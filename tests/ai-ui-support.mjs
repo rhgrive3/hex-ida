@@ -66,7 +66,14 @@ export async function closeSheets(page) {
 }
 
 /** A booted page with the product UI and the assistant installed. */
-export async function openApp(browser, { width, height, sample = false, onboarding = false } = {}) {
+export async function openApp(browser, {
+  width,
+  height,
+  sample = false,
+  onboarding = false,
+  cleanupOnboarding = false,
+  controlWelcomeTimer = false,
+} = {}) {
   const context = await browser.newContext({
     viewport: { width, height }, locale: 'ja-JP', hasTouch: width < 900, isMobile: width < 600,
   });
@@ -77,9 +84,30 @@ export async function openApp(browser, { width, height, sample = false, onboardi
    * keeps that product path covered without letting it interfere with the
    * assistant suite.
    */
-  await context.addInitScript(({ key, guideSeen }) => {
+  await context.addInitScript(({ key, guideSeen, controlTimer }) => {
     try { localStorage.setItem(key, JSON.stringify({ guideSeen })); } catch { /* storage may be unavailable on about:blank */ }
-  }, { key: PREF_KEY, guideSeen: !onboarding });
+    if (!controlTimer) return;
+    const pending = [];
+    const state = { welcomeScheduled: 0, welcomeReleased: 0 };
+    const nativeSetTimeout = window.setTimeout;
+    window.__hexWelcomeTimerState = state;
+    window.__hexReleaseWelcomeGuide = () => {
+      const next = pending.shift();
+      if (!next) return false;
+      state.welcomeReleased++;
+      next.handler(...next.args);
+      return true;
+    };
+    window.setTimeout = function controlledWelcomeTimer(handler, delay, ...args) {
+      const source = typeof handler === 'function' ? String(handler) : '';
+      if (delay === 300 && source.includes('showWelcome')) {
+        state.welcomeScheduled++;
+        pending.push({ handler, args });
+        return 0;
+      }
+      return nativeSetTimeout.call(this, handler, delay, ...args);
+    };
+  }, { key: PREF_KEY, guideSeen: !onboarding, controlTimer: controlWelcomeTimer });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -90,9 +118,10 @@ export async function openApp(browser, { width, height, sample = false, onboardi
   });
   await page.goto(page.__baseUrl || context.__baseUrl || global.__hexBaseUrl, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => !!window.__hexUi && !!window.__hexAi, null, { timeout: 20000 });
-  if (!onboarding) {
+  if (!onboarding || cleanupOnboarding) {
     await page.waitForTimeout(250);
     await closeSheets(page);
+    if (controlWelcomeTimer) await page.evaluate(() => { window.__hexWelcomeInitialCleanupComplete = true; });
   }
   if (sample) {
     await page.evaluate(() => window.__app.openSample());

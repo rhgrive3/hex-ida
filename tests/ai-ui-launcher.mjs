@@ -110,6 +110,68 @@ await run(async ({ browser }) => {
     await context.close();
   }
 
+  /* The non-onboarding path must not schedule the guide at all.  The timer
+     probe is installed before app.js boots, so this remains deterministic
+     even if the page is slow enough to expose the old cleanup race. */
+  {
+    const { context, page, errors } = await openApp(browser, { width: 1440, height: 900, controlWelcomeTimer: true });
+    const initial = await page.evaluate(() => ({
+      scheduled: window.__hexWelcomeTimerState?.welcomeScheduled ?? null,
+      cleanup: window.__hexWelcomeInitialCleanupComplete === true,
+      guide: !!document.querySelector('#overlays .guide-nav'),
+    }));
+    check('default assistant boot schedules no delayed welcome guide',
+      initial.scheduled === 0 && initial.cleanup && !initial.guide, JSON.stringify(initial));
+    await page.click('#ai-launcher');
+    await page.locator('#ai-panel').waitFor({ state: 'visible', timeout: 2000 });
+    const opened = await page.evaluate(() => ({
+      hidden: document.getElementById('ai-panel').hidden,
+      expanded: document.getElementById('ai-launcher').getAttribute('aria-expanded'),
+    }));
+    check('default assistant launcher remains unobstructed after cleanup',
+      opened.hidden === false && opened.expanded === 'true', JSON.stringify(opened));
+    check('default assistant timer probe has no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
+    await context.close();
+  }
+
+  /* Reproduce the old ordering without relying on wall-clock timing: the
+     welcome callback is captured before boot, the legacy one-shot cleanup
+     completes, and only then is the real product callback released. */
+  {
+    const { context, page, errors } = await openApp(browser, {
+      width: 1440,
+      height: 900,
+      onboarding: true,
+      cleanupOnboarding: true,
+      controlWelcomeTimer: true,
+    });
+    const beforeRelease = await page.evaluate(() => ({
+      scheduled: window.__hexWelcomeTimerState?.welcomeScheduled ?? null,
+      released: window.__hexWelcomeTimerState?.welcomeReleased ?? null,
+      cleanup: window.__hexWelcomeInitialCleanupComplete === true,
+      guide: !!document.querySelector('#overlays .guide-nav'),
+    }));
+    check('legacy cleanup completes before the delayed welcome callback',
+      beforeRelease.scheduled === 1 && beforeRelease.released === 0 && beforeRelease.cleanup && !beforeRelease.guide,
+      JSON.stringify(beforeRelease));
+    const released = await page.evaluate(() => window.__hexReleaseWelcomeGuide());
+    check('the controlled welcome callback releases after cleanup', released === true, String(released));
+    await page.locator('#overlays .guide-nav').waitFor({ state: 'visible', timeout: 2000 });
+    const guide = await page.evaluate(() => ({
+      title: document.querySelector('#overlays .sheet .sheet-title')?.textContent || '',
+      navigation: document.querySelectorAll('#overlays .guide-nav button').length,
+      released: window.__hexWelcomeTimerState?.welcomeReleased ?? null,
+    }));
+    check('a guide arriving after the old cleanup remains real product UI',
+      guide.navigation > 0 && guide.title.length > 0 && guide.released === 1, JSON.stringify(guide));
+    await page.keyboard.press('Escape');
+    await page.locator('#overlays .guide-nav').waitFor({ state: 'detached', timeout: 2000 });
+    check('the delayed guide remains dismissible after controlled release',
+      await page.locator('#overlays .guide-nav').count() === 0);
+    check('controlled delayed-guide regression has no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
+    await context.close();
+  }
+
   /* Onboarding remains an explicit, independently testable product path. */
   {
     const { context, page, errors } = await openApp(browser, { width: 1440, height: 900, onboarding: true });
