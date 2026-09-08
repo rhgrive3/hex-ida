@@ -308,7 +308,10 @@ function createStringEntry(app, key, initialOptions = {}) {
     if (live.get(key) === entry) live.delete(key);
     throw error;
   }).finally(() => {
-    if (app.stringsBusyEpoch === epoch) { app.stringsBusy = null; app.stringsBusyEpoch = -1; }
+    if (app.stringsBusyEpoch === epoch && app.stringsBusy === entry.promise) {
+      app.stringsBusy = null;
+      app.stringsBusyEpoch = -1;
+    }
   });
   app.stringsBusyEpoch = epoch;
   app.stringsBusy = entry.promise;
@@ -389,7 +392,10 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     if (live.get(`${epoch}:${key}`) === entry) live.delete(`${epoch}:${key}`);
     throw error;
   }).finally(() => {
-    if (app.programBusyEpoch === epoch) { app.programBusy = null; app.programBusyEpoch = -1; }
+    if (app.programBusyEpoch === epoch && app.programBusy === entry.promise) {
+      app.programBusy = null;
+      app.programBusyEpoch = -1;
+    }
   });
   app.programBusyEpoch = epoch;
   app.programBusy = entry.promise;
@@ -410,7 +416,19 @@ export function installSharedAppArtifacts(app) {
     const key = String(epoch);
     const map = mapFor(STRING_ENTRIES, app);
     let entry = liveEntry(map, key, map.get(key));
-    if (!entry) entry = createStringEntry(app, key, options);
+    if (!entry) {
+      entry = createStringEntry(app, key, options);
+      // The producer IIFE starts synchronously inside createStringEntry, so a
+      // consumer abort during that window reaches attach() unregistered. A
+      // zero-waiter producer must be cancelled and detached, never left to
+      // publish into the shared cache (#5816).
+      if (options.signal?.aborted) {
+        entry.controller.abort(options.signal.reason ?? 'consumer-aborted-during-producer-start');
+        entry.promise?.catch?.(() => { /* no waiters left: swallow the abort */ });
+        if (map.get(key) === entry) map.delete(key);
+        if (app.stringsBusyEpoch === epoch) { app.stringsBusy = null; app.stringsBusyEpoch = -1; }
+      }
+    }
     return attach(entry, options);
   };
 
@@ -426,7 +444,17 @@ export function installSharedAppArtifacts(app) {
     const mapKey = `${epoch}:${key}`;
     const map = mapFor(PROGRAM_ENTRIES, app);
     let entry = liveEntry(map, mapKey, map.get(mapKey));
-    if (!entry) entry = createProgramEntry(app, key, regions, options);
+    if (!entry) {
+      entry = createProgramEntry(app, key, regions, options);
+      // Same producer-start race as ensureStrings (#5816): invalidate a
+      // zero-waiter entry whose consumer aborted during producer start.
+      if (options.signal?.aborted) {
+        entry.controller.abort(options.signal.reason ?? 'consumer-aborted-during-producer-start');
+        entry.promise?.catch?.(() => { /* no waiters left: swallow the abort */ });
+        if (map.get(mapKey) === entry) map.delete(mapKey);
+        if (app.programBusyEpoch === epoch) { app.programBusy = null; app.programBusyEpoch = -1; }
+      }
+    }
     return attach(entry, options);
   };
 
