@@ -228,7 +228,7 @@ test('#7268 branch returns retain their path-specific stack values', () => {
     assert.ok(value, 'each return input resolves to a Semantic IR value');
     assert.ok(value.definitionNodeId, 'each return input has a defining node');
     return value.metadata?.constant;
-  }).sort();
+  });
   assert.deepEqual(constants, ['1', '2']);
 });
 
