@@ -17,6 +17,14 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const PROFILE_PATH = path.join(ROOT, 'tools/validation/competitive/profile.json');
 const REPORT_DIR = path.join(ROOT, 'reports/competitive');
 const SCORECARD_PATH = path.join(REPORT_DIR, 'scorecard.json');
+const REPOSITORY_CAPTURE_FILES = Object.freeze({
+  'machine-effects-x86_64-coverage': 'p5-capture.json',
+  'machine-effects-riscv64-coverage': 'p6-capture.json',
+  'decompiler-quality-gotos': 'p8-gotos-capture.json',
+  'decompiler-quality-assembly-fallbacks': 'p8-fallbacks-capture.json',
+});
+const SHARED_PHASE8_CAPTURE_METRIC = 'decompiler-quality-gotos';
+const SHARED_PHASE8_FALLBACK_METRIC = 'decompiler-quality-assembly-fallbacks';
 
 function git(args) {
   const result = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8', shell: false });
@@ -160,6 +168,141 @@ function atomicWriteJson(filePath, value) {
   }
 }
 
+function repositoryEvidenceError(code, detail = '') {
+  throw new TypeError(`competitive-repository-evidence-${code}${detail ? `:${detail}` : ''}`);
+}
+
+function readRepositoryEvidenceJson(filePath, code, { required = true } = {}) {
+  if (!fs.existsSync(filePath)) {
+    if (required) repositoryEvidenceError(`${code}-missing`, filePath);
+    return null;
+  }
+  try {
+    const value = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+      repositoryEvidenceError(`${code}-object-required`, filePath);
+    }
+    return value;
+  } catch (error) {
+    if (error instanceof TypeError && String(error.message).startsWith('competitive-repository-evidence-')) throw error;
+    repositoryEvidenceError(`${code}-json-invalid`, `${filePath}:${error.message}`);
+  }
+}
+
+function sharedPhase8CaptureFor(metricId, capture) {
+  return metricId === SHARED_PHASE8_FALLBACK_METRIC
+    && capture?.metricId === SHARED_PHASE8_CAPTURE_METRIC;
+}
+
+function expectedCaptureMetricId(metricId, capture) {
+  return sharedPhase8CaptureFor(metricId, capture) ? null : metricId;
+}
+
+function repositoryCapturePath(outputRoot, metricId) {
+  const fileName = REPOSITORY_CAPTURE_FILES[metricId];
+  if (fileName == null) return null;
+  const direct = path.join(outputRoot, fileName);
+  if (fs.existsSync(direct)) return direct;
+  // Native paired Phase 8 measurements deliberately share one capture.  The
+  // collector normally writes both names, but accepting the canonical source
+  // name keeps this path bound to the exact capture rather than making a copy.
+  if (metricId === SHARED_PHASE8_FALLBACK_METRIC) {
+    const shared = path.join(outputRoot, REPOSITORY_CAPTURE_FILES[SHARED_PHASE8_CAPTURE_METRIC]);
+    if (fs.existsSync(shared)) return shared;
+  }
+  return direct;
+}
+
+function loadRepositoryEvidence({ outputRoot, profile }) {
+  if (typeof outputRoot !== 'string' || !outputRoot.trim()) repositoryEvidenceError('output-root-required');
+  const resolvedRoot = path.resolve(outputRoot);
+  if (!fs.existsSync(resolvedRoot) || !fs.statSync(resolvedRoot).isDirectory()) {
+    repositoryEvidenceError('output-root-missing', resolvedRoot);
+  }
+  const measurements = readRepositoryEvidenceJson(path.join(resolvedRoot, 'measurements.json'), 'measurements');
+  for (const metricId of Object.keys(measurements)) {
+    if (!Object.prototype.hasOwnProperty.call(profile.metrics || {}, metricId)) {
+      repositoryEvidenceError('measurement-metric-unknown', metricId);
+    }
+  }
+
+  const captures = {};
+  for (const metricId of Object.keys(profile.metrics || {})) {
+    const capturePath = repositoryCapturePath(resolvedRoot, metricId);
+    if (capturePath == null || !fs.existsSync(capturePath)) continue;
+    captures[metricId] = readRepositoryEvidenceJson(capturePath, `capture-${metricId}`);
+  }
+  return Object.freeze({ outputRoot: resolvedRoot, captures, measurements });
+}
+
+function validateRepositoryEvidence({ profile, captures, measurements, expectedProducerIdentity }) {
+  for (const [metricId, capture] of Object.entries(captures)) {
+    validateCompetitiveTwinCapture(capture, {
+      replayArtifacts: false,
+      expectedMetricId: expectedCaptureMetricId(metricId, capture),
+    });
+  }
+  for (const [metricId, measurement] of Object.entries(measurements)) {
+    const capture = captures[metricId] ?? null;
+    if (measurement?.status === 'MEASURED') {
+      validateCompetitiveMeasurement(measurement, {
+        expectedMetricId: metricId,
+        capture,
+        expectedProducerIdentity,
+        replayArtifacts: true,
+      });
+    } else {
+      validateCompetitiveMeasurement(measurement, { expectedMetricId: metricId });
+    }
+    if (measurement?.status === 'MEASURED'
+        && profile.metrics[metricId]?.groundTruth?.binaryScored !== true) {
+      repositoryEvidenceError('nonbinary-measured-unsupported', metricId);
+    }
+  }
+}
+
+function profileFromRepositoryEvidence(profile, captures, measurements) {
+  const effectiveProfile = structuredClone(profile);
+  for (const [metricId, measurement] of Object.entries(measurements)) {
+    if (measurement.status !== 'MEASURED') continue;
+    const config = effectiveProfile.metrics[metricId];
+    const capture = captures[metricId];
+    if (capture?.status !== 'READY' || !Array.isArray(capture.artifacts) || capture.artifacts.length === 0) {
+      repositoryEvidenceError('measured-capture-required', metricId);
+    }
+    const artifact = capture.artifacts[0];
+    if (artifact?.manifest == null) repositoryEvidenceError('measured-manifest-required', metricId);
+    const existingWorkloads = Array.isArray(config.corpusWorkloadIds) ? config.corpusWorkloadIds : [];
+    config.corpusWorkloadIds = [
+      capture.corpusId,
+      ...existingWorkloads.filter((workloadId) => workloadId !== capture.corpusId),
+    ];
+    config.groundTruth = {
+      kind: 'binary-corpus',
+      authority: 'same-binary-twin',
+      status: 'measured',
+      binaryScored: true,
+      twinManifest: structuredClone(artifact.manifest),
+    };
+  }
+  return effectiveProfile;
+}
+
+function twinEvidenceFromRepositoryCaptures(measurements, captures) {
+  const evidence = {};
+  for (const [metricId, measurement] of Object.entries(measurements)) {
+    if (measurement.status !== 'MEASURED') continue;
+    const artifact = captures[metricId]?.artifacts?.[0];
+    if (artifact == null) repositoryEvidenceError('measured-artifact-required', metricId);
+    evidence[metricId] = {
+      debugArtifactPath: artifact.debugArtifactPath,
+      strippedArtifactPath: artifact.strippedArtifactPath,
+      expected: artifact.manifest,
+    };
+  }
+  return evidence;
+}
+
 export async function generateCompetitiveScorecard({ profile = loadCompetitiveProfile(), twinCapturesByMetric = {}, measurementsByMetric = {} } = {}) {
   const { gitSha: headCommit, treeSha } = currentCompetitiveGitIdentity();
 
@@ -170,7 +313,10 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
     if (!Object.prototype.hasOwnProperty.call(profile.metrics || {}, metricId)) {
       throw new TypeError(`competitive-twin-capture-metric-unknown:${metricId}`);
     }
-    validateCompetitiveTwinCapture(twinCapturesByMetric[metricId], { replayArtifacts: false, expectedMetricId: metricId });
+    validateCompetitiveTwinCapture(twinCapturesByMetric[metricId], {
+      replayArtifacts: false,
+      expectedMetricId: expectedCaptureMetricId(metricId, twinCapturesByMetric[metricId]),
+    });
   }
   if (measurementsByMetric == null || typeof measurementsByMetric !== 'object' || Array.isArray(measurementsByMetric)) {
     throw new TypeError('competitive-measurements-object-required');
@@ -378,11 +524,76 @@ export async function generateCompetitiveScorecard({ profile = loadCompetitivePr
   return Object.freeze(scorecard);
 }
 
+/**
+ * Promote only validated repository measurement envelopes into an effective
+ * scorecard profile.  This consumes collector output and never invokes the
+ * expensive producers again.  The static profile remains the authority for
+ * the frozen denominator, thresholds, and all rows without measured binary
+ * evidence.
+ */
+export async function generateCompetitiveScorecardFromRepositoryEvidence({
+  outputRoot,
+  profile = loadCompetitiveProfile(),
+} = {}) {
+  const { verifyCompetitiveProfile, verifyCompetitiveScorecard } = await import('./verify.mjs');
+  const canonicalProfile = loadCompetitiveProfile();
+  if (stableDigest(profile) !== stableDigest(canonicalProfile)) {
+    repositoryEvidenceError('profile-not-canonical');
+  }
+  verifyCompetitiveProfile(profile);
+  const expectedProducerIdentity = currentCompetitiveGitIdentity();
+  const repositoryEvidence = loadRepositoryEvidence({ outputRoot, profile });
+  validateRepositoryEvidence({
+    profile,
+    captures: repositoryEvidence.captures,
+    measurements: repositoryEvidence.measurements,
+    expectedProducerIdentity,
+  });
+  const effectiveProfile = profileFromRepositoryEvidence(
+    profile,
+    repositoryEvidence.captures,
+    repositoryEvidence.measurements,
+  );
+  const scorecard = await generateCompetitiveScorecard({
+    profile: effectiveProfile,
+    twinCapturesByMetric: repositoryEvidence.captures,
+    measurementsByMetric: repositoryEvidence.measurements,
+  });
+  if (scorecard.gitSha !== expectedProducerIdentity.gitSha || scorecard.treeSha !== expectedProducerIdentity.treeSha) {
+    repositoryEvidenceError('source-changed-during-generation');
+  }
+  const verification = verifyCompetitiveScorecard(scorecard, effectiveProfile, {
+    expectedGitSha: expectedProducerIdentity.gitSha,
+    expectedTreeSha: expectedProducerIdentity.treeSha,
+    measurementCapturesByMetric: repositoryEvidence.captures,
+    twinEvidenceByMetric: twinEvidenceFromRepositoryCaptures(
+      repositoryEvidence.measurements,
+      repositoryEvidence.captures,
+    ),
+  });
+  return Object.freeze({
+    outputRoot: repositoryEvidence.outputRoot,
+    profile: effectiveProfile,
+    captures: repositoryEvidence.captures,
+    measurements: repositoryEvidence.measurements,
+    scorecard,
+    verification,
+  });
+}
+
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   try {
-    const scorecard = await generateCompetitiveScorecard();
-    console.log(`Competitive Scorecard generated: ${scorecard.summary.wins} WINS, ${scorecard.summary.ties} TIES, ${scorecard.summary.losses} LOSSES @ ${scorecard.gitSha}`);
+    const repositoryIndex = process.argv.indexOf('--from-measurements');
+    if (repositoryIndex >= 0) {
+      const outputRoot = process.argv[repositoryIndex + 1];
+      if (outputRoot == null || outputRoot.startsWith('--')) repositoryEvidenceError('output-root-required');
+      const result = await generateCompetitiveScorecardFromRepositoryEvidence({ outputRoot });
+      console.log(`Competitive Scorecard generated from ${result.outputRoot}: ${result.scorecard.summary.wins} WINS, ${result.scorecard.summary.ties} TIES, ${result.scorecard.summary.losses} LOSSES, ${result.scorecard.summary.unmeasured} UNMEASURED @ ${result.scorecard.gitSha}`);
+    } else {
+      const scorecard = await generateCompetitiveScorecard();
+      console.log(`Competitive Scorecard generated: ${scorecard.summary.wins} WINS, ${scorecard.summary.ties} TIES, ${scorecard.summary.losses} LOSSES @ ${scorecard.gitSha}`);
+    }
   } catch (error) {
     console.error(error?.stack || error?.message || String(error));
     process.exitCode = 1;
