@@ -163,7 +163,11 @@ function parseThin(bytes, opts) {
   if (image.entrypoint != null && image.entrypoint !== 0n) {
     const entrySegment = image.segmentAt(image.entrypoint);
     const alignment = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
-    if (entrySegment?.perms?.execute && image.entrypoint % alignment === 0n) {
+    // The LC_UNIXTHREAD PC is an absolute address: unlike the LC_MAIN path
+    // (whose entryoff maps through the file-backed table), it can land in a
+    // segment's zero-fill tail, where no instruction byte exists. Require
+    // file backing before calling it a valid entrypoint (#5555).
+    if (entrySegment?.perms?.execute && image.entrypoint % alignment === 0n && image.addressToOffset(image.entrypoint) != null) {
       image.metadata.entrypointValid = true;
       image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
     } else {
@@ -201,7 +205,12 @@ function parseThin(bytes, opts) {
     for (const sym of image.symbols) {
       if (!sym.defined || sym.address == null) continue;
       const sec = image.sectionAt(sym.address);
-      if (sec && sec.perms.execute && sym.name !== '__mh_execute_header' && metadataBudget.take({ objects:1, operations:1, estimatedHeapBytes:128 }, 'symbol-function-fallback')) image.functions.push(functionSeed(sym.address, { name: sym.name, source: 'symbol', confidence: 0.9 }));
+      // An executable segment's initprot does not make every section code:
+      // only sections carrying S_ATTR_PURE_INSTRUCTIONS/S_ATTR_SOME_INSTRUCTIONS
+      // hold machine instructions, so data sections under __TEXT must not
+      // mint symbol-backed function seeds (#5559).
+      const hasInstructions = !!sec && ((sec.flags & 0x80000000) !== 0 || (sec.flags & 0x400) !== 0);
+      if (sec && hasInstructions && sec.perms.execute && sym.name !== '__mh_execute_header' && metadataBudget.take({ objects:1, operations:1, estimatedHeapBytes:128 }, 'symbol-function-fallback')) image.functions.push(functionSeed(sym.address, { name: sym.name, source: 'symbol', confidence: 0.9 }));
     }
   }
 
@@ -476,6 +485,14 @@ function parseFunctionStarts(r, dc, image, sharedBudget = null) {
     if (!seg || !seg.perms.execute || (alignment > 1n && addr % alignment !== 0n)) {
       status.complete = false; status.partialReason = 'invalid-entry';
       image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)}`);
+      break;
+    }
+    // A segment's vm size may exceed its file size; the difference is loader
+    // zero-fill. A start with no file-backed instruction byte is not static
+    // evidence and must not become a 0.995-confidence seed (#5551).
+    if (image.addressToOffset(addr) == null) {
+      status.complete = false; status.partialReason = 'invalid-entry';
+      image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)} (no file-backed instruction bytes)`);
       break;
     }
     if (!budget.take({ inputBytes:x.bytes, objects:1, estimatedHeapBytes:128 }, 'function-start-output')) { status.complete=false; status.partialReason='metadata-budget'; break; }
