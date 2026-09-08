@@ -277,7 +277,9 @@ export function createApi(app, out, options = {}) {
           const instructionAddress = archAdapter.addressForRow(r, row);
           if (instructionAddress == null) break;
           const chunk = Math.floor(row / 1024);
-          const e = await app.backend.fetchChunk(r.id, chunk, true);
+          // Cancellation contract matches the variable-length path: a hung
+          // fetchChunk must not trap the script past the stop button (#5894).
+          const e = await awaitRequest(app.backend.fetchChunk(r.id, chunk, true), signal);
           const k = row - chunk * 1024;
           if (!e.mn || !e.mn[k]) break;
           out2.push({ addr:instructionAddress, mn:e.mn[k], ops:e.ops ? e.ops[k] : '' });

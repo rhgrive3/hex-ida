@@ -3,8 +3,21 @@
   async function recover(options) {
     const {
       slice, known, readRange, cancelled, requestId, fileSize, Words, budget,
-      sanitizePointer, maxSelector = 240, maxStubs = 80_000, maxSectionBytes = 8 * 1024 * 1024,
+      sanitizePointer,
     } = options || {};
+    // Coverage limits are a typed contract: only primitive finite positive
+    // safe-integer numbers may change a default (#5882). Relational
+    // comparison/BigInt() coercion would let ['1'], true or ['8388608']
+    // reshape scan coverage.
+    const boundedLimit = (value, fallback) => {
+      if (value == null) return fallback;
+      if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0
+        || !Number.isFinite(value)) return fallback;
+      return value;
+    };
+    const maxSelector = boundedLimit(options?.maxSelector, 240);
+    const maxStubs = boundedLimit(options?.maxStubs, 80_000);
+    const maxSectionBytes = boundedLimit(options?.maxSectionBytes, 8 * 1024 * 1024);
     if (!slice || !readRange || !Words || !budget) return [];
     const regs = slice.regions || [];
     const sliceStart = BigInt(slice.offset ?? 0);

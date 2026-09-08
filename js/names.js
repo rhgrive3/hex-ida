@@ -41,7 +41,22 @@ function nextNoteGeneration() {
 /** BigInt でも Number でも同じ鍵になるように、10 進の文字列にそろえる。 */
 function key(addr) {
   if (addr == null) return '';
-  return typeof addr === 'bigint' ? addr.toString() : String(BigInt(Math.trunc(Number(addr))));
+  if (typeof addr === 'bigint') return addr.toString();
+  if (typeof addr === 'number') {
+    if (!Number.isSafeInteger(addr)) return '';
+    return BigInt(addr).toString();
+  }
+  if (typeof addr === 'string') {
+    // Decimal/hex strings are exact identities and must not pass through
+    // Number, which silently rounds > 2^53 addresses into each other (#5909).
+    const text = addr.trim();
+    if (!text) return '';
+    try {
+      if (/^-?(?:0x[0-9a-f]+|\d+)$/i.test(text)) return BigInt(text).toString();
+    } catch { /* fall through: not an address */ }
+    return '';
+  }
+  return '';
 }
 
 /**
@@ -371,7 +386,7 @@ export class NoteStore {
     return `${this._deltaPrefix}${encodeURIComponent(kind)}.${encodeURIComponent(String(recordKey))}`;
   }
 
-  _loadDeltas({ apply = true } = {}) {
+  _loadDeltas({ apply = true, preserveRecoveryKeys = null } = {}) {
     this._deltaScanComplete = true;
     if (!this._deltaPrefix || typeof localStorage === 'undefined') return { complete: true };
     this._deltaBytes.clear(); this._deltaTotalBytes = 0;
@@ -399,6 +414,7 @@ export class NoteStore {
         continue;
       }
       if (raw == null) continue;
+      const preserve = preserveRecoveryKeys?.get(storageKey) === raw;
       try {
         const bytes = new TextEncoder().encode(raw).byteLength;
         this._deltaBytes.set(storageKey, bytes); this._deltaTotalBytes += bytes;
@@ -412,7 +428,10 @@ export class NoteStore {
           continue;
         }
         if (this._snapshotState === SNAPSHOT_MISSING) {
-          this._deltaScanComplete = false;
+          if (!preserve) {
+            this._unreadableDeltaKeys.add(storageKey);
+            this._deltaScanComplete = false;
+          }
           continue;
         }
         // A missing generation belongs to the pre-generation format. It is
@@ -422,7 +441,10 @@ export class NoteStore {
           // A delta found without a base has no safe generation to bind to.
           // Keep it as recovery evidence rather than compacting it away.
           if (this._snapshotGeneration == null && generation != null) {
-            this._deltaScanComplete = false;
+            if (!preserve) {
+              this._unreadableDeltaKeys.add(storageKey);
+              this._deltaScanComplete = false;
+            }
           }
           continue;
         }
@@ -445,6 +467,39 @@ export class NoteStore {
   }
 
   /**
+   * Structural revalidation for a delta record that was unreadable at load
+   * time (#7160): mirrors the _loadDeltas decode boundary. Returns false when
+   * the record still fails the boundary, `current` for a live record that
+   * needs a fresh ordered reload, `reconstructable` for a valid delta that
+   * can be adopted by explicit recovery, and `ignorable` for stale evidence
+   * that the current base already supersedes.
+   */
+  _isUnreadableDeltaRecord(raw) {
+    try {
+      const delta = JSON.parse(raw);
+      if (!delta || typeof delta !== 'object') return false;
+      const hasGeneration = Object.prototype.hasOwnProperty.call(delta, 'generation');
+      if (hasGeneration && (typeof delta.generation !== 'string' || !delta.generation)) return false;
+      const map = this._mapForDelta(delta.kind);
+      if (!map || typeof delta.key !== 'string') return false;
+      const generation = hasGeneration ? delta.generation : null;
+      if (this._snapshotState === SNAPSHOT_MISSING) return 'reconstructable';
+      if (this._snapshotState !== SNAPSHOT_VALID) return 'current';
+      if (generation !== this._snapshotGeneration) {
+        // A committed generation makes all other well-formed overlays stale;
+        // they cannot affect a normal reload and may be collected safely.
+        if (this._snapshotGeneration != null) return 'ignorable';
+        // A generated overlay without a generated base can be adopted only by
+        // explicit recovery after the complete set of deltas is revalidated.
+        return 'reconstructable';
+      }
+      return 'current';
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Quarantine (or explicitly discard) only delta records that failed the
    * structural read/parse/schema boundary. Readable deltas remain intact, and
    * a successful recovery re-enables full snapshot compaction without using
@@ -452,14 +507,58 @@ export class NoteStore {
    */
   recoverUnreadableDeltas({ quarantine = true } = {}) {
     if (!this._deltaPrefix || typeof localStorage === 'undefined') return true;
+    // A failed scan with no per-key evidence may have skipped valid overlay
+    // records before this instance could apply them. A metadata-only retry
+    // cannot establish that this in-memory view incorporated those records.
+    const priorScanIncompleteWithoutKeys = !this._deltaScanComplete &&
+      this._unreadableDeltaKeys.size === 0;
     const pending = [...this._unreadableDeltaKeys];
     const failed = [];
+    const reloadRequired = [];
+    const reconstructed = new Map();
+    const dirtyAtStart = this.dirty;
     const quarantinePrefix = PREFIX + this.id + '.quarantine.';
     for (const storageKey of pending) {
       let raw = null;
       try { raw = localStorage.getItem(storageKey); }
       catch { failed.push(storageKey); continue; }
       if (raw == null) continue;
+      const status = this._isUnreadableDeltaRecord(raw);
+      if (status === 'current') {
+        // Repaired live record (transient read failure at load time): it stays
+        // live. Recovery is blocked with an explicit reload requirement — the
+        // caller must re-read the store so the record is incorporated in
+        // normal delta order; deleting it here would destroy live evidence.
+        if (!this._deltaBytes.has(storageKey)) {
+          try {
+            const bytes = new TextEncoder().encode(raw).byteLength;
+            this._deltaBytes.set(storageKey, bytes); this._deltaTotalBytes += bytes;
+          } catch { failed.push(storageKey); continue; }
+        }
+        reloadRequired.push(storageKey);
+        continue;
+      }
+      if (status === 'reconstructable') {
+        if (dirtyAtStart) {
+          failed.push(storageKey);
+          continue;
+        }
+        try {
+          const delta = JSON.parse(raw);
+          const map = this._mapForDelta(delta.kind);
+          if (!map || typeof delta.key !== 'string') {
+            failed.push(storageKey);
+            continue;
+          }
+          if (delta.deleted) map.delete(delta.key);
+          else map.set(delta.key, String(delta.value ?? ''));
+          reconstructed.set(storageKey, raw);
+          continue;
+        } catch {
+          failed.push(storageKey);
+          continue;
+        }
+      }
       try {
         if (quarantine) localStorage.setItem(
           quarantinePrefix + encodeURIComponent(storageKey),
@@ -468,16 +567,34 @@ export class NoteStore {
         localStorage.removeItem(storageKey);
       } catch { failed.push(storageKey); }
     }
-    this._loadDeltas({ apply: false });
-    const ok = failed.length === 0 && this._deltaScanComplete && this._unreadableDeltaKeys.size === 0;
+    const retry = this._loadDeltas({ apply: false, preserveRecoveryKeys: reconstructed });
+    // Do not let a successful retry erase uncertainty from a failed read or
+    // enumeration. The raw records remain live until a fresh ordered load.
+    for (const storageKey of failed) this._unreadableDeltaKeys.add(storageKey);
+    if (failed.length || priorScanIncompleteWithoutKeys) this._deltaScanComplete = false;
+    // A repaired delta remains live. Keep recovery scan-incomplete so save()
+    // cannot compact it away before a fresh reload establishes its ordering.
+    for (const storageKey of reloadRequired) this._unreadableDeltaKeys.add(storageKey);
+    if (reloadRequired.length) this._deltaScanComplete = false;
+    const scanReloadRequired = priorScanIncompleteWithoutKeys;
+    if (retry.complete && failed.length === 0 && !scanReloadRequired &&
+        this._unreadableDeltaKeys.size === 0) {
+      this._deltaScanComplete = true;
+    }
+    const ok = failed.length === 0 && reloadRequired.length === 0 &&
+      !scanReloadRequired &&
+      this._deltaScanComplete && this._unreadableDeltaKeys.size === 0;
     if (ok) {
       if (!this._cleanupPending) this.lastSaveError = null;
       return true;
     }
     this.lastSaveError = {
-      code: 'DELTA_RECOVERY_FAILED',
-      message: 'unreadable delta recovery remains pending',
+      code: reloadRequired.length ? 'DELTA_RECOVERY_REPAIRED' : 'DELTA_RECOVERY_FAILED',
+      message: reloadRequired.length || scanReloadRequired
+        ? 'a fresh reload is required before recovery'
+        : 'unreadable delta recovery remains pending',
       recoveryRequired: true,
+      ...((reloadRequired.length || scanReloadRequired) ? { reloadRequired: true } : {}),
       pendingKeys: [...new Set([...failed, ...this._unreadableDeltaKeys])],
     };
     return false;

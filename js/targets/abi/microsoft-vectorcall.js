@@ -4,6 +4,7 @@ import { aggregateLayoutDescriptorPresent, canonicalAggregateLayout } from './ag
 
 const INTEGER_ARGUMENT_REGISTERS = Object.freeze(['rcx','rdx','r8','r9']);
 const VECTOR_REGISTER_COUNT = 6;
+const VECTOR_ARGUMENT_REGISTERS = Object.freeze(Array.from({ length:VECTOR_REGISTER_COUNT }, (_value,index) => `xmm${index}`));
 const VECTORCALL_NAMES = new Set(['vectorcall','microsoft-vectorcall']);
 
 function parameterList(prototype) {
@@ -428,7 +429,15 @@ export const MICROSOFT_VECTORCALL_ABI = new ABIPlugin({
   classifyArguments:classifyMicrosoftVectorcallArguments,
   classifyCallReturn:classifyMicrosoftVectorcallCallReturn,
   classifyFunctionReturn:classifyMicrosoftVectorcallFunctionReturn,
-  classifyEntryRegister:(reg) => MICROSOFT_X64_ABI.classifyEntryRegister(reg),
+  classifyEntryRegister:(reg) => {
+    // Register identity is schema data: never stringify arrays/objects into
+    // an argument-register token (#5718).
+    const id = typeof reg === 'string' ? reg.toLowerCase() : '';
+    const vectorIndex = VECTOR_ARGUMENT_REGISTERS.indexOf(id);
+    if (vectorIndex >= 0) return { kind:'argument', reg:id, index:vectorIndex, abiClass:'fp-or-vector' };
+    if (typeof reg !== 'string') return { kind:'incoming-register-state', reg:id };
+    return MICROSOFT_X64_ABI.classifyEntryRegister(reg);
+  },
   callerSaved:()=>MICROSOFT_X64_ABI.callerSaved(),
   calleeSaved:()=>MICROSOFT_X64_ABI.calleeSaved(),
   stackRules:()=>Object.freeze({ ...MICROSOFT_X64_ABI.stackRules(), callingConvention:'vectorcall', vectorArgumentRegisters:6 }),

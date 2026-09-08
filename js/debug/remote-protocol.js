@@ -8,12 +8,28 @@ export const WIRE_TAG = '__hex_wire_type__';
 export const BIGINT_TAG = 'bigint';
 export const BYTES_TAG = 'bytes-base64';
 
+function utf8ByteLength(json) {
+  if (typeof Buffer !== 'undefined' && typeof Buffer.byteLength === 'function') return Buffer.byteLength(json, 'utf8');
+  // Exact UTF-8 length without TextEncoder: surrogate pairs are 4 bytes,
+  // unpaired surrogates count as their 3-byte replacement character, so the
+  // byte budget means the same thing on every runtime (#5939).
+  let bytes = 0;
+  for (let i = 0; i < json.length; i += 1) {
+    const code = json.charCodeAt(i);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && json.charCodeAt(i + 1) >= 0xdc00 && json.charCodeAt(i + 1) <= 0xdfff) { bytes += 4; i += 1; }
+    else bytes += 3;
+  }
+  return bytes;
+}
+
 function jsonByteSize(value) {
   let json;
   try { json = JSON.stringify(value); }
   catch { throw new DebugAdapterError('malformed-packet', 'remote packet is not serializable'); }
   if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(json).byteLength;
-  return json.length * 2;
+  return utf8ByteLength(json);
 }
 
 function bytesToBase64(bytes) {
@@ -307,12 +323,23 @@ export class RemoteProtocolClient {
   receive(raw) {
     let wire;
     try { wire = validateRemotePacket(raw); } catch { return false; }
-    if (wire.type !== 'hello' && wire.epoch !== this.epoch) return false;
+    if (wire.type !== 'hello' && wire.epoch !== this.epoch) {
+      // A request opened with an explicit epoch legally receives its response
+      // carrying that request's own epoch (#5726). Keep such a response only
+      // when it settles a pending request opened at that same epoch; every
+      // other foreign-epoch packet stays rejected.
+      const pendingForWire = wire.type === 'response' && Number.isSafeInteger(wire.id)
+        ? this.pending.get(wire.id) : null;
+      if (!pendingForWire || pendingForWire.epoch !== wire.epoch) return false;
+    }
     let packet;
     try { packet = decodeWireValue(wire); } catch { return false; }
     if (packet.type === 'response') {
       const pending = this.pending.get(packet.id);
-      if (!pending || pending.epoch !== packet.epoch || packet.epoch !== this.epoch) return false;
+      // The request's own epoch is the settle authority: a pending opened at
+      // an explicit epoch must be settled by its matching response even when
+      // that epoch is not the client's current one (#5726).
+      if (!pending || pending.epoch !== packet.epoch) return false;
       this._cleanupPending(packet.id, pending);
       if (packet.error) pending.reject(new DebugAdapterError(String(packet.error.code || 'remote-error'), String(packet.error.message || 'remote error').slice(0,2048), packet.error.details || null));
       else pending.resolve(packet.result);

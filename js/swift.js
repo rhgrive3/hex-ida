@@ -118,9 +118,25 @@ export async function readSwiftMangledName(read, address, options = {}) {
   };
 }
 function contextKind(flags) { switch (flags & 0x1f) { case 0:return 'module'; case 1:return 'extension'; case 2:return 'anonymous'; case 3:return 'protocol'; case 16:return 'class'; case 17:return 'struct'; case 18:return 'enum'; default:return 'unknown'; } }
+/* Section descriptor addresses/sizes come from loader-recovered Mach-O
+   metadata, so they must be canonical non-negative values: non-negative
+   bigint, non-negative safe integer, or an explicit decimal/hex string.
+   Anything else must not reach BigInt(), whose raw SyntaxError would abort
+   the whole Swift metadata analysis instead of degrading one scan (#5857). */
+function canonicalSectionValue(value) {
+  if (typeof value === 'bigint' && value >= 0n) return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (/^(?:0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(text)) {
+      try { return BigInt(text); } catch { return null; }
+    }
+  }
+  return null;
+}
 function sectionRange(sections, wanted) {
   const list = Array.isArray(sections) ? sections : Object.values(sections || {});
-  for (const s of list) { const name = s.section || s.name || s.sectname; if (!wanted.includes(name)) continue; const addr = s.vmAddr ?? s.addr ?? s.address, size = s.size ?? s.declaredSize ?? 0; if (addr != null && size != null) return { addr: BigInt(addr), size: BigInt(size), raw: s }; }
+  for (const s of list) { const name = s.section || s.name || s.sectname; if (!wanted.includes(name)) continue; const addr = s.vmAddr ?? s.addr ?? s.address, size = s.size ?? s.declaredSize ?? 0; if (addr != null && size != null) { const addrBig = canonicalSectionValue(addr), sizeBig = canonicalSectionValue(size); if (addrBig == null || sizeBig == null) return { invalid: true, raw: s }; return { addr: addrBig, size: sizeBig, raw: s }; } }
   return null;
 }
 /*
@@ -336,6 +352,10 @@ export async function parseSwiftWitnessTable(read,address,count,budget=4096,opti
 async function relativePointerSection(read,range,budget,parser,options={}){
   const signal=options?.signal??null;
   const items=[];if(!range)return{items,completeness:{present:false,declared:0,scanned:0,parsed:0,capped:false,unreadableEntries:0,invalidEntries:0,misalignedBytes:0,complete:true}};
+  // A present-but-malformed section descriptor is a scan failure, not an
+  // absent section: fail closed as incomplete instead of leaking a raw
+  // BigInt conversion error or silently claiming completeness (#5857).
+  if(range.invalid===true)return{items,completeness:{present:true,declared:0,scanned:0,parsed:0,capped:false,unreadableEntries:0,invalidEntries:1,misalignedBytes:0,complete:false}};
   const size=range.size,misalignedBytes=Number(size%4n),declared=Number(size/4n),count=Math.min(declared,budget);let scanned=0,unreadableEntries=0,invalidEntries=0;
   for(let i=0;i<count;i++){
     if(signal?.aborted)return{items,completeness:{present:true,declared,scanned,parsed:items.length,capped:true,unreadableEntries,invalidEntries,misalignedBytes,complete:false}};
