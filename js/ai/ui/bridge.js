@@ -149,22 +149,58 @@ export function createAiEngine(app, options = {}) {
   };
 }
 
-function createLiveProjectSessionPersistence(app) {
+// The live persistence defers its durable write to a debounced
+// workspace.autosave(), but `InvestigationSessionStore.persist()/delete()`
+// callers treat a resolved save as durable. save()/delete() therefore await
+// the shared flush and surface the autosave's boolean failure contract
+// (#5648).
+export function createLiveProjectSessionPersistence(app) {
   let saveTimer = null;
+  let flush = null;
   const projectFor = () => app?.workspace?.project || app?.activeProject || app?.project || null;
   const ensureProject = () => projectFor() || app?.workspace?.snapshot?.() || null;
+  const completeFlush = (error) => {
+    const pending = flush;
+    flush = null;
+    if (pending) error ? pending.reject(error) : pending.resolve();
+  };
+  const runAutosave = () => {
+    try {
+      const saved = app?.workspace?.autosave?.();
+      if (saved === false) throw new Error('workspace-autosave-failed');
+      completeFlush(null);
+    } catch (error) {
+      completeFlush(error instanceof Error ? error : new Error(String(error)));
+    }
+  };
   const changed = (project) => {
     if (app?.workspace) app.workspace.project = project;
     app.activeProject = project;
-    if (saveTimer != null || typeof setTimeout !== 'function') return;
-    saveTimer = setTimeout(() => { saveTimer = null; try { app?.workspace?.autosave?.(); } catch { /* optional autosave */ } }, 250);
+    if (typeof setTimeout !== 'function') { runAutosave(); return; }
+    if (flush == null) {
+      let resolve, reject;
+      flush = { promise: new Promise((res, rej) => { resolve = res; reject = rej; }), resolve, reject };
+    }
+    if (saveTimer != null) return;
+    saveTimer = setTimeout(() => { saveTimer = null; runAutosave(); }, 250);
   };
+  const awaitFlush = () => (flush ? flush.promise : Promise.resolve());
   const adapterFor = (project) => project ? createProjectSessionPersistence(project, { onChange: changed }) : null;
   return {
     list() { return adapterFor(projectFor())?.list?.() || []; },
     async load(id) { return (await adapterFor(projectFor())?.load?.(id)) || null; },
-    async save(session) { const adapter = adapterFor(ensureProject()); if (adapter) await adapter.save(session); },
-    async delete(id) { const adapter = adapterFor(projectFor()); if (adapter) await adapter.delete(id); },
+    async save(session) {
+      const adapter = adapterFor(ensureProject());
+      if (!adapter) return;
+      await adapter.save(session);
+      await awaitFlush();
+    },
+    async delete(id) {
+      const adapter = adapterFor(projectFor());
+      if (!adapter) return;
+      await adapter.delete(id);
+      await awaitFlush();
+    },
   };
 }
 
