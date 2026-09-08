@@ -371,13 +371,38 @@ HANDLERS.mov = (o, ops) => {
   addRegRoles(o, ops);
 };
 
-function moveWideShift(op) {
-  const shift = op && op.shift;
-  return shift && shift.op === 'lsl' && Number.isInteger(shift.amount) ? shift.amount : null;
+function moveWideInfo(ops) {
+  if (!Array.isArray(ops) || ops.length !== 2) return null;
+  const [destination, immediate] = ops;
+  const destinationIsGp = destination && destination.k === 'reg' &&
+    (destination.cls === 'gp' || destination.cls === 'zr');
+  const bits = destinationIsGp && (destination.bits === 32 || destination.bits === 64)
+    ? destination.bits
+    : null;
+  if (bits == null || destination.shift || !immediate || immediate.k !== 'imm' ||
+      immediate.value == null || immediate.value < 0n || immediate.value > 0xffffn ||
+      /^#-/i.test(immediate.text || '')) return null;
+
+  const shift = immediate.shift;
+  if (!shift) return { bits, shift: null };
+  if (shift.op !== 'lsl' || !Number.isInteger(shift.amount)) return null;
+  const legalShift = bits === 32
+    ? shift.amount === 0 || shift.amount === 16
+    : shift.amount === 0 || shift.amount === 16 || shift.amount === 32 || shift.amount === 48;
+  return legalShift ? { bits, shift: shift.amount } : null;
 }
 
-function moveWideWidth(op) {
-  return op && op.bits === 32 ? 32 : 64;
+function unknownMoveWide(o, mnemonic) {
+  const displayMnemonic = o.mnemonic || mnemonic;
+  o.title = J('ワイド即値命令（未解釈）', 'Unknown move-wide form');
+  o.pseudo = o.operands ? displayMnemonic + ' ' + o.operands : displayMnemonic;
+  o.summary = J(
+    displayMnemonic.toUpperCase() + ' のこのオペランド形は解釈できません。無効または未対応の入力では値や宛先幅を推測しません。',
+    'This ' + displayMnemonic.toUpperCase() + ' operand form is unknown; invalid or unsupported inputs are not assigned a guessed value or destination width.');
+  o.detail.push(J(
+    '説明できるのは W/X レジスタ、16 ビット即値、合法な LSL 位置を組み合わせた形だけです。',
+    'Only W/X destinations, a 16-bit immediate, and legal move-wide LSL positions are explained.'));
+  o.terms = [];
 }
 
 function moveWideMask(bits) {
@@ -385,9 +410,13 @@ function moveWideMask(bits) {
 }
 
 HANDLERS.movz = (o, ops) => {
+  const info = moveWideInfo(ops);
+  if (!info) {
+    unknownMoveWide(o, 'movz');
+    return;
+  }
   const [d, s] = ops;
-  const sh = moveWideShift(s);
-  const bits = moveWideWidth(d);
+  const { bits, shift: sh } = info;
   o.title = J('代入（上を 0 で埋める）', 'Move with zero');
   o.pseudo = opShort(d) + ' = ' + opShort(s);
   if (sh == null) {
