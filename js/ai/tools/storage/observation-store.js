@@ -61,6 +61,21 @@ function boundedLimit(value, fallback = 100, max = 500) {
 const DEFAULT_MAX_ENTRIES = 256;
 const DEFAULT_MAX_AGE_MS = 30 * 60 * 1000;
 
+const SCOPE_WIDTH = Object.freeze({ selection: 0, function: 1, neighborhood: 2, auto: 3, binary: 3, project: 3, runtime: 3 });
+
+export function assertScopeAccess(record, requestedScope = null, requestedBoundary = null) {
+  if (!record || typeof record !== 'object') return;
+  const requested = typeof requestedScope === 'string' ? requestedScope : null;
+  const requestedWidth = requested ? SCOPE_WIDTH[requested] : null;
+  if (!requested || requested === 'auto' || requestedWidth == null || requestedWidth >= 3) return;
+  const acquired = typeof record.effectiveScope === 'string' ? record.effectiveScope : null;
+  const acquiredWidth = acquired == null ? null : SCOPE_WIDTH[acquired];
+  if (acquiredWidth == null || acquiredWidth > requestedWidth ||
+      !requestedBoundary || !record.scopeBoundary || record.scopeBoundary !== requestedBoundary) {
+    throw new Error('scope_violation');
+  }
+}
+
 // Detail refs are Map identity keys, not coercible text: only a canonical
 // primitive string may reach a record, so a structured value can never alias
 // another observation's payload/provenance (#5425).
@@ -134,20 +149,20 @@ export class ObservationStore {
     return `${binding.key}:${tool}:${shortHash(stableSerialize(args || {}))}`;
   }
 
-  getCached(tool, args, extra = {}) {
+  getCached(tool, args, extra = {}, requestedScope = null, requestedBoundary = null) {
     const key = this.cacheKey(tool, args, extra);
     const id = this.cache.get(key);
     if (!id) return null;
-    try { return this.get(id); } catch { this.cache.delete(key); return null; }
+    try { return this.get(id, requestedScope, requestedBoundary); } catch { this.cache.delete(key); return null; }
   }
 
-  put({ tool, arguments: args = {}, fullResult, functionIdentity = null, deterministic = true, extraBinding = {} } = {}) {
+  put({ tool, arguments: args = {}, fullResult, functionIdentity = null, deterministic = true, extraBinding = {}, effectiveScope = null, scopeBoundary = null } = {}) {
     const binding = this.binding(extraBinding);
     const cacheKey = deterministic ? this.cacheKey(tool, args, extraBinding) : null;
     if (cacheKey) {
       const existing = this.cache.get(cacheKey);
       if (existing) {
-        try { return this.get(existing); } catch { this.cache.delete(cacheKey); }
+        try { return this.get(existing, effectiveScope, scopeBoundary); } catch { this.cache.delete(cacheKey); }
       }
     }
     this.sequence += 1;
@@ -156,6 +171,8 @@ export class ObservationStore {
       id, tool: String(tool || 'unknown'), arguments: args, fullResult, binding,
       binaryIdentity: binding.binaryIdentity,
       functionIdentity: functionIdentity == null ? null : textIdentity(functionIdentity),
+      effectiveScope: typeof effectiveScope === 'string' && effectiveScope ? effectiveScope : null,
+      scopeBoundary: typeof scopeBoundary === 'string' && scopeBoundary ? scopeBoundary : null,
       createdAt: Date.now(), cacheKey, pinned: false,
     };
     this.records.set(id, record);
@@ -185,18 +202,19 @@ export class ObservationStore {
     }
   }
 
-  get(detailRef) {
+  get(detailRef, requestedScope = null, requestedBoundary = null) {
     this.evict();
     const record = this.records.get(observationRefKey(detailRef));
     if (!record) throw new Error('unknown-detail-ref');
+    assertScopeAccess(record, requestedScope, requestedBoundary);
     const current = this.binding();
     if (record.binding.key !== current.key || record.binaryIdentity !== current.binaryIdentity) throw new Error('stale-detail-ref');
     if (!record.pinned && Date.now() - record.createdAt > this.maxAgeMs) throw new Error('stale-detail-ref');
     return record;
   }
 
-  detail({ detailRef, path = '$', cursor = null, limit = 100 } = {}) {
-    const record = this.get(detailRef);
+  detail({ detailRef, path = '$', cursor = null, limit = 100, effectiveScope = null, scopeBoundary = null } = {}) {
+    const record = this.get(detailRef, effectiveScope, scopeBoundary);
     const currentBinding = this.binding();
     let offset = 0;
     let effectivePath = path || '$';
@@ -231,6 +249,8 @@ export class ObservationStore {
         arguments: record.arguments,
         binaryIdentity: record.binaryIdentity,
         functionIdentity: record.functionIdentity,
+        effectiveScope: record.effectiveScope,
+        scopeBoundary: record.scopeBoundary,
         createdAt: record.createdAt,
       },
     };
