@@ -151,7 +151,11 @@ function readPeMetadataDirectory(bytes, view) {
   const metadataRva = readU32(view, cli + 8, 'cil-call-signature-cli-header-truncated');
   const metadataSize = readU32(view, cli + 12, 'cil-call-signature-cli-header-truncated');
   if (!metadataRva || metadataSize < 20) fail('cil-call-signature-metadata-directory-invalid');
-  return { offset:mapRva(metadataRva, metadataSize, 'cil-call-signature-metadata-unmapped'), size:metadataSize };
+  return {
+    offset:mapRva(metadataRva, metadataSize, 'cil-call-signature-metadata-unmapped'),
+    size:metadataSize,
+    mapRva,
+  };
 }
 
 function readStreams(bytes, view, metadata) {
@@ -189,7 +193,8 @@ function readStreams(bytes, view, metadata) {
 export function buildCilCallMetadataIndex(bytes) {
   if (!(bytes instanceof Uint8Array)) fail('cil-call-signature-bytes-required');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const streams = readStreams(bytes, view, readPeMetadataDirectory(bytes, view));
+  const metadata = readPeMetadataDirectory(bytes, view);
+  const streams = readStreams(bytes, view, metadata);
   checkedRange(bytes, streams.tables.offset, streams.tables.size, 'cil-call-signature-tables-out-of-bounds');
   checkedRange(bytes, streams.blob.offset, streams.blob.size, 'cil-call-signature-blob-out-of-bounds');
   checkedRange(bytes, streams.strings.offset, streams.strings.size, 'cil-call-signature-strings-out-of-bounds');
@@ -224,7 +229,10 @@ export function buildCilCallMetadataIndex(bytes) {
       const signatureOffset = 8 + stringIndexSize;
       for (let row = 0; row < rows; row++) {
         const rowPos = pos + row * rowSize;
+        const rva = readU32(view, rowPos, 'cil-call-signature-methoddef-truncated');
         methodDefs.push(Object.freeze({
+          rva,
+          bodyOffset:rva === 0 ? null : metadata.mapRva(rva, 1, 'cil-call-signature-method-body-unmapped'),
           nameIndex:readIndex(view, rowPos + 8, stringIndexSize, 'cil-call-signature-methoddef-truncated'),
           signatureBlobIndex:readIndex(view, rowPos + signatureOffset, blobIndexSize,
             'cil-call-signature-methoddef-truncated'),

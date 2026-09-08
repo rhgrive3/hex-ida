@@ -4,11 +4,21 @@ import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effec
 
 function fail(code) { throw new TypeError(code); }
 
-export function liftCilMethod(bodyIndex, cilImage, options = {}) {
+function methodTokenText(bodyIndex, methodAuthority) {
+  const token = methodAuthority?.methodToken;
+  if (Number.isSafeInteger(token) && token >= 0x06000001 && token <= 0x06ffffff) {
+    return `0x${token.toString(16).padStart(8, '0')}`;
+  }
+  return `0x0600000${(bodyIndex + 1).toString(16)}`;
+}
+
+export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority = null) {
   const methodBody = cilImage.methodBodies[bodyIndex];
   if (!methodBody) fail('cil-invalid-method-body-index');
 
-  const methodId = createManagedMethodId(cilImage.moduleId, `0x0600000${(bodyIndex + 1).toString(16)}`);
+  const methodId = createManagedMethodId(cilImage.moduleId, methodTokenText(bodyIndex, methodAuthority));
+  const returnSignature = methodAuthority?.complete ? methodAuthority?.signature : null;
+  const returnStackSlots = returnSignature ? (returnSignature.returnValue === null ? 0 : 1) : null;
   const bytecode = methodBody.bytecode;
   const view = new DataView(bytecode.buffer, bytecode.byteOffset, bytecode.byteLength);
   // IL stream base for provenance ranges. The parser records the code start
@@ -232,14 +242,15 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
 
         case 0x2a: // ret
           mnemonic = 'ret';
-          // A non-void `ret` returns the evaluation-stack top (ECMA-335 §III.3.57):
-          // the value must be consumed as the return operand so the bridge can
-          // connect it to the Semantic IR return node. An empty stack is the
-          // void-method shape; the return-shape contract is verified by the
-          // CIL stack validator against `returnStackSlots` (#7268).
-          if (currentStackHeight > 0) {
-            consumedValues.push({ id: 'top' });
+          if (returnStackSlots === 1) {
+            consumedValues.push({ id:'top', ...returnSignature.returnValue });
             currentStackHeight--;
+          } else if (returnStackSlots == null) {
+            // The enclosing MethodDef signature is the authority for whether
+            // ret consumes a value. Without it, an exact operand shape would be
+            // fabricated from incidental stack height (#7268).
+            completeness = 'partial';
+            unknownEffects.push({ category:'stack', reason:'cil-return-signature-unresolved' });
           }
           controlEffects.push({ kind: 'return' });
           break;
@@ -561,6 +572,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
     entryState: {
       maxStack: methodBody.maxStack,
       isTiny: methodBody.isTiny,
+      ...(returnStackSlots == null ? {} : { returnStackSlots }),
     },
     exceptionRegions,
   }, options);

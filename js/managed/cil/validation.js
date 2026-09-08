@@ -207,7 +207,13 @@ export function validateCilEffectFunction(decoded, context = {}) {
 
   const needsReturnShape = bundles.some((bundle) =>
     (bundle?.controlEffects || []).some((effect) => effect?.kind === 'return'));
-  const returnStackSlots = context?.returnStackSlots;
+  // A parsed enclosing MethodDef signature is authoritative. Explicit context
+  // remains a compatibility fallback only for synthetic/legacy images that do
+  // not carry resolvable signature metadata (#7268).
+  const signatureReturnStackSlots = decoded?.entryState?.returnStackSlots;
+  const returnStackSlots = safeInteger(signatureReturnStackSlots)
+    ? signatureReturnStackSlots
+    : context?.returnStackSlots;
   const returnShapeKnown = !needsReturnShape || safeInteger(returnStackSlots);
   if (!returnShapeKnown) warnings.push({ code:'cil-return-stack-shape-unavailable' });
 
