@@ -101,6 +101,10 @@ function parseMem(text) {
     if (reg) { if (mem.index) return null; mem.index = reg; continue; }
     const sh = SHIFT_RE.exec(p) || EXT_RE.exec(p);
     if (sh) mem.shift = { op: sh[1].toLowerCase(), amount: sh[2] != null ? Number(bigOf(sh[2])) : null };
+    // Keep unsupported address modifiers visible to the caller instead of
+    // silently presenting the remaining components as a different address
+    // (#4872, e.g. SVE's "MUL VL").
+    else return null;
   }
   if (mem.mode === "pre" && mem.disp) mem.writebackDisp = mem.disp;
   return mem;

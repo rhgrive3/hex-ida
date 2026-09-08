@@ -6,6 +6,7 @@
 // address. Finalize now resolves the async authority for every candidate
 // target before sanitization.
 import assert from 'node:assert/strict';
+import test from 'node:test';
 import { AIRuntime } from '../js/ai/runtime.js';
 import { addressExistsAsync, addressExistsSync } from '../js/ai/control/runtime-support.js';
 import { EvidenceStore } from '../js/ai/evidence.js';
