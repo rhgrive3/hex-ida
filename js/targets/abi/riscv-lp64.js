@@ -748,8 +748,11 @@ function createClassifier(profile) {
     // creating a second, adapter-specific truth for the return layout.
     const aggregateLayoutParameter = aggregate ? { ...prototype } : null;
     // Return prototypes conventionally call the width `returnBits`; normalize
-    // it to the shared layout descriptor's `bits` field before proving spans.
-    if (aggregateLayoutParameter && Number.isSafeInteger(declaredBitsNumber) && declaredBitsNumber > 0) {
+    // it to the shared layout descriptor's `bits` field only when that alias is
+    // genuinely absent. Every explicit `bits` value, including malformed or
+    // non-numeric evidence, must remain visible to the canonicalizer (#5600).
+    if (aggregateLayoutParameter && Number.isSafeInteger(declaredBitsNumber)
+      && declaredBitsNumber > 0 && !Object.hasOwn(prototype, 'bits')) {
       aggregateLayoutParameter.bits = declaredBitsNumber;
     }
     const aggregateLayout = aggregate
