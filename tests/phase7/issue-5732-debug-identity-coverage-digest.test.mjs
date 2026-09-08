@@ -55,6 +55,14 @@ for (const coverage of [
 const againA = createDebugIdentity({ ...base, coverage: { entityIds: ['A'] } });
 assert.equal(againA.digest, onlyA.digest);
 
+const differentMethod = createDebugIdentity({
+  ...base,
+  method: 'build-id',
+  coverage: { entityIds: ['A'] },
+});
+assert.notEqual(differentMethod.digest, onlyA.digest,
+  'the identity method participates in the invalidation digest');
+
 // The list selectors are set-valued authority. Reordering, duplicates, and
 // surrounding whitespace must not create a different invalidation identity.
 const setCoverageA = createDebugIdentity({
