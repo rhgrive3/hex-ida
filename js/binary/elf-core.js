@@ -350,7 +350,8 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
   const count = Math.min(declared,fileCapacity);
   if (declaredBig > BigInt(fileCapacity)) budget.partial(`symbols:${table.index}:truncated`, `ELF symbol table ${table.index} exceeds its file-backed capacity`);
   const xindex = sections.find((sec) => sec.type === SHT_SYMTAB_SHNDX && sec.link === table.index) || null;
-  const xindexValid = !!xindex && (!xindex.entsize || xindex.entsize === 4n)
+  const xindexValid = !!xindex && xindex.entsize === 4n
+    && xindex.size === BigInt(count) * 4n
     && xindex.offset <= BigInt(r.length) && xindex.size <= BigInt(r.length) - xindex.offset;
   if (xindex && !xindexValid) budget.partial(`symbols:${table.index}:xindex-malformed`, `ELF SHT_SYMTAB_SHNDX for table ${table.index} is malformed`);
 

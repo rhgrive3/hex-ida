@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import {
   classifyMicrosoftX64FunctionReturn,
+  classifyMicrosoftX64CallReturn,
   classifyMicrosoftX64Arguments,
+  microsoftX64ReturnResult,
 } from '../../../js/targets/abi/microsoft-x64.js';
 
 // Issue #5997: the return-side vector recognizer must match the parameter
@@ -17,6 +19,25 @@ assert.equal(r256.unsupported, true);
 assert.equal(r256.vector, true);
 assert.equal(r256.bits, 256);
 assert.equal(r256.reason, 'microsoft-x64-wide-vector-return-not-modeled');
+
+const call256 = classifyMicrosoftX64CallReturn({
+  callPrototype:{ returnType:'__m256', returnBits:256, returnsValue:true },
+});
+assert.deepEqual(call256, r256, 'call and function projections preserve the same unsupported shape');
+
+// Diagnostic width is not permission to invent a location, and malformed
+// decision metadata must not be coerced into a proven vector width.
+for (const bits of [0, -1, 32.5, NaN, Infinity, '256', null, undefined]) {
+  const unknown = microsoftX64ReturnResult({ kind:'unknown', vector:true, bits, reg:'rax', unsupported:true });
+  assert.equal(unknown.reg, null);
+  assert.equal(unknown.partial, true);
+  assert.equal(unknown.unsupported, true);
+  assert.equal(unknown.vector, true);
+  assert.equal(unknown.bits, null);
+}
+const untyped = microsoftX64ReturnResult({ kind:'unknown', bits:256 });
+assert.equal(Object.hasOwn(untyped, 'vector'), false);
+assert.equal(Object.hasOwn(untyped, 'bits'), false);
 
 // Without explicit returnBits, `__m256` still identifies by name.
 const r256NoBits = classifyMicrosoftX64FunctionReturn({

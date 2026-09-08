@@ -21,6 +21,7 @@ function run(payload, name = '_x') {
   const imageBase = 0x100000000n;
   const image = {
     imageBase,
+    libraries: ['libA.dylib'],
     exports: [],
     functions: [],
     metadata: {},

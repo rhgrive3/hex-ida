@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { renderIndexedMemory } from '../js/decompiler/address-semantics.js';
+import { renderIndexedMemory } from '../../js/decompiler/address-semantics.js';
 
 // Issue #5561: renderIndexedMemory() embedded the base expression without
 // parentheses. renderValue() can return bitwise forms whose precedence is

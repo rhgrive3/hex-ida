@@ -234,6 +234,12 @@ export function microsoftX64ReturnResult(decision) {
     reg:null,
     partial:true,
     unsupported:decision.unsupported === true,
+    // Preserve a known vector shape as diagnostic metadata, without turning
+    // an unsupported return into a physical register placement.
+    ...(decision.vector === true ? {
+      vector:true,
+      bits:Number.isSafeInteger(decision.bits) && decision.bits > 0 ? decision.bits : null,
+    } : {}),
     reason:decision.reason,
     hiddenResultPossible:decision.hiddenResultPossible === true,
   };

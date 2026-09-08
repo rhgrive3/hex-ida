@@ -34,6 +34,8 @@ test('#6135 safe integer, bigint, and integer string addresses keep working', as
   assert.equal(big.targetAddress, '20000000000001');
   const text = await db.reject({ sourceBinaryHash: 'bin', candidateName: 'candidate3', address: '0x3000', reason: 'r' });
   assert.equal(text.targetAddress, '3000');
+  const decimal = await db.reject({ sourceBinaryHash: 'bin', candidateName: 'decimal', address: '9007199254740993', reason: 'r' });
+  assert.equal(decimal.targetAddress, '20000000000001');
 });
 
 test('#6135 bigint addresses above 2^53 keep distinct negative identities', async () => {

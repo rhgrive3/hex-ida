@@ -11,9 +11,24 @@ const IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10;
 const IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT = 13;
 const WINDOWS_IMAGE_RAW_ALIGNMENT = 0x200;
 
-function windowsImageSectionRawMapping(pointerToRawData) {
+function windowsImageSectionRawMapping(pointerToRawData, { sectionAlignment } = {}) {
   if (pointerToRawData === 0) {
     return { effectiveFileOffset: 0, fileBacked: false, roundedDown: false };
+  }
+  // The Windows loader's 0x200 sector round-down only applies to images
+  // mapped at the default page granularity. Low-alignment images
+  // (SectionAlignment < 0x1000, e.g. pefile issue #465's resource-only PE
+  // with SectionAlignment = FileAlignment = 0x10) are consumed with their
+  // declared raw offsets: the loader does not reinterpret PointerToRawData,
+  // and rounding it down would redirect the mapping into the MZ/header
+  // bytes (#5539).
+  if (Number.isSafeInteger(sectionAlignment) && sectionAlignment > 0 && sectionAlignment < 0x1000) {
+    return {
+      effectiveFileOffset: pointerToRawData,
+      fileBacked: true,
+      roundedDown: false,
+      policy: 'low-alignment-declared-raw-offset',
+    };
   }
   const effectiveFileOffset = pointerToRawData - (pointerToRawData % WINDOWS_IMAGE_RAW_ALIGNMENT);
   return {
@@ -156,11 +171,9 @@ export function parsePE(input, options = {}) {
   if (numberOfSections > 4096 || secBase + numberOfSections * 40 > r.length) throw new Error('PE section table is invalid');
   for (let i = 0; i < numberOfSections; i++) {
     const p = secBase + i * 40;
-    // The PE/COFF spec reserves the "/decimal-offset" section-name
-    // indirection for object files: an executable image never uses the
-    // string table for section names and does not support names longer than
-    // 8 characters. Resolving "/NNN" here would rewrite the image's literal
-    // section name from unrelated COFF string-table bytes (#5624).
+    // Executable-image section-table names are literal 8-byte fields. The
+    // /NNN indirection belongs to COFF object-file section names; using it
+    // here can replace an image section's identity with unrelated symbol data.
     const name = r.ascii(p, 8);
     const virtualSize = r.u32(p + 8);
     const virtualAddress = r.u32(p + 12);
@@ -179,7 +192,7 @@ export function parsePE(input, options = {}) {
     const beyondRvaDomain = endRva > rvaLimit;
     const beyondSizeOfImage = endRva > BigInt(sizeOfImage);
     const virtualRangeInvalid = beyondRvaDomain || beyondSizeOfImage;
-    const rawMapping = windowsImageSectionRawMapping(ptrRaw);
+    const rawMapping = windowsImageSectionRawMapping(ptrRaw, { sectionAlignment });
     const rawSize = windowsImageSectionRawSize(sizeRaw, fileAlignment, sectionAlignment);
     const availableFileBytes = rawMapping.fileBacked ? Math.max(0, bytes.length - rawMapping.effectiveFileOffset) : 0;
     const rawAvailableNumber = rawMapping.fileBacked ? Math.min(rawSize.effectiveRawSize, availableFileBytes) : 0;
@@ -194,7 +207,7 @@ export function parsePE(input, options = {}) {
       sizeOfRawData: sizeRaw,
       fileBacked: rawMapping.fileBacked,
       roundedDown: rawMapping.roundedDown,
-      policy: 'windows-image-loader-0x200-round-down',
+      policy: rawMapping.policy || 'windows-image-loader-0x200-round-down',
     });
     image.metadata.peSectionRawSizes.push({
       sectionIndex: i + 1,
