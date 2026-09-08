@@ -245,6 +245,12 @@ const API_TABLE = [
 
   { id: 'crypto', re: /^_?(CC(Crypt|SHA|HMAC|Digest)|SecKey|SecTrust|CryptoKit|AES_|SHA256|SHA1_|MD5_|EVP_)/i,
     cat: 'crypto', args: null, ret: 'status', effect: 'crypto' },
+  // Security.framework data-retrieval/serialization APIs: no cryptographic
+  // operation, they only copy DER representations out of opaque objects (#6182).
+  { id: 'security_cert_data', re: /^_?SecCertificateCopyData$/, cat: 'crypto',
+    args: ['certificate'], ret: 'object', effect: 'read' },
+  { id: 'security_requirement_data', re: /^_?SecRequirementCopyData$/, cat: 'crypto',
+    args: ['requirement'], ret: 'object', effect: 'read' },
   { id: 'keychain', re: /SecItem(Add|Copy|Update|Delete)|Keychain/i, cat: 'secret',
     args: ['query'], ret: 'status', effect: 'secret' },
   { id: 'random', re: /^_?(arc4random|arc4random_uniform|SecRandomCopyBytes|rand|random)$/i, cat: 'random',
@@ -398,12 +404,19 @@ function targetOf(base, ops) {
   const isBranchImm = base === 'b' || base === 'bl' || /^b\.[a-z]{2}$/.test(base) ||
     base === 'cbz' || base === 'cbnz' || base === 'tbz' || base === 'tbnz';
   if (isBranchImm || base === 'adr' || base === 'adrp') {
-    for (let i = ops.length - 1; i >= 0; i--) {
-      if (ops[i].k === 'imm' && ops[i].value != null && ops[i].value > 0n) return ops[i].value;
-    }
-    return null;
+    const isBitTestBranch = base === 'tbz' || base === 'tbnz';
+    // TBZ/TBNZ have a fixed three-operand shape: register, bit index, target.
+    // If the architectural target is absent or malformed, do not reinterpret
+    // the bit index as a branch destination.
+    if (isBitTestBranch && (ops.length !== 3 || ops[2].k !== 'imm')) return null;
+    // The last immediate is the architectural target (the preceding
+    // immediate in TBZ/TBNZ is the bit index).  Zero is a valid address, but
+    // negative values remain invalid target evidence and must not make us
+    // fall back to that bit index.
+    const target = isBitTestBranch ? ops[2] : [...ops].reverse().find((op) => op.k === 'imm');
+    return target && target.value != null && target.value >= 0n ? target.value : null;
   }
-  if (base === 'ldr' && ops.length === 2 && ops[1].k === 'imm' && ops[1].value != null && ops[1].value > 0n) {
+  if (base === 'ldr' && ops.length === 2 && ops[1].k === 'imm' && ops[1].value != null && ops[1].value >= 0n) {
     return ops[1].value;
   }
   return null;
@@ -411,8 +424,8 @@ function targetOf(base, ops) {
 
 /** アクセスするバイト数（分かる範囲で）。 */
 function accessSize(base, ops) {
-  if (/b$/.test(base) && /^(ldrb|ldrsb|strb|sturb|ldurb|ldursb)$/.test(base)) return 1;
-  if (/^(ldrh|ldrsh|strh|sturh|ldurh|ldursh)$/.test(base)) return 2;
+  if (/^(ldrb|ldrsb|strb|sturb|ldurb|ldursb|ldarb|stlrb)$/.test(base)) return 1;
+  if (/^(ldrh|ldrsh|strh|sturh|ldurh|ldursh|ldarh|stlrh)$/.test(base)) return 2;
   if (/^(ldrsw|ldursw)$/.test(base)) return 4;
   const reg = ops.find((o) => o.k === 'reg');
   const w = reg && reg.bits ? reg.bits / 8 : 8;

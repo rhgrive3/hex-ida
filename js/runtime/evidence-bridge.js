@@ -17,10 +17,18 @@ function required(value, code, message) {
 function stringArray(value, name) {
   if (value == null) return Object.freeze([]);
   if (!Array.isArray(value)) throw new DebugAdapterError('runtime-invalid-array', `${name} must be an array`);
+  const normalized = [];
   for (const item of value) {
-    if (typeof item !== 'string' || !item.trim()) throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
+    if (typeof item !== 'string') throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
+    // Same canonical contract as the scalar ids and the core evidence
+    // stringArray: trim, require non-empty, dedupe/sort canonicalized values.
+    // Keeping raw strings would alias padded duplicates and make parent
+    // references unresolvable against their canonical record ids (#5966).
+    const text = item.trim();
+    if (!text) throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
+    normalized.push(text);
   }
-  return Object.freeze([...new Set(value)].sort());
+  return Object.freeze([...new Set(normalized)].sort());
 }
 
 function optionalSequence(value) {
