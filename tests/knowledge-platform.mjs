@@ -1,6 +1,7 @@
 import './issue-7084-knowledge-transaction.mjs';
 import assert from 'node:assert/strict';
 import { KnowledgeDB, fingerprintVendors } from '../js/knowledge/index.js';
+import { createHexToolRegistry } from '../js/ai/tools/index.js';
 
 const db = new KnowledgeDB({ indexedDB: null, memory: new Map() });
 const fn = { address: 0x1000n, bytes: Uint8Array.from([1,2,3,4,5,6,7,8]), strings: ['coins'], imports: ['memcpy'], cfg: { blocks: 2, edges: 1, exits: 1 } };
@@ -93,3 +94,51 @@ const multiWordIndexed = await indexedSearch.query('foo bar', searchFunctions, {
 assert.deepEqual(addresses(multiWordIndexed), addresses(multiWordMemory), 'multiple search terms must retain backend parity');
 assert.deepEqual(await indexedSearch.query('  ', searchFunctions, { knowledgeLimit:10 }), [], 'an empty query must remain a no-op');
 console.log('issue #4681 KnowledgeDB search backend parity: PASS');
+
+// Keep persistent knowledge lookup bounded without changing the public array
+// result. The first 2,000 record IDs are the deterministic search prefix; an
+// additional record makes the result explicitly incomplete instead of letting
+// a late substring match look like an exhaustive miss.
+const template = await memorySearch.remember({ id:'template', fingerprint:searchFunctionA, names:['noise'], sourceBinaryHash:'knowledge-search-template' });
+const boundedEntries = [];
+for (let index = 0; index < 2000; index++) {
+  const id = `id-${String(index).padStart(4, '0')}`;
+  boundedEntries.push([id, { ...template, id, names:[`noise-${index}`], searchTerms:[`noise-${index}`] }]);
+}
+boundedEntries.push(['zz-late', { ...template, id:'zz-late', names:['late'], searchTerms:['late'] }]);
+const boundedMemory = new KnowledgeDB({ indexedDB:null, memory:new Map(boundedEntries), negativeMemory:new Map() });
+const boundedIndexed = new KnowledgeDB({ indexedDB:{} });
+boundedIndexed._db = createIndexedDBSearchFixture(boundedEntries.map(([, record]) => record));
+
+const underCap = await memorySearch.query('foo', searchFunctions, { knowledgeLimit:1 });
+assert.equal(underCap.truncated, false, 'a result-limit must not be confused with a scan-budget truncation');
+const exactCapMemory = new KnowledgeDB({ indexedDB:null, memory:new Map(boundedEntries.slice(0, 2000)), negativeMemory:new Map() });
+const exactCapIndexed = new KnowledgeDB({ indexedDB:{} });
+exactCapIndexed._db = createIndexedDBSearchFixture(boundedEntries.slice(0, 2000).map(([, record]) => record));
+const exactCapMemoryResult = await exactCapMemory.query('noise-1999', [searchFunctionA], { knowledgeLimit:1 });
+const exactCapIndexedResult = await exactCapIndexed.query('noise-1999', [searchFunctionA], { knowledgeLimit:1 });
+assert.equal(exactCapMemoryResult.truncated, false, 'exactly the scan cap is exhaustive in memory');
+assert.equal(exactCapIndexedResult.truncated, false, 'exactly the scan cap is exhaustive in IndexedDB');
+assert.equal(exactCapMemoryResult.length, 1);
+assert.equal(exactCapIndexedResult.length, 1);
+
+const overCapMemoryResult = await boundedMemory.query('late', [searchFunctionA], { knowledgeLimit:1 });
+const overCapIndexedResult = await boundedIndexed.query('late', [searchFunctionA], { knowledgeLimit:1 });
+assert.deepEqual(overCapMemoryResult, [], 'a late match outside the bounded prefix must not be returned as if found');
+assert.deepEqual(overCapIndexedResult, [], 'IndexedDB must use the same bounded prefix as memory');
+assert.equal(overCapMemoryResult.truncated, true, 'memory must expose an incomplete bounded scan');
+assert.equal(overCapIndexedResult.truncated, true, 'IndexedDB must expose an incomplete bounded scan');
+assert.equal(overCapMemoryResult.reason, 'scan-budget');
+assert.equal(overCapIndexedResult.reason, 'scan-budget');
+
+// The actual tool boundary must retain the array's completeness metadata after
+// its JSON-safe clone; otherwise the model-facing envelope would claim a
+// partial knowledge scan was complete.
+const registry = createHexToolRegistry({ knowledge:boundedMemory, functions:[searchFunctionA] });
+const toolResult = await registry.execute('lookup_known_function', { query:'late', limit:1 }, { scope:'binary' });
+assert.equal(Array.isArray(toolResult.result), true, 'lookup_known_function must retain its array result contract');
+assert.equal(toolResult.result.truncated, true, 'tool result must retain the bounded-scan marker');
+assert.equal(toolResult.completeness.complete, false, 'tool completeness must reflect a bounded knowledge scan');
+assert.equal(toolResult.completeness.reason, 'scan-budget');
+assert.equal(toolResult.modelData.completeness.complete, false, 'model projection must preserve bounded-scan incompleteness');
+console.log('issue #4681 bounded knowledge search: PASS');

@@ -69,9 +69,12 @@ function transactionPromise(transaction) {
   done.catch(() => {});
   return done;
 }
-function candidateBatch(values, truncated = false) {
+const KNOWLEDGE_SEARCH_SCAN_CAP = 2000;
+
+function candidateBatch(values, truncated = false, reason = null) {
   const out = Array.isArray(values) ? values : [];
   Object.defineProperty(out, 'truncated', { value:!!truncated, enumerable:false, configurable:true });
+  if (reason) Object.defineProperty(out, 'reason', { value:String(reason), enumerable:false, configurable:true });
   return out;
 }
 
@@ -218,8 +221,9 @@ export class KnowledgeDB {
       if (fp.semantic.writes.length && terms.some((t) => /coin|xp|experience|money|reward|経験|所持|報酬/.test(t))) addScore(i, 0.22, 'semantic-writer');
     }
 
+    let records = [];
     if (options.useKnowledge !== false && fps.length) {
-      const records = await this.#searchKnowledgeRecords(q, terms, Math.min(100, options.knowledgeLimit || 50));
+      records = await this.#searchKnowledgeRecords(q, terms, Math.min(100, options.knowledgeLimit || 50));
       if (records.length) {
         const index = new FunctionMatchIndex(fps);
         for (const record of records) {
@@ -235,7 +239,8 @@ export class KnowledgeDB {
         }
       }
     }
-    return [...scored.values()].sort((a,b) => b.score - a.score).slice(0, Math.min(500, options.limit || 100));
+    const selected = [...scored.values()].sort((a,b) => b.score - a.score).slice(0, Math.min(500, options.limit || 100));
+    return candidateBatch(selected, records.truncated === true, records.reason || null);
   }
 
   async page(options = {}) {
@@ -322,15 +327,24 @@ export class KnowledgeDB {
     };
     if (this.memory) {
       const ids = [...this.memory.keys()].sort();
-      return ids.map((id) => this.memory.get(id)).filter(matches).slice(0, limit);
+      const scanned = ids.slice(0, KNOWLEDGE_SEARCH_SCAN_CAP);
+      const truncated = ids.length > KNOWLEDGE_SEARCH_SCAN_CAP;
+      return candidateBatch(scanned.map((id) => this.memory.get(id)).filter(matches).slice(0, limit), truncated, truncated ? 'scan-budget' : null);
     }
     const db=await this.#dbOpen(); const store=db.transaction('functions','readonly').objectStore('functions');
     // The multiEntry index only answers exact-key lookups. Scan the object
     // store so substring matches use the same predicate and ID order as the
     // memory backend; an exact hit must not change the candidate set or order.
     return new Promise((resolve,reject) => {
-      const records=[]; const req=store.openCursor();
-      req.onsuccess=()=>{ const c=req.result; if (!c || records.length>=limit) return resolve(records); if (matches(c.value)) records.push(c.value); c.continue(); };
+      const records=[]; let scanned=0; const req=store.openCursor();
+      req.onsuccess=()=>{
+        const c=req.result;
+        if (!c) return resolve(candidateBatch(records, false));
+        if (scanned >= KNOWLEDGE_SEARCH_SCAN_CAP) return resolve(candidateBatch(records, true, 'scan-budget'));
+        scanned++;
+        if (matches(c.value) && records.length < limit) records.push(c.value);
+        c.continue();
+      };
       req.onerror=()=>reject(req.error);
     });
   }
