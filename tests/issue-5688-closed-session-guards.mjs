@@ -27,6 +27,8 @@ assert.throws(() => session.controller(), (error) => error.code === 'session-clo
 assert.throws(() => session.newEpoch(), (error) => error.code === 'session-closed',
   'newEpoch() must reject on a closed session');
 assert.equal(epochCalls.length, epochCallsAtDisconnect, 'the adapter epoch API must not be re-entered after disconnect');
+assert.equal(session.epoch, epochAtDisconnect, 'closed newEpoch() must not change the session epoch');
+assert.equal(session.controllers.size, controllersAtDisconnect, 'closed controller() must not register a controller');
 
 // A live session keeps the existing controller/newEpoch contract.
 {
