@@ -70,7 +70,12 @@ function finalize(result, model, opts) {
  */
 function strictTextAddress(op) {
   if (!op || op.k !== 'other') return null;
-  const s = String(op.text || '').trim();
+  // Textual target completion is an evidence boundary: only a raw primitive
+  // string may become a canonical branch/call target. Array/object/number
+  // payloads would launder through String() into an address token and gain the
+  // same authority as canonical disassembler text (#5676).
+  if (typeof op.text !== 'string') return null;
+  const s = op.text.trim();
   if (!/^#?(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(s)) return null;
   try { return BigInt(s.replace(/^#/, '')); } catch { return null; }
 }
@@ -91,6 +96,7 @@ function semanticModelForDecompiler(model) {
   });
   return changed ? { ...model, instructions } : model;
 }
+export { semanticModelForDecompiler };
 
 function objcMethodInfo(model, opts) {
   const candidates = [opts?.name, model?.name];
