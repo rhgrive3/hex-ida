@@ -127,9 +127,6 @@ function broadEffect(source, addressSpaces = ['memory']) {
   return createMemoryEffect({ regionKind: 'unknown', broad: true, addressSpaces, source });
 }
 
-/** Authority rank: lower wins, because proven evidence outranks a model. */
-const SOURCE_AUTHORITY_RANK = new Map(EFFECT_SOURCES.map((source, index) => [source, index]));
-
 /**
  * Versioned external-model wire contract. A model is authority only when its
  * identity is bound to the requested target and snapshot, its producer says
@@ -262,6 +259,9 @@ export function validateLibraryModel(model, { targetEntityId, snapshotId } = {})
     return null;
   }
 }
+
+/** Authority rank: lower wins, because proven evidence outranks a model. */
+const SOURCE_AUTHORITY_RANK = new Map(EFFECT_SOURCES.map((source, index) => [source, index]));
 
 function strongestSource(left, right) {
   const leftRank = SOURCE_AUTHORITY_RANK.get(left) ?? SOURCE_AUTHORITY_RANK.size;
@@ -480,10 +480,45 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
   const local = locals.get(functionId);
   if (!local) fail('interprocedural-missing-local-summary');
 
-  const reads = [local.memoryReadRegions];
-  const writes = [local.memoryWriteRegions];
-  const unknowns = [...local.unknownCallEffects];
-  const statuses = [local.status];
+  // A local P7-3a summary records a placeholder for every call it could not
+  // resolve: an `unknownCallEffect` plus broad fallback memory effects. Once
+  // the callee is solved, that placeholder must be *replaced* by the callee's
+  // proven effects, not unioned with them — inheriting both keeps the call
+  // boundary open forever and pins every upstream summary conservative
+  // (#5851). A call site counts as resolved only when every one of its targets
+  // has a solved summary; a model-covered or still-unknown target keeps the
+  // local fallback in place.
+  const resolvedCallSites = new Set();
+  // A summary can exist in the solve map while still being partial (for
+  // example, because its own callee or memory evidence is unresolved). Such a
+  // summary is not enough to replace this caller's conservative fallback: only
+  // a complete callee proves that the call boundary is closed.
+  const isCompleteSolved = (target) => solved.get(target)?.status?.completeness === 'complete';
+  for (const call of local.directCalls) {
+    if (call.targetEntityIds.length > 0 && call.targetEntityIds.every(isCompleteSolved)) {
+      resolvedCallSites.add(call.callSiteId);
+    }
+  }
+  for (const set of local.indirectCallSets) {
+    if (set.exhaustive && set.candidateEntityIds.length > 0
+      && set.candidateEntityIds.every(isCompleteSolved)) {
+      resolvedCallSites.add(set.callSiteId);
+    }
+  }
+  // Local fallback effects are only replaceable when every unknown the local
+  // pass recorded points at a resolved call site. An unknown from any other
+  // node — an unresolved memory effect, a stale identity, a non-exhaustive
+  // candidate set — keeps the whole local fallback, because the broad effects
+  // are not attributable per call site and dropping them would claim more
+  // than the solve proved.
+  const replaceCallFallbacks = local.unknownCallEffects.length > 0
+    && local.unknownCallEffects.every((unknown) => resolvedCallSites.has(unknown.callSiteId));
+  const notCallFallback = (effect) => effect.source !== 'unknown-call-fallback';
+
+  const reads = [replaceCallFallbacks ? local.memoryReadRegions.filter(notCallFallback) : local.memoryReadRegions];
+  const writes = [replaceCallFallbacks ? local.memoryWriteRegions.filter(notCallFallback) : local.memoryWriteRegions];
+  const unknowns = replaceCallFallbacks ? [] : [...local.unknownCallEffects];
+  const calleeStatuses = [];
   const noreturn = [local.noreturn];
   const mayThrow = [local.mayThrow];
   const escapes = [...local.escapes];
@@ -497,7 +532,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     unknowns.push(...callee.unknownCallEffects);
     noreturn.push(callee.noreturn);
     mayThrow.push(callee.mayThrow);
-    statuses.push(callee.status);
+    calleeStatuses.push(callee.status);
   };
 
   for (const call of local.directCalls) {
@@ -632,6 +667,6 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     mayThrow: hasUnknown ? 'unknown' : unionKnowledge(mayThrow),
     stackDelta: local.stackDelta,
     semanticFacts: local.semanticFacts,
-    status: statuses.length > 1 ? mergeAnalysisStatus(localStatus, statuses.slice(1)) : localStatus,
+    status: calleeStatuses.length ? mergeAnalysisStatus(localStatus, calleeStatuses) : localStatus,
   });
 }
