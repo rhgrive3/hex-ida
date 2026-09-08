@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import './issue-4512-diff-abort-registration-race.mjs';
 import { compareFingerprints, diffFunctions, fingerprintFunction } from '../js/diff/index.js';
+import { createSymmetricCodeFunctionSet } from '../js/diff/symmetric-function-set.js';
 
 const base = { address: 0x1000n, bytes: Uint8Array.from([1,2,3,4,5,6,7,8]), cfg: { blocks: 2, edges: 1, exits: 1 }, strings: ['coins'], imports: ['memcpy'], calls: ['helper'], constants: [100] };
 let diff = diffFunctions([base], [{ ...base }]);
@@ -19,6 +20,37 @@ const relocation = [{ offset: 0, width: 8 }];
 const fp = fingerprintFunction({ ...base, relocationOffsets: relocation });
 const movedReloc = fingerprintFunction({ ...base, address: 9n, bytes: Uint8Array.from([9,9,9,9,9,9,9,9]), relocationOffsets: relocation });
 assert.equal(fp.normalizedByteHash, movedReloc.normalizedByteHash);
+
+// #4518: structured relocation coordinates are unknown metadata, never mask authority.
+const malformedReloc = fingerprintFunction({
+  architecture: 'arm64', size: 4, bytes: Uint8Array.from([1,2,3,4]),
+  relocationRanges: [{ offset: ['0'], width: ['4'] }],
+});
+const validReloc = fingerprintFunction({
+  architecture: 'arm64', size: 4, bytes: Uint8Array.from([9,8,7,6]),
+  relocationRanges: [{ offset: 0, width: 4 }],
+});
+const originalReloc = fingerprintFunction({ architecture: 'arm64', size: 4, bytes: Uint8Array.from([1,2,3,4]) });
+assert.equal(malformedReloc.relocationNormalization.masked, 0);
+assert.equal(malformedReloc.relocationNormalization.unknown, 1);
+assert.equal(malformedReloc.relocationNormalization.confidence, 0.65);
+assert.equal(malformedReloc.normalizedByteHash, originalReloc.normalizedByteHash);
+assert.notEqual(compareFingerprints(malformedReloc, validReloc).identity, 'normalized-identical');
+
+const malformedLength = fingerprintFunction({
+  architecture: 'arm64', size: 4, bytes: Uint8Array.from([1,2,3,4]),
+  relocationRanges: [{ offset: 0, length: ['2'] }],
+});
+const malformedRLength = fingerprintFunction({
+  architecture: 'arm64', size: 4, bytes: Uint8Array.from([1,2,3,4]),
+  relocationRanges: [{ offset: 0, r_length: { valueOf: () => 2 } }],
+});
+assert.equal(malformedLength.normalizedByteHash, originalReloc.normalizedByteHash);
+assert.equal(malformedLength.relocationNormalization.masked, 0);
+assert.equal(malformedLength.relocationNormalization.confidence, 0.65);
+assert.equal(malformedRLength.normalizedByteHash, originalReloc.normalizedByteHash);
+assert.equal(malformedRLength.relocationNormalization.masked, 0);
+assert.equal(malformedRLength.relocationNormalization.confidence, 0.65);
 
 // Missing metadata is absence of evidence, not perfect semantic similarity.
 const sparseA = fingerprintFunction({ address: 1n, size: 64, bytes: Uint8Array.from({ length: 64 }, (_, i) => i) });
@@ -95,6 +127,75 @@ assert.equal(diffFunctions([emptyA], [emptyB]).matches.length, 0);
   assert.equal(fresh.new.length,1);
   assert.equal(fresh.new[0].confidence,1);
   assert.equal(fresh.unresolved.length,0);
+}
+
+// #4514: symmetric fingerprint budgets are discrete.  Fractional values must
+// be normalized before Array/BigInt consumers, while malformed values must not
+// be coerced into a caller-selected budget.
+{
+  const region = { id:'text', exec:true, vmAddr:0n, size:70_000n };
+  const symbols = { funcs:[0n, 1n], functionStartsComplete:true, nameAt:() => null };
+  const reads = [];
+  const backend = {
+    readAt(_address, length) {
+      assert.equal(Number.isSafeInteger(length), true);
+      reads.push(length);
+      return Promise.resolve({ found:true, bytes:new Uint8Array(length) });
+    },
+  };
+
+  const fractionalLimit = await createSymmetricCodeFunctionSet({
+    backend, symbols, regions:[region], limit:1.5,
+  });
+  assert.equal(fractionalLimit.length, 1);
+  assert.equal(fractionalLimit.scanned, 1);
+  assert.equal(fractionalLimit.total, 2);
+  assert.equal(fractionalLimit.complete, false);
+  assert.equal(fractionalLimit.truncationReason, 'function-budget');
+
+  reads.length = 0;
+  const fractionalChunk = await createSymmetricCodeFunctionSet({
+    backend,
+    symbols:{ ...symbols, funcs:[0n] },
+    regions:[region],
+    chunkBytes:65_536.5,
+  });
+  assert.deepEqual(reads, [65_536, 4_464]);
+  assert.equal(fractionalChunk.complete, true);
+  assert.equal(fractionalChunk.scanned, 1);
+  assert.equal(fractionalChunk.missingEvidence, 0);
+  assert.equal(fractionalChunk.truncationReason, null);
+
+  const zeroLimit = await createSymmetricCodeFunctionSet({
+    backend, symbols, regions:[region], limit:0,
+  });
+  assert.equal(zeroLimit.length, 0);
+  assert.equal(zeroLimit.scanned, 0);
+  assert.equal(zeroLimit.truncationReason, 'function-budget');
+
+  const malformedLimit = await createSymmetricCodeFunctionSet({
+    backend, symbols, regions:[region], limit:'1',
+  });
+  assert.equal(malformedLimit.scanned, 2, 'numeric-string limit must use the default, not coercion');
+
+  const largeRegion = { ...region, size:2n * 1024n * 1024n + 1n };
+  reads.length = 0;
+  await createSymmetricCodeFunctionSet({
+    backend,
+    symbols:{ ...symbols, funcs:[0n] },
+    regions:[largeRegion],
+    chunkBytes:0,
+  });
+  assert.deepEqual(reads, [2 * 1024 * 1024, 1], 'zero chunkBytes must retain the historical default');
+
+  reads.length = 0;
+  await createSymmetricCodeFunctionSet({
+    backend,
+    symbols:{ ...symbols, funcs:[0n] },
+    regions:[largeRegion],
+    chunkBytes:{ value:65_536 },
+  });
+  assert.deepEqual(reads, [2 * 1024 * 1024, 1], 'structured chunkBytes must use the default, not coercion');
 }
 
 console.log('diff-platform: PASS');

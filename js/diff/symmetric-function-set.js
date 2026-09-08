@@ -2,6 +2,27 @@ import { fingerprintFunction, FUNCTION_FINGERPRINT_VERSION } from '../fingerprin
 
 export const SYMMETRIC_CODE_PROFILE = `canonical-code-evidence/v${FUNCTION_FINGERPRINT_VERSION}`;
 const DEFAULT_CHUNK_BYTES = 2 * 1024 * 1024;
+const DEFAULT_FUNCTION_LIMIT = 350000;
+
+// These options are discrete resource budgets.  Accept primitive finite
+// numbers only, floor fractional values before they reach array/BigInt
+// consumers, and fall back for structured values or numeric strings instead
+// of coercing them into an accidental budget.
+function finiteNumberOption(value, fallback) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function normalizeFunctionLimit(value) {
+  return Math.floor(Math.max(0, finiteNumberOption(value, DEFAULT_FUNCTION_LIMIT)));
+}
+
+function normalizeChunkBytes(value) {
+  const finite = finiteNumberOption(value, DEFAULT_CHUNK_BYTES);
+  // Preserve the historical `chunkBytes: 0` -> default semantics before the
+  // lower/upper clamp is applied.
+  const effective = finite === 0 ? DEFAULT_CHUNK_BYTES : finite;
+  return Math.floor(Math.max(64 * 1024, Math.min(8 * 1024 * 1024, effective)));
+}
 
 function abortError(signal) {
   const error = signal?.reason instanceof Error ? signal.reason : new Error('Binary diff fingerprinting aborted');
@@ -51,7 +72,7 @@ function regionFor(regions, address) {
 function functionDescriptors(symbols, regions, architecture, limit) {
   const funcs = symbols?.funcs || [];
   const total = Number(funcs.length || 0);
-  const count = Math.min(total, Math.max(0, Number(limit) || 0));
+  const count = Math.min(total, normalizeFunctionLimit(limit));
   const descriptors = [];
   for (let index = 0; index < count; index++) {
     const address = BigInt(funcs[index]);
@@ -98,7 +119,7 @@ export async function createSymmetricCodeFunctionSet({
   symbols,
   regions:rawRegions,
   architecture = 'unknown',
-  limit = 350000,
+  limit = DEFAULT_FUNCTION_LIMIT,
   signal = null,
   onProgress = null,
   chunkBytes = DEFAULT_CHUNK_BYTES,
@@ -123,7 +144,7 @@ export async function createSymmetricCodeFunctionSet({
   }
 
   let completed = output.filter(Boolean).length;
-  const normalizedChunk = Math.max(64 * 1024, Math.min(8 * 1024 * 1024, Number(chunkBytes) || DEFAULT_CHUNK_BYTES));
+  const normalizedChunk = normalizeChunkBytes(chunkBytes);
   for (const [region, rows] of byRegion) {
     rows.sort((a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : 0);
     const start = BigInt(region.vmAddr);
