@@ -93,10 +93,9 @@ function exactStructuralInteger(value, fallback = null) {
 }
 
 const ARRAY_NUMERIC_FIELDS = new Set(['sizeBytes', 'alignBytes', 'strideBytes', 'length']);
-const POINTER_NUMERIC_FIELDS = new Set(['sizeBytes', 'alignBytes']);
 
 function needsStructuralReconstruction(descriptor) {
-  if (descriptor.kind === 'struct' || descriptor.kind === 'field') return true;
+  if (descriptor.kind === 'struct') return true;
   if (descriptor.kind != null) return false;
   return descriptor.offset != null
     || descriptor.fieldName != null
@@ -104,25 +103,6 @@ function needsStructuralReconstruction(descriptor) {
     || Array.isArray(descriptor.members)
     || descriptor.sizeBytes != null
     || descriptor.alignBytes != null;
-}
-
-function mergeCompatiblePointerDescriptors(entityId, descriptors) {
-  const merged = {};
-  for (const descriptor of descriptors) {
-    for (const [key, value] of Object.entries(descriptor)) {
-      if (!(key in merged)) {
-        merged[key] = value;
-        continue;
-      }
-      if (POINTER_NUMERIC_FIELDS.has(key)) {
-        const left = exactStructuralInteger(merged[key]);
-        const right = exactStructuralInteger(value);
-        if (left != null && right != null && left === right) continue;
-      }
-      if (stableStringify(merged[key]) !== stableStringify(value)) return null;
-    }
-  }
-  return createTypeClaim({ layer: 'structural', entityId, descriptor: merged });
 }
 
 function mergeCompatibleArrayDescriptors(entityId, descriptors) {
@@ -235,11 +215,6 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
 
   const descriptors = distinct.map((claim) => claim.descriptor);
   if (descriptors.some((descriptor) => !descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor))) return null;
-
-  if (layer === 'structural' && descriptors.some((descriptor) => descriptor.kind === 'pointer')) {
-    if (!descriptors.every((descriptor) => descriptor.kind === 'pointer')) return null;
-    return mergeCompatiblePointerDescriptors(entityId, descriptors);
-  }
 
   if (layer === 'structural' && descriptors.every((descriptor) => descriptor.kind === 'array')) {
     return mergeCompatibleArrayDescriptors(entityId, descriptors);
