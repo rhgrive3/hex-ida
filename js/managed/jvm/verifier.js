@@ -356,6 +356,24 @@ export function verifyJvmMethod(decoded, options = {}) {
   if (!descriptor) errors.push({ code: 'jvm-invalid-method-descriptor' });
   const methodName = typeof metadata.methodName === 'string' ? metadata.methodName : null;
   if (methodName === '<init>') unsupported.add('constructor-initialization-verification');
+  // JVMS §4.6 special-method descriptor contract re-checked here so a caller
+  // that bypasses the parser cannot launder a malformed special descriptor
+  // into spec-valid (#7321). Void-only for <init>/<clinit>; <clinit> on
+  // major >= 51 takes no parameters.
+  if (methodName === '<init>' || methodName === '<clinit>') {
+    const classMajorVersion = Number.isInteger(metadata.classMajorVersion) ? metadata.classMajorVersion : null;
+    if (descriptor && descriptor.returns.kind !== 'void') {
+      errors.push({ code: 'jvm-special-method-descriptor-not-void' });
+    } else if (methodName === '<clinit>' && descriptor) {
+      const parameterCount = descriptor.parameterSlots - (isStatic ? 0 : 1);
+      if (classMajorVersion == null) unsupported.add('class-version-evidence-missing');
+      else if (classMajorVersion >= 51 && parameterCount > 0) {
+        errors.push({ code: 'jvm-clinit-parameters-forbidden' });
+      }
+    } else if (methodName === '<clinit>' && classMajorVersion == null) {
+      unsupported.add('class-version-evidence-missing');
+    }
+  }
 
   const isNative = accessFlags != null && (accessFlags & 0x0100) !== 0;
   const isAbstract = accessFlags != null && (accessFlags & 0x0400) !== 0;
