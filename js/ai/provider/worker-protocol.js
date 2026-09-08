@@ -24,7 +24,10 @@ export function normalizeAITurnRequest(value) {
   if (!isObject(value.context)) throw new HttpError(422, 'missing_context', 'A bounded model context object is required.');
   rejectBinaryPayload(value.context);
   const messages = Array.isArray(value.messages) ? value.messages.slice(-12).map((message) => ({ role: message?.role === 'assistant' ? 'assistant' : 'user', content: boundedText(message?.content, 12000) })) : [];
-  const goal = boundedText(value.context?.request?.goal, MAX_QUESTION_CHARS).trim() || [...messages].reverse().find((message) => message.role === 'user' && message.content.trim())?.content.trim();
+  const rawGoal = boundedText(value.context?.request?.goal, MAX_QUESTION_CHARS).trim() || [...messages].reverse().find((message) => message.role === 'user' && message.content.trim())?.content.trim();
+  // Every goal source passes the same MAX_QUESTION_CHARS boundary: the
+  // messages fallback is untrusted transport input, not a privileged path (#5987).
+  const goal = boundedText(rawGoal, MAX_QUESTION_CHARS).trim();
   if (!goal) throw new HttpError(422, 'missing_question', 'A non-empty AI goal is required.');
   const context = sanitizeValue(value.context, 0), tools = normalizeAITools(value.tools);
   const intent = boundedText(value.intent || value.context?.request?.intent, 100), task = boundedText(value.task || value.context?.request?.task, 100);

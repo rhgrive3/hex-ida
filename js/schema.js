@@ -351,8 +351,15 @@ export async function recoverSchemas(opts) {
   if (!byFunction.size) return out;
   const candidates = Array.from(byFunction.values()).map((e) => {
     const r = program.functionRange(e.addr);
-    return Object.assign({}, e, { range: r, size: r ? Number(r.end - r.start) : 0 });
-  }).filter((e) => e.range && e.size > 16 && e.size <= 64 * 1024).sort((a, b) => b.files.length - a.files.length);
+    /*
+     * ProgramIndex.functionRange() legitimately returns `end: null` when the
+     * function end is undetermined. `Number(null - start)` would coerce to 0,
+     * and BigInt mixing throws outright — an open-ended range is a range with
+     * an unknown size, not an error (#5803).
+     */
+    const size = r && r.end != null ? Number(r.end - r.start) : 0;
+    return Object.assign({}, e, { range: r, size });
+  }).filter((e) => e.range && e.range.end != null && e.size > 16 && e.size <= 64 * 1024).sort((a, b) => b.files.length - a.files.length);
   const targets = candidates.slice(0, limit);
   if (targets.length < candidates.length) {
     const reasons = [...new Set([out.incompleteReason, 'schema-recovery-limit'].filter(Boolean))];

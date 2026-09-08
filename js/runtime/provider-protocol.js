@@ -36,6 +36,11 @@ function providerIdentity(value, name) {
   return value;
 }
 
+function providerErrorIdentity(value, name) {
+  if (typeof value !== 'string' || !value.trim()) throw new DebugAdapterError('malformed-provider-data', `${name} must be a non-empty string`);
+  return value;
+}
+
 function facet(value) {
   if (value == null) return null;
   if (typeof value !== 'string') throw new DebugAdapterError('malformed-provider-data', 'runtime facet must be a string');
@@ -111,6 +116,14 @@ export function validateProviderPacket(input) {
   if (packet.type === 'request') {
     packet.facet = facet(packet.facet);
     packet.method = validateMethod(packet.method, packet.facet);
+  }
+  if (packet.type === 'error') {
+    // Error identity fields are optional, but when present they are schema
+    // strings. Reject malformed remote packets before receive() can consume
+    // a pending request (#5757).
+    if (Object.hasOwn(packet, 'code')) packet.code = providerErrorIdentity(packet.code, 'provider error code');
+    if (Object.hasOwn(packet, 'message')) packet.message = providerErrorIdentity(packet.message, 'provider error message');
+
   }
   if (packet.type === 'event-batch') {
     packet.facet = facet(packet.facet);
@@ -245,6 +258,10 @@ export class RuntimeProviderProtocolClient {
     let packet;
     try { packet = validateProviderPacket(input); }
     catch { return false; }
+    if (packet.type === 'close') {
+      this.close();
+      return true;
+    }
     if (packet.type === 'event-batch') {
       if (packet.epoch !== this.epoch) return false;
       for (const listener of [...this.listeners]) { try { listener(packet.batch, packet); } catch {} }
@@ -253,15 +270,33 @@ export class RuntimeProviderProtocolClient {
     if (!['response', 'error'].includes(packet.type)) return false;
     const pending = this.pending.get(packet.id);
     if (!pending || packet.epoch !== pending.epoch || packet.epoch !== this.epoch) return false;
-    if (packet.type === 'error') this.#finish(packet.id, pending, new DebugAdapterError(packet.code || 'provider-failure', packet.message || 'provider request failed', packet.details || null));
-    else this.#finish(packet.id, pending, null, packet.result);
+    if (packet.type === 'error') {
+      // `code` and `message` become DebugAdapterError identity fields.
+      // Structured wire values must not be laundered into that identity.
+      const code = typeof packet.code === 'string' && packet.code ? packet.code : 'provider-failure';
+      const message = typeof packet.message === 'string' && packet.message ? packet.message : 'provider request failed';
+      this.#finish(packet.id, pending, new DebugAdapterError(code, message, packet.details || null));
+    } else this.#finish(packet.id, pending, null, packet.result);
     return true;
   }
 
   close() {
     if (this.closed) return;
     this.closed = true;
-    for (const [id, pending] of this.pending) this.#finish(id, pending, new DebugAdapterError('disconnected', 'provider protocol client closed'));
+    // A client close must cancel in-flight work on the wire as well as reject
+    // local promises, otherwise the provider keeps executing orphaned requests.
+    for (const [id, pending] of [...this.pending]) {
+      this.#finish(id, pending, new DebugAdapterError('disconnected', 'provider protocol client closed'));
+      try {
+        this.transport.send(validateProviderPacket({
+          protocol: RUNTIME_PROVIDER_PROTOCOL,
+          version: RUNTIME_PROVIDER_PROTOCOL_VERSION,
+          type: 'cancel',
+          id,
+          epoch: pending.epoch,
+        }));
+      } catch {}
+    }
     if (typeof this.unsubscribe === 'function') { try { this.unsubscribe(); } catch {} }
     this.unsubscribe = null;
     this.listeners.clear();
