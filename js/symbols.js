@@ -25,13 +25,16 @@ export class SymbolIndex {
     const rawAddrs = r.addrs || new BigUint64Array(0);
     const rawKinds = r.kinds || new Uint8Array(rawAddrs.length);
     const rawFlags = r.flags || new Uint8Array(rawAddrs.length);
-    const rawNames = Array.isArray(r.names)
-      ? r.names.map((name) => String(name ?? ''))
+    const namesArrayTransport = Array.isArray(r.names);
+    const rawNames = namesArrayTransport
+      ? r.names.map((name) => name)
       : (typeof r.names === 'string' && r.names.length ? r.names.split('\n') : []);
-    const symbolCardinalityValid = rawNames.length === rawAddrs.length &&
+    const symbolNameTypesValid = !namesArrayTransport || rawNames.every((name) => typeof name === 'string');
+    const symbolCardinalityValid = symbolNameTypesValid && rawNames.length === rawAddrs.length &&
       rawKinds.length === rawAddrs.length && rawFlags.length === rawAddrs.length;
     this.symbolTransportValid = symbolCardinalityValid;
-    this.symbolTransportError = symbolCardinalityValid ? null : 'symbol-cardinality-mismatch';
+    this.symbolTransportError = symbolCardinalityValid ? null :
+      (symbolNameTypesValid ? 'symbol-cardinality-mismatch' : 'symbol-name-type-invalid');
     /* A mismatched transport can shift every subsequent name to the wrong
        address. Fail closed for symbols while preserving independent function
        starts, so corrupted naming evidence never enters the analysis truth. */

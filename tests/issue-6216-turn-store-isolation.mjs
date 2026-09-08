@@ -187,20 +187,24 @@ async function waitFor(entered, running, message) {
 
   const controller = new AbortController();
   const cancelledTurn = turnFor(runtime, 'cancel-bin', { mode: 'agent', goal: 'cancelled turn' }, { signal: controller.signal });
-  await waitFor(cancelledEntered, cancelledTurn, 'cancelled turn did not enter provider');
+  await waitFor(cancelledEntered, cancelledTurn.catch(() => {}), 'cancelled turn did not enter provider');
   const liveTurn = turnFor(runtime, 'live-bin', { mode: 'agent', goal: 'live turn' });
   await waitFor(liveEntered, liveTurn, 'live turn did not enter provider');
   controller.abort('cancelled');
   releaseLive();
-  const [cancelled, live] = await Promise.all([cancelledTurn, liveTurn]);
+  const [cancelledRejection, live] = await Promise.allSettled([cancelledTurn, liveTurn]);
 
-  assert.equal(cancelled.limits.reason, 'cancelled');
-  assert.equal(live.answer, 'answer LIVE');
-  assert.equal(live.limits.exhausted, false);
-  assert.deepEqual(live.evidence.map((item) => item.id), ['live-evidence']);
-  assert.deepEqual(live.hypotheses.map((item) => item.id), ['hyp-LIVE']);
-  assert.equal(cancelled.hypotheses.some((item) => item.id === 'hyp-LIVE'), false);
-  assert.equal(storesFor(runtime, live.sessionId).hypothesisStore.all().some((item) => item.id === 'hyp-CANCELLED'), false);
+  // #5632: a cancelled turn must reject instead of resolving a fallback answer.
+  assert.equal(cancelledRejection.status, 'rejected', 'a cancelled turn must not resolve');
+  assert.equal(cancelledRejection.reason?.type, 'cancelled');
+  assert.equal(live.status, 'fulfilled');
+  const liveResult = live.value;
+  assert.equal(liveResult.answer, 'answer LIVE');
+  assert.equal(liveResult.limits.exhausted, false);
+  assert.deepEqual(liveResult.evidence.map((item) => item.id), ['live-evidence']);
+  assert.deepEqual(liveResult.hypotheses.map((item) => item.id), ['hyp-LIVE']);
+  assert.equal(liveResult.hypotheses.some((item) => item.id === 'hyp-CANCELLED'), false);
+  assert.equal(storesFor(runtime, liveResult.sessionId).hypothesisStore.all().some((item) => item.id === 'hyp-CANCELLED'), false);
   assert.equal(runtime.activeControllers.size, 0, 'cancellation must release only its controller and leave no leaked bindings');
 }
 

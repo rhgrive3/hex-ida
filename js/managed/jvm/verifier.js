@@ -418,6 +418,19 @@ export function verifyJvmMethod(decoded, options = {}) {
       if (unknown?.reason !== 'invalid-jvm-branch-target') continue;
       errors.push({ code: 'jvm-invalid-branch-target', offset: bundle.bytecodeOffset, target: null });
     }
+    // Same authority split for local-variable accesses (#5394): the lifter
+    // withholds an out-of-frame location access and reports it as an unknown
+    // effect; the verifier owns the max_locals boundary and fails the method.
+    for (const unknown of bundle.unknownEffects ?? []) {
+      if (typeof unknown?.reason !== 'string' || !unknown.reason.startsWith('jvm-local-index-out-of-frame:')) continue;
+      const [, indexText, slotsText] = unknown.reason.split(':');
+      errors.push({
+        code: 'jvm-local-index-out-of-range',
+        offset: bundle.bytecodeOffset,
+        index: indexText != null && indexText !== '' ? Number(indexText) : null,
+        slots: slotsText != null && slotsText !== '' ? Number(slotsText) : null,
+      });
+    }
     for (const access of [...(bundle.locationReads ?? []), ...(bundle.locationWrites ?? [])]) {
       if (access?.kind !== 'local') continue;
       const index = access.index;
