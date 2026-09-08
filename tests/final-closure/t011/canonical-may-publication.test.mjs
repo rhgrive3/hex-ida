@@ -5,7 +5,7 @@ import { stableDigest } from '../../../js/core/identity/index.js';
 import { createSemanticCfg } from '../../../js/semantics/cfg/index.js';
 import { createSemanticIrFunction } from '../../../js/semantics/ir/function.js';
 import { projectSemanticIrV2ToLegacyV1 } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
-import { buildMemorySsa } from '../../../js/semantics/memoryssa/build.js';
+import { buildMemorySsa, MEMORY_SSA_BUILD_VERSION } from '../../../js/semantics/memoryssa/build.js';
 import { createMemoryRegionRef } from '../../../js/semantics/memoryssa/contract.js';
 
 const functionId = 'fn_t011_may_publication';
@@ -210,7 +210,7 @@ function buildFixture({ olderOverlappingMayStore = false } = {}) {
     scalarSsaDigest: 'ssa_fixture_digest',
     memorySsaId: 'mssa_fixture',
     snapshotId: 'snapshot_fixture',
-    memorySsaBuildVersion: '1.0.0',
+    memorySsaBuildVersion: MEMORY_SSA_BUILD_VERSION,
     analyzerVersion: 'memoryssa-fixture',
   };
   const queryAlias = (_left, right, context) => {

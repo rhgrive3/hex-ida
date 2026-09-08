@@ -30,7 +30,7 @@ import { projectSemanticIrV2ToLegacyV1 } from '../../../js/semantics/compat/sema
 import { createSemanticCfg } from '../../../js/semantics/cfg/index.js';
 import { validateSemanticIrFunction } from '../../../js/semantics/ir/index.js';
 import { createMemoryRegionRef } from '../../../js/semantics/memoryssa/contract.js';
-import { buildMemorySsa } from '../../../js/semantics/memoryssa/build.js';
+import { buildMemorySsa, MEMORY_SSA_BUILD_VERSION } from '../../../js/semantics/memoryssa/build.js';
 import { forwardExactStackOperandIdentity } from '../../../js/semantics/memoryssa/operand-forwarding.js';
 import { stableDigest } from '../../../js/core/identity/index.js';
 
@@ -383,7 +383,7 @@ function committedReturnFixture({ registerKind = 'stack', registerSize = 4, regi
     binaryId:'binary_fixture', sliceId:'slice_fixture', functionId:canonicalIr.functionId,
     semanticIrId:'ir_fixture', scalarSsaId:'ssa_fixture', memorySsaId:'mssa_fixture', snapshotId:'snapshot_fixture',
     semanticIrContractVersion:'2.0.0', semanticIrDigest:stableDigest(canonicalIr), scalarSsaBuildVersion:'1.0.0',
-    scalarSsaDigest:'ssa_fixture_digest', memorySsaBuildVersion:'1.0.0', analyzerVersion:'memoryssa-fixture',
+    scalarSsaDigest:'ssa_fixture_digest', memorySsaBuildVersion:MEMORY_SSA_BUILD_VERSION, analyzerVersion:'memoryssa-fixture',
   };
   const memorySsa = buildMemorySsa(canonicalIr, canonicalCfg, {
     regions:[region], resolveRegion:() => region,
