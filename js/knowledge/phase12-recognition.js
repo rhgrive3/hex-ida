@@ -78,17 +78,70 @@ export async function recognizeWithKnowledgeDB({ db, input, packageEnvelope = nu
   return createMatchResult({ ...input, packageContentHash: packageHash, candidates, candidateSearchTruncated: matches.truncated === true, ambiguityWindow: options.ambiguityWindow });
 }
 
+// Host-held approval authority for L4 promotion (#5216): a plain
+// { approved:true, targetMatchId } self-declaration is not approval evidence,
+// so promotion requires an opaque, single-use grant issued by the host for a
+// specific match identity. Grants bind the exact match id, target entity,
+// package identity/hash, algorithm version, actor identity and the host's
+// project/binary binding; consumption verifies every binding and burns the
+// grant, so forged, replayed or cross-target grants fail closed.
+export function createRecognitionApprovalAuthority({ projectBinding = null } = {}) {
+  const binding = projectBinding == null ? null : String(projectBinding).trim();
+  if (binding !== null && !binding) throw new TypeError('recognition approval project binding must be a non-empty string');
+  const pending = new Map();
+  return deepFreeze({
+    issueGrant(result, { actorId } = {}) {
+      if (!result || result.authority !== 'L2-suggestion' || !result.id) throw new TypeError('recognition suggestion required');
+      const actor = String(actorId || '').trim();
+      if (!actor) throw new TypeError('local approving actor identity is required');
+      const nonce = Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)));
+      const token = `recognition-grant_${stableDigest({ nonce, matchId: result.id, actor, projectBinding: binding })}`;
+      const grant = deepFreeze({
+        token,
+        matchId: result.id,
+        sourceEntityId: result.sourceEntityId,
+        packageEntryId: result.packageEntryId,
+        packageContentHash: result.packageContentHash ?? null,
+        algorithmVersion: result.algorithmVersion,
+        actorId: actor,
+        projectBinding: binding,
+      });
+      pending.set(token, grant);
+      return grant;
+    },
+    consumeGrant(result, token, { actorId = null } = {}) {
+      const value = String(token || '');
+      if (!value) throw new Error('explicit recognition approval is required');
+      const grant = pending.get(value);
+      if (!grant) throw new Error('recognition approval grant is not valid');
+      const matches = (field, expected) => (grant[field] ?? null) === (expected ?? null);
+      if (!matches('matchId', result?.id)) throw new Error('recognition approval grant is bound to a different match');
+      if (!matches('sourceEntityId', result?.sourceEntityId)) throw new Error('recognition approval grant is bound to a different target entity');
+      if (!matches('packageEntryId', result?.packageEntryId)) throw new Error('recognition approval grant is bound to a different package entry');
+      if (!matches('packageContentHash', result?.packageContentHash)) throw new Error('recognition approval grant is bound to a different package content');
+      if (!matches('algorithmVersion', result?.algorithmVersion)) throw new Error('recognition approval grant is bound to a different algorithm version');
+      const actor = actorId == null ? grant.actorId : String(actorId).trim();
+      if (actor !== grant.actorId) throw new Error('recognition approval grant is bound to a different actor');
+      pending.delete(value);
+      return grant;
+    },
+  });
+}
+
 export function promoteKnowledgeSuggestion(result, options = {}) {
   if (!result || result.authority !== 'L2-suggestion') throw new TypeError('recognition suggestion required');
-  const token = options.approvalToken;
-  if (!token || token.approved !== true || token.targetMatchId !== result.id) throw new Error('explicit recognition approval is required');
   if (result.candidateSearchTruncated || result.status === 'ambiguous') throw new Error('ambiguous or truncated recognition cannot be promoted');
-  const actorId = String(options.actorId || '').trim();
+  const authority = options.approvalAuthority;
+  if (!authority || typeof authority.consumeGrant !== 'function') throw new Error('explicit recognition approval is required');
+  // A host-issued single-use grant is the only approval evidence; verified
+  // actor/provenance come from the grant, not from caller fields (#5216).
+  const grant = authority.consumeGrant(result, options.approvalGrant, { actorId: options.actorId ?? null });
+  const actorId = String(grant.actorId || '').trim();
   if (!actorId) throw new TypeError('local approving actor identity is required');
   return deepFreeze({
     kind: 'knowledge-fact', targetEntityId: result.sourceEntityId, value: options.value || { packageEntryId: result.packageEntryId, name: options.name || null },
     confirmation: 'user-confirmed', authority: 'L4-local-canonical',
-    provenance: { source: 'local-user', actorId, approvedMatchId: result.id },
+    provenance: { source: 'local-user', actorId, approvedMatchId: grant.matchId },
     externalProvenance: { packageContentHash: result.packageContentHash, packageEntryId: result.packageEntryId, algorithmVersion: result.algorithmVersion, evidenceIds: result.evidenceIds },
   });
 }

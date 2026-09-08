@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createKnowledgePack } from '../../../js/signature/index.js';
 import { createPackageEnvelope, importPhase12Package, parseBoundedPackageInput, resolvePackageDependencies, validateProviderOutput } from '../../../js/phase12/package-envelope.js';
-import { createMatchResult, promoteKnowledgeSuggestion, recognitionCanClaimUnique } from '../../../js/knowledge/phase12-recognition.js';
+import { createMatchResult, promoteKnowledgeSuggestion, recognitionCanClaimUnique, issueRecognitionApprovalGrant } from '../../../js/knowledge/phase12-recognition.js';
 import '../../issue-3783-knowledge-pack-confidence-types.mjs';
 
 const fixturePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures/profile-evidence/knowledge-package.json');
@@ -44,10 +44,12 @@ assert.equal(recognitionCanClaimUnique(ambiguous), false);
 const truncated = createMatchResult({ sourceEntityId: 'entity-a', packageEntryId: 'entry-a', candidates: [{ packageEntryId: 'entry-a', score: 0.99 }], candidateSearchTruncated: true });
 assert.equal(truncated.completeness, 'partial');
 assert.equal(truncated.unique, false);
-assert.throws(() => promoteKnowledgeSuggestion(truncated, { approvalToken: { approved: true, targetMatchId: truncated.id }, actorId: 'actor-a' }), /ambiguous or truncated/);
+assert.throws(() => promoteKnowledgeSuggestion(truncated, { approvalAuthority: createRecognitionApprovalAuthority({ projectBinding: 'p' }), approvalGrant: 'unused-grant-token', actorId: 'actor-a' }), /ambiguous or truncated/);
 
 const unique = createMatchResult({ sourceEntityId: 'entity-a', packageEntryId: 'entry-a', candidates: [{ packageEntryId: 'entry-a', score: 0.99, tier: 'exact-content' }], packageContentHash: sameA.contentHash });
-const fact = promoteKnowledgeSuggestion(unique, { approvalToken: { approved: true, targetMatchId: unique.id }, actorId: 'local-user', name: 'localName' });
+const packageApprovalAuthority = createRecognitionApprovalAuthority({ projectBinding: 'project-a' });
+const packageGrant = packageApprovalAuthority.issueGrant(unique, { actorId: 'local-user' });
+const fact = promoteKnowledgeSuggestion(unique, { approvalAuthority: packageApprovalAuthority, approvalGrant: packageGrant.token, name: 'localName' });
 assert.equal(fact.confirmation, 'user-confirmed');
 assert.equal(fact.externalProvenance.packageContentHash, sameA.contentHash);
 console.log('[phase12] package/provenance/recognition tests passed');

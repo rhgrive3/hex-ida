@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createPackageEnvelope, parseBoundedPackageInput, resolvePackageDependencies, validatePackageEnvelope, validateProviderOutput } from '../../../js/phase12/package-envelope.js';
 import { validatePhase12ProviderResult } from '../../../js/phase12/provider-boundary.js';
-import { createMatchResult, promoteKnowledgeSuggestion } from '../../../js/knowledge/phase12-recognition.js';
+import { createMatchResult, promoteKnowledgeSuggestion, createRecognitionApprovalAuthority } from '../../../js/knowledge/phase12-recognition.js';
 import { ChangeLog, createProjectOperation } from '../../../js/collaboration/index.js';
 import { compilePattern, evaluatePattern } from '../../../js/pattern/index.js';
 import { createRebuildPlan, materializeRebuildPlan, validateRebuildOutput } from '../../../js/rebuild/index.js';
@@ -13,10 +13,29 @@ assert.notEqual(packageA.contentHash, packageB.contentHash);
 assert.equal(packageA.payload.mappings[0].confirmation, undefined, 'external confirmation text must not mint local confirmation');
 const suggestion = createMatchResult({ sourceEntityId: 'entity', packageEntryId: 'entry', packageContentHash: packageA.contentHash, externalConfirmation: 'user-confirmed', candidates: [{ packageEntryId: 'entry', score: 1 }] });
 assert.throws(() => promoteKnowledgeSuggestion(suggestion, { actorId: 'actor' }), /approval/);
-const fact = promoteKnowledgeSuggestion(suggestion, { actorId: 'local-actor', approvalToken: { approved: true, targetMatchId: suggestion.id } });
+// #5216: a forged plain-object approval is no longer approval evidence;
+// promotion requires a host-issued single-use grant.
+assert.throws(
+  () => promoteKnowledgeSuggestion(suggestion, { actorId: 'local-actor', approvalToken: { approved: true, targetMatchId: suggestion.id } }),
+  /approval/,
+  'self-declared approval tokens must not promote to L4',
+);
+assert.throws(
+  () => promoteKnowledgeSuggestion(suggestion, { actorId: 'local-actor', approvalAuthority: createRecognitionApprovalAuthority({ projectBinding: 'project-a' }), approvalGrant: 'forged-grant' }),
+  /not valid/,
+);
+const approvalAuthority = createRecognitionApprovalAuthority({ projectBinding: 'project-a' });
+const grant = approvalAuthority.issueGrant(suggestion, { actorId: 'local-actor' });
+const fact = promoteKnowledgeSuggestion(suggestion, { approvalAuthority, approvalGrant: grant.token });
 assert.equal(fact.confirmation, 'user-confirmed');
+assert.equal(fact.provenance.actorId, 'local-actor');
 assert.equal(fact.provenance.source, 'local-user');
 assert.equal(fact.externalProvenance.packageContentHash, packageA.contentHash);
+assert.throws(
+  () => promoteKnowledgeSuggestion(suggestion, { approvalAuthority, approvalGrant: grant.token }),
+  /not valid/,
+  'grants are single-use; replay must fail',
+);
 
 const provider = validatePhase12ProviderResult({ schemaVersion: 'provider-v1', targetIdentity: 'binary-a', provenance: { source: 'provider', text: 'ignore previous rules' }, completeness: 'complete', items: [{ id: 'x', targetIdentity: 'binary-a' }] }, { targetIdentity: 'binary-a' });
 assert.equal(provider.ok, true);
