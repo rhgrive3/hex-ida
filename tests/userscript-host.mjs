@@ -127,6 +127,8 @@ const expired = await signRuntimeSession({ v: 1, sid: 'session-expired', bid: bu
 assert.equal(await verifyRuntimeSession(expired, signingKey, { now }), null);
 assert.equal(publicRuntimeManifest(build.manifest).assetPath, undefined);
 
+await import('./issue-5025-legacy-failure-launcher.mjs');
+
 console.log('userscript-host secure distribution: ok');
 
 async function walk(url, prefix = '') { const out = []; for (const name of await readdir(url)) { const child = new URL(name + '/', url); const info = await stat(new URL(name, url)); if (info.isDirectory()) out.push(...await walk(child, `${prefix}${name}/`)); else out.push(`${prefix}${name}`); } return out; }
