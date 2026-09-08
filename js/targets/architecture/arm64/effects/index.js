@@ -1,6 +1,6 @@
 import { decorateArm64BtiGuardedPageEffects } from './bti-guard-state.js';
 import { liftArm64ControlEffects } from './control.js';
-import { createArm64EffectContext, directTargetOf, immediateOf, instructionMnemonic } from './common.js';
+import { createArm64EffectContext, directTargetOf, immediateOf, instructionMnemonic, numericOtherTargetValue } from './common.js';
 import { liftArm64FlagEffects } from './flags.js';
 import { liftArm64FpEffects } from './fp.js';
 import { liftArm64IntegerEffects } from './integer.js';
@@ -399,6 +399,11 @@ function addressImmediateEncodingFailure(instruction) {
   if (targetOperand?.k === 'imm' && immediateOf(targetOperand) !== target) {
     return `arm64-${mnemonic}-target-evidence-mismatch`;
   }
+  if (targetOperand?.k === 'other') {
+    const otherValue = numericOtherTargetValue(targetOperand);
+    if (otherValue != null && otherValue !== target) return `arm64-${mnemonic}-target-evidence-mismatch`;
+  }
+
   if (mnemonic === 'adr') {
     const delta = BigInt.asIntN(64, target - address);
     return delta < SIGNED_IMM21_MIN || delta > SIGNED_IMM21_MAX

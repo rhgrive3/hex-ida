@@ -36,7 +36,11 @@ export function vectorPrefixOffset(instruction,prefix){
   const raw=instruction?.rawBytes||[],reportedValue=instruction?.detail?.prefixes?.vector?.offset,reported=reportedValue==null?null:Number(reportedValue);
   let cursor=0;
   while(cursor<raw.length&&LEGACY_PREFIX_BYTES.has(raw[cursor]))cursor+=1;
-  if(cursor<raw.length&&raw[cursor]>=0x40&&raw[cursor]<=0x4f)cursor+=1;
+  // REX is not allowed in extended encodings using VEX/XOP/EVEX escape
+  // prefixes (AMD64 APM Vol.3: violating this restriction is #UD). A REX
+  // byte in front of the vector prefix is therefore invalidity evidence and
+  // must never be consumed to reach a "matching" vector prefix.
+  if(cursor<raw.length&&raw[cursor]>=0x40&&raw[cursor]<=0x4f)return null;
   if(reported!=null&&(!Number.isSafeInteger(reported)||reported!==cursor))return null;
   if(cursor+prefix.length>raw.length)return null;for(let i=0;i<prefix.length;i+=1)if(raw[cursor+i]!==prefix[i])return null;return cursor;
 }
