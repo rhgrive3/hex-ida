@@ -8,12 +8,28 @@ export const WIRE_TAG = '__hex_wire_type__';
 export const BIGINT_TAG = 'bigint';
 export const BYTES_TAG = 'bytes-base64';
 
+function utf8ByteLength(json) {
+  if (typeof Buffer !== 'undefined' && typeof Buffer.byteLength === 'function') return Buffer.byteLength(json, 'utf8');
+  // Exact UTF-8 length without TextEncoder: surrogate pairs are 4 bytes,
+  // unpaired surrogates count as their 3-byte replacement character, so the
+  // byte budget means the same thing on every runtime (#5939).
+  let bytes = 0;
+  for (let i = 0; i < json.length; i += 1) {
+    const code = json.charCodeAt(i);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && json.charCodeAt(i + 1) >= 0xdc00 && json.charCodeAt(i + 1) <= 0xdfff) { bytes += 4; i += 1; }
+    else bytes += 3;
+  }
+  return bytes;
+}
+
 function jsonByteSize(value) {
   let json;
   try { json = JSON.stringify(value); }
   catch { throw new DebugAdapterError('malformed-packet', 'remote packet is not serializable'); }
   if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(json).byteLength;
-  return json.length * 2;
+  return utf8ByteLength(json);
 }
 
 function bytesToBase64(bytes) {
@@ -40,6 +56,16 @@ function base64ToBytes(text) {
     return out;
   } catch {
     throw new DebugAdapterError('malformed-packet', 'invalid base64 byte payload');
+  }
+}
+
+function rejectUnknownWireTag(value) {
+  if (
+    Object.prototype.hasOwnProperty.call(value, WIRE_TAG) &&
+    value[WIRE_TAG] !== BIGINT_TAG &&
+    value[WIRE_TAG] !== BYTES_TAG
+  ) {
+    throw new DebugAdapterError('malformed-packet', 'unknown remote wire value type');
   }
 }
 
@@ -81,6 +107,7 @@ export function decodeWireValue(value, depth = 0) {
   if (depth > 20) throw new DebugAdapterError('malformed-packet', 'remote packet nesting is too deep');
   if (Array.isArray(value)) return value.map((v) => decodeWireValue(v, depth + 1));
   if (!value || typeof value !== 'object') return value;
+  rejectUnknownWireTag(value);
   if (value[WIRE_TAG] === BIGINT_TAG) {
     if (
       Object.keys(value).some((k) => ![WIRE_TAG, 'value'].includes(k)) ||
@@ -118,6 +145,7 @@ function validateValue(value, depth = 0) {
   if (value && typeof value === 'object') {
     const proto = Object.getPrototypeOf(value);
     if (proto !== Object.prototype && proto !== null) throw new DebugAdapterError('malformed-packet', 'remote packet objects must be plain data');
+    rejectUnknownWireTag(value);
     const keys = Object.keys(value);
     if (keys.length > 1024) throw new DebugAdapterError('malformed-packet', 'remote object has too many fields');
     for (const key of keys) {
@@ -137,10 +165,23 @@ function validateValue(value, depth = 0) {
   if (value == null || typeof value === 'boolean') return;
   throw new DebugAdapterError('malformed-packet', 'remote packet contains a non-wire value');
 }
-
 function validateEpoch(packet) {
   if (packet.type === 'hello') return;
   if (!Number.isSafeInteger(packet.epoch) || packet.epoch < 0) throw new DebugAdapterError('malformed-packet', 'packet epoch must be a non-negative safe integer');
+}
+
+function validateResponse(packet) {
+  if (packet.type !== 'response') return;
+  const hasResult = Object.prototype.hasOwnProperty.call(packet, 'result');
+  const hasError = Object.prototype.hasOwnProperty.call(packet, 'error');
+  if (hasResult === hasError) {
+    throw new DebugAdapterError('malformed-packet', 'response must contain exactly one of result or error');
+  }
+  if (!hasError) return;
+  const error = packet.error;
+  if (!error || typeof error !== 'object' || Array.isArray(error) || Object.prototype.hasOwnProperty.call(error, WIRE_TAG)) {
+    throw new DebugAdapterError('malformed-packet', 'response error must be a plain error object');
+  }
 }
 
 export function validateRemotePacket(packet) {
@@ -155,7 +196,36 @@ export function validateRemotePacket(packet) {
     if (typeof packet.method !== 'string' || !packet.method || packet.method.length > 128) throw new DebugAdapterError('malformed-packet', 'request method must be a 1..128 character string');
     if (BLOCKED_METHODS.test(packet.method)) throw new DebugAdapterError('blocked-method', 'host command execution is prohibited');
   }
+  validateResponse(packet);
   return packet;
+}
+
+// Listener isolation must cover async failures too: a listener returning a
+// promise that later rejects would otherwise leak an unhandledRejection
+// through the sync-only try/catch (#5931).
+function invokeListener(fn, packet) {
+  try {
+    const result = fn(packet);
+    if (result && typeof result.then === 'function') Promise.resolve(result).catch(() => { /* listener isolation */ });
+  } catch { /* listener isolation */ }
+}
+
+function defaultMonotonicNow() {
+  try {
+    const perf = globalThis.performance;
+    if (typeof perf?.now === 'function') {
+      const now = perf.now();
+      if (Number.isFinite(now)) return now;
+    }
+  } catch { /* try the next monotonic source */ }
+  try {
+    const hrtime = globalThis.process?.hrtime;
+    if (typeof hrtime?.bigint === 'function') {
+      const now = Number(hrtime.bigint()) / 1e6;
+      if (Number.isFinite(now)) return now;
+    }
+  } catch { /* fail closed below */ }
+  throw new DebugAdapterError('monotonic-clock-unavailable', 'a monotonic clock is required for remote event rate limiting');
 }
 
 export class RemoteProtocolClient {
@@ -169,7 +239,11 @@ export class RemoteProtocolClient {
     this.listeners = new Set();
     this.maxEventsPerSecond = boundedInteger(options.maxEventsPerSecond, 256, 1, 10000, 'maxEventsPerSecond');
     this.maxEventBytesPerSecond = boundedInteger(options.maxEventBytesPerSecond, 4 * 1024 * 1024, 1024, 64 * 1024 * 1024, 'maxEventBytesPerSecond');
-    this.eventWindowStart = Date.now(); this.eventWindowCount = 0; this.eventWindowBytes = 0; this.droppedEvents = 0;
+    // Rate windows measure elapsed time, so they must use a monotonic clock.
+    // Date.now() can jump backwards (NTP/manual correction) and would pin a
+    // saturated window shut until the wall clock catches up.
+    this._monotonicNow = typeof options.monotonicNow === 'function' ? options.monotonicNow : defaultMonotonicNow;
+    this.eventWindowStart = this._monotonicNow(); this.eventWindowCount = 0; this.eventWindowBytes = 0; this.droppedEvents = 0;
     this.epoch = 0;
     this.closed = false;
     this.unsubscribe = typeof transport.onMessage === 'function' ? transport.onMessage((packet) => this.receive(packet)) : null;
@@ -214,7 +288,11 @@ export class RemoteProtocolClient {
     if (typeof method !== 'string' || !method || method.length > 128) return Promise.reject(new DebugAdapterError('malformed-packet', 'request method must be a 1..128 character string'));
     if (BLOCKED_METHODS.test(method)) return Promise.reject(new DebugAdapterError('blocked-method', 'host command execution is prohibited'));
     if (this.pending.size >= this.maxPending) return Promise.reject(new DebugAdapterError('backpressure', 'too many pending remote requests'));
-    if (options.signal && options.signal.aborted) return Promise.reject(new DebugAdapterError('cancelled', String(options.signal.reason ?? 'cancelled')));
+    const signal = options.signal ?? null;
+    if (signal != null && (typeof signal.aborted !== 'boolean' || typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function')) {
+      return Promise.reject(new DebugAdapterError('invalid-argument', 'signal must be AbortSignal-compatible'));
+    }
+    if (signal?.aborted) return Promise.reject(new DebugAdapterError('cancelled', String(signal.reason ?? 'cancelled')));
     const id = this._allocateId();
     const epoch = options.epoch == null ? this.epoch : options.epoch;
     if (!Number.isSafeInteger(epoch) || epoch < 0) return Promise.reject(new DebugAdapterError('invalid-epoch', 'epoch must be a non-negative safe integer'));
@@ -223,7 +301,7 @@ export class RemoteProtocolClient {
     catch (error) { return Promise.reject(error); }
     const packet = { version:DEBUG_PROTOCOL_VERSION, type:'request', id, epoch, method, params };
     return new Promise((resolve,reject) => {
-      const pending = { resolve, reject, timer:null, epoch, method, signal:options.signal || null, abortHandler:null };
+      const pending = { resolve, reject, timer:null, epoch, method, signal, abortHandler:null };
       pending.timer = setTimeout(() => {
         if (!this.pending.has(id)) return;
         this._cleanupPending(id, pending);
@@ -255,31 +333,42 @@ export class RemoteProtocolClient {
   receive(raw) {
     let wire;
     try { wire = validateRemotePacket(raw); } catch { return false; }
-    if (wire.type !== 'hello' && wire.epoch !== this.epoch) return false;
+    if (wire.type !== 'hello' && wire.epoch !== this.epoch) {
+      // A request opened with an explicit epoch legally receives its response
+      // carrying that request's own epoch (#5726). Keep such a response only
+      // when it settles a pending request opened at that same epoch; every
+      // other foreign-epoch packet stays rejected.
+      const pendingForWire = wire.type === 'response' && Number.isSafeInteger(wire.id)
+        ? this.pending.get(wire.id) : null;
+      if (!pendingForWire || pendingForWire.epoch !== wire.epoch) return false;
+    }
     let packet;
     try { packet = decodeWireValue(wire); } catch { return false; }
     if (packet.type === 'response') {
       const pending = this.pending.get(packet.id);
-      if (!pending || pending.epoch !== packet.epoch || packet.epoch !== this.epoch) return false;
+      // The request's own epoch is the settle authority: a pending opened at
+      // an explicit epoch must be settled by its matching response even when
+      // that epoch is not the client's current one (#5726).
+      if (!pending || pending.epoch !== packet.epoch) return false;
       this._cleanupPending(packet.id, pending);
       if (packet.error) pending.reject(new DebugAdapterError(String(packet.error.code || 'remote-error'), String(packet.error.message || 'remote error').slice(0,2048), packet.error.details || null));
       else pending.resolve(packet.result);
       return true;
     }
     if (packet.type === 'event') {
-      const now=Date.now();
+      const now=this._monotonicNow();
       if (now-this.eventWindowStart >= 1000) { this.eventWindowStart=now; this.eventWindowCount=0; this.eventWindowBytes=0; this.droppedEvents=0; }
-      const bytes=jsonByteSize(packet);
+      const bytes=jsonByteSize(wire);
       if (this.eventWindowCount + 1 > this.maxEventsPerSecond || this.eventWindowBytes + bytes > this.maxEventBytesPerSecond) {
         this.droppedEvents++;
         if (this.droppedEvents === 1) {
           const notice={version:DEBUG_PROTOCOL_VERSION,type:'event',epoch:this.epoch,event:'stream-truncated',data:{reason:'event-backpressure'}};
-          for (const fn of this.listeners) { try { fn(notice); } catch {} }
+          for (const fn of this.listeners) { invokeListener(fn, notice); }
         }
         return false;
       }
       this.eventWindowCount++; this.eventWindowBytes+=bytes;
-      for (const fn of this.listeners) { try { fn(packet); } catch { /* listener isolation */ } }
+      for (const fn of this.listeners) { invokeListener(fn, packet); }
       return true;
     }
     return false;

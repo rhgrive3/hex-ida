@@ -52,11 +52,11 @@ export function makeMachO64Fixture() {
 
 export function makeFatMachOFixture() {
   const thin=makeMachO64Fixture();
-  const b=new Uint8Array(0x100+thin.length);
+  const b=new Uint8Array(0x4000+thin.length);
   const v=new DataView(b.buffer);
   v.setUint32(0,0xcafebabe,false); v.setUint32(4,1,false);
-  v.setUint32(8,0x0100000c,false); v.setUint32(12,0,false); v.setUint32(16,0x100,false); v.setUint32(20,thin.length,false); v.setUint32(24,2,false);
-  b.set(thin,0x100);
+  v.setUint32(8,0x0100000c,false); v.setUint32(12,0,false); v.setUint32(16,0x4000,false); v.setUint32(20,thin.length,false); v.setUint32(24,14,false);
+  b.set(thin,0x4000);
   return b;
 }
 
@@ -113,13 +113,13 @@ function testMachOIssueRegressions() {
   const bindBytes=new Uint8Array(0x200), bv=new DataView(bindBytes.buffer);
   const segmentImage=new BinaryImage(bindBytes,{format:'macho',bits:64,imageBase:0x1000n});
   const seg=segmentImage.addSegment({name:'DATA',address:0x1000n,size:0x100n,fileOffset:0n,fileSize:0x100n,perms:{read:true,write:true}}); segmentImage.libraries=['libX'];
-  let s=0x100; bindBytes.set([0x11,0x41,0x66,0x6f,0x6f,0x00,0x70,0x00,0x90,0x00],s);
-  parseClassicBindings(new ByteView(bindBytes),{offset:s,size:10},segmentImage,[seg],'bind');
+  let s=0x100; bindBytes.set([0x11,0x41,0x66,0x6f,0x6f,0x00,0x51,0x70,0x00,0x90,0x00],s);
+  parseClassicBindings(new ByteView(bindBytes),{offset:s,size:11},segmentImage,[seg],'bind');
   assert.equal(segmentImage.imports[0].weak,true); assert.equal(segmentImage.imports[0].symbolFlags,1);
 
   const invalidImage=new BinaryImage(bindBytes,{format:'macho',bits:64,imageBase:0x1000n}); const invalidSeg=invalidImage.addSegment({address:0x1000n,size:0x100n,fileOffset:0n,fileSize:0x100n,perms:{read:true,write:true}}); invalidImage.libraries=['libX'];
-  s=0x120; bindBytes.set([0x11,0x40,0x66,0x80,0x6f,0x00,0x70,0x00,0x90,0x00],s);
-  parseClassicBindings(new ByteView(bindBytes),{offset:s,size:10},invalidImage,[invalidSeg],'bind'); assert.equal(invalidImage.imports.length,1);
+  s=0x120; bindBytes.set([0x11,0x40,0x66,0x80,0x6f,0x00,0x51,0x70,0x00,0x90,0x00],s);
+  parseClassicBindings(new ByteView(bindBytes),{offset:s,size:11},invalidImage,[invalidSeg],'bind'); assert.equal(invalidImage.imports.length,1);
   s=0x140; bindBytes.set([0x40,0x78,0x00,0x70,0x82,0x02,0x90,0x00],s);
   const oobImage=new BinaryImage(bindBytes,{format:'macho',bits:64,imageBase:0x1000n}); const oobSeg=oobImage.addSegment({address:0x1000n,size:0x100n,fileOffset:0n,fileSize:0x100n,perms:{read:true,write:true}});
   const oobStatus=parseClassicBindings(new ByteView(bindBytes),{offset:s,size:8},oobImage,[oobSeg],'bind'); assert.equal(oobImage.imports.length,0); assert.equal(oobStatus.complete,false);
@@ -151,7 +151,7 @@ function testMachO() {
   assert.ok(image.functions[0].sources?.includes('entrypoint')); assert.ok(image.functions[0].sources?.includes('function_starts'));
   assert.equal(auditBinary(image).errors,0);
   const fat=openBinary(makeFatMachOFixture());
-  assert.equal(fat.arch,'arm64'); assert.equal(fat.metadata.fat.selected.offset,0x100n); assert.equal(fat.functions.length,2);
+  assert.equal(fat.arch,'arm64'); assert.equal(fat.metadata.fat.selected.offset,0x4000n); assert.equal(fat.functions.length,2);
 }
 
 export function makeElf64Fixture() {
@@ -159,8 +159,12 @@ export function makeElf64Fixture() {
   const v = new DataView(b.buffer);
   const w16=(o,x)=>v.setUint16(o,x,true), w32=(o,x)=>v.setUint32(o,x,true), w64=(o,x)=>v.setBigUint64(o,BigInt(x),true);
   b.set([0x7f,0x45,0x4c,0x46,2,1,1,0,0],0);
-  w16(16,3); w16(18,62); w32(20,1); w64(24,0x401000n); w64(32,0n); w64(40,0x280n);
-  w32(48,0); w16(52,64); w16(54,56); w16(56,0); w16(58,64); w16(60,6); w16(62,5);
+  w16(16,3); w16(18,62); w32(20,1); w64(24,0x401000n); w64(32,0x40n); w64(40,0x280n);
+  w32(48,0); w16(52,64); w16(54,56); w16(56,1); w16(58,64); w16(60,6); w16(62,5);
+
+  const ph=0x40;
+  w32(ph,1); w32(ph+4,0x5); w64(ph+8,0x100n); w64(ph+16,0x401000n); w64(ph+24,0x401000n);
+  w64(ph+32,0x10n); w64(ph+40,0x10n); w64(ph+48,0x100n);
 
   b.fill(0x90,0x100,0x110); b[0x10f]=0xc3;
   const dynstr = new TextEncoder().encode('\0puts\0myfunc\0libc.so.6\0'); b.set(dynstr,0x120);

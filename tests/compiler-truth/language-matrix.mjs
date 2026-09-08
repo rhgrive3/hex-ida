@@ -4,7 +4,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseOperands } from '../../js/arm64.js';
-import { decompile } from '../../js/decompile.js';
+import { decompile } from './deterministic-decompile.mjs';
 import { semanticAbiAdapter } from '../../js/analysis/semantic-function.js';
 import { AAPCS64_ABI } from '../../js/targets/abi/index.js';
 import { evaluateExpression } from '../../js/decompiler/verify/equivalence.js';

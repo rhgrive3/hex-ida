@@ -8,19 +8,26 @@ const AI_SCOPES = new Set(['auto', 'selection', 'function', 'neighborhood', 'bin
 const TOOL_NAME = /^[a-z][a-z0-9_]{1,63}$/;
 const RESERVED_TOOL_NAMES = new Set(['submit_hex_result']);
 
+function optionalEnum(value, fallback, allowed, status, code, message) {
+  const selected = value == null ? fallback : value;
+  if (typeof selected !== 'string' || !allowed.has(selected)) throw new HttpError(status, code, message);
+  return selected;
+}
+
 export function normalizeAITurnRequest(value) {
   if (!isObject(value)) throw new HttpError(400, 'invalid_request', 'The request body must be an object.');
-  const mode = String(value.mode || 'chat'), style = String(value.style || 'analyst');
-  const legacyScope = String(value.scope || 'auto');
-  const requestedScope = String(value.requestedScope || legacyScope);
-  const effectiveScope = String(value.effectiveScope || (legacyScope === 'auto' ? 'auto' : legacyScope));
-  if (!AI_MODES.has(mode)) throw new HttpError(422, 'invalid_mode', 'mode must be chat or agent.');
-  if (!AI_STYLES.has(style)) throw new HttpError(422, 'invalid_style', 'style must be beginner or analyst.');
-  if (!AI_SCOPES.has(requestedScope) || !AI_SCOPES.has(effectiveScope)) throw new HttpError(422, 'invalid_scope', 'scope is unsupported.');
+  const mode = optionalEnum(value.mode, 'chat', AI_MODES, 422, 'invalid_mode', 'mode must be chat or agent.');
+  const style = optionalEnum(value.style, 'analyst', AI_STYLES, 422, 'invalid_style', 'style must be beginner or analyst.');
+  const legacyScope = optionalEnum(value.scope, 'auto', AI_SCOPES, 422, 'invalid_scope', 'scope is unsupported.');
+  const requestedScope = optionalEnum(value.requestedScope, legacyScope, AI_SCOPES, 422, 'invalid_scope', 'scope is unsupported.');
+  const effectiveScope = optionalEnum(value.effectiveScope, legacyScope === 'auto' ? 'auto' : legacyScope, AI_SCOPES, 422, 'invalid_scope', 'scope is unsupported.');
   if (!isObject(value.context)) throw new HttpError(422, 'missing_context', 'A bounded model context object is required.');
   rejectBinaryPayload(value.context);
   const messages = Array.isArray(value.messages) ? value.messages.slice(-12).map((message) => ({ role: message?.role === 'assistant' ? 'assistant' : 'user', content: boundedText(message?.content, 12000) })) : [];
-  const goal = boundedText(value.context?.request?.goal, MAX_QUESTION_CHARS).trim() || [...messages].reverse().find((message) => message.role === 'user' && message.content.trim())?.content.trim();
+  const rawGoal = boundedText(value.context?.request?.goal, MAX_QUESTION_CHARS).trim() || [...messages].reverse().find((message) => message.role === 'user' && message.content.trim())?.content.trim();
+  // Every goal source passes the same MAX_QUESTION_CHARS boundary: the
+  // messages fallback is untrusted transport input, not a privileged path (#5987).
+  const goal = boundedText(rawGoal, MAX_QUESTION_CHARS).trim();
   if (!goal) throw new HttpError(422, 'missing_question', 'A non-empty AI goal is required.');
   const context = sanitizeValue(value.context, 0), tools = normalizeAITools(value.tools);
   const intent = boundedText(value.intent || value.context?.request?.intent, 100), task = boundedText(value.task || value.context?.request?.task, 100);
@@ -35,23 +42,12 @@ export function normalizeAITools(value) {
   for (const raw of value.slice(0, 40)) {
     if (!isObject(raw)) continue;
     const name = boundedText(raw.name, 64);
-    // The browser ToolRegistry is the authority for which read-only tools are
-    // visible in this turn. The Worker validates the transport surface rather
-    // than duplicating a static tool-name list that would make future Registry
-    // additions unreachable. The Worker-owned final-result tool is reserved.
     if (!TOOL_NAME.test(name) || RESERVED_TOOL_NAMES.has(name) || seen.has(name)) continue;
     seen.add(name); out.push({ name, description: boundedText(raw.description, 2000), inputSchema: sanitizeToolSchema(raw.inputSchema) });
   }
   return out;
 }
 
-/*
- * `target[key] = value` with key '__proto__' runs the inherited
- * Object.prototype.__proto__ setter rather than creating an own property: the
- * input's own '__proto__' entry is dropped and the sanitized object's
- * prototype is replaced by attacker-supplied data (#1304). Every key that
- * comes from outside is therefore defined, never assigned.
- */
 function defineOwn(target, key, value) {
   Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
   return target;
@@ -92,7 +88,13 @@ export function normalizeAIInteraction(value, allowedTools) {
   if (Array.isArray(value?.response?.steps)) steps.push(...value.response.steps);
   const call = steps.find((step) => step && (step.type === 'function_call' || step.type === 'tool_call'));
   if (!call) throw new Error('The model did not return a complete function call.');
-  const name = String(call.name || call.function?.name || '');
+  // A tool/function name is a string identity in the tool schema the Worker
+  // publishes. `String()` coercion let a 1-element array (`['submit_hex_result']`)
+  // launder into that exact name and claim final-result or tool authority
+  // (#6165); only a primitive non-empty string is a valid name.
+  const rawName = call.name ?? call.function?.name ?? null;
+  if (typeof rawName !== 'string' || !rawName) throw new Error('The model returned an invalid function name.');
+  const name = rawName;
   let args = call.arguments ?? call.input ?? call.function?.arguments ?? {};
   if (typeof args === 'string') { try { args = JSON.parse(args); } catch { throw new Error('The model returned malformed function arguments.'); } }
   if (!isObject(args)) throw new Error('The model function arguments must be an object.');
@@ -107,7 +109,10 @@ export function normalizeAIInteraction(value, allowedTools) {
 export function normalizeRequest(value) {
   if (!isObject(value)) throw new HttpError(400, 'invalid_request', 'The request body must be an object.');
   const question = boundedText(value.question, MAX_QUESTION_CHARS).trim(); if (!question) throw new HttpError(422, 'missing_question', 'A non-empty question is required.');
-  const thinkingLevel = value.thinkingLevel == null ? 'high' : String(value.thinkingLevel); if (!THINKING_LEVELS.has(thinkingLevel)) throw new HttpError(422, 'invalid_thinking_level', 'thinkingLevel must be minimal, low, medium, or high.');
+  // `thinkingLevel` drives the provider's generation config; only a primitive
+  // string may match the enum — `String(['minimal'])` would otherwise launder
+  // a schema-invalid array into a real reasoning configuration (#6149).
+  const thinkingLevel = value.thinkingLevel == null ? 'high' : value.thinkingLevel; if (typeof thinkingLevel !== 'string' || !THINKING_LEVELS.has(thinkingLevel)) throw new HttpError(422, 'invalid_thinking_level', 'thinkingLevel must be minimal, low, medium, or high.');
   const currentFunction = normalizeCurrentFunction(value.currentFunction);
   const context = { question, currentFunction, xrefs: normalizeList(value.xrefs, 60), callers: normalizeList(value.callers, 60), callees: normalizeList(value.callees, 60), strings: normalizeList(value.strings, 60), globals: normalizeList(value.globals, 60) };
   if (JSON.stringify(context).length > MAX_CONTEXT_CHARS) throw new HttpError(413, 'request_too_large', 'The selected analysis context is too large.');
@@ -119,9 +124,13 @@ export function normalizeCurrentFunction(value) {
   const address = boundedText(value.address, 80).trim(), assembly = boundedText(value.assembly, 120000).trim();
   if (!address || !assembly) throw new HttpError(422, 'missing_function', 'Current function address and assembly are required.');
   const rawMeta = isObject(value.assemblyMeta) ? value.assemblyMeta : {};
-  const nonNegativeInt = (v, fallback = 0) => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback; };
+  // assemblyMeta counts feed the model's completeness authority
+  // (`truncated` decides whether whole-function conclusions may be complete).
+  // `Number()` coercion turned `['100']`/`true` into canonical counts and
+  // forged that evidence; adopt only primitive safe integers (#6167).
+  const nonNegativeInt = (v, fallback = 0) => (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : fallback);
   const totalInstructions = nonNegativeInt(rawMeta.totalInstructions), includedInstructions = nonNegativeInt(rawMeta.includedInstructions);
-  return { address, name: boundedText(value.name, 500).trim() || null, assembly, assemblyMeta: { totalInstructions, includedInstructions, startRow: rawMeta.startRow == null ? null : nonNegativeInt(rawMeta.startRow), endRow: rawMeta.endRow == null ? null : nonNegativeInt(rawMeta.endRow), truncated: rawMeta.truncated === true || totalInstructions > includedInstructions, omittedInstructions: Math.max(0, nonNegativeInt(rawMeta.omittedInstructions, Math.max(0, totalInstructions - includedInstructions))), selection: boundedText(rawMeta.selection, 40).trim() || 'unknown' }, pseudocode: boundedText(value.pseudocode, 30000).trim() || null };
+  return { address, name: boundedText(value.name, 500).trim() || null, assembly, assemblyMeta: { totalInstructions, includedInstructions, startRow: nonNegativeInt(rawMeta.startRow, null), endRow: nonNegativeInt(rawMeta.endRow, null), truncated: rawMeta.truncated === true || totalInstructions > includedInstructions, omittedInstructions: Math.max(0, nonNegativeInt(rawMeta.omittedInstructions, Math.max(0, totalInstructions - includedInstructions))), selection: boundedText(rawMeta.selection, 40).trim() || 'unknown' }, pseudocode: boundedText(value.pseudocode, 30000).trim() || null };
 }
 
 export function promptWorkbench(context) {
@@ -132,5 +141,9 @@ export function rejectBinaryPayload(value, depth = 0) { if (depth > 10 || !value
 export function normalizeList(value, maxItems) { return Array.isArray(value) ? value.slice(0, maxItems).map((item) => sanitizeValue(item, 0)).filter((item) => item != null) : []; }
 export function sanitizeValue(value, depth) { if (depth > 6) return null; if (typeof value === 'string') return boundedText(value, 6000); if (typeof value === 'number' || typeof value === 'boolean') return value; if (value == null) return null; if (Array.isArray(value)) return value.slice(0, 32).map((item) => sanitizeValue(item, depth + 1)).filter((item) => item != null); if (!isObject(value)) return null; const out = {}; for (const [key, item] of Object.entries(value).slice(0, 40)) { const clean = sanitizeValue(item, depth + 1); if (clean != null) defineOwn(out, boundedText(key, 80), clean); } return out; }
 export function stringList(value, max) { return Array.isArray(value) ? value.slice(0, max).map((item) => boundedText(item, 2000)).filter(Boolean) : []; }
-export function finiteConfidence(value) { const n = Number(value); return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : undefined; }
+// The `submit_hex_result` tool schema declares `confidence` as a number.
+// `Number()` coercion let `['0.9']`, `'0.8'` or `true` pass as a canonical
+// confidence after the fact; only a primitive finite number is valid
+// confidence authority (#6142).
+export function finiteConfidence(value) { return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : undefined; }
 export function isObject(value) { return value != null && typeof value === 'object' && !Array.isArray(value); }

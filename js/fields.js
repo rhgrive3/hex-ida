@@ -24,6 +24,17 @@ export function plainFieldName(name) {
   return String(name || '').replace(/^_+/, '');
 }
 
+function isValidNumericKey(value) {
+  if (value == null) return false;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value === 'bigint') return true;
+  if (typeof value === 'string') {
+    const text = value.trim();
+    return text.length > 0 && /^[+-]?(?:0x[0-9a-fA-F]+|\d+)$/.test(text);
+  }
+  return false;
+}
+
 export class FieldIndex {
   /**
    * @param {object} model buildObjcModel の返り値
@@ -106,17 +117,19 @@ export class FieldIndex {
         }
         return null;
       };
-      for (const m of (c.methods || []).concat(c.classMethods || [])) {
-        if (m.addr == null) continue;
+      const addMethodOwner = (m, defaultKind, allowInstanceAccessor) => {
+        if (m.addr == null) return;
         const key = m.addr.toString();
         const owner = {
-          className: c.name, sel: m.sel || null, kind: m.kind || '-',
-          accessorField: accessorField(m.sel),
+          className: c.name, sel: m.sel || null, kind: m.kind || defaultKind,
+          accessorField: allowInstanceAccessor ? accessorField(m.sel) : null,
         };
         const owners = this.methodOwner.get(key) || [];
         if (!owners.some((x) => x.className === owner.className && x.sel === owner.sel && x.kind === owner.kind)) owners.push(owner);
         this.methodOwner.set(key, owners);
-      }
+      };
+      for (const m of c.methods || []) addMethodOwner(m, '-', true);
+      for (const m of c.classMethods || []) addMethodOwner(m, '+', false);
     }
   }
 
@@ -132,7 +145,7 @@ export class FieldIndex {
 
   /** 同じIMPを共有する全owner。呼び出し側が文脈で絞り込めるよう保持する。 */
   ownersOf(funcAddr) {
-    if (funcAddr == null) return [];
+    if (!isValidNumericKey(funcAddr)) return [];
     return (this.methodOwner.get(funcAddr.toString()) || []).slice();
   }
 
@@ -144,7 +157,7 @@ export class FieldIndex {
    * ちょうど一致しなければ、その位置を含むフィールドを探す（構造体の途中を触る形）。
    */
   fieldAt(className, offset) {
-    if (offset == null) return null;
+    if (!isValidNumericKey(offset)) return null;
     const off = Number(offset);
     if (!Number.isFinite(off)) return null;
     const visited = new Set();
@@ -222,7 +235,7 @@ export class FieldIndex {
    * `adrp/ldr` で _OBJC_IVAR_$_… を読んだアドレスをそのまま渡す。
    */
   fieldAtOffsetVar(addr) {
-    if (addr == null) return null;
+    if (!isValidNumericKey(addr)) return null;
     return this.byOffsetVar.get(addr.toString()) || null;
   }
 

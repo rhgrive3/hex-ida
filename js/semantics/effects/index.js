@@ -76,6 +76,9 @@ export const UNKNOWN_EFFECT_CATEGORIES = Object.freeze([
 export const INTRINSIC_MEMORY_SCOPES = Object.freeze(['none', 'accesses', 'all', 'unknown']);
 export const INTRINSIC_DETERMINISM = Object.freeze(['deterministic', 'input-dependent', 'nondeterministic', 'unknown']);
 export const INTRINSIC_SYMBOLIC_DETAIL = Object.freeze(['available', 'summary-only', 'unavailable']);
+export const UNDEFINED_RESULT_CLASSES = Object.freeze(['fully', 'conditional', 'partial', 'operand-dependent']);
+export const UNDEFINED_RESULT_SCHEMA_VERSION = 'machine-effects-undefined-result/v1';
+export const MAX_UNDEFINED_RESULT_WIDTH_BITS = 4096;
 
 const SETS = Object.freeze({
   completeness: new Set(MACHINE_EFFECT_COMPLETENESS),
@@ -89,6 +92,7 @@ const SETS = Object.freeze({
   intrinsicMemoryScopes: new Set(INTRINSIC_MEMORY_SCOPES),
   intrinsicDeterminism: new Set(INTRINSIC_DETERMINISM),
   intrinsicSymbolicDetail: new Set(INTRINSIC_SYMBOLIC_DETAIL),
+  undefinedResultClasses: new Set(UNDEFINED_RESULT_CLASSES),
 });
 
 function fail(code) { throw new TypeError(code); }
@@ -113,17 +117,18 @@ const ALLOWED_FIELDS = Object.freeze({
   intrinsicSummary: new Set(['inputs', 'outputs', 'registersRead', 'registersWritten', 'memoryRead', 'memoryWrite', 'controlEffects', 'determinism', 'symbolicDetail']),
   unknownEffects: new Set(['categories', 'reason', 'detail', 'preservation']),
   statePreservation: new Set(['proven', 'reason']),
+  undefinedResult: new Set(['schemaVersion', 'widthBits', 'mask', 'class', 'reason', 'condition']),
   bundle: new Set(['schemaVersion', 'contractVersion', 'instructionId', 'architectureId', 'mode', 'operations', 'controlEffect', 'possibleFaults', 'origin', 'completeness', 'unknownEffects', 'statePreservation', 'metadata']),
 });
 const OPERATION_FIELDS_BY_KIND = Object.freeze({
-  value: new Set(['kind', 'id', 'metadata', 'opcode', 'inputs', 'outputs']),
+  value: new Set(['kind', 'id', 'metadata', 'opcode', 'inputs', 'outputs', 'undefinedResult']),
   'register-read': new Set(['kind', 'id', 'metadata', 'register', 'value']),
   'register-write': new Set(['kind', 'id', 'metadata', 'register', 'value']),
   'flag-read': new Set(['kind', 'id', 'metadata', 'flag', 'value']),
   'flag-write': new Set(['kind', 'id', 'metadata', 'flag', 'value']),
-  'memory-read': new Set(['kind', 'id', 'metadata', 'access', 'value']),
+  'memory-read': new Set(['kind', 'id', 'metadata', 'access', 'value', 'undefinedResult']),
   'memory-write': new Set(['kind', 'id', 'metadata', 'access', 'value']),
-  intrinsic: new Set(['kind', 'id', 'metadata', 'intrinsicId', 'effectSummary']),
+  intrinsic: new Set(['kind', 'id', 'metadata', 'intrinsicId', 'effectSummary', 'undefinedResult']),
   barrier: new Set(['kind', 'id', 'metadata', 'scope']),
   unknown: new Set(['kind', 'id', 'metadata', 'reason', 'categories']),
 });
@@ -152,9 +157,8 @@ function nonEmpty(value, code) {
   return text;
 }
 function positiveInteger(value, code) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number <= 0) fail(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) fail(code);
+  return value;
 }
 function optionalPositiveInteger(value, code) {
   return value == null ? undefined : positiveInteger(value, code);
@@ -201,7 +205,14 @@ function strictSerializable(value, code, seen = new WeakSet()) {
     return;
   }
   if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') fail(code);
-  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date) return;
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return;
+  if (value instanceof Date) {
+    // Invalid Dates would otherwise pass this boundary and fail later inside
+    // jsonSafe() with a bare RangeError. Keep the machine-effects error code
+    // at the field that accepted the value (#5853).
+    if (!Number.isFinite(value.getTime())) fail(code);
+    return;
+  }
   if (typeof value !== 'object') fail(code);
   if (seen.has(value)) fail(code);
   seen.add(value);
@@ -218,8 +229,33 @@ function serializable(value, code) {
 }
 
 function bigintValue(value, code) {
-  try { return typeof value === 'bigint' ? value : BigInt(value); }
-  catch { fail(code); }
+  // Machine payloads are exact facts: only bigint, safe integer, or a strict
+  // integer literal grammar may become a canonical machine value. ECMAScript
+  // BigInt() coercion would launder '' -> 0, booleans -> 0/1, and arrays ->
+  // their single element (#5830).
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) fail(code);
+    return BigInt(value);
+  }
+  if (typeof value === 'string' && /^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(value)) {
+    try { return BigInt(value); } catch { fail(code); }
+  }
+  fail(code);
+}
+
+function undefinedResultMask(value) {
+  const code = 'machine-effects-invalid-undefined-result-mask';
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) fail(code);
+    return BigInt(value);
+  }
+  if (typeof value === 'string') {
+    if (!/^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(value)) fail(code);
+    try { return BigInt(value); } catch { fail(code); }
+  }
+  fail(code);
 }
 
 function normalizeBitvectorValue(input) {
@@ -261,7 +297,14 @@ export function createMachineValue(input, options = {}) {
     case 'vector': {
       assertAllowedKeys(input, ALLOWED_FIELDS.vectorValue, 'machine-effects-unexpected-value-field');
       const laneCount = positiveInteger(input.laneCount, 'machine-effects-invalid-vector-lane-count');
-      const elementType = createMachineValue(input.elementType, options);
+      // Vector elements are scalar machine values. Validate the raw kind
+      // before descending so a self-referential or deeply nested vector is
+      // rejected without recursive traversal (#5855).
+      const elementInput = object(input.elementType, 'machine-effects-invalid-vector-element-type');
+      if (!['bitvector', 'float', 'predicate'].includes(elementInput.kind)) {
+        fail('machine-effects-invalid-vector-element-type');
+      }
+      const elementType = createMachineValue(elementInput, options);
       if (!['bitvector', 'float', 'predicate'].includes(elementType.kind)) fail('machine-effects-invalid-vector-element-type');
       out = { kind, laneCount, elementType };
       break;
@@ -439,6 +482,42 @@ function intrinsicSummaryIsComplete(summary) {
   return summary.determinism !== 'unknown';
 }
 
+export function createUndefinedResultDescriptor(input) {
+  input = object(input, 'machine-effects-undefined-result-required');
+  if (input.schemaVersion == null) input = { schemaVersion: UNDEFINED_RESULT_SCHEMA_VERSION, ...input };
+  assertAllowedKeys(input, ALLOWED_FIELDS.undefinedResult, 'machine-effects-unexpected-undefined-result-field');
+  if (input.schemaVersion !== UNDEFINED_RESULT_SCHEMA_VERSION) fail('machine-effects-unsupported-undefined-result-schema');
+  const widthBits = positiveInteger(input.widthBits, 'machine-effects-invalid-undefined-result-width');
+  if (widthBits > MAX_UNDEFINED_RESULT_WIDTH_BITS) fail('machine-effects-invalid-undefined-result-width');
+  const resultClass = enumValue(input.class, SETS.undefinedResultClasses, 'machine-effects-invalid-undefined-result-class');
+  const mask = undefinedResultMask(input.mask);
+  const fullMask = (1n << BigInt(widthBits)) - 1n;
+  if (mask <= 0n || mask > fullMask) fail('machine-effects-invalid-undefined-result-mask');
+  if (resultClass === 'fully' && mask !== fullMask) fail('machine-effects-fully-undefined-result-mask-incomplete');
+  if (resultClass === 'partial' && mask === fullMask) fail('machine-effects-partial-undefined-result-mask-full');
+  const out = {
+    schemaVersion: UNDEFINED_RESULT_SCHEMA_VERSION,
+    widthBits,
+    mask: `0x${mask.toString(16).padStart(Math.ceil(widthBits / 4), '0')}`,
+    class: resultClass,
+    reason: nonEmpty(input.reason, 'machine-effects-undefined-result-reason-required'),
+  };
+  if (input.condition != null) out.condition = serializable(input.condition, 'machine-effects-invalid-undefined-result-condition');
+  if ((resultClass === 'conditional' || resultClass === 'operand-dependent') && out.condition == null) {
+    fail('machine-effects-undefined-result-condition-required');
+  }
+  return deepFreeze(out);
+}
+
+function resultWidthBits(value) {
+  if (value?.kind === 'temporary') return resultWidthBits(value.valueType);
+  if (value?.kind === 'vector') {
+    const elementBits = resultWidthBits(value.elementType);
+    return elementBits == null ? null : elementBits * value.laneCount;
+  }
+  return Number.isSafeInteger(value?.widthBits) ? value.widthBits : null;
+}
+
 export function createMachineOperation(input, options = {}) {
   assertNotAborted(options);
   if (CANONICAL_OPERATIONS.has(input) && usesDefaultBudget(options)) return input;
@@ -479,6 +558,16 @@ export function createMachineOperation(input, options = {}) {
     }
   }
 
+  if (input.undefinedResult != null) {
+    const descriptor = createUndefinedResultDescriptor(input.undefinedResult);
+    const results = kind === 'value' ? out.outputs
+      : kind === 'intrinsic' ? out.effectSummary.outputs
+        : kind === 'memory-read' ? [out.value] : [];
+    if (results.length !== 1 || resultWidthBits(results[0]) !== descriptor.widthBits) {
+      fail('machine-effects-undefined-result-output-width-mismatch');
+    }
+    out.undefinedResult = descriptor;
+  }
   if (input.metadata != null) out.metadata = serializable(input.metadata, 'machine-effects-invalid-operation-metadata');
   const frozen = deepFreeze(out);
   CANONICAL_OPERATIONS.add(frozen);

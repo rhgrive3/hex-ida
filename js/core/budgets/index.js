@@ -77,8 +77,8 @@ export class ResourceBudget {
     throw this.signal.reason ?? new DOMException('Aborted', 'AbortError');
   }
 
-  scope(name, limits = {}, options = {}) {
-    return new ResourceBudget(limits, { ...options, parent: this, name });
+  scope(name, limits = {}) {
+    return new ResourceBudget(limits, { parent: this, name });
   }
 
   consume(resource, amount = 1) {
@@ -88,6 +88,7 @@ export class ResourceBudget {
     // Preflight check across local and all ancestors
     let curr = this;
     while (curr) {
+      if (curr !== this) curr.checkCancelled();
       const next = (curr.used[resource] || 0) + n;
       const limit = curr.limits[resource];
       if (limit != null && next > limit) {
@@ -130,8 +131,13 @@ export class ResourceBudget {
       used: Object.freeze({ ...this.used }),
     };
     if (recursive) {
+      // Scope names are ASCII-only, but collation order for even ASCII
+      // letters differs per ICU locale (en-US ranks 'A' > 'a', da-DK ranks
+      // 'A' < 'a'), so a locale-sensitive comparator made the deterministic
+      // snapshot environment-dependent. Code-unit order is the locale-free
+      // total order the snapshot contract pins (#6023).
       const sortedChildren = [...this.children.values()]
-        .sort((a, b) => a.name.localeCompare(b.name))
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
         .map((c) => c.snapshot({ recursive: true }));
       snap.children = Object.freeze(sortedChildren);
     }

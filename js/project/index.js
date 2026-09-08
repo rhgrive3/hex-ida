@@ -72,7 +72,7 @@ export function createHexProject(input = {}) {
       investigationSessions: list(input.investigationSessions ?? input.findings?.investigationSessions, 'findings.investigationSessions'),
     },
     analysis: { settings: input.analysisSettings || input.analysis?.settings || {}, cacheReferences: list(input.cacheReferences ?? input.analysis?.cacheReferences, 'analysis.cacheReferences') },
-    navigation: normalizeNavigation(input.navigation || {}),
+    navigation: normalizeNavigation(input.navigation ?? {}),
   };
   project.analysis.cacheReferences = sanitizeCacheReferences(project);
   return project;
@@ -86,10 +86,39 @@ function normalizeCursorIndex(value) {
   return value;
 }
 
+const DECIMAL_ADDRESS = /^(?:0|[1-9][0-9]*)$/;
+const HEX_ADDRESS = /^0[xX][0-9a-fA-F]+$/;
+
+function normalizeCurrentFunction(value) {
+  if (value == null) return null;
+  if (typeof value === 'bigint') {
+    if (value < 0n) throw new ProjectFormatError('navigation.currentFunction must be an integer');
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0 || Object.is(value, -0)) {
+      throw new ProjectFormatError('navigation.currentFunction must be an integer');
+    }
+    return BigInt(value);
+  }
+  if (typeof value !== 'string' || (!DECIMAL_ADDRESS.test(value) && !HEX_ADDRESS.test(value))) {
+    throw new ProjectFormatError('navigation.currentFunction must be an integer');
+  }
+  try {
+    return BigInt(value);
+  } catch {
+    throw new ProjectFormatError('navigation.currentFunction must be an integer');
+  }
+}
+
 export function normalizeNavigation(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ProjectFormatError('navigation must be an object');
+  // currentFunction is consumed as BigInt by the workspace apply; validating
+  // the integer representation HERE (at parse time) prevents a malformed value
+  // from failing mid-apply, after notes/patches were already persisted (#5953).
+  const currentFunction = normalizeCurrentFunction(value.currentFunction);
   return {
-    currentFunction: value.currentFunction ?? null,
+    currentFunction,
     history: list(value.history, 'navigation.history').slice(-500),
     cursorIndex: normalizeCursorIndex(value.cursorIndex),
     bookmarks: list(value.bookmarks, 'navigation.bookmarks').slice(-500),
@@ -105,15 +134,24 @@ export function normalizeNavigation(value = {}) {
  *
  * Renaming the tag would only move the collision, so the tag name is reserved
  * instead: on the way out, any object key matching `$hexBigInt` with one or
- * more leading `$` gains one more `$`; on the way in, the reader takes one
- * back. That is injective -- `$hexBigInt` -> `$$hexBigInt` -> `$$$hexBigInt` --
- * so ordinary data and the tag can never occupy the same shape.
+ * more leading `$` gains one more `$`; on the way in, a marked document takes
+ * one back. That is injective -- `$hexBigInt` -> `$$hexBigInt` ->
+ * `$$$hexBigInt` -- so ordinary data and the tag can never occupy the same
+ * shape.
  *
- * Files written before this change are unaffected: a real `{ $hexBigInt: hex }`
- * still reads as a BigInt, because escaped keys never produce that exact shape.
+ * Files written before this change have no provenance marker. Their literal
+ * keys are preserved; a historical escape-aware writer that also omitted the
+ * marker is inherently ambiguous with those legacy files and cannot be
+ * recovered by guessing from the key shape.
  */
 const BIGINT_TAG = '$hexBigInt';
 const ESCAPED_TAG = /^\$(\$*)\$hexBigInt$/;
+const BIGINT_ENCODING_FIELD = 'bigIntEncoding';
+const BIGINT_ENCODING_VERSION = 1;
+// Hex projects persist machine integers (addresses/offsets/ids, ≤ 64–128 bits).
+// A per-value magnitude budget checked BEFORE BigInt() keeps a hostile scalar
+// inside the size-limited file from paying unbounded conversion cost (#5906).
+const MAX_BIGINT_HEX_DIGITS = 128;
 
 function escapeBigIntTag(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
@@ -127,20 +165,58 @@ function escapeBigIntTag(value) {
   return out;
 }
 
-function unescapeBigIntTag(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-  const keys = Object.keys(value);
-  if (!keys.some((key) => ESCAPED_TAG.test(key))) return value;
+/**
+ * Rebuilds a parsed tree and takes one `$` off escaped tag keys. Rebuilding
+ * instead of deleting from the input prevents key-order-dependent loss when
+ * siblings such as `$$$hexBigInt` and `$$hexBigInt` are both present.
+ */
+function unescapeBigIntTagTree(value) {
+  if (!value || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map((item) => unescapeBigIntTagTree(item));
+
   const out = {};
-  for (const key of keys) {
+  for (const key of Object.keys(value)) {
     const unescaped = ESCAPED_TAG.test(key) ? key.slice(1) : key;
-    Object.defineProperty(out, unescaped, { value: value[key], enumerable: true, configurable: true, writable: true });
+    if (Object.hasOwn(out, unescaped)) {
+      throw new ProjectFormatError(
+        `BigInt encoding key collision at ${JSON.stringify(unescaped)}`,
+        'HEX_PROJECT_BIGINT_ENCODING_COLLISION',
+      );
+    }
+    Object.defineProperty(out, unescaped, {
+      value: unescapeBigIntTagTree(value[key]),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   }
   return out;
 }
 
+function hasSupportedBigIntEncoding(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  if (!Object.hasOwn(raw, BIGINT_ENCODING_FIELD)) return false;
+  const version = raw[BIGINT_ENCODING_FIELD];
+  if (!Number.isSafeInteger(version) || version < 1) {
+    throw new ProjectFormatError(
+      'invalid BigInt encoding provenance',
+      'HEX_PROJECT_BIGINT_ENCODING_INVALID',
+    );
+  }
+  if (version !== BIGINT_ENCODING_VERSION) {
+    throw new ProjectFormatError(
+      `unsupported BigInt encoding provenance version ${version}`,
+      'HEX_PROJECT_BIGINT_ENCODING_UNSUPPORTED',
+    );
+  }
+  return true;
+}
+
 export function serializeHexProject(project) {
-  const normalized = validateHexProject(project);
+  const normalized = {
+    ...validateHexProject(project),
+    [BIGINT_ENCODING_FIELD]: BIGINT_ENCODING_VERSION,
+  };
   const text = JSON.stringify(normalized, (_key, value) => (
     typeof value === 'bigint' ? { [BIGINT_TAG]: value.toString(16) } : escapeBigIntTag(value)
   ), 2);
@@ -163,14 +239,21 @@ export function parseHexProject(input) {
         const encoded = value[BIGINT_TAG];
         if (!/^-?[0-9a-f]+$/i.test(encoded) || encoded === '-') throw new ProjectFormatError('invalid bigint encoding');
         const negative = encoded.startsWith('-'); const magnitude = negative ? encoded.slice(1) : encoded;
+        if (magnitude.length > MAX_BIGINT_HEX_DIGITS) throw new ProjectFormatError('bigint magnitude exceeds the project resource limit', 'resource-limit');
         const parsed = BigInt('0x' + magnitude); return negative ? -parsed : parsed;
       }
-      return unescapeBigIntTag(value);
+      return value;
     });
   } catch (error) {
     if (error instanceof ProjectFormatError) throw error;
     throw new ProjectFormatError(`project JSON is malformed: ${error.message}`);
   }
+  // Only an explicit provenance marker authorizes the one-$ unescape. Version
+  // numbers do not identify the BigInt encoding protocol: historical v1/v2
+  // files without this marker are preserved as-is, because some legacy files
+  // contain literal `$$hexBigInt` keys and old escape-aware files are
+  // indistinguishable from them.
+  if (hasSupportedBigIntEncoding(raw)) raw = unescapeBigIntTagTree(raw);
   let migrated;
   try {
     migrated = migrateHexProject(raw, { currentVersion: HEX_PROJECT_VERSION });
@@ -236,7 +319,7 @@ export function normalizeHexProjectV1(project) {
         : {},
       cacheReferences: list(project.analysis?.cacheReferences, 'analysis.cacheReferences'),
     },
-    navigation: normalizeNavigation(project.navigation || {}),
+    navigation: normalizeNavigation(project.navigation ?? {}),
   };
 
   normalized.analysis.cacheReferences = sanitizeCacheReferences(normalized);

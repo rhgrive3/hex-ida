@@ -5,9 +5,9 @@ import { HypothesisStore } from './hypothesis.js';
 import { ProposalStore } from './proposals.js';
 import { createAgentJobManager } from './jobs/index.js';
 import { InvestigationSessionStore } from './session-core/index.js';
-import { sanitizeActions } from './validation.js';
+import { sanitizeActions, addressText } from './validation.js';
 import { executeTurn } from './control/turn-executor.js';
-import { addressExistsSync, assertLiveBindingsUnchanged, deterministicConfidence, fallbackEvidence, presentAnswer } from './control/runtime-support.js';
+import { addressExistsAsync, assertLiveBindingsUnchanged, deterministicConfidence, fallbackEvidence, presentAnswer } from './control/runtime-support.js';
 
 const BUDGET_LIMIT_REASONS = new Set([
   'budget_exhausted',
@@ -25,8 +25,10 @@ export class AIRuntime {
     this.hypothesisStore = options.hypothesisStore || new HypothesisStore(this.evidenceStore);
     this.proposalStore = options.proposalStore || new ProposalStore({ evidenceStore: this.evidenceStore, binding: () => proposalBinding(this.localContext) });
     this.initialStores = { evidenceStore: this.evidenceStore, hypothesisStore: this.hypothesisStore, proposalStore: this.proposalStore };
+    this.initialStoresClaimed = false;
     this.initialStoresExplicit = options.evidenceStore != null || options.hypothesisStore != null || options.proposalStore != null;
     this.storeNamespaces = new Map();
+    this.storeNamespaceOwners = new Map();
     this.contextBroker = options.contextBroker || new ContextBroker(this.localContext, options.contextOptions);
     this.planner = options.planner === false ? null : (options.planner || planAnalysisGoal);
     this.development = !!options.development;
@@ -39,14 +41,19 @@ export class AIRuntime {
     let stores = this.storeNamespaces.get(key);
     if (stores) return stores;
     const hasPersistedState = (session.confirmedFindings?.length || 0) > 0 || (session.hypotheses?.length || 0) > 0;
-    if (this.storeNamespaces.size === 0 && (this.initialStoresExplicit || !hasPersistedState)) stores = this.initialStores;
-    else {
+    // Initial stores belong to one namespace for their entire lifetime (#6004).
+    // Releasing the last session does not make its contents safe to reuse.
+    if (!this.initialStoresClaimed && (this.initialStoresExplicit || !hasPersistedState)) {
+      stores = this.initialStores;
+      this.initialStoresClaimed = true;
+    } else {
       const evidenceStore = new EvidenceStore(session.confirmedFindings || []);
       evidenceStore.restorePersistedConfirmed(session.confirmedFindings || []);
       const hypothesisStore = new HypothesisStore(evidenceStore, session.hypotheses || []);
       stores = { evidenceStore, hypothesisStore, proposalStore: new ProposalStore({ evidenceStore, binding: () => proposalBinding(this.localContext) }) };
     }
     this.storeNamespaces.set(key, stores);
+    this.storeNamespaceOwners.set(key, String(session.id));
     return stores;
   }
 
@@ -55,21 +62,39 @@ export class AIRuntime {
   async runJobSlice(jobOrId, options = {}) { return this.jobs.runSlice(jobOrId, options); }
   async resumeJob(id, options = {}) { return this.jobs.resume(id, options); }
 
-  finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope }) {
+  async finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope, stores, signal }) {
+    // Store authority comes from the turn's captured namespace, never from the
+    // shared fields: a concurrent turn re-points `this.*Store` across awaits
+    // and would otherwise swap this turn's evidence/hypothesis/proposal
+    // mid-finalize (#6216). Fall back to the shared view only for direct
+    // finalize() calls without a turn context (e.g. tests).
+    const evidenceStore = stores?.evidenceStore ?? this.evidenceStore;
+    const hypothesisStore = stores?.hypothesisStore ?? this.hypothesisStore;
+    const proposalStore = stores?.proposalStore ?? this.proposalStore;
     // The final model call can overlap a workbench binary/project/runtime switch
     // without another tool execution. Re-check the turn binding before any
     // live-context validation (notably suggested action addresses) so finalization
     // cannot mix a snapshotted investigation with the newly visible binary.
     assertLiveBindingsUnchanged(this.localContext, snapshot);
     const requestedEvidence = Array.from(new Set((decision.evidenceIds || []).map(String)));
-    const evidence = requestedEvidence.map((id) => this.evidenceStore.get(id)).filter(Boolean);
-    const missingIds = requestedEvidence.filter((id) => !this.evidenceStore.has(id));
+    const evidence = requestedEvidence.map((id) => evidenceStore.get(id)).filter(Boolean);
+    const missingIds = requestedEvidence.filter((id) => !evidenceStore.has(id));
     if (missingIds.length) activity.push({ type: 'consistency-check', label: `${missingIds.length} 件の存在しない evidence 参照を除外`, timestamp: new Date().toISOString() });
-    const finalEvidence = evidence.length ? evidence : fallbackEvidence(this.evidenceStore, plan);
-    for (const modelHypothesis of decision.hypotheses || []) this.hypothesisStore.upsert(modelHypothesis);
+    const finalEvidence = evidence.length ? evidence : fallbackEvidence(evidenceStore, plan);
+    for (const modelHypothesis of decision.hypotheses || []) hypothesisStore.upsert(modelHypothesis);
     const hypothesisIds = new Set((decision.hypothesisIds || []).map(String));
-    const hypotheses = hypothesisIds.size ? this.hypothesisStore.all().filter((item) => hypothesisIds.has(item.id)) : this.hypothesisStore.all();
-    const actions = sanitizeActions(decision.suggestedActions, { evidenceStore: this.evidenceStore, proposalStore: this.proposalStore, addressExists: (address) => addressExistsSync(this.localContext, address) });
+    const hypotheses = hypothesisIds.size ? hypothesisStore.all().filter((item) => hypothesisIds.has(item.id)) : hypothesisStore.all();
+    // Suggested actions must respect an async-only `addressExists`: resolve the
+    // authority for every candidate target before sanitizing, so a `false`
+    // cannot be dropped by the synchronous wrapper (#5790).
+    const candidateAddresses = [...new Set((decision.suggestedActions || [])
+      .map((value) => addressText(value?.target ?? value?.address ?? value?.functionAddress))
+      .filter((value) => value != null))];
+    const existence = new Map();
+    for (const address of candidateAddresses) {
+      existence.set(address, await addressExistsAsync(this.localContext, address, signal));
+    }
+    const actions = sanitizeActions(decision.suggestedActions, { evidenceStore, proposalStore, addressExists: (address) => existence.get(address) ?? false });
     let confidence = Number.isFinite(decision.confidence) ? Math.max(0, Math.min(1, decision.confidence)) : deterministicConfidence(plan);
     if (!finalEvidence.length) confidence = Math.min(confidence, 0.5);
     const budgetReason = BUDGET_LIMIT_REASONS.has(limitReason) ? limitReason : null;
@@ -86,8 +111,10 @@ export class AIRuntime {
   async releaseSession(sessionId, { deletePersisted = false } = {}) {
     if (sessionId == null) return false;
     const id = String(sessionId);
-    for (const key of Array.from(this.storeNamespaces.keys())) {
-      if (key.endsWith(`::${id}`)) this.storeNamespaces.delete(key);
+    for (const [key, ownerId] of Array.from(this.storeNamespaceOwners.entries())) {
+      if (ownerId !== id) continue;
+      this.storeNamespaces.delete(key);
+      this.storeNamespaceOwners.delete(key);
     }
     if (deletePersisted) await this.sessionStore.delete(id);
     else this.sessionStore.sessions?.delete?.(id);

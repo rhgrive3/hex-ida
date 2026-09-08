@@ -9,6 +9,7 @@ import {
 } from '../../semantics/memoryssa/queries.js';
 
 const INVERSE = Object.freeze({ eq:'ne', ne:'eq', lt:'ge', le:'gt', gt:'le', ge:'lt' });
+const EXACT_VIEW_MOV_SUBS = new Set([null, 'copy', 'bitcast', 'trunc', 'zext']);
 
 function valueOf(a) { return a?.value || null; }
 
@@ -225,14 +226,70 @@ function reachingRegisterDefinition(ir, atInst, reg) {
   return best;
 }
 
-function storeOfExactValue(ir, blockIndex, value) {
-  let best = null;
-  for (const inst of ir?.blocks?.[blockIndex]?.insts || []) {
-    if (inst?.op !== 'store' || inst.loc?.kind === 'stack' || inst.loc?.kind === 'unknown') continue;
-    if (valueOf(inst.args?.[0])?.id !== value?.id) continue;
-    if (!best || (inst.row ?? -1) > (best.row ?? -1)) best = inst;
+function exactViewTrace(value, active = new Set()) {
+  if (!value || active.has(value.id)) return null;
+  active.add(value.id);
+  let current = value;
+  const steps = [];
+  while (current?.def?.op === 'mov' && current.def.args?.length === 1) {
+    const def = current.def;
+    const sub = def.sub ?? null;
+    const exactIdentity = sub == null || sub === 'copy' || sub === 'bitcast'
+      || def.extra?.stateRead || def.extra?.stateWrite;
+    if (!exactIdentity && !EXACT_VIEW_MOV_SUBS.has(sub)) break;
+    const source = valueOf(def.args[0]);
+    if (!source || active.has(source.id)) break;
+    if (sub === 'trunc' || sub === 'zext') {
+      steps.push(`${sub}:${Number(source.bits || 0)}>${Number(current.bits || 0)}`);
+    }
+    active.add(source.id);
+    current = source;
   }
-  return best;
+  return { root: current, bits:Number(value.bits || 0), steps };
+}
+
+function storedViewProjectsValue(stored, expected, store) {
+  if (!stored || !expected || !store) return false;
+  if (stored === expected || stored.id === expected.id) return true;
+  const a = exactViewTrace(stored), b = exactViewTrace(expected);
+  if (!a?.root || !b?.root || a.root.id !== b.root.id) return false;
+  const widthBits = Number((store.loc?.size ?? store.addr?.size ?? store.extra?.size ?? 0) * 8);
+  if (widthBits > 0 && Number(stored.bits || 0) !== widthBits) return false;
+  if (a.steps.length < b.steps.length) return false;
+  const suffix = a.steps.slice(a.steps.length - b.steps.length);
+  return suffix.every((step, index) => step === b.steps[index]);
+}
+
+function committedStoreBarrier(inst, key) {
+  if (inst?.op === 'clobber' || inst?.op === 'unknown') return true;
+  if (inst?.op === 'call') return (inst.memKills || []).some((loc) => loc?.key === key);
+  if (inst?.op !== 'store') return false;
+  return !inst.loc?.key || inst.loc?.kind === 'unknown' || inst.loc.key === key;
+}
+
+function storeOfExactValue(ir, blockIndex, value) {
+  let current = blockIndex;
+  const seen = new Set();
+  const later = [];
+  let guard = Math.min(64, (ir?.blocks?.length || 0) + 2);
+  while (current != null && current >= 0 && guard-- > 0 && !seen.has(current)) {
+    seen.add(current);
+    const instructions = [...(ir?.blocks?.[current]?.insts || [])]
+      .sort((a,b) => (b.row ?? -1) - (a.row ?? -1) || (b.id ?? -1) - (a.id ?? -1));
+    for (const inst of instructions) {
+      if (inst?.op === 'store' && inst.loc?.kind !== 'stack' && inst.loc?.kind !== 'unknown'
+          && inst.loc?.key && storedViewProjectsValue(valueOf(inst.args?.[0]), value, inst)) {
+        if (!dominates(ir, current, blockIndex)) return null;
+        if (later.some((candidate) => committedStoreBarrier(candidate, inst.loc.key))) return null;
+        return inst;
+      }
+      later.push(inst);
+    }
+    const predecessors = [...(ir?.blocks?.[current]?.pred || [])];
+    if (predecessors.length !== 1) return null;
+    current = predecessors[0];
+  }
+  return null;
 }
 
 function semanticLocationForStore(result, store) {
@@ -251,8 +308,38 @@ function locationIdentity(location) {
   return `${location.kind}:${location.key || location.text || location.name || ''}`;
 }
 
+function semanticLocationForProvenSnapshot(result, definition) {
+  const projected = (result.semanticAst?.values || []).find((item) =>
+    String(item?.valueId ?? '') === String(definition?.dst?.id ?? ''))?.expression ?? null;
+  if (projected?.kind === 'load'
+      && projected.location?.kind !== 'stack' && projected.location?.kind !== 'unknown') return projected.location;
+
+  const key = definition?.extra?.committedLocationKey ?? definition?.loc?.key;
+  if (!key) return null;
+  const rows = new Set((definition.extra?.committedStoreRows || [])
+    .map(Number).filter(Number.isFinite));
+  const locations = (result.ir?.instructions || [])
+    .filter((store) => store?.op === 'store'
+      && store.loc?.kind !== 'stack' && store.loc?.kind !== 'unknown'
+      && store.loc?.key === key
+      && (rows.size === 0 || rows.has(Number(store.row))))
+    .map((store) => semanticLocationForStore(result, store));
+  if (!locations.length || locations.some((location) => !location)) return null;
+  const identity = locationIdentity(locations[0]);
+  if (!identity || locations.some((location) => locationIdentity(location) !== identity)) return null;
+  return locations[0];
+}
+
 function committedLocationForPhi(result, value) {
-  const phi = value?.def;
+  const definition = value?.def;
+  if (definition?.op === 'load'
+      && (definition.extra?.committedPhiSnapshot === true || definition.extra?.committedSnapshotView === true)
+      && definition.loc?.kind !== 'stack' && definition.loc?.kind !== 'unknown') {
+    const location = semanticLocationForProvenSnapshot(result, definition);
+    if (location) return location;
+  }
+
+  const phi = definition;
   if (phi?.op !== 'phi' || !(phi.incoming || []).length) return null;
   const locations = [];
   for (const incoming of phi.incoming || []) {
@@ -406,6 +493,43 @@ function rewriteReturn(result, expression, opts) {
   return true;
 }
 
+function committedStackSpillOnExactReturnPath(result, root, ret) {
+  for (const inst of before(result.ir, ret.block, ret.row)) {
+    if (inst?.op === 'store' && inst.loc?.kind === 'stack' && inst.loc.key === root.location.key) {
+      const location = committedLocationForPhi(result, valueOf(inst.args?.[0]));
+      return location ? { stackStore:inst, location } : null;
+    }
+    if (unsafeBarrier(inst, root.location.key)) return null;
+  }
+  return null;
+}
+
+function removeProofOnlyStackSpill(result, stackStore, opts) {
+  const body = result.cAst?.body;
+  if (!Array.isArray(body) || !stackStore) return false;
+  const storeRow = Number(stackStore.row);
+  const storeId = String(stackStore.id);
+  const filtered = body.filter((node) => {
+    const text = String(node?.text || '');
+    if (!/^\s*local_[A-Za-z0-9_]+\s*=/.test(text)) return true;
+    const rows = node?.source?.rows || [];
+    const ir = node?.source?.ir || [];
+    const isSpill = rows.some((row) => Number(row) === storeRow) || ir.some((id) => String(id) === storeId);
+    return !isSpill;
+  });
+  if (filtered.length === body.length) return false;
+  result.cAst.body = filtered;
+  const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
+  result.pseudocode = printed.text;
+  result.sourceMap = printed.mapping;
+  result.lines = result.cAst.body.map((node) => ({
+    kind:node.kind, indent:node.indent, text:node.text,
+    row:node.source?.rows?.[0] ?? null, addr:node.source?.addresses?.[0] ?? null,
+    note:null, source:node.source,
+  }));
+  return true;
+}
+
 export function recoverExactStackReturn(result, opts = {}) {
   if (!result?.semantic || !result.ir || !result.semanticAst || !result.cAst) return result;
   const output = result.semanticAst.outputs?.find((x) => x.name === 'return');
@@ -421,11 +545,23 @@ export function recoverExactStackReturn(result, opts = {}) {
     timeBudgetMs:Math.min(12, Math.max(4, Number(opts.decompilerTimeBudgetMs || 50) / 4)),
     maxApplications:512,
   });
-  const committed = committedReturnValue(result, root, ret, opts);
+  let committed = committedReturnValue(result, root, ret, opts);
+  let committedSpill = null;
+  if (!committed) {
+    const proof = committedStackSpillOnExactReturnPath(result, root, ret);
+    if (proof) {
+      committedSpill = proof.stackStore;
+      committed = expr.load(proof.location, root.bits || 64, root.source, {
+        signed:root.signed ?? null,
+        proof:'exact return-path spill carries an SSA phi whose predecessors commit one lvalue',
+      });
+    }
+  }
   const recovered = committed || resolve(result.ir, ret.block, ret.row, root.location.key, values, opts, engine, new Set());
   // A stack load means no useful reconstruction happened. A committed non-stack
   // field/global load is an intentional high-level return and must be retained.
   if (!recovered || (recovered.kind === 'load' && recovered.location?.kind === 'stack') || !rewriteReturn(result, recovered, opts)) return result;
+  if (committedSpill) removeProofOnlyStackSpill(result, committedSpill, opts);
 
   result.rewriteProof = [...(result.rewriteProof || []), {
     rule:'exact-stack-return-recovery', phase:'memory-ssa',

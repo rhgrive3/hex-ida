@@ -16,6 +16,7 @@ function parameterList(insn, opts) {
 }
 
 function stackAlignment(param, argument) {
+  if (argument?.abiClass === 'aggregate-indirect-copy' && argument?.pointer === true) return 8;
   const explicit = Number(param?.alignment ?? param?.align ?? param?.alignmentBytes);
   if (Number.isFinite(explicit) && explicit > 0) return Math.min(16, Math.max(8, Math.floor(explicit)));
   if (argument?.abiClass === 'vector' && Number(argument?.bits) === 128) return 16;

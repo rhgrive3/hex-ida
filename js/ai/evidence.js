@@ -26,6 +26,17 @@ function firstAddress(value) {
   return addressText(value.functionAddress ?? value.function ?? value.address ?? value.addr ?? value.target);
 }
 
+/*
+ * add() 境界で timestamp を canonical graph が受理できる string に限定する。
+ * 欠けていれば現時点の ISO string を入れる。string 以外は保存せず拒否する
+ * （fail-closed）。canonical 側の createdAt は string しか受理しない。
+ */
+function evidenceTimestamp(value) {
+  if (value == null || value === '') return new Date().toISOString();
+  if (typeof value !== 'string') throw new TypeError('evidence-invalid-timestamp');
+  return value;
+}
+
 function factRows(result) {
   const rows = [];
   for (const key of ['results', 'updates', 'sites', 'functions', 'paths', 'causalPaths']) {
@@ -103,6 +114,7 @@ export class EvidenceStore {
     this.recordOrder = new Map();
     this.statusIds = new Map(EVIDENCE_STATUSES.map((status) => [status, []]));
     this.nextRecordOrder = 0;
+    this.nextSourcePayloadOrder = 0;
     this.sourcePayloads = new Map();
     this.observationStore = options.observationStore || null;
     for (const evidence of initial) this.add(evidence);
@@ -110,8 +122,6 @@ export class EvidenceStore {
 
   restorePersistedConfirmed(initial = []) {
     for (const evidence of Array.isArray(initial) ? initial : []) {
-      // Only the runtime-owned persisted-confirmed path may restore deterministic
-      // verification authority. Ordinary constructor/add callers remain untrusted.
       this.add(evidence, evidence?.status === 'verified' ? DETERMINISTIC_VERIFICATION : null);
     }
     return this;
@@ -139,10 +149,14 @@ export class EvidenceStore {
 
   add(input, authority = null) {
     if (!input || typeof input !== 'object') return null;
+    // Validate before either source-data persistence path can create durable state.
+    // The same normalized value is reused for the canonical record (#5946).
+    const timestamp = evidenceTimestamp(input.timestamp);
     let status = EVIDENCE_STATUSES.includes(input.status) ? input.status : 'unknown';
     if (status === 'verified' && authority !== DETERMINISTIC_VERIFICATION) status = 'supported';
 
     let sourceRef = normalizeSourceRef(input.sourceRef);
+    let createdLocalId = null;
     if (!sourceRef && input.sourceData != null) {
       if (this.observationStore) {
         const stored = this.observationStore.put({
@@ -154,10 +168,9 @@ export class EvidenceStore {
         });
         sourceRef = { detailRef: stored.id, path: '$', bindingKey: stored.binding.key };
       } else {
-        // Same reasoning as the record id below: this is a Map key, so a 32-bit
-        // collision would overwrite a stored payload rather than add one.
-        const localId = `evsrc_${stableDigest([input.sourceTool || 'unknown', input.sourceId || null, Date.now(), this.sourcePayloads.size]).slice(0, 32)}`;
+        const localId = `evsrc_${stableDigest([input.sourceTool || 'unknown', input.sourceId || null, this.nextSourcePayloadOrder++]).slice(0, 32)}`;
         this.sourcePayloads.set(localId, input.sourceData);
+        createdLocalId = localId;
         sourceRef = { evidenceSourceId: localId, path: '$' };
       }
     }
@@ -166,12 +179,6 @@ export class EvidenceStore {
       input.sourceTool || 'unknown', input.sourceId || null, sourceBinding || null, input.address ?? null,
       input.functionAddress ?? null, input.kind || 'observation', input.title || '',
     ]));
-    // The automatic id is a permanent record key: proposals, verification and
-    // navigation all resolve evidence through it, and `add()` merges into an
-    // existing key. A 32-bit hash is not enough to carry that — distinct
-    // identities collided in practice (#1302), silently folding the second
-    // record into the first and losing evidence. This is the same 128-bit
-    // digest the symbolic evidence graph already derives its ids from.
     if (input.id && typeof input.id !== 'string') return null;
     const id = input.id || `ev_${stableDigest(identity).slice(0, 32)}`;
     const record = {
@@ -191,26 +198,40 @@ export class EvidenceStore {
     if (input.summary) record.summary = String(input.summary).slice(0, 2000);
     if (input.sourceData != null) record.sourceData = compactSource(input.sourceData);
     if (Number.isFinite(input.confidence)) record.confidence = Math.max(0, Math.min(1, input.confidence));
-    record.timestamp = input.timestamp || new Date().toISOString();
+    /*
+     * timestamp は canonical snapshot が要求する ISO string にここで正規化する。
+     * number など string 以外をそのまま保存すると、add() は成功したのに
+     * canonicalSnapshot() だけが必ず失敗する record になってしまう（#5946）。
+     */
+    record.timestamp = timestamp;
     if (input.navigation) record.navigation = jsonSafe(input.navigation);
 
     const previous = this.records.get(id);
-    // Verified evidence is immutable. A model cannot recycle a verified id for
-    // different semantic content or a different binary/revision binding.
     if (previous?.status === 'verified') {
+      if (createdLocalId) this.sourcePayloads.delete(createdLocalId);
       if (!sameSemanticRecord(previous, record)) return previous;
       return previous;
     }
     if (!this.recordOrder.has(id)) this.recordOrder.set(id, this.nextRecordOrder++);
     this.records.set(id, { ...previous, ...record });
     const storedRecord = this.records.get(id);
+    const previousSourceId = previous?.sourceRef?.evidenceSourceId ?? null;
+    const nextSourceId = storedRecord?.sourceRef?.evidenceSourceId ?? null;
+    if (previousSourceId && previousSourceId !== nextSourceId) {
+      let stillReferenced = false;
+      for (const item of this.records.values()) {
+        if (item.sourceRef?.evidenceSourceId === previousSourceId) {
+          stillReferenced = true;
+          break;
+        }
+      }
+      if (!stillReferenced) this.sourcePayloads.delete(previousSourceId);
+    }
     this._indexStatus(id, previous?.status || null, storedRecord?.status || null);
     if (storedRecord?.sourceRef?.detailRef) this.observationStore?.pin?.(storedRecord.sourceRef.detailRef);
     return storedRecord;
   }
 
-  /* Verification authority is private local state. Tool names, model prose,
-     status strings and supplied evidence ids never grant verified authority. */
   ingest(toolName, result, { verifier = false, sourceRef = null } = {}) {
     const output = result && result.result != null ? result.result : result;
     if (!output || typeof output !== 'object') return [];
@@ -254,25 +275,28 @@ export class EvidenceStore {
 
   ingestPlan(plan) {
     const out = [];
-    // Deterministic-verification authority (#3344): identity comparisons use
-    // exact typed equality. A structured value must not alias its primitive
-    // lookalike through String() coercion, or a different candidate could
-    // launder verified evidence authority.
-    const exactIdentity = (value) => {
-      if (value == null) return null;
-      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return `${typeof value}:${value}`;
-      return `structured:${typeof value}:${stableDigest(jsonSafe(value))}`;
+    /*
+     * 決定的検証 authority の照合に使う identity は、canonical に潰せない値を
+     * 受理しない。address は addressText() で正規化できる表現だけ、evidence ID は
+     * primitive string だけを比較する。jsonSafe() のような打切り projection で
+     * hash すると、打切り範囲外だけが異なる別値を同一視できる（#5952）。
+     */
+    const addressIdentity = (value) => {
+      const text = addressText(value);
+      return text == null ? null : `address:${text}`;
     };
+    const evidenceIdIdentity = (value) =>
+      typeof value === 'string' && value.length > 0 ? `id:${value}` : null;
     for (const candidate of plan && plan.candidates || []) {
       const isVerifiedBest = !!(candidate.verification?.verified && plan.best
-        && exactIdentity(plan.best.address) !== null
-        && exactIdentity(plan.best.address) === exactIdentity(candidate.address));
+        && addressIdentity(plan.best.address) !== null
+        && addressIdentity(plan.best.address) === addressIdentity(candidate.address));
       const explicitlyVerified = new Set([
         ...(candidate.verification?.evidenceIds || []),
         ...(candidate.verification?.verifiedEvidenceIds || []),
-      ].map((id) => exactIdentity(id)).filter((id) => id !== null));
+      ].map((id) => evidenceIdIdentity(id)).filter((id) => id !== null));
       for (const sourceId of candidate.evidence || []) {
-        const verified = isVerifiedBest && explicitlyVerified.has(exactIdentity(sourceId));
+        const verified = isVerifiedBest && explicitlyVerified.has(evidenceIdIdentity(sourceId));
         out.push(this.add({
           sourceId, sourceTool: 'deterministic-goal-planner', kind: 'candidate-source', status: verified ? 'verified' : 'supported',
           functionAddress: candidate.address, functionName: candidate.name,
@@ -341,8 +365,8 @@ export class EvidenceStore {
     return this.sourcePayloads.get(record.sourceRef.evidenceSourceId) ?? null;
   }
 
-  has(id) { return this.records.has(String(id)); }
-  get(id) { return this.records.get(String(id)) || null; }
+  has(id) { return typeof id === 'string' && id.length > 0 ? this.records.has(id) : false; }
+  get(id) { return typeof id === 'string' && id.length > 0 ? (this.records.get(id) || null) : null; }
   all() { return Array.from(this.records.values()); }
   pinned(ids) { return (ids || []).map((id) => this.get(id)).filter(Boolean); }
   hasAddress(value) {

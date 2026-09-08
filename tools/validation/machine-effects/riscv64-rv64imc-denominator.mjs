@@ -80,9 +80,17 @@ export const RV64IMC_32BIT_ENCODING_FAMILIES = Object.freeze([
   ...[[0, 'mulw'], [4, 'divw'], [5, 'divuw'], [6, 'remw'], [7, 'remuw']]
     .map(([funct3, op]) => opcodeFunct3Funct7(`rv64m-op-32-${op}`, 0x3b, funct3, 0x01, op)),
 
-  // Base FENCE: fm=0000 and the reserved rd/rs1 fields are both zero.
+  // Base FENCE: forward-compatible rd/rs1 and fm fields are normalized by the
+  // deployed word decoder. FENCE HINT and FENCE.TSO code points are carved out
+  // by `matchingFamilies` below before this ordinary-barrier family is used.
   entry('rv64i-fence', 0xf00fffff, 0x0000000f, 'fence'),
-  // Canonical FENCE.TSO tuple: fm=1000, predecessor=RW, successor=RW.
+  // The mask/match pair is a canonical representative (PAUSE). The complete
+  // FENCE-HINT allocation needs a small predicate because `rd != x0` / `rs1 !=
+  // x0` cannot be represented by a bitmask family without enumerating registers.
+  entry('rv64i-fence-hint', 0xffffffff, 0x0100000f, 'hint'),
+  // FENCE.TSO tuple: fm=1000, predecessor=RW, successor=RW. The deployed
+  // decoder also accepts the forward-compatible rd/rs1 variants, so the
+  // matcher below owns those variants under this same semantic family.
   entry('rv64i-fence-tso', 0xffffffff, 0x8330000f, 'fence'),
   entry('rv64i-ecall', 0xffffffff, 0x00000073, 'ecall', 'exact-with-intrinsic'),
   entry('rv64i-ebreak', 0xffffffff, 0x00100073, 'ebreak', 'exact-with-intrinsic'),
@@ -125,11 +133,43 @@ export const RV64IMC_ALIAS_OR_HINT_VECTORS = Object.freeze([
   Object.freeze({ id:'not', word:0xfff5c513, operation:'xori' }),
   Object.freeze({ id:'neg', word:0x40b00533, operation:'sub' }),
   Object.freeze({ id:'ret', word:0x00008067, operation:'jalr' }),
+  Object.freeze({ id:'pause', word:0x0100000f, operation:'hint' }),
+  Object.freeze({ id:'fence-hint-rd-argument', word:0x0010008f, operation:'hint' }),
+  Object.freeze({ id:'fence-hint-rs1-argument', word:0x0010800f, operation:'hint' }),
 ]);
+
+function isFenceHintEncoding(value) {
+  if ((value & 0x0000707f) !== 0x0000000f) return false;
+  const rd = (value >>> 7) & 0x1f;
+  const rs1 = (value >>> 15) & 0x1f;
+  const successor = (value >>> 20) & 0x0f;
+  const predecessor = (value >>> 24) & 0x0f;
+  const fenceMode = (value >>> 28) & 0x0f;
+  return fenceMode === 0
+    && (predecessor === 0 || successor === 0)
+    && (rd === 0 || rs1 === 0);
+}
 
 function matchingFamilies(word) {
   const value = Number(word) >>> 0;
-  return RV64IMC_32BIT_ENCODING_FAMILIES.filter((family) => ((value & family.mask) >>> 0) === family.match);
+  const fenceHint = isFenceHintEncoding(value);
+  return RV64IMC_32BIT_ENCODING_FAMILIES.filter((family) => {
+    if (family.id === 'rv64i-fence-hint') return fenceHint;
+    if (family.id === 'rv64i-fence-tso') {
+      return (value & 0x0000707f) === 0x0000000f
+        && ((value >>> 28) & 0x0f) === 0b1000
+        && ((value >>> 24) & 0x0f) === 0b0011
+        && ((value >>> 20) & 0x0f) === 0b0011;
+    }
+    if (family.id === 'rv64i-fence') {
+      const isFence = (value & 0x0000707f) === 0x0000000f;
+      const isTso = ((value >>> 28) & 0x0f) === 0b1000
+        && ((value >>> 24) & 0x0f) === 0b0011
+        && ((value >>> 20) & 0x0f) === 0b0011;
+      return isFence && !fenceHint && !isTso;
+    }
+    return ((value & family.mask) >>> 0) === family.match;
+  });
 }
 
 export function classifyRv64imc32Encoding(word) {
@@ -167,6 +207,40 @@ export function validateRv64imcDecoderDenominator() {
       }
     }
   }
+
+  // FENCE HINTs are allocated by register and predecessor/successor fields that
+  // are intentionally outside the generic discriminator sweep above. Exercise
+  // both zero-register axes and both empty-set axes here, then pin the adjacent
+  // ordinary/reserved boundaries so the custom predicate cannot silently drift.
+  const fenceBoundaryCases = [
+    ['hint-rd-zero-pred-zero', 0x0011000f, 'rv64i-fence-hint'],
+    ['hint-rd-zero-succ-zero', 0x0101000f, 'rv64i-fence-hint'],
+    ['hint-rs1-zero-pred-zero', 0x0010008f, 'rv64i-fence-hint'],
+    ['hint-rs1-zero-succ-zero', 0x0100008f, 'rv64i-fence-hint'],
+    ['hint-both-zero-pred-zero', 0x0010000f, 'rv64i-fence-hint'],
+    ['hint-both-zero-succ-zero', 0x0100000f, 'rv64i-fence-hint'],
+    ['ordinary-fence-nonempty-sets', 0x0110000f, 'rv64i-fence'],
+    ['fence-tso-canonical', 0x8330000f, 'rv64i-fence-tso'],
+    ['forward-compatible-fence-mode', 0x1330000f, 'rv64i-fence'],
+    ['forward-compatible-fence-registers-pred-zero', 0x0011008f, 'rv64i-fence'],
+    ['forward-compatible-fence-registers-succ-zero', 0x0101008f, 'rv64i-fence'],
+    ['forward-compatible-fence-tso-register', 0x8330008f, 'rv64i-fence-tso'],
+    ['zifencei-outside-profile', 0x0000100f, null],
+    ['reserved-misc-mem-funct3', 0x0000200f, null],
+  ];
+  for (const [id, word, expectedFamily] of fenceBoundaryCases) {
+    const matches = matchingFamilies(word);
+    if (expectedFamily == null) {
+      if (matches.length !== 0) {
+        throw new Error(`rv64imc-denominator-fence-boundary:${id}:expected-reserved:${matches.map((item) => item.id).join(',')}`);
+      }
+      continue;
+    }
+    if (matches.length !== 1 || matches[0].id !== expectedFamily) {
+      throw new Error(`rv64imc-denominator-fence-boundary:${id}:expected-${expectedFamily}:${matches.map((item) => item.id).join(',') || 'none'}`);
+    }
+  }
+
   return Object.freeze({
     valid: true,
     schemaVersion: RV64IMC_DECODER_DENOMINATOR_SCHEMA,

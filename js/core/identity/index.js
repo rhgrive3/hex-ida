@@ -14,10 +14,8 @@ function nonEmpty(value, code) {
 
 function nonNegativeInteger(value, fallback, code) {
   if (value == null) return fallback;
-  if (typeof value !== 'number' && !(typeof value === 'string' && value.trim() !== '')) fail(code);
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 0) fail(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) fail(code);
+  return value;
 }
 
 function sortedStrings(value, code) {
@@ -33,6 +31,10 @@ function sortedStrings(value, code) {
   return [...new Set(out)].sort();
 }
 
+function compareCanonicalText(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export function jsonSafe(value, seen = new WeakSet()) {
   if (typeof value === 'bigint') return value.toString();
   if (value == null || typeof value === 'string' || typeof value === 'boolean') return value;
@@ -40,12 +42,25 @@ export function jsonSafe(value, seen = new WeakSet()) {
   if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') return null;
   if (ArrayBuffer.isView(value)) return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
   if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
-  if (value instanceof Date) return value.toISOString();
+  if (value instanceof Date) {
+    // An invalid Date would throw a bare RangeError from toISOString() after
+    // upstream strict-serializable validation had already accepted it. Fail
+    // closed with the canonical identity error instead (#5853).
+    if (!Number.isFinite(value.getTime())) fail('identity-invalid-date');
+    return value.toISOString();
+  }
   if (typeof value !== 'object') return String(value);
   if (seen.has(value)) fail('identity-cyclic-value');
   seen.add(value);
   let out;
-  if (Array.isArray(value)) out = value.map((item) => jsonSafe(item, seen));
+  if (value instanceof Map) {
+    out = { $map: canonicalMapEntries(value, seen).map(({ key, value: entryValue }) => [
+      jsonSafe(key, seen),
+      jsonSafe(entryValue, seen),
+    ]) };
+  } else if (value instanceof Set) {
+    out = { $set: canonicalSetEntries(value, seen).map(({ value: entryValue }) => jsonSafe(entryValue, seen)) };
+  } else if (Array.isArray(value)) out = value.map((item) => jsonSafe(item, seen));
   else {
     out = {};
     for (const key of Object.keys(value).sort()) {
@@ -80,6 +95,43 @@ function fnv64(text, seed) {
 export function stableDigest(value) {
   const text = stableStringify(value);
   return fnv64(text, 0xcbf29ce484222325n) + fnv64(text, 0x84222325cbf29ce4n);
+}
+
+function canonicalWitnessParts(value, seen = new WeakSet()) {
+  return {
+    normalized: jsonSafe(value, seen),
+    witness: lossyTypeWitness(value, '', seen),
+  };
+}
+
+function compareCanonicalWitnessParts(left, right) {
+  return compareCanonicalText(stableStringify(left.normalized), stableStringify(right.normalized))
+    || compareCanonicalText(stableStringify(left.witness), stableStringify(right.witness));
+}
+
+function canonicalMapEntries(value, seen = new WeakSet()) {
+  const entries = [...value.entries()].map(([key, entryValue]) => ({
+    key,
+    value: entryValue,
+    keyParts: canonicalWitnessParts(key, seen),
+    valueParts: canonicalWitnessParts(entryValue, seen),
+  }));
+  entries.sort((left, right) => (
+    compareCanonicalText(stableStringify(left.keyParts.normalized), stableStringify(right.keyParts.normalized))
+    || compareCanonicalText(stableStringify(left.valueParts.normalized), stableStringify(right.valueParts.normalized))
+    || compareCanonicalText(stableStringify(left.keyParts.witness), stableStringify(right.keyParts.witness))
+    || compareCanonicalText(stableStringify(left.valueParts.witness), stableStringify(right.valueParts.witness))
+  ));
+  return entries;
+}
+
+function canonicalSetEntries(value, seen = new WeakSet()) {
+  const entries = [...value].map((entryValue) => ({
+    value: entryValue,
+    parts: canonicalWitnessParts(entryValue, seen),
+  }));
+  entries.sort((left, right) => compareCanonicalWitnessParts(left.parts, right.parts));
+  return entries;
 }
 
 function typedId(prefix, payload) {
@@ -123,12 +175,14 @@ export async function createBinaryId(content) {
 export function createSliceId(input = {}) {
   const sourceRange = input.sourceRange == null ? null : input.sourceRange;
   if (sourceRange != null) validateCanonicalIdentityNumbers(sourceRange);
+  const sourceRangeTypes = sourceRange == null ? null : lossyTypeWitness(sourceRange);
   return typedId('slice', {
     binaryId: nonEmpty(input.binaryId, 'slice-binary-id-required'),
     containerId: input.containerId == null ? null : nonEmpty(input.containerId, 'slice-container-id-invalid'),
     index: nonNegativeInteger(input.index, 0, 'slice-index-invalid'),
     architecture: input.architecture == null ? null : nonEmpty(input.architecture, 'slice-architecture-invalid'),
     sourceRange: sourceRange == null ? null : jsonSafe(sourceRange),
+    ...(sourceRangeTypes ? { sourceRangeTypes } : {}),
   });
 }
 
@@ -160,14 +214,29 @@ export function createArtifactId(input = {}) {
 export function lossyTypeWitness(value, path = '', seen = new WeakSet(), out = []) {
   const type = typeof value;
   if (type === 'bigint') out.push([path, 'bigint']);
-  else if (type === 'number') { if (!Number.isFinite(value)) out.push([path, 'non-finite-number']); }
-  else if (type === 'undefined') out.push([path, 'undefined']);
+  else if (type === 'number') {
+    if (Number.isNaN(value)) out.push([path, 'number:nan']);
+    else if (value === Infinity) out.push([path, 'number:+infinity']);
+    else if (value === -Infinity) out.push([path, 'number:-infinity']);
+    else if (Object.is(value, -0)) out.push([path, 'number:-0']);
+  } else if (type === 'undefined') out.push([path, 'undefined']);
   else if (type === 'function') out.push([path, 'function']);
   else if (type === 'symbol') out.push([path, 'symbol']);
   else if (value !== null && type === 'object') {
     if (seen.has(value)) return out.length ? out : null;
     seen.add(value);
-    if (ArrayBuffer.isView(value)) out.push([path, 'bytes']);
+    if (value instanceof Map) {
+      out.push([path, 'map']);
+      canonicalMapEntries(value, seen).forEach((entry, index) => {
+        lossyTypeWitness(entry.key, `${path}.$map[${index}].<key>`, seen, out);
+        lossyTypeWitness(entry.value, `${path}.$map[${index}].<val>`, seen, out);
+      });
+    } else if (value instanceof Set) {
+      out.push([path, 'set']);
+      canonicalSetEntries(value, seen).forEach((entry, index) => {
+        lossyTypeWitness(entry.value, `${path}.$set[${index}]`, seen, out);
+      });
+    } else if (ArrayBuffer.isView(value)) out.push([path, 'bytes']);
     else if (value instanceof ArrayBuffer) out.push([path, 'bytes']);
     else if (value instanceof Date) out.push([path, 'date']);
     else if (Array.isArray(value)) value.forEach((item, index) => lossyTypeWitness(item, `${path}[${index}]`, seen, out));
@@ -296,7 +365,16 @@ export function validateCanonicalIdentityNumbers(value, seen = new WeakSet()) {
   if (value == null || typeof value !== 'object' || ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date) return;
   if (seen.has(value)) return;
   seen.add(value);
-  if (Array.isArray(value)) {
+  if (value instanceof Map) {
+    for (const [k, v] of value.entries()) {
+      validateCanonicalIdentityNumbers(k, seen);
+      validateCanonicalIdentityNumbers(v, seen);
+    }
+  } else if (value instanceof Set) {
+    for (const v of value.values()) {
+      validateCanonicalIdentityNumbers(v, seen);
+    }
+  } else if (Array.isArray(value)) {
     for (const item of value) validateCanonicalIdentityNumbers(item, seen);
   } else {
     for (const key of Object.keys(value)) validateCanonicalIdentityNumbers(value[key], seen);
@@ -309,7 +387,9 @@ function normalizeIdentity(value, code) {
   validateCanonicalIdentityNumbers(value);
   if (typeof value === 'bigint' || typeof value === 'number') return String(value);
   if (typeof value === 'string') return nonEmpty(value, code);
-  return jsonSafe(value);
+  const witness = lossyTypeWitness(value);
+  const normalized = jsonSafe(value);
+  return witness ? { identity: normalized, identityTypes: witness } : normalized;
 }
 
 export function deepFreeze(value, seen = new WeakSet()) {

@@ -4,6 +4,12 @@ import { RuntimeEventNormalizer } from './events.js';
 import { createInterventionRecord, InterventionLedger } from './evidence-bridge.js';
 import { normalizeRuntimeModuleBinding } from './module-binding.js';
 
+function moduleFields(event) {
+  const payload = event?.payload && typeof event.payload === 'object' ? event.payload : {};
+  const module = payload.module && typeof payload.module === 'object' ? payload.module : payload;
+  return module;
+}
+
 function requiredMethod(backend, method, capability) {
   if (typeof backend?.[method] !== 'function') throw new DebugAdapterError('unsupported', `instrumentation backend does not support ${capability || method}`);
   return backend[method].bind(backend);
@@ -35,7 +41,74 @@ function probeHandle(result) {
 }
 
 function eventProbeHandle(raw) {
-  return normalizeProbeHandle(raw?.probeHandle ?? raw?.handle ?? raw?.payload?.probeHandle ?? raw?.payload?.handle ?? null);
+  const source = raw && raw.type === 'event' && typeof raw.event === 'string'
+    ? (raw.data && typeof raw.data === 'object' && !Array.isArray(raw.data) ? raw.data : {})
+    : raw;
+  return normalizeProbeHandle(source?.probeHandle ?? source?.handle ?? source?.payload?.probeHandle ?? source?.payload?.handle ?? null);
+}
+
+function eventInterventionIds(raw) {
+  const protocolEnvelope = raw && raw.type === 'event' && typeof raw.event === 'string';
+  const source = protocolEnvelope
+    ? (raw.data && typeof raw.data === 'object' && !Array.isArray(raw.data) ? raw.data : {})
+    : raw;
+  return protocolEnvelope && raw.interventionIds != null
+    ? raw.interventionIds
+    : source?.interventionIds ?? null;
+}
+
+function materializeRuntimeValue(value, seen = new WeakMap()) {
+  if (value == null || typeof value !== 'object') {
+    if (typeof value === 'function') throw new DebugAdapterError('runtime-invalid-event', 'runtime event contains a function');
+    return value;
+  }
+  if (seen.has(value)) return seen.get(value);
+  if (value instanceof Date) return new Date(value.getTime());
+  if (value instanceof RegExp) return new RegExp(value.source, value.flags);
+  if (value instanceof ArrayBuffer) return value.slice(0);
+  if (value instanceof DataView) {
+    const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    const ownedBytes = Uint8Array.from(bytes);
+    return new DataView(ownedBytes.buffer);
+  }
+  if (ArrayBuffer.isView(value)) return new value.constructor(value);
+  if (value instanceof Map) {
+    const output = new Map();
+    seen.set(value, output);
+    for (const [key, item] of value) {
+      output.set(materializeRuntimeValue(key, seen), materializeRuntimeValue(item, seen));
+    }
+    return output;
+  }
+  if (value instanceof Set) {
+    const output = new Set();
+    seen.set(value, output);
+    for (const item of value) output.add(materializeRuntimeValue(item, seen));
+    return output;
+  }
+
+  const output = Array.isArray(value) ? [] : {};
+  seen.set(value, output);
+  if (Array.isArray(value)) output.length = value.length;
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string' || key === 'length') continue;
+    Object.defineProperty(output, key, {
+      value: materializeRuntimeValue(value[key], seen),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return output;
+}
+
+function materializeRuntimeEvent(raw) {
+  try {
+    return materializeRuntimeValue(raw);
+  } catch (error) {
+    if (error instanceof DebugAdapterError) throw error;
+    throw new DebugAdapterError('runtime-invalid-event', `runtime event could not be materialized: ${String(error?.message || error)}`);
+  }
 }
 
 export class InstrumentationProvider {
@@ -80,10 +153,10 @@ export class InstrumentationProvider {
       provider: this,
       request,
       close: async () => {
+        if (typeof this.backend.disconnect === 'function') await this.backend.disconnect();
         if (typeof unsubscribe === 'function') { try { unsubscribe(); } catch {} }
         unsubscribe = null;
-        try { if (typeof this.backend.disconnect === 'function') await this.backend.disconnect(); }
-        finally { if (this.activeSession === session) this.activeSession = null; }
+        if (this.activeSession === session) this.activeSession = null;
       },
     });
     const normalizer = new RuntimeEventNormalizer({
@@ -98,12 +171,33 @@ export class InstrumentationProvider {
     const probes = new Map();
 
     const ingest = (raw) => {
-      if (typeof this.options.eventFilter === 'function' && this.options.eventFilter(raw) === false) return null;
-      const handle = eventProbeHandle(raw);
+      const ownedRaw = materializeRuntimeEvent(raw);
+      if (typeof this.options.eventFilter === 'function' && this.options.eventFilter(ownedRaw) === false) return null;
+      const handle = eventProbeHandle(ownedRaw);
       const interventionId = handle == null ? null : probes.get(handle) ?? null;
-      if (!interventionId) return normalizer.push(raw);
-      const existing = Array.isArray(raw?.interventionIds) ? raw.interventionIds : [];
-      return normalizer.push({ ...raw, interventionIds: [...new Set([...existing, interventionId])] });
+      const existingInterventionIds = eventInterventionIds(ownedRaw);
+      const enrichedRaw = interventionId && (existingInterventionIds == null || Array.isArray(existingInterventionIds))
+        ? {
+            ...ownedRaw,
+            interventionIds: [...new Set([...(existingInterventionIds ?? []), interventionId])],
+          }
+        : ownedRaw;
+      const event = normalizer.push(enrichedRaw);
+      if (!event) return null;
+      const module = moduleFields(event);
+      if (event.kind === 'module-load' && (module.runtimeBase ?? module.base) != null && (module.runtimeSize ?? module.size) != null) {
+        const bindingKey = module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name;
+        if (bindingKey && !session.modules.get(bindingKey)) {
+          session.modules.load(normalizeRuntimeModuleBinding(module, {
+            bindingKey,
+            loadedSequence: event.sequence,
+          }));
+        }
+      } else if (event.kind === 'module-unload') {
+        const bindingKey = module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name;
+        if (bindingKey) session.modules.unload(bindingKey, event.sequence);
+      }
+      return event;
     };
 
     try {
@@ -115,7 +209,8 @@ export class InstrumentationProvider {
       }
       if (typeof this.backend.getModules === 'function') {
         const modules = await this.backend.getModules();
-        for (let i = 0; i < (Array.isArray(modules) ? modules.length : 0); i++) {
+        if (!Array.isArray(modules)) throw new DebugAdapterError('runtime-invalid-modules', 'instrumentation backend getModules must return an array');
+        for (let i = 0; i < modules.length; i++) {
           const module = modules[i] || {};
           if ((module.runtimeBase ?? module.base) == null || (module.runtimeSize ?? module.size) == null) continue;
           const bindingKey = moduleKey(module, i);
@@ -224,11 +319,32 @@ export class InstrumentationProvider {
     session.facets = Object.freeze({ instrumentation });
     session.setState('ready');
     this.activeSession = session;
+    let epochTransitionPending = false;
+    const commitEpoch = (reason) => {
+      const committed = session.newEpoch(reason);
+      normalizer.resetEpoch(committed);
+      return committed;
+    };
     session.newProviderEpoch = (reason = 'instrumentation-provider-epoch-changed') => {
-      const next = session.newEpoch(reason);
-      normalizer.resetEpoch(next);
-      if (typeof this.backend.setEpoch === 'function') this.backend.setEpoch(next);
-      return next;
+      if (session.closed) throw new DebugAdapterError('runtime-session-closed', 'runtime provider session is closed');
+      if (epochTransitionPending) throw new DebugAdapterError('runtime-epoch-transition-active', 'instrumentation provider epoch transition is already in progress');
+      const next = session.epoch + 1;
+      if (typeof this.backend.setEpoch !== 'function') return commitEpoch(reason);
+      epochTransitionPending = true;
+      let backendResult;
+      try {
+        backendResult = this.backend.setEpoch(next);
+      } catch (err) {
+        epochTransitionPending = false;
+        throw err;
+      }
+      if (!backendResult || typeof backendResult.then !== 'function') {
+        epochTransitionPending = false;
+        return commitEpoch(reason);
+      }
+      return Promise.resolve(backendResult)
+        .then(() => commitEpoch(reason))
+        .finally(() => { epochTransitionPending = false; });
     };
     return session;
   }

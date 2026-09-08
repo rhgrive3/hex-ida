@@ -6,7 +6,21 @@ import { RuntimeEvidenceBridge } from './evidence-bridge.js';
 
 const TERMINATIONS = Object.freeze(['return', 'halted', 'paused', 'fault', 'unsupported', 'timeout', 'cancelled', 'exception']);
 
+function terminationAlias(raw) {
+  switch (raw) {
+    case 'limit': return 'timeout';
+    case 'cancel': return 'cancelled';
+    case 'crash':
+    case 'oob':
+    case 'unmapped': return 'fault';
+    case 'complete':
+    case 'success': return 'return';
+    default: return null;
+  }
+}
+
 function ownedClone(value) {
+  if (typeof value === 'function' || typeof value === 'symbol') throw new TypeError('value is not replay-recordable');
   if (typeof structuredClone === 'function') return structuredClone(value);
   if (value == null || typeof value !== 'object') return value;
   if (Array.isArray(value)) return value.map(ownedClone);
@@ -21,15 +35,20 @@ function ownedClone(value) {
   return out;
 }
 
+function recordableClone(value) {
+  try {
+    return ownedClone(value);
+  } catch (error) {
+    throw new DebugAdapterError('emulator-replay-options-invalid', `replay options are not recordable: ${String(error?.message || error)}`);
+  }
+}
+
 function terminationOf(result = {}) {
-  const raw = String(result.termination ?? result.stop?.kind ?? result.status ?? 'paused').toLowerCase();
+  const value = result.termination ?? result.stop?.kind ?? result.status ?? 'paused';
+  if (typeof value !== 'string') return 'exception';
+  const raw = value.trim().toLowerCase();
   if (TERMINATIONS.includes(raw)) return raw;
-  if (/unsupported/.test(raw)) return 'unsupported';
-  if (/timeout|limit/.test(raw)) return 'timeout';
-  if (/cancel/.test(raw)) return 'cancelled';
-  if (/fault|crash|oob|unmapped/.test(raw)) return 'fault';
-  if (/return|complete|success/.test(raw)) return 'return';
-  return 'exception';
+  return terminationAlias(raw) ?? 'exception';
 }
 
 function completenessFor(termination) {
@@ -48,6 +67,12 @@ function engineText(value, fallback, code) {
   return resolved;
 }
 
+function deterministicFlag(value) {
+  if (value == null) return true;
+  if (typeof value !== 'boolean') throw new DebugAdapterError('emulator-deterministic-invalid', 'emulator deterministic flag must be a boolean');
+  return value;
+}
+
 function normalizeEngineDescriptor(engine, options) {
   const source = typeof engine?.descriptor === 'function' ? engine.descriptor() : {};
   return deepFreeze({
@@ -55,7 +80,7 @@ function normalizeEngineDescriptor(engine, options) {
     version: engineText(options.engineVersion ?? source.version ?? engine?.version, 'unknown', 'emulator-engine-version-invalid'),
     architecture: options.architecture ?? source.architecture ?? null,
     environment: options.environment ?? source.environment ?? 'unknown',
-    deterministic: options.deterministic ?? source.deterministic ?? engine?.deterministic !== false,
+    deterministic: deterministicFlag(options.deterministic ?? source.deterministic ?? engine?.deterministic),
   });
 }
 
@@ -90,48 +115,81 @@ export class EmulatorProvider {
       provider: this,
       request,
       close: async () => {
-        try { if (typeof this.engine.disconnect === 'function') await this.engine.disconnect(); }
-        finally { if (this.activeSession === session) this.activeSession = null; }
+        if (typeof this.engine.disconnect === 'function') await this.engine.disconnect();
+        if (this.activeSession === session) this.activeSession = null;
       },
     });
     if (options.connect !== false && typeof this.engine.connect === 'function') await this.engine.connect(options.connectOptions || {});
     const evidence = new RuntimeEvidenceBridge();
     let lastRun = null;
+    let activeRun = null;
 
     const run = async (input = {}, runOptions = {}) => {
+      if (activeRun) throw new DebugAdapterError('already-running', 'emulator session already has an active run');
+      const runToken = {};
+      activeRun = runToken;
+      try {
       const maxSteps = boundedInteger(runOptions.maxSteps, 20000, 1, 1000000, 'maxSteps');
       const timeoutMs = boundedInteger(runOptions.timeoutMs, 2000, 10, 60000, 'timeoutMs');
+      const { signal: _nonReplayableSignal, ...replayableRunOptions } = runOptions;
+      const replayOptions = { ...replayableRunOptions, maxSteps, timeoutMs };
+      // Snapshot replay-effective options before engine execution. A callback,
+      // symbol, Proxy, or other non-cloneable option must fail closed before
+      // the engine can succeed and only then make run() throw while recording.
+      const recordedOptions = recordableClone(replayOptions);
       const controller = session.controller();
       let externalAbort = null;
+      let externalCancelled = false;
       if (runOptions.signal) {
-        externalAbort = () => controller.abort(runOptions.signal.reason ?? 'cancelled');
+        externalAbort = () => {
+          externalCancelled = true;
+          if (!controller.signal.aborted) controller.abort('cancelled');
+        };
         if (runOptions.signal.aborted) externalAbort();
-        else runOptions.signal.addEventListener('abort', externalAbort, { once: true });
+        else {
+          runOptions.signal.addEventListener('abort', externalAbort, { once: true });
+          if (runOptions.signal.aborted) externalAbort();
+        }
       }
+      let timeoutTriggered = false;
       let timer = null;
-      if (!controller.signal.aborted) timer = setTimeout(() => controller.abort('timeout'), timeoutMs);
+      if (!controller.signal.aborted) {
+        timer = setTimeout(() => {
+          if (controller.signal.aborted) return;
+          timeoutTriggered = true;
+          controller.abort('timeout');
+        }, timeoutMs);
+      }
       session.setState('running');
       let raw;
+      let abortTermination = null;
       try {
-        if (controller.signal.aborted) raw = { stop: { kind: String(controller.signal.reason || 'cancelled') } };
-        else if (typeof this.engine.execute === 'function') raw = await this.engine.execute(input, { ...runOptions, maxSteps, timeoutMs, signal: controller.signal });
+        if (controller.signal.aborted) raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' } };
+        else if (typeof this.engine.execute === 'function') raw = await this.engine.execute(input, { ...replayOptions, signal: controller.signal });
         else {
           await this.engine.launch(input, { signal: controller.signal });
-          raw = await this.engine.resume({ ...runOptions, maxSteps, timeoutMs, signal: controller.signal });
+          raw = await this.engine.resume({ ...replayOptions, signal: controller.signal });
         }
       } catch (error) {
-        if (controller.signal.aborted) raw = { stop: { kind: String(controller.signal.reason || 'cancelled') }, error: String(error?.message || error) };
+        if (controller.signal.aborted) raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' }, error: String(error?.message || error) };
         else raw = { stop: { kind: 'exception' }, error: String(error?.message || error) };
       } finally {
+        if (timeoutTriggered) abortTermination = 'timeout';
+        else if (externalCancelled || controller.signal.aborted) abortTermination = 'cancelled';
         if (timer) clearTimeout(timer);
         if (runOptions.signal && externalAbort) runOptions.signal.removeEventListener('abort', externalAbort);
         session.releaseController(controller);
       }
 
-      const termination = terminationOf(raw || {});
+      const termination = abortTermination ?? terminationOf(raw || {});
       const completeness = completenessFor(termination);
+      const eventSource = raw?.events != null ? raw.events : raw?.trace?.events;
+      if (eventSource != null && !Array.isArray(eventSource)) {
+        session.setState('degraded');
+        throw new DebugAdapterError('emulator-invalid-events', 'emulator engine events must be an array');
+      }
+      const sourceEvents = eventSource ?? [];
       session.setState(termination === 'paused' ? 'paused' : termination === 'exception' ? 'degraded' : 'ready');
-      const sourceEvents = Array.isArray(raw?.events) ? raw.events : Array.isArray(raw?.trace?.events) ? raw.trace.events : [];
       const events = sourceEvents.map((source, index) => createRuntimeEvent({
         runtimeSessionId: session.runtimeSessionId,
         providerId: session.providerId,
@@ -176,15 +234,18 @@ export class EmulatorProvider {
       const resolution = runOptions.resolution ?? null;
       const evidenceNodes = events.map((event) => evidence.eventToEvidence(event, resolution, { binaryId: request.binaryId ?? request.binaryHash ?? null, semanticKind: 'emulator-observation' }));
       const ownedRaw = ownedClone(raw ?? null);
-      lastRun = deepFreeze({ input: ownedClone(input), options: { maxSteps, timeoutMs }, termination, completeness, raw: ownedRaw, eventIds: events.map((event) => event.eventId) });
+      lastRun = deepFreeze({ input: ownedClone(input), options: recordedOptions, termination, completeness, raw: ownedRaw, eventIds: events.map((event) => event.eventId) });
       return deepFreeze({ termination, completeness, raw: ownedClone(ownedRaw), batch, evidence: evidenceNodes, recording: lastRun });
+      } finally {
+        if (activeRun === runToken) activeRun = null;
+      }
     };
 
     const emulator = Object.freeze({
       engine: this.engineDescriptor,
       run,
       replay: async (recording = null, replayOptions = {}) => {
-        if (!this.engineDescriptor.deterministic) throw new DebugAdapterError('unsupported', 'emulator engine does not advertise deterministic replay');
+        if (this.engineDescriptor.deterministic !== true) throw new DebugAdapterError('unsupported', 'emulator engine does not advertise deterministic replay');
         const source = recording ?? lastRun;
         if (!source) throw new DebugAdapterError('emulator-replay-missing', 'no emulator recording is available to replay');
         return run(source.input, { ...source.options, ...replayOptions });

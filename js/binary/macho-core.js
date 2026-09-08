@@ -2,6 +2,7 @@ import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
 import { parseChainedImports, parseChainedBindingSites, parseClassicBindings, parseExportTrie } from './macho-dyld.js';
 import { createMachOMetadataBudget, ensureMachOMetadataBudget, markMachOMetadataPartial } from './macho-budget.js';
+import { validateFatSlice, validateFatContainer, probePastEndArm64SliceSync, parseInnerMachOHeader } from './macho-fat.js';
 
 const LC_SEGMENT = 0x1;
 const LC_SYMTAB = 0x2;
@@ -40,7 +41,7 @@ export function parseMachO(input, opts = {}) {
   const kind = machoKind(bytes);
   if (!kind) throw new Error('not a Mach-O file');
   if (kind.fat) {
-    const selected = selectFatSlice(bytes, kind, opts.arch);
+    const selected = selectFatSlice(bytes, kind, opts.arch, opts);
     if (!selected) throw new Error('Mach-O universal binary has no readable slice');
     const sub = bytes.subarray(Number(selected.offset), Number(selected.offset + selected.size));
     const image = parseThin(sub, { ...opts, containerOffset: selected.offset });
@@ -80,7 +81,7 @@ function parseThin(bytes, opts) {
       filetype, flags, ncmds, sizeofcmds,
     },
   });
-  const metadataBudget = ensureMachOMetadataBudget(image, createMachOMetadataBudget(image, { signal: opts.signal }));
+  const metadataBudget = ensureMachOMetadataBudget(image, createMachOMetadataBudget(image, { signal: opts.signal, limits: opts.metadataLimits }));
 
   const commands = [];
   const segmentOrder = [];
@@ -125,7 +126,7 @@ function parseThin(bytes, opts) {
       else if ((cmd === LC_DYLD_INFO || cmd === LC_DYLD_INFO_ONLY) && cmdsize >= 48) dyldInfos.push(parseDyldInfo(r, p));
       else if (cmd === LC_BUILD_VERSION && cmdsize >= 24) parseBuildVersion(r, p, image);
     } catch (e) {
-      if (e?.code === 'BINARY_SOURCE_RANGE_MISSING') throw e;
+      if (e?.code === 'BINARY_SOURCE_RANGE_MISSING' || e?.code === 'MACHO_SEGMENT_VM_OVERLAP') throw e;
       markMachOMetadataPartial(image, `load-command-0x${cmd.toString(16)}-parse-error`);
       image.warnings.push(`load command 0x${cmd.toString(16)}: ${e.message}`);
     }
@@ -208,6 +209,55 @@ function validateSectionRange(label, saddr, ssize, fileOffset, fileSize, seg, im
   }
 }
 
+// A file-backed segment owns canonical bytes for [address, address + fileSize).
+// Two file-backed segments whose ownership extents intersect must agree on the
+// file offsets for the shared range, or the same VM address resolves to
+// different bytes depending on load-command order (#7064). Fail closed instead
+// of letting insertion order pick a winner.
+function rejectAmbiguousSegmentOwnership(image, label, address, fileOffset, fileSize, size) {
+  // A segment with no file-backed bytes is transparent: a zero-fill-only
+  // mapping may legitimately overlap a file-backed segment. Once both
+  // segments carry bytes, however, their complete VM extents are ownership
+  // claims. Compare every sub-interval so a zero-fill tail cannot hide
+  // another segment's file-backed bytes (#7064).
+  if (fileSize === 0n) return;
+  const newVmEnd = address + size;
+  const newFileEnd = address + fileSize;
+  for (const existing of image.segments) {
+    if (existing.fileSize === 0n) continue;
+    const existingVmEnd = existing.address + existing.size;
+    const overlapStart = address > existing.address ? address : existing.address;
+    const overlapEnd = newVmEnd < existingVmEnd ? newVmEnd : existingVmEnd;
+    if (overlapStart >= overlapEnd) continue;
+    const boundaries = [...new Set([
+      overlapStart,
+      overlapEnd,
+      newFileEnd,
+      existing.address + existing.fileSize,
+    ].filter((point) => point > overlapStart && point < overlapEnd))].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+    const points = [overlapStart, ...boundaries, overlapEnd];
+    for (let i = 0; i + 1 < points.length; i++) {
+      const point = points[i];
+      const newFileBacked = point < newFileEnd;
+      const oldFileBacked = point < existing.address + existing.fileSize
+        && point >= existing.address;
+      if (!newFileBacked && !oldFileBacked) continue;
+      if (newFileBacked !== oldFileBacked) {
+        const error = new Error(`${label} VM range overlaps segment ${existing.name || '?'} with ambiguous file/zero ownership`);
+        error.code = 'MACHO_SEGMENT_VM_OVERLAP';
+        throw error;
+      }
+      const newOffset = fileOffset + (point - address);
+      const oldOffset = existing.fileOffset + (point - existing.address);
+      if (newOffset !== oldOffset) {
+        const error = new Error(`${label} VM range overlaps segment ${existing.name || '?'} with a different file mapping`);
+        error.code = 'MACHO_SEGMENT_VM_OVERLAP';
+        throw error;
+      }
+    }
+  }
+}
+
 function parseSegment64(r, p, cmdsize, image, order) {
   if (cmdsize < 72) throw new Error(`invalid LC_SEGMENT_64 size ${cmdsize}`);
   const name = r.ascii(p + 8, 16);
@@ -220,6 +270,7 @@ function parseSegment64(r, p, cmdsize, image, order) {
   if (nsects > Math.floor((cmdsize - 72) / 80)) throw new Error(`invalid section count ${nsects}`);
   const flags = r.u32(p + 68);
   validateMappedRange(`segment ${name}`, address, size, fileOffset, fileSize, image);
+  rejectAmbiguousSegmentOwnership(image, `segment ${name}`, address, fileOffset, fileSize, size);
   const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT_64' });
   order.push(seg);
   let q = p + 72;
@@ -250,6 +301,7 @@ function parseSegment32(r, p, cmdsize, image, order) {
   if (nsects > Math.floor((cmdsize - 56) / 68)) throw new Error(`invalid section count ${nsects}`);
   const flags = r.u32(p + 52);
   validateMappedRange(`segment ${name}`, address, size, fileOffset, fileSize, image);
+  rejectAmbiguousSegmentOwnership(image, `segment ${name}`, address, fileOffset, fileSize, size);
   const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT' });
   order.push(seg);
   let q = p + 56;
@@ -423,7 +475,7 @@ function dylibForOrdinal(image, ordinal) {
   if (ordinal === 0) return null;
   if (ordinal === -1 || ordinal === 0xff) return '<main-executable>';
   if (ordinal === -2 || ordinal === 0xfe) return '<flat-lookup>';
-  if (ordinal === -3 || ordinal === 0xfd) return '<weak-lookup>';
+  if (ordinal === -3) return '<weak-lookup>';
   return ordinal > 0 ? image.libraries[ordinal - 1] || null : null;
 }
 function cpuName(cpu) {
@@ -433,7 +485,7 @@ function cpuName(cpu) {
 function subtypeBase(subtype) { return (subtype >>> 0) & 0x00ffffff; }
 function cpuArchName(cpu, subtype) { return cpuName(cpu) === 'arm64' && subtypeBase(subtype) === 2 ? 'arm64e' : cpuName(cpu); }
 function sliceArchName(slice) { return cpuArchName(slice.cpu, slice.subtype); }
-function platformName(p) { return ({ 1: 'macOS', 2: 'iOS', 3: 'tvOS', 4: 'watchOS', 6: 'macCatalyst', 7: 'iOS-simulator', 8: 'tvOS-simulator', 9: 'watchOS-simulator', 10: 'driverKit', 11: 'visionOS', 12: 'visionOS-simulator' })[p] || `apple-platform-${p}`; }
+function platformName(p) { return ({ 1: 'macOS', 2: 'iOS', 3: 'tvOS', 4: 'watchOS', 5: 'bridgeOS', 6: 'macCatalyst', 7: 'iOS-simulator', 8: 'tvOS-simulator', 9: 'watchOS-simulator', 10: 'driverKit', 11: 'visionOS', 12: 'visionOS-simulator' })[p] || `apple-platform-${p}`; }
 function version32(v) { return `${(v >>> 16) & 0xffff}.${(v >>> 8) & 0xff}.${v & 0xff}`; }
 
 function machoKind(bytes) {
@@ -451,25 +503,52 @@ function machoKind(bytes) {
   return null;
 }
 
-function selectFatSlice(bytes, kind, preferredArch) {
+function selectFatSlice(bytes, kind, preferredArch, opts = {}) {
   const r = new ByteView(bytes, { littleEndian: kind.littleEndian });
   const n = r.u32(4);
   if (n > 128) throw new Error(`unreasonable Mach-O slice count ${n}`);
+  const entrySize = kind.bits === 64 ? 32 : 20;
+  const tableSize = n * entrySize;
+  if (8 + tableSize > bytes.length) throw new Error('Mach-O universal slice table is truncated');
   const all = [];
   let p = 8;
   for (let i = 0; i < n; i++) {
     if (kind.bits === 64) {
-      const cpu = r.i32(p), subtype = r.i32(p + 4), offset = r.u64(p + 8), size = r.u64(p + 16);
-      all.push({ cpu, subtype, offset, size }); p += 32;
+      const cpu = r.i32(p), subtype = r.i32(p + 4), offset = r.u64(p + 8), size = r.u64(p + 16), align = r.u32(p + 24);
+      all.push({ cpu, subtype, offset, size, align }); p += 32;
     } else {
-      const cpu = r.i32(p), subtype = r.i32(p + 4), offset = BigInt(r.u32(p + 8)), size = BigInt(r.u32(p + 12));
-      all.push({ cpu, subtype, offset, size }); p += 20;
+      const cpu = r.i32(p), subtype = r.i32(p + 4), offset = BigInt(r.u32(p + 8)), size = BigInt(r.u32(p + 12)), align = r.u32(p + 16);
+      all.push({ cpu, subtype, offset, size, align }); p += 20;
     }
   }
-  const valid = all.filter((s) => s.offset >= 0n && s.size > 0n && s.offset + s.size <= BigInt(bytes.length));
-  const want = preferredArch ? valid.find((s) => sliceArchName(s) === preferredArch) : null;
+
+  // #6317: probe past-end arm64 compatibility slice for FAT32
+  if (kind.bits === 32) {
+    const compat = probePastEndArm64SliceSync(r, n, bytes.length, (off, len) => {
+      const start = Number(off);
+      if (start < 0 || start + len > bytes.length) return null;
+      return bytes.subarray(start, start + len);
+    }, all);
+    if (compat) all.push(compat);
+  }
+
+  // #6316: validate each slice
+  for (const s of all) {
+    const start = Number(s.offset);
+    const headerLength = Math.min(32, Number(s.size));
+    const headerBytes = (start >= 0 && headerLength >= 28 && start + headerLength <= bytes.length)
+      ? bytes.subarray(start, start + headerLength)
+      : null;
+    const inner = parseInnerMachOHeader(headerBytes);
+    validateFatSlice(s, inner, bytes.length, opts);
+  }
+
+  // #6314: validate container (duplicate architectures and slice range overlap)
+  validateFatContainer(all);
+
+  const want = preferredArch ? all.find((s) => sliceArchName(s) === preferredArch) : null;
   if (preferredArch && !want) throw new Error(`requested Mach-O architecture ${preferredArch} is not present in the universal binary`);
-  const chosen = want || valid.find((s) => sliceArchName(s) === 'arm64e') || valid.find((s) => sliceArchName(s) === 'arm64') || valid.find((s) => sliceArchName(s) === 'x86_64') || valid[0];
+  const chosen = want || all.find((s) => sliceArchName(s) === 'arm64e') || all.find((s) => sliceArchName(s) === 'arm64') || all.find((s) => sliceArchName(s) === 'x86_64') || all[0];
   return chosen ? { ...chosen, all } : null;
 }
 
