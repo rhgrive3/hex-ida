@@ -867,7 +867,9 @@ export class NoteStore {
   fromJSON(text) {
     const o = JSON.parse(text);
     if (!o || typeof o !== 'object') throw new Error('invalid-notes-import');
-    if (o.id != null && this.id != null && String(o.id) !== String(this.id)) throw new Error('notes-file-mismatch');
+    // Identity comparison stays type-preserving: a structured id must never
+    // launder into this store's namespace through String() coercion (#5968).
+    if (o.id != null && this.id != null && o.id !== this.id) throw new Error('notes-file-mismatch');
     let n = 0;
     for (const [k, v] of Object.entries(o.names || {})) { this.names.set(k, v); n++; }
     for (const [k, v] of Object.entries(o.comments || {})) { this.comments.set(k, v); n++; }
