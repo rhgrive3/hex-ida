@@ -40,7 +40,8 @@ const AMBIGUOUS_TAIL_A = { name: '__TAILA', vmaddr: 0x1000, vmsize: 0x180, fileo
 const AMBIGUOUS_TAIL_B = { name: '__TAILB', vmaddr: 0x1080, vmsize: 0x200, fileoff: 0x300, filesize: 0x80 };
 
 function fatMachO32(thin) {
-  const offset = 0x1000;
+  // This slice declares arm64, whose final-image alignment is 16 KiB.
+  const offset = 0x4000;
   const bytes = new Uint8Array(offset + thin.length);
   const view = new DataView(bytes.buffer);
   view.setUint32(0, 0xcafebabe, false);
@@ -49,7 +50,7 @@ function fatMachO32(thin) {
   view.setInt32(12, 0, false);
   view.setUint32(16, offset, false);
   view.setUint32(20, thin.length, false);
-  view.setUint32(24, 12, false);
+  view.setUint32(24, 14, false);
   bytes.set(thin, offset);
   return bytes;
 }
