@@ -17,7 +17,7 @@ import {
 import { findIrValueUpdates } from './dataflow-ir.js';
 import { findIrSemanticUpdates } from './dataflow-semantic.js';
 import { findIrConstantComparisons } from './dataflow-ir-compare.js';
-import { irFor, MK, pointerProvenance } from './ir.js';
+import { irFor, readModifyWrite, MK, pointerProvenance } from './ir.js';
 
 export {
   legacyFindValueUpdates as findValueUpdatesLegacy,
@@ -56,8 +56,16 @@ export function findValueUpdates(model, opts) {
   let rmw = [];
   let direct = [];
   try {
-    rmw = findIrValueUpdates(model, opts).filter((u) => !(u.location && u.location.irKind === MK.GLOBAL));
-    direct = findIrSemanticUpdates(model, opts, rmw)
+    // The RMW proof is a graph walk consumed by both adapters. Keep the reuse
+    // inside this one query so mutable/custom IR callers can never observe a
+    // stale cross-query memoized proof.
+    const precomputed = {
+      ir,
+      readModifyWriteProofs: readModifyWrite(ir),
+    };
+    rmw = findIrValueUpdates(model, opts, precomputed)
+      .filter((u) => !(u.location && u.location.irKind === MK.GLOBAL));
+    direct = findIrSemanticUpdates(model, opts, rmw, precomputed)
       .filter((u) => !(u.location && u.location.irKind === MK.GLOBAL));
   } catch {
     // IR existed but a consumer adapter failed. Do not silently replace a proven

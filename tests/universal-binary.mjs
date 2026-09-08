@@ -113,13 +113,13 @@ function testMachOIssueRegressions() {
   const bindBytes=new Uint8Array(0x200), bv=new DataView(bindBytes.buffer);
   const segmentImage=new BinaryImage(bindBytes,{format:'macho',bits:64,imageBase:0x1000n});
   const seg=segmentImage.addSegment({name:'DATA',address:0x1000n,size:0x100n,fileOffset:0n,fileSize:0x100n,perms:{read:true,write:true}}); segmentImage.libraries=['libX'];
-  let s=0x100; bindBytes.set([0x11,0x41,0x66,0x6f,0x6f,0x00,0x70,0x00,0x90,0x00],s);
-  parseClassicBindings(new ByteView(bindBytes),{offset:s,size:10},segmentImage,[seg],'bind');
+  let s=0x100; bindBytes.set([0x11,0x41,0x66,0x6f,0x6f,0x00,0x51,0x70,0x00,0x90,0x00],s);
+  parseClassicBindings(new ByteView(bindBytes),{offset:s,size:11},segmentImage,[seg],'bind');
   assert.equal(segmentImage.imports[0].weak,true); assert.equal(segmentImage.imports[0].symbolFlags,1);
 
   const invalidImage=new BinaryImage(bindBytes,{format:'macho',bits:64,imageBase:0x1000n}); const invalidSeg=invalidImage.addSegment({address:0x1000n,size:0x100n,fileOffset:0n,fileSize:0x100n,perms:{read:true,write:true}}); invalidImage.libraries=['libX'];
-  s=0x120; bindBytes.set([0x11,0x40,0x66,0x80,0x6f,0x00,0x70,0x00,0x90,0x00],s);
-  parseClassicBindings(new ByteView(bindBytes),{offset:s,size:10},invalidImage,[invalidSeg],'bind'); assert.equal(invalidImage.imports.length,1);
+  s=0x120; bindBytes.set([0x11,0x40,0x66,0x80,0x6f,0x00,0x51,0x70,0x00,0x90,0x00],s);
+  parseClassicBindings(new ByteView(bindBytes),{offset:s,size:11},invalidImage,[invalidSeg],'bind'); assert.equal(invalidImage.imports.length,1);
   s=0x140; bindBytes.set([0x40,0x78,0x00,0x70,0x82,0x02,0x90,0x00],s);
   const oobImage=new BinaryImage(bindBytes,{format:'macho',bits:64,imageBase:0x1000n}); const oobSeg=oobImage.addSegment({address:0x1000n,size:0x100n,fileOffset:0n,fileSize:0x100n,perms:{read:true,write:true}});
   const oobStatus=parseClassicBindings(new ByteView(bindBytes),{offset:s,size:8},oobImage,[oobSeg],'bind'); assert.equal(oobImage.imports.length,0); assert.equal(oobStatus.complete,false);

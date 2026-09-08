@@ -468,7 +468,12 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
       return;
     }
 
-    const slotAlignment = classified.vector ? 16 : 8;
+    /* SysV psABI: a stack-passed vector keeps its mode's natural alignment —
+     * 16 bytes for __m128, 32 for __m256, 64 for __m512. A flat 16-byte slot
+     * misaligns ymm/zmm spills and shifts every later stack argument. */
+    const slotAlignment = classified.vector
+      ? (classified.bits <= 128 ? 16 : classified.bits <= 256 ? 32 : 64)
+      : 8;
     const bytes = align(Math.max(8, Math.ceil(classified.bits / 8)), slotAlignment);
     stackOffset = align(stackOffset, slotAlignment);
     const entry = {
@@ -478,6 +483,7 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
       offsetBase:'incoming-stack-arguments',
       calleeEntryOffset:8 + stackOffset,
       bytes,
+      alignment:slotAlignment,
       abiClass:classified.vector ? 'sse-vector' : classified.floating ? 'sse-scalar' : classified.pointer ? 'pointer' : 'integer',
       pointer:classified.pointer,
       bits:classified.bits,

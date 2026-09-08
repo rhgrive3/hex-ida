@@ -218,9 +218,19 @@ function foldInstruction(inst) {
     if (inst.sub === 'and') return uint(a & b, bits);
     if (inst.sub === 'or') return uint(a | b, bits);
     if (inst.sub === 'xor') return uint(a ^ b, bits);
-    if (inst.sub === 'shl') return uint(a << BigInt(Number(b)), bits);
-    if (inst.sub === 'lshr') return uint(uint(a, bits) >> BigInt(Number(b)), bits);
-    if (inst.sub === 'ashr') return uint(sint(a, bits) >> BigInt(Number(b)), bits);
+    if (inst.sub === 'shl' || inst.sub === 'lshr' || inst.sub === 'ashr') {
+      // Compare the original integer count before shifting. Converting an
+      // unbounded bigint through Number() can round it or produce Infinity,
+      // and BigInt(Infinity) throws before the width guard (#5852).
+      if (!Number.isSafeInteger(bits)) return null;
+      const shift = typeof b === 'bigint'
+        ? b
+        : (typeof b === 'number' && Number.isSafeInteger(b) ? BigInt(b) : null);
+      if (shift == null || shift < 0n || shift >= BigInt(bits)) return null;
+      if (inst.sub === 'shl') return uint(a << shift, bits);
+      if (inst.sub === 'lshr') return uint(uint(a, bits) >> shift, bits);
+      return uint(sint(a, bits) >> shift, bits);
+    }
     if (inst.sub === 'ror') return ror(a, b, bits);
     if (inst.sub === 'eq') return a === b ? 1n : 0n;
   }

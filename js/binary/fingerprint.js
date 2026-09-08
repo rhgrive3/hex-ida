@@ -19,8 +19,29 @@ function fnv1a64State(bytes, seed = null) {
     hi = Number((seed >> 32n) & 0xffffffffn) >>> 0;
     lo = Number(seed & 0xffffffffn) >>> 0;
   } else if (typeof seed === 'object' && seed) {
-    hi = Number(seed.hi) >>> 0;
-    lo = Number(seed.lo) >>> 0;
+    // Only a record with own data properties may supply resumable limbs.
+    // Do not invoke accessors or coerce structured values while validating
+    // this hash identity boundary (#5922).
+    let proto, hiDescriptor, loDescriptor;
+    try {
+      proto = Object.getPrototypeOf(seed);
+      hiDescriptor = Object.getOwnPropertyDescriptor(seed, 'hi');
+      loDescriptor = Object.getOwnPropertyDescriptor(seed, 'lo');
+    } catch {
+      throw new TypeError('FNV seed must be BigInt or {hi, lo}');
+    }
+    if (Array.isArray(seed) || (proto !== Object.prototype && proto !== null)
+      || !hiDescriptor || !loDescriptor
+      || !Object.hasOwn(hiDescriptor, 'value') || !Object.hasOwn(loDescriptor, 'value')) {
+      throw new TypeError('FNV seed must be BigInt or {hi, lo}');
+    }
+    const hiLimb = hiDescriptor.value, loLimb = loDescriptor.value;
+    if (!Number.isSafeInteger(hiLimb) || hiLimb < 0 || hiLimb > 0xffffffff
+      || !Number.isSafeInteger(loLimb) || loLimb < 0 || loLimb > 0xffffffff) {
+      throw new TypeError('FNV seed must be BigInt or {hi, lo}');
+    }
+    hi = hiLimb >>> 0;
+    lo = loLimb >>> 0;
   } else throw new TypeError('FNV seed must be BigInt or {hi, lo}');
 
   for (let i = 0; i < bytes.length; i++) {
@@ -249,10 +270,14 @@ export function fingerprintImage(image, opts = {}) {
 
   return (async () => {
     let state = { hi: FNV_OFFSET_HI, lo: FNV_OFFSET_LO }, total = 0;
+    const maxReadLength = Number.isSafeInteger(image.source?.maxReadLength) && image.source.maxReadLength > 0
+      ? image.source.maxReadLength
+      : chunkBytes;
+    const sourceChunkBytes = Math.min(chunkBytes, maxReadLength);
     for (const mapping of ranges) {
       const size = BigInt(mapping.fileSize);
       for (let off = 0n; off < size;) {
-        const take = Number(size - off < BigInt(chunkBytes) ? size - off : BigInt(chunkBytes));
+        const take = Number(size - off < BigInt(sourceChunkBytes) ? size - off : BigInt(sourceChunkBytes));
         const bytes = requireMappingChunk(await sourceMappingChunk(image, mapping, off, take), take);
         state = fnv1a64State(bytes, state);
         total += bytes.length;

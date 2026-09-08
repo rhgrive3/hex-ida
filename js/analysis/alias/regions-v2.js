@@ -252,7 +252,13 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
     });
     const rootKind = rootProof?.kind === 'root-only' ? rootProof.rootKind : rootProof?.kind;
     if (!['rooted', 'stack-like'].includes(String(rootKind))) continue;
-    const rootOffset = rootProof.kind === 'root-only' ? 0n : rootProof.offset;
+    // `root-only` means "same root, exact offset NOT proven" — mergeAlternatives
+    // mints it when two paths through one root disagree on the offset. It is
+    // not evidence for offset 0: converting it into a precise rooted-offset /
+    // stack-fixed descriptor would fabricate exact separation (#5729), so the
+    // conservative unknown-region path stays in force.
+    if (rootProof?.kind === 'root-only') continue;
+    const rootOffset = rootProof.offset;
     if (rootOffset == null) continue;
     const offset = rootOffset + addressOffset;
     if (rootKind === 'stack-like') {
@@ -266,6 +272,9 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
         kind: 'rooted-offset',
         rootEntityId: String(rootProof.rootEntityId),
         offset: offset.toString(),
+        // Keep the proof's non-memory storage domain (#5901).
+        ...(typeof rootProof.addressSpace === 'string' && rootProof.addressSpace && rootProof.addressSpace !== 'memory'
+          ? { addressSpace: rootProof.addressSpace } : {}),
         metadata: {
           canonicalAddressIncludesOperationDisplacement: true,
           ...(rootProof.rootIdentity?.storageClass == null ? {} : {
@@ -349,8 +358,12 @@ function preciseRegion({ descriptor, functionId, binaryId, widthBits, origin, ad
     const rootEntityId = optionalIdentityString(descriptor.rootEntityId ?? descriptor.rootId, 'root-entity-id');
     const offset = toBigIntString(descriptor.offset ?? 0);
     if (!rootEntityId || offset == null || (!scope.functionId && !scope.binaryId)) return null;
-    canonicalRegionIdentity = { rootEntityId, offset, widthBits: normalizedWidth };
-    specific = { ...(scope.functionId ? { functionId: scope.functionId } : {}), ...(scope.binaryId ? { binaryId: scope.binaryId } : {}), rootEntityId, offset };
+    // A rooted-offset region must keep the storage domain its canonical proof
+    // proved (#5901): a tls/io-rooted region is not flat memory and must not
+    // share an identity with a same-root memory region.
+    const rootedSpace = optionalIdentityString(descriptor.addressSpace, 'address-space');
+    canonicalRegionIdentity = { rootEntityId, offset, widthBits: normalizedWidth, ...(rootedSpace ? { addressSpace: rootedSpace } : {}) };
+    specific = { ...(scope.functionId ? { functionId: scope.functionId } : {}), ...(scope.binaryId ? { binaryId: scope.binaryId } : {}), rootEntityId, offset, ...(rootedSpace ? { addressSpace: rootedSpace } : {}) };
   } else {
     const explicitSpace = optionalIdentityString(descriptor.addressSpace ?? addressSpace, 'address-space');
     if (!explicitSpace || (!scope.functionId && !scope.binaryId)) return null;

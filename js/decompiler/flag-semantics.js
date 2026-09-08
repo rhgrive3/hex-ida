@@ -1,4 +1,4 @@
-import { expr } from './ast/nodes.js';
+import { expr, isExpressionNode } from './ast/nodes.js';
 import { printExpression } from './pretty/c.js';
 
 const CONDITIONS = new Set([
@@ -6,6 +6,34 @@ const CONDITIONS = new Set([
   'hi', 'ls', 'ge', 'lt', 'gt', 'le',
 ]);
 const FLAG_SUBS = new Set(['sub', 'add', 'and', 'fsub']);
+
+const WIDTH_BITS = new Set([8, 16, 32, 64]);
+
+function canonicalProducer(sub) {
+  if (typeof sub !== 'string') return null;
+  const normalized = sub.toLowerCase();
+  return FLAG_SUBS.has(normalized) ? normalized : null;
+}
+
+function canonicalCondition(cond) {
+  if (typeof cond !== 'string') return null;
+  const normalized = cond.toLowerCase();
+  return CONDITIONS.has(normalized) ? normalized : null;
+}
+
+function canonicalBits(bits, fallback = 64) {
+  if (bits === undefined) return fallback;
+  if (typeof bits !== 'number' || !Number.isSafeInteger(bits) || bits <= 0 || bits > 64) return null;
+  return bits;
+}
+
+function canonicalOperandValue(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isFinite(value) && Number.isSafeInteger(value)) {
+    return BigInt(value);
+  }
+  return null;
+}
 
 function widthOf(bits) {
   const n = Number(bits || 64);
@@ -62,15 +90,25 @@ function flagsFor(sub, left, right, bits = 64) {
 }
 
 export function isNZCVCondition(cond) {
-  return CONDITIONS.has(String(cond || '').toLowerCase());
+  if (typeof cond !== 'string') return false;
+  return CONDITIONS.has(cond.toLowerCase());
 }
 
-export function evaluateNZCVCondition(sub, cond, left, right, bits = 64) {
-  sub = String(sub || '').toLowerCase();
-  cond = String(cond || '').toLowerCase();
-  const f = flagsFor(sub, left, right, bits);
-  if (!f || !CONDITIONS.has(cond)) return null;
-  switch (cond) {
+export function evaluateNZCVCondition(sub, cond, left, right, bits) {
+  const producer = canonicalProducer(sub);
+  if (producer === null) return null;
+  const condition = canonicalCondition(cond);
+  if (condition === null) return null;
+  if (producer === 'fsub') {
+    if (typeof left !== 'number' || typeof right !== 'number') return null;
+  } else {
+    if (canonicalOperandValue(left) === null || canonicalOperandValue(right) === null) return null;
+  }
+  const width = canonicalBits(bits, arguments.length < 5 ? 64 : null);
+  if (width === null || !WIDTH_BITS.has(width)) return null;
+  const f = flagsFor(producer, left, right, width);
+  if (!f || !CONDITIONS.has(condition)) return null;
+  switch (condition) {
     case 'eq': return f.z;
     case 'ne': return !f.z;
     case 'hs': case 'cs': return f.c;
@@ -129,11 +167,17 @@ function intrinsicCondition(sub, cond, left, right, bits, source) {
  * losing carry/overflow semantics, retain it as an explicit architecture
  * intrinsic instead of manufacturing a false high-level predicate.
  */
-export function buildNZCVConditionExpression(sub, cond, left, right, bits = 64, source = null) {
-  sub = String(sub || '').toLowerCase();
-  cond = String(cond || '').toLowerCase();
-  bits = widthOf(bits);
-  if (!FLAG_SUBS.has(sub) || !CONDITIONS.has(cond) || !left || !right) return null;
+export function buildNZCVConditionExpression(sub, cond, left, right, bits, source = null) {
+  const producer = canonicalProducer(sub);
+  if (producer === null) return null;
+  const condition = canonicalCondition(cond);
+  if (condition === null) return null;
+  const width = canonicalBits(bits, arguments.length < 5 ? 64 : null);
+  if (width === null || !WIDTH_BITS.has(width)) return null;
+  if (!isExpressionNode(left) || !isExpressionNode(right)) return null;
+  sub = producer;
+  cond = condition;
+  bits = width;
 
   if (sub === 'fsub') {
     switch (cond) {
@@ -192,10 +236,12 @@ export function buildNZCVConditionExpression(sub, cond, left, right, bits = 64, 
   return intrinsicCondition(sub, cond, left, right, bits, source);
 }
 
-export function renderNZCVCondition(sub, cond, leftText, rightText, bits = 64, source = null) {
-  bits = widthOf(bits);
-  const left = expr.variable(String(leftText), bits, null, source);
-  const right = expr.variable(String(rightText), bits, null, source);
-  const condition = buildNZCVConditionExpression(sub, cond, left, right, bits, source);
+export function renderNZCVCondition(sub, cond, leftText, rightText, bits, source = null) {
+  if (typeof leftText !== 'string' || typeof rightText !== 'string') return null;
+  const width = canonicalBits(bits, arguments.length < 5 ? 64 : null);
+  if (width === null || !WIDTH_BITS.has(width)) return null;
+  const left = expr.variable(leftText, width, null, source);
+  const right = expr.variable(rightText, width, null, source);
+  const condition = buildNZCVConditionExpression(sub, cond, left, right, width, source);
   return condition ? printExpression(condition) : null;
 }
