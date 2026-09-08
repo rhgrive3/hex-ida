@@ -154,7 +154,7 @@ cat('str strb strh stur sturb sturh stp stnp sttr stxr stlxr stlr stlrb stlrh st
 cat('b bl br blr ret cbz cbnz tbz tbnz braa brab braaz brabz blraa blrab blraaz blrabz retaa retab', 'flow');
 cat('adr adrp', 'address');
 cat('nop hint bti svc hvc smc brk hlt dmb dsb isb yield wfe wfi sev sevl mrs msr sys eret eretaa eretab clrex paciasp pacibsp pacia pacib pacda pacdb paciza pacizb pacdza pacdzb paciaz pacibz pacia1716 pacib1716 autiasp autibsp autia autib autda autdb autiza autizb autdza autdzb autiaz autibz autia1716 autib1716 xpaci xpacd xpaclri pacga dc ic tlbi', 'system');
-cat('fadd fsub fmul fdiv fneg fabs fsqrt fmadd fmsub fnmadd fcvt fcvtzs fcvtzu fcvtas fcvtau fcvtms fcvtns fcvtps scvtf ucvtf frinta frintm frintn frintp frintz fmax fmin fmaxnm fminnm', 'float');
+cat('fadd fsub fmul fdiv fneg fabs fsqrt fmadd fmsub fnmadd fcvt fcvtzs fcvtzu fcvtas fcvtau fcvtms fcvtmu fcvtns fcvtnu fcvtps fcvtpu scvtf ucvtf frinta frintm frintn frintp frintz fmax fmin fmaxnm fminnm', 'float');
 cat('movi mvni orr_v addv uaddlv tbl tbx zip1 zip2 uzp1 uzp2 trn1 trn2 ext rev64_v cmeq cmgt xtn sqxtn', 'simd');
 cat('casal cas casa casl swp swpa swpl swpal ldadd ldadda ldaddl ldaddal ldset ldclr ldeor', 'atomic');
 cat('udf .byte', 'data');
@@ -1849,15 +1849,154 @@ HANDLERS.fcmp = (o, ops) => {
     'Compare two floating-point values, updating the flags.');
   o.terms = ['float', 'flags'];
 };
-for (const n of ['fcvtzs', 'fcvtzu', 'fcvtas', 'fcvtau', 'fcvtms', 'fcvtns', 'fcvtps']) {
-  HANDLERS[n] = (o, ops) => {
-    o.title = J('小数を整数にする', 'Float to integer');
-    o.pseudo = opShort(ops[0]) + ' = (int)' + opShort(ops[1]);
+const FCVT_FLOAT_TO_INTEGER_INFO = Object.freeze({
+  fcvtzs: Object.freeze({
+    signed: true,
+    functionName: 'round_toward_zero',
+    roundingJa: '0 方向（切り捨て）',
+    roundingEn: 'toward zero (truncate)',
+    exampleJa: '1.9 → 1、−1.9 → −1',
+    exampleEn: '1.9 → 1, −1.9 → −1',
+  }),
+  fcvtzu: Object.freeze({
+    signed: false,
+    functionName: 'round_toward_zero',
+    roundingJa: '0 方向（切り捨て）',
+    roundingEn: 'toward zero (truncate)',
+    exampleJa: '1.9 → 1',
+    exampleEn: '1.9 → 1',
+  }),
+  fcvtas: Object.freeze({
+    signed: true,
+    functionName: 'round_nearest_ties_away',
+    roundingJa: '最近接、ちょうど中間は 0 から遠い方',
+    roundingEn: 'nearest, ties away from zero',
+    exampleJa: '1.5 → 2、−1.5 → −2',
+    exampleEn: '1.5 → 2, −1.5 → −2',
+  }),
+  fcvtau: Object.freeze({
+    signed: false,
+    functionName: 'round_nearest_ties_away',
+    roundingJa: '最近接、ちょうど中間は 0 から遠い方',
+    roundingEn: 'nearest, ties away from zero',
+    exampleJa: '1.5 → 2',
+    exampleEn: '1.5 → 2',
+  }),
+  fcvtms: Object.freeze({
+    signed: true,
+    functionName: 'round_toward_minus_infinity',
+    roundingJa: '−∞ 方向',
+    roundingEn: 'toward -infinity (toward minus infinity)',
+    exampleJa: '1.9 → 1、−1.1 → −2',
+    exampleEn: '1.9 → 1, −1.1 → −2',
+  }),
+  fcvtmu: Object.freeze({
+    signed: false,
+    functionName: 'round_toward_minus_infinity',
+    roundingJa: '−∞ 方向',
+    roundingEn: 'toward -infinity (toward minus infinity)',
+    exampleJa: '1.9 → 1',
+    exampleEn: '1.9 → 1',
+  }),
+  fcvtns: Object.freeze({
+    signed: true,
+    functionName: 'round_nearest_ties_even',
+    roundingJa: '最近接、ちょうど中間は偶数',
+    roundingEn: 'nearest, ties to even',
+    exampleJa: '1.5 → 2、2.5 → 2',
+    exampleEn: '1.5 → 2, 2.5 → 2',
+  }),
+  fcvtnu: Object.freeze({
+    signed: false,
+    functionName: 'round_nearest_ties_even',
+    roundingJa: '最近接、ちょうど中間は偶数',
+    roundingEn: 'nearest, ties to even',
+    exampleJa: '1.5 → 2、2.5 → 2',
+    exampleEn: '1.5 → 2, 2.5 → 2',
+  }),
+  fcvtps: Object.freeze({
+    signed: true,
+    functionName: 'round_toward_plus_infinity',
+    roundingJa: '+∞ 方向',
+    roundingEn: 'toward +infinity (toward plus infinity)',
+    exampleJa: '1.1 → 2、−1.9 → −1',
+    exampleEn: '1.1 → 2, −1.9 → −1',
+  }),
+  fcvtpu: Object.freeze({
+    signed: false,
+    functionName: 'round_toward_plus_infinity',
+    roundingJa: '+∞ 方向',
+    roundingEn: 'toward +infinity (toward plus infinity)',
+    exampleJa: '1.1 → 2',
+    exampleEn: '1.1 → 2',
+  }),
+});
+
+function scalarFcvtFloatToIntegerInfo(ops) {
+  if (!Array.isArray(ops) || ops.length !== 2) return null;
+  const [destination, source] = ops;
+  const destinationIsGp = destination?.k === 'reg' &&
+    (destination.cls === 'gp' || destination.cls === 'zr');
+  const sourceIsScalarFloat = source?.k === 'reg' && source.cls === 'fp' &&
+    /^[sd]\d+$/i.test(source.text || '');
+  if (!destinationIsGp || ![32, 64].includes(destination.bits) || destination.shift ||
+      !sourceIsScalarFloat || ![32, 64].includes(source.bits) || source.shift) {
+    return null;
+  }
+  return { destination, source };
+}
+
+function unknownFcvtFloatToInteger(o, mnemonic) {
+  const displayMnemonic = o.mnemonic || mnemonic;
+  o.title = J('小数→整数（未解釈）', 'Unknown float-to-integer form');
+  o.pseudo = o.operands ? displayMnemonic + ' ' + o.operands : displayMnemonic;
+  o.summary = J(
+    displayMnemonic.toUpperCase() + ' のこのオペランド形は解釈できません。無効または未対応の入力では、丸め方・符号・幅を推測しません。',
+    'This ' + displayMnemonic.toUpperCase() + ' operand form is unknown; invalid or unsupported inputs do not guess rounding, signedness, or width.');
+  o.detail.push(J(
+    '説明できるのは、スカラーの W/X 宛先と S/D 浮動小数点ソースを 2 個だけ使う形です。固定小数点の #fbits、SIMD レーン、余分なオペランドは解釈しません。',
+    'Only the two-operand scalar form with a W/X destination and S/D floating-point source is explained. Fixed-point #fbits, SIMD lanes, and extra operands are not interpreted.'));
+  o.terms = [];
+}
+
+function fcvtFloatToIntegerHandler(mnemonic) {
+  return (o, ops) => {
+    const info = FCVT_FLOAT_TO_INTEGER_INFO[mnemonic];
+    const shape = scalarFcvtFloatToIntegerInfo(ops);
+    if (!info || !shape) {
+      unknownFcvtFloatToInteger(o, mnemonic);
+      return;
+    }
+    const { destination, source } = shape;
+    const destinationText = opShort(destination);
+    const sourceText = opShort(source);
+    const destinationType = (info.signed ? 'int' : 'uint') + destination.bits + '_t';
+    const sourcePrecisionJa = source.bits === 64 ? '倍精度' : '単精度';
+    const sourcePrecisionEn = source.bits === 64 ? 'double-precision' : 'single-precision';
+    const signedJa = info.signed ? '符号付き' : '符号なし';
+    const signedEn = info.signed ? 'signed' : 'unsigned';
+    const integerArticleEn = info.signed ? 'a' : 'an';
+    const roundingClauseEn = info.roundingEn.startsWith('nearest')
+      ? 'to the nearest integer (' + info.roundingEn + ')'
+      : info.roundingEn;
+
+    o.title = J(
+      '小数を' + signedJa + '整数にする（' + info.roundingJa + '）',
+      'Float to ' + signedEn + ' integer (' + info.roundingEn + ')');
+    o.pseudo = destinationText + ' = (' + destinationType + ')' + info.functionName + '(' + sourceText + ')';
     o.summary = J(
-      opShort(ops[1]) + ' の小数を整数に変換して ' + opShort(ops[0]) + ' に入れる（小数点以下は切り捨て）。',
-      'Convert the float in ' + opShort(ops[1]) + ' to an integer.');
+      sourceText + ' の' + sourcePrecisionJa + '（' + source.bits + ' ビット）値を' + info.roundingJa + 'に丸め、' +
+        signedJa + '整数（' + destination.bits + ' ビット、' + destinationType + '）として ' + destinationText + ' に入れる。',
+      'Round the ' + sourcePrecisionEn + ' (' + source.bits + '-bit) value in ' + sourceText + ' ' + roundingClauseEn +
+        ', then store it as ' + integerArticleEn + ' ' + signedEn + ' integer (' + destination.bits + '-bit, ' + destinationType + ') in ' + destinationText + '.');
+    o.detail.push(J(
+      'この丸め方は命令名で固定されます。例: ' + info.exampleJa + '。',
+      'The mnemonic fixes this rounding rule. For example: ' + info.exampleEn + '.'));
     o.terms = ['float'];
   };
+}
+for (const mnemonic of Object.keys(FCVT_FLOAT_TO_INTEGER_INFO)) {
+  HANDLERS[mnemonic] = fcvtFloatToIntegerHandler(mnemonic);
 }
 const INT_FLOAT_VECTOR_SHAPES = Object.freeze({
   '4h': Object.freeze({ lanes: 4, bits: 16, precision: 'half' }),
