@@ -92,6 +92,38 @@ function exactStructuralInteger(value, fallback = null) {
   return null;
 }
 
+const ARRAY_NUMERIC_FIELDS = new Set(['sizeBytes', 'alignBytes', 'strideBytes', 'length']);
+
+function needsStructuralReconstruction(descriptor) {
+  if (descriptor.kind === 'struct') return true;
+  if (descriptor.kind != null) return false;
+  return descriptor.offset != null
+    || descriptor.fieldName != null
+    || descriptor.memberType != null
+    || Array.isArray(descriptor.members)
+    || descriptor.sizeBytes != null
+    || descriptor.alignBytes != null;
+}
+
+function mergeCompatibleArrayDescriptors(entityId, descriptors) {
+  const merged = {};
+  for (const descriptor of descriptors) {
+    for (const [key, value] of Object.entries(descriptor)) {
+      if (!(key in merged)) {
+        merged[key] = value;
+        continue;
+      }
+      if (ARRAY_NUMERIC_FIELDS.has(key)) {
+        const left = exactStructuralInteger(merged[key]);
+        const right = exactStructuralInteger(value);
+        if (left != null && right != null && left === right) continue;
+      }
+      if (stableStringify(merged[key]) !== stableStringify(value)) return null;
+    }
+  }
+  return createTypeClaim({ layer: 'structural', entityId, descriptor: merged });
+}
+
 function structuralIntegerWire(value) {
   return value <= MAX_SAFE_LAYOUT_INTEGER ? Number(value) : value.toString();
 }
@@ -179,10 +211,14 @@ function isMemberRecursive(member, entityId, sccMembers = []) {
 function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
   const distinct = [...new Map(claims.map((claim) => [claim.key, claim])).values()]
     .sort((left, right) => left.key.localeCompare(right.key));
-  if (distinct.length === 1 && layer !== 'structural') return distinct[0];
+  if (distinct.length === 1 && (layer !== 'structural' || !needsStructuralReconstruction(distinct[0].descriptor))) return distinct[0];
 
   const descriptors = distinct.map((claim) => claim.descriptor);
   if (descriptors.some((descriptor) => !descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor))) return null;
+
+  if (layer === 'structural' && descriptors.every((descriptor) => descriptor.kind === 'array')) {
+    return mergeCompatibleArrayDescriptors(entityId, descriptors);
+  }
 
   if (layer === 'structural') {
     const rawMembers = [];
