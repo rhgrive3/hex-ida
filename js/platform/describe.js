@@ -10,6 +10,40 @@ function displayFormat(image) {
   return String(image.format || 'Raw binary');
 }
 
+
+function objcClassReferenceTable(image) {
+  const chained = image?.metadata?.chainedFixups || null;
+  const dyld = image?.metadata?.dyldBindings || null;
+  const chainedComplete = chained == null || (chained.complete === true && chained.importsComplete === true && chained.bindingSitesComplete === true);
+  const dyldComplete = dyld == null || dyld.complete === true;
+  let complete = chainedComplete && dyldComplete;
+  const byAddress = new Map();
+  for (const imp of image?.imports || []) {
+    if (typeof imp?.name !== 'string') continue;
+    const match = /^_OBJC_CLASS_\$_([^\s\[\]\x00-\x1f\x7f]+)$/u.exec(imp.name);
+    if (!match) continue;
+    let importAddend;
+    try { importAddend = BigInt(imp.addend ?? 0); } catch { complete = false; continue; }
+    for (const site of imp.sites || []) {
+      let address, siteAddend;
+      try {
+        address = BigInt(site?.address);
+        siteAddend = BigInt(site?.addend ?? 0);
+      } catch { complete = false; continue; }
+      if (address < 0n || importAddend + siteAddend !== 0n) continue;
+      const entry = { schemaVersion:'objc-class-reference/v1', address, className:match[1], symbolName:imp.name, addend:0n,
+        source:site?.kind || imp.source || null, library:imp.library ?? null, ordinal:imp.ordinal ?? null, weak:imp.weak === true };
+      const key = address.toString();
+      const prior = byAddress.get(key);
+      if (prior && (prior.symbolName !== entry.symbolName || prior.library !== entry.library || prior.ordinal !== entry.ordinal || prior.weak !== entry.weak)) {
+        complete = false;
+        byAddress.set(key, null);
+      } else if (!prior) byAddress.set(key, entry);
+    }
+  }
+  return { schemaVersion:'objc-class-reference-table/v1', complete, entries:[...byAddress.values()].filter(Boolean) };
+}
+
 function regionFrom(item, id, kind) {
   const fileSize = BigInt(item.fileSize ?? item.size ?? 0);
   const declaredSize = BigInt(item.size ?? fileSize);
@@ -42,7 +76,12 @@ export function regionsForImage(image, prefix = 'p0_') {
     return segments.map((item, index) => regionFrom(item, `${prefix}s${index}`, 'segment'));
   }
 
-  const regions = usefulSections.map((item, index) => regionFrom(item, `${prefix}s${index}`, 'section'));
+  const objcClassReferences = objcClassReferenceTable(image);
+  const regions = usefulSections.map((item, index) => {
+    const region = regionFrom(item, `${prefix}s${index}`, 'section');
+    if (region.section === '__objc_catlist') region.objcClassReferences = objcClassReferences;
+    return region;
+  });
   const mappedExecSections = usefulSections.filter((s) => sectionHasMappedAddress(s) && !!s.perms?.execute);
 
   let extraIndex = usefulSections.length;
