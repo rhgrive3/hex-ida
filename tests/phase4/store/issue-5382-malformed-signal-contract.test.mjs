@@ -9,7 +9,7 @@ import { ArtifactStorageError } from '../../../js/core/artifacts/contracts.js';
 // TypeError, the storage-error mapping was bypassed, and the finally-cleanup
 // raised its own TypeError over the primary failure.
 
-function fakeIndexedDB({ beforeGetDelivery = null } = {}) {
+function fakeIndexedDB({ beforeGetDelivery = null, getError = null } = {}) {
   const events = [];
   const db = {
     objectStoreNames: { contains: () => false },
@@ -23,6 +23,11 @@ function fakeIndexedDB({ beforeGetDelivery = null } = {}) {
               const request = {};
               queueMicrotask(() => {
                 beforeGetDelivery?.();
+                if (getError) {
+                  request.error = getError;
+                  request.onerror?.();
+                  return;
+                }
                 request.result = undefined;
                 request.onsuccess?.();
               });
@@ -35,7 +40,8 @@ function fakeIndexedDB({ beforeGetDelivery = null } = {}) {
             },
           };
         },
-        abort() {},
+        abortCalls: 0,
+        abort() { this.abortCalls++; },
         oncomplete: null, onerror: null, onabort: null,
       };
       events.push(tx);
@@ -55,8 +61,8 @@ function fakeIndexedDB({ beforeGetDelivery = null } = {}) {
   };
 }
 
-function putWithSignal(signal) {
-  const fake = fakeIndexedDB();
+function putWithSignal(signal, fakeOptions = {}) {
+  const fake = fakeIndexedDB(fakeOptions);
   const backend = new IndexedDbArtifactBackend(fake);
   const outcome = backend.putAtomic(
     { artifactId: 'artifact_5382' },
@@ -92,6 +98,54 @@ test('#5382 a pre-aborted malformed signal still fails closed with the storage c
   const { rejected } = await outcome;
   assert.ok(rejected instanceof ArtifactStorageError);
   assert.equal(rejected.code, 'artifact-storage-signal-invalid');
+});
+
+test('#5382 throwing listener registration is mapped and retires its transaction', async () => {
+  let removeCalls = 0;
+  const signal = {
+    aborted: false,
+    addEventListener() { throw new TypeError('add-failed'); },
+    removeEventListener() { removeCalls++; throw new TypeError('remove-failed'); },
+  };
+  const { fake, outcome } = putWithSignal(signal);
+  const { rejected } = await outcome;
+  assert.ok(rejected instanceof ArtifactStorageError, `expected ArtifactStorageError, got ${rejected?.name}`);
+  assert.equal(rejected.code, 'artifact-storage-failure');
+  assert.equal(rejected.detail.operation, 'put');
+  assert.match(rejected.message, /add-failed/);
+  assert.equal(fake.events.length, 1, 'registration fails only after the transaction is created');
+  assert.equal(fake.events[0].abortCalls, 1, 'registration failure must retire its transaction');
+  assert.equal(removeCalls, 0, 'failed registration must not be treated as a registered listener');
+});
+
+test('#5382 throwing listener cleanup cannot replace a successful put', async () => {
+  let removeCalls = 0;
+  const signal = {
+    aborted: false,
+    addEventListener() {},
+    removeEventListener() { removeCalls++; throw new TypeError('remove-failed'); },
+  };
+  const { outcome } = putWithSignal(signal);
+  const { resolved, rejected } = await outcome;
+  assert.equal(rejected, undefined);
+  assert.equal(resolved.duplicate, false);
+  assert.equal(removeCalls, 1);
+});
+
+test('#5382 throwing listener cleanup cannot replace the primary storage error', async () => {
+  let removeCalls = 0;
+  const signal = {
+    aborted: false,
+    addEventListener() {},
+    removeEventListener() { removeCalls++; throw new TypeError('remove-failed'); },
+  };
+  const { outcome } = putWithSignal(signal, { getError: new Error('get-failed') });
+  const { rejected } = await outcome;
+  assert.ok(rejected instanceof ArtifactStorageError, `expected ArtifactStorageError, got ${rejected?.name}`);
+  assert.equal(rejected.code, 'artifact-storage-failure');
+  assert.equal(rejected.detail.operation, 'put');
+  assert.match(rejected.message, /get-failed/);
+  assert.equal(removeCalls, 1);
 });
 
 test('#5382 real AbortSignal-compatible options keep working end to end', async () => {

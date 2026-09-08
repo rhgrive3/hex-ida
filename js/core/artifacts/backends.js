@@ -298,10 +298,17 @@ export class IndexedDbArtifactBackend {
       tx = db.transaction('artifacts', 'readwrite');
       done = transactionPromise(tx);
       if (signalOrNull) {
-        onAbort = () => {
+        const abortListener = () => {
           try { tx.abort(); this.metrics.transactionAborts++; } catch { /* transaction already completed */ }
         };
-        signalOrNull.addEventListener('abort', onAbort, { once:true });
+        try {
+          signalOrNull.addEventListener('abort', abortListener, { once:true });
+        } catch (error) {
+          try { tx.abort(); this.metrics.transactionAborts++; } catch { /* transaction already completed */ }
+          await absorbTransactionFailure(done);
+          throw error;
+        }
+        onAbort = abortListener;
       }
       const store = tx.objectStore('artifacts');
       const previous = await requestPromise(store.get(id));
@@ -333,7 +340,10 @@ export class IndexedDbArtifactBackend {
       if (error instanceof ArtifactStorageError) throw error;
       throw storageError(error, 'put');
     } finally {
-      if (signalOrNull && onAbort) signalOrNull.removeEventListener('abort', onAbort);
+      if (signalOrNull && onAbort) {
+        try { signalOrNull.removeEventListener('abort', onAbort); }
+        catch { /* cleanup must not replace the primary put outcome */ }
+      }
     }
   }
 
