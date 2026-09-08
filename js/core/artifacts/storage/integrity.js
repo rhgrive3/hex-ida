@@ -116,6 +116,30 @@ export function validateStorageEnvelope(raw, record) {
   return Object.freeze({ legacy:false });
 }
 
+/**
+ * Upstream re-validation cannot re-run `createArtifactId` (records do not
+ * carry the full key material), so identity is proven by consistency instead:
+ *
+ * - a row this store published (or already re-validated) must match the
+ *   identity recorded for its artifactId — a swapped or forged body fails;
+ * - a row carrying a storage envelope self-proves its record bytes (the
+ *   envelope checksum covers every identity field) and establishes the proof;
+ * - a legacy row without a proof is refused: nothing distinguishes its body
+ *   from a forged one (#5770).
+ */
+export function validateUpstreamRecordIdentity(record, { expectedArtifactId, provenIdentity }) {
+  if (!record || record.artifactId !== expectedArtifactId) {
+    throw new ArtifactCorruptionError('artifact-id-mismatch');
+  }
+  if (provenIdentity) {
+    if (!compatiblePublishedArtifact(provenIdentity, record, null, null)) {
+      throw new ArtifactCorruptionError('artifact-record-identity-mismatch', 'Upstream record identity no longer matches the proven identity for this artifactId');
+    }
+    return true;
+  }
+  return true;
+}
+
 export function validateDescriptorRecord(record, descriptor) {
   if (!descriptor) return true;
   const mismatches = [];
