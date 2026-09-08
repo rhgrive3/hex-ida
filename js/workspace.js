@@ -1,6 +1,6 @@
 import { Backend } from './backend.js';
 import { SymbolIndex } from './symbols.js';
-import { createHexProject, exportHexProject, importHexProject, serializeHexProject, parseHexProject } from './project/index.js';
+import { createHexProject, exportHexProject, importHexProject, serializeHexProject, parseHexProject, normalizeNavigation } from './project/index.js';
 import { runDiffInWorker } from './diff/runtime.js';
 import { createCompactFunctionSet, demoteLowInformationAbsenceClaims } from './diff/compact-function-set.js';
 import { stripSecrets } from './ai/session-core/index.js';
@@ -121,6 +121,10 @@ export function snapshotWorkspace(app, identity){
 export function applyWorkspaceProject(app, project){
   const notes=app.notes;
   if(!notes||!notes.id)throw new Error('notes-unavailable');
+  // Keep all navigation validation ahead of the first persistent mutation.
+  // Import callers already parse projects, but this exported apply boundary is
+  // also used directly by local restore and integration code (#5953).
+  const navigation=normalizeNavigation(project.navigation??{});
   const replaceVars = project.user?.varsPresent !== false;
   notes.names.clear();notes.comments.clear();notes.types.clear();if(replaceVars)notes.vars.clear();
   for(const entry of project.user.names||[])if(entry?.address!=null&&entry.value)notes.names.set(BigInt(entry.address).toString(),String(entry.value));
@@ -162,27 +166,37 @@ export function applyWorkspaceProject(app, project){
     if(s.textSize && app.prefs) app.prefs.textSize = s.textSize;
   }
   // Restore last query
-  if(project.navigation?.lastQuery){
-    app.lastGoal = { text: project.navigation.lastQuery };
+  if(navigation.lastQuery){
+    app.lastGoal = { text: navigation.lastQuery };
   }
   // Restore navigation history & cursor
-  const history=project.navigation?.history||[];
+  const history=navigation.history||[];
   if(app.navigation&&history.length){
     app.navigation.entries=history.slice(-app.navigation.limit);
     const droppedHistoryCount=history.length-app.navigation.entries.length;
-    const cursor = project.navigation?.cursorIndex;
+    const cursor = navigation.cursorIndex;
     app.navigation.index = (cursor != null && !isNaN(Number(cursor)))
       ? Math.max(0, Math.min(app.navigation.entries.length - 1, Number(cursor)-droppedHistoryCount))
       : app.navigation.entries.length - 1;
     app.navigation.onChange?.(app.navigation.snapshot());
   }
   // Restore currentFunction if present and within valid range
-  if(project.navigation?.currentFunction != null){
-    const curAddr = BigInt(project.navigation.currentFunction);
-    const region = (app.regionForAddress ? app.regionForAddress(curAddr) : null) || app.codeRegion?.();
-    if(region && curAddr >= region.vmAddr && curAddr < region.vmAddr + region.size){
-      app.store?.set?.({ currentAddress: curAddr });
-      app.viewer?.goToAddress?.(curAddr);
+  if(navigation.currentFunction != null){
+    const curAddr = navigation.currentFunction;
+    if(typeof app.goToAddress === 'function'){
+      // Saved positions can live in any region of the active slice. Route the
+      // restore through the app-level navigation so the owning region gets
+      // selected (secondary code sections, data regions, ...); invalid
+      // addresses stay silently skipped exactly as before (#5944).
+      const regions=app.store?.get?.('regions')||[];
+      const target=regions.find((r)=>r.size>0n&&curAddr>=r.vmAddr&&curAddr<r.vmAddr+r.size);
+      if(target)app.goToAddress(curAddr,{history:false});
+    }else{
+      const region = (app.regionForAddress ? app.regionForAddress(curAddr) : null) || app.codeRegion?.();
+      if(region && curAddr >= region.vmAddr && curAddr < region.vmAddr + region.size){
+        app.store?.set?.({ currentAddress: curAddr });
+        app.viewer?.goToAddress?.(curAddr);
+      }
     }
   }
   // Restore bookmarks

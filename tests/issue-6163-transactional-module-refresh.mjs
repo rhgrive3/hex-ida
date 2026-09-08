@@ -33,7 +33,7 @@ test('issue #6163 - invalid replacement base rejects refresh and preserves the o
     [{ id: 'm1', runtimeBase: 1.5, runtimeSize: 0x100, staticBase: 0x4000, binaryId: 'bin-A', identityState: 'exact' }],
   ]);
   const provider = new DebuggerProvider(adapter);
-  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: 's1' }, { connect: false });
+  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: 's1' }, { connect: true });
   const before = session.modules.get('m1');
   assert.equal(before.generation, 1);
 
@@ -63,7 +63,7 @@ test('issue #6163 - mid-snapshot failure must not partially commit earlier modul
     ],
   ]);
   const provider = new DebuggerProvider(adapter);
-  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: 's2' }, { connect: false });
+  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: 's2' }, { connect: true });
 
   adapter.advance();
   await assert.rejects(
@@ -89,7 +89,7 @@ test('issue #6163 - zero-size, negative address, and invalid staticBase snapshot
       [malformed],
     ]);
     const provider = new DebuggerProvider(adapter);
-    const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: 's3' }, { connect: false });
+    const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: 's3' }, { connect: true });
 
     adapter.advance();
     await assert.rejects(() => session.facets.debugger.refreshModules(), (error) => error.code === code);
@@ -112,7 +112,7 @@ test('issue #6163 - fully valid snapshot still applies add/remove/change atomica
     ],
   ]);
   const provider = new DebuggerProvider(adapter);
-  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: 's4' }, { connect: false });
+  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: 's4' }, { connect: true });
   assert.deepEqual([...session.modules.active().map((m) => m.bindingKey)].sort(), ['a', 'b']);
 
   adapter.advance();

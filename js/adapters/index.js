@@ -19,6 +19,27 @@ function invokeListener(fn, packet) {
   } catch { /* listener isolation */ }
 }
 
+// Execution budgets measure elapsed time, so they need a monotonic clock:
+// Date.now() jumps with NTP/host/VM corrections and would defer or fire the
+// sandbox resume timeout at the wrong moment (#6075).
+function defaultMonotonicNow() {
+  try {
+    const perf = globalThis.performance;
+    if (typeof perf?.now === 'function') {
+      const now = perf.now();
+      if (Number.isFinite(now)) return now;
+    }
+  } catch { /* try the next monotonic source */ }
+  try {
+    const hrtime = globalThis.process?.hrtime;
+    if (typeof hrtime?.bigint === 'function') {
+      const now = Number(hrtime.bigint()) / 1e6;
+      if (Number.isFinite(now)) return now;
+    }
+  } catch { /* fail closed below */ }
+  throw new DebugAdapterError('monotonic-clock-unavailable', 'a monotonic clock is required for local sandbox execution');
+}
+
 function cloneRegisters(emu) {
   const out = {};
   for (let i = 0; i <= 30; i++) out[`x${i}`] = emu.get(`x${i}`);
@@ -279,14 +300,22 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const signal = resumeSignal(options.signal);
     const onProgress = resumeProgressCallback(options.onProgress);
     const traceState = this.traceState;
+    if (sandbox.emulator.stopped === 'paused' || sandbox.emulator.stopped === 'cancelled') sandbox.emulator.stopped = null;
+    const maxSteps = boundedInteger(options.maxSteps, 20000, 1, 1000000, 'maxSteps');
+    const timeoutMs = options.timeoutMs == null ? null : boundedInteger(options.timeoutMs, 2000, 10, 30000, 'timeoutMs');
+    // Injectable per call or at construction time (tests, embedders) so the
+    // budget is observable without relying on the wall clock (#6075).
+    const monotonicNow = typeof options.monotonicNow === 'function'
+      ? options.monotonicNow
+      : (typeof this.options?.monotonicNow === 'function' ? this.options.monotonicNow : defaultMonotonicNow);
+    // A clock is only required when the caller requested an elapsed-time
+    // budget; timeout-free resumes preserve their existing behavior even in a
+    // runtime without a monotonic clock implementation.
+    const started = timeoutMs == null ? null : monotonicNow();
     const run = { sandbox, epoch:this.epoch, cancelled:!!(signal && signal.aborted), paused:false, kind:'resume', memoryEvents:[] };
     traceState.runMemoryEvents = run.memoryEvents;
     this.activeRun = run;
     this.cancelled = run.cancelled;
-    if (sandbox.emulator.stopped === 'paused') sandbox.emulator.stopped = null;
-    const maxSteps = boundedInteger(options.maxSteps, 20000, 1, 1000000, 'maxSteps');
-    const timeoutMs = options.timeoutMs == null ? null : boundedInteger(options.timeoutMs, 2000, 10, 30000, 'timeoutMs');
-    const started = Date.now();
     const onAbort = () => {
       run.cancelled = true;
       run.sandbox.emulator.stopped = 'cancelled';
@@ -302,7 +331,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       const result = await sandbox.run({ maxSteps, onProgress:(n) => {
         if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
         else if (run.paused) sandbox.emulator.stopped = 'paused';
-        else if (timeoutMs != null && Date.now() - started >= timeoutMs) sandbox.emulator.stopped = 'timeout';
+        else if (timeoutMs != null && monotonicNow() - started >= timeoutMs) sandbox.emulator.stopped = 'timeout';
         if (onProgress) onProgress(n);
       } });
       if (this.activeRun !== run || sandbox !== this.sandbox || run.epoch !== this.epoch) {
@@ -418,8 +447,14 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       }
     }
     if (data.length > WRITE_LIMIT) throw new DebugAdapterError('too-large','memory write exceeds 256 KiB');
+    // The address is validated before the empty-data shortcut: an empty write
+    // must not succeed for a malformed/negative address (#6077).
+    const start = asAddress(address);
+    // RuntimeMemoryMap intentionally rejects a zero-byte size.  Empty writes
+    // retain their no-op semantics after address validation and therefore do
+    // not perform a mapping/permission assertion.
     if (!data.length) return { written:0 };
-    const start = asAddress(address); memoryMap.assert(start,data.length,'write'); const emu = sandbox.emulator;
+    memoryMap.assert(start,data.length,'write'); const emu = sandbox.emulator;
     traceState.suppressMemory = Number(traceState.suppressMemory || 0) + 1;
     try {
       for (let i=0;i<data.length;i+=8) {
@@ -525,16 +560,24 @@ export class RemoteDebugAdapter extends DebugAdapter {
   }
   nextEpoch() { return this.setEpoch(this.epoch + 1); }
   onEvent(fn) { this.eventListeners.add(fn); return () => this.eventListeners.delete(fn); }
+  requireConnected() {
+    // Every remote request is gated on a completed connect handshake. Before
+    // that, this.capabilities still holds the caller's local allow-list and
+    // the remote advertisement is unverified: sending a wire request here
+    // would bypass negotiation entirely (#5807).
+    if (!this.connected) throw new DebugAdapterError('not-connected', 'connect the remote debug adapter before calling remote methods');
+  }
   call(method, params = {}, options = {}) {
     if (!REMOTE_CALL_METHODS.has(method)) throw new DebugAdapterError('unsupported-method', `remote debug method is not exposed: ${method}`);
+    this.requireConnected();
     this.requireMethod(method); return this.protocol.request(method, params, { ...options, epoch:this.epoch });
   }
   attach(spec,requestOptions={}){return this.call('attach',spec,requestOptions)}
   launch(spec,requestOptions={}){return this.call('launch',spec,requestOptions)}
-  pause(options={}){const {signal,...params}=options||{};return this.call('pause',params,{signal})}
-  resume(options={}){const {signal,...params}=options||{};return this.call('resume',params,{signal})}
+  pause(options={}){return this.call('pause',{}, { signal:options?.signal })}
+  resume(options={}){return this.call('resume',{}, { signal:options?.signal })}
   stepInto(options={}){return this.call('stepInto',{},options)} stepOver(options={}){return this.call('stepOver',{},options)} stepOut(options={}){return this.call('stepOut',{},options)}
-  setBreakpoint(spec){const bp=normalizeBreakpoint(spec); const cap=bp.kind==='address'?'breakpointAddress':bp.kind==='function'?'breakpointFunction':bp.kind==='conditional'?'breakpointConditional':'watchpointMemory'; this.require(cap); return this.protocol.request('setBreakpoint',bp,{epoch:this.epoch})}
+  setBreakpoint(spec){const bp=normalizeBreakpoint(spec); const cap=bp.kind==='address'?'breakpointAddress':bp.kind==='function'?'breakpointFunction':bp.kind==='conditional'?'breakpointConditional':'watchpointMemory'; this.requireConnected(); this.require(cap); return this.protocol.request('setBreakpoint',bp,{epoch:this.epoch})}
   removeBreakpoint(id){return this.call('removeBreakpoint',{id:breakpointRemovalId(id)})
   }
   async listBreakpoints(){return remoteArray(await this.call('listBreakpoints'),'breakpoints',REMOTE_ARRAY_LIMITS.breakpoints,'breakpoints')}
@@ -550,8 +593,8 @@ export class RemoteDebugAdapter extends DebugAdapter {
   async evaluate(expression,context){const text=String(expression); if(text.length>4096)throw new DebugAdapterError('too-large','remote evaluate expression exceeds 4096 characters'); return this.call('evaluate',{expression:text,context})}
   async trace(options={}){const {signal,...params}=options||{};return remoteTrace(await this.call('trace',params,{signal}))}
   watchMemory(spec){return this.call('watchMemory',normalizeBreakpoint({...spec,kind:'memory'}))}
-  getObjCRuntimeInfo(request={}){this.require('objcRuntime'); return this.protocol.request('objcRuntime',request,{epoch:this.epoch})}
-  getSwiftRuntimeInfo(request={}){this.require('swiftRuntime'); return this.protocol.request('swiftRuntime',request,{epoch:this.epoch})}
+  getObjCRuntimeInfo(request={}){this.requireConnected(); this.require('objcRuntime'); return this.protocol.request('objcRuntime',request,{epoch:this.epoch})}
+  getSwiftRuntimeInfo(request={}){this.requireConnected(); this.require('swiftRuntime'); return this.protocol.request('swiftRuntime',request,{epoch:this.epoch})}
 }
 
 export class LLDBCompatibleAdapter extends RemoteDebugAdapter {
