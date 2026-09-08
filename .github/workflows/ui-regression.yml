@@ -76,6 +76,7 @@ jobs:
           const suites = [
             ['architecture', 'npm run ui:test'],
             ['browser-regression', 'npm run browser'],
+            ['workspace-settings', 'node tests/ui/project-settings-import.browser.mjs'],
             ['analysis-navigation', 'node tests/ui/analysis-navigation.mjs'],
             ['accessibility', 'node tests/ui/accessibility.mjs'],
             ['ai-browser', 'npm run ai:browser'],

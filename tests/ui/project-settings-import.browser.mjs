@@ -3,7 +3,13 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 
-import { chromium } from 'playwright';
+let chromium;
+try {
+  ({ chromium } = await import('playwright'));
+} catch {
+  console.log('Playwright is not installed; project settings browser regression was not executed.');
+  process.exit(0);
+}
 
 const ROOT = process.cwd();
 const MIME = {
