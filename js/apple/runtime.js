@@ -136,6 +136,13 @@ export function resolveAppleCall(index, call = {}) {
       selectorResolution = resolveSelectorStub({ address: call.stubAddress, symbol: name, selectorIndex: index.selectors, selectorFor: call.selectorFor });
       selector = selectorResolution.selector;
     }
+    // Runtime helpers (objc_retain/release/storeStrong/getProperty, …) are
+    // plain C calls that merely classify as objc: without selector evidence,
+    // IMP candidates, or a msgSend entry point there is no message dispatch,
+    // and converting them to kind:'message' erases a known target (#5631).
+    if (!selector && !imp?.candidates?.length && !isObjcMsgSendSymbol(name) && call.kind !== 'message') {
+      return { runtime:'objc', kind: call.target != null ? (call.kind || 'direct') : 'indirect', resolved: call.target != null ? { target: call.target, name: name || null } : null, candidates: [] };
+    }
     const message = selector ? objcMessage(index?.objc, {
       receiver: call.receiver || 'receiver', receiverType: call.receiverType || null,
       selector, args: call.args || [], classMethod: !!call.classMethod,
