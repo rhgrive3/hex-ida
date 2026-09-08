@@ -194,3 +194,34 @@ test('#5915 page and cost are detached immutable response metadata', async () =>
   assert.equal(costOwned.budget.used, 1);
   assert.equal(costOwned.buckets.get('query'), 1);
 });
+
+test('#5915 status.cost fallback supports detached Map and typed-array metadata', async () => {
+  const statusCostOwned = {
+    buckets: new Map([['query', { used: 2 }]]),
+    samples: new Uint8Array([3, 4]),
+  };
+  const metadataAdapter = {
+    async currentIdentity() {
+      return { binaryId: 'bin-5915', projectRevision: 0, analysisEpoch: 1, artifactVersions: {} };
+    },
+    async semanticIR() {
+      return {
+        value: { ok: true },
+        status: { completeness: 'complete', cost: statusCostOwned },
+      };
+    },
+  };
+  const api = new AnalysisQueryAPI(metadataAdapter);
+  const snap = await api.snapshot();
+  const result = await api.semanticIR(snap, 'fn:0');
+
+  assert.equal(result.cost.buckets.get('query').used, 2);
+  assert.deepEqual([...result.cost.samples], [3, 4]);
+  assert.equal(result.status.cost.buckets.get('query').used, 2);
+  assert.throws(() => { result.cost.buckets.set('query', { used: 9 }); }, /analysis-query-value-readonly/);
+  assert.throws(() => { result.cost.buckets.get('query').used = 9; }, TypeError);
+  assert.throws(() => { result.cost.samples[0] = 9; }, /analysis-query-value-readonly/);
+
+  assert.equal(statusCostOwned.buckets.get('query').used, 2);
+  assert.deepEqual([...statusCostOwned.samples], [3, 4]);
+});

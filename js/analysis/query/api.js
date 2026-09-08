@@ -304,13 +304,14 @@ export class AnalysisQueryAPI {
     }
 
     const completeness = completenessOf(result);
+    const rawStatus = result?.status;
     const value = frozenQueryValue(result?.value !== undefined ? result.value : result);
     const status = Object.freeze({
-      ...(typeof result?.status === "object" && result.status !== null ? frozenQueryValue(result.status) : {}),
+      ...(typeof rawStatus === "object" && rawStatus !== null ? frozenQueryValue(rawStatus) : {}),
       completeness,
     });
     const page = frozenQueryValue(result?.page ?? null);
-    const cost = frozenQueryValue(result?.cost ?? status.cost ?? null);
+    const cost = frozenQueryValue(result?.cost ?? rawStatus?.cost ?? null);
     return Object.freeze({
       snapshotId: snapshot.snapshotId,
       analysisEpoch: snapshot.analysisEpoch,
