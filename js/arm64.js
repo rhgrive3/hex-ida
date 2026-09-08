@@ -1419,7 +1419,118 @@ HANDLERS.bti = (o) => {
     'Marks a legitimate branch target, so an attacker cannot jump into the middle of code.');
   o.terms = ['security'];
 };
-HANDLERS.hint = HANDLERS.bti;
+
+// HINT is an immediate-selected architectural hint space.  Only the finite
+// aliases below are given a specific presentation; an unknown or malformed
+// immediate must not be promoted to BTI merely because it uses the HINT
+// mnemonic.
+const GENERIC_HINT_INFO = new Map([
+  [0, {
+    titleJa: 'NOP ヒント', titleEn: 'NOP hint',
+    summaryJa: 'HINT #0 は何もしない NOP です。BTI の目印ではありません。',
+    summaryEn: 'HINT #0 is the NOP hint; it does not mark a branch target.',
+    terms: [],
+  }],
+  [1, {
+    titleJa: '実行時間を譲るヒント', titleEn: 'Yield hint',
+    summaryJa: 'HINT #1 (YIELD) は、ほかの処理に実行時間を譲るヒントです。BTI ではありません。',
+    summaryEn: 'HINT #1 (YIELD) lets another thread or processor run; it is not BTI.',
+    terms: ['thread'],
+  }],
+  [2, {
+    titleJa: 'イベント待ち', titleEn: 'Wait for event hint',
+    summaryJa: 'HINT #2 (WFE) はイベントが来るまで待つヒントです。',
+    summaryEn: 'HINT #2 (WFE) waits for an event.',
+    terms: ['thread'],
+  }],
+  [3, {
+    titleJa: '割り込み待ち', titleEn: 'Wait for interrupt hint',
+    summaryJa: 'HINT #3 (WFI) は割り込みが来るまで待つヒントです。',
+    summaryEn: 'HINT #3 (WFI) waits for an interrupt.',
+    terms: [],
+  }],
+  [4, {
+    titleJa: 'イベントを送るヒント', titleEn: 'Send event hint',
+    summaryJa: 'HINT #4 (SEV) はシステム全体へイベントを送るヒントです。',
+    summaryEn: 'HINT #4 (SEV) sends an event to the system.',
+    terms: ['thread'],
+  }],
+  [5, {
+    titleJa: 'ローカルイベントを送るヒント', titleEn: 'Send local event hint',
+    summaryJa: 'HINT #5 (SEVL) は現在のプロセッサへイベントを送るヒントです。',
+    summaryEn: 'HINT #5 (SEVL) sends a local event on the current processor.',
+    terms: [],
+  }],
+  [16, {
+    titleJa: 'エラー同期ヒント', titleEn: 'Error synchronization hint',
+    summaryJa: 'HINT #16 (ESB) はエラー同期のためのヒントです。',
+    summaryEn: 'HINT #16 (ESB) is an error-synchronization hint.',
+    terms: [],
+  }],
+  [20, {
+    titleJa: '投機実行を制約するヒント', titleEn: 'Speculation constraint hint',
+    summaryJa: 'HINT #20 (CSDB) は投機的なデータ利用を制約するヒントです。',
+    summaryEn: 'HINT #20 (CSDB) constrains speculative data use.',
+    terms: ['security'],
+  }],
+]);
+
+const BTI_HINT_NAMES = new Map([
+  [32, 'BTI'],
+  [34, 'BTI c'],
+  [36, 'BTI j'],
+  [38, 'BTI jc'],
+]);
+
+function hintOperandText(ops) {
+  if (!Array.isArray(ops)) return '';
+  return ops.map((op) => typeof op?.text === 'string' ? op.text.trim() : opShort(op)).join(', ');
+}
+
+function hintImmediate(ops) {
+  if (!Array.isArray(ops) || ops.length !== 1) return null;
+  const operand = ops[0];
+  // parseOperands folds a trailing shift/extend token into the preceding
+  // operand.  HINT's selector is a plain imm7; treating that decorated shape
+  // as the selector would turn malformed text such as "#32, lsl #1" into BTI.
+  if (operand?.k !== 'imm' || typeof operand.value !== 'bigint' || operand.shift) return null;
+  if (operand.value < 0n || operand.value > 0x7fn) return null;
+  return Number(operand.value);
+}
+
+HANDLERS.hint = (o, ops) => {
+  const raw = hintOperandText(ops);
+  const display = raw || '<immediate unavailable>';
+  const immediate = hintImmediate(ops);
+  const btiName = immediate == null ? null : BTI_HINT_NAMES.get(immediate);
+  o.pseudo = 'hint(' + raw + ')';
+
+  if (btiName) {
+    o.title = J('分岐先を示す目印（' + btiName + '）', 'Branch target marker (' + btiName + ')');
+    o.summary = J(
+      'HINT #' + immediate + ' は ' + btiName + ' のエンコーディングで、正規の分岐先を示す目印です。',
+      'HINT #' + immediate + ' is the ' + btiName + ' encoding, marking a legitimate branch target.');
+    o.terms = ['security'];
+    return;
+  }
+
+  const known = immediate == null ? null : GENERIC_HINT_INFO.get(immediate);
+  if (known) {
+    o.title = J(known.titleJa, known.titleEn);
+    o.summary = J(known.summaryJa, known.summaryEn);
+    o.terms = known.terms.slice();
+    return;
+  }
+
+  o.title = J('アーキテクチャのヒント', 'Architectural hint');
+  o.summary = J(
+    'HINT ' + display + ' はアーキテクチャのヒントです。具体的な割り当ては解釈せず、BTI と決めつけません。',
+    'HINT ' + display + ' is an architectural hint; its allocation is not interpreted here, so it is not assumed to be BTI.');
+  o.detail.push(J(
+    'HINT の即値には複数の割り当てと未割り当て値があります。即値が解釈できないときは、特定の動作を断定しません。',
+    'The HINT immediate has multiple allocated meanings and unallocated values; when it is not interpreted here, no specific behavior is asserted.'));
+  o.terms = ['immediate'];
+};
 
 for (const n of ['paciasp', 'pacibsp']) {
   HANDLERS[n] = (o) => {
