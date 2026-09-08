@@ -8,12 +8,28 @@ export const WIRE_TAG = '__hex_wire_type__';
 export const BIGINT_TAG = 'bigint';
 export const BYTES_TAG = 'bytes-base64';
 
+function utf8ByteLength(json) {
+  if (typeof Buffer !== 'undefined' && typeof Buffer.byteLength === 'function') return Buffer.byteLength(json, 'utf8');
+  // Exact UTF-8 length without TextEncoder: surrogate pairs are 4 bytes,
+  // unpaired surrogates count as their 3-byte replacement character, so the
+  // byte budget means the same thing on every runtime (#5939).
+  let bytes = 0;
+  for (let i = 0; i < json.length; i += 1) {
+    const code = json.charCodeAt(i);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && json.charCodeAt(i + 1) >= 0xdc00 && json.charCodeAt(i + 1) <= 0xdfff) { bytes += 4; i += 1; }
+    else bytes += 3;
+  }
+  return bytes;
+}
+
 function jsonByteSize(value) {
   let json;
   try { json = JSON.stringify(value); }
   catch { throw new DebugAdapterError('malformed-packet', 'remote packet is not serializable'); }
   if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(json).byteLength;
-  return json.length * 2;
+  return utf8ByteLength(json);
 }
 
 function bytesToBase64(bytes) {
