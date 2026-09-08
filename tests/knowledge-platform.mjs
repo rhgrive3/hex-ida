@@ -1,3 +1,4 @@
+import './issue-7084-knowledge-transaction.mjs';
 import assert from 'node:assert/strict';
 import { KnowledgeDB, fingerprintVendors } from '../js/knowledge/index.js';
 

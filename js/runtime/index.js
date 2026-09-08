@@ -170,7 +170,13 @@ export class RuntimeAnalysisPlatform {
   }
   async verifyHypothesis(hypothesis, options = {}) {
     const session = this.currentSession();
-    const experiment = compileExperiment(hypothesis,{ ...options,binaryHash:session.binaryHash });
+    // A hypothesis explicitly bound to another binary must never be re-labeled
+    // onto the active session: the compiled experiment would silently pass the
+    // runExperiment mismatch guard and produce evidence for the wrong binary.
+    if (hypothesis?.binaryHash && session.binaryHash && hypothesis.binaryHash !== session.binaryHash) {
+      throw new DebugAdapterError('binary-version-mismatch','hypothesis binary hash does not match the active runtime session',{hypothesisHash:hypothesis.binaryHash,sessionHash:session.binaryHash});
+    }
+    const experiment = compileExperiment(hypothesis,{ ...options,binaryHash:session.binaryHash || options.binaryHash || hypothesis?.binaryHash || null });
     return this.runExperiment(experiment, options);
   }
   async verifyFunction(functionAddress, options = {}) {
@@ -194,7 +200,8 @@ export class RuntimeAnalysisPlatform {
         await adapter.launch(launchSpec,{signal:operation.signal});
       } else if (adapter.capabilities.attach && options.attach) {
         await adapter.attach(options.attach,{signal:operation.signal});
-      } else if (!adapter.capabilities.attach && !adapter.capabilities.traceFunction) {
+      } else if (!adapter.capabilities.traceFunction) {
+        if (adapter.capabilities.attach) throw new DebugAdapterError('attach-target-required','adapter requires an attach target before tracing');
         throw new DebugAdapterError('unsupported','adapter cannot launch, attach, or trace an existing target');
       }
       if (adapter.capabilities.resume) {

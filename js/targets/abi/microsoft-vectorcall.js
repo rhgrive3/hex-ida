@@ -4,6 +4,7 @@ import { aggregateLayoutDescriptorPresent, canonicalAggregateLayout } from './ag
 
 const INTEGER_ARGUMENT_REGISTERS = Object.freeze(['rcx','rdx','r8','r9']);
 const VECTOR_REGISTER_COUNT = 6;
+const VECTOR_ARGUMENT_REGISTERS = Object.freeze(Array.from({ length:VECTOR_REGISTER_COUNT }, (_value,index) => `xmm${index}`));
 const VECTORCALL_NAMES = new Set(['vectorcall','microsoft-vectorcall']);
 
 function parameterList(prototype) {
@@ -88,7 +89,12 @@ function hvaInfo(parameter, classified) {
   const rawElementBits = Number(canonical?.members?.[0]?.bits
     ?? parameter?.elementBits ?? parameter?.memberBits
     ?? (Array.isArray(rawMembers) ? rawMembers[0]?.bits ?? rawMembers[0]?.sizeBits : null));
-  const elementBits = Number.isSafeInteger(rawElementBits) && rawElementBits >= 64 && rawElementBits <= 256
+  // Microsoft x64 __vectorcall: a vector type is a floating-point type
+  // (float, double) OR a SIMD vector type, so an HVA of 32-bit floats is
+  // valid. Elements pass in XMM registers; the previous 64-bit minimum
+  // demoted every float HVA to unproven.
+  const elementBits = Number.isSafeInteger(rawElementBits) && rawElementBits >= 32 && rawElementBits <= 256
+    && (rawElementBits === 32 || rawElementBits === 64 || rawElementBits === 128 || rawElementBits === 256)
     ? rawElementBits : 0;
   const elementBytes = canonical?.members?.[0]?.bytes
     ?? (elementBits > 0 ? Math.ceil(elementBits / 8) : 0);
@@ -115,6 +121,19 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
   const prototype = callPrototypeOf(instruction, options);
   const convention = conventionOf(prototype, options);
   if (convention && !VECTORCALL_NAMES.has(convention)) return unsupported(convention);
+  /* MSVC rejects variadic `__vectorcall` prototypes outright ("can't use a
+   * vararg variable length argument list"), so the combination is a
+   * contradictory prototype, not a partially known ABI: fail closed instead of
+   * publishing exact fixed-parameter placements for a call that cannot exist. */
+  if (prototype?.variadic === true || prototype?.varargs === true) {
+    return {
+      srcs:[], arguments:[], stackArguments:[], stackArgsUnknown:true,
+      stackArgsMayContainPointers:true, partial:true, unsupported:true,
+      reason:'microsoft-vectorcall-variadic-unsupported',
+      callingConvention:convention || 'vectorcall',
+      evidence:'unsupported-microsoft-vectorcall-variadic',
+    };
+  }
   const parameters = parameterList(prototype);
   if (!parameters) {
     const srcs = [
@@ -132,16 +151,41 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
   const srcs = [];
   const arguments_ = [];
   const stackArguments = [];
-  let vectorIndex = 0;
+  /* __vectorcall register allocation (#5586): the first six argument
+   * positions carrying vector/FP values map to their own position's
+   * XMM/YMM0..5 and are reserved up front — even before any HVA runs — so a
+   * later positional vector can never have its register stolen by an
+   * earlier HVA. HVA members then fill the still-unused vector registers
+   * left to right; an HVA that cannot fit the unused registers passes by
+   * reference. */
+  const vectorUsed = Array.from({ length:VECTOR_REGISTER_COUNT }, () => false);
+  parameters.forEach((parameter, position) => {
+    if (position >= VECTOR_REGISTER_COUNT) return;
+    const classified = parameterClass(parameter);
+    const hva = hvaInfo(parameter, classified);
+    if (!hva.hva && (classified.vector ? classified.bits <= 256 : classified.floating)) {
+      vectorUsed[position] = true;
+    }
+  });
+  const nextFreeVectorPositions = (count) => {
+    const positions = [];
+    for (let cursor = 0; cursor < VECTOR_REGISTER_COUNT && positions.length < count; cursor++) {
+      if (!vectorUsed[cursor]) positions.push(cursor);
+    }
+    return positions;
+  };
   let stackIndex = 0;
   let stackArgsMayContainPointers = false;
   let aggregatePartial = false;
+  let vectorAllocationUnknown = false;
 
   parameters.forEach((parameter, index) => {
     const classified = parameterClass(parameter);
     const hva = hvaInfo(parameter, classified);
+    const uncertainHvaBefore = vectorAllocationUnknown;
     if (hva.metadataInvalid) {
       aggregatePartial = true;
+      if (hva.hva) vectorAllocationUnknown = true;
       arguments_.push({ index, location:'unknown', abiClass:'aggregate-metadata-unproven', aggregate:true,
         partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
         reason:'aggregate-hfa-hva-metadata-invalid' });
@@ -149,6 +193,7 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
     }
     if (hva.hva && !hva.layoutProven) {
       aggregatePartial = true;
+      if (hva.hva) vectorAllocationUnknown = true;
       arguments_.push({
         index, location:'unknown', abiClass:'hva-unproven', aggregate:true,
         partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
@@ -164,15 +209,39 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
       const physicalBytes = hva.hva ? hva.bytes : Math.ceil(classified.bits / 8);
       if (hva.hva && physicalBytes > Math.ceil(classified.bits / 8)) {
         aggregatePartial = true;
+        if (hva.hva) vectorAllocationUnknown = true;
         arguments_.push({ index, location:'unknown', abiClass:'hva-padding-register-layout-unproven', aggregate:true,
           partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
           reason:'microsoft-vectorcall-padded-hva-register-layout-not-represented' });
         return;
       }
-      if (elementBits <= 256 && vectorIndex + regsNeeded <= VECTOR_REGISTER_COUNT) {
+      if (uncertainHvaBefore && hva.hva) {
+        aggregatePartial = true;
+        const candidateRegisters = VECTOR_ARGUMENT_REGISTERS.filter((_reg, position) => !vectorUsed[position]);
+        arguments_.push({
+          index, location:'unknown', candidateRegisters, stackPossible:true,
+          abiClass:'hva-after-unproven-hva', aggregate:true, pointer:true,
+          bits:classified.bits, partial:true, possible:true, mustUse:false,
+          exact:false, certainty:'unknown',
+          reason:'microsoft-vectorcall-hva-register-allocation-uncertain',
+        });
+        stackArgsMayContainPointers = true;
+        vectorAllocationUnknown = true;
+        return;
+      }
+      /* A positional vector/FP value always has its own position's register
+       * available (reserved in the pre-pass); positions beyond the six
+       * vector slots never had a register and keep the by-reference stack
+       * fallback. HVA members take the unused registers; when too few
+       * remain the HVA passes by reference. */
+      const freePositions = hva.hva
+        ? nextFreeVectorPositions(regsNeeded)
+        : (index < VECTOR_REGISTER_COUNT ? [index] : []);
+      if (elementBits <= 256 && freePositions.length === regsNeeded) {
         const regs = [];
-        for (let n = 0; n < regsNeeded; n++) {
-          const reg = vectorRegister(vectorIndex++, elementBits);
+        for (const registerPosition of freePositions) {
+          vectorUsed[registerPosition] = true;
+          const reg = vectorRegister(registerPosition, elementBits);
           regs.push(reg);
           appendSource(srcs, reg, elementBits, { purpose:hva.hva?'vectorcall-hva':'vectorcall-vector' });
         }
@@ -191,6 +260,26 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
           } : {}),
           possible:false, mustUse:true,
         });
+        return;
+      }
+      // An HVA in one of the first four parameter positions that cannot fit
+      // the remaining vector registers passes a reference to caller-allocated
+      // memory in the integer register corresponding to its position
+      // (RCX/RDX/R8/R9 per Microsoft x64 __vectorcall) — it never falls
+      // directly to the stack.
+      if (hva.hva && index < INTEGER_ARGUMENT_REGISTERS.length) {
+        const integerRegister = INTEGER_ARGUMENT_REGISTERS[index];
+        const entry = {
+          index, location:'register', reg:integerRegister,
+          abiClass:'hva-indirect', pointer:true, indirectReference:true,
+          bits:64, pointeeBits:classified.bits,
+          requiredTemporaryAlignment:Math.min(32, Math.max(16, Math.ceil(classified.bits / 8))),
+          bytes:8,
+          pieces:[{ pieceIndex:0, order:0, reg:integerRegister, abiClass:'hva-indirect', bits:64, bytes:8, byteOffset:0 }],
+          possible:false, mustUse:true,
+        };
+        arguments_.push(entry);
+        appendSource(srcs, integerRegister, 64, { purpose:'vectorcall-hva-indirect' });
         return;
       }
       const offset = 32 + stackIndex++ * 8;
@@ -214,36 +303,97 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
           reason:'microsoft-vectorcall-aggregate-layout-not-proven' });
         return;
       }
-      const offsetOrPosition = index;
-      if (offsetOrPosition < INTEGER_ARGUMENT_REGISTERS.length) {
-        const reg = INTEGER_ARGUMENT_REGISTERS[offsetOrPosition];
-        appendSource(srcs, reg, 64, { purpose:'vectorcall-aggregate-by-reference' });
-        arguments_.push({ index, location:'register', reg, abiClass:'aggregate-indirect', pointer:true, bits:64, bytes:8,
-          pointeeBits:classified.bits, aggregate:true,
-          pieces:[{ pieceIndex:0, order:0, reg, abiClass:'aggregate-indirect', bits:64, bytes:8, byteOffset:0 }],
+      /* __vectorcall extends the standard x64 convention: outside the
+       * vector/HVA rules, integer-class arguments follow standard x64.
+       * A trivial 8/16/32/64-bit aggregate with proven layout passes by
+       * value in its integer location; proven other sizes pass by
+       * reference; anything unproven stays partial (#5589). */
+      const physicalPadding = classified.aggregateBytes > Math.ceil(classified.bits / 8);
+      const exactSmallAggregate = !physicalPadding && classified.bitsProven && classified.trivialForCalls
+        && [8,16,32,64].includes(classified.bits);
+      const exactIndirect = classified.bitsProven
+        && (classified.nonTrivialForCalls || ![8,16,32,64].includes(classified.bits));
+      if (!exactSmallAggregate && !exactIndirect) {
+        aggregatePartial = true;
+        if (index < INTEGER_ARGUMENT_REGISTERS.length) {
+          const candidates = [INTEGER_ARGUMENT_REGISTERS[index], VECTOR_ARGUMENT_REGISTERS[index]];
+          arguments_.push({
+            index, location:'unknown', candidateRegisters:candidates, stackPossible:false,
+            abiClass:'aggregate-unclassified-partial', pointer:true, bits:classified.bits,
+            partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
+          });
+        } else {
+          const offset = 32 + stackIndex++ * 8;
+          const entry = {
+            index, location:'stack', offset, offsetBase:'caller-stack-before-call', calleeEntryOffset:offset + 8,
+            bytes:8, abiClass:'aggregate-unclassified-partial', pointer:true, bits:classified.bits,
+            partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
+          };
+          arguments_.push(entry); stackArguments.push(entry);
+        }
+        stackArgsMayContainPointers = true;
+        return;
+      }
+      const indirect = !exactSmallAggregate;
+      if (index < INTEGER_ARGUMENT_REGISTERS.length) {
+        const reg = INTEGER_ARGUMENT_REGISTERS[index];
+        appendSource(srcs, reg, indirect ? 64 : classified.bits,
+          { purpose:indirect ? 'vectorcall-aggregate-by-reference' : 'vectorcall-aggregate-value' });
+        arguments_.push({ index, location:'register', reg, aggregate:true,
+          abiClass:indirect ? 'aggregate-indirect' : 'integer-aggregate',
+          pointer:indirect, bits:indirect ? 64 : classified.bits,
+          bytes:indirect ? 8 : Math.max(8, Math.ceil(classified.bits / 8)),
+          pointeeBits:indirect ? classified.bits : undefined,
+          pieces:[{ pieceIndex:0, order:0, reg, abiClass:indirect ? 'aggregate-indirect' : 'integer-aggregate',
+            bits:indirect ? 64 : classified.bits, bytes:indirect ? 8 : Math.max(8, Math.ceil(classified.bits / 8)), byteOffset:0 }],
           possible:false, mustUse:true });
       } else {
         const offset = 32 + stackIndex++ * 8;
-        const entry = { index, location:'stack', offset, offsetBase:'caller-stack-before-call', calleeEntryOffset:offset + 8, bytes:8, abiClass:'aggregate-indirect', pointer:true, bits:64, pointeeBits:classified.bits, aggregate:true,
-          pieces:[{ pieceIndex:0, order:0, stackOffset:offset, abiClass:'aggregate-indirect', bits:64, bytes:8, byteOffset:0 }],
+        const entry = { index, location:'stack', offset, offsetBase:'caller-stack-before-call', calleeEntryOffset:offset + 8,
+          aggregate:true, bytes:8, abiClass:indirect ? 'aggregate-indirect' : 'integer-aggregate',
+          pointer:indirect, bits:indirect ? 64 : classified.bits,
+          pointeeBits:indirect ? classified.bits : undefined,
+          pieces:[{ pieceIndex:0, order:0, stackOffset:offset, abiClass:indirect ? 'aggregate-indirect' : 'integer-aggregate',
+            bits:indirect ? 64 : classified.bits, bytes:8, byteOffset:0 }],
           possible:false, mustUse:true };
         arguments_.push(entry); stackArguments.push(entry);
       }
-      stackArgsMayContainPointers = true;
+      stackArgsMayContainPointers ||= indirect || classified.pointer;
+      return;
+    }
+
+    if (classified.floating && index < VECTOR_REGISTER_COUNT) {
+      /* Position-mapped allocation: a scalar FP value in one of the first
+       * six positions uses its own position's register (XMM0-5, width view)
+       * — the pre-pass reserved it, so it is always free here (#5586). */
+      const reg = vectorRegister(index, classified.bits);
+      appendSource(srcs, reg, classified.bits, { purpose:'vectorcall-scalar-fp' });
+      arguments_.push({ index, location:'register', reg, abiClass:'fp', pointer:false, bits:classified.bits, possible:false, mustUse:true });
+      return;
+    }
+
+    if (classified.floating) {
+      // Vectorcall passes vector/FP arguments in positions six and later by
+      // reference to caller-allocated memory, so the stack slot contains a
+      // pointer even for a scalar floating-point value (#5586).
+      const offset = 32 + stackIndex++ * 8;
+      const entry = {
+        index, location:'stack', offset, offsetBase:'caller-stack-before-call', calleeEntryOffset:offset + 8,
+        bytes:8, abiClass:'fp-indirect', pointer:true, indirectReference:true,
+        bits:64, pointeeBits:classified.bits,
+        pieces:[{ pieceIndex:0, order:0, stackOffset:offset,
+          abiClass:'fp-indirect', bits:64, bytes:8, byteOffset:0 }],
+        possible:false, mustUse:true,
+      };
+      arguments_.push(entry); stackArguments.push(entry); stackArgsMayContainPointers = true;
       return;
     }
 
     if (index < INTEGER_ARGUMENT_REGISTERS.length) {
-      if (classified.floating) {
-        const reg = vectorRegister(Math.min(index, VECTOR_REGISTER_COUNT - 1), classified.bits);
-        appendSource(srcs, reg, classified.bits, { purpose:'vectorcall-scalar-fp' });
-        arguments_.push({ index, location:'register', reg, abiClass:'fp', pointer:false, bits:classified.bits, possible:false, mustUse:true });
-      } else {
-        const reg = INTEGER_ARGUMENT_REGISTERS[index];
-        appendSource(srcs, reg, 64, { purpose:'vectorcall-integer' });
-        arguments_.push({ index, location:'register', reg, abiClass:classified.pointer?'pointer':'integer', pointer:classified.pointer, bits:classified.bits, possible:false, mustUse:true });
-        stackArgsMayContainPointers ||= classified.pointer;
-      }
+      const reg = INTEGER_ARGUMENT_REGISTERS[index];
+      appendSource(srcs, reg, 64, { purpose:'vectorcall-integer' });
+      arguments_.push({ index, location:'register', reg, abiClass:classified.pointer?'pointer':'integer', pointer:classified.pointer, bits:classified.bits, possible:false, mustUse:true });
+      stackArgsMayContainPointers ||= classified.pointer;
       return;
     }
 
@@ -319,7 +469,8 @@ function vectorcallReturn(prototype, options = {}) {
         && member.bytes === elementBytes && member.byteOffset === index * elementBytes)
       && physicalBytes === members * elementBytes);
     if (!Number.isSafeInteger(members) || members < 1 || members > 4
-      || !Number.isSafeInteger(elementBits) || elementBits < 64 || elementBits > 256
+      || !Number.isSafeInteger(elementBits) || elementBits < 32 || elementBits > 256
+      || (elementBits !== 32 && elementBits !== 64 && elementBits !== 128 && elementBits !== 256)
       || !Number.isSafeInteger(rawBits) || rawBits !== members * elementBits
       || !canonicalLayoutValid || physicalBytes <= 0
       || physicalBytes > Math.ceil(rawBits / 8)) {
@@ -378,7 +529,15 @@ export const MICROSOFT_VECTORCALL_ABI = new ABIPlugin({
   classifyArguments:classifyMicrosoftVectorcallArguments,
   classifyCallReturn:classifyMicrosoftVectorcallCallReturn,
   classifyFunctionReturn:classifyMicrosoftVectorcallFunctionReturn,
-  classifyEntryRegister:(reg) => MICROSOFT_X64_ABI.classifyEntryRegister(reg),
+  classifyEntryRegister:(reg) => {
+    // Register identity is schema data: never stringify arrays/objects into
+    // an argument-register token (#5718).
+    const id = typeof reg === 'string' ? reg.toLowerCase() : '';
+    const vectorIndex = VECTOR_ARGUMENT_REGISTERS.indexOf(id);
+    if (vectorIndex >= 0) return { kind:'argument', reg:id, index:vectorIndex, abiClass:'fp-or-vector' };
+    if (typeof reg !== 'string') return { kind:'incoming-register-state', reg:id };
+    return MICROSOFT_X64_ABI.classifyEntryRegister(reg);
+  },
   callerSaved:()=>MICROSOFT_X64_ABI.callerSaved(),
   calleeSaved:()=>MICROSOFT_X64_ABI.calleeSaved(),
   stackRules:()=>Object.freeze({ ...MICROSOFT_X64_ABI.stackRules(), callingConvention:'vectorcall', vectorArgumentRegisters:6 }),

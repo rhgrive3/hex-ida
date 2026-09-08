@@ -330,8 +330,21 @@ function createClassifier(profile) {
      * psABI: a return value larger than 2*XLEN is returned in memory, and the
      * caller passes the destination pointer as an implicit first integer
      * argument, consuming a0.
+     *
+     * The argument list must share the return classifier's canonical decision:
+     * a proven memory result inserts the hidden a0 and shifts every user
+     * argument, without requiring the provider to duplicate the derived
+     * `indirectResult`/`returnClass` metadata. Those provider flags stay
+     * authoritative overrides. When the return size itself is unproven, the
+     * hidden-result presence is unknown and argument placement must fail
+     * closed to unknown instead of minting exact slots.
      */
-    const indirectResult = prototype?.indirectResult === true || prototype?.returnClass === 'indirect';
+    const explicitIndirectResult = prototype?.indirectResult === true || prototype?.returnClass === 'indirect';
+    const returnDecision = explicitIndirectResult ? null : classifyReturn(prototype, options);
+    const derivedIndirectResult = returnDecision?.indirect === true;
+    const returnSizeUnproven = returnDecision?.partial === true
+      && returnDecision?.aggregate === true && returnDecision?.bits == null;
+    const indirectResult = explicitIndirectResult || derivedIndirectResult;
     if (indirectResult) {
       const reg = INTEGER_ARGUMENT_REGISTERS[0];
       useInteger(reg, { purpose:'indirect-result' });
@@ -354,6 +367,13 @@ function createClassifier(profile) {
         arguments_.push({ index, location:'unknown', abiClass:'allocation-after-unproven-argument', bits:classified.bits,
           partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown' });
         partial = true;
+        return;
+      }
+
+      if (returnSizeUnproven) {
+        unknownArgument(index, classified, 'return-size-layout-unproven-hidden-result-unknown', {
+          returnClassification:'partial-hidden-result-possible',
+        });
         return;
       }
 
@@ -678,6 +698,8 @@ function createClassifier(profile) {
         location:'unknown', possible:true, mustUse:false, exact:false, certainty:'unknown',
         reason:'anonymous-vararg-frontier-not-source-prototyped',
       } : undefined,
+      returnClassification:indirectResult ? 'indirect' : returnSizeUnproven ? 'partial' : undefined,
+      hiddenResultPointer:indirectResult ? { input:'x10', location:'register', pointerBits:XLEN } : undefined,
       partial:partial || aggregatePartial || variadic,
       scope:profile.scope,
       evidence:`prototype-${profile.id}`,

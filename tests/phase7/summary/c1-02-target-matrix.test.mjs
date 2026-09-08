@@ -427,10 +427,14 @@ test('HEX-C1-02 matrix axis 10: malformed offset stays unresolved', () => {
 
 // Axis 11: Unknown provenance kind
 test('HEX-C1-02 matrix axis 11: unknown provenance kind stays unresolved', () => {
-  const fixture = callerFixture({
-    returnProvenance: [{ kind: 'unknown-custom-kind', returnIndex: 0, argIndex: 0, offset: '0' }],
-  });
-  assertUnresolvedCall(fixture);
+  const fixture = callerFixture({ returnProvenance: [{ kind: 'unknown', returnIndex: 0 }] });
+  const canonical = fixture.summaries.get('fn_callee');
+  const forged = { ...canonical, returnProvenance: [
+    { kind: 'unknown-custom-kind', returnIndex: 0, argIndex: 0, offset: '0' },
+  ] };
+  assert.throws(() => createFunctionSummary(forged), /invalid-return-provenance-kind/);
+  assert.equal(summaryIdentityMatches(forged), false);
+  assertUnresolvedCall({ ...fixture, summaries: new Map([['fn_callee', forged]]) });
 });
 
 // Axis 12: Candidate construction / join overflow / budget failure

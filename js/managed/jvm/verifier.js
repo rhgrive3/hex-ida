@@ -1,3 +1,5 @@
+import { validateJvmMethodFlags } from './method-flags.js';
+
 function asNonNegativeInteger(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
@@ -343,14 +345,30 @@ export function verifyJvmMethod(decoded, options = {}) {
 
   const metadata = decoded.metadata ?? {};
   const accessFlags = Number.isInteger(metadata.accessFlags) ? metadata.accessFlags : null;
+  const ownerAccessFlags = Number.isInteger(metadata.ownerAccessFlags)
+    ? metadata.ownerAccessFlags
+    : Number.isInteger(options.image?.accessFlags)
+      ? options.image.accessFlags
+      : null;
   const descriptorText = typeof metadata.descriptor === 'string' ? metadata.descriptor : null;
   const isStatic = accessFlags != null && (accessFlags & 0x0008) !== 0;
   const descriptor = parseMethodDescriptor(descriptorText, isStatic);
   if (!descriptor) errors.push({ code: 'jvm-invalid-method-descriptor' });
-  if (metadata.methodName === '<init>') unsupported.add('constructor-initialization-verification');
+  const methodName = typeof metadata.methodName === 'string' ? metadata.methodName : null;
+  if (methodName === '<init>') unsupported.add('constructor-initialization-verification');
 
   const isNative = accessFlags != null && (accessFlags & 0x0100) !== 0;
   const isAbstract = accessFlags != null && (accessFlags & 0x0400) !== 0;
+  if (accessFlags != null) {
+    const classMajor = Number.isInteger(metadata.classMajorVersion) ? metadata.classMajorVersion : null;
+    const flagValidation = validateJvmMethodFlags(accessFlags, {
+      methodName,
+      ownerAccessFlags,
+      majorVersion: classMajor,
+    });
+    for (const code of flagValidation.errors) errors.push({ code });
+    for (const code of flagValidation.unsupported) unsupported.add(code);
+  }
   const hasCode = metadata.hasCode === true;
   if (metadata.hasCode !== true && metadata.hasCode !== false) unsupported.add('method-code-cardinality-metadata-missing');
   else if ((isNative || isAbstract) && hasCode) errors.push({ code: 'jvm-code-forbidden-by-access-flags' });

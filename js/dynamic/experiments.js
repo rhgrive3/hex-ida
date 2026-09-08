@@ -116,7 +116,10 @@ export function compileExperiment(hypothesis, options = {}) {
   return {
     id:String(hypothesis.id || `experiment:${functionAddress.toString(16)}`),
     hypothesis:{ ...hypothesis, functionAddress, fieldOffset },
-    functionAddress, binaryHash:options.binaryHash || hypothesis.binaryHash || null,
+    // An explicit hypothesis binding wins over an options override so callers
+    // cannot silently re-label a hypothesis onto a different binary; identity
+    // conflicts are rejected upstream before an experiment ever runs.
+    functionAddress, binaryHash:hypothesis.binaryHash || options.binaryHash || null,
     cases, generated:true, compiler:'runtime-experiment-v2'
   };
 }

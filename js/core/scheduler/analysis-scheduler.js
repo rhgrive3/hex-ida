@@ -100,7 +100,10 @@ function priorityName(value) {
   for (const [k, v] of Object.entries(ANALYSIS_PRIORITY)) {
     if (v === value) return k;
   }
-  return typeof value === 'string' ? value : 'current';
+  // Numeric priorities outside the named enum remain valid scheduler inputs.
+  // Preserve their canonical numeric identity in lifecycle telemetry instead
+  // of fabricating an unrelated current label.
+  return value;
 }
 
 export class AnalysisScheduler {

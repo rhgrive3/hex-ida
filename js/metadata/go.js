@@ -272,7 +272,12 @@ export function parseGoFunctions(buf, header, options = {}) {
   const is118Plus = header.version === '1.18' || header.version === '1.20+';
   const entrySize = is118Plus ? 8 : header.ptrSize * 2;
 
+  // Number of declared entries whose slot was actually examined. Iterations
+  // after an early break were never attempted and must not be counted (#5861).
+  let scanned = 0;
+
   for (let i = 0; i < maxFuncs; i++) {
+    scanned++;
     const slot = ftabOff + i * entrySize;
     if (slot + entrySize > buf.length) {
       unreadableEntries++;
@@ -349,7 +354,7 @@ export function parseGoFunctions(buf, header, options = {}) {
     completeness: {
       present: true,
       declared: header.nfunc,
-      scanned: maxFuncs,
+      scanned,
       parsed: functions.length,
       capped,
       unreadableEntries,
