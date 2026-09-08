@@ -27,8 +27,9 @@ async function xrefsRaw(targetLiteral) {
   context.importScripts = () => {};
   for (const file of [
     'js/macho.js', 'js/words.js', 'js/worker-budget.js', 'js/address-provenance.js',
-    'js/worker-legacy.js', 'js/worker-fixes.js', 'js/worker-xref-memory-fix.js',
-    'js/worker-loop-provenance-fix.js', 'js/worker-loop-unconditional-fix.js',
+    'js/worker-legacy.js', 'js/worker-fixes.js', 'js/worker-xref-target-identity-fix.js',
+    'js/worker-xref-memory-fix.js', 'js/worker-loop-provenance-fix.js',
+    'js/worker-loop-unconditional-fix.js',
   ]) {
     vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), context, { filename: file });
   }
@@ -76,6 +77,8 @@ for (const [label, literal] of [
   ['fraction', '4352.5'],
   ['negative number', '-1'],
   ['negative bigint', '-1n'],
+  ['negative zero number', '-0'],
+  ['negative zero string', "'-0'"],
   ['hex string', "'0x1100'"],
   ['empty string', "''"],
   ['null', 'null'],
