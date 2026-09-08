@@ -423,3 +423,234 @@ console.log('issues #476-#478 note identity/persistence regressions PASS');
   assert.equal(new NoteStore(id).comment(0x2000n), 'readable overlay',
     'readable deltas must survive recovery and compaction');
 }
+
+// A transiently unreadable delta may be repaired before explicit recovery.
+// Revalidate it, leave it live, and require a fresh ordered reload before
+// compaction can replace the base snapshot.
+{
+  localStorage.clear();
+  const id = 'delta-recovery-repaired';
+  const primaryKey = 'hex.notes.' + id;
+  const repairedKey = primaryKey + '.delta.comments.8192';
+  const notes = new NoteStore(id);
+  assert.equal(notes.setName(0x1000n, 'base'), true);
+  const generation = JSON.parse(localStorage.getItem(primaryKey)).generation;
+  localStorage.setItem(repairedKey, '{transiently unreadable');
+  const originalGetItem = localStorage.getItem.bind(localStorage);
+  localStorage.getItem = (key) => {
+    if (key === repairedKey) throw new Error('transient read');
+    return originalGetItem(key);
+  };
+
+  const reopened = new NoteStore(id);
+  assert.equal(reopened._unreadableDeltaKeys.has(repairedKey), true);
+  localStorage.getItem = originalGetItem;
+  const repaired = JSON.stringify({
+    kind: 'comments', key: '8192', deleted: false, generation, value: 'repaired',
+  });
+  localStorage.setItem(repairedKey, repaired);
+
+  assert.equal(reopened.recoverUnreadableDeltas(), false,
+    'recovery must require a fresh reload for a repaired delta');
+  assert.equal(reopened.lastSaveError?.reloadRequired, true);
+  assert.equal(reopened.comment(0x2000n), null,
+    'recovery must not replay a repaired delta out of order');
+  assert.equal(reopened.dirty, false);
+  assert.equal(localStorage.getItem(repairedKey), repaired,
+    'a repaired live delta must remain available until a replacement base is durable');
+  const repairedBytes = new TextEncoder().encode(repaired).byteLength;
+  assert.equal(reopened._deltaBytes.get(repairedKey), repairedBytes,
+    'the repaired live delta must remain accounted by key');
+  assert.equal(reopened._deltaTotalBytes, repairedBytes,
+    'the repaired live delta must remain accounted toward capacity');
+  assert.equal(reopened.save(), false,
+    'the pre-reload store must not compact a repaired delta');
+
+  // A fresh store replays the live overlay in normal key order even before an
+  // explicit save, so a crash between recovery and compaction cannot lose it.
+  const reloaded = new NoteStore(id);
+  assert.equal(reloaded.comment(0x2000n), 'repaired');
+
+  // A failed replacement-base write must leave the overlay untouched. Once
+  // the write succeeds, normal snapshot cleanup may remove it.
+  const originalSetItem = localStorage.setItem.bind(localStorage);
+  localStorage.setItem = (key, value) => {
+    if (key === primaryKey) throw new Error('quota full');
+    return originalSetItem(key, value);
+  };
+  assert.equal(reloaded.save(), false, 'a quota failure must report persistence failure');
+  localStorage.setItem = originalSetItem;
+  assert.equal(localStorage.getItem(repairedKey), repaired,
+    'a failed replacement-base write must preserve the live delta');
+  assert.equal(new NoteStore(id).comment(0x2000n), 'repaired');
+  assert.equal(reloaded.save(), true);
+  assert.equal(localStorage.getItem(repairedKey), null,
+    'live delta cleanup is allowed only after the replacement base commits');
+  assert.equal(new NoteStore(id).comment(0x2000n), 'repaired');
+}
+
+// A read failure during both the initial load and recovery must remain a
+// blocking scan failure even when the metadata-only retry can read the raw
+// record. The retry cannot prove that this instance applied that value.
+{
+  localStorage.clear();
+  const id = 'delta-recovery-one-shot-read';
+  const primaryKey = 'hex.notes.' + id;
+  const deltaKey = primaryKey + '.delta.comments.8192';
+  const notes = new NoteStore(id);
+  assert.equal(notes.setName(0x1000n, 'base'), true);
+  assert.equal(notes.setComment(0x2000n, 'live overlay'), true);
+  const raw = localStorage.getItem(deltaKey);
+  let failures = 2;
+  const originalGetItem = localStorage.getItem.bind(localStorage);
+  localStorage.getItem = (key) => {
+    if (key === deltaKey && failures > 0) {
+      failures--;
+      throw new Error('one-shot storage read failure');
+    }
+    return originalGetItem(key);
+  };
+
+  const reopened = new NoteStore(id);
+  assert.equal(reopened._deltaScanComplete, false);
+  assert.equal(reopened._unreadableDeltaKeys.has(deltaKey), true);
+  assert.equal(reopened.recoverUnreadableDeltas(), false,
+    'a failed recovery read must remain a persistence failure');
+  assert.equal(failures, 0);
+  assert.equal(reopened._deltaScanComplete, false,
+    'a metadata-only retry must not certify an unapplied overlay');
+  assert.equal(reopened._unreadableDeltaKeys.has(deltaKey), true,
+    'the failed key must remain a retryable scan blocker');
+  assert.equal(reopened.save(), false,
+    'the stale instance must not compact after a failed recovery read');
+
+  localStorage.getItem = originalGetItem;
+  assert.equal(localStorage.getItem(deltaKey), raw,
+    'the failed recovery read must preserve the raw overlay');
+  assert.equal(new NoteStore(id).comment(0x2000n), 'live overlay',
+    'a fresh ordered load must still recover the overlay');
+}
+
+// If localStorage.key() fails before any delta can be enumerated, a later
+// metadata-only scan still cannot certify that the original in-memory view
+// incorporated the overlay. Keep compaction blocked until a fresh reload.
+{
+  localStorage.clear();
+  const id = 'delta-recovery-enumeration-failure';
+  const primaryKey = 'hex.notes.' + id;
+  const deltaKey = primaryKey + '.delta.comments.8192';
+  const notes = new NoteStore(id);
+  assert.equal(notes.setName(0x1000n, 'base'), true);
+  assert.equal(notes.setComment(0x2000n, 'enumerated overlay'), true);
+  const raw = localStorage.getItem(deltaKey);
+  let failEnumeration = true;
+  const originalKey = localStorage.key.bind(localStorage);
+  localStorage.key = (index) => {
+    if (failEnumeration) {
+      failEnumeration = false;
+      throw new Error('delta key enumeration failure');
+    }
+    return originalKey(index);
+  };
+
+  const reopened = new NoteStore(id);
+  assert.equal(reopened._deltaScanComplete, false);
+  assert.equal(reopened._unreadableDeltaKeys.size, 0);
+  assert.equal(reopened.comment(0x2000n), null);
+  assert.equal(reopened.recoverUnreadableDeltas(), false,
+    'enumeration uncertainty must require a fresh reload');
+  assert.equal(reopened.lastSaveError?.reloadRequired, true);
+  assert.equal(reopened._deltaScanComplete, false);
+  assert.equal(reopened.save(), false,
+    'enumeration uncertainty must block compaction');
+
+  localStorage.key = originalKey;
+  assert.equal(localStorage.getItem(deltaKey), raw,
+    'enumeration failure must preserve the raw overlay');
+  assert.equal(new NoteStore(id).comment(0x2000n), 'enumerated overlay',
+    'a fresh ordered load must recover after enumeration failure');
+}
+
+// A repaired delta must not overwrite an unsaved in-memory edit. Leave its
+// bytes live and require a fresh reload; the unsaved edit remains in memory
+// only until that reload and a subsequent successful save.
+{
+  localStorage.clear();
+  const id = 'delta-recovery-dirty-edit';
+  const primaryKey = 'hex.notes.' + id;
+  const repairedKey = primaryKey + '.delta.comments.8192';
+  const notes = new NoteStore(id);
+  assert.equal(notes.setName(0x1000n, 'base'), true);
+  const generation = JSON.parse(localStorage.getItem(primaryKey)).generation;
+  localStorage.setItem(repairedKey, '{originally unreadable');
+
+  const reopened = new NoteStore(id);
+  assert.equal(reopened.setComment(0x3000n, 'dirty edit', { save: false }), true);
+  const repaired = JSON.stringify({
+    kind: 'comments', key: '8192', deleted: false, generation, value: 'repaired',
+  });
+  localStorage.setItem(repairedKey, repaired);
+
+  assert.equal(reopened.recoverUnreadableDeltas(), false,
+    'dirty in-memory edits must block repaired-delta incorporation');
+  assert.equal(reopened.lastSaveError?.code, 'DELTA_RECOVERY_REPAIRED');
+  assert.equal(reopened.lastSaveError?.reloadRequired, true);
+  assert.equal(reopened.comment(0x3000n), 'dirty edit');
+  assert.equal(localStorage.getItem(repairedKey), repaired,
+    'a repaired live delta must remain available for reload');
+  assert.equal(localStorage.getItem(primaryKey).includes('dirty edit'), false);
+  assert.equal(reopened.save(), false, 'reload-required recovery must keep compaction blocked');
+  assert.equal(new NoteStore(id).comment(0x2000n), 'repaired');
+}
+
+// Read and remove failures remain retryable without deleting the raw record.
+{
+  localStorage.clear();
+  const id = 'delta-recovery-read-retry';
+  const primaryKey = 'hex.notes.' + id;
+  const brokenKey = primaryKey + '.delta.types.broken';
+  const notes = new NoteStore(id);
+  assert.equal(notes.setName(0x1000n, 'base'), true);
+  assert.equal(notes.setComment(0x2000n, 'readable overlay'), true);
+  const raw = '{read failure';
+  localStorage.setItem(brokenKey, raw);
+  const originalGetItem = localStorage.getItem.bind(localStorage);
+  localStorage.getItem = (key) => {
+    if (key === brokenKey) throw new Error('read failure');
+    return originalGetItem(key);
+  };
+  const reopened = new NoteStore(id);
+  assert.equal(reopened.recoverUnreadableDeltas(), false);
+  localStorage.getItem = originalGetItem;
+  assert.equal(localStorage.getItem(brokenKey), raw);
+  assert.equal(reopened.recoverUnreadableDeltas(), true);
+  assert.equal(reopened.save(), true);
+  assert.equal(new NoteStore(id).comment(0x2000n), 'readable overlay');
+}
+
+{
+  localStorage.clear();
+  const id = 'delta-recovery-remove-retry';
+  const primaryKey = 'hex.notes.' + id;
+  const brokenKey = primaryKey + '.delta.types.broken';
+  const notes = new NoteStore(id);
+  assert.equal(notes.setName(0x1000n, 'base'), true);
+  assert.equal(notes.setComment(0x2000n, 'readable overlay'), true);
+  localStorage.setItem(brokenKey, '{remove failure');
+  const originalRemoveItem = localStorage.removeItem.bind(localStorage);
+  localStorage.removeItem = (key) => {
+    if (key === brokenKey) throw new Error('remove failure');
+    return originalRemoveItem(key);
+  };
+  const reopened = new NoteStore(id);
+  assert.equal(reopened.recoverUnreadableDeltas(), false);
+  assert.equal(localStorage.getItem(brokenKey), '{remove failure');
+  assert.equal(localStorage.getItem(
+    primaryKey + '.quarantine.' + encodeURIComponent(brokenKey),
+  ), '{remove failure');
+  localStorage.removeItem = originalRemoveItem;
+  assert.equal(reopened.recoverUnreadableDeltas(), true);
+  assert.equal(localStorage.getItem(brokenKey), null);
+  assert.equal(reopened.save(), true);
+  assert.equal(new NoteStore(id).comment(0x2000n), 'readable overlay');
+}
