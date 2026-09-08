@@ -77,4 +77,12 @@ test('#3688 keeps finite option labels truthful and makes unknown options explic
   const unknownJapanese = explainIn('ja', 'dmb', 'future-option');
   assert.match(unknownJapanese.summary, /future-option/);
   assert.match(unknownJapanese.summary, /未解釈/);
+
+  for (const inheritedOption of ['constructor', '__proto__']) {
+    const inherited = explainIn('en', 'dmb', inheritedOption);
+    assert.equal(inherited.pseudo, `dmb(${inheritedOption})`);
+    assert.match(inherited.summary, /not interpreted/);
+    assert.match(inherited.summary, /scope\/type unknown/);
+    assert.doesNotMatch(inherited.summary, /undefined/);
+  }
 });

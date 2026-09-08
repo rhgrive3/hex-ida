@@ -1574,8 +1574,11 @@ function barrierOptionInfo(mnemonic, ops) {
     };
   }
   const raw = operands.map((operand) => typeof operand?.text === 'string' ? operand.text.trim() : '').join(', ');
-  const descriptor = operands.length === 1
-    ? BARRIER_OPTION_INFO[mnemonic]?.[raw.toLowerCase()]
+  const optionTable = BARRIER_OPTION_INFO[mnemonic];
+  const optionKey = raw.toLowerCase();
+  const descriptor = operands.length === 1 && optionTable &&
+    Object.prototype.hasOwnProperty.call(optionTable, optionKey)
+    ? optionTable[optionKey]
     : null;
   if (descriptor) {
     return {
