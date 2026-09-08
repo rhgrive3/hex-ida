@@ -37,6 +37,21 @@ test('InstrumentationProvider correlates protocol-envelope probe handles with in
   assert.deepEqual(byProbeHandle.interventionIds, [installId]);
   assert.equal(byProbeHandle.payload.probeHandle, 7);
 
+  const withExistingProvenance = facet.events.ingest({
+    type: 'event',
+    event: 'instrumentation-observation',
+    data: {
+      sequence: 7,
+      probeHandle: 7,
+      interventionIds: ['upstream-intervention'],
+    },
+  });
+  assert.deepEqual(
+    withExistingProvenance.interventionIds,
+    ['upstream-intervention', installId],
+    'enrichment must preserve canonical data.interventionIds before adding the installed intervention',
+  );
+
   const byHandleAlias = facet.events.ingest({
     type: 'event',
     event: 'instrumentation-observation',

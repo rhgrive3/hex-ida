@@ -47,6 +47,16 @@ function eventProbeHandle(raw) {
   return normalizeProbeHandle(source?.probeHandle ?? source?.handle ?? source?.payload?.probeHandle ?? source?.payload?.handle ?? null);
 }
 
+function eventInterventionIds(raw) {
+  const protocolEnvelope = raw && raw.type === 'event' && typeof raw.event === 'string';
+  const source = protocolEnvelope
+    ? (raw.data && typeof raw.data === 'object' && !Array.isArray(raw.data) ? raw.data : {})
+    : raw;
+  return protocolEnvelope && raw.interventionIds != null
+    ? raw.interventionIds
+    : source?.interventionIds ?? null;
+}
+
 function materializeRuntimeValue(value, seen = new WeakMap()) {
   if (value == null || typeof value !== 'object') {
     if (typeof value === 'function') throw new DebugAdapterError('runtime-invalid-event', 'runtime event contains a function');
@@ -171,9 +181,14 @@ export class InstrumentationProvider {
       if (typeof this.options.eventFilter === 'function' && this.options.eventFilter(ownedRaw) === false) return null;
       const handle = eventProbeHandle(ownedRaw);
       const interventionId = handle == null ? null : probes.get(handle) ?? null;
-      const event = interventionId
-        ? normalizer.push({ ...ownedRaw, interventionIds: [...new Set([...(Array.isArray(ownedRaw?.interventionIds) ? ownedRaw.interventionIds : []), interventionId])] })
-        : normalizer.push(ownedRaw);
+      const existingInterventionIds = eventInterventionIds(ownedRaw);
+      const enrichedRaw = interventionId && (existingInterventionIds == null || Array.isArray(existingInterventionIds))
+        ? {
+            ...ownedRaw,
+            interventionIds: [...new Set([...(existingInterventionIds ?? []), interventionId])],
+          }
+        : ownedRaw;
+      const event = normalizer.push(enrichedRaw);
       if (!event) return null;
       const module = moduleFields(event);
       if (event.kind === 'module-load' && (module.runtimeBase ?? module.base) != null && (module.runtimeSize ?? module.size) != null) {
