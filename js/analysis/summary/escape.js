@@ -116,8 +116,19 @@ export function classifyRootOrigin(target, { allocationRootKeys = new Set() } = 
   return 'unknown';
 }
 
+// Escape-fact evidence follows the same canonical primitive non-empty string
+// contract as the local summary's instruction origin (#5776): a structured
+// value must never launder into an instruction evidence ID via String(), so
+// malformed evidence fails closed instead of joining escape provenance.
 function evidenceOf(node) {
-  return [...(node.origin?.instructionIds ?? [])].map(String);
+  const raw = node.origin?.instructionIds ?? [];
+  if (!Array.isArray(raw)) throw new TypeError('summary-invalid-instruction-evidence');
+  const evidenceIds = [];
+  for (const value of raw) {
+    if (typeof value !== 'string' || !value) throw new TypeError('summary-invalid-instruction-evidence');
+    if (!evidenceIds.includes(value)) evidenceIds.push(value);
+  }
+  return evidenceIds;
 }
 
 /**
