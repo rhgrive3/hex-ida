@@ -316,11 +316,25 @@ export function parseSectionHeaders(bytes) {
   for (let offset = 0; offset + 40 <= bytes.length; offset += 40) {
     headers.push({
       name: cstring(bytes, offset, offset + 8),
+      virtualSize: view.getUint32(offset + 8, true),
       virtualAddress: view.getUint32(offset + 12, true),
       sizeOfRawData: view.getUint32(offset + 16, true),
     });
   }
   return headers;
+}
+
+/**
+ * PE/COFF virtual extent of a section: VirtualSize is authoritative, falling
+ * back to SizeOfRawData for the zero-VirtualSize legacy case (Microsoft
+ * PE/COFF spec: a section occupies max(VirtualSize, SizeOfRawData) bytes of
+ * its VA window; a VirtualSize of 0 means the field was never populated).
+ */
+function sectionVirtualExtent(header) {
+  if (!header) return 0;
+  const declared = header.virtualSize >>> 0;
+  const raw = header.sizeOfRawData >>> 0;
+  return declared > 0 ? declared : raw;
 }
 
 /**
@@ -874,9 +888,18 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     return page(ordered, cursor, pageSize, (symbol) => {
       // Segment indices are one-based. Without section headers the address
       // stays segment-relative and the record says so rather than inventing an
-      // RVA.
+      // RVA. With headers, the offset must land inside the section's virtual
+      // extent: a CodeView (segment, offset) pair outside it is corrupt, and
+      // minting an RVA from it would feed false exact function evidence
+      // downstream (#5678).
       const header = headers[symbol.segment - 1] ?? null;
-      const address = header
+      const extent = sectionVirtualExtent(header);
+      // A procedure whose declared size runs past the section extent is
+      // corrupt evidence too: the start may be in bounds, but the span it
+      // claims is not backed by that section (#5678).
+      const inBounds = symbol.offsetInSegment < extent
+        && (symbol.sizeBytes == null || symbol.offsetInSegment + symbol.sizeBytes <= extent);
+      const address = header && inBounds
         ? `0x${(header.virtualAddress + symbol.offsetInSegment).toString(16)}`
         : null;
       return createDebugRecord({
