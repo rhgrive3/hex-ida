@@ -25,6 +25,10 @@ export function parseMetadataFileInWorker(file, options = {}) {
     };
     const onAbort = () => finish(reject, abortError(signal));
     signal?.addEventListener('abort', onAbort, { once:true });
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
     worker.onmessage = (event) => {
       const message = event.data || {};
       if (message.id !== id) return;
