@@ -17,6 +17,12 @@ const PROVENANCE_DIRECTIONS = Object.freeze([
   'raw-to-optimized', 'optimized-to-rendered', 'raw-to-rendered',
   'rendered-to-optimized', 'optimized-to-raw', 'rendered-to-raw',
 ]);
+// Relation construction visits each entity's immutable source projection once
+// per direction. Cache those normalized reference tokens by the internal
+// entity object so the six relation passes do not rebuild/sort the same lists.
+// Entities are finalized before relation construction and never exposed from
+// this module until the containing graph has been frozen.
+const ENTITY_REFS_CACHE = new WeakMap();
 
 function object(value) { return value && typeof value === 'object' && !Array.isArray(value) ? value : null; }
 function list(value) { return Array.isArray(value) ? value : value == null ? [] : [value]; }
@@ -155,7 +161,12 @@ function entity(stage, kind, identity, source = null, metadata = {}, explicit = 
 }
 
 function entityRefs(entityValue) {
-  return sourceRefTokens(entityValue?.source);
+  if (!entityValue || typeof entityValue !== 'object') return [];
+  const cached = ENTITY_REFS_CACHE.get(entityValue);
+  if (cached !== undefined) return cached;
+  const refs = sourceRefTokens(entityValue.source);
+  ENTITY_REFS_CACHE.set(entityValue, refs);
+  return refs;
 }
 
 function addToMap(map, from, to) {
