@@ -1,5 +1,6 @@
 const ID_SCHEMA_VERSION = 1;
 const HEX_RE = /^[0-9a-f]+$/i;
+const CANONICAL_ARTIFACT_ID_RE = /^artifact_[0-9a-f]{32}$/;
 
 function fail(code) {
   throw new TypeError(code);
@@ -209,6 +210,10 @@ export function createArtifactId(input = {}) {
     optionsHash: input.optionsHash == null ? null : nonEmpty(input.optionsHash, 'artifact-options-hash-invalid'),
     inputArtifactIds: sortedStrings(input.inputArtifactIds, 'artifact-input-ids-invalid'),
   });
+}
+
+export function isCanonicalArtifactId(value) {
+  return typeof value === 'string' && CANONICAL_ARTIFACT_ID_RE.test(value);
 }
 
 export function lossyTypeWitness(value, path = '', seen = new WeakSet(), out = []) {
