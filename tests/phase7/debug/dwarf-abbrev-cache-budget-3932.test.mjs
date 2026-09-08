@@ -33,17 +33,17 @@ const oneAttributeTable = Uint8Array.from([
 ]);
 const oneDie = Uint8Array.from([0x01, 0x00]);
 
-test('#3932 repeated CUs reuse one bounded abbreviation parse', () => {
-  const info = concat(dwarf4Unit(oneDie), dwarf4Unit(oneDie));
+test('#3932 128 repeated CUs reuse one bounded abbreviation parse', () => {
+  const info = concat(...Array.from({ length: 128 }, () => dwarf4Unit(oneDie)));
   const parsed = parseDebugInfo(
     { debug_info: info, debug_abbrev: oneAttributeTable },
-    { maxRecords: 10, maxAbbrevDeclarations: 1, maxAbbrevAttributes: 1 },
+    { maxRecords: 256, maxAbbrevDeclarations: 1, maxAbbrevAttributes: 1 },
   );
 
   assert.equal(parsed.complete, true);
   assert.equal(parsed.cancelled, false);
-  assert.equal(parsed.units.length, 2);
-  assert.equal(parsed.dies.size, 2);
+  assert.equal(parsed.units.length, 128);
+  assert.equal(parsed.dies.size, 128);
   assert.equal(parsed.diagnostics.length, 0);
 });
 
