@@ -190,4 +190,42 @@ assert.throws(
   'the #7535 route must fail closed when no Phase 7 evidence is present',
 );
 
+function routeBlock(workflow, startMarker, endMarker) {
+  const start = workflow.indexOf(startMarker);
+  assert.ok(start >= 0, `workflow must contain exact route marker ${startMarker}`);
+  const end = workflow.indexOf(endMarker, start + startMarker.length);
+  assert.ok(end > start, `workflow route ${startMarker} must end at the next case`);
+  return workflow.slice(start, end);
+}
+
+const circleciWorkflow = readFileSync('.circleci/config.yml', 'utf8');
+const circleciIntegrationRoute = routeBlock(
+  circleciWorkflow,
+  `              ${integrationBatchBranch})`,
+  '              *)',
+);
+assert.ok(circleciIntegrationRoute.includes('node tools/validation/phase7/cross-lane-inventory.mjs'));
+assert.ok(circleciIntegrationRoute.includes('--branch "$CIRCLE_BRANCH"'));
+assert.ok(circleciIntegrationRoute.includes('node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"'));
+assert.ok(
+  circleciIntegrationRoute.indexOf('cross-lane-inventory.mjs')
+    < circleciIntegrationRoute.indexOf('phase7-ownership.mjs --files-json'),
+  'CircleCI must derive the subset with the cross-lane helper before validating it',
+);
+
+const githubWorkflow = readFileSync('.github/workflows/phase7-ownership.yml', 'utf8');
+const githubIntegrationRoute = routeBlock(
+  githubWorkflow,
+  `          elif [[ "$HEAD_REF" == "${integrationBatchBranch}" ]]; then`,
+  '          elif [[',
+);
+assert.ok(githubIntegrationRoute.includes('node tools/validation/phase7/cross-lane-inventory.mjs'));
+assert.ok(githubIntegrationRoute.includes('--branch "$HEAD_REF"'));
+assert.ok(githubIntegrationRoute.includes('node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"'));
+assert.ok(
+  githubIntegrationRoute.indexOf('cross-lane-inventory.mjs')
+    < githubIntegrationRoute.indexOf('phase7-ownership.mjs --files-json'),
+  'GitHub manual fallback must derive the subset with the cross-lane helper before validating it',
+);
+
 console.log('phase7 cross-lane ownership routing: PASS');
