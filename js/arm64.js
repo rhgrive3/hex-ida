@@ -164,7 +164,12 @@ cat('udf .byte', 'data');
 // for exclusive operations and barriers. These are the read-modify-write families
 // that this facade already classifies as atomic; all ordering/size variants belong
 // to the same category (#1827).
-const ATOMIC_CATEGORY_RE = /^(?:cas|swp|ldadd|ldset|ldclr|ldeor)(?:al|a|l)?(?:b|h)?$/;
+const ATOMIC_CATEGORY_RE = /^(?:cas|swp|ld(?:add|set|clr|eor|smax|smin|umax|umin))(?:al|a|l)?(?:b|h)?$/;
+// Store-only LSE aliases discard the loaded value, so Arm exposes only the
+// relaxed/release spellings plus the byte/halfword size suffixes. They remain
+// atomic read-modify-write instructions even though they have no GPR result
+// (#4495; operand read/write ownership is a separate #3702 contract).
+const STORE_ONLY_ATOMIC_CATEGORY_RE = /^st(?:add|clr|eor|set|smax|smin|umax|umin)l?(?:b|h)?$/;
 
 export function categoryOf(mn) {
   if (!mn) return '';
@@ -172,7 +177,7 @@ export function categoryOf(mn) {
   if (b.charCodeAt(0) === 46) return 'data';
   const direct = CATEGORY.get(b);
   if (direct) return direct;
-  if (ATOMIC_CATEGORY_RE.test(b)) return 'atomic';
+  if (ATOMIC_CATEGORY_RE.test(b) || STORE_ONLY_ATOMIC_CATEGORY_RE.test(b)) return 'atomic';
   if (/^b\./.test(b)) return 'flow';
   if (/^f/.test(b)) return 'float';
   return '';
@@ -528,15 +533,47 @@ HANDLERS.msub = (o, ops) => {
     'Multiply then subtract.');
   o.detail.push(J('割り算のあとに「余り」を求める形（a − (a÷b)×b）でよく出ます。', 'Often computes a remainder after a division.'));
 };
-HANDLERS.smull = (o, ops) => {
-  const [d, n, m] = ops;
-  o.title = J('32ビット同士を掛けて64ビットに', 'Signed long multiply');
-  o.pseudo = opShort(d) + ' = ' + opShort(n) + ' × ' + opShort(m);
-  o.summary = J(
-    '32 ビットの ' + opShort(n) + ' と ' + opShort(m) + ' を掛け、あふれないように 64 ビットの ' + opShort(d) + ' に入れる。',
-    'Multiply two 32-bit values into a 64-bit result.');
-};
-HANDLERS.umull = HANDLERS.smull;
+function hasVectorOperand(ops) {
+  return ops.some((op) => op?.k === 'reg' && op.cls === 'vec');
+}
+
+function longMultiply(signed) {
+  return (o, ops) => {
+    const [d, n, m] = ops;
+    if (hasVectorOperand(ops)) {
+      const operation = signed ? 'signed_lane_widen_mul' : 'unsigned_lane_widen_mul';
+      o.title = J(
+        signed ? 'ベクタの各レーンを符号付きで拡張して掛ける' : 'ベクタの各レーンを符号なしで拡張して掛ける',
+        (signed ? 'Signed' : 'Unsigned') + ' vector long multiply');
+      o.pseudo = opShort(d) + ' = ' + operation + '(' + opShort(n) + ', ' + opShort(m) + ')';
+      o.summary = J(
+        opShort(n) + ' と ' + opShort(m) + ' の対応するレーンを' + (signed ? '符号付き' : '符号なし') +
+          'として広いレーンへ拡張してから、レーンごとに掛ける。',
+        (signed ? 'Sign-extend' : 'Zero-extend') + ' corresponding lanes of ' +
+          opShort(n) + ' and ' + opShort(m) + ', then multiply lane by lane into ' + opShort(d) + '.');
+      o.detail.push(J(
+        'これは汎用レジスタの 1 個の値ではなく、ベクタレジスタ内の複数レーンを同時に処理します。',
+        'This is the SIMD form: it processes multiple vector lanes rather than one general-purpose value.'));
+      o.terms = ['simd', 'signedness'];
+      return;
+    }
+    o.title = J(
+      signed ? '32ビット符号付き同士を掛けて64ビットに' : '32ビット符号なし同士を掛けて64ビットに',
+      (signed ? 'Signed' : 'Unsigned') + ' long multiply');
+    o.pseudo = opShort(d) + ' = ' + (signed ? '(signed)' : '(unsigned)') + opShort(n) +
+      ' × ' + (signed ? '(signed)' : '(unsigned)') + opShort(m);
+    o.summary = J(
+      '32 ビットの ' + opShort(n) + ' と ' + opShort(m) + ' を' + (signed ? '符号付き' : '符号なし') +
+        'として掛け、あふれないように 64 ビットの ' + opShort(d) + ' に入れる。',
+      (signed ? 'Sign-extend' : 'Zero-extend') + ' the 32-bit operands, multiply them, and write the 64-bit result to ' + opShort(d) + '.');
+    o.detail.push(J(
+      (signed ? 'マイナスの値は符号を保ったまま' : '値は 0 を上位に補って') + '64 ビットに広げてから掛けます。',
+      (signed ? 'Negative operands keep their sign when widened.' : 'The operands are widened with zeroes in the upper bits.')));
+    o.terms = ['signedness'];
+  };
+}
+HANDLERS.smull = longMultiply(true);
+HANDLERS.umull = longMultiply(false);
 
 /* ビット演算 ------------------------------------------------- */
 
@@ -657,7 +694,36 @@ HANDLERS.ubfiz = (o, ops) => {
     'Take the low bits and place them at bit ' + immShort(lsb) + '.');
   o.terms = ['bitfield'];
 };
-HANDLERS.sbfiz = HANDLERS.ubfiz;
+
+// These aliases have the same operand shape, but SBFIZ sign-extends its field
+// while UBFIZ zero-fills the destination above it (#3612).
+function bitfieldSpan(start, width) {
+  if (!start || start.value == null || !width || width.value == null || width.value <= 0n) return null;
+  return { first: start.value, last: start.value + width.value - 1n, width: width.value };
+}
+
+function bitfieldRange(span) {
+  if (!span) return '…';
+  return span.first.toString(10) + '..' + span.last.toString(10);
+}
+
+HANDLERS.sbfiz = (o, ops) => {
+  const [d, n, lsb, width] = ops;
+  const inserted = bitfieldSpan(lsb, width);
+  const source = width && width.value != null ? bitfieldSpan({ value: 0n }, width) : null;
+  const destBits = bitfieldRange(inserted);
+  const sourceBits = bitfieldRange(source);
+  const bits = d && d.bits ? d.bits : '?';
+  o.title = J('符号つきビットフィールドを左に置く', 'Signed bitfield insert in zeros');
+  o.pseudo = opShort(d) + ' = sign_extend(' + opShort(n) + '[' + sourceBits + '], ' + bits + ') << ' + immShort(lsb);
+  o.summary = J(
+    opShort(n) + ' の下 ' + immShort(width) + ' ビット（' + sourceBits + '）を取り、最上位ビットの符号を広げて ' + opShort(d) + ' の ' + destBits + ' に置く。下は 0、上は符号ビットで埋める。',
+    'Take ' + immShort(width) + ' low bits (' + sourceBits + ') of ' + opShort(n) + ', sign-extend their top bit, and place them in ' + opShort(d) + ' at bits ' + destBits + '. Lower bits are zero; upper bits copy the sign bit.');
+  o.detail.push(J(
+    'UBFIZ と違い、フィールドの一番上のビットを符号として使います。幅が ' + bits + ' ビットのレジスタ全体に符号が広がります。',
+    'Unlike UBFIZ, the field\'s top bit is treated as a sign bit and extended across the ' + bits + '-bit destination.'));
+  o.terms = ['bitfield'];
+};
 HANDLERS.bfi = (o, ops) => {
   const [d, n, lsb, width] = ops;
   o.title = J('ビットを差し込む', 'Bit field insert');
@@ -667,7 +733,24 @@ HANDLERS.bfi = (o, ops) => {
     'Insert bits of ' + opShort(n) + ' into ' + opShort(d) + ' without touching the rest.');
   o.terms = ['bitfield'];
 };
-HANDLERS.bfxil = HANDLERS.bfi;
+// BFXIL reads from the source lsb and writes at destination bit zero; BFI reads
+// the source low bits and writes at the destination lsb (#3612).
+HANDLERS.bfxil = (o, ops) => {
+  const [d, n, lsb, width] = ops;
+  const source = bitfieldSpan(lsb, width);
+  const destination = width && width.value != null ? bitfieldSpan({ value: 0n }, width) : null;
+  const sourceBits = bitfieldRange(source);
+  const destinationBits = bitfieldRange(destination);
+  o.title = J('ビットを切り出して下位へ入れる', 'Bitfield extract and insert at low end');
+  o.pseudo = opShort(d) + '[' + destinationBits + '] = ' + opShort(n) + '[' + sourceBits + ']';
+  o.summary = J(
+    opShort(n) + ' の ' + immShort(lsb) + ' ビット目から ' + immShort(width) + ' ビット（' + sourceBits + '）を抜き出し、' + opShort(d) + ' の下位 ' + immShort(width) + ' ビット（' + destinationBits + '）に入れる。それより上のビットはそのまま。',
+    'Extract ' + immShort(width) + ' bits (' + sourceBits + ') from ' + opShort(n) + ' and insert them into the low bits (' + destinationBits + ') of ' + opShort(d) + '; higher destination bits stay unchanged.');
+  o.detail.push(J(
+    'BFI はソースの下位ビットを宛先の指定位置へ入れますが、BFXIL はソースの指定位置から読み、宛先の 0 ビット目から入れます。',
+    'Unlike BFI, BFXIL reads from the specified source bit and always writes at destination bit 0.'));
+  o.terms = ['bitfield'];
+};
 
 HANDLERS.extr = (o, ops) => {
   const [d, n, m, lsb] = ops;
@@ -690,8 +773,41 @@ HANDLERS.rev = (o, ops) => {
     'Network data is big-endian while ARM is little-endian, so byte swapping converts between them.'));
   o.terms = ['endian'];
 };
-HANDLERS.rev16 = HANDLERS.rev;
-HANDLERS.rev32 = HANDLERS.rev;
+
+function reverseBytesWithin(elementBits) {
+  const elementName = elementBits === 16 ? 'halfword' : 'word';
+  return (o, ops) => {
+    const [d, s] = ops;
+    if (hasVectorOperand(ops)) {
+      o.title = J(
+        elementBits === 16 ? 'ベクタの16ビットレーン内でバイト順を逆に' : 'ベクタの32ビットレーン内でバイト順を逆に',
+        'Reverse bytes within ' + elementBits + '-bit vector lanes');
+      o.pseudo = opShort(d) + ' = vector_byteswap' + elementBits + '(' + opShort(s) + ')';
+      o.summary = J(
+        opShort(s) + ' の各 ' + elementBits + ' ビットレーンの中だけバイト順を逆にして ' + opShort(d) + ' に入れる。',
+        'Reverse bytes within each ' + elementBits + '-bit lane of ' + opShort(s) + ', writing the result to ' + opShort(d) + '.');
+      o.detail.push(J(
+        'ベクタレジスタのレーン同士を入れ替えるのではなく、各レーンの中のバイトだけを入れ替えます。',
+        'The SIMD form swaps bytes inside each lane without moving data between lanes.'));
+      o.terms = ['simd', 'endian'];
+      return;
+    }
+    o.title = J(
+      elementBits === 16 ? '16ビット単位でバイト順を逆に' : '32ビット単位でバイト順を逆に',
+      'Reverse bytes in ' + elementBits + '-bit ' + elementName + 's');
+    o.pseudo = opShort(d) + ' = byteswap' + elementBits + '(' + opShort(s) + ')';
+    o.summary = J(
+      opShort(s) + ' の各 ' + elementBits + ' ビット' + (elementBits === 16 ? '半ワード' : 'ワード') +
+        'の中だけバイト順を逆にして ' + opShort(d) + ' に入れる。',
+      'Reverse bytes within each ' + elementBits + '-bit ' + elementName + ' of ' + opShort(s) + ', writing the result to ' + opShort(d) + '.');
+    o.detail.push(J(
+      'レジスタ全体をひっくり返すのではなく、' + elementBits + ' ビット単位ごとにその中のバイトだけを入れ替えます。',
+      'Split the register into ' + elementBits + '-bit ' + elementName + 's and swap bytes only within each one.'));
+    o.terms = ['endian'];
+  };
+}
+HANDLERS.rev16 = reverseBytesWithin(16);
+HANDLERS.rev32 = reverseBytesWithin(32);
 
 HANDLERS.clz = (o, ops) => {
   const [d, s] = ops;
