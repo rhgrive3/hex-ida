@@ -22,6 +22,7 @@ const REPOSITORY_CAPTURE_FILES = Object.freeze({
   'machine-effects-riscv64-coverage': 'p6-capture.json',
   'decompiler-quality-gotos': 'p8-gotos-capture.json',
   'decompiler-quality-assembly-fallbacks': 'p8-fallbacks-capture.json',
+  'universal-binary-hotpath-ms': 'benchmark-capture.json',
 });
 const SHARED_PHASE8_CAPTURE_METRIC = 'decompiler-quality-gotos';
 const SHARED_PHASE8_FALLBACK_METRIC = 'decompiler-quality-assembly-fallbacks';

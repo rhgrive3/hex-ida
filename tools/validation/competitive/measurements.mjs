@@ -20,8 +20,15 @@ import {
   capturePhase5TwinWorkload,
   capturePhase6TwinWorkload,
   capturePhase8TwinWorkload,
+  captureBenchmarkTwinWorkload,
   validateCompetitiveTwinCapture,
 } from './workload-twins.mjs';
+import {
+  BENCHMARK_METRIC_ID,
+  benchmarkEvidenceFromReport,
+  runUniversalBinaryBenchmark,
+  validateBenchmarkEvidence,
+} from './benchmark.mjs';
 import { extractElfFunctionBytes, loadCorpus } from '../phase8/build-corpus.mjs';
 import { observeCorpus } from '../phase8/decompile-corpus.mjs';
 import {
@@ -53,12 +60,14 @@ const BINARY_METRICS = Object.freeze([
   'machine-effects-riscv64-coverage',
   'decompiler-quality-gotos',
   'decompiler-quality-assembly-fallbacks',
+  BENCHMARK_METRIC_ID,
 ]);
 const MEASUREMENT_CONFIG = Object.freeze({
   'machine-effects-x86_64-coverage': Object.freeze({ direction: 'higher', kind: 'pipeline-tuples' }),
   'machine-effects-riscv64-coverage': Object.freeze({ direction: 'higher', kind: 'pipeline-tuples' }),
   'decompiler-quality-gotos': Object.freeze({ direction: 'lower', kind: 'phase8-frozen-function-corpus', field: 'gotos' }),
   'decompiler-quality-assembly-fallbacks': Object.freeze({ direction: 'lower', kind: 'phase8-frozen-function-corpus', field: 'rawAssemblyFallbacks' }),
+  [BENCHMARK_METRIC_ID]: Object.freeze({ direction: 'lower', kind: 'benchmark-binary', field: 'loaderMsMedian' }),
   ...SOURCE_FIXTURE_METRIC_CONFIG,
 });
 const HEX32_RE = /^[0-9a-f]{32}$/i;
@@ -198,8 +207,16 @@ export function validateCompetitiveMeasurement(value, {
     }
     if (value.denominator == null || typeof value.denominator !== 'object' || Array.isArray(value.denominator)) measurementError('denominator', value.metricId);
     if (value.semanticOracle == null || typeof value.semanticOracle !== 'object' || Array.isArray(value.semanticOracle)) measurementError('oracle', value.metricId);
-    validateMeasuredDenominator(value, metricConfig, capture);
-    validateMeasuredOracle(value, metricConfig, capture);
+    if (metricConfig.kind === 'benchmark-binary') {
+      try {
+        validateBenchmarkEvidence(value, { capture });
+      } catch (error) {
+        measurementError('benchmark', `${value.metricId}:${error.message}`);
+      }
+    } else {
+      validateMeasuredDenominator(value, metricConfig, capture);
+      validateMeasuredOracle(value, metricConfig, capture);
+    }
     if (metricConfig.kind === 'phase8-frozen-function-corpus') {
       if (value.referenceMode === PHASE8_REFERENCE_MODES.NATIVE_PAIRED) validateMeasuredNativePhase8Authority(value);
       else validateMeasuredPhase8Authority(value);
@@ -819,6 +836,54 @@ export function measurePhase56Coverage({ metricId, ledger, capture, direction = 
     evidenceRefs: [P56_METRIC[metricId].testPath, P56_METRIC[metricId].producer],
     producer: valid.execution,
   });
+}
+
+/**
+ * Measure the three pinned universal-binary fixtures only after a complete
+ * same-binary twin capture is READY.  The canonical runner is deliberately
+ * never invoked for a missing or invalid external fixture set.
+ */
+export function measureBenchmarkLatency({
+  capture,
+  report = null,
+  node = process.execPath,
+  env = process.env,
+} = {}) {
+  if (capture?.status !== 'READY') {
+    return unmeasured(BENCHMARK_METRIC_ID, capture, 'benchmark-twin-not-ready', {
+      captureStatus: capture?.status ?? null,
+    });
+  }
+  let candidateReport = report;
+  let producer = producerIdentity();
+  try {
+    if (producer == null) return unmeasured(BENCHMARK_METRIC_ID, capture, 'producer-git-identity-unavailable');
+    if (candidateReport == null) candidateReport = runUniversalBinaryBenchmark({ node, env });
+    const after = producerIdentity();
+    if (after == null || after.gitSha !== producer.gitSha || after.treeSha !== producer.treeSha) {
+      return unmeasured(BENCHMARK_METRIC_ID, capture, 'benchmark-source-changed-during-run');
+    }
+    const evidence = benchmarkEvidenceFromReport(candidateReport, { capture, producer });
+    return measured({
+      metricId: BENCHMARK_METRIC_ID,
+      capture,
+      direction: 'lower',
+      corpusId: evidence.corpusId,
+      candidateValue: evidence.candidateValue,
+      referenceValue: evidence.referenceValue,
+      denominator: evidence.denominator,
+      referenceTool: evidence.referenceTool,
+      referenceVersion: evidence.referenceVersion,
+      semanticOracle: evidence.semanticOracle,
+      evidenceRefs: evidence.evidenceRefs,
+      producer: evidence.producer || producer,
+      details: evidence.details,
+    });
+  } catch (error) {
+    return unmeasured(BENCHMARK_METRIC_ID, capture, 'benchmark-evidence-invalid', {
+      identityFailure: { reason: String(error?.message || error) },
+    });
+  }
 }
 
 function qualityMetric(metricId) {
@@ -1553,8 +1618,8 @@ export function measurePhase8Quality({ metricId, observations, baseline, provena
   });
 }
 
-/** Collect all four binary records from already captured evidence. */
-export function collectCompetitiveMeasurements({ capturesByMetric = {}, phase5Ledger = null, phase6Ledger = null, phase8Observations = null, phase8Baseline = null, phase8Corpus = null, phase8ObservationMethod = null, phase8ReferenceMode = PHASE8_REFERENCE_MODES.FROZEN_LEGACY, phase8NativeAdapterIdentity = null } = {}) {
+/** Collect all binary records from already captured evidence. */
+export function collectCompetitiveMeasurements({ capturesByMetric = {}, phase5Ledger = null, phase6Ledger = null, phase8Observations = null, phase8Baseline = null, phase8Corpus = null, phase8ObservationMethod = null, phase8ReferenceMode = PHASE8_REFERENCE_MODES.FROZEN_LEGACY, phase8NativeAdapterIdentity = null, benchmarkReport = null, benchmarkNode = process.execPath, benchmarkEnv = process.env } = {}) {
   const records = {};
   records['machine-effects-x86_64-coverage'] = measurePhase56Coverage({
     metricId: 'machine-effects-x86_64-coverage',
@@ -1584,6 +1649,12 @@ export function collectCompetitiveMeasurements({ capturesByMetric = {}, phase5Le
       nativeAdapterIdentity: phase8NativeAdapterIdentity,
     });
   }
+  records[BENCHMARK_METRIC_ID] = measureBenchmarkLatency({
+    capture: capturesByMetric[BENCHMARK_METRIC_ID],
+    report: benchmarkReport,
+    node: benchmarkNode,
+    env: benchmarkEnv,
+  });
   return Object.freeze(records);
 }
 
@@ -1756,6 +1827,11 @@ export function collectCompetitiveMeasurementsFromRepository({
       ledgers[metricId] = error.ledger || null;
     }
   }
+  const benchmarkCapture = captureBenchmarkTwinWorkload({
+    artifactRoot: path.join(root, 'benchmark'),
+  });
+  captures[BENCHMARK_METRIC_ID] = benchmarkCapture;
+  writeJson(path.join(root, 'benchmark-capture.json'), benchmarkCapture);
   for (const [metricId, name] of [
     ['decompiler-quality-gotos', 'p8-gotos'],
     ['decompiler-quality-assembly-fallbacks', 'p8-fallbacks'],
@@ -1802,6 +1878,7 @@ export function collectCompetitiveMeasurementsFromRepository({
       phase8ObservationMethod,
       phase8ReferenceMode: useNativeReference ? PHASE8_REFERENCE_MODES.NATIVE_PAIRED : PHASE8_REFERENCE_MODES.FROZEN_LEGACY,
       phase8NativeAdapterIdentity: phase8NativeAdapterBinding,
+      benchmarkReport: null,
     }),
     ...collectCompetitiveSourceMeasurements(),
   };
