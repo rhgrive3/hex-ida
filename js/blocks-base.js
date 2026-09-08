@@ -679,7 +679,7 @@ export function analyzeDataFlow(insns, opts) {
 
     /* ── add xD, xN, #imm: adrp と組ならアドレスの完成 ── */
     if (base === 'add' && insn.ops.length >= 3 && insn.ops[1] && insn.ops[1].k === 'reg' &&
-        insn.ops[2] && insn.ops[2].k === 'imm') {
+        insn.ops[2] && insn.ops[2].k === 'imm' && insn.ops[2].value != null) {
       const src = regKey(insn.ops[1]);
       const dst = insn.writes[0];
       const prev = src ? get(src) : null;

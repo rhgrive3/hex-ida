@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildSemanticModel } from '../../js/blocks.js';
+import { analyzeDataFlow, buildSemanticModel, makeInstruction } from '../../js/blocks.js';
 
 const BASE = 0x100000n;
 
@@ -79,6 +79,17 @@ for (const modifier of ['lsl #1', 'lsr #12']) {
     'ldr x2, [x1, #8]',
   ]);
   assert.deepEqual(differentDestination.addressRefs, [], `${modifier} must remain unknown for a different destination`);
+}
+
+// Structured operands with a missing immediate value must remain safe and
+// unknown before any shifted-immediate arithmetic is attempted.
+for (const missingValue of [null, undefined]) {
+  const adrp = makeInstruction({ row: 0, address: BASE, mn: 'adrp', ops: 'x0, #0x1000' });
+  const add = makeInstruction({ row: 1, address: BASE + 4n, mn: 'add', ops: 'x0, x0, #1, lsl #12' });
+  add.ops[2].value = missingValue;
+  let result;
+  assert.doesNotThrow(() => { result = analyzeDataFlow([adrp, add]); });
+  assert.deepEqual(result.addressRefs, [], `missing immediate ${String(missingValue)} must remain unknown`);
 }
 
 console.log('issue #3888 ADRP+ADD shifted-immediate reconstruction: PASS');
