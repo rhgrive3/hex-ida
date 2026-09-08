@@ -3,6 +3,36 @@ import './issue-4512-diff-abort-registration-race.mjs';
 import { compareFingerprints, diffFunctions, fingerprintFunction } from '../js/diff/index.js';
 import { createSymmetricCodeFunctionSet } from '../js/diff/symmetric-function-set.js';
 
+// #3666: byte-count options must reach the backend as integral chunks.
+for (const [chunkBytes, expectedChunk] of [
+  [65536.5, 65536],
+  [65537, 65537],
+  [12, 65536],
+  [9 * 1024 * 1024, 8 * 1024 * 1024],
+  [undefined, 2 * 1024 * 1024],
+]) {
+  const reads = [];
+  const start = 0x1000n;
+  const result = await createSymmetricCodeFunctionSet({
+    backend: {
+      readAt(address, length) {
+        reads.push({ address, length });
+        assert.ok(Number.isSafeInteger(length) && length > 0);
+        return Promise.resolve({ found:false });
+      },
+    },
+    symbols: { funcs:[start], functionStartsComplete:true },
+    regions: [{ id:'text', exec:true, vmAddr:start, size:BigInt(expectedChunk + 4) }],
+    chunkBytes,
+  });
+  assert.deepEqual(reads, [
+    { address:start, length:expectedChunk },
+    { address:start + BigInt(expectedChunk), length:4 },
+  ]);
+  assert.equal(result.length, 1);
+  assert.equal(result.complete, false, 'unavailable bytes remain incomplete');
+}
+
 const base = { address: 0x1000n, bytes: Uint8Array.from([1,2,3,4,5,6,7,8]), cfg: { blocks: 2, edges: 1, exits: 1 }, strings: ['coins'], imports: ['memcpy'], calls: ['helper'], constants: [100] };
 let diff = diffFunctions([base], [{ ...base }]);
 assert.equal(diff.matches[0].status, 'identical');
