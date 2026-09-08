@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 import { evaluateFinalHeadAdmission } from '../../tools/validation/final-head-admission.mjs';
 
@@ -34,6 +35,47 @@ const evaluate = (reviews) => evaluateFinalHeadAdmission({
   unresolvedReviewThreads: 0,
   ...greenEvidence,
 });
+
+const workflowSource = fs.readFileSync(
+  new URL('../../.github/workflows/final-head-admission.yml', import.meta.url),
+  'utf8',
+);
+assert.ok(
+  workflowSource.includes('pull_request_review_comment:\n    types: [created, edited, deleted]'),
+  'inline review-comment mutations must re-evaluate final-head admission',
+);
+assert.ok(
+  workflowSource.includes("context.eventName === 'pull_request_review_comment'"),
+  'review-comment payloads must resolve their pull request/current head',
+);
+assert.ok(
+  workflowSource.includes('ref: ${{ github.event.repository.default_branch }}'),
+  'the privileged controller must continue loading only default-branch evaluator code',
+);
+assert.ok(
+  workflowSource.includes('persist-credentials: false'),
+  'the privileged controller checkout must remain credential-free',
+);
+
+// A green exact head must become blocking when a newly-created inline comment
+// creates an unresolved review thread. The workflow-source assertions above pin
+// the event that causes this evaluator path to be re-run.
+{
+  const reviews = [auto('R1', 'APPROVED', '2026-09-07T00:02:00Z')];
+  const before = evaluate(reviews);
+  assert.equal(before.state, 'success');
+
+  const after = evaluateFinalHeadAdmission({
+    headSha: HEAD,
+    reviews,
+    trustedAutoReviewers: [TRUSTED],
+    requiredStatusContexts: [REQUIRED],
+    unresolvedReviewThreads: 1,
+    ...greenEvidence,
+  });
+  assert.equal(after.state, 'failure');
+  assert.ok(after.blockers.includes('1 unresolved review thread(s)'));
+}
 
 // R0 and R1 are independent logical reviewers even when the same trusted
 // GitHub account mints both markers. A later R0 approval cannot erase R1's

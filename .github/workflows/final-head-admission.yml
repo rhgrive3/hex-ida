@@ -5,6 +5,8 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   pull_request_review:
     types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
   status:
   workflow_run:
     workflows:
@@ -83,7 +85,11 @@ jobs:
             let prNumber = null;
             let triggeringHead = null;
 
-            if (context.eventName === 'pull_request_target' || context.eventName === 'pull_request_review') {
+            if (
+              context.eventName === 'pull_request_target'
+              || context.eventName === 'pull_request_review'
+              || context.eventName === 'pull_request_review_comment'
+            ) {
               prNumber = context.payload.pull_request?.number ?? null;
               triggeringHead = context.payload.pull_request?.head?.sha ?? null;
             } else if (context.eventName === 'workflow_run') {
