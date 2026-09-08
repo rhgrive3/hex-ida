@@ -90,7 +90,14 @@ export function parameterClass(parameter) {
       && declaredBits > 0
       && declaredBits === intrinsicBits);
   const rawBits = Number(declaredBits ?? (pointer ? 64 : typeBits(type, intrinsicBits ?? (vector ? 128 : 64))));
-  const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(512, rawBits) : 64;
+  /* An aggregate's canonical physical layout may legitimately exceed one
+   * intrinsic vector width (for example four __m256 HVA members = 1024
+   * bits). Preserve that proven total so HVA validation can compare it with
+   * the member sum. Unstructured width hints retain the conservative 512-bit
+   * bound and therefore cannot manufacture a wider exact placement. */
+  const bits = Number.isSafeInteger(rawBits) && rawBits > 0
+    ? (aggregateLayout ? rawBits : Math.min(512, rawBits))
+    : 64;
   const nonTrivialForCalls = parameter?.nonTrivialForCalls === true || parameter?.nonTrivial === true;
   const trivialForCalls = parameter?.trivialForCalls === true || parameter?.pod === true;
   return {

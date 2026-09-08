@@ -79,12 +79,11 @@ test('Microsoft official Example 3 keeps HVA members and integer positions disti
 
 test('Microsoft official Example 4 reserves direct FP positions before HVA lanes', () => {
   // The documented example uses four __m256 members and therefore YMM views.
-  // This canonical four-member fixture exercises the same non-contiguous
-  // reservation topology with the repository's exact __m128 HVA shape;
-  // Example 2 separately proves the XMM/YMM width views.
   const hva4 = {
-    hva:true, bits:512, bytes:64,
-    members:Array.from({ length:4 }, (_unused, index) => ({ bits:128, bytes:16, byteOffset:index * 16 })),
+    type:'hva4', hva:true, bits:1024, bytes:128,
+    members:Array.from({ length:4 }, (_unused, index) => ({
+      type:'__m256', vector:true, bits:256, bytes:32, byteOffset:index * 32,
+    })),
   };
   const result = classifyMicrosoftVectorcallArguments({ callPrototype:{
     callingConvention:'vectorcall',
@@ -92,13 +91,34 @@ test('Microsoft official Example 4 reserves direct FP positions before HVA lanes
   } });
   assert.equal(result.arguments[0].reg, 'rcx');
   assert.equal(result.arguments[1].reg, 'xmm1');
-  assert.deepEqual(result.arguments[2].regs, ['xmm0', 'xmm2', 'xmm4', 'xmm5']);
+  assert.deepEqual(result.arguments[2].regs, ['ymm0', 'ymm2', 'ymm4', 'ymm5']);
+  assert.deepEqual(result.arguments[2].pieces.map((piece) => ({
+    reg:piece.reg, bits:piece.bits, bytes:piece.bytes, byteOffset:piece.byteOffset,
+  })), [
+    { reg:'ymm0', bits:256, bytes:32, byteOffset:0 },
+    { reg:'ymm2', bits:256, bytes:32, byteOffset:32 },
+    { reg:'ymm4', bits:256, bytes:32, byteOffset:64 },
+    { reg:'ymm5', bits:256, bytes:32, byteOffset:96 },
+  ]);
   assert.equal(result.arguments[3].reg, 'xmm3');
   assert.equal(result.arguments[4].location, 'stack');
   assert.equal(result.arguments[4].offset, 32);
   const vectorRegs = result.arguments.flatMap((entry) => entry.regs ?? []);
   assert.equal(new Set(vectorRegs).size, vectorRegs.length);
   assert.equal(result.partial, false);
+});
+
+test('an unproven wide HVA does not turn a bounded width hint into exact placement', () => {
+  const result = classifyMicrosoftVectorcallArguments({ callPrototype:{
+    callingConvention:'vectorcall',
+    args:[{ type:'hva4', hva:true, bits:1024, count:4, elementBits:256 }],
+  } });
+  const entry = result.arguments[0];
+  assert.equal(entry.location, 'unknown');
+  assert.equal(entry.reg, undefined);
+  assert.equal(entry.partial, true);
+  assert.equal(entry.reason, 'microsoft-vectorcall-hva-member-layout-not-proven');
+  assert.equal(result.partial, true);
 });
 
 test('an HVA too large for the unused registers goes indirect in its integer register', () => {
