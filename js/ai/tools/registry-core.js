@@ -81,7 +81,7 @@ export class ToolRegistry {
     if (!tool) throw new AIError("invalid_tool_call", `Unknown tool: ${name}`);
     if (options.signal?.aborted) throw abortError(options.signal);
     const started = Date.now();
-    const scope = scope;
+    const scope = options.scope || "auto";
     const scopeBoundary = scopeBoundaryFor(scope, args, options, this.context);
     const previousSignal = this.executionSignal;
     const timeoutMs = resolveToolTimeout(tool, options);

@@ -18,7 +18,7 @@ function registryWithTool() {
     name: 'get_observation_detail', description: 'detail probe', inputSchema: { type: 'object', properties: { detailRef: { type: 'string' } } },
     scopeSupport: ['auto', 'binary', 'project', 'selection', 'function'], category: 'detail', resultKind: 'observation-detail',
     mutability: 'read-only', needsApproval: false, deterministic: false, storeResult: false,
-    execute: async ({ detailRef, path = '$', limit = 100 }, options = {}) => registry.observationStore.detail({ detailRef, path, limit, effectiveScope: options.scope || 'auto' }),
+    execute: async ({ detailRef, path = '$', limit = 100 }, options = {}) => registry.observationStore.detail({ detailRef, path, limit, effectiveScope: options.scope || 'auto', scopeBoundary: options.scopeBoundary || null }),
   });
   return registry;
 }
@@ -44,8 +44,8 @@ test('#5641 function-scope turn cannot read binary-scope records but reads its o
     () => registry.execute('get_observation_detail', { detailRef: broad.detailRef, limit: 10 }, { scope: 'function', scopeIdentity: 'function-A' }),
     /scope_violation/,
   );
-  const own = await registry.execute('search_strings', {}, { scope: 'function' });
-  const ownDetail = await registry.execute('get_observation_detail', { detailRef: own.detailRef, limit: 10 }, { scope: 'function' });
+  const own = await registry.execute('search_strings', {}, { scope: 'function', scopeIdentity: 'function-A' });
+  const ownDetail = await registry.execute('get_observation_detail', { detailRef: own.detailRef, limit: 10 }, { scope: 'function', scopeIdentity: 'function-A' });
   assert.equal(ownDetail.result?.detailRef, own.detailRef);
 });
 
