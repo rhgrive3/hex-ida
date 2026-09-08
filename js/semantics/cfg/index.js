@@ -7,6 +7,10 @@ export const SEMANTIC_CFG_EDGE_KINDS = Object.freeze([
   'conditional-true',
   'conditional-false',
   'switch-case',
+  // The implicit CIL `switch` default path and wasm `br_table` default label
+  // are real execution paths; without this kind the canonical CFG contract
+  // cannot represent them and the managed bridge cannot publish them (#7239).
+  'switch-default',
   'call',
   'tail-call',
   'return',
