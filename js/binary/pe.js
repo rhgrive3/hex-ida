@@ -11,9 +11,24 @@ const IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10;
 const IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT = 13;
 const WINDOWS_IMAGE_RAW_ALIGNMENT = 0x200;
 
-function windowsImageSectionRawMapping(pointerToRawData) {
+function windowsImageSectionRawMapping(pointerToRawData, { sectionAlignment } = {}) {
   if (pointerToRawData === 0) {
     return { effectiveFileOffset: 0, fileBacked: false, roundedDown: false };
+  }
+  // The Windows loader's 0x200 sector round-down only applies to images
+  // mapped at the default page granularity. Low-alignment images
+  // (SectionAlignment < 0x1000, e.g. pefile issue #465's resource-only PE
+  // with SectionAlignment = FileAlignment = 0x10) are consumed with their
+  // declared raw offsets: the loader does not reinterpret PointerToRawData,
+  // and rounding it down would redirect the mapping into the MZ/header
+  // bytes (#5539).
+  if (Number.isSafeInteger(sectionAlignment) && sectionAlignment > 0 && sectionAlignment < 0x1000) {
+    return {
+      effectiveFileOffset: pointerToRawData,
+      fileBacked: true,
+      roundedDown: false,
+      policy: 'low-alignment-declared-raw-offset',
+    };
   }
   const effectiveFileOffset = pointerToRawData - (pointerToRawData % WINDOWS_IMAGE_RAW_ALIGNMENT);
   return {
@@ -171,7 +186,7 @@ export function parsePE(input, options = {}) {
     const beyondRvaDomain = endRva > rvaLimit;
     const beyondSizeOfImage = endRva > BigInt(sizeOfImage);
     const virtualRangeInvalid = beyondRvaDomain || beyondSizeOfImage;
-    const rawMapping = windowsImageSectionRawMapping(ptrRaw);
+    const rawMapping = windowsImageSectionRawMapping(ptrRaw, { sectionAlignment });
     const rawSize = windowsImageSectionRawSize(sizeRaw, fileAlignment, sectionAlignment);
     const availableFileBytes = rawMapping.fileBacked ? Math.max(0, bytes.length - rawMapping.effectiveFileOffset) : 0;
     const rawAvailableNumber = rawMapping.fileBacked ? Math.min(rawSize.effectiveRawSize, availableFileBytes) : 0;
@@ -186,7 +201,7 @@ export function parsePE(input, options = {}) {
       sizeOfRawData: sizeRaw,
       fileBacked: rawMapping.fileBacked,
       roundedDown: rawMapping.roundedDown,
-      policy: 'windows-image-loader-0x200-round-down',
+      policy: rawMapping.policy || 'windows-image-loader-0x200-round-down',
     });
     image.metadata.peSectionRawSizes.push({
       sectionIndex: i + 1,
