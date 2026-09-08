@@ -14,10 +14,12 @@
  */
 
 import { deepFreeze, stableDigest } from '../../core/identity/index.js';
+import { aliasMemoryRegions } from '../alias/legacy-safety-floor.js';
+import { deriveMemoryRegion, isPreciseMemoryRegion } from '../alias/regions-v2.js';
 import { createAnalysisStatus, isCompleteStatus } from '../status.js';
 
-export const FUNCTION_SUMMARY_SCHEMA_VERSION = 2;
-export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.1.0';
+export const FUNCTION_SUMMARY_SCHEMA_VERSION = 3;
+export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.2.0';
 
 /**
  * Where an effect's authority comes from, in the priority order P7-INV-004
@@ -134,16 +136,55 @@ export function classifyCallTargetProof(call = {}) {
   });
 }
 
+
+function canonicalSummaryRegion(value, expectedId = null, expectedKind = null) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const kind = typeof value.kind === 'string' ? value.kind.trim() : '';
+  if (!kind || (expectedKind != null && kind !== expectedKind)) return null;
+  const regionEvidence = { kind };
+  if (kind === 'stack-fixed') regionEvidence.offset = value.offset;
+  else if (kind === 'global-absolute') regionEvidence.address = value.address;
+  else if (kind === 'rooted-offset') {
+    regionEvidence.rootEntityId = value.rootEntityId;
+    regionEvidence.offset = value.offset;
+    if (value.addressSpace != null) regionEvidence.addressSpace = value.addressSpace;
+  } else if (kind === 'tls' || kind === 'io' || kind === 'physical-space') {
+    regionEvidence.addressSpace = value.addressSpace;
+    regionEvidence.rootIdentity = value.rootIdentity;
+  } else return null;
+  try {
+    const region = deriveMemoryRegion({
+      functionId: value.functionId ?? null,
+      binaryId: value.binaryId ?? null,
+      widthBits: value.widthBits,
+      addressSpace: value.addressSpace ?? null,
+      origin: value.origin,
+      regionEvidence,
+    });
+    if (!isPreciseMemoryRegion(region)) return null;
+    if (expectedId != null && (typeof expectedId !== 'string' || region.id !== expectedId.trim())) return null;
+    if (expectedKind != null && region.kind !== expectedKind) return null;
+    return region;
+  } catch { return null; }
+}
+
 /** One memory region a function reads or writes, with why we believe it. */
 export function createMemoryEffect(input = {}) {
   const source = canonicalEffectSource(input.source, 'proven-summary');
+  const regionId = input.regionId == null ? null : nonEmpty(input.regionId, 'function-summary-invalid-region-id');
+  const regionKind = nonEmpty(input.regionKind ?? 'unknown', 'function-summary-invalid-region-kind');
+  const broad = input.broad === true;
+  if (broad && input.region != null) fail('function-summary-broad-effect-cannot-carry-region-proof');
+  const region = input.region == null ? null : canonicalSummaryRegion(input.region, regionId, regionKind);
+  if (input.region != null && region == null) fail('function-summary-invalid-region-proof');
   return deepFreeze({
-    regionId: input.regionId == null ? null : nonEmpty(input.regionId, 'function-summary-invalid-region-id'),
-    regionKind: nonEmpty(input.regionKind ?? 'unknown', 'function-summary-invalid-region-kind'),
+    regionId,
+    regionKind,
+    ...(region == null ? {} : { region }),
     // A `broad` effect covers every region in its address spaces. It is what an
     // unresolved call contributes, and it is deliberately not expressible as a
     // list of specific regions.
-    broad: input.broad === true,
+    broad,
     addressSpaces: sortedIds(input.addressSpaces, 'function-summary-invalid-address-spaces'),
     source,
     evidenceIds: sortedIds(input.evidenceIds, 'function-summary-invalid-evidence-ids'),
@@ -420,13 +461,22 @@ export function functionSummaryDigest(summary) {
  * about?". It answers `true` whenever the summary cannot prove otherwise,
  * which is what keeps an incomplete summary from reading as pure.
  */
-export function summaryMayWriteRegion(summary, regionId) {
+export function summaryMayWriteRegion(summary, regionOrId) {
   if (!summary) return true;
   if (!isCompleteStatus(summary.status)) return true;
   if (summary.unknownCallEffects.length > 0) return true;
   if (summary.memoryWriteRegions.some((effect) => effect.broad)) return true;
-  if (regionId == null) return summary.memoryWriteRegions.length > 0;
-  return summary.memoryWriteRegions.some((effect) => effect.regionId === regionId);
+  if (regionOrId == null) return summary.memoryWriteRegions.length > 0;
+  const queryId = typeof regionOrId === 'string' ? regionOrId.trim() : null;
+  if (typeof regionOrId === 'string' && !queryId) return true;
+  const query = queryId == null ? canonicalSummaryRegion(regionOrId) : null;
+  if (queryId == null && !query) return true;
+  for (const effect of summary.memoryWriteRegions) {
+    if (effect.regionId === (queryId ?? query.id)) return true;
+    const write = canonicalSummaryRegion(effect.region, effect.regionId, effect.regionKind);
+    if (!write || aliasMemoryRegions(write, query) !== 'no') return true;
+  }
+  return false;
 }
 
 export function summaryIsPure(summary) {
