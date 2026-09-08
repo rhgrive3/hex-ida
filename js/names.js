@@ -869,6 +869,7 @@ export class NoteStore {
     if (!o || typeof o !== 'object') throw new Error('invalid-notes-import');
     // Identity comparison stays type-preserving: a structured id must never
     // launder into this store's namespace through String() coercion (#5968).
+    if (o.id != null && typeof o.id !== 'string') throw new Error('notes-file-mismatch');
     if (o.id != null && this.id != null && o.id !== this.id) throw new Error('notes-file-mismatch');
     let n = 0;
     for (const [k, v] of Object.entries(o.names || {})) { this.names.set(k, v); n++; }
