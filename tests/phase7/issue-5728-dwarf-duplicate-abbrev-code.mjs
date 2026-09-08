@@ -42,6 +42,7 @@ test('#5728 first declaration wins over the duplicate (no silent last-wins seman
   const out = parseDebugInfo({ debug_info, debug_abbrev: debug_abbrev_duplicate });
   const die = [...out.dies.values()][0];
   assert.ok(die, 'DIE still parsed');
+  assert.equal(die.complete, false, 'ambiguous abbreviation evidence is incomplete');
   assert.equal(die.attributes.has(0x11), true, 'first declaration (DW_AT_low_pc) kept');
   assert.equal(die.attributes.has(0x12), false, 'duplicate declaration ignored');
 });

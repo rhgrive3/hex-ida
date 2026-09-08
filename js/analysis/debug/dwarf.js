@@ -434,7 +434,10 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET) {
         break;
       }
       const attributes = new Map();
-      let dieComplete = true;
+      // Keep the first declaration for deterministic decoding, but never
+      // publish a DIE from an ambiguous abbreviation table as complete
+      // evidence (#5728).
+      let dieComplete = !duplicateCode;
       try {
         for (const spec of declaration.attributes) {
           const read = readForm(cursor, spec.form, unit, sections, spec.implicitConst);
