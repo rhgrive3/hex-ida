@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { analyzeDecodedSemanticFunction } from '../../../js/analysis/semantic-function-base.js';
 import { liftRiscv64ControlEffects } from '../../../js/targets/architecture/riscv64/effects/control.js';
+import { evaluateBundle } from './helpers.mjs';
 
 function regNumber(name) { return Number(String(name).replace(/^x/, '')); }
 function littleEndianWord(word) {
@@ -77,6 +79,19 @@ test('6065: 2-mod-4 branch target keeps the fault candidate', () => {
   assert.equal(fault.detail.conditionalOn, 'branch-taken');
 });
 
+test('6065: not-taken misaligned branch does not activate the fault path', () => {
+  const branch = liftRiscv64ControlEffects(rvControl('beq', { imm: 2 }), { instructionAlignment: 4 });
+  const { temporaries } = evaluateBundle(branch, { x10: 1n, x11: 2n });
+  const [fault] = branch.possibleFaults;
+  const [branchTaken, targetMisaligned] = fault.condition.terms;
+  assert.equal(branchTaken.kind, 'riscv64-branch-taken');
+  assert.equal(branchTaken.value.temporaryId, branch.controlEffect.condition.temporaryId);
+  assert.equal(temporaries.get(branchTaken.value.temporaryId), 0n, 'x10 != x11 must make the branch not taken');
+  assert.equal(targetMisaligned.kind, 'riscv64-target-misaligned');
+  assert.equal(temporaries.get(branchTaken.value.temporaryId) === 1n, false,
+    'a statically misaligned target must still fault only when the branch is taken');
+});
+
 test('6065: jalr keeps its conditional fault (runtime target)', () => {
   const jalr = liftRiscv64ControlEffects(rvControl('jalr', { rd: 'x1', rs1: 'x10', imm: 0 }), { instructionAlignment: 4 });
   assert.equal(jalr.possibleFaults.length, 1);
@@ -91,4 +106,47 @@ test('6065: jalr keeps its conditional fault (runtime target)', () => {
 test('6065: IALIGN=16 behavior unchanged', () => {
   const jal = liftRiscv64ControlEffects(rvControl('jal', { imm: 2 }, 0x1000n, 2));
   assert.deepEqual(jal.possibleFaults, []);
+});
+
+test('6065: IALIGN=16 branch and JALR paths carry no alignment fault', () => {
+  const branch = liftRiscv64ControlEffects(
+    rvControl('beq', { imm: 2 }, 0x1000n, 2), { instructionAlignment: 2 });
+  const jalr = liftRiscv64ControlEffects(
+    rvControl('jalr', { rd: 'x0', rs1: 'x10', imm: 1 }, 0x1000n, 2), { instructionAlignment: 2 });
+  assert.deepEqual(branch.possibleFaults, []);
+  assert.deepEqual(jalr.possibleFaults, []);
+});
+
+function analyzeAlignmentCase(immediate, binaryId) {
+  const instruction = rvControl('beq', { imm: immediate }, 0x2000n, 4);
+  return analyzeDecodedSemanticFunction({
+    architecture: 'riscv64',
+    platform: 'linux',
+    abiId: 'lp64',
+    binaryId,
+    sliceId: `${binaryId}-slice`,
+    decoderSemanticVersion: 'capstone-5-riscv64-word-exact-v1',
+    mode: 'rv64im',
+    instructions: [instruction],
+  });
+}
+
+test('6065: MachineEffects-to-Semantic-IR preserves real alignment faults only', () => {
+  const aligned = analyzeAlignmentCase(8, 'issue-6065-aligned');
+  const alignedMachine = aligned.pipeline.machineEffects[0];
+  const alignedBranch = aligned.pipeline.semanticIr.nodes.find((node) => node.kind === 'conditional-branch');
+  assert.ok(alignedBranch, 'aligned branch must reach Semantic IR');
+  assert.deepEqual(alignedMachine.possibleFaults, []);
+  assert.deepEqual(alignedBranch.attributes.machineEffects.possibleFaults ?? [], []);
+  assert.equal(aligned.pipeline.semanticIr.nodes.some((node) => node.kind === 'trap'), false,
+    'an aligned direct target must not create a false Semantic IR exception node');
+
+  const misaligned = analyzeAlignmentCase(2, 'issue-6065-misaligned');
+  const misalignedMachine = misaligned.pipeline.machineEffects[0];
+  const misalignedBranch = misaligned.pipeline.semanticIr.nodes.find((node) => node.kind === 'conditional-branch');
+  assert.ok(misalignedBranch, 'misaligned branch must reach Semantic IR');
+  assert.equal(misalignedMachine.possibleFaults.length, 1);
+  assert.deepEqual(misalignedBranch.attributes.machineEffects.possibleFaults, misalignedMachine.possibleFaults,
+    'Semantic IR must retain the MachineEffects fault evidence');
+  assert.equal(misalignedBranch.attributes.machineEffects.possibleFaults[0].kind, 'pc-alignment-fault');
 });

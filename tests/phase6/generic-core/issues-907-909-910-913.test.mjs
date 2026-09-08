@@ -11,10 +11,50 @@ import { liftRiscv64ControlEffects } from '../../../js/targets/architecture/risc
 import { liftArm64MemoryEffects } from '../../../js/targets/architecture/arm64/effects/memory.js';
 import { liftArm64AtomicEffects } from '../../../js/targets/architecture/arm64/effects/atomic.js';
 
+function regNumber(name) { return Number(String(name).replace(/^x/, '')); }
+function littleEndianWord(word) {
+  return Uint8Array.from([word & 0xff, (word >>> 8) & 0xff, (word >>> 16) & 0xff, (word >>> 24) & 0xff]);
+}
+function encodeJal(rd, immediate) {
+  const imm = Number(BigInt.asUintN(21, BigInt(immediate)));
+  const word = (((imm >>> 20) & 1) << 31)
+    | (((imm >>> 1) & 0x3ff) << 21)
+    | (((imm >>> 11) & 1) << 20)
+    | (((imm >>> 12) & 0xff) << 12)
+    | (regNumber(rd) << 7)
+    | 0x6f;
+  return littleEndianWord(word >>> 0);
+}
+function encodeBranch(op, rs1, rs2, immediate) {
+  const funct3 = { beq: 0, bne: 1, blt: 4, bge: 5, bltu: 6, bgeu: 7 }[op];
+  const imm = Number(BigInt.asUintN(13, BigInt(immediate)));
+  const word = (((imm >>> 12) & 1) << 31)
+    | (((imm >>> 5) & 0x3f) << 25)
+    | (regNumber(rs2) << 20)
+    | (regNumber(rs1) << 15)
+    | (funct3 << 12)
+    | (((imm >>> 1) & 0xf) << 8)
+    | (((imm >>> 11) & 1) << 7)
+    | 0x63;
+  return littleEndianWord(word >>> 0);
+}
+function encodeJalr(rd, rs1, immediate) {
+  const imm = Number(BigInt.asUintN(12, BigInt(immediate)));
+  const word = (imm << 20) | (regNumber(rs1) << 15) | (regNumber(rd) << 7) | 0x67;
+  return littleEndianWord(word >>> 0);
+}
+
 function rvControl(op, fields = {}, instructionAlignment = 2) {
+  const merged = { rd:'x0', rs1:'x10', rs2:'x11', imm:4, ...fields };
+  const rawBytes = op === 'jal'
+    ? encodeJal(merged.rd, merged.imm)
+    : op === 'jalr'
+      ? encodeJalr(merged.rd, merged.rs1, merged.imm)
+      : encodeBranch(op, merged.rs1, merged.rs2, merged.imm);
   return {
     contractVersion:'riscv64-decoded-instruction/v1', instructionId:`rv-${op}`, origin:{instructionIds:[`rv-${op}`]},
     mode:instructionAlignment === 4 ? 'rv64im' : 'rv64imc', instructionAlignment, address:0x1000n, size:4,
+    rawBytes,
     fields:{ supported:true, op, compressed:false, rd:'x0', rs1:'x10', rs2:'x11', imm:4, ...fields },
   };
 }
@@ -33,7 +73,8 @@ test('#907 IALIGN=16 does not invent instruction-address-misaligned faults', () 
 test('#907 future IALIGN=32 profile retains an explicit 4-byte target-alignment fault', () => {
   const branch = liftRiscv64ControlEffects(rvControl('beq', { imm:2 }, 4), { instructionAlignment:4 });
   assert.equal(branch.possibleFaults.length, 1);
-  assert.equal(branch.possibleFaults[0].condition.alignmentBytes, 4);
+  assert.equal(branch.possibleFaults[0].condition.kind, 'and');
+  assert.equal(branch.possibleFaults[0].condition.terms[1].alignmentBytes, 4);
 });
 
 function u32le(value) { return [value & 255, (value >>> 8) & 255, (value >>> 16) & 255, (value >>> 24) & 255]; }
