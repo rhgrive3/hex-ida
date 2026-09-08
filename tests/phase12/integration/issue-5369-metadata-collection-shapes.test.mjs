@@ -14,7 +14,7 @@ import {
   createLanguageMetadataRecord,
   createLanguageMetadataPage,
   createLanguageMetadataResult,
-} from '../js/metadata/provider.js';
+} from '../../../js/metadata/provider.js';
 
 const identity = { providerId: 'p', providerVersion: '1', ecosystem: 'go', verdict: 'identity-unavailable' };
 

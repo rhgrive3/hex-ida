@@ -6,7 +6,7 @@
 // set whose canonical value is exactly true; every other name — including
 // prototype-inherited ones — fails closed with DebugAdapterError('unsupported').
 import assert from 'node:assert/strict';
-import { DebugAdapter, DEBUG_CAPABILITIES } from '../js/debug/adapter.js';
+import { DebugAdapter, DEBUG_CAPABILITIES } from '../../../js/debug/adapter.js';
 
 const adapter = new DebugAdapter({ id: 'test', capabilities: new Set(['readMemory']) });
 
