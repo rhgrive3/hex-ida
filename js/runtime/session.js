@@ -50,8 +50,16 @@ function traceEventEpochAuthority(value) {
 
 function debugSessionId(value) {
   if (value == null) return `debug:${nextSession++}`;
-  if (typeof value !== 'string' || !value.trim()) throw new DebugAdapterError('session-id', 'debug session id must be a non-empty string');
-  return value;
+  if (typeof value !== 'string') throw new DebugAdapterError('session-id', 'debug session id must be a non-empty string');
+  const text = value.trim();
+  if (!text) throw new DebugAdapterError('session-id', 'debug session id must be a non-empty string');
+  return text;
+}
+
+function sessionLookupId(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text || null;
 }
 
 export class DebugSession {
@@ -242,8 +250,15 @@ export class DebugSessionManager {
   create(adapter,options={}){
     if(this.sessions.size>=this.maxSessions)throw new DebugAdapterError('session-limit',`debug session limit reached (${this.maxSessions})`);
     for(const active of this.sessions.values())if(!active.closed&&active.adapter===adapter)throw new DebugAdapterError('adapter-in-use','a debug adapter cannot be shared by multiple live sessions');
+    // Reserve anonymous ids in this manager's live namespace. Explicit ids
+    // remain caller-owned and still fail on a real duplicate; the counter is
+    // monotonic, so an id is not reused after close during this process (#5933).
+    const requested={...options};
+    if(requested.id==null){
+      do{ requested.id=`debug:${nextSession++}`; }while(this.sessions.has(requested.id));
+    }
     const callerOnClosed=typeof options.onClosed==='function'?options.onClosed:null;
-    const session=new DebugSession(adapter,{...options,onClosed:(closed)=>{this._sessionClosed(closed);if(callerOnClosed){try{callerOnClosed(closed);}catch{}}}});
+    const session=new DebugSession(adapter,{...requested,onClosed:(closed)=>{this._sessionClosed(closed);if(callerOnClosed){try{callerOnClosed(closed);}catch{}}}});
     if(this.sessions.has(session.id)) throw new DebugAdapterError('duplicate-session-id',`debug session id already exists: ${session.id}`,{id:session.id});
     this.sessions.set(session.id,session);this.current=session;return session;
   }
@@ -251,7 +266,7 @@ export class DebugSessionManager {
     if(this.sessions.get(session.id)===session)this.sessions.delete(session.id);
     if(this.current===session)this.current=null;
   }
-  get(id){return this.sessions.get(id)||null;}
+  get(id){const key=sessionLookupId(id);return key==null?null:(this.sessions.get(key)||null);}
   switch(id){
     const next=this.get(id);if(!next)throw new DebugAdapterError('session-not-found',`debug session not found: ${id}`);
     // Selecting a session is UI/manager state and must not invalidate execution state.
