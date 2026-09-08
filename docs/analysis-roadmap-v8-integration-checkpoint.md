@@ -230,7 +230,7 @@ compiler argument records, baseline observations, denominators and thresholds
 are unchanged. The default single-entry API still uses its frozen corpus
 toolchain for existing frozen-entry callers.
 
-`tests/phase8/corpus/explicit-compiler-abi.test.mjs` failed 0/2 before the repair
+`tests/phase8/corpus/explicit-compiler-abi.test.mjs` passed 0/2 before the repair
 (log `/tmp/hex-roadmap-p8-abi-before-Tbx8Ub/full.log`) and now passes, including
 negative checks across all metric consumers. Ownership checks pass using the
 existing Phase 8 manifest, without frozen-path exemptions. A complete 45/45
@@ -238,6 +238,53 @@ RISC-V corpus execution passed without per-function errors (33.0 s); this
 focused evidence does not replace the full Phase 8 safety/quality gate.
 Verifier version advances from 1.1.0 to 1.1.1 because measurement changed;
 older verifier reports are not evidence for this repaired candidate.
+
+The exact clean ABI-repair head
+`a2fcb0fee2713e28b4c213334b7441d20b0f0ed2`, tree
+`8a9b16471a5a25d52ded47cba6076d497bf1b7fb`, passed the entire canonical
+`npm run phase8:test` (1142.5 s), with verifier 1.1.1. Its focused ABI
+regression and canonical rebuild/zero generated diff passed first. The worktree
+was kept frozen for the complete run. This is full Phase 8 test evidence for
+that exact head, not a release READY verdict or proof of subsequent changes.
+
+### Retained address evidence and current budget fixtures
+
+While that run was live, corrective work used a separate detached worktree at
+the same base (`/mnt/workspace/hex-roadmap-v8-repair.kPhcD5`), leaving the
+authoritative integration tree unchanged. No replacement PR was created.
+
+The already-merged #7317 strict-address test exposed a remaining hole in the
+#7053 literal-target coherence helper: malformed present target fields were
+treated as absent, allowing a different valid field to produce an exact load.
+The existing canonical helper now rejects malformed/out-of-domain evidence,
+including an existing immediate operand whose value is invalid. Nullable
+optional structured fields remain absent, and valid signed/unsigned 64-bit
+wraparound remains supported. LDR, LDRSW and PRFM are checked through both the
+architecture dispatcher and family provider, with/without encoding bytes.
+No second address engine, reduced denominator or relaxed arity rule is used.
+
+Before repair, the original strict-address test failed at `LDR literal array
+target` (`/tmp/hex-roadmap-literal-before-O2RomV/full.log`), and the new matrix
+failed at `ldr/structured/pcRelTarget`
+(`/tmp/hex-roadmap-literal-matrix-before-nfuovs/full.log`). After repair, all
+eight selected literal/addressing/prefetch/memory-denominator suites passed
+(0.8 s), including all 267 LLVM+Capstone memory cases.
+
+Merged #7055 correctly requires the producer budget class to enter an artifact
+identity when completeness depends on it. Three older foundation fixture
+files omitted that class. They now declare `interactive`; the production
+requirement, cache-dependency assertions and malformed-callee negatives are
+unchanged. The selection previously passed 23/38 tests with all 15 failures
+caused by the missing budget class
+(`/tmp/hex-roadmap-p7-budget-before-ASlYZV/full.log`). All 38 now pass, together
+with both ownership regressions (0.7 s). The five additional changed paths
+are explicitly assigned; no blanket ownership allowance is added.
+
+Repair candidate lint passed (4.3 s); canonical generated build passed (4.1 s).
+Release serial is `2322242154`, build ID `35c29341e2040e8dec97b982`, release
+identity `56f8f5e7dd27e7487b5a14b097943a89b222d3d034858ba5efe21dff7f95da8d`.
+Commit/rebuild-zero-diff, complete current-head gates and runtime checks remain
+required. The earlier Phase 8 green does not attest these new runtime bytes.
 
 ## Ownership and regression policy
 

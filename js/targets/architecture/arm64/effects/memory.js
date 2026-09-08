@@ -519,7 +519,7 @@ function literalLoad(decoded, context, mnemonic) {
   const reg = dataRegisters(decoded)[0];
   if (!reg) return partial(decoded, context, 'literal load destination register is missing');
   if (mnemonic === 'ldrsw' ? !isGp(reg, 64) : !(isGp(reg) && [32,64].includes(Number(reg.bits)) || isVector(reg, [32,64,128]))) return partial(decoded, context, `${mnemonic} literal destination class or width is invalid`);
-  const immediate = immediateValue(immediateOperand(decoded));
+  const immediate = immediateOperand(decoded);
   let target = literalTargetEvidence(decoded, immediate, context);
   if (target == null) return partial(decoded, context, 'literal load target evidence is contradictory or unresolved');
 
@@ -560,7 +560,7 @@ const MAX_UNSIGNED_ADDRESS_64 = (1n << 64n) - 1n;
 // to a different pool slot. Canonicalize every present evidence to an unsigned
 // 64-bit address and require full agreement; `null` means contradictory,
 // out of the architectural address domain, or unresolved.
-function literalTargetEvidence(decoded, immediateOperandValue, context = null) {
+function literalTargetEvidence(decoded, targetOperand, context = null) {
   void context;
   const asTargetInteger = (value) => {
     let target;
@@ -591,12 +591,19 @@ function literalTargetEvidence(decoded, immediateOperandValue, context = null) {
     if (address == null) return null;
     evidence.push(BigInt.asUintN(64, address + displacement));
   }
-  const pcRelTarget = asTargetInteger(decoded?.pcRelTarget);
-  if (pcRelTarget != null) evidence.push(pcRelTarget);
-  const literalTarget = asTargetInteger(decoded?.literalTarget);
-  if (literalTarget != null) evidence.push(literalTarget);
-  const immediate = asTargetInteger(immediateOperandValue);
-  if (immediate != null) evidence.push(immediate);
+  for (const value of [decoded?.pcRelTarget, decoded?.literalTarget]) {
+    if (value == null) continue;
+    const target = asTargetInteger(value);
+    if (target == null) return null;
+    evidence.push(target);
+  }
+  // Preserve operand presence until validation. Converting an invalid value
+  // to null earlier would let another target field or the encoding mask it.
+  if (targetOperand != null) {
+    const immediate = asTargetInteger(targetOperand.value);
+    if (immediate == null) return null;
+    evidence.push(immediate);
+  }
   if (evidence.length === 0) return null;
   const first = evidence[0];
   return evidence.every((value) => value === first) ? first : null;
@@ -683,7 +690,7 @@ function prefetchMetadata(mnemonic, prfop, extra) {
 // PRFM (literal) has no memory operand: the hinted address is PC-relative and
 // the disassembler prints it as a resolved immediate.
 function literalPrefetch(decoded, context, mnemonic, prfop) {
-  const immediate = immediateValue(operands(decoded).find((operand) => operand?.k === 'imm' || operand?.kind === 'immediate'));
+  const immediate = operands(decoded).find((operand) => operand?.k === 'imm' || operand?.kind === 'immediate');
   const target = literalTargetEvidence(decoded, immediate, context);
   if (target == null) return partial(decoded, context, 'prfm literal target evidence is contradictory or unresolved', ['memory','other']);
   const addressExpr = arm64ConstantExpr(target, 64);

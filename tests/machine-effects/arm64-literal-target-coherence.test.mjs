@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { liftArm64MachineEffects } from '../../js/targets/architecture/arm64/effects/index.js';
+import { liftArm64MemoryEffects } from '../../js/targets/architecture/arm64/effects/memory.js';
 
 const base = 0x1000n;
 let sequence = 0;
@@ -64,7 +65,7 @@ function memoryReadTarget(bundle) {
   assert.equal(agree?.completeness, 'exact', agree?.unknownEffects?.reason);
   assert.equal(memoryReadTarget(agree), '4100');
 }
-// Encoding-only derivation (no structured field): exact at the imm19 target.
+// Encoding and immediate agree without structured fields: exact at imm19 target.
 {
   const encodingOnly = liftArm64MachineEffects(ldrLiteral({ pcRelTarget: undefined, literalTarget: undefined }));
   assert.equal(encodingOnly?.completeness, 'exact');
@@ -120,6 +121,52 @@ function memoryReadTarget(bundle) {
   assert.equal(agree?.completeness, 'exact-with-intrinsic', agree?.unknownEffects?.reason);
   const conflict = prfmLiteral({ pcRelTarget: 0x1008n });
   assert.equal(conflict?.completeness, 'partial', 'PRFM literal contradictory target must fail closed');
+}
+
+// Redundant malformed evidence is not absent evidence. Exercise both the
+// architecture dispatcher and the canonical family provider: valid encoding
+// or immediate evidence must never mask a malformed structured target.
+for (const mnemonic of ['ldr', 'ldrsw', 'prfm']) {
+  for (const withEncoding of [false, true]) {
+    const decoded = ldrLiteral({ pcRelTarget: 0x1004n, literalTarget: 0x1004n });
+    decoded.mnemonic = mnemonic;
+    decoded.rawBytes[3] = { ldr: 0x58, ldrsw: 0x98, prfm: 0xd8 }[mnemonic];
+    if (!withEncoding) delete decoded.rawBytes;
+    if (mnemonic === 'prfm') decoded.ops[0] = { k: 'other', text: 'pldl1keep' };
+    for (const lift of [liftArm64MachineEffects, liftArm64MemoryEffects]) {
+      const expected = mnemonic === 'prfm' ? 'exact-with-intrinsic' : 'exact';
+      for (const valid of [4100n, 4100, '4100', '0x1004']) {
+        const result = lift({ ...decoded, pcRelTarget: valid, literalTarget: valid });
+        assert.equal(result?.completeness, expected, `${mnemonic}: canonical target must remain exact`);
+        assert.equal(result.metadata.target, '4100');
+      }
+      for (const field of ['pcRelTarget', 'literalTarget', 'immediate']) {
+        for (const invalid of [[4100], ['4100'], true, false, { value: 4100 }, '',
+          '4100junk', '-0x1004', Number.NaN, 4100.5, Number.MAX_SAFE_INTEGER + 1,
+          1n << 64n, -(1n << 63n) - 1n, (1n << 64n).toString()]) {
+          const input = field === 'immediate'
+            ? { ...decoded, ops: [decoded.ops[0], { k: 'imm', value: invalid }] }
+            : { ...decoded, [field]: invalid };
+          const result = lift(input);
+          const label = `${mnemonic}/${withEncoding ? 'encoded' : 'structured'}/${field}`;
+          assert.equal(result?.completeness, 'partial', `${label}: malformed evidence must not be ignored`);
+          assert.equal(result.operations.length, 0, `${label}: no definite operations`);
+        }
+      }
+      // Nullable structured fields mean no additional evidence; an existing
+      // immediate operand, however, must contain a valid value.
+      assert.equal(lift({ ...decoded, pcRelTarget: null, literalTarget: undefined }).completeness, expected);
+      for (const value of [null, undefined]) {
+        const result = lift({ ...decoded, ops: [decoded.ops[0], { k: 'imm', value }] });
+        assert.equal(result.completeness, 'partial');
+        assert.equal(result.operations.length, 0);
+      }
+      if (withEncoding) {
+        const result = lift({ ...decoded, pcRelTarget: undefined, literalTarget: undefined });
+        assert.equal(result.completeness, expected, 'encoding and immediate suffice without structured fields');
+      }
+    }
+  }
 }
 
 console.log('ARM64 literal target evidence coherence (#6078): PASS');

@@ -12,6 +12,7 @@ const SPECIAL_PATHS = Object.freeze({
     'docs/symbolic-proof-optimizer-v8.md', 'docs/analysis-roadmap-v8-integration-checkpoint.md', 'js/decompile.js',
     'tests/issue-5498-eligibility-result-status-authority.mjs',
     'js/targets/architecture/arm64e/effects.js', 'tests/machine-effects/arm64e-retained-provider-union.test.mjs',
+    'js/targets/architecture/arm64/effects/memory.js', 'tests/machine-effects/arm64-literal-target-coherence.test.mjs',
     'tools/validation/analysis-roadmap/ownership.mjs', 'tools/validation/analysis-roadmap/ownership.json',
     'userscript/hex.user.template.js', 'userscript/release-version.json'],
 });

@@ -164,6 +164,7 @@ test('an option group outside the dependency class cannot change artifact identi
   // phase7.alias.region declares aliasOptions only: points-to tuning must not
   // invalidate it, otherwise the dependency table lies about change impact.
   const aliasBase = {
+    budgetClass: 'interactive',
     kind: 'phase7.alias.region',
     binaryId: 'binary_1',
     functionId: 'function_1',
@@ -188,6 +189,7 @@ test('an option group outside the dependency class cannot change artifact identi
 
 test('a kind without option dependencies ignores analysis tuning options (#6164)', () => {
   const debugBase = {
+    budgetClass: 'interactive',
     kind: 'phase7.debug.facts',
     binaryId: 'binary_1',
     snapshotId: 'snapshot_1',
