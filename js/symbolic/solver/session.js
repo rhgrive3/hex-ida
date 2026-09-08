@@ -94,6 +94,13 @@ export class SolverSession {
       : typeof requestedTimeoutMs === 'number' && Number.isFinite(requestedTimeoutMs)
         ? requestedTimeoutMs
         : sessionTimeoutMs;
+    // Abort-signal compatibility is input validation: a truthy non-function
+    // addEventListener must be rejected BEFORE the record enters _inFlight,
+    // otherwise the rejection leaks a raw TypeError from an internal call
+    // site and strands the never-settled in-flight record (#5395).
+    if (externalSignal != null && (typeof externalSignal !== 'object' || typeof externalSignal.addEventListener !== 'function')) {
+      throw new TypeError('external signal must be AbortSignal-compatible');
+    }
     const record = {
       token,
       controller,
