@@ -406,14 +406,24 @@ function constantFromNode(value, node) {
     node?.attributes?.constant,
     node?.metadata?.constant,
   ];
+  // Proof-grade constants must agree across sources (#5727): adopting the
+  // first parsed value let source priority alone decide the exact address for
+  // contradictory metadata.
+  let parsed = null;
   for (const candidate of candidates) {
     if (candidate == null) continue;
-    const parsed = parseInteger(candidate);
-    if (parsed == null) continue;
-    const widthBits = positiveWidth(candidate?.widthBits) ?? addressWidth(value, node);
-    return scalarConstant(parsed, widthBits, node?.id ?? value?.id ?? null);
+    const value0 = parseInteger(candidate);
+    if (value0 == null) continue;
+    if (parsed != null && parsed !== value0) {
+      return unknown('canonical-address-constant-conflict');
+    }
+    parsed = value0;
   }
-  return null;
+  if (parsed == null) return null;
+  const widthSource = [value?.metadata?.constant, node?.attributes?.constant, node?.metadata?.constant]
+    .find((candidate) => candidate != null && parseInteger(candidate) != null);
+  const widthBits = positiveWidth(widthSource?.widthBits) ?? addressWidth(value, node);
+  return scalarConstant(parsed, widthBits, node?.id ?? value?.id ?? null);
 }
 
 function sameRoot(left, right) {
