@@ -46,3 +46,20 @@ test('6084: canonical metadata still caches', () => {
   assert.ok(first, 'canonical build must succeed');
   assert.strictEqual(irFor(model, opts), first, 'canonical metadata must hit the cache');
 });
+
+test('6084: distinct prototypes do not share a cache entry', () => {
+  const model = modelOf(['mov x0, x1', 'ret']);
+  const first = irFor(model, { functionPrototype: { parameters: [{ type: 'int', bits: 32 }] } });
+  const second = irFor(model, { functionPrototype: { parameters: [{ type: 'int', bits: 64 }] } });
+  assert.ok(first, 'first prototype build must succeed');
+  assert.ok(second, 'second prototype build must succeed');
+  assert.notStrictEqual(second, first, 'different prototypes must not collide in the cache');
+});
+
+test('6084: build failure remains a null result', () => {
+  const model = modelOf(['mov x0, x1', 'ret']);
+  const opts = { cfg: { nodes: {} } };
+  let out = null;
+  assert.doesNotThrow(() => { out = irFor(model, opts); });
+  assert.equal(out, null, 'a failed IR build must fail closed with null');
+});
