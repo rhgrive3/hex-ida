@@ -126,11 +126,31 @@ export function analysisFromBinaryImage(image) {
   const seedByAddress = new Map();
   const exactEndByAddress = new Map();
   const conflictingExactEnds = new Set();
+  // Duplicate seeds for one address must merge by evidence quality, not by
+  // input order: last-write-wins let a trailing heuristic seed demote exact
+  // function-start provenance (and vice versa) depending on producer order
+  // (#6096). Strength = exact over non-exact, then confidence, then a
+  // deterministic source-name tie-break so permutations agree. Keep the
+  // normalized confidence identical to the value emitted in provenance.
+  const seedConfidence = (seed, exact) => {
+    const raw = seed?.confidence;
+    if (raw == null) return exact ? 1 : 0.5;
+    const confidence = Number(raw);
+    return Number.isFinite(confidence) ? confidence : (exact ? 1 : 0.5);
+  };
+  const seedIsStronger = (next, current) => {
+    const nextExact = isExactFunctionSeed(next), currentExact = isExactFunctionSeed(current);
+    if (nextExact !== currentExact) return nextExact;
+    const nextConfidence = seedConfidence(next, nextExact), currentConfidence = seedConfidence(current, currentExact);
+    if (nextConfidence !== currentConfidence) return nextConfidence > currentConfidence;
+    return String(next.source ?? '') < String(current.source ?? '');
+  };
   for (const seed of image.functions || []) {
     if (seed?.address == null) continue;
     const address = u64Address(seed.address);
     const key = address.toString();
-    seedByAddress.set(key, seed);
+    const existing = seedByAddress.get(key);
+    if (existing == null || seedIsStronger(seed, existing)) seedByAddress.set(key, seed);
     const extentConfidence = Number(seed.extentConfidence ?? 0);
     if (!isExactFunctionSeed(seed) || seed.extentInferred === true || !Number.isFinite(extentConfidence) || extentConfidence < 0.9) continue;
     let end = null;
@@ -153,9 +173,11 @@ export function analysisFromBinaryImage(image) {
   const functionProvenance = functions.map((addr) => {
     const seed = seedByAddress.get(addr.toString()) || {};
     const confirmed = isExactFunctionSeed(seed);
-    return { source: seed.source || 'heuristic', confidence: Number(seed.confidence ?? (confirmed ? 1 : 0.5)), confirmed };
+    return { source: seed.source || 'heuristic', confidence: seedConfidence(seed, confirmed), confirmed };
   });
   const nameProvenance = sorted.map((entry) => entry.provenance);
+  // This describes every raw provider seed. A heuristic duplicate must keep
+  // the aggregate non-exact even when exact evidence wins deduplication.
   const allSeedsExact = functions.length > 0 && (image.functions || []).every(isExactFunctionSeed);
   const discoveryComplete = image.metadata?.functionDiscovery?.complete === true;
   return {
