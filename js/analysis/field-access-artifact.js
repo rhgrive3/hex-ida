@@ -10,11 +10,17 @@ function abortError(signal, fallback = 'Field-access search aborted') {
 
 function resultState(result) {
   const unsupported = result?.unsupported === true;
-  const complete = result?.complete === true && result?.truncated !== true && !unsupported;
+  const truncated = result?.truncated === true;
+  const capped = result?.capped === true;
+  const cancelled = result?.cancelled === true;
+  const complete = result?.complete === true && !truncated && !capped && !cancelled && !unsupported;
   return {
     complete,
+    ...(truncated ? { truncated:true } : {}),
+    ...(capped ? { capped:true } : {}),
+    ...(cancelled ? { cancelled:true } : {}),
     ...(unsupported ? { unsupported:true } : {}),
-    reason:complete ? null : (result?.reason || result?.incompleteReason || result?.truncationReason || (unsupported ? 'field-access-unsupported' : 'field-access-incomplete')),
+    reason:complete ? null : (result?.reason || result?.incompleteReason || result?.truncationReason || (cancelled ? 'field-access-cancelled' : capped ? 'field-access-result-budget' : unsupported ? 'field-access-unsupported' : 'field-access-incomplete')),
   };
 }
 
@@ -78,9 +84,9 @@ function artifactKey(request) {
 function validBackendResult(result) {
   if (result == null || typeof result !== 'object' || Array.isArray(result)) return false;
   if (!Array.isArray(result.results)) return false;
-  if (result.complete != null && typeof result.complete !== 'boolean') return false;
-  if (result.truncated != null && typeof result.truncated !== 'boolean') return false;
-  if (result.unsupported != null && typeof result.unsupported !== 'boolean') return false;
+  for (const field of ['complete', 'truncated', 'unsupported', 'capped', 'cancelled']) {
+    if (result[field] != null && typeof result[field] !== 'boolean') return false;
+  }
   return true;
 }
 
@@ -96,12 +102,17 @@ function entryFor(backend, requestParams) {
     .then((result) => {
       if (!validBackendResult(result)) throw new TypeError('field-access-invalid-result');
       const state = resultState(result);
-      entry.result = Object.freeze({
+      const artifact = Object.freeze({
         regionId:requestParams.regionId,
         results:Object.freeze(result.results.map((row) => Object.freeze({ ...row, regionId:requestParams.regionId }))),
         ...state,
       });
-      return entry.result;
+      if (result.cancelled === true) {
+        if (map.get(key) === entry) map.delete(key);
+        return artifact;
+      }
+      entry.result = artifact;
+      return artifact;
     })
     .catch((error) => {
       if (!entry.result) map.delete(key);
