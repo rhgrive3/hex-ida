@@ -109,7 +109,7 @@ function strictSerializable(value, code, seen = new WeakSet()) {
   // A Date is serializable only when its time value is finite; an invalid
   // Date would otherwise pass validation and then throw inside jsonSafe (#5853).
   if (value instanceof Date) {
-    if (Number.isNaN(value.getTime())) fail(code);
+    if (!Number.isFinite(value.getTime())) fail(code);
     return;
   }
   if (typeof value !== 'object' || seen.has(value)) fail(code);

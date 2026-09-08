@@ -37,9 +37,13 @@ function shiftInstruction(operator, count) {
   return (fn.instructions ?? []).find((instruction) => instruction.op === 'bin' && instruction.sub === operator);
 }
 
-test('#5852 negative, width-sized, and huge counts stay unknown for every shift operator', () => {
+test('#5852 negative, width-sized, and large in-range counts stay unknown for every shift operator', () => {
   for (const operator of ['shl', 'lshr', 'ashr']) {
-    for (const count of [-1n, 64n, 10n ** 400n]) {
+    // These are all representable in a 64-bit constant. The last value is
+    // deliberately large enough to catch lossy Number coercion while staying
+    // bounded; constructing an unbounded shift operand would itself be an
+    // invalid regression fixture.
+    for (const count of [-1n, 64n, (2n ** 53n) + 1n, 2n ** 63n]) {
       let instruction;
       assert.doesNotThrow(() => {
         instruction = shiftInstruction(operator, count);

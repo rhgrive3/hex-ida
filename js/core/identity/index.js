@@ -46,7 +46,7 @@ export function jsonSafe(value, seen = new WeakSet()) {
     // An invalid Date would throw a bare RangeError from toISOString() after
     // upstream strict-serializable validation had already accepted it. Fail
     // closed with the canonical identity error instead (#5853).
-    if (Number.isNaN(value.getTime())) fail('identity-invalid-date');
+    if (!Number.isFinite(value.getTime())) fail('identity-invalid-date');
     return value.toISOString();
   }
   if (typeof value !== 'object') return String(value);
