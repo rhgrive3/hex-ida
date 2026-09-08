@@ -103,6 +103,8 @@ export class Emulator {
     this.loaded = new Map();
     this.loadedValid = new Map();
     this.syntheticPages = new Set();
+    this.syntheticRanges = new Map();
+    this.syntheticRangeGated = new Set();
     this.steps = 0;
     this.stopped = null;
     this.faultCode = null;
@@ -161,9 +163,26 @@ export class Emulator {
     let page = (base / BigInt(PAGE)) * BigInt(PAGE);
     while (page < end) {
       const key = page.toString();
-      if (!this.loaded.has(key)) this.loaded.set(key, new Uint8Array(PAGE));
-      this.loadedValid.set(key, PAGE);
-      this.syntheticPages.add(key);
+      /* #5685: the synthetic mapping's validity must stay exactly
+         [base, end). A page-level prefix length cannot express an
+         unaligned lower bound, so each mapZero() call records its
+         per-page [lo, hi) window; a page may carry several windows when
+         multiple synthetic mappings share it. */
+      const lo = page < base ? Number(base - page) : 0;
+      const hi = end - page >= BigInt(PAGE) ? PAGE : Number(end - page);
+      let ranges = this.syntheticRanges.get(key);
+      if (!ranges) { ranges = []; this.syntheticRanges.set(key, ranges); }
+      if (!ranges.some((r) => r.lo === lo && r.hi === hi)) ranges.push({ lo, hi });
+      if (!this.loaded.has(key)) {
+        /* A page created by mapZero has no other backing: its validity is
+           exactly the union of declared windows (#5685). Pages that already
+           carry real file/stack/heap backing keep their own prefix and
+           gain the window on top. */
+        this.loaded.set(key, new Uint8Array(PAGE));
+        this.loadedValid.set(key, PAGE);
+        this.syntheticPages.add(key);
+        this.syntheticRangeGated.add(key);
+      }
       page += BigInt(PAGE);
     }
     return { start: base, size: len, kind };
@@ -211,8 +230,17 @@ export class Emulator {
     const w = this.mem.get(key);
     if (w && w.mask[off]) return w.data[off];
     const l = this.loaded.get(key);
+    if (!l) throw new EmulatorFault('unmapped-memory', `byte is outside backed memory at 0x${address.toString(16)}`, { address });
+    const ranges = this.syntheticRanges.get(key) || [];
+    const inWindow = ranges.some((r) => off >= r.lo && off < r.hi);
+    /* #5685: a mapZero-created page backs only its declared windows;
+       pages with other backing treat a window as additive backing. */
+    if (this.syntheticRangeGated.has(key)) {
+      if (!inWindow) throw new EmulatorFault('unmapped-memory', `byte is outside synthetic mapping at 0x${address.toString(16)}`, { address });
+      return l[off];
+    }
     const valid = this.loadedValid.get(key) || 0;
-    if (!l || off < 0 || off >= valid) throw new EmulatorFault('unmapped-memory', `byte is outside backed memory at 0x${address.toString(16)}`, { address });
+    if (off < 0 || (off >= valid && !inWindow)) throw new EmulatorFault('unmapped-memory', `byte is outside backed memory at 0x${address.toString(16)}`, { address });
     return l[off];
   }
 
@@ -224,6 +252,15 @@ export class Emulator {
     if (!w) { w = { data: new Uint8Array(PAGE), mask: new Uint8Array(PAGE) }; this.mem.set(key, w); }
     const off = Number(address - page);
     if (off < 0 || off >= PAGE) throw new EmulatorFault('unmapped-memory', 'write offset is outside page', { address });
+    /* #5685: writes through a mapZero-created page must stay inside a
+       declared [lo, hi) window; pages with other backing or an existing
+       explicit write keep their own authority. */
+    if (this.syntheticRangeGated.has(key) && !(w && w.mask[off])) {
+      const ranges = this.syntheticRanges.get(key) || [];
+      if (!ranges.some((r) => off >= r.lo && off < r.hi)) {
+        throw new EmulatorFault('unmapped-memory', `write is outside synthetic mapping at 0x${address.toString(16)}`, { address });
+      }
+    }
     w.data[off] = Number(value) & 0xff;
     w.mask[off] = 1;
   }
