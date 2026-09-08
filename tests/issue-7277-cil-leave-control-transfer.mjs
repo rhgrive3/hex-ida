@@ -67,8 +67,12 @@ test('#7277 leave keeps the target block connected in the semantic IR graph', ()
   const retNode = lowered.semanticIr.nodes.find((n) => n.kind === 'return'
     && n.blockId === 'bb_0x4');
   assert.ok(retNode, 'leave target block keeps its own return node');
-  assert.equal(lowered.semanticIr.completeness, 'complete');
-  assert.deepEqual(lowered.semanticIr.unknowns, []);
+  // The fixture deliberately omits MethodDef return-signature metadata; the
+  // return contract is therefore partial independently of leave lowering.
+  assert.equal(lowered.semanticIr.completeness, 'partial');
+  assert.ok(lowered.semanticIr.unknowns.some((unknown) =>
+    unknown.reason === 'cil-return-signature-unresolved'),
+  'metadata-light return authority remains explicitly partial');
 });
 
 test('#7277 leave with an out-of-range target degrades instead of fabricating an edge', () => {
@@ -83,8 +87,8 @@ test('#7277 leave with an out-of-range target degrades instead of fabricating an
 
 test('#7277 leave inside a protected region still lowers its target edge', () => {
   // ECMA-335: leave inside a try exits the protected region; the target edge
-  // remains an unconditional transfer (finally interception is a handler-side
-  // concern and stays out of scope for the ordinary CFG edge).
+  // remains an unconditional CFG transfer, while the unmodeled finally
+  // interception keeps the overall Semantic IR explicitly partial.
   // 00: leave.s +3 => target 0x05      (inside try)
   // 02: ldc.i4.1; 03: ret              (rest of the protected region)
   // 04: pop                            (finally handler, consumes the slot)
@@ -151,5 +155,12 @@ test('#7277 leave across catch preserves the explicit target without false incom
   const lowered = lowerVMEffectsToSemanticIr(liftCilMethod(0, cilImage(bytecode, [region])));
   const entry = lowered.cfg.blocks.find((b) => b.id === 'bb_0x0');
   assert.ok(entry.successors.some((edge) => edge.to === 'bb_0x4' && edge.kind === 'leave'));
-  assert.equal(lowered.semanticIr.completeness, 'complete');
+  // The metadata-light fixture has no return signature, so this remains
+  // partial for the unrelated return-shape authority.
+  assert.equal(lowered.semanticIr.completeness, 'partial');
+  assert.ok(lowered.semanticIr.unknowns.some((unknown) =>
+    unknown.reason === 'cil-return-signature-unresolved'),
+  'missing return authority must remain explicit');
+  assert.equal(lowered.semanticIr.unknowns.some((unknown) =>
+    unknown.reason === 'cil-leave-finally-transfer-unmodeled'), false);
 });
