@@ -4,7 +4,7 @@ export {
   evaluateArm64Bitfield,
 } from './integer-core.js';
 import { liftArm64IntegerEffects as liftArm64IntegerEffectsCore } from './integer-core.js';
-import { createArm64EffectContext, immediateOf, numericOtherTargetValue } from './common.js';
+import { adrTargetOperandValue, canonicalAddressValue, createArm64EffectContext, immediateOf, numericOtherTargetValue } from './common.js';
 
 const ADD_SUB_BASE = new Set(['add','adds','sub','subs']);
 const ADD_SUB_ALL = new Set(['add','adds','sub','subs','adc','adcs','sbc','sbcs','neg','negs','ngc','ngcs']);
@@ -87,6 +87,26 @@ function logicalImmediateEncodable(op, widthBits) {
   try { immediate = BigInt(op.value); } catch { return false; }
   return LOGICAL_IMMEDIATE_MASKS[widthBits].has(BigInt.asUintN(widthBits, immediate).toString());
 }
+function singleWideMoveEncodable(pattern, widthBits) {
+  const value = BigInt.asUintN(widthBits, pattern);
+  const widthMask = (1n << BigInt(widthBits)) - 1n;
+  for (let shift = 0; shift < widthBits; shift += 16) {
+    const laneMask = 0xffffn << BigInt(shift);
+    if ((value & (widthMask ^ laneMask)) === 0n) return true;
+    const inverted = (~value) & widthMask;
+    if ((inverted & (widthMask ^ laneMask)) === 0n) return true;
+  }
+  return false;
+}
+
+function movImmediateEncodable(op, widthBits) {
+  if (op?.k !== 'imm' || (widthBits !== 32 && widthBits !== 64) || op.shift != null || op.extend != null) return false;
+  const immediate = canonicalAddressValue(op.value);
+  if (immediate == null) return false;
+  const pattern = BigInt.asUintN(widthBits, immediate);
+  return singleWideMoveEncodable(pattern, widthBits) || LOGICAL_IMMEDIATE_MASKS[widthBits].has(pattern.toString());
+}
+
 
 function validExtendedSource(rhs, targetBits) {
   if (!isGpOrZr(rhs) || (rhs.shift != null && rhs.extend != null)) return false;
@@ -171,7 +191,13 @@ function validMovEncoding(mnemonic, ops) {
   const bits = regBits(dst);
   if (bits !== 32 && bits !== 64) return false;
   if (dst.shift != null || dst.extend != null) return false;
-  if (src?.k === 'imm') return dstClass !== 'sp' && src.shift == null && src.extend == null;
+  if (src?.k === 'imm') {
+    if (src.shift != null || src.extend != null) return false;
+    if (dstClass === 'sp') {
+      return logicalImmediateEncodable(src, bits);
+    }
+    return movImmediateEncodable(src, bits);
+  }
   const srcClass = regClass(src);
   if (!['gp','zr','sp'].includes(srcClass) || regBits(src) !== bits || src.shift != null || src.extend != null) return false;
   const spInvolved = dstClass === 'sp' || srcClass === 'sp';
@@ -221,12 +247,11 @@ function validAddressEncoding(instruction, ops) {
   if ((targetOperand?.k !== 'imm' && targetOperand?.k !== 'other')
     || targetOperand?.shift != null || targetOperand?.extend != null) return false;
   const rawAddress = instruction?.address;
-  const rawTarget = instruction?.pcRelTarget ?? immediateOf(targetOperand);
-  if (rawAddress == null || rawTarget == null) return false;
-  let address, target;
-  try { address = BigInt(rawAddress); } catch { return false; }
-  try { target = BigInt(rawTarget); } catch { return false; }
-  if (targetOperand?.k === 'imm' && immediateOf(targetOperand) !== target) return false;
+  const rawTarget = instruction?.pcRelTarget ?? adrTargetOperandValue(targetOperand);
+  const address = canonicalAddressValue(rawAddress);
+  const target = canonicalAddressValue(rawTarget);
+  if (address == null || target == null) return false;
+  if (targetOperand?.k === 'imm' && canonicalAddressValue(targetOperand.value) !== target) return false;
   if (targetOperand?.k === 'other') {
     const otherValue = numericOtherTargetValue(targetOperand);
     if (otherValue != null && otherValue !== target) return false;

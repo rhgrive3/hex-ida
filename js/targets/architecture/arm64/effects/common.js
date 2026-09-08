@@ -63,6 +63,31 @@ export function immediateOf(op) {
   return strictInteger(op.value);
 }
 
+// Structured A64 address evidence is authoritative only after strict canonicalization.
+const ADDRESS_EVIDENCE_TEXT = /^-?(?:0x[0-9a-f]+|\d+)$/i;
+
+export function canonicalAddressValue(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && Number.isSafeInteger(value) ? BigInt(value) : null;
+  }
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!ADDRESS_EVIDENCE_TEXT.test(text)) return null;
+    try { return BigInt(text); } catch { return null; }
+  }
+  return null;
+}
+
+// Canonical target evidence carried by an ADR/ADRP target operand.
+export function adrTargetOperandValue(op) {
+  if (op?.k === 'imm') return canonicalAddressValue(op.value);
+  if (op?.k !== 'other' || typeof op.text !== 'string') return null;
+  const text = op.text.trim();
+  if (!/^#?(?:0x[0-9a-f]+|\d+)$/i.test(text)) return null;
+  try { return BigInt(text.replace(/^#/, '')); } catch { return null; }
+}
+
 function decodedAbsoluteTargetOf(op) {
   const immediate = immediateOf(op);
   if (immediate != null) return immediate;
