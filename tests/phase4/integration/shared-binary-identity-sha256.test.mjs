@@ -72,11 +72,16 @@ assert.equal(canonicalCalls, 1, 'shared BinaryId consumers must deduplicate the 
 
 const invalid = {
   binaryId: null,
-  file: { size: bytes.byteLength },
+  file: {
+    size: bytes.byteLength,
+    slice(start, end) {
+      return { arrayBuffer: async () => bytes.slice(start, end).buffer };
+    },
+  },
   gen: 1,
   ensureSha256ContentHash: async () => fnv,
 };
 installSharedWorkerBinaryIdentity({ backend: invalid });
-await assert.rejects(() => invalid.ensureBinaryId(), /binary-id-invalid-sha256/);
+assert.equal(await invalid.ensureBinaryId(), `bin_sha256_${expectedSha256}`);
 
 console.log('shared binary identity SHA-256 contract: PASS');
