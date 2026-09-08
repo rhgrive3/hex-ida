@@ -382,14 +382,24 @@ await run(async ({ browser }) => {
   const switched = await page.evaluate(async () => {
     document.querySelector('.ai-session-button').click();
     await new Promise((resolve) => setTimeout(resolve, 120));
-    const rows = [...document.querySelectorAll('#overlays .menu [role="menuitem"]')].map((n) => n.textContent);
-    const back = [...document.querySelectorAll('#overlays .menu [role="menuitem"]')].find((n) => /コインが増える/.test(n.textContent));
+    const menuItems = [...document.querySelectorAll('#overlays .menu [role="menuitem"]')];
+    const rows = menuItems.map((n) => n.textContent);
+    const visualCurrent = menuItems.filter((n) => /^✓/.test(n.textContent)).map((n) => n.textContent);
+    const ariaCurrent = menuItems.filter((n) => n.getAttribute('aria-current') === 'true').map((n) => n.textContent);
+    const back = menuItems.find((n) => /コインが増える/.test(n.textContent));
     back.click();
     await new Promise((resolve) => setTimeout(resolve, 200));
-    return { rows, text: document.querySelector('.ai-conversation').textContent, id: window.__hexAi.panel.describeState().conversationId };
+    return {
+      rows, visualCurrent, ariaCurrent,
+      text: document.querySelector('.ai-conversation').textContent,
+      id: window.__hexAi.panel.describeState().conversationId,
+    };
   });
   check('the history menu lists both chats with the current one marked',
     switched.rows.some((t) => /新しいチャット/.test(t)) && switched.rows.filter((t) => /^✓/.test(t)).length === 1, JSON.stringify(switched.rows));
+  check('the current chat aria marker matches the visible check',
+    switched.ariaCurrent.length === 1 && switched.ariaCurrent[0] === switched.visualCurrent[0],
+    JSON.stringify({ visible: switched.visualCurrent, aria: switched.ariaCurrent }));
   check('going back to the first chat restores only its own transcript',
     /一つ目のチャットの答え/.test(switched.text) && !/二つ目のチャットの答え/.test(switched.text), switched.text.slice(0, 60));
 
