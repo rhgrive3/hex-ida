@@ -974,7 +974,20 @@ HANDLERS.ccmp = (o, ops) => {
     'How && and || are compiled without extra branches.'));
   o.terms = ['flags'];
 };
-HANDLERS.ccmn = HANDLERS.ccmp;
+HANDLERS.ccmn = (o, ops) => {
+  const [n, m, nzcv, cond] = ops;
+  const ci = cond ? condInfo(cond.text) : null;
+  o.title = J('条件つきで足して比べる', 'Conditional compare negative');
+  o.pseudo = 'if (' + (cond ? cond.text : '?') + ') flags = ' + opShort(n) + ' + ' + opShort(m) + ' else flags = ' + immShort(nzcv);
+  o.summary = J(
+    '前の比較が「' + (ci ? ci.ja : '条件を満たしたとき') + '」に当てはまる場合だけ、' +
+      opShort(n) + ' と ' + opShort(m) + ' を足してフラグを更新する。当てはまらなければフラグを ' + immShort(nzcv) + ' に決め打ちする。',
+    'Add ' + opShort(n) + ' and ' + opShort(m) + ' and update the flags only if the previous condition held; otherwise force the flags to ' + immShort(nzcv) + '.');
+  o.detail.push(J(
+    'C 言語の && や || を、分岐を増やさずに 1 本にまとめた形です（if (a == 1 && b == 2) など）。',
+    'How && and || are compiled without extra branches.'));
+  o.terms = ['flags'];
+};
 
 /* 条件で選ぶ ------------------------------------------------- */
 
@@ -1001,8 +1014,26 @@ HANDLERS.csinc = (o, ops) => {
     'Select, adding one to the second choice.');
   o.terms = ['flags'];
 };
-HANDLERS.csinv = HANDLERS.csinc;
-HANDLERS.csneg = HANDLERS.csinc;
+HANDLERS.csinv = (o, ops) => {
+  const [d, n, m, cond] = ops;
+  const ci = cond ? condInfo(cond.text) : null;
+  o.title = J('条件で選ぶ（片方をビット反転）', 'Conditional select invert');
+  o.pseudo = opShort(d) + ' = ' + (cond ? cond.text : '?') + ' ? ' + opShort(n) + ' : ~' + opShort(m);
+  o.summary = J(
+    '「' + (ci ? ci.ja : '') + '」なら ' + opShort(n) + '、違えば ' + opShort(m) + ' の全ビットを反転した値を ' + opShort(d) + ' に入れる。',
+    'Select ' + opShort(n) + ' if the condition holds; otherwise put the bitwise inverse of ' + opShort(m) + ' in ' + opShort(d) + '.');
+  o.terms = ['flags'];
+};
+HANDLERS.csneg = (o, ops) => {
+  const [d, n, m, cond] = ops;
+  const ci = cond ? condInfo(cond.text) : null;
+  o.title = J('条件で選ぶ（片方を符号反転）', 'Conditional select negate');
+  o.pseudo = opShort(d) + ' = ' + (cond ? cond.text : '?') + ' ? ' + opShort(n) + ' : -' + opShort(m);
+  o.summary = J(
+    '「' + (ci ? ci.ja : '') + '」なら ' + opShort(n) + '、違えば ' + opShort(m) + ' の符号を反転した値を ' + opShort(d) + ' に入れる。',
+    'Select ' + opShort(n) + ' if the condition holds; otherwise put the arithmetic negation of ' + opShort(m) + ' in ' + opShort(d) + '.');
+  o.terms = ['flags'];
+};
 
 HANDLERS.cset = (o, ops) => {
   const [d, cond] = ops;
@@ -1040,8 +1071,26 @@ HANDLERS.cinc = (o, ops) => {
     'Add one only if the condition holds.');
   o.terms = ['flags'];
 };
-HANDLERS.cinv = HANDLERS.cinc;
-HANDLERS.cneg = HANDLERS.cinc;
+HANDLERS.cinv = (o, ops) => {
+  const [d, n, cond] = ops;
+  const ci = cond ? condInfo(cond.text) : null;
+  o.title = J('条件が合えばビット反転', 'Conditional invert');
+  o.pseudo = opShort(d) + ' = ' + (cond ? cond.text : '?') + ' ? ~' + opShort(n) + ' : ' + opShort(n);
+  o.summary = J(
+    '「' + (ci ? ci.ja : '') + '」なら ' + opShort(n) + ' の全ビットを反転して ' + opShort(d) + ' に入れ、違えばそのまま入れる。',
+    'Put the bitwise inverse of ' + opShort(n) + ' in ' + opShort(d) + ' if the condition holds; otherwise put ' + opShort(n) + ' in ' + opShort(d) + '.');
+  o.terms = ['flags'];
+};
+HANDLERS.cneg = (o, ops) => {
+  const [d, n, cond] = ops;
+  const ci = cond ? condInfo(cond.text) : null;
+  o.title = J('条件が合えば符号反転', 'Conditional negate');
+  o.pseudo = opShort(d) + ' = ' + (cond ? cond.text : '?') + ' ? -' + opShort(n) + ' : ' + opShort(n);
+  o.summary = J(
+    '「' + (ci ? ci.ja : '') + '」なら ' + opShort(n) + ' の符号を反転して ' + opShort(d) + ' に入れ、違えばそのまま入れる。',
+    'Put the arithmetic negation of ' + opShort(n) + ' in ' + opShort(d) + ' if the condition holds; otherwise put ' + opShort(n) + ' in ' + opShort(d) + '.');
+  o.terms = ['flags'];
+};
 
 /* メモリ ----------------------------------------------------- */
 
