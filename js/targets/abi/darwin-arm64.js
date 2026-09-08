@@ -148,7 +148,8 @@ function parameterClass(param) {
     : aggregate
     ? layoutEvidence?.bytes ?? (bits > 0 ? Math.max(1, Math.ceil(bits / 8)) : 0)
     : bits > 0 ? Math.max(1, Math.ceil(bits / 8)) : 0;
-  const explicitAlignment = Number(param?.alignmentBytes || param?.alignBytes || param?.alignment || 0);
+  const rawExplicitAlignment = param?.alignmentBytes || param?.alignBytes || param?.alignment || 0;
+  const explicitAlignment = typeof rawExplicitAlignment === 'number' ? rawExplicitAlignment : 0;
   const explicitAlignmentBytes = Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0
     ? explicitAlignment : null;
   const explicitAlignmentProven = Number.isSafeInteger(explicitAlignment) && explicitAlignment > 0;

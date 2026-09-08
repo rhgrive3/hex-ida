@@ -92,7 +92,8 @@ test('#7348 an HFA without explicit alignment keeps compact element-sized slots'
 });
 
 test('#7348 invalid direct alignment metadata never becomes explicit authority', () => {
-  for (const alignmentBytes of [0, -16, 1.5, Number.MAX_SAFE_INTEGER + 1, 'not-an-alignment']) {
+  // Numeric-looking structured values are metadata, not numeric authority.
+  for (const alignmentBytes of [0, -16, 1.5, Number.MAX_SAFE_INTEGER + 1, 'not-an-alignment', '16', ['16'], new Number(16)]) {
     const result = classify([
       ...EXHAUSTED_BANKS,
       { type:'float', bits:32, bytes:4, alignmentBytes:4 },
