@@ -174,6 +174,10 @@ class CanonicalMemoryForwardingSession {
     this.#definitionsById = definitionsById;
     this.#regionsById = regionsById;
     this.#metadataById = metadataById;
+    // Keep the private brand while hiding the constructor from callers. A
+    // leaked constructor could mint a branded session around a serialized or
+    // caller-owned artifact and bypass the factory's producer validation.
+    Object.setPrototypeOf(this, Object.prototype);
   }
 
   static matches(value, artifact) {
