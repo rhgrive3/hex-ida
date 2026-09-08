@@ -81,8 +81,8 @@ function functionFingerprintResult(bytes, fn) {
 }
 
 function byteCountOption(value, fallback, minimum = 1) {
-  const n = Number(value);
-  return Number.isSafeInteger(n) && n > 0 ? Math.max(minimum, n) : fallback;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) return fallback;
+  return Math.max(minimum, value);
 }
 
 /**
