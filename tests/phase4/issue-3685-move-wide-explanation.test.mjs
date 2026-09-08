@@ -66,6 +66,33 @@ try {
   assert.match(movnJapanese.summary, /32 ビット左/);
   assert.match(movnJapanese.summary, /64 ビット幅/);
   assert.match(movnJapanese.detail.join(' '), /64 ビット幅/);
+
+  // Invalid or unsupported forms must stay explicit instead of fabricating a
+  // shift, immediate value, or destination width.
+  setLang('en');
+  for (const [mnemonic, operands] of [
+    ['movz', 'w0, #1, lsl #32'],
+    ['movz', 'x0, #1, lsl #64'],
+    ['movz', 'x0, #1, lsl #8'],
+    ['movn', 'q0, #1, lsl #16'],
+    ['movz', 'x0, #1, lsl'],
+    ['movz', 'x0, #0x10000, lsl #16'],
+    ['movn', 'x0, x1, lsl #16'],
+    ['movn', 'sp, #1, lsl #16'],
+  ]) {
+    const result = explain(mnemonic, operands, 0n, {});
+    assert.equal(result.handlerError, undefined);
+    assert.equal(result.pseudo, `${mnemonic} ${operands}`);
+    assert.equal(result.title, 'Unknown move-wide form');
+    assert.match(result.summary, /unknown|unsupported|guessed/i);
+    assert.doesNotMatch(result.summary, /shifted left|bit width|limited to/);
+    assert.deepEqual(result.terms, []);
+  }
+
+  setLang('ja');
+  const invalidJapanese = explain('movn', 'q0, #1, lsl #16', 0n, {});
+  assert.equal(invalidJapanese.title, 'ワイド即値命令（未解釈）');
+  assert.match(invalidJapanese.summary, /値や宛先幅を推測しません/);
 } finally {
   setLang(previousLang);
 }
