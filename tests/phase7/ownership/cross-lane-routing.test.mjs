@@ -122,6 +122,7 @@ for (const file of ['.circleci/config.yml', '.github/workflows/phase7-ownership.
 
 const integrationBatchBranch = 'dev-agent-hardening/integration/issue-batch-20260909';
 const integrationBatchOwnedFiles = [
+  '.github/workflows/phase7-ownership.yml',
   'js/analysis/summary/local-core.js',
   'js/analysis/types/graph.js',
   'js/knowledge/index.js',
