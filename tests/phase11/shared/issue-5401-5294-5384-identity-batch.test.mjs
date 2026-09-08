@@ -40,6 +40,12 @@ test('#5401 identical configuration reproduces the identical id', () => {
 test('#5296 the validator re-derives the id and rejects tampered or absent identity', () => {
   const profile = createManagedTargetProfile({ frontendId: 'cil' });
   assert.equal(validateManagedTargetProfile(profile), true);
+  // A canonical-looking legacy id must not let an under-specified object
+  // borrow constructor defaults and validate as a complete profile.
+  assert.throws(
+    () => validateManagedTargetProfile({ frontendId: 'wasm', id: 'managed-profile:wasm:1:default' }),
+    /managed-profile-invalid-version/,
+  );
   // A stale/descriptive id from a different configuration cannot validate.
   const tampered = { ...profile, id: 'managed-profile:cil:1:default' };
   assert.throws(() => validateManagedTargetProfile(tampered), /managed-profile-identity-mismatch/);
