@@ -26,7 +26,17 @@ export function discoverSemanticV2Tests(rootDirectory = directory) {
     .sort((left, right) => Buffer.from(left).compare(Buffer.from(right)));
 }
 
-export async function runSemanticV2Tests({ env = process.env, rootDirectory = directory } = {}) {
+function throwLaneFailure(failures, error) {
+  failures.push(error);
+  throw new AggregateError(failures, `semantic-v2: ${failures.length} execution lane(s) failed`);
+}
+
+export async function runSemanticV2Tests({
+  env = process.env,
+  rootDirectory = directory,
+  runLane = runBoundedNodeSuite,
+} = {}) {
+  if (typeof runLane !== 'function') throw new TypeError('semantic-v2: runLane must be a function');
   const files = discoverSemanticV2Tests(rootDirectory);
   if (!files.length) throw new Error('semantic-v2: no Phase 3 contract tests discovered');
 
@@ -63,7 +73,7 @@ export async function runSemanticV2Tests({ env = process.env, rootDirectory = di
   // Only independent, repository-read-only files use the bounded pool.
   if (ordinary.length) {
     try {
-      ordinaryResult = await runBoundedNodeSuite({
+      ordinaryResult = await runLane({
         label: 'semantic-v2',
         files: ordinary,
         cwd: root,
@@ -73,7 +83,7 @@ export async function runSemanticV2Tests({ env = process.env, rootDirectory = di
         reserveCores: 0,
       });
     } catch (error) {
-      failures.push(error);
+      throwLaneFailure(failures, error);
     }
   }
 
@@ -81,7 +91,7 @@ export async function runSemanticV2Tests({ env = process.env, rootDirectory = di
   // semantic/decompiler corpus. Keep it in one process, after the ordinary pool
   // drains so those proof subprocesses own the available CPU budget.
   try {
-    corpusResult = await runBoundedNodeSuite({
+    corpusResult = await runLane({
       label: 'semantic-v2-evidence-chain',
       files: [CURRENT_CORPUS_GROUP],
       cwd: root,
@@ -91,14 +101,14 @@ export async function runSemanticV2Tests({ env = process.env, rootDirectory = di
       reserveCores: 0,
     });
   } catch (error) {
-    failures.push(error);
+    throwLaneFailure(failures, error);
   }
 
   // These contracts recursively run broad npm suites or temporarily rewrite
   // generated files. They are intentionally exclusive to avoid nested CPU
   // oversubscription and cross-process filesystem races.
   try {
-    recursiveResult = await runBoundedNodeSuite({
+    recursiveResult = await runLane({
       label: 'semantic-v2-required-regressions',
       files: [recursive],
       cwd: root,
@@ -108,10 +118,10 @@ export async function runSemanticV2Tests({ env = process.env, rootDirectory = di
       reserveCores: 0,
     });
   } catch (error) {
-    failures.push(error);
+    throwLaneFailure(failures, error);
   }
   try {
-    userscriptResult = await runBoundedNodeSuite({
+    userscriptResult = await runLane({
       label: 'semantic-v2-userscript-sync',
       files: [userscript],
       cwd: root,
@@ -121,7 +131,7 @@ export async function runSemanticV2Tests({ env = process.env, rootDirectory = di
       reserveCores: 0,
     });
   } catch (error) {
-    failures.push(error);
+    throwLaneFailure(failures, error);
   }
 
   const durationMs = Number(process.hrtime.bigint() - started) / 1e6;
