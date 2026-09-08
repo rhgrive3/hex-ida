@@ -80,17 +80,22 @@ import { callGraph } from '../../js/graphview-base.js';
   }
 }
 
-// 5. limit still applies per traversal level alongside the dedupe.
+// 5. limit still applies per traversal level alongside the dedupe: the stub
+//    models the real program.calleesOf contract (limit applied by the
+//    program, {addr} items), so a callGraph that stopped forwarding the limit
+//    would publish all five callees instead of three.
 {
   const entry = 0x4000n;
-  const callees = [1, 2, 3, 4, 5].map((i) => 0x4100n + BigInt(i) * 0x10n);
+  const callees = [1, 2, 3, 4, 5].map((i) => ({ addr: 0x4100n + BigInt(i) * 0x10n }));
   const program = {
-    callersOf: () => [],
+    callersOf: (addr, limit) => [],
     functionRange: (addr) => (addr === entry ? { start: entry, end: entry + 4n } : null),
-    calleesOf: () => callees,
+    calleesOf: (start, end, limit) => callees.slice(0, limit ?? 999),
   };
   const graph = callGraph(program, null, entry, { depth: 1, limit: 3 });
   assert.equal(graph.edges.length, 3, 'the traversal limit keeps capping fan-out');
+  assert.equal(callGraph(program, null, entry, { depth: 1, limit: 999 }).edges.length, 5,
+    'a larger limit reaches every callee');
 }
 
 console.log('issue-5481 call-graph self-edge dedupe: ok');
