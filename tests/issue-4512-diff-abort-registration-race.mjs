@@ -24,6 +24,29 @@ function registrationRaceSignal() {
   };
 }
 
+function registrationDeliveryRaceSignal() {
+  let aborted = false;
+  let removals = 0;
+  return {
+    signal: {
+      get aborted() { return aborted; },
+      addEventListener(type, listener) {
+        assert.equal(type, 'abort');
+        // Model an EventTarget that synchronously delivers abort while the
+        // subscription call is still on the stack. The post-subscribe recheck
+        // must not repeat request cancellation after this callback settles.
+        aborted = true;
+        listener();
+      },
+      removeEventListener(type) {
+        assert.equal(type, 'abort');
+        removals++;
+      },
+    },
+    get removals() { return removals; },
+  };
+}
+
 const symbols = {
   funcs: [0n],
   functionStartsComplete: true,
@@ -66,6 +89,43 @@ const region = { id: 'text', exec: true, vmAddr: 0n, size: 1n };
   );
   assert.equal(cancelled, 1, 'baseline discovery request must be cancelled on registration race');
   assert.equal(race.removals, 1, 'baseline abort listener must be cleaned up once');
+}
+
+{
+  const race = registrationDeliveryRaceSignal();
+  let cancelled = 0;
+  const request = Promise.reject(new Error('late backend rejection'));
+  request.cancel = () => { cancelled++; };
+  await assert.rejects(
+    createSymmetricCodeFunctionSet({
+      backend: { readAt() { return request; } },
+      symbols,
+      regions: [region],
+      architecture: 'arm64',
+      signal: race.signal,
+    }),
+    (error) => error?.name === 'AbortError',
+  );
+  assert.equal(cancelled, 1, 'fingerprint cancellation must remain exactly once when abort delivery and recheck both run');
+  assert.equal(race.removals, 1, 'fingerprint listener cleanup must remain exactly once after synchronous abort delivery');
+}
+
+{
+  const race = registrationDeliveryRaceSignal();
+  let cancelled = 0;
+  const request = Promise.reject(new Error('late baseline rejection'));
+  request.cancel = () => { cancelled++; };
+  const baseline = {
+    symbols: { functionStartsComplete: false, functionCount: 0, addFunctions() {} },
+    slice: { regions: [region] },
+    backend: { guessFunctions() { return request; } },
+  };
+  await assert.rejects(
+    __symmetricWorkspaceInternalsForTests.discoverBaselineFunctions(baseline, { signal: race.signal }),
+    (error) => error?.name === 'AbortError',
+  );
+  assert.equal(cancelled, 1, 'baseline cancellation must remain exactly once when abort delivery and recheck both run');
+  assert.equal(race.removals, 1, 'baseline listener cleanup must remain exactly once after synchronous abort delivery');
 }
 
 {
