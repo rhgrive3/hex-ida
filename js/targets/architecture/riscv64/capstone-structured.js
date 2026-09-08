@@ -135,6 +135,18 @@
     const isaIdentity = optionalIdentity(options.isaIdentity, 'riscv64-decoder-invalid-isa-identity');
     const isaEvidence = optionalIdentity(options.isaEvidence, 'riscv64-decoder-invalid-isa-evidence');
     const instructionAlignment = optionalInstructionAlignment(options.instructionAlignment);
+    // Producer mirror of the canonical #5999 correlation: the declared C
+    // capability must agree with the decode mode before it is published.
+    let compressedInstructions = null;
+    if (options.compressedInstructions != null) {
+      if (typeof options.compressedInstructions !== 'boolean') {
+        throw new TypeError('riscv64-decoder-invalid-compressed-instructions');
+      }
+      if (options.compressedInstructions !== (mode === 'rv64imc')) {
+        throw new TypeError('riscv64-decoder-compressed-capability-conflict');
+      }
+      compressedInstructions = options.compressedInstructions;
+    }
     return Object.freeze({
       address,
       size,
@@ -147,7 +159,7 @@
       ...(isaIdentity == null ? {} : { isaIdentity }),
       ...(isaEvidence == null ? {} : { isaEvidence }),
       ...(instructionAlignment == null ? {} : { instructionAlignment }),
-      ...(options.compressedInstructions == null ? {} : { compressedInstructions:options.compressedInstructions === true }),
+      ...(compressedInstructions == null ? {} : { compressedInstructions }),
       decoderSemanticVersion: 'capstone-5-riscv64-word-exact-v1',
       capstoneInstructionId: u32(M, instructionPointer),
       capstoneOperands: capstoneOperands(M, handle, instructionPointer),
