@@ -390,19 +390,35 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const headerSize = view.getUint32(4, true);
   const firstIndex = view.getUint32(8, true);
+  const lastIndex = view.getUint32(12, true);
+  const typeRecordBytes = view.getUint32(16, true);
   if (headerSize < 56 || headerSize > bytes.length) {
     return { types, unmodelled, complete: false, firstIndex };
   }
-  let offset = headerSize;
+  // The header owns the record range: record data starts at HeaderSize and
+  // covers exactly TypeRecordBytes bytes, and the declared index window
+  // (TypeIndexEnd - TypeIndexBegin) must match what is actually parsed.
+  // Anything past that range is not a type record and must never become one
+  // (#5845).
+  const typeDataStart = headerSize;
+  const typeDataEnd = typeDataStart + typeRecordBytes;
+  if (typeRecordBytes > bytes.length - typeDataStart) {
+    return { types, unmodelled, complete: false, firstIndex };
+  }
+  const expectedCount = lastIndex >= firstIndex ? lastIndex - firstIndex : -1;
+  if (expectedCount < 0) {
+    return { types, unmodelled, complete: false, firstIndex };
+  }
+  let offset = typeDataStart;
   let index = firstIndex;
   let fieldListsComplete = true;
 
-  while (offset + 4 <= bytes.length && types.size < budget.maxRecords) {
+  while (offset + 4 <= typeDataEnd && index - firstIndex < expectedCount && types.size < budget.maxRecords) {
     const length = view.getUint16(offset, true);
     if (length < 2) break;
     const leaf = view.getUint16(offset + 2, true);
     const end = offset + 2 + length;
-    if (end > bytes.length) break;
+    if (end > typeDataEnd) break;
     const body = offset + 4;
 
     // Fixed-field reads are confined to the record's own end (#1845): a short
@@ -470,8 +486,16 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
     index += 1;
   }
   // An incomplete field-list child (unsupported subrecord) fails the stream
-  // closed (#5773).
-  return { types, unmodelled, complete: fieldListsComplete && offset >= bytes.length, firstIndex };
+  // closed (#5773). Complete also only when the declared record extent was
+  // fully consumed and the parsed record count matches TypeIndexEnd -
+  // TypeIndexBegin; trailing bytes beyond TypeRecordBytes (e.g. hash data)
+  // are not type records and do not block completeness (#5845).
+  return {
+    types,
+    unmodelled,
+    complete: fieldListsComplete && expectedCount >= 0 && offset >= typeDataEnd && index - firstIndex === expectedCount,
+    firstIndex,
+  };
 }
 
 /**
