@@ -152,7 +152,10 @@ import { parseMachO } from '../js/binary/macho.js';
       u64: (o) => dv.getBigUint64(o, true),
       cstring: (o, len) => '_sym',
     };
-    const libs = { [rawOrdinal - 1]: '/usr/lib/lib' + rawOrdinal + '.dylib' };
+    const libs = [];
+    if (expectedOrdinal > 0) {
+      libs[expectedOrdinal - 1] = '/usr/lib/lib' + rawOrdinal + '.dylib';
+    }
     const image = { metadata: {}, warnings: [], imports: [], libraries: libs };
     const parsed = parseChainedImports(r, { offset: 0, size: 0x100 }, image);
     assert.equal(parsed[0].library, expectedLibrary);
