@@ -104,9 +104,10 @@ export function createActionRunner(app, { ui, assistant } = {}) {
         return;
       }
       case 'run-agent': {
-        if (!assistant) return;
+        const target = typeof action.target === 'string' ? action.target.trim() : '';
+        if (!assistant || !target) return;
         assistant.open();
-        assistant.ask(action.target || action.label, { mode: 'agent' });
+        assistant.ask(target, { mode: 'agent' });
         return;
       }
       case 'review-proposal': {

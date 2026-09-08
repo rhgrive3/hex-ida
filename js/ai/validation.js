@@ -129,7 +129,13 @@ export function sanitizeActions(actions, { evidenceStore, proposalStore, address
     if (!value || !AI_ACTION_KINDS.includes(value.kind)) continue;
     const action = { kind: value.kind };
     if (typeof value.label === 'string') action.label = value.label.slice(0, 240);
-    if (value.kind === 'run-agent') { action.target = typeof value.target === 'string' ? value.target.slice(0, 1000) : null; out.push(action); continue; }
+    if (value.kind === 'run-agent') {
+      const target = typeof value.target === 'string' ? value.target.trim().slice(0, 1000) : '';
+      if (!target) continue;
+      action.target = target;
+      out.push(action);
+      continue;
+    }
     if (value.kind === 'review-proposal') {
       const rawId = value.target ?? value.proposalId;
       if (typeof rawId === 'string' && rawId && proposalStore && proposalStore.has(rawId)) { action.target = rawId; out.push(action); }

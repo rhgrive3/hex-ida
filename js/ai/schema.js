@@ -10,6 +10,7 @@ export const AI_ACTION_KINDS = Object.freeze([
   'open-function', 'open-address', 'show-xrefs', 'show-callers', 'show-callees',
   'show-cfg', 'show-pseudocode', 'open-evidence', 'trace-value', 'run-agent', 'review-proposal',
 ]);
+const AI_NON_AGENT_ACTION_KINDS = Object.freeze(AI_ACTION_KINDS.filter((kind) => kind !== 'run-agent'));
 export const AI_ERROR_TYPES = Object.freeze([
   'model_timeout', 'provider_error', 'invalid_model_output', 'invalid_tool_call',
   'tool_failed', 'scope_violation', 'budget_exhausted', 'cancelled',
@@ -35,9 +36,29 @@ export const HYPOTHESIS_SCHEMA = Object.freeze({
   },
 });
 
+const ACTION_PROPERTIES = Object.freeze({
+  label: { type: 'string' }, evidenceId: { type: 'string' },
+});
+
 export const ACTION_SCHEMA = Object.freeze({
-  type: 'object', required: ['kind'],
-  properties: { kind: { enum: AI_ACTION_KINDS }, target: { anyOf: [{ type: 'string' }, { type: 'null' }] }, label: { type: 'string' }, evidenceId: { type: 'string' } },
+  oneOf: [
+    {
+      type: 'object', required: ['kind', 'target'],
+      properties: {
+        ...ACTION_PROPERTIES,
+        kind: { enum: ['run-agent'] },
+        target: { type: 'string', minLength: 1, pattern: '\\S' },
+      },
+    },
+    {
+      type: 'object', required: ['kind'],
+      properties: {
+        ...ACTION_PROPERTIES,
+        kind: { enum: AI_NON_AGENT_ACTION_KINDS },
+        target: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+      },
+    },
+  ],
 });
 
 /* These are both defaults and hard browser-side ceilings. Turn/request options
