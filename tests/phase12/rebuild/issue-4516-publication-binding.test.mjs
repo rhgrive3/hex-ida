@@ -121,4 +121,33 @@ test('bytes changed after validation are rejected before promotion (#4516)', asy
   assert.deepEqual(result, { status: 'rejected', reason: 'materialized-output-tampered' });
 });
 
+test('publication snapshots accessor-backed bytes once before hashing and promotion (#4516)', async () => {
+  const source = Uint8Array.from([0x11]);
+  const rebuildPlan = plan('binary-A', source);
+  const materialized = await materializeRebuildPlan(rebuildPlan, source);
+  const validation = await validValidation(rebuildPlan, materialized);
+  const evilBytes = Uint8Array.from([0x22]);
+  let byteReads = 0;
+  let promotedBytes;
+  const accessorMaterialized = {
+    ...materialized,
+    get bytes() {
+      byteReads += 1;
+      return byteReads === 1 ? materialized.bytes : evilBytes;
+    },
+  };
+
+  const result = await publishRebuildOutput(accessorMaterialized, validation, {
+    promote: (output) => {
+      promotedBytes = output;
+      return 'ok';
+    },
+  });
+
+  assert.equal(result.status, 'published');
+  assert.equal(byteReads, 1, 'publication must not re-read caller-controlled bytes after validation');
+  assert.deepEqual([...promotedBytes], [0x11]);
+  assert.notEqual(promotedBytes, materialized.bytes);
+});
+
 console.log('issue #4516 rebuild publication binding regressions: PASS');
