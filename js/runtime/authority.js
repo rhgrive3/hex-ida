@@ -85,9 +85,44 @@ function boundedCount(value, fallback, max, code) {
   return n;
 }
 
+// Canonical authority records must not retain mutable binary backing storage.
+// structuredClone preserves TypedArray/ArrayBuffer identity, but Object.freeze
+// cannot freeze their indexed bytes. Canonicalize every binary view to a plain
+// byte array before identity/freeze, including values nested in Map/Set (#6214).
+function canonicalizeBinary(value, seen = new WeakSet()) {
+  if (!value || typeof value !== 'object') return value;
+  if (ArrayBuffer.isView(value)) return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+  if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
+  if (seen.has(value)) return value;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) value[i] = canonicalizeBinary(value[i], seen);
+    return value;
+  }
+  if (value instanceof Map) {
+    const entries = [...value.entries()];
+    value.clear();
+    for (const [key, item] of entries) value.set(canonicalizeBinary(key, seen), canonicalizeBinary(item, seen));
+    return value;
+  }
+  if (value instanceof Set) {
+    const items = [...value.values()];
+    value.clear();
+    for (const item of items) value.add(canonicalizeBinary(item, seen));
+    return value;
+  }
+  for (const key of Object.keys(value)) value[key] = canonicalizeBinary(value[key], seen);
+  return value;
+}
+
 function clone(value) {
-  if (typeof structuredClone === 'function') return structuredClone(value);
   if (value == null || typeof value !== 'object') return value;
+  if (ArrayBuffer.isView(value)) return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+  if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
+  if (typeof structuredClone === 'function') return canonicalizeBinary(structuredClone(value));
+  if (value instanceof Map) return new Map([...value.entries()].map(([key, item]) => [clone(key), clone(item)]));
+  if (value instanceof Set) return new Set([...value.values()].map(clone));
+  if (value instanceof Date) return new Date(value.getTime());
   if (Array.isArray(value)) return value.map(clone);
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, clone(item)]));
 }
