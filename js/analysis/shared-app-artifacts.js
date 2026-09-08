@@ -119,6 +119,10 @@ function yieldMainRealm(signal) {
   });
 }
 function epochOf(app) { return Number(app?.backend?.gen ?? app?.analysisEpoch ?? -1); }
+function symbolsGenerationOf(app) { return app?.symbols?.gen ?? 0; }
+function programCacheKey(epoch, symbolsGeneration, key) {
+  return `${epoch}:${symbolsGeneration}:${key}`;
+}
 function storeValue(app, key) { try { return app?.store?.get?.(key) ?? null; } catch { return null; } }
 function stringPriority(region) {
   const section = region?.section || '';
@@ -326,6 +330,8 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     producerOptions:producerOptions(initialOptions), retryableIncomplete:false,
   };
   const epoch = epochOf(app);
+  const symbolsGeneration = symbolsGenerationOf(app);
+  const cacheKey = programCacheKey(epoch, symbolsGeneration, key);
   entry.promise = (async () => {
     const primary = regions.find((region) => region.section === '__text') || regions[0];
     await app.ensureFunctions?.(primary, {
@@ -373,6 +379,7 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     if (app.symbols?.functionStartsComplete !== true) failures.push('function-discovery-incomplete');
     throwIfAborted(controller.signal);
     if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared program'), { stale:true });
+    if (symbolsGeneration !== symbolsGenerationOf(app)) throw Object.assign(new Error('stale shared program symbols'), { stale:true });
     const merged = mergeProgramScans(scans, { regions, reasons:failures, limits:PROGRAM_MERGE_LIMITS });
     const program = new ProgramIndex(merged, app.symbols, primary);
     const stats = statsFor(program, counts, scannedRefs, entry.producerOptions);
@@ -389,7 +396,7 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     return program;
   })().then((value) => { entry.settled = true; return value; }).catch((error) => {
     const live = mapFor(PROGRAM_ENTRIES, app);
-    if (live.get(`${epoch}:${key}`) === entry) live.delete(`${epoch}:${key}`);
+    if (live.get(cacheKey) === entry) live.delete(cacheKey);
     throw error;
   }).finally(() => {
     if (app.programBusyEpoch === epoch && app.programBusy === entry.promise) {
@@ -399,7 +406,7 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
   });
   app.programBusyEpoch = epoch;
   app.programBusy = entry.promise;
-  mapFor(PROGRAM_ENTRIES, app).set(`${epoch}:${key}`, entry);
+  mapFor(PROGRAM_ENTRIES, app).set(cacheKey, entry);
   return entry;
 }
 
@@ -441,7 +448,7 @@ export function installSharedAppArtifacts(app) {
     if (app.program && app.programKey === key && app.program.gen === app.symbols?.gen && app.program.globalReferenceStats
       && app.program.completeness?.complete === true) return Promise.resolve(app.program);
     const epoch = epochOf(app);
-    const mapKey = `${epoch}:${key}`;
+    const mapKey = programCacheKey(epoch, symbolsGenerationOf(app), key);
     const map = mapFor(PROGRAM_ENTRIES, app);
     let entry = liveEntry(map, mapKey, map.get(mapKey));
     if (!entry) {
