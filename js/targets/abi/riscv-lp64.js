@@ -328,6 +328,80 @@ function createClassifier(profile) {
       vectorCursor = start + group;
       return Array.from({ length:group }, (_unused, index) => `v${start + index}`);
     }
+    /*
+     * psABI base integer convention: fixed-length vectors are aggregates.
+     * Places a fixed-length vector like the integer aggregate path: up to
+     * 2*XLEN bits split across a0/a1 (or the tail on the stack), larger ones
+     * by reference. Returns null when the placement cannot be proven, so the
+     * caller falls back to unknown instead of inventing slots (#5713).
+     */
+    function placeFixedVectorAsAggregate(index, classified, integerIndexAtEntry, stackOffsetAtEntry) {
+      const bits = classified.bits;
+      const bytes = Math.ceil(bits / 8);
+      let integerIndex = integerIndexAtEntry;
+      let stackOffset = stackOffsetAtEntry;
+      if (bytes > 2 * XLEN / 8) {
+        /* Aggregates larger than 2*XLEN are passed by reference. */
+        const reg = INTEGER_ARGUMENT_REGISTERS[integerIndex];
+        if (!reg) {
+          const entry = { index, location:'stack', offset:stackOffset, offsetBase:'incoming-stack-arguments', bytes:8, aggregate:true, abiClass:'aggregate-by-reference', pointer:true, bits:XLEN, pointeeBits:bits, hiddenIndirection:true,
+            pieces:[aggregatePiece({ pieceIndex:0, stackOffset, bits:XLEN, bytes:8, byteOffset:0, abiClass:'aggregate-by-reference' })] };
+          return { entry, stackParts:[entry], integerIndexAfter:integerIndex, stackOffsetAfter:stackOffset + 8, byReferenceStack:true };
+        }
+        integerIndex += 1;
+        useInteger(reg, { purpose:'aggregate-by-reference' });
+        const entry = { index, location:'register', reg, aggregate:true, abiName:ABI_ALIAS[reg], abiClass:'aggregate-by-reference', pointer:true, bits:XLEN, bytes:8, pointeeBits:bits, hiddenIndirection:true,
+          pieces:[aggregatePiece({ pieceIndex:0, reg, bits:XLEN, bytes:8, byteOffset:0, abiClass:'aggregate-by-reference' })] };
+        return { entry, stackParts:[], integerIndexAfter:integerIndex, stackOffsetAfter:stackOffset };
+      }
+      const needed = bytes > XLEN / 8 ? 2 : 1;
+      if (needed === 2 && integerIndex === INTEGER_ARGUMENT_REGISTERS.length - 1) {
+        const reg = INTEGER_ARGUMENT_REGISTERS[integerIndex++];
+        useInteger(reg, { purpose:'aggregate-eightbyte' });
+        stackOffset = align(stackOffset, 8);
+        const stackPart = { index, part:'high', location:'stack', offset:stackOffset, offsetBase:'incoming-stack-arguments', bytes:8, abiClass:'aggregate-memory', bits:Math.max(1, bits - XLEN) };
+        const pieces = [
+          aggregatePiece({ pieceIndex:0, reg, bits:Math.min(XLEN, bits), bytes:8, byteOffset:0, abiClass:'aggregate-integer' }),
+          aggregatePiece({ pieceIndex:1, stackOffset, bits:Math.max(1, bits - XLEN), bytes:8, byteOffset:8, abiClass:'aggregate-memory' }),
+        ];
+        stackPart.pieceIndex = 1;
+        stackPart.order = 1;
+        stackPart.byteOffset = 8;
+        const entry = { index, location:'register-and-stack', reg, regs:[reg], aggregate:true, abiName:ABI_ALIAS[reg], abiNames:[ABI_ALIAS[reg]], stackOffset, pieces, bytes:16, abiClass:'aggregate-integer-split', bits };
+        return { entry, stackParts:[stackPart], integerIndexAfter:integerIndex, stackOffsetAfter:stackOffset + 8 };
+      }
+      if (integerIndex + needed > INTEGER_ARGUMENT_REGISTERS.length) {
+        stackOffset = align(stackOffset, needed === 2 ? 16 : 8);
+        const slot = align(bytes, 8);
+        const pieces = Array.from({ length:needed }, (_unused, piece) => aggregatePiece({
+          pieceIndex:piece,
+          stackOffset:stackOffset + piece * 8,
+          bits:Math.min(XLEN, Math.max(1, bits - piece * XLEN)),
+          bytes:8,
+          byteOffset:piece * 8,
+          abiClass:'aggregate-memory',
+        }));
+        const entry = { index, location:'stack', offset:stackOffset, offsetBase:'incoming-stack-arguments', bytes:Math.max(slot, needed * 8), aggregate:true, pieces, abiClass:'aggregate-memory', bits };
+        return { entry, stackParts:[entry], integerIndexAfter:integerIndex, stackOffsetAfter:stackOffset + slot };
+      }
+      const regs = [];
+      const pieces = [];
+      for (let piece = 0; piece < needed; piece += 1) {
+        const reg = INTEGER_ARGUMENT_REGISTERS[integerIndex++];
+        useInteger(reg, { purpose:'aggregate-eightbyte' });
+        regs.push(reg);
+        pieces.push(aggregatePiece({
+          pieceIndex:piece,
+          reg,
+          bits:Math.min(XLEN, Math.max(1, bits - piece * XLEN)),
+          bytes:8,
+          byteOffset:piece * 8,
+          abiClass:'aggregate-integer',
+        }));
+      }
+      const entry = { index, location:'registers', regs, abiNames:regs.map((reg) => ABI_ALIAS[reg]), aggregate:true, pieces, bytes:needed * 8, abiClass:'aggregate-integer-registers', bits };
+      return { entry, stackParts:[], integerIndexAfter:integerIndex, stackOffsetAfter:stackOffset };
+    }
     function flattenAggregate(parameter) {
       const canonical = canonicalAggregateLayout(parameter);
       const members = canonical?.members ?? aggregateMembers(parameter);
@@ -397,7 +471,22 @@ function createClassifier(profile) {
       }
 
       if (classified.vector) {
+        // psABI base integer calling convention: "fixed-length vectors are
+        // treated as aggregates". Without the riscv_vector_cc marker they must
+        // take the integer convention's aggregate placement, not fail to
+        // unknown (#5713). Only the variable-length vector extension classes
+        // need the vector calling convention.
         if (!vectorVariant) {
+          if (classified.vector.fixedLength && classified.bits > 0) {
+            const placement = placeFixedVectorAsAggregate(index, classified, integerIndex, stackOffset);
+            arguments_.push(placement.entry);
+            for (const part of placement.stackParts) if (part !== placement.entry) stackArguments.push(part);
+            integerIndex = placement.integerIndexAfter;
+            stackOffset = placement.stackOffsetAfter;
+            aggregateProven = true;
+            if (placement.byReferenceStack) stackArgsMayContainPointers = true;
+            return;
+          }
           unknownArgument(index, classified, 'vector-calling-convention-unknown', { candidates:['riscv-vector-variant','non-vector-fallback'] });
           return;
         }
@@ -809,7 +898,27 @@ function createClassifier(profile) {
       prototype.callingConvention || options.callingConvention,
     ) === 'riscv-vector-variant';
     if (returnVector) {
-      if (!vectorVariant) return { reg:null, partial:true, location:'unknown', reason:'vector-return-calling-convention-unknown' };
+      if (!vectorVariant) {
+        // psABI base integer calling convention: "fixed-length vectors are
+        // treated as aggregates". A fixed-length vector return with a proven
+        // width follows the aggregate return rules (a0/a1 or the hidden
+        // memory result); only variable-length vector classes stay unknown
+        // without the vector calling convention (#5713).
+        if (returnVector.fixedLength && Number.isSafeInteger(bits) && bits > 0) {
+          if (bits > 2 * XLEN) return indirectResult();
+          const regs = bits > XLEN ? INTEGER_RETURN_REGISTERS.slice(0, 2) : INTEGER_RETURN_REGISTERS.slice(0, 1);
+          const pieces = regs.map((reg, pieceIndex) => aggregatePiece({
+            pieceIndex,
+            reg,
+            bits:Math.min(XLEN, Math.max(1, bits - pieceIndex * XLEN)),
+            bytes:8,
+            byteOffset:pieceIndex * 8,
+            abiClass:'aggregate-integer',
+          }));
+          return { reg:regs[0], regs, pieces, bytes:regs.length * 8, abiNames:regs.map((reg) => ABI_ALIAS[reg]), bits, aggregate:true };
+        }
+        return { reg:null, partial:true, location:'unknown', reason:'vector-return-calling-convention-unknown' };
+      }
       if (returnVector.fixedLength && !(Number(options?.abiVlen) > 0)) return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-abi-vlen-required' };
       const count = returnVector.mask ? 1 : returnVector.lmul * returnVector.tupleCount;
       if (!returnVector.mask && count > VECTOR_ARGUMENT_REGISTERS.length) return { reg:null, partial:true, location:'unknown', reason:'vector-return-group-too-large' };
