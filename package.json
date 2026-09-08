@@ -63,7 +63,7 @@
     "metadata:test": "node tests/metadata-provider-contract.test.mjs && node tests/metadata-go.test.mjs && node tests/phase12/integration/metadata-rust.test.mjs && node tests/metadata-apple.test.mjs && node tests/metadata-apple-consolidated-regressions.test.mjs && node tests/metadata-downstream-integration.test.mjs && node tests/issue-5857-swift-section-descriptor-boundary.mjs && node tests/issue-5879-swift-normalize-budget-strict.mjs && node tests/issue-5943-swift-field-descriptor-scan.mjs && node tests/issue-5861-go-scanned-count.mjs && node tests/issue-5863-swift-dispatch-primitive-identity.mjs && node tests/issue-5949-language-identity-coverage-digest.mjs",
     "integration:test": "npm run semantic:test && npm run decompiler:test && npm run platform:test && npm run runtime:test && npm run metadata:test",
     "browser": "node tests/browser.mjs",
-    "ui:test": "node tests/panels-compat-surface.mjs && node tests/ux.mjs && node tests/ui/routes.mjs && node tests/ui/next-views.mjs && node tests/ui/integration-hardening.mjs",
+    "ui:test": "node tests/format-mnemonic-class.test.mjs && node tests/arm64-presentation-compat.mjs && node tests/panels-compat-surface.mjs && node tests/ux.mjs && node tests/ui/routes.mjs && node tests/ui/next-views.mjs && node tests/ui/integration-hardening.mjs",
     "ui:routes": "node tests/ui/routes.mjs",
     "ui:browser": "node tests/ui/browser.mjs && node tests/ui/project-settings-import.browser.mjs && node tests/ui/analysis-navigation.mjs && node tests/ui/mobile-state.mjs && node tests/ui/accessibility.mjs && npm run ai:browser",
     "ui:mobile": "node tests/ui/mobile-state.mjs",
