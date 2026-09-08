@@ -117,7 +117,9 @@ class PublishedRootSet {
   keys() { return this.#entries.keys(); }
   values() { return this.#entries.values(); }
   entries() { return this.#entries.entries(); }
-  forEach(callback, thisArg) { return this.#entries.forEach(callback, thisArg); }
+  forEach(callback, thisArg) {
+    return this.#entries.forEach((value) => Reflect.apply(callback, thisArg, [value, value, this]));
+  }
   [Symbol.iterator]() { return this.#entries[Symbol.iterator](); }
   add() { fail('escape-result-immutable'); }
   delete() { fail('escape-result-immutable'); }
@@ -136,7 +138,9 @@ class PublishedRootOrigins {
   keys() { return this.#entries.keys(); }
   values() { return this.#entries.values(); }
   entries() { return this.#entries.entries(); }
-  forEach(callback, thisArg) { return this.#entries.forEach(callback, thisArg); }
+  forEach(callback, thisArg) {
+    return this.#entries.forEach((value, key) => Reflect.apply(callback, thisArg, [value, key, this]));
+  }
   [Symbol.iterator]() { return this.#entries[Symbol.iterator](); }
   set() { fail('escape-result-immutable'); }
   delete() { fail('escape-result-immutable'); }

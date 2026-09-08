@@ -57,6 +57,34 @@ test('#5274 rootOrigins cannot be rewritten after publication', () => {
   assert.equal(escape.rootOrigins.has('forged'), false);
 });
 
+test('#5274 forEach exposes only the immutable facade, never its backing collections', () => {
+  const escape = escapeRun();
+  const proven = [...escape.nonEscapingRoots][0];
+  const rootKey = [...escape.rootOrigins.keys()][0];
+  assert.ok(proven);
+  assert.ok(rootKey);
+
+  let setView = null;
+  let mapView = null;
+  escape.nonEscapingRoots.forEach((_value, _sameValue, collection) => { setView ??= collection; });
+  escape.rootOrigins.forEach((_origin, _key, collection) => { mapView ??= collection; });
+
+  assert.equal(setView, escape.nonEscapingRoots, 'Set forEach third arg is the immutable facade');
+  assert.equal(mapView, escape.rootOrigins, 'Map forEach third arg is the immutable facade');
+
+  assert.throws(() => setView.add('forged-root'), /escape-result-immutable/);
+  assert.throws(() => setView.delete(proven), /escape-result-immutable/);
+  assert.throws(() => setView.clear(), /escape-result-immutable/);
+  assert.throws(() => mapView.set('forged-root', 'local-allocation'), /escape-result-immutable/);
+  assert.throws(() => mapView.delete(rootKey), /escape-result-immutable/);
+  assert.throws(() => mapView.clear(), /escape-result-immutable/);
+
+  assert.ok(escape.nonEscapingRoots.has(proven), 'the proof survives forEach mutation attempts');
+  assert.equal(escape.nonEscapingRoots.has('forged-root'), false);
+  assert.equal(escape.rootOrigins.get(rootKey), 'local-frame');
+  assert.equal(escape.rootOrigins.has('forged-root'), false);
+});
+
 test('#5274 the published collections stay read-usable for alias authority', () => {
   const escape = escapeRun();
   assert.ok(escape.nonEscapingRoots.size >= 1);
