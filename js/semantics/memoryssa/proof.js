@@ -20,6 +20,20 @@ export const CANONICAL_ALIAS_ISSUER_VERSIONS = Object.freeze({
 });
 export const CANONICAL_ACCESS_ISSUER = 'semantic-memoryssa.access';
 export const CANONICAL_STORE_VALUE_ISSUER = 'semantic-memoryssa.store-operand';
+const TRUSTED_CANONICAL_ACCESS_PROVIDERS = new WeakSet();
+
+// The callback boundary is intentionally separate from the serialized issuer
+// fields. A caller can copy those fields into a plain object, so the producer
+// also has to recognize the exact provider callback that it registered.
+export function registerCanonicalAccessProvider(provider) {
+  if (typeof provider !== 'function') throw new TypeError('canonical-access-provider-must-be-function');
+  TRUSTED_CANONICAL_ACCESS_PROVIDERS.add(provider);
+  return provider;
+}
+
+export function isCanonicalAccessProvider(provider) {
+  return typeof provider === 'function' && TRUSTED_CANONICAL_ACCESS_PROVIDERS.has(provider);
+}
 
 function weakObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
@@ -198,22 +212,28 @@ export function canonicalAliasProof({
   };
 }
 
-export function canonicalAccessProof({ raw, descriptor, identity, functionId }) {
+export function canonicalAccessProof({ raw, descriptor, identity, functionId, providerCallback }) {
   const memory = descriptor?.memory;
   if (!memory) return null;
   const sourceEntityId = String(descriptor?.node?.id ?? '');
   if (!sourceEntityId) return null;
   const provider = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const providerIssuer = weakObject(provider.issuer);
+  const providerAuthority = isCanonicalAccessProvider(providerCallback)
+    && providerIssuer?.type === 'canonical-memory-access-provider'
+    && providerIssuer.id === CANONICAL_ACCESS_ISSUER
+    && providerIssuer.version === MEMORY_SSA_PROOF_VERSION;
   const sourceQualifiersKnown = memory.volatility === false
     && memory.atomic === false
     && (memory.ordering == null || memory.ordering === 'unknown');
-  const providerQualifiersKnown = provider.kind === 'canonical-memory-access-qualifiers'
-    && String(provider.sourceEntityId ?? '') === sourceEntityId
+  const providerQualifiersKnown = providerAuthority
+    && provider.kind === 'canonical-memory-access-qualifiers'
+    && provider.sourceEntityId === sourceEntityId
     && provider.volatility === false
     && provider.atomic === false
     && (provider.ordering == null || provider.ordering === 'unknown')
-    && Number(provider.widthBits) === Number(memory.widthBits)
-    && String(provider.endian ?? '') === String(memory.endian ?? '');
+    && provider.widthBits === Number(memory.widthBits)
+    && provider.endian === memory.endian;
   // Some canonical machine-effect producers intentionally leave the
   // source-level qualifiers unknown.  Only their canonical access provider
   // may close that gap; an arbitrary callback cannot turn unknown metadata
