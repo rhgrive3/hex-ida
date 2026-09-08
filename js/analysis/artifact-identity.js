@@ -192,10 +192,24 @@ export function createPhase7ArtifactDescriptor(input = {}) {
       ? sortedIds(input.calleeSummaryIds, 'phase7-artifact-invalid-callee-summary-id')
       : [],
     libraryModelId: classes.includes('libraryModel') ? optional(input.libraryModelId, 'phase7-artifact-invalid-library-model-id') : null,
-    debugProviderVersion: classes.includes('debugProvider') || classes.includes('debugIdentity')
+    // A declared dependency must be bound in the key: a producer that derives
+    // from debug sources has to name which provider version and matched build
+    // identity it used. Omitting them would drop the debug dimension from the
+    // cache key entirely (#5836).
+    debugProviderVersion: classes.includes('debugProvider')
+      ? nonEmpty(input.debugProviderVersion, 'phase7-artifact-debug-provider-version-required')
+      : classes.includes('debugIdentity')
       ? optional(input.debugProviderVersion, 'phase7-artifact-invalid-debug-provider-version')
       : null,
-    debugBuildIdentity: classes.includes('debugIdentity') ? optional(input.debugBuildIdentity, 'phase7-artifact-invalid-debug-build-identity') : null,
+    debugBuildIdentity: kind === 'phase7.debug.facts'
+      ? nonEmpty(input.debugBuildIdentity, 'phase7-artifact-debug-build-identity-required')
+      : optional(input.debugBuildIdentity, 'phase7-artifact-invalid-debug-build-identity'),
+    // The debug identity digest binds the full canonical debug identity —
+    // including the matched-partial coverage domain that decides which
+    // records are hard evidence — into the key (#5849).
+    debugIdentityDigest: classes.includes('debugIdentity')
+      ? nonEmpty(input.debugIdentityDigest, 'phase7-artifact-debug-identity-digest-required')
+      : null,
     loaderEvidenceId: classes.includes('loaderEvidence') ? optional(input.loaderEvidenceId, 'phase7-artifact-invalid-loader-evidence-id') : null,
     userConstraintDigest: classes.includes('userConstraints') ? optional(input.userConstraintDigest, 'phase7-artifact-invalid-user-constraint-digest') : null,
   };
