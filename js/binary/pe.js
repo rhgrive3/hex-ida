@@ -1,6 +1,6 @@
 import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
-import { parseImports, parseExports, parseExceptionFunctions, parseBaseRelocations, parseCoffSymbols, parseDelayImports, parseTlsDirectory, parseLoadConfig, resolveCoffSectionName, directory, peMachineName, createPEMetadataBudget } from './pe-loader.js';
+import { parseImports, parseExports, parseExceptionFunctions, parseBaseRelocations, parseCoffSymbols, parseDelayImports, parseTlsDirectory, parseLoadConfig, directory, peMachineName, createPEMetadataBudget } from './pe-loader.js';
 
 const IMAGE_DIRECTORY_ENTRY_EXPORT = 0;
 const IMAGE_DIRECTORY_ENTRY_IMPORT = 1;
@@ -56,8 +56,11 @@ function seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine) {
   if (!segment.perms?.execute) { reject('section is not executable'); return; }
   const offset = address - segment.address;
   if (offset < 0n || offset >= segment.fileSize) { reject('entrypoint has no file-backed instruction byte'); return; }
+  // RISC-V base ISA is IALIGN=32 (4-byte); the issue only demands rejecting
+  // non-instruction-boundary addresses, and 2 is the loosest legal IALIGN, so
+  // 2-byte alignment is the fail-closed floor for RISC-V entrypoints (#5545).
   const alignment = machine === 0xaa64 || machine === 0x01c0 ? 4n
-    : machine === 0x01c4 ? 2n
+    : machine === 0x5032 || machine === 0x5064 || machine === 0x01c4 ? 2n
     : 1n;
   if (address % alignment !== 0n) { reject(`address is not ${alignment}-byte aligned`); return; }
   image.metadata.entrypointValid = true;
@@ -153,7 +156,12 @@ export function parsePE(input, options = {}) {
   if (numberOfSections > 4096 || secBase + numberOfSections * 40 > r.length) throw new Error('PE section table is invalid');
   for (let i = 0; i < numberOfSections; i++) {
     const p = secBase + i * 40;
-    const name = resolveCoffSectionName(r, r.ascii(p, 8), ptrSymbols, numberOfSymbols);
+    // The PE/COFF spec reserves the "/decimal-offset" section-name
+    // indirection for object files: an executable image never uses the
+    // string table for section names and does not support names longer than
+    // 8 characters. Resolving "/NNN" here would rewrite the image's literal
+    // section name from unrelated COFF string-table bytes (#5624).
+    const name = r.ascii(p, 8);
     const virtualSize = r.u32(p + 8);
     const virtualAddress = r.u32(p + 12);
     const sizeRaw = r.u32(p + 16);
