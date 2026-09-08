@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { runAgent } from '../../js/agent/runtime.js';
+import { runAgent } from '../js/agent/runtime.js';
 
 const realDateNow = Date.now;
 const withWallClock = async (value, fn) => {
