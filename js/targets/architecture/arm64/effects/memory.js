@@ -520,10 +520,8 @@ function literalLoad(decoded, context, mnemonic) {
   if (!reg) return partial(decoded, context, 'literal load destination register is missing');
   if (mnemonic === 'ldrsw' ? !isGp(reg, 64) : !(isGp(reg) && [32,64].includes(Number(reg.bits)) || isVector(reg, [32,64,128]))) return partial(decoded, context, `${mnemonic} literal destination class or width is invalid`);
   const immediate = immediateValue(immediateOperand(decoded));
-  let target = decoded?.pcRelTarget ?? decoded?.literalTarget ?? immediate;
-  if (typeof target === 'number' && Number.isSafeInteger(target)) target = BigInt(target);
-  if (typeof target === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(target)) target = BigInt(target);
-  if (typeof target !== 'bigint') return partial(decoded, context, 'literal load target is unresolved');
+  let target = literalTargetEvidence(decoded, immediate, context);
+  if (target == null) return partial(decoded, context, 'literal load target evidence is contradictory or unresolved');
 
   const widthBits = memoryWidthBits(mnemonic, reg);
   if (![32,64,128].includes(widthBits)) return partial(decoded, context, 'unsupported literal load width');
@@ -549,15 +547,67 @@ function literalLoad(decoded, context, mnemonic) {
   });
 }
 
+const PREFETCH_TYPES = Object.freeze({ ld:'prefetch-for-load', li:'preload-instruction', st:'prefetch-for-store' });
+const PREFETCH_TYPE_BY_CODE = Object.freeze(['prefetch-for-load','preload-instruction','prefetch-for-store']);
+const PREFETCH_POLICIES = Object.freeze({ keep:'temporal-keep', strm:'streaming-non-temporal' });
+const MIN_SIGNED_ADDRESS_64 = -(1n << 63n);
+const MAX_UNSIGNED_ADDRESS_64 = (1n << 64n) - 1n;
+
+// A64 literal PC-relative targets are imm19 << 2 from PC: the encoding word,
+// the immediate operand, and any structured `pcRelTarget`/`literalTarget`
+// field all carry the SAME absolute target. The former first-present priority
+// let a single contradictory field silently relocate an exact memory access
+// to a different pool slot. Canonicalize every present evidence to an unsigned
+// 64-bit address and require full agreement; `null` means contradictory,
+// out of the architectural address domain, or unresolved.
+function literalTargetEvidence(decoded, immediateOperandValue, context = null) {
+  void context;
+  const asTargetInteger = (value) => {
+    let target;
+    if (typeof value === 'bigint') target = value;
+    else if (typeof value === 'number' && Number.isSafeInteger(value)) target = BigInt(value);
+    else if (typeof value === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(value)) {
+      try { target = BigInt(value); } catch { return null; }
+    } else return null;
+    if (target < MIN_SIGNED_ADDRESS_64 || target > MAX_UNSIGNED_ADDRESS_64) return null;
+    return BigInt.asUintN(64, target);
+  };
+  const evidence = [];
+  const word = arm64DecodedEncodingWord(decoded);
+  if (word != null) {
+    // Literal-class words: `opc 011 V 00 imm19 Rt`. opc 0b00 = 32-bit LDR,
+    // 0b01 = 64-bit LDR, 0b10 = LDRSW, 0b11 with V=0 = PRFM (literal);
+    // V=1 selects the SIMD&FP LDR (literal) forms.
+    const opc = (word >>> 30) & 0x3;
+    const fixed = (word >>> 27) & 0x7;
+    const vr = (word >>> 26) & 0x1;
+    const low = (word >>> 24) & 0x3;
+    const isLiteralClass = fixed === 0b011 && low === 0b00 && (vr === 0b0 || opc !== 0b11);
+    if (!isLiteralClass) return null;
+    let imm19 = BigInt((word >>> 5) & 0x7ffff);
+    if (imm19 & 0x40000n) imm19 -= 0x80000n;
+    const displacement = imm19 << 2n;
+    const address = asTargetInteger(decoded?.address);
+    if (address == null) return null;
+    evidence.push(BigInt.asUintN(64, address + displacement));
+  }
+  const pcRelTarget = asTargetInteger(decoded?.pcRelTarget);
+  if (pcRelTarget != null) evidence.push(pcRelTarget);
+  const literalTarget = asTargetInteger(decoded?.literalTarget);
+  if (literalTarget != null) evidence.push(literalTarget);
+  const immediate = asTargetInteger(immediateOperandValue);
+  if (immediate != null) evidence.push(immediate);
+  if (evidence.length === 0) return null;
+  const first = evidence[0];
+  return evidence.every((value) => value === first) ? first : null;
+}
+
 // PRFM/PRFUM carry a 5-bit prfop field: the 18 architecturally named values are
 // a finite (type, target, policy) product, and the remaining 14 encodings are
 // valid but unnamed. The deployed disassembler prints nothing at all for the
 // unnamed ones, so they are recovered from Rt of the encoding word — the same
 // word the decoder itself consumed. With no word available the form stays
 // fail-closed rather than inventing a prfop.
-const PREFETCH_TYPES = Object.freeze({ ld:'prefetch-for-load', li:'preload-instruction', st:'prefetch-for-store' });
-const PREFETCH_TYPE_BY_CODE = Object.freeze(['prefetch-for-load','preload-instruction','prefetch-for-store']);
-const PREFETCH_POLICIES = Object.freeze({ keep:'temporal-keep', strm:'streaming-non-temporal' });
 const PREFETCH_NAMED_RE = /^p(ld|li|st)l([123])(keep|strm)$/;
 
 function prefetchOperationFromCode(code) {
@@ -634,10 +684,8 @@ function prefetchMetadata(mnemonic, prfop, extra) {
 // the disassembler prints it as a resolved immediate.
 function literalPrefetch(decoded, context, mnemonic, prfop) {
   const immediate = immediateValue(operands(decoded).find((operand) => operand?.k === 'imm' || operand?.kind === 'immediate'));
-  let target = decoded?.pcRelTarget ?? decoded?.literalTarget ?? immediate;
-  if (typeof target === 'number' && Number.isSafeInteger(target)) target = BigInt(target);
-  if (typeof target === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(target)) target = BigInt(target);
-  if (typeof target !== 'bigint') return partial(decoded, context, 'prfm literal target is unresolved', ['memory','other']);
+  const target = literalTargetEvidence(decoded, immediate, context);
+  if (target == null) return partial(decoded, context, 'prfm literal target evidence is contradictory or unresolved', ['memory','other']);
   const addressExpr = arm64ConstantExpr(target, 64);
   return bundle(decoded, context, {
     operations:[prefetchIntrinsic(prfop, createBitVectorValue(64, BigInt.asUintN(64, target)), addressExpr, [])],
