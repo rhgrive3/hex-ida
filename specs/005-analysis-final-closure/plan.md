@@ -12,6 +12,13 @@ integration status and release acceptance are separate; existing boxes are uncha
 See `development-debt.md` for deferred work. The remainder preserves historical
 requirements and evidence; conflicting execution instructions are superseded.
 
+**Current combined-development scope (2026-09-08):** Stage A and Stage B
+implementation dispositions may proceed in parallel under this amendment. The
+current development ledger records Stage A implementation 7/7, Stage B
+implementation 11/11, and 23/23 roadmap rows implementation-complete. This
+development state does not claim final integration, release, external, or
+post-merge acceptance; physical-device execution remains `DEFERRED_BY_OWNER`.
+
 # Implementation Plan: Recovery and Analysis Final Closure
 
 **Branch**: `recovery/final-closure-v3-20260904` (PR #6611) | **Date**: 2026-09-04 | **Spec**: [spec.md](./spec.md)
@@ -20,8 +27,9 @@ requirements and evidence; conflicting execution instructions are superseded.
 
 ## Summary
 
-The 2026-09-05 user amendment limits the active delivery to Stage A through
-T024. Stop before T025/Stage B. Physical-device observations are explicitly
+The 2026-09-05 user amendment historically limited the delivery to Stage A
+through T024; the current combined-development amendment supersedes that scope
+for implementation planning. Physical-device observations are explicitly
 `SKIPPED_USER_WAIVER`; this supersedes only their prior blocking requirement
 for this delivery, not browser/WebKit or runtime checks and not the historical
 Stage B platform denominator. No physical performance PASS is claimed.
@@ -463,8 +471,9 @@ product twice with zero second diff.
 
 The bounded chain is prior checkpoint E → reviewed main merge R → amendment
 code A → generated product G → evidence E2 → immutable receipt P → unique T060
-status transition D. Code A may add only this amendment's declared paths and
-the T049 dependency on T060. Existing ownership, candidate commands and
+status transition D. Code A may add only this amendment's declared paths. The
+historical T049 dependency on T060 is retained as provenance and does not create
+a current administrative gate. Existing ownership, candidate commands and
 independent oracle contracts remain unchanged. Spec/plan amendments append to
 the preserved documents; activation changes only T060's checkbox/status and
 handoff. Receipt publication preserves historical handoffs and checkpoints.
@@ -473,9 +482,10 @@ G uses the existing generation, cumulative rolling and independent-shadow
 verifier, bound to its own exact identity. Old runtime or CI cannot certify it.
 D bridges the next component checkpoint without changing historical rows; once
 a later component G exists, runtime verification selects that newer product.
-Stage B reads T060's historical transition instead of carrying the Stage A
-inventory forward. T060 remains PENDING until independent review, regressions,
-canonical rebuild, exact current-product runtime and CI are complete.
+The historical Stage B flow reads T060's transition instead of carrying the
+Stage A inventory forward. T060 is DONE in the current task ledger; final
+candidate, runtime, CI, and release acceptance remain separately owned by
+T040–T044 under the current amendment.
 
 Later main movement uses an ordered two-parent R2 from the current accepted
 checkpoint (D immediately after this amendment), not a rewritten amendment.

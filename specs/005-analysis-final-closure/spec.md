@@ -12,6 +12,13 @@ integration status and release acceptance are separate; existing boxes are uncha
 See `development-debt.md` for deferred work. The remainder preserves historical
 requirements and evidence; conflicting execution instructions are superseded.
 
+**Current combined-development scope (2026-09-08):** Stage A and Stage B
+implementation dispositions may proceed in parallel under this amendment. The
+current development ledger records Stage A implementation 7/7, Stage B
+implementation 11/11, and 23/23 roadmap rows implementation-complete. This
+development state does not claim final integration, release, external, or
+post-merge acceptance; physical-device execution remains `DEFERRED_BY_OWNER`.
+
 # Feature Specification: Recovery and Analysis Final Closure
 
 **Feature Branch**: `recovery/final-closure-20260904`
@@ -20,8 +27,9 @@ requirements and evidence; conflicting execution instructions are superseded.
 
 **Status**: Draft
 
-**Active delivery amendment (2026-09-05, user authority)**: This session ends
-after Stage A is merged and post-merge verified (T024), before any Stage B work.
+**Historical delivery amendment (2026-09-05, superseded by the current
+combined-development scope)**: The earlier delivery session was defined to end
+after Stage A was merged and post-merge verified (T024), before any Stage B work.
 The user explicitly waived physical-device testing for this delivery. Record
 those observations as `SKIPPED_USER_WAIVER`, never as PASS or simulated physical
 proof. Browser/WebKit, runtime identity, semantic, CI, generated-output and
