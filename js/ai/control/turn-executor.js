@@ -223,7 +223,7 @@ export async function executeTurn(input = {}, options = {}) {
 
       assertLiveBindingsUnchanged(this.localContext, snapshot);
       if (!decision) decision = deterministicDecision(plan, request, new AIError('budget_exhausted', 'The investigation budget was exhausted.'));
-      const result = this.finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope: scopeController.effectiveScope, stores: { evidenceStore, hypothesisStore, proposalStore } });
+      const result = await this.finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope: scopeController.effectiveScope, stores: { evidenceStore, hypothesisStore, proposalStore }, signal });
       // Every asynchronous persistence boundary gets a pre/post binding check.
       // The payloads below are snapshot-derived; a live workbench switch while
       // a persistence adapter is awaiting cannot turn this turn into a normal
