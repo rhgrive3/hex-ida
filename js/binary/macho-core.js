@@ -104,26 +104,41 @@ function parseThin(bytes, opts) {
       if (cmd === LC_SEGMENT_64 && bits === 64) parseSegment64(r, p, cmdsize, image, segmentOrder);
       else if (cmd === LC_SEGMENT && bits === 32) parseSegment32(r, p, cmdsize, image, segmentOrder);
       else if (cmd === LC_SYMTAB) {
-        if (cmdsize < 24) throw new Error(`invalid LC_SYMTAB size ${cmdsize}`);
+        requireExactCommandSize(cmdsize, 24, 'LC_SYMTAB');
         symtabs.push({ symoff: r.u32(p + 8), nsyms: r.u32(p + 12), stroff: r.u32(p + 16), strsize: r.u32(p + 20) });
       }
       else if (DYLIB_COMMANDS.has(cmd) || cmd === LC_ID_DYLIB) {
         if (cmdsize < 24) throw new Error(`invalid dylib command size ${cmdsize}`);
         parseDylib(r, p, cmdsize, image, cmd === LC_ID_DYLIB);
       }
-      else if (cmd === LC_MAIN && cmdsize >= 24) linkeditData.main = { entryoff: r.u64(p + 8), stacksize: r.u64(p + 16) };
+      else if (cmd === LC_MAIN) {
+        requireExactCommandSize(cmdsize, 24, 'LC_MAIN');
+        linkeditData.main = { entryoff: r.u64(p + 8), stacksize: r.u64(p + 16) };
+      }
       else if ((cmd === LC_THREAD || cmd === LC_UNIXTHREAD) && cmdsize >= 16) {
         const pc = parseThreadEntrypoint(r, p, cmdsize, cpu, bits);
         if (pc != null && linkeditData.threadEntry == null) linkeditData.threadEntry = pc;
       }
       else if (cmd === LC_VERSION_MIN_MACOSX || cmd === LC_VERSION_MIN_IPHONEOS || cmd === LC_VERSION_MIN_TVOS || cmd === LC_VERSION_MIN_WATCHOS) {
-        if (cmdsize < 16) throw new Error(`invalid LC_VERSION_MIN size ${cmdsize}`);
+        requireExactCommandSize(cmdsize, 16, 'LC_VERSION_MIN');
         parseLegacyVersionMin(r, p, cmd, image);
       }
-      else if (cmd === LC_FUNCTION_STARTS && cmdsize >= 16) linkeditData.functionStarts = dataCommand(r, p);
-      else if (cmd === LC_DYLD_CHAINED_FIXUPS && cmdsize >= 16) linkeditData.chainedFixups = dataCommand(r, p);
-      else if (cmd === LC_DYLD_EXPORTS_TRIE && cmdsize >= 16) linkeditData.exportsTrie = dataCommand(r, p);
-      else if ((cmd === LC_DYLD_INFO || cmd === LC_DYLD_INFO_ONLY) && cmdsize >= 48) dyldInfos.push(parseDyldInfo(r, p));
+      else if (cmd === LC_FUNCTION_STARTS) {
+        requireExactCommandSize(cmdsize, 16, 'LC_FUNCTION_STARTS');
+        linkeditData.functionStarts = dataCommand(r, p);
+      }
+      else if (cmd === LC_DYLD_CHAINED_FIXUPS) {
+        requireExactCommandSize(cmdsize, 16, 'LC_DYLD_CHAINED_FIXUPS');
+        linkeditData.chainedFixups = dataCommand(r, p);
+      }
+      else if (cmd === LC_DYLD_EXPORTS_TRIE) {
+        requireExactCommandSize(cmdsize, 16, 'LC_DYLD_EXPORTS_TRIE');
+        linkeditData.exportsTrie = dataCommand(r, p);
+      }
+      else if (cmd === LC_DYLD_INFO || cmd === LC_DYLD_INFO_ONLY) {
+        requireExactCommandSize(cmdsize, 48, 'LC_DYLD_INFO');
+        dyldInfos.push(parseDyldInfo(r, p));
+      }
       else if (cmd === LC_BUILD_VERSION && cmdsize >= 24) parseBuildVersion(r, p, image);
     } catch (e) {
       if (e?.code === 'BINARY_SOURCE_RANGE_MISSING' || e?.code === 'MACHO_SEGMENT_VM_OVERLAP') throw e;
@@ -287,6 +302,10 @@ function parseSegment64(r, p, cmdsize, image, order) {
     validateSectionRange(`section ${sectname}`, saddr, ssize, sectionFileOffset, sectionFileSize, seg, image, zeroFill);
     image.addSection({ name: sectname, segment: segname, address: saddr, size: ssize, fileOffset: sectionFileOffset, fileSize: sectionFileSize, perms: vmPerms(initprot), flags: sflags, index: image.sections.length + 1 });
   }
+}
+
+function requireExactCommandSize(actual, expected, label) {
+  if (actual !== expected) throw new Error(`invalid ${label} size ${actual}; expected exactly ${expected}`);
 }
 
 function parseSegment32(r, p, cmdsize, image, order) {
