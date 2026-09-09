@@ -1,6 +1,5 @@
 import { classifyFunction, discoverSubsystems } from '../../recognition/classifier.js';
 import { STRING_SCAN_BUDGET, StringCollectionBudget } from '../../string-budget.js';
-import { canonicalIdentityDimension } from './product-adapter.js';
 
 const REPORT_BINDINGS = new WeakMap();
 const STRING_STATES = new WeakMap();
@@ -100,14 +99,6 @@ function stringPriority(region) {
   return 2;
 }
 
-function stringStateKey(app) {
-  // Derived artifact state must key by the same identity dimensions the
-  // snapshot authority uses. Number()-coercing a structured sliceIndex would
-  // alias `['1']` to canonical `1` and serve a stale scan cache across what
-  // artifactVersionsFor() reports as distinct analysis states (#5585).
-  return `${canonicalIdentityDimension(app.backend?.gen ?? 0, '0')}:${canonicalIdentityDimension(app.store?.get?.('sliceIndex') ?? -1, '-1')}`;
-}
-
 function newStringState(app) {
   const regions = app.store?.get?.('regions') || [];
   const targets = regions.filter((region) => region?.size > 0n &&
@@ -128,7 +119,7 @@ function newStringState(app) {
     }
   }
   return {
-    key: stringStateKey(app),
+    key: `${Number(app.backend?.gen ?? 0)}:${Number(app.store?.get?.('sliceIndex') ?? -1)}`,
     budget,
     plan,
     skipped,
@@ -144,7 +135,7 @@ function newStringState(app) {
 }
 
 function stringState(app) {
-  const key = stringStateKey(app);
+  const key = `${Number(app.backend?.gen ?? 0)}:${Number(app.store?.get?.('sliceIndex') ?? -1)}`;
   let state = STRING_STATES.get(app);
   if (!state || state.key !== key) {
     state = newStringState(app);
