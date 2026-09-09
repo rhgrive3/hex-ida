@@ -2,6 +2,8 @@ import { coarseTokens, compareFingerprints, fingerprintFunction, fingerprintFunc
 import { maximumWeightCandidateMatchingBounded, solveCandidateMatching } from './bounded-matching.js';
 import { createMatchBudget } from './match-budget.js';
 
+const MATCH_POSTPROCESSING_BUDGET_STOP = Symbol('match-postprocessing-budget-stop');
+
 export class FunctionMatchIndex {
   constructor(functions = [], options = {}) {
     const mode = options.mode || 'fast';
@@ -200,8 +202,35 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
 
   const solved = solveCandidateMatching(eligible, budget);
   const selected = solved.selected;
-  const usedBefore = new Set(), usedAfter = new Set(), matches = [];
+  const solverBudgetTruncated = budget.truncated;
+  const truncatedComponents = solved.truncatedComponents.slice(0, 32);
+  const incompletePostprocessing = () => {
+    const matchingBudget = budget.snapshot();
+    return {
+      matches: [], deleted: before.slice(), new: after.slice(),
+      candidatesEvaluated: all.length, candidateComparisons: matchingBudget.candidateEvaluations,
+      indexBuckets: index.buckets.size, truncated: true, ambiguous: true,
+      unresolvedBefore: before, unresolvedAfter: after,
+      matching: {
+        truncated: true,
+        candidateGraphIncomplete: !!matchingBudget.candidateGraphIncomplete,
+        preprocessingIncomplete: !!matchingBudget.preprocessingIncomplete,
+        postprocessingIncomplete: true,
+        ambiguousBefore: before.length, ambiguousAfter: after.length,
+        truncatedComponents,
+        omittedTruncatedComponents: Math.max(0, solved.truncatedComponents.length - truncatedComponents.length),
+        budget: matchingBudget,
+      },
+    };
+  };
+  const postprocessingBudgetOkay = (stage = 'match post-processing') => (
+    solverBudgetTruncated || budget.checkSolverWall(stage)
+  );
+  if (!postprocessingBudgetOkay()) return incompletePostprocessing();
+
+  const usedBefore = new Set(), usedAfter = new Set(), matchRecords = [];
   for (const c of selected) {
+    if (!postprocessingBudgetOkay()) return incompletePostprocessing();
     // Ambiguity is evidence about the original candidate distribution, not a
     // side-effect of assignment order. Keep candidates even when another match
     // consumes their after-function.
@@ -212,18 +241,37 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
     const alternatives = [...forwardAlternatives, ...reverseAlternatives]
       .sort((a,b)=>b.confidence-a.confidence || String(a.side).localeCompare(String(b.side)) || a.index-b.index).slice(0, 4);
     const ambiguous = alternatives.length > 0;
-    matches.push({ before: before[c.i], after: after[c.j], confidence: c.confidence, identity: c.identity, reasons: c.reasons, evidence: c.evidence, ambiguous, candidates: alternatives });
+    matchRecords.push({
+      beforeIndex: c.i,
+      afterIndex: c.j,
+      match: { before: before[c.i], after: after[c.j], confidence: c.confidence, identity: c.identity, reasons: c.reasons, evidence: c.evidence, ambiguous, candidates: alternatives },
+    });
     usedBefore.add(c.i); usedAfter.add(c.j);
     if (!ambiguous && c.confidence >= 0.82 && before[c.i].address != null && after[c.j].address != null) anchors.set(String(before[c.i].address), String(after[c.j].address));
+    if (!postprocessingBudgetOkay()) return incompletePostprocessing();
   }
-  matches.sort((a,b)=>{
-    const ai=before.findIndex((x)=>x===a.before), bi=before.findIndex((x)=>x===b.before);
-    return ai-bi;
-  });
-  const deleted = before.filter((_x, i) => !usedBefore.has(i));
-  const added = after.filter((_x, i) => !usedAfter.has(i));
+  try {
+    matchRecords.sort((a, b) => {
+      if (!postprocessingBudgetOkay('match ordering')) throw MATCH_POSTPROCESSING_BUDGET_STOP;
+      return a.beforeIndex - b.beforeIndex || a.afterIndex - b.afterIndex;
+    });
+  } catch (error) {
+    if (error === MATCH_POSTPROCESSING_BUDGET_STOP) return incompletePostprocessing();
+    throw error;
+  }
+  if (!postprocessingBudgetOkay('match ordering')) return incompletePostprocessing();
+  const matches = matchRecords.map(({ match }) => match);
+  const deleted = [], added = [];
+  for (let i = 0; i < before.length; i++) {
+    if (!postprocessingBudgetOkay()) return incompletePostprocessing();
+    if (!usedBefore.has(i)) deleted.push(before[i]);
+  }
+  for (let i = 0; i < after.length; i++) {
+    if (!postprocessingBudgetOkay()) return incompletePostprocessing();
+    if (!usedAfter.has(i)) added.push(after[i]);
+  }
+  if (!postprocessingBudgetOkay()) return incompletePostprocessing();
   const matchingBudget = budget.snapshot();
-  const truncatedComponents = solved.truncatedComponents.slice(0, 32);
   const truncated = matchingBudget.truncated || solved.truncatedComponents.length > 0;
   return {
     matches, deleted, new: added,
