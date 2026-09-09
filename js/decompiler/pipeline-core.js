@@ -434,6 +434,66 @@ function recordPhiCollapse(v, instruction, incoming, expression, state) {
   state.phiHistoryCount = (state.phiHistoryCount || 0) + 1;
 }
 
+function observeMovSelection(value, instruction, state) {
+  const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
+  const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
+  const budget = consumerObservationBudget(state);
+  if ((state.movHistoryCount || 0) >= maximum) {
+    budget.reasons.add('mov-selection-history-budget'); return null;
+  }
+  // Reserve before recursive input construction; nested MOVs cannot all see
+  // the same last free record. Failed observations never refill this budget.
+  state.movHistoryCount = (state.movHistoryCount || 0) + 1;
+  try {
+    if (budget.edges <= 0) throw new Error('mov-observation-budget');
+    const values = state.ir.values, valueIndex = values?.indexOf(value);
+    const blocks = state.ir.blocks, block = blocks?.find(item => item.index === instruction.block);
+    const blockIndex = blocks?.indexOf(block), instructions = block?.insts;
+    const instructionIndex = instructions?.indexOf(instruction);
+    if (!(valueIndex >= 0) || !(instructionIndex >= 0)) throw new Error('mov-definition-unavailable');
+    const flat = state.ir.instructions, flatIndex = flat?.indexOf(instruction);
+    if (flat != null && !(flatIndex >= 0)) throw new Error('mov-definition-unavailable');
+    // Snapshot BEFORE buildArg can invoke an input's symbol/type callback.
+    // Exact roots/positions bind the observed definition, not just its ID.
+    const captured = captureProjectionIrData([value, instruction]);
+    budget.edges -= captured.metrics.edges;
+    if (budget.edges < 0) throw new Error('mov-observation-budget');
+    const own = (object, key) => Object.getOwnPropertyDescriptor(object, key)?.value;
+    const blockId = block.index;
+    return Object.freeze({ matches:() => own(state.ir, 'values') === values && own(values, valueIndex) === value
+      && own(state.ir, 'blocks') === blocks && own(blocks, blockIndex) === block && own(block, 'index') === blockId
+      && own(block, 'insts') === instructions && own(instructions, instructionIndex) === instruction
+      && own(state.ir, 'instructions') === flat && (flat == null || own(flat, flatIndex) === instruction) && captured.matches() });
+  } catch {
+    budget.edges = 0; budget.reasons.add('mov-selection-observation-unavailable'); return null;
+  }
+}
+
+function recordMovSelection(value, instruction, expression, selection, state, flags) {
+  if (!selection) return;
+  const budget = consumerObservationBudget(state);
+  let observation;
+  try {
+    if (budget.edges <= 0) throw new Error('mov-observation-budget');
+    const output = captureProjectionIrData([expression]);
+    budget.edges -= output.metrics.edges;
+    if (budget.edges < 0 || state.opts?.shouldAbort?.() || !selection.matches() || !output.matches()) throw new Error('mov-selection-unavailable');
+    observation = Object.freeze({ matches:() => selection.matches() && output.matches() });
+  } catch {
+    budget.edges = 0; budget.reasons.add('mov-selection-observation-unavailable'); return;
+  }
+  const input = valueOf(instruction.args?.[0]);
+  const before = { source:mergeSource(origin(instruction, value), origin(input?.def, input), expression.source) };
+  const record = Object.freeze({ rule:'select-mov-operand', phase:'expression-build',
+    before:`mov:${flags.forAddress ? 'address' : 'value'}`, after:`expression:${expression.kind}`,
+    evidence:Object.freeze({ kind:'observed-mov-view-selection-not-equivalence',
+      detail:'actual legacy builder operand selection including existing operand-width/shift views; canonical MOV and memory facts remain, not independently proved copy elimination or forwarding' }),
+    originHistory:expressionOriginHistory(before, expression),
+  });
+  buildHistoryObservations.set(record, observation);
+  (state.buildHistoryFrame.records ??= new Set()).add(record);
+}
+
 function buildValueRaw(v, state, flags = {}) {
   if (!v) return expr.variable('unknown', 64, null);
   const memoKey = `${v.id}:${flags.forAddress ? 'a' : 'v'}`;
@@ -449,7 +509,11 @@ function buildValueRaw(v, state, flags = {}) {
     if (d.op === 'const') out = (v.constKind === 'float' || v.floatConst != null || v.float != null)
       ? expr.floatConstant(v.floatConst ?? v.float, v.bits || 64, origin(d, v))
       : constNode(v, v.const ?? d.extra?.value ?? 0n);
-    else if (d.op === 'mov') out = buildArg(d.args?.[0], state, flags);
+    else if (d.op === 'mov') {
+      const selection = observeMovSelection(v, d, state);
+      out = buildArg(d.args?.[0], state, flags);
+      recordMovSelection(v, d, out, selection, state, flags);
+    }
     else if (d.op === 'bin') {
       const a = buildArg(d.args?.[0], state), b = d.args?.[1] ? buildArg(d.args[1], state) : expr.constant(0, v.bits || 64);
       if (d.sub === 'bic') out = expr.binary('and', a, expr.unary('not', b, v.bits || b.bits || 64, b.signed), v.bits || 64, signedFor(state, v), origin(d, v));
