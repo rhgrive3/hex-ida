@@ -46,16 +46,27 @@ function parseArrayShape(bytes, offset, code) {
   const rank = parsed.value;
   if (rank < 1) fail(code);
   parsed = readCompressed(bytes, parsed.next, code);
-  const sizes = parsed.value;
-  if (sizes > rank) fail(code);
+  const sizeCount = parsed.value;
+  if (sizeCount > rank) fail(code);
+  const sizes = [];
   let pos = parsed.next;
-  for (let i = 0; i < sizes; i++) pos = readCompressed(bytes, pos, code).next;
+  for (let i = 0; i < sizeCount; i++) {
+    const size = readCompressed(bytes, pos, code);
+    sizes.push(size.value);
+    pos = size.next;
+  }
   parsed = readCompressed(bytes, pos, code);
-  const lowerBounds = parsed.value;
-  if (lowerBounds > rank) fail(code);
+  const lowerBoundCount = parsed.value;
+  if (lowerBoundCount > rank) fail(code);
+  const lowerBounds = [];
   pos = parsed.next;
-  for (let i = 0; i < lowerBounds; i++) pos = readCompressed(bytes, pos, code).next;
-  return pos;
+  for (let i = 0; i < lowerBoundCount; i++) {
+    const bound = readCompressed(bytes, pos, code);
+    lowerBounds.push(bound.value);
+    pos = bound.next;
+  }
+  // The shape is part of the exact array type identity (#7706).
+  return { next:pos, shape:{ rank, sizes, lowerBounds } };
 }
 
 function stackType(name, bits = null, extra = {}) {
@@ -96,13 +107,15 @@ function parseType(bytes, offset, code, depth = 0, methodGenericArity = null, ty
   }
   if (type === 0x1d) { // SZARRAY
     pos = consumeCustomMods(bytes, pos, code, typeDefOrRefRowCounts);
-    pos = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts).next;
-    return { next:pos, value:stackType('object-ref') };
+    const element = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
+    // Array element identity is part of the exact type (#7706): int32[] and
+    // int64[] are different constructed array types, not the same object-ref.
+    return { next:element.next, value:stackType('object-ref', null, { arrayShape:{ rank:1, sizes:[], lowerBounds:[] }, elementType:element.value }) };
   }
   if (type === 0x14) { // ARRAY
-    pos = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts).next;
-    pos = parseArrayShape(bytes, pos, code);
-    return { next:pos, value:stackType('object-ref') };
+    const element = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
+    const shape = parseArrayShape(bytes, element.next, code);
+    return { next:shape.next, value:stackType('object-ref', null, { arrayShape:shape.shape, elementType:element.value }) };
   }
   if (type === 0x15) { // GENERICINST
     const kind = bytes[pos++];
