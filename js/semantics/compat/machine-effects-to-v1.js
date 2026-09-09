@@ -343,6 +343,13 @@ function addressIndexTerm(value) {
     return src ? { reg:src.reg, scale:0, extend:null } : null;
   }
   if (value.kind === 'zero-extend' || value.kind === 'sign-extend') {
+    // Legacy `uxtw`/`sxtw` address modifiers mean "extend the low 32-bit word
+    // to 64 bits". Re-labelling any other extension width changes the effective
+    // address, so mirror the Semantic IR v2->v1 `extensionToken()` gate: mint
+    // the modifier only when 32->64 is proven on the expression AND the inner
+    // value width agrees; otherwise fail closed and drop the index term (#5418).
+    const innerWidthBits = value.value ? valueWidth(value.value) : null;
+    if (value.fromBits !== 32 || value.toBits !== 64 || innerWidthBits !== 32) return null;
     const nested = addressIndexTerm(value.value);
     if (!nested) return null;
     return { ...nested, extend:value.kind === 'zero-extend' ? 'uxtw' : 'sxtw' };
