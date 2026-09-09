@@ -130,7 +130,12 @@ function validateUnknownCallInput(input) {
 function validateDirectCallInput(input) {
   plainRecord(input, 'function-summary-invalid-direct-call');
   nonEmptyString(input.callSiteId, 'function-summary-call-site-required');
-  validateStringList(input.targetEntityIds, 'function-summary-invalid-target-ids');
+  // A direct call with zero targets is an unresolved call, not a no-op: it
+  // must be carried as an unknown-call effect with the broad boundary, never
+  // as a direct-call record (#5328).
+  if (validateStringList(input.targetEntityIds, 'function-summary-invalid-target-ids').length === 0) {
+    throw new TypeError('function-summary-direct-call-target-required');
+  }
   if (input.summaryId != null) nonEmptyString(input.summaryId, 'function-summary-invalid-summary-id');
 }
 function validateIndirectCallInput(input) {
