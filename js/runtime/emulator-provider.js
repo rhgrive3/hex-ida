@@ -2,7 +2,7 @@ import { DebugAdapterError, boundedInteger } from '../debug/adapter.js';
 import { deepFreeze } from '../core/identity/index.js';
 import { RuntimeProviderSession, createRuntimeProviderDescriptor } from './provider.js';
 import { createRuntimeEvent, createRuntimeEventBatch } from './events.js';
-import { RuntimeEvidenceBridge } from './evidence-bridge.js';
+import { RuntimeEvidenceBridge, conservativeCompleteness } from './evidence-bridge.js';
 
 const TERMINATIONS = Object.freeze(['return', 'halted', 'paused', 'fault', 'unsupported', 'timeout', 'cancelled', 'exception']);
 const ABORTED_EXECUTION = Symbol('aborted-execution');
@@ -378,7 +378,7 @@ export class EmulatorProvider {
       }
 
       const termination = abortTermination ?? terminationOf(raw || {});
-      const completeness = completenessFor(termination);
+      let completeness = completenessFor(termination);
       if (session.closed || session.state === 'closing') {
         throw new DebugAdapterError('runtime-session-stale', 'emulator run completed after its runtime session began closing', {
           termination,
@@ -409,6 +409,13 @@ export class EmulatorProvider {
       }
       const events = sourceEvents.map((source, index) => {
         const identity = eventIdentity(source, index, runOccurrence);
+        const kind = source.kind ?? source.type ?? 'emulator-checkpoint';
+        const sourceCompleteness = source.completeness;
+        const eventCompleteness = conservativeCompleteness(
+          completeness,
+          sourceCompleteness,
+          kind === 'gap' || kind === 'dropped-events' ? 'truncated' : null,
+        );
         return createRuntimeEvent({
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
@@ -421,10 +428,10 @@ export class EmulatorProvider {
           processKey: session.target.processKey,
           moduleBindingKey: source.moduleBindingKey,
           moduleGeneration: source.moduleGeneration,
-          kind: source.kind ?? source.type ?? 'emulator-checkpoint',
+          kind,
           payload: source.payload ?? source,
           observationMode: 'synthetic',
-          completeness,
+          completeness: eventCompleteness,
           interventionIds: source.interventionIds,
         });
       });
@@ -443,6 +450,7 @@ export class EmulatorProvider {
           completeness,
         }));
       }
+      for (const event of events) completeness = conservativeCompleteness(completeness, event.completeness);
       const batch = createRuntimeEventBatch({
         runtimeSessionId: session.runtimeSessionId,
         providerId: session.providerId,
