@@ -41,9 +41,14 @@ function ascii(u8, off, len) {
 }
 
 function utf8z(u8, off) {
-  if (!(off >= 0) || off >= u8.length) return '';
+  if (!(off >= 0) || off >= u8.length) return null;
   let end = off;
   while (end < u8.length && u8[end]) end++;
+  /* A chained-fixups import name is a NUL-terminated string.  A scan that
+     reaches the payload end without a terminator is truncated/malformed
+     input, not an implicitly terminated name (#5217): fail closed instead of
+     minting a symbol from tail bytes. */
+  if (end >= u8.length) return null;
   try { return new TextDecoder().decode(u8.subarray(off, end)); }
   catch {
     let out = '';
