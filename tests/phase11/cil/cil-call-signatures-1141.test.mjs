@@ -30,6 +30,7 @@ function tokenBytes(token) {
 function buildCallPe({
   callerBytecode,
   staticSignature = Uint8Array.from([0x00, 0x01, 0x08, 0x08]), // static int32(int32)
+  genericSignature = Uint8Array.from([0x10, 0x01, 0x01, 0x1e, 0x00, 0x1e, 0x00]), // static !!0(!!0)
 } = {}) {
   const buf = new Uint8Array(0xc00);
   const view = new DataView(buf.buffer);
@@ -84,8 +85,7 @@ function buildCallPe({
   buf[blobOffset] = 0;
   const cursor = { value:1 };
   const staticSignatureIndex = addBlob(buf, blobOffset, cursor, staticSignature);
-  const genericSignatureIndex = addBlob(buf, blobOffset, cursor,
-    Uint8Array.from([0x10, 0x01, 0x01, 0x1e, 0x00, 0x1e, 0x00])); // static !!0(!!0)
+  const genericSignatureIndex = addBlob(buf, blobOffset, cursor, genericSignature);
   const callerSignatureIndex = addBlob(buf, blobOffset, cursor,
     Uint8Array.from([0x00, 0x00, 0x01])); // static void()
   const constructorSignatureIndex = addBlob(buf, blobOffset, cursor,
@@ -207,6 +207,18 @@ test('#1141 newobj rejects non-constructor MemberRef and MethodDef targets', () 
     assert.equal(newobj.producedValues.length, 0, 'non-constructor target must not mint constructed-object');
     assert.ok(newobj.unknownEffects.some((effect) => effect.category === 'stack'));
   }
+});
+
+test('#7604 an out-of-range MethodDef MVAR degrades call signature authority', () => {
+  const lifted = lift([0x28, ...tokenBytes(0x06000002), 0x2a], {
+    genericSignature:Uint8Array.from([0x10, 0x01, 0x00, 0x1e, 0x01]), // generic<1> static !!1()
+  });
+  const call = lifted.bundles[0];
+  assert.equal(call.mnemonic, 'call');
+  assert.equal(call.completeness, 'partial');
+  assert.equal(call.callEffects[0].signatureResolved, false);
+  assert.equal(call.producedValues.length, 0, 'invalid MVAR must not mint an exact call-result type');
+  assert.ok(call.unknownEffects.some((effect) => effect.category === 'stack'));
 });
 
 test('#1141 MethodSpec validates instantiation and substitutes method generic stack types', () => {
