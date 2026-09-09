@@ -30,7 +30,8 @@ function validateExpression(expression, depth, state) {
   if (depth > 32) throw new TypeError('capability-rule-expression-too-deep');
   state.nodes += 1;
   if (state.nodes > state.maxNodes) throw new TypeError('capability-rule-expression-too-large');
-  const op = String(expression.op || '').trim();
+  if (typeof expression.op !== 'string') throw new TypeError('capability-rule-op-invalid');
+  const op = expression.op.trim();
   const allowed = new Set(['all', 'any', 'not', 'exists', 'equals', 'in', 'contains', 'gte', 'lte', 'gt', 'lt']);
   if (!allowed.has(op)) throw new TypeError(`capability-rule-op-unsupported:${op}`);
   if (['all', 'any'].includes(op)) {
@@ -141,7 +142,8 @@ function evaluateExpression(expression, features, budget) {
   if (op === 'gte') return { value: compared >= 0, complete: true, reason: null };
   if (op === 'lte') return { value: compared <= 0, complete: true, reason: null };
   if (op === 'gt') return { value: compared > 0, complete: true, reason: null };
-  return { value: compared < 0, complete: true, reason: null };
+  if (op === 'lt') return { value: compared < 0, complete: true, reason: null };
+  return { value: false, complete: false, reason: 'capability-rule-op-unsupported' };
 }
 
 function dependencyMap(value) {

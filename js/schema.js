@@ -376,8 +376,11 @@ export async function recoverSchemas(opts) {
       incompleteReason: { value:reasons.join(';'), enumerable:false, configurable:true },
     });
   }
+  let processed = 0;
+  let wasCancelled = false;
   for (let i = 0; i < targets.length; i++) {
-    if (cancelled()) break;
+    if (cancelled()) { wasCancelled = true; break; }
+    processed = i + 1;
     progress({ phase: 'schema', done: i, all: targets.length });
     const t = targets[i];
     let bytes = null;
@@ -390,7 +393,14 @@ export async function recoverSchemas(opts) {
     if (!schema) continue;
     out.push({ loader: t.addr, files: t.files, loaderSize: t.size, tables: schema.tables, best: schema.best });
   }
-  progress({ phase: 'schema', done: targets.length, all: targets.length });
+  if (wasCancelled) {
+    const reasons = [...new Set([out.incompleteReason, 'schema-recovery-cancelled'].filter(Boolean))];
+    Object.defineProperties(out, {
+      complete: { value:false, enumerable:false, configurable:true },
+      incompleteReason: { value:reasons.join(';'), enumerable:false, configurable:true },
+    });
+  }
+  progress({ phase: 'schema', done: processed, all: targets.length });
   out.sort((a, b) => (b.best.consistent === true) - (a.best.consistent === true) || (b.best.columns || 0) - (a.best.columns || 0));
   return out;
 }
