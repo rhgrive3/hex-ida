@@ -7,6 +7,7 @@ import { captureProjectionIrData, PROJECTION_LIMITS } from './projection-origin.
 import { expr, mapChildren, mergeSource, sourceOf } from '../ast/nodes.js';
 import { expressionReadability, printExpression, printProgram } from '../pretty/c.js';
 import { readProvedRewrites, readProvedInputBindings } from './pass-validation.js';
+import { renderProofExpression, sameProofExpression } from './proof-expression.js';
 import {
   analysisIdentityMatches,
   canonicalAnalysisIdentity,
@@ -29,7 +30,7 @@ function readProjectionHistory(result) {
   return entry;
 }
 
-function prepareProjectionHistory(result, expressions, conditions, records, opts, reasons) {
+function prepareProjectionHistory(result, expressions, conditions, records, opts, reasons, proofExpressions) {
   const consumers = [...new Set([...expressions, ...conditions].filter(Boolean))];
   const cap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
   const budget = opts.renderProvenanceBindingBudget;
@@ -52,7 +53,7 @@ function prepareProjectionHistory(result, expressions, conditions, records, opts
       conditions:result.semanticAst.conditions, rewriteProof:result.rewriteProof,
       producerDisposition:result.expressionHistoryBinding,
       expressions:Object.freeze(expressions), conditionConsumers:Object.freeze(conditions),
-      consumers:Object.freeze(consumers), records, observation };
+      consumers:Object.freeze(consumers), records, observation, proofExpressions };
   } catch {
     reasons.add('projection-history-observation-unavailable');
     return null;
@@ -372,8 +373,9 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     for (const key of ['values','stores','outputs','conditions']) result.semanticAst[key] =
       (original.semanticAst[key] ?? []).map(item=>({...item}));
   }
-  const records = [], replacements = new Map(), memo = new Map();
+  const records = [], replacements = new Map(), memo = new Map(), proofExpressions = new Map();
   if (proved) {
+    const selectedReplacements = new Map();
     const inputValues = [...new Set(provedInputs.bindings.flatMap(input => input.binding.inputs.map(input => input.value)))];
     const renderedInputs = readProducerInputExpressions(original, inputValues);
     if (!renderedInputs) return original;
@@ -387,17 +389,33 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
       if (!inputBinding || inputBinding.inputs.some(input => inputExpressions.get(input.value)?.bits !== input.bits)) return original;
       const item = byId.get(entry.rawValueId), root = item?.expression;
       if (!root || root.bits !== entry.bits || root.effect !== 'pure') continue;
-      if (root.kind === 'const' && root.value === entry.value) continue;
+      if (entry.kind === 'solver-constant' && root.kind === 'const' && root.value === entry.value) continue;
       const source = evidenceSource(root.source,`Phase 8 solver proof ${entry.queryHash}`);
-      let replacement = expr.constant(entry.value,entry.bits,root.signed,source);
+      const inputs = inputBinding.inputs.map(input => inputExpressions.get(input.value));
       const token = producerExpressionToken(original,root);
       if (token == null) continue;
+      // Shared observed roots must agree before replay/no-op handling too.
+      const selected = selectedReplacements.get(token);
+      if (selected && !sameProofExpression(selected.recipe,selected.inputs,entry.projection,inputs)) return original;
+      selectedReplacements.set(token,{recipe:entry.projection,inputs});
+      const prior = inherited?.proofExpressions?.get(root);
+      if (prior && sameProofExpression(prior.recipe,prior.inputs,entry.projection,inputs)) {
+        // Keep an actually published expression and its private recipe on replay;
+        // public proof IDs/text cannot manufacture this idempotence relation.
+        replacements.set(token,root); proofExpressions.set(root,prior); continue;
+      }
+      const recipeRoot = entry.projection.nodes[entry.projection.root];
+      if (recipeRoot.kind === 'fresh_symbol' && root === inputs[recipeRoot.input]) continue;
+      let replacement = renderProofExpression(entry.projection,inputs,opts.shouldAbort);
+      if (!replacement || replacement.bits !== entry.bits || replacement.effect !== 'pure') return original;
+      replacement = {...replacement,source:mergeSource(replacement.source,source)};
       const previous = replacements.get(token);
-      if (previous && (previous.bits !== replacement.bits || previous.value !== replacement.value)) return original;
-      if (previous) replacement = expr.constant(entry.value,entry.bits,root.signed,mergeSource(previous.source,source));
+      if (previous) replacement = {...replacement,source:mergeSource(previous.source,replacement.source)};
+      if (entry.kind === 'solver-constant') replacement.signed = root.signed;
       replacements.set(token,replacement);
-      records.push(Object.freeze({kind:'solver-constant',valueId:entry.valueId,
-        proof:'canonical eligible solver equivalence proof',targets:Object.freeze(collectTargets(source,'solver-constant')),
+      proofExpressions.set(replacement,{recipe:entry.projection,inputs:Object.freeze(inputs)});
+      records.push(Object.freeze({kind:entry.kind,valueId:entry.valueId,
+        proof:'canonical eligible solver equivalence proof',targets:Object.freeze(collectTargets(source,entry.kind)),
         queryHash:entry.queryHash,planId:proved.planId,beforeHash:entry.beforeHash,afterHash:entry.afterHash,
         origin:Object.freeze({addresses:Object.freeze([...source.addresses]),rows:Object.freeze([...source.rows]),
           ir:Object.freeze([...source.ir]),ssaDefs:Object.freeze([...source.ssaDefs]),ssaUses:Object.freeze([...source.ssaUses])})}));
@@ -473,8 +491,11 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   });
   if (proofRequested && (opts.shouldAbort?.() || !isProducerProjection(original) || proved && !readProvedRewrites(analysis,proofContext))) return original;
   const retainedRecords = Object.freeze([...(inherited?.records ?? []), ...records]);
+  for (const [expression,binding] of inherited?.proofExpressions ?? []) {
+    if (memo.get(expression) === expression) proofExpressions.set(expression,binding);
+  }
   const pendingHistory = prepareProjectionHistory(result, expressionConsumers, conditionBindings,
-    retainedRecords, opts, historyReasons);
+    retainedRecords, opts, historyReasons, proofExpressions);
   const withLines = {
     ...result,
     lines,

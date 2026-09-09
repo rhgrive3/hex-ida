@@ -1,10 +1,10 @@
 /**
- * Solver-backed, query-local Phase 8 constant projection plans.
+ * Solver-backed, query-local Phase 8 scalar projection plans.
  *
  * These are capabilities, not signed-looking JSON. Only the existing symbolic
  * query/judge can issue a usable plan. Serialization is audit evidence only.
  * The original IR is NEVER modified. The admitted domain is an unconditional,
- * total pure BV expression replaced by an equal constant; no instruction,
+ * total pure BV expression replaced by an independently proved scalar; no instruction,
  * memory access, exceptional edge or architectural side effect is removed.
  */
 import { stableDigest } from '../../core/identity/index.js';
@@ -15,6 +15,7 @@ import { queryRecord, queryArray } from '../../symbolic/memory/data-input.js';
 import { createQueryGuard, QueryFailure, memoryIdentity, sameMemoryIdentity } from '../../symbolic/memory/query-state.js';
 import { semanticValueIdentity } from '../../symbolic/memory/value-identity.js';
 import { createPassDescriptor, createPassResult, unchangedResult, ANALYSIS_KEYS } from './contract.js';
+import { compileProofExpression } from './proof-expression.js';
 
 const plans = new WeakMap();
 const validations = new WeakMap();
@@ -26,10 +27,10 @@ const TOTAL_UNARY = new Set(['not','neg','trunc','zext','sext']);
 const DEFAULT_MODELS = createTaintModels({id:'phase8-empty', version:'1', provenance:'hex.phase8.explicit-empty-model/v1',sources:[],sinks:[]});
 
 export const PROOF_REWRITE_PASS = createPassDescriptor({
-  id:'phase8.solver-constants', version:'1.0.0', stage:'rendering',
+  id:'phase8.solver-constants', version:'2.0.0', stage:'rendering',
   consumes:['ssa','origins'], produces:['provedRewrites'],
   preserves:ANALYSIS_KEYS.filter(key => key !== 'provedRewrites'),
-  description:'Project unconditional solver-proved BV constants without changing canonical IR or effects.',
+  description:'Project unconditional solver-proved BV scalars without changing canonical IR or effects (legacy pass ID).',
 });
 
 function string(value, name) {
@@ -135,8 +136,13 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
       const item = analysis.targets[index], target = selected[index];
       const inputBinding = readSymbolicTargetInputs(analysis, target, guard.identity);
       if (!inputBinding || inputBinding.expression !== item.expression) return reject('unavailable-target-input-binding');
-      const candidate = item.candidates.find(c => c.after?.kind === 'const' && c.after.sort.kind === 'bv'
-        && c.eligible && isAdoptableCandidate(c.verification,{identity:guard.identity}));
+      let candidate, projection;
+      for (const option of item.candidates) {
+        if (option.after?.sort.kind !== 'bv' || !option.eligible
+          || !isAdoptableCandidate(option.verification,{identity:guard.identity})) continue;
+        const recipe = compileProofExpression(option.after,inputBinding,guard);
+        if (recipe) { candidate = option; projection = recipe; break; }
+      }
       const requestIndex = selectedIndices[index];
       if (!candidate) {
         const unsupportedProjection = item.candidates.some(c => c.eligible
@@ -144,20 +150,21 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
         const allRefuted = item.candidates.length > 0 && item.candidates.every(c => c.verification?.verdict === 'refuted');
         const disposition = unsupportedProjection ? 'unsupported' : !item.candidates.length ? 'unchanged' : allRefuted ? 'refuted' : 'unknown';
         decisions[requestIndex] = Object.freeze({ ...requested[requestIndex], disposition,
-          reason:unsupportedProjection ? 'proved-candidate-outside-constant-projection' : !item.candidates.length ? 'no-generated-candidate'
-            : allRefuted ? 'all-generated-candidates-refuted' : 'no-eligible-constant-candidate', candidateCount:item.candidates.length });
+          reason:unsupportedProjection ? 'proved-candidate-outside-scalar-projection' : !item.candidates.length ? 'no-generated-candidate'
+            : allRefuted ? 'all-generated-candidates-refuted' : 'no-eligible-scalar-candidate', candidateCount:item.candidates.length });
         continue;
       }
       guard.take('rewrites'); guard.take('allocationUnits',3 + inputBinding.inputs.length);
       const binding = candidate.verification.binding;
-      const entry = Object.freeze({valueId:item.valueId,rawValueId:target.id,bits:candidate.after.sort.width,
-        value:candidate.after.value,beforeHash:binding.beforeHash,afterHash:binding.afterHash,
+      const kind = candidate.after.kind === 'const' ? 'solver-constant' : 'solver-scalar';
+      const entry = Object.freeze({valueId:item.valueId,rawValueId:target.id,bits:candidate.after.sort.width,kind,projection,
+        value:kind === 'solver-constant' ? candidate.after.value : null,beforeHash:binding.beforeHash,afterHash:binding.afterHash,
         queryHash:candidate.verification.evidence.queryHash,originRefs:Object.freeze([item.valueId]),
         inputBindings:Object.freeze(inputBinding.inputs.map(input => Object.freeze({ valueId:input.valueId,
           rawValueId:input.rawValueId, bits:input.bits, symbolId:input.symbol.symbolId }))) });
       entries.push(entry); internal.push({entry,target,candidate,inputBinding});
       decisions[requestIndex] = Object.freeze({ ...requested[requestIndex], disposition:'selected',
-        reason:'eligible-constant-projection', candidateCount:item.candidates.length, queryHash:entry.queryHash });
+        reason:kind === 'solver-constant' ? 'eligible-constant-projection' : 'eligible-scalar-projection', candidateCount:item.candidates.length, queryHash:entry.queryHash });
     }
     if (decisions.length !== requested.length || requested.some((_target, index) => !decisions[index])) {
       return reject('incomplete-target-decisions');
@@ -165,7 +172,7 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
     // Complete decision coverage can contain unknown/unsupported rows. It is
     // an audit of the requested denominator, never another proof capability.
     const binding = Object.freeze({identity:guard.identity,abiId:submitted.abiId,passId:PROOF_REWRITE_PASS.id,
-      passVersion:PROOF_REWRITE_PASS.version,transformKind:'solver-constant',preconditions:EMPTY,
+      passVersion:PROOF_REWRITE_PASS.version,transformKind:'solver-scalar',preconditions:EMPTY,
       correspondence:EMPTY,observableScope:'total-pure-bv-value-only',modelIdentity:analysis.taint.modelIdentity,
       entries:Object.freeze(entries), targetDecisions:Object.freeze(decisions),
       decisionCoverage:Object.freeze({ requested:requested.length, complete:true }) });
@@ -216,7 +223,7 @@ export function runProofRewritePass(context, budget, area) {
     const validation = Object.freeze({schemaVersion:'hex-phase8-rewrite-validation/v1',
       verifier:'hex.symbolic.verify.bounded-equivalence',planId:plan.planId,queryHash:entry.queryHash});
     validations.set(validation,{plan,entry});
-    transforms.push({kind:'solver-constant',targets:[entry.valueId],originRefs:entry.originRefs,
+    transforms.push({kind:entry.kind,targets:[entry.valueId],originRefs:entry.originRefs,
       proof:'canonical solver proved unconditional total BV value equivalence',
       rewrite:Object.freeze({beforeHash:entry.beforeHash,afterHash:entry.afterHash}),validation});
   }
@@ -231,7 +238,7 @@ export function runProofRewritePass(context, budget, area) {
  * analysis would still commit the rewrite. Refuse the whole transaction. */
 export function proofAdmissionReason(result, stagedWrites, descriptor, context) {
   try {
-    const solverTransforms = result.transforms.filter(t => t.kind === 'solver-constant' || t.rewrite != null || t.validation != null);
+    const solverTransforms = result.transforms.filter(t => ['solver-constant','solver-scalar'].includes(t.kind) || t.rewrite != null || t.validation != null);
     if (!solverTransforms.length && !stagedWrites.has('provedRewrites')) return null;
     if (descriptor !== PROOF_REWRITE_PASS) return 'proof-pass-mismatch';
     const artifact = stagedWrites.get('provedRewrites'), plan = artifacts.get(artifact);
@@ -241,7 +248,7 @@ export function proofAdmissionReason(result, stagedWrites, descriptor, context) 
       const record = validations.get(transform.validation);
       if (!record || record.plan !== plan || seen.has(record.entry)) return 'proof-receipt-invalid';
       const entry = record.entry;
-      if (transform.kind !== 'solver-constant' || transform.targets.length !== 1 || transform.targets[0] !== entry.valueId
+      if (transform.kind !== entry.kind || transform.targets.length !== 1 || transform.targets[0] !== entry.valueId
         || transform.originRefs.length !== entry.originRefs.length || transform.originRefs.some((ref,i)=>ref!==entry.originRefs[i])
         || transform.rewrite?.beforeHash !== entry.beforeHash || transform.rewrite?.afterHash !== entry.afterHash) return 'proof-transform-mismatch';
       seen.add(entry);

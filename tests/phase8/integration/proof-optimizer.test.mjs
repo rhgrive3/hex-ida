@@ -27,7 +27,11 @@ test('v8 true machine->decompiler entry optimizes an MBA cancellation; no helper
  const baseline=decompile(model,opts);assert.match(baseline.pseudocode,/\^/);
  const r=await decompileWithProof(model,opts,{identity:{...identity,architecture:'arm64'},abiId:'aapcs64',candidateStrategy:'equality-saturation',timeoutMs:1000});
  assert.equal(r.proofOptimization.status,'complete',r.proofOptimization.reason);
- assert.equal(r.proofOptimization.adopted,2);assert.match(r.pseudocode,/return 0;/);assert.doesNotMatch(r.pseudocode,/\^/);
+ assert.equal(r.proofOptimization.adopted,5);
+ assert.equal(r.phase8Projection.transforms.filter(t=>t.kind==='solver-constant').length,2);
+ assert.equal(r.phase8Projection.transforms.filter(t=>t.kind==='solver-scalar').length,3);
+ assert.equal(r.proofOptimization.targetDecisions.filter(t=>t.disposition==='adopted').length,5);
+ assert.match(r.pseudocode,/return 0;/);assert.doesNotMatch(r.pseudocode,/\^/);
  assert.ok(r.ir.instructions.some(i=>i.op==='bin'&&i.sub==='xor'),'original instruction effects remain');
 });
 test('v8 staging alone, arbitrary state facades and seeded artifacts cannot authorize a rewrite',async()=>{

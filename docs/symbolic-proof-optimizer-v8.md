@@ -1,4 +1,4 @@
-# Explicit solver-backed Phase 8 constant projection
+# Explicit solver-backed Phase 8 scalar projection
 
 Ordinary `decompile()` stays synchronous. Optional solver/e-graph code is loaded
 on demand by the asynchronous proof entry, not by the Phase 8 pass registry.
@@ -31,7 +31,7 @@ the caller's data. A failed optional query returns the original projection with
 
 ## Exact scope
 
-Only unconditional total pure BV expressions with a solver-proved constant
+Only unconditional total pure BV expressions with a solver-proved scalar
 result are projected. Integer add/sub/mul/bitwise/shifts, pure comparisons and
 casts are admitted. Loads/stores/calls/division, partial semantics and unsupported
 sorts are refused. A MOV reading an executed register assignment may supply its
@@ -42,7 +42,25 @@ changes. `adopted` counts SSA projection bindings, not removed instructions.
 
 This is value projection, **not whole-machine observable equivalence**. Registers,
 memory accesses, traps/faults/calls/atomic ordering remain in canonical IR. Existing
-memory proof APIs are unchanged and do not authorize this constant-only gate.
+memory proof APIs are unchanged and do not authorize this scalar-only gate.
+
+The display lowering uses the actual translator-owned, target-local SSA input
+relation and the actual representation producer's observed input expressions.
+No symbol-name parsing or caller-provided input map authorizes a substitution.
+Immutable recipes cover constants, inputs, arithmetic/bitwise/unary operations,
+guarded saturating shifts, comparisons, Boolean connectives, selection, casts,
+extraction and concatenation within 1–64 bits. C integer promotions and odd BV
+widths are made explicit with native-width casts/masks; sign extension is widened
+before arithmetic. Division, memory and unknown terms remain unsupported.
+The legacy pass ID `phase8.solver-constants` is retained at version `2.0.0`;
+new nonconstant records use `solver-scalar`, constants retain `solver-constant`.
+
+Each inspected request has a decision row. `selected` means a current eligible
+plan; `adopted` requires a committed and applied projection. Missing bindings,
+unsupported recipes or resource refusal never count as adoption. Decision
+coverage is a requested-target denominator, not proof that all targets are
+supported. A privately recorded published recipe is retained on replay without
+counting it again. Source/IR remain unchanged; history retains the original proof.
 
 ## Authority and lifecycle
 
@@ -83,6 +101,15 @@ interactive behavior, corpus, thresholds, existing solver and judge are unchange
 Intentional lifecycle callbacks are trusted executable interfaces, not a sandbox:
 a Proxy trap or callback that never returns cannot be preempted on the same JS
 thread. Use existing worker isolation for hostile executable providers.
+
+Scalar recipes additionally cap 128 unique nodes, depth 24 and 512 expanded
+operand units, including operand duplication introduced by guarded shifts.
+These bounds do not silently truncate a term. Unsupported compilation remains an
+explicit no-adoption decision; cancellation still gates the entire transaction.
+The scalar regression includes exhaustive small-width canonical-BV versus AST
+evaluation, native-width boundaries, real printed-C/UBSan regressions, actual
+nonconstant MBA publication and private-history replay. Native C tests use `CC`
+or `cc`; they do not certify WebKit/iPad runtime behavior.
 
 Run the new discovered `tests/phase8/{substrate,integration,performance}/proof-*.test.mjs`
 and `tests/phase9/taint/v8-query-lifecycle.test.mjs`, then Phase 8/9, existing

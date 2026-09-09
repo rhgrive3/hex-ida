@@ -401,12 +401,12 @@ export async function optimizeSemanticDecompilation(result, options = {}) {
       phase8TimeBudgetMs:submitted.phase8TimeBudgetMs ?? 120,
       phase8WorkBudget:submitted.phase8WorkBudget ?? 1000000,shouldAbort:aborted});
     if (aborted() || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext) || projected.phase8?.published !== true || projected.phase8?.completeness !== 'complete') return fail('optimizer-withheld');
-    const applied = projected.phase8Projection?.transforms.filter(t=>t.kind==='solver-constant') ?? [];
+    const applied = projected.phase8Projection?.transforms.filter(t=>['solver-constant','solver-scalar'].includes(t.kind)) ?? [];
     const targetDecisions = Object.freeze(plan.targetDecisions.map(decision => {
       if (decision.disposition !== 'selected') return decision;
       const adopted = applied.some(transform => transform.valueId === decision.valueId && transform.queryHash === decision.queryHash);
       return Object.freeze({ ...decision, disposition:adopted ? 'adopted' : 'unknown',
-        reason:adopted ? 'committed-and-rendered-constant-projection' : 'selected-projection-not-rendered' });
+        reason:adopted ? 'committed-and-rendered-scalar-projection' : 'selected-projection-not-rendered' });
     }));
     const proofOptimization = Object.freeze({status:'complete',reason:null,
       adopted:applied.length,targetDecisions,decisionCoverage:plan.decisionCoverage,

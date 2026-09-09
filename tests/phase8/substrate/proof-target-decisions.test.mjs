@@ -19,17 +19,19 @@ test('C4-04 every requested target has an ordered decision without calling a sel
   assert.ok(Object.isFrozen(plan.targetDecisions) && plan.targetDecisions.every(Object.isFrozen));
 });
 
-test('C4-04 proved nonconstant candidates explicitly retain the current projection-domain gap', async () => {
+test('C4-04 independently proved nonconstant candidates receive a scalar projection recipe', async () => {
   const f = proofFixture(4);
   f.target.def.sub = 'or';
   const plan = await preparePhase8RewritePlan(f.ir, { ...f.options, candidateStrategy:'equality-saturation' });
   assert.equal(plan.status, 'complete', plan.reason);
-  assert.deepEqual(plan.entries, []);
+  assert.equal(plan.entries.length, 1);
+  assert.equal(plan.entries[0].kind, 'solver-scalar');
+  assert.ok(Object.isFrozen(plan.entries[0].projection));
   assert.equal(plan.targetDecisions.length, 1);
-  assert.equal(plan.targetDecisions[0].disposition, 'unsupported');
-  assert.equal(plan.targetDecisions[0].reason, 'proved-candidate-outside-constant-projection');
+  assert.equal(plan.targetDecisions[0].disposition, 'selected');
+  assert.equal(plan.targetDecisions[0].reason, 'eligible-scalar-projection');
   assert.ok(plan.targetDecisions[0].candidateCount > 0);
-  assert.equal(f.target.def.sub, 'or', 'the audit does not broaden adoption');
+  assert.equal(f.target.def.sub, 'or', 'the display plan does not mutate canonical IR');
 });
 
 test('C4-04 non-total target refusal is included in the same decision denominator', async () => {

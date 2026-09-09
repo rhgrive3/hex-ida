@@ -2374,6 +2374,71 @@ Main performance changes announced by the user are reserved for the defined
 reconciliation lane; none are overwritten or reimplemented here. This is source
 progress, not a component acceptance or integration unlock.
 
+## C4-04 independently proved nonconstant scalar projection
+
+The producer-owned input relation now reaches actual nonconstant publication.
+The existing candidate query and independent proof consumer select an eligible
+BV term; a bounded immutable display recipe lowers it through the existing C AST
+constructors. No candidate generator, evaluator, solver or transaction core is
+replaced. The legacy solver pass ID advances to version 2.0.0; nonconstant ledger
+records use `solver-scalar`, while existing constant records remain intact.
+
+The recipe supports inputs, arithmetic/bitwise/unary operations, saturating
+shifts, comparisons, Boolean terms, selection, casts, extraction and concatenation
+within 1–64 bits. Native-width unsigned views/masks and explicit sign extension
+preserve the BV meaning at the C integer-promotion boundary. Shift guards avoid
+both C undefined counts and a mismatch with the existing masked-count AST
+evaluator. Unsupported/unknown/division/effect terms never acquire a recipe.
+Compilation caps unique nodes, depth and expanded operands, including duplicated
+operands introduced by guarded shifts; budgets cannot truncate a term into proof.
+
+Only a current real committed overlay can publish these recipes. Shared observed
+roots must agree on the exact recipe and actual input expression objects, not
+hashes or display names. Private published-recipe history makes replay idempotent
+without manufacturing authority from serialized records. Origin/proof history is
+retained while the current adopted count returns to zero on a fresh replay.
+
+Eight new canonical substrate tests cover exhaustive widths 1–5, native-width
+boundary values, scalar operator/width conversions, Boolean terms, bounds,
+unavailable/forged inputs, actual nonconstant MBA publication, stale/withheld
+admission and replay. A real printed-C/UBSan regression uses CC or cc. The existing
+real-machine cancellation fixture now explicitly asserts two constant and three
+nonconstant SSA projections (five decision rows), preserving `return 0` and the
+original machine instructions. This counts projection bindings, not removed IR.
+
+The first independent printed-C run found signed-select return promotion and
+32-to-64 sign-extension errors that AST evaluation alone missed. The lowering
+was corrected; the permanent compiler regression covers both. Full supplemental
+Clang 14 / -O2 / UBSan replay passes 134 generated functions and 5,576 cases over
+widths 1/4/8/16/32/64. Its precommit receipt is
+`c4-04-scalar-c-oracle-74a80b63-0349-4765-957b-e9d1c207a227.json`; failed receipt
+`c4-04-scalar-c-oracle-3a412222-5984-4f84-bccf-27f2f48aacc7.json` is retained.
+The reproducible verifier is preserved in persistent evidence as
+`evidence/analysis-roadmap-20260909/verify-scalar-c.mjs`. An initial pinned Clang
+18 invocation lacked its UBSan runtime; no environment repair or sanitizer
+waiver was made. The permanent regression uses the available CC/cc driver and
+the supplemental matrix uses system Clang 14. Exact-head receipts follow in the
+persistent resume checkpoint; these are not browser or full release evidence.
+
+Live #3422 was rechecked at unchanged head
+`ca25c71f1a6f18f0ba043800fb066f8068f2df73`, with no additional open C4-04 PR found
+by the scoped query. Its proof/no-adoption intent and existing #3421 provenance
+remain reused. No main reconciliation or component acceptance occurs here.
+Scalar display adoption is implemented, but the full risky-rewrite registry,
+memory/CFG/exception/UB observables and all other original findings remain open.
+The user's separate main performance changes are neither overwritten nor copied
+into a duplicate implementation. Integration remains LOCKED.
+
+Final precommit canonical substrate rerun failed 8 tests with deadline/partial
+results (163.3 s), receipt
+`c4-04-scalar-final-substrate-681a2ca0-127c-41b8-904a-00ba89ada721.json`.
+The focused changed-file rerun also had deadline/withheld failures (25.1 s),
+receipt `c4-04-scalar-final-focused-7c889a5c-f734-4a7c-a6c5-fd4d344ab13b.json`.
+Concurrent host work was observed, but these runs are failures, not waived green
+gates or proof of a solely environmental cause. Existing deadlines and assertion
+floors were not changed. The previous compiler/AST/production successes remain
+historical evidence; exact committed-head results must be checked separately.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -2409,7 +2474,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
 | HEX-C4-03 | Navigation, observed expression/recovery histories, successive projections and actual spill statement removal/suppression implemented; other view transforms and full removed/merged class coverage still open |
-| HEX-C4-04 | Pure constant projection, requested-target decisions and producer-owned input correspondence implemented; nonconstant projection and memory/CFG/exception observable coverage remain open |
+| HEX-C4-04 | Proof-gated constant/nonconstant scalar projection, requested-target decisions and producer-owned input correspondence implemented; full risky-rewrite registry and memory/CFG/exception observable coverage remain open |
 | HEX-C4-05 | Bounded e-graph candidates, independent proofs and resource matrix |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |
 | HEX-SYM-02 | Byte-memory escalation, alias/partial-write independent oracle |
