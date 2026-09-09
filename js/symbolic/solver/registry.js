@@ -5,9 +5,20 @@
  */
 
 import { FakeSolverBackend } from './fake-backend.js';
-import { PROOF_AUTHORITY } from './backend.js';
+import { isExactProofBackend } from './backend.js';
 import { ExhaustiveBvBackend } from './exhaustive-backend.js';
 import { WorkerSolverBackend } from './worker-backend.js';
+
+function isDefaultEligible(backend, allowNonExactDefault) {
+  if (allowNonExactDefault) return true;
+  try {
+    return isExactProofBackend(backend);
+  } catch {
+    // A malformed provider may still be listed or selected explicitly by a
+    // test registry, but it must never become the production default.
+    return false;
+  }
+}
 
 export class SolverRegistry {
   constructor({ allowNonExactDefault = true } = {}) {
@@ -21,7 +32,7 @@ export class SolverRegistry {
       throw new TypeError('registerBackend: backend must have a valid id');
     }
     this._backends.set(backend.id, backend);
-    if (!this._defaultBackendId && (this._allowNonExactDefault || backend.proofAuthority === PROOF_AUTHORITY.EXACT)) {
+    if (!this._defaultBackendId && isDefaultEligible(backend, this._allowNonExactDefault)) {
       this._defaultBackendId = backend.id;
     }
   }
@@ -30,7 +41,7 @@ export class SolverRegistry {
     this._backends.delete(id);
     if (this._defaultBackendId === id) {
       const replacement = [...this._backends.values()].find((backend) =>
-        this._allowNonExactDefault || backend.proofAuthority === PROOF_AUTHORITY.EXACT
+        isDefaultEligible(backend, this._allowNonExactDefault)
       );
       this._defaultBackendId = replacement?.id || null;
     }
@@ -50,7 +61,7 @@ export class SolverRegistry {
     if (!this._backends.has(id)) {
       throw new Error(`setDefaultBackend: backend '${id}' is not registered`);
     }
-    if (!this._allowNonExactDefault && this._backends.get(id).proofAuthority !== PROOF_AUTHORITY.EXACT) {
+    if (!isDefaultEligible(this._backends.get(id), this._allowNonExactDefault)) {
       throw new Error(`setDefaultBackend: backend '${id}' is not an exact production backend`);
     }
     this._defaultBackendId = id;
