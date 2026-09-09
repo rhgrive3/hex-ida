@@ -13,7 +13,7 @@
  */
 
 import { createAliasResult, mayAlias, unknownAlias } from '../alias/result.js';
-import { provenSeparationAuthority, rangeRelation } from './lattice.js';
+import { canonicalPointsToAddress, provenSeparationAuthority, rangeRelation } from './lattice.js';
 
 export const A2_ALIAS_ANALYZER_ID = 'phase7.alias.a2-points-to';
 
@@ -95,9 +95,13 @@ export function pointsToAlias(left, right, options = {}) {
         }
 
         if (a.address != null && b.address != null) {
-          try {
-            const baseA = BigInt(a.address);
-            const baseB = BigInt(b.address);
+          const addressA = canonicalPointsToAddress(a.address);
+          const addressB = canonicalPointsToAddress(b.address);
+          // Only canonical target spelling is proof authority. This protects
+          // direct/raw pointsToAlias callers that bypass createPointsToSet().
+          if (addressA != null && addressB != null && addressA === a.address && addressB === b.address) {
+            const baseA = BigInt(addressA);
+            const baseB = BigInt(addressB);
             if (a.offsetRange?.min != null && a.offsetRange?.max != null && b.offsetRange?.min != null && b.offsetRange?.max != null) {
               const spanA_min = baseA + a.offsetRange.min;
               const spanA_max = baseA + a.offsetRange.max;
@@ -114,7 +118,7 @@ export function pointsToAlias(left, right, options = {}) {
                 continue;
               }
             }
-          } catch {}
+          }
         }
 
         const pair = new Set([a.rootKind, b.rootKind]);
