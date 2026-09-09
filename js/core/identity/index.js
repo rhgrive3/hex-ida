@@ -137,6 +137,12 @@ function typedId(prefix, payload) {
   return `${prefix}_${stableDigest({ schema: ID_SCHEMA_VERSION, payload })}`;
 }
 
+const CANONICAL_ARTIFACT_ID_PATTERN = /^artifact_[0-9a-f]{32}$/;
+
+export function isCanonicalArtifactId(value) {
+  return typeof value === 'string' && CANONICAL_ARTIFACT_ID_PATTERN.test(value);
+}
+
 function bytesOf(value) {
   if (value instanceof Uint8Array) return value;
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
