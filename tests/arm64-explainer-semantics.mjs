@@ -1,7 +1,7 @@
 /**
  * ARM64 行説明器のセマンティクス回帰テスト。
  *
- * ここが守るのは 11 件の確定した欠陥です。どれも「表示が壊れている」ではなく
+ * ここが守る確定した欠陥を一覧にしています。どれも「表示が壊れている」ではなく
  * 「事実でないことを事実として見せる／本当にある参照を落とす」種類なので、
  * semantic correctness の回帰として恒久的に固定します。
  *
@@ -18,6 +18,7 @@
  *   #3677  LDR literal の転送幅を destination 幅に関係なく固定する
  *   #3713  LDXRB/H・STXRB/H が exclusive monitor と narrow width を落とす
  *   #3740  LDAR/STLR family が acquire/release ordering を落とす
+ *   #3775  LDXP/LDAXP/STXP/STLXP が pair operand と total width を落とす
  *   (new)  immShort / absHex / memExpr が import されておらず、
  *          メモリ系・即値系の説明が例外で空になる
  *
@@ -226,7 +227,12 @@ try {
 
   // The original word/doubleword exclusive forms retain their established
   // monitor, status, and operand ordering contracts.
+  assert.equal(explain('ldxr', 'x0, [x1]').pseudo, 'x0 = *(x1) /* start exclusive monitor */');
+  assert.equal(explain('ldxrb', 'w0, [x1]').pseudo, 'w0 = zero_extend(*(uint8*)(x1)) /* start exclusive monitor */');
+  setLang('ja');
   assert.equal(explain('ldxr', 'x0, [x1]').pseudo, 'x0 = *(x1) /* 監視開始 */');
+  assert.equal(explain('ldxrb', 'w0, [x1]').pseudo, 'w0 = zero_extend(*(uint8*)(x1)) /* 監視開始 */');
+  setLang('en');
   assert.equal(explain('stxr', 'w0, x2, [x1]').pseudo, 'w0 = try_store(x1, x2)');
   assert.match([explain('ldaxr', 'x0, [x1]').summary, ...explain('ldaxr', 'x0, [x1]').detail].join(' '), /acquire/i);
   assert.match([explain('stlxr', 'w0, x2, [x1]').summary, ...explain('stlxr', 'w0, x2, [x1]').detail].join(' '), /release/i);
@@ -262,6 +268,77 @@ try {
   setLang(exclusiveOrderingLang);
 }
 console.log('  ok 4c ordered/exclusive narrow families retain width, monitor, status, and ordering (#3713 #3740)');
+
+/* ── #3775 pair-exclusive families preserve both registers and total width ── */
+
+try {
+  setLang('en');
+  const PAIR_LOADS = [
+    ['ldxp', 'x0, x1, [x2]', 'x0', 'x1', 'uint64', 16, false],
+    ['ldxp', 'w0, w1, [x2]', 'w0', 'w1', 'uint32', 8, false],
+    ['ldaxp', 'x0, x1, [x2]', 'x0', 'x1', 'uint64', 16, true],
+    ['ldaxp', 'w0, w1, [x2]', 'w0', 'w1', 'uint32', 8, true],
+  ];
+  for (const [mn, ops, first, second, type, bytes, acquire] of PAIR_LOADS) {
+    const result = explain(mn, ops, 0x1000n, {});
+    const rendered = [result.title, result.summary, result.pseudo, ...result.detail].join(' ');
+    assert.equal(result.handlerError, undefined, `${mn} handler must not throw (#3775)`);
+    assert.equal(categoryOf(mn), 'load', `${mn} must retain the load category (#3775)`);
+    assert.match(result.pseudo, new RegExp(`${first}, ${second} = load_pair_exclusive\\(x2, ${type}, ${bytes} bytes\\)`),
+      `${mn} must expose both pair destinations and its total width (#3775)`);
+    assert.match(rendered, new RegExp(`${bytes} bytes`), `${mn} must state the pair total width (#3775)`);
+    const elementBits = type === 'uint32' ? 32 : 64;
+    assert.match(rendered, new RegExp(`two ${elementBits}-bit elements`),
+      `${mn} must distinguish W-pair and X-pair element widths (#3775)`);
+    if (type === 'uint32') {
+      assert.match(rendered, /A W pair is single-copy atomic at 64-bit doubleword granularity\./,
+        `${mn} must state the W-pair 64-bit single-copy guarantee (#3775)`);
+      assert.doesNotMatch(rendered, /whole 128-bit atomicity is not guaranteed/i,
+        `${mn} must not apply the X-pair 128-bit limitation to a W pair (#3775)`);
+    } else {
+      assert.match(rendered, /Each 64-bit element of an X pair is single-copy atomic at doubleword granularity; whole 128-bit atomicity is not guaranteed by this load\./,
+        `${mn} must scope X-pair atomicity to each element (#3775)`);
+    }
+    assert.match(rendered, /exclusive monitor|watching/i, `${mn} must explain the exclusive monitor (#3775)`);
+    assert.match(rendered, new RegExp(`${first}.*${second}`), `${mn} must identify both destinations (#3775)`);
+    assert.ok(result.terms.includes('atomic') && result.terms.includes('memory'), `${mn} must retain atomic memory terms (#3775)`);
+    if (acquire) assert.match(rendered, /acquire/i, `${mn} must explain acquire ordering (#3775)`);
+  }
+
+  assert.match(explain('ldxp', 'x0, x1, [x2]', 0x1000n, {}).pseudo,
+    /\/\* start exclusive monitor \*\//,
+    'English pair-load pseudo comments must be localized through J (#3775)');
+  setLang('ja');
+  assert.match(explain('ldxp', 'w0, w1, [x2]', 0x1000n, {}).pseudo,
+    /\/\* 監視開始 \*\//,
+    'Japanese pair-load pseudo comments must remain localized through J (#3775)');
+  setLang('en');
+
+  const PAIR_STORES = [
+    ['stxp', 'w0, x1, x2, [x3]', 'w0', 'x1', 'x2', 'uint64', 16, false],
+    ['stxp', 'w0, w1, w2, [x3]', 'w0', 'w1', 'w2', 'uint32', 8, false],
+    ['stlxp', 'w0, x1, x2, [x3]', 'w0', 'x1', 'x2', 'uint64', 16, true],
+    ['stlxp', 'w0, w1, w2, [x3]', 'w0', 'w1', 'w2', 'uint32', 8, true],
+  ];
+  for (const [mn, ops, status, first, second, type, bytes, release] of PAIR_STORES) {
+    const result = explain(mn, ops, 0x1000n, {});
+    const rendered = [result.title, result.summary, result.pseudo, ...result.detail].join(' ');
+    assert.equal(result.handlerError, undefined, `${mn} handler must not throw (#3775)`);
+    assert.equal(categoryOf(mn), 'store', `${mn} must retain the store category (#3775)`);
+    assert.equal(result.pseudo, `${status} = try_store_pair(x3, ${first}, ${second}, ${type}, ${bytes} bytes)`,
+      `${mn} must distinguish status from both pair data operands (#3775)`);
+    assert.match(rendered, new RegExp(`${bytes} bytes`), `${mn} must state the pair total width (#3775)`);
+    assert.match(rendered, new RegExp(`${first}.*${second}`), `${mn} must identify both data operands (#3775)`);
+    assert.match(rendered, new RegExp(`${status}.*0 on success.*1 on failure`, 'i'),
+      `${mn} must explain the status result (#3775)`);
+    assert.match(rendered, /exclusive monitor|matching exclusive monitor/i, `${mn} must explain conditional exclusivity (#3775)`);
+    assert.ok(result.terms.includes('atomic') && result.terms.includes('memory'), `${mn} must retain atomic memory terms (#3775)`);
+    if (release) assert.match(rendered, /release/i, `${mn} must explain release ordering (#3775)`);
+  }
+} finally {
+  setLang(exclusiveOrderingLang);
+}
+console.log('  ok 4d pair-exclusive families retain destinations, status, width, and ordering (#3775)');
 
 /* ── #3620 conditional compare/select aliases keep their own semantics ── */
 
