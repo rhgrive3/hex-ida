@@ -80,6 +80,36 @@ test('consumer rejects a forged blank address even if target construction is byp
   assert.ok(!separated.reasonCodes.includes('disjoint-global-interval'));
 });
 
+test('raw malformed address presence cannot mint stack-vs-heap root separation (#4165)', () => {
+  const stack = createPointsToTarget({
+    addressSpace:'memory',
+    rootKind:'stack-like',
+    rootEntityId:'raw-stack',
+    address:null,
+    offsetRange:exactRange(0n),
+  });
+  const heapTemplate = createPointsToTarget({
+    addressSpace:'memory',
+    rootKind:'heap-like',
+    rootEntityId:'raw-heap',
+    address:'1',
+    offsetRange:exactRange(0n),
+  });
+
+  for (const address of ['', '   ']) {
+    const forgedHeap = Object.freeze({ ...heapTemplate, address });
+    const left = Object.freeze({ top:false, targets:Object.freeze([stack]), lossReasons:Object.freeze([]) });
+    const right = Object.freeze({ top:false, targets:Object.freeze([forgedHeap]), lossReasons:Object.freeze([]) });
+    const result = pointsToAlias(left, right, {
+      status:complete,
+      widthBitsLeft:64,
+      widthBitsRight:64,
+    });
+    assert.notEqual(result.relation, 'no');
+    assert.ok(!result.reasonCodes.includes('distinct-proven-root'));
+  }
+});
+
 test('valid zero, decimal, hex, bigint and safe-number addresses retain interval precision (#4165)', () => {
   const zeroString = target('zero-string', '0');
   const zeroBigInt = target('zero-bigint', 0n);
