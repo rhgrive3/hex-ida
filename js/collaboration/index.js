@@ -44,6 +44,14 @@ function sortTombstones(state) {
   return state;
 }
 function payloadDigest(value) { return stableDigest(value); }
+function factStateFingerprint(record) {
+  const values = record.values.map((item) => ({ operationId: item.operationId, value: item.value }));
+  // Preserve the existing unresolved fingerprint contract. Once a winner is
+  // selected, bind that semantic state into the CAS token as well.
+  return record.resolvedOperationId == null
+    ? payloadDigest(values)
+    : payloadDigest({ values, resolvedOperationId: record.resolvedOperationId });
+}
 // The identity an operationId is bound to: everything that decides state
 // semantics. Two operations sharing an ID must agree on all of it, otherwise
 // replicas silently fork under an identical ID set (#5397).
@@ -264,6 +272,7 @@ export class ChangeLog {
     if (operation.action === 'resolve') {
       if (!current || !current.values.some((item) => item.operationId === operation.payload?.operationId)) return { status: 'rejected', reason: 'resolution-target-missing' };
       current.resolvedOperationId = operation.payload.operationId;
+      current.stateFingerprint = factStateFingerprint(current);
       this.operations.set(operation.operationId, operation);
       return { status: 'applied', operationId: operation.operationId, effect: 'resolution' };
     }
@@ -278,7 +287,7 @@ export class ChangeLog {
     const record = current || { key, targetEntityId: operation.targetEntityId, factKind: operation.factKind, values: [], resolvedOperationId: null, stateFingerprint: null };
     record.values.push(candidate);
     record.values.sort((a, b) => compareOperationId(a.operationId, b.operationId));
-    record.stateFingerprint = payloadDigest(record.values.map((item) => ({ operationId: item.operationId, value: item.value })));
+    record.stateFingerprint = factStateFingerprint(record);
     this.state.facts[key] = record;
     if (MEANINGFUL_FACTS.has(operation.factKind) && record.values.length > 1) this.state.conflicts.push({ type: 'meaningful-conflict', key, factKind: operation.factKind, operationIds: record.values.map((item) => item.operationId) });
     this.operations.set(operation.operationId, operation);
