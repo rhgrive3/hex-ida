@@ -14,6 +14,7 @@ export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.2.0';
 const CANONICAL_SUMMARIES = new WeakSet();
 const RETURN_PROVENANCE_FIELDS = new Set([
   'kind', 'argIndex', 'returnIndex', 'offset', 'rootEntityId', 'allocationSiteId',
+  'addressSpace',
 ]);
 const RETURN_PROVENANCE_KINDS = new Set(['arg', 'root', 'allocation', 'unknown']);
 
@@ -94,6 +95,9 @@ function validateReturnProvenance(value) {
   if (Object.keys(value).some((key) => !RETURN_PROVENANCE_FIELDS.has(key))) throw new TypeError('function-summary-invalid-return-provenance');
   const kind = nonEmptyString(value.kind, 'function-summary-invalid-return-provenance-kind');
   if (!RETURN_PROVENANCE_KINDS.has(kind)) throw new TypeError('function-summary-invalid-return-provenance-kind');
+  if (value.addressSpace != null) {
+    nonEmptyString(value.addressSpace, 'function-summary-invalid-return-provenance-address-space');
+  }
   const argIndex = value.argIndex == null ? null : strictProvenanceIndex(value.argIndex);
   const returnIndex = value.returnIndex == null ? null : strictProvenanceIndex(value.returnIndex);
   const offset = value.offset == null ? null : strictProvenanceOffset(value.offset);
@@ -110,6 +114,12 @@ function validateReturnProvenance(value) {
   }
   if (kind === 'arg' && argIndex == null) throw new TypeError('function-summary-invalid-return-provenance-arg-index');
   if ((kind === 'root' || kind === 'allocation') && root == null && allocation == null) throw new TypeError('function-summary-invalid-return-provenance-identity');
+  // Storage space is required canonical identity on root/allocation facts
+  // (#5242); checked after the identity code so malformed identities keep
+  // their original error precedence.
+  if ((kind === 'root' || kind === 'allocation') && value.addressSpace == null) {
+    throw new TypeError('function-summary-invalid-return-provenance-address-space');
+  }
   return true;
 }
 function validateMemoryEffectInput(input) {
