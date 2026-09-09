@@ -1,9 +1,25 @@
 import { boundedInteger } from '../debug/adapter.js';
 import { GROUP } from '../evidence.js';
+import { stableDigest } from '../core/identity/index.js';
 
 function nowIso() { return new Date().toISOString(); }
 function safeConfidence(value, fallback = 0.5) { return typeof value === 'number' && Number.isFinite(value) ? Math.max(0,Math.min(1,value)) : fallback; }
-function idPart(value) { return String(value == null ? '' : value).replace(/[^a-zA-Z0-9_.:-]/g,'_').slice(0,160); }
+// #5495: identity components must not collide. Clean components pass through
+// unchanged; anything containing characters outside the canonical class (or
+// longer than the 160-component budget) keeps a readable prefix plus a
+// deterministic digest of the full value, so 'a/b' and 'a?b' can no longer
+// collapse into one group and distinct ids stay distinct after truncation.
+function idPart(value) {
+  const raw = String(value == null ? '' : value);
+  if (/^[a-zA-Z0-9_.:-]*$/.test(raw)) {
+    if (raw.length <= 160) return raw;
+    // Truncation alone would collapse ids that differ only past the budget;
+    // the digest of the full value keeps them distinct ('~' is outside the
+    // canonical class, so suffixed components never collide with clean ones).
+    return `${raw.slice(0, 160)}~${stableDigest(raw)}`;
+  }
+  return `${raw.slice(0, 160).replace(/[^a-zA-Z0-9_.:-]/g, '_')}~${stableDigest(raw)}`;
+}
 function provenanceIdentity(value, fallback, field) {
   const identity = value == null ? fallback : value;
   if (typeof identity !== 'string' || identity.length === 0 || idPart(identity) !== identity) {
@@ -57,7 +73,23 @@ export function createRuntimeEvidenceRecord(input = {}) {
   const caseId = rawCaseId == null ? null : provenanceIdentity(rawCaseId, null, 'caseId');
   const explicitGroup = rawProvenanceGroup == null ? null : provenanceIdentity(rawProvenanceGroup, null, 'provenanceGroup');
   const traceGroup = explicitGroup || `runtime:${idPart(sessionId || 'session')}:${idPart(experimentId || input.function || 'observation')}:${idPart(caseId || 'case')}`;
-  const generatedId = `${traceGroup}:${idPart(input.kind || 'observation')}`;
+  // #5546: re-running the same experiment case with different observations
+  // must produce distinct evidence ids, or the canonical EvidenceGraph
+  // rejects the second run as an evidence-id-conflict. The group stays the
+  // correlation key; content-bearing records get a deterministic digest of
+  // their observation content (identical observations keep identical ids,
+  // content-free records keep the canonical 4327 format).
+  const observationContent = {
+    input: input.input ?? null,
+    initialState: input.initialState ?? null,
+    observedState: input.observedState ?? null,
+    branchPath: Array.isArray(input.branchPath) ? input.branchPath : [],
+    verdict: input.verdict ?? 'inconclusive',
+  };
+  const hasObservationContent = input.input != null || input.initialState != null
+    || input.observedState != null || observationContent.branchPath.length > 0;
+  const occurrence = hasObservationContent ? `:${stableDigest(observationContent)}` : '';
+  const generatedId = `${traceGroup}:${idPart(input.kind || 'observation')}${occurrence}`;
   return {
     id:runtimeEvidenceId(input.id, generatedId),
     source:'runtime', backend:String(input.backend || 'unknown').slice(0,128), binaryHash:input.binaryHash || null, sliceIdentity:input.sliceIdentity || null,
