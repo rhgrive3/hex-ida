@@ -963,6 +963,64 @@ Semantic version advances to x86 5.2.4, generated serial 2322242163, build
 clean-head native reports, rebuilt generated output and full-inventory reruns
 remain required after committing this repair. No finding is marked complete.
 
+### Null-prefix exact-head results and approved storage recovery (2026-09-09)
+
+Product `2ff3d02869e4457d65be76a8ec25c3844e215a3c` now has the following
+observed results; these are not blanket release or finding-closure claims:
+
+- canonical userscript rebuild PASS (2.2 s), generated diff zero;
+- native GCC/browser PASS (8.1 s), Clang/browser PASS (8.6 s), each engine
+  covering all 91,392 input states and 42 encodings;
+- encrypted generated Chromium/WebKit runtime PASS (4.2 s);
+- full canonical Phase 7 tests PASS (68.6 s);
+- full canonical Phase 8 tests PASS (481.5 s), including verifier self-tests;
+- existing competitive twin/ground-truth tests PASS (1.5 s).
+
+Native v2 reports are `native-gcc-2ff3d0286.json` and
+`native-clang-2ff3d0286.json` in
+`/mnt/workspace/hex-roadmap-recovery-durable.UWZe3G`. They retain the exact
+product/verifier/evaluator/fixture/binary/observation identities and unproven
+domains. The 1,487-instruction receiver survey is
+`hex-x86-receiver-denominator-5IAeCk/{chromium,webkit}.json` in that directory.
+Both engines now report 141 exact, 1,207 exact-with-intrinsic and 139 partial;
+the unchanged `269f`/`269e` witnesses are exact dedicated transfers. The survey
+is still NOT-CLOSED: 136 extended-system families plus INT, UD0 and UD1 remain.
+Structural exactness is not a substitute for architecture-wide value proof.
+
+Full `npm run check` failed (65.8 s) in the six previously listed x86 files
+and `independent-oracle-report.test.mjs`. Its preserved log is
+`hex-roadmap-2ff3-check-YYeWZK/full.log` in the same recovery directory.
+The additional failure was traced to persistent-storage EDQUOT while writing
+Git objects, not silently classified as a semantic pass. A small explicit
+fsync/readback probe also failed and read back zero bytes; source/checkpoint
+editing was paused. The product worktree remained clean at the committed head.
+
+The user explicitly approved relocating only already-extracted installer
+archives. All 21 named LLVM `.deb` files and `git-v2.49.1.tar.gz` (22 files,
+110,314,190 bytes) were copied with exclusive creation to
+`/tmp/hex-roadmap-installer-backup.fdYZ1w`, fsynced, and SHA-256 verified before
+any originals were unlinked. Every original was revalidated immediately before
+removal; all backup hashes were rechecked afterwards. Source, installed tool
+trees and proof artifacts were not removed. A complete durable manifest is
+`/mnt/workspace/hex-roadmap-recovery-durable.UWZe3G/approved-installer-relocation-manifest.json`.
+The manifest's `source`, `destination`, size and SHA-256 support restoration.
+The backup itself is temporary and may disappear on environment replacement.
+
+The first post-removal file sync still failed. Fresh probes subsequently
+passed explicit fsync plus exact readback in both the product worktree and
+durable evidence directory. The probe inside the product was then removed.
+Git 2.49.1 and Clang 18.1.3 remained runnable. Normal persistent Git storage
+successfully produced candidate tree `4d279a66501f8fde8c650c19588735b8774eada0`
+for main `1f8884e3e14f02b346b0fe2dc3ea918ccc03e94d` and product `2ff3d0286`.
+The unchanged independent-oracle-report test then passed (12.9 s) on the clean
+product. This does not turn the preceding full seven-failure run green or
+prove the candidate's runtime; it isolates and resolves the storage failure.
+
+No remote push, replacement PR or component merge occurred. Next work remains
+the six x86 gate failures, broader independent semantic evidence, current-main
+reconciliation and all original 23 finding acceptance obligations. Historical
+ledger COMPLETE labels are not fresh proof against this integration product.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
