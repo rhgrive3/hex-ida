@@ -16,6 +16,10 @@ const malformedIdentities = () => [
   1,
   1n,
   new String('session-A'),
+  'session A',
+  'session?A',
+  `${'x'.repeat(160)}A`,
+  `${'x'.repeat(160)}B`,
 ];
 
 function assertProvenanceIdentityRejected(invoke, field) {
@@ -131,6 +135,23 @@ test('#4737 provenance authority is snapshotted once before validation and use',
       && error.message === 'runtime provenance traceId must be a non-empty string',
   );
   assert.equal(traceReads, 1);
+});
+
+test('#4737 lossy sanitizer and truncation spellings are rejected before grouping', () => {
+  for (const sessionId of ['a b', 'a?b', `${'x'.repeat(160)}A`, `${'x'.repeat(160)}B`]) {
+    assert.throws(
+      () => createRuntimeEvidenceRecord({ sessionId, experimentId: 'exp', caseId: 'case' }),
+      TypeError,
+    );
+  }
+  assert.equal(
+    createRuntimeEvidenceRecord({ sessionId: 'a_b', experimentId: 'exp', caseId: 'case' }).provenance.observationGroup,
+    'runtime:a_b:exp:case',
+  );
+  assert.equal(
+    createRuntimeEvidenceRecord({ sessionId: 'x'.repeat(160), experimentId: 'exp', caseId: 'case' }).provenance.observationGroup,
+    `runtime:${'x'.repeat(160)}:exp:case`,
+  );
 });
 
 test('#4737 nullish defaults and function-address fallback remain compatible', () => {
