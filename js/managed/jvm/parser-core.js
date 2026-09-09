@@ -82,11 +82,18 @@ export function parseJvm(bytes,options={}){
   function isValidUnqualifiedName(name,{method=false}={}){if(typeof name!=='string'||name.length===0)return false;if(/[.;[\/]/.test(name))return false;if(method&&(name==='<init>'||name==='<clinit>'))return true;if(method&&/[<>]/.test(name))return false;return true;}
   function requireMemberName(idx,code,{method=false}={}){const name=requireUtf8(idx,code);if(!isValidUnqualifiedName(name,{method}))fail(code);return name;}
   function parseNameAndTypeDescriptor(index,kind,code){const nameAndType=requireCp(index,12,code);const descriptor=requireUtf8(nameAndType.descriptorIndex,`${code}-descriptor-index`);if(kind==='field')parseJvmFieldDescriptor(descriptor);else parseJvmMethodDescriptor(descriptor);return nameAndType;}
+  function validateMemberRef(entry){
+    const method=entry.tag!==9;
+    requireCp(entry.classIndex,7,'jvm-invalid-cp-memberref-class-index');
+    const nameAndType=parseNameAndTypeDescriptor(entry.nameAndTypeIndex,method?'method':'field','jvm-invalid-cp-memberref-name-and-type-index');
+    const name=requireMemberName(nameAndType.nameIndex,'jvm-invalid-cp-memberref-name',{method});
+    if(entry.tag===10&&name==='<clinit>')fail('jvm-invalid-cp-memberref-name');
+    if(entry.tag===11&&(name==='<init>'||name==='<clinit>'))fail('jvm-invalid-cp-memberref-name');
+  }
   function validateConstantPool(){for(let i=1;i<constantPool.length;i++){const entry=constantPool[i];if(!entry)continue;switch(entry.tag){
     case 7:requireClassName(i,'jvm-invalid-cp-class-name-index');break;
     case 8:requireCp(entry.stringIndex,1,'jvm-invalid-cp-string-index');break;
-    case 9:requireCp(entry.classIndex,7,'jvm-invalid-cp-memberref-class-index');parseNameAndTypeDescriptor(entry.nameAndTypeIndex,'field','jvm-invalid-cp-memberref-name-and-type-index');break;
-    case 10:case 11:requireCp(entry.classIndex,7,'jvm-invalid-cp-memberref-class-index');parseNameAndTypeDescriptor(entry.nameAndTypeIndex,'method','jvm-invalid-cp-memberref-name-and-type-index');break;
+    case 9:case 10:case 11:validateMemberRef(entry);break;
     case 12:{requireCp(entry.nameIndex,1,'jvm-invalid-cp-nameandtype-name-index');const descriptor=requireUtf8(entry.descriptorIndex,'jvm-invalid-cp-nameandtype-descriptor-index');let valid=false;try{parseJvmFieldDescriptor(descriptor);valid=true;}catch{}if(!valid){try{parseJvmMethodDescriptor(descriptor);valid=true;}catch{}}if(!valid)fail('jvm-invalid-cp-nameandtype-descriptor');break;}
     case 15:{const kind=entry.referenceKind;if(!Number.isInteger(kind)||kind<1||kind>9)fail('jvm-invalid-cp-methodhandle-reference-kind');let tags;if(kind>=1&&kind<=4)tags=[9];else if(kind===9)tags=[11];else if((kind===6||kind===7)&&majorVersion>=52)tags=[10,11];else tags=[10];const target=requireCpOneOf(entry.referenceIndex,tags,'jvm-invalid-cp-methodhandle-reference-index');if(kind>=5){const nameAndType=requireCp(target.nameAndTypeIndex,12,'jvm-invalid-cp-methodhandle-name-and-type-index');const name=requireUtf8(nameAndType.nameIndex,'jvm-invalid-cp-methodhandle-name-index');if((kind===8&&name!=='<init>')||(kind!==8&&(name==='<init>'||name==='<clinit>')))fail('jvm-invalid-cp-methodhandle-target-name');}break;}
     case 16:{const descriptor=requireUtf8(entry.descriptorIndex,'jvm-invalid-cp-methodtype-descriptor-index');parseJvmMethodDescriptor(descriptor);break;}
