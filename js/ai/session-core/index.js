@@ -60,10 +60,13 @@ export class InvestigationSessionStore {
 
   async delete(id) {
     const key = String(id);
-    this.sessions.delete(key);
     if (this.persistence && typeof this.persistence.delete === 'function') {
+      // Keep the in-memory record visible until the durable delete succeeds.
+      // A rejected persistence operation must not make a still-persisted
+      // session disappear from this process (#4450).
       await this.persistence.delete(key);
     }
+    this.sessions.delete(key);
   }
 
   async create(input) {
