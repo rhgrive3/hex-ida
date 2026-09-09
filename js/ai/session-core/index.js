@@ -3,6 +3,15 @@ import { AI_MODES, AI_SCOPES, AI_STYLES } from '../schema.js';
 let sessionSequence = 1;
 const MEMORY_KEYS = ['goal','anchor','confirmedFacts','activeHypotheses','rejectedHypotheses','unresolvedQuestions','userConstraints','importantPriorActions'];
 
+export function isValidSessionId(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function requireSessionId(value) {
+  if (!isValidSessionId(value)) throw new TypeError('AI session id must be a non-empty string');
+  return value;
+}
+
 export function createInvestigationMemory(input = {}) {
   return {
     goal: String(input.goal || ''),
@@ -18,8 +27,9 @@ export function createInvestigationMemory(input = {}) {
 
 export function createInvestigationSession(input = {}) {
   const now = new Date().toISOString();
+  const hasExplicitId = input.id != null;
   return {
-    id: String(input.id || `ai_${Date.now().toString(36)}_${sessionSequence++}`),
+    id: hasExplicitId ? requireSessionId(input.id) : `ai_${Date.now().toString(36)}_${sessionSequence++}`,
     binaryId: input.binaryId == null ? null : String(input.binaryId),
     binaryIdentity: input.binaryIdentity && typeof input.binaryIdentity === 'object' ? { ...input.binaryIdentity } : null,
     projectId: input.projectId == null ? null : String(input.projectId),
@@ -52,14 +62,15 @@ export class InvestigationSessionStore {
   constructor({ persistence } = {}) { this.persistence = persistence || null; this.sessions = new Map(); }
 
   register(session) {
-    if (!session || !session.id) return null;
+    if (!session || !isValidSessionId(session.id)) return null;
     const validated = createInvestigationSession(session);
     this.sessions.set(validated.id, validated);
     return validated;
   }
 
   async delete(id) {
-    const key = String(id);
+    if (!isValidSessionId(id)) return false;
+    const key = id;
     this.sessions.delete(key);
     if (this.persistence && typeof this.persistence.delete === 'function') {
       await this.persistence.delete(key);
@@ -76,7 +87,8 @@ export class InvestigationSessionStore {
   }
 
   async get(id) {
-    const key = String(id);
+    if (!isValidSessionId(id)) return null;
+    const key = id;
     if (this.sessions.has(key)) return this.sessions.get(key);
     if (this.persistence && typeof this.persistence.load === 'function') {
       const loaded = await this.persistence.load(key);
@@ -111,7 +123,7 @@ export class InvestigationSessionStore {
     if (candidate.binaryId != null) candidate.binaryId = String(candidate.binaryId);
     candidate.updatedAt = new Date().toISOString();
     await this.persist(candidate);
-    this.sessions.set(String(id), candidate);
+    this.sessions.set(id, candidate);
     return candidate;
   }
 
@@ -183,10 +195,14 @@ export function createProjectSessionPersistence(project, { onChange } = {}) {
   project.findings ||= {}; project.findings.investigationSessions ||= [];
   return {
     list() { return project.findings.investigationSessions.slice(); },
-    async load(id) { return project.findings.investigationSessions.find((session) => session && session.id === String(id)) || null; },
+    async load(id) {
+      if (!isValidSessionId(id)) return null;
+      return project.findings.investigationSessions.find((session) => session && session.id === id) || null;
+    },
     async save(session) {
+      const id = requireSessionId(session?.id);
       const safe = stripSecrets(session);
-      const index = project.findings.investigationSessions.findIndex((item) => item && item.id === safe.id);
+      const index = project.findings.investigationSessions.findIndex((item) => item && item.id === id);
       if (index >= 0) project.findings.investigationSessions[index] = safe; else project.findings.investigationSessions.push(safe);
       // AI session bookkeeping must not advance the semantic revision that
       // ObservationStore binds tool results to; only meaningful project
@@ -196,8 +212,9 @@ export function createProjectSessionPersistence(project, { onChange } = {}) {
       if (typeof onChange === 'function') onChange(project, safe);
     },
     async delete(id) {
-      const key = String(id);
-      const index = project.findings.investigationSessions.findIndex((item) => item && String(item.id) === key);
+      if (!isValidSessionId(id)) return false;
+      const key = id;
+      const index = project.findings.investigationSessions.findIndex((item) => item && item.id === key);
       if (index >= 0) {
         project.findings.investigationSessions.splice(index, 1);
         project.updatedAt = new Date().toISOString();
