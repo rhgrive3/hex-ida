@@ -46,6 +46,62 @@ assert.equal(diff.matches[0].status, 'rewritten');
 assert.equal(diff.matches[0].changeType, 'rewritten');
 assert.ok(diff.matches[0].confidence >= 0.62);
 
+// #3890: general operation-set changes must not disappear from the summary.
+{
+  const summarize = (before, after) => {
+    const result = diffFunctions([{ ...base, ...before }], [{ ...base, ...after }]);
+    assert.equal(result.matches.length, 1);
+    return result.matches[0].semanticChange;
+  };
+  for (const [before, after] of [
+    [['add'], ['sub']], [['and'], ['xor']], [[], ['add']], [['sub'], []],
+  ]) {
+    const change = summarize({ semantic:{ operations:before } }, { semantic:{ operations:after } });
+    assert.equal(change.changed, true, `${before} -> ${after} must be a semantic change`);
+    assert.deepEqual(change.addedOperations, after);
+    assert.deepEqual(change.removedOperations, before);
+    assert.deepEqual(change.tags, ['operations-changed']);
+  }
+  for (const [before, after] of [
+    [{}, {}],
+    [{ operations:['add', 'xor', 'add'] }, { operations:['xor', 'add'] }],
+  ]) {
+    const same = summarize({ semantic:before }, { semantic:after });
+    assert.equal(same.changed, false, 'operation order and duplicates are not set changes');
+    assert.deepEqual(same.addedOperations, []);
+    assert.deepEqual(same.removedOperations, []);
+    assert.deepEqual(same.tags, []);
+  }
+  for (const operation of ['clamp', 'min', 'max', 'saturate']) {
+    const introduced = summarize({ semantic:{ operations:[] } }, { semantic:{ operations:[operation] } });
+    assert.ok(introduced.tags.includes('clamp-introduced'));
+    assert.ok(introduced.tags.includes('operations-changed'));
+    const removed = summarize({ semantic:{ operations:[operation] } }, { semantic:{ operations:[] } });
+    assert.ok(removed.tags.includes('clamp-removed'));
+    assert.ok(removed.tags.includes('operations-changed'));
+  }
+  const overlapping = summarize(
+    { semantic:{ operations:['min', 'add', 'add'] } },
+    { semantic:{ operations:['max', 'add', 'max'] } },
+  );
+  assert.equal(overlapping.changed, true);
+  assert.deepEqual(overlapping.addedOperations, ['max']);
+  assert.deepEqual(overlapping.removedOperations, ['min']);
+  assert.deepEqual(overlapping.tags, ['operations-changed'], 'changing clamp operations does not introduce/remove the clamp family');
+  const other = summarize(
+    { constants:[1], calls:['old'], semantic:{ operations:['add'], writes:['x0'] } },
+    { constants:[2], calls:['new'], semantic:{ operations:['add'], writes:['x1'] } },
+  );
+  assert.equal(other.changed, true);
+  assert.deepEqual(other.addedConstants, ['2']);
+  assert.deepEqual(other.removedConstants, ['1']);
+  assert.deepEqual(other.addedCalls, ['new']);
+  assert.deepEqual(other.removedCalls, ['old']);
+  assert.deepEqual(other.addedWrites, ['x1']);
+  assert.deepEqual(other.removedWrites, ['x0']);
+  assert.deepEqual(other.tags, ['constants-added', 'calls-added', 'write-set-changed']);
+}
+
 const relocation = [{ offset: 0, width: 8 }];
 const fp = fingerprintFunction({ ...base, relocationOffsets: relocation });
 const movedReloc = fingerprintFunction({ ...base, address: 9n, bytes: Uint8Array.from([9,9,9,9,9,9,9,9]), relocationOffsets: relocation });

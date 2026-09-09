@@ -16,6 +16,8 @@
  *   #3620  条件付き比較/select の別演算 alias を同じ説明にする
  *   #3668  FP compare family を入力レジスタへの代入として説明する
  *   #3677  LDR literal の転送幅を destination 幅に関係なく固定する
+ *   #3713  LDXRB/H・STXRB/H が exclusive monitor と narrow width を落とす
+ *   #3740  LDAR/STLR family が acquire/release ordering を落とす
  *   (new)  immShort / absHex / memExpr が import されておらず、
  *          メモリ系・即値系の説明が例外で空になる
  *
@@ -24,7 +26,7 @@
  * `out.handlerError` に残るようにし、このテストが機械的に検出します。
  */
 import assert from 'node:assert/strict';
-import { explain, referenceTarget, operandNotes } from '../js/arm64.js';
+import { categoryOf, explain, referenceTarget, operandNotes } from '../js/arm64.js';
 import { buildBasicBlocks, makeInstruction } from '../js/blocks-base.js';
 import { lang, setLang } from '../js/i18n.js';
 
@@ -179,6 +181,87 @@ for (const [mn, reg, bytes] of [
   assert.equal(insn.memory?.size, bytes, `${mn} ${reg} must report ${bytes}-byte access`);
 }
 console.log('  ok 4b ordered narrow memory widths remain architectural (#3610)');
+
+/* ── #3713/#3740 ordered and exclusive narrow families keep their semantics ── */
+
+const exclusiveOrderingLang = lang();
+try {
+  setLang('en');
+
+  const EXCLUSIVE_LOADS = [
+    ['ldxrb', 'w0, [x1]', 1, false],
+    ['ldxrh', 'w0, [x1]', 2, false],
+    ['ldaxrb', 'w0, [x1]', 1, true],
+    ['ldaxrh', 'w0, [x1]', 2, true],
+  ];
+  for (const [mn, ops, bytes, acquire] of EXCLUSIVE_LOADS) {
+    const result = explain(mn, ops, 0x1000n, {});
+    const rendered = [result.title, result.summary, result.pseudo, ...result.detail].join(' ');
+    assert.equal(result.handlerError, undefined, `${mn} handler must not throw (#3713)`);
+    assert.equal(categoryOf(mn), 'load', `${mn} must retain the load category (#3713)`);
+    assert.match(result.pseudo, new RegExp(`uint${bytes * 8}`), `${mn} must keep its ${bytes}-byte source width (#3713)`);
+    assert.match(result.pseudo, /zero_extend/, `${mn} must zero-extend its narrow load (#3713)`);
+    assert.match(rendered, /exclusive monitor|watching/i, `${mn} must explain the exclusive monitor (#3713)`);
+    if (acquire) assert.match(rendered, /acquire/i, `${mn} must explain acquire ordering (#3713 #3740)`);
+  }
+
+  const EXCLUSIVE_STORES = [
+    ['stxrb', 'w0, w2, [x1]', 1, false],
+    ['stxrh', 'w0, w2, [x1]', 2, false],
+    ['stlxrb', 'w0, w2, [x1]', 1, true],
+    ['stlxrh', 'w0, w2, [x1]', 2, true],
+  ];
+  for (const [mn, ops, bytes, release] of EXCLUSIVE_STORES) {
+    const result = explain(mn, ops, 0x1000n, {});
+    const rendered = [result.title, result.summary, result.pseudo, ...result.detail].join(' ');
+    assert.equal(result.handlerError, undefined, `${mn} handler must not throw (#3713)`);
+    assert.equal(categoryOf(mn), 'store', `${mn} must retain the store category (#3713)`);
+    assert.equal(result.pseudo, `w0 = try_store(x1, w2, uint${bytes * 8})`,
+      `${mn} must use w2 as data and w0 as the status destination (#3713)`);
+    assert.match(rendered, new RegExp(`${bytes} byte`), `${mn} must state its ${bytes}-byte conditional store (#3713)`);
+    assert.match(rendered, /w2/, `${mn} must identify the data operand (#3713)`);
+    assert.match(rendered, /w0.*0 on success.*1 on failure/i, `${mn} must explain the status result (#3713)`);
+    if (release) assert.match(rendered, /release/i, `${mn} must explain release ordering (#3713 #3740)`);
+  }
+
+  // The original word/doubleword exclusive forms retain their established
+  // monitor, status, and operand ordering contracts.
+  assert.equal(explain('ldxr', 'x0, [x1]').pseudo, 'x0 = *(x1) /* 監視開始 */');
+  assert.equal(explain('stxr', 'w0, x2, [x1]').pseudo, 'w0 = try_store(x1, x2)');
+  assert.match([explain('ldaxr', 'x0, [x1]').summary, ...explain('ldaxr', 'x0, [x1]').detail].join(' '), /acquire/i);
+  assert.match([explain('stlxr', 'w0, x2, [x1]').summary, ...explain('stlxr', 'w0, x2, [x1]').detail].join(' '), /release/i);
+
+  const ORDERED_LOADS = [
+    ['ldar', 'w0, [x1]', 4], ['ldar', 'x0, [x1]', 8],
+    ['ldarb', 'w0, [x1]', 1], ['ldarh', 'w0, [x1]', 2],
+  ];
+  for (const [mn, ops, bytes] of ORDERED_LOADS) {
+    const result = explain(mn, ops, 0x1000n, {});
+    const plain = explain('ldr', ops, 0x1000n, {});
+    assert.equal(result.handlerError, undefined, `${mn} handler must not throw (#3740)`);
+    assert.equal(categoryOf(mn), 'load', `${mn} must retain the load category (#3740)`);
+    assert.match(result.pseudo, new RegExp(`uint${bytes * 8}`), `${mn} must preserve ${bytes}-byte width (#3740)`);
+    assert.match(result.summary, /acquire/i, `${mn} must identify acquire ordering (#3740)`);
+    assert.notEqual(result.summary, plain.summary, `${mn} must remain distinct from LDR (#3740)`);
+  }
+
+  const ORDERED_STORES = [
+    ['stlr', 'w0, [x1]', 4], ['stlr', 'x0, [x1]', 8],
+    ['stlrb', 'w0, [x1]', 1], ['stlrh', 'w0, [x1]', 2],
+  ];
+  for (const [mn, ops, bytes] of ORDERED_STORES) {
+    const result = explain(mn, ops, 0x1000n, {});
+    const plain = explain('str', ops, 0x1000n, {});
+    assert.equal(result.handlerError, undefined, `${mn} handler must not throw (#3740)`);
+    assert.equal(categoryOf(mn), 'store', `${mn} must retain the store category (#3740)`);
+    assert.match(result.pseudo, new RegExp(`uint${bytes * 8}`), `${mn} must preserve ${bytes}-byte width (#3740)`);
+    assert.match(result.summary, /release/i, `${mn} must identify release ordering (#3740)`);
+    assert.notEqual(result.summary, plain.summary, `${mn} must remain distinct from STR (#3740)`);
+  }
+} finally {
+  setLang(exclusiveOrderingLang);
+}
+console.log('  ok 4c ordered/exclusive narrow families retain width, monitor, status, and ordering (#3713 #3740)');
 
 /* ── #3620 conditional compare/select aliases keep their own semantics ── */
 
