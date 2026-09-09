@@ -1,5 +1,6 @@
 import { createAppAnalysisQueryAdapter as createBaseAdapter } from './app-adapter.js';
 import { stableDigest, jsonSafe } from '../../core/identity/index.js';
+import { runtimeEvidenceForApp } from '../../runtime/app-runtime.js';
 
 const SAFE_ROUTE = Symbol('analysis-query-safe-ui-route');
 const SAFE_FUNCTION_DISCOVERY = Symbol('analysis-query-function-discovery-single-flight');
@@ -107,6 +108,22 @@ function canonicalIdentityDimension(value, fallback) {
   }
 }
 
+// Runtime evidence is projected into evidence() rows, but it is not owned by
+// any of the static identity dimensions above. Without a dimension of its own,
+// a runtime trace/experiment recorded between two queries mutates the visible
+// rows while the snapshotId stays constant and every stale check passes
+// (#5630). The dimension is a digest over the corpus membership the adapter
+// can surface; a missing runtime state digests identically to an empty corpus.
+function runtimeEvidenceIdentity(app) {
+  let rows = null;
+  try { rows = runtimeEvidenceForApp(app); } catch { rows = null; }
+  if (!Array.isArray(rows)) return 'unavailable';
+  return canonicalIdentityDimension(
+    rows.map((row) => `${String(row?.id ?? '')}|${String(row?.kind ?? '')}|${String(row?.verdict ?? '')}|${String(row?.timestamp ?? '')}`),
+    [],
+  );
+}
+
 function artifactVersionsFor(app) {
   const direct = app?.analysisArtifactVersions ?? app?.artifactVersions ?? null;
   if (direct && isPlainObject(direct)) return { ...direct };
@@ -122,6 +139,7 @@ function artifactVersionsFor(app) {
     instructionAlignment: canonicalIdentityDimension(storeValue(app, 'instructionAlignment') ?? capability.instructionAlignment ?? 'unknown', 'unknown'),
     symbolsGeneration: canonicalIdentityDimension(app?.symbols?.gen ?? 0, '0'),
     sliceIndex: canonicalIdentityDimension(storeValue(app, 'sliceIndex') ?? -1, '-1'),
+    runtimeEvidence: runtimeEvidenceIdentity(app),
   };
 }
 
