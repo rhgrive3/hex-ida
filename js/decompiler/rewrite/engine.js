@@ -169,3 +169,28 @@ export class RewriteEngine {
     return { root: current, proof, stats };
   }
 }
+
+// A bounded journal around the existing engine, not another optimizer. Recovery
+// may explore a subtree and later reject it; marks let that producer discard
+// tentative history instead of presenting it as an applied output transform.
+export class RewriteHistoryJournal {
+  constructor(engine, maximum = 1024) {
+    this.engine = engine;
+    this.maximum = Number.isSafeInteger(maximum) && maximum >= 0 ? Math.min(maximum, 1024) : 1024;
+    this.records = [];
+    this.truncated = false;
+  }
+
+  rewrite(root, context = {}) {
+    const result = this.engine.rewrite(root, context);
+    for (const record of result.proof) {
+      if (this.records.length < this.maximum) this.records.push(Object.freeze(record));
+      else this.truncated = true;
+    }
+    return result;
+  }
+
+  mark() { return { length:this.records.length, truncated:this.truncated }; }
+  rollback(mark) { this.records.length = mark.length; this.truncated = mark.truncated; }
+  recordsSince(mark) { return Object.freeze(this.records.slice(mark.length)); }
+}

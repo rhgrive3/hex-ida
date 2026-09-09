@@ -6,7 +6,7 @@ import { applyPhase8Projection } from '../../../js/decompiler/phase8/projection.
 import { validateRenderProvenance } from '../../../js/decompiler/phase8/render-provenance.js';
 import { analysis } from './fixture.js';
 import { enhanceSemanticDecompilation } from '../../../js/decompiler/pipeline.js';
-import { readStackReturnHistoryConsumer } from '../../../js/decompiler/passes/stack-return-recovery.js';
+import { readStackReturnHistoryConsumer, recoverExactStackReturn } from '../../../js/decompiler/passes/stack-return-recovery.js';
 
 function fixture({ diamond = false, barrier = false, width = 8 } = {}) {
   const address = row => 0x8000n + BigInt(row * 4);
@@ -152,7 +152,7 @@ test('C4-03 truncated recovery origins cannot assert elision or complete provena
   assert.deepEqual(map.ledger[0].originHistory.elidedRefs, []);
 });
 
-function publicResult(options = {}) {
+function publicResult(options = {}, booleanReturn = false) {
   const f = fixture({ diamond:true });
   const [a, b] = f.result.ir.values;
   Object.assign(a, { kind:'arg', reg:'x1', uses:[], def:null });
@@ -165,6 +165,13 @@ function publicResult(options = {}) {
   f.ret.args = [{ value:loaded }];
   f.branch.extra.kind = 'cbnz';
   f.branch.args = [{ value:a }];
+  if (booleanReturn) {
+    const zero = { id:104, kind:'const', bits:64, const:0n, uses:[f.first] };
+    const one = { id:105, kind:'const', bits:64, const:1n, uses:[f.second] };
+    f.result.ir.values.push(zero, one);
+    f.first.args = [{ value:zero }];
+    f.second.args = [{ value:one }];
+  }
   const result = enhanceSemanticDecompilation({ semantic:true, ir:f.result.ir,
     types:{ values:new Map(), locations:new Map() },
     lines:[{ kind:'stmt', indent:1, text:'return slot;', row:f.ret.row, addr:f.ret.address }],
@@ -227,4 +234,111 @@ test('C4-03 canonical-root getters cannot replay recovery bindings or run during
     assert.equal(read(result.cAst.body[0].semantic, result.ir), null);
     assert.equal(reads, 0);
   }
+});
+
+function simplifyingFixture() {
+  const f = fixture({ diamond:true });
+  const inner = expr.binary('add', f.aExpr, expr.constant(0, 64), 64, false,
+    { ir:901, row:901, address:0xa000n });
+  const expression = expr.binary('add', inner, expr.constant(0, 64), 64, false,
+    { ir:902, row:902, address:0xa004n });
+  f.result.semanticAst.values[0].expression = expression;
+  f.result.semanticAst.conditions[0].expression.left = expression;
+  f.branch.extra.kind = 'cbnz';
+  f.branch.args = [{ value:f.result.ir.values[0] }];
+  return f;
+}
+
+for (const recover of [recoverExactStackPhiExpressions, recoverExactStackReturn]) {
+  test(`C4-03 ${recover.name} publishes real internal simplifications bound to the recovered output`, () => {
+    const f = simplifyingFixture(), canonical = structuredClone(f.result.ir);
+    recover(f.result, f.opts);
+    const records = f.result.rewriteProof.filter(record => record.rule === 'add-zero-right');
+    assert.ok(records.length >= 2, 'must actually simplify the nested additions');
+    assert.ok(records.every(record => Object.isFrozen(record) && record.originHistory));
+    let projected = applyPhase8Projection(f.result, analysis());
+    const normalized = projected.renderProvenance.ledger.filter(record => record.rule === 'add-zero-right');
+    assert.equal(normalized.length, records.length);
+    assert.ok(normalized.every(record => record.renderedBinding === 'producer-bound'));
+    assert.ok(normalized.every(record => record.producedRefs.length === 1 && record.producedRefs[0] === 'L0:stmt'));
+    assert.deepEqual(projected.renderProvenance.reverse['addr:40960'], ['L0:stmt']);
+    assert.deepEqual(projected.renderProvenance.reverse['addr:40964'], ['L0:stmt']);
+    assert.deepEqual(f.result.ir, canonical);
+    for (let i = 0; i < 4; i++) projected = applyPhase8Projection(projected, analysis());
+    assert.equal(projected.renderProvenance.ledger.filter(record => record.rule === 'add-zero-right').length, records.length);
+    assert.equal(projected.renderProvenance.completeness, 'complete');
+  });
+
+  test(`C4-03 ${recover.name} bounds internal history without changing recovered pseudocode`, () => {
+    const normal = simplifyingFixture(), limited = simplifyingFixture();
+    recover(normal.result, normal.opts);
+    recover(limited.result, { ...limited.opts, renderProvenanceBudget:{ maxTransformRecords:1 } });
+    assert.equal(limited.result.pseudocode, normal.result.pseudocode);
+    assert.equal(limited.result.rewriteProof.filter(record => record.rule === 'add-zero-right').length, 1);
+    assert.ok(limited.result.expressionHistoryBinding.reasons.includes('recovery-rewrite-history-budget'));
+    const projected = applyPhase8Projection(limited.result, analysis());
+    assert.equal(projected.renderProvenance.completeness, 'incomplete');
+    assert.equal(applyPhase8Projection(projected, analysis()).renderProvenance.completeness, 'incomplete');
+  });
+}
+
+test('C4-03 public pipeline retains boolean-select simplifications across phi and return recovery', () => {
+  const { result } = publicResult({}, true);
+  const records = result.rewriteProof.filter(record => record.rule === 'select-bool-materialize');
+  assert.equal(records.length, 2, 'both actual recovery passes simplify their reconstructed select');
+  const binding = readStackReturnHistoryConsumer(result.cAst.body[0].semantic, result.ir);
+  assert.ok(records.every(record => binding.records.includes(record)), 'retain the actual engine record objects');
+  const map = applyPhase8Projection(result, analysis()).renderProvenance;
+  const normalized = map.ledger.filter(record => record.rule === 'select-bool-materialize');
+  assert.equal(normalized.length, 2);
+  assert.ok(normalized.every(record => record.renderedBinding === 'producer-bound'));
+  assert.equal(map.completeness, 'complete');
+});
+
+test('C4-03 rejected recovery does not spend history capacity or leak transforms into another return', () => {
+  const f = fixture({ diamond:true });
+  f.result.semanticAst.values[0].expression = expr.unary('zext', f.aExpr, 128, false);
+  f.second.loc = { ...f.second.loc, size:4 }; // First arm simplifies, but the other arm cannot prove the load width.
+  const store = { ...f.first, id:8, row:8, address:0x8020n, block:4 };
+  const load = { ...f.load, id:9, row:9, address:0x8024n, block:4 };
+  const ret = { ...f.ret, id:10, row:10, address:0x8028n, block:4 };
+  f.result.ir.instructions.push(store, load, ret);
+  f.result.ir.blocks.push({ index:4, pred:[], succ:[], insts:[store, load, ret] });
+  f.result.cAst.body.push({ kind:'stmt', indent:1, text:'return other;', source:sourceOf({ ir:ret.id, row:ret.row, address:ret.address }),
+    semantic:{ op:'return', ir:ret.id, expression:expr.load(load.loc, 64, { ir:load.id, row:load.row, address:load.address }) } });
+  recoverExactStackPhiExpressions(f.result, { ...f.opts, renderProvenanceBudget:{ maxTransformRecords:1 } });
+  assert.equal(f.node.semantic.expression, f.expression, 'failed return remains unchanged');
+  assert.deepEqual(f.result.rewriteProof.map(record => record.rule), ['trunc-after-zext-to-source-width', 'exact-stack-phi-recovery']);
+  assert.notEqual(f.result.expressionHistoryBinding?.completeness, 'incomplete');
+  const map = applyPhase8Projection(f.result, analysis()).renderProvenance;
+  assert.deepEqual(map.ledger[0].producedRefs, ['L1:stmt']);
+  assert.ok(map.ledger[0].originHistory.consumedRefs.includes('ir:8'));
+  assert.ok(!map.ledger[0].originHistory.consumedRefs.includes('ir:1'));
+  assert.equal(map.completeness, 'complete');
+});
+
+test('C4-03 failed nested condition recovery rolls back tentative histories while the outer return succeeds', () => {
+  const f = fixture({ diamond:true });
+  const location = { kind:'stack', key:'stack:condition:s8', size:8 };
+  const input = { id:106, bits:128 };
+  f.result.ir.values.push(input);
+  f.result.semanticAst.values.push({ valueId:input.id, expression:expr.unary('zext', f.aExpr, 128, false) });
+  const first = { id:41, row:2, address:0x9000n, op:'store', block:1, loc:location, args:[{ value:input }] };
+  const second = { id:42, row:3, address:0x9004n, op:'store', block:2, loc:{ ...location, size:4 }, args:[{ value:input }] };
+  const load = { id:40, row:4, address:0x9008n, op:'load', block:3, loc:location };
+  f.result.ir.instructions.push(first, second, load);
+  f.result.ir.blocks[1].insts.push(first);
+  f.result.ir.blocks[2].insts.push(second);
+  f.result.ir.blocks[3].insts.unshift(load);
+  f.result.semanticAst.conditions[0].expression = expr.compare('ne',
+    expr.load(location, 64, { ir:load.id, row:load.row, address:load.address }), expr.constant(0, 64), false);
+  recoverExactStackPhiExpressions(f.result, { ...f.opts, renderProvenanceBudget:{ maxTransformRecords:1 } });
+  assert.deepEqual(f.result.rewriteProof.map(record => record.rule), ['exact-stack-phi-recovery']);
+  assert.equal(f.node.semantic.expression.kind, 'select');
+  assert.equal(f.node.semantic.expression.condition.left.kind, 'load', 'unproven condition load survives');
+  const map = applyPhase8Projection(f.result, analysis()).renderProvenance;
+  assert.equal(map.completeness, 'complete');
+  assert.ok(map.ledger[0].originHistory.producedRefs.includes('ir:40'));
+  assert.ok(!map.ledger[0].originHistory.consumedRefs.includes('ir:41'));
+  assert.ok(!map.ledger[0].originHistory.consumedRefs.includes('ir:42'));
 });

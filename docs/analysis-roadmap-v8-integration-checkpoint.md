@@ -2054,6 +2054,50 @@ C4-03 still needs internal recovery simplification histories, the other legacy
 recovery transitions, and full CSE/DCE/switch/struct-field removed/merged class
 coverage. This step does not close C4-03 or any other original finding.
 
+### C4-03 recovery-internal rewrite histories — TODO implementation, 2026-09-09
+
+The existing stack-phi and stack-return passes now retain the actual
+`RewriteEngine.proof` records for successful internal simplifications. A bounded
+journal delegates to the same engine, without changing rewrite rules, roots,
+admission, work limits or time limits. Each accepted return binds its internal
+records together with the enclosing recovery record. The later return pass
+preserves valid earlier phi records through its existing observed transition.
+
+Tentative CFG recovery is transactional for provenance: failed subtrees roll
+back their records and collected dependency origins. An unresolved nested
+condition load can remain in a successfully recovered outer return without
+publishing simplifications from the abandoned nested attempt. Rejected return
+sites also restore history capacity before the next site is processed.
+
+The journal retains at most 1024 records per pass invocation, or a lower
+`renderProvenanceBudget.maxTransformRecords` request. Exhaustion never changes
+the recovered pseudocode; it adds `recovery-rewrite-history-budget` to the
+incomplete producer disposition. Existing mapper limits and stale/cancelled
+observation checks still apply. No unapplied candidate becomes an applied
+transform, and no canonical instruction deletion is claimed.
+
+Evidence before final commit:
+
+- recovery suite extended from 12 to 19 tests, including real nested-add and
+  boolean-select simplification records, both public recovery transitions,
+  stable record identity, repeated projection, capacity exhaustion, abandoned
+  return recovery and abandoned nested-condition recovery;
+- canonical provenance PASS 13.7 s:
+  `c4-03-recovery-internal-owned-settled-acfbd2cc-484e-4bb1-ba7d-2a52403394f8.json`;
+- width/proof/publication/reanchor/ownership boundaries PASS 2.3 s:
+  `c4-03-recovery-internal-boundaries-d1a2f6a9-33eb-4349-aeaa-d4e9a5264dad.json`;
+- semantic pipeline PASS 0.6 s:
+  `c4-03-recovery-internal-pipeline-3b685ccb-56e6-463b-aaf1-ef4c3dcc89ee.json`;
+- existing rewrite regression PASS 0.2 s:
+  `c4-03-recovery-internal-rewrite-49ea2a03-70df-485e-9a3e-8bd1d769c553.json`.
+
+All changes remain in already assigned paths; no new component is accepted.
+The live C4-03 PR search still resolves to the already-reused #3421 head
+`4cd5b3eb9200b1180985b9df3a74f8245a5cc928`. No main reconciliation or parallel
+performance/issue work is included. Other legacy recovery transitions and the
+full CSE/DCE/switch/struct-field removed/merged class coverage remain open.
+The original finding scope and integration acceptance lock are unchanged.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -2088,7 +2132,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C3-03 | Versioned language metadata and unknown-version matrix |
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
-| HEX-C4-03 | Product/legacy navigation, expression histories, observed consumers, successive projections and stack/phi/return transitions implemented; internal/legacy recovery histories and full removed/merged class coverage still open |
+| HEX-C4-03 | Product/legacy navigation, expression histories, observed consumers, successive projections and stack/phi/return histories including internal simplifications implemented; other legacy transitions and full removed/merged class coverage still open |
 | HEX-C4-04 | v8 pure constant projection plus remaining risky rewrite observables |
 | HEX-C4-05 | Bounded e-graph candidates, independent proofs and resource matrix |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |

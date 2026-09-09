@@ -1,5 +1,5 @@
 import { expr, structuralKey, mergeSource } from '../ast/nodes.js';
-import { RewriteEngine, expressionOriginHistory } from '../rewrite/engine.js';
+import { RewriteEngine, RewriteHistoryJournal, expressionOriginHistory } from '../rewrite/engine.js';
 import { captureRecoveryIrData, PROJECTION_LIMITS } from '../phase8/projection-origin.js';
 import { readStackPhiHistoryConsumer } from './stack-phi-recovery.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
@@ -570,12 +570,12 @@ export function recoverExactStackReturn(result, opts = {}) {
   if (!ret) return result;
 
   const values = mapsOf(result);
-  const engine = new RewriteEngine(DEFAULT_RULES, {
+  const engine = new RewriteHistoryJournal(new RewriteEngine(DEFAULT_RULES, {
     maxIterations:10,
     nodeBudget:Math.min(2048, Number(opts.decompilerNodeBudget || 12000)),
     timeBudgetMs:Math.min(12, Math.max(4, Number(opts.decompilerTimeBudgetMs || 50) / 4)),
     maxApplications:512,
-  });
+  }), opts.renderProvenanceBudget?.maxTransformRecords);
   let committed = committedReturnValue(result, root, ret, opts);
   let committedSpill = null;
   if (!committed) {
@@ -605,10 +605,14 @@ export function recoverExactStackReturn(result, opts = {}) {
       evidence:Object.freeze({ kind:'cfg-memory-ssa', detail:'exact stack return reconstructed from predecessor stores and flag-producing SSA evidence' }),
       originHistory:expressionOriginHistory({ source:mergeSource(item.before?.source, root.source) }, recovered),
     });
-    item.records = Object.freeze([...(item.prior?.records || []), record]);
+    item.records = Object.freeze([...(item.prior?.records || []), ...engine.records, record]);
     return record;
   });
-  result.rewriteProof = [...(result.rewriteProof || []), ...records];
+  result.rewriteProof = [...(result.rewriteProof || []), ...engine.records, ...records];
+  if (engine.truncated) result.expressionHistoryBinding = Object.freeze({
+    ...result.expressionHistoryBinding, completeness:'incomplete',
+    reasons:Object.freeze([...new Set([...(result.expressionHistoryBinding?.reasons || []), 'recovery-rewrite-history-budget'])]),
+  });
   bindReturnHistory(result, transitions, opts);
   result.metrics = { ...(result.metrics || {}), rewrittenExpressions:(result.metrics?.rewrittenExpressions || 0) + 1, sourceMappedNodes:result.sourceMap?.length || 0 };
   result.ctx = { ...(result.ctx || {}), decompilerPipeline:{ ...(result.ctx?.decompilerPipeline || {}), exactStackReturnRecovered:true } };
