@@ -25,7 +25,12 @@ const DT_RELA = 7;
 const DT_RELASZ = 8;
 const DT_RELAENT = 9;
 
-function buildDynamicElf({ entries = 64, withRelocationsAndSymbols = false } = {}) {
+// GNU-hash fixture geometry: one bucket whose chain needs GNU_HASH_CHAIN_STEPS
+// walk steps, so symoffset + steps = GNU_HASH_SYM_COUNT exact symbols.
+const GNU_HASH_CHAIN_STEPS = 64;
+const GNU_HASH_SYM_COUNT = GNU_HASH_CHAIN_STEPS + 1;
+
+function buildDynamicElf({ entries = 64, withRelocationsAndSymbols = false, withGnuHash = false } = {}) {
   const strtab = new TextEncoder().encode('\0libc.so.6\0foo\0');
   // Layout: [0,64) ELF header, [64,64+2*56) phdrs, strtab at 0x100,
   // PT_DYNAMIC entries at 0x200, [opt] dynsym + relocations after.
@@ -51,6 +56,39 @@ function buildDynamicElf({ entries = 64, withRelocationsAndSymbols = false } = {
     dynamicEntries.push([...u64(DT_RELASZ), ...u64(24)]);
     dynamicEntries.push([...u64(DT_RELAENT), ...u64(24)]);
   }
+  // A GNU hash table whose single chain needs many steps, so a cancellation
+  // observed mid-walk can only be honored by a traversal that checks the
+  // signal inside the loop (#5584 item: tag scan -> DT_GNU_HASH traversal).
+  // DT_SYMTAB/DT_SYMENT are declared too: exact count evidence only grounds
+  // symbolCountSource when the dynsym table itself exists.
+  let gnuHashOffset = null;
+  let gnuHashVa = null;
+  let gnuHashBytes = null;
+  let symtabBytes = null;
+  if (withGnuHash) {
+    symtabBytes = new Uint8Array(GNU_HASH_SYM_COUNT * 24);
+    const symView = new DataView(symtabBytes.buffer);
+    symView.setUint32(24, 11, true); // entry 1 st_name -> 'foo'
+    symView.setUint8(28, (1 << 4) | 2); // global function
+    dynamicEntries.push([...u64(DT_SYMTAB), ...u64(symtabVa)]);
+    dynamicEntries.push([...u64(DT_SYMENT), ...u64(24)]);
+    gnuHashOffset = symtabOffset + symtabBytes.length; // hash table follows the dynsym table
+    gnuHashVa = 0x1000 + (gnuHashOffset - 0x100);
+    const symOffset = 1;
+    const chains = new Uint8Array(GNU_HASH_CHAIN_STEPS * 4);
+    const chainView = new DataView(chains.buffer);
+    for (let i = 0; i < GNU_HASH_CHAIN_STEPS; i += 1) {
+      // Even values keep the walk going; only the final entry is odd.
+      chainView.setUint32(i * 4, i === GNU_HASH_CHAIN_STEPS - 1 ? 1 : (i + 2) * 2, true);
+    }
+    gnuHashBytes = new Uint8Array([
+      ...u32(1), ...u32(symOffset), ...u32(1), ...u32(0), // hdr: nbuckets, symoffset, bloom_size, bloom_shift
+      ...new Uint8Array(8), // bloom filter (1 x 64-bit word, unused)
+      ...u32(symOffset), // buckets[0] starts the chain at symOffset
+      ...chains,
+    ]);
+    dynamicEntries.push([...u64(0x6ffffef5n), ...u64(gnuHashVa)]); // DT_GNU_HASH
+  }
   for (let i = dynamicEntries.length; i < entries; i += 1) {
     // Non-NULL filler tags keep the scan busy; a plain unknown tag keeps this
     // fixture minimal.
@@ -60,8 +98,9 @@ function buildDynamicElf({ entries = 64, withRelocationsAndSymbols = false } = {
   const dynamicBytes = dynamicEntries.flat();
 
   const dynamicSize = dynamicBytes.length;
-  const trailingBytes = withRelocationsAndSymbols ? 48 + 24 : 0;
-  const loadFilesz = dynamicOffset + dynamicSize - 0x100 + trailingBytes; // strtab + dynamic [+ symtab + rela]
+  const trailingBytes = (withRelocationsAndSymbols ? 48 + 24 : 0)
+    + (withGnuHash ? symtabBytes.length + gnuHashBytes.length : 0);
+  const loadFilesz = dynamicOffset + dynamicSize - 0x100 + trailingBytes; // strtab + dynamic [+ symtab + rela [+ dynsym + gnu hash]]
   const total = 0x100 + loadFilesz;
   const bytes = new Uint8Array(total);
   const view = new DataView(bytes.buffer);
@@ -91,6 +130,10 @@ function buildDynamicElf({ entries = 64, withRelocationsAndSymbols = false } = {
 
   bytes.set(strtab, strtabOffset);
   bytes.set(dynamicBytes, dynamicOffset);
+  if (withGnuHash) {
+    bytes.set(symtabBytes, symtabOffset);
+    bytes.set(gnuHashBytes, gnuHashOffset);
+  }
   if (withRelocationsAndSymbols) {
     // Dynsym: entry 0 null, entry 1 = {name:'foo', STB_GLOBAL, SHN_UNDEF}.
     const symtabBytes = new Uint8Array(48);
@@ -172,6 +215,32 @@ test('#5584: the same image decodes its relocations and symbols without cancella
   assert.equal(image.relocations.length, 1, 'the RELA entry is decoded normally');
   assert.equal(image.relocations[0].symbol, 'foo');
   assert.equal(image.imports.some((imp) => imp.name === 'foo'), true, 'the undefined dynsym symbol mints its import');
+});
+
+// The GNU-hash symbol-count traversal is budget-less large work after the tag
+// scan: with 64 chain steps it must observe the caller's signal inside the
+// walk, not after it (#5584 item: tag scan -> DT_GNU_HASH traversal). The
+// stub flips after 20 observations: the tag scan consumes ~14, so the abort
+// fires while the chain walk is still stepping.
+test('#5584: a signal flipping mid-GNU-hash-traversal stops the count walk as partial', () => {
+  const image = parseELF(buildDynamicElf({ entries: 12, withGnuHash: true }), { signal: signalAfter(20) });
+  const diagnostics = image.metadata.programDynamicDiagnostics ?? [];
+  assert.equal(image.metadata.programDynamicPartial, true, 'a cancelled traversal is partial, not silently complete');
+  assert.ok(diagnostics.some((d) => d.includes('cancelled')), `expected a cancellation diagnostic, got ${JSON.stringify(diagnostics)}`);
+  assert.notEqual(image.metadata.programDynamic?.symbolCountSource, 'gnu-hash',
+    'a mid-walk abort must not leave exact GNU-hash count evidence behind');
+  assert.equal(image.metadata.programDynamic?.symbolsExpected ?? 0, 0, 'no symbol decode was funded after the abort');
+});
+
+test('#5584: the same GNU-hash image yields exact count evidence without cancellation', () => {
+  const controller = new AbortController();
+  const image = parseELF(buildDynamicElf({ entries: 12, withGnuHash: true }), { signal: controller.signal });
+  const diagnostics = image.metadata.programDynamicDiagnostics ?? [];
+  assert.equal(image.metadata.programDynamic?.symbolCountSource, 'gnu-hash',
+    'the control proves the traversal itself mints exact count evidence');
+  assert.equal(image.metadata.programDynamic?.symbolsExpected, GNU_HASH_SYM_COUNT, 'symoffset + chain steps = symbol count');
+  assert.equal(image.metadata.programDynamicPartial ?? false, false);
+  assert.equal(diagnostics.some((d) => d.includes('cancelled')), false, 'no cancellation evidence without an abort');
 });
 
 
