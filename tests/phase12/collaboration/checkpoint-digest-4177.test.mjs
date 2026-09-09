@@ -30,6 +30,31 @@ const key = 'entity-1\u0000name';
 }
 
 {
+  const next = createProjectOperation({
+    ...base,
+    operationId: 'op:next',
+    targetEntityId: 'entity-2',
+    factKind: 'name',
+    action: 'set',
+    payload: 'next',
+  });
+  const replayed = replayOperations({ ...base, checkpoint: structuredClone(checkpoint), operations: [next] });
+  assert.equal(replayed.status, 'applied', 'valid checkpoint replay must admit new operations');
+  assert.equal(replayed.state.facts[key].values[0].value, 'original', 'checkpoint facts must survive replay with new operations');
+  assert.equal(replayed.state.facts['entity-2\u0000name'].values[0].value, 'next', 'new replay operations must be applied losslessly');
+}
+
+{
+  const invalidSchema = structuredClone(checkpoint);
+  invalidSchema.schemaVersion = 'forged-checkpoint-v2';
+  assert.throws(
+    () => replayOperations({ ...base, checkpoint: invalidSchema }),
+    /checkpoint-schema-invalid/,
+    'replay must reject a checkpoint with an invalid schema before trusting its contents',
+  );
+}
+
+{
   const tampered = structuredClone(checkpoint);
   tampered.state.facts[key].values[0].value = 'tampered';
   assert.throws(

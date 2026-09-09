@@ -407,6 +407,7 @@ function validateCheckpointDigest(checkpoint) {
 }
 
 export function replayOperations({ projectIdentity, binaryIdentity = null, operations = [], checkpoint = null } = {}) {
+  if (checkpoint && checkpoint.schemaVersion !== CHECKPOINT_SCHEMA_VERSION) throw new TypeError('checkpoint-schema-invalid');
   const checkpointMaterial = checkpoint ? validateCheckpointDigest(checkpoint) : { state: null, operationIds: [] };
   const log = new ChangeLog({ projectIdentity, binaryIdentity, state: checkpointMaterial.state, operations: checkpointMaterial.operationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity, binaryIdentity, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } })) });
   const filtered = checkpoint ? operations.filter((operation) => !checkpointMaterial.operationIds.includes(operation.operationId)) : operations;
