@@ -1,3 +1,4 @@
+import { lossyTypeWitness, stableStringify } from '../core/identity/index.js';
 import { DebugAdapterError } from '../debug/adapter.js';
 import { DebugAdapterRuntimeProvider } from './provider.js';
 import { RuntimeEventNormalizer } from './events.js';
@@ -73,7 +74,10 @@ function sameStructuredIdentity(left, right) {
   if (Object.is(left, right)) return true;
   if (left == null || right == null || typeof left !== 'object' || typeof right !== 'object') return false;
   try {
-    const encode = (value) => JSON.stringify(value, (_key, item) => typeof item === 'bigint' ? `${item}n` : item);
+    const encode = (value) => stableStringify({
+      value,
+      typeWitness: lossyTypeWitness(value),
+    });
     return encode(left) === encode(right);
   } catch {
     return false;
