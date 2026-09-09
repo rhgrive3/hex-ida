@@ -274,7 +274,7 @@ function readType(type, offset, space, ctx, values, depth = 0) {
     const pointer = readType({ kind: 'primitive', name: 'u64le' }, offset, space, ctx, values, depth + 1); if (pointer.status) return pointer;
     const address = pointer.value; const targetSpace = type.space;
     const out = fieldValue(type, address, ctx, offset, 8, space, { targetSpace, lazy: true });
-    out.dereference = () => readType(type.target, safeNumber(address), targetSpace, ctx, values, depth + 1);
+    out.dereference = () => readType(type.target, address, targetSpace, ctx, values, depth + 1);
     return out;
   }
   if (type.kind === 'array') {
