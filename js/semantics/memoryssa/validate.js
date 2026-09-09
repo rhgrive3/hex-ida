@@ -42,6 +42,7 @@ export function validateMemorySsa(memorySsa, options = {}) {
   }
 
   const definitionIds = new Set(contract.definitions.map((definition) => definition.id));
+  const definitionById = new Map(contract.definitions.map((definition) => [definition.id, definition]));
   const useIds = new Set(contract.uses.map((use) => use.id));
   const regionIds = new Set(contract.regions.map((region) => region.id));
   if (memorySsa.useDefLinks != null) {
@@ -128,6 +129,7 @@ export function validateMemorySsa(memorySsa, options = {}) {
         for (const item of state[side]) {
           if (!regionIds.has(item.regionId)) fail('memory-ssa-validate-block-state-region-mismatch');
           if (!definitionIds.has(item.definitionId)) fail('memory-ssa-validate-block-state-definition-mismatch');
+          if (definitionById.get(item.definitionId).regionId !== item.regionId) fail('memory-ssa-validate-block-state-region-mismatch');
           if (seenRegions.has(item.regionId)) fail('memory-ssa-validate-duplicate-block-state-region');
           seenRegions.add(item.regionId);
         }
