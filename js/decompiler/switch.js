@@ -164,19 +164,18 @@ export function structureKnownSwitches(result, model, opts = {}) {
     }
     const allTargets = cases.map((c) => c.address);
     if (defaultAddress != null) allTargets.push(defaultAddress);
+    const linesBeforeMaterialization = result.lines.slice();
+    const labelsBeforeMaterialization = new Set(index.labels);
     if (!materializeVerifiedLabels(result, index, allTargets)) {
       result.warnings = [...(result.warnings || []), `Switch at row ${sw.row} was not structured because one or more case targets are not exact instruction addresses.`];
       continue;
     }
     const at = insertionIndex(result.lines, sw.row);
     if (!at) {
-      // The switch has no insertion point, so it cannot be structured — but
-      // the label materialization above already mutated result.lines. Roll
-      // the spliced labels back out so lines stay consistent with the
-      // unchanged pseudocode instead of publishing a half-mutated view
-      // (#5535).
-      const splicedLabels = new Set(allTargets.map((address) => labelForAddress(address).toUpperCase()));
-      result.lines = result.lines.filter((line) => !(line?.kind === 'label' && splicedLabels.has(String(line.text || '').replace(/:$/, '').toUpperCase())));
+      // Restore the exact pre-materialization state. Filtering by target text
+      // can erase a legitimate label that existed before this switch (#5535).
+      result.lines = linesBeforeMaterialization;
+      index.labels = labelsBeforeMaterialization;
       continue;
     }
     const expr = String(sw.expr || sw.reg || 'switch_value');
