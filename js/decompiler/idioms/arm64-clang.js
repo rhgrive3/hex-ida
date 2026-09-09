@@ -37,29 +37,40 @@ export function recognizeDivisionByConstant(root) {
   return null;
 }
 
+function orderedConstantBound(innerBound, outerBound, outerName) {
+  if (innerBound?.kind !== 'const' || outerBound?.kind !== 'const') return false;
+  if (typeof innerBound.value !== 'bigint' || typeof outerBound.value !== 'bigint') return false;
+  if (innerBound.bits !== outerBound.bits || innerBound.signed !== outerBound.signed) return false;
+  return outerName === 'min'
+    ? innerBound.value <= outerBound.value
+    : outerBound.value <= innerBound.value;
+}
+
 export function recognizeClamp(root) {
-  if (root?.kind !== 'intrinsic' || !['min','max'].includes(root.name)) return null;
-  const other = root.args?.find((a) => a?.kind === 'intrinsic' && ['min','max'].includes(a.name) && a.name !== root.name);
-  if (!other || other.args?.length !== 2) return null;
+  if (root?.kind !== 'intrinsic' || !['min','max'].includes(root.name) || root.args?.length !== 2) return null;
+  const opposing = root.args.filter((a) => a?.kind === 'intrinsic' && ['min','max'].includes(a.name) && a.name !== root.name);
+  if (opposing.length !== 1) return null;
+  const other = opposing[0];
+  if (other.args?.length !== 2) return null;
   // Historical spelling: the clamped value appears directly in the outer args
-  // as well as inside the opposing intrinsic.
+  // as well as inside the opposing intrinsic. This is direct structural authority
+  // for the value role, so retain the established result.
   const shared = root.args.find((a) => other.args.some((b) => sameExpr(a, b)));
   if (shared) {
     return { kind: 'clamp', value: shared, low: root.name === 'max' ? root.args.find((a) => a !== shared) : other.args.find((a) => a !== shared), high: root.name === 'min' ? root.args.find((a) => a !== shared) : other.args.find((a) => a !== shared) };
   }
-  // The canonical clamp AST is nested: min(max(x, low), high) / max(min(x, high), low).
-  // The clamped value lives inside the opposing intrinsic: the inner bound
-  // comes from `other`, the outer bound from `root`. The inner arg order is
-  // the value/bound contract (value first); a deeper nested min/max in the
-  // value slot or an inner bound duplicating the outer bound is ambiguous and
-  // fails closed (#4159).
-  const outerBound = root.args.find((a) => a !== other);
+  // A nested min/max is commutative, so operand position cannot identify the
+  // clamped value. Mint a clamp only when exactly one inner operand is proven to
+  // be the ordered constant bound in the same integer domain as the outer bound.
+  // Otherwise the value/bound roles are ambiguous and must remain unclassified.
+  const outerBound = root.args[0] === other ? root.args[1] : root.args[0];
   if (!outerBound) return null;
-  const value = other.args[0];
-  const innerBound = other.args[1];
-  if (value?.kind === 'intrinsic' && ['min','max'].includes(value.name)) return null;
-  if (value == null || innerBound == null) return null;
+  const boundCandidates = other.args.filter((candidate) => orderedConstantBound(candidate, outerBound, root.name));
+  if (boundCandidates.length !== 1) return null;
+  const innerBound = boundCandidates[0];
   if (sameExpr(innerBound, outerBound)) return null;
+  const value = other.args[0] === innerBound ? other.args[1] : other.args[0];
+  if (value == null || (value?.kind === 'intrinsic' && ['min','max'].includes(value.name))) return null;
   return {
     kind: 'clamp',
     value,
