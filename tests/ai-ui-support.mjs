@@ -65,6 +65,63 @@ export async function closeSheets(page) {
   }
 }
 
+/**
+ * Wait for a visible UI node's finite CSS animations and geometry to settle.
+ * Layout changes such as orientation are debounced by the product, so callers
+ * may also require the expected data-layout before the stable-frame check.
+ * The assertions that follow still own the exact viewport bounds.
+ */
+export async function waitForLayoutReady(page, selector, expectedLayout = null, timeout = 2000) {
+  await page.evaluate(async ({ targetSelector, targetLayout, timeoutMs }) => {
+    const started = performance.now();
+    const nextFrame = () => new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      requestAnimationFrame(finish);
+      // Keep the bounded readiness loop progressing if a backgrounded page
+      // suppresses animation frames; this is a polling fallback, not the
+      // readiness condition.
+      setTimeout(finish, 50);
+    });
+    let previous = null;
+    let stableFrames = 0;
+    const rectSnapshot = (rect) => [rect.x, rect.y, rect.width, rect.height, rect.right, rect.bottom]
+      .map((value) => Number.isFinite(value) ? value.toFixed(4) : String(value)).join('|');
+    const activeFiniteAnimations = (node) => {
+      let animations = [];
+      try { animations = node.getAnimations?.({ subtree: true }) || []; } catch { animations = node.getAnimations?.() || []; }
+      return animations.filter((animation) => {
+        const timing = animation.effect?.getComputedTiming?.();
+        return timing?.iterations !== Infinity && (animation.playState === 'running' || animation.playState === 'pending');
+      });
+    };
+    while (performance.now() - started <= timeoutMs) {
+      const node = document.querySelector(targetSelector);
+      if (!node) throw new Error(`Cannot wait for missing layout node: ${targetSelector}`);
+      const expected = targetLayout == null || node.dataset.layout === targetLayout;
+      const visible = !node.hidden && getComputedStyle(node).display !== 'none';
+      const active = activeFiniteAnimations(node);
+      if (expected && visible && active.length === 0) {
+        const current = rectSnapshot(node.getBoundingClientRect());
+        if (current === previous) stableFrames += 1;
+        else { previous = current; stableFrames = 1; }
+        if (stableFrames >= 2) return;
+      } else {
+        previous = null;
+        stableFrames = 0;
+      }
+      await nextFrame();
+    }
+    const node = document.querySelector(targetSelector);
+    const rect = node?.getBoundingClientRect();
+    throw new Error(`Timed out waiting for ${targetSelector} layout (${targetLayout || 'any'}): ${rect ? rectSnapshot(rect) : 'missing'}`);
+  }, { targetSelector: selector, targetLayout: expectedLayout, timeoutMs: timeout });
+}
+
 /** A booted page with the product UI and the assistant installed. */
 export async function openApp(browser, {
   width,

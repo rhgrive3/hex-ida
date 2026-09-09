@@ -3,7 +3,7 @@
  * rule that matters most — opening the assistant must never make the code
  * unreachable.
  */
-import { openApp, reporter, run, stubEngine, ask } from './ai-ui-support.mjs';
+import { openApp, reporter, run, stubEngine, ask, waitForLayoutReady } from './ai-ui-support.mjs';
 
 const VIEWPORTS = [
   ['desktop', 1440, 900, 'dock'],
@@ -49,7 +49,7 @@ await run(async ({ browser }) => {
     check(`${name}: launcher does not sit on top of the primary navigation`, !overlapsNav || width >= 900, JSON.stringify(closed.nav.slice(-1)));
 
     await page.click('#ai-launcher');
-    await page.waitForTimeout(280);
+    await waitForLayoutReady(page, '#ai-panel', expectedLayout);
     const open = await page.evaluate(() => {
       const panel = document.getElementById('ai-panel');
       const rect = panel.getBoundingClientRect();
@@ -97,7 +97,7 @@ await run(async ({ browser }) => {
     }
 
     await page.keyboard.press('Escape');
-    await page.waitForTimeout(220);
+    await page.locator('#ai-panel').waitFor({ state: 'hidden', timeout: 2000 });
     const afterEscape = await page.evaluate(() => ({
       hidden: document.getElementById('ai-panel').hidden,
       focus: document.activeElement && document.activeElement.id,
@@ -243,9 +243,9 @@ await run(async ({ browser }) => {
   {
     const { context, page } = await openApp(browser, { width: 1133, height: 744 });
     await page.click('#ai-launcher');
-    await page.waitForTimeout(200);
+    await waitForLayoutReady(page, '#ai-panel', 'dock');
     await page.setViewportSize({ width: 744, height: 1133 });
-    await page.waitForTimeout(400);
+    await waitForLayoutReady(page, '#ai-panel', 'sheet');
     const rotated = await page.evaluate(() => {
       const panel = document.getElementById('ai-panel');
       const rect = panel.getBoundingClientRect();
