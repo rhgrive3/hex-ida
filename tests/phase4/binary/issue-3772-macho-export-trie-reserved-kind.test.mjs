@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { ByteView } from '../../../js/binary/reader.js';
 import { parseExportTrie } from '../../../js/binary/macho-dyld.js';
 
+const imageBase = 0x100000000n;
+
 function singleTerminalTrie(name, payload) {
   const edge = new TextEncoder().encode(name);
   const childOffset = 4 + edge.length;
@@ -18,7 +20,6 @@ function singleTerminalTrie(name, payload) {
 
 function run(payload, name = '_x') {
   const bytes = singleTerminalTrie(name, payload);
-  const imageBase = 0x100000000n;
   const image = {
     imageBase,
     libraries: ['libA.dylib'],
@@ -54,7 +55,7 @@ function run(payload, name = '_x') {
   assert.equal(status.complete, true);
   assert.equal(image.exports.length, 1);
   assert.equal(image.exports[0].kind, 'thread-local');
-  assert.equal(image.exports[0].address, 0x20n);
+  assert.equal(image.exports[0].address, imageBase + 0x20n);
 }
 
 {
