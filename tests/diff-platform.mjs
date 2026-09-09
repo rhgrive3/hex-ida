@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './issue-3624-symmetric-short-read.mjs';
 import { compareFingerprints, diffFunctions, fingerprintFunction } from '../js/diff/index.js';
 
 const base = { address: 0x1000n, bytes: Uint8Array.from([1,2,3,4,5,6,7,8]), cfg: { blocks: 2, edges: 1, exits: 1 }, strings: ['coins'], imports: ['memcpy'], calls: ['helper'], constants: [100] };
