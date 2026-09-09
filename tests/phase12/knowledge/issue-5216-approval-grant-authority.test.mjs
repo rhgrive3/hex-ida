@@ -362,3 +362,32 @@ test('#5216 the host binding setter is a host-held capability: an importer canno
   assert.throws(() => promoteKnowledgeSuggestion(staleMatch, { actorId: 'attacker' }), /approval is required/, 'and it is single-use');
   recognition.configureRecognitionApprovalHost({ projectBinding: 'test-project', capability });
 });
+
+test('#5216 re-binding back to the original binding never revives a stale approval (review R2 round 6)', () => {
+  // The exact R2-round-6 counterexample: approve@A (gesture, not consumed) →
+  // host re-binds B → promote correctly rejected → host re-binds back to A
+  // → WITHOUT any new gesture the stale record must stay dead, because
+  // every host re-configuration issues a new binding generation and the
+  // old record carries the dead one.
+  const capability = hostRecognitionCapability();
+  const revivalMatch = uniqueResult({ sourceEntityId: 'fn:binding-d', packageEntryId: 'pkg:binding-d' });
+  recognition.configureRecognitionApprovalHost({ projectBinding: 'project-A', capability });
+  approveThroughControl(revivalMatch, { actorId: 'attacker' });
+  recognition.configureRecognitionApprovalHost({ projectBinding: 'project-B', capability });
+  assert.throws(() => promoteKnowledgeSuggestion(revivalMatch, { actorId: 'attacker' }), /bound to a different project binding/);
+  // Re-bind back to A: same value, NEW generation.
+  recognition.configureRecognitionApprovalHost({ projectBinding: 'project-A', capability });
+  assert.throws(
+    () => promoteKnowledgeSuggestion(revivalMatch, { actorId: 'attacker' }),
+    /predates the current host binding and has expired/,
+    'A→B→A without a fresh gesture cannot revive the stale approval',
+  );
+  assert.throws(() => promoteKnowledgeSuggestion(revivalMatch, { actorId: 'attacker' }), /approval is required|predates/, 'the expired record is not spendable at all');
+  // Only a fresh trusted gesture mints a new record under the current
+  // generation — and that one promotes exactly once.
+  approveThroughControl(revivalMatch, { actorId: 'attacker' });
+  const fact = promoteKnowledgeSuggestion(revivalMatch, { actorId: 'attacker' });
+  assert.equal(fact.authority, 'L4-local-canonical', 'a fresh gesture under the current generation promotes');
+  assert.throws(() => promoteKnowledgeSuggestion(revivalMatch, { actorId: 'attacker' }), /approval is required/, 'single-use');
+  recognition.configureRecognitionApprovalHost({ projectBinding: 'test-project', capability });
+});

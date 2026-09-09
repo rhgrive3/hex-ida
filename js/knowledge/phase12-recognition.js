@@ -146,6 +146,12 @@ function createRecognitionApprovalAuthority() {
   // matchId -> minted approval record. Single-use, keyed to the match.
   const approved = new Map();
   let projectBinding = null;
+  // Monotonic host-binding generation (review R2 round 6): every host
+  // (re-)configuration bumps the generation, and a record carries the
+  // generation it was minted under. Consumption requires the CURRENT
+  // generation — so a record minted under A dies on ANY rebind (A→B→A
+  // never revives it); only a fresh gesture mints a new record.
+  let bindingGeneration = 0;
   return deepFreeze({
     configureHost({ projectBinding: binding = null } = {}) {
       if (binding != null) {
@@ -155,6 +161,7 @@ function createRecognitionApprovalAuthority() {
       } else {
         projectBinding = null;
       }
+      bindingGeneration += 1;
     },
     hostProjectBinding() { return projectBinding; },
     // A trusted approval gesture delivered to the control's surface: a real
@@ -195,6 +202,7 @@ function createRecognitionApprovalAuthority() {
         actorId: actor,
         interactionType: String(interactionType || ''),
         projectBinding,
+        bindingGeneration,
       });
       approved.set(result.id, record);
       return record;
@@ -217,6 +225,12 @@ function createRecognitionApprovalAuthority() {
       // an unbound record can never be spent, even against an unbound host.
       if (projectBinding == null || record.projectBinding == null) throw new Error('recognition approval record is bound to a different project binding');
       if ((projectBinding ?? null) !== (record.projectBinding ?? null)) throw new Error('recognition approval record is bound to a different project binding');
+      // The record must carry the CURRENT binding generation (review R2
+      // round 6): every host re-configuration — even re-binding to the same
+      // value — invalidates outstanding records, so A→B→A can never revive
+      // an approval minted before the rebinds. Only a fresh gesture mints a
+      // new record under the current generation.
+      if (record.bindingGeneration !== bindingGeneration) throw new Error('recognition approval record predates the current host binding and has expired');
       approved.delete(result.id);
       return record;
     },
