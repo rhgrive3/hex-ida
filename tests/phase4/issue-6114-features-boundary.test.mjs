@@ -36,6 +36,29 @@ assert.equal(validAsync.engine?.id, 'unity', 'async primitive engine evidence mu
 assert.ok(validAsync.features.some((feature) => feature.id === 'purchase'),
   'async primitive feature evidence must retain matching');
 
+// #4119: the chunk boundary must preserve callable progress and ignore malformed observers.
+const boundaryStrings = Array.from({ length: 101 }, (_, index) => ({
+  addr: BigInt(index),
+  text: index === 100 ? 'UnityEngine purchase payment' : 'ordinary text',
+}));
+const boundaryProgress = [];
+const boundaryResult = await classifyFeaturesAndEngineAsync(boundaryStrings, {
+  chunkSize: 100,
+  onProgress: (done, all) => boundaryProgress.push({ done, all }),
+});
+assert.deepEqual(boundaryProgress, [{ done: 100, all: 101 }],
+  'callable progress must fire once at the 100-item chunk boundary');
+assert.equal(boundaryResult.count, 101);
+assert.equal(boundaryResult.engine?.id, 'unity', 'boundary scan must retain engine detection');
+assert.ok(boundaryResult.features.some((feature) => feature.id === 'purchase'),
+  'boundary scan must retain feature classification');
+for (const onProgress of [undefined, null, true, {}, [], 'progress', 1]) {
+  const result = await classifyFeaturesAndEngineAsync(boundaryStrings, { chunkSize: 100, onProgress });
+  assert.equal(result.count, 101,
+    `non-callable onProgress ${Object.prototype.toString.call(onProgress)} must not abort classification`);
+  assert.equal(result.engine?.id, 'unity');
+}
+
 assert.ok(classifyString('purchase payment').some((hit) => hit.id === 'purchase'));
 assert.equal(detectEngine([{ addr: 3n, text: 'UnityEngine' }])?.id, 'unity');
 assert.ok(groupByFeature([{ addr: 4n, text: 'purchase payment' }]).some((f) => f.id === 'purchase'));
