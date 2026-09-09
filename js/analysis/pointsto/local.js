@@ -677,6 +677,8 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
   // it the derivation assumes 'memory' and identical numeric pointers from
   // different spaces collapse into false MustAlias targets (#5234).
   const canonical = new Map();
+  const canonicalOptions = options.canonicalOptions ?? {};
+  const configuredAddressSpace = canonicalOptions?.addressSpace ?? null;
   for (const id of values.keys()) {
     let proof;
     try {
@@ -684,7 +686,16 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
       const valueSpace = value?.machineType?.kind === 'address' && value.machineType.addressSpace != null
         ? value.machineType.addressSpace
         : null;
-      proof = deriveCanonicalAddressProof(ir, id, { ssa, ...(options.canonicalOptions ?? {}), ...(valueSpace != null ? { addressSpace: valueSpace } : {}) });
+      // A global caller authority and the per-value machine type are both
+      // provenance claims. If they disagree, choosing either side would mint
+      // an exact proof from contradictory metadata, so fail closed (#5234).
+      proof = valueSpace != null && configuredAddressSpace != null && valueSpace !== configuredAddressSpace
+        ? null
+        : deriveCanonicalAddressProof(ir, id, {
+          ssa,
+          ...canonicalOptions,
+          ...(valueSpace != null ? { addressSpace: valueSpace } : {}),
+        });
     }
     catch { proof = null; }
     canonical.set(id, proof);

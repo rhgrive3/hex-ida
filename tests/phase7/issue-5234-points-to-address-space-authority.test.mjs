@@ -4,7 +4,7 @@
 // Two address constants with the same numeric address but different physical
 // spaces ('memory' vs 'io') collapsed into one points-to target — a false
 // MustAlias across address spaces. Identity of an absolute pointer includes
-// its space.
+// its space. Caller-vs-value authority conflicts must fail closed.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -48,4 +48,31 @@ test('#5234 a plain memory-space constant keeps the canonical memory projection'
   const target = result.pointsTo.get('v_mem')?.targets?.[0];
   assert.equal(target.rootKind, 'absolute');
   assert.equal(target.address, '4096');
+});
+
+test('#5234 matching caller addressSpace preserves exact per-value authority', () => {
+  const result = analyzeLocalPointsTo(
+    sameAddressDifferentSpacesIr(),
+    null,
+    { definitions: [], uses: [] },
+    { canonicalOptions: { addressSpace: 'io' } },
+  );
+  const target = result.pointsTo.get('v_io')?.targets?.[0];
+  assert.equal(target?.rootKind, 'absolute');
+  assert.equal(target?.addressSpace, 'io');
+  assert.equal(target?.address, '4096');
+});
+
+test('#5234 caller and machine addressSpace mismatch fails closed', () => {
+  const result = analyzeLocalPointsTo(
+    sameAddressDifferentSpacesIr(),
+    null,
+    { definitions: [], uses: [] },
+    { canonicalOptions: { addressSpace: 'memory' } },
+  );
+  const memTarget = result.pointsTo.get('v_mem')?.targets?.[0];
+  const ioSet = result.pointsTo.get('v_io');
+  assert.equal(memTarget?.addressSpace, 'memory', 'matching authority must remain exact');
+  assert.equal(ioSet?.top, true, 'conflicting authority must not mint an exact target');
+  assert.equal(ioSet?.targets?.length ?? 0, 0);
 });
