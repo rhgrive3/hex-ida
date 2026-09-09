@@ -831,6 +831,13 @@ export function parseCompactUnwind(r, image, metadataBudget = null) {
       fail('entry-extent-mapping-invalid', `function range 0x${candidate.startOffset.toString(16)}..0x${candidate.endOffset.toString(16)} escapes its executable mapping`, true);
       return;
     }
+    // #5571: vmsize > filesize segments zero-fill the tail. A unwind entry
+    // whose bytes live past the segment's file-backed extent describes no
+    // real code and must not become a 0.95-confidence function seed.
+    if (end > seg.address + BigInt(seg.fileSize ?? seg.size ?? 0n)) {
+      fail('entry-zero-fill-invalid', `function range 0x${candidate.startOffset.toString(16)}..0x${candidate.endOffset.toString(16)} extends into the executable zero-fill tail`, true);
+      return;
+    }
     const continuation = (candidate.encoding & notFunctionStartMask) !== 0;
     if (continuation) {
       if (currentOwnerStart == null) {
