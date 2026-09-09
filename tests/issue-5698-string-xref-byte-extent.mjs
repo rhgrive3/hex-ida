@@ -86,3 +86,43 @@ test('#5698 escaped control characters still classify through the byte proxy', (
   assert.equal(out.length, 1);
   assert.equal(out[0].actionable, true);
 });
+
+test('#5698 the real worker scanStrings producer carries the raw run byte extent', async () => {
+  // Producer→consumer contract: the classic worker's scanStrings() is the
+  // producer of the strings consumed by buildStringMap()/findings(). It
+  // display-escapes TAB/CR/LF, so its escaped text is LONGER than the raw run
+  // (here 17 display chars for 14 raw bytes). The emitted byteLength must be
+  // the raw run's byte extent, not the escaped display length; the consumer
+  // span must then cover the raw run.
+  const { NodeBackend } = await import('./harness.mjs');
+  const raw = new TextEncoder().encode('debug:\t\r\nvalue');
+  assert.equal(raw.length, 14);
+  const bytes = new Uint8Array(raw.length + 4);
+  bytes.set(raw, 2);
+  const file = {
+    name: 'issue-5698-control-bytes.bin',
+    size: bytes.length,
+    slice(start, end) {
+      const part = bytes.subarray(start, end);
+      return { arrayBuffer: async () => part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength) };
+    },
+  };
+  const backend = new NodeBackend();
+  const info = await backend.open(file);
+  assert.ok(info.raw?.id, 'raw region must be available');
+  const scan = await backend.strings({ regionId: info.raw.id, min: 2, limit: 8 });
+  assert.equal(scan.cancelled, false);
+  const entry = scan.results.find((candidate) => candidate.text.includes('debug'));
+  assert.ok(entry, 'the control-character string must be scanned');
+  assert.equal(entry.text, 'debug:\\t\\r\\nvalue', 'display text stays control-escaped');
+  assert.equal(entry.text.length, 17, 'the escaped display text is longer than the raw run');
+  assert.equal(entry.byteLength, 14, 'byteLength is the raw run extent, not the display length');
+
+  // Consumer: a ref to the last raw byte (offset 13) must fall inside the
+  // producer-carried byte extent.
+  const consumerProgram = indexWithRefs([entry.addr + 13n]);
+  const out = findings([{ addr: entry.addr, text: entry.text, byteLength: entry.byteLength }],
+    consumerProgram, null, 40);
+  assert.equal(out.length, 1, 'the debug signal fires');
+  assert.equal(out[0].actionable, true, 'the interior ref is covered by the raw byte extent');
+});
