@@ -280,15 +280,25 @@ export class BinaryImage {
     if (!plan) return null;
     const total = plan.reduce((sum, chunk) => sum + Number(chunk.length), 0);
     const out = new Uint8Array(total);
+    const sourceReadLimit = Number.isSafeInteger(this.source.maxReadLength) && this.source.maxReadLength > 0
+      ? BigInt(this.source.maxReadLength)
+      : null;
     let cursor = 0;
     for (const chunk of plan) {
       const length = Number(chunk.length);
       if (chunk.kind === 'zero') { cursor += length; continue; }
       if (chunk.offset < 0n || chunk.offset > this.fileSize || chunk.length > this.fileSize - chunk.offset) return null;
-      const bytes = await this.source.readExactly(chunk.offset, chunk.length);
-      if (!bytes || bytes.length !== length) return null;
-      out.set(bytes, cursor);
-      cursor += length;
+      let done = 0n;
+      while (done < chunk.length) {
+        const remaining = chunk.length - done;
+        const take = sourceReadLimit == null ? remaining : minBigInt(remaining, sourceReadLimit);
+        const bytes = await this.source.readExactly(chunk.offset + done, take);
+        const expected = Number(take);
+        if (!bytes || bytes.length !== expected) return null;
+        out.set(bytes, cursor);
+        cursor += expected;
+        done += take;
+      }
     }
     return out;
   }

@@ -38,6 +38,30 @@ function safeSnapshot(value) {
   return deepFreeze(clone);
 }
 
+function makeBudgetCapability(budget) {
+  if (!budget || (typeof budget !== 'object' && typeof budget !== 'function')) return undefined;
+  const capability = Object.create(null);
+  if (typeof budget.consume === 'function') {
+    Object.defineProperty(capability, 'consume', {
+      enumerable: true,
+      value: (resource, amount = 1) => budget.consume(resource, amount),
+    });
+  }
+  if (typeof budget.remaining === 'function') {
+    Object.defineProperty(capability, 'remaining', {
+      enumerable: true,
+      value: (resource) => budget.remaining(resource),
+    });
+  }
+  if (typeof budget.snapshot === 'function') {
+    Object.defineProperty(capability, 'snapshot', {
+      enumerable: true,
+      value: (options) => safeSnapshot(options === undefined ? budget.snapshot() : budget.snapshot(safeSnapshot(options))),
+    });
+  }
+  return Object.freeze(capability);
+}
+
 function withInvocationSignal(snapshot, signal) {
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return snapshot;
   const out = Object.create(Object.getPrototypeOf(snapshot));
@@ -308,7 +332,7 @@ export class PlatformPluginRegistry {
       const safeContext = Object.freeze({
         binary: safeSnapshot(context.binary), capability: safeSnapshot(context.capability), project: safeSnapshot(context.project),
         read: makeReadCapability(context, pluginScope, record),
-        resourceBudget: pluginScope || context.resourceBudget,
+        resourceBudget: makeBudgetCapability(pluginScope || context.resourceBudget),
         reportProgress: typeof context.reportProgress === 'function' ? (...progressArgs) => context.reportProgress(...progressArgs.map((x) => safeSnapshot(x))) : undefined,
         signal: invocationController.signal,
       });

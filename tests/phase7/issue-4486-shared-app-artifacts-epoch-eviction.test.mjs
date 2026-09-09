@@ -117,4 +117,37 @@ function programApp(scanProgram) {
   );
 }
 
+{
+  let calls = 0;
+  let releaseOld;
+  const oldScan = new Promise((resolve) => { releaseOld = resolve; });
+  const { app, symbols } = programApp((regionId) => {
+    calls++;
+    if (calls === 1) return oldScan.then(() => ({ regionId }));
+    return Promise.resolve({ regionId });
+  });
+  installSharedAppArtifacts(app);
+
+  const oldConsumer = app.ensureProgram();
+  app.backend.gen = 1;
+  symbols.gen = 1;
+  app.program = null;
+  app.programKey = null;
+  const currentConsumer = app.ensureProgram();
+  assert.equal(
+    __sharedAppArtifactInternalsForTests.cacheSizes(app).programEntries,
+    2,
+    'an old in-flight program entry with a waiter remains until its consumer settles',
+  );
+
+  releaseOld();
+  await assert.rejects(oldConsumer, /stale shared program/);
+  await currentConsumer;
+  assert.equal(
+    __sharedAppArtifactInternalsForTests.cacheSizes(app).programEntries,
+    1,
+    'the old in-flight program entry is evicted after it settles',
+  );
+}
+
 console.log('  ok #4486 shared app-artifact epoch eviction regression passed');

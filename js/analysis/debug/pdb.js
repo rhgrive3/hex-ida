@@ -115,14 +115,25 @@ export function parseMsf(bytes) {
 
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const blockSize = view.getUint32(32, true);
+  /* MSF's FreeBlockMapBlock selects which of blocks 1/2 holds the active free
+     block map; the LLVM MSF format documentation allows only those two values
+     (#5672). */
+  const freeBlockMapBlock = view.getUint32(36, true);
   const numBlocks = view.getUint32(40, true);
   const numDirectoryBytes = view.getUint32(44, true);
   const blockMapAddr = view.getUint32(52, true);
   if (blockSize === 0 || (blockSize & (blockSize - 1)) !== 0) {
     return { streams: [], diagnostics: ['invalid MSF block size'], complete: false };
   }
-  if (numBlocks * blockSize > data.length + blockSize) {
-    return { streams: [], diagnostics: ['MSF block count exceeds the file'], complete: false };
+  if (freeBlockMapBlock !== 1 && freeBlockMapBlock !== 2) {
+    return { streams: [], diagnostics: [`invalid MSF free block map index ${freeBlockMapBlock}`], complete: false };
+  }
+  /* NumBlocks is the total block count of the on-disk file (LLVM MSF format
+     documentation): NumBlocks * BlockSize must equal the file size, not
+     merely stay within one block of it (#5665). A missing trailing block
+     would let streams reference unreadable data while reporting complete. */
+  if (numBlocks * blockSize !== data.length) {
+    return { streams: [], diagnostics: ['MSF block count does not match the file size'], complete: false };
   }
   if (numDirectoryBytes < 4) {
     return { streams: [], diagnostics: ['MSF stream directory is truncated'], complete: false };
@@ -286,7 +297,10 @@ export function parseModuleInfo(bytes, dbi) {
   if (end < declaredEnd) complete = false;
   let offset = DBI_HEADER_SIZE;
   while (offset + 64 <= end) {
-    const streamIndex = view.getInt16(offset + 34, true);
+    // ModInfo::ModuleSymStream is uint16_t. Treat only 0xffff as the PDB nil
+    // sentinel; the upper half of the 16-bit namespace contains valid stream
+    // indices and must not become negative through a signed read (#4431).
+    const streamIndex = view.getUint16(offset + 34, true);
     const symbolByteSize = view.getUint32(offset + 36, true);
     const moduleNameEntry = cstringWithNext(bytes, offset + 64, end);
     if (!moduleNameEntry) { complete = false; break; }
@@ -822,7 +836,13 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
         symbols.complete = false;
         continue;
       }
-      if (module.streamIndex < 0 || module.streamIndex >= msf.streams.length) {
+      if (module.streamIndex === 0xffff) {
+        // A nil ModuleSymStream is valid for modules with no private symbols;
+        // a nonempty declared range is still missing evidence.
+        if (declaredSize > 4) symbols.complete = false;
+        continue;
+      }
+      if (module.streamIndex >= msf.streams.length) {
         if (declaredSize > 4) symbols.complete = false;
         continue;
       }
@@ -1021,8 +1041,12 @@ function findSectionHeaderStream(msf, dbi, dbiBytes) {
 }
 
 function page(items, cursor, pageSize, map) {
+  /* A page size must make progress: pageSize 0 (or any non-positive value)
+     would otherwise return the same cursor forever, letting a normal
+     nextCursor consumer loop without advancing (#5691). */
+  const size = Number.isSafeInteger(pageSize) && pageSize > 0 ? pageSize : DEBUG_DEFAULT_PAGE_SIZE;
   const start = cursor == null ? 0 : Number(cursor);
-  const slice = items.slice(start, start + pageSize);
+  const slice = items.slice(start, start + size);
   const next = start + slice.length;
   return createDebugPage({
     records: slice.map(map),

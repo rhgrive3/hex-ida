@@ -86,7 +86,6 @@ function semanticRecord(record) {
     navigation: record.navigation ?? null,
   });
 }
-
 function sameSemanticRecord(left, right) {
   return JSON.stringify(semanticRecord(left)) === JSON.stringify(semanticRecord(right));
 }
@@ -94,14 +93,15 @@ function sameSemanticRecord(left, right) {
 // Observation provenance references are identity keys, not presentation text:
 // only a canonical non-empty primitive string may reach a record, so a
 // structured value can never launder into another observation's identity
-// (#5425). Identity fields fail closed; `path` stays a normalized projection.
+// (#5425). Identity fields, including identity-bearing paths, fail closed.
 function canonicalIdentityRef(value) {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
 // A present-but-unusable sourceRef: neither canonicalizable to a reference
 // nor absent. String refs are always canonical; object refs must carry at
-// least one canonical identity field; any other shape is malformed.
+// least one canonical identity field, and an explicit path must itself be a
+// canonical primitive string because ingest() uses it for permanent IDs.
 function malformedSourceRef(sourceRef) {
   if (sourceRef == null) return false;
   if (typeof sourceRef === 'string') return sourceRef.length === 0;
@@ -109,6 +109,7 @@ function malformedSourceRef(sourceRef) {
   if (Object.hasOwn(sourceRef, 'detailRef') && sourceRef.detailRef != null && !canonicalIdentityRef(sourceRef.detailRef)) return true;
   if (Object.hasOwn(sourceRef, 'evidenceSourceId') && sourceRef.evidenceSourceId != null && !canonicalIdentityRef(sourceRef.evidenceSourceId)) return true;
   if (Object.hasOwn(sourceRef, 'bindingKey') && sourceRef.bindingKey != null && !canonicalIdentityRef(sourceRef.bindingKey)) return true;
+  if (Object.hasOwn(sourceRef, 'path') && !canonicalIdentityRef(sourceRef.path)) return true;
   if (canonicalIdentityRef(sourceRef.detailRef) || canonicalIdentityRef(sourceRef.evidenceSourceId)) return false;
   return true;
 }
@@ -117,12 +118,14 @@ function normalizeSourceRef(sourceRef) {
   if (!sourceRef) return null;
   if (typeof sourceRef === 'string') return { detailRef: sourceRef, path: '$' };
   if (typeof sourceRef !== 'object') return null;
+  const path = Object.hasOwn(sourceRef, 'path') ? canonicalIdentityRef(sourceRef.path) : '$';
+  if (!path) return null;
   if (canonicalIdentityRef(sourceRef.detailRef)) return {
     detailRef: sourceRef.detailRef,
-    path: String(sourceRef.path || '$'),
+    path,
     ...(canonicalIdentityRef(sourceRef.bindingKey) ? { bindingKey: sourceRef.bindingKey } : {}),
   };
-  if (canonicalIdentityRef(sourceRef.evidenceSourceId)) return { evidenceSourceId: sourceRef.evidenceSourceId, path: String(sourceRef.path || '$') };
+  if (canonicalIdentityRef(sourceRef.evidenceSourceId)) return { evidenceSourceId: sourceRef.evidenceSourceId, path };
   return null;
 }
 
@@ -210,10 +213,13 @@ export class EvidenceStore {
       }
     }
     const sourceBinding = String(input.sourceBinding ?? sourceRef?.bindingKey ?? '');
-    const identity = JSON.stringify(jsonSafe([
+    const sourceCoordinate = canonicalIdentityRef(input.sourceCoordinate);
+    const identityParts = [
       input.sourceTool || 'unknown', input.sourceId || null, sourceBinding || null, input.address ?? null,
       input.functionAddress ?? null, input.kind || 'observation', input.title || '',
-    ]));
+    ];
+    if (sourceCoordinate) identityParts.push({ sourceCoordinate });
+    const identity = JSON.stringify(jsonSafe(identityParts));
     const id = explicitId || `ev_${stableDigest(identity).slice(0, 32)}`;
     const record = {
       id,
@@ -271,6 +277,7 @@ export class EvidenceStore {
   ingest(toolName, result, { verifier = false, sourceRef = null, effectiveScope = null, scopeBoundary = null } = {}) {
     const output = result && result.result != null ? result.result : result;
     if (!output || typeof output !== 'object') return [];
+    if (malformedSourceRef(sourceRef)) return [];
     const rootSourceRef = normalizeSourceRef(sourceRef);
     const outputVerifiedIds = verifiedEvidenceIds(output);
     const rows = factRows(output);
@@ -289,6 +296,13 @@ export class EvidenceStore {
         ...rootSourceRef,
         path: key === 'result' ? (rootSourceRef.path || '$') : `${rootSourceRef.path === '$' ? '$.' : `${rootSourceRef.path}.`}${key}[${index}]`,
       } : null;
+      // A producer-supplied row id/evidence id is the stable identity. When it
+      // is absent, retain the fact's source coordinate so sibling rows cannot
+      // collapse into one record. sourceRef.path is already canonicalized;
+      // the generated path covers results without an external sourceRef.
+      const sourceCoordinate = ids.length
+        ? null
+        : (rowSourceRef?.path || `$.${key}[${index}]`);
       for (const sourceId of sourceIds.length ? sourceIds : [null]) {
         const sourceVerified = sourceId != null && (rowVerifiedIds.has(sourceId) || outputVerifiedIds.has(sourceId));
         const verified = verifier === true && (sourceVerified || rowVerdict || singleTopLevelVerdict);
@@ -296,6 +310,7 @@ export class EvidenceStore {
         const kind = String(row.kind || key || 'observation');
         const evidence = this.add({
           sourceId, sourceTool: toolName, sourceRef: rowSourceRef, sourceBinding: rowSourceRef?.bindingKey,
+          sourceCoordinate,
           kind, status, address: addr, functionAddress: fnAddr,
           effectiveScope, scopeBoundary,
           functionName: row.functionName || row.name || output.name,
@@ -421,7 +436,6 @@ function summarizeRow(row) {
   if (addr) parts.push(`address=${addr}`);
   return parts.join('; ').slice(0, 2000) || 'Deterministic tool observation';
 }
-
 function uniqueById(values) {
   return Array.from(new Map(values.map((value) => [value.id, value])).values());
 }

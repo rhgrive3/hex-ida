@@ -937,8 +937,16 @@ export function constantComparisons(model) {
   const out = [];
   for (const insn of model.instructions || []) {
     const base = insn.mnemonic.toLowerCase();
-    if (!/^(cmp|cmn|subs|adds|ccmp|fcmp)$/.test(base)) continue;
-    const imm = insn.ops.find((o) => o.k === 'imm' && (o.value != null || o.float != null));
+    if (!/^(cmp|cmn|subs|adds|ccmp|ccmn|fcmp)$/.test(base)) continue;
+    // CCMP/CCMN place the fallback NZCV immediate after the comparison
+    // operands.  It is not a threshold and must never be selected by a
+    // generic "first immediate" scan.  The immediate form, when present,
+    // is the second operand (index 1); the register form has no literal
+    // comparison candidate.
+    const immediate = (op) => op && op.k === 'imm' && (op.value != null || op.float != null);
+    const imm = base === 'ccmp' || base === 'ccmn'
+      ? (immediate(insn.ops[1]) ? insn.ops[1] : null)
+      : insn.ops.find(immediate);
     if (!imm) continue;
     out.push({
       row: insn.row,

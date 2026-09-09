@@ -1,3 +1,4 @@
+import { lossyTypeWitness, stableStringify } from '../core/identity/index.js';
 import { DebugAdapterError } from '../debug/adapter.js';
 import { DebugAdapterRuntimeProvider } from './provider.js';
 import { RuntimeEventNormalizer } from './events.js';
@@ -12,7 +13,13 @@ function moduleFields(event) {
 }
 
 function validateInterventionDraft(ledger, input) {
-  const record = createInterventionRecord(input);
+  // Executed occurrences must be distinguishable: the ledger allocates a
+  // monotonic sequence when the draft omits one (#5327), so repeated
+  // identical target/change operations derive distinct intervention ids.
+  const record = createInterventionRecord({
+    ...input,
+    sequence: input.sequence == null ? ledger.nextSequence() : input.sequence,
+  });
   for (const parent of record.parentInterventionIds) {
     if (!ledger.get(parent)) throw new DebugAdapterError('runtime-intervention-parent-missing', `intervention parent not found: ${parent}`);
   }
@@ -67,7 +74,10 @@ function sameStructuredIdentity(left, right) {
   if (Object.is(left, right)) return true;
   if (left == null || right == null || typeof left !== 'object' || typeof right !== 'object') return false;
   try {
-    const encode = (value) => JSON.stringify(value, (_key, item) => typeof item === 'bigint' ? `${item}n` : item);
+    const encode = (value) => stableStringify({
+      value,
+      typeWitness: lossyTypeWitness(value),
+    });
     return encode(left) === encode(right);
   } catch {
     return false;

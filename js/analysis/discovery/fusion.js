@@ -60,6 +60,7 @@ export class DiscoveryProducerRegistry {
     // manufacture a second "independent" producer (#5792).
     if (typeof producer.id !== 'string' || producer.id.trim() === '' || producer.id.trim() !== producer.id) throw new TypeError('discovery-producer-id-required');
     const id = producer.id;
+    if (this.producers.has(id)) throw new TypeError('discovery-producer-id-duplicate');
     this.producers.set(id, producer);
     return this;
   }

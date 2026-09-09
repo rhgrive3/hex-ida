@@ -18,6 +18,7 @@
  */
 
 import { deepFreeze, stableStringify } from '../../core/identity/index.js';
+import { createSemanticMachineType } from '../../semantics/ir/types.js';
 import { createAnalysisStatus } from '../status.js';
 import { provenSeparationAuthority } from '../pointsto/lattice.js';
 
@@ -55,6 +56,9 @@ export const ROOT_ORIGINS = Object.freeze(['local-frame', 'local-allocation', 'i
 const REASON_SET = new Set(ESCAPE_REASONS);
 const BOUNDARY_SET = new Set(ESCAPE_BOUNDARIES);
 const LOCALLY_CREATED = new Set(['local-frame', 'local-allocation']);
+// Only canonical Semantic IR scalar kinds are proof that a value cannot carry
+// a pointer. Missing, malformed, or future kinds remain unknown/fail-closed.
+const NON_POINTER_MACHINE_TYPES = new Set(['bitvector', 'float', 'vector', 'predicate']);
 
 function fail(code) { throw new TypeError(code); }
 
@@ -160,12 +164,34 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
   }
 
   const nodes = new Map((ir.nodes ?? []).map((node) => [String(node.id), node]));
+  const values = new Map();
+  const duplicateValueIds = new Set();
+  for (const value of ir.values ?? []) {
+    if (typeof value?.id !== 'string' || !value.id.trim() || value.id !== value.id.trim()) continue;
+    if (values.has(value.id)) duplicateValueIds.add(value.id);
+    else values.set(value.id, value);
+  }
   const allocationRootKeys = new Set(options.allocationRootKeys ?? []);
   const escapes = [];
   const rootOrigins = new Map();
   const escapedRoots = new Set();
   const containment = new Map();
   let sawUnresolvedFlow = false;
+
+  const valueFlowKinds = new Map();
+  const valueFlowKind = (valueId) => {
+    if (typeof valueId !== 'string' || duplicateValueIds.has(valueId)) return 'unknown';
+    if (valueFlowKinds.has(valueId)) return valueFlowKinds.get(valueId);
+    const value = values.get(valueId);
+    if (!value) return 'unknown';
+    let kind = null;
+    try { kind = createSemanticMachineType(value.machineType).kind; } catch { /* malformed type stays unknown */ }
+    const flowKind = kind === 'address'
+      ? 'pointer'
+      : NON_POINTER_MACHINE_TYPES.has(kind) ? 'non-pointer' : 'unknown';
+    valueFlowKinds.set(valueId, flowKind);
+    return flowKind;
+  };
 
   const setsFor = (valueId) => {
     // Points-to map keys are canonical value ID strings. A non-string
@@ -195,6 +221,11 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
     }
   };
 
+  const recordValue = (valueId, details) => {
+    if (valueFlowKind(valueId) === 'non-pointer') return;
+    record(setsFor(valueId), details);
+  };
+
   const observe = (set) => {
     if (!set || set.top) return;
     for (const target of set.targets) {
@@ -204,13 +235,18 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
     }
   };
 
+  const observeValue = (valueId) => {
+    if (valueFlowKind(valueId) === 'non-pointer') return;
+    observe(setsFor(valueId));
+  };
+
   for (const node of nodes.values()) {
     if (options.signal?.aborted) return cancelledResult();
-    for (const input of node.inputs ?? []) observe(setsFor(input));
+    for (const input of node.inputs ?? []) observeValue(input);
 
     if (node.kind === 'return') {
       for (const input of node.inputs ?? []) {
-        record(setsFor(input), { reason: 'returned', boundary: 'return', siteId: node.id, evidenceIds: evidenceOf(node) });
+        recordValue(input, { reason: 'returned', boundary: 'return', siteId: node.id, evidenceIds: evidenceOf(node) });
       }
       continue;
     }
@@ -220,6 +256,7 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
       // points. The address decides the boundary.
       const storedValueId = (node.inputs ?? [])[1];
       if (storedValueId == null) continue;
+      if (valueFlowKind(storedValueId) === 'non-pointer') continue;
       const storedSet = setsFor(storedValueId);
       if (!storedSet || storedSet.top || !storedSet.targets.length) { sawUnresolvedFlow = true; continue; }
       const addressSet = setsFor(node.memory?.addressExpr?.valueId);
@@ -245,7 +282,7 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
           if (!containment.has(destTarget.rootKey)) containment.set(destTarget.rootKey, new Set());
           for (const storedTarget of storedSet.targets) {
             containment.get(destTarget.rootKey).add(storedTarget.rootKey);
-            observe(setsFor(storedValueId));
+            observeValue(storedValueId);
           }
         }
       }
@@ -275,7 +312,7 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
           ? argument.valueId : argument,
       ))];
       for (const valueId of argumentValueIds) {
-        record(setsFor(valueId), { reason, boundary, siteId: node.id, evidenceIds: evidenceOf(node) });
+        recordValue(valueId, { reason, boundary, siteId: node.id, evidenceIds: evidenceOf(node) });
       }
       if (!complete) sawUnresolvedFlow = true;
       continue;

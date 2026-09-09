@@ -2,7 +2,7 @@ import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
 import { parseEhFrameHeader } from './elf-unwind.js';
 import { parseProgramDynamic } from './elf-dynamic.js';
-import { createELFMetadataBudget } from './elf-budget.js';
+import { createELFMetadataBudget, markELFMetadataPartial } from './elf-budget.js';
 import { executableELFRange, mappedELFFileSpanForVa } from './elf-mapping.js';
 import { parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
 
@@ -56,7 +56,7 @@ export function parseELF(input, options = {}) {
 
   const programHeaders = parseProgramHeaders(r, h, image, bits);
   const rawSections = parseSectionHeaders(r, h, bits, image);
-  nameSections(r, rawSections, h);
+  nameSections(r, rawSections, h, image);
   let riscvFileIsa = null;
   if (image.arch === 'riscv64') {
     const namedAttributeSections = rawSections.filter((section) => section.name === '.riscv.attributes');
@@ -205,9 +205,9 @@ function actualSectionIndex(index, sections) {
 }
 
 function symbolAddressForELF(elfType, value, sectionIndex, sections, extendedSectionIndex = false) {
-  if (elfType !== ET_REL) return value;
   if (!extendedSectionIndex && sectionIndex === SHN_ABS) return value;
   if (!extendedSectionIndex && (sectionIndex === SHN_COMMON || sectionIndex === SHN_UNDEF)) return null;
+  if (elfType !== ET_REL) return value;
   const valid = extendedSectionIndex
     ? actualSectionIndex(sectionIndex, sections)
     : normalSectionIndex(sectionIndex, sections);
@@ -307,7 +307,6 @@ function parseSectionHeaders(r, h, bits, image) {
       out.push({ index: i, nameOffset: r.u32(p), type: r.u32(p + 4), flags: BigInt(r.u32(p + 8)), addr: BigInt(r.u32(p + 12)), offset: BigInt(r.u32(p + 16)), size: BigInt(r.u32(p + 20)), link: r.u32(p + 24), info: r.u32(p + 28), addralign: BigInt(r.u32(p + 32)), entsize: BigInt(r.u32(p + 36)), name: '' });
     }
   }
-  if (h.shstrndx === 0xffff && out[0] && out[0].link < out.length) h.shstrndx = out[0].link;
   return out;
 }
 
@@ -326,13 +325,25 @@ function terminatedStringInTable(r, strStart, strSize, offset, maxSpan) {
   return r.cstring(strStart + offset, Math.min(nul + 1, max));
 }
 
-function nameSections(r, sections, h) {
+function nameSections(r, sections, h, image) {
   let shstrndx = h.shstrndx;
-  if (shstrndx === 0xffff && sections[0] && sections[0].link < sections.length) {
-    shstrndx = sections[0].link;
+  if (shstrndx === SHN_XINDEX) {
+    const link = sections[0]?.link;
+    if (link == null || link === 0 || link >= sections.length) {
+      markELFMetadataPartial(image, 'section-names:shstrndx-invalid', `ELF e_shstrndx SHN_XINDEX section-0 sh_link ${link ?? '<absent>'} does not resolve to a section`);
+      return;
+    }
+    shstrndx = link;
+  } else if (shstrndx !== 0 && shstrndx >= sections.length) {
+    markELFMetadataPartial(image, 'section-names:shstrndx-invalid', `ELF e_shstrndx ${shstrndx} is outside the section header table (${sections.length} sections)`);
+    return;
   }
   const str = sections[shstrndx];
-  if (!str || str.type !== SHT_STRTAB || str.offset + str.size > BigInt(r.length)) return;
+  if (!str || (shstrndx !== 0 && str.type !== SHT_STRTAB)) {
+    if (shstrndx !== 0) markELFMetadataPartial(image, 'section-names:shstrndx-not-strtab', `ELF e_shstrndx ${shstrndx} does not name an SHT_STRTAB section`);
+    return;
+  }
+  if (str.offset + str.size > BigInt(r.length)) return;
   for (const s of sections) {
     if (BigInt(s.nameOffset) >= str.size) continue;
     const sectionName = terminatedStringInTable(r, Number(str.offset), Number(str.size), s.nameOffset, 1 << 20);
@@ -386,6 +397,7 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     const specialKnown=!extendedSectionIndex&&(resolvedShndx===SHN_UNDEF||resolvedShndx===SHN_ABS||resolvedShndx===SHN_COMMON);
     if(sectionIdentityKnown&&!normal&&!specialKnown){sectionIdentityKnown=false;image.warnings.push(`ELF symbol ${i} uses unsupported reserved section index ${resolvedShndx}`);}
     const defined=sectionIdentityKnown?(resolvedShndx!==SHN_UNDEF):null;
+    const common=sectionIdentityKnown&&!extendedSectionIndex&&resolvedShndx===SHN_COMMON;
     // STT_TLS: a defined TLS symbol's st_value is its TLS offset, not a
     // virtual address (ELF gABI). It must never enter the VA domain or
     // image.exports as a canonical address (#5843).
@@ -396,11 +408,11 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     // anonymous `bind-N` bucket (#5844).
     const binding=bind===0?'local':bind===1?'global':bind===2?'weak':bind===STB_GNU_UNIQUE?'gnu-unique':`bind-${bind}`;
     const kind=type===2?'function':type===1?'object':type===3?'section':tls?'tls':type===STT_GNU_IFUNC?'indirect-function':`type-${type}`;
-    const ifunc=type===STT_GNU_IFUNC&&defined===true;
+    const ifunc=type===STT_GNU_IFUNC&&defined===true&&!common;
     const riscvVariantCcFlag=image.metadata.machine===EM_RISCV&&(other&STO_RISCV_VARIANT_CC)!==0;
     const riscvVariantCc=riscvVariantCcFlag&&type===2;
     const sym={name,address:tls?null:(address??0n),originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??value,resolution:'runtime-resolver'}:{}),
-      ...(tls?{tlsOffset:value}:{}),sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:value}:null,addressDomain:tls?'tls-offset':elfType===ET_REL&&normal?'section-relative-synthetic':'virtual'};
+      ...(tls?{tlsOffset:value}:{}),...(common?{commonAlignment:value,commonSize:size,allocation:'common-unallocated'}:{}),sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:value}:null,addressDomain:tls?'tls-offset':common?'common-unallocated':elfType===ET_REL&&normal?'section-relative-synthetic':'virtual'};
     image.symbols.push(sym);
     const externallyVisible=bind===1||bind===2||bind===STB_GNU_UNIQUE;
     if(defined===false&&externallyVisible){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'symbol-import'))break;image.imports.push({name,library:null,ordinal:null,weak:bind===2,symbolIndex:i,tableIndex:table.index,source:'elf-dynsym',sites:[]});}

@@ -68,8 +68,9 @@ export class HypothesisStore {
       updatedAt: now,
     };
     if (!record.claim) return null;
-    this.records.set(id, record);
-    return record;
+    const stored = freezeRecord(record);
+    this.records.set(id, stored);
+    return stored;
   }
 
   reject(id, contradictionEvidenceIds = []) {
@@ -96,4 +97,15 @@ function knownIds(ids, store) {
 
 function clamp(value) {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0.5;
+}
+
+function freezeRecord(record) {
+  // Hypothesis records are authority-bearing state. Freeze the record and its
+  // mutable collection fields before publishing it through any accessor or
+  // upsert return value, so callers cannot bypass verify()/reject() by mutating
+  // a leaked reference (#4434).
+  Object.freeze(record.supportEvidenceIds);
+  Object.freeze(record.contradictionEvidenceIds);
+  Object.freeze(record.missingEvidence);
+  return Object.freeze(record);
 }
