@@ -97,12 +97,12 @@ function containsExpression(root, expression) {
   }
   return false;
 }
-function semanticExpressionConsumer(semantic, value, instruction, state, nested = false) {
+function semanticExpressionConsumer(semantic, value, instruction, state, nested = false, rendered = null) {
   const produced = state.expressionProofs?.get(value?.id);
   const elisions = state.renderElisions?.get(instruction?.id);
   const fields = fieldProjectionRecords(semantic, state);
-  const records = elisions?.length || fields.length
-    ? Object.freeze([...(produced?.records || []), ...(elisions || []), ...fields]) : produced?.records;
+  const records = elisions?.length || fields.length || rendered?.records.length
+    ? Object.freeze([...(produced?.records || []), ...(elisions || []), ...fields, ...(rendered?.records || [])]) : produced?.records;
   if (!records?.length) return semantic;
   if (!produced || (produced.expression !== semantic.expression
       && (!nested || !containsExpression(semantic.expression, produced.expression)))) {
@@ -129,10 +129,13 @@ function semanticExpressionConsumer(semantic, value, instruction, state, nested 
     if (!currentBuildHistory(records)) {
       budget.reasons.add('stale-expression-build-history'); return semantic;
     }
+    if (rendered && !rendered.isCurrent()) {
+      budget.reasons.add('stale-store-render-history'); return semantic;
+    }
     expressionHistoryConsumers.set(semantic, Object.freeze({
       ir:state.ir, expression:semantic.expression, op:semantic.op, instructionId:semantic.ir,
       location:semantic.location, records,
-      isCurrent:() => observation.matches() && currentBuildHistory(records),
+      isCurrent:() => observation.matches() && currentBuildHistory(records) && (!rendered || rendered.isCurrent()),
     }));
   } catch {
     // A failed bounded observation must not be retried for every later line.
@@ -800,6 +803,42 @@ function isElidableReturnSpillStore(store, state) {
   return false;
 }
 
+function compoundStoreHistory(instruction, value, expression, location, form, state) {
+  const budget = consumerObservationBudget(state);
+  const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
+  const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
+  if ((state.compoundStoreHistoryCount || 0) >= maximum) {
+    budget.reasons.add('compound-store-history-budget'); return null;
+  }
+  // This is the actual text-rendering branch, not the readModifyWrite analysis
+  // fact or a memory-equivalence proof. The repeated load and the arithmetic
+  // remain semantic inputs even when their spelling is implicit in ++ or +=.
+  const source = mergeSource(origin(instruction, value), expression.source,
+    location.expression?.source, location.base?.source, location.index?.source);
+  const record = Object.freeze({ rule:'render-compound-store', phase:'render', valueId:value?.id ?? null,
+    before:'store:assignment', after:`store:${form}`,
+    evidence:Object.freeze({ kind:'observed-store-spelling-not-memory-equivalence',
+      detail:'actual C AST store spelling; no atomicity, alias, overflow or memory-equivalence proof is issued' }),
+    originHistory:expressionOriginHistory({ source }, { source }),
+  });
+  (state.rewriteProof ??= []).push(record);
+  state.compoundStoreHistoryCount = (state.compoundStoreHistoryCount || 0) + 1;
+  const ir = state.ir, instructions = ir.instructions, position = instructions.indexOf(instruction);
+  let observation = null;
+  try {
+    if (budget.edges <= 0 || position < 0) throw new Error('store-render-observation-budget');
+    // Observe the selected inputs before invoking a caller's abort hook. A
+    // callback must not bind yesterday's spelling to today's changed operands.
+    observation = captureProjectionIrData([instruction, value, expression, location]);
+    budget.edges -= observation.metrics.edges;
+    if (budget.edges < 0 || state.opts?.shouldAbort?.() || !observation.matches()) throw new Error('store-render-observation-unavailable');
+  } catch {
+    observation = null; budget.edges = 0; budget.reasons.add('compound-store-observation-unavailable');
+  }
+  return { records:Object.freeze([record]), isCurrent:() => Object.getOwnPropertyDescriptor(ir, 'instructions')?.value === instructions
+    && Object.getOwnPropertyDescriptor(instructions, position)?.value === instruction && observation?.matches() === true };
+}
+
 function knownStatementForLine(line, state, lineIndex) {
   if (line?.row == null || line.kind !== 'stmt') return null;
   const insts = (state.ir.instructions || []).filter((i) => i.row === line.row);
@@ -833,14 +872,16 @@ function knownStatementForLine(line, state, lineIndex) {
       };
     }
     const location = memoryLocation(store, state), value = valueOf(store.args?.[0]), e = expressionFor(value, state);
-    let text = `${location.text} = ${printExpression(e)};`;
+    let text = `${location.text} = ${printExpression(e)};`, rendered = null;
     if (e?.kind === 'binary' && ['add','sub','mul'].includes(e.op) && e.left?.kind === 'load' && e.left.location?.key === location.key) {
       const rhs = printExpression(e.right);
-      if (e.op === 'add' && e.right?.kind === 'const' && e.right.value === 1n) text = `${location.text}++;`;
-      else if (e.op === 'sub' && e.right?.kind === 'const' && e.right.value === 1n) text = `${location.text}--;`;
-      else text = `${location.text} ${{add:'+=',sub:'-=',mul:'*='}[e.op]} ${rhs};`;
+      let form;
+      if (e.op === 'add' && e.right?.kind === 'const' && e.right.value === 1n) { text = `${location.text}++;`; form = 'post-increment'; }
+      else if (e.op === 'sub' && e.right?.kind === 'const' && e.right.value === 1n) { text = `${location.text}--;`; form = 'post-decrement'; }
+      else { text = `${location.text} ${{add:'+=',sub:'-=',mul:'*='}[e.op]} ${rhs};`; form = `${e.op}-assignment`; }
+      rendered = compoundStoreHistory(store, value, e, location, form, state);
     }
-    return { text, semantic: semanticExpressionConsumer({ op: 'store', location, expression: e, ir: store.id }, value, store, state), source: mergeSource(line.source, e?.source, origin(store, store.dst)) };
+    return { text, semantic: semanticExpressionConsumer({ op: 'store', location, expression: e, ir: store.id }, value, store, state, false, rendered), source: mergeSource(line.source, e?.source, origin(store, store.dst)) };
   }
   const ret = insts.find((i) => i.op === 'ret');
   if (ret && /^return\b/.test(String(line.text || ''))) {

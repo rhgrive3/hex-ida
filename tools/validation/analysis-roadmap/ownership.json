@@ -57,6 +57,7 @@
       "tests/phase8/provenance/semantic-suppression.test.mjs",
       "tests/phase8/provenance/idiom-history.test.mjs",
       "tests/phase8/provenance/equal-phi-history.test.mjs",
+      "tests/phase8/provenance/compound-store-history.test.mjs",
       "tests/phase8/provenance/field-render.test.mjs",
       "js/decompiler/switch.js",
       "tests/phase8/provenance/switch-render.test.mjs",

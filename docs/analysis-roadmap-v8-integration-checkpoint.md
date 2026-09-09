@@ -2843,6 +2843,49 @@ C4-04 legacy proof gating and the remaining C4-03 class denominator remain open.
 The preceding checkpoint's broad deadline-related failures are retained, not
 waived as baseline or silently converted into acceptance. Integration stays LOCKED.
 
+## C4-03 actual C AST compound-store spelling history
+
+The existing C AST producer spells a direct same-location load/add/sub/mul/store
+as post-increment, post-decrement or a compound assignment. Those five actual
+branches now append bounded source histories to the existing rewrite ledger.
+The record retains the load, arithmetic, store and rendered address inputs;
+implicit spelling is not removal of a canonical load or value. Before/after
+origin sets therefore retain those inputs, with no invented deleted semantic
+entity, replacement AST, memory proof or RMW analysis-fact adoption.
+
+Only the actual store-render consumer receives its record, not another store
+or return that consumes the same expression. Selection-time observations bind
+the original instruction root/position, inputs, expression and location before
+calling an abort hook. Consumer publication and later projection check those
+observations again. Mutation, replaced instructions and copied public records
+cannot manufacture a current rendered edge. Caps and cancellation preserve the
+actual existing output while reporting incomplete provenance. The observation
+closure retains the selected IR inputs, not the full pipeline state.
+
+The proof label is `observed-store-spelling-not-memory-equivalence`: the existing
+display predicate is unchanged and is not newly certified for atomicity,
+aliasing, overflow or memory observables. Phase 8 currently expands the compound
+text back to an ordinary assignment; the actual earlier spelling event is
+retained through that owned projection and replay, not presented as the current
+line spelling. The earlier semantic-core RMW renderer (including division) and
+explicit later spelling-transition histories remain separate uncompleted paths.
+
+Nine new canonical provenance tests cover five actual spellings at eight widths
+(40 source-history cells, not equivalence proofs), distinct actual consumers,
+non-rendered/reversed/different-location negatives, stale/copy/root refusal,
+late renderer callback mutation, cumulative record limits, cancellation,
+mandatory deadline-skipped fallback, replay and snapshot-bound query navigation.
+Canonical IR data/root identities and existing output predicates are preserved.
+The exact new test path is assigned to Phase 8 ownership.
+
+Live PR #3421 remains the reused foundation at
+`4cd5b3eb9200b1180985b9df3a74f8245a5cc928`. The open compound-title search found
+no match; the provenance-title search also found the unrelated cache issue PR
+#7746, which is not imported into this TODO lane. These searches are not an
+exhaustive proof that no other implementation exists. All original 23 findings,
+the 135-binary denominator and existing broad substrate failures remain open;
+no requirement is narrowed or marked complete. Acceptance remains LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -2877,7 +2920,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C3-03 | Versioned language metadata and unknown-version matrix |
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
-| HEX-C4-03 | Navigation, expression/recovery/legacy-idiom and equal-incoming-phi histories, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
+| HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi and C AST compound-store histories, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
 | HEX-C4-04 | Proof-gated scalar projection, owned inputs, transaction coverage and optional reuse of all 64 display rules as independently verified candidates implemented; ordinary legacy-view adoption, full family/width denominator and memory/CFG/exception observables remain open |
 | HEX-C4-05 | Frozen 272-cell scalar/14-Bool/8-width producer coverage and 3 actual schedules (816 scalar cells); adopted-transform history now preserves actual rule/cost/budget/proof audits. Native proof gaps, arbitrary permutations and full acceptance remain open |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |
