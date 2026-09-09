@@ -41,6 +41,7 @@ const DW_TAG = Object.freeze({
   member: 0x0d,
   pointer_type: 0x0f,
   compile_unit: 0x11,
+  partial_unit: 0x12,
   base_type: 0x24,
   const_type: 0x26,
   subprogram: 0x2e,
@@ -576,7 +577,12 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
     }
 
     const stack = [];
+    let rootDie = null;
     let unitComplete = true;
+    // A structural violation (wrong root tag, extra top-level DIE) fails the
+    // unit closed but does not stop the walk: later DIE offsets and their
+    // facts stay available, and only the completeness claim is withheld.
+    let unitStructurallyMalformed = false;
     while (cursor.offset < unitEnd) {
       if (abbrevState.isCancelled()) {
         diagnostics.push('debug parse cancelled');
@@ -603,13 +609,45 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
         unitComplete = false;
         break;
       }
-      if (code === 0) { stack.pop(); continue; }
+      if (code === 0) {
+        // DWARF4 §2.3 / v5 §2.3: sibling chains terminate with a null entry.
+        // A null entry with no open sibling chain is structure nobody declared,
+        // not a no-op (#5244).
+        if (stack.length === 0) {
+          diagnostics.push(`unmatched null DIE entry at 0x${dieOffset.toString(16)}`);
+          complete = false;
+          unitComplete = false;
+          continue;
+        }
+        stack.pop();
+        continue;
+      }
       const declaration = abbrev.get(code);
       if (!declaration) {
         diagnostics.push(`unknown abbreviation code ${code} at 0x${dieOffset.toString(16)}`);
         complete = false;
         unitComplete = false;
         break;
+      }
+      // A .debug_info compilation unit roots at exactly one DW_TAG_compile_unit
+      // or DW_TAG_partial_unit DIE (DWARF4 §7.5). Any other root tag, or a
+      // second top-level DIE, is a structure the format cannot express (#5251).
+      // The unit fails closed; the remaining DIEs keep parsing so their facts
+      // stay available without the result ever claiming completeness. DWARF5
+      // roots are a per-unit-type contract and are validated separately.
+      if (stack.length === 0 && version < 5) {
+        if (rootDie == null) {
+          rootDie = dieOffset;
+          if (declaration.tag !== DW_TAG.compile_unit && declaration.tag !== DW_TAG.partial_unit) {
+            diagnostics.push(`unit at 0x${unitStart.toString(16)} does not start with a compilation or partial unit DIE (tag 0x${declaration.tag.toString(16)})`);
+            complete = false;
+            unitStructurallyMalformed = true;
+          }
+        } else {
+          diagnostics.push(`multiple top-level DIEs in unit at 0x${unitStart.toString(16)}`);
+          complete = false;
+          unitStructurallyMalformed = true;
+        }
       }
       const attributes = new Map();
       // Keep the first declaration for deterministic decoding, but never
@@ -705,6 +743,16 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       if (die.parent != null) dies.get(die.parent)?.children.push(dieOffset);
       if (declaration.hasChildren) stack.push(dieOffset);
     }
+    // A unit whose bytes exactly fill its declared length can still end with a
+    // child/sibling chain that was never closed by its terminating null entry;
+    // physical truncation and structural truncation are different defects and
+    // both must withhold completeness (#5244).
+    if (unitComplete && stack.length > 0) {
+      diagnostics.push(`unterminated DIE tree at end of unit at 0x${unitStart.toString(16)}`);
+      unitComplete = false;
+      complete = false;
+    }
+    if (unitStructurallyMalformed) unitComplete = false;
     if (!unitComplete) complete = false;
     units.push(unit);
     cursor.offset = unitEnd;
