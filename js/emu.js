@@ -790,7 +790,12 @@ export class Emulator {
     if (mn === 'fcvt' || mn === 'fcvtd' || mn === 'fcvts') { this.fset(ops[0],a); return null; }
     if (/^(scvtf|ucvtf)$/.test(mn)) {
       const bits=ops[1]?.bits === 32 ? 32 : 64, raw=this.get(ops[1].text);
-      this.fset(ops[0],Number(mn === 'scvtf' ? BigInt.asIntN(bits,raw) : BigInt.asUintN(bits,raw))); return null;
+      const value=mn === 'scvtf' ? BigInt.asIntN(bits,raw) : BigInt.asUintN(bits,raw);
+      // The destination format must round once, directly from the integer.
+      // Going through binary64 first would round twice and flip boundary
+      // cases by one ULP (#5235).
+      if (this.fpSize(ops[0]) === 4) { this.setFpBits(ops[0],encodeExactFp(value,0,4)); return null; }
+      this.fset(ops[0],Number(value)); return null;
     }
     if (/^fcvtz[su]$/.test(mn)) {
       const bits=ops[0]?.bits === 32 || /^w/.test(ops[0]?.text || '') ? 32 : 64, unsigned=mn === 'fcvtzu'; let result=0n;
