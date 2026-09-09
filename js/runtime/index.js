@@ -4,6 +4,13 @@ import { compileExperiment, HypothesisVerifier } from '../dynamic/experiments.js
 import { createRuntimeEvidenceRecord, evidenceFromExperiment, fuseStaticDynamic, traceToSemanticFacts } from '../runtime-evidence/index.js';
 import { DebugAdapterError, asAddress, boundedInteger } from '../debug/adapter.js';
 
+function runtimeAdapterName(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new DebugAdapterError('invalid-adapter-name', 'adapter name must be a non-empty string');
+  }
+  return value;
+}
+
 function invalidExternalSignal() {
   return new DebugAdapterError('invalid-signal', 'signal must be AbortSignal-compatible');
 }
@@ -173,21 +180,25 @@ export class RuntimeAnalysisPlatform {
   }
   registerAdapter(name, adapter) {
     if (!adapter) throw new DebugAdapterError('adapter','adapter is required');
-    this.adapters.set(String(name), adapter);
+    this.adapters.set(runtimeAdapterName(name), adapter);
     return adapter;
   }
   adapter(name = null) {
-    if (name) return this.adapters.get(String(name)) || null;
+    if (name != null) return this.adapters.get(runtimeAdapterName(name)) || null;
     const session = this.sessions.current;
     if (session) return session.adapter;
     return this.adapters.get('local') || this.adapters.values().next().value || null;
   }
   createRemote(name, transport, options = {}) {
+    const adapterName = runtimeAdapterName(name);
     const kind = options.kind || 'remote';
     const adapter = kind === 'lldb' ? new LLDBCompatibleAdapter(transport, options) : kind === 'frida' ? new FridaCompatibleAdapter(transport, options) : new RemoteDebugAdapter(transport, options);
-    return this.registerAdapter(name, adapter);
+    return this.registerAdapter(adapterName, adapter);
   }
-  createReplay(name, recording, options = {}) { return this.registerAdapter(name, new ReplayAdapter(recording, options)); }
+  createReplay(name, recording, options = {}) {
+    const adapterName = runtimeAdapterName(name);
+    return this.registerAdapter(adapterName, new ReplayAdapter(recording, options));
+  }
   async startSession({ adapter = null, binaryHash = null, trace = {}, connect = true } = {}) {
     const instance = adapter == null ? this.adapter() : (typeof adapter === 'string' ? this.adapter(adapter) : adapter);
     if (!instance) throw new DebugAdapterError('adapter-not-found',`debug adapter not found: ${adapter ?? '<default>'}`);

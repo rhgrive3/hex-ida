@@ -8,7 +8,7 @@ import { assertWireBudget, providerCapabilities, semanticBudgetFor } from '../bu
 import { createHexToolRegistry } from '../tools/index.js';
 import {
   addressString, assertLiveBindingsUnchanged, compactCandidate, deterministicDecision,
-  ensureRunning, humanError, maxWireUsage, memoryAnchor, normalizeError, providerDiagnostics,
+  createMonotonicClock, ensureRunning, humanError, maxWireUsage, memoryAnchor, normalizeError, providerDiagnostics,
   remainingTime, requiredScopeForTool, resolveMonotonicClock, sessionMatchesSnapshot, stableStringify, wireMeta,
 } from './runtime-support.js';
 
@@ -23,6 +23,14 @@ function normalizeExternalSignal(value) {
     throw new AIError('invalid_model_output', 'AI turn signal must be AbortSignal-compatible.');
   }
   return value;
+}
+
+function externalAbortError(signal) {
+  const timedOut = signal?.reason === 'timeout';
+  return new AIError(
+    timedOut ? 'budget_exhausted' : 'cancelled',
+    timedOut ? 'The AI investigation timed out.' : 'AI investigation was cancelled.',
+  );
 }
 
 export async function executeTurn(input = {}, options = {}) {
@@ -41,14 +49,14 @@ export async function executeTurn(input = {}, options = {}) {
     const turnTimeoutMs = Number.isFinite(providerDefault) && providerDefault > 0
       ? Math.min(budget.timeoutMs, Math.floor(providerDefault))
       : budget.timeoutMs;
-    const monotonicNow = resolveMonotonicClock(options.clock, options.monotonicNow, options.now);
+    const monotonicNow = createMonotonicClock(resolveMonotonicClock(options.clock, options.monotonicNow, options.now));
     const started = monotonicNow(), activity = [], observations = [];
     let modelCalls = 0, toolCalls = 0, contextBytes = 0, plan = null, decision = null, limitReason = null;
     let wireUsage = { semanticContextBytes: 0, toolSchemaBytes: 0, historyBytes: 0, wireBytes: 0, estimatedInputTokens: 0 };
     const externalSignal = normalizeExternalSignal(options.signal ?? request.signal);
-    if (externalSignal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
+    if (externalSignal?.aborted) throw externalAbortError(externalSignal);
     const turnController = new AbortController();
-    const externalAbort = () => turnController.abort(externalSignal?.reason || 'cancelled');
+    const externalAbort = () => turnController.abort(externalSignal?.reason ?? 'cancelled');
     if (externalSignal) { externalSignal.addEventListener('abort', externalAbort, { once: true }); if (externalSignal.aborted) externalAbort(); }
     const deadline = Number.isFinite(turnTimeoutMs) ? setTimeout(() => turnController.abort('timeout'), turnTimeoutMs) : null;
     this.activeControllers.add(turnController);
@@ -243,7 +251,7 @@ export async function executeTurn(input = {}, options = {}) {
         }
       };
       assertDeadlineHonest();
-      const result = await this.finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope: scopeController.effectiveScope, stores: { evidenceStore, hypothesisStore, proposalStore }, signal });
+      const result = await this.finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, monotonicNow, limitReason, registry, snapshot, effectiveScope: scopeController.effectiveScope, stores: { evidenceStore, hypothesisStore, proposalStore }, signal });
       // Every asynchronous persistence boundary gets a pre/post binding check.
       // The payloads below are snapshot-derived; a live workbench switch while
       // a persistence adapter is awaiting cannot turn this turn into a normal

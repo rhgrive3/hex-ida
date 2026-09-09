@@ -41,13 +41,15 @@ async function expectApprovalFailure(promise) {
 }
 
 {
-  const app = { projectAnnotations: [] };
+  let saves = 0;
+  const app = { projectAnnotations: [], workspace: { autosave: () => { saves += 1; return true; } } };
   const store = createStore();
   const capabilityExecutor = new CapabilityExecutor({ catalog, app });
   const proposalExecutor = new ProposalExecutor({ store, capabilityExecutor, app });
   const proposal = createProjectProposal(store, 'approved');
   const result = await proposalExecutor.approveAndApply(proposal.id);
   assert.equal(result.proposal.status, 'applied');
+  assert.equal(saves, 1, 'approved project annotation must use the durable workspace persistence adapter');
   assert.equal(app.projectAnnotations.length, 1);
   assert.equal(app.projectAnnotations[0].id, 'approved');
   assert.equal(app.projectAnnotations[0].value, 'approved');
@@ -151,7 +153,9 @@ async function expectApprovalFailure(promise) {
   let executionBefore = null;
   await store.apply(proposal.id, {
     approvalToken,
-    currentState: firstBefore,
+    // ProposalExecutor's patch backend exposes the current bytes as a plain
+    // array, matching the canonical payload used for the stale-state check.
+    currentState: Array.from(firstBefore),
     apply: (item, authorization) => {
       executionBefore = Array.from(item.before);
       assert.equal(
@@ -162,11 +166,11 @@ async function expectApprovalFailure(promise) {
     },
   });
   assert.deepEqual(executionBefore, [0x90], 'stale-state revision and execution payload must come from one snapshot');
-  assert.equal(beforeReads, 2, 'create() must not fingerprint caller-owned before separately from payload snapshotting');
+  assert.equal(beforeReads, 1, 'create() must snapshot caller-owned before once for both payload and revision authority');
 }
 
 {
-  const app = { projectAnnotations: [] };
+  const app = { projectAnnotations: [], workspace: { autosave: () => true } };
   const store = createStore();
   const executor = new CapabilityExecutor({ catalog, app });
   const proposal = createProjectProposal(store, 'snapshot', 'safe');
@@ -247,7 +251,7 @@ async function expectApprovalFailure(promise) {
 }
 
 {
-  const app = { projectAnnotations: [] };
+  const app = { projectAnnotations: [], workspace: { autosave: () => true } };
   const store = createStore();
   const executor = new CapabilityExecutor({ catalog, app });
   const proposal = createProjectProposal(store, 'single-use');

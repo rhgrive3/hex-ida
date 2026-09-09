@@ -1,5 +1,5 @@
 import { deepFreeze, stableStringify } from '../../core/identity/index.js';
-import { createOriginSet } from '../../core/identity/origin.js';
+import { createOriginSet, isReusableOriginSet } from '../../core/identity/origin.js';
 import {
   SEMANTIC_IR_CONTRACT_VERSION,
   SEMANTIC_IR_SCHEMA_VERSION,
@@ -115,6 +115,11 @@ function cloneReferenceTarget(value) {
 function cacheReferenceReads(value, seen = new WeakMap()) {
   if (!value || typeof value !== 'object'
     || ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date) return value;
+  // Only this producer-owned, recursively checked immutable payload is safe
+  // to retain. Proxying it would discard the normalizer's ownership brand and
+  // copy/normalize the whole provenance tree again for each semantic entity.
+  // Caller-owned frozen objects, accessors and mutable children still capture.
+  if (isReusableOriginSet(value)) return value;
   const cached = seen.get(value);
   if (cached) return cached;
   const target = needsReferenceClone(value) ? cloneReferenceTarget(value) : value;
