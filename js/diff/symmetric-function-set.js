@@ -21,12 +21,14 @@ function requestWithSignal(request, signal) {
       fn(value);
     };
     const onAbort = () => {
+      if (settled) return;
       try { request?.cancel?.(); } catch { /* best effort */ }
       finish(reject, abortError(signal));
     };
     if (signal?.aborted) { onAbort(); return; }
     signal?.addEventListener?.('abort', onAbort, { once:true });
     Promise.resolve(request).then((value) => finish(resolve, value), (error) => finish(reject, error));
+    if (signal?.aborted) { onAbort(); return; }
   });
 }
 function executableRegions(regions) {
@@ -121,7 +123,10 @@ export async function createSymmetricCodeFunctionSet({
   }
 
   let completed = output.filter(Boolean).length;
-  const normalizedChunk = Math.max(64 * 1024, Math.min(8 * 1024 * 1024, Number(chunkBytes) || DEFAULT_CHUNK_BYTES));
+  const requestedChunk = Number(chunkBytes);
+  const normalizedChunk = Number.isSafeInteger(requestedChunk) && requestedChunk > 0
+    ? Math.max(64 * 1024, Math.min(8 * 1024 * 1024, requestedChunk))
+    : DEFAULT_CHUNK_BYTES;
   for (const [region, rows] of byRegion) {
     rows.sort((a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : 0);
     const start = BigInt(region.vmAddr);

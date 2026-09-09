@@ -50,6 +50,21 @@ assert.equal(evaluateCapabilityRule(missingVsNull, { features: {} }).verdict, 'n
 assert.equal(evaluateCapabilityRule(missingVsNull, { features: { value: null } }).verdict, 'supported');
 assert.throws(() => compileCapabilityRule({ id: 'proto', when: { op: 'exists', path: 'prototype.polluted' } }), /path-forbidden/);
 assert.throws(() => compileCapabilityRule({ id: 'bad-in', when: { op: 'in', path: 'value', value: 'not-an-array' } }), /in-value-array-required/);
+for (const malformedOp of [['equals'], { value: 'equals' }, true, 1]) {
+  assert.throws(
+    () => compileCapabilityRule({ id: 'typed-op', when: { op: malformedOp, path: 'value', value: 2 } }),
+    /capability-rule-op-invalid/,
+  );
+}
+assert.throws(
+  () => evaluateCapabilityRule({ id: 'structured-op', when: { op: ['equals'], path: 'value', value: 2 } }, { features: { value: 1 } }),
+  /capability-rule-op-invalid/,
+);
+assert.equal(
+  evaluateCapabilityRule({ id: 'lt-control', when: { op: 'lt', path: 'value', value: 2 } }, { features: { value: 1 } }).verdict,
+  'supported',
+  'valid lt rules must keep their existing comparison semantics',
+);
 
 const hugeArgs = Array.from({ length: 4 }, (_, index) => ({ op: 'exists', path: `v${index}` }));
 assert.throws(() => compileCapabilityRule({ id: 'too-many', when: { op: 'all', args: hugeArgs } }, { maxExpressionArgs: 3 }), /args-too-many/);

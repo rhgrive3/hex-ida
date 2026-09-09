@@ -191,6 +191,10 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   }
 
   const formalArgumentIndex = (valueId) => {
+    // Raw/partial call IR may carry a malformed structured argument. Never
+    // let an object reach String() here: its default spelling could collide
+    // with a real value id (and null-prototype records throw on coercion).
+    if (valueId == null || (typeof valueId === 'object' && valueId !== null) || typeof valueId === 'function') return -1;
     if (Array.isArray(ir.inputs)) return ir.inputs.indexOf(valueId);
     const value = valueById.get(String(valueId));
     const explicit = value?.metadata?.argumentIndex
@@ -257,7 +261,12 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     // the canonical structured spelling ({ valueId }); the structured form is
     // unwrapped exactly as escape analysis does (#6151).
     const argumentIds = Array.isArray(callNode.call?.arguments)
-      ? callNode.call.arguments.map((argument) => argument?.valueId ?? argument)
+      ? callNode.call.arguments.map((argument) => {
+        if (argument == null || typeof argument !== 'object') return argument;
+        if (Array.isArray(argument) || !Object.hasOwn(argument, 'valueId')) return null;
+        const valueId = argument.valueId;
+        return typeof valueId === 'string' && valueId.trim() ? valueId : null;
+      })
       : callNode.inputs;
     const composed = [];
     for (const provenance of alternatives) {

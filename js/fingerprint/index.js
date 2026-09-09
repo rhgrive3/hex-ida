@@ -22,6 +22,15 @@ function hashBytes(bytes) {
   return hash.toString(16).padStart(16, '0');
 }
 function hashText(text) { return text ? hashBytes(new TextEncoder().encode(text)) : null; }
+function canonicalFingerprintBytes(value) {
+  if (value == null) return null;
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (!Array.isArray(value) || value.some((byte) => typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 255)) {
+    throw new TypeError('function-fingerprint-bytes-invalid');
+  }
+  return Uint8Array.from(value);
+}
 function stable(value) {
   if (value == null) return 'null';
   if (typeof value === 'bigint') return JSON.stringify({ $bigint: value.toString() });
@@ -50,8 +59,8 @@ function fingerprintSchema(value) {
 export function assertFingerprintCompatible(value) {
   const schema = fingerprintSchema(value);
   if (!schema) return value;
-  const version = Number(value.version);
-  if (!Number.isSafeInteger(version) || version < 1) throw new FingerprintVersionError(value.version, schema);
+  const version = value.version;
+  if (typeof version !== 'number' || !Number.isSafeInteger(version) || version < 1) throw new FingerprintVersionError(version, schema);
   if (version > FUNCTION_FINGERPRINT_VERSION) throw new FingerprintVersionError(version, schema);
   return value;
 }
@@ -273,7 +282,7 @@ function stackShape(input = {}) {
 export function fingerprintFunction(fn = {}, options = {}) {
   assertFingerprintCompatible(fn);
   if (fn?.schema === 'hex.function-fingerprint' && fn.version === FUNCTION_FINGERPRINT_VERSION && options.includeSemantic !== false) return fn;
-  const bytes = fn.bytes == null ? null : (fn.bytes instanceof Uint8Array ? fn.bytes : new Uint8Array(fn.bytes));
+  const bytes = canonicalFingerprintBytes(fn.bytes);
   const architecture = String(fn.architecture || fn.arch || 'unknown').toLowerCase();
   const relocation = normalizeRelocationsDetailed(bytes, fn.relocationOffsets, fn.relocationRanges, architecture);
   const normalizedBytes = relocation.bytes;
@@ -338,7 +347,7 @@ export function fingerprintFunctionFast(fn = {}) {
       relocationNormalization:source.relocationNormalization,
       objc:{ selector:source.objc?.selector || null }, swift:{ typeDescriptor:source.swift?.typeDescriptor || null } });
   }
-  const bytes = fn.bytes == null ? null : (fn.bytes instanceof Uint8Array ? fn.bytes : new Uint8Array(fn.bytes));
+  const bytes = canonicalFingerprintBytes(fn.bytes);
   const architecture = String(fn.architecture || fn.arch || 'unknown').toLowerCase();
   const relocation = normalizeRelocationsDetailed(bytes, fn.relocationOffsets, fn.relocationRanges, architecture);
   const normalizedBytes = relocation.bytes;

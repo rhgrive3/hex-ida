@@ -26,6 +26,7 @@ export function runDiffInWorker(before, after, options = {}) {
     worker.onmessage=(event)=>{const msg=event.data||{};if(msg.id!==id)return;if(msg.ok)finish(resolve,msg.result);else{const error=new Error(msg.error?.message||'Binary diff worker failed');error.name=msg.error?.name||'Error';if(msg.error?.code)error.code=msg.error.code;finish(reject,error);}};
     worker.onerror=(event)=>finish(reject,event?.error||new Error(event?.message||'Binary diff worker failed'));
     worker.onmessageerror=(event)=>finish(reject,event?.error||new Error('Binary diff worker message failed'));
+    if(signal?.aborted){onAbort();return;}
     try{worker.postMessage({t:'diff',id,before,after,options:cloneOptions(options)});}catch(error){finish(reject,error);}
   });
 }
