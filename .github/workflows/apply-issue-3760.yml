@@ -1,0 +1,54 @@
+name: Apply issue 3760 patch
+
+on:
+  push:
+    branches:
+      - fix/issue-3760-elf-unwind-zero-address
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Apply minimal patch and validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('js/binary/elf-unwind.js')
+          text = path.read_text()
+          replacements = [
+              ("  if (address == null || address === 0n || !existingNonUnwindFunction(image, address)) return;",
+               "  if (address == null || !existingNonUnwindFunction(image, address)) return;"),
+              ("      if (initial.value != null && initial.value !== 0n) {",
+               "      if (initial.value != null) {"),
+              ("      if (row.initial == null || row.initial === 0n || row.fde == null || row.fde === 0n) {",
+               "      if (row.initial == null || row.fde == null) {"),
+          ]
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit(f'expected patch anchor exactly once: {old}')
+              text = text.replace(old, new)
+          path.write_text(text)
+          Path('.github/workflows/apply-issue-3760.yml').unlink()
+          PY
+
+          timeout 20s node tests/issue-3760-elf-unwind-zero-address.mjs
+          timeout 30s node tests/phase4/binary/issue-3670-elf-eh-aligned-address.test.mjs
+          timeout 30s node tests/phase4/binary/issue-5581-eh-frame-hdr-output-budget.test.mjs
+          timeout 30s node tests/phase4/binary/issue-6297-elf-ehframe-hdr-decode-failure.test.mjs
+          timeout 45s node tests/check.mjs
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'fix(elf): preserve zero-address unwind evidence'
+          git push origin HEAD:${GITHUB_REF_NAME}
