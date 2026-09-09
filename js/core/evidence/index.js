@@ -294,7 +294,6 @@ export class EvidenceGraph {
     });
     let verdict = claim.verdict;
     if (knownContradictions.length) verdict = 'contradicted';
-    else if (claim.verdict === 'contradicted' && existingContradictionIds.length === 0) verdict = 'contradicted';
     else if (deterministicConfirmations.length) verdict = 'confirmed';
     else if (knownSupport.length) verdict = 'supported';
     else if (supporting.size || confirmedBy.size || claim.verdict === 'unverified') verdict = 'unverified';
