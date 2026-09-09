@@ -79,5 +79,7 @@ for (const value of invalidNumberMaxEntries) {
 }
 assert.equal(new ProjectArtifactIndex([], { maxEntries:2 }).maxEntries, 2);
 assert.equal(new ProjectArtifactIndex().maxEntries, MAX_PROJECT_ARTIFACT_REFS);
+assert.equal(new ProjectArtifactIndex([], { maxEntries:MAX_PROJECT_ARTIFACT_REFS }).maxEntries, MAX_PROJECT_ARTIFACT_REFS);
+assert.equal(artifactIndexFromProject({ analysis:{ cacheReferences:[] } }, { maxEntries:MAX_PROJECT_ARTIFACT_REFS }).maxEntries, MAX_PROJECT_ARTIFACT_REFS);
 
 console.log('phase4 project bounds: PASS');
