@@ -197,12 +197,15 @@ function parseImportNames(raw) {
         if (pageSize !== 0x1000 && pageSize !== 0x4000) continue;
         const trailing = structSize - 22 - pageCount * 2;
         if (trailing % 2 !== 0) continue; // multi-start pool must be uint16-aligned
-        const overflow = new Array(trailing / 2);
-        for (let oi = 0; oi < overflow.length; oi++) overflow[oi] = dv.getUint16(s + 22 + pageCount * 2 + oi * 2, true);
-        const pageStarts = new Array(pageCount);
-        for (let pg = 0; pg < pageCount; pg++) pageStarts[pg] = dv.getUint16(s + 22 + pg * 2, true);
+        /* dyld resolves a DYLD_CHAINED_PTR_START_MULTI entry against the
+           combined page_start[] array (MachOLayout.cpp indexes
+           segInfo->page_start[overflowIndex]), so keep the trailing entries
+           and the page_start[] entries in one array (#5388 review). */
+        const pool = new Array(pageCount + trailing / 2);
+        for (let pg = 0; pg < pageCount; pg++) pool[pg] = dv.getUint16(s + 22 + pg * 2, true);
+        for (let oi = 0; oi < trailing / 2; oi++) pool[pageCount + oi] = dv.getUint16(s + 22 + pageCount * 2 + oi * 2, true);
         formats.set(i, pointerFormat);
-        starts.set(i, { pointerFormat, pageSize, pageCount, pageStarts, overflow });
+        starts.set(i, { pointerFormat, pageSize, pageCount, pool });
       }
     }
   }
@@ -287,14 +290,14 @@ function segmentStarts(starts, segIndex, slot, seg) {
   const delta = slot - seg.vmaddr;
   const page = Number(delta / BigInt(st.pageSize));
   if (page < 0 || page >= st.pageCount) return null;
-  const start = st.pageStarts[page];
+  const start = st.pool[page];
   if (start === 0xffff) return null; // dyld: DYLD_CHAINED_PTR_START_NONE — the page holds no fixups
   const chainStarts = [];
   if (start & 0x8000) {
     let oi = start & 0x7fff;
     let terminated = false;
-    for (let guard = 0; guard < 4096 && oi < st.overflow.length; guard++, oi++) {
-      const x = st.overflow[oi];
+    for (let guard = 0; guard < 4096 && oi < st.pool.length; guard++, oi++) {
+      const x = st.pool[oi];
       chainStarts.push(x & 0x7fff);
       if (x & 0x8000) { terminated = true; break; }
     }
@@ -337,13 +340,13 @@ function makeBlockReader(file) {
 }
 
 /**
- * Walk one fixup chain and report whether `slot` is one of its members.  The
- * whole chain is validated before any membership claim: returns true/false on
- * a cleanly terminated chain, or null when the chain is malformed (out-of-page
+ * Walk one fixup chain and collect its member slot VM addresses.  The whole
+ * chain is validated before any membership claim: returns the member set on a
+ * cleanly terminated chain, or null when the chain is malformed (out-of-page
  * next, non-positive step, unreadable or non-file-backed fixup, iteration
  * guard) — a malformed chain proves membership for nothing (#5388).
  */
-async function chainCoversSlot(st, page, chainStart, slot, seg, read64, base) {
+async function chainMembers(st, page, chainStart, seg, read64, base) {
   const pageSize = BigInt(st.pageSize);
   const pageStart = seg.vmaddr + BigInt(page) * pageSize;
   const pageVmEnd = pageStart + pageSize < seg.vmaddr + BigInt(seg.vmsize)
@@ -351,16 +354,16 @@ async function chainCoversSlot(st, page, chainStart, slot, seg, read64, base) {
     : seg.vmaddr + BigInt(seg.vmsize);
   if (chainStart < 0 || BigInt(chainStart) + 8n > pageVmEnd - pageStart) return null;
   let address = pageStart + BigInt(chainStart);
-  let member = false;
+  const members = new Set();
   for (let guard = 0; guard < 100000; guard++) {
     const fileOff = base + seg.fileoff + (address - seg.vmaddr);
     if (fileOff + 8n > base + seg.fileoff + seg.filesize) return null;
     const ptr = await read64(fileOff);
     if (ptr == null) return null;
-    if (address === slot) member = true;
+    members.add(address);
     const d = chainNext(ptr, st.pointerFormat);
     if (d == null) return null;
-    if (d.next === 0) return member;
+    if (d.next === 0) return members;
     const step = BigInt(d.next) * BigInt(d.stride);
     if (step <= 0n) return null;
     const next = address + step;
@@ -386,6 +389,12 @@ export async function chainedImportSymbols(file, sliceIndex = 0) {
   if (!imports || !imports.names.length) return [];
 
   const read64 = makeBlockReader(file);
+  /* Page-scoped membership memo: many stubs converge on the same GOT page,
+     so cache per (segment, page, chainStart) — a validated member Set (chain
+     walked clean) or null (malformed chain). Malformed stays scoped to its
+     own chainStart, never collapsed into a page-wide invalid flag (#5388
+     review). */
+  const chainMembersCache = new Map();
   const out = [];
   let supplementalReadBytes = raw.length;
   let decodedStubs = 0;
@@ -415,9 +424,14 @@ export async function chainedImportSymbols(file, sliceIndex = 0) {
       if (segStarts == null) continue;
       let member = false;
       for (const chainStart of segStarts.chainStarts) {
-        const verdict = await chainCoversSlot(segStarts.st, segStarts.page, chainStart, slot, hit.s, read64, image.base);
-        if (verdict === true) { member = true; break; }
-        if (verdict == null) { member = false; break; }
+        const cacheKey = `${hit.i}:${segStarts.page}:${chainStart}`;
+        let members = chainMembersCache.get(cacheKey);
+        if (members === undefined) {
+          members = await chainMembers(segStarts.st, segStarts.page, chainStart, hit.s, read64, image.base);
+          chainMembersCache.set(cacheKey, members);
+        }
+        if (members === null) { member = false; break; }
+        if (members.has(slot)) { member = true; break; }
       }
       if (!member) continue;
       const fileOff = image.base + hit.s.fileoff + (slot - hit.s.vmaddr);

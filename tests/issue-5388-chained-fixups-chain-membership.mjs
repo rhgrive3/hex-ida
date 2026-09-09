@@ -19,7 +19,10 @@ function stubWords(slot) {
   return [adrp >>> 0, ldr >>> 0, 0xd61f0200];
 }
 
-/* nodes: page offset -> { ordinal, next } format-6 fixup values; slot: page offset. */
+/* pageStarts: raw page_start[] entries; overflow: trailing multi-start pool entries.
+   Multi-start page entries encode an ABSOLUTE index into the combined array
+   (dyld MachOLayout.cpp walks segInfo->page_start[overflowIndex]).
+   nodes: page offset -> { ordinal, next } format-6 fixup values; slot: page offset. */
 function fixture({ pageStarts, overflow = [], pageCount = pageStarts.length, nodes, slot = 0x300 }) {
   const file = new Uint8Array(0x9000);
   const dv = new DataView(file.buffer);
@@ -124,14 +127,16 @@ test('#5388 a chain whose next leaves its page fails closed', async () => {
 });
 
 test('#5388 an unterminated multi-start pool fails closed', async () => {
-  const file = fixture({ pageStarts: [0x8000], overflow: [0x100], nodes: { 0x100: { ordinal: 0, next: 0 } }, slot: 0x100 });
+  // dyld indexes page_start[overflowIndex] absolutely: for pageCount 1 the
+  // multi-start list lives at pool index 1 = first trailing entry.
+  const file = fixture({ pageStarts: [0x8000 | 1], overflow: [0x100], nodes: { 0x100: { ordinal: 0, next: 0 } }, slot: 0x100 });
   const out = await chainedImportSymbols(file, 0);
   assert.deepEqual(out, []);
 });
 
 test('#5388 a slot on the second chain of a multi-start page is accepted', async () => {
   const file = fixture({
-    pageStarts: [0x8000],
+    pageStarts: [0x8000 | 1],
     overflow: [0x100, 0x300 | 0x8000],
     nodes: { 0x100: { ordinal: 0, next: 0 }, 0x300: { ordinal: 0, next: 0 } },
     slot: 0x300,
@@ -145,7 +150,7 @@ test('#5388 a slot on the second chain of a multi-start page is accepted', async
 
 test('#5388 a slot on the first chain of a multi-start page is accepted', async () => {
   const file = fixture({
-    pageStarts: [0x8000],
+    pageStarts: [0x8000 | 1],
     overflow: [0x100, 0x300 | 0x8000],
     nodes: { 0x100: { ordinal: 0, next: 0 }, 0x300: { ordinal: 0, next: 0 } },
     slot: 0x100,

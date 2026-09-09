@@ -17,13 +17,14 @@ function uleb(value) {
 /* stream: uleb deltas (or raw bytes via rawBytes); fsSize forces the data
    command's declared size (0 = zero-size command). The image exports one
    executable function `foo` at 0x1008 that the stream does not recover. */
-function fixture(stream, { terminator = true, fsSize = null, rawBytes = false, limits = null } = {}) {
+function fixture(stream, { terminator = true, fsSize = null, rawBytes = false, limits = null, symbols = [] } = {}) {
   const bytes = new Uint8Array(0x400);
   const v = new DataView(bytes.buffer);
   const u32 = (o, x) => v.setUint32(o, x, true), i32 = (o, x) => v.setInt32(o, x, true);
   const u64 = (o, x) => v.setBigUint64(o, BigInt(x), true);
   bytes.set([0xcf, 0xfa, 0xed, 0xfe], 0);
-  i32(4, 0x0100000c); i32(8, 0); u32(12, 2); u32(16, 4); u32(20, 312); u32(24, 0); u32(28, 0);
+  const symtabBytes = symbols.length ? 24 + symbols.length * 16 + 64 : 0;
+  i32(4, 0x0100000c); i32(8, 0); u32(12, 2); u32(16, symbols.length ? 5 : 4); u32(20, 312 + symtabBytes); u32(24, 0); u32(28, 0);
   // __TEXT with one executable section
   u32(32, 0x19); u32(36, 152);
   bytes.set(new TextEncoder().encode('__TEXT'), 40);
@@ -46,6 +47,22 @@ function fixture(stream, { terminator = true, fsSize = null, rawBytes = false, l
   const et = 272;
   u32(et, 0x80000033); u32(et + 4, 16); u32(et + 8, 0x380); u32(et + 12, 11);
   bytes.set([0x00, 0x01, 0x66, 0x6f, 0x6f, 0x00, 0x07, 0x02, 0x00, 0x08, 0x00], 0x380);
+  // LC_SYMTAB (optional): defined N_SECT symbols over the executable __text
+  if (symbols.length) {
+    const symoff = 0x180, stroff = symoff + symbols.length * 16;
+    const st = et + 16;
+    u32(st, 0x2); u32(st + 4, 24); u32(st + 8, symoff); u32(st + 12, symbols.length);
+    u32(st + 16, stroff); u32(st + 20, 64);
+    symbols.forEach(([name, address], i) => {
+      const p = symoff + i * 16;
+      u32(p, i * 12);
+      bytes[p + 4] = 0x0e; // N_SECT
+      bytes[p + 5] = 1;    // n_sect
+      u64(p + 8, address);
+      bytes.set(Buffer.from(name), stroff + i * 12);
+      bytes[stroff + i * 12 + name.length] = 0;
+    });
+  }
   return parseMachO(bytes, limits ? { metadataLimits: limits } : {});
 }
 
@@ -77,6 +94,19 @@ test('#5275 a partial stream keeps the starts it did recover', () => {
   const image = fixture([4n], { terminator: false });
   const starts = image.functions.filter((f) => f.source === 'function_starts');
   assert.deepEqual(starts.map((f) => f.address), [0x1004n], 'recovered starts stay alongside independent seeds');
+});
+
+test('#5275 a partial stream seeds unproven executable symbols without double-seeding', () => {
+  /* LC_SYMTAB with two defined N_SECT symbols: `recovered` at 0x1004 (the
+     address the partial function-starts stream did recover) and `fallback`
+     at 0x100c (in __text, never seeded by the truncated stream). */
+  const image = fixture([4n], { terminator: false, symbols: [['recovered', 0x1004n], ['fallback', 0x100cn]] });
+  const at = (addr) => image.functions.filter((f) => f.address === addr);
+  assert.equal(at(0x1004n).length, 1, 'the recovered start keeps its function_starts provenance (no duplicate)');
+  assert.equal(at(0x1004n)[0].source, 'function_starts');
+  const fallback = at(0x100cn);
+  assert.equal(fallback.length, 1, 'the unproven executable symbol gains a symbol-fallback seed');
+  assert.equal(fallback[0].source, 'symbol');
 });
 
 test('#5275 a partial stream does not double-seed a recovered address from symbols', () => {
