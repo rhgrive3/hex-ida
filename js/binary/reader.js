@@ -25,8 +25,9 @@ function integerValue(value, label = 'value') {
 }
 
 function finiteBound(value, fallback) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : fallback;
 }
 
 function byteOffset(value) {
@@ -237,6 +238,7 @@ export class ByteView {
       const start = checkedStart;
       const hardEnd = Number(hardEndBig);
       let p = start;
+      const hardEnd = Number(hardEndBig);
       let value = 0n;
       let shift = 0n;
       let b = 0;
