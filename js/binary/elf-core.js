@@ -256,6 +256,50 @@ function resolveExtendedProgramHeaderCount(r, h, bits) {
   h.phnum = actual;
 }
 
+function rejectAmbiguousPtLoadOverlap(image, index, ph) {
+  // Linux maps conflicting PT_LOAD claims last-wins: a later segment's bytes
+  // (file-backed or zero-fill) replace the earlier mapping for the shared VA
+  // range. Publishing first-wins bytes would hand analysis the program the
+  // OS does NOT execute (#7610), so any overlap whose byte provenance depends
+  // on program-header order fails closed instead of being resolved silently.
+  // Congruent claims (identical file mapping across the shared range) and
+  // all-zero overlaps carry no ambiguity and stay accepted.
+  const vmStart = ph.vaddr;
+  const vmEnd = ph.vaddr + ph.memsz;
+  const backedEnd = ph.vaddr + ph.filesz;
+  for (const existing of image.segments) {
+    if (existing.source !== 'PT_LOAD' || existing.size === 0n) continue;
+    const eVmEnd = existing.address + existing.size;
+    const eBackedEnd = existing.address + existing.fileSize;
+    const overlapStart = vmStart > existing.address ? vmStart : existing.address;
+    const overlapEnd = vmEnd < eVmEnd ? vmEnd : eVmEnd;
+    if (overlapStart >= overlapEnd) continue;
+    const points = [overlapStart, overlapEnd];
+    for (const point of [backedEnd, eBackedEnd]) {
+      if (point > overlapStart && point < overlapEnd) points.push(point);
+    }
+    points.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    for (let i = 0; i + 1 < points.length; i++) {
+      const point = points[i];
+      const newBacked = point >= vmStart && point < backedEnd;
+      const oldBacked = point >= existing.address && point < eBackedEnd;
+      if (!newBacked && !oldBacked) continue;
+      if (newBacked !== oldBacked) {
+        const error = new Error(`PT_LOAD ${index} VM range overlaps ${existing.name || 'PT_LOAD'} with ambiguous file/zero ownership`);
+        error.code = 'ELF_PT_LOAD_VM_OVERLAP';
+        throw error;
+      }
+      const newOffset = ph.offset + (point - vmStart);
+      const oldOffset = existing.fileOffset + (point - existing.address);
+      if (newOffset !== oldOffset) {
+        const error = new Error(`PT_LOAD ${index} VM range overlaps ${existing.name || 'PT_LOAD'} with a different file mapping`);
+        error.code = 'ELF_PT_LOAD_VM_OVERLAP';
+        throw error;
+      }
+    }
+  }
+}
+
 function parseProgramHeaders(r, h, image, bits) {
   const out = [];
   const off = safeOffset(h.phoff);
@@ -281,6 +325,7 @@ function parseProgramHeaders(r, h, image, bits) {
     }
     out.push(ph);
     if (ph.type === PT_LOAD) {
+      rejectAmbiguousPtLoadOverlap(image, i, ph);
       image.addSegment({
         name: `LOAD${i}`, address: ph.vaddr, size: ph.memsz, fileOffset: ph.offset, fileSize: ph.filesz,
         perms: { read: !!(ph.flags & 4), write: !!(ph.flags & 2), execute: !!(ph.flags & 1) }, flags: ph.flags, source: 'PT_LOAD',
