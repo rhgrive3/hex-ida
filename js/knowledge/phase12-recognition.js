@@ -260,9 +260,18 @@ const HOST_APPROVAL_AUTHORITY = createRecognitionApprovalAuthority();
 // itself, and out of the threat model (same tier argument as the captured
 // platform Event references). If no bootstrap hook is registered, the
 // capability is dropped and the binding stays unconfigured — fail-closed.
+// Capability authentication is WeakSet membership, not a property read
+// (review R1 on the R2 round 6 head): a property-brand check
+// (`value[STAMP] === true`) is forgeable by any object with a `get` trap —
+// `new Proxy({}, { get: () => true })` passes every symbol lookup including
+// a module-private one. WeakSet membership is trap-proof: the proxy is a
+// different referent than the capability object and was never added, and
+// the check never reads a property from the candidate at all.
+const HOST_CAPABILITIES = new WeakSet();
 const HOST_CAPABILITY_STAMP = Symbol('hex.recognition.host-capability');
 const HOST_BOOTSTRAP_KEY = Symbol.for('hex.recognition.host-bootstrap');
 const HOST_CAPABILITY = deepFreeze({ [HOST_CAPABILITY_STAMP]: true });
+HOST_CAPABILITIES.add(HOST_CAPABILITY);
 (function deliverHostCapabilityOnce() {
   const bootstrap = globalThis[HOST_BOOTSTRAP_KEY];
   if (bootstrap && typeof bootstrap.deliver === 'function') {
@@ -279,7 +288,7 @@ const HOST_CAPABILITY = deepFreeze({ [HOST_CAPABILITY_STAMP]: true });
 })();
 
 function isHostCapability(value) {
-  return typeof value === 'object' && value !== null && value[HOST_CAPABILITY_STAMP] === true;
+  return typeof value === 'object' && value !== null && HOST_CAPABILITIES.has(value);
 }
 
 // The host uses the capability it received at bootstrap to set/re-bind the

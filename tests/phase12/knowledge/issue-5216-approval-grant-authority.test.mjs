@@ -330,6 +330,15 @@ test('#5216 the host binding setter is a host-held capability: an importer canno
     /host capability/,
     'a symbol-stamped foreign object is not the module-private brand',
   );
+  // A property-read brand check is forgeable by a Proxy whose get trap
+  // returns true for every key (review R1 on the R2-round-6 head); WeakSet
+  // membership never reads a property, so the proxy cannot pass.
+  const proxyForged = new Proxy({}, { get: () => true });
+  assert.throws(
+    () => recognition.configureRecognitionApprovalHost({ projectBinding: 'attacker-project', capability: proxyForged }),
+    /host capability/,
+    'a get-trap proxy cannot forge the capability brand',
+  );
   // The binding is still project-B: nothing changed.
   assert.throws(() => promoteKnowledgeSuggestion(staleMatch, { actorId: 'attacker' }), /bound to a different project binding/);
   // (2) The genuine capability is not globally readable (review R2 round 4):
