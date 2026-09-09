@@ -3,6 +3,7 @@ import { PatchSet } from '../patch.js';
 
 export const REBUILD_PLAN_VERSION = 'hex-rebuild-plan-v1';
 export const REBUILD_LEVELS = Object.freeze(['R0', 'R1', 'R2', 'R3', 'R4', 'R5']);
+const REBUILD_BASELINE_VALIDATORS = Object.freeze(['source-precondition', 'structure', 'loader-reparse', 'unchanged-regions', 'evidence']);
 
 function required(value, code) { const text = String(value ?? '').trim(); if (!text) throw new TypeError(code); return text; }
 function explicitBigInt(value, code) {
@@ -24,6 +25,35 @@ function impactValidators(impact) {
   if (impact?.importsExports) validators.add('imports-exports');
   if (impact?.signature) validators.add('signature-consequence');
   return [...validators].sort();
+}
+
+function canonicalPlanId(plan) {
+  if (!plan || typeof plan !== 'object' || Array.isArray(plan)) return null;
+  try {
+    return `rebuild-plan:${stableDigest({ ...plan, planId: null })}`;
+  } catch {
+    return null;
+  }
+}
+
+function planIntegrityReason(plan) {
+  if (!plan || typeof plan !== 'object' || Array.isArray(plan) || plan.schemaVersion !== REBUILD_PLAN_VERSION) {
+    return 'rebuild-plan-schema-invalid';
+  }
+  if (!Array.isArray(plan.requiredValidators)
+    || plan.requiredValidators.some((validator) => typeof validator !== 'string' || !validator.trim())) {
+    return 'rebuild-plan-required-validators-invalid';
+  }
+  if (typeof plan.planId !== 'string' || plan.planId !== canonicalPlanId(plan)) return 'rebuild-plan-identity-mismatch';
+  return null;
+}
+
+function requiredValidatorsFor(plan) {
+  return [...new Set([
+    ...REBUILD_BASELINE_VALIDATORS,
+    ...impactValidators(plan.impact),
+    ...plan.requiredValidators,
+  ])].sort();
 }
 
 export function createRebuildPlan(input = {}) {
@@ -57,6 +87,8 @@ async function sourceBytes(source) {
 
 export async function materializeRebuildPlan(plan, source, options = {}) {
   if (!plan || plan.schemaVersion !== REBUILD_PLAN_VERSION) throw new TypeError('rebuild-plan-schema-invalid');
+  const integrityReason = planIntegrityReason(plan);
+  if (integrityReason) return { status: 'rejected', reason: integrityReason, planId: plan.planId ?? null };
   const original = await sourceBytes(source);
   if (options.signal?.aborted) return { status: 'cancelled', reason: 'cancelled-before-materialization', planId: plan.planId };
   if (plan.sourceHash && plan.sourceHash !== hashBytes(original) && options.allowSourceHashMismatch !== true) return { status: 'rejected', reason: 'source-identity-mismatch', planId: plan.planId, expected: plan.sourceHash, observed: hashBytes(original) };
@@ -100,9 +132,11 @@ async function runValidatorOracle(name, output, plan, materialized, options) {
 }
 
 export async function validateRebuildOutput(plan, materialized, options = {}) {
+  const integrityReason = planIntegrityReason(plan);
+  if (integrityReason) return { status: 'invalid', reason: integrityReason, planId: plan?.planId || null };
   if (!materialized || materialized.status !== 'materialized') return { status: 'invalid', reason: 'materialization-not-complete', planId: plan?.planId || null };
   const output = materialized.bytes;
-  const required = Array.isArray(plan?.requiredValidators) ? plan.requiredValidators : [];
+  const required = requiredValidatorsFor(plan);
   const results = new Map();
 
   const sourcePreconditionPassed = materialized.planId === plan.planId
