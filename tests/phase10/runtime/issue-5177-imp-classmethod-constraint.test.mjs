@@ -1,54 +1,76 @@
-// Regression for #5177: resolveObjcIMP() filtered candidates only by selector
-// and receiverType. When a caller knows the call is a class method
-// (`classMethod: true`), a same-IMP instance-method sibling (-foo sharing the
-// IMP with +foo) could be resolved as a high-confidence (0.98) exact identity.
-// The classMethod bit now constrains the candidate set exactly as the
-// objc_msgSend dispatch path does; an unknown bit preserves the ambiguity.
+// Regression for #5177: direct IMP class/instance-method evidence must stay
+// authoritative. Malformed classMethod values are rejected rather than
+// truthiness-coerced, and a contradiction at the direct IMP address must not
+// fall through to selector dispatch and resolve an unrelated implementation.
 import assert from 'node:assert/strict';
-import { resolveObjcIMP } from '../../../js/apple/runtime.js';
+import { buildObjcRuntimeIndex } from '../../../js/apple/objc-runtime.js';
+import { buildAppleRuntimeIndex, resolveAppleCall, resolveObjcIMP } from '../../../js/apple/runtime.js';
 
-// +helper and -helper share one IMP.
-const index = {
-  runtime: 'objc',
-  methodsByIMP: new Map([['4660', [
-    { className: 'Foo', selector: 'helper', classMethod: true },
-    { className: 'Foo', selector: 'helper', classMethod: false },
-  ]]]),
-  completeness: { complete: true },
+const COMPLETE = {
+  complete: true,
+  classes: { complete: true },
+  categories: { complete: true },
+  protocols: { complete: true },
 };
 
-// a known class-method call must resolve its own sibling, not the instance one
-{
-  const result = resolveObjcIMP(index, 0x1234n, { classMethod: true });
-  assert.equal(result.resolved?.classMethod, true, 'known classMethod resolves the class method');
-  assert.equal(result.resolved?.className, 'Foo');
-  assert.equal(result.resolved?.selector, 'helper');
-  assert.equal(result.confidence, 0.98);
-}
-{
-  const result = resolveObjcIMP(index, 0x1234n, { classMethod: false });
-  assert.equal(result.resolved?.classMethod, false, 'known instance method resolves the instance method');
-  assert.equal(result.confidence, 0.98);
+function objcIndex({ methods = [], classMethods = [] } = {}) {
+  return buildObjcRuntimeIndex({
+    classes: [{ name: 'Foo', superName: null, methods, classMethods, protocols: [] }],
+    categories: [],
+    protocols: [],
+    runtimeCompleteness: COMPLETE,
+  });
 }
 
-// an unknown classMethod bit keeps the ambiguity non-exact (0.55)
-{
-  const result = resolveObjcIMP(index, 0x1234n);
-  assert.equal(result.resolved, null, 'ambiguity must not mint an exact identity');
-  assert.equal(result.confidence, 0.55);
-  assert.equal(result.candidates.length, 2);
+// +helper and -helper share one IMP: a known bit selects only its own sibling,
+// while an omitted bit stays ambiguous.
+const shared = objcIndex({
+  methods: [{ sel: 'helper', addr: 0x1234n }],
+  classMethods: [{ sel: 'helper', addr: 0x1234n }],
+});
+assert.equal(resolveObjcIMP(shared, 0x1234n, { classMethod: true }).resolved?.classMethod, true);
+assert.equal(resolveObjcIMP(shared, 0x1234n, { classMethod: false }).resolved?.classMethod, false);
+assert.equal(resolveObjcIMP(shared, 0x1234n).resolved, null);
+assert.equal(resolveObjcIMP(shared, 0x1234n).confidence, 0.55);
+
+for (const classMethod of ['false', 0, [], {}, ['true']]) {
+  const result = resolveObjcIMP(shared, 0x1234n, { classMethod });
+  assert.equal(result.resolved, null, 'malformed classMethod must not mint an exact IMP');
+  assert.deepEqual(result.candidates, [], 'malformed classMethod must fail closed');
+  assert.equal(result.confidence, 0);
 }
 
-// a unique candidate still resolves exactly with a known classMethod bit
-{
-  const uniqueIndex = {
-    runtime: 'objc',
-    methodsByIMP: new Map([['4660', [{ className: 'Bar', selector: 'only', classMethod: true }]]]),
-    completeness: { complete: true },
-  };
-  const result = resolveObjcIMP(uniqueIndex, 0x1234n, { classMethod: true });
-  assert.equal(result.resolved?.className, 'Bar');
-  assert.equal(result.confidence, 0.98);
-}
+// The requested class method exists, but at a DIFFERENT address. Direct IMP
+// evidence for 0x1234 must remain a contradiction rather than falling through
+// to selector dispatch and choosing +helper at 0x5678.
+const split = objcIndex({
+  methods: [{ sel: 'helper', addr: 0x1234n }],
+  classMethods: [{ sel: 'helper', addr: 0x5678n }],
+});
+const runtimeIndex = buildAppleRuntimeIndex({ objc: split });
+const contradiction = resolveAppleCall(runtimeIndex, {
+  runtime: 'objc',
+  kind: 'imp',
+  impTarget: 0x1234n,
+  receiverType: 'Foo',
+  selector: 'helper',
+  classMethod: true,
+});
+assert.equal(contradiction.kind, 'imp');
+assert.equal(contradiction.resolved, null);
+assert.deepEqual(contradiction.candidates, []);
+
+// The same direct-IMP contradiction remains explicit even without selector
+// evidence; this also preserves #5631's direct-call behavior because plain
+// runtime helpers have no `imp` object at all.
+const noSelector = resolveAppleCall(runtimeIndex, {
+  runtime: 'objc',
+  kind: 'imp',
+  impTarget: 0x1234n,
+  classMethod: true,
+});
+assert.equal(noSelector.kind, 'imp');
+assert.equal(noSelector.resolved, null);
+assert.deepEqual(noSelector.candidates, []);
 
 console.log('issue #5177 IMP classMethod constraint regression: PASS');
