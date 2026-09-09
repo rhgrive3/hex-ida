@@ -4,6 +4,14 @@ import { GROUP } from '../evidence.js';
 function nowIso() { return new Date().toISOString(); }
 function safeConfidence(value, fallback = 0.5) { return typeof value === 'number' && Number.isFinite(value) ? Math.max(0,Math.min(1,value)) : fallback; }
 function idPart(value) { return String(value == null ? '' : value).replace(/[^a-zA-Z0-9_.:-]/g,'_').slice(0,160); }
+function provenanceIdentity(value, fallback, field) {
+  const identity = value == null ? fallback : value;
+  if (typeof identity !== 'string' || identity.length === 0) {
+    throw new TypeError(`runtime provenance ${field} must be a non-empty string`);
+  }
+  return identity;
+}
+function provenancePart(value, fallback, field) { return idPart(provenanceIdentity(value, fallback, field)); }
 function addressValue(value) {
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
@@ -36,14 +44,22 @@ function runtimeEvidenceId(value, fallback) {
 }
 
 export function createRuntimeEvidenceRecord(input = {}) {
-  const traceGroup = input.provenanceGroup || `runtime:${idPart(input.sessionId || 'session')}:${idPart(input.experimentId || input.function || 'observation')}:${idPart(input.caseId || 'case')}`;
+  const rawSessionId = input.sessionId;
+  const rawExperimentId = input.experimentId;
+  const rawCaseId = input.caseId;
+  const rawProvenanceGroup = input.provenanceGroup;
+  const sessionId = rawSessionId == null ? null : provenanceIdentity(rawSessionId, null, 'sessionId');
+  const experimentId = rawExperimentId == null ? null : provenanceIdentity(rawExperimentId, null, 'experimentId');
+  const caseId = rawCaseId == null ? null : provenanceIdentity(rawCaseId, null, 'caseId');
+  const explicitGroup = rawProvenanceGroup == null ? null : provenanceIdentity(rawProvenanceGroup, null, 'provenanceGroup');
+  const traceGroup = explicitGroup || `runtime:${idPart(sessionId || 'session')}:${idPart(experimentId || input.function || 'observation')}:${idPart(caseId || 'case')}`;
   const generatedId = `${traceGroup}:${idPart(input.kind || 'observation')}`;
   return {
     id:runtimeEvidenceId(input.id, generatedId),
     source:'runtime', backend:String(input.backend || 'unknown').slice(0,128), binaryHash:input.binaryHash || null, sliceIdentity:input.sliceIdentity || null,
     function:input.function == null ? null : input.function, address:input.address == null ? null : input.address,
     input:input.input || null, initialState:input.initialState || null, observedState:input.observedState || null,
-    branchPath:Array.isArray(input.branchPath) ? input.branchPath.slice(0,4096) : [], timestamp:input.timestamp || nowIso(), sessionId:input.sessionId || null,
+    branchPath:Array.isArray(input.branchPath) ? input.branchPath.slice(0,4096) : [], timestamp:input.timestamp || nowIso(), sessionId,
     reproducibility:input.reproducibility || { replayable:false, runs:1, consistent:null },
     confidence:safeConfidence(input.confidence), verdict:input.verdict || 'inconclusive', kind:input.kind || 'observation',
     provenance:{ group:GROUP.RUNTIME, observationGroup:traceGroup, independent:false, parent:input.parentEvidenceId || null },
@@ -51,7 +67,7 @@ export function createRuntimeEvidenceRecord(input = {}) {
 }
 
 export function evidenceFromExperiment({ experiment, testCase, observation, comparison, backend = 'unknown', binaryHash = null, sliceIdentity = null, sessionId = null, replayable = false }) {
-  const group = `runtime:${idPart(sessionId || 'session')}:${idPart(experiment.id)}:${idPart(testCase.id)}`;
+  const group = `runtime:${provenancePart(sessionId, 'session', 'sessionId')}:${provenancePart(experiment.id, null, 'experimentId')}:${provenancePart(testCase.id, null, 'caseId')}`;
   return createRuntimeEvidenceRecord({
     backend, binaryHash:binaryHash || experiment.binaryHash, sliceIdentity, function:experiment.functionAddress, input:testCase.input,
     initialState:testCase.initialState, observedState:{ returnValue:observation.returnValue, registerDelta:observation.registerDelta, memoryDelta:observation.memoryDelta, memoryAfter:observation.memoryAfter, stop:observation.stop },
@@ -77,14 +93,20 @@ export function traceToSemanticFacts(trace, context = {}) {
     events = trace.events || [];
   }
   const limit = boundedInteger(context.limit, 10000, 1, 50000, 'fact limit');
-  const group = context.provenanceGroup || `trace:${idPart(context.sessionId || 'session')}:${idPart(context.traceId || 'trace')}`;
+  const rawSessionId = context.sessionId;
+  const rawTraceId = context.traceId;
+  const rawProvenanceGroup = context.provenanceGroup;
+  const sessionId = rawSessionId == null ? null : provenanceIdentity(rawSessionId, null, 'sessionId');
+  const traceId = rawTraceId == null ? null : provenanceIdentity(rawTraceId, null, 'traceId');
+  const explicitGroup = rawProvenanceGroup == null ? null : provenanceIdentity(rawProvenanceGroup, null, 'provenanceGroup');
+  const group = explicitGroup || `trace:${idPart(sessionId || 'session')}:${idPart(traceId || 'trace')}`;
   const facts = [];
   let processedEvents = 0;
   let hitFactLimit = false;
   for (const event of events) {
     if (facts.length >= limit) { hitFactLimit = true; break; }
     processedEvents++;
-    const common = { runtime:true, sessionId:context.sessionId || null, binaryHash:context.binaryHash || null, provenance:{ group:GROUP.RUNTIME, observationGroup:group, independent:false }, address:event.address ?? null, confidence:safeConfidence(context.confidence,0.8) };
+    const common = { runtime:true, sessionId, binaryHash:context.binaryHash || null, provenance:{ group:GROUP.RUNTIME, observationGroup:group, independent:false }, address:event.address ?? null, confidence:safeConfidence(context.confidence,0.8) };
     if (event.type === 'memory-read') facts.push({ ...common, kind:'reads-field', location:{ address:event.address, region:event.region, size:event.size }, value:event.value });
     else if (event.type === 'memory-write') facts.push({ ...common, kind:'writes-field', location:{ address:event.address, region:event.region, size:event.size }, before:event.before, value:event.after });
     else if (event.type === 'call') facts.push({ ...common, kind:'calls-target', target:event.target ?? null, text:event.text || null });
