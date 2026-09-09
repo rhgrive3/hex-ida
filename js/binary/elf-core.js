@@ -587,7 +587,7 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
     if(symIndex!==0&&symbolEntryCount!=null&&BigInt(symIndex)>=symbolEntryCount){budget.partial(`relocations:${sec.index}:symbol-index-range`,`ELF relocation section ${sec.index} references symbol index ${symIndex} outside its associated table count ${symbolEntryCount}`);continue;}
     const sym=byIndex.get(symIndex)||null;
     image.relocations.push({address,fileOffset,type,symbol:sym?sym.name:null,symbolIndex:symIndex,addend,section:sec.name,source:sec.type===SHT_RELA?'RELA':'REL',symbolTableIndex:sec.link,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null,addressDomain});
-    if(sym&&sym.defined===false){const imp=image.imports.find((x)=>x.name===sym.name&&x.library==null);if(imp){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:96},'relocation-import-site'))break;imp.sites.push({address,offset:fileOffset,kind:'relocation',type,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null});}}
+    if(sym&&sym.defined===false){const imp=image.imports.find((x)=>x.symbolIndex===symIndex&&x.tableIndex===sec.link&&x.name===sym.name&&x.library==null);if(imp){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:96},'relocation-import-site'))break;imp.sites.push({address,offset:fileOffset,kind:'relocation',type,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null});}}
   }
 }
 
