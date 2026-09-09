@@ -238,7 +238,6 @@ export class ByteView {
       const start = checkedStart;
       const hardEnd = Number(hardEndBig);
       let p = start;
-      const hardEnd = Number(hardEndBig);
       let value = 0n;
       let shift = 0n;
       let b = 0;
