@@ -5,10 +5,14 @@ function nowIso() { return new Date().toISOString(); }
 function safeConfidence(value, fallback = 0.5) { return typeof value === 'number' && Number.isFinite(value) ? Math.max(0,Math.min(1,value)) : fallback; }
 function idPart(value) { return String(value == null ? '' : value).replace(/[^a-zA-Z0-9_.:-]/g,'_').slice(0,160); }
 function addressValue(value) {
-  if (typeof value === 'bigint') return value;
-  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
-  if (typeof value !== 'string' || value.trim() === '') return null;
-  try { return BigInt(value.trim()); } catch { return null; }
+  let address;
+  if (typeof value === 'bigint') address = value;
+  else if (typeof value === 'number') address = Number.isSafeInteger(value) ? BigInt(value) : null;
+  else {
+    if (typeof value !== 'string' || value.trim() === '') return null;
+    try { address = BigInt(value.trim()); } catch { return null; }
+  }
+  return address != null && address >= 0n ? address : null;
 }
 function sameAddress(a,b) { const left=addressValue(a); const right=addressValue(b); return left != null && right != null && left === right; }
 const VERDICT_PRIORITY = Object.freeze({ unsupported:0, inconclusive:1, supported:2, confirmed:3, contradicted:4 });

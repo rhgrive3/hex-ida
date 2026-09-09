@@ -77,7 +77,11 @@ export function classifyOpSupport(op, inst = null) {
     case OP.BIN: {
       const sub = inst?.subOp || inst?.name;
       const supportedBin = ['add', 'sub', 'mul', 'and', 'or', 'orr', 'xor', 'eor', 'shl', 'lshr', 'ashr', 'udiv', 'sdiv', 'urem', 'srem'];
-      if (!sub || supportedBin.includes(sub)) {
+      /* #5202: a missing subOp/name is a semantic discriminator the source IR
+         never supplied. Defaulting it to ADD would invent exact semantics, so
+         a BIN instruction without one is unsupported. */
+      if (!sub) return TRANSLATION_STATUS.UNSUPPORTED;
+      if (supportedBin.includes(sub)) {
         return TRANSLATION_STATUS.EXACT;
       }
       return TRANSLATION_STATUS.UNSUPPORTED;
@@ -86,14 +90,24 @@ export function classifyOpSupport(op, inst = null) {
     case OP.UN: {
       const sub = inst?.subOp || inst?.name;
       const supportedUn = ['not', 'neg'];
-      if (!sub || supportedUn.includes(sub)) {
+      /* #5202: missing unary discriminator must not default to NOT. */
+      if (!sub) return TRANSLATION_STATUS.UNSUPPORTED;
+      if (supportedUn.includes(sub)) {
         return TRANSLATION_STATUS.EXACT;
       }
       return TRANSLATION_STATUS.UNSUPPORTED;
     }
 
     case OP.CMP:
+      /* #5202: a comparison without cond/subOp has no ordering or equality
+         semantic; '==' must not be invented. */
+      if (!(inst?.cond || inst?.subOp)) return TRANSLATION_STATUS.UNSUPPORTED;
+      return TRANSLATION_STATUS.EXACT;
+
     case OP.SEL:
+      /* #5202: a select without a condition must not become an
+         always-true ITE. */
+      if (!inst?.cond) return TRANSLATION_STATUS.UNSUPPORTED;
       return TRANSLATION_STATUS.EXACT;
 
     case OP.BFX:

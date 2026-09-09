@@ -138,6 +138,13 @@ function validateIndirectCallInput(input) {
   nonEmptyString(input.callSiteId, 'function-summary-call-site-required');
   validateStringList(input.candidateEntityIds, 'function-summary-invalid-target-ids');
   optionalBoolean(input.exhaustive, 'function-summary-invalid-exhaustive');
+  // `exhaustive:true` claims the candidate universe is complete and lets the
+  // summary omit the unknown-call fallback. That claim is only meaningful for
+  // a non-empty universe: an empty "exhaustive" set describes an indirect call
+  // with no possible target yet still publishes complete/pure (#5346).
+  if (input.exhaustive === true && input.candidateEntityIds.length === 0) {
+    throw new TypeError('function-summary-exhaustive-indirect-requires-candidates');
+  }
 }
 function detached(value, seen = new WeakMap()) {
   if (value == null || typeof value !== 'object') return value;

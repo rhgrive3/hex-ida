@@ -54,12 +54,21 @@ function utf8z(u8, off) {
 
 function u32be(dv, off) { return dv.getUint32(off, false); }
 
+const MACHO64_VM_LIMIT = 1n << 64n;
+
+function validMachOVmRange(vmaddr, vmsize) {
+  return vmaddr >= 0n && vmsize >= 0n
+    && vmaddr < MACHO64_VM_LIMIT && vmsize < MACHO64_VM_LIMIT
+    && vmaddr <= MACHO64_VM_LIMIT - vmsize;
+}
+
 function rangeWithin(start, size, parentStart, parentSize) {
   return size >= 0n && start >= parentStart && start - parentStart <= parentSize && size <= parentSize - (start - parentStart);
 }
 
 function stubSectionWithinSegment(segment, addr, size, fileoff) {
-  return !!segment?.validFileRange
+  return segment?.validVmRange !== false
+    && !!segment?.validFileRange
     && rangeWithin(addr, size, segment.vmaddr, segment.vmsize)
     && rangeWithin(fileoff, size, segment.fileoff, segment.filesize);
 }
@@ -126,7 +135,8 @@ async function parseImage(file, sliceIndex) {
       const nsects = dv.getUint32(p + 64, true);
       const segIndex = segments.length;
       const validFileRange = fileoff <= sliceSize && filesize <= sliceSize - fileoff;
-      segments.push({ name, vmaddr, vmsize, fileoff, filesize, validFileRange });
+      const validVmRange = validMachOVmRange(vmaddr, vmsize);
+      segments.push({ name, vmaddr, vmsize, fileoff, filesize, validFileRange, validVmRange });
       let q = p + 72;
       for (let si = 0; si < nsects && q + 80 <= p + size; si++, q += 80) {
         const section = ascii(raw, q, 16);
@@ -264,6 +274,7 @@ function bindOrdinal(raw, pointerFormat) {
 function segmentFor(segments, addr) {
   for (let i = 0; i < segments.length; i++) {
     const s = segments[i];
+    if (s.validVmRange === false) continue;
     if (addr >= s.vmaddr && addr < s.vmaddr + s.vmsize) return { s, i };
   }
   return null;
@@ -395,4 +406,4 @@ export async function augmentAnalysisResultWithChainedImports(file, sliceIndex, 
   return Object.assign({}, result, { addrs, kinds, flags, names });
 }
 
-export const __chainedInternalsForTests = Object.freeze({ rangeWithin, stubSectionWithinSegment });
+export const __chainedInternalsForTests = Object.freeze({ validMachOVmRange, rangeWithin, stubSectionWithinSegment, segmentFor });
