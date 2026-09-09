@@ -27,7 +27,9 @@ async function runtimeRowWithVerdict(verdict) {
   const platform = await runtimePlatformForApp(app);
   const adapter = createAppAnalysisQueryAdapter(app);
   const api = new AnalysisQueryAPI(adapter);
-  const snapshot = await api.snapshot();
+  // Record FIRST, then snapshot: the product snapshot identity binds the
+  // query-visible runtime evidence corpus (#5630), so a snapshot taken before
+  // the record would be stale by the time it is queried on the combined tree.
   platform._recordEvidence(createRuntimeEvidenceRecord({
     function: ADDRESS,
     binaryHash: 'hash-5582',
@@ -36,6 +38,7 @@ async function runtimeRowWithVerdict(verdict) {
     confidence: 0.35,
     kind: 'trace',
   }));
+  const snapshot = await api.snapshot();
   const result = await api.evidence(snapshot, QUERY, { offset: 0, limit: 5000 }, {});
   const rows = Array.isArray(result?.value) ? result.value : [];
   return rows.find((row) => row.kind === 'trace' || row.kind === 'runtime-observation') ?? null;
