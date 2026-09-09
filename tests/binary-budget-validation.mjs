@@ -77,11 +77,10 @@ console.log('  ok 1 relocation step() only spends non-negative safe integers (#1
   assert.equal(taken, MACHO_METADATA_LIMITS.records, 'the record ceiling must still hold (#1376)');
 }
 
-// A numeric string coerces to a valid limit and is accepted, matching the
-// `positiveLimit` helpers elsewhere in the loader; only values that cannot be
-// a finite positive integer fall back. Explicit numeric zero is covered by
-// #4299 and is a valid zero budget, not a default-budget request.
-for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -5, 1.5, 'lots', null, undefined, {}, []]) {
+// Limit overrides are a typed resource boundary: only primitive safe-integer
+// numbers are accepted. Explicit numeric zero remains a valid zero budget
+// (#4299); coercible strings/arrays/booleans must fall back (#5134).
+for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -5, 1.5, 'lots', '1', null, false, true, undefined, {}, [], ['1']]) {
   const budget = createMachOMetadataBudget({ metadata: {}, warnings: [] }, {
     limits: { records: bad, stringBytes: bad, warnings: bad, wallClockMs: bad, objects: bad, operations: bad, inputBytes: bad, estimatedHeapBytes: bad },
   });

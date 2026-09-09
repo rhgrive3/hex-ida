@@ -26,13 +26,17 @@ export function markMachOMetadataPartial(image, reason) {
  * ceiling entirely, while `stringBytes: NaN` leaked a non-finite value out
  * through `remainingStringBytes` and `remaining()` into bounded decode paths
  * (#1376). Preserve explicit numeric zero as a zero budget (#4299), without
- * turning omitted or coercive zero values (null/false/blank) into zero limits.
- * Other values retain the positive-integer compatibility policy.
+ * turning omitted or coercive values into resource limits. Only primitive safe
+ * integer numbers are valid at this boundary (#5134).
  */
 function metadataLimit(value, fallback) {
   if (value === 0) return 0;
-  const n = Number(value);
-  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function metadataCost(value) {
+  if (value === undefined) return 0;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function resolveMetadataLimits(overrides = {}) {
@@ -66,16 +70,22 @@ export function createMachOMetadataBudget(image, options = {}) {
     take(cost = {}, reason = 'metadata') {
       if (stopped) return false;
       if (signal?.aborted) return stop('aborted');
-      const opCost = Math.max(0, Number(cost.operations || 0));
+      const resolvedCost = {};
+      for (const key of Object.keys(used)) {
+        const value = metadataCost(cost[key]);
+        if (value == null) return stop(`${reason}:${key}`);
+        resolvedCost[key] = value;
+      }
+      const opCost = resolvedCost.operations;
       if (used.operations + opCost >= nextTimeCheck) {
         nextTimeCheck = used.operations + opCost + 1024;
         if (Date.now() - started > limits.wallClockMs) return stop('wall-clock');
       }
       for (const key of Object.keys(used)) {
-        const next = used[key] + Math.max(0, Number(cost[key] || 0));
-        if (!Number.isFinite(next) || next > limits[key]) return stop(`${reason}:${key}`);
+        const next = used[key] + resolvedCost[key];
+        if (!Number.isSafeInteger(next) || next > limits[key]) return stop(`${reason}:${key}`);
       }
-      for (const key of Object.keys(used)) used[key] += Math.max(0, Number(cost[key] || 0));
+      for (const key of Object.keys(used)) used[key] += resolvedCost[key];
       return true;
     },
     partial(reason, warning = null) {
