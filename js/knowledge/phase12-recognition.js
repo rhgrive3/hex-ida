@@ -218,37 +218,51 @@ function createRecognitionApprovalAuthority() {
 const HOST_APPROVAL_AUTHORITY = createRecognitionApprovalAuthority();
 
 // The host project/binary binding is a host-held capability, not a public
-// reset (review R2 round 3): a normal exported setter would let any importer
-// restore a stale binding and spend an approval record that the host re-bind
-// had just invalidated (mint under A → host re-binds B → attacker restores
-// A → stale record spendable). The capability is stamped by this module at
-// evaluation time — the same trust tier as the host bundle itself, since
-// later page script cannot reach module-private state — and delivered to the
-// host through a Symbol.for-keyed global holder. Ordinary recognition/AI/
-// plugin/alternate-UI importers hold no capability: their configure calls
-// fail closed. A capability cannot be forged by stamping a foreign object —
-// the brand is a module-private symbol; and no other export returns one.
+// reset (review R2 rounds 3+4): a normal exported setter would let any
+// importer restore a stale binding and spend an approval record that the
+// host re-bind had just invalidated (mint under A → host re-binds B →
+// attacker restores A → stale record spendable). The capability is minted
+// module-privately at evaluation time and delivered ONCE — over a
+// consume-once bootstrap channel — to the host bundle's bootstrap hook,
+// which the host registers before the module graph evaluates (its first
+// import). The capability lives only in the host's closure afterwards: no
+// global holder, no export, and no other surface ever returns it, so an
+// importer cannot read or steal the genuine capability (the R2-round-4
+// theft path — `globalThis[holder-key].capability` — no longer exists).
+// A page script that executes BEFORE the module graph evaluates could
+// install its own hook and receive the capability; that is
+// pre-application code execution, the same trust tier as the host bundle
+// itself, and out of the threat model (same tier argument as the captured
+// platform Event references). If no bootstrap hook is registered, the
+// capability is dropped and the binding stays unconfigured — fail-closed.
 const HOST_CAPABILITY_STAMP = Symbol('hex.recognition.host-capability');
-const HOST_CAPABILITY_HOLDER_KEY = Symbol.for('hex.recognition.host-capability-holder');
-(function bootstrapHostCapability() {
-  const capability = deepFreeze({
-    // Irrevocable for the session by construction: the module keeps no
-    // reference that could hand it to callers, and no export returns it.
-    [HOST_CAPABILITY_STAMP]: true,
-  });
-  globalThis[HOST_CAPABILITY_HOLDER_KEY] = deepFreeze({ capability });
+const HOST_BOOTSTRAP_KEY = Symbol.for('hex.recognition.host-bootstrap');
+const HOST_CAPABILITY = deepFreeze({ [HOST_CAPABILITY_STAMP]: true });
+(function deliverHostCapabilityOnce() {
+  const bootstrap = globalThis[HOST_BOOTSTRAP_KEY];
+  if (bootstrap && typeof bootstrap.deliver === 'function') {
+    try {
+      bootstrap.deliver(HOST_CAPABILITY);
+    } catch {
+      // A hostile/misbehaving hook must not break module evaluation; the
+      // capability is simply not delivered and the binding stays null.
+    }
+  }
+  // Consume the channel: post-evaluation code cannot observe or re-trigger
+  // the delivery.
+  delete globalThis[HOST_BOOTSTRAP_KEY];
 })();
 
 function isHostCapability(value) {
   return typeof value === 'object' && value !== null && value[HOST_CAPABILITY_STAMP] === true;
 }
 
-// The host (host bundle bootstrap) takes its capability from the global
-// bootstrap holder once at boot and uses it to set/re-bind the approval host
-// binding for the session. This export is the ONLY way to change the
-// binding, and it requires the module-stamped capability.
+// The host uses the capability it received at bootstrap to set/re-bind the
+// approval host binding for the session. This export is the ONLY way to
+// change the binding, and it requires the module-stamped capability that
+// only the host bootstrap ever received.
 export function configureRecognitionApprovalHost({ projectBinding = null, capability = null } = {}) {
-  if (!isHostCapability(capability)) throw new TypeError('recognition approval host configuration requires the host capability minted at host bootstrap; importer-provided configuration is not authorized');
+  if (!isHostCapability(capability)) throw new TypeError('recognition approval host configuration requires the host capability delivered at host bootstrap; importer-provided configuration is not authorized');
   HOST_APPROVAL_AUTHORITY.configureHost({ projectBinding });
 }
 

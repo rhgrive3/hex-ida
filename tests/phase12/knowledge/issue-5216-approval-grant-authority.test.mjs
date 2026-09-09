@@ -308,12 +308,13 @@ test('#5216 the host binding setter is a host-held capability: an importer canno
   );
   // The binding is still project-B: nothing changed.
   assert.throws(() => promoteKnowledgeSuggestion(staleMatch, { actorId: 'attacker' }), /bound to a different project binding/);
-  // (2) The bootstrap holder object itself is not a capability.
-  const holder = globalThis[Symbol.for('hex.recognition.host-capability-holder')];
-  assert.throws(
-    () => recognition.configureRecognitionApprovalHost({ projectBinding: 'project-A', capability: holder }),
-    /host capability/,
-  );
+  // (2) The genuine capability is not globally readable (review R2 round 4):
+  // the consume-once bootstrap channel is deleted after evaluation and no
+  // holder exists. The R2-round-4 theft path fails.
+  assert.equal(globalThis[Symbol.for('hex.recognition.host-bootstrap')], undefined,
+    'the bootstrap channel is consumed at module evaluation');
+  assert.equal(globalThis[Symbol.for('hex.recognition.host-capability-holder')], undefined,
+    'no global capability holder exists');
   // (3) No export mints a capability: creating controls and probing the
   // module surface yields no object that passes the brand check.
   const probe = [createRecognitionApprovalControl(uniqueResult({ sourceEntityId: 'fn:cap', packageEntryId: 'pkg:cap' }), { actorId: 'x', onApproved: () => {} }), recognition].flat();
