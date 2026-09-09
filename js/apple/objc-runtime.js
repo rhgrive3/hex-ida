@@ -507,7 +507,13 @@ export function recognizeObjcBlockLiteral(fields, opts = {}) {
   const descriptorOffset = invokeOffset + pointerSize;
   const capturesOffset = descriptorOffset + pointerSize;
   const isa = get(0), flags = get(flagsOffset), invoke = get(invokeOffset), descriptor = get(descriptorOffset);
-  if (invoke == null) return null;
+  // invoke is the block's function pointer: the null pointer (0/0n or its
+  // numeric-string spellings) cannot be valid Block evidence (#5368).
+  const invokeValue = typeof invoke === 'bigint' ? invoke
+    : typeof invoke === 'number' && Number.isFinite(invoke) ? BigInt(invoke)
+    : typeof invoke === 'string' && /^0x[0-9a-f]+$/i.test(invoke) ? BigInt(invoke)
+    : null;
+  if (invoke == null || invokeValue === null || invokeValue === 0n) return null;
   const captures = [];
   const entries = fields instanceof Map ? [...fields.entries()] : Object.entries(fields || {}).map(([k, v]) => [Number(k), v]);
   for (const [rawOff, value] of entries) {
