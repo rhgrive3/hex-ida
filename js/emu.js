@@ -425,7 +425,7 @@ export class Emulator {
       eor: (a, b) => a ^ b, eon: (a, b) => a ^ ~b,
       bic: (a, b) => a & ~b, bics: (a, b) => a & ~b,
       mul: (a, b) => a * b,
-      lsl: (a, b) => a << (b & 63n), lsr: null, asr: null, ror: null,
+      lsl: null, lsr: null, asr: null, ror: null,
       udiv: null, sdiv: null,
       smull: null, umull: null,
     };
@@ -433,9 +433,11 @@ export class Emulator {
       const wide = isWide(ops[0]);
       const a = R(ops[1]);
       const b = R(ops[2]);
+      const shiftAmount = b & (wide ? 63n : 31n);
       let r;
-      if (mn === 'lsr') r = (wide ? a : a & MASK32) >> (b & 63n);
-      else if (mn === 'asr') r = BigInt.asIntN(wide ? 64 : 32, a) >> (b & 63n);
+      if (mn === 'lsl') r = a << shiftAmount;
+      else if (mn === 'lsr') r = (wide ? a : a & MASK32) >> shiftAmount;
+      else if (mn === 'asr') r = BigInt.asIntN(wide ? 64 : 32, a) >> shiftAmount;
       else if (mn === 'ror') { const w = wide ? 64n : 32n; const s = b % w; r = (a >> s) | (a << (w - s)); }
       else if (mn === 'udiv') r = b === 0n ? 0n : a / b;
       else if (mn === 'sdiv') {
