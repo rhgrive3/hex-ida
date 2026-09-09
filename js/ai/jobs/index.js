@@ -1,10 +1,12 @@
 const CHECKPOINT_VERSION = 1;
+const MAX_JOB_SLICES = 32;
+const MAX_JOB_ELAPSED_MS = 4 * 60 * 60 * 1000;
 let fallbackRandomSequence = 0n;
 
 export class AgentJobManager {
   constructor({ runtime, persistence = null, maxSlices = 8, maxElapsedMs = 30 * 60 * 1000 } = {}) {
     if (!runtime || typeof runtime.turn !== 'function') throw new TypeError('AgentJobManager requires an AIRuntime');
-    this.runtime = runtime; this.persistence = persistence; this.maxSlices = bounded(maxSlices, 1, 32); this.maxElapsedMs = bounded(maxElapsedMs, 1000, 4 * 60 * 60 * 1000);
+    this.runtime = runtime; this.persistence = persistence; this.maxSlices = bounded(maxSlices, 1, MAX_JOB_SLICES); this.maxElapsedMs = bounded(maxElapsedMs, 1000, MAX_JOB_ELAPSED_MS);
     this.pendingCheckpoints = new Map();
     this.jobs = new Map(); this.creatingIds = new Set(); this.runningJobIds = new Set(); this.loadingPromises = new Map();
   }
@@ -42,7 +44,7 @@ export class AgentJobManager {
         provider: input.provider || null, model: input.model || null, reasoning: input.reasoning || null,
         evidenceIds: [], hypothesisIds: [], completedTools: [], continuationRefs: [], unresolvedWork: [],
         budgetUsage: { slices: 0, modelCalls: 0, toolCalls: 0, elapsedMs: 0, contextBytes: 0 },
-        limits: { maxSlices: bounded(input.maxSlices ?? this.maxSlices, 1, 32), maxElapsedMs: bounded(input.maxElapsedMs ?? this.maxElapsedMs, 1000, 4 * 60 * 60 * 1000) },
+        limits: { maxSlices: bounded(input.maxSlices ?? this.maxSlices, 1, MAX_JOB_SLICES), maxElapsedMs: bounded(input.maxElapsedMs ?? this.maxElapsedMs, 1000, MAX_JOB_ELAPSED_MS) },
         request: safeRequest(input), lastResult: null, createdAt: now, updatedAt: now,
       };
       // Keep the ID reserved, but do not publish a runnable job until its
@@ -153,10 +155,6 @@ export class AgentJobManager {
     }
     if (typeof id !== 'string' || !id) throw new Error(`Unknown agent job: ${value}`);
     let job = await this.get(id);
-    if (!job && value && typeof value === 'object' && validateCheckpoint(value, id)) {
-      this.jobs.set(id, value);
-      job = value;
-    }
     if (!job) throw new Error(`Unknown agent job: ${id}`);
     return job;
   }
@@ -171,8 +169,9 @@ export class AgentJobManager {
         return null;
       }
       if (validateCheckpoint(value, id)) {
-        this.jobs.set(id, value);
-        return value;
+        const canonical = checkpoint(value);
+        this.jobs.set(id, canonical);
+        return canonical;
       }
       return null;
     })();
@@ -238,7 +237,8 @@ function validateCheckpoint(value, expectedId = null) {
   if (!isValidNumber(bu.slices) || !isValidNumber(bu.modelCalls) || !isValidNumber(bu.toolCalls) || !isValidNumber(bu.elapsedMs) || !isValidNumber(bu.contextBytes)) return false;
   const lim = value.limits;
   if (!lim || typeof lim !== 'object') return false;
-  if (!isValidNumber(lim.maxSlices, 1) || !isValidNumber(lim.maxElapsedMs, 1000)) return false;
+  if (!isValidNumber(lim.maxSlices, 1) || lim.maxSlices > MAX_JOB_SLICES) return false;
+  if (!isValidNumber(lim.maxElapsedMs, 1000) || lim.maxElapsedMs > MAX_JOB_ELAPSED_MS) return false;
   if (!Array.isArray(value.evidenceIds) || !Array.isArray(value.hypothesisIds) || !Array.isArray(value.completedTools) || !Array.isArray(value.continuationRefs) || !Array.isArray(value.unresolvedWork)) return false;
   return true;
 }
