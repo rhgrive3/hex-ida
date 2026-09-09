@@ -95,6 +95,14 @@ function validateReturnProvenance(value) {
   if (Object.keys(value).some((key) => !RETURN_PROVENANCE_FIELDS.has(key))) throw new TypeError('function-summary-invalid-return-provenance');
   const kind = nonEmptyString(value.kind, 'function-summary-invalid-return-provenance-kind');
   if (!RETURN_PROVENANCE_KINDS.has(kind)) throw new TypeError('function-summary-invalid-return-provenance-kind');
+  // #4314 pin: digit strings are laundering for argIndex/returnIndex. The
+  // canonical offset is the only field whose wire spelling is a string.
+  if (value.argIndex != null && typeof value.argIndex !== 'number') {
+    throw new TypeError('function-summary-invalid-return-provenance-arg-index');
+  }
+  if (value.returnIndex != null && typeof value.returnIndex !== 'number') {
+    throw new TypeError('function-summary-invalid-return-provenance-return-index');
+  }
   if (value.addressSpace != null) {
     nonEmptyString(value.addressSpace, 'function-summary-invalid-return-provenance-address-space');
   }
