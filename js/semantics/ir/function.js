@@ -213,6 +213,26 @@ function countRawReferences(blocks, values, nodes, seen) {
   return count;
 }
 
+function sameStringSequence(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function callInputsMatchNode(node) {
+  const argumentInputs = node.call.arguments;
+  // An unresolved call with no target or argument summary may still carry
+  // opaque generic inputs for conservative accounting. There is no embedded
+  // I/O claim to contradict in that shape, so preserve the legacy boundary.
+  if (node.call.targetEntityIds.length === 0
+    && node.call.targetValueIds.length === 0
+    && argumentInputs.length === 0) return true;
+  // Direct calls and enriched indirect calls keep the target separate from
+  // the ABI argument list; ABI-neutral lowering may also expose the target as
+  // the leading generic input. Both are canonical, but no third value may
+  // appear in either representation.
+  if (sameStringSequence(node.inputs, argumentInputs)) return true;
+  return sameStringSequence(node.inputs, [...node.call.targetValueIds, ...argumentInputs]);
+}
+
 function validateNormalizedFunction(out, options) {
   assertNotAborted(options);
   const blockById = new Map();
@@ -258,6 +278,8 @@ function validateNormalizedFunction(out, options) {
     }
     if (node.memory && !valueById.has(node.memory.addressExpr.valueId)) fail('semantic-ir-dangling-address-value-id');
     if (node.call) {
+      if (!callInputsMatchNode(node)) fail('semantic-ir-call-input-mismatch');
+      if (!sameStringSequence(node.outputs, node.call.returns)) fail('semantic-ir-call-output-mismatch');
       for (const id of [...node.call.targetValueIds, ...node.call.arguments, ...node.call.returns]) {
         if (!valueById.has(id)) fail('semantic-ir-dangling-call-value-id');
       }
@@ -268,6 +290,8 @@ function validateNormalizedFunction(out, options) {
       }
     }
     if (node.intrinsic) {
+      if (!sameStringSequence(node.inputs, node.intrinsic.inputs)) fail('semantic-ir-intrinsic-input-mismatch');
+      if (!sameStringSequence(node.outputs, node.intrinsic.outputs)) fail('semantic-ir-intrinsic-output-mismatch');
       for (const id of [...node.intrinsic.inputs, ...node.intrinsic.outputs]) {
         if (!valueById.has(id)) fail('semantic-ir-dangling-intrinsic-value-id');
       }
