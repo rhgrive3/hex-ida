@@ -205,6 +205,20 @@ export async function parseSwiftNominalDescriptor(read, address) {
   if (kind === 'class') {
     const tail = await exact(read, addr + 20n, 24); if (!tail) return null;
     out.superclassType = rel(addr + 20n, i32(tail, 0)); out.metadataNegativeSizeInWords = u32(tail,4); out.metadataPositiveSizeInWords=u32(tail,8); out.numImmediateMembers=u32(tail,12); out.numFields=u32(tail,16); out.fieldOffsetVectorOffset=u32(tail,20);
+  } else if (kind === 'enum') {
+    // EnumDescriptor tail layout differs from StructDescriptor (Swift runtime
+    // Metadata.h): NumPayloadCasesAndPayloadSizeOffset packs the payload case
+    // count in the low 24 bits and the payload-size offset word in the high 8
+    // bits, followed by NumEmptyCases. Reading this as struct NumFields /
+    // FieldOffsetVectorOffset deterministically misdecoded every valid enum
+    // descriptor (#5209), so enums keep their own ABI fields and never grow
+    // struct semantics.
+    const tail = await exact(read, addr + 20n, 8); if (!tail) return null;
+    const numPayloadCasesAndPayloadSizeOffset = u32(tail, 0);
+    out.numPayloadCases = numPayloadCasesAndPayloadSizeOffset & 0x00ffffff;
+    out.payloadSizeOffset = numPayloadCasesAndPayloadSizeOffset >>> 24;
+    out.numEmptyCases = u32(tail, 4);
+    out.numCases = out.numPayloadCases + out.numEmptyCases;
   } else {
     const tail = await exact(read, addr + 20n, 8); if (!tail) return null;
     out.numFields=u32(tail,0); out.fieldOffsetVectorOffset=u32(tail,4);
