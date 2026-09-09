@@ -15,6 +15,7 @@ const ARITHMETIC_EXCEPTION_CLASSES = Object.freeze([
 ]);
 const COMPARE_EXCEPTION_CLASSES = Object.freeze(['invalid-operation', 'input-denormal']);
 const ROUND_TO_INTEGER_EXCEPTION_CLASSES = Object.freeze(['invalid-operation', 'inexact', 'input-denormal']);
+const NONEXACT_ROUND_EXCEPTION_CLASSES = Object.freeze(['invalid-operation', 'input-denormal']);
 const INTEGER_TO_FLOAT_EXCEPTION_CLASSES = Object.freeze(['overflow', 'inexact']);
 const MINMAX_EXCEPTION_CLASSES = Object.freeze(['invalid-operation', 'input-denormal']);
 
@@ -26,9 +27,9 @@ const MINMAX = new Set(['fmax','fmin','fmaxnm','fminnm']);
 const COMPARE = new Set(['fcmp','fcmpe','fccmp','fccmpe','fcmeq','fcmge','fcmgt','facge','facgt']);
 const INTEGER_TO_FLOAT = new Set(['scvtf','ucvtf']);
 const ROUND_TO_INTEGER = new Set([
-  'fcvtas','fcvtau','fcvtms','fcvtmu','fcvtns','fcvtnu','fcvtps','fcvtpu','fcvtzs','fcvtzu',
-  'frinta','frintm','frintn','frintp','frintx','frinti','frintz',
+  'fcvtas','fcvtau','fcvtms','fcvtmu','fcvtns','fcvtnu','fcvtps','fcvtpu','fcvtzs','fcvtzu','frintx',
 ]);
+const NONEXACT_ROUND_TO_INTEGER = new Set(['frinta','frintm','frintn','frintp','frinti','frintz']);
 const DEFAULT_FAULT_CACHE = new Map();
 
 function arm64FpExceptionClassesForMnemonic(mnemonic) {
@@ -39,6 +40,7 @@ function arm64FpExceptionClassesForMnemonic(mnemonic) {
   if (COMPARE.has(canonical)) return COMPARE_EXCEPTION_CLASSES;
   if (INTEGER_TO_FLOAT.has(canonical)) return INTEGER_TO_FLOAT_EXCEPTION_CLASSES;
   if (ROUND_TO_INTEGER.has(canonical)) return ROUND_TO_INTEGER_EXCEPTION_CLASSES;
+  if (NONEXACT_ROUND_TO_INTEGER.has(canonical)) return NONEXACT_ROUND_EXCEPTION_CLASSES;
   if (ARITHMETIC.has(canonical)) return ARITHMETIC_EXCEPTION_CLASSES;
   return Object.freeze([]);
 }

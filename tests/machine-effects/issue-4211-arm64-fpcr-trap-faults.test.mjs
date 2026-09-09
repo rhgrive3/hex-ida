@@ -103,3 +103,13 @@ test('#4211 conditional FCCMPE faults only on the executed compare arm', () => {
   assert.equal(guard.nzcv?.kind, 'temporary');
   assert.ok(String(guard.nzcv?.temporaryId).includes('old-nzcv'));
 });
+
+test('#4211 only FRINTX exposes an inexact trap among scalar FRINT forms', () => {
+  for (const mnemonic of ['frinta','frintm','frintn','frintp','frinti','frintz']) {
+    const fault = fpTrap(lift(mnemonic, 's0, s1'));
+    assert.equal(exceptionTerm(fault, 'inexact'), undefined,
+      `${mnemonic} uses exact=FALSE and must not expose IXE`);
+  }
+  const exact = fpTrap(lift('frintx', 's0, s1'));
+  assert.ok(exceptionTerm(exact, 'inexact'), 'FRINTX uses exact=TRUE and can expose IXE');
+});
