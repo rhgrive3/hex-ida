@@ -259,7 +259,10 @@ function parseMetadataTables(bytes, view, tableStream) {
     }
     pos += rows * rowSize;
   }
-  return Object.freeze({ methodRvas, standAloneSigBlobIndexes });
+  // Row counts for tables beyond the legacy scan limit (catch-type token RID
+  // validation reaches TypeRef at 0x01 / TypeSpec at 0x1b) (#7606).
+  const typeDefOrRefCounts = { typeDef: rowCounts[0x02] || 0, typeRef: rowCounts[0x01] || 0, typeSpec: rowCounts[0x1b] || 0 };
+  return Object.freeze({ methodRvas, standAloneSigBlobIndexes, typeDefOrRefCounts });
 }
 
 function readSignatureCompressed(bytes, offset, code = 'cil-invalid-local-var-signature') {
@@ -502,6 +505,7 @@ function parseMetadataRoot(bytes, view, metadataOffset, metadataSize) {
     strings,
     methodRvas: tables.methodRvas,
     standAloneSigBlobIndexes: tables.standAloneSigBlobIndexes,
+    typeDefOrRefCounts: tables.typeDefOrRefCounts,
     blobStream,
   });
 }
@@ -516,7 +520,7 @@ function exceptionClauseKind(flags) {
   }
 }
 
-function validateExceptionClauseRange(clause, codeSize) {
+function validateExceptionClauseRange(clause, codeSize, metadataInfo = null) {
   const rangeInCode = (offset, length) => Number.isSafeInteger(offset)
     && Number.isSafeInteger(length)
     && offset >= 0
@@ -534,6 +538,23 @@ function validateExceptionClauseRange(clause, codeSize) {
     // Match the canonical verifier: filter code is [filterOffset, handlerOffset).
     if (!Number.isSafeInteger(filterOffset) || filterOffset < 0 || filterOffset >= clause.handlerOffset) {
       fail('cil-invalid-exception-filter-offset');
+    }
+  }
+  if (clause.kind === 'catch') {
+    // ECMA-335 II.25.4.6: a catch clause's ClassToken is a TypeDefOrRefOrSpec
+    // metadata token. Any other table (e.g. a MethodDef token) is invalid EH
+    // metadata and must not surface as a spec-valid catch type (#7606).
+    const CATCH_TOKEN_TABLES = new Set([0x01, 0x02, 0x1b]);
+    const token = clause.classTokenOrFilter;
+    const table = token >>> 24;
+    if (!CATCH_TOKEN_TABLES.has(table)) fail('cil-invalid-catch-token-kind');
+    if (metadataInfo) {
+      const counts = metadataInfo.typeDefOrRefCounts ?? {};
+      const rowCount = table === 0x02 ? counts.typeDef : table === 0x01 ? counts.typeRef : counts.typeSpec;
+      if (rowCount != null) {
+        const rid = token & 0x00ffffff;
+        if (rid < 1 || rid > rowCount) fail('cil-invalid-catch-token-rid');
+      }
     }
   }
   return clause;
@@ -636,7 +657,7 @@ function parseMethodBody(bytes, view, offset, metadataInfo = null) {
             classTokenOrFilter: readU32(view, clauseOffset + 8, 'cil-small-method-clause-truncated'),
           };
         }
-        exceptionClauses.push(validateExceptionClauseRange(parsedClause, codeSize));
+        exceptionClauses.push(validateExceptionClauseRange(parsedClause, codeSize, metadataInfo));
       }
 
       moreSections = (kind & 0x80) !== 0;
