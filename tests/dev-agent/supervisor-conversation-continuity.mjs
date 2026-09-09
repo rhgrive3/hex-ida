@@ -7,12 +7,28 @@ import { installChatGPTWebBridge } from '../../js/userscript/chatgpt-bridge.js';
 import { SingleConversationWorkerCoordinator } from '../../js/userscript/dev/single-tab/single-conversation-worker-coordinator.js';
 
 await testDevSupervisorRunReusesSessionWithinHexConversation();
+await testWaitingHumanResumeRequiresConcreteConversationIdentity();
 await testDelayedConversationIdentityStaysOnOneSupervisorChat();
 await testUnboundSupervisorSurfaceNeverCreatesAnotherChat();
 await testWorkerSendRefreshesLatestSupervisorAnchorAfterVirtualization();
 await testWorkerFollowupRefreshesLatestSupervisorAnchorAfterVirtualization();
 await testReleaseAdoptsAlreadyRoutedSupervisorSurfaceAfterVirtualization();
 console.log('dev-agent supervisor conversation continuity: ok');
+
+async function testWaitingHumanResumeRequiresConcreteConversationIdentity() {
+  const settings = new DevAgentUiSettings({ storage:null });
+  const waitingRun = { status:'WAITING_HUMAN', hexConversationId:null };
+  settings.setLastRun(waitingRun);
+  const engine = new DevSupervisorEngineV0({ supervisor:{}, settings });
+
+  assert.equal(engine.resumableHumanRun({ conversationId:null }), null);
+  assert.equal(engine.resumableHumanRun({}), null);
+
+  waitingRun.hexConversationId = 'hex-chat-waiting';
+  assert.equal(engine.resumableHumanRun({ conversationId:'hex-chat-waiting' }), waitingRun);
+  assert.equal(engine.resumableHumanRun({ conversationId:'hex-chat-other' }), null);
+  assert.equal(engine.resumableHumanRun({}), null);
+}
 
 async function testDevSupervisorRunReusesSessionWithinHexConversation() {
   const settings = new DevAgentUiSettings({ storage: null });

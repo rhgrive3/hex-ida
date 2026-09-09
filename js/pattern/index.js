@@ -112,7 +112,11 @@ export function evaluatePattern(compiled, byteSource, options = {}) {
   const pattern = looksCompiled(compiled)
     ? validateCompiledPattern(compiled)
     : compilePattern(compiled, options);
-  return core.evaluatePattern(pattern, byteSource, options);
+  const rootSpace = pattern.compileOptions.targetAddressSpace;
+  if (options.addressSpace != null && options.addressSpace !== rootSpace) {
+    fail('pattern-address-space-override-mismatch');
+  }
+  return core.evaluatePattern(pattern, byteSource, { ...options, addressSpace: rootSpace });
 }
 
 export function evaluatePatternAsync(compiled, byteSource, options = {}) {

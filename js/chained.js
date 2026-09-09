@@ -54,6 +54,16 @@ function utf8z(u8, off) {
 
 function u32be(dv, off) { return dv.getUint32(off, false); }
 
+function rangeWithin(start, size, parentStart, parentSize) {
+  return size >= 0n && start >= parentStart && start - parentStart <= parentSize && size <= parentSize - (start - parentStart);
+}
+
+function stubSectionWithinSegment(segment, addr, size, fileoff) {
+  return !!segment?.validFileRange
+    && rangeWithin(addr, size, segment.vmaddr, segment.vmsize)
+    && rangeWithin(fileoff, size, segment.fileoff, segment.filesize);
+}
+
 /** Return the bounded active architecture slice. */
 async function sliceOffset(file, sliceIndex) {
   if (sliceIndex != null) {
@@ -126,9 +136,11 @@ async function parseImage(file, sliceIndex) {
         const flags = dv.getUint32(q + 64, true);
         const reserved2 = dv.getUint32(q + 72, true);
         const stubSize = BigInt(reserved2);
+        const segment = segments[segIndex];
         if ((flags & 0xff) === S_SYMBOL_STUBS && secSize > 0n &&
             reserved2 >= 8 && reserved2 % 4 === 0 &&
-            stubSize <= secSize && secSize % stubSize === 0n) {
+            stubSize <= secSize && secSize % stubSize === 0n &&
+            stubSectionWithinSegment(segment, addr, secSize, offset)) {
           stubs.push({ section, addr, size: secSize, fileoff: offset, stubSize: reserved2, segIndex });
         }
       }
@@ -382,3 +394,5 @@ export async function augmentAnalysisResultWithChainedImports(file, sliceIndex, 
   }
   return Object.assign({}, result, { addrs, kinds, flags, names });
 }
+
+export const __chainedInternalsForTests = Object.freeze({ rangeWithin, stubSectionWithinSegment });
