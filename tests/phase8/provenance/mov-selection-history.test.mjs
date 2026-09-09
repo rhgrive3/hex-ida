@@ -6,6 +6,8 @@ import { validateRenderProvenance } from '../../../js/decompiler/phase8/render-p
 import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
 import { createDecompilerNavigation } from '../../../js/ui/decompiler-provenance.js';
 import { fixture as irFixture } from '../helpers/ir-fixtures.mjs';
+import { projectionFixture } from '../helpers/proof-fixtures.mjs';
+import { optimizeSemanticDecompilation } from '../../../js/decompiler/pipeline.js';
 import { analysis } from './fixture.js';
 
 const records = result => result.renderProvenance.ledger.filter(record => record.rule === 'select-mov-operand');
@@ -210,4 +212,22 @@ test('query navigation reaches the selected-away MOV at the actual return and re
   assert.ok(selected.transforms.some(record => record.rule === 'select-mov-operand'));
   epoch++;
   assert.equal((await navigation.selectOrigin('addr', f.moved.def.address)).reason, 'stale-query-snapshot');
+});
+
+test('public no-op stack recovery preserves MOV history through real proved replacement and replay', async () => {
+  const f = projectionFixture();
+  assert.equal(f.result.expressionHistoryBinding.completeness, 'complete');
+  assert.ok(readExpressionHistoryConsumer(f.result.cAst.body[0].semantic, f.ir));
+  const canonical = structuredClone(f.ir);
+  const first = await optimizeSemanticDecompilation(f.result, f.options);
+  assert.equal(first.proofOptimization.status, 'complete');
+  assert.ok(first.proofOptimization.adopted > 0);
+  assert.ok(records(first).some(record => record.renderedBinding === 'producer-bound' && record.producedRefs.includes('L0:stmt')));
+  const replay = await optimizeSemanticDecompilation(first, f.options);
+  assert.equal(replay.proofOptimization.status, 'complete');
+  assert.equal(replay.proofOptimization.adopted, 0);
+  assert.equal(replay.renderProvenance.completeness, 'complete');
+  assert.deepEqual(records(replay), records(first));
+  assert.deepEqual(structuredClone(f.ir), canonical);
+  assert.ok(readExpressionHistoryConsumer(f.result.cAst.body[0].semantic, f.ir), 'owned proof clone must preserve the original producer too');
 });

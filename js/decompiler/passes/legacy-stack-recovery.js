@@ -135,7 +135,16 @@ export function recoverLegacySameBlockStackSpills(result, opts = {}) {
       }
       return resolved;
     }
-    return mapChildren(node, child => rewrite(child, trace, depth + 1));
+    // A no-op traversal is not a new producer. Keep the actual expression and
+    // its private input history when no child was recovered; cloning here
+    // would force unrelated scalar histories through stack-recovery authority.
+    let changed = false;
+    const mapped = mapChildren(node, child => {
+      const resolved = rewrite(child, trace, depth + 1);
+      changed ||= resolved !== child;
+      return resolved;
+    });
+    return changed ? mapped : node;
   };
 
   for (const item of result.semanticAst.values || []) {

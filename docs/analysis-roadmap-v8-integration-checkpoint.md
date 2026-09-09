@@ -3015,13 +3015,24 @@ never refilled by failed observations or memo hits. Input/output observations
 share the cumulative edge budget. Missing/cancelled/stale/capped history stays
 explicitly incomplete without changing the legacy display selection.
 
-Thirteen new tests cover sixteen direct/chained source-selection cells over
+Fourteen new tests cover sixteen direct/chained source-selection cells over
 eight widths, nested/repeated consumers, three operand-view variants, unresolved
 loads, separate address-mode use, precomputed bypass, copied and changed sources,
 callback-time mutation, getter refusal, recursive last-slot reservation, degraded
 mandatory fallback, projection replay and query staleness. These are not sixteen
 new scalar or memory equivalence proofs. The exact ownership manifest adds only
 the new MOV provenance test path; the canonical provenance runner discovers it.
+
+The first exact substrate run exposed a deterministic public-pipeline interaction:
+legacy stack recovery cloned unchanged composite expressions and attempted to
+rebind the newly present MOV history as a stack recovery. Its full recovery
+observation rejected the fixture's Set-valued dominators, leaving even a pure
+scalar MOV replay incomplete. A new regression failed before the correction.
+The no-op recovery traversal now preserves its original expression identity;
+actual changed children still go through the existing stack-recovery observation
+and width/barrier gates. Neither the data boundary nor timeout/assertion is
+weakened. The regression exercises real scalar proof adoption, subsequent replay,
+the MOV's rendered lineage and preservation of the original producer.
 
 PR #3421 remains reused at `4cd5b3eb9200b1180985b9df3a74f8245a5cc928`.
 Live MOV/C4-03/provenance searches found no separate matching MOV-history PR;
