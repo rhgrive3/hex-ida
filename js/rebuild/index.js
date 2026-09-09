@@ -83,13 +83,16 @@ function unchangedRegions(original, output, touched) {
 function validatorResult(validator, status, reason = null) {
   return { validator, status, ...(reason ? { reason } : {}) };
 }
+function validatorPassed(result) {
+  return result === true || result?.ok === true || result?.status === 'passed' || result?.status === 'valid';
+}
 
 async function runValidatorOracle(name, output, plan, materialized, options) {
   const oracle = options.validators?.[name];
   if (typeof oracle !== 'function') return validatorResult(name, 'unavailable', 'validator-oracle-unavailable');
   try {
     const result = await oracle(output, { plan, materialized });
-    if (result === true || result?.ok === true || result?.status === 'passed' || result?.status === 'valid') return validatorResult(name, 'passed');
+    if (validatorPassed(result)) return validatorResult(name, 'passed');
     return validatorResult(name, 'failed', result?.reason || 'validator-rejected-output');
   } catch (error) {
     return validatorResult(name, 'failed', error?.message || String(error));
@@ -131,7 +134,7 @@ export async function validateRebuildOutput(plan, materialized, options = {}) {
   if (typeof options.loaderReparse === 'function') {
     try {
       const result = await options.loaderReparse(output);
-      const passed = result?.status !== 'unsupported' && result?.ok !== false;
+      const passed = validatorPassed(result);
       results.set('loader-reparse', validatorResult('loader-reparse', passed ? 'passed' : 'failed', passed ? null : (result?.reason || 'loader-rejected-output')));
     } catch (error) {
       results.set('loader-reparse', validatorResult('loader-reparse', 'failed', error?.message || String(error)));

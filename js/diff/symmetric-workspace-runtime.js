@@ -112,6 +112,24 @@ function demoteIncompleteAbsenceClaims(result, reason) {
     }),
   };
 }
+function workspaceCompleteness(result, before, current) {
+  const inputsComplete = before?.complete === true && current?.complete === true;
+  const reasons = [];
+  if (!before?.complete) reasons.push(before?.truncationReason || 'baseline-function-set-incomplete');
+  if (!current?.complete) reasons.push(current?.truncationReason || 'current-function-set-incomplete');
+  if (result?.truncated) reasons.push('matcher-truncated');
+  if (result?.ambiguous) reasons.push('matcher-ambiguous');
+  if (result?.complete !== true && !result?.truncated && !result?.ambiguous) reasons.push('matcher-incomplete');
+  return {
+    complete:inputsComplete && result?.complete === true,
+    reasons:[...new Set(reasons)],
+    evidenceProfile:SYMMETRIC_CODE_PROFILE,
+    fingerprintVersion:before?.fingerprintVersion,
+    evidenceSymmetric:true,
+    baseline:{ complete:before?.complete === true, total:before?.total, scanned:before?.scanned, missingEvidence:before?.missingEvidence, reason:before?.truncationReason },
+    current:{ complete:current?.complete === true, total:current?.total, scanned:current?.scanned, missingEvidence:current?.missingEvidence, reason:current?.truncationReason },
+  };
+}
 function currentRegions(app) {
   return typeof app?.programRegions === 'function' ? app.programRegions() : executableRegions(app?.store?.get?.('regions') || []);
 }
@@ -208,19 +226,7 @@ export function installSymmetricWorkspaceDiff(app) {
       assertCurrent();
       const inputsComplete = before.complete === true && current.complete === true;
       result = demoteIncompleteAbsenceClaims(result, inputsComplete ? null : 'incomplete-symmetric-code-evidence');
-      const reasons = [];
-      if (!before.complete) reasons.push(before.truncationReason || 'baseline-function-set-incomplete');
-      if (!current.complete) reasons.push(current.truncationReason || 'current-function-set-incomplete');
-      if (result.truncated) reasons.push('matcher-truncated');
-      result.completeness = {
-        complete:inputsComplete && !result.truncated,
-        reasons:[...new Set(reasons)],
-        evidenceProfile:SYMMETRIC_CODE_PROFILE,
-        fingerprintVersion:before.fingerprintVersion,
-        evidenceSymmetric:true,
-        baseline:{ complete:before.complete === true, total:before.total, scanned:before.scanned, missingEvidence:before.missingEvidence, reason:before.truncationReason },
-        current:{ complete:current.complete === true, total:current.total, scanned:current.scanned, missingEvidence:current.missingEvidence, reason:current.truncationReason },
-      };
+      result.completeness = workspaceCompleteness(result, before, current);
       result.provenance = {
         baselineHash:baseline.hash,
         currentHash:workspace.identity?.hash || null,
@@ -248,4 +254,5 @@ export function installSymmetricWorkspaceDiff(app) {
 export const __symmetricWorkspaceInternalsForTests = Object.freeze({
   demoteIncompleteAbsenceClaims,
   discoverBaselineFunctions,
+  workspaceCompleteness,
 });
