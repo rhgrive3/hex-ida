@@ -90,7 +90,7 @@ export function groupedFusion(items, opts) {
 }
 
 function finiteProbabilityRows(samples) {
-  return (samples || []).filter((s) => s && Number.isFinite(s.probability));
+  return (samples || []).filter((s) => s && Number.isFinite(s.probability) && typeof s.correct === 'boolean');
 }
 
 export function brierScore(samples) {
@@ -148,7 +148,7 @@ function normalizeBinCount(value) {
 }
 
 export function accuracyReport(rows) {
-  const all = (rows || []).filter(Boolean);
+  const all = finiteProbabilityRows(rows);
   const total = all.length;
   if (!total) {
     return { total: 0, top1: null, top3: null, precision: null, recall: null,

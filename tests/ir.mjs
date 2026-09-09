@@ -13,7 +13,7 @@ import {
 } from '../js/ir.js';
 import { backwardSlice, forwardSlice, valueChain, causalChain } from '../js/slice.js';
 import { compileGoal, describeQuery } from '../js/goalc.js';
-import { groupedFusion, brierScore, expectedCalibrationError, accuracyReport } from '../js/calib.js';
+import { groupedFusion, brierScore, expectedCalibrationError, reliabilityBins, accuracyReport, fitCalibration } from '../js/calib.js';
 
 let passed = 0;
 const failures = [];
@@ -429,6 +429,39 @@ test('calib: Brier / ECE が計算できる', () => {
   ok(b < 0.02, 'よく当たっている: ' + b);
   const ece = expectedCalibrationError(samples, 5);
   ok(ece < 0.15, '校正できている: ' + ece);
+});
+
+test('calib: correct label は primitive boolean だけを評価する (#4345)', () => {
+  const malformed = [
+    { probability: 0.9, correct: 'false', verdict: 'confirmed', rank: 1 },
+    { probability: 0.8, correct: 1, verdict: 'confirmed', rank: 1 },
+    { probability: 0.7, correct: [], verdict: 'likely', rank: 1 },
+    { probability: 0.6, correct: {}, verdict: 'none', rank: 9 },
+  ];
+  eq(brierScore(malformed), null, 'malformed labels must not become Brier targets');
+  eq(expectedCalibrationError(malformed, 5), null, 'malformed labels must not enter ECE');
+  eq(reliabilityBins(malformed, 5).reduce((n, bin) => n + bin.n, 0), 0,
+    'malformed labels must not enter reliability bins');
+  eq(accuracyReport(malformed).total, 0, 'accuracy report must use the same label policy');
+
+  const valid = [
+    { probability: 0.9, correct: true, verdict: 'confirmed', rank: 1 },
+    { probability: 0.1, correct: false, verdict: 'none', rank: 9 },
+  ];
+  const mixed = [...malformed, ...valid];
+  eq(brierScore(mixed), brierScore(valid), 'malformed labels cannot improve Brier score');
+  eq(expectedCalibrationError(mixed, 5), expectedCalibrationError(valid, 5),
+    'malformed labels cannot improve ECE');
+  eq(JSON.stringify(accuracyReport(mixed)), JSON.stringify(accuracyReport(valid)),
+    'accuracy report must ignore malformed labels consistently');
+
+  const calibration = Array.from({ length: 39 }, (_, i) => ({
+    probability: i < 20 ? 0.1 : 0.9,
+    correct: i >= 20,
+  }));
+  calibration.push({ probability: 0.99, correct: 'false' });
+  eq(fitCalibration(calibration, 5), null,
+    'malformed labels must not satisfy the minimum calibration sample count');
 });
 
 test('calib: 「確定」と言って外した率を出せる', () => {
