@@ -33,6 +33,7 @@ test('#4389 a persisted running slice is recoverable after final checkpoint fail
   await assert.rejects(first.runSlice('issue-4389'), /storage unavailable/);
   assert.equal(turns, 1);
   assert.equal(persistence.records.get('issue-4389').status, 'running');
+  assert.match(persistence.records.get('issue-4389').executionLeaseId, /^agent_job_lease_/);
 
   const restarted = new AgentJobManager({ runtime, persistence });
   const loaded = await restarted.get('issue-4389');
@@ -44,6 +45,50 @@ test('#4389 a persisted running slice is recoverable after final checkpoint fail
   assert.equal(resumed.status, 'complete');
   assert.equal(turns, 2);
   assert.equal(persistence.records.get('issue-4389').status, 'complete');
+});
+
+test('#4389 a live owner cannot be replayed by a second manager sharing persistence', async () => {
+  let releaseFirst;
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  let turns = 0;
+  let active = 0;
+  let maxActive = 0;
+  const runtime = {
+    async turn() {
+      turns++;
+      active++;
+      maxActive = Math.max(maxActive, active);
+      try {
+        if (turns === 1) {
+          markStarted();
+          await new Promise((resolve) => { releaseFirst = resolve; });
+        }
+        return { answer: `turn-${turns}`, limits: { exhausted: false } };
+      } finally {
+        active--;
+      }
+    },
+  };
+  const persistence = memoryPersistence();
+  const owner = new AgentJobManager({ runtime, persistence });
+  await owner.create({ jobId: 'issue-4389-live-owner', goal: 'one owner' });
+  const running = owner.runSlice('issue-4389-live-owner');
+  await started;
+  assert.equal(persistence.records.get('issue-4389-live-owner').status, 'running');
+
+  const contenderRuntime = { turn: (...args) => runtime.turn(...args) };
+  const contender = new AgentJobManager({ runtime: contenderRuntime, persistence });
+  try {
+    await assert.rejects(contender.resume('issue-4389-live-owner'), /active slice/);
+    assert.equal(turns, 1);
+    assert.equal(maxActive, 1);
+  } finally {
+    releaseFirst();
+    await running;
+  }
+  assert.equal(persistence.records.get('issue-4389-live-owner').status, 'complete');
+  assert.equal((await contender.get('issue-4389-live-owner')).status, 'complete');
 });
 
 test('#4389 a running checkpoint left by a runtime crash can be resumed', async () => {
