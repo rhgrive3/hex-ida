@@ -30,6 +30,14 @@ const struct8 = {
     { type:'uint64_t', bits:64, bytes:8, byteOffset:0, alignmentBytes:8 },
   ] },
 };
+const struct24 = {
+  type:'struct S24', aggregate:true, bits:192, alignmentBytes:8,
+  layout:{ bits:192, bytes:24, alignmentBytes:8, members:[
+    { type:'uint64_t', bits:64, bytes:8, byteOffset:0, alignmentBytes:8 },
+    { type:'uint64_t', bits:64, bytes:8, byteOffset:8, alignmentBytes:8 },
+    { type:'uint64_t', bits:64, bytes:8, byteOffset:16, alignmentBytes:8 },
+  ] },
+};
 const gprs = Array.from({ length:8 }, () => ({ type:'uint64_t', bits:64 }));
 
 test('#5607 a 3-byte aggregate consumes 3 stack bytes, not a widened 8-byte slot', () => {
@@ -66,4 +74,18 @@ test('#5607 an 8-byte aggregate keeps its full-slot layout (control)', () => {
   const tail = result.arguments[9];
   assert.equal(s.bytes, 8);
   assert.equal(tail.offset, 8);
+});
+
+test('#5607 an anonymous variadic aggregate forced to the stack keeps the indirect-copy marker', () => {
+  const result = classifyDarwinArm64Arguments({ callPrototype:{
+    variadic:true,
+    fixedParameterCount:0,
+    args:[{ ...struct24, unnamed:true, variadic:true }],
+  } });
+  const argument = result.arguments[0];
+  assert.equal(argument.location, 'stack');
+  assert.equal(argument.abiClass, 'aggregate-indirect-copy');
+  assert.equal(argument.pointer, true);
+  assert.equal(argument.variadicAnonymous, true);
+  assert.equal(argument.bytes, 8, 'the stack entry is an indirect pointer slot, not the widened aggregate');
 });
