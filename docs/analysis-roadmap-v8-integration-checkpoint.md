@@ -3152,10 +3152,48 @@ parallel points-to constant-kind and query slice-identity issues, not this rende
 history. Keep it as a central reconciliation candidate, without duplicating its
 fixes or treating its prose as verification. One new exact provenance test path
 is added to ownership. No component/main merge occurred. Actual upstream folding
-pass histories, lower explicit numeric-load selection, general flag-condition
+pass histories, general flag-condition
 history and the full rendered/removed class audit remain open, as do all23
 findings, C4-04/C4-05 work, frozen135compiler binaries and required integration
 acceptance. Acceptance stays LOCKED.
+
+## C4-03 explicit canonical numeric-load selection history
+
+The lower LOAD builder branch now emits `select-canonical-load-constant` only
+after the existing current canonical numeric-forwarding gate actually selects
+the constant. The shared constant-selection source observer retains the load,
+declared operands and uniquely mapped contributing-store sources using the same
+private build frame, cumulative observation budget and pre-reserved selection
+slots as precomputed/MOV/address-load history. No second ledger, issuer or
+semantic identity is introduced. Existing canonical proof eligibility, numeric
+output and memory facts are unchanged.
+
+The event is labelled `observed-canonical-load-selection-not-new-memory-proof`:
+it describes consumption of the existing proof, not a new theorem or an inferred
+upstream pass. A precomputed load takes its own earlier branch and never acquires
+this unvisited event. Later changed facts, contexts, source roots or store fields
+invalidate private consumer bindings. Missing/ambiguous source projections and
+exhausted history budgets remain incomplete even when scalar output is retained.
+
+Seven additional tests in the existing precomputed-value history test file cover
+four real canonical MemorySSA widths (8/16/32/64), public rendering/replay,
+source-to-return query navigation and stale refusal, invalid/copied facts before
+selection, source/context/private-consumer/public-history changes after selection,
+fallback, record/edge/consumer/cancel bounds, ambiguous store projections and
+non-executing getter refusal. The fixture clears only the compatibility-supplied
+scalar constant and verifies that the existing independent canonical gate stays
+valid, exercising the actual lower branch without fabricated proof authority.
+
+PR #3421 remains the reused provenance foundation. Search also returned #7548
+at `574683a98a59a5ecb1a79ba789a0f0f5789dac3d`; its inspected body and four
+changed paths concern Phase 7 alias binary identity and escape-cache authority,
+not this render-history consumer. Preserve it as a central reconciliation
+candidate rather than duplicate those parallel issue fixes. No new ownership
+path or component/main merge is added. This closes one observed producer gap,
+not the full rendered/removed-class requirement or original23findings. General
+flag reconstruction, upstream compatibility transforms, full C4-03 audit,
+C4-04/C4-05 proofs, frozen135compiler corpus and required integration acceptance
+remain open. Goal ACTIVE and integration acceptance LOCKED.
 
 ## Ownership and regression policy
 
@@ -3191,7 +3229,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C3-03 | Versioned language metadata and unknown-version matrix |
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
-| HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi, MOV/address-load/precomputed-value selection, initial RMW/C AST compound-store histories, owned handoffs and explicit assignment-expansion records, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
+| HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi, MOV/address-load/precomputed-value/canonical-numeric-load selection, initial RMW/C AST compound-store histories, owned handoffs and explicit assignment-expansion records, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
 | HEX-C4-04 | Proof-gated scalar projection, owned inputs, transaction coverage and optional reuse of all 64 display rules as independently verified candidates implemented; ordinary legacy-view adoption, full family/width denominator and memory/CFG/exception observables remain open |
 | HEX-C4-05 | Frozen 272-cell scalar/14-Bool/8-width producer coverage and 3 actual schedules (816 scalar cells); adopted-transform history now preserves actual rule/cost/budget/proof audits. Native proof gaps, arbitrary permutations and full acceptance remain open |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |

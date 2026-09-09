@@ -18,6 +18,8 @@ import { createDecompilerNavigation } from '../../../js/ui/decompiler-provenance
 
 const rule = 'select-precomputed-value';
 const records = result => result.renderProvenance.ledger.filter(record => record.rule === rule);
+const loadRule = 'select-canonical-load-constant';
+const loadRecords = result => result.renderProvenance.ledger.filter(record => record.rule === loadRule);
 const canonicalData = ir => structuredClone(Object.fromEntries(Object.entries(ir).filter(([, value]) => typeof value !== 'function')));
 
 function render(ir, target, unrelated, options = {}, publicPipeline = false) {
@@ -104,6 +106,139 @@ function assertCanonical(f) {
   assert.deepEqual(canonicalData(f.ir), f.canonical);
   for (const [key, value] of f.roots) assert.equal(f.ir[key], value);
 }
+
+function explicitLoad(bits = 32) {
+  const m = canonicalLoad(bits);
+  // Compatibility normally supplies this constant already. Removing only the
+  // cached scalar value exercises the lower builder gate without changing its
+  // canonical MemorySSA fact or independently supplied current load context.
+  m.load.dst.const = null;
+  assert.ok(isCanonicalExactMemoryForwarding(m.load.memoryForwarding,
+    canonicalMemoryForwardingContextForLoad(m.load.memoryForwarding, m.load, m.load.memoryForwardingContext)));
+  return m;
+}
+
+test('explicit canonical numeric-load selection retains load/store sources at four widths through public rendering and replay', () => {
+  for (const bits of [8, 16, 32, 64]) {
+    const m = explicitLoad(bits), f = render(m.ir, m.load.dst, null, {}, true);
+    assert.equal(f.result.cAst.body[0].semantic.expression.value, 37n);
+    let result = applyPhase8Projection(f.result, analysis());
+    const history = loadRecords(result);
+    assert.equal(history.length, 1);
+    const [record] = history;
+    assert.equal(record.before, 'load:canonical-numeric-forwarding');
+    assert.equal(record.proof, 'observed-canonical-load-selection-not-new-memory-proof');
+    assert.equal(record.renderedBinding, 'producer-bound');
+    assert.deepEqual(record.producedRefs, ['L0:stmt']);
+    for (const inst of [m.load, m.store, m.store.args[0].value.def]) {
+      assert.ok(record.originHistory.consumedRefs.includes(`ir:${inst.id}`));
+      assert.ok(result.renderProvenance.reverse[`addr:${inst.address}`].includes('L0:stmt'));
+    }
+    assert.equal(validateRenderProvenance(result.renderProvenance).state, 'complete');
+    assert.deepEqual(records(result), [], 'a visited lower branch is not a supplied precomputed-value selection');
+    const ledger = result.renderProvenance.ledger;
+    for (let i = 0; i < 3; i++) result = applyPhase8Projection(result, analysis());
+    assert.deepEqual(result.renderProvenance.ledger, ledger);
+    assertCanonical(f);
+  }
+});
+
+test('unvisited or uncertified numeric-load branches cannot issue canonical selection history', () => {
+  const supplied = canonicalLoad(), precomputed = render(supplied.ir, supplied.load.dst, null);
+  assert.deepEqual(loadRecords(applyPhase8Projection(precomputed.result, analysis())), []);
+  for (const mutate of [
+    m => { m.load.memoryForwarding = { ...m.load.memoryForwarding }; },
+    m => { m.load.memoryForwardingContext = { ...m.load.memoryForwardingContext, snapshotId:'stale' }; },
+    m => { m.load.memoryForwarding = null; },
+  ]) {
+    const m = explicitLoad(); mutate(m);
+    const f = render(m.ir, m.load.dst, null), result = applyPhase8Projection(f.result, analysis());
+    assert.equal(f.result.cAst.body[0].semantic.expression.kind, 'load');
+    assert.deepEqual(loadRecords(result), []);
+    assertCanonical(f);
+  }
+});
+
+test('canonical numeric-load history refuses changed private source roots, facts, contexts and public copies', () => {
+  for (const [index, mutate] of [
+    m => { m.load.memoryForwarding = { ...m.load.memoryForwarding }; },
+    m => { m.load.memoryForwardingContext = { ...m.load.memoryForwardingContext, snapshotId:'stale' }; },
+    m => { m.store.semanticNodeId = 'other-store'; },
+    m => { m.ir.instructions = [...m.ir.instructions]; },
+    (m, f) => { f.result.cAst.body[0].semantic = { ...f.result.cAst.body[0].semantic }; },
+    (m, f) => { f.result.rewriteProof = f.result.rewriteProof.map(record => ({ ...record })); },
+  ].entries()) {
+    const m = explicitLoad(), f = render(m.ir, m.load.dst, null);
+    assert.ok(readExpressionHistoryConsumer(f.result.cAst.body[0].semantic, m.ir));
+    mutate(m, f);
+    assert.equal(readExpressionHistoryConsumer(f.result.cAst.body[0].semantic, m.ir) !== null, index === 5);
+    const history = loadRecords(applyPhase8Projection(f.result, analysis()));
+    assert.ok(history.length > 0);
+    assert.ok(history.every(record => record.renderedBinding === 'unresolved' && record.producedRefs.length === 0));
+  }
+});
+
+test('canonical numeric-load fallback and history limits preserve scalar output without inventing complete history', () => {
+  const m = explicitLoad(), baseline = render(m.ir, m.load.dst, null).result.pseudocode;
+  for (const options of [
+    { deterministicTransforms:false, decompilerTimeBudgetMs:1e-12 },
+    { renderProvenanceBudget:{ maxTransformRecords:0 } },
+    { renderProvenanceBindingBudget:{ maxEdges:0 } },
+    { renderProvenanceBindingBudget:{ maxConsumers:0 } },
+    { shouldAbort:() => true },
+  ]) {
+    const m = explicitLoad(), f = render(m.ir, m.load.dst, null, options);
+    const result = applyPhase8Projection(f.result, analysis());
+    assert.equal(f.result.pseudocode, baseline);
+    if (options.deterministicTransforms === false) {
+      assert.ok(loadRecords(result).some(record => record.renderedBinding === 'producer-bound' && record.producedRefs.includes('L0:stmt')));
+      assert.ok(result.renderProvenance.reverse[`addr:${m.store.address}`].includes('L0:stmt'));
+    } else assert.equal(result.renderProvenance.completeness, 'incomplete');
+    assertCanonical(f);
+  }
+});
+
+test('canonical numeric-load query navigates its selected-away store and rejects stale snapshots', async () => {
+  const m = explicitLoad(), f = render(m.ir, m.load.dst, null);
+  const result = applyPhase8Projection(f.result, analysis());
+  let epoch = 1;
+  const api = new AnalysisQueryAPI({
+    currentIdentity:async () => ({ binaryId:'explicit-load-history', projectRevision:1, analysisEpoch:epoch, artifactVersions:{} }),
+    decompile:async () => ({ value:{ lines:result.lines, pseudocode:result.pseudocode, renderProvenance:result.renderProvenance }, status:{ completeness:'complete' } }),
+  });
+  const snapshot = await api.snapshot(), query = await api.decompile(snapshot, 'function');
+  const navigation = createDecompilerNavigation(query, { currentSnapshot:() => api.snapshot() });
+  const selected = await navigation.selectOrigin('addr', m.store.address);
+  assert.equal(selected.state, 'ready');
+  assert.deepEqual(selected.entities.map(entity => entity.lineIndex), [0]);
+  assert.ok(selected.transforms.some(record => record.rule === loadRule));
+  epoch++;
+  assert.equal((await navigation.selectOrigin('addr', m.store.address)).reason, 'stale-query-snapshot');
+});
+
+test('ambiguous canonical store-source projection preserves the numeric result but cannot claim complete navigation', () => {
+  const m = explicitLoad();
+  m.ir.instructions.push({ ...m.store, id:9001 });
+  const f = render(m.ir, m.load.dst, null), result = applyPhase8Projection(f.result, analysis());
+  assert.equal(f.result.cAst.body[0].semantic.expression.value, 37n);
+  assert.ok(f.result.expressionHistoryBinding.reasons.includes('canonical-load-source-history-incomplete'));
+  assert.equal(result.renderProvenance.completeness, 'incomplete');
+  const history = loadRecords(result);
+  assert.ok(history.length > 0);
+  assert.ok(history.every(record => record.originHistory.completeness === 'incomplete'
+    && !record.originHistory.consumedRefs.includes(`ir:${m.store.id}`)
+    && !record.originHistory.consumedRefs.includes('ir:9001')));
+  assertCanonical(f);
+});
+
+test('a getter replacing an observed canonical store source invalidates history without executing it', () => {
+  const m = explicitLoad(), f = render(m.ir, m.load.dst, null);
+  const original = m.store.semanticNodeId;
+  let reads = 0;
+  Object.defineProperty(m.store, 'semanticNodeId', { enumerable:true, configurable:true, get:() => { reads++; return original; } });
+  assert.equal(readExpressionHistoryConsumer(f.result.cAst.body[0].semantic, m.ir), null);
+  assert.equal(reads, 0);
+});
 
 test('precomputed bin/MOV/phi selection preserves declared dependencies across eight widths without inventing upstream pass events', () => {
   let cells = 0;

@@ -519,7 +519,7 @@ function recordAddressLoadSelection(value, instruction, store, expression, selec
   (state.buildHistoryFrame.records ??= new Set()).add(record);
 }
 
-function precomputedValueOrigins(value, state) {
+function selectedValueOrigins(value, state) {
   const pending = [value], seen = new Set(), definitions = new Set(), sources = [], memoryChecks = [];
   const started = performance.now();
   let incomplete = false;
@@ -564,31 +564,34 @@ function precomputedValueOrigins(value, state) {
   return { source:mergeSource(...sources), definitions:[...definitions], incomplete, memoryChecks };
 }
 
-function precomputedSelection(value, state) {
+function constantValueSelection(value, state, kind = 'precomputed') {
   // A literal has no selected-away computation. Other precomputed values do,
   // but this consumer must not invent which upstream folding passes ran.
   if (!value.def || value.def.op === 'const') return null;
   const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
   const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
   if ((state.buildSelectionHistoryCount || 0) >= maximum || consumerObservationBudget(state).edges <= 0) {
-    observeBuildSelection(value, value.def, state, 'precomputed'); return null;
+    observeBuildSelection(value, value.def, state, kind); return null;
   }
-  const origins = precomputedValueOrigins(value, state);
-  const observation = observeBuildSelection(value, value.def, state, 'precomputed',
+  const origins = selectedValueOrigins(value, state);
+  const observation = observeBuildSelection(value, value.def, state, kind,
     origins.definitions.filter(definition => definition !== value.def));
-  if (origins.incomplete) consumerObservationBudget(state).reasons.add('precomputed-source-history-incomplete');
-  return { origins, observation };
+  if (origins.incomplete) consumerObservationBudget(state).reasons.add(`${kind}-source-history-incomplete`);
+  return { origins, observation, kind };
 }
 
-function recordPrecomputedSelection(value, expression, selected, state) {
+function recordConstantValueSelection(value, expression, selected, state) {
   if (!selected) return;
   const observation = finishBuildSelection(expression, selected.observation, state);
   if (!observation) return;
   const history = expressionOriginHistory({ source:selected.origins.source }, expression);
-  const record = Object.freeze({ rule:'select-precomputed-value', phase:'expression-build',
-    before:`precomputed:${value.def.op}`, after:`expression:${expression.kind}`,
-    evidence:Object.freeze({ kind:'observed-precomputed-value-selection-not-equivalence',
-      detail:'actual supplied constant selection and declared dependency sources; not an upstream folding trace, executed path, scalar equivalence or new memory proof' }),
+  const canonicalLoad = selected.kind === 'canonical-load';
+  const record = Object.freeze({ rule:canonicalLoad ? 'select-canonical-load-constant' : 'select-precomputed-value', phase:'expression-build',
+    before:canonicalLoad ? 'load:canonical-numeric-forwarding' : `precomputed:${value.def.op}`, after:`expression:${expression.kind}`,
+    evidence:Object.freeze({ kind:canonicalLoad ? 'observed-canonical-load-selection-not-new-memory-proof' : 'observed-precomputed-value-selection-not-equivalence',
+      detail:canonicalLoad
+        ? 'actual numeric constant selection admitted by the existing current canonical forwarding gate and its contributing sources; not an upstream pass trace or a new memory proof'
+        : 'actual supplied constant selection and declared dependency sources; not an upstream folding trace, executed path, scalar equivalence or new memory proof' }),
     originHistory:selected.origins.incomplete ? Object.freeze({ ...history, truncated:true }) : history,
   });
   buildHistoryObservations.set(record, Object.freeze({ matches:() => observation.matches() && selected.origins.memoryChecks.every(current => current()) }));
@@ -604,14 +607,14 @@ function buildValueRaw(v, state, flags = {}) {
   let out = null;
   const d = v.def;
   if (v.constKind === 'float' || v.floatConst != null || (v.float != null && v.const == null)) {
-    const selected = precomputedSelection(v, state);
+    const selected = constantValueSelection(v, state);
     out = expr.floatConstant(v.floatConst ?? v.float, v.bits || 64, origin(d, v));
-    recordPrecomputedSelection(v, out, selected, state);
+    recordConstantValueSelection(v, out, selected, state);
   }
   if (!out && v.const != null && d?.op !== 'addr') {
-    const selected = precomputedSelection(v, state);
+    const selected = constantValueSelection(v, state);
     out = constNode(v);
-    recordPrecomputedSelection(v, out, selected, state);
+    recordConstantValueSelection(v, out, selected, state);
   }
   if (!out && (v.kind === 'arg' || !d)) out = expr.variable(argumentName(v, state), v.bits || 64, signedFor(state, v), origin(d, v), { ssaId: v.id, range: v.range ? { ...v.range } : null });
   if (!out && d) {
@@ -674,7 +677,9 @@ function buildValueRaw(v, state, flags = {}) {
         canonicalMemoryForwardingContextForLoad(d.memoryForwarding, d,
           d.memoryForwardingContext ?? d.extra?.memoryForwardingContext))
         && d.memoryForwarding.value != null) {
+        const selection = constantValueSelection(v, state, 'canonical-load');
         out = constNode(v, d.memoryForwarding.value);
+        recordConstantValueSelection(v, out, selection, state);
       } else if (flags.forAddress && d.reachingStore && d.reachingStore !== d) {
         const store = d.reachingStore;
         const selection = observeBuildSelection(v, d, state, 'address-load', [store]);
