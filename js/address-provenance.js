@@ -48,6 +48,23 @@
       if (typeof value[Symbol.iterator] !== 'function') throw new TypeError('address-provenance-boundary-collection-required');
       return [...value];
     };
+    // Entry-kill register lists are registers, not addresses, but they are an
+    // external boundary shape too: a truthy non-iterable must fail with the
+    // named contract error instead of leaking a raw for...of TypeError.
+    const registerCollection = (value) => {
+      if (value == null) return [];
+      if (typeof value === 'string' || typeof value[Symbol.iterator] !== 'function') {
+        throw new TypeError('address-provenance-entry-kill-registers-required');
+      }
+      return [...value];
+    };
+    const entryKillCollection = (value) => {
+      if (value == null) return [];
+      if (typeof value === 'string' || typeof value[Symbol.iterator] !== 'function') {
+        throw new TypeError('address-provenance-entry-kills-required');
+      }
+      return [...value];
+    };
     const functionStarts = addressCollection(opts.functionStarts)
       .map(asBigInt)
       .filter((start) => start != null)
@@ -77,12 +94,15 @@
     // clearing every register at every back-edge target: unchanged bases remain
     // valid, while loop-carried clobbers fail closed on the first visit.
     const entryKills = new Map();
-    for (const item of opts.entryKills || []) {
+    for (const item of entryKillCollection(opts.entryKills)) {
       if (!Array.isArray(item) || item.length < 2) continue;
+      // Validate the register-collection shape before the range filter: the
+      // shape is the boundary contract, the range is semantic filtering.
+      const registers = registerCollection(item[1]);
       const target = asBigInt(item[0]);
       if (target == null || !inRange(target)) continue;
       const regs = new Set();
-      for (const value of item[1] || []) {
+      for (const value of registers) {
         const reg = value;
         if (Number.isInteger(reg) && reg >= 0 && reg < 32) regs.add(reg);
       }
