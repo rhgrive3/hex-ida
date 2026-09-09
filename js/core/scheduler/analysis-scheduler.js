@@ -139,7 +139,13 @@ export class AnalysisScheduler {
         queued: this.queue.size,
         details: Object.freeze({ ...details }),
       });
-      this.onEvent(event);
+      const observerResult = this.onEvent(event);
+      if (observerResult != null && (typeof observerResult === 'object' || typeof observerResult === 'function')) {
+        const observerPromise = Promise.resolve(observerResult);
+        Promise.prototype.then.call(observerPromise, undefined, () => {
+          this.metrics.observerFailures = (this.metrics.observerFailures || 0) + 1;
+        });
+      }
     } catch {
       this.metrics.observerFailures = (this.metrics.observerFailures || 0) + 1;
     }

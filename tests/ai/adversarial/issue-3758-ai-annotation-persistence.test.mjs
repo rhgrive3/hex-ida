@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { CapabilityExecutor } from '../../../js/ai/capabilities/executor.js';
 import { NoteStore } from '../../../js/names.js';
 
-const authorization = { kind: 'proposal', token: 'approved-token' };
+import { executeApprovedCapability } from '../support/approved-capability.mjs';
 
 function executorFor(app) {
-  return new CapabilityExecutor({
+  const executor = new CapabilityExecutor({
     app,
     catalog: {
       get(id) {
@@ -19,6 +19,8 @@ function executorFor(app) {
       },
     },
   });
+  executor.executeApproved = (id, args) => executeApprovedCapability(executor, id, args);
+  return executor;
 }
 
 async function rejectsToolFailed(promise) {
@@ -68,10 +70,9 @@ function installStorage(storage) {
     },
     updateChrome: () => { chromeUpdates += 1; },
   });
-  await rejectsToolFailed(executor.execute(
+  await rejectsToolFailed(executor.executeApproved(
     'annotation.comment',
     { address: '4096', value: 'approved note' },
-    { authorization },
   ));
   assert.equal(setCommentCalls, 0, 'setter-only comment adapters must fail before mutation when rollback state cannot be captured');
   assert.equal(current, 'before', 'snapshot-unavailable comment adapters must not retain the rejected mutation');
@@ -87,10 +88,9 @@ function installStorage(storage) {
     },
     symbols: { rename: () => { symbolRenames += 1; } },
   });
-  await rejectsToolFailed(executor.execute(
+  await rejectsToolFailed(executor.executeApproved(
     'annotation.rename',
     { address: '4096', value: 'after' },
-    { authorization },
   ));
   assert.equal(symbolRenames, 0, 'failed name persistence must stop before the coupled symbol rename');
 }
@@ -110,10 +110,9 @@ function installStorage(storage) {
     },
     symbols: { rename: () => { symbolRenames += 1; } },
   });
-  await rejectsToolFailed(executor.execute(
+  await rejectsToolFailed(executor.executeApproved(
     'annotation.rename',
     { address: '4096', value: 'after' },
-    { authorization },
   ));
   assert.equal(setNameCalls, 0, 'throwing name getters must fail before a stateful setter can mutate');
   assert.equal(current, 'before', 'throwing name getters must leave the previous state untouched');
@@ -126,10 +125,9 @@ function installStorage(storage) {
     save: () => false,
   };
   const executor = executorFor({ notes });
-  await rejectsToolFailed(executor.execute(
+  await rejectsToolFailed(executor.executeApproved(
     'annotation.struct-field',
     { struct: 'Pair', offset: 0, field: 'left', type: 'int' },
-    { authorization },
   ));
   assert.deepEqual(notes.structs, [], 'failed structure persistence must roll back the in-memory structure');
 }
@@ -138,10 +136,9 @@ function installStorage(storage) {
   const executor = executorFor({
     notes: { setType: () => false },
   });
-  await rejectsToolFailed(executor.execute(
+  await rejectsToolFailed(executor.executeApproved(
     'annotation.set-type',
     { address: '4096', key: 'return', value: 'int' },
-    { authorization },
   ));
 }
 
@@ -161,25 +158,21 @@ function installStorage(storage) {
     symbols: { rename: () => { renamed += 1; } },
   };
   const executor = executorFor(app);
-  assert.equal((await executor.execute(
+  assert.equal((await executor.executeApproved(
     'annotation.comment',
     { address: '4096', value: 'ok' },
-    { authorization },
   )).ok, true);
-  assert.equal((await executor.execute(
+  assert.equal((await executor.executeApproved(
     'annotation.rename',
     { address: '4096', value: 'renamed' },
-    { authorization },
   )).ok, true);
-  assert.equal((await executor.execute(
+  assert.equal((await executor.executeApproved(
     'annotation.set-type',
     { address: '4096', key: 'return', value: 'int' },
-    { authorization },
   )).ok, true);
-  assert.equal((await executor.execute(
+  assert.equal((await executor.executeApproved(
     'annotation.struct-field',
     { struct: 'Pair', offset: 0, field: 'left', type: 'int' },
-    { authorization },
   )).ok, true);
   assert.equal(renamed, 1);
   assert.equal(saved, 1);
@@ -200,11 +193,10 @@ function installStorage(storage) {
     },
   });
   await assert.rejects(
-    executor.execute(
+    executor.executeApproved(
       'annotation.rename',
       { address: '4096', value: 'after' },
-      { authorization },
-    ),
+      ),
     (error) => error?.type === 'tool_failed' && /rolled back/i.test(error.message),
   );
   assert.equal(setNameCalls, 2, 'rename rollback must attempt to persist the previous note value');
@@ -219,11 +211,10 @@ function installStorage(storage) {
     assert.equal(notes.dirty, false);
 
     storage.failWrites = true;
-    await rejectsToolFailed(executorFor({ notes }).execute(
+    await rejectsToolFailed(executorFor({ notes }).executeApproved(
       'annotation.comment',
       { address: '4096', value: 'after' },
-      { authorization },
-    ));
+      ));
     assert.equal(notes.comment(4096n), 'before', 'failed comment persistence must restore the previous in-memory value');
     assert.equal(notes.dirty, false, 'failed comment persistence must restore the previous dirty state');
 
@@ -247,11 +238,10 @@ function installStorage(storage) {
     await rejectsToolFailed(executorFor({
       notes,
       symbols: { rename: () => { symbolRenames += 1; } },
-    }).execute(
+    }).executeApproved(
       'annotation.rename',
       { address: '4096', value: 'after' },
-      { authorization },
-    ));
+      ));
     assert.equal(notes.nameOf(4096n), 'before', 'failed rename persistence must restore the previous in-memory name');
     assert.equal(notes.dirty, false, 'failed rename persistence must restore the previous dirty state');
     assert.equal(symbolRenames, 0, 'failed NoteStore persistence must stop before symbol rename');
@@ -280,7 +270,7 @@ function installStorage(storage) {
       { struct: 'Pair', offset: 4, field: 'extra', type: 'int' },
       { struct: 'Fresh', offset: 0, field: 'first', type: 'int' },
     ]) {
-      await rejectsToolFailed(executor.execute('annotation.struct-field', args, { authorization }));
+      await rejectsToolFailed(executor.executeApproved('annotation.struct-field', args));
       assert.deepEqual(
         notes.structs,
         [{ name: 'Pair', fields: [{ offset: 0, name: 'left', type: 'int' }] }],

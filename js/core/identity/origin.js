@@ -43,6 +43,9 @@ function requiredString(value, code) {
   if (!text) fail(code);
   return text;
 }
+function compareCanonicalText(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
 function bigintValue(value, code) {
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number') {
@@ -126,9 +129,9 @@ function normalizedList(values, code, normalize) {
 }
 function sortedList(byKey, cacheable = true) {
   if (byKey.size === 0) return EMPTY_LIST;
-  // Preserve localeCompare (including ties between distinct keys) and Map's
-  // first-insertion order / last-value-wins semantics exactly.
-  const entries = [...byKey.entries()].sort(([a], [b]) => a.localeCompare(b));
+  // Sort canonical UTF-16 keys deterministically while retaining Map's
+  // first-insertion order / last-value-wins semantics for equal keys.
+  const entries = [...byKey.entries()].sort(([a], [b]) => compareCanonicalText(a, b));
   const values = entries.map(([, value]) => value);
   if (cacheable) CANONICAL_LIST_ENTRIES.set(values, entries);
   return values;

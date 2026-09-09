@@ -24,10 +24,17 @@ function globalRoot() {
 
 function candidates() {
   const out = [];
-  if (BAKED) out.push(BAKED);
+  // Project-local dependency wins: the checkout's own @nanonets/graft must
+  // never be shadowed by a machine-specific global install (#5895). The
+  // baked absolute path is only a historical compat fallback, and an
+  // explicit GRAFT_CLAUDE_DIR override takes precedence over everything so
+  // a pinned toolchain stays possible without repinning every checkout.
+  const override = process.env.GRAFT_CLAUDE_DIR;
+  if (override) out.push(override);
   const local = fromPkg(dir); if (local) out.push(local);
   const legacy = fromPkg(path.join(path.dirname(process.execPath), '..', 'lib')); if (legacy) out.push(legacy);
   const gr = globalRoot(); if (gr) out.push(path.join(gr, '@nanonets', 'graft', 'dist', 'claude'));
+  if (BAKED) out.push(BAKED);
   return out;
 }
 

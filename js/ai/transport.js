@@ -10,7 +10,7 @@ export async function requestJSON(url, body, {
   fetchImpl = globalThis.fetch,
 } = {}) {
   if (typeof fetchImpl !== 'function') throw new AIError('provider_error', 'Fetch is unavailable.');
-  if (signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
+  if (signal?.aborted) throw externalAbortError(signal);
   const responseLimit = normalizeLimit(maxResponseBytes);
   const timeoutDelay = normalizeTimeout(timeoutMs);
   const controller = new AbortController();
@@ -22,7 +22,9 @@ export async function requestJSON(url, body, {
     if (signal.aborted) abort();
   }
   try {
-    if (controller.signal.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
+    if (controller.signal.aborted) {
+      throw signal?.aborted ? externalAbortError(signal) : new AIError('cancelled', 'AI investigation was cancelled.');
+    }
     const response = await fetchImpl(url, {
       method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' },
       body: JSON.stringify(body), signal: controller.signal,
@@ -42,8 +44,14 @@ export async function requestJSON(url, body, {
     }
     return payload;
   } catch (error) {
-    if (error instanceof AIError) throw error;
-    if (signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
+    if (error instanceof AIError) {
+      // An inner controller can report a generic cancellation after the
+      // caller's timeout reason has crossed the transport boundary. Restore
+      // the caller's semantic deadline before rethrowing (#4451).
+      if (error.type === 'cancelled' && signal?.aborted) throw externalAbortError(signal);
+      throw error;
+    }
+    if (signal?.aborted) throw externalAbortError(signal);
     if (controller.signal.aborted) {
       if (controller.signal.reason === 'response-too-large') throw new AIError('context_too_large', `The AI service response exceeded ${responseLimit} bytes.`);
       throw new AIError('model_timeout', 'The AI model request timed out.');
@@ -113,10 +121,18 @@ function normalizeLimit(value) {
 }
 
 function normalizeRemoteError(code, status, localSignal, externalSignal) {
-  if (externalSignal?.aborted) return 'cancelled';
+  if (externalSignal?.aborted) return externalSignal.reason === 'timeout' ? 'budget_exhausted' : 'cancelled';
   if (localSignal?.aborted || code === 'upstream_timeout' || status === 504) return 'model_timeout';
   if (code === 'invalid_model_output') return 'invalid_model_output';
   if (code === 'request_too_large') return 'context_too_large';
   if (code === 'rate_limited' || code === 'upstream_rate_limited' || code === 'upstream_quota_exceeded') return 'provider_error';
   return 'provider_error';
+}
+
+function externalAbortError(signal) {
+  const timedOut = signal?.reason === 'timeout';
+  return new AIError(
+    timedOut ? 'budget_exhausted' : 'cancelled',
+    timedOut ? 'The AI investigation timed out.' : 'AI investigation was cancelled.',
+  );
 }

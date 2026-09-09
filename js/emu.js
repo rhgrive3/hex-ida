@@ -115,6 +115,7 @@ export class Emulator {
     this.heapAllocations = 0;
     this.log = [];
     this.breakpoints = new Set();
+    this._runSignal = null;
   }
 
   _normalizeReg(reg) {
@@ -191,8 +192,16 @@ export class Emulator {
       throw new EmulatorFault('unmapped-memory', `no backing memory for 0x${address.toString(16)}`, { address, page });
     }
     let bytes;
-    try { bytes = await this.io.read(page, PAGE); }
-    catch (error) {
+    const runSignal = this._runSignal;
+    try {
+      // Do not start backing I/O after cancellation has already won. Keep the
+      // read invocation itself inside this boundary so synchronous backend
+      // throws retain the legacy memory-read-failed taxonomy (#5594).
+      throwIfAborted(runSignal);
+      const operation = this.io.read(page, PAGE);
+      bytes = runSignal ? await awaitAbortable(operation, runSignal) : await operation;
+    } catch (error) {
+      if (runSignal?.aborted) throw abortError(runSignal);
       throw new EmulatorFault('memory-read-failed', `backing read failed at 0x${page.toString(16)}`, { address, page, cause:String(error && error.message || error) });
     }
     if (!(bytes instanceof Uint8Array) || bytes.length === 0) {
@@ -305,12 +314,16 @@ export class Emulator {
     this.steps++;
 
     let next = at + 4n;
+    this._runSignal = signal;
     try {
       const jumped = await this.execute(insn.mn.toLowerCase(), insn.ops || '', at);
       if (jumped != null) next = jumped;
     } catch (err) {
+      if (signal?.aborted) throw abortError(signal);
       this.stopped = (err && err.message) || String(err);
       return { ok: false, text, reason: this.stopped, code:err && err.code || null };
+    } finally {
+      this._runSignal = null;
     }
     this.pc = next;
     if (this.pc === 0n) this.stopped = '最初の呼び出し元まで戻ってきました（実行おわり）。';
