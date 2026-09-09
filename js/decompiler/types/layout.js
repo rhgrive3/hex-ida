@@ -58,13 +58,14 @@ export function recoverAggregateLayouts(ir, types, opts = {}) {
       return { size: widths.length ? Math.max(...widths) : 0, mixed: widths.length > 1 };
     };
     const fixedWidths=new Map([...g.fixed.entries()].map(([offset,xs])=>[offset,widthsOf(xs)]));
+    const hasUnknownFixedExtent=[...fixedWidths.values()].some(({size})=>size===0);
     if (g.indexed.length >= 2) {
       const consistent = g.indexed.every((x)=>x.size>0 && x.scale===x.size);
       if (consistent) { kind='array'; confidence=0.86; evidence.push('multiple indexed accesses with element-size scale'); }
     }
     if (kind !== 'array' && g.fixed.size >= 2) {
       const fixed=[...g.fixed.entries()].map(([offset,xs])=>({ offset:BigInt(offset), size:fixedWidths.get(offset).size, reads:xs.filter(x=>x.op==='load').length, writes:xs.filter(x=>x.op==='store').length }));
-      const noOverlap=fixed.every((a,i)=>fixed.every((b,j)=>i===j || a.offset+BigInt(a.size||0)<=b.offset || b.offset+BigInt(b.size||0)<=a.offset));
+      const noOverlap=!hasUnknownFixedExtent && fixed.every((a,i)=>fixed.every((b,j)=>i===j || a.offset+BigInt(a.size)<=b.offset || b.offset+BigInt(b.size)<=a.offset));
       if (noOverlap) { kind='struct-or-object'; confidence=0.68; evidence.push('multiple non-overlapping fixed-offset fields'); }
     }
     const owner = resolverOwner(g, types);
