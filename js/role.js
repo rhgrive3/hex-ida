@@ -261,8 +261,8 @@ function actionOfShape(input) {
 /* ── 役割の候補を組み立てる ────────────────────────────────── */
 
 function accessorSpec(owner) {
-  const sel = owner && owner.sel ? String(owner.sel) : '';
-  if (!sel) return null;
+  const sel = owner?.sel;
+  if (typeof sel !== 'string' || !sel) return null;
   const set = /^set(.+):$/.exec(sel);
   if (set && set[1]) return { kind: 'write', name: set[1].replace(/^_+/, '').toLowerCase(), selector: sel };
   // 引数なし selector だけを getter とみなす。`foo:` のような通常メソッドを
