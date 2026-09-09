@@ -2026,6 +2026,8 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
   let runStart = -1;           // いま伸びている文字列の先頭
   let runBytes = [];
 
+  let runTruncated = false;    // 保存上限を超えて捨てた byte がある (#5381)
+
   const flush = () => {
     if (runStart >= 0 && runBytes.length) {
       // Keep the raw run's byte extent: the display text is a decoded,
@@ -2034,11 +2036,12 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
       const text = UTF8.decode(new Uint8Array(runBytes))
         .replace(/\t/g, '\\t').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
       if (text.length >= minLen) {
-        out.push({ addr: region.vmAddr + BigInt(runStart), offset: runStart, text, byteLength });
+        out.push({ addr: region.vmAddr + BigInt(runStart), offset: runStart, text, byteLength, truncated: runTruncated });
       }
     }
     runStart = -1;
     runBytes = [];
+    runTruncated = false;
   };
 
   /** buf[i] から始まる UTF-8 の並びの長さ。文字として読めないなら 0。 */
@@ -2087,6 +2090,10 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
       if (runStart < 0) { runStart = baseOff + i; runBytes = []; }
       if (runBytes.length < MAX_STRING_CHARS * 4) {
         for (let k = 0; k < n; k++) runBytes.push(buf[i + k]);
+      } else {
+        // 保存上限を超えた分は捨てられている。走査自体は元の文字列の終端まで
+        // 進むので、prefix だけを「完全な文字列」として返さないよう印をつける (#5381)。
+        runTruncated = true;
       }
       i += n - 1;
     }
