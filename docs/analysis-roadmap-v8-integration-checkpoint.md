@@ -2237,6 +2237,54 @@ overwritten or reimplemented here. Source/test coverage of this field renderer
 does not close arbitrary CSE/DCE/switch transformations, the original 23 finding
 requirements, or integration acceptance. The checkpoint remains LOCKED.
 
+## C4-03 actual switch-render transitions
+
+The existing switch renderer now retains each actual emitted header/case/default/
+closing span's branch origins and its own target origins. Replaced raw branches
+receive pre-transform render tombstones; insertion without removal does not.
+Private line/result observations carry the records through the existing core
+and #3421 mapper. Copying metadata, changing source/target data or editing C AST
+text cannot replay a binding. A second actual insertion preserves prior history.
+The existing compatibility-name normalization carries only its own deterministic
+spelling transition, not arbitrary edits. No switch eligibility, target rule,
+selector semantics, pseudocode or semantic/legacy mode is changed.
+
+The real public indirect-switch fixture enters the existing faithful fallback
+because its targets are disconnected. That path now also publishes the same
+mapper's switch history without inventing an analysis snapshot or promoting
+fallback to semantic mode. Missing snapshot identity remains explicit. Observers
+cover the renderer's instruction/block roots and descriptor/model inputs; the
+IR envelope's helper methods and unused dominator Sets are not renderer inputs.
+Record/observation limits preserve output and report incomplete history.
+
+Eleven new tests cover actual spans and target separation, replaced/insertion-only
+history, repeated projection, descriptor/IR/line/AST mutation, copied fallback,
+compatibility spelling, budgets, rejected descriptors and snapshot-bound rendered
+artifact navigation. The latter sends cloneable rendered artifacts, not the live
+IR envelope: passing that envelope with its existing `defUse` method directly to
+the generic query API is rejected as unclonable. No unrelated query-adapter repair
+or complete end-to-end product-query claim is included.
+
+Persistent precommit receipts (`evidence/analysis-roadmap-20260909`):
+
+- canonical provenance PASS 20.3 s:
+  `c4-03-switch-owned-final-b856ac4f-26bd-4de1-b0e2-62f1327a4280.json`;
+- existing canonical switch tests PASS 0.4 s:
+  `c4-03-switch-existing-03e7d021-9385-4f33-9542-c8e09f4cf984.json`;
+- semantic pipeline/public switch PASS 0.6/1.0 s:
+  `c4-03-switch-pipeline-9d1d3ddb-90ec-4f59-b0dc-b33d3e0669be.json`,
+  `c4-03-switch-public-ff864806-8e5a-4544-bf4d-c0afa9b01964.json`;
+- deterministic/width/proof/publication/ownership/reanchor PASS 5.5 s:
+  `c4-03-switch-boundaries-29dea5d5-a125-4f72-bd57-3c31eccdc6c9.json`.
+
+Live #3421 is unchanged at `4cd5b3eb9200b1180985b9df3a74f8245a5cc928`;
+its mapper is reused. No main reconciliation, component merge or independent
+acceptance occurs here. CSE/DCE coverage and all original finding requirements
+remain open; Phase 8 DCE identifies candidates rather than applying removal, so
+its candidates must not be reported as executed transformations. Integration
+acceptance remains LOCKED. Concurrent main performance work is preserved for the
+defined reconciliation point.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

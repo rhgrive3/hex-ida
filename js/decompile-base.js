@@ -2,9 +2,10 @@
 import { decompile as legacyDecompile } from './decompile-legacy.js';
 import { decompileSemantic } from './decompiler/semantic.js';
 import { repairCanonicalPostTestLoop } from './decompiler/loop-repair.js';
-import { structureKnownSwitches } from './decompiler/switch.js';
+import { structureKnownSwitches, normalizeCompatibilityLine } from './decompiler/switch.js';
 import { enhanceSemanticDecompilation } from './decompiler/pipeline.js';
 import { sourceOf, mergeSource } from './decompiler/ast/nodes.js';
+import { buildRenderProvenance } from './decompiler/phase8/render-provenance.js';
 
 // Preserve every historical helper export (stackNaming, decompiledText, etc.).
 // Explicit exports below intentionally override only the public decompile entry.
@@ -27,10 +28,7 @@ function asmCount(result) {
 function normalizeCompatibility(result) {
   if (!result) return result;
   for (const l of result.lines || []) {
-    if (!l || typeof l.text !== 'string') continue;
-    l.text = l.text
-      .replace(/\blocal_([0-9a-f]+)\b/gi, (_m, h) => 'var_' + h.toUpperCase())
-      .replace(/\bvar_([0-9a-f]+)\b/gi, (_m, h) => 'var_' + h.toUpperCase());
+    normalizeCompatibilityLine(l, result.ir);
   }
   if (result.semantic) result.pseudocode = textOf(result.lines);
   return result;
@@ -60,7 +58,18 @@ function augmentLegacy(fallback, reason, semantic = null) {
 function finalize(result, model, opts) {
   result = normalizeCompatibility(structureKnownSwitches(result, model, opts));
   if (result?.semantic) result = enhanceSemanticDecompilation(result, model, opts);
-  return normalizeCompatibility(result);
+  result = normalizeCompatibility(result);
+  if (!result?.semantic && result?.switchRenderHistory) {
+    // No semantic-mode promotion or invented analysis snapshot for fallback
+    // output. Missing snapshot identity remains explicit in the shared map.
+    try { result.renderProvenance = buildRenderProvenance({ result, budget:opts.renderProvenanceBudget, shouldAbort:opts.shouldAbort }); }
+    catch {
+      result.renderProvenance = null;
+      result.expressionHistoryBinding = Object.freeze({ scope:'producer-consumer-observations',
+        completeness:'incomplete', reasons:Object.freeze(['switch-map-unavailable']) });
+    }
+  }
+  return result;
 }
 
 /*

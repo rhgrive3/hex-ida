@@ -16,6 +16,7 @@ import { PassManager } from './passes/manager.js';
 import { INTERACTIVE_STAGES as PHASE8_INTERACTIVE_STAGES, PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
 import { printExpression, printProgram, expressionReadability } from './pretty/c.js';
 import { explainSemanticFacts } from './explain.js';
+import { readSwitchLineHistory, readSwitchRenderHistory } from './switch.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -754,6 +755,11 @@ function knownStatementForLine(line, state, lineIndex) {
 
 function cAstFromLines(result, state) {
   const body = [];
+  const switchHistory = readSwitchRenderHistory(result);
+  if (switchHistory) {
+    state.rewriteProof.push(...switchHistory.records);
+    for (const reason of switchHistory.reasons) consumerObservationBudget(state).reasons.add(reason);
+  } else if (result.switchRenderHistory) consumerObservationBudget(state).reasons.add('switch-history-unavailable');
   for (const line of result.lines || []) {
     const known = knownStatementForLine(line, state, body.length);
     const carried = line.source || { address: line.addr, row: line.row };
@@ -761,7 +767,25 @@ function cAstFromLines(result, state) {
       ...carried,
       evidence: [...(carried.evidence || []), ...(line.note ? [{ reason: line.note }] : [])],
     });
-    body.push({ kind: line.kind || 'raw', indent: line.indent || 0, text: known?.text ?? line.text ?? '', source, semantic: known?.semantic || null });
+    let semantic = known?.semantic || null;
+    const switched = switchHistory && readSwitchLineHistory(line, state.ir);
+    if (switched && !known) semantic = { op:'switch-render', expression:null, ir:null };
+    const node = { kind: line.kind || 'raw', indent: line.indent || 0, text: known?.text ?? line.text ?? '', source, semantic };
+    if (switched && !known) {
+      const budget = consumerObservationBudget(state);
+      try {
+        if (budget.consumers <= 0 || budget.edges <= 0) throw new Error('switch-consumer-budget');
+        budget.consumers--;
+        const observation = captureProjectionIrData([node], state.opts?.shouldAbort);
+        budget.edges -= observation.metrics.edges;
+        if (budget.edges < 0) throw new Error('switch-consumer-budget');
+        expressionHistoryConsumers.set(semantic, Object.freeze({ ...switched,
+          expression:null, op:semantic.op, instructionId:null, location:undefined,
+          isCurrent:() => switched.isCurrent() && observation.matches(),
+        }));
+      } catch { budget.edges = 0; budget.reasons.add('switch-consumer-unavailable'); }
+    }
+    body.push(node);
   }
   return { kind: 'CProgram', body, source: mergeSource(...body.map((x) => x.source)) };
 }

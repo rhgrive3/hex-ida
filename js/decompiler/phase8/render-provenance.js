@@ -1,6 +1,11 @@
 import { sourceOf } from '../ast/nodes.js';
 import { renderProvenanceRecord } from './contract.js';
 import { readLineExpressionHistory } from './projection.js';
+import { readSwitchLineHistory, readSwitchRenderHistory } from '../switch.js';
+
+function readRenderedHistory(line, ir) {
+  return readLineExpressionHistory(line, ir) || readSwitchLineHistory(line, ir)?.records || null;
+}
 
 export const RENDER_PROVENANCE_VERSION = 1;
 
@@ -216,12 +221,16 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
 
   const reasons = new Set();
   if (result.expressionHistoryBinding?.completeness === 'incomplete') reasons.add('incomplete-expression-binding');
+  const switches = readSwitchRenderHistory(result);
+  if (result.switchRenderHistory?.completeness === 'incomplete') reasons.add('incomplete-switch-history');
+  if (result.switchRenderHistory && !switches && !result.cAst) reasons.add('unavailable-switch-history');
   if (result.phase8Projection?.history?.completeness === 'incomplete') reasons.add('incomplete-projection-history');
   const truncatedScopes = [];
   let entitiesTruncated = 0;
   let ledgerTruncated = 0;
 
-  const expressionRecords = Array.isArray(result.rewriteProof) ? result.rewriteProof : [];
+  const rewritten = Array.isArray(result.rewriteProof) ? result.rewriteProof : [];
+  const expressionRecords = switches ? [...new Set([...rewritten, ...switches.records])] : rewritten;
   const projection = result.phase8Projection;
   const rawRecords = Array.isArray(projection?.history?.transforms) ? projection.history.transforms
     : Array.isArray(projection?.transforms) ? projection.transforms : [];
@@ -270,8 +279,8 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     const line = result.lines[index];
     if (!line || typeof line !== 'object' || Array.isArray(line)) fail('phase8-render-provenance-entity-source-invalid');
     const entityKey = `L${index}:${line.kind ?? 'null'}`;
-    const raw = sourceOf(line.source);
-    const binding = readLineExpressionHistory(line, result.ir);
+    const raw = sourceOf(line.source || (switches ? { address:line.addr, row:line.row } : null));
+    const binding = readRenderedHistory(line, result.ir);
     const boundRecords = new Set(binding ?? []);
     if (binding) boundLines.push([line, binding]);
     let origins = canonicalOrigins(raw);
@@ -359,7 +368,7 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   for (const refs of Object.values(transformReverse)) Object.freeze(refs);
 
   let completeness = 'complete';
-  if (boundLines.some(([line, binding]) => readLineExpressionHistory(line, result.ir) !== binding)) {
+  if (boundLines.some(([line, binding]) => readRenderedHistory(line, result.ir) !== binding)) {
     reasons.add('stale-expression-binding');
   }
   if (snapshotId == null) {
