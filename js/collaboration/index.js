@@ -1,4 +1,4 @@
-import { deepFreeze, stableDigest } from '../core/identity/index.js';
+import { deepFreeze, lossyTypeWitness, stableDigest } from '../core/identity/index.js';
 import { createOperationIdentity, assertIdentityMatch } from '../phase12/identity.js';
 
 export const CHANGELOG_SCHEMA_VERSION = 'hex-project-operation-v1';
@@ -43,7 +43,15 @@ function sortTombstones(state) {
   if (Array.isArray(state?.tombstones)) state.tombstones.sort(compareTombstones);
   return state;
 }
-function payloadDigest(value) { return stableDigest(value); }
+// stableDigest intentionally normalizes a few values for general JSON-like
+// identities. Operation payloads are retained by clone(), so bind any such
+// lossy types to their existing type witness before hashing. JSON-safe values
+// keep the historical digest bytes unchanged.
+export function collaborationDigest(value) {
+  const witness = lossyTypeWitness(value);
+  return stableDigest(witness ? { value, valueTypes: witness } : value);
+}
+function payloadDigest(value) { return collaborationDigest(value); }
 function factStateFingerprint(record) {
   const values = record.values.map((item) => ({ operationId: item.operationId, value: item.value }));
   // Preserve the existing unresolved fingerprint contract. Once a winner is
@@ -81,7 +89,7 @@ export function createProjectOperation(input = {}) {
   const beforeFingerprintInput = input.beforeFingerprint;
   const beforeFingerprint = beforeFingerprintInput == null ? null : beforeFingerprintInput;
   if (beforeFingerprint !== null && (typeof beforeFingerprint !== 'string' || !beforeFingerprint.trim())) throw new TypeError('operation-before-fingerprint-invalid');
-  const operationId = required(input.operationId ?? `op:${stableDigest({ projectIdentity, binaryIdentity: input.binaryIdentity || null, targetEntityId, factKind, action, payload, beforeFingerprint, causalParents: list(input.causalParents) })}`, 'operation-id-required');
+  const operationId = required(input.operationId ?? `op:${collaborationDigest({ projectIdentity, binaryIdentity: input.binaryIdentity || null, targetEntityId, factKind, action, payload, beforeFingerprint, causalParents: list(input.causalParents) })}`, 'operation-id-required');
   const operation = {
     schemaVersion: CHANGELOG_SCHEMA_VERSION,
     operationId,
