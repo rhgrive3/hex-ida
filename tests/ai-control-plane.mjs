@@ -88,6 +88,19 @@ auto.ensureForIntent('find-behaviour');
 assert.equal(auto.effectiveScope, 'binary');
 assert.equal(auto.expansions.length, 1);
 
+// #4173: optional expansion observers are callable-only; malformed values must not break scope state transitions.
+for (const onExpand of [true, {}, []]) {
+  const guardedAuto = new ScopeController(fnSnap, 'auto', { onExpand });
+  assert.equal(guardedAuto.expandTo('binary', 'search needed'), true);
+  assert.equal(guardedAuto.effectiveScope, 'binary');
+  assert.equal(guardedAuto.expansions.length, 1);
+}
+const expansionEvents = [];
+const observedAuto = new ScopeController(fnSnap, 'auto', { onExpand:event => expansionEvents.push(event) });
+assert.equal(observedAuto.expandTo('binary', 'search needed'), true);
+assert.equal(expansionEvents.length, 1);
+assert.equal(expansionEvents[0], observedAuto.expansions[0]);
+
 // G/H: phase-specific windows stay small but discovery can reach deep tools.
 const names = ['search_functions','search_strings','lookup_known_function','lookup_signature','get_function','get_current_function','get_selection_context','get_semantic_facts','trace_value','get_cfg','get_callers','get_callees','get_related_functions','verify_field_update','get_runtime_observations','verify_runtime_hypothesis'];
 const registry = { definitionsForModel: ({ scope } = {}) => names.filter((name) => !(scope === 'selection' && ['get_current_function','get_semantic_facts','get_cfg','trace_value'].includes(name))).map((name) => ({ name, inputSchema: { type: 'object' } })) };
