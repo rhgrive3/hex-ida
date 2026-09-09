@@ -4,6 +4,7 @@ import { decompileSemantic } from './decompiler/semantic.js';
 import { repairCanonicalPostTestLoop } from './decompiler/loop-repair.js';
 import { structureKnownSwitches } from './decompiler/switch.js';
 import { enhanceSemanticDecompilation } from './decompiler/pipeline.js';
+import { sourceOf, mergeSource } from './decompiler/ast/nodes.js';
 
 // Preserve every historical helper export (stackNaming, decompiledText, etc.).
 // Explicit exports below intentionally override only the public decompile entry.
@@ -297,7 +298,14 @@ function ensureLegacyGoto(lines, edge, label) {
   // Only synthesize an unconditional goto when IR proves a single successor.
   // Conditional non-natural edges keep the conservative Semantic IR CFG path.
   if ((edge.from.succ || []).length !== 1) return false;
-  if (lines.some((l) => l.row === edge.from.endRow && String(l.text || '').includes(`goto ${label}`))) return true;
+  const from = edge.from.insts?.at(-1), to = edge.to.insts?.[0];
+  if (!from || !to) return false;
+  const source = mergeSource(...[from, to].map(inst => sourceOf({
+    row:inst.row, address:inst.address, ir:inst.id,
+    evidence:[{ reason:'canonical shared-cleanup control edge' }],
+  })));
+  const existing = lines.find(l => l.row === edge.from.endRow && String(l.text || '').includes(`goto ${label}`));
+  if (existing) { existing.source = mergeSource(existing.source, source); return true; }
   let at = -1;
   for (let i = 0; i < lines.length; i++) {
     const r = lines[i]?.row;
@@ -305,7 +313,7 @@ function ensureLegacyGoto(lines, edge, label) {
   }
   if (at < 0) return false;
   const indent = Math.max(1, lines[at]?.indent || 1);
-  lines.splice(at + 1, 0, { kind: 'stmt', indent, text: `goto ${label};`, row: edge.from.endRow, addr: null, note: null });
+  lines.splice(at + 1, 0, { kind: 'stmt', indent, text: `goto ${label};`, row: edge.from.endRow, addr: from.address ?? null, note: null, source });
   return true;
 }
 

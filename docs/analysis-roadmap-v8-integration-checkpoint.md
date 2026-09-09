@@ -1600,9 +1600,82 @@ are historical references only and must not be assumed to survive.
 
 PR #3421 remains open at `4cd5b3eb9200b1180985b9df3a74f8245a5cc928`;
 reuse its C4-03 implementation rather than create a competing implementation.
-The original goal is preserved but the product reports `blocked`; create_goal
-rejects the unfinished goal and no resume operation is exposed. This is not a
-claim of completion and does not stop the explicitly requested implementation.
+The original goal was resumed through the supported Codex app-server
+`thread/goal/set` operation (status only); `get_goal` confirms `active`.
+The objective and accounting were retained, not recreated or restored from an
+old database. No completion is claimed.
+
+### C4-03 existing-PR reuse candidate, 2026-09-09
+
+Parent WIP `3940aa6a7b82da5116cb8ad82b90686c99962ba3` is backed up to the
+existing #7036 branch. The C4-03 source candidate reuses all 18 changed paths
+from #3421 at `4cd5b3eb9200b1180985b9df3a74f8245a5cc928`, including its
+bidirectional render map, transform ledger, safety counters and regressions.
+Git's intermediate merge tree `e7d7c0c9431ea2f4735e3f847bb5d10d49010914`
+contained two projection conflicts; it is NOT a resolved or accepted tree.
+Current query-local proof authority and cancellation checks were retained;
+solver-constant records now supply the PR ledger's proof and target fields.
+Publication checks run again after render-map construction.
+
+Integration also connects the current legacy shared-cleanup goto path to the
+actual predecessor terminator and destination instruction origins. Missing
+instructions refuse that structuring path instead of inventing provenance.
+The existing PR regression now asserts both exact addresses and excludes an
+unrelated address. Its address-only ledger fixture was corrected to expect the
+public decimal-string canonical form already produced by the PR itself.
+No semantic authority, ABI assumption, corpus denominator or timeout was added.
+
+Actual inventory against frozen reconciliation base
+`4e869019d2d26592932bcf6f80d25132ebb982a5`: 246 paths, Phase 7: 22,
+Phase 8: 39. The complete tracked/untracked union passes ownership validation;
+the legacy bridge has an exact integration-owned path, not a blanket exception.
+
+Persistent evidence root for the following receipts:
+`/mnt/workspace/.dev-state/agent-work/evidence/analysis-roadmap-20260909/`.
+
+- Focused provenance and CFG: PASS (5.5 s), receipt
+  `c4-03-provenance-final-439d8e15-1163-4f90-9b99-1e8b1139e4c0.json`.
+- Combined provenance/ownership/v8 proof regressions: 85/86 passed; first
+  optimizer case exceeded its existing deadline. Isolated optimizer: 8/9.
+  Clean parent comparison: 7/9, including the same deadline plus the machine
+  optimizer-withheld case. This comparison is not a green optimizer gate.
+- Full candidate frozen corpus: 12/14 passed (334.0 s), receipt
+  `c4-03-corpus-9a6cfb9a-78ce-40b5-8867-6a5157f5fc61.json`.
+  The added render-map check passed across all 135 functions. The only two
+  failures are `x86_64.quality.gvn_call_barrier.O1` and `.O2`, each retaining
+  9 of the 10 required addresses. The clean parent corpus had the same two
+  failures (11/13 passed). The changed corpus suite is still RED: EP-031
+  acceptance is not established by baseline equivalence.
+- Canonical generation PASS (5.9 s), subsequent rebuild PASS (6.1 s), zero
+  generated diff against the staged generated pair. Serial `2322242168`,
+  build `65215f8ee81b271cd91940b1`, release identity
+  `67e1ead8cf2f3a688a6137a309f1041eeeba35ec67887a51daf06188d8fed8df`.
+  Deployment identity is null; no deployed/live-runtime claim follows.
+- Encrypted-runtime Chromium/WebKit sandbox browser test after rebuilding:
+  PASS (24.9 s), receipt
+  `c4-03-browser-82ed40aa-290e-4600-83a5-98a47d6dd33f.json`.
+
+These are working-candidate results, not clean-commit release evidence.
+The checkpoint remains locked; #3421 and #7036 are not merged or accepted.
+All 23 findings remain in scope, including raw/deleted-entity and UI/query
+navigation proof not established by render-map construction alone.
+
+### Other relevant PRs are reuse inputs, not duplicate implementation work
+
+`pr-reuse-inventory.json` in the evidence root records 32 relevant open PRs,
+their observed heads and mappings to 15 roadmap findings (observed
+2026-09-09T08:46:10Z). Revalidate their live heads before acceptance.
+Important groups include MemorySSA/points-to (#7502, #7504, #7551), type/ABI
+(#7635, #7636, #7512, #7518), metadata (#7674, #7540, #7672), rebuild
+(#7513, #7527), runtime identity (#7675, #7526), and recognition
+(#7507, #7543, #7579). This inventory is relevance evidence, not completed work.
+Parallel issue/performance owners keep their implementation scope.
+
+Next C4-04 reuse input is #3422 at
+`ca25c71f1a6f18f0ba043800fb066f8068f2df73`. Its owned-snapshot/pass-validation
+facade must be reconciled with, not substituted for, the newer query-local
+proof-capability registry in this branch. No next component acceptance is
+authorized while this checkpoint remains locked.
 
 ## Ownership and regression policy
 

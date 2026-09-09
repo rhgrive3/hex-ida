@@ -55,7 +55,20 @@
       "tests/phase8/substrate/proof-admission.test.mjs",
       "tests/phase8/substrate/proof-projection-origin.test.mjs",
       "tests/phase8/substrate/proof-publication-boundaries.test.mjs",
-      "tests/phase8/substrate/vertical.test.mjs"
+      "tests/phase8/substrate/vertical.test.mjs",
+      "js/decompiler/phase8/render-provenance.js",
+      "tests/phase8/corpus/no-op-equivalence.test.mjs",
+      "tests/phase8/provenance/budget.test.mjs",
+      "tests/phase8/provenance/cancellation.test.mjs",
+      "tests/phase8/provenance/control-edge-source.test.mjs",
+      "tests/phase8/provenance/determinism.test.mjs",
+      "tests/phase8/provenance/discovery.test.mjs",
+      "tests/phase8/provenance/fixture.js",
+      "tests/phase8/provenance/forward.test.mjs",
+      "tests/phase8/provenance/ledger.test.mjs",
+      "tests/phase8/provenance/removal.test.mjs",
+      "tests/phase8/provenance/safety-counter.test.mjs",
+      "tests/phase8/provenance/validation.test.mjs"
     ],
     "symbolic": [
       "js/symbolic/egraph/graph.js",
@@ -245,7 +258,8 @@
       "tools/validation/machine-effects/fixtures/random-oracle.c",
       "tools/validation/machine-effects/x86-long64-closure-matrix.mjs",
       "userscript/hex.user.template.js",
-      "userscript/release-version.json"
+      "userscript/release-version.json",
+      "js/decompile-base.js"
     ]
   }
 }
