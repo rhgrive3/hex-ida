@@ -174,9 +174,12 @@ function parseImportNames(raw) {
     names[i] = utf8z(raw, symbolsOffset + nameOffset);
   }
 
-  /* starts_in_image uses the Mach-O segment order.  Keep only the pointer
-     format here; locating a stub's GOT slot is cheaper than walking all chains. */
+  /* starts_in_image uses the Mach-O segment order.  Keep the pointer format
+     plus the full dyld_chained_starts_in_segment structure here: a GOT slot
+     only carries a chained fixup if it is reachable through page_start[]/next
+     chain walks (#5388) — the pointer format alone proves nothing. */
   const formats = new Map();
+  const starts = new Map();
   if (startsOffset + 4 <= raw.length) {
     const segCount = dv.getUint32(startsOffset, true);
     if (segCount <= 4096 && startsOffset + 4 + segCount * 4 <= raw.length) {
@@ -185,12 +188,35 @@ function parseImportNames(raw) {
         if (!rel) continue;
         const s = startsOffset + rel;
         if (s + 22 > raw.length) continue;
+        const structSize = dv.getUint32(s, true);
+        const pageSize = dv.getUint16(s + 4, true);
         const pointerFormat = dv.getUint16(s + 6, true);
+        const pageCount = dv.getUint16(s + 20, true);
+        if (structSize < 22 || s + structSize > raw.length) continue;
+        if (22 + pageCount * 2 > structSize) continue;
+        if (pageSize !== 0x1000 && pageSize !== 0x4000) continue;
+        const trailing = structSize - 22 - pageCount * 2;
+        if (trailing % 2 !== 0) continue; // multi-start pool must be uint16-aligned
+        const overflow = new Array(trailing / 2);
+        for (let oi = 0; oi < overflow.length; oi++) overflow[oi] = dv.getUint16(s + 22 + pageCount * 2 + oi * 2, true);
+        const pageStarts = new Array(pageCount);
+        for (let pg = 0; pg < pageCount; pg++) pageStarts[pg] = dv.getUint16(s + 22 + pg * 2, true);
         formats.set(i, pointerFormat);
+        starts.set(i, { pointerFormat, pageSize, pageCount, pageStarts, overflow });
       }
     }
   }
-  return { names, formats };
+  return { names, formats, starts };
+}
+
+/* `next` field position/stride per pointer format, mirroring dyld's
+   fixup-chains pointer layouts (cf. macho-dyld.js decodeChainedPointer). */
+function chainNext(raw, format) {
+  if (format === 2 || format === 6) return { next: Number((raw >> 51n) & 0xfffn), stride: 4 };
+  if (format === 1 || format === 7 || format === 9 || format === 10 || format === 12) {
+    return { next: Number((raw >> 51n) & 0x7ffn), stride: format === 7 || format === 10 ? 4 : 8 };
+  }
+  return null;
 }
 
 function sign21(v) { return (v & 0x100000) ? v - 0x200000 : v; }
@@ -254,6 +280,31 @@ function bindOrdinal(raw, pointerFormat) {
   return null;
 }
 
+/** Decode `dyld_chained_starts_in_segment` fields for the owning segment. */
+function segmentStarts(starts, segIndex, slot, seg) {
+  const st = starts.get(segIndex);
+  if (!st) return null;
+  const delta = slot - seg.vmaddr;
+  const page = Number(delta / BigInt(st.pageSize));
+  if (page < 0 || page >= st.pageCount) return null;
+  const start = st.pageStarts[page];
+  if (start === 0xffff) return null; // dyld: DYLD_CHAINED_PTR_START_NONE — the page holds no fixups
+  const chainStarts = [];
+  if (start & 0x8000) {
+    let oi = start & 0x7fff;
+    let terminated = false;
+    for (let guard = 0; guard < 4096 && oi < st.overflow.length; guard++, oi++) {
+      const x = st.overflow[oi];
+      chainStarts.push(x & 0x7fff);
+      if (x & 0x8000) { terminated = true; break; }
+    }
+    if (!terminated) return null; // malformed multi-start list fails closed
+  } else {
+    chainStarts.push(start);
+  }
+  return { st, page, chainStarts };
+}
+
 function segmentFor(segments, addr) {
   for (let i = 0; i < segments.length; i++) {
     const s = segments[i];
@@ -283,6 +334,40 @@ function makeBlockReader(file) {
     }
     return new DataView(b.buffer, b.byteOffset + p, 8).getBigUint64(0, true);
   };
+}
+
+/**
+ * Walk one fixup chain and report whether `slot` is one of its members.  The
+ * whole chain is validated before any membership claim: returns true/false on
+ * a cleanly terminated chain, or null when the chain is malformed (out-of-page
+ * next, non-positive step, unreadable or non-file-backed fixup, iteration
+ * guard) — a malformed chain proves membership for nothing (#5388).
+ */
+async function chainCoversSlot(st, page, chainStart, slot, seg, read64, base) {
+  const pageSize = BigInt(st.pageSize);
+  const pageStart = seg.vmaddr + BigInt(page) * pageSize;
+  const pageVmEnd = pageStart + pageSize < seg.vmaddr + BigInt(seg.vmsize)
+    ? pageStart + pageSize
+    : seg.vmaddr + BigInt(seg.vmsize);
+  if (chainStart < 0 || BigInt(chainStart) + 8n > pageVmEnd - pageStart) return null;
+  let address = pageStart + BigInt(chainStart);
+  let member = false;
+  for (let guard = 0; guard < 100000; guard++) {
+    const fileOff = base + seg.fileoff + (address - seg.vmaddr);
+    if (fileOff + 8n > base + seg.fileoff + seg.filesize) return null;
+    const ptr = await read64(fileOff);
+    if (ptr == null) return null;
+    if (address === slot) member = true;
+    const d = chainNext(ptr, st.pointerFormat);
+    if (d == null) return null;
+    if (d.next === 0) return member;
+    const step = BigInt(d.next) * BigInt(d.stride);
+    if (step <= 0n) return null;
+    const next = address + step;
+    if (next + 8n > pageVmEnd) return null; // chain leaves its page
+    address = next;
+  }
+  return null;
 }
 
 /**
@@ -322,6 +407,19 @@ export async function chainedImportSymbols(file, sliceIndex = 0) {
       if (delta < 0n || delta + 8n > hit.s.filesize) continue;
       const format = imports.formats.get(hit.i);
       if (format == null) continue;
+      /* A GOT slot carries a chained fixup only when the segment's starts
+         structure declares fixups on its page AND the slot lies on one of
+         that page's chains (#5388).  START_NONE pages, off-chain slots and
+         malformed chains must never launder raw bytes into an import name. */
+      const segStarts = segmentStarts(imports.starts, hit.i, slot, hit.s);
+      if (segStarts == null) continue;
+      let member = false;
+      for (const chainStart of segStarts.chainStarts) {
+        const verdict = await chainCoversSlot(segStarts.st, segStarts.page, chainStart, slot, hit.s, read64, image.base);
+        if (verdict === true) { member = true; break; }
+        if (verdict == null) { member = false; break; }
+      }
+      if (!member) continue;
       const fileOff = image.base + hit.s.fileoff + (slot - hit.s.vmaddr);
       const ptr = await read64(fileOff);
       if (ptr == null) continue;
