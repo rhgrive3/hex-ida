@@ -77,6 +77,27 @@ export function captureProjectionIrData(roots, shouldAbort = null) {
   }});
 }
 
+// Recovery depends on these canonical roots, not on envelope caches or Map
+// indexes. Preserve their own-data descriptors so getters cannot replay a root.
+export function captureRecoveryIrData(ir, extraRoots, shouldAbort = null) {
+  const keys = ['instructions', 'values', 'blocks', 'idom', 'dominators'];
+  const prototype = Object.getPrototypeOf(ir);
+  const descriptors = keys.map(key => Object.getOwnPropertyDescriptor(ir, key));
+  if (descriptors.some(descriptor => descriptor && (!Object.hasOwn(descriptor, 'value') || !descriptor.enumerable))) {
+    throw new TypeError('recovery-ir-data-roots-required');
+  }
+  const observation = captureProjectionIrData([...descriptors.map(descriptor => descriptor?.value), ...extraRoots], shouldAbort);
+  return Object.freeze({ metrics:observation.metrics, matches() {
+    try {
+      return Object.getPrototypeOf(ir) === prototype && keys.every((key, index) => {
+        const current = Object.getOwnPropertyDescriptor(ir, key), prior = descriptors[index];
+        return prior ? !!current && Object.hasOwn(current, 'value') && current.enumerable
+          && Object.is(current.value, prior.value) : current === undefined;
+      }) && observation.matches();
+    } catch { return false; }
+  } });
+}
+
 export function captureProjectionData(roots, shouldAbort = null) {
   const records = [], memo = new WeakMap(), active = new WeakSet();
   let edges = 0, nodes = 0;

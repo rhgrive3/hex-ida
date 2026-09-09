@@ -26,6 +26,15 @@ function sourceSnapshot(node, cap) {
   return { origins:Object.freeze(snapshot), truncated };
 }
 
+// Shared by real expression producers, including CFG-backed recovery passes.
+// This records history only; it grants neither rewrite admission nor a binding.
+export function expressionOriginHistory(before, after, maximum = 512) {
+  const cap = Number.isSafeInteger(maximum) && maximum >= 0 ? Math.min(maximum, 512) : 512;
+  const left = sourceSnapshot(before, cap), right = sourceSnapshot(after, cap);
+  return Object.freeze({ before:left.origins, after:right.origins,
+    truncated:left.truncated || right.truncated });
+}
+
 function validTimeBudgetMs(value, fallback) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
     ? value

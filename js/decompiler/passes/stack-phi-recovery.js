@@ -1,11 +1,68 @@
-import { expr, mapChildren, structuralKey } from '../ast/nodes.js';
-import { RewriteEngine } from '../rewrite/engine.js';
+import { expr, mapChildren, structuralKey, mergeSource } from '../ast/nodes.js';
+import { RewriteEngine, expressionOriginHistory } from '../rewrite/engine.js';
+import { captureRecoveryIrData, PROJECTION_LIMITS } from '../phase8/projection-origin.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { printExpression, printProgram } from '../pretty/c.js';
 import { buildNZCVConditionExpression } from '../flag-semantics.js';
 import { uniqueReachableMergePredecessorIndex } from './stack-join-arm-proof.js';
 
+// Only a successful recovery below can issue this presentation binding.
+const recoveryConsumers = new WeakMap();
+export function readStackPhiHistoryConsumer(semantic, ir) {
+  const binding = recoveryConsumers.get(semantic);
+  if (!binding || binding.ir !== ir) return null;
+  const data = key => Object.getOwnPropertyDescriptor(semantic, key)?.value;
+  return data('expression') === binding.expression && data('op') === binding.op
+    && data('ir') === binding.instructionId && data('location') === binding.location
+    && binding.isCurrent() ? binding : null;
+}
+
+function bindRecoveries(result, recovered, opts) {
+  const cap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
+  const budget = opts.renderProvenanceBindingBudget;
+  const reasons = new Set(result.expressionHistoryBinding?.reasons || []);
+  let remaining = cap(budget?.maxConsumers, 4096);
+  // Observe shared canonical dependencies once, not once per return site.
+  try {
+    const observation = captureRecoveryIrData(result.ir, [
+      recovered.map(({ node, record }) => [node.semantic?.expression, record])], opts.shouldAbort);
+    if (observation.metrics.edges > cap(budget?.maxEdges, PROJECTION_LIMITS.edges)) {
+      reasons.add('recovery-binding-budget');
+    } else {
+      for (const { node, record } of recovered) {
+        const semantic = node.semantic;
+        if (!semantic) { reasons.add('recovery-consumer-unavailable'); continue; }
+        if (remaining-- <= 0) { reasons.add('recovery-binding-budget'); continue; }
+        recoveryConsumers.set(semantic, Object.freeze({ ir:result.ir,
+          expression:semantic.expression, op:semantic.op, instructionId:semantic.ir,
+          location:semantic.location, records:Object.freeze([record]),
+          isCurrent:() => observation.matches(),
+        }));
+      }
+    }
+  } catch { reasons.add('recovery-binding-observation-unavailable'); }
+  if (reasons.size) result.expressionHistoryBinding = Object.freeze({
+    completeness:'incomplete', reasons:Object.freeze([...reasons].sort()),
+  });
+}
+
 function valueOf(arg) { return arg?.value || null; }
+
+function retainRecoverySource(maps, instruction) {
+  if (!instruction || !maps.recoverySources) return;
+  if (maps.recoverySources.size < 512) maps.recoverySources.add(instruction);
+  else if (!maps.recoverySources.has(instruction)) maps.recoverySourcesTruncated = true;
+}
+
+function recoveryOriginHistory(before, expression, maps) {
+  const sources = [...maps.recoverySources].map(inst => ({
+    address:inst.address, row:inst.row, ir:inst.id, ssaDef:inst.dst?.id,
+    ssaUses:(inst.args || []).map(valueOf).filter(Boolean).map(value => value.id),
+  }));
+  const history = expressionOriginHistory({ source:mergeSource(before?.source, ...sources) }, expression);
+  return maps.recoverySourcesTruncated
+    ? Object.freeze({ ...history, truncated:true }) : history;
+}
 
 function targetBlock(ir, term, opts) {
   const address = term?.extra?.target;
@@ -265,6 +322,7 @@ function exactStoreExpression(inst, key, size, maps, engine, ir, opts, active, d
     expression = resolveStackBefore(ir, sourceSlot.load.block, sourceSlot.load.row,
       sourceSlot.key, sourceSlot.size, maps, opts, engine, active, depth + 1);
     if (!expression) return null;
+    retainRecoverySource(maps, sourceSlot.load);
   }
 
   // A W-register store is an exact truncation boundary. Keep that width in the
@@ -280,6 +338,7 @@ function exactStoreExpression(inst, key, size, maps, engine, ir, opts, active, d
       evidence: [{ reason: `exact ${storeBits}-bit stack store width` }],
     }, { fromBits: expression.bits }), engine);
   }
+  retainRecoverySource(maps, inst);
   return expression;
 }
 
@@ -321,6 +380,7 @@ function resolveStackBefore(ir, blockIndex, beforeRow, key, size, maps, opts, en
     if (!control) return null;
     const condition = controlCondition(control.term, maps, engine, ir, opts, active, depth + 1);
     if (!condition) return null;
+    retainRecoverySource(maps, control.term);
     const bits = size * 8;
     const signed = condition.compareSigned ?? incoming[0]?.signed ?? incoming[1]?.signed ?? null;
 
@@ -375,6 +435,8 @@ function recoverReturnExpressionAt(result, node, maps, opts, engine, allowSingle
   if (!slot) return null;
   const retInst = returnSiteForNode(node, result.ir, allowSingleFallback);
   if (!retInst) return null;
+  retainRecoverySource(maps, slot.load);
+  retainRecoverySource(maps, retInst);
   return resolveStackBefore(result.ir, retInst.block, retInst.row, slot.key, slot.size,
     maps, opts, engine, new Set());
 }
@@ -385,11 +447,20 @@ function rewriteReturnsInAst(result, maps, opts, engine) {
   const recovered = [];
   const allowSingleFallback = nodes.length === 1;
   for (const node of nodes) {
+    maps.recoverySources = new Set();
+    maps.recoverySourcesTruncated = false;
+    const before = node.semantic?.expression
+      || (allowSingleFallback ? result.semanticAst.outputs?.find(x => x.name === 'return')?.expression : null);
     const expression = recoverReturnExpressionAt(result, node, maps, opts, engine, allowSingleFallback);
     if (!expression || expression.kind === 'load') continue;
+    const record = Object.freeze({ rule:'exact-stack-phi-recovery', phase:'memory-ssa',
+      before:before ? structuralKey(before) : null, after:structuralKey(expression),
+      evidence:Object.freeze({ kind:'cfg-memory-ssa', detail:'return site reconstructed from exact RET provenance without crossing unknown memory effects' }),
+      originHistory:recoveryOriginHistory(before, expression, maps),
+    });
     node.text = `return ${printExpression(expression)};`;
     if (node.semantic) node.semantic.expression = expression;
-    recovered.push({ node, expression });
+    recovered.push({ node, expression, record });
   }
   if (recovered.length === 1 && nodes.length === 1) {
     const output = result.semanticAst?.outputs?.find((x) => x.name === 'return');
@@ -423,11 +494,8 @@ export function recoverExactStackPhiExpressions(result, opts = {}) {
     note: null,
     source: node.source,
   }));
-  result.rewriteProof = [...(result.rewriteProof || []), {
-    rule: 'exact-stack-phi-recovery',
-    phase: 'memory-ssa',
-    evidence: { kind: 'cfg-memory-ssa', detail: `${rewrite.changed} return site(s) reconstructed from exact RET provenance without crossing unknown memory effects` },
-  }];
+  result.rewriteProof = [...(result.rewriteProof || []), ...rewrite.recovered.map(item => item.record)];
+  bindRecoveries(result, rewrite.recovered, opts);
   result.metrics = {
     ...(result.metrics || {}),
     rewrittenExpressions: (result.metrics?.rewrittenExpressions || 0) + rewrite.changed,

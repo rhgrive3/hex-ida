@@ -2009,6 +2009,51 @@ CSE/DCE/phi/switch/struct-field removed/merged class denominator. All other
 original findings and the integration acceptance lock remain in force.
 No device/runtime, full gate, unrelated issue or performance work was added.
 
+### C4-03 stack/phi/return recovery transitions — TODO implementation, 2026-09-09
+
+Successful stack/CFG-phi recovery now emits one immutable before/after origin
+record per actual return site, including the load, reaching stores, selected
+controller and return instructions used by recovery. Failed width/barrier
+reconstruction emits no applied transform. These records describe presentation
+replacement; they do not claim that canonical IR instructions were deleted.
+
+Private bindings associate each record with its own observed return expression.
+The later stack-return recovery records its actual replacement and retains the
+valid preceding phi history. The public semantic pipeline regression exercises
+both passes, not only a prepared AST, and requires their records to remain bound
+through repeated owned Phase 8 projections. No new semantic IDs, source mutation
+of surviving loads, second recovery engine or relaxed proof admission is added.
+
+Both passes reuse the existing bounded projection-data observer over canonical
+instruction/value/CFG roots. Root descriptor replacement, accessor replay,
+copied ASTs, changed widths/CFG and altered records cannot establish bindings.
+Observations are shared across return sites; retained transitions are reobserved
+as data rather than forming recursive observer chains. Consumer/edge exhaustion,
+missing observation and truncated origins remain explicitly incomplete.
+
+Evidence before final commit:
+
+- 12 new recovery regressions cover forwarding, two-arm phi, multiple return
+  sites, real public pipeline, stale/copy/accessor rejection, unsuccessful
+  recovery, bounded/truncated history and repeated projections;
+- canonical provenance PASS 15.8 s:
+  `c4-03-stack-recovery-owned-settled-2714c720-b09f-4c92-b6b7-1fe96a31677a.json`;
+- existing access-width, proof-origin/publication, return reanchor and both
+  ownership regressions PASS 2.5 s:
+  `c4-03-stack-recovery-boundaries-a7f414e9-b151-4e4f-920d-57be81022db0.json`;
+- semantic pipeline PASS 0.6 s:
+  `c4-03-stack-recovery-pipeline-settled-58d64443-c855-4777-a881-87aec2cf44cb.json`.
+
+PR #3421 remains at `4cd5b3eb9200b1180985b9df3a74f8245a5cc928` and its
+previously reused mapper remains the implementation base. #3422 remains at
+`ca25c71f1a6f18f0ba043800fb066f8068f2df73`; its admission incompatibility audit
+still applies. No component merge, moving-main reconciliation, unrelated issue
+or performance work is included. Integration acceptance remains LOCKED.
+
+C4-03 still needs internal recovery simplification histories, the other legacy
+recovery transitions, and full CSE/DCE/switch/struct-field removed/merged class
+coverage. This step does not close C4-03 or any other original finding.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -2043,7 +2088,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C3-03 | Versioned language metadata and unknown-version matrix |
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
-| HEX-C4-03 | Product/legacy navigation, expression histories, observed consumers and successive owned projections implemented; later recovery transitions and full removed/merged class coverage still open |
+| HEX-C4-03 | Product/legacy navigation, expression histories, observed consumers, successive projections and stack/phi/return transitions implemented; internal/legacy recovery histories and full removed/merged class coverage still open |
 | HEX-C4-04 | v8 pure constant projection plus remaining risky rewrite observables |
 | HEX-C4-05 | Bounded e-graph candidates, independent proofs and resource matrix |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |

@@ -1,5 +1,7 @@
 import { isProducerProjection, producerExpressionToken } from '../pipeline.js';
 import { readExpressionHistoryConsumer } from '../pipeline-core.js';
+import { readStackPhiHistoryConsumer } from '../passes/stack-phi-recovery.js';
+import { readStackReturnHistoryConsumer } from '../passes/stack-return-recovery.js';
 import { captureProjectionIrData, PROJECTION_LIMITS } from './projection-origin.js';
 import { expr, mapChildren, mergeSource, sourceOf } from '../ast/nodes.js';
 import { expressionReadability, printExpression, printProgram } from '../pretty/c.js';
@@ -340,10 +342,12 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   if (hasPriorHistory && !inherited) historyReasons.add('unavailable-prior-projection-history');
   if (original.phase8Projection?.history?.completeness === 'incomplete') historyReasons.add('upstream-projection-history-incomplete');
   // Capture before this owned projection transforms or clones the descriptors.
-  // A stack/return recovery that replaced the earlier expression has already
-  // invalidated that consumer and is deliberately not rebound by similarity.
+  // Recovery supplies its own observed transition; it does not inherit the
+  // earlier consumer by source or expression similarity.
   const expressionConsumers = inherited ? [...inherited.expressions]
-    : (result.cAst.body ?? []).map(node => hasPriorHistory ? null : readExpressionHistoryConsumer(node?.semantic, result.ir));
+    : (result.cAst.body ?? []).map(node => hasPriorHistory ? null
+      : readStackReturnHistoryConsumer(node?.semantic, result.ir)
+        || readStackPhiHistoryConsumer(node?.semantic, result.ir) || readExpressionHistoryConsumer(node?.semantic, result.ir));
   const conditionBindings = inherited ? [...inherited.conditionConsumers]
     : (result.semanticAst.conditions ?? []).map(condition => hasPriorHistory ? null : readExpressionHistoryConsumer(condition, result.ir));
   const conditionConsumers = new Map();

@@ -1,5 +1,7 @@
-import { expr, structuralKey } from '../ast/nodes.js';
-import { RewriteEngine } from '../rewrite/engine.js';
+import { expr, structuralKey, mergeSource } from '../ast/nodes.js';
+import { RewriteEngine, expressionOriginHistory } from '../rewrite/engine.js';
+import { captureRecoveryIrData, PROJECTION_LIMITS } from '../phase8/projection-origin.js';
+import { readStackPhiHistoryConsumer } from './stack-phi-recovery.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { printExpression, printProgram } from '../pretty/c.js';
 import { buildNZCVConditionExpression } from '../flag-semantics.js';
@@ -11,6 +13,46 @@ import { uniqueReachableMergePredecessorIndex } from './stack-join-arm-proof.js'
 
 const INVERSE = Object.freeze({ eq:'ne', ne:'eq', lt:'ge', le:'gt', gt:'le', ge:'lt' });
 const EXACT_VIEW_MOV_SUBS = new Set([null, 'copy', 'bitcast', 'trunc', 'zext']);
+
+const returnHistoryConsumers = new WeakMap();
+export function readStackReturnHistoryConsumer(semantic, ir) {
+  const binding = returnHistoryConsumers.get(semantic);
+  if (!binding || binding.ir !== ir) return null;
+  const data = key => Object.getOwnPropertyDescriptor(semantic, key)?.value;
+  return data('expression') === binding.expression && data('op') === binding.op
+    && data('ir') === binding.instructionId && data('location') === binding.location
+    && binding.isCurrent() ? binding : null;
+}
+
+function bindReturnHistory(result, transitions, opts) {
+  const cap = (value, max) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, max) : max;
+  const budget = opts.renderProvenanceBindingBudget;
+  const reasons = new Set(result.expressionHistoryBinding?.reasons || []);
+  const ir = result.ir;
+  try {
+    const observation = captureRecoveryIrData(ir, [
+      transitions.map(item => [item.before, item.node.semantic?.expression, item.records])], opts.shouldAbort);
+    if (observation.metrics.edges > cap(budget?.maxEdges, PROJECTION_LIMITS.edges)) reasons.add('recovery-binding-budget');
+    else {
+      let remaining = cap(budget?.maxConsumers, 4096);
+      for (const item of transitions) {
+        const semantic = item.node.semantic;
+        if (!semantic || (item.prior && !item.prior.isCurrent())) { reasons.add('recovery-consumer-unavailable'); continue; }
+        if (remaining-- <= 0) { reasons.add('recovery-binding-budget'); continue; }
+        returnHistoryConsumers.set(semantic, Object.freeze({ ir,
+          expression:semantic.expression, op:semantic.op, instructionId:semantic.ir,
+          location:semantic.location, records:item.records,
+          // Re-observe the original data, rather than retaining a chain of
+          // earlier consumer closures across recovery invocations.
+          isCurrent:() => observation.matches(),
+        }));
+      }
+    }
+  } catch { reasons.add('recovery-binding-observation-unavailable'); }
+  if (reasons.size) result.expressionHistoryBinding = Object.freeze({
+    completeness:'incomplete', reasons:Object.freeze([...reasons].sort()),
+  });
+}
 
 function valueOf(a) { return a?.value || null; }
 
@@ -547,15 +589,27 @@ export function recoverExactStackReturn(result, opts = {}) {
     }
   }
   const recovered = committed || resolve(result.ir, ret.block, ret.row, root.location.key, values, opts, engine, new Set());
+  const transitions = (result.cAst.body || [])
+    .filter(node => node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim()))
+    .map(node => ({ node, before:node.semantic?.expression || root,
+      prior:readStackReturnHistoryConsumer(node.semantic, result.ir)
+        || readStackPhiHistoryConsumer(node.semantic, result.ir) }));
   // A stack load means no useful reconstruction happened. A committed non-stack
   // field/global load is an intentional high-level return and must be retained.
   if (!recovered || (recovered.kind === 'load' && recovered.location?.kind === 'stack') || !rewriteReturn(result, recovered, opts)) return result;
   if (committedSpill) removeProofOnlyStackSpill(result, committedSpill, opts);
 
-  result.rewriteProof = [...(result.rewriteProof || []), {
-    rule:'exact-stack-return-recovery', phase:'memory-ssa',
-    evidence:{ kind:'cfg-memory-ssa', detail:'exact stack return reconstructed from predecessor stores and flag-producing SSA evidence' },
-  }];
+  const records = transitions.map(item => {
+    const record = Object.freeze({ rule:'exact-stack-return-recovery', phase:'memory-ssa',
+      before:structuralKey(item.before), after:structuralKey(recovered),
+      evidence:Object.freeze({ kind:'cfg-memory-ssa', detail:'exact stack return reconstructed from predecessor stores and flag-producing SSA evidence' }),
+      originHistory:expressionOriginHistory({ source:mergeSource(item.before?.source, root.source) }, recovered),
+    });
+    item.records = Object.freeze([...(item.prior?.records || []), record]);
+    return record;
+  });
+  result.rewriteProof = [...(result.rewriteProof || []), ...records];
+  bindReturnHistory(result, transitions, opts);
   result.metrics = { ...(result.metrics || {}), rewrittenExpressions:(result.metrics?.rewrittenExpressions || 0) + 1, sourceMappedNodes:result.sourceMap?.length || 0 };
   result.ctx = { ...(result.ctx || {}), decompilerPipeline:{ ...(result.ctx?.decompilerPipeline || {}), exactStackReturnRecovered:true } };
   return result;
