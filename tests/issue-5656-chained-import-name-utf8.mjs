@@ -111,4 +111,14 @@ test('#5656 a malformed name later in the pool does not corrupt earlier entries'
   assert.ok(out.every((e) => e.name === 'one'), 'the malformed second import must not become symbol evidence');
 });
 
+test('#5656 a leading BOM is preserved, not stripped from the name', async () => {
+  // EF BB BF + "puts" + NUL: the default ignoreBOM:false strips U+FEFF and the
+  // published name would no longer match the symbol-pool bytes.
+  const out = await chainedImportSymbols(
+    fixture(Buffer.from([0xef, 0xbb, 0xbf, 0x70, 0x75, 0x74, 0x73, 0x00]), 91),
+    0,
+  );
+  assert.deepEqual([...new Set(out.map((e) => e.name))], ['\uFEFFputs']);
+});
+
 console.log('issue #5656 chained import name strict UTF-8 regression: ok');

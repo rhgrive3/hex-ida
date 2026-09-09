@@ -48,9 +48,11 @@ function utf8z(u8, off) {
      A scan that reaches the payload end without a terminator is
      truncated/malformed input (#5217), and a byte sequence the strict decoder
      rejects must not launder into U+FFFD replacement characters (#5656):
-     both fail closed instead of minting a symbol. */
+     both fail closed instead of minting a symbol. ignoreBOM keeps a leading
+     U+FEFF in the decoded name — the default strips it and the published
+     name would no longer match the pool bytes. */
   if (end >= u8.length) return null;
-  try { return new TextDecoder('utf-8', { fatal: true }).decode(u8.subarray(off, end)); }
+  try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u8.subarray(off, end)); }
   catch { return null; }
 }
 
