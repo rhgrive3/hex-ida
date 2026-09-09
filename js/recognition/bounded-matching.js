@@ -31,6 +31,10 @@ function componentShape(candidates) {
   return { left, right, nodes:left.size + right.size, edges:candidates.length };
 }
 
+function isValidConfidence(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
 function maximumWeightComponent(candidates, budget) {
   const leftIds = [...new Set(candidates.map((c)=>c.i))].sort((a,b)=>a-b);
   const rightIds = [...new Set(candidates.map((c)=>c.j))].sort((a,b)=>a-b);
@@ -47,7 +51,7 @@ function maximumWeightComponent(candidates, budget) {
   for (let k=0;k<leftIds.length;k++) addEdge(source,leftBase+k,1,0);
   for (let k=0;k<rightIds.length;k++) addEdge(rightBase+k,sink,1,0);
   const candidateEdges = [];
-  for (const c of candidates) candidateEdges.push(addEdge(leftBase+leftIndex.get(c.i),rightBase+rightIndex.get(c.j),1,-Number(c.confidence),c));
+  for (const c of candidates) candidateEdges.push(addEdge(leftBase+leftIndex.get(c.i),rightBase+rightIndex.get(c.j),1,-c.confidence,c));
 
   const EPS = 1e-12;
   while (true) {
@@ -78,7 +82,8 @@ function maximumWeightComponent(candidates, budget) {
 
 export function solveCandidateMatching(candidates = [], budget = createMatchBudget()) {
   const selected = [], ambiguousLeft = new Set(), ambiguousRight = new Set(), truncatedComponents = [];
-  const components = candidateComponents(candidates);
+  const validCandidates = (candidates || []).filter((candidate) => isValidConfidence(candidate?.confidence));
+  const components = candidateComponents(validCandidates);
   for (let index = 0; index < components.length; index++) {
     const component = components[index];
     const shape = componentShape(component);

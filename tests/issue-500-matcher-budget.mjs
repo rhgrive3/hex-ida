@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { fingerprintFunctionFast } from '../js/fingerprint/index.js';
 import { matchFunctionsFast, maximumWeightCandidateMatching } from '../js/recognition/matcher.js';
-import { createMatchBudget } from '../js/recognition/match-budget.js';
+import { createMatchBudget, DEFAULT_MATCH_BUDGET } from '../js/recognition/match-budget.js';
 import { solveCandidateMatching } from '../js/recognition/bounded-matching.js';
 
 const sharedBytes=Uint8Array.from([0xc0,0x03,0x5f,0xd6]);
@@ -195,5 +195,79 @@ for (const count of [1_000,10_000,100_000]) {
   assert.equal(result.matching.budget.preprocessInputBytes,0);
   assert.equal(result.matches.length,1);
 }
+
+
+
+// #3856: matching limits accept only primitive positive safe integers and keep
+// malformed configuration from changing the candidate graph's completeness.
+let coercionCalls = 0;
+const customCoercion = {
+  valueOf() {
+    coercionCalls++;
+    return 1;
+  },
+};
+const malformedValues = [
+  ['structured', { value: 1 }],
+  ['string', '1'],
+  ['boolean', true],
+  ['array', ['1']],
+  ['boxed-number', new Number(1)],
+  ['custom-coercion', customCoercion],
+  ['symbol', Symbol('budget')],
+  ['bigint', 1n],
+  ['zero', 0],
+  ['negative', -1],
+  ['fraction', 1.5],
+  ['nan', Number.NaN],
+  ['infinity', Number.POSITIVE_INFINITY],
+];
+for (const [name, fallback] of Object.entries(DEFAULT_MATCH_BUDGET)) {
+  for (const [label, value] of malformedValues) {
+    const budget = createMatchBudget({ [name]: value });
+    assert.equal(budget.limits[name], fallback, `invalid ${name} ${label} must use its fallback`);
+  }
+}
+const configuredLimits = Object.fromEntries(Object.keys(DEFAULT_MATCH_BUDGET).map((name) => [name, 2]));
+assert.deepEqual(createMatchBudget(configuredLimits).limits, configuredLimits);
+assert.equal(coercionCalls, 0, 'matching limits must not invoke user coercion hooks');
+
+const typedBefore = [{ ...template, address: 0x1000n }, { ...template, address: 0x1004n }];
+const typedAfter = [{ ...template, address: 0x2000n }, { ...template, address: 0x2004n }];
+const malformedBudgetResult = matchFunctionsFast(typedBefore, typedAfter, {
+  matchBudget: { maxCandidateEvaluations: '1' },
+});
+assert.equal(malformedBudgetResult.matching.preprocessingIncomplete, false);
+assert.equal(malformedBudgetResult.matching.candidateGraphIncomplete, false);
+
+// #3861: confidence is solver evidence, so malformed values are excluded
+// before they can become a cost, including values that would otherwise win.
+const malformedConfidence = [
+  ['structured', { value: 1 }],
+  ['string', '1'],
+  ['boolean', true],
+  ['array', ['1']],
+  ['boxed-number', new Number(1)],
+  ['custom-coercion', customCoercion],
+  ['symbol', Symbol('confidence')],
+  ['bigint', 1n],
+  ['nan', Number.NaN],
+  ['infinity', Number.POSITIVE_INFINITY],
+  ['negative', -0.1],
+  ['above-one', 1.1],
+];
+for (const [label, confidence] of malformedConfidence) {
+  const onlyMalformed = maximumWeightCandidateMatching(
+    [{ i: 0, j: 0, confidence, id: 'malformed' }],
+    { matchBudget: { maxWallMs: 10_000 } },
+  );
+  assert.deepEqual(onlyMalformed, [], `${label} confidence must be excluded from solver weights`);
+  const selected = maximumWeightCandidateMatching([
+    { i: 0, j: 0, confidence: 0.9, id: 'valid' },
+    { i: 0, j: 1, confidence, id: 'malformed' },
+  ], { matchBudget: { maxWallMs: 10_000 } });
+  assert.deepEqual(selected.map((candidate) => candidate.id), ['valid'], `${label} confidence must not outrank valid evidence`);
+}
+assert.equal(coercionCalls, 0, 'candidate confidence must not invoke user coercion hooks');
 
 console.log('issue #500 matcher budget: PASS');
