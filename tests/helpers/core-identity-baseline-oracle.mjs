@@ -1,5 +1,5 @@
-import { fnv64Text } from './fnv64.js';
-
+// Test-only unoptimized oracle from Drive main 45311ca2f26a9e41c6e87a11e5c791d8ea4ae417.
+// Do not import into production code or regenerate from the optimized implementation.
 const ID_SCHEMA_VERSION = 1;
 const HEX_RE = /^[0-9a-f]+$/i;
 
@@ -68,18 +68,12 @@ export function jsonSafe(value, seen = new WeakSet()) {
     for (const key of Object.keys(value).sort()) {
       const normalized = jsonSafe(value[key], seen);
       if (normalized !== null || value[key] === null) {
-        // Assignment creates the same own data descriptor for a fresh key,
-        // without allocating a descriptor on every property. Inherited names
-        // (including __proto__, setters and non-writable prototype properties)
-        // still require DefineProperty: never invoke an inherited setter.
-        if (key in out) {
-          Object.defineProperty(out, key, {
-            value: normalized,
-            enumerable: true,
-            configurable: true,
-            writable: true,
-          });
-        } else out[key] = normalized;
+        Object.defineProperty(out, key, {
+          value: normalized,
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
       }
     }
   }
@@ -91,9 +85,18 @@ export function stableStringify(value) {
   return JSON.stringify(jsonSafe(value));
 }
 
+function fnv64(text, seed) {
+  let hash = BigInt.asUintN(64, seed);
+  for (let i = 0; i < text.length; i++) {
+    hash ^= BigInt(text.charCodeAt(i));
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return hash.toString(16).padStart(16, '0');
+}
+
 export function stableDigest(value) {
   const text = stableStringify(value);
-  return fnv64Text(text) + fnv64Text(text, 0xcbf29ce4, 0x84222325);
+  return fnv64(text, 0xcbf29ce484222325n) + fnv64(text, 0x84222325cbf29ce4n);
 }
 
 function canonicalWitnessParts(value, seen = new WeakSet()) {
