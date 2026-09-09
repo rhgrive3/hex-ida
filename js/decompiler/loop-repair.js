@@ -83,13 +83,12 @@ function discoverPostTestInduction(result, loop, ordinal) {
     }
     if (!init && prior.const != null) init = prior;
     if (!init) continue;
-    // The init alone is not a recurrence: a constant `prior` with no loop-carried
-    // redefinition of the compared value describes a fixed expression, not an
-    // induction variable. Rewriting it would turn a genuinely non-terminating
-    // loop into a finite do-while (#5567), so only a PHI (or an in-loop
-    // redefinition of the prior value) proves a loop-carried state exists.
+
+    // A constant initializer does not by itself prove recurrence. Unknown or
+    // out-of-loop BIN provenance must fail closed; only an explicit in-loop
+    // definition (or the validated PHI path above) can authorize the rewrite.
     const hasLoopCarriedState = prior.def?.op === OP.PHI
-      || (prior.def?.op === OP.BIN && loop.nodes.has(prior.def.block ?? loop.header));
+      || (prior.def?.op === OP.BIN && prior.def.block != null && loop.nodes.has(prior.def.block));
     if (phi == null && !hasLoopCarriedState) continue;
 
     return {
