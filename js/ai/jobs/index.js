@@ -154,8 +154,8 @@ export class AgentJobManager {
     if (typeof id !== 'string' || !id) throw new Error(`Unknown agent job: ${value}`);
     let job = await this.get(id);
     if (!job && value && typeof value === 'object' && validateCheckpoint(value, id)) {
-      this.jobs.set(id, value);
-      job = value;
+      job = recoverPersistedRunningCheckpoint(value);
+      this.jobs.set(id, job);
     }
     if (!job) throw new Error(`Unknown agent job: ${id}`);
     return job;
@@ -171,8 +171,9 @@ export class AgentJobManager {
         return null;
       }
       if (validateCheckpoint(value, id)) {
-        this.jobs.set(id, value);
-        return value;
+        const recovered = recoverPersistedRunningCheckpoint(value);
+        this.jobs.set(id, recovered);
+        return recovered;
       }
       return null;
     })();
@@ -223,6 +224,19 @@ function hardLimit(job) { return job.budgetUsage.slices >= job.limits.maxSlices 
 function compactResult(result) { return { answer: result?.answer || '', confidence: result?.confidence ?? null, limits: result?.limits || { exhausted: false }, usage: result?.usage || {}, sessionId: result?.sessionId || null }; }
 function checkpoint(job) { return JSON.parse(JSON.stringify(job)); }
 function unique(values) { return [...new Set(values)]; }
+function recoverPersistedRunningCheckpoint(value) {
+  if (value.status !== 'running') return value;
+  // `running` is a process-local lease. A fresh manager cannot observe the
+  // old process's active set, so a persisted running checkpoint must be
+  // treated as interrupted and made resumable instead of becoming a
+  // permanent restart lock (#4389).
+  return {
+    ...value,
+    status: 'checkpointed',
+    unresolvedWork: unique([...value.unresolvedWork, 'resume-after:interrupted-slice']).slice(-32),
+    updatedAt: new Date().toISOString(),
+  };
+}
 function bounded(value, min, max) { const n = Number(value); return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.floor(n))) : min; }
 const VALID_STATUSES = new Set(['ready', 'running', 'checkpointed', 'complete', 'failed', 'hard-limit']);
 function isValidNumber(n, min = 0) { return typeof n === 'number' && Number.isFinite(n) && n >= min; }
