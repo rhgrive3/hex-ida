@@ -95,7 +95,12 @@ export function createAppAnalysisQueryAdapter(app) {
         const value = functionResult?.value ?? null;
         for (const evidence of Array.isArray(value?.evidence) ? value.evidence : []) suffix.push(projectEvidence('function-analysis', evidence, { address }));
         for (const proof of Array.isArray(value?.rewriteProof) ? value.rewriteProof : []) suffix.push(projectEvidence('rewrite-proof', proof, { address, title: typeof proof?.rule === 'string' ? proof.rule : typeof proof?.name === 'string' ? proof.name : 'Decompiler rewrite' }));
-        for (const observation of runtimeEvidenceForApp(app, address)) suffix.push(projectEvidence('runtime-observation', observation, { address, binaryHash: observation?.binaryHash ?? null, sliceIdentity: observation?.sliceIdentity ?? null }, 'confirmed'));
+        // #5582: a consumer must not strengthen runtime evidence strength.
+        // Unrecognized verdicts (e.g. the runtime producer's 'inconclusive')
+        // previously fell back to 'confirmed'; they now fall back to
+        // 'unverified' so an inconclusive trace can never surface as confirmed
+        // product evidence. Recognized canonical verdicts pass through.
+        for (const observation of runtimeEvidenceForApp(app, address)) suffix.push(projectEvidence('runtime-observation', observation, { address, binaryHash: observation?.binaryHash ?? null, sliceIdentity: observation?.sliceIdentity ?? null }, 'unverified'));
       }
 
       // Preserve the existing supplemental row budget without applying it to
