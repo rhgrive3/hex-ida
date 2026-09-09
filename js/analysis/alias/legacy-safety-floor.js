@@ -173,16 +173,26 @@ export function effectSummaryAliasRelation(memoryWrite, targetRegion, classifyAc
   if (memoryWrite.scope !== 'accesses' || !Array.isArray(memoryWrite.accesses) || !memoryWrite.accesses.length) return 'unknown';
   if (typeof classifyAccess !== 'function') return 'unknown';
 
+  // The accesses form a set of claims about the same summary, so the relation
+  // must be order-independent (#5201): short-circuiting on the first `may`
+  // let a later exact `must` go unseen, making the answer depend on
+  // enumeration order. Aggregate the whole multiset before deciding.
   let sawUnknown = false;
+  let sawMay = false;
+  let sawMust = false;
   for (const access of memoryWrite.accesses) {
     let region;
     try { region = classifyAccess(access); }
     catch { sawUnknown = true; continue; }
     const relation = aliasMemoryRegions(region, targetRegion);
-    if (relation === 'must') return 'must';
-    if (relation === 'may') return 'may';
-    if (relation === 'unknown') sawUnknown = true;
+    if (relation === 'must') sawMust = true;
+    else if (relation === 'may') sawMay = true;
+    else if (relation === 'unknown') sawUnknown = true;
   }
+  // An exact identity among the accesses is the strongest observed claim;
+  // report it even when other accesses only overlap.
+  if (sawMust) return 'must';
+  if (sawMay) return 'may';
   return sawUnknown ? 'unknown' : 'no';
 }
 
