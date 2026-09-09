@@ -7,7 +7,7 @@ import {
   fuseStaticDynamic,
 } from '../../../js/runtime-evidence/index.js';
 
-const negativeForms = [-1n, -1, '-1', '-42'];
+const negativeForms = [-1n, -1, '-1', '-42', '-0x1'];
 
 for (const value of negativeForms) {
   test(`issue #4983 rejects negative runtime/static address ${String(value)}`, () => {
