@@ -5,6 +5,7 @@ import { createRuntimeEvent, createRuntimeEventBatch } from './events.js';
 import { RuntimeEvidenceBridge } from './evidence-bridge.js';
 
 const TERMINATIONS = Object.freeze(['return', 'halted', 'paused', 'fault', 'unsupported', 'timeout', 'cancelled', 'exception']);
+const ABORTED_EXECUTION = Symbol('aborted-execution');
 
 function terminationAlias(raw) {
   switch (raw) {
@@ -114,6 +115,30 @@ function normalizeEngineDescriptor(engine, options) {
   });
 }
 
+async function boundedEngineOperation(operation, signal) {
+  let onAbort;
+  const aborted = new Promise((resolve) => {
+    onAbort = () => resolve(ABORTED_EXECUTION);
+    if (signal.aborted) resolve(ABORTED_EXECUTION);
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+  // Observe both outcomes explicitly. A signal-ignoring engine may settle
+  // after the provider has already returned its bounded cancellation result;
+  // attaching the rejection branch here prevents that late failure from
+  // becoming an unhandled rejection (#4385).
+  const execution = Promise.resolve()
+    .then(() => signal.aborted ? ABORTED_EXECUTION : operation())
+    .then(
+      (value) => value === ABORTED_EXECUTION ? { kind: 'aborted' } : { kind: 'completed', value },
+      (error) => ({ kind: 'failed', error }),
+    );
+  try {
+    return await Promise.race([execution, aborted]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
 export class EmulatorProvider {
   constructor(engine, options = {}) {
     if (!engine || (typeof engine.execute !== 'function' && (typeof engine.launch !== 'function' || typeof engine.resume !== 'function'))) {
@@ -214,10 +239,31 @@ export class EmulatorProvider {
       let abortTermination = null;
       try {
         if (controller.signal.aborted) raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' } };
-        else if (typeof this.engine.execute === 'function') raw = await this.engine.execute(input, { ...replayOptions, signal: controller.signal });
+        else if (typeof this.engine.execute === 'function') {
+          const outcome = await boundedEngineOperation(
+            () => this.engine.execute(input, { ...replayOptions, signal: controller.signal }),
+            controller.signal,
+          );
+          if (outcome.kind === 'aborted') raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' } };
+          else if (outcome.kind === 'failed') throw outcome.error;
+          else raw = outcome.value;
+        }
         else {
-          await this.engine.launch(input, { signal: controller.signal });
-          raw = await this.engine.resume({ ...replayOptions, signal: controller.signal });
+          const launch = await boundedEngineOperation(
+            () => this.engine.launch(input, { signal: controller.signal }),
+            controller.signal,
+          );
+          if (launch.kind === 'aborted') raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' } };
+          else if (launch.kind === 'failed') throw launch.error;
+          else {
+            const resume = await boundedEngineOperation(
+              () => this.engine.resume({ ...replayOptions, signal: controller.signal }),
+              controller.signal,
+            );
+            if (resume.kind === 'aborted') raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' } };
+            else if (resume.kind === 'failed') throw resume.error;
+            else raw = resume.value;
+          }
         }
       } catch (error) {
         if (controller.signal.aborted) raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' }, error: String(error?.message || error) };
