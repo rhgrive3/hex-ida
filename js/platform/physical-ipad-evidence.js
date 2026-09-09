@@ -17,7 +17,11 @@ export const REQUIRED_IPAD_CHECKS = Object.freeze([
 const ARTIFACT_IDENTITY = /^artifact:[^@]+@sha256:[0-9a-f]{64}$/;
 
 function required(value, code) {
-  const text = String(value ?? '').trim();
+  // Identity-authority fields enter the evidence digest. Structured values
+  // (arrays, {toString} holders, booleans, numbers) must not launder into the
+  // canonical text via String() coercion — fail closed instead (#5385).
+  if (typeof value !== 'string') throw new TypeError(code);
+  const text = value.trim();
   if (!text) throw new TypeError(code);
   return text;
 }
