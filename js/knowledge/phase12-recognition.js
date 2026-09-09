@@ -78,17 +78,26 @@ export async function recognizeWithKnowledgeDB({ db, input, packageEnvelope = nu
   return createMatchResult({ ...input, packageContentHash: packageHash, candidates, candidateSearchTruncated: matches.truncated === true, ambiguityWindow: options.ambiguityWindow });
 }
 
-// Host-held approval authority for L4 promotion (#5216, review R2): a plain
+// Host-held approval authority for L4 promotion (#5216, review R2/R3): a plain
 // { approved:true, targetMatchId } self-declaration is not approval evidence,
-// and neither is a caller-supplied authority — a duck-typed
-// { consumeGrant(){…} } option or a self-minted authority (untrusted code
-// calling an exported factory) would resurrect the forgery. The issuing
-// authority is therefore module-private: promotion consumes grants only from
-// the single host-held instance created below, grants bind the exact match
-// id, target entity, package identity/hash, algorithm version, actor
-// identity and the host's project/binary binding, and consumption verifies
-// every binding and burns the grant (single-use). Callers can only pass the
-// opaque token they received from the host issuance seam.
+// and neither is any caller-fabricated authority — a duck-typed
+// { consumeGrant(){…} } option or an importer of this module must not be able
+// to mint approval. Two boundaries make issuance real rather than
+// self-asserted:
+// 1. Grant issuance requires a browser-trusted user interaction: the caller
+//    must present the actual Event of a direct approval gesture, and the gate
+//    reads `isTrusted` — a property the browser sets and synthetic/dispatched
+//    events can never fake. AI/plugin/alternate-UI code running in the page
+//    therefore cannot mint an approval by importing this module, no matter
+//    what actorId it self-reports.
+// 2. Consumption is module-private: promotion verifies the grant against this
+//    module's own authority instance (match id, target entity, package
+//    identity/hash, algorithm version, actor identity, project/binary
+//    binding; single-use), so only a grant minted through (1) can promote.
+// The Node test harness is the trusted-runner domain (it executes this module
+// itself); the privilege boundary is browser-enforced user activation.
+const APPROVAL_INTERACTION_TYPES = new Set(['click', 'pointerdown', 'pointerup', 'keydown']);
+
 function createRecognitionApprovalAuthority() {
   const pending = new Map();
   let projectBinding = null;
@@ -103,10 +112,16 @@ function createRecognitionApprovalAuthority() {
       }
     },
     hostProjectBinding() { return projectBinding; },
-    issueGrant(result, { actorId } = {}) {
+    requireTrustedInteraction(interaction) {
+      if (!interaction || typeof interaction !== 'object') throw new TypeError('recognition approval requires the user interaction event of a direct approval gesture');
+      if (interaction.isTrusted !== true) throw new TypeError('recognition approval requires a browser-trusted user interaction; synthetic events are not approval evidence');
+      if (!APPROVAL_INTERACTION_TYPES.has(interaction.type)) throw new TypeError('recognition approval requires a direct approval gesture (click/pointer/keydown), not an indirect event');
+    },
+    issueGrant(result, { actorId, interaction } = {}) {
       if (!result || result.authority !== 'L2-suggestion' || !result.id) throw new TypeError('recognition suggestion required');
       const actor = String(actorId || '').trim();
       if (!actor) throw new TypeError('local approving actor identity is required');
+      this.requireTrustedInteraction(interaction);
       const nonce = Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)));
       const token = `recognition-grant_${stableDigest({ nonce, matchId: result.id, actor, projectBinding })}`;
       const grant = deepFreeze({
@@ -117,6 +132,7 @@ function createRecognitionApprovalAuthority() {
         packageContentHash: result.packageContentHash ?? null,
         algorithmVersion: result.algorithmVersion,
         actorId: actor,
+        interactionType: interaction.type,
         projectBinding,
       });
       pending.set(token, grant);
@@ -141,17 +157,19 @@ function createRecognitionApprovalAuthority() {
   });
 }
 
-// The one issuing authority. It is not reachable through the module surface:
-// only this module can consume grants, so callers cannot duck-type, swap or
-// self-mint their way into the approval boundary.
+// The one consuming authority. It is not reachable through the module
+// surface: only this module can consume grants, so callers cannot duck-type,
+// swap or self-mint their way into the approval boundary. Issuance is bound
+// to a browser-trusted user interaction (see above) — importing this module
+// from AI/plugin/alternate-UI code yields no way to mint a grant.
 const HOST_APPROVAL_AUTHORITY = createRecognitionApprovalAuthority();
 
 export function configureRecognitionApprovalHost({ projectBinding = null } = {}) {
   HOST_APPROVAL_AUTHORITY.configureHost({ projectBinding });
 }
 
-export function issueRecognitionApprovalGrant(result, { actorId } = {}) {
-  return HOST_APPROVAL_AUTHORITY.issueGrant(result, { actorId });
+export function issueRecognitionApprovalGrant(result, { actorId, interaction } = {}) {
+  return HOST_APPROVAL_AUTHORITY.issueGrant(result, { actorId, interaction });
 }
 
 export function promoteKnowledgeSuggestion(result, options = {}) {

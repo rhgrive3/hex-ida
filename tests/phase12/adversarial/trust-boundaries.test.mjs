@@ -25,7 +25,7 @@ assert.throws(
   /host-issued/,
   'a duck-typed caller-supplied authority must not become the issuer (review R2)',
 );
-const grant = issueRecognitionApprovalGrant(suggestion, { actorId: 'local-actor' });
+const grant = issueRecognitionApprovalGrant(suggestion, { actorId: 'local-actor', interaction: { type: 'click', isTrusted: true } });
 const fact = promoteKnowledgeSuggestion(suggestion, { approvalGrant: grant.token });
 assert.equal(fact.confirmation, 'user-confirmed');
 assert.equal(fact.provenance.actorId, 'local-actor');

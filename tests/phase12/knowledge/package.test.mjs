@@ -47,7 +47,7 @@ assert.equal(truncated.unique, false);
 assert.throws(() => promoteKnowledgeSuggestion(truncated, { approvalGrant: 'unused-grant-token', actorId: 'actor-a' }), /ambiguous or truncated/);
 
 const unique = createMatchResult({ sourceEntityId: 'entity-a', packageEntryId: 'entry-a', candidates: [{ packageEntryId: 'entry-a', score: 0.99, tier: 'exact-content' }], packageContentHash: sameA.contentHash });
-const packageGrant = issueRecognitionApprovalGrant(unique, { actorId: 'local-user' });
+const packageGrant = issueRecognitionApprovalGrant(unique, { actorId: 'local-user', interaction: { type: 'click', isTrusted: true } });
 const fact = promoteKnowledgeSuggestion(unique, { approvalGrant: packageGrant.token, name: 'localName' });
 assert.equal(fact.confirmation, 'user-confirmed');
 assert.equal(fact.externalProvenance.packageContentHash, sameA.contentHash);
