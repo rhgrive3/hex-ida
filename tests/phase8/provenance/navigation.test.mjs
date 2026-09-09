@@ -8,7 +8,8 @@ import { createDecompilerNavigation, createDecompilerProvenanceView } from '../.
 import { showDecompilerProvenanceSheet } from '../../../js/ui/decompiler-provenance-sheet.js';
 import { RewriteEngine } from '../../../js/decompiler/rewrite/engine.js';
 import { DEFAULT_RULES } from '../../../js/decompiler/rewrite/rules.js';
-import { analysis, consumerFixture, expr, resultWith, source } from './fixture.js';
+import { recoverExactStackReturn } from '../../../js/decompiler/passes/stack-return-recovery.js';
+import { analysis, consumerFixture, expr, resultWith, source, proofOnlySpillFixture } from './fixture.js';
 
 test('C4-03 production pseudocode route consumes the snapshot-bound provenance view', () => {
   const product = fs.readFileSync(new URL('../../../js/ui/product-base.js', import.meta.url), 'utf8');
@@ -163,6 +164,33 @@ class Element {
   focus() { this.focused = true; }
   scrollIntoView() { this.scrolled = true; }
 }
+
+test('C4-03 UI labels an actual removed statement with its old position and selects only the surviving return', async () => {
+  const previous = globalThis.document;
+  globalThis.document = { createElement:tag => new Element(tag) };
+  try {
+    const producer = proofOnlySpillFixture();
+    recoverExactStackReturn(producer.result);
+    const f = await queryFixture(applyPhase8Projection(producer.result, analysis()));
+    const view = createDecompilerProvenanceView(f.query, f.options);
+    const [controls, code, status, details, history] = view.root.children;
+    const originalText = code.textContent;
+    controls.children[0].value = '0x7004';
+    await controls.children[1].click();
+    assert.match(history.textContent, /Rendered statement removed \(pre-transform line 1\)/);
+    assert.match(history.textContent, /does not mean canonical IR was deleted/);
+    assert.equal(code.children[0].classList.contains('selected'), false, 'the new line at old position zero is unrelated');
+    assert.equal(code.children[1].classList.contains('selected'), true);
+    assert.equal(code.textContent, originalText);
+    f.advance();
+    await controls.children[1].click();
+    assert.match(status.textContent, /stale-query-snapshot/);
+    assert.equal(history.children.length, 0);
+    assert.equal(details.children.length, 0);
+  } finally {
+    if (previous === undefined) delete globalThis.document; else globalThis.document = previous;
+  }
+});
 
 test('C4-03 UI exposes actual elided-origin history without selecting a guessed output row', async () => {
   const previous = globalThis.document;

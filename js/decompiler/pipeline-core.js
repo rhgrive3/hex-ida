@@ -5,7 +5,7 @@
  * fallback at the public facade.
  */
 import { children, expr, mergeSource, sourceOf, mapChildren, structuralKey, sameExpr } from './ast/nodes.js';
-import { RewriteEngine } from './rewrite/engine.js';
+import { RewriteEngine, expressionOriginHistory } from './rewrite/engine.js';
 import { DEFAULT_RULES } from './rewrite/rules.js';
 import { captureProjectionIrData, PROJECTION_LIMITS } from './phase8/projection-origin.js';
 import { recoverArm64ClangIdiom, recognizeClamp, recognizeDivisionByConstant } from './idioms/arm64-clang.js';
@@ -40,7 +40,9 @@ function containsExpression(root, expression) {
 }
 function semanticExpressionConsumer(semantic, value, instruction, state, nested = false) {
   const produced = state.expressionProofs?.get(value?.id);
-  if (!produced?.records.length || (produced.expression !== semantic.expression
+  const elisions = state.renderElisions?.get(instruction?.id);
+  const records = elisions?.length ? Object.freeze([...(produced?.records || []), ...elisions]) : produced?.records;
+  if (!records?.length || !produced || (produced.expression !== semantic.expression
       && (!nested || !containsExpression(semantic.expression, produced.expression)))) return semantic;
   // Bound cumulative observation work for the function, not just each
   // individual graph: many consumers may share a large definition graph.
@@ -57,7 +59,7 @@ function semanticExpressionConsumer(semantic, value, instruction, state, nested 
   budget.consumers--;
   try {
     const observation = captureProjectionIrData(
-      [semantic.expression, produced.records, value, instruction, semantic.location], state.opts?.shouldAbort);
+      [semantic.expression, records, value, instruction, semantic.location], state.opts?.shouldAbort);
     const remaining = budget.edges - observation.metrics.edges;
     budget.edges = Math.max(0, remaining);
     if (remaining < 0) {
@@ -66,7 +68,7 @@ function semanticExpressionConsumer(semantic, value, instruction, state, nested 
     }
     expressionHistoryConsumers.set(semantic, Object.freeze({
       ir:state.ir, expression:semantic.expression, op:semantic.op, instructionId:semantic.ir,
-      location:semantic.location, records:produced.records,
+      location:semantic.location, records,
       isCurrent:() => observation.matches(),
     }));
   } catch {
@@ -644,17 +646,37 @@ function isElidableReturnSpillStore(store, state) {
     if (ret.op !== 'ret' || ret.row == null || Number(ret.row) <= Number(load.row)) continue;
     const returned = returnValueAt(ret, state);
     if (!returned || !valueDependsOnAny(returned, loadIds)) continue;
-    if (structuralKey(expressionFor(returned, state)) === storedKey) return true;
+    if (structuralKey(expressionFor(returned, state)) === storedKey) return { ret, returned, load, storedValue };
   }
   return false;
 }
 
-function knownStatementForLine(line, state) {
+function knownStatementForLine(line, state, lineIndex) {
   if (line?.row == null || line.kind !== 'stmt') return null;
   const insts = (state.ir.instructions || []).filter((i) => i.row === line.row);
   const store = insts.find((i) => i.op === 'store');
   if (store) {
-    if (isElidableReturnSpillStore(store, state)) {
+    const elision = isElidableReturnSpillStore(store, state);
+    if (elision) {
+      const hasVisibleStatement = String(line.text || '').trim().length > 0;
+      const maximum = Number.isSafeInteger(state.opts?.renderProvenanceBudget?.maxTransformRecords)
+        ? Math.max(0, Math.min(1024, state.opts.renderProvenanceBudget.maxTransformRecords)) : 1024;
+      if (hasVisibleStatement && (state.renderElisionCount || 0) < maximum) {
+        const expression = expressionFor(elision.returned, state);
+        const record = Object.freeze({ rule:'suppress-return-spill-statement', phase:'render',
+          evidence:Object.freeze({ kind:'memoryssa-return-spill', detail:'existing C AST producer suppressed this return-preservation spill statement' }),
+          originHistory:expressionOriginHistory({ source:mergeSource(line.source, origin(store, elision.storedValue), origin(elision.load)) }, expression),
+          renderedRemoval:Object.freeze({ scope:'pre-transform-render', operation:'suppress', lineIndex, kind:line.kind || 'null' }),
+        });
+        state.renderElisions ??= new Map();
+        const records = state.renderElisions.get(elision.ret.id) || [];
+        state.renderElisions.set(elision.ret.id, [...records, record]);
+        (state.rewriteProof ??= []).push(record);
+        state.renderElisionCount = (state.renderElisionCount || 0) + 1;
+      } else if (hasVisibleStatement) {
+        state.expressionBindingBudget ??= { consumers:0, edges:0, reasons:new Set() };
+        state.expressionBindingBudget.reasons.add('render-removal-history-budget');
+      }
       return {
         text:'',
         semantic:{ op:'elided-return-spill', ir:store.id },
@@ -682,7 +704,7 @@ function knownStatementForLine(line, state) {
 function cAstFromLines(result, state) {
   const body = [];
   for (const line of result.lines || []) {
-    const known = knownStatementForLine(line, state);
+    const known = knownStatementForLine(line, state, body.length);
     const carried = line.source || { address: line.addr, row: line.row };
     const source = known?.source || sourceOf({
       ...carried,

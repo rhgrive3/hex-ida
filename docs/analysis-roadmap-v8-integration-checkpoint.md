@@ -2149,6 +2149,54 @@ rendered-entity removal/merge coverage (including proof-only spill removal),
 other view transformations, CSE/DCE/switch/struct-field denominator coverage and
 all original findings remain open. Integration acceptance remains LOCKED.
 
+### C4-03 actual spill statement removal/suppression — TODO implementation, 2026-09-09
+
+Two existing applied presentation transformations now retain their removed
+statement history: core return-preservation spill suppression and the later
+proof-only stack-spill removal. Their existing semantic/removal predicates and
+resulting code remain unchanged. Already-empty input lines do not manufacture
+another suppression event. Histories bind to the actual surviving return through
+the existing private producer/consumer observations.
+
+`renderedRemoval` names the `pre-transform-render` scope, operation, old line
+position and kind. A producer-bound record can expose a transform-local
+`before:<record-index>:L<old-index>:<kind>` tombstone in `removedRefs`. This is
+neither a current rendered line nor a canonical IR identity; source navigation
+continues to use the existing canonical origins and current `producedRefs`.
+Copied/unbound history cannot certify a tombstone. The validator rejects current
+line aliases, malformed scopes/positions and inconsistent removed references.
+Ordinary in-place expression rewrites still have empty `removedRefs`.
+
+The shared provenance UI explicitly labels removed/suppressed rendered statements
+and their old position, while preserving the warning that canonical IR was not
+deleted. The UI regression requires selecting the surviving return rather than
+the unrelated statement which moved into the old position, unchanged pseudocode
+copy content, and clearing history/navigation after snapshot invalidation.
+
+Producer record limits do not change which statements are actually removed.
+Missing observations, exhausted record budgets and unverified consumer bindings
+remain explicit; no unapplied optimizer candidate is reported as a removal.
+
+Evidence before final commit:
+
+- 8 new removal regressions plus a shared-UI regression cover both real
+  producers, canonical-IR non-mutation, shifted positions, private bindings,
+  repeated projection, failed predicates, copy/mutation rejection, budget
+  exhaustion, already-hidden lines and malformed tombstones;
+- canonical provenance PASS 15.4 s:
+  `c4-03-render-removal-owned-e2e9613f-df33-45e5-8799-9484773ee980.json`;
+- deterministic/width/proof/publication/reanchor/ownership boundaries PASS 2.3 s:
+  `c4-03-render-removal-boundaries-8f7a84f5-ba67-44fa-b21d-5024887175a8.json`;
+- semantic pipeline PASS 0.6 s:
+  `c4-03-render-removal-pipeline-5892c869-5327-47a7-9d5e-b3326bf6568f.json`.
+
+The reused C4-03 PR #3421 remains at
+`4cd5b3eb9200b1180985b9df3a74f8245a5cc928`. No component merge, main
+reconciliation or unrelated issue/performance work is included. These concrete
+spill transformations do not prove the full CSE/DCE/switch/struct-field
+removed/merged class denominator. Other view transitions and all original
+findings remain open; integration acceptance stays LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -2183,7 +2231,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C3-03 | Versioned language metadata and unknown-version matrix |
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
-| HEX-C4-03 | Product/legacy navigation, observed expression/recovery histories, successive projections and legacy stack-value/return transitions implemented; other view transforms and full removed/merged class coverage still open |
+| HEX-C4-03 | Navigation, observed expression/recovery histories, successive projections and actual spill statement removal/suppression implemented; other view transforms and full removed/merged class coverage still open |
 | HEX-C4-04 | v8 pure constant projection plus remaining risky rewrite observables |
 | HEX-C4-05 | Bounded e-graph candidates, independent proofs and resource matrix |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |

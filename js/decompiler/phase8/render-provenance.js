@@ -161,6 +161,12 @@ function freezeOrigins(origins) {
 }
 
 function expressionHistoryRecord(record, cap) {
+  const removal = record.renderedRemoval;
+  if (removal && (removal.scope !== 'pre-transform-render' || !['remove', 'suppress'].includes(removal.operation)
+      || !Number.isSafeInteger(removal.lineIndex) || removal.lineIndex < 0
+      || typeof removal.kind !== 'string' || !removal.kind || removal.kind.length > 128)) {
+    fail('phase8-render-removal-invalid');
+  }
   const before = canonicalOrigins(record.originHistory.before);
   const after = canonicalOrigins(record.originHistory.after);
   const truncated = record.originHistory.truncated === true || originsTotalSize(before) > cap || originsTotalSize(after) > cap;
@@ -178,6 +184,8 @@ function expressionHistoryRecord(record, cap) {
     before:record.before,
     after:record.after,
     valueId:record.valueId ?? null,
+    ...(removal ? { renderedRemoval:Object.freeze({ scope:removal.scope, operation:removal.operation,
+      lineIndex:removal.lineIndex, kind:removal.kind }) } : {}),
     targets:consumed,
     // These origins feed a line only through an observed producer binding.
     origin:{
@@ -331,7 +339,10 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
       ssaUses:Object.freeze(canonicalList(record.origin.ssaUses, false)),
     }),
     producedRefs:Object.freeze([...entityRefsByRecord[recordIndex]].sort((left, right) => left.localeCompare(right, 'en'))),
-    removedRefs:Object.freeze([]),
+    // Transform-local render tombstones never identify a current line or a
+    // canonical semantic entity. Public copied metadata cannot bind one.
+    removedRefs:Object.freeze(record.renderedRemoval && entityRefsByRecord[recordIndex].size
+      ? [`before:${recordIndex}:L${record.renderedRemoval.lineIndex}:${record.renderedRemoval.kind}`] : []),
     version:RENDER_PROVENANCE_VERSION,
   }));
 
@@ -428,6 +439,18 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
       }
       const history = record?.originHistory;
       if (!history) continue;
+      const removal = record.renderedRemoval;
+      if (removal) {
+        const valid = removal.scope === 'pre-transform-render' && ['remove', 'suppress'].includes(removal.operation)
+          && Number.isSafeInteger(removal.lineIndex) && removal.lineIndex >= 0
+          && typeof removal.kind === 'string' && removal.kind.length > 0 && removal.kind.length <= 128;
+        const expected = valid && record.renderedBinding === 'producer-bound'
+          ? [`before:${provenanceMap.ledger.indexOf(record)}:L${removal.lineIndex}:${removal.kind}`] : [];
+        if (!valid || !Array.isArray(record.removedRefs) || record.removedRefs.length !== expected.length
+            || expected.some((ref, index) => record.removedRefs[index] !== ref || Object.hasOwn(provenanceMap.entities, ref))) {
+          reasons.add('invalid-render-removal');
+        }
+      } else if (record.removedRefs?.length) reasons.add('invalid-render-removal');
       const fields = ['consumedRefs', 'producedRefs', 'elidedRefs'];
       if (history.scope !== 'replacement-expression-source'
           || !['complete', 'incomplete'].includes(history.completeness)

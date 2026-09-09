@@ -536,20 +536,34 @@ function committedStackSpillOnExactReturnPath(result, root, ret) {
   return null;
 }
 
-function removeProofOnlyStackSpill(result, stackStore, opts) {
+function removeProofOnlyStackSpill(result, stackStore, expression, opts) {
   const body = result.cAst?.body;
-  if (!Array.isArray(body) || !stackStore) return false;
+  if (!Array.isArray(body) || !stackStore) return [];
+  const removed = [];
   const storeRow = Number(stackStore.row);
   const storeId = String(stackStore.id);
-  const filtered = body.filter((node) => {
+  const filtered = body.filter((node, lineIndex) => {
     const text = String(node?.text || '');
     if (!/^\s*local_[A-Za-z0-9_]+\s*=/.test(text)) return true;
     const rows = node?.source?.rows || [];
     const ir = node?.source?.ir || [];
     const isSpill = rows.some((row) => Number(row) === storeRow) || ir.some((id) => String(id) === storeId);
+    if (isSpill) {
+      const maximum = Number.isSafeInteger(opts.renderProvenanceBudget?.maxTransformRecords)
+        ? Math.max(0, Math.min(1024, opts.renderProvenanceBudget.maxTransformRecords)) : 1024;
+      if (removed.length < maximum) removed.push(Object.freeze({
+        rule:'remove-proof-only-stack-spill', phase:'render',
+        evidence:Object.freeze({ kind:'committed-return-spill', detail:'existing return recovery removed this proof-only C statement' }),
+        originHistory:expressionOriginHistory({ source:mergeSource(node.source,
+          { ir:stackStore.id, row:stackStore.row, address:stackStore.address }) }, expression),
+        renderedRemoval:Object.freeze({ scope:'pre-transform-render', operation:'remove', lineIndex, kind:node.kind || 'null' }),
+      }));
+      else result.expressionHistoryBinding = Object.freeze({ ...result.expressionHistoryBinding, completeness:'incomplete',
+        reasons:Object.freeze([...new Set([...(result.expressionHistoryBinding?.reasons || []), 'render-removal-history-budget'])]) });
+    }
     return !isSpill;
   });
-  if (filtered.length === body.length) return false;
+  if (filtered.length === body.length) return [];
   result.cAst.body = filtered;
   const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
   result.pseudocode = printed.text;
@@ -559,7 +573,7 @@ function removeProofOnlyStackSpill(result, stackStore, opts) {
     row:node.source?.rows?.[0] ?? null, addr:node.source?.addresses?.[0] ?? null,
     note:null, source:node.source,
   }));
-  return true;
+  return removed;
 }
 
 export function recoverExactStackReturn(result, opts = {}) {
@@ -599,7 +613,7 @@ export function recoverExactStackReturn(result, opts = {}) {
   // A stack load means no useful reconstruction happened. A committed non-stack
   // field/global load is an intentional high-level return and must be retained.
   if (!recovered || (recovered.kind === 'load' && recovered.location?.kind === 'stack') || !rewriteReturn(result, recovered, opts)) return result;
-  if (committedSpill) removeProofOnlyStackSpill(result, committedSpill, opts);
+  const removals = committedSpill ? removeProofOnlyStackSpill(result, committedSpill, recovered, opts) : [];
 
   const records = transitions.map(item => {
     const record = Object.freeze({ rule:'exact-stack-return-recovery', phase:'memory-ssa',
@@ -607,10 +621,10 @@ export function recoverExactStackReturn(result, opts = {}) {
       evidence:Object.freeze({ kind:'cfg-memory-ssa', detail:'exact stack return reconstructed from predecessor stores and flag-producing SSA evidence' }),
       originHistory:expressionOriginHistory({ source:mergeSource(item.before?.source, root.source) }, recovered),
     });
-    item.records = Object.freeze([...(item.prior?.records || []), ...engine.records, record]);
+    item.records = Object.freeze([...(item.prior?.records || []), ...engine.records, record, ...removals]);
     return record;
   });
-  result.rewriteProof = [...(result.rewriteProof || []), ...engine.records, ...records];
+  result.rewriteProof = [...(result.rewriteProof || []), ...engine.records, ...records, ...removals];
   if (engine.truncated) result.expressionHistoryBinding = Object.freeze({
     ...result.expressionHistoryBinding, completeness:'incomplete',
     reasons:Object.freeze([...new Set([...(result.expressionHistoryBinding?.reasons || []), 'recovery-rewrite-history-budget'])]),

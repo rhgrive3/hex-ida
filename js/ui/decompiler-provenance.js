@@ -163,6 +163,14 @@ export function createDecompilerProvenanceView(query, options = {}) {
         const item = h('details');
         item.append(h('summary', 'ui-hint', `${record.rule} (${record.proof})`));
         const origins = record.originHistory;
+        if (record.renderedRemoval) {
+          const removal = record.renderedRemoval;
+          item.append(h('p', 'ui-hint',
+            (removal.operation === 'suppress' ? text('表示文を非表示化', 'Rendered statement suppressed')
+              : text('表示文を削除', 'Rendered statement removed'))
+            + text('（変換前の行 ', ' (pre-transform line ') + (removal.lineIndex + 1) + text('）', ')')
+            + (record.removedRefs?.length ? '' : text(' — 対応未確定', ' — binding unresolved'))));
+        }
         item.append(h('pre', 'mono',
           text('変換前: ', 'Consumed: ') + origins.consumedRefs.join(', ') + '\n'
           + text('変換後: ', 'Produced: ') + origins.producedRefs.join(', ') + '\n'
