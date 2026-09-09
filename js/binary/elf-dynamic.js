@@ -226,6 +226,9 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     const type = info & 0xf;
     const sectionIdentity = resolveDynamicSectionIndex(r, image, tags, i, shndx);
     const defined = sectionIdentity.known ? sectionIdentity.index !== SHN_UNDEF : null;
+    const common = sectionIdentity.known && sectionIdentity.index === SHN_COMMON;
+    const unallocatedOrUndefined = sectionIdentity.known
+      && (sectionIdentity.index === SHN_COMMON || sectionIdentity.index === SHN_UNDEF);
     if (!sectionIdentity.known) markDynamicPartial(image, `dynamic symbol ${i} has unresolved section identity (${sectionIdentity.reason})`);
     // STB_GNU_UNIQUE (10) is a process-wide unique global binding (GNU ELF
     // ABI): it must stay in the export/linkage truth, not be lumped into an
@@ -233,14 +236,14 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     const binding = bind === 0 ? 'local' : bind === 1 ? 'global' : bind === 2 ? 'weak' : bind === STB_GNU_UNIQUE ? 'gnu-unique' : `bind-${bind}`;
     const kind = dynamicSymbolKind(type);
     const ver = versions.get(i) || null;
-    const ifunc = type === STT_GNU_IFUNC && defined === true;
+    const ifunc = type === STT_GNU_IFUNC && defined === true && !common;
     const riscvVariantCcFlag = Number(image?.metadata?.machine) === 243 && (other & 0x80) !== 0;
     const riscvVariantCc = riscvVariantCcFlag && type === 2;
     // STT_TLS: a defined TLS symbol's st_value is its TLS offset, not a
     // virtual address (ELF gABI). Keep it out of the VA domain and
     // image.exports as a canonical address (#5843).
     const tls = type === 6;
-    const sym = { name, address: tls ? null : value, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, stOther: other, processorSpecificOther: other & ~3, riscvVariantCcFlag, riscvVariantCc, callingConvention: riscvVariantCc ? 'riscv-vector-variant' : null, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(tls ? { tlsOffset: value } : {}), ...(ifunc ? { resolverAddress:value, resolution:'runtime-resolver' } : {}) };
+    const sym = { name, address: tls ? null : unallocatedOrUndefined ? 0n : value, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, stOther: other, processorSpecificOther: other & ~3, riscvVariantCcFlag, riscvVariantCc, callingConvention: riscvVariantCc ? 'riscv-vector-variant' : null, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(tls ? { tlsOffset: value } : {}), ...(common ? { commonAlignment: value, commonSize: size, allocation: 'common-unallocated' } : {}), addressDomain: tls ? 'tls-offset' : common ? 'common-unallocated' : 'virtual', ...(ifunc ? { resolverAddress:value, resolution:'runtime-resolver' } : {}) };
     out.push(sym);
     if (!name) continue;
     image.symbols.push(sym);
@@ -249,14 +252,14 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
       if (budget && !budget.claimOutput(1, 160, 'PT_DYNAMIC imports')) break;
       image.imports.push({ name, library: null, ordinal: null, weak: bind === 2, version: ver?.name ?? null, versionLibrary: ver?.library ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC', sites: [] });
     }
-    if (defined === true && externallyVisible && (sym.visibility === 0 || sym.visibility === 3)) {
+    if (defined === true && !common && externallyVisible && (sym.visibility === 0 || sym.visibility === 3)) {
       if (budget && !budget.claimOutput(1, 144, 'PT_DYNAMIC exports')) break;
       // TLS exports keep their name/visibility fact but never mint a VA (#5843).
       image.exports.push(tls
         ? { name, address: null, kind, tlsOffset: value, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' }
         : { name, address: value, kind, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' });
     }
-    if (defined === true && (type === 2 || type === STT_GNU_IFUNC) && value !== 0n) {
+    if (defined === true && !common && (type === 2 || type === STT_GNU_IFUNC) && value !== 0n) {
       if (budget && !budget.claimOutput(1, 128, 'PT_DYNAMIC function seeds')) break;
       const owner = (() => {
         const start=value, extent=size||0n;

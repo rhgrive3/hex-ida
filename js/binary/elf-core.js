@@ -205,9 +205,9 @@ function actualSectionIndex(index, sections) {
 }
 
 function symbolAddressForELF(elfType, value, sectionIndex, sections, extendedSectionIndex = false) {
-  if (elfType !== ET_REL) return value;
   if (!extendedSectionIndex && sectionIndex === SHN_ABS) return value;
   if (!extendedSectionIndex && (sectionIndex === SHN_COMMON || sectionIndex === SHN_UNDEF)) return null;
+  if (elfType !== ET_REL) return value;
   const valid = extendedSectionIndex
     ? actualSectionIndex(sectionIndex, sections)
     : normalSectionIndex(sectionIndex, sections);
@@ -386,6 +386,7 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     const specialKnown=!extendedSectionIndex&&(resolvedShndx===SHN_UNDEF||resolvedShndx===SHN_ABS||resolvedShndx===SHN_COMMON);
     if(sectionIdentityKnown&&!normal&&!specialKnown){sectionIdentityKnown=false;image.warnings.push(`ELF symbol ${i} uses unsupported reserved section index ${resolvedShndx}`);}
     const defined=sectionIdentityKnown?(resolvedShndx!==SHN_UNDEF):null;
+    const common=sectionIdentityKnown&&!extendedSectionIndex&&resolvedShndx===SHN_COMMON;
     // STT_TLS: a defined TLS symbol's st_value is its TLS offset, not a
     // virtual address (ELF gABI). It must never enter the VA domain or
     // image.exports as a canonical address (#5843).
@@ -396,11 +397,11 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     // anonymous `bind-N` bucket (#5844).
     const binding=bind===0?'local':bind===1?'global':bind===2?'weak':bind===STB_GNU_UNIQUE?'gnu-unique':`bind-${bind}`;
     const kind=type===2?'function':type===1?'object':type===3?'section':tls?'tls':type===STT_GNU_IFUNC?'indirect-function':`type-${type}`;
-    const ifunc=type===STT_GNU_IFUNC&&defined===true;
+    const ifunc=type===STT_GNU_IFUNC&&defined===true&&!common;
     const riscvVariantCcFlag=image.metadata.machine===EM_RISCV&&(other&STO_RISCV_VARIANT_CC)!==0;
     const riscvVariantCc=riscvVariantCcFlag&&type===2;
     const sym={name,address:tls?null:(address??0n),originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??value,resolution:'runtime-resolver'}:{}),
-      ...(tls?{tlsOffset:value}:{}),sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:value}:null,addressDomain:tls?'tls-offset':elfType===ET_REL&&normal?'section-relative-synthetic':'virtual'};
+      ...(tls?{tlsOffset:value}:{}),...(common?{commonAlignment:value,commonSize:size,allocation:'common-unallocated'}:{}),sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:value}:null,addressDomain:tls?'tls-offset':common?'common-unallocated':elfType===ET_REL&&normal?'section-relative-synthetic':'virtual'};
     image.symbols.push(sym);
     const externallyVisible=bind===1||bind===2||bind===STB_GNU_UNIQUE;
     if(defined===false&&externallyVisible){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'symbol-import'))break;image.imports.push({name,library:null,ordinal:null,weak:bind===2,symbolIndex:i,tableIndex:table.index,source:'elf-dynsym',sites:[]});}
