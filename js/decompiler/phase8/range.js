@@ -103,13 +103,24 @@ function asMask(value, bits) {
   try { return unsignedOf(value ?? 0n, bits); } catch { return 0n; }
 }
 
+// Only canonical scalar spellings are evidence: bigint, safe number, numeric
+// string. JavaScript coerces `true`→1n and `['8']`→8n through BigInt(), which
+// let booleans and arrays pose as exact known-bit/congruence facts (#5222).
+function evidenceScalar(value) {
+  if (value == null) return null;
+  if (typeof value === 'bigint' || typeof value === 'number' || typeof value === 'string') return value;
+  return undefined;
+}
+
 function parseBoundedMaskEvidence(value, bits) {
   if (value == null) return { value: null, malformed: false };
-  if (typeof value === 'number' && (!Number.isSafeInteger(value) || value < 0)) {
+  const scalar = evidenceScalar(value);
+  if (scalar === undefined) return { value: null, malformed: true };
+  if (typeof scalar === 'number' && (!Number.isSafeInteger(scalar) || scalar < 0)) {
     return { value: null, malformed: true };
   }
   try {
-    const parsed = BigInt(value);
+    const parsed = BigInt(scalar);
     if (parsed < 0n || parsed > widthMask(bits)) return { value: null, malformed: true };
     return { value: parsed, malformed: false };
   } catch {
@@ -140,12 +151,15 @@ function normalizeCongruenceValue(congruence, bits) {
  * this parser to prevent malformed evidence from retaining exactness. */
 function parseCongruenceValue(congruence, bits) {
   const width = 1n << BigInt(bits);
-  if (congruence == null || typeof congruence !== 'object') return null;
+  if (congruence == null || typeof congruence !== 'object' || Array.isArray(congruence)) return null;
+  const modulusInput = evidenceScalar(congruence.modulus);
+  const remainderInput = evidenceScalar(congruence.remainder);
+  if (modulusInput === undefined || remainderInput === undefined) return null;
   let modulus;
   let remainder;
   try {
-    modulus = BigInt(congruence.modulus);
-    remainder = BigInt(congruence.remainder);
+    modulus = BigInt(modulusInput);
+    remainder = BigInt(remainderInput);
   } catch {
     return null;
   }
