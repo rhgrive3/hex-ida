@@ -242,7 +242,6 @@ export function parseDex(bytes, options = {}) {
     requireOptionalDataItemOffset(fileSize,interfacesOff,4,4,'dex-invalid-interfaces-offset');
     requireOptionalDataItemOffset(fileSize,annotationsOff,4,16,'dex-invalid-annotations-offset');
     requireOptionalDataItemOffset(fileSize,staticValuesOff,1,1,'dex-invalid-static-values-offset');
-    dataRange(interfacesOff,4,'dex-invalid-interfaces-offset',4,true);
     dataRange(annotationsOff,16,'dex-invalid-annotations-offset',4,true);
     dataRange(staticValuesOff,1,'dex-invalid-static-values-offset',1,true);
     const classType = requireIndex(types,classIdx,'dex-invalid-class-index');
@@ -288,7 +287,26 @@ export function parseDex(bytes, options = {}) {
         lastMethodIdx+=delta; requireIndex(methods,lastMethodIdx,'dex-invalid-class-data-method-index'); validateCode(codeOff,mFlags); virtualMethods.push({methodIdx:lastMethodIdx,accessFlags:mFlags,codeOff});
       }
     }
-    classes.push({classType:requireIndex(types,classIdx,'dex-invalid-class-index'),accessFlags,superType:superclassIdx!==0xffffffff?requireIndex(types,superclassIdx,'dex-invalid-superclass-index'):null,sourceFile:sourceFileIdx!==0xffffffff?requireIndex(strings,sourceFileIdx,'dex-invalid-source-file-index'):null,staticFields,instanceFields,directMethods,virtualMethods});
+    // class_def_item.interfaces_off is the authority for implemented
+    // interfaces: decode the referenced type_list losslessly and fail closed
+    // on AOSP contract violations — bounds, alignment, type_idx validity,
+    // class (non-array/primitive) entries, and duplicates (#7620).
+    const interfaceTypes=[];
+    if(interfacesOff!==0){
+      dataRange(interfacesOff,4,'dex-invalid-interfaces-offset',4);
+      const interfaceCount=view.getUint32(interfacesOff,true);
+      dataRange(interfacesOff+4,interfaceCount*2,'dex-invalid-interfaces-range',2);
+      const seenInterfaces=new Set();
+      for(let entry=0;entry<interfaceCount;entry++){
+        const typeIdx=view.getUint16(interfacesOff+4+entry*2,true);
+        const descriptor=requireIndex(types,typeIdx,'dex-invalid-interface-type-index');
+        if(!descriptor.startsWith('L')) fail('dex-invalid-interface-type');
+        if(seenInterfaces.has(descriptor)) fail('dex-duplicate-interface-type');
+        seenInterfaces.add(descriptor);
+        interfaceTypes.push(descriptor);
+      }
+    }
+    classes.push({classType:requireIndex(types,classIdx,'dex-invalid-class-index'),accessFlags,superType:superclassIdx!==0xffffffff?requireIndex(types,superclassIdx,'dex-invalid-superclass-index'):null,sourceFile:sourceFileIdx!==0xffffffff?requireIndex(strings,sourceFileIdx,'dex-invalid-source-file-index'):null,interfaceTypes,staticFields,instanceFields,directMethods,virtualMethods});
   }
 
   dexMethodDefinitions({ methods, classes });
