@@ -474,7 +474,20 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const classIdx = view.getUint16(pc, false);
           pc += 2;
           mnemonic = opcode === 0xc0 ? 'checkcast' : 'instanceof';
-          if (opcode === 0xc1) producedValues.push({ bits: 32 });
+          // JVM stack semantics (#5243): both opcodes pop the objectref.
+          // instanceof pushes the int result; checkcast pushes the same
+          // reference back (refined in place), so the def-use edge to the
+          // objectref is preserved instead of vanishing. ClassCastException
+          // is real control-affecting behaviour the bundle does not model as
+          // control flow, so checkcast fails closed to partial.
+          consumedValues.push({ id: 'obj' });
+          if (opcode === 0xc1) {
+            producedValues.push({ bits: 32, cpClassIndex: classIdx });
+          } else {
+            producedValues.push({ id: 'obj-refined', bits: 64, cpClassIndex: classIdx });
+            completeness = 'partial';
+            unknownEffects.push({ category: 'other', reason: 'jvm-checkcast-exception-unrepresented' });
+          }
         }
         break;
 

@@ -1,9 +1,11 @@
 import { parseMachOSource as parseMachOSourceRaw } from './source-loaders.js';
 
 /*
- * Selected FAT Mach-O slices are immutable loader artifacts.  Keep the cache at
+ * Selected FAT Mach-O slices are shared producer artifacts. Keep the cache at
  * the public source-loader boundary so analysis and pointer-resolution share the
- * same parse instead of each reparsing identical bytes.
+ * same parse instead of each reparsing identical bytes. The producer image
+ * is never returned directly: each waiter receives a detached mutable view so
+ * consumer annotations cannot mutate the cache or another consumer's result.
  *
  * The producer owns its AbortController.  Consumer cancellation only detaches
  * that waiter; the producer is aborted when the last waiter leaves.  This avoids
@@ -50,6 +52,65 @@ function producerRangeOptions(value) {
   // abort would cancel the parse other consumers still need.
   const { signal: _consumerSignal, ...rest } = value;
   return rest;
+}
+
+function cloneCachedArtifact(value) {
+  const shared = new Set();
+  if (value?.source && typeof value.source === 'object') shared.add(value.source);
+  return cloneValue(value, new Map(), shared);
+}
+
+function cloneValue(value, seen, shared) {
+  if (value == null || typeof value !== 'object' || shared.has(value)) return value;
+  if (seen.has(value)) return seen.get(value);
+
+  if (value instanceof ArrayBuffer) {
+    const copy = value.slice(0);
+    seen.set(value, copy);
+    return copy;
+  }
+  if (ArrayBuffer.isView(value)) {
+    const copy = value instanceof DataView
+      ? new DataView(cloneValue(value.buffer, seen, shared), value.byteOffset, value.byteLength)
+      : value.slice();
+    seen.set(value, copy);
+    return copy;
+  }
+  if (value instanceof Date) {
+    const copy = new Date(value.getTime());
+    seen.set(value, copy);
+    return copy;
+  }
+  if (value instanceof RegExp) {
+    const copy = new RegExp(value.source, value.flags);
+    copy.lastIndex = value.lastIndex;
+    seen.set(value, copy);
+    return copy;
+  }
+  if (value instanceof Map) {
+    const copy = new Map();
+    seen.set(value, copy);
+    for (const [key, item] of value) {
+      copy.set(cloneValue(key, seen, shared), cloneValue(item, seen, shared));
+    }
+    return copy;
+  }
+  if (value instanceof Set) {
+    const copy = new Set();
+    seen.set(value, copy);
+    for (const item of value) copy.add(cloneValue(item, seen, shared));
+    return copy;
+  }
+
+  const copy = Array.isArray(value) ? [] : Object.create(Object.getPrototypeOf(value));
+  seen.set(value, copy);
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor) continue;
+    if ('value' in descriptor) descriptor.value = cloneValue(descriptor.value, seen, shared);
+    try { Object.defineProperty(copy, key, descriptor); } catch { /* preserve best-effort data copies */ }
+  }
+  return copy;
 }
 
 function cacheKey(options = {}) {
@@ -112,7 +173,10 @@ function waitForEntry(entry, signal, onProgress = null) {
       reject(abortError(signal));
     };
     signal?.addEventListener('abort', onAbort, { once:true });
-    entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
+    entry.promise.then((value) => {
+      try { finish(resolve, cloneCachedArtifact(value)); }
+      catch (error) { finish(reject, error); }
+    }, (error) => finish(reject, error));
   });
 }
 

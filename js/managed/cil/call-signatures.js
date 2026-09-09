@@ -36,7 +36,7 @@ function resolveIndexed(index, token, depth = 0) {
       const base = resolveIndexed(index, baseToken, depth + 1);
       if (!base.complete) return base;
       const args = parseCilMethodSpecInstantiation(readCilMetadataBlob(index.blobHeap, row.instantiation,
-        'cil-call-signature-methodspec-blob-invalid'));
+        'cil-call-signature-methodspec-blob-invalid'), index.typeDefOrRefRowCounts);
       if (args.length !== base.signature.genericParameterCount) fail('cil-call-signature-methodspec-arity-mismatch');
       const parameters = base.signature.parameters.map((value) => substituteCilMethodGeneric(value, args));
       const returnValue = substituteCilMethodGeneric(base.signature.returnValue, args);
@@ -70,7 +70,14 @@ function resolveIndexed(index, token, depth = 0) {
     const methodName = readCilMetadataString(index.stringsHeap, row.nameIndex,
       'cil-call-signature-method-name-invalid');
     const signature = parseCilMethodSignature(readCilMetadataBlob(index.blobHeap, blobIndex,
-      'cil-call-signature-blob-invalid'));
+      'cil-call-signature-blob-invalid'), index.typeDefOrRefRowCounts);
+    if (table === METHOD_DEF_TABLE) {
+      if (!Number.isSafeInteger(row.accessFlags) || row.accessFlags < 0 || row.accessFlags > 0xffff) {
+        fail('cil-call-signature-methoddef-flags-invalid');
+      }
+      const isStatic = (row.accessFlags & 0x0010) !== 0;
+      if (isStatic === signature.hasThis) fail('cil-call-signature-methoddef-static-hasthis-mismatch');
+    }
     return Object.freeze({
       complete:true,
       signature,
@@ -83,6 +90,7 @@ function resolveIndexed(index, token, depth = 0) {
         signatureBlobIndex:blobIndex,
         nameStringIndex:row.nameIndex,
         methodName,
+        ...(table === METHOD_DEF_TABLE ? { methodAccessFlags:row.accessFlags } : {}),
       }),
     });
   } catch (error) {
