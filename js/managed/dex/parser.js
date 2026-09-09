@@ -27,6 +27,36 @@ function requireMethodOwnerType(descriptor) {
   return descriptor;
 }
 
+function isDexSimpleNameChar(codePoint, extendedSpaces) {
+  if ((codePoint >= 0x41 && codePoint <= 0x5a) ||
+      (codePoint >= 0x61 && codePoint <= 0x7a) ||
+      (codePoint >= 0x30 && codePoint <= 0x39) ||
+      codePoint === 0x24 || codePoint === 0x2d || codePoint === 0x5f) return true;
+  if (codePoint === 0x20 || codePoint === 0x00a0 || codePoint === 0x202f) return extendedSpaces;
+  if (codePoint >= 0x00a1 && codePoint <= 0x1fff) return true;
+  if (codePoint >= 0x2000 && codePoint <= 0x200a) return extendedSpaces;
+  if (codePoint >= 0x2010 && codePoint <= 0x2027) return true;
+  if (codePoint >= 0x2030 && codePoint <= 0xd7ff) return true;
+  if (codePoint >= 0xe000 && codePoint <= 0xffef) return true;
+  return codePoint >= 0x10000 && codePoint <= 0x10ffff;
+}
+
+function isDexSimpleName(name, dexVersion) {
+  if (typeof name !== 'string' || name.length === 0) return false;
+  const extendedSpaces = dexVersion >= 40;
+  for (const char of name) {
+    if (!isDexSimpleNameChar(char.codePointAt(0), extendedSpaces)) return false;
+  }
+  return true;
+}
+
+function requireDexMemberName(name, dexVersion, code) {
+  const wrapped = name.length >= 2 && name.startsWith('<') && name.endsWith('>');
+  const simpleName = wrapped ? name.slice(1, -1) : name;
+  if (!isDexSimpleName(simpleName, dexVersion)) fail(code);
+  return name;
+}
+
 const SUPPORTED_DEX_VERSIONS = new Set(['035', '037', '038', '039', '040']);
 
 export function probeDex(bytes) {
@@ -97,6 +127,7 @@ function decodeMutf8(bytes, offset) {
 export function parseDex(bytes, options = {}) {
   const probe = probeDex(bytes);
   if (!probe.supported) fail('dex-unsupported-binary');
+  const dexVersion = Number(probe.formatVersion.slice(4));
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
 
@@ -188,7 +219,8 @@ export function parseDex(bytes, options = {}) {
     if(off+8>u8.length) fail('dex-truncated-field-ids');
     const classIdx=view.getUint16(off,true),typeIdx=view.getUint16(off+2,true),nameIdx=view.getUint32(off+4,true);
     const classType = requireFieldOwnerType(requireIndex(types,classIdx,'dex-invalid-field-class-index'));
-    fields.push({classType,type:requireIndex(types,typeIdx,'dex-invalid-field-type-index'),name:requireIndex(strings,nameIdx,'dex-invalid-field-name-index')});
+    const name = requireDexMemberName(requireIndex(strings,nameIdx,'dex-invalid-field-name-index'),dexVersion,'dex-invalid-field-name');
+    fields.push({classType,type:requireIndex(types,typeIdx,'dex-invalid-field-type-index'),name});
   }
 
   const methods=[];
@@ -197,7 +229,8 @@ export function parseDex(bytes, options = {}) {
     if(off+8>u8.length) fail('dex-truncated-method-ids');
     const classIdx=view.getUint16(off,true),protoIdx=view.getUint16(off+2,true),nameIdx=view.getUint32(off+4,true);
     const classType = requireMethodOwnerType(requireIndex(types,classIdx,'dex-invalid-method-class-index'));
-    methods.push({classType,proto:requireIndex(protos,protoIdx,'dex-invalid-method-proto-index'),name:requireIndex(strings,nameIdx,'dex-invalid-method-name-index')});
+    const name = requireDexMemberName(requireIndex(strings,nameIdx,'dex-invalid-method-name-index'),dexVersion,'dex-invalid-method-name');
+    methods.push({classType,proto:requireIndex(protos,protoIdx,'dex-invalid-method-proto-index'),name});
   }
 
   const classes=[];
