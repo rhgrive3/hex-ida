@@ -78,6 +78,14 @@ test('#6058 sentinel zero ID is only valid with skipdata status', () => {
     () => createX86DecodedInstruction({ ...SKIPDATA_BASE, instructionCode: 42, detailStatus: 'skipdata', detailAvailable: false }),
     /x86-decoded-instruction-id-required/,
   );
+  // The sentinel is a primitive numeric contract, not a Number()-coercible
+  // value. Structured/boolean/string spellings must not mint ID 0 authority.
+  for (const instructionCode of [false, [], ['0'], '0']) {
+    assert.throws(
+      () => createX86DecodedInstruction({ ...SKIPDATA_BASE, instructionCode, detailStatus: 'skipdata', detailAvailable: false }),
+      /x86-decoded-instruction-id-required/,
+    );
+  }
 });
 
 test('#6058 normal instructions keep the positive-ID requirement', () => {

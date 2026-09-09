@@ -35,6 +35,13 @@ function integer(value, code, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
   return number;
 }
 
+function skipdataInstructionCode(value) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || !Object.is(value, 0)) {
+    throw new TypeError('x86-decoded-instruction-id-required');
+  }
+  return value;
+}
+
 function bigint(value, code) {
   try { return BigInt(value); } catch { throw new TypeError(code); }
 }
@@ -312,7 +319,7 @@ export function createX86DecodedInstruction(input = {}) {
     // only as exactly 0 — a non-zero ID with skipdata status is a schema
     // contradiction. Every normal instruction keeps the positive-ID rule.
     instructionCode:detailStatus === SKIPDATA_DETAIL_STATUS
-      ? integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { max:0 })
+      ? skipdataInstructionCode(input.instructionCode ?? input.id)
       : integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:1 }),
     instructionFamily,
     decoderContractVersion:contractVersion,
