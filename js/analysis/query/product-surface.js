@@ -1,6 +1,7 @@
 import { classifyFunction, discoverSubsystems } from '../../recognition/classifier.js';
 import { assertAnalysisSnapshot } from './snapshot.js';
 import { STRING_SCAN_BUDGET, StringCollectionBudget } from '../../string-budget.js';
+import { jsonSafe, stableDigest } from '../../core/identity/index.js';
 
 const REPORT_BINDINGS = new WeakMap();
 const STRING_STATES = new WeakMap();
@@ -106,6 +107,23 @@ function stringPriority(region) {
   return 2;
 }
 
+function canonicalSliceStateDimension(app) {
+  // The state key must track the same identity dimensions the snapshot uses.
+  // `Number(['1'])` aliased a structured slice index onto the canonical `1`
+  // and let one snapshot's string state be served to a different snapshot
+  // (#5585). Type-preserving spelling instead of numeric coercion.
+  const raw = app.store?.get?.('sliceIndex');
+  const gen = Number(app.backend?.gen ?? 0);
+  let slice;
+  if (raw == null || (typeof raw === 'string' && !raw)) slice = '-1';
+  else if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'bigint' || typeof raw === 'boolean') {
+    slice = `p:${typeof raw}:${String(raw)}`;
+  } else {
+    try { slice = `s:${stableDigest(jsonSafe(raw))}`; } catch { slice = `s:opaque:${typeof raw}`; }
+  }
+  return `${gen}:${slice}`;
+}
+
 function newStringState(app) {
   const regions = app.store?.get?.('regions') || [];
   const targets = regions.filter((region) => region?.size > 0n &&
@@ -126,7 +144,7 @@ function newStringState(app) {
     }
   }
   return {
-    key: `${Number(app.backend?.gen ?? 0)}:${Number(app.store?.get?.('sliceIndex') ?? -1)}`,
+    key: canonicalSliceStateDimension(app),
     budget,
     plan,
     skipped,
@@ -142,7 +160,7 @@ function newStringState(app) {
 }
 
 function stringState(app) {
-  const key = `${Number(app.backend?.gen ?? 0)}:${Number(app.store?.get?.('sliceIndex') ?? -1)}`;
+  const key = canonicalSliceStateDimension(app);
   let state = STRING_STATES.get(app);
   if (!state || state.key !== key) {
     state = newStringState(app);

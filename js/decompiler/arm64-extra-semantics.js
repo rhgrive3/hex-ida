@@ -28,13 +28,25 @@ function parseImm(text) {
   return Number.isSafeInteger(value) ? value : null;
 }
 
-function expandMovi2dImmediate(imm) {
-  if (!Number.isInteger(imm) || imm < 0 || imm > 0xff) return null;
-  let value = 0n;
-  for (let bit = 0; bit < 8; bit++) {
-    if ((imm & (1 << bit)) !== 0) value |= 0xffn << BigInt(bit * 8);
+function parseImm64(text) {
+  const raw = String(text || '').trim().replace(/^#/, '');
+  if (!/^-?(?:0x[0-9a-f]+|\d+)$/i.test(raw)) return null;
+  try { return BigInt(raw); } catch { return null; }
+}
+
+// In A64 assembly syntax the MOVI <V>.2D immediate is the already-expanded
+// 64-bit value whose every byte is 0x00 or 0xff — the encoding's 8-bit
+// `abcdefgh` field has been unfolded by the disassembler (#5454). Treating the
+// printed immediate as the encoding field turned `movi v0.2d, #0xff` into
+// all-ones. Validate the byte-mask shape instead of re-expanding; anything
+// else is not a canonical 2D immediate and stays raw.
+function canonicalMovi2dImmediate(imm) {
+  if (imm == null || imm < 0n || imm > 0xffffffffffffffffn) return null;
+  for (let byte = 0; byte < 8; byte++) {
+    const value = (imm >> BigInt(byte * 8)) & 0xffn;
+    if (value !== 0n && value !== 0xffn) return null;
   }
-  return value;
+  return imm;
 }
 
 function asmPayload(text) {
@@ -89,6 +101,15 @@ function lowerOne(payload) {
   // MOVI vector immediate. The observed gap is the shifted halfword form, but
   // keep the lowering generic for valid vN.<lanes><b|h|s|d> arrangements.
   if (mnemonic === 'movi' && operands.length >= 2 && /^v\d+\.\d+[bhsd]$/i.test(operands[0])) {
+    const arrangement = operands[0].split('.')[1].toLowerCase();
+    if (arrangement === '2d') {
+      // The printed immediate is the full 64-bit byte mask; parse it exactly
+      // so masks wider than a safe integer still lower exactly (#5454).
+      if (operands.length !== 2) return null;
+      const value = canonicalMovi2dImmediate(parseImm64(operands[1]));
+      if (value == null) return null;
+      return `${operands[0].split('.')[0]} = __a64_movi_2d(0x${value.toString(16)});`;
+    }
     const imm = parseImm(operands[1]);
     if (imm != null) {
       let shift = 0;
@@ -98,11 +119,7 @@ function lowerOne(payload) {
         shift = Number(match[1]);
       }
       if (shift >= 0 && shift <= 63) {
-        const arrangement = operands[0].split('.')[1].toLowerCase();
-        const value = arrangement === '2d'
-          ? (operands.length === 2 ? expandMovi2dImmediate(imm) : null)
-          : BigInt.asUintN(64, BigInt(imm) << BigInt(shift));
-        if (value == null) return null;
+        const value = BigInt.asUintN(64, BigInt(imm) << BigInt(shift));
         return `${operands[0].split('.')[0]} = __a64_movi_${arrangement}(0x${value.toString(16)});`;
       }
     }

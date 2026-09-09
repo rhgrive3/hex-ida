@@ -39,9 +39,20 @@ const VECTOR_VARIANT_CALLEE_SAVED = Object.freeze([
   ...Array.from({ length:7 }, (_unused, index) => `v${1 + index}`),
   ...Array.from({ length:8 }, (_unused, index) => `v${24 + index}`),
 ]);
+// psABI vector calling convention variant: v0 and v8-v23 (the vector argument
+// window) are caller-clobbered; v1-v7 and v24-v31 are callee-saved. `vstart`
+// is deliberately absent from every preservation list: per the psABI it is
+// not a plain caller-saved register but a dedicated zero-on-call-boundary
+// contract (see RISCV_VECTOR_VSTART_CONTRACT) (#5707).
 const VECTOR_VARIANT_CALLER_SAVED = Object.freeze([
-  'v0', ...VECTOR_ARGUMENT_REGISTERS, 'vl', 'vtype', 'vxrm', 'vxsat', 'vstart',
+  'v0', ...VECTOR_ARGUMENT_REGISTERS, 'vl', 'vtype', 'vxrm', 'vxsat',
 ]);
+// Standard psABI vector convention: v0-v31 are all temporaries (not preserved
+// across calls) and vl/vtype/vxrm/vxsat carry no cross-call guarantee, so an
+// unknown call may clobber all of them regardless of the float ABI in force
+// (#5707).
+const ALL_VECTOR_REGISTERS = Object.freeze(Array.from({ length:32 }, (_unused, index) => `v${index}`));
+const VECTOR_CSR_CALLER_SAVED = Object.freeze(['vl', 'vtype', 'vxrm', 'vxsat']);
 
 // Keep the registry vocabulary and both argument/return classifiers on one
 // alias set. LLVM/Clang commonly emits the underscore spelling while the
@@ -302,6 +313,13 @@ function createClassifier(profile) {
     let allocationUnknown = false;
     const vectorVariant = vectorVariantRequested(instruction, options, prototype);
     let vectorCursor = 8;
+    // psABI vector calling convention allocation state: only the FIRST mask
+    // argument is v0; every later mask and all data/tuple arguments allocate
+    // an unused, LMUL-aligned group from v8..v23. The search restarts at v8
+    // for every argument so a smaller later argument can reuse the alignment
+    // hole a larger earlier one left behind (#5615).
+    const usedVectorRegisters = new Set();
+    let maskAllocated = false;
 
     function useInteger(reg, extra = {}) {
       if (!seen.has(reg)) { seen.add(reg); srcs.push(registerSource(reg, XLEN, extra)); }
@@ -319,15 +337,46 @@ function createClassifier(profile) {
         partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown', ...extra });
     }
     function allocateVectorGroup(descriptor) {
-      if (descriptor.mask) return ['v0'];
+      if (descriptor.mask && !maskAllocated) { maskAllocated = true; usedVectorRegisters.add('v0'); return ['v0']; }
       if (descriptor.fixedLength && !(Number(options?.abiVlen) > 0)) return null;
       const group = descriptor.lmul * descriptor.tupleCount;
-      let start = vectorCursor;
-      while (start <= 23 && (start % descriptor.lmul) !== 0) start += 1;
+      // Re-scan from v8 for every argument: the psABI allocator explicitly
+      // allows a later, smaller argument to take a register BELOW the previous
+      // argument's allocation when alignment left a hole (#5615).
+      let start = 8;
+      while (start <= 23 && ((start % descriptor.lmul) !== 0
+        || Array.from({ length:group }, (_unused, index) => start + index).some((reg) => usedVectorRegisters.has(`v${reg}`)))) start += 1;
       if (start + group - 1 > 23) return null;
-      vectorCursor = start + group;
+      for (let reg = start; reg < start + group; reg++) usedVectorRegisters.add(`v${reg}`);
+      vectorCursor = Math.max(vectorCursor, start + group);
       return Array.from({ length:group }, (_unused, index) => `v${start + index}`);
     }
+    /*
+     * psABI hardware floating-point flattening recurses through the full
+     * struct/array hierarchy: `struct { struct { float f[1]; } a[2]; }` is
+     * classified exactly like `struct { float f0; float f1; }`. Leaves carry
+     * their proven absolute byte span so register placement can be validated
+     * against the physical layout. A nested aggregate without a proven layout,
+     * or a leaf that is neither a FP real nor an integer, keeps the previous
+     * fail-closed ineligibility (integer convention, still exact) (#5619).
+     */
+    function collectFlattenLeaves(member, offset) {
+      const classifiedMember = parameterClass(member);
+      if (classifiedMember.vector || (!classifiedMember.floating && classifiedMember.bits > XLEN)) return null;
+      if (!classifiedMember.aggregate) {
+        return [{ member:classifiedMember, byteOffset:offset, bytes:Math.ceil(classifiedMember.bits / 8) }];
+      }
+      const nestedCanonical = canonicalAggregateLayout(member);
+      if (!nestedCanonical) return null;
+      const leaves = [];
+      for (const nested of nestedCanonical.members) {
+        const nestedLeaves = collectFlattenLeaves(nested, offset + nested.byteOffset);
+        if (!nestedLeaves) return null;
+        leaves.push(...nestedLeaves);
+      }
+      return leaves;
+    }
+
     function flattenAggregate(parameter) {
       const canonical = canonicalAggregateLayout(parameter);
       const members = canonical?.members ?? aggregateMembers(parameter);
@@ -338,11 +387,33 @@ function createClassifier(profile) {
         ? { bytes:canonical.bytes, members:canonical.members }
         : aggregateMemberLayout(members, classifiedMembers);
       if (!layout) return null;
-      if (classifiedMembers.some((member) => member.aggregate || member.vector || member.bits > XLEN)) return { eligible:false, known:true };
-      const floatMembers = classifiedMembers.filter((member) => member.floating && member.bits <= abiFlen);
-      if (!floatMembers.length || classifiedMembers.some((member) => member.floating && member.bits > abiFlen)) return { eligible:false, known:true };
-      if (classifiedMembers.some((member) => !member.floating && member.bits > XLEN)) return { eligible:false, known:true };
-      return { eligible:true, known:true, members:classifiedMembers, layout };
+      const leaves = [];
+      for (const [memberIndex, member] of members.entries()) {
+        if (!classifiedMembers[memberIndex].aggregate) {
+          const classifiedMember = classifiedMembers[memberIndex];
+          if (classifiedMember.vector || classifiedMember.bits > XLEN) return { eligible:false, known:true };
+          leaves.push({ member:classifiedMember,
+            byteOffset:layout.members?.[memberIndex]?.byteOffset ?? 0,
+            bytes:layout.members?.[memberIndex]?.bytes ?? Math.ceil(classifiedMember.bits / 8) });
+          continue;
+        }
+        const nestedLeaves = collectFlattenLeaves(member, layout.members?.[memberIndex]?.byteOffset ?? 0);
+        // An unproven nested layout leaves FP-eligibility undecidable: fail
+        // closed to unknown instead of minting an exact integer slot (#5619).
+        if (!nestedLeaves) return null;
+        leaves.push(...nestedLeaves);
+      }
+      if (!leaves.length || leaves.length > 2) return { eligible:false, known:true };
+      const flattenMembers = leaves.map((leaf) => leaf.member);
+      const floatMembers = flattenMembers.filter((member) => member.floating && member.bits <= abiFlen);
+      if (!floatMembers.length || flattenMembers.some((member) => member.floating && member.bits > abiFlen)) return { eligible:false, known:true };
+      if (flattenMembers.some((member) => !member.floating && member.bits > XLEN)) return { eligible:false, known:true };
+      return {
+        eligible:true,
+        known:true,
+        members:flattenMembers,
+        layout:{ bytes:canonical?.bytes ?? layout.bytes, members:leaves.map((leaf) => ({ byteOffset:leaf.byteOffset, bytes:leaf.bytes })) },
+      };
     }
 
     /*
@@ -897,21 +968,53 @@ function createClassifier(profile) {
 function createRiscvAbi(profile) {
   const { classifyArguments, classifyReturn } = createClassifier(profile);
   const abiFlenBits = profile.floatAbi === 'single' ? 32 : profile.floatAbi === 'double' ? 64 : 0;
-  const callerSavedFor = ({ valueWidthBits = null } = {}) => {
-    if (profile.floatAbi === 'soft') return CALLER_SAVED;
-    const width = Number(valueWidthBits);
-    const calleeSavedFpWidthProven = Number.isSafeInteger(width) && width > 0 && width <= abiFlenBits;
-    return calleeSavedFpWidthProven
-      ? Object.freeze([...CALLER_SAVED, ...FLOAT_CALLER_SAVED])
-      : Object.freeze([...CALLER_SAVED, ...ALL_FLOAT_REGISTERS]);
+  // The caller-saved vector set depends on the calling-convention identity in
+  // force: the standard convention leaves every vector register and the vector
+  // CSRs unpreserved, while the riscv_vector_cc variant keeps v1-v7/v24-v31
+  // alive across calls. Requests that do not carry a convention id use the
+  // standard convention's wider (safer) clobber set (#5707).
+  const vectorCallerSavedFor = (request = {}) => {
+    const explicit = canonicalRiscvVectorCallingConvention(
+      request?.callingConvention ?? request?.callingConventionId ?? request?.convention,
+    );
+    return explicit === 'riscv-vector-variant'
+      ? VECTOR_VARIANT_CALLER_SAVED
+      : [...ALL_VECTOR_REGISTERS, ...VECTOR_CSR_CALLER_SAVED];
   };
-  const calleeSavedFor = ({ valueWidthBits = null } = {}) => {
-    if (profile.floatAbi === 'soft') return CALLEE_SAVED;
-    const width = Number(valueWidthBits);
+  const callerSavedFor = (request = {}) => {
+    const vectorCallerSaved = vectorCallerSavedFor(request);
+    if (profile.floatAbi === 'soft') {
+      return Object.freeze([...CALLER_SAVED, ...vectorCallerSaved]);
+    }
+    const width = Number(request?.valueWidthBits);
     const calleeSavedFpWidthProven = Number.isSafeInteger(width) && width > 0 && width <= abiFlenBits;
     return calleeSavedFpWidthProven
-      ? Object.freeze([...CALLEE_SAVED, ...FLOAT_CALLEE_SAVED])
-      : CALLEE_SAVED;
+      ? Object.freeze([...CALLER_SAVED, ...FLOAT_CALLER_SAVED, ...vectorCallerSaved])
+      : Object.freeze([...CALLER_SAVED, ...ALL_FLOAT_REGISTERS, ...vectorCallerSaved]);
+  };
+  // The vector variant's callee-saved vector registers compose with the base
+  // integer/FP callee sets; non-variant requests keep the standard convention
+  // in which no vector register is preserved.
+  const vectorCalleeSavedFor = (request = {}) => {
+    const explicit = canonicalRiscvVectorCallingConvention(
+      request?.callingConvention ?? request?.callingConventionId ?? request?.convention,
+    );
+    return explicit === 'riscv-vector-variant' ? VECTOR_VARIANT_CALLEE_SAVED : [];
+  };
+  const calleeSavedFor = (request = {}) => {
+    const vectorCalleeSaved = vectorCalleeSavedFor(request);
+    if (profile.floatAbi === 'soft') {
+      return vectorCalleeSaved.length
+        ? Object.freeze([...CALLEE_SAVED, ...vectorCalleeSaved]) : CALLEE_SAVED;
+    }
+    const width = Number(request?.valueWidthBits);
+    const calleeSavedFpWidthProven = Number.isSafeInteger(width) && width > 0 && width <= abiFlenBits;
+    return calleeSavedFpWidthProven
+      ? (vectorCalleeSaved.length
+        ? Object.freeze([...CALLEE_SAVED, ...FLOAT_CALLEE_SAVED, ...vectorCalleeSaved])
+        : Object.freeze([...CALLEE_SAVED, ...FLOAT_CALLEE_SAVED]))
+      : (vectorCalleeSaved.length
+        ? Object.freeze([...CALLEE_SAVED, ...vectorCalleeSaved]) : CALLEE_SAVED);
   };
   return new ABIPlugin({
     id:profile.id,
@@ -1003,6 +1106,20 @@ export const RISCV_ABI_ALIAS = ABI_ALIAS;
 export const RISCV_VECTOR_ARGUMENT_REGISTERS = VECTOR_ARGUMENT_REGISTERS;
 export const RISCV_VECTOR_VARIANT_CALLEE_SAVED = VECTOR_VARIANT_CALLEE_SAVED;
 export const RISCV_VECTOR_VARIANT_CALLER_SAVED = VECTOR_VARIANT_CALLER_SAVED;
+
+/* psABI vector calling convention: `vstart` is not a plain caller-saved
+ * register. A procedure may assume vstart=0 at entry, and any procedure that
+ * writes a non-zero vstart must zero it again before returning or calling
+ * another procedure. It therefore belongs to no preservation set — both
+ * callerSavedFor()/calleeSavedFor() exclude it — and its cross-call behaviour
+ * is pinned by this dedicated contract descriptor (#5707). */
+export const RISCV_VECTOR_VSTART_CONTRACT = Object.freeze({
+  register:'vstart',
+  contract:'zero-on-call-boundary',
+  preservedAcrossCalls:false,
+  zeroAssumedAtProcedureEntry:true,
+  mustZeroBeforeReturnOrCall:true,
+});
 
 /*
  * psABI variant selection from ELF e_flags.
