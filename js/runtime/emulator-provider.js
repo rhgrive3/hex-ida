@@ -150,6 +150,7 @@ export class EmulatorProvider {
     this.engineDescriptor = normalizeEngineDescriptor(engine, options);
     this.activeSession = null;
     this.pendingEngineOperation = null;
+    this.pendingEngineReady = null;
     this._descriptor = createRuntimeProviderDescriptor({
       id: options.id ?? `emulator:${this.engineDescriptor.id}`,
       version: options.version ?? '1',
@@ -167,9 +168,31 @@ export class EmulatorProvider {
 
   _registerEngineOperation(settlement) {
     this.pendingEngineOperation = settlement;
+    this.pendingEngineReady = null;
     settlement.finally(() => {
-      if (this.pendingEngineOperation === settlement) this.pendingEngineOperation = null;
+      if (this.pendingEngineOperation !== settlement) return;
+      this.pendingEngineOperation = null;
+      const ready = this.pendingEngineReady;
+      this.pendingEngineReady = null;
+      if (!ready || ready.settlement !== settlement) return;
+      const { session, epoch } = ready;
+      if (
+        this.activeSession === session
+        && !session.closed
+        && session.state === 'running'
+        && session.epoch === epoch
+      ) {
+        session.setState('ready');
+      }
     });
+  }
+
+  _holdSessionUntilEngineSettles(session, epoch) {
+    const settlement = this.pendingEngineOperation;
+    if (!settlement) return false;
+    this.pendingEngineReady = { settlement, session, epoch };
+    session.setState('running');
+    return true;
   }
 
   _assertEngineAvailable() {
@@ -321,7 +344,11 @@ export class EmulatorProvider {
         throw new DebugAdapterError('emulator-invalid-events', 'emulator engine events must be an array');
       }
       const sourceEvents = eventSource ?? [];
-      session.setState(termination === 'paused' ? 'paused' : termination === 'exception' ? 'degraded' : 'ready');
+      const waitForEngine = (termination === 'timeout' || termination === 'cancelled')
+        && this._holdSessionUntilEngineSettles(session, startedEpoch);
+      if (!waitForEngine) {
+        session.setState(termination === 'paused' ? 'paused' : termination === 'exception' ? 'degraded' : 'ready');
+      }
       const events = sourceEvents.map((source, index) => {
         const identity = eventIdentity(source, index, runOccurrence);
         return createRuntimeEvent({
