@@ -6,7 +6,7 @@ function safeConfidence(value, fallback = 0.5) { return typeof value === 'number
 function idPart(value) { return String(value == null ? '' : value).replace(/[^a-zA-Z0-9_.:-]/g,'_').slice(0,160); }
 function provenanceIdentity(value, fallback, field) {
   const identity = value == null ? fallback : value;
-  if (typeof identity !== 'string' || identity.length === 0) {
+  if (typeof identity !== 'string' || identity.length === 0 || idPart(identity) !== identity) {
     throw new TypeError(`runtime provenance ${field} must be a non-empty string`);
   }
   return identity;
