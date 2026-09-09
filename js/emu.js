@@ -637,14 +637,26 @@ export class Emulator {
 
   effectiveAddress(mem, after) {
     const base = mem.base ? this.get(mem.base.text) : 0n;
-    const disp = mem.disp && mem.disp.value != null ? mem.disp.value : 0n;
+    // Post-indexed syntax keeps the writeback offset in `writebackDisp`, so a
+    // plain `[x1], #-8` has no address displacement at all.
+    const disp = mem.mode === 'post'
+      ? 0n
+      : (mem.disp && mem.disp.value != null ? mem.disp.value : 0n);
     let index = 0n;
     if (mem.index) index = this.valueOf(Object.assign({}, mem.index, { shift: mem.shift }));
+    // 64-bit address arithmetic wraps modulo 2^64 like the architectural
+    // register width. A negative or overflowing BigInt here would page the
+    // access from the wrong (zero-side) page and disagree with every 64-bit
+    // register writeback (#5227).
+    const wrap64 = (value) => BigInt.asUintN(64, value);
     if (mem.mode === 'post') {
-      if (after && mem.base) this.set(mem.base.text, base + disp);
-      return base + index;
+      if (after && mem.base) {
+        const step = mem.writebackDisp && mem.writebackDisp.value != null ? mem.writebackDisp.value : disp;
+        this.set(mem.base.text, wrap64(base + step));
+      }
+      return wrap64(base + index);
     }
-    const addr = base + disp + index;
+    const addr = wrap64(base + disp + index);
     if (mem.mode === 'pre' && after && mem.base) this.set(mem.base.text, addr);
     return addr;
   }
