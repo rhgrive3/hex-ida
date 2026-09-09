@@ -40,8 +40,30 @@ export function recognizeDivisionByConstant(root) {
 export function recognizeClamp(root) {
   if (root?.kind !== 'intrinsic' || !['min','max'].includes(root.name)) return null;
   const other = root.args?.find((a) => a?.kind === 'intrinsic' && ['min','max'].includes(a.name) && a.name !== root.name);
-  if (!other) return null;
+  if (!other || other.args?.length !== 2) return null;
+  // Historical spelling: the clamped value appears directly in the outer args
+  // as well as inside the opposing intrinsic.
   const shared = root.args.find((a) => other.args.some((b) => sameExpr(a, b)));
-  if (!shared) return null;
-  return { kind: 'clamp', value: shared, low: root.name === 'max' ? root.args.find((a) => a !== shared) : other.args.find((a) => a !== shared), high: root.name === 'min' ? root.args.find((a) => a !== shared) : other.args.find((a) => a !== shared) };
+  if (shared) {
+    return { kind: 'clamp', value: shared, low: root.name === 'max' ? root.args.find((a) => a !== shared) : other.args.find((a) => a !== shared), high: root.name === 'min' ? root.args.find((a) => a !== shared) : other.args.find((a) => a !== shared) };
+  }
+  // The canonical clamp AST is nested: min(max(x, low), high) / max(min(x, high), low).
+  // The clamped value lives inside the opposing intrinsic: the inner bound
+  // comes from `other`, the outer bound from `root`. The inner arg order is
+  // the value/bound contract (value first); a deeper nested min/max in the
+  // value slot or an inner bound duplicating the outer bound is ambiguous and
+  // fails closed (#4159).
+  const outerBound = root.args.find((a) => a !== other);
+  if (!outerBound) return null;
+  const value = other.args[0];
+  const innerBound = other.args[1];
+  if (value?.kind === 'intrinsic' && ['min','max'].includes(value.name)) return null;
+  if (value == null || innerBound == null) return null;
+  if (sameExpr(innerBound, outerBound)) return null;
+  return {
+    kind: 'clamp',
+    value,
+    low: root.name === 'min' ? innerBound : outerBound,
+    high: root.name === 'min' ? outerBound : innerBound,
+  };
 }
