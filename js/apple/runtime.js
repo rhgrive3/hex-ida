@@ -62,11 +62,13 @@ export function resolveObjcIMP(objcIndex, address, { receiverType = null, select
   if (addressKey == null) return { resolved: null, candidates: [], confidence: 0 };
   let candidates = (objcIndex.methodsByIMP?.get(addressKey) || []).slice();
   if (selector) candidates = candidates.filter((m) => m.selector === selector);
-  // #5177: a known classMethod bit must constrain IMP resolution exactly as
-  // the objc_msgSend dispatch path does — treating a known '+' call as its
-  // same-IMP '-foo' instance sibling would mint a high-confidence exact
-  // identity the caller's evidence cannot support.
-  if (classMethod != null) candidates = candidates.filter((m) => !!m.classMethod === !!classMethod);
+  // #5177: class/instance-method evidence is an authority bit, not a truthy
+  // hint. Reject malformed structured values instead of coercing them into a
+  // different method kind.
+  if (classMethod != null) {
+    if (typeof classMethod !== 'boolean') return { resolved: null, candidates: [], confidence: 0 };
+    candidates = candidates.filter((m) => m.classMethod === classMethod);
+  }
   if (receiverType != null) {
     if (typeof receiverType !== 'string') return { resolved: null, candidates: [], confidence: 0 };
     // Canonical class identity: the dispatch path normalizes spellings like
@@ -135,8 +137,14 @@ export function resolveAppleCall(index, call = {}) {
   // C call (`_objc_retain`, `_objc_release`, …) has no selector and must keep
   // its direct-call target instead of becoming a selector-less `message`.
   const hasSelectorEvidence = call.selector != null || call.selectorFor != null || call.stubAddress != null;
-  if ((origin === 'objc' || isObjcMsgSendSymbol(name)) && (isObjcMsgSendSymbol(name) || hasSelectorEvidence || imp?.candidates?.length)) {
-    if (imp?.candidates?.length && !isObjcMsgSendSymbol(name)) {
+  const directImpConstraint = imp && !isObjcMsgSendSymbol(name) && call.classMethod != null;
+  if ((origin === 'objc' || isObjcMsgSendSymbol(name))
+      && (isObjcMsgSendSymbol(name) || hasSelectorEvidence || imp?.candidates?.length || directImpConstraint)) {
+    // A direct IMP target is stronger evidence than selector dispatch. If the
+    // supplied method-kind constraint contradicts every candidate at that
+    // address, preserve the contradiction instead of resolving an unrelated
+    // implementation with the same selector at another address.
+    if (imp && !isObjcMsgSendSymbol(name) && (imp.candidates?.length || call.classMethod != null)) {
       return {
         runtime: 'objc', kind: 'imp', imp,
         resolved: imp.resolved,
