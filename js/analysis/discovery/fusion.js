@@ -100,6 +100,10 @@ function primitiveInteger(value, code) {
   if (type !== 'bigint' && type !== 'string' && !(type === 'number' && Number.isSafeInteger(value))) {
     throw new TypeError(code);
   }
+  // A whitespace-only string would become BigInt('') === 0n and launder a
+  // blank start/size into the canonical address 0 (#5733). It names no number,
+  // so it must fail closed exactly like the evidence constructors do.
+  if (type === 'string' && value.trim().length === 0) throw new TypeError(code);
   try {
     return BigInt(value);
   } catch {
