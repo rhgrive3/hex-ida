@@ -137,7 +137,7 @@ function mbaFixture(bits = 4) {
   ir.instructions.forEach((inst,index) => { inst.id = `mba_${index}`; inst.address = 0x1000n + BigInt(index * 4); });
   const ret = ir.instructions.at(-1); ret.args = [{value:target}];
   const result = enhanceSemanticDecompilation({semantic:true,ir,types:null,lines:[{kind:'stmt',indent:0,text:'return pending;',row:ret.row,addr:ret.address}],metrics:{},ctx:{}},null,
-    {phase8PrepareProof:true,decompilerTimeBudgetMs:1000,returnType:'uint8_t'});
+    {phase8PrepareProof:true,decompilerTimeBudgetMs:1000,returnType:`uint${Math.max(8,bits)}_t`});
   return {ir,target,a,b,result,options:{identity,abiId:'generic-v1',memory:{addressBits:8},targets:[target],timeoutMs:1000,backendTier:'tiered',candidateStrategy:'equality-saturation'}};
 }
 
@@ -182,4 +182,41 @@ test('C4-04 nonconstant plans retain private proof authority and failed publicat
   assert.ok(failed.proofOptimization.targetDecisions.every(row => row.disposition === 'unknown'));
   f.a.bits = 8;
   assert.equal(isPhase8RewritePlan(plan,context),false);
+});
+
+test('C4-05 full frozen MBA width axis reaches the real producer/transaction/projection, including withheld wide cells', async t => {
+  const rows = [];
+  for (const bits of [1,2,3,4,8,16,32,64]) {
+    const f = mbaFixture(bits), text = f.result.pseudocode;
+    const instructions = [...f.ir.instructions];
+    const expressions = f.result.semanticAst.values.map(item => item.expression);
+    const r = await optimizeSemanticDecompilation(f.result,f.options);
+    rows.push({bits,status:r.proofOptimization.status,reason:r.proofOptimization.reason,adopted:r.proofOptimization.adopted});
+    assert.equal(r.ir,f.ir);
+    assert.deepEqual(f.ir.instructions,instructions);
+    assert.equal(f.target.def.sub,'add');
+    assert.equal(f.result.pseudocode,text);
+    assert.deepEqual(f.result.semanticAst.values.map(item => item.expression),expressions);
+    if (bits >= 8 && r.proofOptimization.status !== 'complete') {
+      assert.equal(r.proofOptimization.status,'partial');
+      assert.match(r.proofOptimization.reason,/^(cancelled|timeout|deadline-exceeded|budget:.*)$/);
+      assert.equal(r.proofOptimization.adopted,0);
+      assert.equal(r.pseudocode,text);
+      assert.ok(r.proofOptimization.targetDecisions.every(row => row.disposition === 'unknown'));
+      continue;
+    }
+    assert.equal(r.proofOptimization.status,'complete',`${bits}:${r.proofOptimization.reason}`);
+    assert.equal(r.proofOptimization.adopted,1,`${bits}:real projection adoption`);
+    const record = r.phase8Projection.transforms.find(record => record.kind === 'solver-scalar');
+    assert.ok(record?.queryHash && record.beforeHash && record.afterHash && record.planId);
+    assert.ok(r.renderProvenance.ledger.some(row => row.queryHash === record.queryHash));
+    const expression = r.semanticAst.values.find(item => item.valueId === f.target.id).expression;
+    const names = f.result.semanticAst.values.filter(item => [f.a.id,f.b.id].includes(item.valueId)).map(item => item.expression.name);
+    const count = bits <= 4 ? 2 ** bits : 16, mask = (1n << BigInt(bits)) - 1n;
+    for (let a=0;a<count;a++) for (let b=0;b<count;b++) {
+      assert.equal(evaluateExpression(expression,{[names[0]]:BigInt(a),[names[1]]:BigInt(b)}),(BigInt(a)+BigInt(b))&mask);
+    }
+  }
+  assert.equal(rows.length,8);
+  t.diagnostic(JSON.stringify({denominator:'c4-05-mba-production-widths-v1',rows}));
 });

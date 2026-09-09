@@ -2553,6 +2553,65 @@ as do C4-04B memory/CFG/exception/UB observables and all original findings. Exis
 e-graph/solver/transaction implementations remain reused. No issue/performance/
 environment/device lane is repaired here. Integration acceptance stays LOCKED.
 
+## C4-05 frozen scalar-family and width coverage
+
+`tests/phase9/egraph/family-width-matrix.test.mjs` introduces an explicit
+34-family x 8-width denominator (272 cells), with widths 1/2/3/4/8/16/32/64.
+It reuses the actual canonical Expr factories, existing e-graph, extraction,
+independent candidate verifier and private receipt validator. No candidate rule,
+solver, deadline, resource ceiling or production rendering behavior is changed.
+The canonical Phase 9 egraph group discovers this test. Its new exact path belongs
+to the existing symbolic owner, not a blanket ownership exemption.
+
+Every cell is attempted, including unsupported intermediate BV65 expressions.
+Direct integer formulas check the original source as well as every published
+candidate: all input pairs at widths 1–4, and an explicit boundary cross-product
+at larger widths. Every eligible result requires the actual privately issued
+receipt, original before/after objects and a proved evidence verdict; a copied
+receipt fails. The evidence records candidate IDs, source/output hashes, costs,
+rule histories, query hashes, measured resource counters, elapsed time and explicit
+dispositions. Allocation counters are not measured process peak memory.
+
+The initial retained run produced 240 proved-candidate cells, 5 unchanged
+equal-cost double-add cells, 24 unknown/withheld cells and 3 unsupported/withheld
+cells, with 47,180 concrete input-pair checks. A candidate is not an adopted
+projection. Equal-cost add/shift extraction may retain the original hash-ranked
+term; this is not counted as proof. The 24 wide proof attempts returned
+`cancelled` through the current verifier boundary; this report does not infer a
+more specific timeout/solver-limit cause or repair that separate owner.
+
+The first test attempt incorrectly required a candidate for every equal-cost
+double-add and a completed proof for every native-width cancellation. The retained
+inventory established those distinct outcomes. The permanent regression now
+requires positive proof on the supported cells, permits bounded refusal only on
+the explicitly enumerated wide-family gaps, and requires an empty candidate batch
+on every refusal. It does not waive arbitrary new failures or promote those gaps
+to proved status. The retained report explicitly has `completeProofCoverage:false`.
+The frozen matrix and known-unsupported rows remain in the denominator.
+
+Additional permanent checks cover 14 symbolic Bool families (not conflated with
+BV1), 8 independently refuted off-by-one MBA candidates, all 272 cells with zero
+work budget, and cancellation-expression discovery/association variants plus
+replay at all 8 widths. Search extraction is checked separately from proof
+availability, without injecting alternative rules into the production API.
+This is association/discovery metamorphism, not a claim to have tested every
+possible rule schedule.
+
+The existing real-producer nonconstant MBA fixture now exercises all 8 widths
+through proof planning, transaction and rendered projection. Small-width cells
+require actual adoption, proof-linked provenance and exhaustive output checks;
+unproved wide cells must retain the original pseudocode, IR and expressions with
+zero adoption. Its previous fixed uint8 return annotation now follows the fixture
+width. This remains synthetic Semantic IR evidence, not the frozen 135-binary
+compiler corpus, raw instruction support or physical-device proof.
+
+Both existing PR #3421 and #3422 were rechecked at their previously inspected
+heads; the open egraph/equality-saturation search found the current integration
+PR #7036 and no separate implementation to duplicate. Full legacy rule coverage,
+arbitrary rule-order metamorphism, memory/CFG/exception observables, native-width
+proof gaps and required integration acceptance remain open. All original 23
+findings are retained; no finding is marked complete. Acceptance remains LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -2589,7 +2648,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
 | HEX-C4-03 | Navigation, observed expression/recovery histories, successive projections and actual spill statement removal/suppression implemented; other view transforms and full removed/merged class coverage still open |
 | HEX-C4-04 | Proof-gated scalar projection, owned inputs, transaction coverage and optional reuse of all 64 display rules as independently verified candidates implemented; ordinary legacy-view adoption, full family/width denominator and memory/CFG/exception observables remain open |
-| HEX-C4-05 | Bounded e-graph candidates, independent proofs and resource matrix |
+| HEX-C4-05 | Existing e-graph/proof path now has a frozen 272-cell scalar matrix, 14 Bool families, negative/resource/replay tests and 8-width real-producer MBA coverage; native-width proof gaps, arbitrary rule schedules and full acceptance remain open |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |
 | HEX-SYM-02 | Byte-memory escalation, alias/partial-write independent oracle |
 | HEX-SYM-03 | Taint/source/sink/sanitizer and proof-gated deobfuscation matrix |

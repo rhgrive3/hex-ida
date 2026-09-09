@@ -149,6 +149,34 @@ semantic/decompiler tests, lint and module/evidence checks. Regression coverage
 includes real assembly-to-render flow, independent BV enumeration, tampering,
 DAG bounds, N-1/N/N+1, stale identities and late cancellation.
 
+### Frozen C4-05 family/width regression
+
+The canonical Phase 9 egraph group now discovers
+`tests/phase9/egraph/family-width-matrix.test.mjs`: 34 scalar families across
+1/2/3/4/8/16/32/64 bits (272 cells), plus 14 distinct Bool families, off-by-one
+MBA counterexamples, zero-work refusal for every scalar cell, and cancellation
+association/discovery variants with deterministic replay. Independent integer
+formulas check source and candidate outputs, exhaustively at widths 1–4 and on
+boundary cross-products at larger widths. E-class membership remains insufficient;
+every eligible candidate needs its own actual verifier receipt.
+
+The matrix is a coverage inventory, not an all-proved benchmark. Initial results
+were 240 cells with proved candidates, 5 retaining the original equal-cost term,
+24 unknown/withheld proof attempts and 3 unsupported BV65 intermediate cases.
+Only explicitly enumerated native-width proof gaps may return bounded refusal;
+other cells retain mandatory positive proof assertions. Refusal always publishes
+zero candidates. `completeProofCoverage:false` remains explicit, and synthetic
+coverage does not replace the compiler denominator or physical-device evidence.
+
+Set `HEX_EGRAPH_MATRIX_REPORT` to a new persistent file path to retain the full
+scalar report (never reuse an existing receipt path). The report is atomically
+published after the matrix's assertions pass and includes IDs, hashes, proof
+query hashes, costs and actual resource counters. It does not attest deployed
+runtime identity or real process peak memory. Bind it to the exact clean test head
+in the checkpoint evidence. The existing Phase 8 scalar substrate test separately
+checks all eight MBA widths through the real producer and projection boundary:
+proved cases adopt with provenance; unproved cases preserve the original result.
+
 ## Current-main reconciliation (2026-09-07)
 
 The publication branch is reconciled onto the then-current `main` lineage.  In
