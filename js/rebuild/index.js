@@ -177,6 +177,19 @@ export async function validateRebuildOutput(plan, materialized, options = {}) {
 export async function publishRebuildOutput(materialized, validation, options = {}) {
   if (!materialized || materialized.status !== 'materialized') return { status: 'rejected', reason: 'materialization-not-complete' };
   if (!validation || validation.status !== 'valid') return { status: 'rejected', reason: 'validation-not-green' };
+  const hasMaterializedIdentity = typeof materialized.planId === 'string' && materialized.planId.length > 0
+    && typeof materialized.outputHash === 'string' && materialized.outputHash.length > 0;
+  const validationMatchesMaterialized = hasMaterializedIdentity
+    && validation.planId === materialized.planId
+    && validation.outputHash === materialized.outputHash;
+  if (!validationMatchesMaterialized) {
+    return {
+      status: 'rejected',
+      reason: 'validation-target-mismatch',
+      planId: materialized.planId ?? null,
+      outputHash: materialized.outputHash ?? null,
+    };
+  }
   if (typeof options.promote !== 'function') return { status: 'not-published', reason: 'explicit-promotion-required', outputHash: materialized.outputHash };
   const promoted = await options.promote(materialized.bytes, validation);
   return { status: 'published', outputHash: materialized.outputHash, result: promoted };
