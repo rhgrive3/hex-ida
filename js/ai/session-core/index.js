@@ -88,6 +88,12 @@ export class InvestigationSessionStore {
     if (this.persistence && typeof this.persistence.load === 'function') {
       const loaded = await this.persistence.load(key);
       if (loaded) {
+        // The lookup key is the session identity, not a search hint: a record
+        // whose own id differs is corrupt/stale state from an adapter or
+        // migration. Adopting it would alias another session's binary,
+        // project, and conversation bindings onto the requested id and let
+        // later updates persist against the wrong session (#4413).
+        if (typeof loaded.id !== 'string' || loaded.id !== key) return null;
         const session = createInvestigationSession(loaded);
         if (session.id !== key) return null;
         const owned = freezeOwned(session);

@@ -13,7 +13,13 @@ const POOL_ORDER = Object.freeze(['lexical', 'string', 'graph', 'recognition', '
 const POOL_SHARE = Object.freeze({ lexical: 0.29, string: 0.17, graph: 0.21, recognition: 0.17, runtime: 0.06, semantic: 0.06, exploration: 0.04 });
 
 function asAddr(v) {
-  try { return v == null ? null : (typeof v === 'bigint' ? v : BigInt(v)); } catch { return null; }
+  if (typeof v === 'bigint') return v >= 0n ? v : null;
+  if (typeof v === 'number') return Number.isSafeInteger(v) && v >= 0 ? BigInt(v) : null;
+  if (typeof v === 'string') {
+    const text = v.trim();
+    if (/^(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) return BigInt(text);
+  }
+  return null;
 }
 function lower(v) { return String(v == null ? '' : v).toLowerCase(); }
 function resultAddress(row) {
