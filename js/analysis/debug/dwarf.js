@@ -16,6 +16,7 @@
  * accepted — the provider contract rejects it outright.
  */
 
+import { parseELF as parseELFImage } from '../../binary/elf.js';
 import { createAnalysisStatus } from '../status.js';
 import {
   DEBUG_DEFAULT_BUDGET,
@@ -994,6 +995,33 @@ export function readDebugLink(section) {
   return { name, crc32: view.getUint32(crcOffset, true) >>> 0 };
 }
 
+/**
+ * A CRC-verified split-debug companion is an ELF that carries the .debug_*
+ * sections the stripped binary lacks. Verification alone is not restoration:
+ * after the identity matches, the companion's DWARF sections must become the
+ * parse source or the split-debug configuration loses every symbol/type
+ * (#5461). Anything that is not a readable ELF simply yields no sections.
+ */
+function companionDebugSections(companion) {
+  if (!(companion instanceof Uint8Array) || companion.length < 64) return null;
+  if (companion[0] !== 0x7f || companion[1] !== 0x45 || companion[2] !== 0x4c || companion[3] !== 0x46) return null;
+  let parsed;
+  try {
+    parsed = parseELFImage(companion);
+  } catch {
+    return null;
+  }
+  const out = {};
+  for (const section of parsed.sections) {
+    if (!section.name?.startsWith('.debug_') || section.type === 8) continue;
+    const start = Number(section.fileOffset);
+    const size = Number(section.fileSize);
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(size) || size <= 0 || start < 0 || start + size > companion.length) continue;
+    out[section.name] = companion.slice(start, start + size);
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 export class DwarfDebugInfoProvider extends DebugInfoProvider {
   constructor() {
     super({ id: DWARF_PROVIDER_ID, version: DWARF_PROVIDER_VERSION, ecosystem: 'dwarf' });
@@ -1063,11 +1091,27 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
       detail = expected == null ? 'binary carries no build id' : 'debug source carries no build id';
     }
 
-    if (!sections.debug_info && !sections['.debug_info']) {
+    // Split debug: once the companion is CRC-verified, its .debug_* sections
+    // become the parse source for everything the stripped binary lacks. The
+    // identity verdict is unaffected by whether the extraction succeeds
+    // (#5461).
+    let parseSource = sections;
+    if (verdict === 'matched-authoritative' && method === 'gnu-debuglink-crc32') {
+      const companionSections = companionDebugSections(image?.companionBytes ?? null);
+      if (companionSections) {
+        parseSource = { ...sections };
+        for (const [name, sectionBytes] of Object.entries(companionSections)) {
+          const withoutDot = name.slice(1);
+          if (parseSource[name] == null && parseSource[withoutDot] == null) parseSource[name] = sectionBytes;
+        }
+      }
+    }
+
+    if (!parseSource.debug_info && !parseSource['.debug_info']) {
       diagnostics.push('no .debug_info section');
     }
 
-    const normalized = normalizeSections(sections);
+    const normalized = normalizeSections(parseSource);
     const parsed = parseDebugInfo(normalized, budget, { signal });
     diagnostics.push(...parsed.diagnostics);
 
