@@ -2482,9 +2482,12 @@ function exclusiveLoadPairHandler({ ordering = null } = {}) {
         'acquire は、合図を読み取った後のメモリアクセスを、この読み込みより先に実行したことにしないためのスレッド間の順序付けです。',
         'Acquire ordering keeps later memory operations after this load when threads use the value as a synchronization signal.'));
     }
+    const elementBits = elementSize * 8;
     o.detail.push(J(
-      '2 個の値を 1 組として読むので、ペアの一部だけを別のスレッドに書き換えられた状態で受け取らないための仕組みです。',
-      'Both values are one exclusive pair: the operation does not accept a separately modified half of the pair.'));
+      elementBits + ' ビットの要素を 2 個、同じ exclusive reservation の対象として読みます。' +
+        '各要素の single-copy atomicity は要素幅に従い、このペアを 128 ビット全体の single-copy atomic 転送とは説明しません。',
+      'The pair contains two ' + elementBits + '-bit elements under one exclusive reservation. ' +
+        'Each element\'s single-copy atomicity follows its element width; the pair is not one 128-bit single-copy atomic transfer.'));
     o.terms = ['thread', 'atomic', 'memory'];
   };
 }

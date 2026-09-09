@@ -282,6 +282,13 @@ try {
     assert.match(result.pseudo, new RegExp(`${first}, ${second} = load_pair_exclusive\\(x2, ${type}, ${bytes} bytes\\)`),
       `${mn} must expose both pair destinations and its total width (#3775)`);
     assert.match(rendered, new RegExp(`${bytes} bytes`), `${mn} must state the pair total width (#3775)`);
+    const elementBits = type === 'uint32' ? 32 : 64;
+    assert.match(rendered, new RegExp(`two ${elementBits}-bit elements`),
+      `${mn} must distinguish W-pair and X-pair element widths (#3775)`);
+    assert.match(rendered, /single-copy atomicity follows its element width/i,
+      `${mn} must scope single-copy atomicity to each element (#3775)`);
+    assert.match(rendered, /not one 128-bit single-copy atomic transfer/i,
+      `${mn} must not claim whole-pair 128-bit atomicity (#3775)`);
     assert.match(rendered, /exclusive monitor|watching/i, `${mn} must explain the exclusive monitor (#3775)`);
     assert.match(rendered, new RegExp(`${first}.*${second}`), `${mn} must identify both destinations (#3775)`);
     assert.ok(result.terms.includes('atomic') && result.terms.includes('memory'), `${mn} must retain atomic memory terms (#3775)`);
