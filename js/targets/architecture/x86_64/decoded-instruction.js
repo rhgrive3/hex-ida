@@ -7,7 +7,12 @@ export const X86_DECODE_MODES = Object.freeze(['long-64']);
 
 const OPERAND_TYPES = new Set(['register','immediate','memory','invalid']);
 const ACCESS = new Set(['read','write','read-write','unknown']);
-const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed']);
+// Capstone's SKIPDATA contract emits the sentinel instruction ID 0 for bytes
+// it could not decode; the structured bridge publishes those records with
+// `detailStatus:'skipdata'` (#6058). The sentinel is only ever valid together
+// with that status — a normal instruction keeps its positive ID requirement.
+const SKIPDATA_DETAIL_STATUS = 'skipdata';
+const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed',SKIPDATA_DETAIL_STATUS]);
 const SEGMENT_REGISTERS = new Set(['cs','ds','es','fs','gs','ss']);
 const X86_64_ARCHITECTURE_ID = 'x86_64';
 
@@ -301,7 +306,14 @@ export function createX86DecodedInstruction(input = {}) {
     get rawBytes() { return rawBytes.slice(); },
     mode,
     instructionId:instructionIdOf(input.instructionId),
-    instructionCode:integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:1 }),
+    // SKIPDATA is the one Capstone contract where instruction ID 0 is the
+    // architectural sentinel: admit it only when the record's detail status
+    // is exactly `skipdata` (which also forces `detailAvailable:false`), and
+    // only as exactly 0 — a non-zero ID with skipdata status is a schema
+    // contradiction. Every normal instruction keeps the positive-ID rule.
+    instructionCode:detailStatus === SKIPDATA_DETAIL_STATUS
+      ? integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { max:0 })
+      : integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:1 }),
     instructionFamily,
     decoderContractVersion:contractVersion,
     detailStatus,
