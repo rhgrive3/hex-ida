@@ -1899,6 +1899,29 @@ HANDLERS.fcmp = (o, ops) => {
     'Compare two floating-point values, updating the flags.');
   o.terms = ['float', 'flags'];
 };
+function noteSignalingFloatCompare(o) {
+  o.detail.push(J(
+    '比較を実行するときは、quiet NaN を含む NaN 入力で浮動小数点の Invalid Operation 例外を通知する。入力レジスタ自体は書き換えない。',
+    'When the comparison executes, any NaN input, including a quiet NaN, signals the floating-point Invalid Operation exception. The input registers are not written.'));
+}
+HANDLERS.fcmpe = (o, ops) => {
+  HANDLERS.fcmp(o, ops);
+  noteSignalingFloatCompare(o);
+};
+HANDLERS.fccmp = (o, ops) => {
+  const [n, m, nzcv, cond] = ops;
+  const condition = cond ? cond.text : '?';
+  o.title = J('条件つきで小数を比べる', 'Conditional float compare');
+  o.pseudo = 'if (' + condition + ') flags = ' + opShort(n) + ' ⋛ ' + opShort(m) + ' else flags = ' + immShort(nzcv);
+  o.summary = J(
+    '条件 ' + condition + ' が成立するときは ' + opShort(n) + ' と ' + opShort(m) + ' を小数として比較し、NZCV フラグを更新する。不成立なら NZCV を ' + immShort(nzcv) + ' に設定する。入力レジスタは書き換えない。',
+    'If condition ' + condition + ' holds, compare ' + opShort(n) + ' and ' + opShort(m) + ' as floating-point values and update NZCV; otherwise set NZCV to ' + immShort(nzcv) + '. The input registers are not written.');
+  o.terms = ['float', 'flags'];
+};
+HANDLERS.fccmpe = (o, ops) => {
+  HANDLERS.fccmp(o, ops);
+  noteSignalingFloatCompare(o);
+};
 const FCVT_FLOAT_TO_INTEGER_INFO = Object.freeze({
   fcvtzs: Object.freeze({
     signed: true,

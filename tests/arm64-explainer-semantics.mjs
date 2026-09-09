@@ -1,7 +1,7 @@
 /**
  * ARM64 行説明器のセマンティクス回帰テスト。
  *
- * ここが守るのは 10 件の確定した欠陥です。どれも「表示が壊れている」ではなく
+ * ここが守るのは 11 件の確定した欠陥です。どれも「表示が壊れている」ではなく
  * 「事実でないことを事実として見せる／本当にある参照を落とす」種類なので、
  * semantic correctness の回帰として恒久的に固定します。
  *
@@ -14,6 +14,7 @@
  *   #3612  SBFIZ/BFXIL を unsigned/逆方向 alias として説明する
  *   #3627  REV16/REV32 と UMULL が別のバイト範囲・符号であることを落とす
  *   #3620  条件付き比較/select の別演算 alias を同じ説明にする
+ *   #3668  FP compare family を入力レジスタへの代入として説明する
  *   #3677  LDR literal の転送幅を destination 幅に関係なく固定する
  *   (new)  immShort / absHex / memExpr が import されておらず、
  *          メモリ系・即値系の説明が例外で空になる
@@ -460,5 +461,36 @@ try {
   setLang(trapLang);
 }
 console.log('  ok 11 UDF/BRK exception intent stays distinct in both languages (#3750)');
+
+/* #3668 Floating comparisons write flags, never their input FP register. */
+const fpCompareLang = lang();
+try {
+  for (const language of ['en', 'ja']) {
+    setLang(language);
+    for (const width of ['s', 'd']) {
+      for (const mnemonic of ['fcmp', 'fcmpe']) {
+        const result = explain(mnemonic, `${width}0, ${width}1`);
+        assert.equal(result.handlerError, undefined);
+        assert.equal(result.pseudo, `flags = ${width}0 ⋛ ${width}1`);
+        assert.ok(result.terms.includes('flags'));
+        if (mnemonic === 'fcmpe') assert.match(result.detail.join(' '), /NaN/);
+      }
+      for (const [mnemonic, condition, fallback] of [['fccmp', 'eq', 0], ['fccmpe', 'ne', 15]]) {
+        const result = explain(mnemonic, `${width}0, ${width}1, #${fallback}, ${condition}`);
+        assert.equal(result.handlerError, undefined);
+        assert.equal(result.pseudo, `if (${condition}) flags = ${width}0 ⋛ ${width}1 else flags = ${fallback}`);
+        assert.match(result.summary, /NZCV/);
+        assert.ok(result.terms.includes('float') && result.terms.includes('flags'));
+        if (mnemonic === 'fccmpe') assert.match(result.detail.join(' '), /NaN/);
+      }
+      for (const [mnemonic, operator] of [['fadd', '+'], ['fsub', '−'], ['fmul', '×'], ['fdiv', '÷']]) {
+        assert.equal(explain(mnemonic, `${width}0, ${width}1, ${width}2`).pseudo,
+          `${width}0 = ${width}1 ${operator} ${width}2`, 'ordinary FP arithmetic retains its destination');
+      }
+    }
+    assert.equal(explain('fcmpe', 's0, #0.0').pseudo, 'flags = s0 ⋛ 0');
+  }
+} finally { setLang(fpCompareLang); }
+console.log('  ok floating compare flags and conditional NZCV fallback (#3668)');
 
 console.log('ARM64 explainer semantics: PASS');
