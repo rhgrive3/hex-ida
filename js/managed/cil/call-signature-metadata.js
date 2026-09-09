@@ -1,5 +1,8 @@
 import { codedIndexSize, metadataRowSize } from './metadata-layout.js';
 import { readCilMetadataStreams } from './metadata-streams.js';
+const TYPE_REF_TABLE = 0x01;
+const TYPE_DEF_TABLE = 0x02;
+const TYPE_SPEC_TABLE = 0x1b;
 export const METHOD_DEF_TABLE = 0x06;
 export const MEMBER_REF_TABLE = 0x0a;
 export const METHOD_SPEC_TABLE = 0x2b;
@@ -143,6 +146,7 @@ export function buildCilCallMetadataIndex(bytes) {
         methodDefs.push(Object.freeze({
           rva,
           bodyOffset:rva === 0 ? null : metadata.mapRva(rva, 1, 'cil-call-signature-method-body-unmapped'),
+          accessFlags:readU16(view, rowPos + 6, 'cil-call-signature-methoddef-truncated'),
           nameIndex:readIndex(view, rowPos + 8, stringIndexSize, 'cil-call-signature-methoddef-truncated'),
           signatureBlobIndex:readIndex(view, rowPos + signatureOffset, blobIndexSize,
             'cil-call-signature-methoddef-truncated'),
@@ -174,6 +178,11 @@ export function buildCilCallMetadataIndex(bytes) {
     methodDefs:Object.freeze(methodDefs),
     memberRefs:Object.freeze(memberRefs),
     methodSpecs:Object.freeze(methodSpecs),
+    typeDefOrRefRowCounts:Object.freeze([
+      rowCounts[TYPE_DEF_TABLE],
+      rowCounts[TYPE_REF_TABLE],
+      rowCounts[TYPE_SPEC_TABLE],
+    ]),
     blobHeap:bytes.subarray(streams.blob.offset, streams.blob.offset + streams.blob.size),
     stringsHeap:bytes.subarray(streams.strings.offset, streams.strings.offset + streams.strings.size),
   });

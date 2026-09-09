@@ -31,7 +31,7 @@ export const EDGE = {
  */
 export function buildCfg(model, opts) {
   const o = opts || {};
-  const rowOf = o.rowOfAddress || (() => null);
+  const rowOf = typeof o.rowOfAddress === 'function' ? o.rowOfAddress : (() => null);
   const blocks = model.basicBlocks || [];
   const insnByRow = new Map();
   for (const i of model.instructions || []) insnByRow.set(i.row, i);
@@ -115,6 +115,11 @@ export function buildCfg(model, opts) {
       continue;
     }
     if (term.isReturn) { node.isExit = true; continue; }
+
+    if (term.isCall && term.branchTarget != null) {
+      if (next >= 0) node.succ.push({ to: next, kind: EDGE.FALL });
+      continue;
+    }
 
     const isUncond = term.isBranch && !term.isCall && !term.isConditional && !term.isReturn;
     if (term.branchTarget != null) {
