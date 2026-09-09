@@ -224,8 +224,15 @@ export function inferSemanticTypes(ir, model, opts = {}) {
       const a = eFor(valueOf(inst.args && inst.args[0]));
       if (/^sxt/.test(inst.sub || '')) score(a, 'signed', 5, `row ${inst.row}: sign extension`);
       if (/^uxt/.test(inst.sub || '')) score(a, 'unsigned', 5, `row ${inst.row}: zero extension`);
-      if (/^(i2f|f2i)/.test(inst.sub || '')) { if (a) score(a, 'signed', 3, `row ${inst.row}: numeric conversion`); if (dst && inst.sub === 'i2f') score(dst, 'floating', 5, `row ${inst.row}: float conversion`); }
-      if (/^(u2f|f2u)/.test(inst.sub || '')) { if (a) score(a, 'unsigned', 3, `row ${inst.row}: numeric conversion`); if (dst && inst.sub === 'u2f') score(dst, 'floating', 5, `row ${inst.row}: float conversion`); }
+      // Numeric conversions type each side independently (#5494). i2f/u2f
+      // prove the source's integer signedness and a floating result; f2i/f2u
+      // prove a floating source and the result's integer signedness. Scoring
+      // the f2i/f2u source as integer evidence inverted the conversion's
+      // meaning and left the destination's signedness unrecovered.
+      if (/^i2f/.test(inst.sub || '')) { if (a) score(a, 'signed', 3, `row ${inst.row}: numeric conversion`); if (dst) score(dst, 'floating', 5, `row ${inst.row}: float conversion`); }
+      if (/^u2f/.test(inst.sub || '')) { if (a) score(a, 'unsigned', 3, `row ${inst.row}: numeric conversion`); if (dst) score(dst, 'floating', 5, `row ${inst.row}: float conversion`); }
+      if (/^f2i/.test(inst.sub || '')) { if (a) score(a, 'floating', 5, `row ${inst.row}: float conversion`); if (dst) score(dst, 'signed', 5, `row ${inst.row}: numeric conversion`); }
+      if (/^f2u/.test(inst.sub || '')) { if (a) score(a, 'floating', 5, `row ${inst.row}: float conversion`); if (dst) score(dst, 'unsigned', 5, `row ${inst.row}: numeric conversion`); }
     }
 
     if (inst.op === OP.CMP) {
