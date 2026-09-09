@@ -8,6 +8,72 @@ function nonNegativeSafeInteger(value) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
+const QUERY_INSTRUCTION_SCAN_PAGE = 500;
+const QUERY_INSTRUCTION_MAX_OFFSET = 1_000_000;
+
+function instructionIdentity(value) {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
+  }
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
+  if (typeof value === 'string' && /^[0-9]+$/.test(value)) return BigInt(value);
+  return null;
+}
+
+function instructionMatchesAnchor(row, anchor) {
+  const value = row?.id ?? row?.instructionId ?? row?.row;
+  const identity = instructionIdentity(value);
+  return identity != null && identity === BigInt(anchor);
+}
+
+function assertRequestedInstructionPage(page, requestedOffset) {
+  const actualOffset = nonNegativeSafeInteger(page?.offset);
+  if (actualOffset !== requestedOffset) throw new Error('instruction-anchor-page-offset-unproven');
+  return pageRows(page);
+}
+
+function throwIfCancelled(signal) {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  throw new Error('cancelled');
+}
+
+async function resolveInstructionAnchorOffset(context, functionAddress, anchor, radius, signal) {
+  const target = nonNegativeSafeInteger(anchor);
+  const anchorRadius = nonNegativeSafeInteger(radius);
+  if (target == null || target > 100_000_000 || anchorRadius == null || anchorRadius < 1 || anchorRadius > 200) {
+    throw new Error('instruction-anchor-invalid');
+  }
+
+  const readPage = async (offset) => {
+    throwIfCancelled(signal);
+    const page = await context.getInstructions(functionAddress, {
+      offset,
+      limit:QUERY_INSTRUCTION_SCAN_PAGE,
+      signal,
+    });
+    throwIfCancelled(signal);
+    return { page, rows:assertRequestedInstructionPage(page, offset) };
+  };
+
+  // The first-party QueryAPI exposes instruction rows by bounded row offset, not
+  // by instruction id. Scan that producer contract and promote an id to offset
+  // authority only after observing the exact row. The producer's 1,000,000
+  // offset ceiling keeps this complete within the addressable QueryAPI domain;
+  // cancellation/tool deadlines remain the outer wall-clock authority.
+  for (let offset = 0; offset <= QUERY_INSTRUCTION_MAX_OFFSET;) {
+    const { page, rows } = await readPage(offset);
+    const localIndex = rows.findIndex((row) => instructionMatchesAnchor(row, target));
+    if (localIndex >= 0) return Math.max(0, offset + localIndex - anchorRadius);
+    if (page?.complete === true) break;
+    if (!rows.length) break;
+    const next = offset + rows.length;
+    if (!Number.isSafeInteger(next) || next <= offset || next > QUERY_INSTRUCTION_MAX_OFFSET) break;
+    offset = next;
+  }
+  throw new Error('instruction-anchor-unresolved');
+}
+
 function queryContext(context) {
   return context?.analysisAuthority === 'AnalysisQueryAPI';
 }
@@ -48,8 +114,7 @@ function queryPaging(registry, tool, params, cursor) {
     if (offset == null) throw new Error('cursor-offset-invalid');
   }
   const makeCursor = (next) => codec.encode({
-    kind:'tool-page',
-    bindingKey:registry.observationStore.binding().key,
+    kind:'tool-page', bindingKey:registry.observationStore.binding().key,
     tool,
     paramsHash:hash,
     offset: normalizeCursorOffset(next),
@@ -91,12 +156,47 @@ function installQueryOverrides(registry, context) {
     };
     const paging = queryPaging(registry, 'inspect_function_region', params, args.cursor);
     const count = Math.max(1, Math.min(500, Number(args.count || (args.radius ? args.radius * 2 + 1 : 160))));
-    const offset = args.cursor ? paging.offset : Math.max(0, Number(args.start) || 0);
-    const page = await context.getInstructions(args.functionAddress, {
-      offset,
-      limit:count,
-      signal:registry.executionSignal,
-    });
+    let offset;
+    let page;
+    if (args.cursor) {
+      offset = paging.offset;
+      page = await context.getInstructions(args.functionAddress, {
+        offset,
+        limit:count,
+        signal:registry.executionSignal,
+      });
+    } else if (args.aroundInstructionId != null) {
+      if (typeof context.getInstructionRegionAround === 'function') {
+        page = await context.getInstructionRegionAround(args.functionAddress, {
+          aroundInstructionId:args.aroundInstructionId,
+          radius:args.radius ?? 20,
+          limit:count,
+          signal:registry.executionSignal,
+        });
+        offset = nonNegativeSafeInteger(page?.offset);
+        if (offset == null) throw new Error('instruction-anchor-page-offset-unproven');
+      } else {
+        offset = await resolveInstructionAnchorOffset(
+          context,
+          args.functionAddress,
+          args.aroundInstructionId,
+          args.radius ?? 20,
+          registry.executionSignal,
+        );
+        page = await context.getInstructions(args.functionAddress, {
+          offset,
+          limit:count,
+          signal:registry.executionSignal,
+        });
+      }
+    } else {
+      offset = Math.max(0, Number(args.start) || 0);
+      page = await context.getInstructions(args.functionAddress, {
+        offset,
+        limit:count,
+        signal:registry.executionSignal,
+      });
+    }
     const rows = pageRows(page).map((row, index) => ({
       id:row?.id ?? row?.instructionId ?? offset + index,
       row:row?.row ?? null,
