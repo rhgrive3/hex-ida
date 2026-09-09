@@ -198,7 +198,7 @@ export function artifactPayloadChecksum(bytes) {
   return stableDigest(Array.from(view));
 }
 
-function normalizeArtifactPayloadBytes(value, { allowMissing = false } = {}) {
+export function normalizeArtifactPayloadBytes(value, { allowMissing = false } = {}) {
   if (value == null) {
     if (allowMissing) return new Uint8Array(0);
     throw new ArtifactError('artifact-payload-bytes-invalid', 'Artifact payload bytes must be a byte container');
