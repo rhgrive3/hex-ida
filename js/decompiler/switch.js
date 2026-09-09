@@ -43,16 +43,30 @@ function insertionIndex(lines, row) {
   return { start: last + 1, end: last + 1, indent };
 }
 
+// The single integer grammar for switch case values: an optional '-' sign in
+// front of a hex or decimal magnitude. `BigInt('-0x1')` throws, so the sign
+// must be split from the magnitude before handing the value to BigInt —
+// otherwise `caseLiteral()` accepting '-0x1' while `BigInt()` rejects it makes
+// verified structuring depend on notation alone.
+function parseCaseInteger(text) {
+  const s = String(text).trim();
+  const negative = s.startsWith('-');
+  const magnitude = negative ? s.slice(1) : s;
+  if (!/^(?:0x[0-9a-f]+|\d+)$/i.test(magnitude)) return null;
+  const raw = BigInt(magnitude);
+  return negative ? -raw : raw;
+}
+
 function caseLiteral(v) {
   if (typeof v === 'bigint') return v.toString();
   if (typeof v === 'number' && Number.isSafeInteger(v)) return String(v);
-  if (typeof v === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(v.trim())) return v.trim();
+  if (typeof v === 'string' && parseCaseInteger(v) != null) return v.trim();
   return null;
 }
 
 function caseIdentity(literal, sw = {}, c = {}) {
-  let raw;
-  try { raw = BigInt(literal); } catch { return null; }
+  const raw = parseCaseInteger(literal);
+  if (raw == null) return null;
   const requestedBits = c.bits ?? c.width ?? sw.bits ?? sw.width ?? sw.valueBits ?? null;
   const numericBits = Number(requestedBits);
   const bits = Number.isInteger(numericBits) && numericBits > 0 && numericBits <= 128 ? numericBits : null;
