@@ -515,7 +515,17 @@ function canonicalIdentity(value, stack = new Set()) {
         : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
       let hexText = '';
       for (const byte of bytes) hexText += byte.toString(16).padStart(2, '0');
-      return `y${JSON.stringify(hexText)}`;
+      // Raw bytes are not the whole state for binary containers: the same
+      // four bytes represent four Uint8 elements, one Uint32 element, a
+      // DataView window, or an ArrayBuffer with different semantics. Keep the
+      // concrete binary container kind in the stale-state identity so an
+      // approved representation cannot silently change type (#6215). The
+      // patch path canonicalizes its accepted byte containers before this
+      // point (#6171), so its deliberate Uint8Array/Array parity is preserved.
+      const kind = value instanceof ArrayBuffer
+        ? 'ArrayBuffer'
+        : Object.prototype.toString.call(value).slice(8, -1);
+      return `y${JSON.stringify(kind)}:${JSON.stringify(hexText)}`;
     }
     // Map/Set entry order is part of the value, so it is preserved rather than
     // sorted: two maps built in a different order are different states.
