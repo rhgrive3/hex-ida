@@ -74,7 +74,7 @@ export class ArchitectureAdapter {
       const size = BigInt(this.fixedInstructionSize);
       if (rel < 0n || rel + size > BigInt(region.size)) return { ok:false, code:'patch-range', error:'アドレスがコードのセクション範囲外です。' };
       const alignment = BigInt(this.instructionAlignment);
-      if (normalizedAddress % alignment !== 0n || rel % alignment !== 0n || !Number.isInteger(length) || length !== this.fixedInstructionSize) {
+      if (normalizedAddress % alignment !== 0n || rel % size !== 0n || !Number.isInteger(length) || length !== this.fixedInstructionSize) {
         return { ok:false, code:'instruction-placement', architecture:this.id, error:`${this.id} 命令の位置または長さが不正です。` };
       }
       return { ok:true };
