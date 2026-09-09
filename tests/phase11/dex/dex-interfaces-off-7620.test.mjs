@@ -167,21 +167,31 @@ const dispatchCall = dispatchFn.bundles.flatMap((b) => b.callEffects).find((c) =
 assert.ok(dispatchCall, 'invoke-interface decoded');
 assert.equal(dispatchCall.target, 'LI;->go');
 assert.deepEqual(dispatchCall.interfaceTypes, ['LI;']);
-assert.equal(dispatchCall.enclosingClassImplementsTarget, true);
 assert.equal(dispatchCall.unresolved, true);
-// Without the interfaces_off edge the candidate set is empty and the derived
-// assignability fact is false — never silently inherited from elsewhere.
-const plainDispatch = liftDexMethod(0, parseDex(consumerFixture({ withInterface: false }), { binaryId: 'dispatch' }));
-const plainCall = plainDispatch.bundles.flatMap((b) => b.callEffects).find((c) => c.dispatchKind === 'interface');
+// (4a) A non-implementing caller with an LI;-typed receiver is legal; the
+// interface rows must still reach the call effect (receiver authority is not
+// caller authority).
+// (4b) Conversely, a caller that implements LI; must not make that evidence
+// a per-site receiver assignability proof: no such derived fact exists.
+const implementsImage = parseDex(consumerFixture({ withInterface: true }), { binaryId: 'implements' });
+const plainImage = parseDex(consumerFixture({ withInterface: false }), { binaryId: 'plain' });
+// With interfaces_off=0 the candidate set is empty — nothing is inherited.
+const plainCall = liftDexMethod(0, plainImage).bundles.flatMap((b) => b.callEffects).find((c) => c.dispatchKind === 'interface');
 assert.deepEqual(plainCall.interfaceTypes, []);
-assert.equal(plainCall.enclosingClassImplementsTarget, false);
+assert.equal(plainCall.unresolved, true);
+// The edge set stays module-wide candidate evidence on both images; the
+// unresolved flag never narrows dispatch beyond what the file proves.
+const implementsCall = liftDexMethod(0, implementsImage).bundles.flatMap((b) => b.callEffects).find((c) => c.dispatchKind === 'interface');
+assert.deepEqual(implementsCall.interfaceTypes, ['LI;']);
+assert.equal(implementsCall.unresolved, true);
+assert.ok(!('enclosingClassImplementsTarget' in implementsCall));
 // The interface-rows evidence attaches specifically to the invoke-interface
 // dispatch site; the static site at the same method reference stays clean.
 const staticCall = dispatchFn.bundles.flatMap((b) => b.callEffects).find((c) => c.dispatchKind === 'static');
 assert.ok(staticCall, 'invoke-static decoded');
 assert.equal(staticCall.target, 'LI;->go');
 assert.ok(!('interfaceTypes' in staticCall));
-assert.ok(!('enclosingClassImplementsTarget' in staticCall));
+assert.ok(!('unresolved' in staticCall));
 
 function parseDexSafe(bytes) {
   try {
