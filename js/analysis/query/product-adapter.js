@@ -94,7 +94,9 @@ function isPlainObject(value) {
 // value, or distinct analysis states would share one artifactVersions identity.
 // Primitive values use a type + length + payload encoding so strings cannot
 // collide with reserved prefixes belonging to number/bigint/boolean values.
-function canonicalIdentityDimension(value, fallback) {
+// Exported for derived artifact caches that must key their state by the same
+// identity dimensions the snapshot authority uses (#5585).
+export function canonicalIdentityDimension(value, fallback) {
   if (value == null) return fallback;
   if (typeof value === 'string' && !value) return fallback;
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean') {
