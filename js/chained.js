@@ -430,8 +430,9 @@ export async function chainedImportSymbols(file, sliceIndex = 0) {
           members = await chainMembers(segStarts.st, segStarts.page, chainStart, hit.s, read64, image.base);
           chainMembersCache.set(cacheKey, members);
         }
-        if (members === null) { member = false; break; }
-        if (members.has(slot)) { member = true; break; }
+        /* A malformed chain proves no membership for its own start only; a
+           later independent multi-start chain may still cover the slot. */
+        if (members !== null && members.has(slot)) { member = true; break; }
       }
       if (!member) continue;
       const fileOff = image.base + hit.s.fileoff + (slot - hit.s.vmaddr);

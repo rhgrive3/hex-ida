@@ -168,6 +168,33 @@ test('#5388 an out-of-range multi-start pool index fails closed', async () => {
   assert.deepEqual(out, []);
 });
 
+test('#5388 a malformed earlier chain does not exclude a later valid multi-start chain', async () => {
+  /* First declared chain leaves its page (malformed); the second, independent
+     chain is clean and contains the stub-referenced slot. */
+  const file = fixture({
+    pageStarts: [0x8000 | 1],
+    overflow: [0x100, 0x300 | 0x8000],
+    nodes: { 0x100: { ordinal: 0, next: 0xfff }, 0x300: { ordinal: 0, next: 0 } },
+    slot: 0x300,
+  });
+  const out = await chainedImportSymbols(file, 0);
+  assert.deepEqual(out.map((e) => ({ addr: e.addr, kind: e.kind })), [
+    { addr: stub, kind: 1 },
+    { addr: slotAddr(0x300), kind: 2 },
+  ], 'malformed evidence is scoped to its own chain, not the page');
+});
+
+test('#5388 an off-chain slot stays unnamed when one of the chains is malformed', async () => {
+  const file = fixture({
+    pageStarts: [0x8000 | 1],
+    overflow: [0x100, 0x300 | 0x8000],
+    nodes: { 0x100: { ordinal: 0, next: 0xfff }, 0x300: { ordinal: 0, next: 0 } },
+    slot: 0x500,
+  });
+  const out = await chainedImportSymbols(file, 0);
+  assert.deepEqual(out, [], 'neither the malformed chain nor the unrelated clean chain covers the slot');
+});
+
 test('#5388 a slot beyond the declared page count names nothing', async () => {
   const file = fixture({ pageStarts: [0xffff, 0x100], pageCount: 1, nodes: { 0x100: { ordinal: 0, next: 0 } }, slot: 0x1100 });
   const out = await chainedImportSymbols(file, 0);
