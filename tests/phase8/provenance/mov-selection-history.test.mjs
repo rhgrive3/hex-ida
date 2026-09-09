@@ -220,7 +220,9 @@ test('public no-op stack recovery preserves MOV history through real proved repl
   assert.ok(readExpressionHistoryConsumer(f.result.cAst.body[0].semantic, f.ir));
   const canonical = structuredClone(f.ir);
   const first = await optimizeSemanticDecompilation(f.result, f.options);
-  assert.equal(first.proofOptimization.status, 'complete');
+  assert.equal(first.proofOptimization.status, 'complete', JSON.stringify({
+    reason:first.proofOptimization.reason, targetDecisions:first.proofOptimization.targetDecisions,
+  }));
   assert.ok(first.proofOptimization.adopted > 0);
   assert.ok(records(first).some(record => record.renderedBinding === 'producer-bound' && record.producedRefs.includes('L0:stmt')));
   const replay = await optimizeSemanticDecompilation(first, f.options);

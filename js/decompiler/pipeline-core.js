@@ -450,10 +450,11 @@ function observeBuildSelection(value, instruction, state, kind = 'mov', related 
     const blocks = state.ir.blocks, flat = state.ir.instructions;
     const locations = [instruction, ...related].map(selected => {
       const block = blocks?.find(item => item.index === selected.block);
-      const blockIndex = blocks?.indexOf(block), instructions = block?.insts;
+      const blockIndex = blocks?.indexOf(block), listKey = block?.phis?.includes(selected) ? 'phis' : 'insts';
+      const instructions = block?.[listKey];
       const instructionIndex = instructions?.indexOf(selected), flatIndex = flat?.indexOf(selected);
       if (!(valueIndex >= 0) || !(instructionIndex >= 0) || flat != null && !(flatIndex >= 0)) throw new Error('build-definition-unavailable');
-      return { selected, block, blockIndex, blockId:block.index, instructions, instructionIndex, flatIndex };
+      return { selected, block, blockIndex, blockId:block.index, listKey, instructions, instructionIndex, flatIndex };
     });
     // Snapshot BEFORE buildArg can invoke an input's symbol/type callback.
     // Exact roots/positions bind the observed definition, not just its ID.
@@ -463,9 +464,9 @@ function observeBuildSelection(value, instruction, state, kind = 'mov', related 
     const own = (object, key) => Object.getOwnPropertyDescriptor(object, key)?.value;
     return Object.freeze({ kind, matches:() => own(state.ir, 'values') === values && own(values, valueIndex) === value
       && own(state.ir, 'blocks') === blocks && own(state.ir, 'instructions') === flat
-      && locations.every(({ selected, block, blockIndex, blockId, instructions, instructionIndex, flatIndex }) =>
+      && locations.every(({ selected, block, blockIndex, blockId, listKey, instructions, instructionIndex, flatIndex }) =>
         own(blocks, blockIndex) === block && own(block, 'index') === blockId
-        && own(block, 'insts') === instructions && own(instructions, instructionIndex) === selected
+        && own(block, listKey) === instructions && own(instructions, instructionIndex) === selected
         && (flat == null || own(flat, flatIndex) === selected)) && captured.matches() });
   } catch {
     budget.edges = 0; budget.reasons.add(`${kind}-selection-observation-unavailable`); return null;
@@ -518,6 +519,82 @@ function recordAddressLoadSelection(value, instruction, store, expression, selec
   (state.buildHistoryFrame.records ??= new Set()).add(record);
 }
 
+function precomputedValueOrigins(value, state) {
+  const pending = [value], seen = new Set(), definitions = new Set(), sources = [], memoryChecks = [];
+  const started = performance.now();
+  let incomplete = false;
+  while (pending.length && seen.size < 512) {
+    if (performance.now() - started >= 250) { incomplete = true; break; }
+    const current = pending.pop();
+    if (!current || seen.has(current)) continue;
+    seen.add(current);
+    const definition = current.def;
+    sources.push(origin(definition, current));
+    if (!definition) continue;
+    definitions.add(definition);
+    pending.push(...(definition.args || []).map(valueOf), ...(definition.incoming || []).map(item => item.value),
+      definition.addr?.base, definition.addr?.index, definition.loc?.base);
+    if (definition.op === 'load') {
+      const fact = definition.memoryForwarding;
+      // The observed supplied constant/load origin needs no memory theorem.
+      // Only an explicit exact-forwarding claim offers additional store roots;
+      // absent/non-exact facts must not invent those roots or an upstream trace.
+      if (fact?.status !== 'exact') continue;
+      const isCurrent = () => isCanonicalExactMemoryForwarding(fact, canonicalMemoryForwardingContextForLoad(fact, definition,
+        definition.memoryForwardingContext ?? definition.extra?.memoryForwardingContext));
+      const width = Number(current.bits);
+      if (!isCurrent() || current.constKind === 'float' || current.floatConst != null || current.float != null
+        || current.const != null && (typeof current.const !== 'bigint' || !Number.isSafeInteger(width) || width <= 0 || width > 1024
+          || current.const !== BigInt.asUintN(width, fact.value))) {
+        incomplete = true; continue;
+      }
+      memoryChecks.push(isCurrent);
+      // Only the existing proof issuer can supply store dependencies. A bare
+      // reachingStore link is not a source certificate for a numeric constant.
+      for (const id of fact.provenance.sourceEntityIds) {
+        const matches = (state.ir.instructions || []).filter(inst => inst.semanticNodeId === id || inst.sourceEntityId === id);
+        if (matches.length !== 1) { incomplete = true; continue; }
+        const store = matches[0];
+        definitions.add(store); sources.push(origin(store));
+        pending.push(...(store.args || []).map(valueOf));
+      }
+    }
+  }
+  if (pending.length) incomplete = true;
+  return { source:mergeSource(...sources), definitions:[...definitions], incomplete, memoryChecks };
+}
+
+function precomputedSelection(value, state) {
+  // A literal has no selected-away computation. Other precomputed values do,
+  // but this consumer must not invent which upstream folding passes ran.
+  if (!value.def || value.def.op === 'const') return null;
+  const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
+  const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
+  if ((state.buildSelectionHistoryCount || 0) >= maximum || consumerObservationBudget(state).edges <= 0) {
+    observeBuildSelection(value, value.def, state, 'precomputed'); return null;
+  }
+  const origins = precomputedValueOrigins(value, state);
+  const observation = observeBuildSelection(value, value.def, state, 'precomputed',
+    origins.definitions.filter(definition => definition !== value.def));
+  if (origins.incomplete) consumerObservationBudget(state).reasons.add('precomputed-source-history-incomplete');
+  return { origins, observation };
+}
+
+function recordPrecomputedSelection(value, expression, selected, state) {
+  if (!selected) return;
+  const observation = finishBuildSelection(expression, selected.observation, state);
+  if (!observation) return;
+  const history = expressionOriginHistory({ source:selected.origins.source }, expression);
+  const record = Object.freeze({ rule:'select-precomputed-value', phase:'expression-build',
+    before:`precomputed:${value.def.op}`, after:`expression:${expression.kind}`,
+    evidence:Object.freeze({ kind:'observed-precomputed-value-selection-not-equivalence',
+      detail:'actual supplied constant selection and declared dependency sources; not an upstream folding trace, executed path, scalar equivalence or new memory proof' }),
+    originHistory:selected.origins.incomplete ? Object.freeze({ ...history, truncated:true }) : history,
+  });
+  buildHistoryObservations.set(record, Object.freeze({ matches:() => observation.matches() && selected.origins.memoryChecks.every(current => current()) }));
+  (state.buildHistoryFrame.records ??= new Set()).add(record);
+}
+
 function buildValueRaw(v, state, flags = {}) {
   if (!v) return expr.variable('unknown', 64, null);
   const memoKey = `${v.id}:${flags.forAddress ? 'a' : 'v'}`;
@@ -526,8 +603,16 @@ function buildValueRaw(v, state, flags = {}) {
   state.expressionActive.add(v.id);
   let out = null;
   const d = v.def;
-  if (v.constKind === 'float' || v.floatConst != null || (v.float != null && v.const == null)) out = expr.floatConstant(v.floatConst ?? v.float, v.bits || 64, origin(d, v));
-  if (!out && v.const != null && d?.op !== 'addr') out = constNode(v);
+  if (v.constKind === 'float' || v.floatConst != null || (v.float != null && v.const == null)) {
+    const selected = precomputedSelection(v, state);
+    out = expr.floatConstant(v.floatConst ?? v.float, v.bits || 64, origin(d, v));
+    recordPrecomputedSelection(v, out, selected, state);
+  }
+  if (!out && v.const != null && d?.op !== 'addr') {
+    const selected = precomputedSelection(v, state);
+    out = constNode(v);
+    recordPrecomputedSelection(v, out, selected, state);
+  }
   if (!out && (v.kind === 'arg' || !d)) out = expr.variable(argumentName(v, state), v.bits || 64, signedFor(state, v), origin(d, v), { ssaId: v.id, range: v.range ? { ...v.range } : null });
   if (!out && d) {
     if (d.op === 'const') out = (v.constKind === 'float' || v.floatConst != null || v.float != null)

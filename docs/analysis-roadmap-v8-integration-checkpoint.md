@@ -3092,6 +3092,71 @@ reconstruction and the complete rendered/removed class audit also remain open,
 alongside C4-04 proof gating, C4-05 gaps, all original23 findings and frozen135
 compiler binaries. No component/main merge occurred; acceptance stays LOCKED.
 
+## C4-03 precomputed-value consumption history
+
+The expression builder now records `select-precomputed-value` when it actually
+selects a supplied integer/floating constant for a nonliteral definition. This
+is a consumer event, not a guessed trace of upstream constant-folding passes.
+Literal definitions and unvisited MOV/phi/address-load branches do not acquire
+fictional events. The before-source retains declared operand, phi incoming and
+address dependencies; the after-source is the actual selected constant. The
+label `observed-precomputed-value-selection-not-equivalence` does not certify
+the supplied value, which still belongs to C4-04 admission work.
+
+The existing private build-selection observer now supports actual phi-list
+membership as well as instruction-list membership. Dependency collection is
+bounded to512values/250ms, selection slots share the existing pre-reserved
+MOV/address-load allowance, and observations share the cumulative edge budget.
+Missing/truncated history remains explicit. Canonical objects, scalar output,
+widths and existing memory/solver gates are not changed by this bookkeeping.
+
+Memory-derived constants only acquire additional contributing-store dependencies from a
+currently valid canonical numeric MemorySSA fact and an unambiguous projected
+source-entity mapping. The selected numeric constant must agree at its width
+with that fact. An explicit exact fact whose proof is copied/invalid, values
+mismatch, mappings are missing or floating-memory interpretation is unsupported
+leaves that claimed source history incomplete; a structural
+reachingStore cannot supply a numeric source certificate. Existing canonical
+proof currentness is rechecked by the private history observation on later use.
+Without an exact claim, the observed supplied constant and declared load/address
+origins can still be recorded completely; no store roots or upstream computation
+trace are invented. Provenance completeness is not semantic proof eligibility.
+This covers real upstream compatibility constants that bypass the lower
+builder's explicit numeric-forwarding branch, without inventing that branch's
+execution or a new memory theorem.
+
+Twelve new tests cover24bin/MOV/phi width/source cells, two floating widths and
+four real canonical numeric-load widths, ordinary/public pipelines, replay,
+declared dependencies and query reverse navigation, copied/changed facts and
+contexts, changed constants/phi roots/getters, mismatched numeric values,
+mandatory fallback, absent memory authority and bounded large dependencies.
+The real memory fixture uses the existing canonical IR/CFG/MemorySSA/compatibility
+chain from the C2-01 regressions, not a fabricated exact fact. Its callable
+compatibility root properties are checked for identity separately from cloned
+data, because functions are not structured-cloneable. Fallback assertions select
+the actual rendered consumer record, not the first potentially unused history
+copy. Public history copies lose projected bindings without revoking the original
+private consumer itself. No expectation/timeout is relaxed for proof failures.
+
+Related existing MOV proof tests had intermittent `deadline` refusals during
+verification. Diagnostic assertion output now includes the actual refusal and
+target decisions. A clean parent checkout and a later current-tree diagnostic
+both passed; the diagnostic confirms this fixture produced zero new precomputed
+history records. Those checks do not erase the failed receipts or prove the
+timing issue fixed. Only subsequent exact-head gates can support this head.
+
+PR #3421 remains reused at `4cd5b3eb9200b1180985b9df3a74f8245a5cc928`.
+Constant/provenance search also identified #7550 at
+`6ebaa3477c5e720d7bdf756c60a4a590bd254764`; current body/files describe the
+parallel points-to constant-kind and query slice-identity issues, not this render
+history. Keep it as a central reconciliation candidate, without duplicating its
+fixes or treating its prose as verification. One new exact provenance test path
+is added to ownership. No component/main merge occurred. Actual upstream folding
+pass histories, lower explicit numeric-load selection, general flag-condition
+history and the full rendered/removed class audit remain open, as do all23
+findings, C4-04/C4-05 work, frozen135compiler binaries and required integration
+acceptance. Acceptance stays LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -3126,7 +3191,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C3-03 | Versioned language metadata and unknown-version matrix |
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
-| HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi, MOV/address-load operand selection, initial RMW/C AST compound-store histories, owned handoffs and explicit assignment-expansion records, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
+| HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi, MOV/address-load/precomputed-value selection, initial RMW/C AST compound-store histories, owned handoffs and explicit assignment-expansion records, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
 | HEX-C4-04 | Proof-gated scalar projection, owned inputs, transaction coverage and optional reuse of all 64 display rules as independently verified candidates implemented; ordinary legacy-view adoption, full family/width denominator and memory/CFG/exception observables remain open |
 | HEX-C4-05 | Frozen 272-cell scalar/14-Bool/8-width producer coverage and 3 actual schedules (816 scalar cells); adopted-transform history now preserves actual rule/cost/budget/proof audits. Native proof gaps, arbitrary permutations and full acceptance remain open |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |
