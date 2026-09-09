@@ -97,11 +97,29 @@ test('#7610 non-overlapping PT_LOADs are not regressed', () => {
   assert.equal(image.addressToOffset(0x401000n), 0x2000n);
 });
 
-test('#7610 adjacent PT_LOADs sharing only a boundary stay accepted', () => {
+test('#7610 loader-congruent partial-page aliases fail closed in either header order', () => {
+  const first = { offset: 0x1000, flags: PF_R | PF_X, vaddr: 0x400000, filesz: 0x800, memsz: 0x800 };
+  const second = { offset: 0x2800, flags: PF_R | PF_X, vaddr: 0x400800, filesz: 0x800, memsz: 0x800 };
+  for (const loads of [[first, second], [second, first]]) {
+    const { image, error } = parse(loads);
+    assert.equal(image, null, 'same mapped page with different file-page provenance must not publish canonical bytes');
+    assert.equal(error?.code, 'ELF_PT_LOAD_VM_OVERLAP');
+    assert.match(error.message, /mapped page.*different file mapping/);
+  }
+});
+
+test('#7610 page-disjoint adjacent PT_LOADs keep one canonical mapping authority', async () => {
   const { image, error } = parse([
-    { offset: 0x1000, flags: PF_R | PF_X, vaddr: 0x400000, filesz: 0x800, memsz: 0x800 },
-    { offset: 0x2000, flags: PF_R | PF_X, vaddr: 0x400800, filesz: 0x800, memsz: 0x800 },
+    { offset: 0x1000, flags: PF_R | PF_X, vaddr: 0x400000, filesz: 0x1000, memsz: 0x1000 },
+    { offset: 0x2000, flags: PF_R | PF_X, vaddr: 0x401000, filesz: 0x1000, memsz: 0x1000 },
   ]);
   assert.equal(error, null);
-  assert.equal(image.addressToOffset(0x400800n), 0x2000n);
+  assert.equal(image.addressToOffset(0x401000n), 0x2000n);
+  const mapping = image.resolveVirtualMapping(0x401000n);
+  assert.equal(mapping?.kind, 'file');
+  assert.equal(mapping?.offset, 0x2000n);
+  const expected = [0xb8, 0x3c, 0x00, 0x00, 0x00, 0xbf, 22, 0x00, 0x00, 0x00, 0x0f, 0x05];
+  assert.deepEqual([...image.readVirtual(0x401000n, expected.length)], expected);
+  assert.deepEqual([...await image.readVirtualAsync(0x401000n, expected.length)], expected);
+  assert.equal(image.offsetToAddress(0x2000n), 0x401000n);
 });
