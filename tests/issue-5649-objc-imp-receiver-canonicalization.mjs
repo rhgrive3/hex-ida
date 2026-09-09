@@ -28,6 +28,25 @@ test('#5649 canonical receiver spellings resolve through the direct IMP path', (
   }
 });
 
+test('#5649 canonicalized child receiver resolves an ancestor IMP', () => {
+  const hierarchy = {
+    completeness: { complete: true },
+    methodsByIMP: new Map([
+      ['8192', [{ className: 'Base', selector: 'work', classMethod: false, imp: 0x2000n }]],
+    ]),
+    classes: new Map([
+      ['Child', { name: 'Child', superName: 'Base' }],
+      ['Base', { name: 'Base', superName: null }],
+    ]),
+  };
+  for (const receiverType of ['Child', 'class Child', '@"Child" *']) {
+    const result = resolveObjcIMP(hierarchy, 0x2000n, { receiverType, selector: 'work' });
+    assert.ok(result.resolved, `receiverType ${JSON.stringify(receiverType)} must reach Base`);
+    assert.equal(result.resolved.className, 'Base');
+    assert.equal(result.resolved.selector, 'work');
+  }
+});
+
 test('#5649 unknown receiver classes still fail closed as before', () => {
   const result = resolveObjcIMP(objcIndex, 0x1000n, { receiverType: 'Bar', selector: 'work' });
   assert.equal(result.resolved, null, 'an unrelated class must not resolve Foo IMPs');
