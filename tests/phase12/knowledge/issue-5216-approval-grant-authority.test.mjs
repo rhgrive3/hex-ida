@@ -1,26 +1,29 @@
-// Regression for #5216 (review R2/R3): promoteKnowledgeSuggestion() must not
+// Regression for #5216 (review R2–R4): promoteKnowledgeSuggestion() must not
 // accept approval evidence a caller can fabricate. That covers (a) plain
 // self-declared {approved:true, targetMatchId} tokens, (b) duck-typed
 // { consumeGrant(){…} } authority objects passed as options, (c) an untrusted
 // caller self-minting an authority (an exported factory or the exported
-// issuance seam imported from any other module), and (d) issuance without a
-// real user interaction. Contract now: the consuming authority is
+// issuance seam imported from any other module), (d) issuance without a real
+// user interaction, and (e) spending a grant under a different host project
+// binding than it was minted under. Contract now: the consuming authority is
 // module-private and host-held — promotion consumes grants only from that
-// instance — and issuance requires a browser-trusted user interaction
-// (Event.isTrusted on a direct approval gesture), so merely importing this
-// module yields no way to mint approval. Grants stay single-use and bound to
-// the match identity (match id, target entity, package entry/hash, algorithm
-// version, actor identity, interaction type, project/binary binding).
+// instance — issuance requires the platform Event of a browser-trusted
+// user-activation gesture (real Event instance, isTrusted read through the
+// captured prototype getter so an own-property shadow cannot forge it), and
+// consumption re-verifies the host project binding current at consumption
+// time. Grants stay single-use and bound to the match identity (match id,
+// target entity, package entry/hash, algorithm version, actor identity,
+// interaction type, project binding).
+//
+// The harness realm shim MUST be imported before the module: it installs the
+// harness Event platform API this trusted-runner realm uses (static import
+// order below).
+import '../../phase12/knowledge/harness-event-realm.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as recognition from '../../../js/knowledge/phase12-recognition.js';
+import { syntheticEvent, trustedApprovalGesture } from './harness-event-realm.mjs';
 const { createMatchResult, promoteKnowledgeSuggestion, issueRecognitionApprovalGrant } = recognition;
-
-// The test harness itself acts as the trusted host runner: it hands the
-// module a trusted interaction event, exactly as the browser would for a
-// direct approval gesture. Synthetic objects (isTrusted:false or missing) are
-// rejected in the negative cases below.
-const trustedInteraction = { type: 'click', isTrusted: true };
 
 function uniqueResult(overrides = {}) {
   return createMatchResult({
@@ -86,25 +89,41 @@ test('#5216 an untrusted self-mint via any exported surface cannot promote', () 
   );
 });
 
-test('#5216 importing the module is not enough to mint approval: issuance requires a browser-trusted user interaction', () => {
-  // The exact R2/R3 counterexample: an arbitrary in-page caller imports the
-  // module and self-reports an actorId. Without a trusted interaction event
-  // (synthetic, missing, or an indirect event type) no grant can be minted,
-  // so nothing can be promoted.
+test('#5216 importing the module is not enough to mint approval: issuance requires the platform Event of a browser-trusted gesture', () => {
+  // The exact R4 counterexample: a caller-made plain object claiming
+  // { type:'click', isTrusted:true } is not approval evidence — it is not a
+  // platform Event at all.
+  assert.throws(
+    () => issueRecognitionApprovalGrant(result, { actorId: 'attacker', interaction: { type: 'click', isTrusted: true } }),
+    /platform Event/,
+    'a plain caller-built object is not an interaction event',
+  );
+  // A real platform Event that was not trusted by the user agent (script
+  // constructed / dispatched) carries isTrusted false and must fail.
+  assert.throws(
+    () => issueRecognitionApprovalGrant(result, { actorId: 'attacker', interaction: syntheticEvent('click') }),
+    /browser-trusted/,
+    'synthetic platform events are not approval evidence',
+  );
+  // An own-property isTrusted shadow must not defeat the getter read.
+  const shadowed = syntheticEvent('click');
+  Object.defineProperty(shadowed, 'isTrusted', { value: true });
+  assert.throws(
+    () => issueRecognitionApprovalGrant(result, { actorId: 'attacker', interaction: shadowed }),
+    /browser-trusted/,
+    'an own isTrusted shadow cannot forge user activation',
+  );
+  // An indirect event type is not a direct approval gesture.
+  assert.throws(
+    () => issueRecognitionApprovalGrant(result, { actorId: 'attacker', interaction: trustedApprovalGesture('load') }),
+    /direct approval gesture/,
+    'indirect event types are not approval gestures',
+  );
+  // Missing / non-event interactions fail closed.
   assert.throws(
     () => issueRecognitionApprovalGrant(result, { actorId: 'attacker' }),
     /user interaction/,
     'issuance without any interaction event must fail',
-  );
-  assert.throws(
-    () => issueRecognitionApprovalGrant(result, { actorId: 'attacker', interaction: { type: 'click', isTrusted: false } }),
-    /browser-trusted/,
-    'synthetic events are not approval evidence',
-  );
-  assert.throws(
-    () => issueRecognitionApprovalGrant(result, { actorId: 'attacker', interaction: { type: 'load', isTrusted: true } }),
-    /direct approval gesture/,
-    'indirect event types are not approval gestures',
   );
   assert.throws(
     () => issueRecognitionApprovalGrant(result, { actorId: 'attacker', interaction: 'click' }),
@@ -120,7 +139,7 @@ test('#5216 importing the module is not enough to mint approval: issuance requir
 });
 
 test('#5216 a host-issued grant succeeds exactly once, then replays fail', () => {
-  const grant = issueRecognitionApprovalGrant(result, { actorId: 'actor-a', interaction: trustedInteraction });
+  const grant = issueRecognitionApprovalGrant(result, { actorId: 'actor-a', interaction: trustedApprovalGesture('click') });
   const fact = promoteKnowledgeSuggestion(result, { approvalGrant: grant.token });
   assert.equal(fact.authority, 'L4-local-canonical');
   assert.equal(fact.confirmation, 'user-confirmed');
@@ -136,7 +155,7 @@ test('#5216 a host-issued grant succeeds exactly once, then replays fail', () =>
 test('#5216 grants stay bound to match identity, actor and package content', () => {
   const other = uniqueResult({ sourceEntityId: 'fn:2000', packageEntryId: 'pkg:other' });
   const changedHash = uniqueResult({ packageContentHash: 'hash-b' });
-  const grant = issueRecognitionApprovalGrant(result, { actorId: 'actor-a', interaction: trustedInteraction });
+  const grant = issueRecognitionApprovalGrant(result, { actorId: 'actor-a', interaction: trustedApprovalGesture('pointerdown') });
   assert.throws(
     () => promoteKnowledgeSuggestion(other, { approvalGrant: grant.token }),
     /bound to a different/,
@@ -153,18 +172,44 @@ test('#5216 grants stay bound to match identity, actor and package content', () 
   promoteKnowledgeSuggestion(result, { approvalGrant: grant.token });
 });
 
-test('#5216 the host project/binary binding is recorded on grants', () => {
-  configureHostBinding('project-A');
-  const grant = issueRecognitionApprovalGrant(result, { actorId: 'actor-a', interaction: trustedInteraction });
-  assert.equal(grant.projectBinding, 'project-A');
-  assert.equal(grant.interactionType, 'click', 'the approval gesture is part of the grant provenance');
-  const fact = promoteKnowledgeSuggestion(result, { approvalGrant: grant.token });
-  assert.equal(fact.confirmation, 'user-confirmed');
+test('#5216 the host project/binary binding is recorded on grants and re-verified at consumption (review R4)', () => {
+  recognition.configureRecognitionApprovalHost({ projectBinding: 'project-A' });
+  try {
+    const grant = issueRecognitionApprovalGrant(result, { actorId: 'actor-a', interaction: trustedApprovalGesture('click') });
+    assert.equal(grant.projectBinding, 'project-A');
+    assert.equal(grant.interactionType, 'click', 'the approval gesture is part of the grant provenance');
+    // Re-binding the host (e.g. a different project/binary loaded) must
+    // invalidate the previously minted grant — consumption re-verifies the
+    // binding CURRENT at consumption time.
+    recognition.configureRecognitionApprovalHost({ projectBinding: 'project-B' });
+    assert.throws(
+      () => promoteKnowledgeSuggestion(result, { approvalGrant: grant.token }),
+      /bound to a different project binding/,
+      'a grant minted under one binding cannot be spent after the host re-binds',
+    );
+    // A grant minted under the new binding promotes normally.
+    const grantB = issueRecognitionApprovalGrant(result, { actorId: 'actor-a', interaction: trustedApprovalGesture('click') });
+    const fact = promoteKnowledgeSuggestion(result, { approvalGrant: grantB.token });
+    assert.equal(fact.confirmation, 'user-confirmed');
+  } finally {
+    recognition.configureRecognitionApprovalHost({ projectBinding: null });
+  }
 });
 
-function configureHostBinding(binding) {
-  recognition.configureRecognitionApprovalHost({ projectBinding: binding });
-}
+test('#5216 an unbound grant cannot be spent once the host carries a binding', () => {
+  const grant = issueRecognitionApprovalGrant(result, { actorId: 'actor-a', interaction: trustedApprovalGesture('click') });
+  assert.equal(grant.projectBinding, null);
+  recognition.configureRecognitionApprovalHost({ projectBinding: 'project-A' });
+  try {
+    assert.throws(
+      () => promoteKnowledgeSuggestion(result, { approvalGrant: grant.token }),
+      /bound to a different project binding/,
+      'an unbound grant cannot be spent under any binding',
+    );
+  } finally {
+    recognition.configureRecognitionApprovalHost({ projectBinding: null });
+  }
+});
 
 test('#5216 ambiguous/truncated promotion stays forbidden (grant not even consulted)', () => {
   const ambiguous = createMatchResult({

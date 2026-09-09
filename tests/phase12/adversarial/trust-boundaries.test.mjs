@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createPackageEnvelope, parseBoundedPackageInput, resolvePackageDependencies, validatePackageEnvelope, validateProviderOutput } from '../../../js/phase12/package-envelope.js';
 import { validatePhase12ProviderResult } from '../../../js/phase12/provider-boundary.js';
+import '../knowledge/harness-event-realm.mjs';
 import { createMatchResult, promoteKnowledgeSuggestion, issueRecognitionApprovalGrant } from '../../../js/knowledge/phase12-recognition.js';
 import { ChangeLog, createProjectOperation } from '../../../js/collaboration/index.js';
 import { compilePattern, evaluatePattern } from '../../../js/pattern/index.js';
@@ -25,7 +26,7 @@ assert.throws(
   /host-issued/,
   'a duck-typed caller-supplied authority must not become the issuer (review R2)',
 );
-const grant = issueRecognitionApprovalGrant(suggestion, { actorId: 'local-actor', interaction: { type: 'click', isTrusted: true } });
+const grant = issueRecognitionApprovalGrant(suggestion, { actorId: 'local-actor', interaction: new globalThis.Event('click', { trusted: true }) });
 const fact = promoteKnowledgeSuggestion(suggestion, { approvalGrant: grant.token });
 assert.equal(fact.confirmation, 'user-confirmed');
 assert.equal(fact.provenance.actorId, 'local-actor');

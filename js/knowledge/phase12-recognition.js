@@ -78,25 +78,44 @@ export async function recognizeWithKnowledgeDB({ db, input, packageEnvelope = nu
   return createMatchResult({ ...input, packageContentHash: packageHash, candidates, candidateSearchTruncated: matches.truncated === true, ambiguityWindow: options.ambiguityWindow });
 }
 
-// Host-held approval authority for L4 promotion (#5216, review R2/R3): a plain
-// { approved:true, targetMatchId } self-declaration is not approval evidence,
-// and neither is any caller-fabricated authority — a duck-typed
-// { consumeGrant(){…} } option or an importer of this module must not be able
-// to mint approval. Two boundaries make issuance real rather than
+// Host-held approval authority for L4 promotion (#5216, review R2–R4): a
+// plain { approved:true, targetMatchId } self-declaration is not approval
+// evidence, and neither is any caller-fabricated authority — a duck-typed
+// { consumeGrant(){…} } option or an importer of this module must not be
+// able to mint approval. Two boundaries make issuance real rather than
 // self-asserted:
 // 1. Grant issuance requires a browser-trusted user interaction: the caller
-//    must present the actual Event of a direct approval gesture, and the gate
-//    reads `isTrusted` — a property the browser sets and synthetic/dispatched
-//    events can never fake. AI/plugin/alternate-UI code running in the page
-//    therefore cannot mint an approval by importing this module, no matter
-//    what actorId it self-reports.
-// 2. Consumption is module-private: promotion verifies the grant against this
-//    module's own authority instance (match id, target entity, package
-//    identity/hash, algorithm version, actor identity, project/binary
-//    binding; single-use), so only a grant minted through (1) can promote.
-// The Node test harness is the trusted-runner domain (it executes this module
-// itself); the privilege boundary is browser-enforced user activation.
+//    must present the actual platform Event of a direct approval gesture.
+//    The module captures the realm's Event constructor and the Event.prototype
+//    isTrusted getter once, at evaluation time (host boot). Issuance then
+//    requires (a) `interaction instanceof <captured Event>` — a caller-made
+//    plain object like { type:'click', isTrusted:true } is not an Event and
+//    can never pass — and (b) the browser-managed isTrusted internal slot,
+//    read through the captured prototype getter so an own-property
+//    `isTrusted` shadow on the instance cannot forge it. User-agent
+//    dispatched gestures are the only Events whose isTrusted slot is true,
+//    so AI/plugin/alternate-UI code running in the page cannot mint an
+//    approval by importing this module, no matter what actorId it
+//    self-reports. (Replacing globalThis.Event before host boot is out of
+//    the threat model: that is pre-application code execution, the same
+//    trust tier as the host bundle itself; post-boot replacement cannot
+//    affect the captured references.)
+// 2. Consumption is module-private: promotion verifies the grant against
+//    this module's own authority instance (match id, target entity, package
+//    identity/hash, algorithm version, actor identity, interaction type,
+//    single-use) AND re-verifies the grant's project binding against the
+//    host binding current at consumption time — a grant minted under one
+//    binding cannot be spent after the host re-binds.
+// The Node test harness is the trusted-runner domain: it runs this module in
+// a realm whose Event platform API is the harness stand-in (see
+// tests/phase12/knowledge/harness-event-realm.mjs); the privilege boundary
+// in production remains the browser-enforced user activation.
 const APPROVAL_INTERACTION_TYPES = new Set(['click', 'pointerdown', 'pointerup', 'keydown']);
+
+const HOST_EVENT = typeof Event === 'function' ? Event : null;
+const HOST_EVENT_IS_TRUSTED_GETTER = HOST_EVENT
+  ? Object.getOwnPropertyDescriptor(Event.prototype, 'isTrusted')?.get ?? null
+  : null;
 
 function createRecognitionApprovalAuthority() {
   const pending = new Map();
@@ -114,7 +133,15 @@ function createRecognitionApprovalAuthority() {
     hostProjectBinding() { return projectBinding; },
     requireTrustedInteraction(interaction) {
       if (!interaction || typeof interaction !== 'object') throw new TypeError('recognition approval requires the user interaction event of a direct approval gesture');
-      if (interaction.isTrusted !== true) throw new TypeError('recognition approval requires a browser-trusted user interaction; synthetic events are not approval evidence');
+      // The interaction must be a real platform Event of this realm — a
+      // caller-made plain object ({ type:'click', isTrusted:true }) is not
+      // approval evidence (review R4).
+      if (!HOST_EVENT || !HOST_EVENT_IS_TRUSTED_GETTER) throw new TypeError('recognition approval is unavailable in this realm: no platform Event API');
+      if (!(interaction instanceof HOST_EVENT)) throw new TypeError('recognition approval requires the platform Event of a direct approval gesture; caller-built objects are not approval evidence');
+      // Read the browser-managed isTrusted internal slot through the captured
+      // prototype getter: an own `isTrusted` property on the instance cannot
+      // shadow it.
+      if (HOST_EVENT_IS_TRUSTED_GETTER.call(interaction) !== true) throw new TypeError('recognition approval requires a browser-trusted user interaction; synthetic events are not approval evidence');
       if (!APPROVAL_INTERACTION_TYPES.has(interaction.type)) throw new TypeError('recognition approval requires a direct approval gesture (click/pointer/keydown), not an indirect event');
     },
     issueGrant(result, { actorId, interaction } = {}) {
@@ -151,6 +178,11 @@ function createRecognitionApprovalAuthority() {
       if (!matches('algorithmVersion', result?.algorithmVersion)) throw new Error('recognition approval grant is bound to a different algorithm version');
       const actor = actorId == null ? grant.actorId : String(actorId).trim();
       if (actor !== grant.actorId) throw new Error('recognition approval grant is bound to a different actor');
+      // The binding is re-verified against the host binding CURRENT at
+      // consumption time (review R4): a grant minted under one project
+      // binding cannot be spent after the host re-binds, and an unbound
+      // grant cannot be spent under any binding.
+      if ((projectBinding ?? null) !== (grant.projectBinding ?? null)) throw new Error('recognition approval grant is bound to a different project binding');
       pending.delete(value);
       return grant;
     },

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createKnowledgePack } from '../../../js/signature/index.js';
 import { createPackageEnvelope, importPhase12Package, parseBoundedPackageInput, resolvePackageDependencies, validateProviderOutput } from '../../../js/phase12/package-envelope.js';
+import './harness-event-realm.mjs';
 import { createMatchResult, promoteKnowledgeSuggestion, recognitionCanClaimUnique, issueRecognitionApprovalGrant } from '../../../js/knowledge/phase12-recognition.js';
 import '../../issue-3783-knowledge-pack-confidence-types.mjs';
 
@@ -47,7 +48,7 @@ assert.equal(truncated.unique, false);
 assert.throws(() => promoteKnowledgeSuggestion(truncated, { approvalGrant: 'unused-grant-token', actorId: 'actor-a' }), /ambiguous or truncated/);
 
 const unique = createMatchResult({ sourceEntityId: 'entity-a', packageEntryId: 'entry-a', candidates: [{ packageEntryId: 'entry-a', score: 0.99, tier: 'exact-content' }], packageContentHash: sameA.contentHash });
-const packageGrant = issueRecognitionApprovalGrant(unique, { actorId: 'local-user', interaction: { type: 'click', isTrusted: true } });
+const packageGrant = issueRecognitionApprovalGrant(unique, { actorId: 'local-user', interaction: new globalThis.Event('click', { trusted: true }) });
 const fact = promoteKnowledgeSuggestion(unique, { approvalGrant: packageGrant.token, name: 'localName' });
 assert.equal(fact.confirmation, 'user-confirmed');
 assert.equal(fact.externalProvenance.packageContentHash, sameA.contentHash);
