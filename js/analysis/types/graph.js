@@ -430,14 +430,17 @@ export class TypeConstraintGraph {
     const bucket = this.#bucket(constraint.claim.entityId, constraint.claim.layer);
     const identity = hardIdentity(constraint);
     const duplicateIndex = bucket.hardIndex.get(identity);
+    let retained = false;
     if (duplicateIndex == null) {
       if (bucket.hard.length + bucket.soft.length >= this.limits.maxConstraintsPerLayer) {
         bucket.truncated = true;
       } else {
         bucket.hardIndex.set(identity, bucket.hard.length);
         bucket.hard.push(constraint);
+        retained = true;
       }
     } else {
+      retained = true;
       const existing = bucket.hard[duplicateIndex];
       const evidenceIds = mergedEvidenceIds(existing.evidenceIds, constraint.evidenceIds);
       if (evidenceIds.length !== existing.evidenceIds.length) {
@@ -452,8 +455,11 @@ export class TypeConstraintGraph {
         });
       }
     }
-    this.#recordDependencies(constraint.claim);
-    if (constraint.origin === 'user-approved') {
+    // Only retained hard evidence may influence graph semantics. A truncated
+    // constraint is returned to the caller for accounting, but must not leave
+    // a dependency/SCC edge or user-constraint marker behind.
+    if (retained) this.#recordDependencies(constraint.claim);
+    if (retained && constraint.origin === 'user-approved') {
       this.userConstraintDigests.add(stableDigest(constraint.claim));
     }
     return constraint;
