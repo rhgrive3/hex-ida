@@ -11,6 +11,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const LANE = 'codex/lane5-6633-abi-a8b2';
 const OBJC_PROTOCOL_LANE = 'fix/objc-protocol-class-properties-3979';
 const ANALYSIS_BATCH_LANE = 'fix/analysis-batch-20260907-l62';
+const INTEGRATION_BATCH_LANE = 'dev-agent-hardening/integration/issue-batch-20260909';
 
 // This is an exact, short-lived integration route for #6975. The PR carries a
 // Phase 7 production-path regression alongside the ABI/Phase 6 owner slice.
@@ -33,6 +34,34 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     'js/ai/ui/hex-context-query-base.js',
     'js/semantics/ir/function.js',
     'tests/semantic-v2/issue-5765-locale-free-serialization.test.mjs',
+  ]),
+  [INTEGRATION_BATCH_LANE]: Object.freeze([
+    '.circleci/config.yml',
+    'js/ai/control/runtime-support.js',
+    'js/ai/control/turn-executor.js',
+    'js/ai/runtime.js',
+    'js/ai/tools/registry-core.js',
+    'js/ai/tools/storage/observation-store.js',
+    'js/binary/macho-source-cache.js',
+    'js/diff/runtime.js',
+    'js/diff/symmetric-function-set.js',
+    'js/diff/symmetric-workspace-runtime.js',
+    'js/managed/jvm/parser-core.js',
+    'js/platform/plugin-api-core.js',
+    'js/workspace.js',
+    'tests/ai-control-plane.mjs',
+    'tests/diff-platform.mjs',
+    'tests/issue-4512-diff-abort-registration-race.mjs',
+    'tests/issue-6086-agent-monotonic-clock.mjs',
+    'tests/issue-6095-turn-monotonic-clock.mjs',
+    'tests/issue-7198-jvm-member-name-grammar.mjs',
+    'tests/knowledge-platform.mjs',
+    'tests/phase11/jvm/jvm-parser.test.mjs',
+    'tests/phase4/binary/issue-5536-source-cache-mutable-input.test.mjs',
+    'tests/phase4/integration/issues-2502-2522-demand-analysis.test.mjs',
+    'tests/phase4/issue-4510-macho-source-cache-result-ownership.test.mjs',
+    'tests/plugin-platform-invocation-lifetime-4511.mjs',
+    'tests/project-roundtrip.mjs',
   ]),
 });
 

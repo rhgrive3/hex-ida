@@ -197,12 +197,13 @@ assert.throws(() => assertWireBudget({ messages: [{ role: 'user', content: 'x'.r
   };
   const common = {
     request: { mode: 'chat', style: 'analyst', scope: 'auto' }, decision, plan: null,
-    modelCalls: 1, toolCalls: 0, contextBytes: 0, wireUsage: {}, started: Date.now(),
+    modelCalls: 1, toolCalls: 0, contextBytes: 0, wireUsage: {}, started: 100, monotonicNow: () => 125,
     registry: { analysisStats: { disassembly: 0 }, accounting: { cost: 0 } },
     snapshot: snap, effectiveScope: 'selection',
   };
   const providerFailure = await runtime.finalize({ ...common, activity: [], limitReason: 'provider_error' });
   assert.deepEqual(providerFailure.limits, { exhausted: false, reason: 'provider_error' });
+  assert.equal(providerFailure.usage.elapsedMs, 25, 'finalize timestamps must share the injected monotonic clock origin');
   const modelTimeout = await runtime.finalize({ ...common, activity: [], limitReason: 'model_timeout' });
   assert.deepEqual(modelTimeout.limits, { exhausted: false, reason: 'model_timeout' });
   const budgetFailure = await runtime.finalize({ ...common, activity: [], limitReason: 'model-call-budget' });
