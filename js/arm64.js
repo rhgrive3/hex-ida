@@ -1123,11 +1123,11 @@ HANDLERS.ldr = (o, ops, base, addr, c) => {
   plainLdr(o, ops, base, addr, c);
 };
 
-function pairLoadStore(isLoad) {
+function pairLoadStore(isLoad, options = {}) {
   return (o, ops, base, addr, c) => {
     const [a, b] = ops;
     const mem = ops.find((x) => x.k === 'mem');
-    const size = sizeOfReg(a);
+    const size = options.elementSize ?? sizeOfReg(a);
     o.title = isLoad ? J('2 本まとめて読む', 'Load a pair') : J('2 本まとめて書く', 'Store a pair');
     if (!mem) return;
     o.pseudo = isLoad
@@ -1184,6 +1184,23 @@ function pairLoadStore(isLoad) {
             'x19–x28 are callee-saved, so they are stashed before use.'));
       o.terms.push('calleesaved');
     }
+    if (isLoad && options.signExtendFromBits) {
+      const fromBits = options.signExtendFromBits;
+      const toBits = options.signExtendToBits || (a && a.bits) || fromBits;
+      const totalBytes = size * 2;
+      const pairAddress = memExpr(mem);
+      o.pseudo = opShort(a) + ' = sign_extend' + fromBits + '(*(int' + fromBits + '*)(' + pairAddress + ')); ' +
+        opShort(b) + ' = sign_extend' + fromBits + '(*(int' + fromBits + '*)(' + pairAddress + ' + ' + size + '))';
+      o.summary += J(
+        ' 各値は ' + size + ' バイト（' + fromBits + ' ビット）の符号付きワードで、2 個で合計 ' + totalBytes +
+          ' バイトを読み、それぞれ ' + toBits + ' ビットへ符号拡張する。',
+        ' Each value is a signed ' + fromBits + '-bit word (' + size + ' bytes each, ' + totalBytes +
+          ' bytes total), sign-extended to ' + toBits + ' bits.');
+      o.detail.push(J(
+        'LDPSW は LDP と違い、宛先が x レジスタでもメモリから読む単位は 32 ビットです。',
+        'Unlike LDP with X registers, LDPSW still reads 32-bit memory elements; the wider destination comes from sign extension.'));
+      o.terms.push('signedness');
+    }
     o.terms.push('stack', 'memory');
   };
 }
@@ -1191,7 +1208,7 @@ HANDLERS.stp = pairLoadStore(false);
 HANDLERS.stnp = pairLoadStore(false);
 HANDLERS.ldp = pairLoadStore(true);
 HANDLERS.ldnp = pairLoadStore(true);
-HANDLERS.ldpsw = pairLoadStore(true);
+HANDLERS.ldpsw = pairLoadStore(true, { elementSize:4, signExtendFromBits:32, signExtendToBits:64 });
 
 HANDLERS.prfm = (o, ops) => {
   const mem = ops.find((x) => x.k === 'mem');
