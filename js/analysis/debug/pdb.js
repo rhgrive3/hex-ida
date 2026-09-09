@@ -128,8 +128,12 @@ export function parseMsf(bytes) {
   if (freeBlockMapBlock !== 1 && freeBlockMapBlock !== 2) {
     return { streams: [], diagnostics: [`invalid MSF free block map index ${freeBlockMapBlock}`], complete: false };
   }
-  if (numBlocks * blockSize > data.length + blockSize) {
-    return { streams: [], diagnostics: ['MSF block count exceeds the file'], complete: false };
+  /* NumBlocks is the total block count of the on-disk file (LLVM MSF format
+     documentation): NumBlocks * BlockSize must equal the file size, not
+     merely stay within one block of it (#5665). A missing trailing block
+     would let streams reference unreadable data while reporting complete. */
+  if (numBlocks * blockSize !== data.length) {
+    return { streams: [], diagnostics: ['MSF block count does not match the file size'], complete: false };
   }
   if (numDirectoryBytes < 4) {
     return { streams: [], diagnostics: ['MSF stream directory is truncated'], complete: false };
@@ -1037,8 +1041,12 @@ function findSectionHeaderStream(msf, dbi, dbiBytes) {
 }
 
 function page(items, cursor, pageSize, map) {
+  /* A page size must make progress: pageSize 0 (or any non-positive value)
+     would otherwise return the same cursor forever, letting a normal
+     nextCursor consumer loop without advancing (#5691). */
+  const size = Number.isSafeInteger(pageSize) && pageSize > 0 ? pageSize : DEBUG_DEFAULT_PAGE_SIZE;
   const start = cursor == null ? 0 : Number(cursor);
-  const slice = items.slice(start, start + pageSize);
+  const slice = items.slice(start, start + size);
   const next = start + slice.length;
   return createDebugPage({
     records: slice.map(map),
