@@ -637,14 +637,26 @@ export class Emulator {
 
   effectiveAddress(mem, after) {
     const base = mem.base ? this.get(mem.base.text) : 0n;
-    const disp = mem.disp && mem.disp.value != null ? mem.disp.value : 0n;
+    // Post-indexed syntax keeps the writeback offset in `writebackDisp`, so a
+    // plain `[x1], #-8` has no address displacement at all.
+    const disp = mem.mode === 'post'
+      ? 0n
+      : (mem.disp && mem.disp.value != null ? mem.disp.value : 0n);
     let index = 0n;
     if (mem.index) index = this.valueOf(Object.assign({}, mem.index, { shift: mem.shift }));
+    // 64-bit address arithmetic wraps modulo 2^64 like the architectural
+    // register width. A negative or overflowing BigInt here would page the
+    // access from the wrong (zero-side) page and disagree with every 64-bit
+    // register writeback (#5227).
+    const wrap64 = (value) => BigInt.asUintN(64, value);
     if (mem.mode === 'post') {
-      if (after && mem.base) this.set(mem.base.text, base + disp);
-      return base + index;
+      if (after && mem.base) {
+        const step = mem.writebackDisp && mem.writebackDisp.value != null ? mem.writebackDisp.value : disp;
+        this.set(mem.base.text, wrap64(base + step));
+      }
+      return wrap64(base + index);
     }
-    const addr = base + disp + index;
+    const addr = wrap64(base + disp + index);
     if (mem.mode === 'pre' && after && mem.base) this.set(mem.base.text, addr);
     return addr;
   }
@@ -790,7 +802,12 @@ export class Emulator {
     if (mn === 'fcvt' || mn === 'fcvtd' || mn === 'fcvts') { this.fset(ops[0],a); return null; }
     if (/^(scvtf|ucvtf)$/.test(mn)) {
       const bits=ops[1]?.bits === 32 ? 32 : 64, raw=this.get(ops[1].text);
-      this.fset(ops[0],Number(mn === 'scvtf' ? BigInt.asIntN(bits,raw) : BigInt.asUintN(bits,raw))); return null;
+      const value=mn === 'scvtf' ? BigInt.asIntN(bits,raw) : BigInt.asUintN(bits,raw);
+      // The destination format must round once, directly from the integer.
+      // Going through binary64 first would round twice and flip boundary
+      // cases by one ULP (#5235).
+      if (this.fpSize(ops[0]) === 4) { this.setFpBits(ops[0],encodeExactFp(value,0,4)); return null; }
+      this.fset(ops[0],Number(value)); return null;
     }
     if (/^fcvtz[su]$/.test(mn)) {
       const bits=ops[0]?.bits === 32 || /^w/.test(ops[0]?.text || '') ? 32 : 64, unsigned=mn === 'fcvtzu'; let result=0n;
