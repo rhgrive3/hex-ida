@@ -248,6 +248,12 @@ export class ChangeLog {
       }
       return { status: 'duplicate', operationId: operation.operationId };
     }
+    // A tombstone-protected operation is intentionally parked until an
+    // explicit resurrection. Replaying the same pending operation must not
+    // append another unresolved diagnostic or change the state digest.
+    if (permanentlyBlockedOp(this, operation.operationId)) {
+      return { status: 'unresolved', reason: 'tombstone-protects-state' };
+    }
     const key = factKey(operation.targetEntityId, operation.factKind);
     const current = this.state.facts[key] || null;
     if (operation.action !== 'resolve' && operation.action !== 'remove' && this.state.tombstones.some((item) => item.key === key) && operation.action !== 'resurrect') {
