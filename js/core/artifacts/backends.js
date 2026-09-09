@@ -43,12 +43,13 @@ function requestPromise(request) {
   });
 }
 
-function transactionPromise(transaction) {
+function transactionPromise(transaction, onSettled = null) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => {
       if (settled) return;
       settled = true;
+      onSettled?.();
       fn(value);
     };
     transaction.oncomplete = () => finish(resolve);
@@ -272,6 +273,7 @@ export class IndexedDbArtifactBackend {
     let done = null;
     let onAbort = null;
     let abortedBySignal = false;
+    let transactionSettled = false;
     const id = requireArtifactId(record.artifactId);
     const buffer = exactArrayBuffer(payload);
     try {
@@ -282,12 +284,11 @@ export class IndexedDbArtifactBackend {
       }
       if (signal) {
         onAbort = () => {
-          abortedBySignal = true;
+          if (transactionSettled || !tx) return;
           try {
-            if (tx) {
-              tx.abort();
-              this.metrics.transactionAborts++;
-            }
+            tx.abort();
+            abortedBySignal = true;
+            this.metrics.transactionAborts++;
           } catch { /* transaction already completed */ }
         };
         signal.addEventListener('abort', onAbort, { once:true });
@@ -299,7 +300,7 @@ export class IndexedDbArtifactBackend {
       // Use the portable two-argument transaction form for older iPad/WebKit.
       // A single readwrite transaction owns conflict detection and publication.
       tx = db.transaction('artifacts', 'readwrite');
-      done = transactionPromise(tx);
+      done = transactionPromise(tx, () => { transactionSettled = true; });
       if (signal?.aborted) {
         abortedBySignal = true;
         try { tx.abort(); this.metrics.transactionAborts++; } catch {}
@@ -332,12 +333,17 @@ export class IndexedDbArtifactBackend {
       this.metrics.bytesWritten += buffer.byteLength;
       return { duplicate:false, ...cloneRaw(row) };
     } catch (error) {
+      const callerAbort = abortedBySignal;
+      if (signal && onAbort) {
+        signal.removeEventListener('abort', onAbort);
+        onAbort = null;
+      }
       await absorbTransactionFailure(done);
       if (error instanceof ArtifactStorageError) throw error;
       // IndexedDB reports every transaction abort as AbortError. Only the
       // signal handler for this operation can establish caller-cancellation
       // provenance; an unproven abort is a storage failure.
-      if (abortedBySignal) throw abortError(signal);
+      if (callerAbort) throw abortError(signal);
       throw storageError(error, 'put');
     } finally {
       if (signal && onAbort) signal.removeEventListener('abort', onAbort);

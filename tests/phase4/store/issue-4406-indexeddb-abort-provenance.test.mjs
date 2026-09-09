@@ -13,7 +13,7 @@ import { descriptor } from './support.mjs';
 // This double keeps the IndexedDbArtifactBackend boundary under test without
 // making the regression depend on a browser. The independent mode models an
 // IndexedDB transaction abort whose cause is not the caller's AbortSignal.
-function scriptedIndexedDB({ mode = 'complete', onAdd = null } = {}) {
+function scriptedIndexedDB({ mode = 'complete', onAdd = null, afterIndependentAbort = null } = {}) {
   const rows = new Map();
   let schemaCreated = false;
   let openCount = 0;
@@ -33,7 +33,10 @@ function scriptedIndexedDB({ mode = 'complete', onAdd = null } = {}) {
         onerror: null,
         onabort: null,
         abort() {
-          if (ended) return;
+          if (ended) {
+            if (mode === 'independent-late-signal') throw new DOMException('transaction already aborted', 'InvalidStateError');
+            return;
+          }
           ended = true;
           rows.clear();
           for (const [key, value] of snapshot) rows.set(key, value);
@@ -43,7 +46,12 @@ function scriptedIndexedDB({ mode = 'complete', onAdd = null } = {}) {
             request.onerror?.();
           }
           pendingRequests.clear();
-          queueMicrotask(() => transaction.onabort?.());
+          if (mode === 'independent-late-signal') {
+            queueMicrotask(() => {
+              afterIndependentAbort?.();
+              transaction.onabort?.();
+            });
+          } else queueMicrotask(() => transaction.onabort?.());
         },
       };
 
@@ -176,6 +184,27 @@ test('#4406 an independent IndexedDB AbortError stays a storage failure with a l
     return true;
   });
   assert.equal(controller.signal.aborted, false);
+  await backend.close();
+});
+
+test('#4406 a late caller signal cannot rewrite an observed independent transaction failure', async () => {
+  const controller = new AbortController();
+  const reason = new DOMException('late caller cancellation', 'AbortError');
+  const fake = scriptedIndexedDB({
+    mode: 'independent-late-signal',
+    onAdd: ({ transaction }) => transaction.abort(),
+    afterIndependentAbort: () => controller.abort(reason),
+  });
+  const backend = backendWith(fake);
+  const { record, payloadBytes } = fixture('independent-late-signal');
+
+  await assert.rejects(backend.putAtomic(record, payloadBytes, { signal: controller.signal }), (error) => {
+    assert.equal(error.name, 'ArtifactStorageError');
+    assert.equal(error.code, 'artifact-storage-failure');
+    return true;
+  });
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(fake.rows.has(record.artifactId), false);
   await backend.close();
 });
 
