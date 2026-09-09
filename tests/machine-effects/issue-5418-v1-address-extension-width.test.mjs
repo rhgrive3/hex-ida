@@ -10,6 +10,7 @@ import {
   createTemporaryValue,
 } from '../../js/semantics/effects/index.js';
 import { lowerMachineEffectsToLegacyV1 } from '../../js/semantics/compat/index.js';
+import { liftArm64MemoryEffects } from '../../js/targets/architecture/arm64/effects/memory.js';
 
 // #5418: the MachineEffects -> legacy v1 address projection minted legacy
 // `uxtw`/`sxtw` index modifiers for every zero-extend/sign-extend expression,
@@ -82,6 +83,36 @@ const extendNode = (kind, fromBits, toBits, value) => ({
   const addr = loweredAddressWith(extendNode('zero-extend', 32, 64, wide));
   assert.equal(addr?.index, '$me:w32');
   assert.equal(addr?.extend, 'uxtw');
+}
+// The ARM64 address lifter emits a lightweight temporary expression with a
+// direct widthBits field (rather than canonical valueType). It must retain the
+// same proven 32->64 modifier instead of being mistaken for a 64-bit value.
+{
+  const rawTemporary = { kind: 'temporary', temporaryId: 'raw-w32', widthBits: 32 };
+  const addr = loweredAddressWith(extendNode('zero-extend', 32, 64, rawTemporary));
+  assert.equal(addr?.index, '$me:raw-w32');
+  assert.equal(addr?.extend, 'uxtw');
+}
+// Verify the actual ARM64 memory lifter path, whose lightweight temporary
+// expressions use that direct widthBits shape.
+{
+  const bundle = liftArm64MemoryEffects({
+    mnemonic: 'ldr',
+    ops: [
+      { k: 'reg', text: 'x0', cls: 'gp', bits: 64, num: 0 },
+      {
+        k: 'mem', text: '[x1,w2,uxtw #3]',
+        base: { k: 'reg', text: 'x1', cls: 'gp', bits: 64, num: 1 },
+        index: { k: 'reg', text: 'w2', cls: 'gp', bits: 32, num: 2 },
+        shift: { op: 'uxtw', amount: 3 }, mode: 'offset',
+        disp: { k: 'imm', value: 0n }, addressDisp: { k: 'imm', value: 0n }, writebackDisp: null,
+      },
+    ],
+  }, { instructionId: 'issue-5418-real', origin: { instructionIds: ['issue-5418-real'] } });
+  const addr = lowerMachineEffectsToLegacyV1(bundle).find((item) => item.op === OP.LOAD)?.addr;
+  assert.equal(addr?.index, '$me:addr.index');
+  assert.equal(addr?.extend, 'uxtw');
+  assert.equal(addr?.scale, 3);
 }
 
 // Every non-32->64 width (or missing width evidence) must fail closed: no

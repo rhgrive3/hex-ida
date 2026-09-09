@@ -49,7 +49,15 @@ function safeBigInt(value) {
 
 function valueWidth(value) {
   if (!value || typeof value !== 'object') return 64;
-  if (value.kind === 'temporary') return valueWidth(value.valueType);
+  if (value.kind === 'temporary') {
+    // ARM64 address expressions use lightweight temporary nodes with a direct
+    // `widthBits` field, while canonical MachineEffect values carry the width
+    // under `valueType`. Preserve both shapes so the 32-bit proof in the
+    // legacy address gate reflects the actual producer rather than defaulting
+    // raw temporaries to 64 bits.
+    if (Number.isInteger(value.widthBits) && value.widthBits > 0) return value.widthBits;
+    return valueWidth(value.valueType);
+  }
   if (value.kind === 'vector') return value.laneCount * valueWidth(value.elementType);
   return Number(value.widthBits || 64) || 64;
 }
