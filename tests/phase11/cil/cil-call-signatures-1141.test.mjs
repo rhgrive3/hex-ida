@@ -209,6 +209,17 @@ test('#1141 newobj rejects non-constructor MemberRef and MethodDef targets', () 
   }
 });
 
+test('#7603 an out-of-range signature TypeDefOrRef degrades call signature authority', () => {
+  const call = lift([0x28, ...tokenBytes(0x06000001), 0x2a], {
+    staticSignature:Uint8Array.from([0x00, 0x00, 0x12, 0x08]), // static class TypeDef#2(), only #1 exists
+  }).bundles[0];
+  assert.equal(call.mnemonic, 'call');
+  assert.equal(call.completeness, 'partial');
+  assert.equal(call.callEffects[0].signatureResolved, false);
+  assert.equal(call.producedValues.length, 0, 'invalid type reference must not mint an exact call-result type');
+  assert.ok(call.unknownEffects.some((effect) => effect.category === 'stack'));
+});
+
 test('#7604 an out-of-range MethodDef MVAR degrades call signature authority', () => {
   const lifted = lift([0x28, ...tokenBytes(0x06000002), 0x2a], {
     genericSignature:Uint8Array.from([0x10, 0x01, 0x00, 0x1e, 0x01]), // generic<1> static !!1()

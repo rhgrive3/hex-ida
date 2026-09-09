@@ -36,7 +36,7 @@ function resolveIndexed(index, token, depth = 0) {
       const base = resolveIndexed(index, baseToken, depth + 1);
       if (!base.complete) return base;
       const args = parseCilMethodSpecInstantiation(readCilMetadataBlob(index.blobHeap, row.instantiation,
-        'cil-call-signature-methodspec-blob-invalid'));
+        'cil-call-signature-methodspec-blob-invalid'), index.typeDefOrRefRowCounts);
       if (args.length !== base.signature.genericParameterCount) fail('cil-call-signature-methodspec-arity-mismatch');
       const parameters = base.signature.parameters.map((value) => substituteCilMethodGeneric(value, args));
       const returnValue = substituteCilMethodGeneric(base.signature.returnValue, args);
@@ -70,7 +70,7 @@ function resolveIndexed(index, token, depth = 0) {
     const methodName = readCilMetadataString(index.stringsHeap, row.nameIndex,
       'cil-call-signature-method-name-invalid');
     const signature = parseCilMethodSignature(readCilMetadataBlob(index.blobHeap, blobIndex,
-      'cil-call-signature-blob-invalid'));
+      'cil-call-signature-blob-invalid'), index.typeDefOrRefRowCounts);
     return Object.freeze({
       complete:true,
       signature,
