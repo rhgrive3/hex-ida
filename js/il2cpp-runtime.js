@@ -10,6 +10,11 @@ function abortError(signal) {
 
 export function parseMetadataFileInWorker(file, options = {}) {
   const signal = options.signal ?? null;
+  if (signal != null && (typeof signal !== 'object'
+      || typeof signal.addEventListener !== 'function'
+      || typeof signal.removeEventListener !== 'function')) {
+    return Promise.reject(new TypeError('IL2CPP metadata signal must be AbortSignal-compatible.'));
+  }
   const workerFactory = options.workerFactory || (() => new Worker(new URL('./il2cpp-worker.js', import.meta.url), { type:'module' }));
   if (signal?.aborted) return Promise.reject(abortError(signal));
   const id = sequence++;
