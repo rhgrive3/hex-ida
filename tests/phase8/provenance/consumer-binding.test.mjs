@@ -157,8 +157,12 @@ test('C4-03 cumulative binding budgets stop new observations without changing de
   ]) {
     const f = fixture({ bindingBudget });
     assert.equal(f.enhanced.pseudocode, normal.enhanced.pseudocode);
+    assert.equal(f.enhanced.expressionHistoryBinding.completeness, 'incomplete');
+    assert.ok(f.enhanced.expressionHistoryBinding.reasons.includes('binding-budget'));
     const map = applyPhase8Projection(f.enhanced, analysis()).renderProvenance;
     assert.deepEqual(identityRecord(map).producedRefs, expected);
     assert.equal(identityRecord(map).renderedBinding, expected.length ? 'producer-bound' : 'unresolved');
+    assert.equal(map.completeness, 'incomplete');
+    assert.ok(map.reasons.includes('incomplete-expression-binding'));
   }
 });

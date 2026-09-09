@@ -1921,6 +1921,36 @@ origin. No other original finding is declared complete. Main reconciliation,
 full integration acceptance, device/runtime proof and unrelated issue/performance
 work were not performed; the existing acceptance lock remains in force.
 
+### C4-03 observation-cap publication — same TODO step, 2026-09-09
+
+The initial consumer implementation was committed as
+`e026b2f11c8cc9e53f968fb669b795d1ae5f3ac8`, tree
+`0ec9a0bff6e93c81f9bd0361c2b117901a196b3e`; all 59 focused tests passed on that
+head, receipt `c4-03-consumer-exact-719dc0b6-26c4-4284-bc34-9599b71ae9e5.json`.
+Its second generation was clean, receipt
+`c4-03-consumer-rebuild-eb68674f-2d65-4ce5-8dcb-df4160604fe4.json`.
+
+Final inspection identified a completeness gap in the new observation cap:
+when one consumer was bound and a later consumer hit the cap, the bound record
+alone could hide the missing observation. The same producer now publishes an
+immutable `expressionHistoryBinding` disposition scoped to consumer observations.
+Budget exhaustion or unavailable observation marks the public map incomplete,
+including when some observed edges remain present. Pseudocode is unchanged;
+incomplete navigation follows the existing unavailable path. The cap regression
+now asserts this disposition and the map's incomplete reason, not just the
+retained edge count. This is a correction to this TODO implementation, not an
+unrelated issue repair or a weakening of the denominator.
+
+Settled canonical provenance PASS 32.2 s, receipt
+`c4-03-consumer-budget-owned-72269841-a6ee-49f5-8302-8e7d0678bd96.json`.
+Canonical generation PASS 8.7 s, receipt
+`c4-03-consumer-budget-build-0ae3bc1c-44d8-45ba-84f8-f10fceb13768.json`:
+serial `2322242176`, build `f6421e50803d3ba3fb4bd54d`, release identity
+`4410dbe4a8506195b7a49ef4730efaea6c7f051b4c4d1ae181d04e2d431647c2`.
+The final exact-head and zero-diff rebuild receipts are recorded in the durable
+resume checkpoint. The incomplete C4-03 scope and acceptance lock above remain
+unchanged; neither commit constitutes a component acceptance or release.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

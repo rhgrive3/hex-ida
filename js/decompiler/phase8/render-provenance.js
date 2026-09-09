@@ -207,6 +207,7 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   if (typeof shouldAbort === 'function' && shouldAbort() === true) return cancelledMap(resolvedBudget);
 
   const reasons = new Set();
+  if (result.expressionHistoryBinding?.completeness === 'incomplete') reasons.add('incomplete-expression-binding');
   const truncatedScopes = [];
   let entitiesTruncated = 0;
   let ledgerTruncated = 0;

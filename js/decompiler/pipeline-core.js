@@ -48,15 +48,22 @@ function semanticExpressionConsumer(semantic, value, instruction, state, nested 
   const cap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
   const budget = state.expressionBindingBudget ??= {
     consumers:cap(requested?.maxConsumers, 4096), edges:cap(requested?.maxEdges, PROJECTION_LIMITS.edges),
+    reasons:new Set(),
   };
-  if (budget.consumers <= 0 || budget.edges <= 0) return semantic;
+  if (budget.consumers <= 0 || budget.edges <= 0) {
+    budget.reasons.add('binding-budget');
+    return semantic;
+  }
   budget.consumers--;
   try {
     const observation = captureProjectionIrData(
       [semantic.expression, produced.records, value, instruction, semantic.location], state.opts?.shouldAbort);
     const remaining = budget.edges - observation.metrics.edges;
     budget.edges = Math.max(0, remaining);
-    if (remaining < 0) return semantic;
+    if (remaining < 0) {
+      budget.reasons.add('binding-budget');
+      return semantic;
+    }
     expressionHistoryConsumers.set(semantic, Object.freeze({
       ir:state.ir, expression:semantic.expression, op:semantic.op, instructionId:semantic.ir,
       location:semantic.location, records:produced.records,
@@ -65,6 +72,7 @@ function semanticExpressionConsumer(semantic, value, instruction, state, nested 
   } catch {
     // A failed bounded observation must not be retried for every later line.
     budget.edges = 0;
+    budget.reasons.add('binding-observation-unavailable');
   }
   return semantic;
 }
@@ -808,6 +816,11 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
     prototype: advanced.prototype,
     aggregateLayouts: advanced.aggregateLayouts,
     rewriteProof: advanced.rewriteProof,
+    expressionHistoryBinding:Object.freeze({
+      scope:'producer-consumer-observations',
+      completeness:advanced.expressionBindingBudget?.reasons.size ? 'incomplete' : 'complete',
+      reasons:Object.freeze([...(advanced.expressionBindingBudget?.reasons ?? [])]),
+    }),
     rewriteStats: advanced.rewriteStats,
     passMetrics: advanced.passMetrics,
     // Phase 8's frozen ledger. It is published or withheld as a whole; a missing
