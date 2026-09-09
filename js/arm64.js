@@ -1123,26 +1123,37 @@ HANDLERS.ldr = (o, ops, base, addr, c) => {
   plainLdr(o, ops, base, addr, c);
 };
 
-function pairLoadStore(isLoad) {
+function pairLoadStore(isLoad, { elementSize = null, signedExtendToBits = null } = {}) {
   return (o, ops, base, addr, c) => {
     const [a, b] = ops;
     const mem = ops.find((x) => x.k === 'mem');
-    const size = sizeOfReg(a);
+    const size = elementSize ?? sizeOfReg(a);
     o.title = isLoad ? J('2 本まとめて読む', 'Load a pair') : J('2 本まとめて書く', 'Store a pair');
     if (!mem) return;
     o.pseudo = isLoad
       ? opShort(a) + ', ' + opShort(b) + ' = *(pair*)(' + memExpr(mem) + ')'
       : '*(pair*)(' + memExpr(mem) + ') = ' + opShort(a) + ', ' + opShort(b);
-    o.summary = isLoad
-      ? J(memText(mem) + 'から ' + sizeWord(size) + ' ずつ 2 個読み、' + opShort(a) + ' と ' + opShort(b) + ' に入れる。',
-          'Read two values into ' + opShort(a) + ' and ' + opShort(b) + '.')
-      : J(opShort(a) + ' と ' + opShort(b) + ' を、' + memText(mem) + 'から順に 2 個ぶん書き込む。',
-          'Write ' + opShort(a) + ' and ' + opShort(b) + ' side by side.');
-    o.detail.push(J(
-      '2 本を 1 命令で扱えるので、関数の入口と出口でレジスタを退避／復元するときの定番です。',
-      'Two registers in one instruction — the standard way to save and restore around a function.'));
+    if (isLoad && signedExtendToBits != null) {
+      o.title = J('符号付き値を 2 本まとめて読む', 'Load and sign-extend a pair');
+      o.summary = J(
+        memText(mem) + 'から ' + sizeWord(size) + ' の符号付き値を 2 個（合計 ' + sizeWord(size * 2) + '）読み、それぞれ ' + signedExtendToBits + ' ビットへ符号拡張して ' + opShort(a) + ' と ' + opShort(b) + ' に入れる。',
+        'Read two signed ' + (size * 8) + '-bit values (' + sizeWord(size * 2) + ' total) from ' + memText(mem) + ', sign-extend each to ' + signedExtendToBits + ' bits, and place them in ' + opShort(a) + ' and ' + opShort(b) + '.');
+      o.detail.push(J(
+        'メモリ上では各要素は ' + sizeWord(size) + ' だけを読み、レジスタへ入れるときに符号を保ったまま幅を広げます。',
+        'Each memory element is only ' + sizeWord(size) + '; widening happens after the load while preserving the sign.'));
+      o.terms.push('signedness');
+    } else {
+      o.summary = isLoad
+        ? J(memText(mem) + 'から ' + sizeWord(size) + ' ずつ 2 個読み、' + opShort(a) + ' と ' + opShort(b) + ' に入れる。',
+            'Read two values into ' + opShort(a) + ' and ' + opShort(b) + '.')
+        : J(opShort(a) + ' と ' + opShort(b) + ' を、' + memText(mem) + 'から順に 2 個ぶん書き込む。',
+            'Write ' + opShort(a) + ' and ' + opShort(b) + ' side by side.');
+      o.detail.push(J(
+        '2 本を 1 命令で扱えるので、関数の入口と出口でレジスタを退避／復元するときの定番です。',
+        'Two registers in one instruction — the standard way to save and restore around a function.'));
+    }
     // 典型的なプロローグ / エピローグ
-    const isFpLr = a && b && a.k === 'reg' && b.k === 'reg'
+    const isFpLr = signedExtendToBits == null && a && b && a.k === 'reg' && b.k === 'reg'
       && a.cls === 'gp' && b.cls === 'gp'
       && a.bits === 64 && b.bits === 64
       && a.num === 29 && b.num === 30;
@@ -1154,7 +1165,7 @@ function pairLoadStore(isLoad) {
       o.summary = J(
         'スタックを ' + (-dispVal).toString(10) + ' バイト広げて、その先頭に ' + opShort(a) + ' と ' + opShort(b) + ' を置く。',
         'Grow the stack by ' + (-dispVal) + ' bytes and put ' + opShort(a) + ' and ' + opShort(b) + ' there.');
-    } else if (onStack && mem.mode === 'post' && dispVal > 0n && isLoad) {
+    } else if (signedExtendToBits == null && onStack && mem.mode === 'post' && dispVal > 0n && isLoad) {
       o.title = J('スタックから降ろす（pop）', 'Pop from the stack');
       o.summary = J(
         'スタックの先頭から ' + opShort(a) + ' と ' + opShort(b) + ' を取り戻し、スタックを ' + dispVal.toString(10) + ' バイト縮める。',
@@ -1176,7 +1187,7 @@ function pairLoadStore(isLoad) {
         'スタックに預けておいた戻り先アドレス (x30) とフレーム位置 (x29) を取り戻す。もうすぐ ret で帰ります。',
         'Restore the saved return address and frame pointer — a ret is coming.');
       o.terms.push('epilogue', 'lr', 'stack');
-    } else if (a && a.k === 'reg' && a.cls === 'gp' && a.num >= 19 && a.num <= 28) {
+    } else if (signedExtendToBits == null && a && a.k === 'reg' && a.cls === 'gp' && a.num >= 19 && a.num <= 28) {
       o.detail.push(isLoad
         ? J('x19〜x28 は「呼ばれた側が元に戻す約束」のレジスタです。ここで戻しています。',
             'x19–x28 are callee-saved; this restores them.')
@@ -1191,7 +1202,7 @@ HANDLERS.stp = pairLoadStore(false);
 HANDLERS.stnp = pairLoadStore(false);
 HANDLERS.ldp = pairLoadStore(true);
 HANDLERS.ldnp = pairLoadStore(true);
-HANDLERS.ldpsw = pairLoadStore(true);
+HANDLERS.ldpsw = pairLoadStore(true, { elementSize: 4, signedExtendToBits: 64 });
 
 HANDLERS.prfm = (o, ops) => {
   const mem = ops.find((x) => x.k === 'mem');
