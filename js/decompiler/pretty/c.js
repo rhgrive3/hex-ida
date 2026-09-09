@@ -108,6 +108,12 @@ function printIntegerView(n, bits, signed, parentPrec, opts) {
 }
 
 function compareOperands(n, p, opts) {
+  // A floating-domain comparison compares the operands' values as-is; the
+  // integer signed/unsigned views would assert a different domain and change
+  // the meaning of the comparison (#5247).
+  if (n.comparisonDomain === 'floating') {
+    return [printExpression(n.left, p, opts), printExpression(n.right, p + 1, opts)];
+  }
   if (n.compareSigned !== true && n.compareSigned !== false) {
     return [printExpression(n.left, p, opts), printExpression(n.right, p + 1, opts)];
   }

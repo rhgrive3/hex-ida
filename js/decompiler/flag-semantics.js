@@ -183,8 +183,8 @@ export function buildNZCVConditionExpression(sub, cond, left, right, bits, sourc
     switch (cond) {
       case 'eq': return directCompare('eq', left, right, false, bits, source, 'floating');
       case 'ne': return directCompare('ne', left, right, false, bits, source, 'floating');
-      case 'mi': case 'lo': case 'cc': return directCompare('lt', left, right, true, bits, source, 'floating');
-      case 'ls': return directCompare('le', left, right, true, bits, source, 'floating');
+      case 'mi': case 'lo': case 'cc': case 'lt': return directCompare('lt', left, right, true, bits, source, 'floating');
+      case 'ls': case 'le': return directCompare('le', left, right, true, bits, source, 'floating');
       case 'ge': return directCompare('ge', left, right, true, bits, source, 'floating');
       case 'gt': return directCompare('gt', left, right, true, bits, source, 'floating');
       default: return intrinsicCondition(sub, cond, left, right, bits, source);
