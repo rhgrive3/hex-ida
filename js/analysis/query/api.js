@@ -1,4 +1,5 @@
 import { stableDigest } from "../../core/identity/index.js";
+import { ANALYSIS_COMPLETENESS } from "../status.js";
 import {
   assertAnalysisSnapshot,
   createAnalysisSnapshot,
@@ -6,7 +7,7 @@ import {
   normalizeAnalysisArtifactVersions,
 } from "./snapshot.js";
 
-const COMPLETENESS = new Set(["complete", "partial", "truncated", "unsupported"]);
+const COMPLETENESS = new Set(ANALYSIS_COMPLETENESS);
 const TYPED_ARRAY_MUTATORS = new Set(["set", "copyWithin", "fill", "reverse", "sort"]);
 const TYPED_ARRAY_CALLBACKS = new Set([
   "forEach", "map", "filter", "every", "some", "find", "findIndex", "findLast", "findLastIndex",
