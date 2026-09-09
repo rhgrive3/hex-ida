@@ -33,6 +33,12 @@ test('v8 true machine->decompiler entry optimizes an MBA cancellation; no helper
  assert.equal(r.proofOptimization.targetDecisions.filter(t=>t.disposition==='adopted').length,5);
  assert.match(r.pseudocode,/return 0;/);assert.doesNotMatch(r.pseudocode,/\^/);
  assert.ok(r.ir.instructions.some(i=>i.op==='bin'&&i.sub==='xor'),'original instruction effects remain');
+ for(const transform of r.phase8Projection.transforms) {
+  assert.equal(transform.generatorAudit?.strategy,'equality-saturation');
+  assert.equal(transform.generatorAudit.proofQueryHash,transform.queryHash);
+  assert.ok(r.renderProvenance.ledger.some(row=>row.queryHash===transform.queryHash
+   && row.generatorAudit?.candidateId===transform.generatorAudit.candidateId));
+ }
 });
 test('v8 staging alone, arbitrary state facades and seeded artifacts cannot authorize a rewrite',async()=>{
  const f=proofFixture(),plan=await preparePhase8RewritePlan(f.ir,f.options);let artifact;

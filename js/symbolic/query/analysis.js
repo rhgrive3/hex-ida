@@ -163,7 +163,7 @@ export async function querySymbolicAnalysis(ir, inputOptions = {}) {
       guard.take('candidates', candidates.candidates.length);
       guard.take('allocationUnits', candidates.candidates.length + 1);
       output.push(Object.freeze({ valueId, expression, candidates: candidates.candidates, metrics: candidates.metrics,
-        ...(equalitySaturation ? {ruleOrder:candidates.ruleOrder} : {}) }));
+        ...(equalitySaturation ? {ruleOrder:candidates.ruleOrder,generatorLimits:candidates.limits} : {}) }));
       targetInputs.set(target, translated);
     }
     guard.check();

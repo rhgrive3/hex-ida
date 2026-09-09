@@ -52,7 +52,7 @@ guarded saturating shifts, comparisons, Boolean connectives, selection, casts,
 extraction and concatenation within 1–64 bits. C integer promotions and odd BV
 widths are made explicit with native-width casts/masks; sign extension is widened
 before arithmetic. Division, memory and unknown terms remain unsupported.
-The legacy pass ID `phase8.solver-constants` is retained at version `2.2.0`;
+The legacy pass ID `phase8.solver-constants` is retained at version `2.3.0`;
 new nonconstant records use `solver-scalar`, constants retain `solver-constant`.
 
 Each inspected request has a decision row. `selected` means a current eligible
@@ -93,6 +93,46 @@ truthy but the independent verifier finds a behavioral difference. This path
 does not repair or certify the ordinary synchronous legacy rendering rules.
 Full rule-by-width/operator/idiom closure, every legacy view transition, and
 memory/CFG/exception observables remain separate unfinished roadmap work.
+
+## Adopted equality-candidate audit
+
+Each adopted equality-saturation transform now retains `generatorAudit` in its
+committed plan entry, `phase8Projection.transforms` and `renderProvenance.ledger`.
+The record contains the actual candidate/proof query IDs, rule-set version,
+rule order, applied search rules, extraction cost, effective query limits and
+measured resource counters. The symbolic query reports its captured limits and
+the owned target result carries them to the Phase 8 plan; callers cannot supply
+replacement audit metadata. The pass version is 2.3.0.
+
+`appliedRules` is the complete query search's applied-rule set, **not** a derivation
+certificate for one extracted term. `extractionCost` belongs to that specific
+candidate. Limits and counters describe the encompassing query, not independent
+per-rule resource use, the whole function or the solver's internal limits.
+Allocation/e-class counters are not physical peak memory measurements.
+
+Audit fields are bounded, snapshotted, validated and deeply frozen before they
+enter the plan's audit identity. Capture charges the parent work/allocation
+budget. Wall-clock observations stay in existing query/plan metrics outside the
+stable audit digest; timing does not make the same semantic plan acquire a new
+identity on every replay. Replay retains the actual prior transform and its audit
+without counting another adoption.
+
+The strict canonical PassResult schema is unchanged: its validation still has
+four fields, including plan and proof query IDs, and rewrite data still has two
+hash fields. Its committed overlay contains the audited entry; the actual rendered
+transform ledger retains the corresponding audit. No parallel ledger or proof
+capability was added. Serialized/copied audits and edited plans do not authorize
+adoption. Legitimate wrappers around an unchanged owned AST remain usable, but
+substituting unowned history produces explicitly incomplete history and cannot
+smuggle in a forged transform. The optional legacy representation/local generators
+are not mislabeled as equality-saturation audits.
+
+`tests/phase8/substrate/generator-audit.test.mjs` covers captured nondefault limits,
+owned target propagation, genuine committed overlays, constant/nonconstant output
+under all three schedules, provenance/replay, stable audit identity, copy/edit
+refusal, N-1/N/N+1 parent budgets and withheld/stale transactions. This completes
+the C4-05 generator-metadata path for actually adopted equality candidates, not
+the full native proof, memory/CFG/exception or compiler/device denominator.
 
 ## Authority and lifecycle
 
@@ -191,7 +231,7 @@ The order is captured before asynchronous verification, reported on the query
 and its candidates, and carried through symbolic analysis into the real Phase 8
 plan and target decisions. It participates in the plan's audit digest. It is not
 part of proof authority: identical before/after terms still need an actual
-privately issued verification receipt. The pass version is 2.2.0. Unknown orders,
+privately issued verification receipt. Unknown orders,
 non-data fields and orders supplied to a different candidate strategy fail closed.
 
 `tests/phase9/egraph/rule-order.test.mjs` exercises the actual scheduling primitive

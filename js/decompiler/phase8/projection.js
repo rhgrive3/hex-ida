@@ -417,6 +417,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
       records.push(Object.freeze({kind:entry.kind,valueId:entry.valueId,
         proof:'canonical eligible solver equivalence proof',targets:Object.freeze(collectTargets(source,entry.kind)),
         queryHash:entry.queryHash,planId:proved.planId,beforeHash:entry.beforeHash,afterHash:entry.afterHash,
+        ...(entry.generatorAudit ? {generatorAudit:entry.generatorAudit} : {}),
         origin:Object.freeze({addresses:Object.freeze([...source.addresses]),rows:Object.freeze([...source.rows]),
           ir:Object.freeze([...source.ir]),ssaDefs:Object.freeze([...source.ssaDefs]),ssaUses:Object.freeze([...source.ssaUses])})}));
     }

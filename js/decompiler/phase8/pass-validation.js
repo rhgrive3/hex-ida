@@ -27,7 +27,7 @@ const TOTAL_UNARY = new Set(['not','neg','trunc','zext','sext']);
 const DEFAULT_MODELS = createTaintModels({id:'phase8-empty', version:'1', provenance:'hex.phase8.explicit-empty-model/v1',sources:[],sinks:[]});
 
 export const PROOF_REWRITE_PASS = createPassDescriptor({
-  id:'phase8.solver-constants', version:'2.2.0', stage:'rendering',
+  id:'phase8.solver-constants', version:'2.3.0', stage:'rendering',
   consumes:['ssa','origins'], produces:['provedRewrites'],
   preserves:ANALYSIS_KEYS.filter(key => key !== 'provedRewrites'),
   description:'Project unconditional solver-proved BV scalars without changing canonical IR or effects (legacy pass ID).',
@@ -52,6 +52,43 @@ function scopeOptions(options) {
     memoryObservables:EMPTY, effectObservables:EMPTY, models:submitted.models ?? DEFAULT_MODELS };
   for (const key of ['memory','execution','analysisLimits','limits']) if (submitted[key] != null) out[key] = queryRecord(submitted[key]);
   return Object.freeze(out);
+}
+
+// Bounded audit data from the already-issued symbolic result and eligible
+// candidate, never caller-supplied metadata or another proof capability. The
+// search-wide rule set is not a derivation certificate for this particular term.
+function equalityGeneratorAudit(item,candidate,guard) {
+  const limits = queryRecord(item.generatorLimits,guard,32);
+  const metrics = queryRecord(item.metrics,guard,32);
+  const cost = queryRecord(candidate.cost,guard,8);
+  const rules = queryArray(candidate.rules,guard,128);
+  const resources = {};
+  const invalid = () => { throw new QueryFailure('invalid-egraph-generator-audit'); };
+  for (const [key,maximum] of Object.entries(limits)) {
+    guard.take('workItems');
+    if (key.length > 64 || !Number.isSafeInteger(maximum) || maximum < 0
+      || !Number.isSafeInteger(metrics[key]) || metrics[key] < 0 || metrics[key] > maximum) invalid();
+    resources[key] = metrics[key];
+  }
+  if (!Object.keys(limits).length || !Number.isSafeInteger(metrics.verificationQueries)
+    || metrics.verificationQueries < 1 || metrics.verificationQueries > limits.candidates
+    || candidate.ruleOrder !== item.ruleOrder) invalid();
+  resources.verificationQueries = metrics.verificationQueries;
+  for (const key of ['treeNodes','depth','expensiveOps']) {
+    if (!Number.isSafeInteger(cost[key]) || cost[key] < 0) invalid();
+  }
+  if (cost.treeNodes < 1 || cost.depth < 1 || cost.depth > cost.treeNodes || cost.expensiveOps > cost.treeNodes) invalid();
+  if (new Set(rules).size !== rules.length) invalid();
+  const appliedRules = rules.map(rule => string(rule,'generator-rule'));
+  guard.take('allocationUnits',appliedRules.length + Object.keys(limits).length * 2 + 12);
+  return Object.freeze({schemaVersion:'hex-phase8-generator-audit/v1',strategy:'equality-saturation',
+    scope:'whole-query-search-not-per-candidate-derivation-or-proof',
+    candidateId:string(candidate.candidateId,'generator-candidate'),
+    rulesetVersion:string(candidate.rulesetVersion,'generator-ruleset'),
+    ruleOrder:string(candidate.ruleOrder,'generator-rule-order'),appliedRules:Object.freeze(appliedRules),
+    extractionCost:Object.freeze({treeNodes:cost.treeNodes,depth:cost.depth,expensiveOps:cost.expensiveOps}),
+    limits:Object.freeze(limits),resources:Object.freeze(resources),
+    proofQueryHash:string(candidate.verification.evidence.queryHash,'generator-proof-query')});
 }
 
 // This is an admission filter, not another evaluator. Meaning stays in the
@@ -174,7 +211,9 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
       guard.take('rewrites'); guard.take('allocationUnits',3 + inputBinding.inputs.length);
       const binding = candidate.verification.binding;
       const kind = candidate.after.kind === 'const' ? 'solver-constant' : 'solver-scalar';
+      const generatorAudit = candidate.rule === 'equality-saturation' ? equalityGeneratorAudit(item,candidate,guard) : null;
       const entry = Object.freeze({valueId:item.valueId,rawValueId:target.id,bits:candidate.after.sort.width,kind,projection,
+        ...(generatorAudit ? {generatorAudit} : {}),
         value:kind === 'solver-constant' ? candidate.after.value : null,beforeHash:binding.beforeHash,afterHash:binding.afterHash,
         queryHash:candidate.verification.evidence.queryHash,originRefs:Object.freeze([item.valueId]),
         inputBindings:Object.freeze(inputBinding.inputs.map(input => Object.freeze({ valueId:input.valueId,

@@ -59,6 +59,7 @@
       "tests/phase8/provenance/switch-render.test.mjs",
       "tests/phase8/substrate/proof-target-decisions.test.mjs",
       "tests/phase8/substrate/proof-scalar-expression.test.mjs",
+      "tests/phase8/substrate/generator-audit.test.mjs",
       "tests/phase8/substrate/rewrite-registry.test.mjs",
       "tests/phase8/substrate/representation-candidates.test.mjs",
       "tests/phase8/provenance/stack-recovery-history.test.mjs",

@@ -27,6 +27,7 @@ export async function queryEqualitySaturation(options={}) {
     schemaVersion:'hex-equality-saturation/v1',status,reason,identity:guard.identity,
     scope:'pure-expression-candidates-only',rulesetVersion:EQUALITY_RULESET_VERSION,
     ruleOrder:EGRAPH_RULE_ORDERS.includes(ruleOrder)?ruleOrder:null,
+    limits:guard.limits,
     saturated:search?.saturated??false,optimality:search?.optimality??null,
     candidates:Object.freeze(candidates),rules:search?.rules??Object.freeze([]),
     metrics:Object.freeze({...guard.metrics(),verificationQueries}),

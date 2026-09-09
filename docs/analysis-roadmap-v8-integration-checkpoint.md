@@ -2655,6 +2655,57 @@ the whole original C4-05 card or the full 23-finding roadmap. The 135-binary
 compiler denominator and all remaining scope stay unchanged. Integration
 acceptance remains LOCKED.
 
+## C4-05 generator audit on actual adopted-transform history
+
+The equality-saturation query now reports its actual frozen effective `limits`;
+the owned symbolic target retains them alongside its existing query metrics.
+For an independently eligible equality candidate, Phase 8 creates a bounded,
+deeply frozen `generatorAudit`: candidate/proof query IDs, rule-set version and
+order, applied search rules, the selected candidate's extraction cost, effective
+limits and measured counters. It is carried by the genuine plan entry and its
+committed overlay into actual `phase8Projection.transforms` and
+`renderProvenance.ledger`, including retained history on replay.
+
+This connects the existing candidate information to the real transformed output;
+it is not another ledger or verifier. Pass version is 2.3.0. The canonical pass
+result's exact transform/validation/rewrite schemas are unchanged. Its plan and
+proof IDs still link the committed entry, while the rendered-transform ledger
+holds the bounded generator record. Copying/editing the audit never creates a
+plan, committed overlay, producer input binding or proof capability.
+
+The applied-rule set is explicitly search-wide, not an invented derivation
+certificate for one candidate. Query counters and limits are not per-rule costs,
+whole-function totals, internal solver ceilings or physical peak memory. Dynamic
+wall-clock observations remain outside stable plan/audit identity. Audit capture
+is charged to the parent plan budget; limits are captured from the actual query,
+not reconstructed from defaults or copied from caller-supplied metadata.
+
+Nine permanent substrate tests exercise effective nondefault limits and async
+mutation, owned target propagation, genuine committed overlays, constant and
+nonconstant real projection under all three schedules, proof-linked provenance
+and replay, deterministic identity, fake plans/overlays/history, late refusal and
+exact N-1/N/N+1 parent capture budgets. Other strategies remain unlabeled rather
+than receiving fabricated equality metadata.
+The existing public ARM64 EOR/MBA machine-to-decompiler regression also checks
+every actual transform's generator audit and matching render-ledger entry; no
+instruction or target-device coverage is removed to force that fixture through.
+
+The first tests incorrectly required null-prototype input dictionaries to remain
+prototype-identical after JSON transport, and treated every new result wrapper
+as a new AST. The product deliberately permits wrappers retaining the same owned
+AST. The corrected regression requires value-preserving audit serialization,
+zero adoption from forged metadata, explicitly incomplete history after history
+substitution, and refusal of copied ASTs. No product authority was weakened or
+issue-lane behavior changed to accommodate those initial fixture assumptions.
+
+The live relevant PR search again found the existing integration PR #7036 and no
+separate egraph implementation to duplicate. This implements the stated C4-05
+rule-set/budget/cost/proof-ID history path for adopted equality candidates.
+Native-width proof gaps, arbitrary permutations/unbounded expressions, ordinary
+legacy-view adoption, memory/CFG/exception observables and full integration
+acceptance remain open. All 23 original findings and the frozen 135-binary
+compiler denominator remain; no whole finding is newly closed. Acceptance LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -2691,7 +2742,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
 | HEX-C4-03 | Navigation, observed expression/recovery histories, successive projections and actual spill statement removal/suppression implemented; other view transforms and full removed/merged class coverage still open |
 | HEX-C4-04 | Proof-gated scalar projection, owned inputs, transaction coverage and optional reuse of all 64 display rules as independently verified candidates implemented; ordinary legacy-view adoption, full family/width denominator and memory/CFG/exception observables remain open |
-| HEX-C4-05 | Existing e-graph/proof path has the frozen 272-cell scalar matrix, 14 Bool families and 8-width real-producer MBA coverage, now checked across 3 actual rule schedules (816 scalar cells) with private proof/plan/projection identity; native proof gaps, arbitrary permutations and full acceptance remain open |
+| HEX-C4-05 | Frozen 272-cell scalar/14-Bool/8-width producer coverage and 3 actual schedules (816 scalar cells); adopted-transform history now preserves actual rule/cost/budget/proof audits. Native proof gaps, arbitrary permutations and full acceptance remain open |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |
 | HEX-SYM-02 | Byte-memory escalation, alias/partial-write independent oracle |
 | HEX-SYM-03 | Taint/source/sink/sanitizer and proof-gated deobfuscation matrix |
