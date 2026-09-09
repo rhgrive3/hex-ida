@@ -148,6 +148,17 @@ export class ArtifactStore {
 
   async get(descriptorOrId, options = {}) {
     const descriptor = typeof descriptorOrId === 'string' ? null : descriptorOrId;
+    // A caller-supplied descriptor object is read authority. Any object that
+    // carries its own artifactId must be a canonical mint product (the same
+    // boundary publish() enforces) before it is compared against stored
+    // records: a forged lookalike with a valid artifactId must not drive
+    // validateDescriptorRecord() into artifact-record-identity-mismatch and
+    // the delete-on-mismatch path, which would destroy a healthy artifact
+    // because of caller input alone. Objects without an artifactId are not
+    // descriptor attempts and keep the requireArtifactId() boundary below.
+    if (descriptor !== null && typeof descriptor === 'object' && Object.hasOwn(descriptor, 'artifactId')) {
+      assertCanonicalArtifactDescriptor(descriptor);
+    }
     const artifactId = requireArtifactId(descriptor?.artifactId ?? descriptorOrId);
     aborted(options.signal);
     this.metrics.requests++;
