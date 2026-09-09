@@ -92,6 +92,7 @@ export function parseAarch64GnuProperty(input, options = {}) {
   const evidence = [];
   let featureBits = null;
   let propertyIncomplete = false;
+  let propertyNonConforming = false;
   for (let index = 0; index < phnum; index++) {
     const p = phoffNumber + index * phentsize;
     const type = r.u32(p);
@@ -102,6 +103,19 @@ export function parseAarch64GnuProperty(input, options = {}) {
         || !boundedSpan(offset, filesz, bytes.byteLength)) {
       propertyIncomplete = true;
       warnings.push(`PT_GNU_PROPERTY ${index} is outside bounded input`);
+      continue;
+    }
+    // Loader policy for NT_GNU_PROPERTY_TYPE_0 requires the segment to be
+    // aligned to the native address size (ELF32_GNU_PROPERTY_ALIGN=4,
+    // ELF64_GNU_PROPERTY_ALIGN=8). glibc's _dl_process_pt_gnu_property skips
+    // notes with any other p_align, so a nonconforming segment must never
+    // mint BTI/PAC evidence (#4349).
+    const requiredPropertyAlignment = bits === 64 ? 8 : 4;
+    const segmentAlignmentRaw = bits === 64 ? r.u64(p + 48) : BigInt(r.u32(p + 28));
+    const segmentAlignment = safeNumber(segmentAlignmentRaw);
+    if (segmentAlignment !== requiredPropertyAlignment) {
+      propertyNonConforming = true;
+      warnings.push(`PT_GNU_PROPERTY ${index} is ignored: p_align ${segmentAlignmentRaw.toString()} does not satisfy the ${bits}-bit GNU property alignment ${requiredPropertyAlignment}`);
       continue;
     }
     const end = offset + filesz;
@@ -181,6 +195,16 @@ export function parseAarch64GnuProperty(input, options = {}) {
       pacRequested:null,
       gcsRequested:null,
       ...(featureBits == null ? {} : { featureBits }),
+      evidence:Object.freeze(evidence),
+      warnings:Object.freeze(warnings),
+    });
+  }
+  if (propertyNonConforming && featureBits == null) {
+    return defaultResult({
+      loaderPolicy:'unknown',
+      btiRequested:null,
+      pacRequested:null,
+      gcsRequested:null,
       evidence:Object.freeze(evidence),
       warnings:Object.freeze(warnings),
     });
