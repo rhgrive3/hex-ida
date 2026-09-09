@@ -205,30 +205,53 @@ function canonicalDescriptorString(layer, descriptor) {
   return stableStringify(canonicalDescriptorMaterial(layer, descriptor));
 }
 
+const NESTED_STRUCTURAL_TYPE_KEYS = Object.freeze(['memberType', 'elementType', 'pointeeType']);
+
+function validateStructuralDescriptorValue(value, seen = new WeakSet()) {
+  if (value == null || typeof value !== 'object' || seen.has(value)) return;
+  seen.add(value);
+
+  if (value.offset != null) {
+    const offset = toBigInt(value.offset, null);
+    if (offset == null || offset < 0n) fail('structural-offset-invalid');
+  }
+  if (value.sizeBytes != null) {
+    const size = toBigInt(value.sizeBytes, null);
+    if (size == null || size <= 0n) fail('structural-size-invalid');
+  }
+  if (value.alignBytes != null) {
+    const align = toBigInt(value.alignBytes, null);
+    if (align == null || align <= 0n) fail('structural-align-invalid');
+  }
+  if (value.strideBytes != null) {
+    const stride = toBigInt(value.strideBytes, null);
+    if (stride == null || stride <= 0n) fail('structural-stride-invalid');
+  }
+  if (value.length != null) {
+    const len = toBigInt(value.length, null);
+    if (len == null || len < 0n) fail('structural-length-invalid');
+  }
+
+  if (Array.isArray(value)) {
+    for (const child of value) validateStructuralDescriptorValue(child, seen);
+    return;
+  }
+
+  // Structural type descriptors can nest through fields, arrays, pointers,
+  // and inline aggregates. Validate only those semantic edges so unrelated
+  // metadata objects with a property named `length` are not misclassified as
+  // type layout facts.
+  for (const key of NESTED_STRUCTURAL_TYPE_KEYS) {
+    validateStructuralDescriptorValue(value[key], seen);
+  }
+  if (Array.isArray(value.members)) {
+    validateStructuralDescriptorValue(value.members, seen);
+  }
+}
+
 function validateDescriptor(layer, descriptor) {
   if (descriptor == null || typeof descriptor !== 'object') fail('type-claim-descriptor-required');
-  if (layer === 'structural') {
-    if (descriptor.offset != null) {
-      const offset = toBigInt(descriptor.offset, null);
-      if (offset == null || offset < 0n) fail('structural-offset-invalid');
-    }
-    if (descriptor.sizeBytes != null) {
-      const size = toBigInt(descriptor.sizeBytes, null);
-      if (size == null || size <= 0n) fail('structural-size-invalid');
-    }
-    if (descriptor.alignBytes != null) {
-      const align = toBigInt(descriptor.alignBytes, null);
-      if (align == null || align <= 0n) fail('structural-align-invalid');
-    }
-    if (descriptor.strideBytes != null) {
-      const stride = toBigInt(descriptor.strideBytes, null);
-      if (stride == null || stride <= 0n) fail('structural-stride-invalid');
-    }
-    if (descriptor.length != null) {
-      const len = toBigInt(descriptor.length, null);
-      if (len == null || len < 0n) fail('structural-length-invalid');
-    }
-  }
+  if (layer === 'structural') validateStructuralDescriptorValue(descriptor);
 }
 
 /**
