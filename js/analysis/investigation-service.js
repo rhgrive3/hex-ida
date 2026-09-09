@@ -190,29 +190,54 @@ function pinCacheKey(snapshotId, goal) {
 // #5284: the pin request identity must bind every input that changes what a
 // cached pin means, not just the goal tuple. `needsShapeEvidence()` reads the
 // goal's canonical `expects` selectors to decide whether shapes/metadata
-// evidence is collected, and the effective pinpoint budget bounds the search —
-// validating only snapshot/id/text let a wide-evidence or high-budget
-// re-investigation reuse a pin computed under narrower semantics. The identity
-// is stored alongside the pin and re-validated on lookup (a cache keyed only
-// on the goal tuple cannot express it without changing the entry shape that
-// snapshot-scoped pin retention depends on).
+// evidence is collected, the effective ranking limit controls the candidate
+// universe, and the effective pinpoint budget bounds the search. Actual
+// evidence object coverage is also bound so a cached pin cannot be paired with
+// a returned context from a different in-snapshot evidence generation.
 function canonicalExpectsDigest(goal) {
   const expects = goal?.expects;
   if (!expects || typeof expects !== 'object' || Array.isArray(expects)) return '';
   return Object.keys(expects).filter((name) => !!expects[name]).sort().join('|');
 }
-function pinRequestIdentity(context, goal, options) {
+function effectiveRankingLimit(options) {
+  const numeric = Number(options?.limit ?? 40);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : 0;
+}
+function pinEvidenceCoverage(context) {
+  return {
+    fields:context?.fields ?? null,
+    shapes:context?.shapes ?? null,
+    program:context?.program ?? null,
+    symbols:context?.symbols ?? null,
+    strings:context?.strings ?? null,
+    region:context?.region ?? null,
+  };
+}
+function pinEvidenceCoverageMatches(cached, request) {
+  if (!cached || !request) return false;
+  return Object.is(cached.fields, request.fields)
+    && Object.is(cached.shapes, request.shapes)
+    && Object.is(cached.program, request.program)
+    && Object.is(cached.symbols, request.symbols)
+    && Object.is(cached.strings, request.strings)
+    && Object.is(cached.region, request.region);
+}
+function pinRequestIdentity(context, goal, options, rankingLimit = effectiveRankingLimit(options)) {
   return {
     expectsDigest: canonicalExpectsDigest(goal),
     pinpointBudget: boundedBudget(options?.budget?.pinpoint, 48),
+    rankingLimit,
     shapesCollected: needsShapeEvidence(goal) === true,
+    evidenceCoverage:pinEvidenceCoverage(context),
   };
 }
 function pinRequestMatches(cached, request) {
   if (!cached) return false;
   return cached.expectsDigest === request.expectsDigest
     && cached.pinpointBudget === request.pinpointBudget
-    && cached.shapesCollected === request.shapesCollected;
+    && cached.rankingLimit === request.rankingLimit
+    && cached.shapesCollected === request.shapesCollected
+    && pinEvidenceCoverageMatches(cached.evidenceCoverage, request.evidenceCoverage);
 }
 
 function beats(next, current) {
@@ -651,13 +676,14 @@ export class InvestigationService {
     const epoch = this.#syncEpoch();
     const generation = this.cacheGeneration;
     assertAnalysisBinding(this.app, context.binding);
+    const rankingLimit = effectiveRankingLimit(options);
     const ranked = rankCandidates({
       goal,
       strings:context.strings,
       program:context.program,
       symbols:context.symbols,
       region:context.region,
-      limit:options.limit ?? 40,
+      limit:rankingLimit,
       vendors:vendorsOf(context.fields),
     });
     abortIfNeeded(options.signal);
@@ -668,7 +694,7 @@ export class InvestigationService {
     // one goal's pinpoint result be reused as another's (#5610). A
     // length-prefixed encoding makes the tuple decode unambiguously.
     const cacheKey = pinCacheKey(context.snapshotId, goal);
-    const request = pinRequestIdentity(context, goal, options);
+    const request = pinRequestIdentity(context, goal, options, rankingLimit);
     const cached = this.pinCache.get(cacheKey) || null;
     const cachedIdentity = this.pinRequestIdentityCache.get(cacheKey) || null;
     let pin = cached && pinRequestMatches(cachedIdentity, request) ? cached : null;
@@ -779,4 +805,4 @@ export function investigationServiceFor(app) {
   return service;
 }
 
-export const __investigationInternalsForTests = Object.freeze({ needsShapeEvidence, completenessFor, beats, regionForAddress, priorityOf, budgetConfig, budgetProfileCovers, captureAnalysisBinding, analysisBindingCurrent, typedRankedCandidates, pinCacheKey, pinRequestIdentity });
+export const __investigationInternalsForTests = Object.freeze({ needsShapeEvidence, completenessFor, beats, regionForAddress, priorityOf, budgetConfig, budgetProfileCovers, captureAnalysisBinding, analysisBindingCurrent, typedRankedCandidates, pinCacheKey, pinRequestIdentity, pinRequestMatches });
