@@ -36,6 +36,12 @@ function token(value) {
 const NON_SEMANTIC_KEYS = new Set(['dst', 'uses']);
 const NO_SKIPPED_KEYS = new Set();
 const DEEPLY_FROZEN_CACHE = new WeakMap();
+// Values in the existing validator's true-cache have only deeply immutable
+// own data properties (no Map/Set/Date/accessor children). Keep their exact
+// typed spelling weakly, and cap individual entries to avoid retaining giant
+// strings beside large live graphs. Mutable/unvalidated data always re-encodes.
+const FROZEN_IDENTITY_TEXT = new WeakMap();
+const MAX_CACHED_IDENTITY_TEXT = 16 * 1024;
 
 /* Semantic identity only accepts enumerable, own, data properties.  Reading a
  * getter while issuing an artifact ID would make identity depend on timing or
@@ -138,6 +144,17 @@ function canonicalSortText(value) {
 function typedIdentityText(root) {
   const active = new Set();
   const visit = (value) => {
+    if (value != null && typeof value === 'object' && DEEPLY_FROZEN_CACHE.get(value) === true) {
+      if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
+      const cached = FROZEN_IDENTITY_TEXT.get(value);
+      if (cached !== undefined) return cached;
+      const text = encode(value);
+      if (text.length <= MAX_CACHED_IDENTITY_TEXT) FROZEN_IDENTITY_TEXT.set(value, text);
+      return text;
+    }
+    return encode(value);
+  };
+  const encode = (value) => {
     if (value === null) return 'null;';
     switch (typeof value) {
       case 'undefined':
