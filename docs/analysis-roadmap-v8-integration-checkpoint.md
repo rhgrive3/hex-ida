@@ -2197,6 +2197,46 @@ spill transformations do not prove the full CSE/DCE/switch/struct-field
 removed/merged class denominator. Other view transitions and all original
 findings remain open; integration acceptance stays LOCKED.
 
+## C4-03 actual struct-field rendering history
+
+The existing canonical field-location renderer now records its actual consumed
+memory accesses, including store lvalues and nested load bases. Records are
+issued for emitted consumers, not for unused aggregate-layout candidates.
+The original instruction and base SSA origins remain navigable through the
+existing #3421 mapper and private producer/consumer observation. Equal field
+names and offsets do not correlate independent accesses. Repeated consumers
+of one actual location share the original record; owned reprojection retains
+history without counting it as a new optimizer adoption.
+
+`fieldFor` naming remains presentation metadata, explicitly not type/layout
+proof. Its existing fallback spelling and exception behavior, canonical IR,
+load source/identity and pseudocode are unchanged. Bounded history or observation
+failure withholds complete provenance instead of changing generated statements.
+Copied descriptors/records and mutated canonical locations do not carry binding
+authority. No new semantic engine, ABI rule or layout inference is introduced.
+
+Seven new regressions cover independent equal-name accesses, unused candidates,
+source/IR preservation, missing names, copy/mutation rejection, record/observer
+limits, repeated projections, nested bases, shared consumers and the public
+decompiler -> query -> navigation path with stale-snapshot rejection.
+
+Precommit evidence in persistent `evidence/analysis-roadmap-20260909`:
+
+- canonical provenance PASS 16.4 s:
+  `c4-03-field-owned-c1d677fa-10c6-420b-9687-337e4b24fbfe.json`;
+- deterministic/width/proof/publication/reanchor/ownership boundaries PASS 5.6 s:
+  `c4-03-field-boundaries-8cc9feee-ff63-459a-83cc-d0da0f318d6c.json`;
+- semantic pipeline PASS 0.6 s:
+  `c4-03-field-pipeline-6728c98f-f6d2-4efa-a433-fc9f25729de3.json`.
+
+Live #3421 still resolves to `4cd5b3eb9200b1180985b9df3a74f8245a5cc928`;
+the related PR search found no newer replacement for that mapping producer.
+No component merge or main reconciliation is included. The user's concurrent
+main performance changes remain for the defined reconciliation point, not
+overwritten or reimplemented here. Source/test coverage of this field renderer
+does not close arbitrary CSE/DCE/switch transformations, the original 23 finding
+requirements, or integration acceptance. The checkpoint remains LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

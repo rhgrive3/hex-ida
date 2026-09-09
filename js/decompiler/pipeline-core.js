@@ -28,6 +28,54 @@ function valueOf(a) { return a?.value || null; }
 // to an expression's text or a shared input's source IDs. No public metadata
 // can issue a binding, and the expression/load identity is never modified.
 const expressionHistoryConsumers = new WeakMap();
+function consumerObservationBudget(state) {
+  const requested = state.opts?.renderProvenanceBindingBudget;
+  const cap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
+  return state.expressionBindingBudget ??= {
+    consumers:cap(requested?.maxConsumers, 4096), edges:cap(requested?.maxEdges, PROJECTION_LIMITS.edges),
+    reasons:new Set(),
+  };
+}
+
+function fieldProjectionRecords(semantic, state) {
+  if (!state.fieldLocations?.size) return [];
+  // Only actual consumed locations get history. Equal names/offsets and
+  // speculative aggregate layouts cannot identify an emitted access.
+  const records = new Set(), seen = new Set(), pending = [semantic.expression];
+  const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
+  const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
+  const collect = location => {
+    const producer = state.fieldLocations.get(location);
+    if (!producer) return;
+    if (!producer.record) {
+      if ((state.fieldProjectionCount || 0) >= maximum) {
+        consumerObservationBudget(state).reasons.add('field-projection-history-budget'); return;
+      }
+      producer.record = Object.freeze({ rule:'render-field-access', phase:'render',
+        before:`memory:${producer.instruction.op}:${producer.instruction.id}`, after:structuralKey(producer.access),
+        evidence:Object.freeze({ kind:'canonical-memory-access-projection', detail:'field spelling projects an existing memory access; a supplied field name is presentation metadata, not type or layout proof' }),
+        originHistory:expressionOriginHistory({ source:mergeSource(origin(producer.instruction), producer.access.base?.source) }, producer.access),
+      });
+      (state.rewriteProof ??= []).push(producer.record);
+      state.fieldProjectionCount = (state.fieldProjectionCount || 0) + 1;
+    }
+    records.add(producer.record);
+    // Loads are leaves in the ordinary expression walker; an address can
+    // itself contain a field load whose canonical origin must remain visible.
+    pending.push(location.base);
+  };
+  collect(semantic.location);
+  while (pending.length && seen.size < 4096) {
+    const node = pending.pop();
+    if (!node || seen.has(node)) continue;
+    seen.add(node);
+    if (node.kind === 'load') collect(node.location);
+    pending.push(...children(node));
+  }
+  if (pending.length) consumerObservationBudget(state).reasons.add('field-projection-traversal-budget');
+  return [...records];
+}
+
 function containsExpression(root, expression) {
   const pending = [root], seen = new Set();
   while (pending.length && seen.size < 4096) {
@@ -41,17 +89,18 @@ function containsExpression(root, expression) {
 function semanticExpressionConsumer(semantic, value, instruction, state, nested = false) {
   const produced = state.expressionProofs?.get(value?.id);
   const elisions = state.renderElisions?.get(instruction?.id);
-  const records = elisions?.length ? Object.freeze([...(produced?.records || []), ...elisions]) : produced?.records;
-  if (!records?.length || !produced || (produced.expression !== semantic.expression
-      && (!nested || !containsExpression(semantic.expression, produced.expression)))) return semantic;
+  const fields = fieldProjectionRecords(semantic, state);
+  const records = elisions?.length || fields.length
+    ? Object.freeze([...(produced?.records || []), ...(elisions || []), ...fields]) : produced?.records;
+  if (!records?.length) return semantic;
+  if (!produced || (produced.expression !== semantic.expression
+      && (!nested || !containsExpression(semantic.expression, produced.expression)))) {
+    if (fields.length) consumerObservationBudget(state).reasons.add('field-projection-consumer-unavailable');
+    return semantic;
+  }
   // Bound cumulative observation work for the function, not just each
   // individual graph: many consumers may share a large definition graph.
-  const requested = state.opts?.renderProvenanceBindingBudget;
-  const cap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
-  const budget = state.expressionBindingBudget ??= {
-    consumers:cap(requested?.maxConsumers, 4096), edges:cap(requested?.maxEdges, PROJECTION_LIMITS.edges),
-    reasons:new Set(),
-  };
+  const budget = consumerObservationBudget(state);
   if (budget.consumers <= 0 || budget.edges <= 0) {
     budget.reasons.add('binding-budget');
     return semantic;
@@ -176,7 +225,9 @@ function memoryLocation(inst, state) {
     const base = buildValue(loc.base || addr.base, state, { forAddress: true });
     const name = safeIdent(known?.name || `field_${off.toString(16).toUpperCase()}`);
     const access = expr.field(base, name, off, Number(loc.size || inst?.size || 64), origin(inst));
-    return { kind: 'field', key: loc.key, offset: off, base, name, expression: access, text: printExpression(access) };
+    const location = { kind: 'field', key: loc.key, offset: off, base, name, expression: access, text: printExpression(access) };
+    (state.fieldLocations ??= new Map()).set(location, { instruction:inst, access });
+    return location;
   }
   if (addr.base && addr.index) {
     const base = buildValue(addr.base, state, { forAddress: true });
