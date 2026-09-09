@@ -2,6 +2,7 @@ import { sourceOf } from '../ast/nodes.js';
 import { renderProvenanceRecord } from './contract.js';
 import { readLineExpressionHistory } from './projection.js';
 import { readSwitchLineHistory, readSwitchRenderHistory } from '../switch.js';
+import { readSemanticSuppressionHistory } from '../semantic-core.js';
 
 function readRenderedHistory(line, ir) {
   return readLineExpressionHistory(line, ir) || readSwitchLineHistory(line, ir)?.records || null;
@@ -128,6 +129,9 @@ function originKeySet(origins) {
 }
 
 function recordFeedsEntity(record, entityOriginKeys, bound) {
+  // An initial omission has no pre-existing C line and no known replacement.
+  // Sharing an origin with a visible expression is not a producer edge.
+  if (record.kind === 'display-suppression') return false;
   // A rewrite's consumed/remaining sources do not establish which C line
   // uses its result. In particular, a shared input is not a replacement edge.
   // Keep these records queryable without inventing a rendered consumer.
@@ -220,6 +224,11 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   if (typeof shouldAbort === 'function' && shouldAbort() === true) return cancelledMap(resolvedBudget);
 
   const reasons = new Set();
+  const suppressions = readSemanticSuppressionHistory(result);
+  if (result.semanticSuppressionHistory?.completeness === 'incomplete') reasons.add('incomplete-semantic-suppression-history');
+  if ((result.semanticSuppressionHistory || result.ctx?.suppressed?.length) && !suppressions) {
+    reasons.add('unavailable-semantic-suppression-history');
+  }
   if (result.expressionHistoryBinding?.completeness === 'incomplete') reasons.add('incomplete-expression-binding');
   const switches = readSwitchRenderHistory(result);
   if (result.switchRenderHistory?.completeness === 'incomplete') reasons.add('incomplete-switch-history');
@@ -234,8 +243,12 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   const projection = result.phase8Projection;
   const rawRecords = Array.isArray(projection?.history?.transforms) ? projection.history.transforms
     : Array.isArray(projection?.transforms) ? projection.transforms : [];
-  const rawRecordCount = expressionRecords.length + rawRecords.length;
+  const suppressionRecords = suppressions?.records ?? [];
+  const rawRecordCount = expressionRecords.length + rawRecords.length + suppressionRecords.length;
   const ledgerRecords = [];
+  for (const record of suppressionRecords.slice(0, resolvedBudget.maxTransformRecords)) {
+    ledgerRecords.push(renderProvenanceRecord(record));
+  }
   const historyProducers = new Map();
   let unavailableExpressionHistory = 0;
   for (const record of expressionRecords) {
@@ -255,6 +268,9 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   }
   if (unavailableExpressionHistory) reasons.add('missing-expression-history');
   for (const record of rawRecords.slice(0, Math.max(0, resolvedBudget.maxTransformRecords - ledgerRecords.length))) {
+    if (record?.kind === 'display-suppression' || record?.suppressedRender) {
+      reasons.add('unissued-semantic-suppression-history'); continue;
+    }
     ledgerRecords.push(renderProvenanceRecord(record));
   }
   if (rawRecordCount > ledgerRecords.length + unavailableExpressionHistory) {
@@ -368,6 +384,7 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   for (const refs of Object.values(transformReverse)) Object.freeze(refs);
 
   let completeness = 'complete';
+  if (suppressions && readSemanticSuppressionHistory(result) !== suppressions) reasons.add('stale-semantic-suppression-history');
   if (boundLines.some(([line, binding]) => readRenderedHistory(line, result.ir) !== binding)) {
     reasons.add('stale-expression-binding');
   }
@@ -445,6 +462,16 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
     for (const record of provenanceMap.ledger) {
       if (typeof shouldAbort === 'function' && shouldAbort() === true) {
         reasons.add('cancelled'); validationCancelled = true; break;
+      }
+      if (record?.kind === 'display-suppression' || record?.suppressedRender) {
+        const omission = record.suppressedRender;
+        if (record.kind !== 'display-suppression' || record.proof !== 'observed-display-event-not-semantic-equivalence'
+            || !['omit-mechanical-stack-spill', 'omit-runtime-noise-call'].includes(record.rule)
+            || omission?.scope !== 'initial-semantic-render' || omission.operation !== 'omit'
+            || typeof omission.reason !== 'string' || !omission.reason
+            || record.originHistory || record.renderedRemoval
+            || !Array.isArray(record.producedRefs) || record.producedRefs.length
+            || !Array.isArray(record.removedRefs) || record.removedRefs.length) reasons.add('invalid-semantic-suppression-history');
       }
       const history = record?.originHistory;
       if (!history) continue;

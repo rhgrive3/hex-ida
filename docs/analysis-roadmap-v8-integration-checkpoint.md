@@ -2706,6 +2706,57 @@ legacy-view adoption, memory/CFG/exception observables and full integration
 acceptance remain open. All 23 original findings and the frozen 135-binary
 compiler denominator remain; no whole finding is newly closed. Acceptance LOCKED.
 
+## C4-03 initial semantic-render omission history
+
+The actual `semantic-core` emitter now records initial runtime-noise call and
+mechanical stack-spill omissions in the existing render-provenance ledger.
+These are **observed display events, not semantic DCE or equivalence proofs**.
+Canonical CALL/STORE instructions and the existing display predicates are
+unchanged. Original diagnostic `ctx.suppressed` entries remain available.
+
+Only the emitter issues the private suppression-history binding. Actual event
+instruction/source identities are checked at the end of emission; a bounded
+instruction-local observation then binds the diagnostics and canonical objects
+to the completed render. The IR envelope, instruction-array identity, selected
+instruction positions and immutable disposition must remain current. This is
+not a full-CFG suppression-soundness proof. The selected faithful-CFG fallback
+starts its own event list instead of publishing the abandoned structured attempt
+twice. Capture and publication budgets, unavailable observations, cancellation,
+copied diagnostics, stale instructions and mutations during map construction
+remain explicit incomplete states. They do not alter actual emitted output.
+
+Records carry `kind:display-suppression`, the observed rule/reason and original
+row/address/IR references. The existing `transformReverse` maps these sources to
+history. There is no fabricated pre-transform C line, `removedRefs` tombstone,
+replacement-expression edge or rendered consumer. Origin overlap with a visible
+line is not a binding. Public projection records cannot mint this event kind.
+The existing shared PassResult/proof contracts and render-map version are not
+changed; no new semantic identity or independent ledger is created.
+
+The existing snapshot-bound UI now shows these omission reasons and explicitly
+distinguishes them from semantic deletion/equivalence. History alone does not
+authorize navigation through a nonexistent rendered line. Ten new canonical
+provenance tests exercise real machine-input CALL emission, actual mechanical
+STORE suppression, non-suppression/expert negatives, replay, private ownership,
+budgets/cancellation, source changes during emission, stale mid-build data and
+real faithful-CFG fallback. One
+additional UI/query regression uses the actual cloneable rendered artifacts,
+matching the established switch-history fixture: the live compatibility IR owns
+methods and is not itself a cloneable query value. No query-adapter issue repair
+or real-browser/device acceptance is claimed.
+
+Existing PR #3421 remains the reused C4-03 foundation; live head
+`4cd5b3eb9200b1180985b9df3a74f8245a5cc928` was rechecked. The existing integration
+PR #7036 remains authoritative. Other concurrently open issue/performance PRs
+are not merged or reimplemented here. One exact new Phase 8 provenance test path
+is added to the ownership union, with no shared-contract exemption.
+
+C4-03 still requires the remaining view-transform and complete removed/merged
+class denominator. All 23 original findings, the 135-binary compiler denominator,
+mandatory central current-main reconciliation and exact integration acceptance
+remain open. Acceptance stays LOCKED; device/environment/issue/performance work
+continues to belong to the other lanes.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -2740,7 +2791,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C3-03 | Versioned language metadata and unknown-version matrix |
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
-| HEX-C4-03 | Navigation, observed expression/recovery histories, successive projections and actual spill statement removal/suppression implemented; other view transforms and full removed/merged class coverage still open |
+| HEX-C4-03 | Navigation, expression/recovery histories, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
 | HEX-C4-04 | Proof-gated scalar projection, owned inputs, transaction coverage and optional reuse of all 64 display rules as independently verified candidates implemented; ordinary legacy-view adoption, full family/width denominator and memory/CFG/exception observables remain open |
 | HEX-C4-05 | Frozen 272-cell scalar/14-Bool/8-width producer coverage and 3 actual schedules (816 scalar cells); adopted-transform history now preserves actual rule/cost/budget/proof audits. Native proof gaps, arbitrary permutations and full acceptance remain open |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |

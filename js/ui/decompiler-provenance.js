@@ -149,7 +149,7 @@ export function createDecompilerProvenanceView(query, options = {}) {
       status.textContent = text('対応表を利用できません。再解析してください。', 'Mapping unavailable. Refresh the analysis.') + ` (${outcome.reason})`;
       return;
     }
-    const recordsWithHistory = (outcome.transforms ?? EMPTY).filter(record => record.originHistory);
+    const recordsWithHistory = (outcome.transforms ?? EMPTY).filter(record => record.originHistory || record.suppressedRender);
     const changeHistoryPage = async offset => {
       const serial = ++action;
       const current = await navigation.checkSnapshot();
@@ -162,6 +162,14 @@ export function createDecompilerProvenanceView(query, options = {}) {
       for (const record of recordsWithHistory.slice(offset, offset + 16)) {
         const item = h('details');
         item.append(h('summary', 'ui-hint', `${record.rule} (${record.proof})`));
+        if (record.suppressedRender) {
+          item.append(h('p', 'ui-hint', text('初期表示で省略: ', 'Omitted during initial rendering: ') + record.suppressedRender.reason));
+          item.append(h('pre', 'mono', text('元の命令: ', 'Original instructions: ') + record.origin.ir.join(', ') + '\n'
+            + text('対応する変換前のC行はありません。意味上の削除や等価性の証明ではありません。',
+              'No pre-transform C line exists. This is not proof of semantic deletion or equivalence.')));
+          history.append(item);
+          continue;
+        }
         const origins = record.originHistory;
         if (record.renderedRemoval) {
           const removal = record.renderedRemoval;
@@ -187,7 +195,9 @@ export function createDecompilerProvenanceView(query, options = {}) {
     };
     showHistory(0);
     if (!outcome.entities.length) {
-      status.textContent = recordsWithHistory.length
+      status.textContent = recordsWithHistory.length && recordsWithHistory.every(record => record.suppressedRender)
+        ? text('初期表示での省略履歴があります。対応する表示行はありません。', 'Initial-render omission history exists. There is no corresponding rendered line.')
+        : recordsWithHistory.length
         ? text('変換履歴がありますが、表示行への対応は未確定です。', 'Transform history exists, but its rendered binding is unresolved.')
         : text('この命令に対応する表示行はありません。', 'No rendered line maps to this instruction.');
       return;

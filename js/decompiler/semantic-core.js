@@ -15,6 +15,7 @@ import { sourceOf, mergeSource } from './ast/nodes.js';
 import { isNZCVCondition, renderNZCVCondition } from './flag-semantics.js';
 import { renderIndexedMemory } from './address-semantics.js';
 import { integerText } from './pretty/c.js';
+import { captureProjectionIrData } from './phase8/projection-origin.js';
 import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
@@ -23,6 +24,58 @@ import {
 const MAX_EXPR_DEPTH = 48;
 const MAX_EXPR_NODES = 512;
 const MAX_BLOCKS = 6000;
+
+// Historical display events, not a proof that the suppressed operation is
+// semantically dead. Only the actual emitter can issue this private binding.
+const suppressionHistories = new WeakMap();
+export function readSemanticSuppressionHistory(result) {
+  const entry = suppressionHistories.get(result?.ctx?.suppressed);
+  return entry && entry.ir === result.ir && entry.disposition === result.semanticSuppressionHistory
+    && entry.isCurrent() ? entry : null;
+}
+
+function recordSuppression(ctx, inst, reason, rule) {
+  ctx.suppressed.push(evidenceOf(inst, reason));
+  const history = ctx.suppressionHistory;
+  if (history.events.length >= history.limit) { history.reasons.add('semantic-suppression-history-budget'); return; }
+  history.events.push({ inst, reason, rule, id:inst.id, row:inst.row, address:inst.address, op:inst.op });
+}
+
+function bindSuppressionHistory(result, ctx) {
+  const history = ctx.suppressionHistory;
+  let observation = null, locations = [];
+  const ir = ctx.ir, instructions = ir.instructions;
+  try {
+    const positions = history.events.length ? new Map(instructions.map((inst, index) => [inst, index])) : new Map();
+    locations = history.events.map(event => [positions.get(event.inst), event.inst]);
+    if (locations.some(([index]) => index == null)) throw new TypeError('suppression-instruction-unavailable');
+    observation = captureProjectionIrData([ctx.suppressed, ...history.events.map(event => event.inst)], ctx.opts.shouldAbort);
+    if (history.events.some(event => ['id', 'row', 'address', 'op'].some(key => !Object.is(event[key], event.inst[key])))) {
+      throw new TypeError('suppression-source-changed-during-render');
+    }
+    const maxEdges = ctx.opts.renderProvenanceBindingBudget?.maxEdges;
+    if (Number.isSafeInteger(maxEdges) && maxEdges >= 0 && observation.metrics.edges > maxEdges) {
+      throw new TypeError('suppression-observation-budget');
+    }
+  } catch { observation = null; history.reasons.add('semantic-suppression-observation-unavailable'); }
+  const records = Object.freeze(observation ? history.events.map(({ id, row, address, reason, rule }) => Object.freeze({
+    kind:'display-suppression', proof:'observed-display-event-not-semantic-equivalence', rule,
+    targets:Object.freeze([`ir:${id}`]),
+    origin:Object.freeze({ addresses:Object.freeze(address == null ? [] : [address]),
+      rows:Object.freeze(row == null ? [] : [row]), ir:Object.freeze([id]),
+      ssaDefs:Object.freeze([]), ssaUses:Object.freeze([]) }),
+    suppressedRender:Object.freeze({ scope:'initial-semantic-render', operation:'omit', reason }),
+  })) : []);
+  result.semanticSuppressionHistory = Object.freeze({ scope:'semantic-render-producer',
+    completeness:history.reasons.size ? 'incomplete' : 'complete', reasons:Object.freeze([...history.reasons]) });
+  const disposition = result.semanticSuppressionHistory;
+  suppressionHistories.set(ctx.suppressed, Object.freeze({ ir, disposition, records,
+    isCurrent() {
+      return !!observation && ir.instructions === instructions && locations.every(([index, inst]) =>
+        Object.getOwnPropertyDescriptor(instructions, index)?.value === inst) && observation.matches();
+    } }));
+  return result;
+}
 
 function line(kind, indent, text, row = null, addr = null, extra = null) {
   return { kind, indent, text, row, addr, note: null, ...(extra || {}) };
@@ -746,7 +799,7 @@ function emitBlockStatements(block, out, ctx, indent) {
     if (inst === term || inst.op === OP.CMP || inst.op === OP.PHI || inst.op === OP.LOAD || inst.op === OP.CONST || inst.op === OP.MOV || inst.op === OP.BIN || inst.op === OP.UN || inst.op === OP.SEL || inst.op === OP.ADDR || inst.op === OP.MAC || inst.op === OP.BFX || inst.op === OP.BFI || inst.op === OP.CLOBBER) continue;
     if (inst.op === OP.STORE) {
       if (isMechanicalStackSpill(inst, ctx)) {
-        ctx.suppressed.push(evidenceOf(inst, 'compiler-only stack spill'));
+        recordSuppression(ctx, inst, 'compiler-only stack spill', 'omit-mechanical-stack-spill');
         continue;
       }
       const text = statementForStore(inst, ctx);
@@ -754,7 +807,9 @@ function emitBlockStatements(block, out, ctx, indent) {
       ctx.evidence.push(evidenceOf(inst, 'Memory SSA store'));
     } else if (inst.op === OP.CALL) {
       const c = callRecord(inst, ctx);
-      if (shouldFoldRuntimeCall(c.name, { expert: ctx.opts.expert })) { ctx.suppressed.push(evidenceOf(inst, `folded runtime noise: ${c.name}`)); continue; }
+      if (shouldFoldRuntimeCall(c.name, { expert: ctx.opts.expert })) {
+        recordSuppression(ctx, inst, `folded runtime noise: ${c.name}`, 'omit-runtime-noise-call'); continue;
+      }
       const call = renderCall(inst, ctx);
       const extra = { source: callSource(inst, c, ctx) };
       if (inst.dst && ctx.materialNames.has(inst.dst.id)) out.push(line('stmt', indent, `${ctx.materialNames.get(inst.dst.id)} = ${call};`, inst.row, inst.address, extra));
@@ -981,6 +1036,8 @@ export function decompileSemantic(model, opts = {}) {
     returnInsts: (ir.instructions || []).filter((i) => i.op === OP.RET),
     exprCache: new Map(), exprActive: new Set(), exprNodes: 0,
     callCache: new Map(), evidence: [], suppressed: [], unknown: 0, unknownCallArities: 0,
+    suppressionHistory: { events:[], reasons:new Set(), limit:Number.isSafeInteger(opts.renderProvenanceBudget?.maxTransformRecords)
+      && opts.renderProvenanceBudget.maxTransformRecords >= 0 ? Math.min(opts.renderProvenanceBudget.maxTransformRecords, 1024) : 1024 },
     materialNames: new Map(), switchByRow: new Map((opts.switches || model.switches || []).map((s) => [s.row, s])),
     blockAddress: (bi) => model.instructions?.find((x) => x.row === ir.blocks[bi]?.startRow)?.address ?? firstAddr + BigInt(ir.blocks[bi]?.startRow || 0) * 4n,
   };
@@ -998,6 +1055,9 @@ export function decompileSemantic(model, opts = {}) {
   let coverage = { mode: 'structured', reachable: reachable.size, emitted: state.visited.size, missing: missing.length, recovered: 0, structuredMissing: missing.length };
   if (missing.length) {
     body.length = 0; state.visited.clear(); state.gotos = 0;
+    // Only the selected final emission belongs to the history. Keep legacy
+    // ctx.suppressed diagnostics unchanged, including the abandoned attempt.
+    ctx.suppressionHistory.events.length = 0; ctx.suppressionHistory.reasons.clear();
     body.push(...faithfulCfg(ctx, 1));
     coverage = { mode: 'linear', reachable: reachable.size, emitted: reachable.size, missing: 0, recovered: missing.length, structuredMissing: missing.length };
   }
@@ -1017,10 +1077,10 @@ export function decompileSemantic(model, opts = {}) {
   if (ir.truncated) warnings.push('Semantic IR budget truncated this function; the result is partial.');
 
   const summary = summarize(body, ctx);
-  return {
+  return bindSuppressionHistory({
     lines, signature, types, summary, pseudocode: pseudocode(lines),
     evidence: ctx.evidence, warnings, labels: new Set(body.filter((l) => l.kind === 'label').map((l) => l.text.replace(/:$/, ''))),
     coverage, ir, ctx: { runtime, suppressed: ctx.suppressed, inductions: ctx.inductions, irPrimary: true, unknownInstructions: ctx.unknown },
     semantic: true,
-  };
+  }, ctx);
 }

@@ -9,6 +9,8 @@ import { showDecompilerProvenanceSheet } from '../../../js/ui/decompiler-provena
 import { RewriteEngine } from '../../../js/decompiler/rewrite/engine.js';
 import { DEFAULT_RULES } from '../../../js/decompiler/rewrite/rules.js';
 import { recoverExactStackReturn } from '../../../js/decompiler/passes/stack-return-recovery.js';
+import { buildSemanticModel } from '../../../js/blocks.js';
+import { decompileSemantic } from '../../../js/decompiler/semantic-core.js';
 import { analysis, consumerFixture, expr, resultWith, source, proofOnlySpillFixture } from './fixture.js';
 
 test('C4-03 production pseudocode route consumes the snapshot-bound provenance view', () => {
@@ -164,6 +166,39 @@ class Element {
   focus() { this.focused = true; }
   scrollIntoView() { this.scrolled = true; }
 }
+
+test('C4-03 UI shows actual initial omissions through query history without authorizing a phantom line', async () => {
+  const previous = globalThis.document;
+  globalThis.document = { createElement:tag => new Element(tag) };
+  try {
+    const raw = ['bl', 'bl', 'ret'].map((mn, row) => ({ mn, ops:mn === 'bl' ? '0x2000' : '', row, address:0x1000n + BigInt(row * 4) }));
+    const opts = { symbolFor:() => 'objc_release', rowOfAddress:address => raw.find(inst => inst.address === BigInt(address))?.row ?? null };
+    const model = buildSemanticModel(raw, { ...opts, startRow:0, endRow:2 });
+    const result = decompileSemantic(model, opts);
+    result.renderProvenance = buildRenderProvenance({ result, snapshotId:'initial-suppression-ui-fixture' });
+    // As with switch-render coverage, publish the actual cloneable rendered
+    // artifacts, not the live compatibility IR envelope (which owns methods).
+    const f = await queryFixture({ lines:result.lines, pseudocode:result.pseudocode, renderProvenance:result.renderProvenance });
+    const navigation = createDecompilerNavigation(f.query, f.options);
+    const selected = await navigation.selectOrigin('addr', 0x1004n);
+    assert.equal(selected.state, 'ready'); assert.deepEqual(selected.entities, []);
+    assert.equal(selected.transforms[0].rule, 'omit-runtime-noise-call');
+    assert.equal((await navigation.openAddress(0x1004n, () => assert.fail('no rendered navigation authority'))).reason, 'address-not-in-selection');
+    const view = createDecompilerProvenanceView(f.query, f.options);
+    const [controls, code, status, details, history] = view.root.children;
+    const originalText = code.textContent;
+    controls.children[0].value = '0x1004'; await controls.children[1].click();
+    assert.match(status.textContent, /Initial-render omission history exists/);
+    assert.match(history.textContent, /Omitted during initial rendering: folded runtime noise: objc_release/);
+    assert.match(history.textContent, /not proof of semantic deletion or equivalence/);
+    assert.equal(code.children.some(row => row.classList.contains('selected')), false);
+    assert.equal(details.children.length, 0); assert.equal(code.textContent, originalText);
+    f.advance(); await controls.children[1].click();
+    assert.match(status.textContent, /stale-query-snapshot/); assert.equal(history.children.length, 0);
+  } finally {
+    if (previous === undefined) delete globalThis.document; else globalThis.document = previous;
+  }
+});
 
 test('C4-03 UI labels an actual removed statement with its old position and selects only the surviving return', async () => {
   const previous = globalThis.document;
