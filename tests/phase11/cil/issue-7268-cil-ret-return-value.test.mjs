@@ -116,6 +116,7 @@ function buildReturnPe({ returnSignature, bytecode }) {
 
   const addMethodDef = (rva, nameIndex, signatureIndex) => {
     view.setUint32(tablePos, rva, true);
+    view.setUint16(tablePos + 6, 0x0010, true); // Static; focused signatures are all static.
     view.setUint16(tablePos + 8, nameIndex, true);
     view.setUint16(tablePos + 10, signatureIndex, true);
     view.setUint16(tablePos + 12, 0, true);

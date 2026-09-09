@@ -29,8 +29,8 @@ function isAppleSystemLibrary(value) {
 }
 
 function boundedConfidence(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
 }
 
 export function classifyFunction(input = {}, context = {}) {

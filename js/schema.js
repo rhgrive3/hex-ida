@@ -325,12 +325,20 @@ export async function recoverSchemas(opts) {
   const { strings, program, read, architecture } = o;
   const arch = String(architecture || program?.architecture || '').toLowerCase();
   const unsupported = !!arch && arch !== 'arm64' && arch !== 'aarch64';
-  const isComplete = !unsupported && program?.complete !== false && program?.unsupported !== true;
+  const canonicalProgramComplete = program?.completeness?.complete;
+  const programComplete = canonicalProgramComplete == null
+    ? program?.complete !== false
+    : canonicalProgramComplete === true;
+  const isComplete = !unsupported && programComplete && program?.unsupported !== true;
+  const incompleteReason = program?.queryIncompleteReason
+    || program?.completeness?.reasons?.[0]
+    || program?.incompleteReason
+    || null;
   const out = [];
   Object.defineProperties(out, {
     complete: { value: isComplete, enumerable: false, configurable: true },
     unsupported: { value: unsupported || !!program?.unsupported, enumerable: false, configurable: true },
-    incompleteReason: { value: unsupported ? 'unsupported-architecture' : (program?.incompleteReason || null), enumerable: false, configurable: true },
+    incompleteReason: { value: unsupported ? 'unsupported-architecture' : incompleteReason, enumerable: false, configurable: true },
   });
   if (unsupported || !strings || !program || !read || program.unsupported) return out;
   const limit = normalizeSchemaRecoveryLimit(o.limit);
@@ -368,8 +376,11 @@ export async function recoverSchemas(opts) {
       incompleteReason: { value:reasons.join(';'), enumerable:false, configurable:true },
     });
   }
+  let processed = 0;
+  let wasCancelled = false;
   for (let i = 0; i < targets.length; i++) {
-    if (cancelled()) break;
+    if (cancelled()) { wasCancelled = true; break; }
+    processed = i + 1;
     progress({ phase: 'schema', done: i, all: targets.length });
     const t = targets[i];
     let bytes = null;
@@ -382,7 +393,14 @@ export async function recoverSchemas(opts) {
     if (!schema) continue;
     out.push({ loader: t.addr, files: t.files, loaderSize: t.size, tables: schema.tables, best: schema.best });
   }
-  progress({ phase: 'schema', done: targets.length, all: targets.length });
+  if (wasCancelled) {
+    const reasons = [...new Set([out.incompleteReason, 'schema-recovery-cancelled'].filter(Boolean))];
+    Object.defineProperties(out, {
+      complete: { value:false, enumerable:false, configurable:true },
+      incompleteReason: { value:reasons.join(';'), enumerable:false, configurable:true },
+    });
+  }
+  progress({ phase: 'schema', done: processed, all: targets.length });
   out.sort((a, b) => (b.best.consistent === true) - (a.best.consistent === true) || (b.best.columns || 0) - (a.best.columns || 0));
   return out;
 }

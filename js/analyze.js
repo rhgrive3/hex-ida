@@ -229,7 +229,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         if (pairDestReg === 0) lastX0Write = row;
       }
 
-      if (b === 'sub' && ops[0] && ops[0].cls === 'sp' && ops[2] && ops[2].k === 'imm' && ops[2].value != null) {
+      if (b === 'sub' && ops[0] && ops[0].cls === 'sp' && ops[1] && ops[1].cls === 'sp' && ops[2] && ops[2].k === 'imm' && ops[2].value != null) {
         const amount = arm64AddSubImmediateValue(ops[2]);
         if (amount != null) res.frameBytes += Number(amount);
       }
