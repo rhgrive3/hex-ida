@@ -50,25 +50,28 @@ function defaultResult(overrides = {}) {
  * never upgrades it into actual mapped-page guarded state.
  */
 export function parseAarch64GnuProperty(input, options = {}) {
-  const bytes = input instanceof Uint8Array
-    ? input
-    : ArrayBuffer.isView(input)
-      ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
-      : input instanceof ArrayBuffer
-        ? new Uint8Array(input)
-        : null;
-  if (!bytes || bytes.byteLength < 64) return defaultResult({ loaderPolicy:'unavailable', btiRequested:null, pacRequested:null, gcsRequested:null, warnings:Object.freeze(['ELF bytes unavailable or truncated']) });
-  if (bytes[0] !== 0x7f || bytes[1] !== 0x45 || bytes[2] !== 0x4c || bytes[3] !== 0x46) {
+  // ByteView accepts SparseByteBuffer-style `__binaryByteBacking` inputs
+  // (#5006), so source-backed parses must reach this parser through the same
+  // path instead of falling to `unavailable` on input type alone. Reads over
+  // a sparse backing raise BINARY_SOURCE_RANGE_MISSING for uncached ranges,
+  // which parseSourceRanges answers with a bounded refetch.
+  let r = null;
+  try {
+    r = new ByteView(input, { littleEndian: true });
+  } catch {
+    return defaultResult({ loaderPolicy:'unavailable', btiRequested:null, pacRequested:null, gcsRequested:null, warnings:Object.freeze(['ELF bytes unavailable or truncated']) });
+  }
+  if (r.length < 64) return defaultResult({ loaderPolicy:'unavailable', btiRequested:null, pacRequested:null, gcsRequested:null, warnings:Object.freeze(['ELF bytes unavailable or truncated']) });
+  if (r.u8(0) !== 0x7f || r.u8(1) !== 0x45 || r.u8(2) !== 0x4c || r.u8(3) !== 0x46) {
     return defaultResult({ loaderPolicy:'not-elf', btiRequested:null, pacRequested:null, gcsRequested:null });
   }
-  const cls = bytes[4];
-  const data = bytes[5];
+  const cls = r.u8(4);
+  const data = r.u8(5);
   if ((cls !== 1 && cls !== 2) || (data !== 1 && data !== 2)) {
     return defaultResult({ loaderPolicy:'unsupported-elf-header', btiRequested:null, pacRequested:null, gcsRequested:null });
   }
+  if (data !== 1) r = r.endian(false);
   const bits = cls === 2 ? 64 : 32;
-  const littleEndian = data === 1;
-  const r = new ByteView(bytes, { littleEndian });
   const machine = r.u16(18);
   if (machine !== EM_AARCH64) return defaultResult({ loaderPolicy:'not-aarch64', btiRequested:null, pacRequested:null, gcsRequested:null });
   const phoff = bits === 64 ? r.u64(32) : BigInt(r.u32(28));
@@ -84,7 +87,7 @@ export function parseAarch64GnuProperty(input, options = {}) {
     return defaultResult({ loaderPolicy:'unknown', btiRequested:null, pacRequested:null, gcsRequested:null, warnings:Object.freeze(warnings) });
   }
   if (phoffNumber == null || phentsize < minPh || phnum > maxProgramHeaders
-      || !boundedSpan(phoffNumber, phnum * phentsize, bytes.byteLength)) {
+      || !boundedSpan(phoffNumber, phnum * phentsize, r.length)) {
     warnings.push('ELF program-header table is unavailable or outside bounded input');
     return defaultResult({ loaderPolicy:'unknown', btiRequested:null, pacRequested:null, gcsRequested:null, warnings:Object.freeze(warnings) });
   }
@@ -100,7 +103,7 @@ export function parseAarch64GnuProperty(input, options = {}) {
     const offset = safeNumber(bits === 64 ? r.u64(p + 8) : BigInt(r.u32(p + 4)));
     const filesz = safeNumber(bits === 64 ? r.u64(p + 32) : BigInt(r.u32(p + 16)));
     if (offset == null || filesz == null || filesz > maxPropertyBytes
-        || !boundedSpan(offset, filesz, bytes.byteLength)) {
+        || !boundedSpan(offset, filesz, r.length)) {
       propertyIncomplete = true;
       warnings.push(`PT_GNU_PROPERTY ${index} is outside bounded input`);
       continue;
@@ -133,10 +136,10 @@ export function parseAarch64GnuProperty(input, options = {}) {
         break;
       }
       const canonicalGnuOwner = namesz === 4
-        && bytes[nameStart] === 0x47
-        && bytes[nameStart + 1] === 0x4e
-        && bytes[nameStart + 2] === 0x55
-        && bytes[nameStart + 3] === 0x00;
+        && r.u8(nameStart) === 0x47
+        && r.u8(nameStart + 1) === 0x4e
+        && r.u8(nameStart + 2) === 0x55
+        && r.u8(nameStart + 3) === 0x00;
       if (noteType === NT_GNU_PROPERTY_TYPE_0 && canonicalGnuOwner) {
         const propertyAlignment = bits === 64 ? 8 : 4;
         let propertyCursor = descStart;
@@ -179,8 +182,11 @@ export function parseAarch64GnuProperty(input, options = {}) {
       cursor = next;
     }
     if (cursor < end && cursor + 12 > end) {
-      const trailing = bytes.subarray(cursor, end);
-      const zeroPadding = trailing.length < 4 && trailing.every((byte) => byte === 0);
+      // Sub-4-byte trailing padding; must be zero to keep the note bounded.
+      let zeroPadding = (end - cursor) < 4;
+      for (let pad = cursor; zeroPadding && pad < end; pad++) {
+        if (r.u8(pad) !== 0) zeroPadding = false;
+      }
       if (!zeroPadding) {
         propertyIncomplete = true;
         warnings.push(`truncated GNU property note header at file offset ${cursor}`);
