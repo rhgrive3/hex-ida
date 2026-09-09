@@ -14,9 +14,10 @@ import { liftCilMethod } from '../../../js/managed/cil/lifter.js';
 // flags collapsed AnyCPU and x86-only images into identical canonical
 // projections with a fabricated 64-bit exact `O` width.
 
-function fixture({ requires32, pe32Plus = false } = {}) {
+function fixture({ requires32, pe32Plus = false, buildOptions = {} } = {}) {
   const built = buildCil({
     methods: [{ name: 'Run', body: [0x14, 0x26, 0x2a] }], // ldnull; pop; ret
+    ...buildOptions,
   });
   const bytes = built.bytes.slice();
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -85,4 +86,75 @@ test('#7775 32BITREQUIRED without IMAGE_FILE_32BIT_MACHINE fails closed', () => 
 
 test('#7775 non-32BITREQUIRED images still validate with or without the machine bit', () => {
   assert.equal(probeCil(fixture({ requires32: false })).supported, true);
+});
+
+// Production frontend paths (#7775 R2): the signature-resolved replacement in
+// the public lifter must not strip the width authority — constructed objects
+// (`newobj`), string references (`ldstr`), and call-return object refs carry
+// the image's native pointer width on the final `liftCilMethod()` output.
+
+const LDC_I4_1_RET = Uint8Array.from([0x00, 0x00, 0x08]); // static int32 f()
+const retType = (bytes) => bytes[bytes.length - 1];
+
+test('#7775 newobj constructed objects keep the width on the public output', () => {
+  // instance void .ctor() on MethodDef #1, called as `newobj 0x06000001` from
+  // Run (MethodDef #2, body index 1 after the ctor's).
+  for (const requires32 of [true, false]) {
+    const image = parseCil(fixture({
+      requires32,
+      buildOptions: {
+        methods: [
+          { name: '.ctor', flags: 0x0006, signature: Uint8Array.from([0x20, 0x00, 0x01]), body: [0x2a] },
+          { name: 'Run', body: [0x73, 0x01, 0x00, 0x00, 0x06, 0x26, 0x2a] },
+        ],
+      },
+    }), { binaryId: `newobj-${requires32}` });
+    const fx = liftCilMethod(1, image);
+    const newobj = fx.bundles.find((b) => b.mnemonic === 'newobj');
+    assert.equal(newobj.callEffects[0].signatureResolved, true);
+    const constructed = newobj.producedValues.find((v) => v.id === 'constructed-object');
+    assert.ok(constructed, 'newobj must produce a constructed-object value');
+    if (requires32) assert.equal(constructed.bits, 32);
+    else assert.equal(constructed.bits, undefined);
+  }
+});
+
+test('#7775 ldstr values keep the width on the public output', () => {
+  // #Strings fixture heap has 'Run' at a nonzero index; ldstr reads its token
+  // opaquely from the bytecode, so any nonzero user-string index works.
+  for (const requires32 of [true, false]) {
+    const image = parseCil(fixture({
+      requires32,
+      buildOptions: { methods: [{ name: 'Run', body: [0x72, 0x01, 0x00, 0x00, 0x70, 0x26, 0x2a] }] },
+    }), { binaryId: `ldstr-${requires32}` });
+    const ldstr = liftCilMethod(0, image).bundles.find((b) => b.mnemonic === 'ldstr');
+    assert.equal(ldstr.producedValues.length, 1);
+    if (requires32) assert.equal(ldstr.producedValues[0].bits, 32);
+    else assert.equal(ldstr.producedValues[0].bits, undefined);
+  }
+});
+
+test('#7775 call-result object references keep the width on the public output', () => {
+  // static FixtureType f() returning an object ref; the resolved call-result
+  // is an object-ref, so the width authority attaches on the public output.
+  for (const requires32 of [true, false]) {
+    const image = parseCil(fixture({
+      requires32,
+      buildOptions: {
+        methods: [
+          { name: 'StaticTarget', signature: Uint8Array.from([0x00, 0x00, 0x12, 0x04]) },
+          { name: 'Run', body: [0x28, 0x01, 0x00, 0x00, 0x06, 0x26, 0x2a] },
+        ],
+      },
+    }), { binaryId: `call-${requires32}` });
+    const fx = liftCilMethod(0, image);
+    const call = fx.bundles.find((b) => b.mnemonic === 'call');
+    assert.equal(call.callEffects[0].signatureResolved, true);
+    assert.deepEqual(call.producedValues, [{
+      id: 'call-result',
+      stackType: 'object-ref',
+      typeToken: 4,
+      ...(requires32 ? { bits: 32 } : {}),
+    }]);
+  }
 });

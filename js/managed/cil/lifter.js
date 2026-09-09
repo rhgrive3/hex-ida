@@ -8,8 +8,18 @@ import {
 import { liftCilMethod as liftCilMethodCore } from './lifter-core.js';
 
 const CALL_MNEMONICS = new Set(['call', 'callvirt', 'newobj']);
+// Native-size stack types (ECMA-335 I.12.1.1): `O`, `&`, `native int`. When
+// the image's pointer-width authority is known (32BITREQUIRED / PE32+), the
+// final public output carries it; unresolved widths stay unstated (#7775).
+const NATIVE_WIDTH_STACK_TYPES = new Set(['object-ref', 'native-int']);
 
-function enrichCallBundle(bundle, resolveSignature) {
+function attachNativeWidth(value, nativePointerBits) {
+  if (nativePointerBits == null || !value || typeof value !== 'object') return value;
+  if (value.bits != null || !NATIVE_WIDTH_STACK_TYPES.has(value.stackType)) return value;
+  return Object.freeze({ ...value, bits: nativePointerBits });
+}
+
+function enrichCallBundle(bundle, resolveSignature, nativePointerBits = null) {
   if (!CALL_MNEMONICS.has(bundle?.mnemonic)) return bundle;
   const kind = bundle.mnemonic;
   const primaryCall = bundle.callEffects?.[0] ?? null;
@@ -27,11 +37,17 @@ function enrichCallBundle(bundle, resolveSignature) {
     }),
   }));
 
+  // The stack effect replaces the core produced values when the signature
+  // resolves, so the native-width authority must be re-applied here — the
+  // constructed-object / call-result native-size values would otherwise lose
+  // it on the final public output (#7775).
+  const producedValues = stackEffect.producedValues.map((value) => attachNativeWidth(value, nativePointerBits));
+
   if (stackEffect.complete) {
     return {
       ...bundle,
       consumedValues:stackEffect.consumedValues,
-      producedValues:stackEffect.producedValues,
+      producedValues,
       callEffects,
     };
   }
@@ -39,7 +55,7 @@ function enrichCallBundle(bundle, resolveSignature) {
   return {
     ...bundle,
     consumedValues:stackEffect.consumedValues,
-    producedValues:stackEffect.producedValues,
+    producedValues,
     callEffects,
     completeness:bundle.completeness === 'unknown' ? 'unknown' : 'partial',
     unknownEffects:[
@@ -57,7 +73,10 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}) {
   if (!lifted.bundles.some((bundle) => CALL_MNEMONICS.has(bundle.mnemonic))) return lifted;
 
   const resolveSignature = createCilCallSignatureResolver(cilImage);
-  const bundles = lifted.bundles.map((bundle) => enrichCallBundle(bundle, resolveSignature));
+  const nativePointerBits = cilImage?.requires32Bit === true ? 32
+    : cilImage?.requires64Bit === true ? 64
+      : null;
+  const bundles = lifted.bundles.map((bundle) => enrichCallBundle(bundle, resolveSignature, nativePointerBits));
   const { bundles:_bundles, aggregateCompleteness:_aggregateCompleteness, ...functionInput } = lifted;
   return createVMEffectFunction({ ...functionInput, bundles }, options);
 }
