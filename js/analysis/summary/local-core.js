@@ -30,8 +30,12 @@ const DEFAULT_ADDRESS_SPACES = Object.freeze(['memory']);
 function parseIntegerConstant(candidate) {
   if (candidate == null) return null;
   const structured = typeof candidate === 'object' && !Array.isArray(candidate);
-  if (structured && candidate.kind != null && candidate.kind !== 'bitvector') return null;
-  const raw = structured ? (candidate.value ?? candidate.bits ?? null) : candidate;
+  if (structured) {
+    if (candidate.kind !== 'bitvector') return null;
+    if (!Number.isSafeInteger(candidate.widthBits) || candidate.widthBits <= 0) return null;
+    if (!Object.hasOwn(candidate, 'value') || candidate.value == null) return null;
+  }
+  const raw = structured ? candidate.value : candidate;
   if (raw == null) return null;
   try {
     if (typeof raw === 'bigint') return raw;
