@@ -285,6 +285,21 @@ export function buildAppMap(opts) {
   };
 }
 
+// The xref span must be the string's original UTF-8 byte extent (#5698).
+// Escaped control characters make a TextEncoder re-encode unreliable, but an
+// escaped ASCII spelling never shrinks below the raw run, so counting code
+// units is the conservative byte-length proxy when the scanner's byteLength
+// is absent.
+function utf8ByteLength(text) {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.codePointAt(i);
+    if (unit > 0xffff) i++;
+    bytes += unit <= 0x7f ? 1 : unit <= 0x7ff ? 2 : unit <= 0xffff ? 3 : 4;
+  }
+  return bytes;
+}
+
 export function buildStringMap(opts) {
   const o = opts || {};
   const program = o.program;
@@ -297,7 +312,11 @@ export function buildStringMap(opts) {
     if (scanned >= 4000) break;
     const hits = classifyString(s.text);
     if (!hits.length) continue;
-    const users = program.functionsReferencing(s.addr, BigInt(Math.min(s.text.length, 128)), 8);
+    // The xref span is a virtual-address byte range (#5698): use the string's
+    // original UTF-8 byte extent, not the display text's UTF-16 code-unit
+    // count, which under-covers multibyte strings and drops interior xrefs.
+    const span = s.byteLength ?? utf8ByteLength(s.text);
+    const users = program.functionsReferencing(s.addr, BigInt(Math.min(span, 128)), 8);
     if (!users.length) continue;
     scanned++;
     for (const hit of hits) {

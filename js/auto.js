@@ -115,6 +115,21 @@ export function notableFunctions(program, symbols, region, limit = 12) {
  * Keep interesting dead/unreferenced strings visible as data, but mark them
  * explicitly non-actionable. Only proven code xrefs may drive next-step advice.
  */
+// The xref span must be the string's original UTF-8 byte extent (#5698).
+// Escaped control characters make a TextEncoder re-encode unreliable, but an
+// escaped ASCII spelling never shrinks below the raw run, so counting code
+// units is the conservative byte-length proxy when the scanner's byteLength
+// is absent.
+function utf8ByteLength(text) {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.codePointAt(i);
+    if (unit > 0xffff) i++;
+    bytes += unit <= 0x7f ? 1 : unit <= 0x7ff ? 2 : unit <= 0xffff ? 3 : 4;
+  }
+  return bytes;
+}
+
 export function findings(strings, program, symbols, limit = 40) {
   const out = [];
   if (!program) return out;
@@ -123,7 +138,12 @@ export function findings(strings, program, symbols, limit = 40) {
     for (const s of strings || []) {
       if (taken >= sig.max || out.length >= limit) break;
       if (!sig.re.test(s.text)) continue;
-      const users = program.functionsReferencing(s.addr, BigInt(Math.max(1, Math.min(s.text.length, 256))), 8);
+      // The xref span is a virtual-address byte range (#5698): use the
+      // string's original UTF-8 byte extent, not the display text's UTF-16
+      // code-unit count, which under-covers multibyte strings and hides
+      // interior xrefs behind a false 'unreferenced'.
+      const span = s.byteLength ?? utf8ByteLength(s.text);
+      const users = program.functionsReferencing(s.addr, BigInt(Math.max(1, Math.min(span, 256))), 8);
       const actionable = users.length > 0;
       out.push({
         id: sig.id, level: sig.level, text: s.text, addr: s.addr,
