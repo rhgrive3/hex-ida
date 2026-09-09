@@ -52,7 +52,7 @@ guarded saturating shifts, comparisons, Boolean connectives, selection, casts,
 extraction and concatenation within 1–64 bits. C integer promotions and odd BV
 widths are made explicit with native-width casts/masks; sign extension is widened
 before arithmetic. Division, memory and unknown terms remain unsupported.
-The legacy pass ID `phase8.solver-constants` is retained at version `2.1.0`;
+The legacy pass ID `phase8.solver-constants` is retained at version `2.2.0`;
 new nonconstant records use `solver-scalar`, constants retain `solver-constant`.
 
 Each inspected request has a decision row. `selected` means a current eligible
@@ -176,6 +176,41 @@ runtime identity or real process peak memory. Bind it to the exact clean test he
 in the checkpoint evidence. The existing Phase 8 scalar substrate test separately
 checks all eight MBA widths through the real producer and projection boundary:
 proved cases adopt with provenance; unproved cases preserve the original result.
+
+### Rule-order metamorphism
+
+The optional equality-saturation route accepts
+`ruleOrder:'canonical' | 'reverse' | 'discovery'`. Omission keeps the original
+canonical rule-name/owner ordering and its work charge. Reverse applies the same
+completed proposal batch in descending order; discovery preserves its generation
+order. These are finite built-in schedules, not externally supplied rules or
+comparators. Read/search, batch addition/union and rebuild remain separate stages.
+All schedules retain the existing hard limits and independent proof requirement.
+
+The order is captured before asynchronous verification, reported on the query
+and its candidates, and carried through symbolic analysis into the real Phase 8
+plan and target decisions. It participates in the plan's audit digest. It is not
+part of proof authority: identical before/after terms still need an actual
+privately issued verification receipt. The pass version is 2.2.0. Unknown orders,
+non-data fields and orders supplied to a different candidate strategy fail closed.
+
+`tests/phase9/egraph/rule-order.test.mjs` exercises the actual scheduling primitive
+and the existing shared 34-family/8-width fixtures at all three orders (816 cells).
+It compares complete Pareto extractions, independently verifies each schedule's
+candidates and checks concrete output formulas. It retains the existing explicit
+wide proof gaps and unsupported BV65 rows. It also checks all 14 Bool families,
+replay, N-1/N/N+1 work/allocation ceilings, cancellation and stale identities.
+The real producer/optimizer regression proves that all three orders reach actual
+projection and proof-linked origins, with distinct plan audit IDs and the same
+output. No helper-produced AST or copied receipt authorizes that test's adoption.
+
+Set `HEX_EGRAPH_RULE_ORDER_REPORT` to a fresh persistent file path to retain the
+816-row scalar report, separately from `HEX_EGRAPH_MATRIX_REPORT`. A matrix report
+is not whole-suite or release acceptance; bind it to a successful exact-head
+test receipt. These checks establish the declared three-schedule denominator,
+not every possible permutation or all unbounded expressions. Native proof gaps,
+ordinary legacy-render coverage, memory/CFG/exception proofs and full integration
+acceptance remain open.
 
 ## Current-main reconciliation (2026-09-07)
 

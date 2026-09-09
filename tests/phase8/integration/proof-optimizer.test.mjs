@@ -90,3 +90,25 @@ test('v8 final optimizer callback cannot change canonical IR while publishing an
  const result=await optimizeSemanticDecompilation(f.result,{...f.options,isCancelled(){if(++actual===calls)f.target.def.sub='or';return false;}});
  assert.equal(actual,calls);assert.equal(result.proofOptimization.status,'partial');assert.equal(result.proofOptimization.adopted,0);assert.equal(result.pseudocode,f.result.pseudocode);
 });
+
+test('C4-05 rule schedules reach the real producer and proof plan without conflating schedule with proof authority',async()=>{
+ const f=projectionFixture(4),plans=[],outputs=[];
+ for(const ruleOrder of ['canonical','reverse','discovery']) {
+  const options={...f.options,ruleOrder},plan=await preparePhase8RewritePlan(f.ir,options);
+  assert.equal(plan.status,'complete',plan.reason);assert.equal(plan.ruleOrder,ruleOrder);
+  assert.ok(plan.targetDecisions.every(row=>row.ruleOrder===ruleOrder));
+  const r=await optimizeSemanticDecompilation(f.result,options);
+  assert.equal(r.proofOptimization.status,'complete',r.proofOptimization.reason);
+  assert.equal(r.proofOptimization.adopted,2);
+  assert.ok(r.proofOptimization.targetDecisions.every(row=>row.ruleOrder===ruleOrder));
+  assert.match(r.pseudocode,/return 0;/);assert.equal(r.ir,f.ir);
+  assert.ok(r.phase8Projection.transforms.every(t=>t.queryHash && t.planId));
+  plans.push(plan.planId);outputs.push(r.pseudocode);
+ }
+ assert.equal(new Set(plans).size,3,'schedule is part of plan audit identity');
+ assert.equal(new Set(outputs).size,1);
+ assert.match(f.result.pseudocode,/\^/,'original producer output is retained');
+ const invalid=await optimizeSemanticDecompilation(f.result,{...f.options,ruleOrder:'random'});
+ assert.equal(invalid.proofOptimization.status,'partial');assert.equal(invalid.proofOptimization.adopted,0);
+ assert.equal(invalid.pseudocode,f.result.pseudocode);
+});

@@ -2612,6 +2612,49 @@ arbitrary rule-order metamorphism, memory/CFG/exception observables, native-widt
 proof gaps and required integration acceptance remain open. All original 23
 findings are retained; no finding is marked complete. Acceptance remains LOCKED.
 
+## C4-05 actual rule-order metamorphism
+
+The equality-saturation query now has three finite built-in `ruleOrder` values:
+`canonical` (the unchanged default), `reverse`, and `discovery`. The same existing
+rules generate a completed proposal batch before scheduling; no externally supplied
+rule, comparator, solver result or proof is accepted. Scheduling changes only the
+order of that batch's addition/union, not its contents or the search/rebuild
+boundary. The default ordering and resource charge remain unchanged. This is a
+bounded candidate-generation control, not a second semantic engine.
+
+The order is snapshotted as data before asynchronous work. Query/candidate output,
+the owned symbolic target and Phase 8 target decisions report it; the plan's audit
+binding also includes it. Pass version is 2.2.0. Unknown orders, coercible objects,
+callbacks/accessors and orders on other strategies are rejected without silently
+falling back to the default. Only the existing private verifier/plan/transaction
+capabilities authorize adoption; schedule metadata and a copied receipt do not.
+
+The existing 34-family x 8-width denominator and independent formulas moved
+unchanged into a shared test fixture module, so canonical and order-metamorphic
+tests cannot silently use different corpora. The order test covers all 816 cells:
+807 supported searches must have the same bounded Pareto choices/costs under all
+three actual schedules, and 9 unsupported intermediate-width cases remain explicit.
+Each schedule's extracted candidates separately face the existing independent
+verifier and the concrete formulas. Previously recorded native-width proof gaps
+are still unknown/withheld with no candidates, not upgraded to proof successes.
+
+Further regressions cover the scheduling primitive's actual permutations and
+unchanged default cost, all 14 Bool families under all three orders, exact
+N-1/N/N+1 work/allocation boundaries per schedule, deterministic replay, invalid
+configuration, cancellation and stale identity. A real producer/optimizer test
+threads all three schedules through the private plan/transaction and rendered
+projection: outputs match, query/provenance IDs survive and plan audit IDs differ
+by schedule. Original IR and producer output stay intact.
+
+The open egraph/equality-saturation/C4-05 search was repeated and found the current
+PR #7036, with no separate candidate implementation to duplicate. No solver or
+performance issue, device/environment repair, component merge or main merge is
+included. This discharges the declared finite three-schedule regression item;
+it does not prove arbitrary permutations, unbounded search, every native proof,
+the whole original C4-05 card or the full 23-finding roadmap. The 135-binary
+compiler denominator and all remaining scope stay unchanged. Integration
+acceptance remains LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -2648,7 +2691,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
 | HEX-C4-03 | Navigation, observed expression/recovery histories, successive projections and actual spill statement removal/suppression implemented; other view transforms and full removed/merged class coverage still open |
 | HEX-C4-04 | Proof-gated scalar projection, owned inputs, transaction coverage and optional reuse of all 64 display rules as independently verified candidates implemented; ordinary legacy-view adoption, full family/width denominator and memory/CFG/exception observables remain open |
-| HEX-C4-05 | Existing e-graph/proof path now has a frozen 272-cell scalar matrix, 14 Bool families, negative/resource/replay tests and 8-width real-producer MBA coverage; native-width proof gaps, arbitrary rule schedules and full acceptance remain open |
+| HEX-C4-05 | Existing e-graph/proof path has the frozen 272-cell scalar matrix, 14 Bool families and 8-width real-producer MBA coverage, now checked across 3 actual rule schedules (816 scalar cells) with private proof/plan/projection identity; native proof gaps, arbitrary permutations and full acceptance remain open |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |
 | HEX-SYM-02 | Byte-memory escalation, alias/partial-write independent oracle |
 | HEX-SYM-03 | Taint/source/sink/sanitizer and proof-gated deobfuscation matrix |

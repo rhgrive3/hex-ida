@@ -3,7 +3,7 @@ import * as E from '../expr/index.js';
 import { queryRecord, queryArray } from '../memory/data-input.js';
 import { assertMemoryExpr } from '../memory/byte-memory.js';
 import { createQueryGuard, QueryFailure } from '../memory/query-state.js';
-import { saturatePureExpression, EGRAPH_LIMITS } from '../egraph/graph.js';
+import { saturatePureExpression, EGRAPH_LIMITS, EGRAPH_RULE_ORDERS } from '../egraph/graph.js';
 import { EQUALITY_RULESET_VERSION } from '../egraph/rules.js';
 import { verifyDeobfuscationCandidate } from '../taint/proof-consumer.js';
 
@@ -22,15 +22,18 @@ export async function queryEqualitySaturation(options={}) {
       candidates:Object.freeze([]),metrics:null});
   }
   let verificationQueries=0;
+  const ruleOrder = submitted.ruleOrder === undefined ? 'canonical' : submitted.ruleOrder;
   const result=(status,reason,candidates=[],search=null)=>Object.freeze({
     schemaVersion:'hex-equality-saturation/v1',status,reason,identity:guard.identity,
     scope:'pure-expression-candidates-only',rulesetVersion:EQUALITY_RULESET_VERSION,
+    ruleOrder:EGRAPH_RULE_ORDERS.includes(ruleOrder)?ruleOrder:null,
     saturated:search?.saturated??false,optimality:search?.optimality??null,
     candidates:Object.freeze(candidates),rules:search?.rules??Object.freeze([]),
     metrics:Object.freeze({...guard.metrics(),verificationQueries}),
   });
   try {
     guard.check();
+    if(!EGRAPH_RULE_ORDERS.includes(ruleOrder))throw new QueryFailure('invalid-egraph-rule-order');
     if(['verified','proof','solverResult','session','backend','rules'].some(key=>Object.hasOwn(submitted,key)))throw new QueryFailure('external-proof-or-rules-not-accepted');
     if(Object.hasOwn(submitted,'executionSnapshot'))throw new QueryFailure('execution-path-proof-handoff');
     const memory=queryArray(submitted.memoryObservables,guard),effects=queryArray(submitted.effectObservables,guard);
@@ -45,7 +48,7 @@ export async function queryEqualitySaturation(options={}) {
     const expression=submitted.expression;
     assertMemoryExpr(expression,guard);
     for(const condition of preconditions){assertMemoryExpr(condition,guard);if(condition.sort.kind!=='bool')throw new QueryFailure('precondition-sort-mismatch');}
-    const search=saturatePureExpression(expression,guard),beforeDigest=E.computeStructuralHash(expression),candidates=[];
+    const search=saturatePureExpression(expression,guard,ruleOrder),beforeDigest=E.computeStructuralHash(expression),candidates=[];
     for(const choice of search.choices) {
       if(choice.digest===beforeDigest)continue; // ranking only, never a proof
       guard.take('candidates');guard.take('allocationUnits');guard.check();
@@ -61,7 +64,7 @@ export async function queryEqualitySaturation(options={}) {
       });
       guard.check();
       if(!verification.eligible && /budget|timeout|deadline|cancel|stale/.test(verification.reason??''))throw new QueryFailure(verification.reason);
-      candidates.push(Object.freeze({rule:'equality-saturation',rules:search.rules,rulesetVersion:EQUALITY_RULESET_VERSION,
+      candidates.push(Object.freeze({rule:'equality-saturation',rules:search.rules,rulesetVersion:EQUALITY_RULESET_VERSION,ruleOrder,
         candidateId,before:expression,after:choice.expression,cost:choice.cost,eligible:verification.eligible,verification}));
     }
     guard.check();return result('complete',null,candidates,search);

@@ -27,7 +27,7 @@ const TOTAL_UNARY = new Set(['not','neg','trunc','zext','sext']);
 const DEFAULT_MODELS = createTaintModels({id:'phase8-empty', version:'1', provenance:'hex.phase8.explicit-empty-model/v1',sources:[],sinks:[]});
 
 export const PROOF_REWRITE_PASS = createPassDescriptor({
-  id:'phase8.solver-constants', version:'2.1.0', stage:'rendering',
+  id:'phase8.solver-constants', version:'2.2.0', stage:'rendering',
   consumes:['ssa','origins'], produces:['provedRewrites'],
   preserves:ANALYSIS_KEYS.filter(key => key !== 'provedRewrites'),
   description:'Project unconditional solver-proved BV scalars without changing canonical IR or effects (legacy pass ID).',
@@ -151,7 +151,8 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
         guard.take('allocationUnits',generated.metrics.allocationUnits);
       }
       const candidates = generated?.candidates ?? item.candidates;
-      const generatorDecision = generated ? {ruleCoverage:generated.ruleCoverage} : {};
+      const generatorDecision = generated ? {ruleCoverage:generated.ruleCoverage}
+        : item.ruleOrder ? {ruleOrder:item.ruleOrder} : {};
       let candidate, projection;
       for (const option of candidates) {
         if (option.after?.sort.kind !== 'bv' || !option.eligible
@@ -190,6 +191,7 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
     const binding = Object.freeze({identity:guard.identity,abiId:submitted.abiId,passId:PROOF_REWRITE_PASS.id,
       passVersion:PROOF_REWRITE_PASS.version,transformKind:'solver-scalar',preconditions:EMPTY,
       candidateStrategy:submitted.candidateStrategy ?? 'local-rewrites',
+      ...(submitted.candidateStrategy === 'equality-saturation' ? {ruleOrder:submitted.ruleOrder ?? 'canonical'} : {}),
       correspondence:EMPTY,observableScope:'total-pure-bv-value-only',modelIdentity:analysis.taint.modelIdentity,
       entries:Object.freeze(entries), targetDecisions:Object.freeze(decisions),
       decisionCoverage:Object.freeze({ requested:requested.length, complete:true }) });

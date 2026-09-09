@@ -13,6 +13,20 @@ export const EGRAPH_LIMITS = Object.freeze({
   iterations:16, rebuilds:64, extractionPasses:8192, extractedTrees:50000,
   ruleApplications:4096, candidates:8,
 });
+export const EGRAPH_RULE_ORDERS = Object.freeze(['canonical','reverse','discovery']);
+/** Only reorder the already-generated finite proposal batch. No alternate
+ * rules, comparators or semantic authority can enter through this option.
+ * Default ordering and its resource charge are unchanged.
+ */
+export function orderEqualityProposals(pending,guard,ruleOrder = 'canonical') {
+  if (!EGRAPH_RULE_ORDERS.includes(ruleOrder)) throw new QueryFailure('invalid-egraph-rule-order');
+  guard.take('workItems',pending.length*Math.max(1,Math.ceil(Math.log2(pending.length+1))));
+  if (ruleOrder !== 'discovery') {
+    const direction = ruleOrder === 'reverse' ? -1 : 1;
+    pending.sort((a,b)=>direction*((a.rule<b.rule?-1:a.rule>b.rule?1:0)||a.owner-b.owner));
+  }
+  return pending;
+}
 const MAX_TREE_SIZE=4096, MAX_TREE_DEPTH=64, MAX_FRONTIER=4;
 const expensive = node => ['mul','udiv','sdiv','urem','srem'].includes(node.op) ? 1 : 0;
 const sameCost = (a,b) => a.treeNodes===b.treeNodes && a.depth===b.depth && a.expensiveOps===b.expensiveOps;
@@ -27,8 +41,8 @@ function header(node) {
 }
 
 class CandidateEGraph {
-  constructor(guard) {
-    this.guard=guard;this.nodes=[];this.parents=[];this.sorts=[];this.index=new Map();
+  constructor(guard,ruleOrder) {
+    this.guard=guard;this.ruleOrder=ruleOrder;this.nodes=[];this.parents=[];this.sorts=[];this.index=new Map();
     this.memo=new WeakMap();this.revision=0;this.rules=new Set();
   }
   find(id) {
@@ -141,9 +155,9 @@ class CandidateEGraph {
           pending.push({owner:node.owner,rule:proposal.rule,after:proposal.after});
         }
       }
-      // Stable rule ordering is part of the versioned search contract.
-      this.guard.take('workItems',pending.length*Math.max(1,Math.ceil(Math.log2(pending.length+1))));
-      pending.sort((a,b)=>(a.rule<b.rule?-1:a.rule>b.rule?1:0)||a.owner-b.owner);
+      // Ordering changes only the application of this completed read batch.
+      // No newly generated term is searched until the next rebuild/iteration.
+      orderEqualityProposals(pending,this.guard,this.ruleOrder);
       this.guard.take('allocationUnits',pending.length*2);
       const unions=[];
       for(const entry of pending)unions.push({...entry,target:this.add(entry.after)});
@@ -154,12 +168,13 @@ class CandidateEGraph {
     const choices=frontier.get(this.find(root));
     if(!choices?.length)throw new QueryFailure('budget:extraction-tree');
     this.guard.check();
-    return Object.freeze({saturated:true,rulesetVersion:EQUALITY_RULESET_VERSION,
+    return Object.freeze({saturated:true,rulesetVersion:EQUALITY_RULESET_VERSION,ruleOrder:this.ruleOrder,
       rules:Object.freeze([...this.rules].sort()),choices:Object.freeze(choices.map(value=>Object.freeze(value))),
       optimality:'explored-bounded-pareto-frontier-only'});
   }
 }
 
-export function saturatePureExpression(expression,guard) {
-  return new CandidateEGraph(guard).saturate(expression);
+export function saturatePureExpression(expression,guard,ruleOrder = 'canonical') {
+  if (!EGRAPH_RULE_ORDERS.includes(ruleOrder)) throw new QueryFailure('invalid-egraph-rule-order');
+  return new CandidateEGraph(guard,ruleOrder).saturate(expression);
 }

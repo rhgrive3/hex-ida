@@ -148,6 +148,8 @@
       "tests/phase9/browser/review-cases.test.mjs",
       "tests/phase9/egraph/equality-saturation.test.mjs",
       "tests/phase9/egraph/family-width-matrix.test.mjs",
+      "tests/phase9/helpers/egraph-family-fixtures.mjs",
+      "tests/phase9/egraph/rule-order.test.mjs",
       "tests/phase9/egraph/query-boundary-v6.test.mjs",
       "tests/phase9/egraph/target-input-binding.test.mjs",
       "tests/phase9/fixtures/memory-taint-performance-locks.json",

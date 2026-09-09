@@ -12,6 +12,7 @@ import { assertMemoryExpr } from '../memory/byte-memory.js';
 import { translateExecutionValue } from '../translate/memory.js';
 import { queryTaint, isTaintQueryResult } from './taint.js';
 import { queryEqualitySaturation } from './equality-saturation.js';
+import { EGRAPH_RULE_ORDERS } from '../egraph/graph.js';
 import { queryDeobfuscationCandidates } from './deobfuscation.js';
 import { isAdoptableCandidate } from '../taint/proof-consumer.js';
 
@@ -122,6 +123,8 @@ export async function querySymbolicAnalysis(ir, inputOptions = {}) {
   try {
     guard.check();
     if (options.candidateStrategy != null && !['local-rewrites','equality-saturation','translate-only'].includes(options.candidateStrategy)) throw new QueryFailure('unknown-candidate-strategy');
+    if (options.ruleOrder !== undefined && (options.candidateStrategy !== 'equality-saturation'
+      || !EGRAPH_RULE_ORDERS.includes(options.ruleOrder))) throw new QueryFailure('invalid-egraph-rule-order');
     if (Object.hasOwn(options, 'executionSnapshot')) throw new QueryFailure('execution-path-proof-handoff');
     if (options.preconditions != null && (!Array.isArray(options.preconditions) || options.preconditions.length)) throw new QueryFailure('analysis-precondition-handoff');
     if (['memoryObservables', 'effectObservables'].some(key => options[key] != null && (!Array.isArray(options[key]) || options[key].length))) throw new QueryFailure('memory-effect-judge-handoff');
@@ -151,6 +154,7 @@ export async function querySymbolicAnalysis(ir, inputOptions = {}) {
         memoryObservables: [], effectObservables: [], taintResult: taint,
         signal: options.signal, isCancelled: options.isCancelled, getCurrentIdentity: options.getCurrentIdentity,
         timeoutMs: Math.min(equalitySaturation ? 1000 : 120, remaining()), backendTier: options.backendTier,
+        ...(equalitySaturation ? {ruleOrder:options.ruleOrder} : {}),
         limits: { candidates: Math.min(equalitySaturation ? 8 : 32, guard.limits.candidates - guard.metrics().candidates) },
       });
       guard.check();
@@ -158,7 +162,8 @@ export async function querySymbolicAnalysis(ir, inputOptions = {}) {
       if (candidates.status !== 'complete') throw new QueryFailure(candidates.reason ?? 'incomplete-candidate-query');
       guard.take('candidates', candidates.candidates.length);
       guard.take('allocationUnits', candidates.candidates.length + 1);
-      output.push(Object.freeze({ valueId, expression, candidates: candidates.candidates, metrics: candidates.metrics }));
+      output.push(Object.freeze({ valueId, expression, candidates: candidates.candidates, metrics: candidates.metrics,
+        ...(equalitySaturation ? {ruleOrder:candidates.ruleOrder} : {}) }));
       targetInputs.set(target, translated);
     }
     guard.check();
