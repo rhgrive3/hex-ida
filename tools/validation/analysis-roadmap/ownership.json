@@ -66,6 +66,7 @@
       "tests/phase8/provenance/fixture.js",
       "tests/phase8/provenance/forward.test.mjs",
       "tests/phase8/provenance/ledger.test.mjs",
+      "tests/phase8/provenance/navigation.test.mjs",
       "tests/phase8/provenance/removal.test.mjs",
       "tests/phase8/provenance/safety-counter.test.mjs",
       "tests/phase8/provenance/validation.test.mjs"
@@ -259,7 +260,10 @@
       "tools/validation/machine-effects/x86-long64-closure-matrix.mjs",
       "userscript/hex.user.template.js",
       "userscript/release-version.json",
-      "js/decompile-base.js"
+      "js/decompile-base.js",
+      "js/ui/decompiler-provenance.js",
+      "js/ui/product-base.js",
+      "css/components.css"
     ]
   }
 }

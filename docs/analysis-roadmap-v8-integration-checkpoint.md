@@ -1677,6 +1677,77 @@ facade must be reconciled with, not substituted for, the newer query-local
 proof-capability registry in this branch. No next component acceptance is
 authorized while this checkpoint remains locked.
 
+### C4-03 canonical product navigation — TODO implementation, 2026-09-09
+
+The active goal is now explicitly: finish the analysis-MD TODOs first; physical
+device checks, environment limitations and issue fixes are handled elsewhere.
+This lane does not claim release/device acceptance by skipping those external
+checks. It prioritizes missing roadmap mechanisms and focused regressions.
+The user also reports decompiler performance improvements on latest main and
+a forthcoming second one-file improvement; preserve those at the next main
+reconciliation instead of duplicating performance work here.
+
+The previous full Phase 8 run on clean `89af94801865abc0d85640ae048aa68d822c6a51`
+was explicitly interrupted in its final verifier remeasurement after 1788 s
+to prioritize the newly scoped TODO work. Its runner and child were confirmed
+terminal before any product edit. Receipt
+`c4-03-exact-phase8-10d3e92c-dfa1-4566-bd28-453a96fd0e47.json` records exit 1;
+the retained log reports the two known call-barrier corpus failures. This is
+an INTERRUPTED, incomplete broad gate, not a full result or acceptance proof.
+It is not restarted in this TODO turn.
+
+New `js/ui/decompiler-provenance.js` consumes #3421's existing immutable
+`renderProvenance.entities` and `.reverse` through the production
+AnalysisQueryAPI result. `js/ui/product-base.js` now mounts it in the canonical
+pseudocode tab. It adds:
+
+- rendered line to original instruction addresses, including direct assembly
+  navigation through the existing router;
+- instruction-address lookup to all mapped rendered lines, with visible
+  selection and keyboard activation;
+- the same logical line text for viewing/copying, including wrapping;
+- exact BigInt addresses, without truncating high bits;
+- explicit unavailable/no-match states, paged address details retaining access
+  to every origin, and
+  no navigation from incomplete maps;
+- fresh outer query-snapshot checks before selection and navigation, separate
+  from the inner canonical IR snapshot; cancellation/disposal are rechecked
+  after asynchronous reads;
+- selection ordering so old async requests or pending clicks cannot override
+  a newer visible selection.
+
+The new 12-test navigation regression uses the real Phase 8 projection and
+AnalysisQueryAPI, plus a small DOM model for view interactions. It also pins
+production-route wiring. This is local contract/UI-handler evidence, not a
+real-device/browser claim. The final canonical provenance group passed (26.8 s),
+receipt `c4-03-navigation-settled-owned-b02edec1-6922-4b38-a7ed-b097ca5cd2e1.json`.
+Both roadmap ownership regression files passed with the navigation tests.
+The complete actual inventory is 250 paths (Phase 7: 22; Phase 8: 40), with
+three exact integration-owned UI/CSS paths and no blanket ownership widening.
+
+A scratch prototype initially asserted a unique SSA origin despite deliberately
+sharing the collapse instruction with the condition. The one-line lookup now
+uses the return node's distinct SSA origin; the multiple-line instruction
+lookup retains its exact two-line assertion. No production map was changed to
+fit the fixture. A later successful prototype run encountered an ENOTEMPTY
+error in quiet-log cleanup; no environment repair was attempted. Direct Node
+execution then verified all nine prototype tests; the authoritative 12-test
+suite additionally covers production wiring, all address pages, and unmapped
+legacy query text. Navigation plus both ownership files also passed directly
+with 20 tests and no failures.
+
+Final canonical generation passed (5.4 s), and the second rebuild passed
+(7.4 s) with zero generated diff. Settled serial `2322242171`, build
+`29fee2c7852f10bff969f69a`, release identity
+`30a4aa9461e6989e61e7611e9bcea0d406427f88f4950d31b9d94bd076e6c41b`.
+Receipts: `c4-03-navigation-settled-build-36df48f2-9a3d-46e1-9122-28175344b2e9.json`
+and `c4-03-navigation-settled-rebuild-706d3510-3c24-455d-ab17-18be0f3edefa.json`.
+No physical-device check or unrelated issue/performance fix was added.
+Remaining C4-03 work includes complete raw/deleted-entity transform histories
+and the separate legacy sheet's reverse-navigation surface. The two frozen
+call-barrier losses remain unclosed. This is further work on the same C4-03
+candidate, not acceptance of a next component or completion of all findings.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -1711,7 +1782,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C3-03 | Versioned language metadata and unknown-version matrix |
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
-| HEX-C4-03 | Every raw/optimized/rendered forward and reverse mapping |
+| HEX-C4-03 | Product query/UI bidirectional navigation implemented; raw/deleted histories and remaining surfaces still open |
 | HEX-C4-04 | v8 pure constant projection plus remaining risky rewrite observables |
 | HEX-C4-05 | Bounded e-graph candidates, independent proofs and resource matrix |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |
