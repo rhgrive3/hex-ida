@@ -1,4 +1,5 @@
 import { classifyFunction, discoverSubsystems } from '../../recognition/classifier.js';
+import { assertAnalysisSnapshot } from './snapshot.js';
 import { STRING_SCAN_BUDGET, StringCollectionBudget } from '../../string-budget.js';
 
 const REPORT_BINDINGS = new WeakMap();
@@ -71,6 +72,12 @@ function canonicalRecognitionConfidence(value) {
 
 async function assertCurrentSnapshot(app, snapshot, options = {}) {
   abortIfNeeded(options.signal);
+  // Product surface answers carry snapshot-attributed evidence, so the caller
+  // supplied envelope must satisfy the same canonical AnalysisSnapshot
+  // contract AnalysisQueryAPI enforces before any query. snapshotId string
+  // equality alone would accept a forged envelope whose other identity fields
+  // are missing or contradictory while it names the current snapshot (#5344).
+  assertAnalysisSnapshot(snapshot);
   const current = await app.analysisQueries.snapshot(options);
   abortIfNeeded(options.signal);
   if (!sameSnapshot(snapshot, current)) {
