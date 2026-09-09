@@ -1126,8 +1126,12 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
 }
 
 function page(items, cursor, pageSize, map) {
+  /* A page size must make progress: pageSize 0 (or any non-positive value)
+     would otherwise return the same cursor forever, letting a normal
+     nextCursor consumer loop without advancing (#5691). */
+  const size = Number.isSafeInteger(pageSize) && pageSize > 0 ? pageSize : DEBUG_DEFAULT_PAGE_SIZE;
   const start = cursor == null ? 0 : Number(cursor);
-  const slice = items.slice(start, start + pageSize);
+  const slice = items.slice(start, start + size);
   const next = start + slice.length;
   return createDebugPage({
     records: slice.map(map),

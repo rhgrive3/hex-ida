@@ -14,7 +14,8 @@ export class PackageValidationError extends Error {
 }
 
 function required(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new PackageValidationError(code);
+  const text = value.trim();
   if (!text) throw new PackageValidationError(code);
   return text;
 }
