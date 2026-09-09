@@ -160,7 +160,13 @@ export class EmulatorProvider {
       }
     } catch (error) {
       session.setState('failed');
-      try { await session.close(); } catch {}
+      try { await session.close(); }
+      catch {
+        // A failed open never returns this session to its caller. Release the
+        // provider ownership even when disconnect itself fails; normal close
+        // failures remain retryable through RuntimeProviderSession.close().
+        if (this.activeSession === session) this.activeSession = null;
+      }
       throw error;
     }
     const evidence = new RuntimeEvidenceBridge();
