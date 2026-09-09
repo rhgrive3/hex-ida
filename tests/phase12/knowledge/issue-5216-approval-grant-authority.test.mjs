@@ -24,7 +24,7 @@ import '../../phase12/knowledge/harness-event-realm.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as recognition from '../../../js/knowledge/phase12-recognition.js';
-import { fireTrustedApprovalGesture, syntheticEvent } from './harness-event-realm.mjs';
+import { fireTrustedApprovalGesture, syntheticEvent, hostRecognitionCapability } from './harness-event-realm.mjs';
 const { createMatchResult, promoteKnowledgeSuggestion, createRecognitionApprovalControl } = recognition;
 
 function uniqueResult(overrides = {}) {
@@ -242,10 +242,11 @@ test('#5216 grants stay bound to match identity, actor and package content', () 
 
 test('#5216 the host project binding is recorded and re-verified at consumption (review R4)', () => {
   const bindingMatch = uniqueResult({ sourceEntityId: 'fn:binding-a', packageEntryId: 'pkg:binding-a' });
-  recognition.configureRecognitionApprovalHost({ projectBinding: 'project-A' });
+  const capability = hostRecognitionCapability();
+  recognition.configureRecognitionApprovalHost({ projectBinding: 'project-A', capability });
   try {
     approveThroughControl(bindingMatch, { actorId: 'actor-a' });
-    recognition.configureRecognitionApprovalHost({ projectBinding: 'project-B' });
+    recognition.configureRecognitionApprovalHost({ projectBinding: 'project-B', capability });
     assert.throws(
       () => promoteKnowledgeSuggestion(bindingMatch, { actorId: 'actor-a' }),
       /bound to a different project binding/,
@@ -255,14 +256,15 @@ test('#5216 the host project binding is recorded and re-verified at consumption 
     const fact = promoteKnowledgeSuggestion(bindingMatch, { actorId: 'actor-a' });
     assert.equal(fact.confirmation, 'user-confirmed');
   } finally {
-    recognition.configureRecognitionApprovalHost({ projectBinding: null });
+    recognition.configureRecognitionApprovalHost({ projectBinding: null, capability });
   }
 });
 
 test('#5216 an unbound approval cannot be spent once the host carries a binding', () => {
   const unboundMatch = uniqueResult({ sourceEntityId: 'fn:binding-b', packageEntryId: 'pkg:binding-b' });
+  const capability = hostRecognitionCapability();
   approveThroughControl(unboundMatch, { actorId: 'actor-a' });
-  recognition.configureRecognitionApprovalHost({ projectBinding: 'project-A' });
+  recognition.configureRecognitionApprovalHost({ projectBinding: 'project-A', capability });
   try {
     assert.throws(
       () => promoteKnowledgeSuggestion(unboundMatch, { actorId: 'actor-a' }),
@@ -270,6 +272,68 @@ test('#5216 an unbound approval cannot be spent once the host carries a binding'
       'an unbound record cannot be spent under any binding',
     );
   } finally {
-    recognition.configureRecognitionApprovalHost({ projectBinding: null });
+    recognition.configureRecognitionApprovalHost({ projectBinding: null, capability });
   }
+});
+
+test('#5216 the host binding setter is a host-held capability: an importer cannot restore a stale binding (review R2 round 3)', () => {
+  // The exact R2-round-3 counterexample: mint under A, host re-binds to B
+  // (the stale record must die), an untrusted importer restores A through
+  // the exported setter, then tries to spend the stale record.
+  const capability = hostRecognitionCapability();
+  const staleMatch = uniqueResult({ sourceEntityId: 'fn:binding-c', packageEntryId: 'pkg:binding-c' });
+  recognition.configureRecognitionApprovalHost({ projectBinding: 'project-A', capability });
+  approveThroughControl(staleMatch, { actorId: 'attacker' });
+  recognition.configureRecognitionApprovalHost({ projectBinding: 'project-B', capability });
+  assert.throws(
+    () => promoteKnowledgeSuggestion(staleMatch, { actorId: 'attacker' }),
+    /bound to a different project binding/,
+    'the stale record is unspendable after the host re-bind',
+  );
+  // (1) A plain importer without the capability cannot reconfigure at all.
+  assert.throws(
+    () => recognition.configureRecognitionApprovalHost({ projectBinding: 'project-A' }),
+    /host capability/,
+    'importer-provided configuration is not authorized',
+  );
+  assert.throws(
+    () => recognition.configureRecognitionApprovalHost({ projectBinding: 'project-A', capability: {} }),
+    /host capability/,
+    'a duck-typed capability is not the module-stamped brand',
+  );
+  assert.throws(
+    () => recognition.configureRecognitionApprovalHost({ projectBinding: 'project-A', capability: { [Symbol.for('hex.recognition.host-capability')]: true } }),
+    /host capability/,
+    'a symbol-stamped foreign object is not the module-private brand',
+  );
+  // The binding is still project-B: nothing changed.
+  assert.throws(() => promoteKnowledgeSuggestion(staleMatch, { actorId: 'attacker' }), /bound to a different project binding/);
+  // (2) The bootstrap holder object itself is not a capability.
+  const holder = globalThis[Symbol.for('hex.recognition.host-capability-holder')];
+  assert.throws(
+    () => recognition.configureRecognitionApprovalHost({ projectBinding: 'project-A', capability: holder }),
+    /host capability/,
+  );
+  // (3) No export mints a capability: creating controls and probing the
+  // module surface yields no object that passes the brand check.
+  const probe = [createRecognitionApprovalControl(uniqueResult({ sourceEntityId: 'fn:cap', packageEntryId: 'pkg:cap' }), { actorId: 'x', onApproved: () => {} }), recognition].flat();
+  for (const candidate of probe) {
+    assert.throws(
+      () => recognition.configureRecognitionApprovalHost({ projectBinding: 'project-A', capability: candidate }),
+      /host capability/,
+      'no exported object is a host capability',
+    );
+  }
+  // The attacker's stale record stays dead even with the capability held by
+  // the honest host: the host would have to actively re-bind to A — which
+  // the review contract treats as the host's own authorization decision,
+  // not the attacker's. The record from under A never revives by itself:
+  // after the host re-binds back to A and the user approves again, only the
+  // NEW record is spendable.
+  recognition.configureRecognitionApprovalHost({ projectBinding: 'project-A', capability });
+  approveThroughControl(staleMatch, { actorId: 'attacker' });
+  const fact = promoteKnowledgeSuggestion(staleMatch, { actorId: 'attacker' });
+  assert.equal(fact.authority, 'L4-local-canonical', 'only a fresh approval under the current binding promotes');
+  assert.throws(() => promoteKnowledgeSuggestion(staleMatch, { actorId: 'attacker' }), /approval is required/, 'and it is single-use');
+  recognition.configureRecognitionApprovalHost({ projectBinding: null, capability });
 });

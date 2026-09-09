@@ -217,7 +217,38 @@ function createRecognitionApprovalAuthority() {
 // duck-type, swap or self-mint their way into the approval boundary.
 const HOST_APPROVAL_AUTHORITY = createRecognitionApprovalAuthority();
 
-export function configureRecognitionApprovalHost({ projectBinding = null } = {}) {
+// The host project/binary binding is a host-held capability, not a public
+// reset (review R2 round 3): a normal exported setter would let any importer
+// restore a stale binding and spend an approval record that the host re-bind
+// had just invalidated (mint under A → host re-binds B → attacker restores
+// A → stale record spendable). The capability is stamped by this module at
+// evaluation time — the same trust tier as the host bundle itself, since
+// later page script cannot reach module-private state — and delivered to the
+// host through a Symbol.for-keyed global holder. Ordinary recognition/AI/
+// plugin/alternate-UI importers hold no capability: their configure calls
+// fail closed. A capability cannot be forged by stamping a foreign object —
+// the brand is a module-private symbol; and no other export returns one.
+const HOST_CAPABILITY_STAMP = Symbol('hex.recognition.host-capability');
+const HOST_CAPABILITY_HOLDER_KEY = Symbol.for('hex.recognition.host-capability-holder');
+(function bootstrapHostCapability() {
+  const capability = deepFreeze({
+    // Irrevocable for the session by construction: the module keeps no
+    // reference that could hand it to callers, and no export returns it.
+    [HOST_CAPABILITY_STAMP]: true,
+  });
+  globalThis[HOST_CAPABILITY_HOLDER_KEY] = deepFreeze({ capability });
+})();
+
+function isHostCapability(value) {
+  return typeof value === 'object' && value !== null && value[HOST_CAPABILITY_STAMP] === true;
+}
+
+// The host (host bundle bootstrap) takes its capability from the global
+// bootstrap holder once at boot and uses it to set/re-bind the approval host
+// binding for the session. This export is the ONLY way to change the
+// binding, and it requires the module-stamped capability.
+export function configureRecognitionApprovalHost({ projectBinding = null, capability = null } = {}) {
+  if (!isHostCapability(capability)) throw new TypeError('recognition approval host configuration requires the host capability minted at host bootstrap; importer-provided configuration is not authorized');
   HOST_APPROVAL_AUTHORITY.configureHost({ projectBinding });
 }
 

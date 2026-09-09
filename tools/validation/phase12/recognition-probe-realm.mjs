@@ -80,3 +80,15 @@ export function fireTrustedApprovalGesture(surface, type = 'click') {
 export function syntheticEvent(type = 'click') {
   return new Event(type, { trusted: false });
 }
+
+// The trusted runner plays the host bundle: it takes the module-stamped
+// host capability from the bootstrap holder (keyed by a Symbol.for the
+// module owns) and hands it back on each host configuration call. Page
+// importers can read the same holder but NOT mint a capability: the brand
+// is a module-private symbol, so a plain {…} or the holder object itself
+// fails the module's brand check.
+export function hostRecognitionCapability() {
+  const holder = globalThis[Symbol.for('hex.recognition.host-capability-holder')];
+  if (!holder?.capability) throw new Error('recognition host capability bootstrap holder unavailable — import the recognition module first');
+  return holder.capability;
+}

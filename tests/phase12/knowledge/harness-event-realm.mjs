@@ -22,6 +22,7 @@
 import {
   fireTrustedApprovalGesture,
   syntheticEvent,
+  hostRecognitionCapability,
 } from '../../../tools/validation/phase12/recognition-probe-realm.mjs';
 
-export { fireTrustedApprovalGesture, syntheticEvent };
+export { fireTrustedApprovalGesture, syntheticEvent, hostRecognitionCapability };
