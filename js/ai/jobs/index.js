@@ -3,7 +3,13 @@ const MAX_JOB_SLICES = 32;
 const MAX_JOB_ELAPSED_MS = 4 * 60 * 60 * 1000;
 let fallbackRandomSequence = 0n;
 const activeExecutionLeases = new Map();
-const activeLeaseScopes = new WeakMap();
+// Persistence adapters are often thin wrappers created per manager. Object
+// identity therefore cannot identify a durable execution scope: two wrappers
+// over one store could otherwise acquire independent leases. Use the job ID as
+// the conservative process-local fallback so a job is single-flight even when
+// its adapters differ. A lease is removed on every normal exit, so unrelated
+// job IDs still run concurrently and the map does not retain completed jobs.
+const activeLeaseScopes = new Map();
 
 export class AgentJobManager {
   constructor({ runtime, persistence = null, maxSlices = 8, maxElapsedMs = 30 * 60 * 1000 } = {}) {
@@ -41,6 +47,11 @@ export class AgentJobManager {
     try {
       const job = {
         version: CHECKPOINT_VERSION, id,
+        // Persist a stable scope so managers that wrap the same durable store
+        // share one process-local lease while independent stores remain
+        // isolated. Legacy checkpoints without this field conservatively use
+        // the job ID as their fallback scope.
+        executionScopeId: `agent_job_scope_${randomId()}`,
         status: 'ready', goal, effectiveScope: input.scope || 'auto',
         conversationId: input.conversationId == null ? null : String(input.conversationId), sessionId: input.sessionId || null,
         provider: input.provider || null, model: input.model || null, reasoning: input.reasoning || null,
@@ -66,6 +77,20 @@ export class AgentJobManager {
     this.runningJobIds.add(id);
     let executionLeaseId = null;
     try {
+      // A completed execution marker is a durable hand-off from a failed
+      // final-status write. Persist the recovered final status once, then
+      // return it without replaying provider/tool side effects. A later
+      // explicit resume may continue a checkpointed job normally.
+      if (job.executionRecoveryPending === true) {
+        delete job.executionRecoveryPending;
+        try {
+          await this.save(job);
+        } catch (error) {
+          job.executionRecoveryPending = true;
+          throw error;
+        }
+        return checkpoint(job);
+      }
       // A successful slice is never replayed to recover a failed checkpoint
       // write (#6273). The first resume retries the exact saved result only,
       // including when the execution status is checkpointed rather than done.
@@ -88,7 +113,7 @@ export class AgentJobManager {
         }
         return checkpoint(job);
       }
-      executionLeaseId = beginExecutionLease(this.runtime, this.persistence, id);
+      executionLeaseId = beginExecutionLease(this.runtime, this.persistence, id, job.executionScopeId);
       if (!executionLeaseId) {
         // A different manager sharing this execution scope still owns this job.
         // Drop any stale local copy so a later retry reloads durable state.
@@ -140,13 +165,25 @@ export class AgentJobManager {
       else if (!result?.limits?.exhausted) job.status = 'complete';
       else if (hardLimit(job)) job.status = 'hard-limit';
       else job.status = 'checkpointed';
+      const completedStatus = job.status;
       delete job.executionLeaseId;
       job.updatedAt = new Date().toISOString();
       this.pendingCheckpoints.set(id, checkpoint(job));
-      await this.persistPendingCheckpoint(job);
+      try {
+        await this.persistPendingCheckpoint(job);
+      } catch (error) {
+        // The turn already completed. Preserve its result in a durable
+        // running envelope when the final status write fails, so a fresh
+        // manager can recover the completed checkpoint without replaying the
+        // provider/tool side effects (#6273). If this fallback write also
+        // fails, the ordinary interrupted-running recovery remains available
+        // for a true process crash (#4389).
+        await this.persistCompletedExecutionMarker(job, completedStatus);
+        throw error;
+      }
       return checkpoint(job);
     } finally {
-      if (executionLeaseId) endExecutionLease(this.runtime, this.persistence, id, executionLeaseId);
+      if (executionLeaseId) endExecutionLease(this.runtime, this.persistence, id, executionLeaseId, job.executionScopeId);
       this.runningJobIds.delete(id);
     }
   }
@@ -168,6 +205,20 @@ export class AgentJobManager {
     this.pendingCheckpoints.delete(job.id);
     delete job.checkpointSavePending;
     delete job.checkpointSaveError;
+  }
+  async persistCompletedExecutionMarker(job, status) {
+    const marker = checkpoint(job);
+    marker.status = 'running';
+    delete marker.executionLeaseId;
+    marker.executionOutcomeStatus = status;
+    marker.executionRecoveryPending = true;
+    try {
+      await this.save(marker);
+    } catch {
+      // The original persistence error is the actionable failure. A later
+      // manager can still classify an unmarked running checkpoint as an
+      // interrupted slice and recover it (#4389).
+    }
   }
   async get(id) {
     if (typeof id !== 'string') return null;
@@ -271,12 +322,13 @@ function hardLimit(job) { return job.budgetUsage.slices >= job.limits.maxSlices 
 function compactResult(result) { return { answer: result?.answer || '', confidence: result?.confidence ?? null, limits: result?.limits || { exhausted: false }, usage: result?.usage || {}, sessionId: result?.sessionId || null }; }
 function checkpoint(job) { return JSON.parse(JSON.stringify(job)); }
 function unique(values) { return [...new Set(values)]; }
-function executionLeaseScope(runtime, persistence) {
-  if (persistence && (typeof persistence === 'object' || typeof persistence === 'function')) return persistence;
-  return runtime;
+function executionLeaseScope(runtime, persistence, jobId, executionScopeId) {
+  void runtime;
+  void persistence;
+  return typeof executionScopeId === 'string' && executionScopeId ? `scope:${executionScopeId}` : `legacy-job:${jobId}`;
 }
-function beginExecutionLease(runtime, persistence, jobId) {
-  const scope = executionLeaseScope(runtime, persistence);
+function beginExecutionLease(runtime, persistence, jobId, executionScopeId) {
+  const scope = executionLeaseScope(runtime, persistence, jobId, executionScopeId);
   let jobs = activeLeaseScopes.get(scope);
   if (!jobs) {
     jobs = new Map();
@@ -288,8 +340,8 @@ function beginExecutionLease(runtime, persistence, jobId) {
   activeExecutionLeases.set(leaseId, jobId);
   return leaseId;
 }
-function endExecutionLease(runtime, persistence, jobId, leaseId) {
-  const scope = executionLeaseScope(runtime, persistence);
+function endExecutionLease(runtime, persistence, jobId, leaseId, executionScopeId) {
+  const scope = executionLeaseScope(runtime, persistence, jobId, executionScopeId);
   const jobs = activeLeaseScopes.get(scope);
   if (jobs?.get(jobId) === leaseId) {
     jobs.delete(jobId);
@@ -303,7 +355,16 @@ function isLiveRunningCheckpoint(value) {
   return leaseId !== null && activeExecutionLeases.get(leaseId) === value.id;
 }
 function recoverPersistedRunningCheckpoint(value) {
-  if (value.status !== 'running' || isLiveRunningCheckpoint(value)) return value;
+  if (value.status !== 'running') return value;
+  if (value.executionOutcomeStatus && value.executionRecoveryPending === true) {
+    const recovered = { ...value, status: value.executionOutcomeStatus };
+    delete recovered.executionOutcomeStatus;
+    delete recovered.executionLeaseId;
+    delete recovered.checkpointSavePending;
+    delete recovered.checkpointSaveError;
+    return recovered;
+  }
+  if (isLiveRunningCheckpoint(value)) return value;
   // Only a running checkpoint whose process-local execution lease is no
   // longer active is treated as interrupted. A second manager in the same
   // process cannot turn a live owner's checkpoint into resumable work.
@@ -316,6 +377,7 @@ function recoverPersistedRunningCheckpoint(value) {
 }
 function bounded(value, min, max) { const n = Number(value); return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.floor(n))) : min; }
 const VALID_STATUSES = new Set(['ready', 'running', 'checkpointed', 'complete', 'failed', 'hard-limit']);
+const RECOVERABLE_OUTCOME_STATUSES = new Set(['checkpointed', 'complete', 'hard-limit']);
 function isValidNumber(n, min = 0) { return typeof n === 'number' && Number.isFinite(n) && n >= min; }
 function validateCheckpoint(value, expectedId = null) {
   if (!value || typeof value !== 'object') return false;
@@ -324,6 +386,12 @@ function validateCheckpoint(value, expectedId = null) {
   if (expectedId !== null && value.id !== expectedId) return false;
   if (!VALID_STATUSES.has(value.status)) return false;
   if (value.executionLeaseId !== undefined && (typeof value.executionLeaseId !== 'string' || !value.executionLeaseId)) return false;
+  if (value.executionScopeId !== undefined && (typeof value.executionScopeId !== 'string' || !value.executionScopeId)) return false;
+  if (value.executionRecoveryPending !== undefined && typeof value.executionRecoveryPending !== 'boolean') return false;
+  if (value.executionRecoveryPending === true
+    && (value.status !== 'running' || !RECOVERABLE_OUTCOME_STATUSES.has(value.executionOutcomeStatus))) return false;
+  if (value.executionOutcomeStatus !== undefined
+    && (value.status !== 'running' || !RECOVERABLE_OUTCOME_STATUSES.has(value.executionOutcomeStatus) || value.executionRecoveryPending !== true)) return false;
   if (typeof value.goal !== 'string' || !value.goal) return false;
   const bu = value.budgetUsage;
   if (!bu || typeof bu !== 'object') return false;

@@ -8,7 +8,7 @@ function fixture(exhausted=false) {
   const persistence={
     async save(job){
       writes.push(structuredClone(job));
-      if(['complete','checkpointed'].includes(job.status) && failures-- > 0) {job.lastResult.answer='adapter-mutation';throw new Error('quota');}
+      if((['complete','checkpointed'].includes(job.status) || job.executionRecoveryPending === true) && failures-- > 0) {job.lastResult.answer='adapter-mutation';throw new Error('quota');}
       persisted.set(job.id,structuredClone(job));
     },
     async load(id){return structuredClone(persisted.get(id));},
@@ -27,7 +27,7 @@ for(const exhausted of [false,true]) test(`#6273 resume retries only the checkpo
   assert.deepEqual(recovered.budgetUsage,before);assert.equal(recovered.lastResult.answer,'done');
   assert.equal(recovered.checkpointSavePending,undefined);
   assert.equal(f.persisted.get('j').status,recovered.status);
-  assert.deepEqual(f.writes.at(-1),f.writes.at(-2),'same checkpoint, without doubled usage or adapter mutation');
+  assert.deepEqual(f.writes.at(-1),recovered,'same checkpoint, without doubled usage or adapter mutation');
   await f.manager.retryCheckpoint('j');assert.equal(f.turns,1);
   if(exhausted){await f.manager.resume('j');assert.equal(f.turns,2);}
 });
@@ -41,6 +41,27 @@ test('#6273 repeated quota failures cannot replay a finished slice in-process; #
   assert.equal(recovered.status,'checkpointed');
   assert.equal(f.turns,2);
   assert.equal(f.persisted.get('j').lastResult.answer,'done');
+});
+test('#6273 a fresh manager recovers a completed outcome marker without replaying the turn', async () => {
+  const f = fixture(true);
+  await f.manager.create({ jobId: 'j', goal: 'test' });
+  await assert.rejects(f.manager.runSlice('j'), /quota/);
+  assert.equal(f.turns, 1);
+  const marker = f.persisted.get('j');
+  assert.equal(marker.status, 'running');
+  assert.equal(marker.executionOutcomeStatus, 'checkpointed');
+  assert.equal(marker.executionRecoveryPending, true);
+
+  const restarted = new AgentJobManager({ runtime: f.runtime, persistence: f.persistence });
+  const recovered = await restarted.resume('j');
+  assert.equal(recovered.status, 'checkpointed');
+  assert.equal(recovered.executionRecoveryPending, undefined);
+  assert.equal(f.turns, 1, 'durable outcome recovery must not replay provider/tool side effects');
+  assert.equal(f.persisted.get('j').status, 'checkpointed');
+
+  const continued = await restarted.resume('j');
+  assert.equal(continued.status, 'checkpointed');
+  assert.equal(f.turns, 2, 'an explicit later resume may continue the checkpointed job');
 });
 test('#6273 an actual execution failure retains failure/cancellation semantics',async()=>{
   for(const cancelled of [false,true]) {

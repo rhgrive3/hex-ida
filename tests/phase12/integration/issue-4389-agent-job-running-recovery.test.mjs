@@ -91,6 +91,48 @@ test('#4389 a live owner cannot be replayed by a second manager sharing persiste
   assert.equal((await contender.get('issue-4389-live-owner')).status, 'complete');
 });
 
+test('#4389 distinct persistence wrappers over one store cannot replay a preloaded ready job', async () => {
+  const records = new Map();
+  const adapter = () => ({
+    async save(job) { records.set(job.id, structuredClone(job)); },
+    async load(id) { return structuredClone(records.get(id) ?? null); },
+  });
+  const ownerPersistence = adapter();
+  const contenderPersistence = adapter();
+  let releaseOwner;
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const ownerRuntime = {
+    async turn() {
+      markStarted();
+      await new Promise((resolve) => { releaseOwner = resolve; });
+      return { answer: 'owner', limits: { exhausted: false } };
+    },
+  };
+  let contenderTurns = 0;
+  const contenderRuntime = {
+    async turn() {
+      contenderTurns++;
+      return { answer: 'contender', limits: { exhausted: false } };
+    },
+  };
+  const owner = new AgentJobManager({ runtime: ownerRuntime, persistence: ownerPersistence });
+  await owner.create({ jobId: 'issue-4389-wrapper-race', goal: 'one owner' });
+  const contender = new AgentJobManager({ runtime: contenderRuntime, persistence: contenderPersistence });
+  await contender.get('issue-4389-wrapper-race');
+
+  const running = owner.runSlice('issue-4389-wrapper-race');
+  await started;
+  try {
+    await assert.rejects(contender.resume('issue-4389-wrapper-race'), /active slice/);
+    assert.equal(contenderTurns, 0);
+  } finally {
+    releaseOwner();
+    await running;
+  }
+  assert.equal(records.get('issue-4389-wrapper-race').status, 'complete');
+});
+
 test('#4389 a running checkpoint left by a runtime crash can be resumed', async () => {
   const persistence = memoryPersistence();
   const seed = new AgentJobManager({ runtime: { async turn() { throw new Error('must not run during seed'); } }, persistence });
