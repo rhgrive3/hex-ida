@@ -1,0 +1,51 @@
+name: Apply issue 3716 patch
+
+on:
+  push:
+    branches:
+      - fix/issue-3716-emu-variable-shift-width
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Apply minimal patch and validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('js/emu.js')
+          text = path.read_text()
+          replacements = [
+              ("      lsl: (a, b) => a << (b & 63n), lsr: null, asr: null, ror: null,", "      lsl: null, lsr: null, asr: null, ror: null,"),
+              ("      const b = R(ops[2]);", "      const b = R(ops[2]);" + chr(10) + "      const variableShift = b & (wide ? 63n : 31n);"),
+              ("      if (mn === 'lsr') r = (wide ? a : a & MASK32) >> (b & 63n);", "      if (mn === 'lsl') r = a << variableShift;" + chr(10) + "      else if (mn === 'lsr') r = (wide ? a : a & MASK32) >> variableShift;"),
+              ("      else if (mn === 'asr') r = BigInt.asIntN(wide ? 64 : 32, a) >> (b & 63n);", "      else if (mn === 'asr') r = BigInt.asIntN(wide ? 64 : 32, a) >> variableShift;"),
+          ]
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit(f'expected patch anchor exactly once: {old}')
+              text = text.replace(old, new)
+          path.write_text(text)
+          Path('.github/workflows/apply-issue-3716.yml').unlink()
+          PY
+
+          timeout 20s node tests/issue-3716-emu-variable-shift-width.mjs
+          timeout 30s node tests/issues-350-399.mjs
+          timeout 30s node tests/issues-802-805-810-835-840.mjs
+          timeout 45s node tests/check.mjs
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'fix(emu): respect W-register variable shift width'
+          git push origin HEAD:${GITHUB_REF_NAME}
