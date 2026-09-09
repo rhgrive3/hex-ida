@@ -1,3 +1,4 @@
+import { PROPOSAL_DRAFT_SCHEMA } from '../schema.js';
 import { boundedText, byteLength, HttpError, MAX_CONTEXT_CHARS } from './worker-transport.js';
 
 const MAX_QUESTION_CHARS = 6000;
@@ -76,7 +77,8 @@ export function finalResultTool() {
       answer: { type: 'string', maxLength: 30000 }, confidence: { type: 'number', minimum: 0, maximum: 1 },
       evidenceIds: { type: 'array', items: { type: 'string' } }, hypothesisIds: { type: 'array', items: { type: 'string' } },
       hypotheses: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, claim: { type: 'string' }, confidence: { type: 'number' }, status: { type: 'string' }, supportEvidenceIds: { type: 'array', items: { type: 'string' } }, contradictionEvidenceIds: { type: 'array', items: { type: 'string' } }, missingEvidence: { type: 'array', items: { type: 'string' } } } } },
-      suggestedActions: { type: 'array', items: { type: 'object', required: ['kind'], properties: { kind: { type: 'string' }, target: { type: 'string' }, label: { type: 'string' }, evidenceId: { type: 'string' } } } }, followups: { type: 'array', items: { type: 'string' } },
+      suggestedActions: { type: 'array', items: { type: 'object', required: ['kind'], properties: { kind: { type: 'string' }, target: { type: 'string' }, label: { type: 'string' }, evidenceId: { type: 'string' } } } },
+      proposals: { type: 'array', maxItems: 8, items: PROPOSAL_DRAFT_SCHEMA }, followups: { type: 'array', items: { type: 'string' } },
     },
   } };
 }
@@ -100,7 +102,7 @@ export function normalizeAIInteraction(value, allowedTools) {
   if (!isObject(args)) throw new Error('The model function arguments must be an object.');
   if (name === 'submit_hex_result') {
     const answer = boundedText(args.answer, 30000).trim(); if (!answer) throw new Error('The final answer is empty.');
-    return { type: 'final', answer, confidence: finiteConfidence(args.confidence), evidenceIds: stringList(args.evidenceIds, 100), hypothesisIds: stringList(args.hypothesisIds, 100), hypotheses: normalizeList(args.hypotheses, 30), suggestedActions: normalizeList(args.suggestedActions, 30), followups: stringList(args.followups, 20) };
+    return { type: 'final', answer, confidence: finiteConfidence(args.confidence), evidenceIds: stringList(args.evidenceIds, 100), hypothesisIds: stringList(args.hypothesisIds, 100), hypotheses: normalizeList(args.hypotheses, 30), suggestedActions: normalizeList(args.suggestedActions, 30), proposals: normalizeList(args.proposals, 8), followups: stringList(args.followups, 20) };
   }
   if (!allowedTools.includes(name)) throw new Error('The model requested an unknown tool.');
   return { type: 'tool', tool: name, arguments: sanitizeValue(args, 0), purpose: boundedText(call.purpose, 1000) };
