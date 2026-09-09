@@ -169,7 +169,16 @@ export function structureKnownSwitches(result, model, opts = {}) {
       continue;
     }
     const at = insertionIndex(result.lines, sw.row);
-    if (!at) continue;
+    if (!at) {
+      // The switch has no insertion point, so it cannot be structured — but
+      // the label materialization above already mutated result.lines. Roll
+      // the spliced labels back out so lines stay consistent with the
+      // unchanged pseudocode instead of publishing a half-mutated view
+      // (#5535).
+      const splicedLabels = new Set(allTargets.map((address) => labelForAddress(address).toUpperCase()));
+      result.lines = result.lines.filter((line) => !(line?.kind === 'label' && splicedLabels.has(String(line.text || '').replace(/:$/, '').toUpperCase())));
+      continue;
+    }
     const expr = String(sw.expr || sw.reg || 'switch_value');
     const repl = [{ kind: 'ctrl', indent: at.indent, text: `switch (${expr}) {`, row: sw.row, addr: null, note: null }];
     for (let i = 0; i < cases.length; i++) repl.push({ kind: 'ctrl', indent: at.indent + 1, text: `case ${values[i]}: goto ${cases[i].label};`, row: sw.row, addr: cases[i].address, note: null });
