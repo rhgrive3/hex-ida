@@ -256,8 +256,35 @@ function resolveExtendedProgramHeaderCount(r, h, bits) {
   h.phnum = actual;
 }
 
+// #7610: the Linux loader resolves overlapping PT_LOADs last-wins, while
+// BinaryImage's equal-size mapping lookup keeps the first. Two PT_LOADs that
+// map the same VM range to different file bytes therefore make Hex canonical
+// bytes disagree with what the CPU actually executes. Reject that ambiguity
+// at parse time instead of publishing arbitrary bytes; overlapping loads
+// whose overlapping file bytes are identical stay unambiguous and accepted.
+function overlappingFileBytesDisagree(r, load, ph) {
+  const start = ph.vaddr > load.vaddr ? ph.vaddr : load.vaddr;
+  const endA = ph.vaddr + ph.filesz;
+  const endB = load.vaddr + load.filesz;
+  const end = endA < endB ? endA : endB;
+  if (start >= end) return false;
+  const length = end - start;
+  const offA = ph.offset + (start - ph.vaddr);
+  const offB = load.offset + (start - load.vaddr);
+  if (offA === offB) return false;
+  const CHUNK = 65536n;
+  for (let i = 0n; i < length; i += CHUNK) {
+    const n = Number(length - i < CHUNK ? length - i : CHUNK);
+    const a = r.slice(Number(offA + i), n);
+    const b = r.slice(Number(offB + i), n);
+    for (let j = 0; j < n; j++) if (a[j] !== b[j]) return true;
+  }
+  return false;
+}
+
 function parseProgramHeaders(r, h, image, bits) {
   const out = [];
+  const loads = [];
   const off = safeOffset(h.phoff);
   if (off == null) { image.warnings.push('ELF program header offset is not safely representable'); return out; }
   if (!h.phnum || !h.phentsize || off <= 0) return out;
@@ -278,6 +305,12 @@ function parseProgramHeaders(r, h, image, bits) {
         image.warnings.push(`invalid ELF PT_LOAD ${i}: ${invalidSize ? 'p_filesz > p_memsz' : 'file range exceeds input'}`);
         continue;
       }
+      for (const load of loads) {
+        if (overlappingFileBytesDisagree(r, load, ph)) {
+          throw new Error(`ELF PT_LOAD ${i} VM range 0x${ph.vaddr.toString(16)}..0x${(ph.vaddr + ph.filesz).toString(16)} overlaps PT_LOAD ${load.index} with a different file mapping`);
+        }
+      }
+      loads.push({ index: i, vaddr: ph.vaddr, filesz: ph.filesz, offset: ph.offset });
     }
     out.push(ph);
     if (ph.type === PT_LOAD) {
