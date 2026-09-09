@@ -110,6 +110,47 @@ await run(async ({ browser }) => {
     await context.close();
   }
 
+  /* A deterministic finite animation longer than every historical fixed wait
+   * must still settle through the readiness helper before bounds are sampled. */
+  {
+    const { context, page, errors } = await openApp(browser, { width: 1440, height: 900 });
+    const delayedDuration = 650;
+    await page.addStyleTag({ content: `#ai-panel { animation-duration: ${delayedDuration}ms !important; }` });
+    await page.click('#ai-launcher');
+    const started = await page.evaluate(() => {
+      const panel = document.getElementById('ai-panel');
+      const animation = panel.getAnimations({ subtree: true }).find((item) => {
+        const timing = item.effect?.getComputedTiming?.();
+        return timing?.iterations !== Infinity && (item.playState === 'running' || item.playState === 'pending');
+      });
+      const timing = animation?.effect?.getComputedTiming?.();
+      return { layout: panel.dataset.layout, state: animation?.playState || null, duration: timing?.duration || null };
+    });
+    check('readiness regression delays a finite panel animation beyond fixed waits',
+      started.layout === 'dock' && (started.state === 'running' || started.state === 'pending') && started.duration >= delayedDuration,
+      JSON.stringify(started));
+    await waitForLayoutReady(page, '#ai-panel', 'dock');
+    const settled = await page.evaluate(() => {
+      const panel = document.getElementById('ai-panel');
+      const rect = panel.getBoundingClientRect();
+      return { layout: panel.dataset.layout, x: rect.x, right: rect.right, bottom: rect.bottom };
+    });
+    check('readiness regression samples exact settled viewport bounds',
+      settled.layout === 'dock' && settled.x >= -1 && settled.right <= 1441 && settled.bottom <= 901,
+      JSON.stringify(settled));
+
+    const timeoutStarted = Date.now();
+    let timeoutMessage = '';
+    try { await waitForLayoutReady(page, '#ai-panel', 'layout-that-never-arrives', 120); }
+    catch (error) { timeoutMessage = String(error?.message || error); }
+    const timeoutElapsed = Date.now() - timeoutStarted;
+    check('layout readiness rejects an impossible layout within its bound',
+      /Timed out waiting for #ai-panel layout/.test(timeoutMessage) && timeoutElapsed < 1000,
+      JSON.stringify({ timeoutElapsed, timeoutMessage }));
+    check('deterministic animation readiness probe has no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
+    await context.close();
+  }
+
   /* The non-onboarding path must not schedule the guide at all.  The timer
      probe is installed before app.js boots, so this remains deterministic
      even if the page is slow enough to expose the old cleanup race. */
