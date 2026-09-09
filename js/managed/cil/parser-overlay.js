@@ -103,5 +103,5 @@ export function overlayCilMetadata(bytes,parsed){
   const payload=u8.subarray(start+4,start+4+length);
   return {...row,location:'embedded',payload};
  });
- return deepFreeze({...parsed,runtimeVersion:meta.runtimeVersion,vmSpecEdition:meta.runtimeVersion,types:defs.types,fields:defs.fields,methods,methodBodies,manifestResources,files:defs.files,exportedTypes:defs.exportedTypes});
+ return deepFreeze({...parsed,runtimeVersion:meta.runtimeVersion,vmSpecEdition:meta.runtimeVersion,types:defs.types,fields:defs.fields,methods,methodBodies,manifestResources,files:defs.files,exportedTypes:defs.exportedTypes,declSecurity:defs.declSecurity});
 }

@@ -146,5 +146,35 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobHeap 
       isForwarder: (flags & 0x00200000) !== 0,
     };
   });
-  return { types, methods, fields, manifestResources, files, exportedTypes };
+  // ECMA-335 II.22.11 DeclSecurity (0x0E): declarative security authority —
+  // Action + Parent (HasDeclSecurity coded: TypeDef | MethodDef | Assembly) +
+  // PermissionSet (#Blob). Only the physical row size was known, so Demand /
+  // Assert / Deny / PermitOnly semantics vanished from the canonical image
+  // and Action-only deltas collapsed (#7632).
+  const declSecurityParentSize = codedIndexSize(counts, [0x02, 0x06, 0x20], 2);
+  const declSecurityParentTables = [0x02, 0x06, 0x20];
+  const DECL_SECURITY_ACTIONS = new Set([0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0009, 0x000a]);
+  const declSecurity = readRows(0x0e, pos => {
+    const action = view.getUint16(pos, true);
+    // II.23.1.24 / CorDeclSecurity: only the seven defined actions are valid.
+    if (!DECL_SECURITY_ACTIONS.has(action)) fail('cil-declsecurity-action-invalid');
+    const parent = index(pos + 2, declSecurityParentSize);
+    const parentTable = declSecurityParentTables[parent & 0x3];
+    const parentRid = Math.floor(parent / 4);
+    if (parentTable == null || parentRid < 1 || parentRid > counts[parentTable]) {
+      fail('cil-declsecurity-parent-invalid');
+    }
+    const permissionSetBlobIndex = index(pos + 2 + declSecurityParentSize, b);
+    if (permissionSetBlobIndex === 0) fail('cil-declsecurity-permission-set-required');
+    if (!blobHeap) fail('cil-declsecurity-permission-set-blob-missing');
+    const permissionSet = readCilMetadataBlob(blobHeap, permissionSetBlobIndex,
+      'cil-declsecurity-permission-set-blob-invalid');
+    return {
+      action,
+      parent: { table: parentTable, rid: parentRid, token: cilMetadataToken(parentTable, parentRid) },
+      permissionSetBlobIndex,
+      permissionSet,
+    };
+  });
+  return { types, methods, fields, manifestResources, files, exportedTypes, declSecurity };
 }

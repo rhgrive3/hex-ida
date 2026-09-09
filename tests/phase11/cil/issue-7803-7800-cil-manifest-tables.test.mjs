@@ -25,6 +25,7 @@ function manifestFixture({
   fileFlagsRow,
   exportedRow,
   fileHashIndex = 1,
+  declSecurity = null,
 } = {}) {
   const strings = [0, ...utf8('A.netmodule'), ...utf8('B.netmodule'), ...utf8('Widget'), ...utf8('Example'), ...utf8('T')];
   const blob = Uint8Array.from([0, 0x03, hashByte, 0xbb, 0xcc]);
@@ -43,11 +44,30 @@ function manifestFixture({
   const assemblyRefs = new Uint8Array(20), av = new DataView(assemblyRefs.buffer);
   av.setUint16(0, 1, true);
   av.setUint16(14, 25, true); // 'Widget'
-  const tables = cilTables(new Map([
+  const rows = new Map([
     [0x23, { count: 1, bytes: assemblyRefs }],
     [0x26, { count: 1, bytes: fileFlagsRow ?? files }],
     [0x27, { count: 1, bytes: exportedRow ?? exported }],
-  ]));
+  ]);
+  if (declSecurity != null) {
+    // DeclSecurity: Action(2) Parent(2) PermissionSet(2); parent = TypeDef #1
+    // (HasDeclSecurity tag 0). A TypeDef row must exist for the parent to
+    // resolve — flags include HasSecurity (0x00040000).
+    const types = new Uint8Array(14), tv = new DataView(types.buffer);
+    tv.setUint32(0, 0x00040001, true);
+    tv.setUint16(4, 25, true); // 'Widget'
+    tv.setUint16(6, 32, true); // 'Example'
+    tv.setUint16(8, 0, true);
+    tv.setUint16(10, 1, true);
+    tv.setUint16(12, 1, true);
+    rows.set(2, { count: 1, bytes: types });
+    const decl = new Uint8Array(6), dv = new DataView(decl.buffer);
+    dv.setUint16(0, declSecurity.action ?? 0x0002, true);
+    dv.setUint16(2, ((declSecurity.parentRid ?? 1) << 2) | 0, true);
+    dv.setUint16(4, declSecurity.permissionSetIndex ?? 1, true);
+    rows.set(0x0e, { count: 1, bytes: decl });
+  }
+  const tables = cilTables(rows);
   return buildCil({
     methods: [{ name: 'Run', body: [0x2a] }],
     streams: [
@@ -150,6 +170,36 @@ test('#7800 a null ExportedType implementation fails closed', () => {
   ev.setUint16(12, 0, true);
   assert.throws(() => parseCil(manifestFixture({ exportedRow: exported }), { binaryId: 'nullimpl' }),
     /cil-exported-type-implementation-required|cil-unsupported-binary/);
+});
+
+test('#7632 DeclSecurity row is decoded as declarative-security authority', () => {
+  const image = parseCil(manifestFixture({ declSecurity: { action: 0x0002 } }), { binaryId: 'declsec' });
+  assert.equal(image.declSecurity.length, 1);
+  assert.deepEqual(image.declSecurity[0], {
+    rid: 1,
+    token: '0x0e000001',
+    action: 0x0002, // Demand
+    parent: { table: 0x02, rid: 1, token: '0x02000001' },
+    permissionSetBlobIndex: 1,
+    permissionSet: new Uint8Array([0xaa, 0xbb, 0xcc]), // shared fixture blob #1
+  });
+});
+
+test('#7632 DeclSecurity.Action distinguishes images (previously collapsed)', () => {
+  const a = parseCil(manifestFixture({ declSecurity: { action: 0x0002 } }), { binaryId: 'same' });
+  const b = parseCil(manifestFixture({ declSecurity: { action: 0x0004 } }), { binaryId: 'same' });
+  assert.equal(a.declSecurity[0].action, 0x0002);
+  assert.equal(b.declSecurity[0].action, 0x0004);
+  assert.notEqual(semantic(a), semantic(b));
+});
+
+test('#7632 DeclSecurity fails closed on unknown action, missing parent row, or empty set', () => {
+  assert.throws(() => parseCil(manifestFixture({ declSecurity: { action: 0x00ff } }), { binaryId: 'badaction' }),
+    /cil-declsecurity-action-invalid|cil-unsupported-binary/);
+  assert.throws(() => parseCil(manifestFixture({ declSecurity: { parentRid: 2 } }), { binaryId: 'badparent' }),
+    /cil-declsecurity-parent-invalid|cil-unsupported-binary/);
+  assert.throws(() => parseCil(manifestFixture({ declSecurity: { permissionSetIndex: 0 } }), { binaryId: 'noset' }),
+    /cil-declsecurity-permission-set-required|cil-unsupported-binary/);
 });
 
 test('#7803/#7800 probe stays exact with manifest tables present', () => {
