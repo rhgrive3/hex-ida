@@ -237,8 +237,9 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     const explicit = value?.metadata?.argumentIndex
       ?? value?.metadata?.argIndex
       ?? value?.metadata?.abiArgIndex;
-    const index = explicit == null ? null : Number(explicit);
-    return Number.isSafeInteger(index) && index >= 0 ? index : -1;
+    return typeof explicit === 'number' && Number.isSafeInteger(explicit) && explicit >= 0
+      ? explicit
+      : -1;
   };
 
   const summaryIdentityOptions = (functionId) => {
