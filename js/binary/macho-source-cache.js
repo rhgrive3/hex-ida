@@ -173,6 +173,12 @@ function waitForEntry(entry, signal, onProgress = null) {
       reject(abortError(signal));
     };
     signal?.addEventListener('abort', onAbort, { once:true });
+    /* Issue #5263: the initial aborted check happened before registration, so
+       an abort landing in that window never dispatches (AbortSignals do not
+       replay past events). Re-check after the listener is in place — the
+       done flag keeps a real event delivery and this re-check mutually
+       idempotent. */
+    if (signal?.aborted) { onAbort(); return; }
     entry.promise.then((value) => {
       try { finish(resolve, cloneCachedArtifact(value)); }
       catch (error) { finish(reject, error); }
