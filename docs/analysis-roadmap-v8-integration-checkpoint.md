@@ -1021,6 +1021,84 @@ the six x86 gate failures, broader independent semantic evidence, current-main
 reconciliation and all original 23 finding acceptance obligations. Historical
 ledger COMPLETE labels are not fresh proof against this integration product.
 
+## Real browser receiver regression checkpoint — 2026-09-09
+
+Verified test/integration head:
+`4a5094ebe4d7a1e5fbfdf2cac5401236179dcc93`, on the same persistent
+worktree and existing PR #7036. Production semantics and generated content
+are unchanged from `2ff3d02869e4457d65be76a8ec25c3844e215a3c`.
+
+Four formerly failing canonical MachineEffects files now exercise the actual
+classic decoder Worker followed by the dedicated semantic revalidation Worker
+and shared production pipeline, on both Chromium 140.0.7339.16 and WebKit 26.0:
+
+- `issue-6133-x87-terminal-family-authority.test.mjs`;
+- `x86-long64-extended-state.test.mjs`;
+- `x86-long64-fp-denominator.test.mjs`;
+- `x86-long64-simd-denominator.test.mjs`.
+
+The common test transport is `tests/machine-effects/helpers/x86-browser-effects.mjs`.
+It checks response IDs, exact input bytes, addresses, instruction counts and
+one effect bundle per instruction, and closes browser/Worker resources after
+success or failure. It neither emulates WorkerGlobalScope nor mints private
+decoder/receiver provenance. The FSQRT regression separately proves that the
+structured-cloned decoder row remains partial with zero operations when lifted
+directly in Node. FSAVE now checks both WAIT and FNSAVE, instead of silently
+discarding the instruction after WAIT. Existing exactness assertions, all
+68 FP / 125 SIMD forms, and synthetic malformed/untrusted negatives remain.
+All seven changed paths are explicitly integration-owned; the full inventory
+against `058177e3ba15511aae290495fa98e7129fda2583` is 217 paths, with unchanged
+23-path Phase 7 and 24-path Phase 8 slices. The four ownership regressions pass.
+
+Exact-head validation:
+
+- Canonical generated build PASS (2.8 s), followed by clean Git status.
+- First canonical `npm run check` FAIL (74.7 s), three files. The independent
+  oracle report failure was caused by default Git 2.34.1 lacking
+  `merge-tree --write-tree`, not by a new oracle divergence or storage error.
+- Repeated the **whole unchanged canonical command** with installed Git 2.49.1
+  explicitly on PATH: FAIL (111.4 s), now only
+  `issue-6133-x87-trusted-terminal-domain.test.mjs` and
+  `x86-long64-closure-matrix.test.mjs`. All four changed tests passed in this
+  canonical run; independent-oracle-report passed too. The full command still
+  stops at the MachineEffects invariant; later gates are not thereby proven.
+- Full log:
+  `/mnt/workspace/hex-roadmap-recovery-durable.UWZe3G/hex-roadmap-4a5094-git249-check-TY8kYK/full.log`.
+- LAHF/SAHF native v2 proof rerun on this clean exact head: GCC 11.4.0 PASS
+  (16.3 s), Clang 18.1.3 PASS (16.4 s). Each compiler's actual observations were
+  compared against 91,392 cases / 42 encodings in each browser. Reports:
+  `/mnt/workspace/hex-roadmap-recovery-durable.UWZe3G/native-gcc-4a5094ebe.json`
+  and `native-clang-4a5094ebe.json` in the same directory. Their status remains
+  `PASS_NORMAL_EXECUTION_ONLY`; CPUID-disabled faults, other CPUs, physical iPad
+  and the complete MachineEffects denominator are not proven.
+- Main ref observed `1f8884e3e14f02b346b0fe2dc3ea918ccc03e94d`; Git 2.49.1
+  computes candidate tree `6ae3f8ace4acd1d68235d91b6fa39935ad679221`.
+  This is merge computation, not candidate runtime proof or authorization to merge.
+
+Resume commands MUST retain the installed Git toolchain, for example:
+
+```sh
+PATH=/mnt/workspace/.local/hex-stage-a-toolchain/install/bin:$PATH TMPDIR=/mnt/workspace/hex-roadmap-recovery-durable.UWZe3G node scripts/run-quiet-command.mjs --label check -- npm run check
+```
+
+The remaining #6133 test was investigated through the real browser path too:
+its x87/FCOMI/FCMOV cases reached their existing positive assertions, but RDRAND
+`0fc7f0` is genuinely partial in both browsers, with
+`x86-extended-system-family-requires-dedicated-semantics`. Its existing positive
+requirement was NOT weakened or removed. The exploratory change to that file
+was reverted before this commit; the failing test remains unchanged. Existing
+PR search found #6910's already-reused x87 fix and no separate RDRAND successor
+implementation. A dedicated semantic implementation/proof is still needed,
+alongside routing the remaining integration positives through the real receiver.
+
+The canonical 1487-witness closure test is unchanged and still blocking. The
+prior actual-receiver diagnostic had 139 partial rows; this test-only checkpoint
+does not remove any of those product gaps or claim a fresh full-denominator run.
+No source PR was duplicated, no remote push/merge occurred, and none of the
+23 original finding acceptance obligations is newly marked complete. Next work
+remains the two blocking x86 tests and actual missing semantics, independent
+semantic evidence, current-main reconciliation and the full completion audit.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
