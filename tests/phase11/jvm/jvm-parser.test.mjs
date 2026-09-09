@@ -89,4 +89,26 @@ assert.equal(parsed.methods[0].code.maxStack, 2);
 assert.equal(parsed.methods[0].code.maxLocals, 2);
 assert.equal(parsed.methods[0].code.codeLength, 6);
 
+function buildFieldClass(fieldName) {
+  const b = [];
+  const u1 = (n) => b.push(n & 0xff);
+  const u2 = (n) => b.push((n >>> 8) & 0xff, n & 0xff);
+  const u4 = (n) => b.push((n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff);
+  const utf = (text) => { const bytes = Buffer.from(text); u1(1); u2(bytes.length); b.push(...bytes); };
+
+  u4(0xcafebabe); u2(0); u2(61); u2(7);
+  utf('FieldNames'); u1(7); u2(1);
+  utf('java/lang/Object'); u1(7); u2(3);
+  utf(fieldName); utf('I');
+  u2(0x0021); u2(2); u2(4); u2(0); // public | super, no interfaces
+  u2(1); u2(0x0009); u2(5); u2(6); u2(0); // one public static field
+  u2(0); u2(0); // no methods or class attributes
+  return Uint8Array.from(b);
+}
+
+for (const fieldName of ['<x>', 'x>y', '<init>', '<clinit>']) {
+  const fieldImage = parseJvm(buildFieldClass(fieldName), { binaryId: `phase11-7462-${fieldName}` });
+  assert.equal(fieldImage.fields[0].name, fieldName);
+}
+
 console.log('  ok jvm parser tests passed');

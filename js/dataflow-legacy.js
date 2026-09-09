@@ -50,6 +50,18 @@ const ARG0 = 'x0';
 const IDENTITY_HELPER =
   /objc_(retain|autorelease|retainAutorelease|retainAutoreleaseReturnValue|retainAutoreleasedReturnValue|autoreleaseReturnValue|unsafeClaimAutoreleasedReturnValue|retainBlock)$/;
 
+/** ORR が register MOV alias (`orr Xd, XZR, Xm`) だと構造的に確認できるか。 */
+function isOrrMovAlias(insn) {
+  const ops = Array.isArray(insn?.ops) ? insn.ops : [];
+  if (ops.length !== 3) return false;
+  const [dst, zero, src] = ops;
+  if (dst?.k !== 'reg' || dst.cls !== 'gp' || dst.bits !== 64) return false;
+  if (zero?.k !== 'reg' || zero.cls !== 'zr' || zero.bits !== 64) return false;
+  if (src?.k !== 'reg' || src.cls !== 'gp' || src.bits !== 64) return false;
+  const shift = src.shift;
+  return shift == null || (shift.op === 'lsl' && shift.amount === 0);
+}
+
 /**
  * self（＝ x0 で渡されたオブジェクト）を持ち回っているレジスタを求める。
  *
@@ -106,8 +118,9 @@ export function selfRegisters(model) {
       continue;                                    // x0 の中身はそのまま
     }
 
-    // mov xd, xs / orr xd, xzr, xs — 素直なコピー
-    if ((mn === 'mov' || mn === 'orr') && insn.writes.length === 1) {
+    // mov xd, xs / orr xd, xzr, xs — 素直なコピー。
+    // ORR は mnemonic だけでは identity copy ではないので MOV alias 形を必須にする。
+    if ((mn === 'mov' || (mn === 'orr' && isOrrMovAlias(insn))) && insn.writes.length === 1) {
       const dst = insn.writes[0];
       const src = insn.reads.find((r) => live.has(r));
       if (src && dst) {
