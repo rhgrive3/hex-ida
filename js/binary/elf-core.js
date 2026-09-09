@@ -150,6 +150,7 @@ export function parseELF(input, options = {}) {
   const hasRelocations = rawSections.some((s) => s.type === SHT_REL || s.type === SHT_RELA);
   const hasDynamic = rawSections.some((s) => s.type === SHT_DYNAMIC);
   parseProgramDynamic(r, programHeaders, image, bits, {
+    signal: options.signal,
     symbols: !hasDynsym,
     relocations: !hasRelocations,
     sectionDynamicPresent: hasDynamic,

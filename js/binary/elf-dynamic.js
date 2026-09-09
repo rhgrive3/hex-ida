@@ -44,12 +44,25 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   }
 
   const entSize = bits === 64 ? 16 : 8;
+  // parseELF's public cancellation contract must reach the PT_DYNAMIC path:
+  // an aborted caller must not start (or keep funding) large dynamic decode
+  // work (#5584).
+  const signal = opts.signal || null;
+  const cancelled = () => signal?.aborted === true;
+  if (cancelled()) {
+    markDynamicPartial(image, 'PT_DYNAMIC parse was cancelled before it started');
+    return { parsed: false };
+  }
   const tags = new Map();
   const ordered = [];
   const entrySpanRemainder = size % entSize;
   let guard = 0;
   let terminated = false;
   for (let p = start; p + entSize <= start + size && guard < 1_000_000; p += entSize, guard++) {
+    if (cancelled()) {
+      markDynamicPartial(image, 'PT_DYNAMIC entry scan was cancelled');
+      return { parsed: false };
+    }
     const tag = bits === 64 ? r.i64(p) : BigInt(r.i32(p));
     const value = bits === 64 ? r.u64(p + 8) : BigInt(r.u32(p + 4));
     if (tag === DT_NULL) {
@@ -113,6 +126,7 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   }
 
   const relocationBudget = createRelocationBudget({
+    signal,
     onLimit(message) { markDynamicPartial(image, `relocation decode budget exceeded: ${message}`); },
   });
   const relocs = collectDynamicRelocations(r, tags, image, bits, relocationBudget);
@@ -120,6 +134,7 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   if (!relocationBudget.stopped) collectAndroidPackedRelocations(r, tags, image, bits, { budget: relocationBudget, out: relocs });
   image.metadata.programDynamicRelocationBudget = relocationBudget.snapshot(relocs.length);
   const symbolBudget = createDynamicSymbolBudget({
+    signal,
     limits: opts.dynamicSymbolLimits || {},
     onLimit(message) { markDynamicPartial(image, `dynamic symbol decode budget exceeded: ${message}`); },
   });
