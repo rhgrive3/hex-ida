@@ -3,7 +3,7 @@ import { BinaryImage, functionSeed } from './model.js';
 import { parseEhFrameHeader } from './elf-unwind.js';
 import { parseProgramDynamic } from './elf-dynamic.js';
 import { createELFMetadataBudget, markELFMetadataPartial } from './elf-budget.js';
-import { executableELFRange, mappedELFFileSpanForVa } from './elf-mapping.js';
+import { executableELFRange, mappedELFFileSpanForVa, elfSectionFileSpanConsistentWithLoads } from './elf-mapping.js';
 import { parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
 
 const ET_REL = 1;
@@ -86,6 +86,17 @@ export function parseELF(input, options = {}) {
     // ('unmapped-section').
     const fileSpanInvalid = h.type !== ET_REL && s.type !== 8 && (s.flags & SHF_ALLOC) !== 0n
       && (s.offset > BigInt(r.length) || s.size > BigInt(r.length) - s.offset);
+    // A file-backed SHF_ALLOC section whose sh_addr→sh_offset relation
+    // contradicts the runtime loader contract must not shadow a validated
+    // PT_LOAD either (#7611): for its file-backed address range, the owning
+    // PT_LOAD mapping must reproduce sh_offset + delta. Otherwise the section
+    // stays listed for metadata but loses mapping authority.
+    const mappingInconsistent = !fileSpanInvalid && h.type !== ET_REL && s.type !== 8
+      && (s.flags & SHF_ALLOC) !== 0n && s.size > 0n
+      && !elfSectionFileSpanConsistentWithLoads(image, s.addr, s.size, s.offset);
+    if (mappingInconsistent) {
+      image.warnings.push(`ELF section ${s.index} (${s.name || 'unnamed'}) has a sh_addr/sh_offset relation inconsistent with the runtime PT_LOAD mapping and is excluded from virtual mapping authority`);
+    }
     if (fileSpanInvalid) {
       image.warnings.push(`ELF section ${s.index} (${s.name || 'unnamed'}) has a file span beyond EOF and is excluded from virtual mapping authority`);
     }
@@ -95,7 +106,7 @@ export function parseELF(input, options = {}) {
       fileSize: s.type === 8 ? 0n : s.size,
       perms: { read: !!(s.flags & SHF_ALLOC), write: !!(s.flags & SHF_WRITE), execute: !!(s.flags & SHF_EXECINSTR) },
       flags: s.flags, type: s.type, index: s.index,
-      source: h.type === ET_REL ? 'ET_REL-synthetic-section' : fileSpanInvalid ? 'unmapped-section' : 'section-header',
+      source: h.type === ET_REL ? 'ET_REL-synthetic-section' : fileSpanInvalid || mappingInconsistent ? 'unmapped-section' : 'section-header',
     });
   }
 

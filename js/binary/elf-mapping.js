@@ -31,6 +31,40 @@ export function mappedELFFileRangeForVa(image, va) {
   return null;
 }
 
+/**
+ * A file-backed SHF_ALLOC section may only serve as virtual mapping authority
+ * when its sh_addr→sh_offset relation agrees with the runtime loader contract:
+ * for the file-backed part of its address range, the owning PT_LOAD's
+ * VA→file mapping must reproduce `sh_offset + delta` (issue #7611). Sections
+ * that disagree with every owning PT_LOAD (or have no owning PT_LOAD at all)
+ * are de-authoritized; they stay listed for metadata via their `source`.
+ */
+export function elfSectionFileSpanConsistentWithLoads(image, address, size, fileOffset) {
+  const start = strictELFInteger(address, 'address');
+  const length = strictELFInteger(size ?? 0n, 'size');
+  const off = strictELFInteger(fileOffset ?? 0n, 'fileOffset');
+  if (length < 0n || off < 0n) return false;
+  if (length === 0n) return true;
+  const end = start + length;
+  const loads = image?.segments || [];
+  let covered = false;
+  for (const segment of loads) {
+    const segStart = BigInt(segment.address ?? 0);
+    const segSize = BigInt(segment.size ?? 0);
+    const segFilesz = BigInt(segment.fileSize ?? 0);
+    if (segFilesz <= 0n) continue;
+    const vaBegin = start > segStart ? start : segStart;
+    const vaEnd = end < segStart + segFilesz ? end : segStart + segFilesz;
+    if (vaBegin >= vaEnd) continue;
+    const segOffset = BigInt(segment.fileOffset ?? 0);
+    const deltaBegin = vaBegin - start;
+    const deltaEnd = vaEnd - start;
+    if (segOffset + (vaBegin - segStart) !== off + deltaBegin) return false;
+    covered = true;
+  }
+  return covered;
+}
+
 /** Require the entire VA span to remain in one file-backed PT_LOAD mapping. */
 export function mappedELFFileSpanForVa(image, va, size) {
   const n = strictELFInteger(size, 'size');
