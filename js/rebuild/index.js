@@ -45,7 +45,7 @@ export function createRebuildPlan(input = {}) {
 }
 
 export function adaptPatchSetToRebuildPlan(patchSet, input = {}) {
-  if (!(patchSet instanceof PatchSet) && !patchSet?.list) throw new TypeError('PatchSet required');
+  if (!(patchSet instanceof PatchSet) && typeof patchSet?.list !== 'function') throw new TypeError('PatchSet required');
   const operations = patchSet.list().map((item) => ({ id: `patch:${item.offset.toString()}`, offset: item.offset, before: item.before, after: item.after, address: item.addr, provenance: { source: 'PatchSet' } }));
   return createRebuildPlan({ ...input, operations });
 }
@@ -140,7 +140,7 @@ export async function validateRebuildOutput(plan, materialized, options = {}) {
       results.set('loader-reparse', validatorResult('loader-reparse', 'failed', error?.message || String(error)));
     }
   } else {
-    results.set('loader-reparse', validatorResult('loader-reparse', 'unavailable', 'loader-reparse-oracle-unavailable'));
+    results.set('unchanged-regions', validatorResult('loader-reparse', 'unavailable', 'loader-reparse-oracle-unavailable'));
   }
 
   for (const validator of required) {
