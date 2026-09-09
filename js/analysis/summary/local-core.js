@@ -27,6 +27,43 @@ export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.2.0';
 
 const DEFAULT_ADDRESS_SPACES = Object.freeze(['memory']);
 
+function parseIntegerConstant(candidate) {
+  if (candidate == null) return null;
+  const structured = typeof candidate === 'object' && !Array.isArray(candidate);
+  if (structured) {
+    if (candidate.kind !== 'bitvector') return null;
+    if (!Number.isSafeInteger(candidate.widthBits) || candidate.widthBits <= 0) return null;
+    if (!Object.hasOwn(candidate, 'value') || candidate.value == null) return null;
+  }
+  const raw = structured ? candidate.value : candidate;
+  if (raw == null) return null;
+  try {
+    if (typeof raw === 'bigint') return raw;
+    if (typeof raw === 'number') return Number.isSafeInteger(raw) ? BigInt(raw) : null;
+    if (typeof raw !== 'string') return null;
+    const text = raw.trim();
+    if (!/^[+-]?(?:0x[0-9a-f]+|\d+)$/i.test(text)) return null;
+    return BigInt(text);
+  } catch { return null; }
+}
+
+function integerConstant(value, node) {
+  let parsed = null;
+  for (const candidate of [
+    value?.metadata?.constant,
+    node?.attributes?.constant,
+    node?.metadata?.constant,
+    node?.constant,
+  ]) {
+    if (candidate == null) continue;
+    const next = parseIntegerConstant(candidate);
+    if (next == null) return null;
+    if (parsed != null && parsed !== next) return null;
+    parsed = next;
+  }
+  return parsed;
+}
+
 // Instruction origin evidence carries the same primitive non-empty string
 // contract as the canonical origin set (#5776): a structured value must never
 // launder into a canonical instruction evidence ID via String(), so malformed
@@ -371,7 +408,11 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
           } else if (producer.kind === 'binary' && (producer.operator === 'add' || producer.operator === 'sub')) {
             const rightConst = producer.inputs?.[1];
             const rightProducer = nodeByOutput.get(rightConst);
-            const num = rightProducer?.constant != null ? rightProducer.constant : (typeof rightConst === 'number' || typeof rightConst === 'bigint' ? rightConst : null);
+            const rightValue = valueById.get(String(rightConst));
+            const hasConstantSource = rightProducer != null || rightValue?.metadata?.constant != null;
+            const num = hasConstantSource
+              ? integerConstant(rightValue, rightProducer)
+              : (typeof rightConst === 'number' || typeof rightConst === 'bigint' ? parseIntegerConstant(rightConst) : null);
             if (num != null) {
               offset += (producer.operator === 'sub' ? -BigInt(num) : BigInt(num));
               curr = producer.inputs?.[0];
