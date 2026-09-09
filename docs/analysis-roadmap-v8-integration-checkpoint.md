@@ -1748,6 +1748,42 @@ and the separate legacy sheet's reverse-navigation surface. The two frozen
 call-barrier losses remain unclosed. This is further work on the same C4-03
 candidate, not acceptance of a next component or completion of all findings.
 
+### C4-03 legacy navigation access — TODO implementation, 2026-09-09
+
+The separate legacy decompiler now opens `js/ui/decompiler-provenance-sheet.js`
+from its “命令との双方向対応” control. This sheet consumes the same
+AnalysisQueryAPI envelope and shared provenance view as the product tab;
+it does not implement another reverse index, decompiler, or router.
+Existing assembly, annotation, copy and diagram controls remain intact.
+The child sheet preserves full-width address navigation through the existing
+`app.goToAddress` route and has its own copy/wrap controls.
+
+The sheet checks closure, API identity, backend/generation and slice identity
+after each asynchronous query. Closing it makes pending publication and
+navigation ineligible, including the period before deferred Sheet destruction.
+Missing query support and absent pseudocode are explicit unavailable states.
+The 16 navigation tests passed, including four new legacy-sheet regressions
+using the real query/projection with a local DOM/Sheet model. Both ownership
+files passed (8 tests). Complete actual tracked/untracked inventory passes:
+252 paths, Phase 7: 22, Phase 8: 40. Only the two exact integration-owned
+legacy UI paths were added to ownership.
+
+Canonical provenance group PASS (15.3 s), receipt
+`c4-03-legacy-owned-3ba3b0c0-fe82-43e8-9a9c-0c5bf7aa5890.json`.
+Canonical generation PASS (5.2 s), receipt
+`c4-03-legacy-build-7a3d9bb2-f465-456f-ba53-9d191eeedc97.json`:
+serial `2322242172`, build `fc4c2300b247a4061946f647`, release identity
+`ef9182e30fa492a0d25a2fa8a9681c40a089996b0a93944c8e260d2919475e6f`.
+Exact-head and second-rebuild evidence is recorded in the durable resume
+checkpoint after commit. Deployment identity is not claimed.
+
+This closes the previously missing legacy navigation access, not the whole
+C4-03 finding. Complete raw/deleted/merged entity transform histories and the
+full class denominator remain open. No device/browser, environment, performance
+or unrelated issue work was added. No new component was accepted and the
+integration acceptance lock remains in force. Main has not been reconciled in
+this step; the user's performance changes must be preserved at reconciliation.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

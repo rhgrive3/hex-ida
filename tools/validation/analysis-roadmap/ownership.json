@@ -262,6 +262,8 @@
       "userscript/release-version.json",
       "js/decompile-base.js",
       "js/ui/decompiler-provenance.js",
+      "js/ui/decompiler-provenance-sheet.js",
+      "js/tools-base.js",
       "js/ui/product-base.js",
       "css/components.css"
     ]

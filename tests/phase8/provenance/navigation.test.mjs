@@ -5,6 +5,7 @@ import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
 import { applyPhase8Projection } from '../../../js/decompiler/phase8/projection.js';
 import { buildRenderProvenance } from '../../../js/decompiler/phase8/render-provenance.js';
 import { createDecompilerNavigation, createDecompilerProvenanceView } from '../../../js/ui/decompiler-provenance.js';
+import { showDecompilerProvenanceSheet } from '../../../js/ui/decompiler-provenance-sheet.js';
 import { analysis, expr, resultWith, source } from './fixture.js';
 
 test('C4-03 production pseudocode route consumes the snapshot-bound provenance view', () => {
@@ -147,7 +148,7 @@ class Element {
   constructor(tag) {
     this.tagName = tag.toUpperCase(); this.children = []; this.attributes = {}; this.events = {}; this.value = '';
     const classes = new Set();
-    this.classList = { toggle:(name, enabled) => { if (enabled) classes.add(name); else classes.delete(name); }, contains:name => classes.has(name) };
+    this.classList = { add:name => classes.add(name), toggle:(name, enabled) => { if (enabled) classes.add(name); else classes.delete(name); }, contains:name => classes.has(name) };
   }
   set textContent(value) { this.content = String(value); this.children = []; }
   get textContent() { return (this.content ?? '') + this.children.map(child => child.textContent).join(''); }
@@ -287,4 +288,98 @@ test('C4-03 unmapped legacy query text stays readable without inventing navigati
   } finally {
     if (previous === undefined) delete globalThis.document; else globalThis.document = previous;
   }
+});
+
+class NavigationSheet {
+  static latest = null;
+  constructor(title, options) {
+    this.title = title; this.options = options;
+    this.root = new Element('section'); this.root.isConnected = true;
+    this.body = new Element('div'); this.root.append(this.body);
+    NavigationSheet.latest = this;
+  }
+  close() { this.root.isConnected = false; this.options.onClose(); }
+}
+
+test('C4-03 legacy sheet reuses the shared query view and navigates without a product router', async () => {
+  const previous = globalThis.document;
+  globalThis.document = { createElement:tag => new Element(tag) };
+  try {
+    const f = await queryFixture(), opened = [];
+    const app = { analysisQueries:f.api, backend:{ gen:1 }, store:{ get:() => 0 },
+      goToAddress:(address, options) => opened.push({ address, options }) };
+    const sheet = await showDecompilerProvenanceSheet(app, 0x1000n, { SheetClass:NavigationSheet });
+    assert.equal(sheet.body.classList.contains('product-ui-ready'), true);
+    const [toolbar, view] = sheet.body.children;
+    const [controls, code, status, details] = view.children;
+    controls.children[0].value = '0x100C';
+    await controls.children[1].click();
+    assert.equal(code.children.filter(row => row.classList.contains('selected')).length, 2);
+    assert.match(status.textContent, /2 行/);
+    const wrap = toolbar.children[1];
+    await wrap.fire('click', { currentTarget:wrap });
+    assert.equal(code.classList.contains('wrap'), true);
+    assert.equal(wrap.attributes['aria-pressed'], 'true');
+    const target = details.children.find(node => node.textContent === '0x00001004');
+    assert.ok(target);
+    await target.click();
+    assert.deepEqual(opened, [{ address:0x1004n, options:{ announce:true } }]);
+    assert.equal(sheet.root.isConnected, false);
+    await target.click();
+    assert.equal(opened.length, 1, 'closed sheet must not issue another navigation');
+  } finally {
+    if (previous === undefined) delete globalThis.document; else globalThis.document = previous;
+  }
+});
+
+test('C4-03 legacy sheet does not publish a query that finishes after closure or binary replacement', async () => {
+  const previous = globalThis.document;
+  globalThis.document = { createElement:tag => new Element(tag) };
+  try {
+    for (const mode of ['close', 'replace']) {
+      const f = await queryFixture();
+      let release, began;
+      const ready = new Promise(resolve => { began = resolve; });
+      const api = { snapshot:options => f.api.snapshot(options), decompile:async (snapshot, address, options) => {
+        began(); await new Promise(resolve => { release = resolve; });
+        return f.api.decompile(snapshot, address, options);
+      } };
+      const app = { analysisQueries:api, backend:{ gen:1 }, store:{ get:() => 0 } };
+      const loading = showDecompilerProvenanceSheet(app, 0x1000n, { SheetClass:NavigationSheet });
+      await ready;
+      const sheet = NavigationSheet.latest;
+      if (mode === 'close') sheet.close(); else app.backend = { gen:1 };
+      release();
+      assert.equal(await loading, sheet);
+      assert.equal(sheet.body.children.length, 1, 'late view must not replace the loading surface');
+      assert.match(sheet.body.textContent, /取得しています/);
+    }
+  } finally {
+    if (previous === undefined) delete globalThis.document; else globalThis.document = previous;
+  }
+});
+
+test('C4-03 legacy sheet reports unavailable analysis without falling back to another decompiler', async () => {
+  const previous = globalThis.document;
+  globalThis.document = { createElement:tag => new Element(tag) };
+  try {
+    const app = { analyzeFunctionAt:() => assert.fail('must not create a parallel analysis path') };
+    const sheet = await showDecompilerProvenanceSheet(app, 0x1000n, { SheetClass:NavigationSheet });
+    assert.match(sheet.body.textContent, /解析クエリが利用できない/);
+    const f = await queryFixture(null);
+    const missing = await showDecompilerProvenanceSheet({ analysisQueries:f.api }, 0x1000n, { SheetClass:NavigationSheet });
+    assert.match(missing.body.textContent, /表示できる疑似コードがありません/);
+  } finally {
+    if (previous === undefined) delete globalThis.document; else globalThis.document = previous;
+  }
+});
+
+test('C4-03 legacy decompiler keeps its existing controls and opens the common provenance sheet', () => {
+  const tools = fs.readFileSync(new URL('../../../js/tools-base.js', import.meta.url), 'utf8');
+  const start = tools.indexOf('export async function showDecompiler(app, addr)');
+  const end = tools.indexOf('function paintCode(', start);
+  const surface = tools.slice(start, end);
+  assert.match(surface, /button\('命令との双方向対応', 'chip', \(\) => showDecompilerProvenanceSheet\(app, addr\)\)/);
+  assert.match(surface, /button\('アセンブリを併記'/);
+  assert.match(surface, /button\('日本語の注釈'/);
 });
