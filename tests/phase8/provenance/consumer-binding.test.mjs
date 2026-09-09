@@ -6,7 +6,7 @@ import { buildRenderProvenance, validateRenderProvenance } from '../../../js/dec
 import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
 import { createDecompilerNavigation } from '../../../js/ui/decompiler-provenance.js';
 import { structuralKey } from '../../../js/decompiler/ast/nodes.js';
-import { analysis, consumerFixture as fixture } from './fixture.js';
+import { analysis, consumerFixture as fixture, expr, resultWith, source } from './fixture.js';
 
 
 function identityRecord(map) { return map.ledger.find(record => record.rule === 'add-zero-right' && record.valueId === 3); }
@@ -165,4 +165,89 @@ test('C4-03 cumulative binding budgets stop new observations without changing de
     assert.equal(map.completeness, 'incomplete');
     assert.ok(map.reasons.includes('incomplete-expression-binding'));
   }
+});
+
+test('C4-03 successive owned projections retain store, return and branch history without accumulating records', () => {
+  const f = fixture({ branch:true });
+  let result = f.enhanced;
+  let originalText, originalCount;
+  for (let generation = 0; generation < 12; generation++) {
+    result = applyPhase8Projection(result, analysis());
+    assert.equal(result.phase8Projection.history.completeness, 'complete');
+    assert.equal(result.renderProvenance.completeness, 'complete');
+    assert.deepEqual(identityRecord(result.renderProvenance).producedRefs, ['L0:stmt', 'L2:ctrl', 'L3:stmt']);
+    originalText ??= result.pseudocode;
+    originalCount ??= result.renderProvenance.ledger.length;
+    assert.equal(result.pseudocode, originalText);
+    assert.equal(result.renderProvenance.ledger.length, originalCount);
+  }
+});
+
+test('C4-03 no-op re-projection retains actual earlier view transforms and their reverse map', () => {
+  const value = expr.variable('a1', 64, true, source(1, 1));
+  const expression = expr.unary('trunc', expr.unary('trunc', value, 32, false, source(2, 2)), 8, false, source(3, 3));
+  let result = applyPhase8Projection(resultWith(expression), analysis());
+  assert.equal(result.phase8Projection.transforms.length, 1);
+  const record = result.phase8Projection.transforms[0];
+  const reverse = result.renderProvenance.reverse;
+  for (let generation = 0; generation < 8; generation++) {
+    result = applyPhase8Projection(result, analysis());
+    assert.equal(result.phase8Projection.transforms.length, 0, 'old transforms must not be counted as newly applied');
+    assert.equal(result.phase8Projection.history.transforms.length, 1);
+    assert.equal(result.phase8Projection.history.transforms[0], record, 'retain the actual record, not a guessed equivalent');
+    assert.equal(result.renderProvenance.ledger.length, 1);
+    assert.deepEqual(result.renderProvenance.reverse, reverse);
+  }
+});
+
+test('C4-03 ordinary result envelopes preserve the exact owned AST transition', () => {
+  let result = applyPhase8Projection(fixture({ branch:true }).enhanced, analysis());
+  result = applyPhase8Projection({ ...result, ctx:{ ...result.ctx, wrapper:'phase-envelope' } }, analysis());
+  assert.equal(result.phase8Projection.history.completeness, 'complete');
+  assert.deepEqual(identityRecord(result.renderProvenance).producedRefs, ['L0:stmt', 'L2:ctrl', 'L3:stmt']);
+});
+
+test('C4-03 re-projection refuses altered or copied transition data, even when expressions look equal', () => {
+  for (const mutate of [
+    result => { result.cAst = { ...result.cAst }; },
+    result => { result.cAst.body = [...result.cAst.body]; },
+    result => { result.cAst.body[0].semantic.expression = { ...result.cAst.body[0].semantic.expression }; },
+    result => { result.semanticAst.conditions[0].row++; },
+    result => { result.rewriteProof = result.rewriteProof.map(record => ({ ...record })); },
+    result => { result.phase8Projection = { ...result.phase8Projection }; },
+    result => { result.expressionHistoryBinding = { ...result.expressionHistoryBinding }; },
+    result => { result.ir = { ...result.ir }; },
+  ]) {
+    let result = applyPhase8Projection(fixture({ branch:true }).enhanced, analysis());
+    mutate(result);
+    result = applyPhase8Projection(result, analysis());
+    assert.equal(result.phase8Projection.history.completeness, 'incomplete');
+    assert.equal(result.renderProvenance.completeness, 'incomplete');
+    assert.equal(identityRecord(result.renderProvenance).renderedBinding, 'unresolved');
+  }
+});
+
+test('C4-03 projection retention caps and cancellation cannot become complete on a later no-op', () => {
+  let result = applyPhase8Projection(fixture({ branch:true }).enhanced, analysis(), { renderProvenanceBindingBudget:{ maxEdges:1 } });
+  assert.ok(result.phase8Projection.history.reasons.includes('projection-history-budget'));
+  assert.equal(result.renderProvenance.completeness, 'incomplete');
+  result = applyPhase8Projection(result, analysis());
+  assert.equal(result.renderProvenance.completeness, 'incomplete');
+  const valid = applyPhase8Projection(fixture({ branch:true }).enhanced, analysis());
+  const cancelled = applyPhase8Projection(valid, analysis(), { shouldAbort:() => true });
+  assert.deepEqual(cancelled.renderProvenance.reasons, ['cancelled']);
+  assert.deepEqual(cancelled.renderProvenance.ledger, []);
+});
+
+test('C4-03 repeated projection leaves the original surviving load and canonical IR unchanged', () => {
+  const f = fixture({ load:true, branch:true });
+  const original = f.enhanced.cAst.body[0].semantic.expression;
+  const key = structuralKey(original), originalSource = structuredClone(original.source);
+  let result = f.enhanced;
+  for (let generation = 0; generation < 6; generation++) result = applyPhase8Projection(result, analysis());
+  assert.equal(result.ir, f.ir);
+  assert.equal(f.sum.def.sub, 'add');
+  assert.equal(structuralKey(original), key);
+  assert.deepEqual(original.source, originalSource);
+  assert.equal(identityRecord(result.renderProvenance).renderedBinding, 'producer-bound');
 });

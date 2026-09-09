@@ -208,12 +208,15 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
 
   const reasons = new Set();
   if (result.expressionHistoryBinding?.completeness === 'incomplete') reasons.add('incomplete-expression-binding');
+  if (result.phase8Projection?.history?.completeness === 'incomplete') reasons.add('incomplete-projection-history');
   const truncatedScopes = [];
   let entitiesTruncated = 0;
   let ledgerTruncated = 0;
 
   const expressionRecords = Array.isArray(result.rewriteProof) ? result.rewriteProof : [];
-  const rawRecords = Array.isArray(result.phase8Projection?.transforms) ? result.phase8Projection.transforms : [];
+  const projection = result.phase8Projection;
+  const rawRecords = Array.isArray(projection?.history?.transforms) ? projection.history.transforms
+    : Array.isArray(projection?.transforms) ? projection.transforms : [];
   const rawRecordCount = expressionRecords.length + rawRecords.length;
   const ledgerRecords = [];
   const historyProducers = new Map();

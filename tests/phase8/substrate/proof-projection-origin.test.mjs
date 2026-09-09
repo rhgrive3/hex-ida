@@ -39,8 +39,15 @@ test('v8 producer observation rejects changed IR accessors without evaluation',a
 test('v8 public optimizer retains an issued projection after successful replay',async()=>{
  const f=projectionFixture();const first=await optimizeSemanticDecompilation(f.result,f.options);
  assert.equal(first.proofOptimization.status,'complete');assert.equal(isProducerProjection(first),true);
+ const accepted=first.phase8Projection.transforms.filter(t=>t.kind==='solver-constant');
+ assert.ok(accepted.length>0,'fixture must perform a real proof-backed projection');
  const replay=await optimizeSemanticDecompilation(first,f.options);assert.equal(replay.proofOptimization.status,'complete');
  assert.equal(replay.proofOptimization.adopted,0);assert.equal(replay.pseudocode,first.pseudocode);
+ assert.equal(replay.renderProvenance.completeness,'complete');
+ for(const record of accepted) {
+  assert.ok(replay.phase8Projection.history.transforms.includes(record),'retain the earlier applied record without readopting it');
+  assert.ok(replay.renderProvenance.ledger.some(t=>t.kind==='solver-constant' && t.queryHash===record.queryHash && t.planId===record.planId));
+ }
 });
 test('v8 public optimizer cancellation at the last observer does not publish',async()=>{
  const f=projectionFixture();let calls=0;const completed=await optimizeSemanticDecompilation(f.result,{...f.options,isCancelled:()=>{calls++;return false;}});

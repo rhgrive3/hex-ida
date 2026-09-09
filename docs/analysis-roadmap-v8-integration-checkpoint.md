@@ -1951,6 +1951,64 @@ The final exact-head and zero-diff rebuild receipts are recorded in the durable
 resume checkpoint. The incomplete C4-03 scope and acceptance lock above remain
 unchanged; neither commit constitutes a component acceptance or release.
 
+### C4-03 successive owned projections — TODO implementation, 2026-09-09
+
+Observed consumers now survive successive owned Phase 8 projections. The
+projection keeps one private current observation per owned C AST and retains
+the original producer bindings, not a recursively growing chain of earlier
+projection observers. The current body, conditions, rewrite records, IR and
+producer completeness disposition must still match. Ordinary production result
+wrappers can retain those exact objects; copied/replaced AST data or public
+history flags cannot issue the transition. Later recovery passes that replace
+the expression outside this owned transition still remain unbound.
+
+Earlier actual view/solver records are retained in
+`phase8Projection.history.transforms`. Existing `phase8Projection.transforms`
+and `transformCount` continue to describe only this invocation's newly applied
+transforms. This preserves the public optimizer's adoption-count contract:
+replaying a successful optimization reports zero new adoptions while keeping
+the earlier solver record in the render-provenance ledger. Metrics continue to
+measure current work; the shared provenance ledger consumes the retained history.
+
+Retention uses the existing bounded data observer and explicit consumer/edge
+caps. Missing/stale history, exhausted observation, cancellation and late
+mutation cannot become complete merely through a later no-op projection.
+Private history is published only at the final current/non-cancelled boundary.
+Existing source/load/IR identities and proof-admission authority remain unchanged.
+
+Focused evidence:
+
+- 19 consumer-binding tests, including 12 successive store/return/branch
+  projections, earlier view-record retention, exact-object wrappers,
+  equal-looking replacements/copies, persistent incomplete state and unchanged
+  load/IR identity; the previous consumer and UI regressions remain included;
+- canonical provenance PASS 13.7 s, receipt
+  `c4-03-reprojection-owned-settled-4cea0c9c-9c83-4950-b7e4-615769d300bb.json`;
+- 13 existing proof-origin/publication tests PASS 2.5 s, receipt
+  `c4-03-reprojection-proof-settled-165240cd-6036-491d-92b8-7192b5b269fd.json`.
+  The real public-optimizer replay test now additionally requires a genuine
+  first solver application, retained exact record/query/plan identity, a
+  complete provenance map on replay and no new adoption. Its timeout and
+  admission checks were not weakened;
+- existing semantic pipeline PASS 0.7 s, receipt
+  `c4-03-reprojection-pipeline-05a5860b-c809-4a8b-bdc3-9db0a9020586.json`;
+- full actual inventory remains 256 paths, Phase 7: 22, Phase 8: 44.
+
+Canonical generation PASS 3.7 s, receipt
+`c4-03-reprojection-build-0e6e4819-1d98-4134-9363-1c9f80bba8f8.json`:
+serial `2322242177`, build `9b9c26a35c1de6790a33dae0`, release identity
+`647d7408e80828b6d9402e27765652d4b2d3019403d930e9c270edf31ccaf949`.
+Exact-head and clean second-rebuild receipts follow in the durable checkpoint.
+
+Live relevant PR heads remain #3421
+`4cd5b3eb9200b1180985b9df3a74f8245a5cc928` and #3422
+`ca25c71f1a6f18f0ba043800fb066f8068f2df73`. Their reuse status is unchanged;
+no new component was accepted and main was not reconciled in this step.
+C4-03 remains open for later recovery-pass transitions and the full
+CSE/DCE/phi/switch/struct-field removed/merged class denominator. All other
+original findings and the integration acceptance lock remain in force.
+No device/runtime, full gate, unrelated issue or performance work was added.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -1985,7 +2043,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C3-03 | Versioned language metadata and unknown-version matrix |
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
-| HEX-C4-03 | Product/legacy navigation, expression histories and observed store/return/direct-branch bindings implemented; successive-projection retention and full removed/merged class coverage still open |
+| HEX-C4-03 | Product/legacy navigation, expression histories, observed consumers and successive owned projections implemented; later recovery transitions and full removed/merged class coverage still open |
 | HEX-C4-04 | v8 pure constant projection plus remaining risky rewrite observables |
 | HEX-C4-05 | Bounded e-graph candidates, independent proofs and resource matrix |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |

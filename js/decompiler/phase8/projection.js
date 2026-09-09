@@ -1,6 +1,6 @@
 import { isProducerProjection, producerExpressionToken } from '../pipeline.js';
 import { readExpressionHistoryConsumer } from '../pipeline-core.js';
-import { captureProjectionIrData } from './projection-origin.js';
+import { captureProjectionIrData, PROJECTION_LIMITS } from './projection-origin.js';
 import { expr, mapChildren, mergeSource, sourceOf } from '../ast/nodes.js';
 import { expressionReadability, printExpression, printProgram } from '../pretty/c.js';
 import { readProvedRewrites } from './pass-validation.js';
@@ -12,6 +12,50 @@ import {
 import { buildRenderProvenance } from './render-provenance.js';
 
 const lineExpressionHistories = new WeakMap();
+// One current snapshot per owned AST, never a chain of previous projections.
+// Ordinary result wrappers may retain this AST; copied/replaced AST data cannot
+// manufacture the private transition that carries the original consumers.
+const projectionHistories = new WeakMap();
+function readProjectionHistory(result) {
+  const entry = projectionHistories.get(result.cAst);
+  if (!entry || entry.ir !== result.ir || entry.semanticAst !== result.semanticAst
+      || entry.body !== result.cAst.body || entry.conditions !== result.semanticAst.conditions
+      || entry.rewriteProof !== result.rewriteProof || entry.projection !== result.phase8Projection
+      || entry.producerDisposition !== result.expressionHistoryBinding
+      || !entry.observation.matches() || !entry.consumers.every(consumer => consumer.isCurrent())) return null;
+  return entry;
+}
+
+function prepareProjectionHistory(result, expressions, conditions, records, opts, reasons) {
+  const consumers = [...new Set([...expressions, ...conditions].filter(Boolean))];
+  const cap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
+  const budget = opts.renderProvenanceBindingBudget;
+  if (consumers.length > cap(budget?.maxConsumers, 4096)) {
+    reasons.add('projection-history-budget');
+    return null;
+  }
+  try {
+    const observation = captureProjectionIrData(
+      [result.cAst.body, result.semanticAst.conditions, result.rewriteProof, records], opts.shouldAbort);
+    if (observation.metrics.edges > cap(budget?.maxEdges, PROJECTION_LIMITS.edges)) {
+      reasons.add('projection-history-budget');
+      return null;
+    }
+    if (!consumers.every(consumer => consumer.isCurrent())) {
+      reasons.add('stale-projection-consumer');
+      return null;
+    }
+    return { ir:result.ir, semanticAst:result.semanticAst, body:result.cAst.body,
+      conditions:result.semanticAst.conditions, rewriteProof:result.rewriteProof,
+      producerDisposition:result.expressionHistoryBinding,
+      expressions:Object.freeze(expressions), conditionConsumers:Object.freeze(conditions),
+      consumers:Object.freeze(consumers), records, observation };
+  } catch {
+    reasons.add('projection-history-observation-unavailable');
+    return null;
+  }
+}
+
 export function readLineExpressionHistory(line, ir) {
   const entry = lineExpressionHistories.get(line);
   return entry && entry.ir === ir && entry.consumers.every(consumer => consumer.isCurrent()) && entry.observation.matches()
@@ -290,15 +334,23 @@ function boundAnalysisIdentity(result, analysis, supplied) {
 export function applyPhase8Projection(result, analysis, opts = {}) {
   if (!result?.semantic || !result.semanticAst || !result.cAst || !analysis) return result;
   const original = result;
+  const inherited = readProjectionHistory(original);
+  const historyReasons = new Set();
+  const hasPriorHistory = projectionHistories.has(original.cAst) || original.phase8Projection != null;
+  if (hasPriorHistory && !inherited) historyReasons.add('unavailable-prior-projection-history');
+  if (original.phase8Projection?.history?.completeness === 'incomplete') historyReasons.add('upstream-projection-history-incomplete');
   // Capture before this owned projection transforms or clones the descriptors.
   // A stack/return recovery that replaced the earlier expression has already
   // invalidated that consumer and is deliberately not rebound by similarity.
-  const expressionConsumers = (result.cAst.body ?? []).map(node => readExpressionHistoryConsumer(node?.semantic, result.ir));
+  const expressionConsumers = inherited ? [...inherited.expressions]
+    : (result.cAst.body ?? []).map(node => hasPriorHistory ? null : readExpressionHistoryConsumer(node?.semantic, result.ir));
+  const conditionBindings = inherited ? [...inherited.conditionConsumers]
+    : (result.semanticAst.conditions ?? []).map(condition => hasPriorHistory ? null : readExpressionHistoryConsumer(condition, result.ir));
   const conditionConsumers = new Map();
-  for (const condition of result.semanticAst.conditions ?? []) {
+  for (const [index, condition] of (result.semanticAst.conditions ?? []).entries()) {
     if (condition.row == null) continue;
     const row = Number(condition.row);
-    conditionConsumers.set(row, conditionConsumers.has(row) ? null : readExpressionHistoryConsumer(condition, result.ir));
+    conditionConsumers.set(row, conditionConsumers.has(row) ? null : conditionBindings[index]);
   }
   const renderedConditions = new Map();
   const proofRequested = opts.phase8RewritePlan != null;
@@ -407,6 +459,9 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     return line;
   });
   if (proofRequested && (opts.shouldAbort?.() || !isProducerProjection(original) || proved && !readProvedRewrites(analysis,proofContext))) return original;
+  const retainedRecords = Object.freeze([...(inherited?.records ?? []), ...records]);
+  const pendingHistory = prepareProjectionHistory(result, expressionConsumers, conditionBindings,
+    retainedRecords, opts, historyReasons);
   const withLines = {
     ...result,
     lines,
@@ -418,6 +473,8 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
       transformCount:records.length,
       transforms:Object.freeze(records),
       inductionNames:Object.freeze(Object.fromEntries(names)),
+      history:Object.freeze({ completeness:historyReasons.size ? 'incomplete' : 'complete',
+        reasons:Object.freeze([...historyReasons]), transformCount:retainedRecords.length, transforms:retainedRecords }),
     }),
   };
   // HEX-C4-03: bidirectional render provenance. Caller-supplied identity may
@@ -426,13 +483,25 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   // overrides fall back to the canonical result instead of minting snapshot
   // authority for a different IR.
   const resolvedIdentity = boundAnalysisIdentity(result, analysis, opts.analysisIdentity);
-  const renderProvenance = buildRenderProvenance({
+  let renderProvenance = buildRenderProvenance({
     result:withLines,
     snapshotId:resolvedIdentity?.identity?.snapshotId ?? null,
     budget:opts.renderProvenanceBudget,
     shouldAbort:opts.shouldAbort,
   });
   if (proofRequested && (opts.shouldAbort?.() || !isProducerProjection(original) || proved && !readProvedRewrites(analysis,proofContext))) return original;
+  const cancelled = opts.shouldAbort?.() === true;
+  const stillCurrent = pendingHistory && pendingHistory.observation.matches()
+    && pendingHistory.consumers.every(consumer => consumer.isCurrent());
+  if (cancelled) {
+    if (proofRequested) return original;
+    renderProvenance = buildRenderProvenance({ result:withLines, budget:opts.renderProvenanceBudget, shouldAbort:() => true });
+  } else if (pendingHistory && !stillCurrent) {
+    renderProvenance = Object.freeze({ ...renderProvenance, completeness:'incomplete',
+      reasons:Object.freeze([...new Set([...renderProvenance.reasons, 'stale-projection-history'])]) });
+  } else if (stillCurrent) {
+    projectionHistories.set(result.cAst, { ...pendingHistory, projection:withLines.phase8Projection });
+  }
   return {
     ...withLines,
     renderProvenance,
