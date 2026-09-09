@@ -1,0 +1,64 @@
+name: Apply issue 3677 fix
+
+on:
+  push:
+    branches:
+      - fix/issue-3677-ldr-literal-width
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/issue-3677-ldr-literal-width
+          fetch-depth: 1
+
+      - name: Apply exact patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('js/arm64.js')
+          text = source.read_text()
+          old = "    o.pseudo = opShort(ops[0]) + ' = *(uint64*)0x' + at.toString(16).toUpperCase();"
+          new = "    const size = sizeOfReg(ops[0]);\n    o.pseudo = opShort(ops[0]) + ' = *(' + cType(size, false) + '*)0x' + at.toString(16).toUpperCase();"
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one LDR literal pseudo, found {text.count(old)}')
+          source.write_text(text.replace(old, new, 1))
+
+          test = Path('tests/arm64-presentation-compat.mjs')
+          text = test.read_text()
+          marker = 'console.log("  ok 5 public facade smoke");\n'
+          block = '''\n// #3677: LDR literal presentation must use the destination register width.\nfor (const [reg, ctype] of [\n  ["w0", "uint32"],\n  ["x0", "uint64"],\n  ["s0", "uint32"],\n  ["d0", "uint64"],\n  ["q0", "uint128"],\n]) {\n  const explained = facade.explain("ldr", `${reg}, #0x1000`);\n  assert.equal(explained.pseudo, `${reg} = *(${ctype}*)0x1000`, `LDR literal width must follow ${reg}`);\n}\nassert.notEqual(facade.explain("ldr", "w0, [x1]").title.en, "Load from a literal pool", "register-indirect LDR must keep the ordinary load handler");\nconsole.log("  ok 5a LDR literal width presentation (#3677)");\n'''
+          if marker not in text:
+              raise SystemExit('test insertion marker not found')
+          if '#3677: LDR literal presentation' in text:
+              raise SystemExit('issue #3677 regression already present unexpectedly')
+          test.write_text(text.replace(marker, marker + block, 1))
+          PY
+
+      - name: Focused validation
+        shell: bash
+        run: |
+          node --check js/arm64.js
+          node --check tests/arm64-presentation-compat.mjs
+          node tests/arm64-presentation-compat.mjs
+          node tests/arm64-explainer-semantics.mjs
+          git diff --check
+
+      - name: Commit final diff and remove bootstrap workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/issue-3677-apply.yml
+          git add js/arm64.js tests/arm64-presentation-compat.mjs
+          git diff --cached --check
+          git commit -m "fix(arm64): respect LDR literal destination width"
+          git push origin HEAD:fix/issue-3677-ldr-literal-width
