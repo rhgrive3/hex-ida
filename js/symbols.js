@@ -11,8 +11,14 @@ export const SYM_STUB = 1;      // 外部ライブラリへの中継地点 (__st
 export const SYM_POINTER = 2;   // 外部関数のアドレスを入れる箱 (__got など)
 
 function finiteListMax(value, fallback = 50000) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
+  if (value == null) return fallback;
+  // 件数上限は primitive な正の safe integer だけが authority (#5250):
+  // numeric string / Array / boolean を Number() で昇格させない。
+  // fractional 値は「最大件数」契約を満たさないので採用しない。
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    throw new TypeError('result limit must be a positive safe integer');
+  }
+  return value;
 }
 
 function canonicalAddressKey(value) {
