@@ -164,7 +164,10 @@ const cursorPage = await registry.execute('get_semantic_facts', { functionAddres
 context.analysisRevision = 'rev:2';
 await assert.rejects(() => registry.execute('get_semantic_facts', { functionAddress:'0x100000000', kinds:[FACT.RMW], limit:20, cursor:cursorPage.continuation.cursor }, { scope:'function' }), (error) => error.type === 'invalid_tool_call');
 context.analysisRevision = 'rev:1';
-await assert.rejects(() => registry.execute('get_semantic_facts', { functionAddress:'0x100000000', kinds:[FACT.RMW], limit:20, cursor:cursorPage.continuation.cursor.slice(0, -1) + 'x' }, { scope:'function' }), (error) => error.type === 'invalid_tool_call');
+const originalCursor = cursorPage.continuation.cursor;
+const tamperedCursor = `${originalCursor.slice(0, -1)}${originalCursor.endsWith('x') ? 'y' : 'x'}`;
+assert.notEqual(tamperedCursor, originalCursor);
+await assert.rejects(() => registry.execute('get_semantic_facts', { functionAddress:'0x100000000', kinds:[FACT.RMW], limit:20, cursor:tamperedCursor }, { scope:'function' }), (error) => error.type === 'invalid_tool_call');
 
 // O/P. Symbolic execution remains capped; model-supplied verification cannot self-authorize.
 const sym = registry.get('symbolic_execute');

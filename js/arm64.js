@@ -149,8 +149,8 @@ cat('add adds sub subs adc adcs sbc sbcs neg negs mul madd msub mneg smull umull
 cat('and ands orr orn eor eon bic bics lsl lsr asr ror lslv lsrv asrv rorv extr ubfm sbfm bfm ubfx sbfx ubfiz sbfiz bfi bfxil bfc rev rev16 rev32 rev64 clz cls rbit sxtb sxth sxtw uxtb uxth', 'logic');
 cat('cmp cmn tst ccmp ccmn fcmp fcmpe', 'compare');
 cat('csel csinc csinv csneg cset csetm cinc cinv cneg', 'select');
-cat('ldr ldrb ldrh ldrsb ldrsh ldrsw ldur ldurb ldurh ldursb ldursh ldursw ldp ldpsw ldnp ldtr ldxr ldaxr ldar ldarb ldarh ld1 ld2 ld3 ld4 prfm', 'load');
-cat('str strb strh stur sturb sturh stp stnp sttr stxr stlxr stlr stlrb stlrh st1 st2 st3 st4', 'store');
+cat('ldr ldrb ldrh ldrsb ldrsh ldrsw ldur ldurb ldurh ldursb ldursh ldursw ldp ldpsw ldnp ldtr ldxr ldaxr ldxrb ldxrh ldaxrb ldaxrh ldxp ldaxp ldar ldarb ldarh ld1 ld2 ld3 ld4 prfm', 'load');
+cat('str strb strh stur sturb sturh stp stnp sttr stxr stlxr stxrb stxrh stlxrb stlxrh stxp stlxp stlr stlrb stlrh st1 st2 st3 st4', 'store');
 cat('b bl br blr ret cbz cbnz tbz tbnz braa brab braaz brabz blraa blrab blraaz blrabz retaa retab', 'flow');
 cat('adr adrp', 'address');
 cat('nop hint bti svc hvc smc brk hlt dmb dsb isb yield wfe wfi sev sevl mrs msr sys eret eretaa eretab clrex paciasp pacibsp pacia pacib pacda pacdb paciza pacizb pacdza pacdzb paciaz pacibz pacia1716 pacib1716 autiasp autibsp autia autib autda autdb autiza autizb autdza autdzb autiaz autibz autia1716 autib1716 xpaci xpacd xpaclri pacga dc ic tlbi', 'system');
@@ -974,7 +974,20 @@ HANDLERS.ccmp = (o, ops) => {
     'How && and || are compiled without extra branches.'));
   o.terms = ['flags'];
 };
-HANDLERS.ccmn = HANDLERS.ccmp;
+HANDLERS.ccmn = (o, ops) => {
+  const [n, m, nzcv, cond] = ops;
+  const ci = cond ? condInfo(cond.text) : null;
+  o.title = J('条件つきで足して比べる', 'Conditional compare negative');
+  o.pseudo = 'if (' + (cond ? cond.text : '?') + ') flags = ' + opShort(n) + ' + ' + opShort(m) + ' else flags = ' + immShort(nzcv);
+  o.summary = J(
+    '前の比較が「' + (ci ? ci.ja : '条件を満たしたとき') + '」に当てはまる場合だけ、' +
+      opShort(n) + ' と ' + opShort(m) + ' を足してフラグを更新する。当てはまらなければフラグを ' + immShort(nzcv) + ' に決め打ちする。',
+    'Add ' + opShort(n) + ' and ' + opShort(m) + ' and update the flags only if the previous condition held; otherwise force the flags to ' + immShort(nzcv) + '.');
+  o.detail.push(J(
+    'C 言語の && や || を、分岐を増やさずに 1 本にまとめた形です（if (a == 1 && b == 2) など）。',
+    'How && and || are compiled without extra branches.'));
+  o.terms = ['flags'];
+};
 
 /* 条件で選ぶ ------------------------------------------------- */
 
@@ -1001,8 +1014,26 @@ HANDLERS.csinc = (o, ops) => {
     'Select, adding one to the second choice.');
   o.terms = ['flags'];
 };
-HANDLERS.csinv = HANDLERS.csinc;
-HANDLERS.csneg = HANDLERS.csinc;
+HANDLERS.csinv = (o, ops) => {
+  const [d, n, m, cond] = ops;
+  const ci = cond ? condInfo(cond.text) : null;
+  o.title = J('条件で選ぶ（片方をビット反転）', 'Conditional select invert');
+  o.pseudo = opShort(d) + ' = ' + (cond ? cond.text : '?') + ' ? ' + opShort(n) + ' : ~' + opShort(m);
+  o.summary = J(
+    '「' + (ci ? ci.ja : '') + '」なら ' + opShort(n) + '、違えば ' + opShort(m) + ' の全ビットを反転した値を ' + opShort(d) + ' に入れる。',
+    'Select ' + opShort(n) + ' if the condition holds; otherwise put the bitwise inverse of ' + opShort(m) + ' in ' + opShort(d) + '.');
+  o.terms = ['flags'];
+};
+HANDLERS.csneg = (o, ops) => {
+  const [d, n, m, cond] = ops;
+  const ci = cond ? condInfo(cond.text) : null;
+  o.title = J('条件で選ぶ（片方を符号反転）', 'Conditional select negate');
+  o.pseudo = opShort(d) + ' = ' + (cond ? cond.text : '?') + ' ? ' + opShort(n) + ' : -' + opShort(m);
+  o.summary = J(
+    '「' + (ci ? ci.ja : '') + '」なら ' + opShort(n) + '、違えば ' + opShort(m) + ' の符号を反転した値を ' + opShort(d) + ' に入れる。',
+    'Select ' + opShort(n) + ' if the condition holds; otherwise put the arithmetic negation of ' + opShort(m) + ' in ' + opShort(d) + '.');
+  o.terms = ['flags'];
+};
 
 HANDLERS.cset = (o, ops) => {
   const [d, cond] = ops;
@@ -1040,16 +1071,36 @@ HANDLERS.cinc = (o, ops) => {
     'Add one only if the condition holds.');
   o.terms = ['flags'];
 };
-HANDLERS.cinv = HANDLERS.cinc;
-HANDLERS.cneg = HANDLERS.cinc;
+HANDLERS.cinv = (o, ops) => {
+  const [d, n, cond] = ops;
+  const ci = cond ? condInfo(cond.text) : null;
+  o.title = J('条件が合えばビット反転', 'Conditional invert');
+  o.pseudo = opShort(d) + ' = ' + (cond ? cond.text : '?') + ' ? ~' + opShort(n) + ' : ' + opShort(n);
+  o.summary = J(
+    '「' + (ci ? ci.ja : '') + '」なら ' + opShort(n) + ' の全ビットを反転して ' + opShort(d) + ' に入れ、違えばそのまま入れる。',
+    'Put the bitwise inverse of ' + opShort(n) + ' in ' + opShort(d) + ' if the condition holds; otherwise put ' + opShort(n) + ' in ' + opShort(d) + '.');
+  o.terms = ['flags'];
+};
+HANDLERS.cneg = (o, ops) => {
+  const [d, n, cond] = ops;
+  const ci = cond ? condInfo(cond.text) : null;
+  o.title = J('条件が合えば符号反転', 'Conditional negate');
+  o.pseudo = opShort(d) + ' = ' + (cond ? cond.text : '?') + ' ? -' + opShort(n) + ' : ' + opShort(n);
+  o.summary = J(
+    '「' + (ci ? ci.ja : '') + '」なら ' + opShort(n) + ' の符号を反転して ' + opShort(d) + ' に入れ、違えばそのまま入れる。',
+    'Put the arithmetic negation of ' + opShort(n) + ' in ' + opShort(d) + ' if the condition holds; otherwise put ' + opShort(n) + ' in ' + opShort(d) + '.');
+  o.terms = ['flags'];
+};
 
 /* メモリ ----------------------------------------------------- */
 
-function loadStore(isLoad) {
+function loadStore(isLoad, options = {}) {
   return (o, ops, base, addr, c) => {
     const dst = ops[0];
     const mem = ops.find((x) => x.k === 'mem');
-    const size = LOAD_SIZES[base] ? LOAD_SIZES[base][0] : sizeOfReg(dst);
+    const size = options.elementSize != null
+      ? options.elementSize
+      : (LOAD_SIZES[base] ? LOAD_SIZES[base][0] : sizeOfReg(dst));
     const signed = LOAD_SIZES[base] ? LOAD_SIZES[base][1] : false;
     o.title = isLoad ? J('メモリから読む', 'Load from memory') : J('メモリへ書く', 'Store to memory');
     if (!mem) { o.pseudo = (mn2(base) || base) + ' ' + (o.operands || ''); return; }
@@ -1061,6 +1112,25 @@ function loadStore(isLoad) {
           'Read ' + sizeWord(size) + ' from ' + memText(mem) + ' into ' + opShort(dst) + '.')
       : J(opShort(dst) + ' の値（' + sizeWord(size) + '）を、' + memText(mem) + 'へ書き込む。',
           'Write ' + sizeWord(size) + ' from ' + opShort(dst) + ' to ' + memText(mem) + '.');
+    if (options.ordering === 'acquire') {
+      o.title = J('順序を守って読む', 'Acquire load');
+      o.summary += J(
+        ' acquire load なので、この読み込みより後のメモリアクセスをこの命令より前へ並べ替えない。',
+        ' This acquire load prevents later memory operations from being reordered before this load.');
+      o.detail.push(J(
+        'acquire は、合図を読み取った後のメモリアクセスを、この読み込みより先に実行したことにしないためのスレッド間の順序付けです。',
+        'Acquire ordering keeps later memory operations after this load when threads use the value as a synchronization signal.'));
+      o.terms.push('thread');
+    } else if (options.ordering === 'release') {
+      o.title = J('順序を守って書く', 'Release store');
+      o.summary += J(
+        ' release store なので、この書き込みより前のメモリアクセスをこの命令より後へ並べ替えない。',
+        ' This release store prevents earlier memory operations from being reordered after this store.');
+      o.detail.push(J(
+        'release は、共有データを書き終えてから合図を書き込むように、先行するメモリアクセスをこの書き込みより後へ動かさないためのスレッド間の順序付けです。',
+        'Release ordering keeps earlier memory operations before this store when it publishes a synchronization signal.'));
+      o.terms.push('thread');
+    }
     o.detail.push(J(
       'レジスタは 31 本しかないので、それより多くのデータはメモリに置きます。' +
       'メモリを使うにはこのように「アドレスを作って、読む／書く」の 2 段構えになります。',
@@ -1094,10 +1164,10 @@ function cType(size, signed) {
   return (signed ? '' : 'u') + t;
 }
 
-for (const n of ['ldr', 'ldrb', 'ldrh', 'ldrsb', 'ldrsh', 'ldrsw', 'ldur', 'ldurb', 'ldurh', 'ldursb', 'ldursh', 'ldursw', 'ldtr', 'ldar', 'ldarb', 'ldarh', 'ldxr', 'ldaxr']) {
+for (const n of ['ldr', 'ldrb', 'ldrh', 'ldrsb', 'ldrsh', 'ldrsw', 'ldur', 'ldurb', 'ldurh', 'ldursb', 'ldursh', 'ldursw', 'ldtr']) {
   HANDLERS[n] = loadStore(true);
 }
-for (const n of ['str', 'strb', 'strh', 'stur', 'sturb', 'sturh', 'sttr', 'stlr', 'stlrb', 'stlrh']) {
+for (const n of ['str', 'strb', 'strh', 'stur', 'sturb', 'sturh', 'sttr']) {
   HANDLERS[n] = loadStore(false);
 }
 
@@ -1106,8 +1176,9 @@ const plainLdr = HANDLERS.ldr;
 HANDLERS.ldr = (o, ops, base, addr, c) => {
   if (ops.length === 2 && ops[1].k === 'imm' && ops[1].value != null) {
     const at = ops[1].value;
+    const size = sizeOfReg(ops[0]);
     o.title = J('近くに置かれた定数を読む', 'Load from a literal pool');
-    o.pseudo = opShort(ops[0]) + ' = *(uint64*)0x' + at.toString(16).toUpperCase();
+    o.pseudo = opShort(ops[0]) + ' = *(' + cType(size, false) + '*)0x' + at.toString(16).toUpperCase();
     o.summary = J(
       'この命令の近くに埋め込まれている値（' + tgt(at, c) + ' の場所）を読み込んで ' + opShort(ops[0]) + ' に入れる。',
       'Read the constant stored at ' + tgt(at, c) + ' into ' + opShort(ops[0]) + '.');
@@ -1866,6 +1937,29 @@ HANDLERS.fcmp = (o, ops) => {
     'Compare two floating-point values, updating the flags.');
   o.terms = ['float', 'flags'];
 };
+function noteSignalingFloatCompare(o) {
+  o.detail.push(J(
+    '比較を実行するときは、quiet NaN を含む NaN 入力で浮動小数点の Invalid Operation 例外を通知する。入力レジスタ自体は書き換えない。',
+    'When the comparison executes, any NaN input, including a quiet NaN, signals the floating-point Invalid Operation exception. The input registers are not written.'));
+}
+HANDLERS.fcmpe = (o, ops) => {
+  HANDLERS.fcmp(o, ops);
+  noteSignalingFloatCompare(o);
+};
+HANDLERS.fccmp = (o, ops) => {
+  const [n, m, nzcv, cond] = ops;
+  const condition = cond ? cond.text : '?';
+  o.title = J('条件つきで小数を比べる', 'Conditional float compare');
+  o.pseudo = 'if (' + condition + ') flags = ' + opShort(n) + ' ⋛ ' + opShort(m) + ' else flags = ' + immShort(nzcv);
+  o.summary = J(
+    '条件 ' + condition + ' が成立するときは ' + opShort(n) + ' と ' + opShort(m) + ' を小数として比較し、NZCV フラグを更新する。不成立なら NZCV を ' + immShort(nzcv) + ' に設定する。入力レジスタは書き換えない。',
+    'If condition ' + condition + ' holds, compare ' + opShort(n) + ' and ' + opShort(m) + ' as floating-point values and update NZCV; otherwise set NZCV to ' + immShort(nzcv) + '. The input registers are not written.');
+  o.terms = ['float', 'flags'];
+};
+HANDLERS.fccmpe = (o, ops) => {
+  HANDLERS.fccmp(o, ops);
+  noteSignalingFloatCompare(o);
+};
 const FCVT_FLOAT_TO_INTEGER_INFO = Object.freeze({
   fcvtzs: Object.freeze({
     signed: true,
@@ -2264,32 +2358,220 @@ for (const n of ['st1', 'st2', 'st3', 'st4']) {
   };
 }
 
+/* Ordered loads/stores have the same address and width presentation as their
+   plain counterparts, but their acquire/release edge is part of the user-
+   facing meaning. Keep the finite spelling table ahead of familyHandler so a
+   future load/store prefix fallback cannot silently erase that edge (#3740). */
+const ORDERED_MEMORY_TABLE = [
+  { mnemonic: 'ldar', isLoad: true, ordering: 'acquire' },
+  { mnemonic: 'ldarb', isLoad: true, elementSize: 1, ordering: 'acquire' },
+  { mnemonic: 'ldarh', isLoad: true, elementSize: 2, ordering: 'acquire' },
+  { mnemonic: 'stlr', isLoad: false, ordering: 'release' },
+  { mnemonic: 'stlrb', isLoad: false, elementSize: 1, ordering: 'release' },
+  { mnemonic: 'stlrh', isLoad: false, elementSize: 2, ordering: 'release' },
+];
+for (const entry of ORDERED_MEMORY_TABLE) {
+  HANDLERS[entry.mnemonic] = loadStore(entry.isLoad, entry);
+}
+
 /* 排他アクセス ----------------------------------------------- */
 
-for (const n of ['ldxr', 'ldaxr']) {
-  HANDLERS[n] = (o, ops) => {
+function sizeLabel(bytes) {
+  if (isJa()) return sizeWord(bytes);
+  return bytes + (bytes === 1 ? ' byte' : ' bytes');
+}
+
+function exclusiveLoadHandler({ elementSize = null, ordering = null } = {}) {
+  return (o, ops) => {
     const mem = ops.find((x) => x.k === 'mem');
+    const destination = opShort(ops[0]);
     o.title = J('横取りされないように読む', 'Exclusive load');
-    o.pseudo = opShort(ops[0]) + ' = *(' + (mem ? memExpr(mem) : '') + ') /* 監視開始 */';
-    o.summary = J(
-      'メモリを読むと同時に「ここを見張る」と CPU に宣言する。他のスレッドが書き換えたら、次の stxr が失敗します。',
-      'Load and start watching the address; a matching stxr fails if anyone else writes it.');
+    if (elementSize == null) {
+      o.pseudo = destination + ' = *(' + (mem ? memExpr(mem) : '') + ') ' +
+        J('/* 監視開始 */', '/* start exclusive monitor */');
+      o.summary = J(
+        'メモリを読むと同時に「ここを見張る」と CPU に宣言する。他のスレッドが書き換えたら、次の stxr が失敗します。',
+        'Load and start watching the address; a matching stxr fails if anyone else writes it.');
+    } else {
+      const type = cType(elementSize, false);
+      const width = sizeLabel(elementSize);
+      o.pseudo = destination + ' = zero_extend(*(' + type + '*)(' + (mem ? memExpr(mem) : '') + ')) ' +
+        J('/* 監視開始 */', '/* start exclusive monitor */');
+      o.summary = J(
+        (mem ? memText(mem) : 'メモリ') + 'から ' + width + 'を読み、上位ビットを 0 で埋めて' + destination + 'に入れながら「ここを見張る」と CPU に宣言する。他のスレッドが書き換えたら、対応する stxr が失敗します。',
+        'Read ' + width + ' from ' + (mem ? memText(mem) : 'memory') + ' into ' + destination + ', zero-extend it, and start the exclusive monitor. A matching stxr fails if another thread writes the address.');
+    }
+    if (ordering === 'acquire') {
+      o.title = J('順序を守って横取りされないように読む', 'Acquire exclusive load');
+      o.summary += J(
+        ' acquire load なので、この読み込みより後のメモリアクセスをこの命令より前へ並べ替えない。',
+        ' This acquire load also prevents later memory operations from being reordered before this load.');
+      o.detail.push(J(
+        'acquire は、合図を読み取った後のメモリアクセスを、この読み込みより先に実行したことにしないためのスレッド間の順序付けです。',
+        'Acquire ordering keeps later memory operations after this load when threads use the value as a synchronization signal.'));
+      o.terms = ['thread', 'atomic'];
+    }
     o.detail.push(J(
       '複数のスレッドが同じ値を同時に増やそうとしても壊れないように、read → 変更 → write を「誰にも割り込まれずに」行うための仕組みです。',
       'The building block of atomic read-modify-write across threads.'));
     o.terms = ['thread', 'atomic'];
   };
 }
-for (const n of ['stxr', 'stlxr']) {
-  HANDLERS[n] = (o, ops) => {
+
+function exclusiveStoreHandler({ elementSize = null, ordering = null } = {}) {
+  return (o, ops) => {
     const mem = ops.find((x) => x.k === 'mem');
+    const status = opShort(ops[0]);
+    const data = opShort(ops[1]);
     o.title = J('横取りされていなければ書く', 'Exclusive store');
-    o.pseudo = opShort(ops[0]) + ' = try_store(' + (mem ? memExpr(mem) : '') + ', ' + opShort(ops[1]) + ')';
-    o.summary = J(
-      '見張っていた間に誰も書き換えていなければ書き込み、' + opShort(ops[0]) + ' に 0（成功）を入れる。失敗なら 1 が入り、ふつうは上に戻ってやり直します。',
-      'Store only if nothing else wrote the address; ' + opShort(ops[0]) + ' gets 0 on success, 1 on failure.');
+    if (elementSize == null) {
+      o.pseudo = status + ' = try_store(' + (mem ? memExpr(mem) : '') + ', ' + data + ')';
+      o.summary = J(
+        '見張っていた間に誰も書き換えていなければ書き込み、' + status + ' に 0（成功）を入れる。失敗なら 1 が入り、ふつうは上に戻ってやり直します。',
+        'Store only if nothing else wrote the address; ' + status + ' gets 0 on success, 1 on failure.');
+    } else {
+      const type = cType(elementSize, false);
+      const width = sizeLabel(elementSize);
+      o.pseudo = status + ' = try_store(' + (mem ? memExpr(mem) : '') + ', ' + data + ', ' + type + ')';
+      o.summary = J(
+        '見張っていた間に誰も書き換えていなければ' + data + ' の下位 ' + width + 'を条件付きで書き込み、' + status + ' に 0（成功）を入れる。失敗なら 1 が入り、ふつうは上に戻ってやり直します。',
+        'Conditionally store the low ' + width + ' from ' + data + ' only if nothing else wrote the address; ' + status + ' gets 0 on success, 1 on failure.');
+    }
+    if (ordering === 'release') {
+      o.title = J('順序を守って横取りされていなければ書く', 'Release exclusive store');
+      o.summary += J(
+        ' release store なので、この書き込みより前のメモリアクセスをこの命令より後へ並べ替えない。',
+        ' This release store also prevents earlier memory operations from being reordered after this store.');
+      o.detail.push(J(
+        'release は、共有データを書き終えてから合図を書き込むように、先行するメモリアクセスをこの書き込みより後へ動かさないためのスレッド間の順序付けです。',
+        'Release ordering keeps earlier memory operations before this store when it publishes a synchronization signal.'));
+    }
     o.terms = ['thread', 'atomic'];
   };
+}
+
+function pairElementSize(ops, index) {
+  const operand = ops[index];
+  return operand && operand.k === 'reg' && (operand.bits === 32 || operand.bits === 64)
+    ? operand.bits / 8
+    : 8;
+}
+
+function exclusiveLoadPairHandler({ ordering = null } = {}) {
+  return (o, ops) => {
+    const mem = ops.find((x) => x.k === 'mem');
+    const first = opShort(ops[0]);
+    const second = opShort(ops[1]);
+    const elementSize = pairElementSize(ops, 0);
+    const totalSize = elementSize * 2;
+    const type = cType(elementSize, false);
+    const width = sizeLabel(totalSize);
+    o.title = ordering === 'acquire'
+      ? J('順序を守って横取りされないようにペアで読む', 'Acquire exclusive pair load')
+      : J('横取りされないようにペアで読む', 'Exclusive pair load');
+    o.pseudo = first + ', ' + second + ' = load_pair_exclusive(' + (mem ? memExpr(mem) : '') +
+      ', ' + type + ', ' + totalSize + ' bytes) ' + J('/* 監視開始 */', '/* start exclusive monitor */');
+    o.summary = J(
+      (mem ? memText(mem) : 'メモリ') + 'から ' + width + '（' + type + ' を 2 個）を読み、' +
+        first + ' と ' + second + ' に入れながら「ここを見張る」と CPU に宣言する。他のスレッドが書き換えたら、対応する stxp が失敗します。',
+      'Read two ' + type + ' values (' + width + ' total) from ' + (mem ? memText(mem) : 'memory') +
+        ' into ' + first + ' and ' + second + ', and start the exclusive monitor. A matching stxp fails if another thread writes the pair.');
+    if (ordering === 'acquire') {
+      o.summary += J(
+        ' acquire load なので、この読み込みより後のメモリアクセスをこの命令より前へ並べ替えない。',
+        ' This acquire load also prevents later memory operations from being reordered before this load.');
+      o.detail.push(J(
+        'acquire は、合図を読み取った後のメモリアクセスを、この読み込みより先に実行したことにしないためのスレッド間の順序付けです。',
+        'Acquire ordering keeps later memory operations after this load when threads use the value as a synchronization signal.'));
+    }
+    const elementBits = elementSize * 8;
+    const atomicity = elementSize === 4
+      ? {
+        ja: 'W ペアの 2 つの 32 ビット要素は、64 ビットのダブルワード単位で single-copy atomic です。',
+        en: 'A W pair is single-copy atomic at 64-bit doubleword granularity.',
+      }
+      : {
+        ja: 'X ペアの各 64 ビット要素はダブルワード単位で single-copy atomic ですが、この読み込みで 128 ビット全体の atomicity は保証されません。',
+        en: 'Each 64-bit element of an X pair is single-copy atomic at doubleword granularity; whole 128-bit atomicity is not guaranteed by this load.',
+      };
+    o.detail.push(J(
+      elementBits + ' ビットの要素を 2 個、同じ exclusive reservation の対象として読みます。' + atomicity.ja,
+      'The pair contains two ' + elementBits + '-bit elements under one exclusive reservation. ' + atomicity.en));
+    o.terms = ['thread', 'atomic', 'memory'];
+  };
+}
+
+function exclusiveStorePairHandler({ ordering = null } = {}) {
+  return (o, ops) => {
+    const mem = ops.find((x) => x.k === 'mem');
+    const status = opShort(ops[0]);
+    const first = opShort(ops[1]);
+    const second = opShort(ops[2]);
+    const elementSize = pairElementSize(ops, 1);
+    const totalSize = elementSize * 2;
+    const type = cType(elementSize, false);
+    const width = sizeLabel(totalSize);
+    o.title = ordering === 'release'
+      ? J('順序を守って横取りされていなければペアで書く', 'Release exclusive pair store')
+      : J('横取りされていなければペアで書く', 'Exclusive pair store');
+    o.pseudo = status + ' = try_store_pair(' + (mem ? memExpr(mem) : '') + ', ' + first + ', ' + second +
+      ', ' + type + ', ' + totalSize + ' bytes)';
+    o.summary = J(
+      '見張っていた間に誰も書き換えていなければ、' + first + ' と ' + second + ' の ' + type +
+        ' を 2 個（合計 ' + width + '）として条件付きで書き込み、' + status +
+        ' に 0（成功）を入れる。失敗なら 1 が入り、ふつうは上に戻ってやり直します。',
+      'Conditionally store ' + first + ' and ' + second + ' as two ' + type + ' values (' + width + ' total) to ' +
+        (mem ? memText(mem) : 'memory') + ' only if the matching exclusive monitor is still valid; ' +
+        status + ' gets 0 on success and 1 on failure.');
+    if (ordering === 'release') {
+      o.summary += J(
+        ' release store なので、この書き込みより前のメモリアクセスをこの命令より後へ並べ替えない。',
+        ' This release store also prevents earlier memory operations from being reordered after this store.');
+      o.detail.push(J(
+        'release は、共有データを書き終えてから合図を書き込むように、先行するメモリアクセスをこの書き込みより後へ動かさないためのスレッド間の順序付けです。',
+        'Release ordering keeps earlier memory operations before this store when it publishes a synchronization signal.'));
+    }
+    o.detail.push(J(
+      status + ' はメモリへ書く値ではなく、ペアの書き込みが成功したかを返すステータスです。',
+      status + ' is a status result, not store data; ' + first + ' and ' + second + ' are the two data sources.'));
+    o.terms = ['thread', 'atomic', 'memory'];
+  };
+}
+
+const EXCLUSIVE_LOAD_TABLE = [
+  { mnemonic: 'ldxr' },
+  { mnemonic: 'ldaxr', ordering: 'acquire' },
+  { mnemonic: 'ldxrb', elementSize: 1 },
+  { mnemonic: 'ldxrh', elementSize: 2 },
+  { mnemonic: 'ldaxrb', elementSize: 1, ordering: 'acquire' },
+  { mnemonic: 'ldaxrh', elementSize: 2, ordering: 'acquire' },
+];
+for (const entry of EXCLUSIVE_LOAD_TABLE) {
+  HANDLERS[entry.mnemonic] = exclusiveLoadHandler(entry);
+}
+
+const EXCLUSIVE_STORE_TABLE = [
+  { mnemonic: 'stxr' },
+  { mnemonic: 'stlxr', ordering: 'release' },
+  { mnemonic: 'stxrb', elementSize: 1 },
+  { mnemonic: 'stxrh', elementSize: 2 },
+  { mnemonic: 'stlxrb', elementSize: 1, ordering: 'release' },
+  { mnemonic: 'stlxrh', elementSize: 2, ordering: 'release' },
+];
+for (const entry of EXCLUSIVE_STORE_TABLE) {
+  HANDLERS[entry.mnemonic] = exclusiveStoreHandler(entry);
+}
+for (const entry of [
+  { mnemonic: 'ldxp' },
+  { mnemonic: 'ldaxp', ordering: 'acquire' },
+]) {
+  HANDLERS[entry.mnemonic] = exclusiveLoadPairHandler(entry);
+}
+for (const entry of [
+  { mnemonic: 'stxp' },
+  { mnemonic: 'stlxp', ordering: 'release' },
+]) {
+  HANDLERS[entry.mnemonic] = exclusiveStorePairHandler(entry);
 }
 for (const n of ['casal', 'cas', 'casa', 'casl']) {
   HANDLERS[n] = (o, ops) => {

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { createKnowledgePack } from '../../../js/signature/index.js';
 import { createPackageEnvelope, importPhase12Package, parseBoundedPackageInput, resolvePackageDependencies, validateProviderOutput } from '../../../js/phase12/package-envelope.js';
 import { createMatchResult, promoteKnowledgeSuggestion, recognitionCanClaimUnique } from '../../../js/knowledge/phase12-recognition.js';
+import '../../issue-3783-knowledge-pack-confidence-types.mjs';
 
 const fixturePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures/profile-evidence/knowledge-package.json');
 const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));

@@ -331,7 +331,7 @@ function setStructField(app, args) {
   return { ok: true, struct: name, field };
 }
 
-function setProjectAnnotation(app, args) {
+async function setProjectAnnotation(app, args) {
   if (!app) throw new AIError('tool_failed', 'Project annotation adapter is unavailable.');
   if (typeof app.workspace?.autosave !== 'function') throw new AIError('tool_failed', 'Project annotation persistence is unavailable.');
 
@@ -390,7 +390,7 @@ function setProjectAnnotation(app, args) {
 
   let saved;
   try {
-    saved = app.workspace.autosave();
+    saved = await app.workspace.autosave();
   } catch (error) {
     rollback();
     throw error;

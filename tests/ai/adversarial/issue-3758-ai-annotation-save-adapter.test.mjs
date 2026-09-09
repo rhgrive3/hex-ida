@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { CapabilityExecutor } from '../../../js/ai/capabilities/executor.js';
 
-const authorization = { kind: 'proposal', token: 'approved-token' };
+import { executeApprovedCapability } from '../support/approved-capability.mjs';
 
 function executorFor(app) {
   return new CapabilityExecutor({
@@ -25,7 +25,7 @@ async function assertMissingSaveFailsClosed(notes, args) {
   const beforeDirty = notes.dirty;
 
   await assert.rejects(
-    executorFor({ notes }).execute('annotation.struct-field', args, { authorization }),
+    executeApprovedCapability(executorFor({ notes }), 'annotation.struct-field', args),
     (error) => error?.type === 'tool_failed' && /adapter is unavailable/i.test(error.message),
   );
 
