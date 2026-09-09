@@ -4,6 +4,7 @@ const TYPES = new Set(['format', 'architecture', 'analyzer', 'knowledgeProvider'
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_READ_CALL_BYTES = 1024 * 1024;
 const DEFAULT_READ_TOTAL_BYTES = 8 * 1024 * 1024;
+let budgetScopeNamespaceSequence = 0n;
 
 function deepFreeze(value, seen = new WeakSet()) {
   if (!value || typeof value !== 'object' || seen.has(value)) return value;
@@ -167,7 +168,11 @@ function validateContributionId(id) {
 }
 
 export class PlatformPluginRegistry {
+  #budgetScopeNamespace;
+  #budgetInvocationSequence = 0n;
+
   constructor(options = {}) {
+    this.#budgetScopeNamespace = ++budgetScopeNamespaceSequence;
     this.entries = new Map([...TYPES].map((type) => [type, new Map()]));
     this.plugins = new Map();
     this.failures = [];
@@ -294,17 +299,15 @@ export class PlatformPluginRegistry {
     const signal = rawOptions.signal;
     const invocationController = new AbortController();
 
-    let pluginScope = null;
-    if (context.resourceBudget && typeof context.resourceBudget.scope === 'function') {
-      const sanitized = `${type}.${id}.${method}`.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
-      try {
-        pluginScope = context.resourceBudget.scope(sanitized);
-      } catch {
-        pluginScope = context.resourceBudget;
-      }
-    }
-
     try {
+      let pluginScope = null;
+      if (context.resourceBudget && typeof context.resourceBudget.scope === 'function') {
+        const baseScopeName = `${type}.${id}.${method}`.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+        this.#budgetInvocationSequence += 1n;
+        pluginScope = context.resourceBudget.scope(`${baseScopeName}.r${this.#budgetScopeNamespace}.i${this.#budgetInvocationSequence}`);
+        if (!pluginScope) throw new Error('plugin resource budget scope unavailable');
+      }
+
       const safeContext = Object.freeze({
         binary: safeSnapshot(context.binary), capability: safeSnapshot(context.capability), project: safeSnapshot(context.project),
         read: makeReadCapability(context, pluginScope, record),
