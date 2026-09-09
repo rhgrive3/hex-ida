@@ -49,16 +49,12 @@ assert.equal(truncated.unique, false);
 assert.throws(() => promoteKnowledgeSuggestion(truncated, { approvalGrant: 'unused-grant-token', actorId: 'actor-a' }), /ambiguous or truncated/);
 
 const unique = createMatchResult({ sourceEntityId: 'entity-a', packageEntryId: 'entry-a', candidates: [{ packageEntryId: 'entry-a', score: 0.99, tier: 'exact-content' }], packageContentHash: sameA.contentHash });
-// #5216: local promotion is minted only through a host approval control
-// driven by a browser-trusted gesture delivered to its approval surface (the
-// harness realm simulates the UA delivery).
-const packageSurface = new globalThis.HarnessEventTarget();
+// #5216: local promotion is minted only through a host approval control's
+// module-minted surface driven by a browser-trusted gesture (the harness
+// realm simulates the UA delivery).
 let packageApproved = false;
 const packageControl = createRecognitionApprovalControl(unique, { actorId: 'local-user', onApproved: () => { packageApproved = true; } });
-packageControl.attach(packageSurface);
-packageSurface.addEventListener('click', packageControl.handleEvent);
-fireTrustedApprovalGesture(packageSurface, 'click');
-packageSurface.removeEventListener('click', packageControl.handleEvent);
+fireTrustedApprovalGesture(packageControl.surface, 'click');
 assert.equal(packageApproved, true, 'the approval gesture minted the promotion');
 const fact = promoteKnowledgeSuggestion(unique, { actorId: 'local-user', name: 'localName' });
 assert.equal(fact.confirmation, 'user-confirmed');

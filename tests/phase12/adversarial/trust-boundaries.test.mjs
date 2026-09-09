@@ -27,14 +27,10 @@ assert.throws(
   /cannot be supplied/,
   'a duck-typed caller-supplied authority must not become the issuer (review R2)',
 );
-const approvalSurface = new globalThis.HarnessEventTarget();
 let localApproved = false;
 const approvalControl = createRecognitionApprovalControl(suggestion, { actorId: 'local-actor', onApproved: () => { localApproved = true; } });
-approvalControl.attach(approvalSurface);
-approvalSurface.addEventListener('click', approvalControl.handleEvent);
-fireTrustedApprovalGesture(approvalSurface, 'click');
-approvalSurface.removeEventListener('click', approvalControl.handleEvent);
-assert.equal(localApproved, true, 'the trusted gesture on the bound approval surface minted the approval');
+fireTrustedApprovalGesture(approvalControl.surface, 'click');
+assert.equal(localApproved, true, 'the trusted gesture on the module-minted approval surface minted the approval');
 const fact = promoteKnowledgeSuggestion(suggestion, { actorId: 'local-actor' });
 assert.equal(fact.confirmation, 'user-confirmed');
 assert.equal(fact.provenance.actorId, 'local-actor');

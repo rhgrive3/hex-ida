@@ -93,30 +93,31 @@ export async function recognizeWithKnowledgeDB({ db, input, packageEnvelope = nu
 //    isTrusted:true }) can never pass (it is not a platform Event at all).
 //    User-agent dispatched gestures are the only Events whose isTrusted slot
 //    is true, so code running in the page cannot fabricate one.
-// 2. Approval controls bind the gesture to the target match (review R5): an
-//    arbitrary trusted click observed elsewhere (navigation, another panel,
-//    any unrelated button) must not be launderable into an approval for an
-//    attacker-chosen result. The module therefore does not hand out any
-//    "issue a grant for this event" seam at all — `Event.isTrusted` proves
-//    that user input happened, never that THIS suggestion was approved.
-//    Issuance is bound host-side: `createRecognitionApprovalControl(result, …)`
-//    creates a one-shot approval control for exactly that match. The control
-//    becomes an approval only for a trusted approval gesture DELIVERED TO THE
-//    SURFACE the control is attached to (the captured
-//    `Event.prototype.currentTarget` getter must report the attached surface
-//    during delivery — the platform sets it only for listeners the dispatch
-//    reaches, so an event captured on another surface fails the check both
-//    live and when replayed after the dispatch ended). On such a delivery the
-//    module mints the approval record into its own private state and invokes
-//    the creator's onApproved continuation; approval evidence never crosses
-//    the module boundary as caller-forgeable data, and `promoteKnowledge-
-//    Suggestion` consumes the record keyed to the match identity. An importer
-//    can create a control only for a match whose rendered approval surface
-//    the user actually activates — laundering unrelated clicks is impossible.
-//    (A hostile UI that draws its own "approve X" surface and talks the user
-//    into clicking it is browser-security/clickjacking territory, outside
-//    any in-page JS authority; the module requires only what a gesture on an
-//    approval surface for that match proves.)
+// 2. Approval surfaces are module-minted and match-bound before any gesture
+//    can reach them (review R5 + R2): an arbitrary trusted click observed
+//    elsewhere (navigation, another panel, any unrelated button) must not be
+//    launderable into an approval for an attacker-chosen result — and
+//    neither may a caller-chosen surface, which would let untrusted code
+//    redefine what the user clicked on. The module therefore hands out
+//    neither an "issue a grant for this event" nor an "attach this control
+//    to that element" seam: `Event.isTrusted` proves that user input
+//    happened, never what it meant. `createRecognitionApprovalControl(
+//    result, …)` MINTS the approval surface itself (a real DOM button in
+//    the browser; the trusted runner's EventTarget stand-in under test),
+//    registers the delivery handler on it module-internally, and exposes
+//    the surface read-only for the host UI to mount. A gesture can mint
+//    only when the platform DELIVERS it to that exact module-minted surface
+//    (the captured `Event.prototype.currentTarget` getter reports the
+//    surface during delivery only): forwarding an event captured on another
+//    surface fails live and on replay, and because neither `attach()` nor
+//    `handleEvent` is exposed, no importer can transplant the delivery
+//    handler onto an unrelated element — a genuine trusted click on a
+//    navigation button can never reach the approval authority. Whatever UI
+//    mounts the module's own approval button for a match, a
+//    platform-delivered trusted click ON THAT BUTTON is the user activating
+//    the approval control for that match; a hostile UI that deceptively
+//    places it is browser-security/clickjacking territory, outside any
+//    in-page JS authority.
 // 3. Consumption is module-private and re-verifies the host project binding
 //    current at consumption time (review R4): a record minted under one
 //    binding cannot be spent after the host re-binds, and an unbound record
@@ -221,12 +222,32 @@ export function configureRecognitionApprovalHost({ projectBinding = null } = {})
 }
 
 // The only issuance seam: a one-shot approval control bound to exactly one
-// recognition suggestion. The host renders an approval surface (button) for
-// the suggestion and attaches the control's handleEvent as its event
-// listener; only a browser-trusted gesture the platform delivers to that
-// surface mints the approval record, and the grant never crosses the module
+// recognition suggestion. The control MINTS its own approval surface (a real
+// DOM button in the browser; a trusted-runner EventTarget stand-in under
+// test) and registers the delivery handler on it module-internally — the
+// surface is exposed read-only for the host UI to mount, and neither the
+// surface registration nor the handler is reachable from outside, so no
+// importer can transplant the approval delivery onto an unrelated element.
+// Only a browser-trusted gesture the platform delivers to this module-minted
+// surface mints the approval record; the grant never crosses the module
 // boundary as data — the creator's onApproved continuation runs the local
 // promotion. See the boundary comment above for the threat model.
+const APPROVAL_SURFACE_CAPTION = 'Approve recognition suggestion';
+
+function mintApprovalSurface(matchId) {
+  if (typeof document === 'object' && document !== null && typeof document.createElement === 'function') {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.dataset.hexRecognitionApproval = matchId;
+    button.textContent = APPROVAL_SURFACE_CAPTION;
+    return button;
+  }
+  // Trusted-runner (Node test / denominator probe) realm stand-in.
+  const RunnerEventTarget = globalThis.HarnessEventTarget || globalThis.ProbeEventTarget;
+  if (typeof RunnerEventTarget === 'function') return new RunnerEventTarget();
+  throw new TypeError('recognition approval requires a host UI realm (DOM or trusted runner) to mint the approval surface');
+}
+
 export function createRecognitionApprovalControl(result, { actorId, onApproved } = {}) {
   if (!result || result.authority !== 'L2-suggestion' || !result.id) throw new TypeError('recognition suggestion required');
   if (result.candidateSearchTruncated || result.status === 'ambiguous') throw new Error('ambiguous or truncated recognition cannot be promoted');
@@ -234,15 +255,17 @@ export function createRecognitionApprovalControl(result, { actorId, onApproved }
   if (!actor) throw new TypeError('local approving actor identity is required');
   if (typeof onApproved !== 'function') throw new TypeError('an onApproved continuation is required to run the local promotion');
   let state = 'pending';
-  let surface = null;
   let continuation = onApproved;
-  const handleEvent = (event) => {
+  // The surface is minted here, before exposure; the delivery handler is
+  // registered module-internally and never exported.
+  const surface = mintApprovalSurface(result.id);
+  const handleDelivery = (event) => {
     if (state !== 'pending') return;
     try {
       HOST_APPROVAL_AUTHORITY.requireTrustedDelivery(event, surface);
     } catch {
-      // Not a trusted gesture on this approval surface: no approval is
-      // minted and the control stays armed for the real one.
+      // Not a trusted gesture on this module-minted approval surface: no
+      // approval is minted and the control stays armed for the real one.
       return;
     }
     HOST_APPROVAL_AUTHORITY.recordApproval(result, { actorId: actor, interactionType: event.type });
@@ -251,18 +274,20 @@ export function createRecognitionApprovalControl(result, { actorId, onApproved }
     continuation = null;
     run();
   };
+  surface.addEventListener('click', handleDelivery);
   return deepFreeze({
     matchId: result.id,
-    handleEvent,
-    // Bind the control to the rendered approval surface. One surface per
-    // control, bound before delivery; rebinding is refused (fail-closed).
-    attach(approvalSurface) {
-      if (state !== 'pending') throw new Error('approval control is no longer pending');
-      if (surface != null && approvalSurface !== surface) throw new Error('approval control is already bound to its approval surface');
-      if (approvalSurface == null || (typeof approvalSurface !== 'object' && typeof approvalSurface !== 'function')) throw new TypeError('an approval surface (the rendered control target) is required');
-      surface = approvalSurface;
+    // The host UI mounts this module-minted approval surface (e.g.
+    // panel.appendChild(control.surface)). It is not caller-replaceable and
+    // the delivery handler is not exported, so the approval delivery path
+    // cannot be transplanted onto unrelated elements.
+    get surface() { return surface; },
+    // Tear down the pending control (e.g. the suggestion left the UI).
+    release() {
+      if (state === 'approved') return;
+      state = 'released';
+      surface.removeEventListener?.('click', handleDelivery);
     },
-    release() { state = 'released'; },
   });
 }
 

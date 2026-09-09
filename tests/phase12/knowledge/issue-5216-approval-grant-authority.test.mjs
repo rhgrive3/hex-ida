@@ -43,16 +43,12 @@ function uniqueResult(overrides = {}) {
 
 const result = uniqueResult();
 
-// Mint an approval for `match` through the only legitimate path: a rendered
-// approval surface carrying the control's listener, activated by a real
-// trusted gesture delivered to THAT surface.
-function approveThroughControl(match, { actorId = 'actor-a', surface = new globalThis.HarnessEventTarget(), onApproved = () => {} } = {}) {
+// Mint an approval for `match` through the only legitimate path: a
+// platform-trusted gesture delivered to the module-minted approval surface.
+function approveThroughControl(match, { actorId = 'actor-a', onApproved = () => {} } = {}) {
   const control = createRecognitionApprovalControl(match, { actorId, onApproved });
-  control.attach(surface);
-  surface.addEventListener('click', control.handleEvent);
-  const event = fireTrustedApprovalGesture(surface, 'click');
-  surface.removeEventListener('click', control.handleEvent);
-  return { control, surface, event };
+  const event = fireTrustedApprovalGesture(control.surface, 'click');
+  return { control, surface: control.surface, event };
 }
 
 test('#5216 the authority factory and the caller-supplied issuance seam are gone', () => {
@@ -103,7 +99,12 @@ test('#5216 an untrusted self-mint via any exported surface cannot promote', () 
 
 test('#5216 an approval control promotes exactly its bound match once', () => {
   let approved = 0;
-  const { event } = approveThroughControl(result, { actorId: 'actor-a', onApproved: () => { approved++; } });
+  const control = createRecognitionApprovalControl(result, { actorId: 'actor-a', onApproved: () => { approved++; } });
+  // The surface is module-minted; the host UI mounts it. The trusted-runner
+  // delivery helper models the UA activating the rendered button.
+  const surface = control.surface;
+  assert.equal(typeof surface.addEventListener, 'function');
+  const event = fireTrustedApprovalGesture(surface, 'click');
   assert.equal(event.isTrusted, true, 'the harness delivered a browser-trusted gesture');
   assert.equal(approved, 1, 'the creator continuation ran once');
   const fact = promoteKnowledgeSuggestion(result, { actorId: 'actor-a' });
@@ -116,59 +117,56 @@ test('#5216 an approval control promotes exactly its bound match once', () => {
   assert.throws(() => promoteKnowledgeSuggestion(result, { actorId: 'actor-a' }), /approval is required/);
 });
 
-test('#5216 a trusted click observed on another UI cannot issue for an attacker-chosen result (review R5)', () => {
-  // The exact R5 counterexample: an arbitrary in-page caller renders its own
-  // approval control for a result the user never approved and tries to
-  // launder a trusted click that happened elsewhere (navigation, another
-  // panel, any unrelated button).
+test('#5216 a trusted click on an unrelated real surface cannot promote an attacker-chosen result (review R2 round 2)', () => {
+  // The exact R2-round-2 counterexample: the importer creates a control for
+  // a result the user never approved and tries to transplant the approval
+  // delivery onto an existing, legitimate, already-trusted element (a
+  // navigation button) that the user clicks normally.
   const attackerResult = uniqueResult({ sourceEntityId: 'fn:attacker', packageEntryId: 'pkg:attacker' });
   let attackerApproved = 0;
-  const attackerSurface = new globalThis.HarnessEventTarget();
   const control = createRecognitionApprovalControl(attackerResult, { actorId: 'attacker', onApproved: () => { attackerApproved++; } });
-  control.attach(attackerSurface);
+  assert.equal(control.attach, undefined, 'no attach(): the delivery surface cannot be caller-chosen');
+  assert.equal(control.handleEvent, undefined, 'the delivery handler is not exported');
 
-  // (1) Live laundering: the attacker listens on some other surface and
-  // forwards the trusted event object to their control during that other
-  // dispatch. The platform delivered it to the OTHER surface, so the
-  // captured currentTarget getter reports that other target, not the
-  // attacker's approval surface.
-  const otherSurface = new globalThis.HarnessEventTarget();
-  otherSurface.addEventListener('click', (stolen) => control.handleEvent(stolen));
-  otherSurface.dispatchEvent(new globalThis.Event('click', { trusted: true }));
-  assert.equal(attackerApproved, 0, 'a trusted click delivered to another surface must not issue');
+  // The attacker adds their own listener to a legitimate navigation button
+  // and forwards whatever it receives (the old seam is gone — this is the
+  // only forwarding an importer can do).
+  const navigationButton = new globalThis.HarnessEventTarget();
+  navigationButton.addEventListener('click', (event) => { void event; });
+  // The user genuinely clicks the navigation button: trusted on that
+  // surface — but the module-minted approval surface never received a
+  // platform delivery, so nothing mints.
+  const stolen = fireTrustedApprovalGesture(navigationButton, 'click');
+  assert.equal(stolen.isTrusted, true);
+  assert.equal(attackerApproved, 0, 'a trusted click on an unrelated element must not mint');
 
-  // (2) Post-dispatch replay: the event object survives the dispatch, but
-  // currentTarget is null outside delivery.
-  const replayed = fireTrustedApprovalGesture(otherSurface, 'click');
-  assert.equal(replayed.isTrusted, true, 'the stolen event was genuinely trusted on the other surface');
-  control.handleEvent(replayed);
-  assert.equal(attackerApproved, 0, 'a replayed trusted event from another UI must not issue');
+  // The attacker cannot trigger the module's delivery handler directly: it
+  // is not exported, and a script-dispatched event on the module-minted
+  // surface is untrusted by the platform.
+  attackerApproved = 0;
+  control.surface.dispatchEvent(new globalThis.Event('click', { trusted: true }));
+  assert.equal(attackerApproved, 0, 'script dispatch can never mint (isTrusted false via the platform)');
+  control.surface.dispatchEvent({ type: 'click', isTrusted: true });
+  assert.equal(attackerApproved, 0, 'a plain caller-built object is not a platform Event');
+  control.surface.dispatchEvent(syntheticEvent('click'));
+  assert.equal(attackerApproved, 0, 'synthetic (untrusted) events never mint');
+  const shadowed = syntheticEvent('click');
+  Object.defineProperty(shadowed, 'isTrusted', { value: true });
+  control.surface.dispatchEvent(shadowed);
+  assert.equal(attackerApproved, 0, 'an own isTrusted shadow cannot forge user activation');
 
-  // (3) Attaching the control to an unrelated surface after binding is
-  // refused, and synthetic/untrusted deliveries are ignored.
-  assert.throws(() => control.attach(new globalThis.HarnessEventTarget()), /already bound/);
-  attackerSurface.addEventListener('click', control.handleEvent);
-  attackerSurface.dispatchEvent(syntheticEvent('click'));
-  assert.equal(attackerApproved, 0, 'synthetic (untrusted) events never issue');
-  // The user actually activating the rendered approval surface is the only
-  // path — and it promotes exactly the rendered match, once.
-  fireTrustedApprovalGesture(attackerSurface, 'click');
-  assert.equal(attackerApproved, 1);
-  const fact = promoteKnowledgeSuggestion(attackerResult, { actorId: 'attacker' });
-  assert.equal(fact.provenance.approvedMatchId, attackerResult.id);
-  assert.throws(() => promoteKnowledgeSuggestion(attackerResult, { actorId: 'attacker' }), /approval is required/, 'single-use');
+  // The surface property is getter-only on the frozen control: the attacker
+  // cannot swap the module-minted surface for their own element.
+  assert.throws(() => { control.surface = new globalThis.HarnessEventTarget(); }, TypeError);
 });
 
-test('#5216 non-approval gestures and forged event shapes never issue', () => {
+test('#5216 synthetic, forged and misdirected deliveries never mint', () => {
   let approved = 0;
-  const surface = new globalThis.HarnessEventTarget();
   const control = createRecognitionApprovalControl(uniqueResult(), { actorId: 'actor-a', onApproved: () => { approved++; } });
-  control.attach(surface);
-  surface.addEventListener('click', control.handleEvent);
-  // Indirect event type (not a direct approval gesture).
-  surface.addEventListener('load', control.handleEvent);
-  fireTrustedApprovalGesture(surface, 'load');
-  assert.equal(approved, 0);
+  const surface = control.surface;
+  // Synthetic platform event (script dispatch) on the real approval surface.
+  surface.dispatchEvent(syntheticEvent('click'));
+  assert.equal(approved, 0, 'synthetic (untrusted) events never issue');
   // Own-property isTrusted shadow on a real event, delivered to the surface.
   const shadowed = syntheticEvent('click');
   Object.defineProperty(shadowed, 'isTrusted', { value: true });
@@ -177,12 +175,19 @@ test('#5216 non-approval gestures and forged event shapes never issue', () => {
   // Caller-built plain object claiming to be a trusted click.
   surface.dispatchEvent({ type: 'click', isTrusted: true });
   assert.equal(approved, 0, 'a plain caller-built object is not a platform Event');
-  // Unbound control (attach refused) never issues.
-  const loose = createRecognitionApprovalControl(uniqueResult(), { actorId: 'actor-a', onApproved: () => { approved++; } });
-  const otherSurface = new globalThis.HarnessEventTarget();
-  otherSurface.addEventListener('click', loose.handleEvent);
-  fireTrustedApprovalGesture(otherSurface, 'click');
-  assert.equal(approved, 0, 'a control not bound to the delivery surface must not issue');
+  // Indirect gesture type delivered by the platform.
+  fireTrustedApprovalGesture(surface, 'load');
+  assert.equal(approved, 0, 'indirect event types are not approval gestures');
+  // A trusted gesture delivered to a DIFFERENT module-minted surface never
+  // mints this control (per-control surface binding).
+  const other = createRecognitionApprovalControl(uniqueResult({ sourceEntityId: 'fn:other', packageEntryId: 'pkg:other' }), { actorId: 'actor-a', onApproved: () => {} });
+  fireTrustedApprovalGesture(other.surface, 'click');
+  assert.equal(approved, 0, 'another control\'s surface delivery does not mint this match');
+  // Released controls never mint.
+  const released = createRecognitionApprovalControl(uniqueResult({ sourceEntityId: 'fn:rel', packageEntryId: 'pkg:rel' }), { actorId: 'actor-a', onApproved: () => { approved++; } });
+  released.release();
+  fireTrustedApprovalGesture(released.surface, 'click');
+  assert.equal(approved, 0, 'a released control must not mint');
 });
 
 test('#5216 approval controls refuse invalid construction', () => {
