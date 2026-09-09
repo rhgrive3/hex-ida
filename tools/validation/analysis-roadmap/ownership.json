@@ -58,6 +58,7 @@
       "tests/phase8/provenance/idiom-history.test.mjs",
       "tests/phase8/provenance/equal-phi-history.test.mjs",
       "tests/phase8/provenance/mov-selection-history.test.mjs",
+      "tests/phase8/provenance/address-load-selection-history.test.mjs",
       "tests/phase8/provenance/compound-store-history.test.mjs",
       "tests/phase8/provenance/initial-store-history.test.mjs",
       "tests/phase8/provenance/field-render.test.mjs",

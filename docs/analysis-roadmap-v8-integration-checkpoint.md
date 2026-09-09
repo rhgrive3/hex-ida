@@ -3044,6 +3044,54 @@ performed. All original23 findings, the remaining C4-03 class denominator,
 C4-04 proof gating, C4-05 proof gaps, frozen135 compiler binaries and required
 integration acceptance remain open. Acceptance stays LOCKED.
 
+## C4-03 actual address-mode load selection
+
+The existing address-mode `reachingStore` branch now issues
+`select-address-load-store-operand` only when it actually selects the stored
+operand. Its before-source preserves the load, selected store and stored input;
+the existing build-history frame carries the event through the actual outer
+load/return/store consumer. A separate value-mode read of the same load remains
+a load and does not acquire this address-selection event. Precomputed constants,
+missing reaching stores and the self-link guard do not invent unvisited events.
+
+The private MOV selection observation is reused as a shared build-selection
+observer, not a second provenance ledger. Exact canonical root/position checks
+now cover related selected instructions as well as the primary value/definition.
+Observation begins before recursive stored-operand construction; callbacks,
+modified input views, copied nonmember stores, root replacement and getters
+cannot attach old history to a new selection. MOV/address-load selections share
+one pre-reserved bounded record allowance and the existing cumulative edge
+budget. Failing history does not change the legacy branch's expression output.
+
+The proof label is `observed-address-load-selection-not-memory-equivalence`.
+This records the legacy view decision, not certified MemorySSA forwarding,
+aliasing, atomicity or volatility. Canonical loads/stores and their original
+unknown qualifiers are retained. The existing canonical numeric-forwarding gate
+is unchanged; no structural reachingStore fact is promoted to its authority.
+
+Twelve new tests cover eight width/source cells, selected-load/store reverse
+navigation, nested MOV/repeated consumers, the full public compatibility path,
+value/address separation, bypass cases, nonmember/copy/edit/getter refusal,
+in-operand callback mutation, cumulative shared limits, mandatory fallback,
+projection replay and stale query navigation. The ownership manifest adds only
+the new address-load provenance test path. These are source-selection tests,
+not eight independent memory-equivalence proofs.
+
+PR #3421 remains reused at `4cd5b3eb9200b1180985b9df3a74f8245a5cc928`.
+The live forwarding search identified #7738 at
+`67f34e72254c60da9825ee2301c8b8f15d77cccf`; its body/files describe canonical
+access-provider issuer checks in the parallel memory-issue lane, not this render
+history. Preserve it as a central reconciliation candidate without duplicating
+or importing its issue fix. Search results are not exhaustive absence proof.
+
+Numeric load constants still require an upstream-producer audit: compatibility
+projection can already set `load.dst.const`, bypassing the lower builder's
+canonical-forwarding branch. That producer and precomputed-value history must
+not be conflated with an observed address selection. General flag-condition
+reconstruction and the complete rendered/removed class audit also remain open,
+alongside C4-04 proof gating, C4-05 gaps, all original23 findings and frozen135
+compiler binaries. No component/main merge occurred; acceptance stays LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -3078,7 +3126,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C3-03 | Versioned language metadata and unknown-version matrix |
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
-| HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi, MOV operand selection, initial RMW/C AST compound-store histories, owned handoffs and explicit assignment-expansion records, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
+| HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi, MOV/address-load operand selection, initial RMW/C AST compound-store histories, owned handoffs and explicit assignment-expansion records, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
 | HEX-C4-04 | Proof-gated scalar projection, owned inputs, transaction coverage and optional reuse of all 64 display rules as independently verified candidates implemented; ordinary legacy-view adoption, full family/width denominator and memory/CFG/exception observables remain open |
 | HEX-C4-05 | Frozen 272-cell scalar/14-Bool/8-width producer coverage and 3 actual schedules (816 scalar cells); adopted-transform history now preserves actual rule/cost/budget/proof audits. Native proof gaps, arbitrary permutations and full acceptance remain open |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |

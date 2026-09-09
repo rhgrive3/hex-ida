@@ -434,60 +434,84 @@ function recordPhiCollapse(v, instruction, incoming, expression, state) {
   state.phiHistoryCount = (state.phiHistoryCount || 0) + 1;
 }
 
-function observeMovSelection(value, instruction, state) {
+function observeBuildSelection(value, instruction, state, kind = 'mov', related = []) {
   const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
   const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
   const budget = consumerObservationBudget(state);
-  if ((state.movHistoryCount || 0) >= maximum) {
-    budget.reasons.add('mov-selection-history-budget'); return null;
+  if ((state.buildSelectionHistoryCount || 0) >= maximum) {
+    budget.reasons.add(`${kind}-selection-history-budget`); return null;
   }
-  // Reserve before recursive input construction; nested MOVs cannot all see
+  // Reserve before recursive input construction; nested selections cannot all see
   // the same last free record. Failed observations never refill this budget.
-  state.movHistoryCount = (state.movHistoryCount || 0) + 1;
+  state.buildSelectionHistoryCount = (state.buildSelectionHistoryCount || 0) + 1;
   try {
-    if (budget.edges <= 0) throw new Error('mov-observation-budget');
+    if (budget.edges <= 0) throw new Error('build-selection-observation-budget');
     const values = state.ir.values, valueIndex = values?.indexOf(value);
-    const blocks = state.ir.blocks, block = blocks?.find(item => item.index === instruction.block);
-    const blockIndex = blocks?.indexOf(block), instructions = block?.insts;
-    const instructionIndex = instructions?.indexOf(instruction);
-    if (!(valueIndex >= 0) || !(instructionIndex >= 0)) throw new Error('mov-definition-unavailable');
-    const flat = state.ir.instructions, flatIndex = flat?.indexOf(instruction);
-    if (flat != null && !(flatIndex >= 0)) throw new Error('mov-definition-unavailable');
+    const blocks = state.ir.blocks, flat = state.ir.instructions;
+    const locations = [instruction, ...related].map(selected => {
+      const block = blocks?.find(item => item.index === selected.block);
+      const blockIndex = blocks?.indexOf(block), instructions = block?.insts;
+      const instructionIndex = instructions?.indexOf(selected), flatIndex = flat?.indexOf(selected);
+      if (!(valueIndex >= 0) || !(instructionIndex >= 0) || flat != null && !(flatIndex >= 0)) throw new Error('build-definition-unavailable');
+      return { selected, block, blockIndex, blockId:block.index, instructions, instructionIndex, flatIndex };
+    });
     // Snapshot BEFORE buildArg can invoke an input's symbol/type callback.
     // Exact roots/positions bind the observed definition, not just its ID.
-    const captured = captureProjectionIrData([value, instruction]);
+    const captured = captureProjectionIrData([value, instruction, ...related]);
     budget.edges -= captured.metrics.edges;
-    if (budget.edges < 0) throw new Error('mov-observation-budget');
+    if (budget.edges < 0) throw new Error('build-selection-observation-budget');
     const own = (object, key) => Object.getOwnPropertyDescriptor(object, key)?.value;
-    const blockId = block.index;
-    return Object.freeze({ matches:() => own(state.ir, 'values') === values && own(values, valueIndex) === value
-      && own(state.ir, 'blocks') === blocks && own(blocks, blockIndex) === block && own(block, 'index') === blockId
-      && own(block, 'insts') === instructions && own(instructions, instructionIndex) === instruction
-      && own(state.ir, 'instructions') === flat && (flat == null || own(flat, flatIndex) === instruction) && captured.matches() });
+    return Object.freeze({ kind, matches:() => own(state.ir, 'values') === values && own(values, valueIndex) === value
+      && own(state.ir, 'blocks') === blocks && own(state.ir, 'instructions') === flat
+      && locations.every(({ selected, block, blockIndex, blockId, instructions, instructionIndex, flatIndex }) =>
+        own(blocks, blockIndex) === block && own(block, 'index') === blockId
+        && own(block, 'insts') === instructions && own(instructions, instructionIndex) === selected
+        && (flat == null || own(flat, flatIndex) === selected)) && captured.matches() });
   } catch {
-    budget.edges = 0; budget.reasons.add('mov-selection-observation-unavailable'); return null;
+    budget.edges = 0; budget.reasons.add(`${kind}-selection-observation-unavailable`); return null;
   }
 }
 
-function recordMovSelection(value, instruction, expression, selection, state, flags) {
-  if (!selection) return;
+function finishBuildSelection(expression, selection, state) {
+  if (!selection) return null;
   const budget = consumerObservationBudget(state);
   let observation;
   try {
-    if (budget.edges <= 0) throw new Error('mov-observation-budget');
+    if (budget.edges <= 0) throw new Error('build-selection-observation-budget');
     const output = captureProjectionIrData([expression]);
     budget.edges -= output.metrics.edges;
-    if (budget.edges < 0 || state.opts?.shouldAbort?.() || !selection.matches() || !output.matches()) throw new Error('mov-selection-unavailable');
+    if (budget.edges < 0 || state.opts?.shouldAbort?.() || !selection.matches() || !output.matches()) throw new Error('build-selection-unavailable');
     observation = Object.freeze({ matches:() => selection.matches() && output.matches() });
   } catch {
-    budget.edges = 0; budget.reasons.add('mov-selection-observation-unavailable'); return;
+    budget.edges = 0; budget.reasons.add(`${selection.kind}-selection-observation-unavailable`); return null;
   }
+  return observation;
+}
+
+function recordMovSelection(value, instruction, expression, selection, state, flags) {
+  const observation = finishBuildSelection(expression, selection, state);
+  if (!observation) return;
   const input = valueOf(instruction.args?.[0]);
   const before = { source:mergeSource(origin(instruction, value), origin(input?.def, input), expression.source) };
   const record = Object.freeze({ rule:'select-mov-operand', phase:'expression-build',
     before:`mov:${flags.forAddress ? 'address' : 'value'}`, after:`expression:${expression.kind}`,
     evidence:Object.freeze({ kind:'observed-mov-view-selection-not-equivalence',
       detail:'actual legacy builder operand selection including existing operand-width/shift views; canonical MOV and memory facts remain, not independently proved copy elimination or forwarding' }),
+    originHistory:expressionOriginHistory(before, expression),
+  });
+  buildHistoryObservations.set(record, observation);
+  (state.buildHistoryFrame.records ??= new Set()).add(record);
+}
+
+function recordAddressLoadSelection(value, instruction, store, expression, selection, state) {
+  const observation = finishBuildSelection(expression, selection, state);
+  if (!observation) return;
+  const input = valueOf(store.args?.[0]);
+  const before = { source:mergeSource(origin(instruction, value), origin(store), origin(input?.def, input), expression.source) };
+  const record = Object.freeze({ rule:'select-address-load-store-operand', phase:'expression-build',
+    before:'load:address-reaching-store', after:`expression:${expression.kind}`,
+    evidence:Object.freeze({ kind:'observed-address-load-selection-not-memory-equivalence',
+      detail:'actual legacy address-mode reachingStore operand selection; canonical load/store and unknown access qualifiers remain, not independent memory forwarding or alias proof' }),
     originHistory:expressionOriginHistory(before, expression),
   });
   buildHistoryObservations.set(record, observation);
@@ -510,7 +534,7 @@ function buildValueRaw(v, state, flags = {}) {
       ? expr.floatConstant(v.floatConst ?? v.float, v.bits || 64, origin(d, v))
       : constNode(v, v.const ?? d.extra?.value ?? 0n);
     else if (d.op === 'mov') {
-      const selection = observeMovSelection(v, d, state);
+      const selection = observeBuildSelection(v, d, state);
       out = buildArg(d.args?.[0], state, flags);
       recordMovSelection(v, d, out, selection, state, flags);
     }
@@ -567,7 +591,10 @@ function buildValueRaw(v, state, flags = {}) {
         && d.memoryForwarding.value != null) {
         out = constNode(v, d.memoryForwarding.value);
       } else if (flags.forAddress && d.reachingStore && d.reachingStore !== d) {
-        out = buildArg(d.reachingStore.args?.[0], state, flags);
+        const store = d.reachingStore;
+        const selection = observeBuildSelection(v, d, state, 'address-load', [store]);
+        out = buildArg(store.args?.[0], state, flags);
+        recordAddressLoadSelection(v, d, store, out, selection, state);
       } else {
         out = expr.load(loc, v.bits || Number((d.size || 8) * 8), origin(d, v), { signed: d.signed ?? signedFor(state, v), volatile: !!d.volatile });
       }
