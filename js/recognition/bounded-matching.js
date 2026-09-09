@@ -1,8 +1,13 @@
 import { createMatchBudget } from './match-budget.js';
 
+function isValidConfidence(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
 function candidateComponents(candidates) {
   const left = new Map(), right = new Map();
   for (const c of candidates) {
+    if (!isValidConfidence(c?.confidence)) continue;
     let a = left.get(c.i); if (!a) left.set(c.i, a = []); a.push(c);
     let b = right.get(c.j); if (!b) right.set(c.j, b = []); b.push(c);
   }
@@ -29,10 +34,6 @@ function componentShape(candidates) {
   const left = new Set(), right = new Set();
   for (const c of candidates) { left.add(c.i); right.add(c.j); }
   return { left, right, nodes:left.size + right.size, edges:candidates.length };
-}
-
-function isValidConfidence(value) {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
 }
 
 function maximumWeightComponent(candidates, budget) {
@@ -82,8 +83,7 @@ function maximumWeightComponent(candidates, budget) {
 
 export function solveCandidateMatching(candidates = [], budget = createMatchBudget()) {
   const selected = [], ambiguousLeft = new Set(), ambiguousRight = new Set(), truncatedComponents = [];
-  const validCandidates = (candidates || []).filter((candidate) => isValidConfidence(candidate?.confidence));
-  const components = candidateComponents(validCandidates);
+  const components = candidateComponents(candidates);
   for (let index = 0; index < components.length; index++) {
     const component = components[index];
     const shape = componentShape(component);

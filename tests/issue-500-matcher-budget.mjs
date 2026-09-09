@@ -270,4 +270,20 @@ for (const [label, confidence] of malformedConfidence) {
 }
 assert.equal(coercionCalls, 0, 'candidate confidence must not invoke user coercion hooks');
 
+// The public bounded matcher accepts any iterable candidate container. Keep
+// the validation inside component discovery so Sets and one-shot generators
+// retain their existing behavior without an eager array conversion.
+const iterableCandidate = { i: 0, j: 0, confidence: 0.9, id: 'iterable-valid' };
+const setSelected = maximumWeightCandidateMatching(new Set([iterableCandidate]), {
+  matchBudget: { maxWallMs: 10_000 },
+});
+assert.deepEqual(setSelected.map((candidate) => candidate.id), ['iterable-valid']);
+function* validCandidateGenerator() {
+  yield { i: 0, j: 0, confidence: 0.9, id: 'generator-valid' };
+}
+const generatorSelected = maximumWeightCandidateMatching(validCandidateGenerator(), {
+  matchBudget: { maxWallMs: 10_000 },
+});
+assert.deepEqual(generatorSelected.map((candidate) => candidate.id), ['generator-valid']);
+
 console.log('issue #500 matcher budget: PASS');
