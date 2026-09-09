@@ -15,6 +15,10 @@ function nonEmpty(value, code) {
   if (!text) fail(code);
   return text;
 }
+function canonicalNonEmpty(value, code) {
+  if (typeof value !== 'string' || !value || value !== value.trim()) fail(code);
+  return value;
+}
 function textOrIndex(value, code) {
   if (typeof value === 'number') {
     if (!Number.isSafeInteger(value) || value < 0) fail(code);
@@ -81,29 +85,21 @@ export function validateManagedTargetProfile(profile) {
   // by createManagedTargetProfile(). Do not substitute constructor defaults
   // while validating published identity (#5296): an under-specified object
   // must fail before identity re-derivation.
-  if (typeof profile.frontendSemanticVersion !== 'string' || !profile.frontendSemanticVersion.trim()) {
-    fail('managed-profile-invalid-version');
-  }
-  if (typeof profile.formatVersion !== 'string' || !profile.formatVersion.trim()) {
-    fail('managed-profile-invalid-format-version');
-  }
-  if (typeof profile.vmSpecEdition !== 'string' || !profile.vmSpecEdition.trim()) {
-    fail('managed-profile-invalid-spec-edition');
-  }
+  canonicalNonEmpty(profile.frontendSemanticVersion, 'managed-profile-invalid-version');
+  canonicalNonEmpty(profile.formatVersion, 'managed-profile-invalid-format-version');
+  canonicalNonEmpty(profile.vmSpecEdition, 'managed-profile-invalid-spec-edition');
   if (!Array.isArray(profile.featureSet)) fail('managed-profile-invalid-feature-set');
   const canonicalFeatureSet = sortedUniqueStrings(profile.featureSet);
   if (canonicalFeatureSet.length !== profile.featureSet.length
       || canonicalFeatureSet.some((value, index) => value !== profile.featureSet[index])) {
     fail('managed-profile-invalid-feature-set');
   }
-  if (profile.runtimeVersionHint != null
-      && (typeof profile.runtimeVersionHint !== 'string' || !profile.runtimeVersionHint.trim())) {
-    fail('managed-profile-runtime-version-hint-invalid');
+  if (profile.runtimeVersionHint != null) {
+    canonicalNonEmpty(profile.runtimeVersionHint, 'managed-profile-runtime-version-hint-invalid');
   }
-  if (typeof profile.validationPolicy !== 'string' || !profile.validationPolicy.trim()) {
-    fail('managed-profile-invalid-validation-policy');
-  }
-  if (typeof profile.decodingOptionsHash !== 'string' || !profile.decodingOptionsHash.trim()) {
+  canonicalNonEmpty(profile.validationPolicy, 'managed-profile-invalid-validation-policy');
+  if (typeof profile.decodingOptionsHash !== 'string'
+      || !/^[0-9a-f]{32}$/.test(profile.decodingOptionsHash)) {
     fail('managed-profile-invalid-options-hash');
   }
 
