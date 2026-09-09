@@ -31,6 +31,8 @@ function buildCallPe({
   callerBytecode,
   staticSignature = Uint8Array.from([0x00, 0x01, 0x08, 0x08]), // static int32(int32)
   genericSignature = Uint8Array.from([0x10, 0x01, 0x01, 0x1e, 0x00, 0x1e, 0x00]), // static !!0(!!0)
+  staticMethodFlags = 0x0010,
+  genericMethodFlags = 0x0010,
 } = {}) {
   const buf = new Uint8Array(0xc00);
   const view = new DataView(buf.buffer);
@@ -123,18 +125,19 @@ function buildCallPe({
   view.setUint16(tablePos, 1, true); tablePos += 2; // FieldList
   view.setUint16(tablePos, 1, true); tablePos += 2; // MethodList
 
-  const addMethodDef = (rva, nameIndex, signatureIndex) => {
+  const addMethodDef = (rva, nameIndex, signatureIndex, accessFlags) => {
     view.setUint32(tablePos, rva, true);
+    view.setUint16(tablePos + 6, accessFlags, true);
     view.setUint16(tablePos + 8, nameIndex, true);
     view.setUint16(tablePos + 10, signatureIndex, true);
     view.setUint16(tablePos + 12, 0, true); // ParamList
     tablePos += 14;
   };
-  addMethodDef(0, staticNameIndex, staticSignatureIndex);
-  addMethodDef(0, genericNameIndex, genericSignatureIndex);
-  addMethodDef(0x2500, callerNameIndex, callerSignatureIndex);
-  addMethodDef(0, constructorNameIndex, constructorSignatureIndex);
-  addMethodDef(0, nonConstructorNameIndex, constructorSignatureIndex);
+  addMethodDef(0, staticNameIndex, staticSignatureIndex, staticMethodFlags);
+  addMethodDef(0, genericNameIndex, genericSignatureIndex, genericMethodFlags);
+  addMethodDef(0x2500, callerNameIndex, callerSignatureIndex, 0x0010);
+  addMethodDef(0, constructorNameIndex, constructorSignatureIndex, 0);
+  addMethodDef(0, nonConstructorNameIndex, constructorSignatureIndex, 0);
 
   const addMemberRef = (nameIndex) => {
     // MemberRefParent = MethodDef RID 1, tag 3 => (1 << 3) | 3.
@@ -173,6 +176,7 @@ test('#1141 MethodDef static call consumes parameters and produces non-void retu
   assert.equal(call.callEffects[0].signatureResolved, true);
   assert.equal(call.callEffects[0].signatureProvenance.table, 'MethodDef');
   assert.equal(call.callEffects[0].signatureProvenance.methodName, 'StaticTarget');
+  assert.equal(call.callEffects[0].signatureProvenance.methodAccessFlags, 0x0010);
 });
 
 test('#1141 instance/constructor calls apply receiver, 64-bit, and value-type stack contracts', () => {
@@ -207,6 +211,24 @@ test('#1141 newobj rejects non-constructor MemberRef and MethodDef targets', () 
     assert.equal(newobj.producedValues.length, 0, 'non-constructor target must not mint constructed-object');
     assert.ok(newobj.unknownEffects.some((effect) => effect.category === 'stack'));
   }
+});
+
+test('#7608 MethodDef Static and HASTHIS mismatches degrade signature authority', () => {
+  const staticWithThis = lift([0x14, 0x28, ...tokenBytes(0x06000001), 0x2a], {
+    staticSignature:Uint8Array.from([0x20, 0x00, 0x01]), // instance-shaped void()
+    staticMethodFlags:0x0010,
+  }).bundles[1];
+  assert.equal(staticWithThis.completeness, 'partial');
+  assert.equal(staticWithThis.callEffects[0].signatureResolved, false);
+  assert.equal(staticWithThis.consumedValues.length, 0, 'static MethodDef must not gain a fabricated receiver');
+
+  const instanceWithoutThis = lift([0x28, ...tokenBytes(0x06000001), 0x2a], {
+    staticSignature:Uint8Array.from([0x00, 0x00, 0x01]), // static-shaped void()
+    staticMethodFlags:0x0000,
+  }).bundles[0];
+  assert.equal(instanceWithoutThis.completeness, 'partial');
+  assert.equal(instanceWithoutThis.callEffects[0].signatureResolved, false);
+  assert.equal(instanceWithoutThis.producedValues.length, 0);
 });
 
 test('#7603 an out-of-range signature TypeDefOrRef degrades call signature authority', () => {

@@ -146,6 +146,7 @@ export function buildCilCallMetadataIndex(bytes) {
         methodDefs.push(Object.freeze({
           rva,
           bodyOffset:rva === 0 ? null : metadata.mapRva(rva, 1, 'cil-call-signature-method-body-unmapped'),
+          accessFlags:readU16(view, rowPos + 6, 'cil-call-signature-methoddef-truncated'),
           nameIndex:readIndex(view, rowPos + 8, stringIndexSize, 'cil-call-signature-methoddef-truncated'),
           signatureBlobIndex:readIndex(view, rowPos + signatureOffset, blobIndexSize,
             'cil-call-signature-methoddef-truncated'),
