@@ -99,9 +99,9 @@ export class KnowledgeDB {
     const identityKey = input.identityKey || fingerprint.semanticHash || fingerprint.normalizedBytesHash || fingerprint.hash || null;
     const id = input.id || `${sourceBinaryHash}:${addrText(address)}:${identityKey || 'sparse'}`;
     const requestedConfirmation = CONFIRMATION_LEVELS.includes(input.confirmation) ? input.confirmation : null;
-    const userConfirmed = input.userConfirmed || requestedConfirmation === 'user-confirmed';
-    const debuggerConfirmed = input.debuggerConfirmed || requestedConfirmation === 'debugger-confirmed';
-    const metadataConfirmed = input.metadataConfirmed || requestedConfirmation === 'metadata-confirmed';
+    const userConfirmed = input.userConfirmed === true || requestedConfirmation === 'user-confirmed';
+    const debuggerConfirmed = input.debuggerConfirmed === true || requestedConfirmation === 'debugger-confirmed';
+    const metadataConfirmed = input.metadataConfirmed === true || requestedConfirmation === 'metadata-confirmed';
     const resolvedConfidence = input.confidence == null ? (userConfirmed || debuggerConfirmed ? 1 : metadataConfirmed ? 0.95 : 0.5) : explicitConfidence(input.confidence);
     const confirmation = requestedConfirmation || (userConfirmed ? 'user-confirmed' : debuggerConfirmed ? 'debugger-confirmed' : metadataConfirmed ? 'metadata-confirmed' : resolvedConfidence >= 0.9 ? 'high-confidence-inferred' : 'weak-inferred');
     const record = {
