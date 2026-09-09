@@ -5,6 +5,7 @@ import { inferTypes } from '../../types.js';
 import { resolveABIPlugin } from '../../targets/abi/index.js';
 import { riscvAbiFromElfFlags } from '../../targets/abi/riscv-lp64.js';
 import { X86_SEMANTIC_FUNCTION_MAX_DECODE_BYTES } from '../../targets/architecture/x86_64/semantic-function-contract.js';
+import { ANALYSIS_COMPLETENESS, weakestCompleteness } from '../status.js';
 
 const QUERY_ROUTED_FETCH = Symbol('analysis-query-routed-fetch');
 const QUERY_ROUTED_ANALYZE = Symbol('analysis-query-routed-analyze');
@@ -135,12 +136,7 @@ function unsupported(id, reason) {
   return { value:null, functionId:id, status:{ completeness:'unsupported', reason } };
 }
 
-const COMPLETENESS_ORDER = Object.freeze({
-  complete: 0,
-  partial: 1,
-  truncated: 2,
-  unsupported: 3,
-});
+const COMPLETENESS = new Set(ANALYSIS_COMPLETENESS);
 
 function completenessOf(value, fallback = 'complete') {
   const evidence = [];
@@ -152,13 +148,11 @@ function completenessOf(value, fallback = 'complete') {
   if (value?.truncated === true) evidence.push('truncated');
   if (topLevelCompleteness?.complete === false || value?.complete === false || value?.partial === true) evidence.push('partial');
 
-  const recognized = evidence.filter((item) => Object.prototype.hasOwnProperty.call(COMPLETENESS_ORDER, item));
-  const hasInvalidString = evidence.some((item) => typeof item === 'string' && !Object.prototype.hasOwnProperty.call(COMPLETENESS_ORDER, item));
+  const recognized = evidence.filter((item) => COMPLETENESS.has(item));
+  const hasInvalidString = evidence.some((item) => typeof item === 'string' && !COMPLETENESS.has(item));
   if (hasInvalidString) recognized.push('partial');
   if (recognized.length === 0) return fallback;
-  return recognized.reduce((strongest, item) => (
-    COMPLETENESS_ORDER[item] > COMPLETENESS_ORDER[strongest] ? item : strongest
-  ));
+  return weakestCompleteness(recognized);
 }
 
 function wrap(value, completeness = null, status = {}) {
@@ -768,9 +762,8 @@ export function createAppAnalysisQueryAdapter(app) {
       let decompilerCompleteness = 'complete';
       if (targetAddress != null || targetId != null) {
         const result = await loadFunction(rawTarget, options);
-        if (result?.status?.completeness === 'partial' || result?.status?.completeness === 'truncated') {
-          decompilerCompleteness = result.status.completeness;
-        }
+        const functionCompleteness = completenessOf(result, 'complete');
+        if (functionCompleteness !== 'unsupported') decompilerCompleteness = functionCompleteness;
         for (const evidence of result?.value?.decompiler?.evidence || []) {
           rows.push({ kind:'decompiler', functionId:targetId ?? rawTarget, evidence });
         }
