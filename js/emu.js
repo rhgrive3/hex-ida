@@ -192,15 +192,15 @@ export class Emulator {
       throw new EmulatorFault('unmapped-memory', `no backing memory for 0x${address.toString(16)}`, { address, page });
     }
     let bytes;
-    // A backing read that never settles must not hold the emulator hostage
-    // after the caller aborted the run (#5594): race it against the active
-    // run's AbortSignal, cancelling it if possible.
     const runSignal = this._runSignal;
-    const raced = runSignal
-      ? awaitAbortable(this.io.read(page, PAGE), runSignal)
-      : this.io.read(page, PAGE);
-    try { bytes = await raced; }
-    catch (error) {
+    try {
+      // Do not start backing I/O after cancellation has already won. Keep the
+      // read invocation itself inside this boundary so synchronous backend
+      // throws retain the legacy memory-read-failed taxonomy (#5594).
+      throwIfAborted(runSignal);
+      const operation = this.io.read(page, PAGE);
+      bytes = runSignal ? await awaitAbortable(operation, runSignal) : await operation;
+    } catch (error) {
       if (runSignal?.aborted) throw abortError(runSignal);
       throw new EmulatorFault('memory-read-failed', `backing read failed at 0x${page.toString(16)}`, { address, page, cause:String(error && error.message || error) });
     }
@@ -314,20 +314,14 @@ export class Emulator {
     this.steps++;
 
     let next = at + 4n;
-    // The execute path (load/store/hooked memory I/O) must observe this run's
-    // AbortSignal: a backing io.read that never settles must not pin run()/step()
-    // after the caller aborted (#5594). execute() funnels every memory access
-    // through ensure(), which races the pending read against this signal.
     this._runSignal = signal;
     try {
-      try {
-        const jumped = await this.execute(insn.mn.toLowerCase(), insn.ops || '', at);
-        if (jumped != null) next = jumped;
-      } catch (err) {
-        if (signal?.aborted) throw err;
-        this.stopped = (err && err.message) || String(err);
-        return { ok: false, text, reason: this.stopped, code:err && err.code || null };
-      }
+      const jumped = await this.execute(insn.mn.toLowerCase(), insn.ops || '', at);
+      if (jumped != null) next = jumped;
+    } catch (err) {
+      if (signal?.aborted) throw abortError(signal);
+      this.stopped = (err && err.message) || String(err);
+      return { ok: false, text, reason: this.stopped, code:err && err.code || null };
     } finally {
       this._runSignal = null;
     }
