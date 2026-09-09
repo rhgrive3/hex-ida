@@ -179,19 +179,10 @@ function parseReturn(bytes, offset, code, depth, methodGenericArity, typeDefOrRe
   if (bytes[pos] === 0x10) { // BYREF
     const pre = readCustomMods(bytes, pos + 1, code, typeDefOrRefRowCounts);
     const inner = parseType(bytes, pre.next, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
-<<<<<<< HEAD
-    // ECMA-335 II.23.2.10: BYREF is a paired type. Dropping `inner.value`
-    // collapsed int32&/int64& into one exact managed-pointer identity (#7750),
-    // so the referent is carried losslessly; modifier lists compose in
-    // source order across the paired production (#7706/#7673 R2).
-    return { next:inner.next, value:attachMods(stackType('managed-pointer', null,
-      { referent:inner.value }), lead.mods, pre.mods) };
-=======
     // Placement stays distinct (R1): lead mods precede the BYREF production;
     // mods between BYREF and the Type are BYREF-production-local.
     return { next:inner.next, value:attachMods(stackType('managed-pointer', null,
       { pointee:inner.value }), lead.mods, pre.mods) };
->>>>>>> 99cf98284 (fix(cil): keep custom-modifier placement distinct in exact type identity (#7706, #7673 R1b))
   }
   const inner = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
   return { next:inner.next, value:attachMods(inner.value, lead.mods) };
@@ -201,18 +192,12 @@ function parseParam(bytes, offset, code, depth, methodGenericArity, typeDefOrRef
   const lead = readCustomMods(bytes, offset, code, typeDefOrRefRowCounts);
   const pos = lead.next;
   if (bytes[pos] === 0x16) return { next:pos + 1, value:attachMods(stackType('typed-reference'), lead.mods) };
-  if (bytes[pos] === 0x10) { // BYREF
+  if (bytes[pos] === 0x10) {
     const pre = readCustomMods(bytes, pos + 1, code, typeDefOrRefRowCounts);
     const inner = parseType(bytes, pre.next, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
-<<<<<<< HEAD
-    // Same referent-retention contract as the return path (#7750).
-    return { next:inner.next, value:attachMods(stackType('managed-pointer', null,
-      { referent:inner.value }), lead.mods, pre.mods) };
-=======
     // Same placement semantics as the BYREF return production (R1).
     return { next:inner.next, value:attachMods(stackType('managed-pointer', null,
       { pointee:inner.value }), lead.mods, pre.mods) };
->>>>>>> 99cf98284 (fix(cil): keep custom-modifier placement distinct in exact type identity (#7706, #7673 R1b))
   }
   const inner = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
   return { next:inner.next, value:attachMods(inner.value, lead.mods) };
@@ -271,44 +256,8 @@ export function parseCilMethodSignature(blob, typeDefOrRefRowCounts = null) {
   return parseMethodSignature(blob, 0, 'cil-call-signature-invalid', 0, true, 0, typeDefOrRefRowCounts).value;
 }
 
-// ECMA-335 II.23.2.6 LocalVarSig: 0x07 Count T* where each T may carry
-// custom modifiers, the PINNED modifier, and a BYREF pair. The lifter needs
-// the typed locals as a stack-type array so ldloc/stloc stop publishing a
-// fabricated 32-bit width (#5353).
-export function parseCilLocalVarSignature(blob, typeDefOrRefRowCounts = null) {
-  const code = 'cil-local-var-signature-invalid';
-  if (!(blob instanceof Uint8Array) || blob.length < 2 || blob[0] !== 0x07) fail(code);
-  const count = readCompressed(blob, 1, code);
-  if (count.value < 1 || count.value > 0xfffe) fail(code);
-  let pos = count.next;
-  const locals = [];
-  for (let index = 0; index < count.value; index++) {
-    pos = consumeCustomMods(blob, pos, code, typeDefOrRefRowCounts);
-    while (blob[pos] === 0x45) { // PINNED
-      pos += 1;
-      pos = consumeCustomMods(blob, pos, code, typeDefOrRefRowCounts);
-    }
-    if (blob[pos] === 0x16) { // TYPEDBYREF
-      locals.push(stackType('typed-reference'));
-      pos += 1;
-      continue;
-    }
-    if (blob[pos] === 0x10) { // BYREF
-      pos = consumeCustomMods(blob, pos + 1, code, typeDefOrRefRowCounts);
-      const inner = parseType(blob, pos, code, 1, null, typeDefOrRefRowCounts);
-      pos = inner.next;
-      locals.push(stackType('managed-pointer', null, { referent:inner.value }));
-      continue;
-    }
-    const parsed = parseType(blob, pos, code, 1, null, typeDefOrRefRowCounts);
-    pos = parsed.next;
-    locals.push(parsed.value);
-  }
-  if (pos !== blob.length) fail(code);
-  return Object.freeze(locals);
-}
-
-export function parseCilMethodSpecInstantiation(blob, typeDefOrRefRowCounts = null) {  const code = 'cil-call-signature-methodspec-invalid';
+export function parseCilMethodSpecInstantiation(blob, typeDefOrRefRowCounts = null) {
+  const code = 'cil-call-signature-methodspec-invalid';
   if (!(blob instanceof Uint8Array) || blob.length < 2 || blob[0] !== 0x0a) fail(code);
   const count = readCompressed(blob, 1, code);
   if (count.value < 1) fail(code);
@@ -335,20 +284,37 @@ export function parseCilTypeSpecSignature(blob, typeDefOrRefRowCounts = null) {
   return Object.freeze(parsed.value);
 }
 
+// Structural substitution (#7810): a method generic can appear at any nested
+// identity position of the base signature — a PTR pointee, a BYREF referent,
+// an array/SZARRAY element, a GENERICINST argument, or a nested FNPTR
+// signature — not only at the top level. Substituting only top-level values
+// would let a MethodSpec instantiation publish an unresolved generic as an
+// exact pointee/element identity.
 export function substituteCilMethodGeneric(value, args) {
+  if (Array.isArray(value)) {
+    let changed = false;
+    const mapped = value.map((entry) => {
+      const substituted = substituteCilMethodGeneric(entry, args);
+      if (substituted !== entry) changed = true;
+      return substituted;
+    });
+    return changed ? Object.freeze(mapped) : value;
+  }
   if (!value || typeof value !== 'object') return value;
-  if (value.stackType !== 'method-generic' && value.stackType !== 'managed-pointer') return value;
-  if (value.stackType === 'managed-pointer') {
-    // A BYREF referent may itself be a method generic; substitution must walk
-    // the pair or the MethodSpec would re-collapse distinct instantiations (#7750).
-    if (!value.referent) return value;
-    const referent = substituteCilMethodGeneric(value.referent, args);
-    if (referent === value.referent) return value;
-    return { ...value, referent };
+  if (value.stackType === 'method-generic') {
+    const index = value.genericIndex;
+    if (!Number.isSafeInteger(index) || index < 0 || index >= args.length) {
+      fail('cil-call-signature-methodspec-generic-index-invalid');
+    }
+    return args[index];
   }
-  const index = value.genericIndex;
-  if (!Number.isSafeInteger(index) || index < 0 || index >= args.length) {
-    fail('cil-call-signature-methodspec-generic-index-invalid');
+  let changed = false;
+  const out = {};
+  for (const key of Object.keys(value)) {
+    const entry = value[key];
+    const substituted = substituteCilMethodGeneric(entry, args);
+    if (substituted !== entry) changed = true;
+    out[key] = substituted;
   }
-  return args[index];
+  return changed ? Object.freeze(out) : value;
 }
