@@ -85,20 +85,21 @@ test('#4421 a partially connected engine is released after connect fails', async
   assert.equal(provider.activeSession, null);
 });
 
-test('#4421 disconnect failure does not replace the connect error or retain provider ownership', async () => {
+test('#4421 failed cleanup quarantines partial engine ownership and preserves the connect error', async () => {
   const connectError = new Error('original connect error');
   const disconnectError = new Error('disconnect failed');
-  let disconnectFail = true;
+  let connected = false;
   let connectCalls = 0;
   let disconnectCalls = 0;
   const engine = baseEngine({
     async connect() {
       connectCalls++;
-      if (connectCalls === 1) throw connectError;
+      connected = true;
+      throw connectError;
     },
     async disconnect() {
       disconnectCalls++;
-      if (disconnectFail) throw disconnectError;
+      throw disconnectError;
     },
   });
   const provider = new EmulatorProvider(engine);
@@ -107,14 +108,20 @@ test('#4421 disconnect failure does not replace the connect error or retain prov
     provider.openSession({ binaryId: 'binary-4421', sessionNonce: 'disconnect-failure' }),
     (error) => error === connectError,
   );
+  assert.equal(connectCalls, 1);
   assert.equal(disconnectCalls, 1);
-  assert.equal(provider.activeSession, null);
+  assert.equal(connected, true, 'failed disconnect leaves engine resource authority unresolved');
+  assert.ok(provider.activeSession, 'provider must retain ownership while cleanup is unresolved');
+  assert.equal(provider.activeSession.closed, false);
+  assert.equal(provider.activeSession.state, 'closing');
 
-  disconnectFail = false;
-  const retry = await provider.openSession({ binaryId: 'binary-4421', sessionNonce: 'retry' });
-  assert.equal(retry.state, 'ready');
-  await retry.close();
-  assert.equal(disconnectCalls, 2);
+  await assert.rejects(
+    provider.openSession({ binaryId: 'binary-4421', sessionNonce: 'quarantined-retry' }),
+    /already has an open session/,
+    'a later open must not reuse an engine whose failed cleanup may have left resources live',
+  );
+  assert.equal(connectCalls, 1, 'quarantined retry must not call connect again');
+  assert.equal(disconnectCalls, 1, 'quarantined retry must not start another cleanup attempt');
 });
 
 test('#4421 connect:false does not claim or disconnect an engine connection', async () => {
