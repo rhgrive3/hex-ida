@@ -1413,6 +1413,197 @@ base, then verify the actual resolved candidate. Do not create a replacement
 PR. After reconciliation, continue FS/GS state/address dependencies, the
 remaining semantic gaps and all 23 findings; none is newly declared complete.
 
+## 2026-09-09 main reconciliation and opaque-input provenance — WIP
+
+Reconciled the same local integration branch with fetched main
+`4e869019d2d26592932bcf6f80d25132ebb982a5`. Local merge commit
+`2216ced7a4af8d72d469eaea994b09f2e1ea697e` has resolved candidate tree
+`18085c40244b9a2f1567f9062403cc86c05d4417`. Git 2.49.1 candidate merge-tree
+verification against that base returned this tree without conflicts. PR #7036
+remains the existing draft; no new PR, push, remote merge or component acceptance
+was performed. The checkpoint remains locked.
+
+The graph conflict was the already-imported upstream pointer/field repair
+(#7495). The resolved graph is byte-identical to the pre-merge integration
+version, retaining its recursive-type and safe-property work. Seven type
+regression files passed, and all 41 test files changed between the former base
+`058177e3ba15511aae290495fa98e7129fda2583` and the fetched main passed together
+(4.5 s). Generated output was canonically built and rebuilt with zero diff:
+serial `2322242166`, build `060e3fa62cb06d9b8b65b10c`, release identity
+`0e39f3886d8ca075c2278c6bf398643de029e2bafac2eca255ce196f0b2419f3`.
+This identity describes the local product, not an active deployed runtime.
+
+Against the new explicitly recorded base, the exact committed inventory was
+226 paths (Phase 7: 22; Phase 8: 24). The one removed delta is
+`tests/phase7/types/issue-4503-structural-array-claims.test.mjs`, now identical
+on main. It was not silently excluded from inventory validation.
+
+### Settled clean-head `2216ced7a` evidence
+
+- `npm run check`: FAIL, 130.3 s, at the MachineEffects closure matrix only:
+  both actual browser receivers report 141 exact / 1209 exact-with-intrinsic /
+  137 partial / 0 unowned. Subsequent invariant gates were not reached.
+  The new scalar-address regression passed within this run.
+  Log: `/mnt/workspace/hex-roadmap-recovery-durable.UWZe3G/hex-roadmap-2216-check-uESGIb/full.log`.
+- Full `npm run phase7:test`: PASS, 59.1 s.
+- Independent oracle report self-test: PASS, 59.7 s. This proves the report and
+  candidate-head verification path, not completion of all ISA semantics.
+- Full `npm run phase9:test`: PASS, 26.5 s.
+- Full `npm run phase8:test`: FAIL, 543.6 s. The unchanged frozen provenance
+  comparator found three cases: `gvn_call_barrier.O1`, `gvn_call_barrier.O2`
+  and `structure_switch.O0`, all x86-64. Separately, finalizer test setup failed
+  copying Capstone into the persistent temporary directory with errno -122.
+  Log: `/mnt/workspace/hex-roadmap-recovery-durable.UWZe3G/hex-roadmap-2216-p8-s2SPs2/full.log`.
+- Encrypted userscript browser test initially failed launching Chromium with
+  its profile in the quota-limited directory. The identical test with only
+  child `TMPDIR=/tmp` passed in both engines (4.4 s). Source stayed in this
+  worktree. No test semantics, browser denominator or timeout was weakened.
+
+### First-divergence repair in the working tree
+
+The indirect-switch case loses the MOVSXD target-load address `0x940023` at
+opaque statement emission: the compatibility IR retains the target argument,
+but `semantic-core.js` printed UNKNOWN with only the statement's own source.
+The repair reuses the existing bounded SSA dependency traversal for explicit
+UNKNOWN arguments. It does not decode assembly, infer indirect destinations,
+promote unknown semantics or attach arbitrary nearby instructions as evidence.
+
+Checked existing PR #3421 at `4cd5b3eb9200b1180985b9df3a74f8245a5cc928`:
+its bidirectional ledger and residual-goto changes do not repair this opaque
+argument boundary. That larger implementation is still to be reused, not
+recreated. This repair does not claim to integrate or complete #3421.
+
+New `tests/phase8/provenance/unknown-input-source.test.mjs` has a generic
+SSA regression and the frozen real-x86 case through interactive and optimized
+decompiler/printer paths. Both fail on the unchanged production code and pass
+after the repair (1.8 s). It checks input origins/IR IDs, duplicate suppression,
+unrelated-definition exclusion, and preservation of the unresolved statement.
+These are Node product-path tests, not physical-device evidence.
+
+Both ownership regressions, frozen provenance verifier tests, typed-origin
+tests and the finalizer transaction tests passed together (0.7 s), with child
+temporary storage on `/tmp`. The complete no-op-equivalence test was rerun
+unchanged: still FAIL (90.9 s), now only the two call-barrier cases. The switch
+case is repaired, but the comparator was not weakened. Remaining MOV RBX,RDI
+origins are `0x770003` and `0x780003`; the ABI-neutral call's canonical unknown
+state definition breaks the later RBX value chain. Do not assume call
+preservation or invent source dependencies merely to make this comparator green.
+Log: `/mnt/workspace/hex-roadmap-recovery-durable.UWZe3G/hex-roadmap-provenance-after-F6N5Hm/full.log`.
+
+The two new paths (semantic core and its regression) are explicitly assigned
+to Phase 8 in the roadmap inventory. The manifest reconciliation base now
+records `4e869019d2d26592932bcf6f80d25132ebb982a5`.
+
+### Storage and resume boundary
+
+The subsequent canonical build FAILED with quota errno -122 while closing an
+output file, after advancing the tentative release record to serial 2322242167,
+build `7a228b00c8547ab13ecfc6d4`, identity
+`6c3d154ef89f2aab8652e2f23437403b324702c5395744eeda7e860e291341e3`.
+These are NOT accepted generated-output proof. Git also reported an index-lock
+close error. No stale index lock remained; live goal DB integrity still returned
+`ok`. Do not restore the earlier goal DB backup over resumed accounting.
+
+Only the failed build's regenerable, untracked `dist` and `.runtime-build`
+directories were relocated to `/tmp/hex-roadmap-failed-build-wcAqHN/` to free
+approximately 13.5 MiB. They are recoverable there but are an incomplete build,
+not release evidence. No source, Git history, other worktree, user cache or
+evidence report was deleted or moved. Source and this checkpoint remain durable.
+
+Before acceptance: restore reliable persistent write capacity, complete the
+canonical generated build/rebuild transaction, then run exact-head gates.
+Resume from Git state rather than assuming the tentative build succeeded.
+All test handles cited above are terminal. The 137 MachineEffects gaps, FS/GS
+base writers/invalidation, the two provenance cases, #3421 integration, all
+23 findings and the required real-browser/device/release proofs remain scope.
+No finding or competitive-superiority claim is newly marked complete.
+
+### Storage recovery and durable-publication regression (supersedes the pause above)
+
+A later small-file write/fsync/readback succeeded. The two zero-byte generated
+files were restored through verified sibling files, fsynced and atomically
+renamed from exact `2216ced7a` Git content. No goal DB rollback was performed.
+The previously failed build and this campaign's 529 KiB Node compile cache
+remain recoverable under `/tmp/hex-roadmap-failed-build-wcAqHN/`; only regenerable
+campaign outputs were moved. Four pending source files were separately copied
+and byte-verified there; authoritative source was never moved out of this repo.
+
+The repeated EDQUOT/truncation failure now has a repository regression:
+`scripts/userscript-publication.mjs` stages each generated file with exclusive
+creation, checks write/fsync/close and reads the bytes back before replacement.
+The canonical builder publishes its committed loader/release pair only after
+all dist writes finish. The pair uses an exclusive publication lock and
+hard-link backups so a caught late failure can restore old content without
+another data write. If rollback fails, recovery backups and the lock remain and
+another publisher fails closed. This is error-rollback publication, NOT a claim
+of crash-atomic replacement of two filesystem names. A killed publisher's
+recovery state requires inspection.
+
+`tests/userscript-publication.mjs` is imported by the existing canonical
+`tests/userscript-release-version.mjs`. It injects partial write, sync, close,
+false-success short-write, readback, second-rename, directory-sync and rollback
+failures, plus stale expected content. It verifies old bytes remain unchanged
+on handled failure, recovery state survives failed rollback, successful output
+is exact and normal cleanup finishes. The old committed builder fails the
+new wiring requirements (early serial write/direct loader truncation).
+Both unit fault regressions and the canonical release-version test passed.
+
+Actual NFS EDQUOT recurred during the first protected builder invocation,
+this time at staging fsync. The builder failed and all three existing committed
+generated files remained byte-identical to HEAD, including deployment identity.
+Thus the real storage error no longer truncated them. An ordinary apply_patch
+edit to the ownership validator separately hit the same quota and became empty;
+it was recovered via a verified, fsynced sibling before continuing. Never treat
+a tool's empty success response as proof of persisted source bytes.
+
+After that recovery, the canonical build passed (2.2 s), generated files were
+staged, and a second canonical build passed (2.6 s) with zero unstaged generated
+diff. Settled identity: serial `2322242167`, build
+`7a228b00c8547ab13ecfc6d4`, release identity
+`128ee9e66622ba35e70c707ea5ba13d2dc9e879d8fdc3f876b87121904301053`.
+The publication helper is explicitly included in release identity inputs.
+This supersedes the earlier failed tentative release identity.
+
+Both ownership regressions and the opaque-input product regressions passed
+together (2.2 s). Actual working inventory is 232 paths (Phase 7: 22; Phase 8:
+26), including four exact integration paths for builder/publication/tests.
+Canonical release-version regressions passed again after building (0.8 s).
+Encrypted userscript tests in Chromium and WebKit passed after the rebuild
+settled (4.6 s). An earlier browser invocation overlapped the rebuild and failed
+on missing runtime-secrets; that was invalid orchestration, not product proof.
+Do not run consumers of dist/.runtime-build concurrently with their builder.
+
+These are pre-commit results. Exact-head gates still need to run after the WIP
+commit. The checkpoint stays locked: the two call-barrier provenance cases,
+137 MachineEffects gaps, full 23-finding audit, #3421 reuse and all required
+independent/device/release evidence remain outstanding.
+
+The verified untracked runtime outputs were then relocated to
+`/tmp/hex-roadmap-verified-runtime-StrdvO/`, with symlinks preserving the original
+`dist` and `.runtime-build` lookup paths. Runtime-secrets and public-manifest
+SHA-256 values were unchanged across relocation. Source, committed loader,
+release identity and Git history stayed in the durable worktree. The builder
+may replace these symlinks on its next run; it still requires persistent space.
+
+### Persistent-storage resume, 2026-09-09
+
+User resolved capacity and directed this lane to finish the analysis-roadmap
+TODOs; unrelated issue/performance work belongs to parallel workers. New command
+TMPDIR/TMP/TEMP all use `/mnt/workspace/.dev-state/agent-work/scratch`.
+Command receipts and failed logs now live under
+`/mnt/workspace/.dev-state/agent-work/evidence/analysis-roadmap-20260909/`.
+The canonical builder replaced the former temporary-target output symlinks with
+real persistent generated files. Build passed (5.2 s), existing generated index
+diff remained zero, ownership plus opaque-input regressions passed (6.9 s), and
+canonical userscript release regressions passed (4.5 s). Old temporary receipts
+are historical references only and must not be assumed to survive.
+
+PR #3421 remains open at `4cd5b3eb9200b1180985b9df3a74f8245a5cc928`;
+reuse its C4-03 implementation rather than create a competing implementation.
+The original goal is preserved but the product reports `blocked`; create_goal
+rejects the unfinished goal and no resume operation is exposed. This is not a
+claim of completion and does not stop the explicitly requested implementation.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

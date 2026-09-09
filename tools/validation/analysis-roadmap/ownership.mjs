@@ -9,6 +9,8 @@ export const BRANCH = 'feat/analysis-roadmap-v8-current-main-20260907';
 const SPECIAL_PATHS = Object.freeze({
   semanticCompat: ['js/ir-core.js', 'js/semantics/compat/index.js', 'js/semantics/compat/semantic-ir-v2-to-v1-memory.js'],
   integration: ['.circleci/config.yml', '.github/workflows/phase7-ownership.yml', '.github/workflows/phase8-ownership.yml',
+    'scripts/build-userscript.mjs', 'scripts/userscript-publication.mjs',
+    'tests/userscript-publication.mjs', 'tests/userscript-release-version.mjs',
     'docs/symbolic-proof-optimizer-v8.md', 'docs/analysis-roadmap-v8-integration-checkpoint.md', 'js/decompile.js',
     'tests/issue-5498-eligibility-result-status-authority.mjs',
     'tests/objc-metadata.mjs', 'tests/issue-529-objc-integration.mjs',

@@ -2,7 +2,7 @@
   "version": 1,
   "branch": "feat/analysis-roadmap-v8-current-main-20260907",
   "inputHead": "8254ebe98bf6060bd902837d3751428a4fc15860",
-  "reconciliationBase": "058177e3ba15511aae290495fa98e7129fda2583",
+  "reconciliationBase": "4e869019d2d26592932bcf6f80d25132ebb982a5",
   "owners": {
     "phase7": [
       "js/analysis/alias/regions-v2.js",
@@ -43,10 +43,12 @@
       "js/decompiler/phase8/range.js",
       "js/decompiler/phase8/transaction.js",
       "js/decompiler/pipeline.js",
+      "js/decompiler/semantic-core.js",
       "tests/phase8/helpers/proof-fixtures.mjs",
       "tests/phase8/integration/proof-optimizer.test.mjs",
       "tests/phase8/memory/gvn.test.mjs",
       "tests/phase8/ownership/roadmap-v8-integration.test.mjs",
+      "tests/phase8/provenance/unknown-input-source.test.mjs",
       "tests/phase8/performance/proof-optimizer.test.mjs",
       "tests/phase8/scalar/c2-product-transfer-v6.test.mjs",
       "tests/phase8/scalar/sccp.test.mjs",
@@ -179,6 +181,10 @@
       "js/semantics/compat/semantic-ir-v2-to-v1-memory.js"
     ],
     "integration": [
+      "scripts/build-userscript.mjs",
+      "scripts/userscript-publication.mjs",
+      "tests/userscript-publication.mjs",
+      "tests/userscript-release-version.mjs",
       ".circleci/config.yml",
       ".github/workflows/phase7-ownership.yml",
       ".github/workflows/phase8-ownership.yml",

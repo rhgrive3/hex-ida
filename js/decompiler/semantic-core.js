@@ -746,7 +746,14 @@ function emitBlockStatements(block, out, ctx, indent) {
       else out.push(line('stmt', indent, `${call};`, inst.row, inst.address, extra));
       ctx.evidence.push(evidenceOf(inst, c.resolved.runtime === 'objc' ? 'Objective-C dispatch' : c.resolved.runtime === 'swift' ? 'Swift dispatch' : 'call'));
     } else if (inst.op === OP.UNKNOWN) {
-      out.push(line('stmt', indent, `__asm(${JSON.stringify(inst.text || 'unknown')});`, inst.row, inst.address, { source: sourceForInst(inst, 'unsupported instruction') })); ctx.unknown++;
+      // Unknown semantics do not erase known SSA inputs. In particular, an
+      // unresolved indirect transfer still depends on its computed target.
+      // Follow only those inputs, using the same bounded traversal and stack
+      // boundaries as other statements; nearby instructions are not evidence.
+      const seen = new Set();
+      const source = mergeSource(sourceForInst(inst, 'unsupported instruction'),
+        ...(inst.args || []).map(arg => dependencySource(valueOf(arg), ctx, seen)));
+      out.push(line('stmt', indent, `__asm(${JSON.stringify(inst.text || 'unknown')});`, inst.row, inst.address, { source })); ctx.unknown++;
       ctx.evidence.push(evidenceOf(inst, 'unsupported IR instruction retained faithfully'));
     }
   }
