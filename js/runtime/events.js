@@ -40,6 +40,14 @@ function safeInteger(value, fallback, name, { min = 0 } = {}) {
 
 function optionalText(value) { return value == null ? null : String(value); }
 
+function optionalTimestamp(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string') {
+    throw new DebugAdapterError('runtime-invalid-event-timestamp', 'timestamp must be a string');
+  }
+  return value;
+}
+
 function optionalIdentity(value, name) {
   if (value == null) return null;
   if (typeof value !== 'string' || value.trim().length === 0) throw new DebugAdapterError('runtime-invalid-event-identity', `${name} must be a non-empty string`);
@@ -94,15 +102,18 @@ export function createRuntimeEvent(input = {}) {
   const kind = normalizeKind(input.kind);
   const observationMode = normalizeMode(input.observationMode);
   const completeness = normalizeCompleteness(input.completeness, kind === 'gap' || kind === 'dropped-events' ? 'truncated' : 'partial');
+  const streamId = optionalIdentity(input.streamId, 'streamId');
+  const providerEventId = optionalIdentity(input.providerEventId, 'providerEventId');
+  const timestamp = optionalTimestamp(input.timestamp);
   const payload = jsonSafe(input.payload ?? {});
   const identity = {
     runtimeSessionId,
     providerId,
     providerVersion,
     sessionEpoch,
-    streamId: optionalIdentity(input.streamId, 'streamId'),
+    streamId,
     sequence,
-    providerEventId: optionalIdentity(input.providerEventId, 'providerEventId'),
+    providerEventId,
     kind,
     processKey: optionalText(input.processKey),
     threadKey: optionalText(input.threadKey),
@@ -110,6 +121,9 @@ export function createRuntimeEvent(input = {}) {
     moduleGeneration,
     payload,
   };
+  if (providerEventId == null && !(streamId != null && sequence != null) && timestamp != null) {
+    identity.timestamp = timestamp;
+  }
   const eventId = input.eventId == null
     ? `runtimeevent_${stableDigest(identity)}`
     : required(input.eventId, 'runtime-event-id-invalid', 'runtime event id must be a non-empty string');
@@ -119,11 +133,11 @@ export function createRuntimeEvent(input = {}) {
     providerId,
     providerVersion,
     sessionEpoch,
-    streamId: optionalIdentity(input.streamId, 'streamId'),
+    streamId,
     sequence,
     predecessorIds: arrayOfStrings(input.predecessorIds, 'predecessorIds'),
-    providerEventId: optionalIdentity(input.providerEventId, 'providerEventId'),
-    timestamp: input.timestamp == null ? null : String(input.timestamp),
+    providerEventId,
+    timestamp,
     processKey: optionalText(input.processKey),
     threadKey: optionalText(input.threadKey),
     moduleBindingKey: optionalText(input.moduleBindingKey),
