@@ -10,7 +10,13 @@ import * as core from './contract-core.js';
 
 export * from './contract-core.js';
 
-export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.2.0';
+// Single contract-version source of truth: the core canonical constructor owns
+// the version identity (the #5242 root/allocation `addressSpace` requirement
+// bumped it to 1.3.0). Redeclaring a stale constant here re-stamped core-built
+// summaries with an older wire version while identity validation compared
+// against the same stale value — version-keyed cache/consumer layers could not
+// distinguish the incompatible envelope from a legacy 1.2 summary.
+export const FUNCTION_SUMMARY_CONTRACT_VERSION = core.FUNCTION_SUMMARY_CONTRACT_VERSION;
 const CANONICAL_SUMMARIES = new WeakSet();
 const RETURN_PROVENANCE_FIELDS = new Set([
   'kind', 'argIndex', 'returnIndex', 'offset', 'rootEntityId', 'allocationSiteId',
