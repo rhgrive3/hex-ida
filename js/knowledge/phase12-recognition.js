@@ -13,8 +13,17 @@ export function createMatchResult(input = {}) {
   const packageEntryId = String(input.packageEntryId || input.entryId || '').trim();
   if (!sourceEntityId || !packageEntryId) throw new TypeError('recognition source and package identities are required');
   if (Array.isArray(input.candidates) && input.candidates.length === 0) throw new TypeError('recognition candidates are required');
-  const candidates = (Array.isArray(input.candidates) ? input.candidates : [{ ...input, sourceEntityId, packageEntryId }]).map((candidate) => ({
-    sourceEntityId: String(candidate.sourceEntityId || sourceEntityId),
+  const candidates = (Array.isArray(input.candidates) ? input.candidates : [{ ...input, sourceEntityId, packageEntryId }]).map((candidate) => {
+    // One recognition result compares candidates for exactly one source
+    // entity (#5332): a candidate may not carry a different source identity,
+    // otherwise its package/evidence provenance would attach to a foreign
+    // target through the top-candidate adoption below.
+    const candidateSourceEntityId = String(candidate.sourceEntityId || sourceEntityId).trim();
+    if (candidateSourceEntityId !== sourceEntityId) {
+      throw new TypeError('recognition candidate source identity does not match the match result source entity');
+    }
+    return {
+    sourceEntityId: candidateSourceEntityId,
     packageEntryId: String(candidate.packageEntryId || candidate.entryId || packageEntryId),
     tier: MATCH_TIERS.includes(candidate.tier) ? candidate.tier : 'semantic',
     score: clamp(candidate.score ?? candidate.confidence),
@@ -23,7 +32,8 @@ export function createMatchResult(input = {}) {
     conflictingFeatures: list(candidate.conflictingFeatures || candidate.conflicts),
     evidenceIds: list(candidate.evidenceIds || candidate.evidence),
     packageContentHash: String(candidate.packageContentHash || input.packageContentHash || ''),
-  })).sort((a, b) => b.score - a.score || tierRank(a.tier) - tierRank(b.tier) || a.packageEntryId.localeCompare(b.packageEntryId));
+    };
+  }).sort((a, b) => b.score - a.score || tierRank(a.tier) - tierRank(b.tier) || a.packageEntryId.localeCompare(b.packageEntryId));
   const top = candidates[0];
   const second = candidates[1] || null;
   const rawAmbiguityWindow = Number(input.ambiguityWindow ?? 0.035);

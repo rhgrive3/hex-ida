@@ -5,6 +5,7 @@ const TYPE_DEF_TABLE = 0x02;
 const TYPE_SPEC_TABLE = 0x1b;
 export const METHOD_DEF_TABLE = 0x06;
 export const MEMBER_REF_TABLE = 0x0a;
+export const STANDALONE_SIG_TABLE = 0x11;
 export const METHOD_SPEC_TABLE = 0x2b;
 
 const CLI_DIRECTORY_INDEX = 14;
@@ -129,6 +130,7 @@ export function buildCilCallMetadataIndex(bytes) {
   const methodDefs = [];
   const memberRefs = [];
   const methodSpecs = [];
+  const standAloneSigs = [];
   const stringIndexSize = (heapSizes & 0x01) !== 0 ? 4 : 2;
   const blobIndexSize = (heapSizes & 0x04) !== 0 ? 4 : 2;
   for (let table = 0; table < 64; table++) {
@@ -162,6 +164,14 @@ export function buildCilCallMetadataIndex(bytes) {
             'cil-call-signature-memberref-truncated'),
         }));
       }
+    } else if (table === STANDALONE_SIG_TABLE) {
+      // Local variable signatures (ECMA-335 II.22.27): the fat method header's
+      // LocalVarSigTok targets these rows, and locals typing needs the same
+      // metadata authority as arguments (#5353).
+      for (let row = 0; row < rows; row++) {
+        standAloneSigs.push(readIndex(view, pos + row * rowSize, blobIndexSize,
+          'cil-call-signature-standalonesig-truncated'));
+      }
     } else if (table === METHOD_SPEC_TABLE) {
       const methodSize = codedIndexSize(rowCounts, [0x06, 0x0a], 1);
       for (let row = 0; row < rows; row++) {
@@ -178,6 +188,7 @@ export function buildCilCallMetadataIndex(bytes) {
     methodDefs:Object.freeze(methodDefs),
     memberRefs:Object.freeze(memberRefs),
     methodSpecs:Object.freeze(methodSpecs),
+    standAloneSigs:Object.freeze(standAloneSigs),
     typeDefOrRefRowCounts:Object.freeze([
       rowCounts[TYPE_DEF_TABLE],
       rowCounts[TYPE_REF_TABLE],

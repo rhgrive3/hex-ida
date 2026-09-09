@@ -2,6 +2,7 @@ import { createVMEffectFunction } from '../shared/vm-effects.js';
 import {
   createCilCallSignatureResolver,
   createCilCallStackEffect,
+  createCilLocalTypeResolver,
   createCilMethodSignatureResolver,
 } from './call-signatures.js';
 import { liftCilMethod as liftCilMethodCore } from './lifter-core.js';
