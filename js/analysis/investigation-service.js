@@ -187,6 +187,34 @@ function pinCacheKey(snapshotId, goal) {
   const esc = (value) => String(value ?? '').replaceAll('%', '%25').replaceAll(':', '%3A');
   return `${esc(snapshotId)}:${esc(goal?.id || '')}:${esc(goal?.text || '')}`;
 }
+// #5284: the pin request identity must bind every input that changes what a
+// cached pin means, not just the goal tuple. `needsShapeEvidence()` reads the
+// goal's canonical `expects` selectors to decide whether shapes/metadata
+// evidence is collected, and the effective pinpoint budget bounds the search —
+// validating only snapshot/id/text let a wide-evidence or high-budget
+// re-investigation reuse a pin computed under narrower semantics. The identity
+// is stored alongside the pin and re-validated on lookup (a cache keyed only
+// on the goal tuple cannot express it without changing the entry shape that
+// snapshot-scoped pin retention depends on).
+function canonicalExpectsDigest(goal) {
+  const expects = goal?.expects;
+  if (!expects || typeof expects !== 'object' || Array.isArray(expects)) return '';
+  return Object.keys(expects).filter((name) => !!expects[name]).sort().join('|');
+}
+function pinRequestIdentity(context, goal, options) {
+  return {
+    expectsDigest: canonicalExpectsDigest(goal),
+    pinpointBudget: boundedBudget(options?.budget?.pinpoint, 48),
+    shapesCollected: needsShapeEvidence(goal) === true,
+  };
+}
+function pinRequestMatches(cached, request) {
+  if (!cached) return false;
+  return cached.expectsDigest === request.expectsDigest
+    && cached.pinpointBudget === request.pinpointBudget
+    && cached.shapesCollected === request.shapesCollected;
+}
+
 function beats(next, current) {
   if (!next?.top) return false;
   if (!current?.top) return true;
@@ -290,6 +318,10 @@ export class InvestigationService {
     this.app = app;
     this.shared = new Map();
     this.pinCache = new Map();
+    // #5284: request-identity side cache for pinCache. One identity entry per
+    // pin entry; both are cleared and snapshot-synced together so the side
+    // cache can never outlive its pin or grow unbounded.
+    this.pinRequestIdentityCache = new Map();
     this.cacheEpoch = epochOf(app);
     this.cacheGeneration = 0;
     this.pinSnapshotId = undefined;
@@ -303,6 +335,7 @@ export class InvestigationService {
     }
     this.shared.clear();
     this.pinCache.clear();
+    this.pinRequestIdentityCache.clear();
     this.pinSnapshotId = undefined;
     this.cacheGeneration++;
   }
@@ -318,6 +351,7 @@ export class InvestigationService {
   #syncPinSnapshot(snapshotId) {
     if (Object.is(snapshotId, this.pinSnapshotId)) return;
     this.pinCache.clear();
+    this.pinRequestIdentityCache.clear();
     this.pinSnapshotId = snapshotId;
   }
 
@@ -634,7 +668,10 @@ export class InvestigationService {
     // one goal's pinpoint result be reused as another's (#5610). A
     // length-prefixed encoding makes the tuple decode unambiguously.
     const cacheKey = pinCacheKey(context.snapshotId, goal);
-    let pin = this.pinCache.get(cacheKey) || null;
+    const request = pinRequestIdentity(context, goal, options);
+    const cached = this.pinCache.get(cacheKey) || null;
+    const cachedIdentity = this.pinRequestIdentityCache.get(cacheKey) || null;
+    let pin = cached && pinRequestMatches(cachedIdentity, request) ? cached : null;
     if (!pin) {
       const common = {
         goal,
@@ -672,6 +709,7 @@ export class InvestigationService {
       if (!options.signal?.aborted) {
         this.#assertPinMutationCurrent(context, epoch, generation);
         this.pinCache.set(cacheKey, pin);
+        this.pinRequestIdentityCache.set(cacheKey, request);
       }
     }
     await this.app.analysisQueries.binaryInfo(context.snapshot, {
@@ -741,4 +779,4 @@ export function investigationServiceFor(app) {
   return service;
 }
 
-export const __investigationInternalsForTests = Object.freeze({ needsShapeEvidence, completenessFor, beats, regionForAddress, priorityOf, budgetConfig, budgetProfileCovers, captureAnalysisBinding, analysisBindingCurrent, typedRankedCandidates, pinCacheKey });
+export const __investigationInternalsForTests = Object.freeze({ needsShapeEvidence, completenessFor, beats, regionForAddress, priorityOf, budgetConfig, budgetProfileCovers, captureAnalysisBinding, analysisBindingCurrent, typedRankedCandidates, pinCacheKey, pinRequestIdentity });
