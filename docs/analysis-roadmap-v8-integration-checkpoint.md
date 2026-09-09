@@ -2757,6 +2757,47 @@ mandatory central current-main reconciliation and exact integration acceptance
 remain open. Acceptance stays LOCKED; device/environment/issue/performance work
 continues to belong to the other lanes.
 
+## C4-03 actual legacy-idiom transformation history
+
+The four existing `recoverArm64ClangIdiom` applications (`madd`, `msub`,
+`bit_extract`, signed-mask `max`) were executed before RewriteEngine without
+entering its history. `pipeline-core` now captures these actual before/after
+source transitions and prepends them to the existing per-value rewrite history.
+The same existing private consumer observations bind them to actual stores,
+returns and nested expressions. No separate recognizer, semantic AST, ledger,
+identity or proof authority is introduced. Descriptive shape labels are not
+semantic IDs. Recognition rules and emitted semantics are unchanged.
+
+Each record explicitly says `legacy-idiom-recognition-not-equivalence`.
+Recording an existing display transformation is not a new proof of the
+recognizer's soundness: ordinary legacy-view proof gating remains C4-04 work.
+The mandatory representation fallback records its actual recognizer executions
+even when the optional rewrite pass was skipped. Function-wide capped history
+and existing consumer-observation budgets keep omissions explicit/incomplete
+without changing the recognizer's output. Copied history/consumer data cannot
+manufacture a replacement edge. Repeated owned projections carry the history
+without re-running or duplicating those events.
+
+Seven new canonical provenance tests cover all four actual recognizers across
+eight widths (32 finite source-history cells, **not** 32 equivalence theorems),
+nested/shared consumers, unmatched shapes, private/stale rejection, exhausted
+history/consumer budgets, actual deadline-skipped mandatory fallback and
+snapshot-bound query navigation. Canonical data and original root identities
+are checked separately because structuredClone does not retain DominanceView
+prototypes. A skipped PassManager entry has `ok:true, skipped:true`; the test
+uses `skipped` to distinguish it from actual execution. No scheduler/deadline or
+canonical-IR behavior was changed to satisfy these fixture checks.
+
+Live open idiom-title PR search found no additional implementation; reused
+C4-03 PR #3421 and existing integration PR #7036 remain authoritative. CSE/DCE
+inspection found `valueNumbers`/`deadCode` fact publishers with `transforms:[]`
+and no display-adoption consumer in the current pipeline/projection. This is
+not an implemented rendered CSE/DCE path and does not justify synthetic
+removal histories. The full removed/merged-class denominator remains open.
+One exact new Phase 8 test path is added to the ownership union. All original
+23 findings and the frozen 135-binary compiler denominator remain; integration
+acceptance stays LOCKED and no whole finding is newly closed.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -2791,7 +2832,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C3-03 | Versioned language metadata and unknown-version matrix |
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
-| HEX-C4-03 | Navigation, expression/recovery histories, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
+| HEX-C4-03 | Navigation, expression/recovery/legacy-idiom histories, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
 | HEX-C4-04 | Proof-gated scalar projection, owned inputs, transaction coverage and optional reuse of all 64 display rules as independently verified candidates implemented; ordinary legacy-view adoption, full family/width denominator and memory/CFG/exception observables remain open |
 | HEX-C4-05 | Frozen 272-cell scalar/14-Bool/8-width producer coverage and 3 actual schedules (816 scalar cells); adopted-transform history now preserves actual rule/cost/budget/proof audits. Native proof gaps, arbitrary permutations and full acceptance remain open |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |

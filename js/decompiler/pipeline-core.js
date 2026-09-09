@@ -437,13 +437,14 @@ function rewriteAll(state, budget) {
   state.rewriteStats = { applications: 0, budgetExceeded: false, byRule: {} };
   for (const v of state.ir.values || []) {
     let root = buildValue(v, state);
-    root = walkIdiom(root);
+    const idiomRecords = [];
+    root = walkIdiom(root, state, idiomRecords);
     // `deterministicTransforms` is an opt-in measurement mode: it removes the
     // rewrite engine's wall-clock cutoff so the fixed point depends only on the
     // input and the rules. Work bounds still apply. Production leaves it unset.
     const r = engine.rewrite(root, { state, deterministicTransforms: state.opts?.deterministicTransforms === true });
     state.expressions.set(v.id, r.root);
-    const records = Object.freeze(r.proof.map((p) => ({ ...p, valueId: v.id })));
+    const records = Object.freeze([...idiomRecords, ...r.proof].map((p) => ({ ...p, valueId: v.id })));
     state.rewriteProof.push(...records);
     state.expressionProofs.set(v.id, { expression:r.root, records });
     state.rewriteStats.applications += r.stats.applications;
@@ -459,10 +460,29 @@ function rewriteAll(state, budget) {
   return state;
 }
 
-function walkIdiom(n) {
+function walkIdiom(n, state, records) {
   if (!n) return n;
-  const mapped = mapChildren(n, walkIdiom);
-  return recoverArm64ClangIdiom(mapped);
+  const mapped = mapChildren(n, child => walkIdiom(child, state, records));
+  const recovered = recoverArm64ClangIdiom(mapped);
+  if (recovered !== mapped) {
+    const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
+    const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
+    if ((state.idiomHistoryCount || 0) >= maximum || state.opts?.shouldAbort?.()) {
+      consumerObservationBudget(state).reasons.add('idiom-history-unavailable');
+    } else {
+      // This is an observed legacy display transformation, not an independently
+      // verified rewrite. Shape labels are descriptive, never semantic IDs or
+      // equivalence certificates. The existing consumer owns the actual edge.
+      records.push(Object.freeze({ rule:`recognize-${recovered.name}`, phase:'idiom',
+        before:`${mapped.kind}:${mapped.op}`, after:`${recovered.kind}:${recovered.name}`,
+        evidence:Object.freeze({ kind:'legacy-idiom-recognition-not-equivalence',
+          detail:'actual existing recognizer application; no independent equivalence proof is claimed' }),
+        originHistory:expressionOriginHistory(mapped, recovered),
+      }));
+      state.idiomHistoryCount = (state.idiomHistoryCount || 0) + 1;
+    }
+  }
+  return recovered;
 }
 
 // Dominance walk shared by the reaching-definition queries. Prefer the
@@ -565,7 +585,18 @@ function reachingRegisterValue(ir, atInst, reg) {
   return best;
 }
 
-function expressionFor(v, state) { return state.expressions?.get(v?.id) || walkIdiom(buildValue(v, state)); }
+function expressionFor(v, state) {
+  const existing = state.expressions?.get(v?.id);
+  if (existing) return existing;
+  // The mandatory representation fallback also executes the recognizer when
+  // optional passes did not run. Retain those actual events and their current
+  // consumer instead of treating a degraded pipeline as history-free.
+  const history = [], root = walkIdiom(buildValue(v, state), state, history);
+  const records = Object.freeze(history.map(record => ({ ...record, valueId:v?.id ?? null })));
+  (state.rewriteProof ??= []).push(...records);
+  (state.expressionProofs ??= new Map()).set(v?.id, { expression:root, records });
+  return root;
+}
 // A read-modify-write claim is only sound when the selected operator operand is
 // directly the load of the canonical location being overwritten. A nested load
 // proves only a dependency, not that the outer operator is a compound update.
