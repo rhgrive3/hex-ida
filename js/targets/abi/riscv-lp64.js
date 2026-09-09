@@ -115,9 +115,19 @@ function vectorDescriptor(parameter) {
   const mask = parameter?.mask === true || parameter?.vectorMask === true || /\bvbool|mask/.test(`${type} ${abiClass}`);
   const explicitLmul = Number(parameter?.lmul ?? parameter?.LMUL);
   const parsed = /m(1|2|4|8)(?:_t|\b)/.exec(type);
+  // Standard RVV tuple typedefs spell the group multiplier and field count as
+  // `m<LMUL>x<NFIELDS>` (e.g. vint32m2x3_t). The bare `m<LMUL>(?:_t|\b)` scan
+  // cannot match them — 'm2' is followed by 'x' — and without an NFIELDS path
+  // the tuple silently degraded to LMUL=1/NFIELDS=1, i.e. one register for a
+  // 6-register tuple (#5628).
+  const tupleMatch = /m(1|2|4|8)x(\d)(?:_t|\b)/.exec(type);
+  const parsedLmul = tupleMatch ? Number(tupleMatch[1]) : parsed ? Number(parsed[1]) : null;
   const lmul = Number.isInteger(explicitLmul) && [1,2,4,8].includes(explicitLmul)
-    ? explicitLmul : parsed ? Number(parsed[1]) : 1;
-  const tupleCount = Math.max(1, Math.min(8, Number(parameter?.tupleCount ?? parameter?.nf ?? 1) || 1));
+    ? explicitLmul : parsedLmul ?? 1;
+  const explicitTupleCount = Number(parameter?.tupleCount ?? parameter?.nf);
+  const tupleCount = Math.max(1, Math.min(8, Number.isSafeInteger(explicitTupleCount) && explicitTupleCount >= 1
+    ? explicitTupleCount
+    : tupleMatch ? Number(tupleMatch[2]) : 1));
   const fixedLength = parameter?.fixedLengthVector === true || /fixed[-_ ]?length/.test(abiClass);
   return { mask, lmul, tupleCount, fixedLength };
 }
