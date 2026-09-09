@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { HypothesisStore } from '../js/ai/hypothesis.js';
+import { HypothesisStore } from '../../../js/ai/hypothesis.js';
 
 function evidenceStore() {
   const verified = new Map([
