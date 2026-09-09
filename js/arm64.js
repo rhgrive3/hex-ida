@@ -149,8 +149,8 @@ cat('add adds sub subs adc adcs sbc sbcs neg negs mul madd msub mneg smull umull
 cat('and ands orr orn eor eon bic bics lsl lsr asr ror lslv lsrv asrv rorv extr ubfm sbfm bfm ubfx sbfx ubfiz sbfiz bfi bfxil bfc rev rev16 rev32 rev64 clz cls rbit sxtb sxth sxtw uxtb uxth', 'logic');
 cat('cmp cmn tst ccmp ccmn fcmp fcmpe', 'compare');
 cat('csel csinc csinv csneg cset csetm cinc cinv cneg', 'select');
-cat('ldr ldrb ldrh ldrsb ldrsh ldrsw ldur ldurb ldurh ldursb ldursh ldursw ldp ldpsw ldnp ldtr ldxr ldaxr ldar ldarb ldarh ld1 ld2 ld3 ld4 prfm', 'load');
-cat('str strb strh stur sturb sturh stp stnp sttr stxr stlxr stlr stlrb stlrh st1 st2 st3 st4', 'store');
+cat('ldr ldrb ldrh ldrsb ldrsh ldrsw ldur ldurb ldurh ldursb ldursh ldursw ldp ldpsw ldnp ldtr ldxr ldaxr ldxrb ldxrh ldaxrb ldaxrh ldar ldarb ldarh ld1 ld2 ld3 ld4 prfm', 'load');
+cat('str strb strh stur sturb sturh stp stnp sttr stxr stlxr stxrb stxrh stlxrb stlxrh stlr stlrb stlrh st1 st2 st3 st4', 'store');
 cat('b bl br blr ret cbz cbnz tbz tbnz braa brab braaz brabz blraa blrab blraaz blrabz retaa retab', 'flow');
 cat('adr adrp', 'address');
 cat('nop hint bti svc hvc smc brk hlt dmb dsb isb yield wfe wfi sev sevl mrs msr sys eret eretaa eretab clrex paciasp pacibsp pacia pacib pacda pacdb paciza pacizb pacdza pacdzb paciaz pacibz pacia1716 pacib1716 autiasp autibsp autia autib autda autdb autiza autizb autdza autdzb autiaz autibz autia1716 autib1716 xpaci xpacd xpaclri pacga dc ic tlbi', 'system');
@@ -1094,11 +1094,13 @@ HANDLERS.cneg = (o, ops) => {
 
 /* メモリ ----------------------------------------------------- */
 
-function loadStore(isLoad) {
+function loadStore(isLoad, options = {}) {
   return (o, ops, base, addr, c) => {
     const dst = ops[0];
     const mem = ops.find((x) => x.k === 'mem');
-    const size = LOAD_SIZES[base] ? LOAD_SIZES[base][0] : sizeOfReg(dst);
+    const size = options.elementSize != null
+      ? options.elementSize
+      : (LOAD_SIZES[base] ? LOAD_SIZES[base][0] : sizeOfReg(dst));
     const signed = LOAD_SIZES[base] ? LOAD_SIZES[base][1] : false;
     o.title = isLoad ? J('メモリから読む', 'Load from memory') : J('メモリへ書く', 'Store to memory');
     if (!mem) { o.pseudo = (mn2(base) || base) + ' ' + (o.operands || ''); return; }
@@ -1110,6 +1112,25 @@ function loadStore(isLoad) {
           'Read ' + sizeWord(size) + ' from ' + memText(mem) + ' into ' + opShort(dst) + '.')
       : J(opShort(dst) + ' の値（' + sizeWord(size) + '）を、' + memText(mem) + 'へ書き込む。',
           'Write ' + sizeWord(size) + ' from ' + opShort(dst) + ' to ' + memText(mem) + '.');
+    if (options.ordering === 'acquire') {
+      o.title = J('順序を守って読む', 'Acquire load');
+      o.summary += J(
+        ' acquire load なので、この読み込みより後のメモリアクセスをこの命令より前へ並べ替えない。',
+        ' This acquire load prevents later memory operations from being reordered before this load.');
+      o.detail.push(J(
+        'acquire は、合図を読み取った後のメモリアクセスを、この読み込みより先に実行したことにしないためのスレッド間の順序付けです。',
+        'Acquire ordering keeps later memory operations after this load when threads use the value as a synchronization signal.'));
+      o.terms.push('thread');
+    } else if (options.ordering === 'release') {
+      o.title = J('順序を守って書く', 'Release store');
+      o.summary += J(
+        ' release store なので、この書き込みより前のメモリアクセスをこの命令より後へ並べ替えない。',
+        ' This release store prevents earlier memory operations from being reordered after this store.');
+      o.detail.push(J(
+        'release は、共有データを書き終えてから合図を書き込むように、先行するメモリアクセスをこの書き込みより後へ動かさないためのスレッド間の順序付けです。',
+        'Release ordering keeps earlier memory operations before this store when it publishes a synchronization signal.'));
+      o.terms.push('thread');
+    }
     o.detail.push(J(
       'レジスタは 31 本しかないので、それより多くのデータはメモリに置きます。' +
       'メモリを使うにはこのように「アドレスを作って、読む／書く」の 2 段構えになります。',
@@ -1143,10 +1164,10 @@ function cType(size, signed) {
   return (signed ? '' : 'u') + t;
 }
 
-for (const n of ['ldr', 'ldrb', 'ldrh', 'ldrsb', 'ldrsh', 'ldrsw', 'ldur', 'ldurb', 'ldurh', 'ldursb', 'ldursh', 'ldursw', 'ldtr', 'ldar', 'ldarb', 'ldarh', 'ldxr', 'ldaxr']) {
+for (const n of ['ldr', 'ldrb', 'ldrh', 'ldrsb', 'ldrsh', 'ldrsw', 'ldur', 'ldurb', 'ldurh', 'ldursb', 'ldursh', 'ldursw', 'ldtr']) {
   HANDLERS[n] = loadStore(true);
 }
-for (const n of ['str', 'strb', 'strh', 'stur', 'sturb', 'sturh', 'sttr', 'stlr', 'stlrb', 'stlrh']) {
+for (const n of ['str', 'strb', 'strh', 'stur', 'sturb', 'sturh', 'sttr']) {
   HANDLERS[n] = loadStore(false);
 }
 
@@ -2337,32 +2358,118 @@ for (const n of ['st1', 'st2', 'st3', 'st4']) {
   };
 }
 
+/* Ordered loads/stores have the same address and width presentation as their
+   plain counterparts, but their acquire/release edge is part of the user-
+   facing meaning. Keep the finite spelling table ahead of familyHandler so a
+   future load/store prefix fallback cannot silently erase that edge (#3740). */
+const ORDERED_MEMORY_TABLE = [
+  { mnemonic: 'ldar', isLoad: true, ordering: 'acquire' },
+  { mnemonic: 'ldarb', isLoad: true, elementSize: 1, ordering: 'acquire' },
+  { mnemonic: 'ldarh', isLoad: true, elementSize: 2, ordering: 'acquire' },
+  { mnemonic: 'stlr', isLoad: false, ordering: 'release' },
+  { mnemonic: 'stlrb', isLoad: false, elementSize: 1, ordering: 'release' },
+  { mnemonic: 'stlrh', isLoad: false, elementSize: 2, ordering: 'release' },
+];
+for (const entry of ORDERED_MEMORY_TABLE) {
+  HANDLERS[entry.mnemonic] = loadStore(entry.isLoad, entry);
+}
+
 /* 排他アクセス ----------------------------------------------- */
 
-for (const n of ['ldxr', 'ldaxr']) {
-  HANDLERS[n] = (o, ops) => {
+function sizeLabel(bytes) {
+  if (isJa()) return sizeWord(bytes);
+  return bytes + (bytes === 1 ? ' byte' : ' bytes');
+}
+
+function exclusiveLoadHandler({ elementSize = null, ordering = null } = {}) {
+  return (o, ops) => {
     const mem = ops.find((x) => x.k === 'mem');
+    const destination = opShort(ops[0]);
     o.title = J('横取りされないように読む', 'Exclusive load');
-    o.pseudo = opShort(ops[0]) + ' = *(' + (mem ? memExpr(mem) : '') + ') /* 監視開始 */';
-    o.summary = J(
-      'メモリを読むと同時に「ここを見張る」と CPU に宣言する。他のスレッドが書き換えたら、次の stxr が失敗します。',
-      'Load and start watching the address; a matching stxr fails if anyone else writes it.');
+    if (elementSize == null) {
+      o.pseudo = destination + ' = *(' + (mem ? memExpr(mem) : '') + ') /* 監視開始 */';
+      o.summary = J(
+        'メモリを読むと同時に「ここを見張る」と CPU に宣言する。他のスレッドが書き換えたら、次の stxr が失敗します。',
+        'Load and start watching the address; a matching stxr fails if anyone else writes it.');
+    } else {
+      const type = cType(elementSize, false);
+      const width = sizeLabel(elementSize);
+      o.pseudo = destination + ' = zero_extend(*(' + type + '*)(' + (mem ? memExpr(mem) : '') + ')) /* 監視開始 */';
+      o.summary = J(
+        (mem ? memText(mem) : 'メモリ') + 'から ' + width + 'を読み、上位ビットを 0 で埋めて' + destination + 'に入れながら「ここを見張る」と CPU に宣言する。他のスレッドが書き換えたら、対応する stxr が失敗します。',
+        'Read ' + width + ' from ' + (mem ? memText(mem) : 'memory') + ' into ' + destination + ', zero-extend it, and start the exclusive monitor. A matching stxr fails if another thread writes the address.');
+    }
+    if (ordering === 'acquire') {
+      o.title = J('順序を守って横取りされないように読む', 'Acquire exclusive load');
+      o.summary += J(
+        ' acquire load なので、この読み込みより後のメモリアクセスをこの命令より前へ並べ替えない。',
+        ' This acquire load also prevents later memory operations from being reordered before this load.');
+      o.detail.push(J(
+        'acquire は、合図を読み取った後のメモリアクセスを、この読み込みより先に実行したことにしないためのスレッド間の順序付けです。',
+        'Acquire ordering keeps later memory operations after this load when threads use the value as a synchronization signal.'));
+      o.terms = ['thread', 'atomic'];
+    }
     o.detail.push(J(
       '複数のスレッドが同じ値を同時に増やそうとしても壊れないように、read → 変更 → write を「誰にも割り込まれずに」行うための仕組みです。',
       'The building block of atomic read-modify-write across threads.'));
     o.terms = ['thread', 'atomic'];
   };
 }
-for (const n of ['stxr', 'stlxr']) {
-  HANDLERS[n] = (o, ops) => {
+
+function exclusiveStoreHandler({ elementSize = null, ordering = null } = {}) {
+  return (o, ops) => {
     const mem = ops.find((x) => x.k === 'mem');
+    const status = opShort(ops[0]);
+    const data = opShort(ops[1]);
     o.title = J('横取りされていなければ書く', 'Exclusive store');
-    o.pseudo = opShort(ops[0]) + ' = try_store(' + (mem ? memExpr(mem) : '') + ', ' + opShort(ops[1]) + ')';
-    o.summary = J(
-      '見張っていた間に誰も書き換えていなければ書き込み、' + opShort(ops[0]) + ' に 0（成功）を入れる。失敗なら 1 が入り、ふつうは上に戻ってやり直します。',
-      'Store only if nothing else wrote the address; ' + opShort(ops[0]) + ' gets 0 on success, 1 on failure.');
+    if (elementSize == null) {
+      o.pseudo = status + ' = try_store(' + (mem ? memExpr(mem) : '') + ', ' + data + ')';
+      o.summary = J(
+        '見張っていた間に誰も書き換えていなければ書き込み、' + status + ' に 0（成功）を入れる。失敗なら 1 が入り、ふつうは上に戻ってやり直します。',
+        'Store only if nothing else wrote the address; ' + status + ' gets 0 on success, 1 on failure.');
+    } else {
+      const type = cType(elementSize, false);
+      const width = sizeLabel(elementSize);
+      o.pseudo = status + ' = try_store(' + (mem ? memExpr(mem) : '') + ', ' + data + ', ' + type + ')';
+      o.summary = J(
+        '見張っていた間に誰も書き換えていなければ' + data + ' の下位 ' + width + 'を条件付きで書き込み、' + status + ' に 0（成功）を入れる。失敗なら 1 が入り、ふつうは上に戻ってやり直します。',
+        'Conditionally store the low ' + width + ' from ' + data + ' only if nothing else wrote the address; ' + status + ' gets 0 on success, 1 on failure.');
+    }
+    if (ordering === 'release') {
+      o.title = J('順序を守って横取りされていなければ書く', 'Release exclusive store');
+      o.summary += J(
+        ' release store なので、この書き込みより前のメモリアクセスをこの命令より後へ並べ替えない。',
+        ' This release store also prevents earlier memory operations from being reordered after this store.');
+      o.detail.push(J(
+        'release は、共有データを書き終えてから合図を書き込むように、先行するメモリアクセスをこの書き込みより後へ動かさないためのスレッド間の順序付けです。',
+        'Release ordering keeps earlier memory operations before this store when it publishes a synchronization signal.'));
+    }
     o.terms = ['thread', 'atomic'];
   };
+}
+
+const EXCLUSIVE_LOAD_TABLE = [
+  { mnemonic: 'ldxr' },
+  { mnemonic: 'ldaxr', ordering: 'acquire' },
+  { mnemonic: 'ldxrb', elementSize: 1 },
+  { mnemonic: 'ldxrh', elementSize: 2 },
+  { mnemonic: 'ldaxrb', elementSize: 1, ordering: 'acquire' },
+  { mnemonic: 'ldaxrh', elementSize: 2, ordering: 'acquire' },
+];
+for (const entry of EXCLUSIVE_LOAD_TABLE) {
+  HANDLERS[entry.mnemonic] = exclusiveLoadHandler(entry);
+}
+
+const EXCLUSIVE_STORE_TABLE = [
+  { mnemonic: 'stxr' },
+  { mnemonic: 'stlxr', ordering: 'release' },
+  { mnemonic: 'stxrb', elementSize: 1 },
+  { mnemonic: 'stxrh', elementSize: 2 },
+  { mnemonic: 'stlxrb', elementSize: 1, ordering: 'release' },
+  { mnemonic: 'stlxrh', elementSize: 2, ordering: 'release' },
+];
+for (const entry of EXCLUSIVE_STORE_TABLE) {
+  HANDLERS[entry.mnemonic] = exclusiveStoreHandler(entry);
 }
 for (const n of ['casal', 'cas', 'casa', 'casl']) {
   HANDLERS[n] = (o, ops) => {
