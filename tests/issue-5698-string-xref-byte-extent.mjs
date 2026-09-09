@@ -87,6 +87,97 @@ test('#5698 escaped control characters still classify through the byte proxy', (
   assert.equal(out[0].actionable, true);
 });
 
+test('#5698 base xrefs to an ASCII login string stay detected (control)', () => {
+  // Required regression #1: the pre-#5698 ASCII behavior is preserved. A ref
+  // at the string base must keep classifying the string.
+  const program = indexWithRefs([0x1000n]);
+  const result = buildStringMap({
+    program,
+    strings: [{ addr: 0x1000n, text: 'https://example.com/login', byteLength: 25 }],
+  });
+  assert.ok(result.subsystems.length > 0, 'ASCII base xref still classifies');
+  const out = findings([{ addr: 0x1000n, text: 'https://example.com/login', byteLength: 25 }],
+    program, null, 40);
+  assert.equal(out[0].actionable, true, 'the ASCII control stays actionable');
+});
+
+test('#5698 base xrefs to a multibyte string are detected by the consumer', () => {
+  // Required regression #2: a ref at the BASE of ログイン (not only interior
+  // offsets) classifies through buildStringMap().
+  const program = indexWithRefs([0x1000n]);
+  const result = buildStringMap({
+    program,
+    strings: [{ addr: 0x1000n, text: LOGIN, byteLength: 12 }],
+  });
+  assert.ok(result.subsystems.length > 0, 'the multibyte base xref classifies');
+});
+
+test('#5698 the real worker producer carries raw extents for 2/3/4-byte code points', async () => {
+  // Required regression #5: each UTF-8 code-point class keeps its raw run
+  // byte extent (which differs from the decoded display length).
+  const { NodeBackend } = await import('./harness.mjs');
+  const raw = new Uint8Array([
+    ...Buffer.from('café', 'utf8'), 0x00,           // 2-byte é: 5 raw bytes
+    ...Buffer.from('ログイン', 'utf8'), 0x00,        // 3-byte code points: 12 raw bytes
+    ...Buffer.from('𝒜𝒷', 'utf8'),                   // 4-byte code points: 8 raw bytes
+  ]);
+  const file = {
+    name: 'issue-5698-codepoint-classes.bin',
+    size: raw.length,
+    slice(start, end) {
+      const part = raw.subarray(start, end);
+      return { arrayBuffer: async () => part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength) };
+    },
+  };
+  const backend = new NodeBackend();
+  const info = await backend.open(file);
+  const scan = await backend.strings({ regionId: info.raw.id, min: 2, limit: 8 });
+  assert.equal(scan.cancelled, false);
+  const byText = new Map(scan.results.map((entry) => [entry.text, entry]));
+  const cases = [
+    ['café', 5, 4],       // [text, rawBytes, displayUnits (UTF-16 units)]
+    ['ログイン', 12, 4],
+    ['𝒜𝒷', 8, 4],
+  ];
+  for (const [text, rawBytes, displayUnits] of cases) {
+    const entry = byText.get(text);
+    assert.ok(entry, `the ${rawBytes}-byte string must be scanned`);
+    assert.equal(entry.text.length, displayUnits, `${text}: display length`);
+    assert.equal(entry.byteLength, rawBytes, `${text}: raw byte extent is preserved`);
+    assert.notEqual(entry.byteLength, entry.text.length, `${text}: raw extent differs from display length`);
+  }
+});
+
+test('#5698 the findings 256-byte cap is byte-denominated at its boundary', () => {
+  // Required regression #7: refs at the last byte inside the 256-byte cap
+  // stay actionable; refs inside the real 300-byte string but beyond the cap
+  // must NOT be. Enlarging the cap to 300 would flip the second assertion.
+  const long = { addr: 0x2000n, text: `https://example.com/${'a'.repeat(260)}`, byteLength: 300 };
+  const inside = indexWithRefs([0x2000n + 255n]);
+  const out = findings([long], inside, null, 40);
+  assert.equal(out[0].actionable, true, 'a ref at cap-1 (byte 255) is covered');
+  const beyond = indexWithRefs([0x2000n + 260n]);
+  const outBeyond = findings([long], beyond, null, 40);
+  assert.equal(outBeyond[0].actionable, false,
+    'a ref at byte 260 lies beyond the 256-byte cap even though the string is 300 bytes');
+  const atCap = indexWithRefs([0x2000n + 256n]);
+  const outAtCap = findings([long], atCap, null, 40);
+  assert.equal(outAtCap[0].actionable, false,
+    'the cap is exclusive of byte offset 256');
+});
+
+test('#5698 the buildStringMap 128-byte cap is byte-denominated at its boundary', () => {
+  // The map's span cap is 128 bytes: a ref at byte 127 classifies the string,
+  // a ref at byte 130 (inside the real 200-byte string) does not.
+  const long = { addr: 0x4000n, text: `https://example.com/${'a'.repeat(160)}`, byteLength: 200 };
+  const inside = indexWithRefs([0x4000n + 127n]);
+  assert.ok(buildStringMap({ program: inside, strings: [long] }).subsystems.length > 0,
+    'a ref at cap-1 (byte 127) classifies');
+  const beyond = indexWithRefs([0x4000n + 130n]);
+  assert.equal(buildStringMap({ program: beyond, strings: [long] }).subsystems.length, 0,
+    'a ref at byte 130 lies beyond the 128-byte cap');
+});
+
 test('#5698 the real worker scanStrings producer carries the raw run byte extent', async () => {
   // Producer→consumer contract: the classic worker's scanStrings() is the
   // producer of the strings consumed by buildStringMap()/findings(). It
