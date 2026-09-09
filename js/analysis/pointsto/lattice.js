@@ -419,6 +419,35 @@ export function pointsToIsBottom(set) {
   return !set.top && set.targets.length === 0;
 }
 
+function canonicalProofForTarget(target) {
+  const proof = target?.[ROOT_DESCRIPTOR_PROOF];
+  return targetMatchesCanonicalProof(target, proof) ? proof : null;
+}
+
+function mergeSameRootTargets(prior, target) {
+  const priorProof = canonicalProofForTarget(prior);
+  const targetProof = canonicalProofForTarget(target);
+  // A genuine root-descriptor proof is evidence about the shared storage, so a
+  // plain observation of that same root must not erase it. Two genuine proofs
+  // are compatible only when they prove the same separation class; conflicting
+  // proof classes conservatively drop authority instead of picking an operand.
+  const proof = priorProof && targetProof
+    ? (priorProof.separationClass === targetProof.separationClass ? priorProof : null)
+    : (priorProof ?? targetProof);
+  const merged = {
+    ...prior,
+    separationClass: proof?.separationClass
+      ?? (prior.separationClass === target.separationClass ? prior.separationClass : null),
+    separationAuthority: proof ? 'root-descriptor' : null,
+    offsetRange: joinRange(prior.offsetRange, target.offsetRange),
+    widthBits: prior.widthBits === target.widthBits ? prior.widthBits : null,
+    evidenceIds: [...prior.evidenceIds, ...target.evidenceIds],
+  };
+  if (proof) merged[ROOT_DESCRIPTOR_PROOF] = proof;
+  else delete merged[ROOT_DESCRIPTOR_PROOF];
+  return createPointsToTarget(merged);
+}
+
 /**
  * Set join. Same-root targets merge their ranges; distinct roots accumulate
  * until the target cap, at which point the set collapses to TOP rather than
@@ -433,12 +462,7 @@ export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
   for (const target of [...a.targets, ...b.targets]) {
     const prior = byRoot.get(target.rootKey);
     if (!prior) { byRoot.set(target.rootKey, target); continue; }
-    byRoot.set(target.rootKey, createPointsToTarget({
-      ...prior,
-      offsetRange: joinRange(prior.offsetRange, target.offsetRange),
-      widthBits: prior.widthBits === target.widthBits ? prior.widthBits : null,
-      evidenceIds: [...prior.evidenceIds, ...target.evidenceIds],
-    }));
+    byRoot.set(target.rootKey, mergeSameRootTargets(prior, target));
   }
   if (byRoot.size > targetLimit) {
     return createPointsToSet({ top: true, lossReasons: [...a.lossReasons, ...b.lossReasons, 'target-cap'] });
