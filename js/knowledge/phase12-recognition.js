@@ -12,6 +12,7 @@ export function createMatchResult(input = {}) {
   const sourceEntityId = String(input.sourceEntityId || input.entityId || '').trim();
   const packageEntryId = String(input.packageEntryId || input.entryId || '').trim();
   if (!sourceEntityId || !packageEntryId) throw new TypeError('recognition source and package identities are required');
+  if (Array.isArray(input.candidates) && input.candidates.length === 0) throw new TypeError('recognition candidates are required');
   const candidates = (Array.isArray(input.candidates) ? input.candidates : [{ ...input, sourceEntityId, packageEntryId }]).map((candidate) => ({
     sourceEntityId: String(candidate.sourceEntityId || sourceEntityId),
     packageEntryId: String(candidate.packageEntryId || candidate.entryId || packageEntryId),

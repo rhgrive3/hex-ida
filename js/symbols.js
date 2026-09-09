@@ -55,9 +55,12 @@ export class SymbolIndex {
        retained as the legacy name for an authoritative complete start set;
        `allSeedsExact` only describes the starts currently present. */
     const discoveryComplete = r.discoveryComplete === true || r.functionStartsComplete === true || r.functionStartsExact === true;
-    this.allSeedsExact = r.allSeedsExact != null ? !!r.allSeedsExact : !!r.functionStartsExact;
+    const seedExactness = r.allSeedsExact != null
+      ? r.allSeedsExact === true
+      : (r.functionStartsExact != null ? r.functionStartsExact === true : null);
+    this.allSeedsExact = seedExactness === true;
     this.functionStartsComplete = discoveryComplete;
-    this.functionStartsExact = discoveryComplete && (r.allSeedsExact == null || this.allSeedsExact);
+    this.functionStartsExact = discoveryComplete && (seedExactness == null || seedExactness);
     this.functionDiscovery = r.functionDiscovery || {
       complete: discoveryComplete,
       capped: !!r.functionStartsCapped,

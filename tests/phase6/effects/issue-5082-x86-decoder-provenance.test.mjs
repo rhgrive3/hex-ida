@@ -176,6 +176,17 @@ assert.match(userscriptBuildSource, /existingOptionalEntries\(OPTIONAL_BUNDLED_C
   'the userscript infrastructure parent must remain build-safe before the x86 receiver file exists');
 assert.match(userscriptBuildSource, /bundleInlinedClassic\(entry, inlineImports\(entry, sources\)\)/,
   'receiver dynamic ESM dependencies and classic Capstone scripts must be bundled into the protected worker blob');
+const classicBundleStart = userscriptBuildSource.indexOf('async function bundleInlinedClassic(');
+const classicBundleEnd = userscriptBuildSource.indexOf('function protectedImportMetaPlugin()', classicBundleStart);
+assert.ok(classicBundleStart >= 0 && classicBundleEnd > classicBundleStart,
+  'dedicated classic worker bundle must remain a separately inspectable build path');
+const classicBundleSource = userscriptBuildSource.slice(classicBundleStart, classicBundleEnd);
+assert.match(classicBundleSource, /external:\s*\[\s*['"]node:fs['"]\s*\]/,
+  'only the inline Capstone worker bundle may externalize its guarded Node builtin');
+assert.equal((userscriptBuildSource.match(/external:\s*\[\s*['"]node:fs['"]\s*\]/g) || []).length, 1,
+  'node:fs externalization must not spread to ordinary browser bundles');
+assert.doesNotMatch(userscriptBuildSource, /import\s+[^;]*['"]node:fs['"]/,
+  'the userscript build graph must not add a real node:fs module import');
 assert.match(protectedWorkersSource, /X86_REVALIDATION_WORKER = 'js\/targets\/architecture\/x86_64\/semantic-revalidation-worker\.js'/);
 assert.match(protectedWorkersSource, /CAPSTONE_CLASSIC_WORKERS = new Set\([\s\S]*X86_REVALIDATION_WORKER/,
   'protected receiver worker must receive the integrity-bound Capstone WASM bootstrap');
