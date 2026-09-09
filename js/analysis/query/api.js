@@ -261,6 +261,24 @@ function preserveKnownQueryLimitContinuation(result) {
   });
 }
 
+function pinValidatedSnapshot(snapshot) {
+  // Snapshot-like caller input is allowed at this boundary. Detach the
+  // validated identity before the first await so later caller mutation cannot
+  // retarget stale checks, producer execution, or result attribution (#5131).
+  assertAnalysisSnapshot(snapshot);
+  const pinned = {
+    schemaVersion: snapshot.schemaVersion,
+    snapshotId: snapshot.snapshotId,
+    binaryId: snapshot.binaryId,
+    projectRevision: snapshot.projectRevision,
+    analysisEpoch: snapshot.analysisEpoch,
+    artifactVersions: normalizeAnalysisArtifactVersions(snapshot.artifactVersions),
+  };
+  if (snapshot.createdAt != null) pinned.createdAt = snapshot.createdAt;
+  assertAnalysisSnapshot(pinned);
+  return deepFreezeTree(pinned);
+}
+
 export class AnalysisQueryAPI {
   constructor(adapter) {
     if (!adapter || typeof adapter.currentIdentity !== "function") {
@@ -277,29 +295,30 @@ export class AnalysisQueryAPI {
   }
 
   async #validateAndCheckStale(snapshot, options) {
-    assertAnalysisSnapshot(snapshot);
+    const pinnedSnapshot = pinValidatedSnapshot(snapshot);
     aborted(options);
     const current = await this.adapter.currentIdentity(options);
     aborted(options);
-    if (!sameSnapshotIdentity(snapshot, current)) {
+    if (!sameSnapshotIdentity(pinnedSnapshot, current)) {
       throw new AnalysisSnapshotStaleError("Snapshot is stale before query", {
-        snapshotId: snapshot.snapshotId,
-        expectedEpoch: snapshot.analysisEpoch,
+        snapshotId: pinnedSnapshot.snapshotId,
+        expectedEpoch: pinnedSnapshot.analysisEpoch,
         currentEpoch: current?.analysisEpoch,
       });
     }
+    return pinnedSnapshot;
   }
 
   async #wrapResult(snapshot, executeFn, options) {
-    await this.#validateAndCheckStale(snapshot, options);
-    const result = await executeFn();
+    const pinnedSnapshot = await this.#validateAndCheckStale(snapshot, options);
+    const result = await executeFn(pinnedSnapshot);
     aborted(options);
     const currentAfter = await this.adapter.currentIdentity(options);
     aborted(options);
-    if (!sameSnapshotIdentity(snapshot, currentAfter)) {
+    if (!sameSnapshotIdentity(pinnedSnapshot, currentAfter)) {
       throw new AnalysisSnapshotStaleError("Snapshot became stale during query", {
-        snapshotId: snapshot.snapshotId,
-        expectedEpoch: snapshot.analysisEpoch,
+        snapshotId: pinnedSnapshot.snapshotId,
+        expectedEpoch: pinnedSnapshot.analysisEpoch,
         currentEpoch: currentAfter?.analysisEpoch,
       });
     }
@@ -314,8 +333,8 @@ export class AnalysisQueryAPI {
     const page = frozenQueryValue(result?.page ?? null);
     const cost = frozenQueryValue(result?.cost ?? rawStatus?.cost ?? null);
     return Object.freeze({
-      snapshotId: snapshot.snapshotId,
-      analysisEpoch: snapshot.analysisEpoch,
+      snapshotId: pinnedSnapshot.snapshotId,
+      analysisEpoch: pinnedSnapshot.analysisEpoch,
       completeness,
       value,
       status,
@@ -327,8 +346,8 @@ export class AnalysisQueryAPI {
   async #query(method, snapshot, args, options = {}) {
     return this.#wrapResult(
       snapshot,
-      () => typeof this.adapter[method] === "function"
-        ? this.adapter[method](snapshot, ...args, options)
+      (pinnedSnapshot) => typeof this.adapter[method] === "function"
+        ? this.adapter[method](pinnedSnapshot, ...args, options)
         : unavailable(method),
       options,
     );
