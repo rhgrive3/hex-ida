@@ -132,7 +132,10 @@ function parseReturn(bytes, offset, code, depth, methodGenericArity, typeDefOrRe
   if (bytes[pos] === 0x10) { // BYREF
     pos = consumeCustomMods(bytes, pos + 1, code, typeDefOrRefRowCounts);
     const inner = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
-    return { next:inner.next, value:stackType('managed-pointer') };
+    // ECMA-335 II.23.2.10: BYREF is a paired type. Dropping `inner.value`
+    // collapsed int32&/int64& into one exact managed-pointer identity (#7750),
+    // so the referent is carried losslessly on the stack type.
+    return { next:inner.next, value:stackType('managed-pointer', null, { referent:inner.value }) };
   }
   return parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
 }
@@ -140,10 +143,11 @@ function parseReturn(bytes, offset, code, depth, methodGenericArity, typeDefOrRe
 function parseParam(bytes, offset, code, depth, methodGenericArity, typeDefOrRefRowCounts) {
   let pos = consumeCustomMods(bytes, offset, code, typeDefOrRefRowCounts);
   if (bytes[pos] === 0x16) return { next:pos + 1, value:stackType('typed-reference') };
-  if (bytes[pos] === 0x10) {
+  if (bytes[pos] === 0x10) { // BYREF
     pos = consumeCustomMods(bytes, pos + 1, code, typeDefOrRefRowCounts);
     const inner = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
-    return { next:inner.next, value:stackType('managed-pointer') };
+    // Same referent-retention contract as the return path (#7750).
+    return { next:inner.next, value:stackType('managed-pointer', null, { referent:inner.value }) };
   }
   return parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
 }
@@ -201,8 +205,44 @@ export function parseCilMethodSignature(blob, typeDefOrRefRowCounts = null) {
   return parseMethodSignature(blob, 0, 'cil-call-signature-invalid', 0, true, 0, typeDefOrRefRowCounts).value;
 }
 
-export function parseCilMethodSpecInstantiation(blob, typeDefOrRefRowCounts = null) {
-  const code = 'cil-call-signature-methodspec-invalid';
+// ECMA-335 II.23.2.6 LocalVarSig: 0x07 Count T* where each T may carry
+// custom modifiers, the PINNED modifier, and a BYREF pair. The lifter needs
+// the typed locals as a stack-type array so ldloc/stloc stop publishing a
+// fabricated 32-bit width (#5353).
+export function parseCilLocalVarSignature(blob, typeDefOrRefRowCounts = null) {
+  const code = 'cil-local-var-signature-invalid';
+  if (!(blob instanceof Uint8Array) || blob.length < 2 || blob[0] !== 0x07) fail(code);
+  const count = readCompressed(blob, 1, code);
+  if (count.value < 1 || count.value > 0xfffe) fail(code);
+  let pos = count.next;
+  const locals = [];
+  for (let index = 0; index < count.value; index++) {
+    pos = consumeCustomMods(blob, pos, code, typeDefOrRefRowCounts);
+    while (blob[pos] === 0x45) { // PINNED
+      pos += 1;
+      pos = consumeCustomMods(blob, pos, code, typeDefOrRefRowCounts);
+    }
+    if (blob[pos] === 0x16) { // TYPEDBYREF
+      locals.push(stackType('typed-reference'));
+      pos += 1;
+      continue;
+    }
+    if (blob[pos] === 0x10) { // BYREF
+      pos = consumeCustomMods(blob, pos + 1, code, typeDefOrRefRowCounts);
+      const inner = parseType(blob, pos, code, 1, null, typeDefOrRefRowCounts);
+      pos = inner.next;
+      locals.push(stackType('managed-pointer', null, { referent:inner.value }));
+      continue;
+    }
+    const parsed = parseType(blob, pos, code, 1, null, typeDefOrRefRowCounts);
+    pos = parsed.next;
+    locals.push(parsed.value);
+  }
+  if (pos !== blob.length) fail(code);
+  return Object.freeze(locals);
+}
+
+export function parseCilMethodSpecInstantiation(blob, typeDefOrRefRowCounts = null) {  const code = 'cil-call-signature-methodspec-invalid';
   if (!(blob instanceof Uint8Array) || blob.length < 2 || blob[0] !== 0x0a) fail(code);
   const count = readCompressed(blob, 1, code);
   if (count.value < 1) fail(code);
@@ -218,7 +258,16 @@ export function parseCilMethodSpecInstantiation(blob, typeDefOrRefRowCounts = nu
 }
 
 export function substituteCilMethodGeneric(value, args) {
-  if (!value || typeof value !== 'object' || value.stackType !== 'method-generic') return value;
+  if (!value || typeof value !== 'object') return value;
+  if (value.stackType !== 'method-generic' && value.stackType !== 'managed-pointer') return value;
+  if (value.stackType === 'managed-pointer') {
+    // A BYREF referent may itself be a method generic; substitution must walk
+    // the pair or the MethodSpec would re-collapse distinct instantiations (#7750).
+    if (!value.referent) return value;
+    const referent = substituteCilMethodGeneric(value.referent, args);
+    if (referent === value.referent) return value;
+    return { ...value, referent };
+  }
   const index = value.genericIndex;
   if (!Number.isSafeInteger(index) || index < 0 || index >= args.length) {
     fail('cil-call-signature-methodspec-generic-index-invalid');

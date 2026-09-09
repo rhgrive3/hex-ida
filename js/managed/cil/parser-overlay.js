@@ -19,7 +19,10 @@ function peLayout(bytes,view){
  const mapRva=(rva,size=1,code='cil-rva-unmapped')=>{if(!Number.isSafeInteger(rva)||!Number.isSafeInteger(size)||rva<0||size<0)fail(code);for(const s of sections){const span=Math.max(s.virtualSize,s.rawSize);if(rva<s.virtualAddress||rva>=s.virtualAddress+span)continue;const delta=rva-s.virtualAddress;if(delta>s.rawSize||size>s.rawSize-delta)fail(code);const out=s.rawOffset+delta;range(bytes,out,size,code);return out}fail(code)};
  const dir=dOff+CLI_DIRECTORY_INDEX*8,rva=u32(view,dir,'cil-truncated-cli-directory'),size=u32(view,dir+4,'cil-truncated-cli-directory');if(!rva||size<CLI_HEADER_SIZE)return {cliPresent:false};
  const cli=mapRva(rva,CLI_HEADER_SIZE,'cil-cli-header-unmapped'),metaRva=u32(view,cli+8,'cil-truncated-cli-header'),metaSize=u32(view,cli+12,'cil-truncated-cli-header');if(!metaRva||metaSize<20)fail('cil-cli-metadata-directory-invalid');
- return {cliPresent:true,mapRva,metadataOffset:mapRva(metaRva,metaSize,'cil-cli-metadata-unmapped'),metadataSize:metaSize};
+ // CLI Resources directory (+24/+28) anchors embedded manifest resources (#7753).
+ const resRva=u32(view,cli+24,'cil-truncated-cli-header'),resSize=u32(view,cli+28,'cil-truncated-cli-header');
+ const resources=resRva===0||resSize===0?null:{offset:mapRva(resRva,resSize,'cil-resources-directory-unmapped'),size:resSize};
+ return {cliPresent:true,mapRva,metadataOffset:mapRva(metaRva,metaSize,'cil-cli-metadata-unmapped'),metadataSize:metaSize,resources};
 }
 function tableLayout(bytes,view,stream){
  range(bytes,stream.offset,stream.size,'cil-metadata-tables-out-of-bounds');if(stream.size<24)fail('cil-metadata-tables-truncated');const start=stream.offset,end=start+stream.size,heapSizes=bytes[start+6];
@@ -33,5 +36,19 @@ export function overlayCilMetadata(bytes,parsed){
  const meta=readCilMetadataStreams(u8,pe.metadataOffset,pe.metadataSize),tablesStream=meta.streams.find(s=>s.name==='#~'||s.name==='#-'),stringsStream=meta.streams.find(s=>s.name==='#Strings');if(!tablesStream)fail('cil-metadata-tables-missing');
  const layout=tableLayout(u8,view,tablesStream),defs=readCilDefinitions(u8,view,layout,stringsStream);const byOffset=new Map((parsed.methodBodies??[]).map(b=>[b.headerOffset,b])),methodBodies=[],methods=[];
  for(const method of defs.methods){const out={...method,bodyIndex:null};if(method.rva!==0){const off=pe.mapRva(method.rva,1,'cil-method-rva-unmapped'),body=byOffset.get(off);if(!body)fail('cil-method-rva-unmapped');out.bodyIndex=methodBodies.length;methodBodies.push({...body,token:method.token,rid:method.rid})}methods.push(out)}
- return deepFreeze({...parsed,runtimeVersion:meta.runtimeVersion,vmSpecEdition:meta.runtimeVersion,types:defs.types,fields:defs.fields,methods,methodBodies});
+ // ECMA-335 II.22.28: Implementation == null resources live inside the CLI
+ // Resources directory at the recorded Offset. Each blob is a 4-byte length
+ // prefix followed by the payload; both must stay inside the directory or the
+ // image fails closed instead of publishing an unresolvable resource (#7753).
+ const dir=pe.resources;
+ const manifestResources=defs.manifestResources.map((row)=>{
+  if(row.implementation!=null)return row;
+  const start=dir.offset+row.offset;
+  if(!Number.isSafeInteger(row.offset)||row.offset<0||row.offset+4>dir.size)fail('cil-manifest-resource-offset-invalid');
+  const length=view.getUint32(start,true);
+  if(length>dir.size-4-row.offset)fail('cil-manifest-resource-payload-out-of-bounds');
+  const payload=u8.subarray(start+4,start+4+length);
+  return {...row,location:'embedded',payload};
+ });
+ return deepFreeze({...parsed,runtimeVersion:meta.runtimeVersion,vmSpecEdition:meta.runtimeVersion,types:defs.types,fields:defs.fields,methods,methodBodies,manifestResources});
 }

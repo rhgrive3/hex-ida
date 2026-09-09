@@ -71,5 +71,36 @@ export function readCilDefinitions(bytes, view, layout, stringsStream) {
   };
   bindOwners(4, 3, fields, 'fieldList', 'fieldTokens');
   bindOwners(6, 5, methods, 'methodList', 'methodTokens');
-  return { types, methods, fields };
+  // ECMA-335 II.22.28 ManifestResource (0x28): Offset / Flags / Name /
+  // Implementation (File | AssemblyRef | ExportedType coded index). Skipping
+  // this table discarded every named embedded resource from the canonical
+  // image, so payload-only changes were semantically invisible (#7753).
+  const implementationSize = codedIndexSize(counts, [0x26, 0x23, 0x27], 2);
+  const implementationTables = [0x26, 0x23, 0x27];
+  const manifestResources = readRows(0x28, pos => {
+    const offset = view.getUint32(pos, true);
+    const flags = view.getUint32(pos + 4, true);
+    const name = text(index(pos + 8, s));
+    if (name == null || !name.length) fail('cil-manifest-resource-name-required');
+    const implementation = index(pos + 8 + s, implementationSize);
+    if ((flags & ~0x3) !== 0 || (flags & 0x3) === 0 || (flags & 0x3) === 0x3) {
+      // II.23.1.5: Visibility mask 0x0003 — Public (1) or Private (2); all
+      // other bits are reserved and must be zero.
+      fail('cil-manifest-resource-flags-invalid');
+    }
+    let target = null;
+    if (implementation !== 0) {
+      const table = implementationTables[implementation & 0x3];
+      const rid = Math.floor(implementation / 4);
+      if (table == null || rid < 1 || rid > counts[table]) {
+        fail('cil-manifest-resource-implementation-invalid');
+      }
+      target = { table, rid, token: cilMetadataToken(table, rid) };
+    }
+    return { offset, flags, visibility: flags & 0x3, name, ...(target ? { implementation: target } : {}) };
+  });
+  if (new Set(manifestResources.map(row => row.name)).size !== manifestResources.length) {
+    fail('cil-manifest-resource-name-duplicate');
+  }
+  return { types, methods, fields, manifestResources };
 }

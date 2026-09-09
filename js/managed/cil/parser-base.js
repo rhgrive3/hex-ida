@@ -121,7 +121,32 @@ function readPeCliLayout(bytes, view) {
   const metadataSize = readU32(view, cliOffset + 12, 'cil-truncated-cli-header');
   if (metadataRva === 0 || metadataSize < 20) fail('cil-cli-metadata-directory-invalid');
   const metadataOffset = mapRva(metadataRva, metadataSize, 'cil-cli-metadata-unmapped');
-  return Object.freeze({ cliPresent: true, mapRva, cliOffset, cliSize, metadataOffset, metadataSize });
+  // ECMA-335 II.25.3.3: CLI Flags (+16) and the EntryPointToken union field
+  // (+20) are the managed entry authority. Dropping them left the application
+  // root unrecoverable and accepted clearly invalid entry tokens (#7735).
+  const cliFlags = readU32(view, cliOffset + 16, 'cil-truncated-cli-header');
+  const entryPointToken = readU32(view, cliOffset + 20, 'cil-truncated-cli-header');
+  // The CLI Resources directory (+24/+28) anchors embedded manifest resource
+  // payloads. Without it the ManifestResource rows cannot be resolved to
+  // bytes and embedded data vanishes from the canonical image (#7753).
+  const resourcesRva = readU32(view, cliOffset + 24, 'cil-truncated-cli-header');
+  const resourcesSize = readU32(view, cliOffset + 28, 'cil-truncated-cli-header');
+  const resources = resourcesRva === 0 || resourcesSize === 0 ? null : {
+    rva: resourcesRva,
+    offset: mapRva(resourcesRva, resourcesSize, 'cil-resources-directory-unmapped'),
+    size: resourcesSize,
+  };
+  return Object.freeze({
+    cliPresent: true,
+    mapRva,
+    cliOffset,
+    cliSize,
+    metadataOffset,
+    metadataSize,
+    cliFlags,
+    entryPointToken,
+    resources,
+  });
 }
 
 function codedIndexSize(rowCounts, tables, tagBits) {
@@ -778,6 +803,42 @@ export function parseCil(bytes, options = {}) {
   const imageId = createManagedImageId(binaryId);
   const moduleId = createManagedModuleId(imageId, 'Assembly.dll');
 
+  // Managed entrypoint authority (ECMA-335 II.15.4.1.2 / II.25.3.3). The
+  // COMIMAGE_FLAGS_NATIVE_ENTRYPOINT (0x00000010) branch stores a native RVA
+  // in the union field, not a metadata token: it is preserved verbatim and
+  // never validated as a token (#7735).
+  const NATIVE_ENTRYPOINT_FLAG = 0x00000010;
+  const cliFlags = peCli?.cliPresent ? peCli.cliFlags : null;
+  const rawEntryPointToken = peCli?.cliPresent ? peCli.entryPointToken : null;
+  const isNativeEntryPoint = cliFlags != null && (cliFlags & NATIVE_ENTRYPOINT_FLAG) !== 0;
+  const entryTokenTable = rawEntryPointToken == null ? null : rawEntryPointToken >>> 24;
+  const entryTokenRid = rawEntryPointToken == null ? null : rawEntryPointToken & 0x00ffffff;
+  const entryTargetKind = rawEntryPointToken == null || rawEntryPointToken === 0
+    ? null
+    : isNativeEntryPoint
+      ? 'native-rva'
+      : entryTokenTable === METHOD_DEF_TABLE
+        ? 'method-def'
+        : entryTokenTable === 0x26 ? 'file' : null;
+  if (entryTargetKind === null && rawEntryPointToken != null && rawEntryPointToken !== 0) {
+    // A managed entry token must name a MethodDef or File row; anything else
+    // is invalid metadata and must not pass as a spec-valid image (#7735).
+    fail('cil-entrypoint-token-kind-invalid');
+  }
+  if (entryTargetKind === 'method-def') {
+    const methodRow = metadataInfo?.methodRvas?.[entryTokenRid - 1];
+    if (!Number.isSafeInteger(entryTokenRid) || entryTokenRid < 1 || methodRow === undefined) {
+      fail('cil-entrypoint-methoddef-row-missing');
+    }
+  }
+  if (entryTargetKind === 'file') {
+    // File-row presence is validated by the metadata overlay when the table
+    // is decoded; here the RID must at least be a plausible nonzero index.
+    if (!Number.isSafeInteger(entryTokenRid) || entryTokenRid < 1) {
+      fail('cil-entrypoint-file-row-missing');
+    }
+  }
+
   return deepFreeze({
     imageId,
     moduleId,
@@ -788,6 +849,18 @@ export function parseCil(bytes, options = {}) {
     fields,
     strings,
     methodBodies,
+    ...(cliFlags != null ? { cliFlags } : {}),
+    ...(rawEntryPointToken != null ? {
+      entryPointToken: rawEntryPointToken,
+      ...(entryTargetKind != null ? { entryTargetKind } : {}),
+      ...(entryTargetKind === 'method-def' ? {
+        entryMethodToken: `0x${rawEntryPointToken.toString(16).padStart(8, '0')}`,
+      } : {}),
+      ...(isNativeEntryPoint ? { nativeEntryPointRva: rawEntryPointToken } : {}),
+    } : {}),
+    ...(peCli?.resources ? {
+      resources: deepFreeze({ rva: peCli.resources.rva, size: peCli.resources.size, fileOffset: peCli.resources.offset }),
+    } : {}),
     rawBytes: u8,
   });
 }
