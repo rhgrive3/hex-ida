@@ -3,7 +3,7 @@ import { runtimeEvidenceForApp } from '../../runtime/app-runtime.js';
 import { weakestCompleteness } from '../status.js';
 
 const CANONICAL_VERDICTS = new Set([
-  'confirmed', 'supported', 'likely', 'unverified', 'contradicted', 'unknown',
+  'confirmed', 'supported', 'likely', 'unverified', 'contradicted', 'unknown', 'inconclusive',
 ]);
 const MAX_EVIDENCE_ROWS = 5_000;
 
@@ -95,7 +95,7 @@ export function createAppAnalysisQueryAdapter(app) {
         const value = functionResult?.value ?? null;
         for (const evidence of Array.isArray(value?.evidence) ? value.evidence : []) suffix.push(projectEvidence('function-analysis', evidence, { address }));
         for (const proof of Array.isArray(value?.rewriteProof) ? value.rewriteProof : []) suffix.push(projectEvidence('rewrite-proof', proof, { address, title: typeof proof?.rule === 'string' ? proof.rule : typeof proof?.name === 'string' ? proof.name : 'Decompiler rewrite' }));
-        for (const observation of runtimeEvidenceForApp(app, address)) suffix.push(projectEvidence('runtime-observation', observation, { address, binaryHash: observation?.binaryHash ?? null, sliceIdentity: observation?.sliceIdentity ?? null }, 'confirmed'));
+        for (const observation of runtimeEvidenceForApp(app, address)) suffix.push(projectEvidence('runtime-observation', observation, { address, binaryHash: observation?.binaryHash ?? null, sliceIdentity: observation?.sliceIdentity ?? null }, 'unverified'));
       }
 
       // Preserve the existing supplemental row budget without applying it to
