@@ -17,6 +17,16 @@ function requireIndex(table, idx, code) {
   return table[idx];
 }
 
+function requireFieldOwnerType(descriptor) {
+  if (!descriptor.startsWith('L')) fail('dex-invalid-field-owner-type');
+  return descriptor;
+}
+
+function requireMethodOwnerType(descriptor) {
+  if (!descriptor.startsWith('L') && !descriptor.startsWith('[')) fail('dex-invalid-method-owner-type');
+  return descriptor;
+}
+
 const SUPPORTED_DEX_VERSIONS = new Set(['035', '037', '038', '039', '040']);
 
 export function probeDex(bytes) {
@@ -177,7 +187,8 @@ export function parseDex(bytes, options = {}) {
     const off=fieldIdsOff+i*8;
     if(off+8>u8.length) fail('dex-truncated-field-ids');
     const classIdx=view.getUint16(off,true),typeIdx=view.getUint16(off+2,true),nameIdx=view.getUint32(off+4,true);
-    fields.push({classType:requireIndex(types,classIdx,'dex-invalid-field-class-index'),type:requireIndex(types,typeIdx,'dex-invalid-field-type-index'),name:requireIndex(strings,nameIdx,'dex-invalid-field-name-index')});
+    const classType = requireFieldOwnerType(requireIndex(types,classIdx,'dex-invalid-field-class-index'));
+    fields.push({classType,type:requireIndex(types,typeIdx,'dex-invalid-field-type-index'),name:requireIndex(strings,nameIdx,'dex-invalid-field-name-index')});
   }
 
   const methods=[];
@@ -185,7 +196,8 @@ export function parseDex(bytes, options = {}) {
     const off=methodIdsOff+i*8;
     if(off+8>u8.length) fail('dex-truncated-method-ids');
     const classIdx=view.getUint16(off,true),protoIdx=view.getUint16(off+2,true),nameIdx=view.getUint32(off+4,true);
-    methods.push({classType:requireIndex(types,classIdx,'dex-invalid-method-class-index'),proto:requireIndex(protos,protoIdx,'dex-invalid-method-proto-index'),name:requireIndex(strings,nameIdx,'dex-invalid-method-name-index')});
+    const classType = requireMethodOwnerType(requireIndex(types,classIdx,'dex-invalid-method-class-index'));
+    methods.push({classType,proto:requireIndex(protos,protoIdx,'dex-invalid-method-proto-index'),name:requireIndex(strings,nameIdx,'dex-invalid-method-name-index')});
   }
 
   const classes=[];

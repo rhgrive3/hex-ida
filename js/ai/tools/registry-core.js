@@ -118,6 +118,15 @@ export class ToolRegistry {
         }
       }
       const result = jsonSafe(raw);
+      // Array results can carry non-enumerable completeness metadata (for
+      // example KnowledgeDB's bounded search marker). Preserve it across the
+      // JSON-safe array copy so the tool envelope cannot call a partial scan
+      // complete merely because the array itself is otherwise valid.
+      if (Array.isArray(raw) && Array.isArray(result)) {
+        for (const key of ['truncated', 'reason']) {
+          if (raw[key] !== undefined) Object.defineProperty(result, key, { value: raw[key], enumerable:false, configurable:true });
+        }
+      }
       const sourceRef = record ? { detailRef: record.id, path: "$", bindingKey: record.binding.key } : null;
       let evidence = record?.evidence || null;
       const resultLifecycle = raw?.solverResult?.lifecycle || raw?.lifecycle || {};
