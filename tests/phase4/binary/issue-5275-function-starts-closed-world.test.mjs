@@ -23,8 +23,8 @@ function fixture(stream, { terminator = true, fsSize = null, rawBytes = false, l
   const u32 = (o, x) => v.setUint32(o, x, true), i32 = (o, x) => v.setInt32(o, x, true);
   const u64 = (o, x) => v.setBigUint64(o, BigInt(x), true);
   bytes.set([0xcf, 0xfa, 0xed, 0xfe], 0);
-  const symtabBytes = symbols.length ? 24 + symbols.length * 16 + 64 : 0;
-  i32(4, 0x0100000c); i32(8, 0); u32(12, 2); u32(16, symbols.length ? 5 : 4); u32(20, 312 + symtabBytes); u32(24, 0); u32(28, 0);
+  const commandBytes = 152 + 72 + 16 + 16 + (symbols.length ? 24 : 0);
+  i32(4, 0x0100000c); i32(8, 0); u32(12, 2); u32(16, symbols.length ? 5 : 4); u32(20, commandBytes); u32(24, 0); u32(28, 0);
   // __TEXT with one executable section
   u32(32, 0x19); u32(36, 152);
   bytes.set(new TextEncoder().encode('__TEXT'), 40);
