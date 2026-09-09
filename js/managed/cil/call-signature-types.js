@@ -83,11 +83,16 @@ function stackType(name, bits = null, extra = {}) {
 }
 
 // Attach identity-bearing components at their production level. Modifier
-// lists compose in source order across nested productions.
-function attachMods(value, mods) {
-  if (!mods.length || !value) return value;
-  const existing = Array.isArray(value.customModifiers) ? value.customModifiers : [];
-  return Object.freeze({ ...value, customModifiers: Object.freeze([...existing, ...mods]) });
+// placement is part of the exact identity (R1): leading modifiers (before
+// the Type) and production-local modifiers (between SZARRAY/PTR and the
+// element type) are structurally distinct groups, never flattened.
+function attachMods(value, leadMods = [], localMods = []) {
+  if (!value || (!leadMods.length && !localMods.length)) return value;
+  return Object.freeze({
+    ...value,
+    ...(leadMods.length ? { customModifiers: Object.freeze([...leadMods]) } : {}),
+    ...(localMods.length ? { productionCustomModifiers: Object.freeze([...localMods]) } : {}),
+  });
 }
 
 function parseType(bytes, offset, code, depth = 0, methodGenericArity = null, typeDefOrRefRowCounts = null) {
@@ -120,10 +125,10 @@ function parseType(bytes, offset, code, depth = 0, methodGenericArity = null, ty
   if (type === 0x0f) { // PTR
     const pre = readCustomMods(bytes, pos, code, typeDefOrRefRowCounts);
     if (bytes[pre.next] === 0x01) { // PTR VOID — void is still a distinct pointee
-      return { next:pre.next + 1, value:attachMods(stackType('native-int', null, { pointee:{ stackType:'void' } }), [...lead.mods, ...pre.mods]) };
+      return { next:pre.next + 1, value:attachMods(stackType('native-int', null, { pointee:{ stackType:'void' } }), lead.mods, pre.mods) };
     }
     const pointee = parseType(bytes, pre.next, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
-    return { next:pointee.next, value:attachMods(stackType('native-int', null, { pointee:pointee.value }), [...lead.mods, ...pre.mods]) };
+    return { next:pointee.next, value:attachMods(stackType('native-int', null, { pointee:pointee.value }), lead.mods, pre.mods) };
   }
   if (type === 0x1d) { // SZARRAY
     const pre = readCustomMods(bytes, pos, code, typeDefOrRefRowCounts);
@@ -131,7 +136,7 @@ function parseType(bytes, offset, code, depth = 0, methodGenericArity = null, ty
     // Array element identity is part of the exact type (#7706): int32[] and
     // int64[] are different constructed array types, not the same object-ref.
     return { next:element.next, value:attachMods(stackType('object-ref', null,
-      { arrayShape:{ rank:1, sizes:[], lowerBounds:[] }, elementType:element.value }), [...lead.mods, ...pre.mods]) };
+      { arrayShape:{ rank:1, sizes:[], lowerBounds:[] }, elementType:element.value }), lead.mods, pre.mods) };
   }
   if (type === 0x14) { // ARRAY
     const element = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
@@ -174,12 +179,19 @@ function parseReturn(bytes, offset, code, depth, methodGenericArity, typeDefOrRe
   if (bytes[pos] === 0x10) { // BYREF
     const pre = readCustomMods(bytes, pos + 1, code, typeDefOrRefRowCounts);
     const inner = parseType(bytes, pre.next, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
+<<<<<<< HEAD
     // ECMA-335 II.23.2.10: BYREF is a paired type. Dropping `inner.value`
     // collapsed int32&/int64& into one exact managed-pointer identity (#7750),
     // so the referent is carried losslessly; modifier lists compose in
     // source order across the paired production (#7706/#7673 R2).
     return { next:inner.next, value:attachMods(stackType('managed-pointer', null,
       { referent:inner.value }), lead.mods, pre.mods) };
+=======
+    // Placement stays distinct (R1): lead mods precede the BYREF production;
+    // mods between BYREF and the Type are BYREF-production-local.
+    return { next:inner.next, value:attachMods(stackType('managed-pointer', null,
+      { pointee:inner.value }), lead.mods, pre.mods) };
+>>>>>>> 99cf98284 (fix(cil): keep custom-modifier placement distinct in exact type identity (#7706, #7673 R1b))
   }
   const inner = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
   return { next:inner.next, value:attachMods(inner.value, lead.mods) };
@@ -192,9 +204,15 @@ function parseParam(bytes, offset, code, depth, methodGenericArity, typeDefOrRef
   if (bytes[pos] === 0x10) { // BYREF
     const pre = readCustomMods(bytes, pos + 1, code, typeDefOrRefRowCounts);
     const inner = parseType(bytes, pre.next, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
+<<<<<<< HEAD
     // Same referent-retention contract as the return path (#7750).
     return { next:inner.next, value:attachMods(stackType('managed-pointer', null,
       { referent:inner.value }), lead.mods, pre.mods) };
+=======
+    // Same placement semantics as the BYREF return production (R1).
+    return { next:inner.next, value:attachMods(stackType('managed-pointer', null,
+      { pointee:inner.value }), lead.mods, pre.mods) };
+>>>>>>> 99cf98284 (fix(cil): keep custom-modifier placement distinct in exact type identity (#7706, #7673 R1b))
   }
   const inner = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
   return { next:inner.next, value:attachMods(inner.value, lead.mods) };

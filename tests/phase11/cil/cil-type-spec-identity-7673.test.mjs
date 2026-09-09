@@ -183,18 +183,45 @@ assert.deepEqual(decodeTypeSpec([0x1b, 0x00, 0x00, 0x01]), {
     genericParameterCount: 0, parameters: [], returnValue: null,
   },
 });
-// Custom modifier identity: modreq token 4 vs 8 on the same SZARRAY element.
+// Custom modifier identity (R1): modifier placement is part of the exact
+// identity. Leading modifiers (before the Type) and production-local
+// modifiers (between SZARRAY/PTR and the element) are distinct groups.
 assert.deepEqual(decodeTypeSpec([0x1d, 0x1f, 0x04, 0x08]), {
   stackType: 'object-ref',
   arrayShape: { rank: 1, sizes: [], lowerBounds: [] },
   elementType: { stackType: 'int32', bits: 32 },
-  customModifiers: [{ kind: 'required', typeToken: 4 }],
+  productionCustomModifiers: [{ kind: 'required', typeToken: 4 }],
 });
 assert.deepEqual(decodeTypeSpec([0x1d, 0x20, 0x04, 0x08]), {
   stackType: 'object-ref',
   arrayShape: { rank: 1, sizes: [], lowerBounds: [] },
   elementType: { stackType: 'int32', bits: 32 },
+  productionCustomModifiers: [{ kind: 'optional', typeToken: 4 }],
+});
+// R1 collision: `CMOD_OPT T, SZARRAY I4` (leading) vs `SZARRAY CMOD_OPT T,
+// I4` (production-local) — same modifier set, different placement, so the
+// decoded identities must differ and must not be flattened together.
+const leading = decodeTypeSpec([0x20, 0x04, 0x1d, 0x08]);
+assert.deepEqual(leading, {
+  stackType: 'object-ref',
+  arrayShape: { rank: 1, sizes: [], lowerBounds: [] },
+  elementType: { stackType: 'int32', bits: 32 },
   customModifiers: [{ kind: 'optional', typeToken: 4 }],
+});
+assert.notDeepEqual(leading, decodeTypeSpec([0x1d, 0x20, 0x04, 0x08]));
+// Both modifier groups at once stay in their own fields.
+assert.deepEqual(decodeTypeSpec([0x1f, 0x04, 0x1d, 0x20, 0x04, 0x08]), {
+  stackType: 'object-ref',
+  arrayShape: { rank: 1, sizes: [], lowerBounds: [] },
+  elementType: { stackType: 'int32', bits: 32 },
+  customModifiers: [{ kind: 'required', typeToken: 4 }],
+  productionCustomModifiers: [{ kind: 'optional', typeToken: 4 }],
+});
+// PTR keeps the same lead/local distinction.
+assert.deepEqual(decodeTypeSpec([0x0f, 0x1f, 0x04, 0x08]), {
+  stackType: 'native-int',
+  pointee: { stackType: 'int32', bits: 32 },
+  productionCustomModifiers: [{ kind: 'required', typeToken: 4 }],
 });
 // Differential proof across every component family.
 const identities = [
@@ -207,6 +234,8 @@ const identities = [
   decodeTypeSpec([0x1b, 0x00, 0x00, 0x01]),
   decodeTypeSpec([0x1d, 0x1f, 0x04, 0x08]),
   decodeTypeSpec([0x1d, 0x20, 0x04, 0x08]),
+  decodeTypeSpec([0x20, 0x04, 0x1d, 0x08]),
+  decodeTypeSpec([0x1f, 0x04, 0x1d, 0x20, 0x04, 0x08]),
   decodeTypeSpec([0x1d, 0x08]),
   decodeTypeSpec([0x1d, 0x0a]),
   decodeTypeSpec([0x15, 0x12, 0x08, 0x01, 0x08]),
