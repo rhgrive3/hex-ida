@@ -243,7 +243,7 @@ function existingNonUnwindFunction(image, address) {
 }
 
 function recordUnverifiedKnownUnwind(image, address, reason, seen) {
-  if (address == null || address === 0n || !existingNonUnwindFunction(image, address)) return;
+  if (address == null || !existingNonUnwindFunction(image, address)) return;
   const key = BigInt(address).toString();
   if (seen.has(key)) return;
   image.functions.push(functionSeed(address, {
@@ -310,7 +310,7 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
       const initial = decodeEhValue(r, p, tableEnc, ctx, end); p = initial.next;
       const fde = decodeEhValue(r, p, tableEnc, ctx, end); p = fde.next;
       rows.push({ index:i, initial:initial.value, fde:fde.value });
-      if (initial.value != null && initial.value !== 0n) {
+      if (initial.value != null) {
         if (previousInitial != null && initial.value <= previousInitial) tableSorted = false;
         previousInitial = initial.value;
       }
@@ -345,7 +345,7 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
     }
 
     for (const row of rows) {
-      if (row.initial == null || row.initial === 0n || row.fde == null || row.fde === 0n) {
+      if (row.initial == null || row.fde == null) {
         invalidEntries++;
         recordUnverifiedKnownUnwind(image, row.initial, 'missing-fde-evidence', unverifiedSeen);
         continue;

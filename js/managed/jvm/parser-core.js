@@ -76,10 +76,10 @@ export function parseJvm(bytes,options={}){
   // interface — an array descriptor is never a defining class identity (#7162).
   function requireDefiningClassName(idx,code){const name=requireClassName(idx,code);if(!isValidBinaryName(name))fail(code);return name;}
   function requireClassName(idx,code='jvm-invalid-class-index'){const entry=requireCp(idx,7,code);const name=requireUtf8(entry.nameIndex,`${code}-name`);if(!isValidClassInfoName(name))fail(code);return name;}
-  // JVMS §4.7/§4.6 unqualified member names: non-empty, and must not contain
-  // '.', ';', '[' or '/'. Method names additionally allow the exact special
-  // names <init>/<clinit>; no field name may contain '<' or '>' (#7198).
-  function isValidUnqualifiedName(name,{method=false}={}){if(typeof name!=='string'||name.length===0)return false;if(method&&(name==='<init>'||name==='<clinit>'))return true;if(/[.;[\/<>]/.test(name))return false;return true;}
+  // JVMS §4.2.2 unqualified member names are non-empty and must not contain
+  // '.', ';', '[' or '/'. '<' and '>' are additionally restricted only for
+  // ordinary method names; <init>/<clinit> are the special method names.
+  function isValidUnqualifiedName(name,{method=false}={}){if(typeof name!=='string'||name.length===0)return false;if(/[.;[\/]/.test(name))return false;if(method&&(name==='<init>'||name==='<clinit>'))return true;if(method&&/[<>]/.test(name))return false;return true;}
   function requireMemberName(idx,code,{method=false}={}){const name=requireUtf8(idx,code);if(!isValidUnqualifiedName(name,{method}))fail(code);return name;}
   function parseNameAndTypeDescriptor(index,kind,code){const nameAndType=requireCp(index,12,code);const descriptor=requireUtf8(nameAndType.descriptorIndex,`${code}-descriptor-index`);if(kind==='field')parseJvmFieldDescriptor(descriptor);else parseJvmMethodDescriptor(descriptor);return nameAndType;}
   function validateConstantPool(){for(let i=1;i<constantPool.length;i++){const entry=constantPool[i];if(!entry)continue;switch(entry.tag){

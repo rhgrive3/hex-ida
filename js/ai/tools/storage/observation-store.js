@@ -1,4 +1,5 @@
 import { CursorCodec, shortHash, stableSerialize } from '../paging/cursor.js';
+import { completenessOf } from '../projections/index.js';
 
 const FORBIDDEN_PATH = new Set(['__proto__', 'prototype', 'constructor']);
 
@@ -114,6 +115,28 @@ function pageValue(value, offset, limit) {
   return { value, total: value == null ? 0 : 1, returned: value == null ? 0 : 1, offset: 0, nextOffset: null, kind: 'scalar' };
 }
 
+function sourceCompleteness(fullResult, selected) {
+  const root = completenessOf(fullResult);
+  if (root.complete === false || selected === fullResult) return root;
+  const selectedCompleteness = completenessOf(selected);
+  return selectedCompleteness.complete === false ? selectedCompleteness : root;
+}
+
+function detailCompleteness(page, source) {
+  const pageComplete = page.nextOffset == null;
+  const sourceComplete = source.complete !== false;
+  const pageCoverage = page.total ? Math.min(1, (page.offset + page.returned) / page.total) : 1;
+  return {
+    // Exhausting a page cannot upgrade a source that was already bounded or
+    // otherwise incomplete. Keep the source reason ahead of page navigation.
+    complete: sourceComplete && pageComplete,
+    returned: page.returned,
+    total: page.total,
+    coverage: sourceComplete ? pageCoverage : source.coverage,
+    reason: sourceComplete ? (pageComplete ? null : 'result-limit') : source.reason,
+  };
+}
+
 export class ObservationStore {
   constructor({ context = {}, maxEntries = DEFAULT_MAX_ENTRIES, maxAgeMs = DEFAULT_MAX_AGE_MS, cursorCodec = null } = {}) {
     this.context = context;
@@ -227,6 +250,7 @@ export class ObservationStore {
     const safeLimit = boundedLimit(limit);
     const selected = atPath(record.fullResult, effectivePath);
     const page = pageValue(selected, offset, safeLimit);
+    const completeness = detailCompleteness(page, sourceCompleteness(record.fullResult, selected));
     const nextCursor = page.nextOffset == null ? null : this.cursorCodec.encode({
       kind: 'observation-detail', bindingKey: currentBinding.key, detailRef: record.id,
       path: effectivePath, offset: page.nextOffset,
@@ -236,13 +260,7 @@ export class ObservationStore {
       tool: record.tool,
       path: effectivePath,
       data: page.value,
-      completeness: {
-        complete: page.nextOffset == null,
-        returned: page.returned,
-        total: page.total,
-        coverage: page.total ? Math.min(1, (page.offset + page.returned) / page.total) : 1,
-        reason: page.nextOffset == null ? null : 'result-limit',
-      },
+      completeness,
       continuation: nextCursor ? { cursor: nextCursor } : null,
       origin: {
         tool: record.tool,

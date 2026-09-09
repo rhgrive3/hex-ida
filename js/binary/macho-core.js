@@ -341,9 +341,9 @@ function parseSegment32(r, p, cmdsize, image, order) {
 
 function parseDylib(r, p, cmdsize, image, isId) {
   const nameoff = r.u32(p + 8);
-  if (nameoff < 24 || nameoff >= cmdsize) return;
+  if (nameoff < 24 || nameoff >= cmdsize) throw new Error(`invalid dylib name offset ${nameoff}`);
   const span = r.bytes.subarray(p + nameoff, p + cmdsize);
-  if (span.indexOf(0) === -1) return;
+  if (span.indexOf(0) === -1) throw new Error('unterminated dylib name');
   const name = r.cstring(p + nameoff, cmdsize - nameoff);
   if (isId) image.metadata.installName = name;
   else if (name) image.libraries.push(name);
