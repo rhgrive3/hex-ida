@@ -97,6 +97,53 @@ async function shellGeometry(page) {
   });
 }
 
+async function checkUiRootContract(page, browserName, viewportName) {
+  const result = await page.evaluate(async () => {
+    const [{ setUiRoot, uiRoot }, { setLang }] = await Promise.all([
+      import(`/js/ui-root.js?issue5355=${Date.now()}`),
+      import(`/js/i18n.js?issue5355=${Date.now()}`),
+    ]);
+    const hadRoot = Object.prototype.hasOwnProperty.call(globalThis, '__HEX_UI_ROOT__');
+    const previousRoot = globalThis.__HEX_UI_ROOT__;
+    const host = document.createElement('div');
+    document.body.append(host);
+    try {
+      const documentResult = setUiRoot(document.documentElement);
+      const documentElementAccepted = documentResult === document.documentElement
+        && uiRoot() === document.documentElement;
+      const hostResult = setUiRoot(host);
+      const hostElementAccepted = hostResult === host && uiRoot() === host;
+
+      let rejected = false;
+      try {
+        setUiRoot({ nodeType: 1, classList: {}, style: {} });
+      } catch (error) {
+        rejected = error instanceof TypeError && /Hex UI root must be an Element/.test(error.message);
+      }
+      const rejectionPreservedRoot = uiRoot() === host;
+
+      setLang('en');
+      const englishAttribute = host.getAttribute('lang') === 'en';
+      setLang('ja');
+      const japaneseAttribute = host.getAttribute('lang') === 'ja';
+      return {
+        documentElementAccepted,
+        hostElementAccepted,
+        rejected,
+        rejectionPreservedRoot,
+        englishAttribute,
+        japaneseAttribute,
+      };
+    } finally {
+      if (hadRoot) globalThis.__HEX_UI_ROOT__ = previousRoot;
+      else delete globalThis.__HEX_UI_ROOT__;
+      host.remove();
+    }
+  });
+  const ok = Object.values(result).every(Boolean);
+  check(`${browserName}/${viewportName}: UI root validates native and userscript Elements`, ok, JSON.stringify(result));
+}
+
 async function openSample(page) {
   await page.evaluate(() => window.__app.openSample());
   await page.waitForFunction(() => !!window.__app.store.get('fileInfo'), null, { timeout: 20000 });
@@ -187,6 +234,7 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
     await page.waitForFunction(() => !!window.__hexUi, null, { timeout: 10000 });
     await page.waitForTimeout(350);
     await closeTransient(page);
+    await checkUiRootContract(page, browserName, viewportName);
 
     /*
      * Code first. The landing state is the workbench with its compact
