@@ -93,14 +93,30 @@ export function condenseTypeGraph(entityIds, dependenciesOf, {
         stack.push(frame.node);
         onStack.add(frame.node);
 
+        // Bounded materialization (#5271): the dependency iterable itself is
+        // part of the edge budget. Enumerate at most maxEdges + 1 raw items —
+        // enumerating, deduplicating and sorting more can never fit the
+        // budget, and an unbounded iterable would otherwise exhaust work and
+        // memory before the edge counter ever runs.
+        let overBudget = false;
         let succs = [];
         try {
-          succs = [...new Set(dependenciesOf(frame.node) ?? [])].sort();
+          const seen = new Set();
+          let enumerated = 0;
+          for (const item of dependenciesOf(frame.node) ?? []) {
+            if (++enumerated > maxEdges) { overBudget = true; break; }
+            seen.add(item);
+          }
+          succs = [...seen].sort();
         } catch {
           truncated = true;
           succs = [];
         }
         frame.successors = succs;
+        if (overBudget) {
+          truncated = true;
+          break;
+        }
       }
 
       if (frame.state < frame.successors.length) {
