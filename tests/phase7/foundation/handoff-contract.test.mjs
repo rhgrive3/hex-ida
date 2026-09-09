@@ -118,7 +118,10 @@ test('constructing the surface performs no analysis', () => {
   // Opening a binary must not trigger a whole-program solve (P7-INV-009).
   const built = buildFixture('cyclic-pointer-phi');
   const started = process.hrtime.bigint();
-  createAnalysisSurface({ ir: built.ir, cfg: built.cfg, ssa: built.ssa, memorySsa: built.memorySsa });
+  createAnalysisSurface({
+    ir: built.ir, cfg: built.cfg, ssa: built.ssa, memorySsa: built.memorySsa,
+    snapshotId: 'snapshot_handoff_construct_only',
+  });
   const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
   assert.ok(elapsedMs < 5, `constructing the surface took ${elapsedMs} ms, so it solved something`);
 });
