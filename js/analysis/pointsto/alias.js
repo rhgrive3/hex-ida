@@ -13,7 +13,7 @@
  */
 
 import { createAliasResult, mayAlias, unknownAlias } from '../alias/result.js';
-import { provenSeparationAuthority, rangeRelation } from './lattice.js';
+import { canonicalPointsToAddress, provenSeparationAuthority, rangeRelation } from './lattice.js';
 
 export const A2_ALIAS_ANALYZER_ID = 'phase7.alias.a2-points-to';
 
@@ -94,31 +94,34 @@ export function pointsToAlias(left, right, options = {}) {
           continue;
         }
 
-        if (a.address != null && b.address != null) {
-          try {
-            const baseA = BigInt(a.address);
-            const baseB = BigInt(b.address);
-            if (a.offsetRange?.min != null && a.offsetRange?.max != null && b.offsetRange?.min != null && b.offsetRange?.max != null) {
-              const spanA_min = baseA + a.offsetRange.min;
-              const spanA_max = baseA + a.offsetRange.max;
-              const spanB_min = baseB + b.offsetRange.min;
-              const spanB_max = baseB + b.offsetRange.max;
-              if (spanA_max + widthA <= spanB_min || spanB_max + widthB <= spanA_min) {
-                relations.push('no');
-                reasonCodes.add('disjoint-global-interval');
-                continue;
-              }
-              if (a.offsetRange.exact && b.offsetRange.exact && spanA_min === spanB_min && widthA === widthB) {
-                relations.push('must');
-                reasonCodes.add('identical-root-and-exact-offset');
-                continue;
-              }
+        const addressA = canonicalPointsToAddress(a.address);
+        const addressB = canonicalPointsToAddress(b.address);
+        const hasCanonicalAddressA = addressA != null && addressA === a.address;
+        const hasCanonicalAddressB = addressB != null && addressB === b.address;
+
+        if (hasCanonicalAddressA && hasCanonicalAddressB) {
+          const baseA = BigInt(addressA);
+          const baseB = BigInt(addressB);
+          if (a.offsetRange?.min != null && a.offsetRange?.max != null && b.offsetRange?.min != null && b.offsetRange?.max != null) {
+            const spanA_min = baseA + a.offsetRange.min;
+            const spanA_max = baseA + a.offsetRange.max;
+            const spanB_min = baseB + b.offsetRange.min;
+            const spanB_max = baseB + b.offsetRange.max;
+            if (spanA_max + widthA <= spanB_min || spanB_max + widthB <= spanA_min) {
+              relations.push('no');
+              reasonCodes.add('disjoint-global-interval');
+              continue;
             }
-          } catch {}
+            if (a.offsetRange.exact && b.offsetRange.exact && spanA_min === spanB_min && widthA === widthB) {
+              relations.push('must');
+              reasonCodes.add('identical-root-and-exact-offset');
+              continue;
+            }
+          }
         }
 
         const pair = new Set([a.rootKind, b.rootKind]);
-        if ((pair.has('stack-fixed') || pair.has('stack-like')) && (pair.has('global-absolute') || pair.has('absolute') || a.address != null || b.address != null)) {
+        if ((pair.has('stack-fixed') || pair.has('stack-like')) && (pair.has('global-absolute') || pair.has('absolute') || hasCanonicalAddressA || hasCanonicalAddressB)) {
           relations.push('no');
           reasonCodes.add('distinct-proven-root');
           continue;
