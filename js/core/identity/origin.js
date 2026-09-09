@@ -31,6 +31,9 @@ function requiredString(value, code) {
   if (!text) fail(code);
   return text;
 }
+function compareCanonicalText(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
 function bigintValue(value, code) {
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number') {
@@ -43,7 +46,7 @@ function bigintValue(value, code) {
 }
 function uniqueSorted(values) {
   const byKey = new Map(values.map((value) => [stableStringify(value), value]));
-  return [...byKey.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => value);
+  return [...byKey.entries()].sort(([a], [b]) => compareCanonicalText(a, b)).map(([, value]) => value);
 }
 // Provenance payloads must be validated before jsonSafe can erase or round numeric evidence.
 function exactJson(value) {
