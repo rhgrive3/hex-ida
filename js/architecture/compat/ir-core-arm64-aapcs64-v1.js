@@ -216,7 +216,19 @@ function parameterAbiClass(param) {
     typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
   const members = Math.max(1, Math.min(4, abiCount(param?.members ?? param?.elements ?? param?.count, 1)));
   const bits = Math.max(8, Math.min(128, abiCount(param?.bits ?? param?.sizeBits, fp ? 64 : 64)));
-  return { pointer, hfa, vector, fp, members, bits };
+  // Stage C C.10/C.11: a 16-byte Integral Type needs a consecutive GP
+  // register pair. Only records with an explicit integral authority (int128
+  // type spelling, or an integer class at a proven 128-bit width) may take
+  // the pair path: width alone cannot reclassify composites — a 128-bit
+  // aggregate must keep its own conservative single-register record rather
+  // than consuming an even-aligned pair reserved for Integral Types (#4939).
+  const composite = param?.aggregate === true || members > 1
+    || /aggregate|composite|homogeneous|struct|union|class/.test(cls)
+    || /^(struct|union|class)[\s_]/.test(type);
+  const integral128 = /(?:unsigned\s+)?__int128|int128_t|uint128_t/.test(type + ' ' + cls)
+    || (cls.includes('integer') && bits === 128);
+  const wideIntegral = !pointer && !hfa && !vector && !fp && !composite && integral128;
+  return { pointer, hfa, vector, fp, members, bits, wideIntegral };
 }
 
 function abiReturnBits(value) {
@@ -254,10 +266,25 @@ export function classifyCallArguments(insn, opts = {}) {
       // so every later FP argument is also assigned to the stack.
       fp = 8;
     }
-    if (!c.fp && gp < 8) {
-      const reg=`x${gp++}`; srcs.push({t:'reg',reg,bits:64});
-      arguments_.push({index,location:'register',reg,abiClass:c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits});
-      return;
+    if (!c.fp) {
+      if (c.wideIntegral) {
+        // AAPCS64 Stage C rules C.10/C.11 (#4939): a 16-byte Integral Type
+        // rounds NGRN up to an even register and consumes the consecutive
+        // pair; without a fitting pair the argument (and NGRN) moves to the
+        // stack so later GP arguments cannot reuse a phantom x7 half.
+        if ((gp & 1) !== 0) gp += 1;
+        if (gp <= 6) {
+          const regs=[`x${gp}`,`x${gp+1}`]; gp += 2;
+          for (const reg of regs) srcs.push({t:'reg',reg,bits:64});
+          arguments_.push({index,location:'registers',regs,reg:regs[0],abiClass:'wide-integer',pointer:false,bits:128});
+          return;
+        }
+        gp = 8;
+      } else if (gp < 8) {
+        const reg=`x${gp++}`; srcs.push({t:'reg',reg,bits:64});
+        arguments_.push({index,location:'register',reg,abiClass:c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits});
+        return;
+      }
     }
     const slots=Math.max(1,Math.ceil((c.hfa?c.members*c.bits:c.bits)/64));
     const entry={index,location:'stack',offset:stackOffset,bytes:slots*8,abiClass:c.hfa?'hfa':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits};
