@@ -1847,6 +1847,80 @@ the unresolved history bindings. C4-04 and the rest of the original findings
 remain open. No component acceptance/merge, full gate, browser/device/runtime
 claim, main reconciliation, or unrelated issue/performance work occurred.
 
+### C4-03 observed expression consumers — TODO implementation, 2026-09-09
+
+The preceding history step intentionally left rendered bindings unresolved.
+This step connects actual store, return and direct-value branch consumers from
+the existing semantic producer to the existing final projection. A live PR
+search again found #3421 at `4cd5b3eb9200b1180985b9df3a74f8245a5cc928` and
+#3422 at `ca25c71f1a6f18f0ba043800fb066f8068f2df73`; their reuse status is
+unchanged. No competing implementation or new component merge was created.
+
+`pipeline-core.js` retains the exact records for each produced value and issues
+private consumer bindings only while constructing statements that actually use
+that value. Store/return roots are identity-checked. The cbz/cbnz/tbz/tbnz
+condition producers additionally check their actual nested expression object;
+flag reconstruction does not borrow that edge. Existing bounded live-object
+observation checks the expression, records, canonical value and instruction.
+The original expression/source IDs, including source-derived load identities,
+are not changed. Copied public descriptors or record payloads do not acquire
+these private bindings.
+
+The final projection captures valid consumers before its owned transformations
+and observes the lines it actually emits. A condition is linked only after a
+successful condition replacement; already-identical output is supported, while
+malformed/ambiguous replacement remains unbound. The shared render mapper
+matches those exact record objects, unions the consumed origins into the
+rendered entity, and records `renderedBinding: producer-bound`. A different
+statement reading the same input is not linked. Late mutation invalidates
+the resulting map; copied or edited lines cannot replay the binding. The
+validator checks the record/entity back-reference. Existing query-snapshot,
+truncation and cancellation boundaries remain in force.
+
+The shared UI now distinguishes observed consumers from unresolved histories.
+Instruction lookup selects the actual consumer lines, shows their transform
+history and enables the existing instruction navigation. Copy text remains
+unchanged. The producer's cumulative observation work is bounded per function
+(at most 4096 consumers and the existing projection edge allowance); lower
+`renderProvenanceBindingBudget` caps leave later bindings unresolved without
+changing decompilation. Failed observation is not retried for every later line.
+
+Focused evidence:
+
+- 13 real-producer consumer regressions, including shared-input negatives,
+  unchanged load identity, store/return/branch consumers, query navigation,
+  mutation/copy refusal, late mutation, malformed/ambiguous conditions and caps;
+- 19 shared navigation/UI-handler tests and 12 expression-history tests;
+- both roadmap ownership suites (8) and existing budget regressions (7);
+- canonical provenance PASS 13.4 s, receipt
+  `c4-03-consumer-settled-owned-b26d6137-ac63-4689-b722-fcaaf29045b2.json`;
+- settled semantic pipeline PASS 0.6 s, receipt
+  `c4-03-consumer-settled-pipeline-b2943bac-3b08-4870-a0c9-5628f7aeaf44.json`;
+- unchanged rewrite semantic properties PASS 0.2 s, receipt
+  `c4-03-consumer-rewrite-217603d7-ce0f-4cde-8ba1-19575cd780d8.json`;
+- full actual inventory: 256 paths, Phase 7: 22, Phase 8: 44.
+
+An initial test assigned the exact same surviving input object while expecting
+replacement invalidation. The negative fixture now actually replaces the
+expression object; the positive shared-input case still requires no cross-link.
+An initial missing-entry guard failed two existing standalone-map tests and was
+corrected before the settled canonical run. No tests were waived or excluded.
+
+Canonical generation PASS 3.6 s, receipt
+`c4-03-consumer-build-e051fd2e-8643-4a6c-9392-c151117ab289.json`:
+serial `2322242175`, build `b2b5dd6a6c92363e070e960c`, release identity
+`a3e588dea7e306aff60e35cd0b5cf9ef33ce8497586505d3385d52cead9dc6e5`.
+Exact-head and zero-diff second-rebuild receipts follow in the durable resume
+checkpoint. This is Node contract/UI-handler evidence, not browser/device proof.
+
+C4-03 remains open. Remaining work includes retention across successive owned
+projections, consumers replaced by later recovery passes, and the complete
+CSE/DCE/phi/switch/struct-field removed/merged-entity denominator. An unobserved
+replacement is still unresolved, not reattached by expression text or a shared
+origin. No other original finding is declared complete. Main reconciliation,
+full integration acceptance, device/runtime proof and unrelated issue/performance
+work were not performed; the existing acceptance lock remains in force.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -1881,7 +1955,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C3-03 | Versioned language metadata and unknown-version matrix |
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
-| HEX-C4-03 | Product/legacy navigation and actual expression-source histories implemented; exact history-to-render binding and full removed/merged class coverage still open |
+| HEX-C4-03 | Product/legacy navigation, expression histories and observed store/return/direct-branch bindings implemented; successive-projection retention and full removed/merged class coverage still open |
 | HEX-C4-04 | v8 pure constant projection plus remaining risky rewrite observables |
 | HEX-C4-05 | Bounded e-graph candidates, independent proofs and resource matrix |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |

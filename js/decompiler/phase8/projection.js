@@ -1,4 +1,6 @@
 import { isProducerProjection, producerExpressionToken } from '../pipeline.js';
+import { readExpressionHistoryConsumer } from '../pipeline-core.js';
+import { captureProjectionIrData } from './projection-origin.js';
 import { expr, mapChildren, mergeSource, sourceOf } from '../ast/nodes.js';
 import { expressionReadability, printExpression, printProgram } from '../pretty/c.js';
 import { readProvedRewrites } from './pass-validation.js';
@@ -8,6 +10,13 @@ import {
   isValidatedAnalysisIdentity,
 } from './analysis-identity.js';
 import { buildRenderProvenance } from './render-provenance.js';
+
+const lineExpressionHistories = new WeakMap();
+export function readLineExpressionHistory(line, ir) {
+  const entry = lineExpressionHistories.get(line);
+  return entry && entry.ir === ir && entry.consumers.every(consumer => consumer.isCurrent()) && entry.observation.matches()
+    ? entry.records : null;
+}
 
 function integer(value) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
@@ -220,7 +229,7 @@ function replaceCondition(text, keyword, expression) {
   const source = String(text || '');
   const marker = `${keyword} (`;
   const at = source.indexOf(marker);
-  if (at < 0) return source;
+  if (at < 0) return { text:source, replaced:false };
   const open = at + keyword.length + 1;
   let depth = 0;
   for (let index = open; index < source.length; index += 1) {
@@ -228,10 +237,10 @@ function replaceCondition(text, keyword, expression) {
     if (char === '(') depth += 1;
     else if (char === ')') {
       depth -= 1;
-      if (depth === 0) return `${source.slice(0, open + 1)}${expression}${source.slice(index)}`;
+      if (depth === 0) return { text:`${source.slice(0, open + 1)}${expression}${source.slice(index)}`, replaced:true };
     }
   }
-  return source;
+  return { text:source, replaced:false };
 }
 
 function conditionMap(semanticAst, transform) {
@@ -281,6 +290,17 @@ function boundAnalysisIdentity(result, analysis, supplied) {
 export function applyPhase8Projection(result, analysis, opts = {}) {
   if (!result?.semantic || !result.semanticAst || !result.cAst || !analysis) return result;
   const original = result;
+  // Capture before this owned projection transforms or clones the descriptors.
+  // A stack/return recovery that replaced the earlier expression has already
+  // invalidated that consumer and is deliberately not rebound by similarity.
+  const expressionConsumers = (result.cAst.body ?? []).map(node => readExpressionHistoryConsumer(node?.semantic, result.ir));
+  const conditionConsumers = new Map();
+  for (const condition of result.semanticAst.conditions ?? []) {
+    if (condition.row == null) continue;
+    const row = Number(condition.row);
+    conditionConsumers.set(row, conditionConsumers.has(row) ? null : readExpressionHistoryConsumer(condition, result.ir));
+  }
+  const renderedConditions = new Map();
   const proofRequested = opts.phase8RewritePlan != null;
   const proofContext = {ir:result.ir,opts};
   const proved = proofRequested ? readProvedRewrites(analysis,proofContext) : null;
@@ -338,14 +358,21 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     const candidates = [...new Set(rows.map((row) => conditions.get(row)).filter(Boolean))];
     if (candidates.length === 1) {
       const expression = printExpression(candidates[0]);
-      if (String(node.text || '').includes('if (')) node.text = replaceCondition(node.text, 'if', expression);
-      else if (String(node.text || '').includes('while (')) node.text = replaceCondition(node.text, 'while', expression);
+      const keyword = String(node.text || '').includes('if (') ? 'if' : String(node.text || '').includes('while (') ? 'while' : null;
+      if (keyword) {
+        const replacement = replaceCondition(node.text, keyword, expression);
+        // Only a condition actually printed by this owned replacement can
+        // supply a rendered edge. Ambiguous source rows remain unbound.
+        const consumers = [...new Set(rows.map(row => conditionConsumers.get(row)).filter(Boolean))];
+        if (replacement.replaced && consumers.length === 1) renderedConditions.set(node, consumers[0]);
+        node.text = replacement.text;
+      }
     }
   }
 
   if (proofRequested && (opts.shouldAbort?.() || !isProducerProjection(original) || proved && !readProvedRewrites(analysis,proofContext))) return original;
   const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
-  const lines = (result.cAst.body || []).map((node) => {
+  const lines = (result.cAst.body || []).map((node, index) => {
     // HEX-C4-03: a rendered line is produced by its own node location AND by
     // the rewritten semantic expression that now renders into it. The merged
     // expression source carries the union of every consumed origin across the
@@ -360,7 +387,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     })();
     const sources = [node?.source, expressionSource, conditionSource].filter(Boolean);
     const source = sources.length === 1 ? sources[0] : mergeSource(...sources);
-    return {
+    const line = {
       kind:node.kind,
       indent:node.indent,
       text:node.text,
@@ -369,6 +396,15 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
       note:null,
       source,
     };
+    const consumers = [expressionConsumers[index], renderedConditions.get(node)].filter(Boolean);
+    if (consumers.length && consumers.every(consumer => consumer.isCurrent())) {
+      try {
+        const observation = captureProjectionIrData([line], opts.shouldAbort);
+        const records = Object.freeze([...new Set(consumers.flatMap(consumer => consumer.records))]);
+        lineExpressionHistories.set(line, { ir:result.ir, consumers, records, observation });
+      } catch { /* No inferred edge when the bounded observation is unavailable. */ }
+    }
+    return line;
   });
   if (proofRequested && (opts.shouldAbort?.() || !isProducerProjection(original) || proved && !readProvedRewrites(analysis,proofContext))) return original;
   const withLines = {

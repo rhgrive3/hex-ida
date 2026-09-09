@@ -4,9 +4,10 @@
  * re-interpret ARM64 instruction text. The legacy decompiler remains an isolated
  * fallback at the public facade.
  */
-import { expr, mergeSource, sourceOf, mapChildren, structuralKey, sameExpr } from './ast/nodes.js';
+import { children, expr, mergeSource, sourceOf, mapChildren, structuralKey, sameExpr } from './ast/nodes.js';
 import { RewriteEngine } from './rewrite/engine.js';
 import { DEFAULT_RULES } from './rewrite/rules.js';
+import { captureProjectionIrData, PROJECTION_LIMITS } from './phase8/projection-origin.js';
 import { recoverArm64ClangIdiom, recognizeClamp, recognizeDivisionByConstant } from './idioms/arm64-clang.js';
 import { recoverHighVariables } from './types/high-variables.js';
 import { recoverFunctionPrototype } from './types/prototype.js';
@@ -22,6 +23,61 @@ import {
 } from '../semantics/memoryssa/queries.js';
 
 function valueOf(a) { return a?.value || null; }
+
+// Presentation provenance belongs to the actual producer/consumer pair, not
+// to an expression's text or a shared input's source IDs. No public metadata
+// can issue a binding, and the expression/load identity is never modified.
+const expressionHistoryConsumers = new WeakMap();
+function containsExpression(root, expression) {
+  const pending = [root], seen = new Set();
+  while (pending.length && seen.size < 4096) {
+    const node = pending.pop();
+    if (node === expression) return true;
+    if (!node || seen.has(node)) continue;
+    seen.add(node); pending.push(...children(node));
+  }
+  return false;
+}
+function semanticExpressionConsumer(semantic, value, instruction, state, nested = false) {
+  const produced = state.expressionProofs?.get(value?.id);
+  if (!produced?.records.length || (produced.expression !== semantic.expression
+      && (!nested || !containsExpression(semantic.expression, produced.expression)))) return semantic;
+  // Bound cumulative observation work for the function, not just each
+  // individual graph: many consumers may share a large definition graph.
+  const requested = state.opts?.renderProvenanceBindingBudget;
+  const cap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
+  const budget = state.expressionBindingBudget ??= {
+    consumers:cap(requested?.maxConsumers, 4096), edges:cap(requested?.maxEdges, PROJECTION_LIMITS.edges),
+  };
+  if (budget.consumers <= 0 || budget.edges <= 0) return semantic;
+  budget.consumers--;
+  try {
+    const observation = captureProjectionIrData(
+      [semantic.expression, produced.records, value, instruction, semantic.location], state.opts?.shouldAbort);
+    const remaining = budget.edges - observation.metrics.edges;
+    budget.edges = Math.max(0, remaining);
+    if (remaining < 0) return semantic;
+    expressionHistoryConsumers.set(semantic, Object.freeze({
+      ir:state.ir, expression:semantic.expression, op:semantic.op, instructionId:semantic.ir,
+      location:semantic.location, records:produced.records,
+      isCurrent:() => observation.matches(),
+    }));
+  } catch {
+    // A failed bounded observation must not be retried for every later line.
+    budget.edges = 0;
+  }
+  return semantic;
+}
+
+export function readExpressionHistoryConsumer(semantic, ir) {
+  const binding = expressionHistoryConsumers.get(semantic);
+  if (!binding || binding.ir !== ir) return null;
+  const data = key => Object.getOwnPropertyDescriptor(semantic, key)?.value;
+  if (data('expression') !== binding.expression || data('op') !== binding.op
+      || data('ir') !== binding.instructionId || data('location') !== binding.location
+      || !binding.isCurrent()) return null;
+  return binding;
+}
 function safeIdent(s, fallback = 'value') {
   const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_$]/g, '_').replace(/^([0-9])/, '_$1');
   return x || fallback;
@@ -314,6 +370,7 @@ function buildValue(v, state, flags = {}) {
 function rewriteAll(state, budget) {
   const engine = new RewriteEngine(DEFAULT_RULES, { timeBudgetMs: Math.max(4, Math.min(22, budget.timeBudgetMs / 2)), nodeBudget: Math.min(4096, budget.nodeBudget) });
   state.expressions = new Map();
+  state.expressionProofs = new Map();
   state.rewriteProof = [];
   state.rewriteStats = { applications: 0, budgetExceeded: false, byRule: {} };
   for (const v of state.ir.values || []) {
@@ -324,7 +381,9 @@ function rewriteAll(state, budget) {
     // input and the rules. Work bounds still apply. Production leaves it unset.
     const r = engine.rewrite(root, { state, deterministicTransforms: state.opts?.deterministicTransforms === true });
     state.expressions.set(v.id, r.root);
-    state.rewriteProof.push(...r.proof.map((p) => ({ ...p, valueId: v.id })));
+    const records = Object.freeze(r.proof.map((p) => ({ ...p, valueId: v.id })));
+    state.rewriteProof.push(...records);
+    state.expressionProofs.set(v.id, { expression:r.root, records });
     state.rewriteStats.applications += r.stats.applications;
     state.rewriteStats.budgetExceeded ||= r.stats.budgetExceeded;
     for (const [k, n] of Object.entries(r.stats.byRule)) state.rewriteStats.byRule[k] = (state.rewriteStats.byRule[k] || 0) + n;
@@ -501,7 +560,12 @@ function semanticFacts(state, result) {
       facts.calls.push({ name, runtime, row: inst.row, address: inst.address, ir: inst.id });
     } else if (inst.op === 'cbr') {
       const e = branchCondition(inst, state);
-      facts.conditions.push({ expression: e, text: printExpression(e), row: inst.row, address: inst.address, ir: inst.id });
+      const condition = { expression:e, text:printExpression(e), row:inst.row, address:inst.address, ir:inst.id };
+      // Only these branch producers consume expressionFor(args[0]). Flag
+      // reconstruction has a different producer and cannot borrow this edge.
+      const kind = inst.extra?.kind || inst.sub || '';
+      facts.conditions.push(['cbz', 'cbnz', 'tbz', 'tbnz'].includes(kind)
+        ? semanticExpressionConsumer(condition, valueOf(inst.args?.[0]), inst, state, true) : condition);
     } else if (inst.op === 'ret') {
       const rv = returnValueAt(inst, state);
       if (rv) facts.outputs.push({ name: 'return', type: typeFor(state, rv), expression: expressionFor(rv, state) });
@@ -597,12 +661,12 @@ function knownStatementForLine(line, state) {
       else if (e.op === 'sub' && e.right?.kind === 'const' && e.right.value === 1n) text = `${location.text}--;`;
       else text = `${location.text} ${{add:'+=',sub:'-=',mul:'*='}[e.op]} ${rhs};`;
     }
-    return { text, semantic: { op: 'store', location, expression: e, ir: store.id }, source: mergeSource(line.source, e?.source, origin(store, store.dst)) };
+    return { text, semantic: semanticExpressionConsumer({ op: 'store', location, expression: e, ir: store.id }, value, store, state), source: mergeSource(line.source, e?.source, origin(store, store.dst)) };
   }
   const ret = insts.find((i) => i.op === 'ret');
   if (ret && /^return\b/.test(String(line.text || ''))) {
     const rv = returnValueAt(ret, state);
-    if (rv) { const e = expressionFor(rv, state); return { text: `return ${printExpression(e)};`, semantic: { op: 'return', expression: e, ir: ret.id }, source: mergeSource(line.source, e?.source, origin(ret, rv)) }; }
+    if (rv) { const e = expressionFor(rv, state); return { text: `return ${printExpression(e)};`, semantic: semanticExpressionConsumer({ op: 'return', expression: e, ir: ret.id }, rv, ret, state), source: mergeSource(line.source, e?.source, origin(ret, rv)) }; }
   }
   return null;
 }
@@ -627,7 +691,12 @@ function semanticAstOf(state, facts) {
     values: [...state.expressions.entries()].map(([valueId, expression]) => ({ kind: 'SemanticValue', valueId, expression, type: state.types?.values?.get?.(valueId) || null, source: expression.source })),
     stores: facts.stores.map((s) => ({ kind: 'SemanticStore', ...s })),
     calls: facts.calls.map((c) => ({ kind: 'SemanticCall', ...c })),
-    conditions: facts.conditions.map((c) => ({ kind: 'SemanticCondition', ...c })),
+    conditions: facts.conditions.map((c) => {
+      const condition = { kind:'SemanticCondition', ...c };
+      const binding = readExpressionHistoryConsumer(c, state.ir);
+      if (binding) expressionHistoryConsumers.set(condition, binding);
+      return condition;
+    }),
     inputs: facts.inputs,
     outputs: facts.outputs,
   };

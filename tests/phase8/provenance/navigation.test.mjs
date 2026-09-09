@@ -8,7 +8,7 @@ import { createDecompilerNavigation, createDecompilerProvenanceView } from '../.
 import { showDecompilerProvenanceSheet } from '../../../js/ui/decompiler-provenance-sheet.js';
 import { RewriteEngine } from '../../../js/decompiler/rewrite/engine.js';
 import { DEFAULT_RULES } from '../../../js/decompiler/rewrite/rules.js';
-import { analysis, expr, resultWith, source } from './fixture.js';
+import { analysis, consumerFixture, expr, resultWith, source } from './fixture.js';
 
 test('C4-03 production pseudocode route consumes the snapshot-bound provenance view', () => {
   const product = fs.readFileSync(new URL('../../../js/ui/product-base.js', import.meta.url), 'utf8');
@@ -191,6 +191,30 @@ test('C4-03 UI exposes actual elided-origin history without selecting a guessed 
     await controls.children[1].click();
     assert.match(status.textContent, /stale-query-snapshot/);
     assert.equal(history.children.length, 0, 'stale histories clear with the existing selection lifecycle');
+  } finally {
+    if (previous === undefined) delete globalThis.document; else globalThis.document = previous;
+  }
+});
+
+test('C4-03 UI connects producer-bound history to the real rows and instruction navigation', async () => {
+  const previous = globalThis.document;
+  globalThis.document = { createElement:tag => new Element(tag) };
+  try {
+    const producer = consumerFixture();
+    const f = await queryFixture(applyPhase8Projection(producer.enhanced, analysis()));
+    const opened = [];
+    const view = createDecompilerProvenanceView(f.query, { ...f.options, onNavigate:address => opened.push(address) });
+    const [controls, code, status, details, history] = view.root.children;
+    const originalText = code.textContent;
+    controls.children[0].value = '0x1004';
+    await controls.children[1].click();
+    assert.deepEqual(code.children.map(row => row.classList.contains('selected')), [true, false, true]);
+    assert.match(status.textContent, /2 matching lines/);
+    assert.match(history.textContent, /Bound to the rendered consumer of this expression/);
+    assert.doesNotMatch(history.textContent, /binding is unresolved/);
+    await details.children.find(node => node.textContent === '0x00001004').click();
+    assert.deepEqual(opened, [producer.add.address]);
+    assert.equal(code.textContent, originalText);
   } finally {
     if (previous === undefined) delete globalThis.document; else globalThis.document = previous;
   }

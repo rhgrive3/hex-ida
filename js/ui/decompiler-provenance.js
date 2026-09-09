@@ -167,8 +167,11 @@ export function createDecompilerProvenanceView(query, options = {}) {
           text('変換前: ', 'Consumed: ') + origins.consumedRefs.join(', ') + '\n'
           + text('変換後: ', 'Produced: ') + origins.producedRefs.join(', ') + '\n'
           + text('式の出典から除去: ', 'Elided expression origins: ') + origins.elidedRefs.join(', ') + '\n'
-          + text('表示行への対応は未確定です。IRの削除を意味しません。',
-            'Rendered binding is unresolved. This does not mean canonical IR was deleted.')));
+          + (record.renderedBinding === 'producer-bound'
+            ? text('この式を使う表示行に対応しています。IRの削除を意味しません。',
+              'Bound to the rendered consumer of this expression. This does not mean canonical IR was deleted.')
+            : text('表示行への対応は未確定です。IRの削除を意味しません。',
+              'Rendered binding is unresolved. This does not mean canonical IR was deleted.'))));
         history.append(item);
       }
       if (offset > 0) history.append(uiButton(text('前の履歴', 'Previous history'), { onClick:() => changeHistoryPage(offset - 16) }));

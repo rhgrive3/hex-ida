@@ -1,5 +1,6 @@
 import { sourceOf } from '../ast/nodes.js';
 import { renderProvenanceRecord } from './contract.js';
+import { readLineExpressionHistory } from './projection.js';
 
 export const RENDER_PROVENANCE_VERSION = 1;
 
@@ -121,11 +122,11 @@ function originKeySet(origins) {
   return new Set(entityOriginEntries(origins).map(([kind, value]) => originKey(kind, value)));
 }
 
-function recordFeedsEntity(record, entityOriginKeys) {
+function recordFeedsEntity(record, entityOriginKeys, bound) {
   // A rewrite's consumed/remaining sources do not establish which C line
   // uses its result. In particular, a shared input is not a replacement edge.
   // Keep these records queryable without inventing a rendered consumer.
-  if (record.originHistory) return false;
+  if (record.originHistory) return bound;
   const recordOrigins = canonicalOrigins(record?.origin ?? {});
   return entityOriginEntries(recordOrigins)
     .some(([kind, value]) => entityOriginKeys.has(originKey(kind, value)));
@@ -166,6 +167,8 @@ function expressionHistoryRecord(record, cap) {
   const consumed = [...originKeySet(truncateOrigins(before, cap))];
   const produced = [...originKeySet(truncateOrigins(after, cap))];
   const producedSet = new Set(produced);
+  const boundedBefore = truncateOrigins(before, cap), boundedAfter = truncateOrigins(after, cap);
+  const refs = [...boundedBefore.ssaRefs, ...boundedAfter.ssaRefs];
   return renderProvenanceRecord({
     kind:'expression-rewrite',
     proof:nonEmptyString(typeof record.evidence === 'string' ? record.evidence : record.evidence?.kind,
@@ -176,8 +179,14 @@ function expressionHistoryRecord(record, cap) {
     after:record.after,
     valueId:record.valueId ?? null,
     targets:consumed,
-    // This is a transform history, not evidence for an inferred rendered line.
-    origin:{},
+    // These origins feed a line only through an observed producer binding.
+    origin:{
+      rows:canonicalList([...boundedBefore.rows, ...boundedAfter.rows], true),
+      addresses:canonicalList([...boundedBefore.addresses, ...boundedAfter.addresses], false),
+      ir:canonicalList([...boundedBefore.ir, ...boundedAfter.ir], false),
+      ssaDefs:canonicalList(refs.filter(ref => ref.startsWith('def:')).map(ref => ref.slice(4)), false),
+      ssaUses:canonicalList(refs.filter(ref => ref.startsWith('use:')).map(ref => ref.slice(4)), false),
+    },
     originHistory:Object.freeze({
       scope:'replacement-expression-source',
       consumedRefs:Object.freeze(consumed),
@@ -206,6 +215,7 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   const rawRecords = Array.isArray(result.phase8Projection?.transforms) ? result.phase8Projection.transforms : [];
   const rawRecordCount = expressionRecords.length + rawRecords.length;
   const ledgerRecords = [];
+  const historyProducers = new Map();
   let unavailableExpressionHistory = 0;
   for (const record of expressionRecords) {
     if (typeof shouldAbort === 'function' && shouldAbort() === true) return cancelledMap(resolvedBudget);
@@ -216,6 +226,7 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     if (ledgerRecords.length >= resolvedBudget.maxTransformRecords) break;
     const normalized = expressionHistoryRecord(record, resolvedBudget.maxOriginsPerEntity);
     ledgerRecords.push(normalized);
+    historyProducers.set(normalized, record);
     if (normalized.originHistory.completeness !== 'complete') {
       truncatedScopes.push('expression-history-origins');
       reasons.add('truncated');
@@ -234,6 +245,7 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   const entities = {};
   const reverse = new Map();
   const entityRefsByRecord = ledgerRecords.map(() => new Set());
+  const boundLines = [];
   const lineCount = Math.min(result.lines.length, resolvedBudget.maxEntities);
   if (result.lines.length > lineCount) {
     entitiesTruncated = result.lines.length - lineCount;
@@ -247,13 +259,16 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     if (!line || typeof line !== 'object' || Array.isArray(line)) fail('phase8-render-provenance-entity-source-invalid');
     const entityKey = `L${index}:${line.kind ?? 'null'}`;
     const raw = sourceOf(line.source);
+    const binding = readLineExpressionHistory(line, result.ir);
+    const boundRecords = new Set(binding ?? []);
+    if (binding) boundLines.push([line, binding]);
     let origins = canonicalOrigins(raw);
     let entityOriginKeys = originKeySet(origins);
 
     const recordRefs = [];
     for (let recordIndex = 0; recordIndex < ledgerRecords.length; recordIndex += 1) {
       const record = ledgerRecords[recordIndex];
-      if (!recordFeedsEntity(record, entityOriginKeys)) continue;
+      if (!recordFeedsEntity(record, entityOriginKeys, boundRecords.has(historyProducers.get(record)))) continue;
       recordRefs.push(recordIndex);
       entityRefsByRecord[recordIndex].add(entityKey);
       origins = mergeOrigins(origins, record.origin);
@@ -303,6 +318,7 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
 
   const ledger = ledgerRecords.map((record, recordIndex) => Object.freeze({
     ...record,
+    ...(record.originHistory ? { renderedBinding:entityRefsByRecord[recordIndex].size ? 'producer-bound' : 'unresolved' } : {}),
     origin:Object.freeze({
       addresses:Object.freeze(canonicalList(record.origin.addresses, false)),
       rows:Object.freeze(canonicalList(record.origin.rows, true)),
@@ -328,6 +344,9 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   for (const refs of Object.values(transformReverse)) Object.freeze(refs);
 
   let completeness = 'complete';
+  if (boundLines.some(([line, binding]) => readLineExpressionHistory(line, result.ir) !== binding)) {
+    reasons.add('stale-expression-binding');
+  }
   if (snapshotId == null) {
     reasons.add('missing-snapshot');
   }
@@ -408,7 +427,7 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
       const fields = ['consumedRefs', 'producedRefs', 'elidedRefs'];
       if (history.scope !== 'replacement-expression-source'
           || !['complete', 'incomplete'].includes(history.completeness)
-          || record.renderedBinding !== 'unresolved'
+          || !['unresolved', 'producer-bound'].includes(record.renderedBinding)
           || fields.some(field => !Array.isArray(history[field])
             || history[field].some(ref => typeof ref !== 'string' || !/^(row|addr|ir|ssa):.+/.test(ref))
             || new Set(history[field]).size !== history[field].length)) {
@@ -416,6 +435,11 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
         continue;
       }
       if (history.completeness !== 'complete') reasons.add('incomplete-expression-history');
+      if (!Array.isArray(record.producedRefs)
+          || (record.renderedBinding === 'producer-bound') !== (record.producedRefs.length > 0)
+          || record.producedRefs.some(ref => !provenanceMap.entities[ref]?.recordRefs?.includes(provenanceMap.ledger.indexOf(record)))) {
+        reasons.add('inconsistent-expression-binding');
+      }
       const expected = history.completeness === 'complete'
         ? history.consumedRefs.filter(ref => !history.producedRefs.includes(ref)) : [];
       if (expected.length !== history.elidedRefs.length || expected.some(ref => !history.elidedRefs.includes(ref))) {
