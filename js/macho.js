@@ -494,12 +494,18 @@
       const pageOff = dv.getUint32(e + 4, true);
       if (!pageOff || pageOff + 8 > buf.length) continue;      // 最後の番人の行
       const kind = dv.getUint32(pageOff, true);
+      /* Second-level entries live inside their own 4 KiB page (lld emits
+       * exactly 4096-byte pages). Only bounding against buf.length let a
+       * malformed entryPageOffset/entryCount walk into the next page, the
+       * LSDA index, or any other __unwind_info payload and reinterpret those
+       * bytes as compact-unwind entries (#5371). */
+      const pageEnd = Math.min(buf.length, pageOff + 0x1000);
       if (kind === 2) {                                        // そのまま並んでいる形
         const entryOff = dv.getUint16(pageOff + 4, true);
         const count = dv.getUint16(pageOff + 6, true);
         for (let k = 0; k < count; k++) {
           const p = pageOff + entryOff + k * 8;
-          if (p + 8 > buf.length) break;
+          if (p + 8 > pageEnd) break;
           out.push(imageBase + BigInt(dv.getUint32(p, true)));
         }
       } else if (kind === 3) {                                 // 圧縮された形
@@ -507,7 +513,7 @@
         const count = dv.getUint16(pageOff + 6, true);
         for (let k = 0; k < count; k++) {
           const p = pageOff + entryOff + k * 4;
-          if (p + 4 > buf.length) break;
+          if (p + 4 > pageEnd) break;
           const v = dv.getUint32(p, true);
           out.push(imageBase + BigInt(funcOffset + (v & 0x00ffffff)));
         }
