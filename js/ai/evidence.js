@@ -91,6 +91,34 @@ function sameSemanticRecord(left, right) {
   return JSON.stringify(semanticRecord(left)) === JSON.stringify(semanticRecord(right));
 }
 
+// Evidence records are authority-bearing state. Public readers must receive
+// owned snapshots so a caller cannot rewrite status, provenance, or a nested
+// payload and thereby bypass the private verification/indexing paths.
+function cloneOwned(value, seen = new WeakMap()) {
+  if (value == null || typeof value !== 'object') return value;
+  const previous = seen.get(value);
+  if (previous) return previous;
+  const copy = Array.isArray(value) ? new Array(value.length) : {};
+  seen.set(value, copy);
+  for (const [key, item] of Object.entries(value)) {
+    Object.defineProperty(copy, key, {
+      value: cloneOwned(item, seen), enumerable: true, configurable: true, writable: true,
+    });
+  }
+  return copy;
+}
+
+function freezeOwned(value, seen = new WeakSet()) {
+  if (value == null || typeof value !== 'object' || seen.has(value)) return value;
+  seen.add(value);
+  for (const item of Object.values(value)) freezeOwned(item, seen);
+  return Object.freeze(value);
+}
+
+function immutableSnapshot(value) {
+  return freezeOwned(cloneOwned(value));
+}
+
 // Observation provenance references are identity keys, not presentation text:
 // only a canonical non-empty primitive string may reach a record, so a
 // structured value can never launder into another observation's identity
@@ -199,7 +227,7 @@ export class EvidenceStore {
         sourceRef = { detailRef: stored.id, path: '$', bindingKey: stored.binding.key };
       } else {
         const localId = `evsrc_${stableDigest([input.sourceTool || 'unknown', input.sourceId || null, this.nextSourcePayloadOrder++]).slice(0, 32)}`;
-        this.sourcePayloads.set(localId, input.sourceData);
+        this.sourcePayloads.set(localId, cloneOwned(input.sourceData));
         createdLocalId = localId;
         sourceRef = { evidenceSourceId: localId, path: '$' };
       }
@@ -240,8 +268,8 @@ export class EvidenceStore {
     const previous = this.records.get(id);
     if (previous?.status === 'verified') {
       if (createdLocalId) this.sourcePayloads.delete(createdLocalId);
-      if (!sameSemanticRecord(previous, record)) return previous;
-      return previous;
+      if (!sameSemanticRecord(previous, record)) return immutableSnapshot(previous);
+      return immutableSnapshot(previous);
     }
     if (!this.recordOrder.has(id)) this.recordOrder.set(id, this.nextRecordOrder++);
     this.records.set(id, { ...previous, ...record });
@@ -260,7 +288,7 @@ export class EvidenceStore {
     }
     this._indexStatus(id, previous?.status || null, storedRecord?.status || null);
     if (storedRecord?.sourceRef?.detailRef) this.observationStore?.pin?.(storedRecord.sourceRef.detailRef);
-    return storedRecord;
+    return immutableSnapshot(storedRecord);
   }
 
   ingest(toolName, result, { verifier = false, sourceRef = null, effectiveScope = null, scopeBoundary = null } = {}) {
@@ -379,7 +407,7 @@ export class EvidenceStore {
     const out = [];
     for (let index = start; index < ids.length; index++) {
       const record = this.records.get(ids[index]);
-      if (record) out.push(record);
+      if (record) out.push(immutableSnapshot(record));
     }
     return out;
   }
@@ -387,19 +415,24 @@ export class EvidenceStore {
   byStatus(status) {
     const ids = this.statusIds.get(String(status)) || [];
     const out = [];
-    for (const id of ids) { const record = this.records.get(id); if (record) out.push(record); }
+    for (const id of ids) { const record = this.records.get(id); if (record) out.push(immutableSnapshot(record)); }
     return out;
   }
 
   sourceDataFor(id) {
     const record = typeof id === 'object' ? id : this.get(id);
     if (!record?.sourceRef?.evidenceSourceId) return null;
-    return this.sourcePayloads.get(record.sourceRef.evidenceSourceId) ?? null;
+    const payload = this.sourcePayloads.get(record.sourceRef.evidenceSourceId);
+    return payload == null ? null : immutableSnapshot(payload);
   }
 
   has(id) { return typeof id === 'string' && id.length > 0 ? this.records.has(id) : false; }
-  get(id) { return typeof id === 'string' && id.length > 0 ? (this.records.get(id) || null) : null; }
-  all() { return Array.from(this.records.values()); }
+  get(id) {
+    if (typeof id !== 'string' || id.length === 0) return null;
+    const record = this.records.get(id);
+    return record ? immutableSnapshot(record) : null;
+  }
+  all() { return Array.from(this.records.values(), (record) => immutableSnapshot(record)); }
   pinned(ids) { return (ids || []).map((id) => this.get(id)).filter(Boolean); }
   hasAddress(value) {
     const address = addressText(value);
