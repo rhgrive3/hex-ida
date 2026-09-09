@@ -80,7 +80,11 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   const symentValid = syment >= defaultSyment;
   if (!symentValid) markDynamicPartial(image, `DT_SYMENT ${syment} is smaller than ${defaultSyment}`);
   if (needsStringTable && (strtab == null || strsz == null)) markDynamicPartial(image, 'dynamic string table address/size is missing');
-  const strSize = strsz == null ? 0 : toSafeNumber(strsz);
+  const strSizeRaw = strsz == null ? null : toSafeNumber(strsz);
+  if (strsz != null && strSizeRaw == null) {
+    markDynamicPartial(image, `DT_STRSZ ${strsz} is not a safely representable file span; dynamic string table skipped`);
+  }
+  const strSize = strSizeRaw ?? 0;
   const strSpan = strtab == null || strSize == null ? null : mappedELFFileSpanForVa(image, strtab, strSize);
   if (strtab != null && strSize > 0 && !strSpan) markDynamicPartial(image, 'DT_STRTAB/DT_STRSZ crosses a file-backed PT_LOAD boundary');
   const strOff = strSpan?.start ?? null;
