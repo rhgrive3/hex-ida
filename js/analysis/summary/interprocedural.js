@@ -34,7 +34,7 @@ import {
 } from './contract.js';
 
 export const INTERPROCEDURAL_ANALYZER_ID = 'phase7.summary.interprocedural';
-export const INTERPROCEDURAL_ANALYZER_VERSION = '1.3.0';
+export const INTERPROCEDURAL_ANALYZER_VERSION = '1.3.1';
 
 export const INTERPROCEDURAL_DEFAULT_BUDGET = Object.freeze({
   maxIterationsPerComponent: 16,
@@ -270,6 +270,12 @@ function strongestSource(left, right) {
   return leftRank <= rightRank ? left : right;
 }
 
+function weakestSource(left, right) {
+  const leftRank = SOURCE_AUTHORITY_RANK.get(left) ?? SOURCE_AUTHORITY_RANK.size;
+  const rightRank = SOURCE_AUTHORITY_RANK.get(right) ?? SOURCE_AUTHORITY_RANK.size;
+  return leftRank >= rightRank ? left : right;
+}
+
 function compareCodeUnitStrings(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
 }
@@ -301,16 +307,33 @@ function mergedRegionProof(left, right) {
   catch { return null; }
 }
 
+function effectAddressSpaces(effect) {
+  if (effect.broad) return effect.addressSpaces?.length ? effect.addressSpaces : [];
+  return effect.addressSpaces?.length ? effect.addressSpaces : ['memory'];
+}
+
 function mergeEffects(lists, cap) {
   const effectiveCap = Number.isSafeInteger(cap) && cap >= 1 ? cap : 1;
   const byKey = new Map();
-  let broad = null;
+  const broadByKey = new Map();
   for (const effect of lists.flat()) {
     if (effect.broad) {
-      // One broad effect subsumes every specific one in its address spaces, so
-      // the merge keeps a single broad entry rather than an unbounded list.
-      const spaces = [...new Set([...(broad?.addressSpaces ?? []), ...effect.addressSpaces])].sort();
-      broad = createMemoryEffect({ ...effect, addressSpaces: spaces });
+      // A broad effect is already a coverage claim for every region in each
+      // address space. Keep source and evidence attached to those spaces while
+      // deduping repeated observations; a later broad effect must not rewrite
+      // the authority of an earlier, disjoint space.
+      const spaces = effect.addressSpaces.length ? effect.addressSpaces : [null];
+      for (const addressSpace of spaces) {
+        const key = `${effect.source}\u0000${addressSpace ?? ''}`;
+        const prior = broadByKey.get(key);
+        const addressSpaces = addressSpace == null ? [] : [addressSpace];
+        broadByKey.set(key, createMemoryEffect({
+          ...(prior ?? effect),
+          broad: true,
+          addressSpaces,
+          evidenceIds: [...new Set([...(prior?.evidenceIds ?? []), ...effect.evidenceIds])].sort(),
+        }));
+      }
       continue;
     }
     const key = `${effect.regionId}\u0000${effect.regionKind}`;
@@ -334,23 +357,51 @@ function mergeEffects(lists, cap) {
       evidenceIds: [...new Set([...prior.evidenceIds, ...effect.evidenceIds])].sort(),
     }));
   }
-  const specific = [...byKey.values()];
-  if (broad) {
-    const combined = [broad, ...specific];
-    if (combined.length <= effectiveCap) return combined;
-    const dropped = combined.slice(effectiveCap);
-    const allDroppedSpaces = dropped.flatMap((eff) => eff.addressSpaces || []);
-    const mergedSpaces = [...new Set([...(broad.addressSpaces || []), ...allDroppedSpaces])].sort();
-    const finalBroad = createMemoryEffect({ ...broad, addressSpaces: mergedSpaces });
-    return [finalBroad, ...combined.slice(1, effectiveCap)];
+  const specific = [...byKey.values()].sort((left, right) => {
+    const leftKey = `${left.regionId ?? ''}\u0000${left.regionKind}\u0000${SOURCE_AUTHORITY_RANK.get(left.source) ?? SOURCE_AUTHORITY_RANK.size}\u0000${left.addressSpaces.join(',')}\u0000${left.evidenceIds.join(',')}`;
+    const rightKey = `${right.regionId ?? ''}\u0000${right.regionKind}\u0000${SOURCE_AUTHORITY_RANK.get(right.source) ?? SOURCE_AUTHORITY_RANK.size}\u0000${right.addressSpaces.join(',')}\u0000${right.evidenceIds.join(',')}`;
+    return compareCodeUnitStrings(leftKey, rightKey);
+  });
+  const broad = [...broadByKey.values()].sort((left, right) => {
+    const leftKey = `${SOURCE_AUTHORITY_RANK.get(left.source) ?? SOURCE_AUTHORITY_RANK.size}\u0000${left.addressSpaces.join(',')}\u0000${left.evidenceIds.join(',')}`;
+    const rightKey = `${SOURCE_AUTHORITY_RANK.get(right.source) ?? SOURCE_AUTHORITY_RANK.size}\u0000${right.addressSpaces.join(',')}\u0000${right.evidenceIds.join(',')}`;
+    return compareCodeUnitStrings(leftKey, rightKey);
+  });
+  const combined = [...broad, ...specific];
+  if (broad.length === 0 && specific.length > effectiveCap) {
+    const spaces = [...new Set(specific.flatMap(effectAddressSpaces))].sort();
+    const evidenceIds = [...new Set(specific.flatMap((effect) => effect.evidenceIds || []))].sort();
+    return [createMemoryEffect({
+      regionKind: 'unknown',
+      broad: true,
+      addressSpaces: spaces,
+      source: 'unknown-call-fallback',
+      evidenceIds,
+    })];
   }
-  if (specific.length > effectiveCap) {
-    // Rather than truncate a list a consumer would read as exhaustive, collapse
-    // to one broad effect across all present address spaces: less precise, still sound.
-    const spaces = [...new Set(specific.flatMap((eff) => eff.addressSpaces || ['memory']))].sort();
-    return [broadEffect('unknown-call-fallback', spaces.length ? spaces : ['memory'])];
+  if (combined.length > effectiveCap) {
+    // Any entry folded into a new broad claim loses its precise geometry. A
+    // conservative fallback source is therefore required whenever a specific
+    // effect is dropped; broad-only collapse can retain the weakest broad
+    // authority without laundering a stronger source into another space.
+    const kept = combined.slice(0, Math.max(0, effectiveCap - 1));
+    const dropped = combined.slice(kept.length);
+    const droppedSpaces = [...new Set(dropped.flatMap(effectAddressSpaces))].sort();
+    const droppedEvidence = [...new Set(dropped.flatMap((effect) => effect.evidenceIds || []))].sort();
+    const hasSpecific = dropped.some((effect) => !effect.broad);
+    const source = hasSpecific
+      ? 'unknown-call-fallback'
+      : dropped.reduce((current, effect) => weakestSource(current, effect.source), dropped[0]?.source || 'unknown-call-fallback');
+    const finalBroad = createMemoryEffect({
+      regionKind: 'unknown',
+      broad: true,
+      addressSpaces: droppedSpaces,
+      source,
+      evidenceIds: droppedEvidence,
+    });
+    return [finalBroad, ...kept];
   }
-  return specific;
+  return combined;
 }
 
 function unionKnowledge(values) {
