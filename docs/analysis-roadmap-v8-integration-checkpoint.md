@@ -917,6 +917,52 @@ identities and the unproven domains. Failed or interrupted runs do not publish a
 final artifact. This makes new native evidence durable without treating old
 logs or successful console chatter as recoverable proof.
 
+### Exact recovery proof and canonical null-prefix gap (2026-09-09)
+
+Recovered product `9662123bd83ebd6ed1fe57bf2b3fe10dc77c2ee8` passed the
+generated rebuild/zero-diff check, touched tests, encrypted generated runtime,
+and both Chromium/WebKit native comparisons. Durable reports are
+`/mnt/workspace/hex-roadmap-recovery-durable.UWZe3G/native-gcc-9662123.json`
+and `native-clang-9662123.json` in the same directory. Each compiler/engine
+pair covers 73,984 normal-execution cases and 34 encodings, with the exact
+product, verifier, evaluator, fixture, executable and observation identities.
+
+The full unchanged `npm run check` on that head failed in six x86 test files:
+`issue-6133-x87-terminal-family-authority`,
+`issue-6133-x87-trusted-terminal-domain`, `x86-long64-closure-matrix`,
+`x86-long64-extended-state`, `x86-long64-fp-denominator`, and
+`x86-long64-simd-denominator` (all under `tests/machine-effects/`, `.test.mjs`).
+The durable log is `hex-roadmap-966-check-fANUju/full.log` under the same
+recovery directory. Later gates were not reached; the full gate is not green.
+
+The clean-head actual receiver survey of all 1,487 canonical instructions
+returned 139 exact, 1,207 exact-with-intrinsic, and 141 partial in both engines.
+Reports are `hex-x86-receiver-denominator-v2ScEc/{chromium,webkit}.json` under
+that directory. Counts are structural coverage, not independent value proof.
+Crucially, its unchanged LAHF/SAHF witnesses are `269f`/`269e`: the initial
+dedicated proof covered unprefixed and single-REX bytes but missed ES prefixes.
+The next action follows this first divergence, not a replacement denominator.
+
+The regression now requires both original witnesses to occur in the value-proof
+inventory. It failed on the old product (`partial` versus `exact`) before the
+repair. The repair admits a single CS/DS/ES/SS null prefix only for LAHF/SAHF;
+multiple prefixes, FS/GS, size overrides, REP and LOCK still emit no definite
+transfer. A separate negative prevents promoting unrelated system families.
+Intel SDM Vol. 1 p. 3-10 and AMD APM Vol. 2 section 2.5.2 specify the null
+segment behavior in 64-bit mode. Sources inspected:
+[Intel SDM](https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-1-manual.pdf),
+[AMD APM, university mirror](https://users.cs.northwestern.edu/~pdinda/icsclass/doc/AMD_ARCH_MANUALS/Volume_2-System_Programming.pdf).
+The live existing-PR search for `lahf sahf` returned no matches before repair.
+
+The expanded proof has 42 encodings / 129,024 reference-value cases and
+91,392 native observations per compiler/engine. Native and report schemas
+advance to v2; v1 evidence does not satisfy this expanded acceptance matrix.
+The encrypted generated fixture now also contains the canonical ES+LAHF form.
+Semantic version advances to x86 5.2.4, generated serial 2322242163, build
+`8410c2a7aca62c18ec8be0e7`. Initial unit and GCC/browser diagnostics passed;
+clean-head native reports, rebuilt generated output and full-inventory reruns
+remain required after committing this repair. No finding is marked complete.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

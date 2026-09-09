@@ -110,7 +110,7 @@ async function run(name, browserType) {
           decoded = await request(decoder, {
             id: 1, architecture: 'x86_64', address: 0x2000n,
             // MOV | FSQRT | IRETQ | SAVEPREVSSP | LAHF | REX.B+SAHF | RET
-            bytes: new Uint8Array([0x48, 0x8b, 0x03, 0xd9, 0xfa, 0x48, 0xcf, 0xf3, 0x0f, 0x01, 0xea, 0x9f, 0x41, 0x9e, 0xc3]),
+            bytes: new Uint8Array([0x48, 0x8b, 0x03, 0xd9, 0xfa, 0x48, 0xcf, 0xf3, 0x0f, 0x01, 0xea, 0x26, 0x9f, 0x41, 0x9e, 0xc3]),
           });
         } catch (error) {
           return { decodedOk: false, decodedError: `decoder: ${error?.message || error}` };

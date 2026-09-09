@@ -14,6 +14,10 @@
     : [wanted] "r"(wanted) : "r11", "cc", "memory")
 #define PREFIX_CASES(OP) \
     case 0: EXECUTE(".byte " OP); break; \
+    case 0x26: EXECUTE(".byte 0x26," OP); break; \
+    case 0x2e: EXECUTE(".byte 0x2e," OP); break; \
+    case 0x36: EXECUTE(".byte 0x36," OP); break; \
+    case 0x3e: EXECUTE(".byte 0x3e," OP); break; \
     case 0x40: EXECUTE(".byte 0x40," OP); break; \
     case 0x41: EXECUTE(".byte 0x41," OP); break; \
     case 0x42: EXECUTE(".byte 0x42," OP); break; \
@@ -58,13 +62,16 @@ int main(void) {
     __builtin_memcpy(vendor + 8, &ecx, 4);
     vendor[12] = 0;
     __cpuid(1, eax, ebx, ecx, edx);
-    printf("{\"schema\":\"x86-lahf-sahf-native/v1\",\"vendor\":\"%s\",\"signature\":%u,\"hypervisor\":%s,\"extendedEcx\":%u,\"compiler\":\"%s\"}\n",
+    printf("{\"schema\":\"x86-lahf-sahf-native/v2\",\"vendor\":\"%s\",\"signature\":%u,\"hypervisor\":%s,\"extendedEcx\":%u,\"compiler\":\"%s\"}\n",
            vendor, eax, (ecx >> 31) ? "true" : "false", feature, __VERSION__);
     uint64_t baseline;
     __asm__ volatile("pushfq\n\tpopq %0" : "=r"(baseline));
     const uint64_t seeds[] = { UINT64_C(0x0123456789abcdef), UINT64_C(0xfedcba9876543210) };
+    const unsigned prefixes[] = { 0, 0x26, 0x2e, 0x36, 0x3e,
+        0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+        0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f };
     for (unsigned store = 0; store < 2; store++)
-    for (unsigned p = 0; p < 17; p++)
+    for (unsigned p = 0; p < sizeof(prefixes) / sizeof(prefixes[0]); p++)
     for (unsigned seed = 0; seed < 2; seed++)
     for (unsigned byte = 0; byte < (store ? 256u : 32u); byte++)
     for (unsigned extra = 0; extra < 4; extra++)
@@ -74,7 +81,7 @@ int main(void) {
                | ((byte & 8u) << 3) | ((byte & 16u) << 3));
         uint64_t wanted = (baseline & ~UINT64_C(0xcd5)) | low | ((uint64_t)extra << 10);
         uint64_t initial = store ? ((seeds[seed] & ~UINT64_C(0xff00)) | ((uint64_t)byte << 8)) : seeds[seed];
-        observe(store, p ? 0x3f + p : 0, initial, wanted);
+        observe(store, prefixes[p], initial, wanted);
     }
     return ferror(stdout) ? 1 : 0;
 }

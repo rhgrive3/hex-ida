@@ -103,7 +103,13 @@ function crossVendorPrefixPolicy(state, family, { memoryOperand = false } = {}) 
     return prefixes.length === 1 && prefixes[0] === 0xf3;
   }
 
-  // For system instructions without explicit memory operands, the only
+  // Intel SDM Vol. 1 §3.3.7 and AMD APM Vol. 2 §2.5.2 specify null
+  // CS/DS/ES/SS prefixes in long mode. The dedicated AH flag-transfer proof
+  // covers each single null prefix; combinations remain unproved here.
+  if ((family === 'lahf' || family === 'sahf') && prefixes.length === 1
+      && [0x26, 0x2e, 0x36, 0x3e].includes(prefixes[0])) return true;
+
+  // For other system instructions without explicit memory operands, the only
   // cross-vendor optional prefix we exact-model is one final REX byte. Both
   // Intel and AMD specify a meaningless REX as ignored in 64-bit mode.
   if (!memoryOperand) {

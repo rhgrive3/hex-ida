@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 export const FLAG_TRANSFER_CASES = ['lahf', 'sahf'].flatMap(family =>
-  [null, ...Array.from({ length:16 }, (_, i) => 0x40 + i)].map(prefix => ({
+  [null, 0x26, 0x2e, 0x36, 0x3e, ...Array.from({ length:16 }, (_, i) => 0x40 + i)].map(prefix => ({
     family, prefix, bytes:[...(prefix == null ? [] : [prefix]), family === 'lahf' ? 0x9f : 0x9e],
   })));
 const POSITIONS = { 'RFLAGS.CF':0n, 'RFLAGS.PF':2n, 'RFLAGS.AF':4n, 'RFLAGS.ZF':6n, 'RFLAGS.SF':7n };

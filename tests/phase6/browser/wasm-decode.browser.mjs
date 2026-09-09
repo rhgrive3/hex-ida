@@ -65,13 +65,13 @@ if (process.env.HEX_X86_FLAG_ORACLE) {
   assert.ifError(run.error);
   assert.equal(run.status, 0, run.stderr);
   const [identity, ...rows] = run.stdout.trim().split('\n').map(line => JSON.parse(line));
-  assert.equal(identity.schema, 'x86-lahf-sahf-native/v1');
+  assert.equal(identity.schema, 'x86-lahf-sahf-native/v2');
   assert.equal(identity.extendedEcx & 1, 1);
-  assert.equal(rows.length, 73984, 'full native prefix/state inventory');
+  assert.equal(rows.length, 91392, 'full native prefix/state inventory');
   const keys = new Set();
   for (const row of rows) {
     assert.ok(['lahf', 'sahf'].includes(row.family));
-    assert.ok(row.prefix === 0 || (row.prefix >= 0x40 && row.prefix <= 0x4f));
+    assert.ok([0, 0x26, 0x2e, 0x36, 0x3e].includes(row.prefix) || (row.prefix >= 0x40 && row.prefix <= 0x4f));
     const key = `${row.family}:${row.prefix}:${row.initial}:${row.before}`;
     assert.ok(!keys.has(key), `duplicate native observation: ${key}`);
     keys.add(key);
@@ -421,7 +421,7 @@ if (nativeReportPath) {
   const digest = bytes => createHash('sha256').update(bytes).digest('hex');
   assert.equal(digest(fs.readFileSync(nativeFlagOracle.binary)), nativeFlagOracle.binarySha256);
   const report = {
-    schema:'x86-lahf-sahf-browser-native-proof/v1', status:'PASS_NORMAL_EXECUTION_ONLY',
+    schema:'x86-lahf-sahf-browser-native-proof/v2', status:'PASS_NORMAL_EXECUTION_ONLY',
     productHead:nativeProductHead,
     verifierSha256:digest(fs.readFileSync(fileURLToPath(import.meta.url))),
     evaluatorSha256:digest(fs.readFileSync(path.join(root, 'tests/machine-effects/helpers/lahf-sahf-oracle.mjs'))),
