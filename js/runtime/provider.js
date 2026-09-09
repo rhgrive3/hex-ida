@@ -359,8 +359,17 @@ export class DebugAdapterRuntimeProvider {
         if (!Array.isArray(modules)) throw new DebugAdapterError('runtime-invalid-modules', 'debug adapter getModules must return an array');
         for (let i = 0; i < modules.length; i++) {
           const module = modules[i] || {};
-          if (module.base == null || module.size == null) continue;
-          const bindingKey = module.id ?? module.uuid ?? module.name ?? `module:${i}`;
+          // #5675: the canonical normalizer accepts runtimeBase/runtimeSize as
+          // first-class extents; the initial import must match the refresh
+          // path (DebuggerProvider.refreshModules) or an identical snapshot
+          // would materialize modules only after the first refresh.
+          const runtimeBase = module.runtimeBase ?? module.base;
+          const runtimeSize = module.runtimeSize ?? module.size;
+          if (runtimeBase == null || runtimeSize == null) continue;
+          // #5677: mirror moduleBindingKey()'s authority order so an explicit
+          // bindingKey/moduleKey survives the initial import instead of being
+          // re-keyed to module:<i> and swapped at the first refresh.
+          const bindingKey = module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name ?? `module:${i}`;
           session.modules.load(normalizeRuntimeModuleBinding(module, { bindingKey }));
         }
       }
