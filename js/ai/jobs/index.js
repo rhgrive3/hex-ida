@@ -1,5 +1,7 @@
 const CHECKPOINT_VERSION = 1;
 let fallbackRandomSequence = 0n;
+const activeExecutionLeases = new Map();
+const activeLeaseScopes = new WeakMap();
 
 export class AgentJobManager {
   constructor({ runtime, persistence = null, maxSlices = 8, maxElapsedMs = 30 * 60 * 1000 } = {}) {
@@ -60,6 +62,7 @@ export class AgentJobManager {
     const id = job.id;
     if (this.runningJobIds.has(id)) throw new Error('Agent job already has an active slice');
     this.runningJobIds.add(id);
+    let executionLeaseId = null;
     try {
       // A successful slice is never replayed to recover a failed checkpoint
       // write (#6273). The first resume retries the exact saved result only,
@@ -83,12 +86,21 @@ export class AgentJobManager {
         }
         return checkpoint(job);
       }
+      executionLeaseId = beginExecutionLease(this.runtime, this.persistence, id);
+      if (!executionLeaseId) {
+        // A different manager sharing this execution scope still owns this job.
+        // Drop any stale local copy so a later retry reloads durable state.
+        this.jobs.delete(id);
+        throw new Error('Agent job already has an active slice');
+      }
       const prevStatus = job.status;
       job.status = 'running';
+      job.executionLeaseId = executionLeaseId;
       try {
         await this.save(job);
       } catch (saveError) {
         job.status = prevStatus;
+        delete job.executionLeaseId;
         throw saveError;
       }
       let result;
@@ -100,6 +112,7 @@ export class AgentJobManager {
         }, options);
       } catch (error) {
         job.status = options.signal?.aborted ? 'checkpointed' : 'failed';
+        delete job.executionLeaseId;
         job.unresolvedWork = unique([...job.unresolvedWork, String(error?.message || error)]).slice(-32);
         job.updatedAt = new Date().toISOString();
         try {
@@ -111,11 +124,13 @@ export class AgentJobManager {
       if (!result?.limits?.exhausted) job.status = 'complete';
       else if (hardLimit(job)) job.status = 'hard-limit';
       else job.status = 'checkpointed';
+      delete job.executionLeaseId;
       job.updatedAt = new Date().toISOString();
       this.pendingCheckpoints.set(id, checkpoint(job));
       await this.persistPendingCheckpoint(job);
       return checkpoint(job);
     } finally {
+      if (executionLeaseId) endExecutionLease(this.runtime, this.persistence, id, executionLeaseId);
       this.runningJobIds.delete(id);
     }
   }
@@ -154,8 +169,9 @@ export class AgentJobManager {
     if (typeof id !== 'string' || !id) throw new Error(`Unknown agent job: ${value}`);
     let job = await this.get(id);
     if (!job && value && typeof value === 'object' && validateCheckpoint(value, id)) {
+      const live = isLiveRunningCheckpoint(value);
       job = recoverPersistedRunningCheckpoint(value);
-      this.jobs.set(id, job);
+      if (!live) this.jobs.set(id, job);
     }
     if (!job) throw new Error(`Unknown agent job: ${id}`);
     return job;
@@ -171,8 +187,11 @@ export class AgentJobManager {
         return null;
       }
       if (validateCheckpoint(value, id)) {
+        const live = isLiveRunningCheckpoint(value);
         const recovered = recoverPersistedRunningCheckpoint(value);
-        this.jobs.set(id, recovered);
+        // Do not cache another live manager's running snapshot. Its durable
+        // state may advance before this manager retries.
+        if (!live) this.jobs.set(id, recovered);
         return recovered;
       }
       return null;
@@ -224,12 +243,42 @@ function hardLimit(job) { return job.budgetUsage.slices >= job.limits.maxSlices 
 function compactResult(result) { return { answer: result?.answer || '', confidence: result?.confidence ?? null, limits: result?.limits || { exhausted: false }, usage: result?.usage || {}, sessionId: result?.sessionId || null }; }
 function checkpoint(job) { return JSON.parse(JSON.stringify(job)); }
 function unique(values) { return [...new Set(values)]; }
+function executionLeaseScope(runtime, persistence) {
+  if (persistence && (typeof persistence === 'object' || typeof persistence === 'function')) return persistence;
+  return runtime;
+}
+function beginExecutionLease(runtime, persistence, jobId) {
+  const scope = executionLeaseScope(runtime, persistence);
+  let jobs = activeLeaseScopes.get(scope);
+  if (!jobs) {
+    jobs = new Map();
+    activeLeaseScopes.set(scope, jobs);
+  }
+  if (jobs.has(jobId)) return null;
+  const leaseId = `agent_job_lease_${randomId()}`;
+  jobs.set(jobId, leaseId);
+  activeExecutionLeases.set(leaseId, jobId);
+  return leaseId;
+}
+function endExecutionLease(runtime, persistence, jobId, leaseId) {
+  const scope = executionLeaseScope(runtime, persistence);
+  const jobs = activeLeaseScopes.get(scope);
+  if (jobs?.get(jobId) === leaseId) {
+    jobs.delete(jobId);
+    if (jobs.size === 0) activeLeaseScopes.delete(scope);
+  }
+  if (activeExecutionLeases.get(leaseId) === jobId) activeExecutionLeases.delete(leaseId);
+}
+function isLiveRunningCheckpoint(value) {
+  if (value?.status !== 'running') return false;
+  const leaseId = identityString(value.executionLeaseId);
+  return leaseId !== null && activeExecutionLeases.get(leaseId) === value.id;
+}
 function recoverPersistedRunningCheckpoint(value) {
-  if (value.status !== 'running') return value;
-  // `running` is a process-local lease. A fresh manager cannot observe the
-  // old process's active set, so a persisted running checkpoint must be
-  // treated as interrupted and made resumable instead of becoming a
-  // permanent restart lock (#4389).
+  if (value.status !== 'running' || isLiveRunningCheckpoint(value)) return value;
+  // Only a running checkpoint whose process-local execution lease is no
+  // longer active is treated as interrupted. A second manager in the same
+  // process cannot turn a live owner's checkpoint into resumable work.
   return {
     ...value,
     status: 'checkpointed',
@@ -246,6 +295,7 @@ function validateCheckpoint(value, expectedId = null) {
   if (typeof value.id !== 'string' || !value.id) return false;
   if (expectedId !== null && value.id !== expectedId) return false;
   if (!VALID_STATUSES.has(value.status)) return false;
+  if (value.executionLeaseId !== undefined && (typeof value.executionLeaseId !== 'string' || !value.executionLeaseId)) return false;
   if (typeof value.goal !== 'string' || !value.goal) return false;
   const bu = value.budgetUsage;
   if (!bu || typeof bu !== 'object') return false;
