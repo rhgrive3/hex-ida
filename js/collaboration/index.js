@@ -81,16 +81,28 @@ export function createProjectOperation(input = {}) {
   const beforeFingerprintInput = input.beforeFingerprint;
   const beforeFingerprint = beforeFingerprintInput == null ? null : beforeFingerprintInput;
   if (beforeFingerprint !== null && (typeof beforeFingerprint !== 'string' || !beforeFingerprint.trim())) throw new TypeError('operation-before-fingerprint-invalid');
-  const operationId = required(input.operationId ?? `op:${stableDigest({ projectIdentity, binaryIdentity: input.binaryIdentity || null, targetEntityId, factKind, action, payload, beforeFingerprint, causalParents: list(input.causalParents) })}`, 'operation-id-required');
+  const operationIdInput = input.operationId;
+  let operationId = operationIdInput == null ? null : required(operationIdInput, 'operation-id-required');
+  const binaryIdentityInput = input.binaryIdentity;
+  const binaryIdentity = binaryIdentityInput == null ? null : required(binaryIdentityInput, 'operation-binary-identity-invalid');
+  let causalParents = null;
+  if (operationId === null) {
+    causalParents = list(input.causalParents);
+    operationId = required(`op:${stableDigest({ projectIdentity, binaryIdentity, targetEntityId, factKind, action, payload, beforeFingerprint, causalParents })}`, 'operation-id-required');
+  }
+  const authorIdentity = input.authorIdentity == null ? null : required(input.authorIdentity, 'operation-author-identity-invalid');
+  const deviceIdentity = input.deviceIdentity == null ? null : required(input.deviceIdentity, 'operation-device-identity-invalid');
+  const timestampHint = input.timestampHint == null ? null : String(input.timestampHint);
+  if (causalParents === null) causalParents = list(input.causalParents);
   const operation = {
     schemaVersion: CHANGELOG_SCHEMA_VERSION,
     operationId,
     projectIdentity,
-    binaryIdentity: input.binaryIdentity == null ? null : required(input.binaryIdentity, 'operation-binary-identity-invalid'),
-    authorIdentity: input.authorIdentity == null ? null : required(input.authorIdentity, 'operation-author-identity-invalid'),
-    deviceIdentity: input.deviceIdentity == null ? null : required(input.deviceIdentity, 'operation-device-identity-invalid'),
-    timestampHint: input.timestampHint == null ? null : String(input.timestampHint),
-    causalParents: list(input.causalParents),
+    binaryIdentity,
+    authorIdentity,
+    deviceIdentity,
+    timestampHint,
+    causalParents,
     targetEntityId,
     factKind,
     action,
