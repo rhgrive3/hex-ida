@@ -248,11 +248,10 @@ export async function classifyFeaturesAndEngineAsync(strings, options = {}) {
   let detectedEngine = null;
 
   const total = strings?.length || 0;
-  const reportProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
   for (let i = 0; i < total; i++) {
     if (signal?.aborted) break;
     if (i > 0 && i % chunkSize === 0) {
-      reportProgress?.(i, total);
+      if (typeof options.onProgress === 'function') options.onProgress(i, total);
       await new Promise((r) => setTimeout(r, 0));
       if (signal?.aborted) break;
     }

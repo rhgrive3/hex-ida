@@ -42,10 +42,15 @@ const boundaryStrings = Array.from({ length: 101 }, (_, index) => ({
   text: index === 100 ? 'UnityEngine purchase payment' : 'ordinary text',
 }));
 const boundaryProgress = [];
-const boundaryResult = await classifyFeaturesAndEngineAsync(boundaryStrings, {
+const boundaryOptions = {
   chunkSize: 100,
-  onProgress: (done, all) => boundaryProgress.push({ done, all }),
-});
+  onProgress(done, all) {
+    assert.equal(this, boundaryOptions,
+      'callable progress must retain the options receiver at the chunk boundary');
+    boundaryProgress.push({ done, all });
+  },
+};
+const boundaryResult = await classifyFeaturesAndEngineAsync(boundaryStrings, boundaryOptions);
 assert.deepEqual(boundaryProgress, [{ done: 100, all: 101 }],
   'callable progress must fire once at the 100-item chunk boundary');
 assert.equal(boundaryResult.count, 101);
