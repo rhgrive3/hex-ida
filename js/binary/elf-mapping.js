@@ -38,8 +38,15 @@ export function mappedELFFileRangeForVa(image, va) {
  * VA→file mapping must reproduce `sh_offset + delta` (issue #7611). Sections
  * that disagree with every owning PT_LOAD (or have no owning PT_LOAD at all)
  * are de-authoritized; they stay listed for metadata via their `source`.
+ *
+ * SHT_NOBITS (`noBits = true`) has no file bytes at all: it may only claim
+ * zero-fill authority where the runtime loader also zero-fills, i.e. strictly
+ * inside a single PT_LOAD's `p_filesz..p_memsz` tail. A NOBITS section that
+ * overlaps any PT_LOAD file-backed byte, spans more than one PT_LOAD, or has
+ * no owning PT_LOAD is de-authoritized (#7611): otherwise it shadows the
+ * loader's file bytes with zero-fill.
  */
-export function elfSectionFileSpanConsistentWithLoads(image, address, size, fileOffset) {
+export function elfSectionFileSpanConsistentWithLoads(image, address, size, fileOffset, noBits = false) {
   const start = strictELFInteger(address, 'address');
   const length = strictELFInteger(size ?? 0n, 'size');
   const off = strictELFInteger(fileOffset ?? 0n, 'fileOffset');
@@ -47,6 +54,19 @@ export function elfSectionFileSpanConsistentWithLoads(image, address, size, file
   if (length === 0n) return true;
   const end = start + length;
   const loads = image?.segments || [];
+  if (noBits) {
+    let owner = null;
+    for (const segment of loads) {
+      const segStart = BigInt(segment.address ?? 0);
+      const segSize = BigInt(segment.size ?? 0);
+      const segFilesz = BigInt(segment.fileSize ?? 0);
+      if (segSize <= 0n) continue;
+      if (start < segStart || end > segStart + segSize) continue;
+      if (owner != null) return false;
+      owner = { segStart, segSize, segFilesz };
+    }
+    return owner != null && start >= owner.segStart + owner.segFilesz;
+  }
   let covered = false;
   for (const segment of loads) {
     const segStart = BigInt(segment.address ?? 0);

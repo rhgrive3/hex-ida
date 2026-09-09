@@ -155,4 +155,56 @@ const ALLOC_EXEC = 0x3n;
   assert.equal(image.sections[0].source, 'ET_REL-synthetic-section');
 }
 
+// SHT_NOBITS zero-fill authority (issue regression #6): a NOBITS section may
+// only claim zero-fill where the loader actually zero-fills — strictly inside
+// a single PT_LOAD's p_filesz..p_memsz tail. A NOBITS section overlapping
+// PT_LOAD file-backed bytes would shadow the loader's file bytes with
+// zero-fill (and make addressToOffset null), so it is de-authoritized.
+{
+  const buf = buildELF({
+    loads: [{ offset: 0x1000, vaddr: 0x400000, filesz: 0x1000 }],
+    sections: [{ type: 8, flags: ALLOC_EXEC, addr: 0x400000, offset: 0x2000, size: 0x100, align: 16 }],
+  });
+  const image = parseELF(buf);
+  assert.equal(image.addressToOffset(0x400000n), 0x1000n, 'the PT_LOAD mapping must own the runtime VA');
+  assert.equal(image.readVirtual(0x400000n, 4)[0], 0xb8, 'file-backed bytes must not be zero-fill shadowed by NOBITS');
+  assert.ok(image.sections.some((s) => s.source === 'unmapped-section' && s.address === 0x400000n),
+    'a NOBITS section over file-backed PT_LOAD bytes must lose authority');
+  assert.ok(image.warnings.some((w) => w.includes('inconsistent with the runtime PT_LOAD mapping')));
+}
+{
+  // legitimate zero-fill tail: NOBITS wholly inside p_filesz..p_memsz
+  const buf = buildELF({
+    loads: [{ offset: 0x1000, vaddr: 0x400000, filesz: 0x800, memsz: 0x1000 }],
+    sections: [{ type: 8, flags: ALLOC_EXEC, addr: 0x400800, offset: 0x1800, size: 0x800, align: 16 }],
+  });
+  const image = parseELF(buf);
+  const sec = image.sections.find((s) => s.address === 0x400800n);
+  assert.ok(sec, 'the NOBITS tail section is still listed');
+  assert.equal(sec.source, 'section-header', 'a NOBITS section inside the legitimate zero-fill tail keeps authority');
+  const vm = image.resolveVirtualMapping(0x400900n);
+  assert.equal(vm?.kind, 'zero', 'reads inside the NOBITS tail resolve as zero-fill');
+}
+{
+  // NOBITS starting inside the file-backed region and extending into the tail
+  const buf = buildELF({
+    loads: [{ offset: 0x1000, vaddr: 0x400000, filesz: 0x800, memsz: 0x1000 }],
+    sections: [{ type: 8, flags: ALLOC_EXEC, addr: 0x400400, offset: 0x1400, size: 0x800, align: 16 }],
+  });
+  const image = parseELF(buf);
+  assert.ok(image.sections.some((s) => s.source === 'unmapped-section' && s.address === 0x400400n),
+    'a NOBITS section straddling the file/zero boundary must lose authority');
+  assert.equal(image.readVirtual(0x400000n, 4)[0], 0xb8, 'file-backed head keeps loader bytes');
+}
+{
+  // NOBITS with no owning PT_LOAD at all
+  const buf = buildELF({
+    loads: [{ offset: 0x1000, vaddr: 0x400000, filesz: 0x1000 }],
+    sections: [{ type: 8, flags: ALLOC_EXEC, addr: 0x500000, offset: 0x2000, size: 0x100, align: 16 }],
+  });
+  const image = parseELF(buf);
+  assert.ok(image.sections.some((s) => s.source === 'unmapped-section' && s.address === 0x500000n),
+    'a NOBITS section outside every PT_LOAD must lose authority');
+}
+
 console.log('issue #7611 ELF alloc-section PT_LOAD consistency regressions: PASS');

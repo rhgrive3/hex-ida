@@ -89,11 +89,15 @@ export function parseELF(input, options = {}) {
     // A file-backed SHF_ALLOC section whose sh_addr→sh_offset relation
     // contradicts the runtime loader contract must not shadow a validated
     // PT_LOAD either (#7611): for its file-backed address range, the owning
-    // PT_LOAD mapping must reproduce sh_offset + delta. Otherwise the section
-    // stays listed for metadata but loses mapping authority.
-    const mappingInconsistent = !fileSpanInvalid && h.type !== ET_REL && s.type !== 8
+    // PT_LOAD mapping must reproduce sh_offset + delta. SHT_NOBITS has no
+    // file bytes: it may only claim zero-fill authority inside a single
+    // PT_LOAD's p_filesz..p_memsz tail, never over file-backed bytes.
+    // Otherwise the section stays listed for metadata but loses mapping
+    // authority.
+    const noBits = s.type === 8;
+    const mappingInconsistent = !fileSpanInvalid && h.type !== ET_REL
       && (s.flags & SHF_ALLOC) !== 0n && s.size > 0n
-      && !elfSectionFileSpanConsistentWithLoads(image, s.addr, s.size, s.offset);
+      && !elfSectionFileSpanConsistentWithLoads(image, s.addr, s.size, s.offset, noBits);
     if (mappingInconsistent) {
       image.warnings.push(`ELF section ${s.index} (${s.name || 'unnamed'}) has a sh_addr/sh_offset relation inconsistent with the runtime PT_LOAD mapping and is excluded from virtual mapping authority`);
     }
