@@ -325,12 +325,20 @@ export async function recoverSchemas(opts) {
   const { strings, program, read, architecture } = o;
   const arch = String(architecture || program?.architecture || '').toLowerCase();
   const unsupported = !!arch && arch !== 'arm64' && arch !== 'aarch64';
-  const isComplete = !unsupported && program?.complete !== false && program?.unsupported !== true;
+  const canonicalProgramComplete = program?.completeness?.complete;
+  const programComplete = canonicalProgramComplete == null
+    ? program?.complete !== false
+    : canonicalProgramComplete === true;
+  const isComplete = !unsupported && programComplete && program?.unsupported !== true;
+  const incompleteReason = program?.queryIncompleteReason
+    || program?.completeness?.reasons?.[0]
+    || program?.incompleteReason
+    || null;
   const out = [];
   Object.defineProperties(out, {
     complete: { value: isComplete, enumerable: false, configurable: true },
     unsupported: { value: unsupported || !!program?.unsupported, enumerable: false, configurable: true },
-    incompleteReason: { value: unsupported ? 'unsupported-architecture' : (program?.incompleteReason || null), enumerable: false, configurable: true },
+    incompleteReason: { value: unsupported ? 'unsupported-architecture' : incompleteReason, enumerable: false, configurable: true },
   });
   if (unsupported || !strings || !program || !read || program.unsupported) return out;
   const limit = normalizeSchemaRecoveryLimit(o.limit);
