@@ -44,6 +44,27 @@ import '../js/worker-budget.js';
   assert.equal(provenanceStatus(sym.functionEvidence(0x1100n)), 'likely');
 }
 
+// #4115: exactness authority is boolean-only; malformed flags must fail closed without changing absent-legacy compatibility.
+{
+  for (const allSeedsExact of ['false', ['true'], [], {}, 1, 0]) {
+    const sym = new SymbolIndex({ funcs: new BigUint64Array([0x2000n]), discoveryComplete: true, allSeedsExact });
+    assert.equal(sym.allSeedsExact, false);
+    assert.equal(sym.functionStartsExact, false);
+    assert.deepEqual(sym.functionEvidence(0x2000n), { source: 'metadata', confidence: 0.7, confirmed: false });
+  }
+  for (const functionStartsExact of ['true', ['true'], [], {}, 1, 0]) {
+    const sym = new SymbolIndex({ funcs: new BigUint64Array([0x2100n]), discoveryComplete: true, functionStartsExact });
+    assert.equal(sym.allSeedsExact, false);
+    assert.equal(sym.functionStartsExact, false);
+  }
+  const exact = new SymbolIndex({ funcs: new BigUint64Array([0x2200n]), discoveryComplete: true, allSeedsExact: true });
+  assert.equal(exact.functionStartsExact, true);
+  assert.deepEqual(exact.functionEvidence(0x2200n), { source: 'function-starts', confidence: 1, confirmed: true });
+  const completeOnly = new SymbolIndex({ funcs: new BigUint64Array([0x2300n]), discoveryComplete: true });
+  assert.equal(completeOnly.allSeedsExact, false);
+  assert.equal(completeOnly.functionStartsExact, true);
+}
+
 // #553: result and estimated-heap budgets are global, not per-region.
 {
   const b = new StringCollectionBudget({ inputBytes: 100, resultLimit: 2, estimatedHeapBytes: 1000 });

@@ -26,6 +26,7 @@ function abortError(signal, message = 'Analysis query aborted') {
   const error = new Error(message); error.name = 'AbortError'; return error;
 }
 function abortIfNeeded(signal) { if (signal?.aborted) throw abortError(signal); }
+function optionalCallback(value) { return typeof value === 'function' ? value : null; }
 function addressOf(value) {
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
@@ -283,7 +284,7 @@ function installMultiRegionShapes(app) {
   if (!app?.backend || typeof app.backend.valueShapes !== 'function') return;
   const regionCache = new Map(); let combinedKey = null;
   app.ensureShapes = async function demandShapes(progressOrOptions = {}) {
-    const onProgress = typeof progressOrOptions === 'function' ? progressOrOptions : progressOrOptions?.onProgress;
+    const onProgress = optionalCallback(typeof progressOrOptions === 'function' ? progressOrOptions : progressOrOptions?.onProgress);
     const signal = typeof progressOrOptions === 'object' ? progressOrOptions?.signal ?? null : null;
     abortIfNeeded(signal);
     const epoch = Number(app.backend.gen ?? app.analysisEpoch ?? 0); const regions = executableRegions(app);
@@ -430,7 +431,8 @@ function installCancellableFunctionDiscovery(app) {
       }
       // Register every consumer's observer on the shared entry, whether it
       // created the producer or attached to an existing one (#5860).
-      const observer = typeof options.onProgress === 'function' ? { callback: options.onProgress } : null;
+      const onProgress = optionalCallback(options.onProgress);
+      const observer = onProgress ? { callback:onProgress } : null;
       if (observer) entry.observers.add(observer);
       try {
         return waitForShared(entry, options.signal ?? null, () => {
