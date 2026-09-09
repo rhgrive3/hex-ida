@@ -16,9 +16,15 @@ export function integerText(v, bits = 64, signed = null) {
 
   // C has no portable integer-literal suffix for __int128.  Build the value
   // from 64-bit chunks so the printed program preserves every source bit.
-  const uv = BigInt.asUintN(width, n);
-  const lo = uv & ((1n << 64n) - 1n);
-  const hi = uv >> 64n;
+  // A signed width below 128 must first be sign-extended into the 128-bit
+  // pattern: zero-extending a negative width-bit value would print a positive
+  // __int128 and silently lose the sign (#5249). Unsigned keeps zero
+  // extension.
+  const pattern = signed === true
+    ? BigInt.asUintN(128, sv)
+    : BigInt.asUintN(width, n);
+  const lo = pattern & ((1n << 64n) - 1n);
+  const hi = pattern >> 64n;
   const wide = `(((unsigned __int128)0x${hi.toString(16).toUpperCase()}ULL << 64) | 0x${lo.toString(16).toUpperCase()}ULL)`;
   return signed === true ? `((__int128)${wide})` : wide;
 }
