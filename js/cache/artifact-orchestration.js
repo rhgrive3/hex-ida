@@ -46,8 +46,7 @@ const DATA_VIEW_BYTE_OFFSET_GETTER = Object.getOwnPropertyDescriptor(DataView.pr
 const DATA_VIEW_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteLength')?.get;
 
 function required(value, code) {
-  if (typeof value !== 'string') throw new TypeError(code);
-  const text = value.trim();
+  const text = String(value ?? '').trim();
   if (!text) throw new TypeError(code);
   return text;
 }
@@ -63,10 +62,7 @@ export function requireCanonicalBinaryId(value) {
 }
 
 export function normalizeAnalysisRoute(route) {
-  if (typeof route !== 'string') {
-    throw new TypeError(`analysis-orchestration-route-invalid:${route == null ? '<empty>' : '<non-string>'}`);
-  }
-  const value = route.trim();
+  const value = String(route ?? '').trim();
   if (value === ANALYSIS_ORCHESTRATION_ROUTE.CURRENT || value === ANALYSIS_ORCHESTRATION_ROUTE.ARTIFACT) return value;
   throw new TypeError(`analysis-orchestration-route-invalid:${value || '<empty>'}`);
 }
@@ -594,9 +590,9 @@ export function createWorkerAnalysisArtifactDescriptor(input = {}) {
     },
     config:input.config ?? {},
     keyExtras:{
+      ...(input.keyExtras ?? {}),
       migrationContract:WORKER_CACHE_MIGRATION_VERSION,
       payloadCodec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION,
-      ...(input.keyExtras ?? {}),
     },
     upstreamArtifactIds:input.upstreamArtifactIds ?? [],
     originRefs:input.originRefs ?? [],
@@ -643,10 +639,10 @@ export class ArtifactAnalysisOrchestrator {
         ? (encodedPayload, record, context) => validate(decodeWorkerAnalysisPayload(encodedPayload, { rejectSparseArrays:true }), record, context)
         : null,
       creation:{
+        ...(creation || {}),
         migrationContract:WORKER_CACHE_MIGRATION_VERSION,
         payloadCodec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION,
         sourceRoute:ANALYSIS_ORCHESTRATION_ROUTE.CURRENT,
-        ...(creation || {}),
       },
       produce:async (context) => {
         this.metrics.producerInvocations++;
