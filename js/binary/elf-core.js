@@ -2,7 +2,7 @@ import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
 import { parseEhFrameHeader } from './elf-unwind.js';
 import { parseProgramDynamic } from './elf-dynamic.js';
-import { createELFMetadataBudget } from './elf-budget.js';
+import { createELFMetadataBudget, markELFMetadataPartial } from './elf-budget.js';
 import { executableELFRange, mappedELFFileSpanForVa } from './elf-mapping.js';
 import { parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
 
@@ -56,7 +56,7 @@ export function parseELF(input, options = {}) {
 
   const programHeaders = parseProgramHeaders(r, h, image, bits);
   const rawSections = parseSectionHeaders(r, h, bits, image);
-  nameSections(r, rawSections, h);
+  nameSections(r, rawSections, h, image);
   let riscvFileIsa = null;
   if (image.arch === 'riscv64') {
     const namedAttributeSections = rawSections.filter((section) => section.name === '.riscv.attributes');
@@ -307,7 +307,6 @@ function parseSectionHeaders(r, h, bits, image) {
       out.push({ index: i, nameOffset: r.u32(p), type: r.u32(p + 4), flags: BigInt(r.u32(p + 8)), addr: BigInt(r.u32(p + 12)), offset: BigInt(r.u32(p + 16)), size: BigInt(r.u32(p + 20)), link: r.u32(p + 24), info: r.u32(p + 28), addralign: BigInt(r.u32(p + 32)), entsize: BigInt(r.u32(p + 36)), name: '' });
     }
   }
-  if (h.shstrndx === 0xffff && out[0] && out[0].link < out.length) h.shstrndx = out[0].link;
   return out;
 }
 
@@ -326,13 +325,25 @@ function terminatedStringInTable(r, strStart, strSize, offset, maxSpan) {
   return r.cstring(strStart + offset, Math.min(nul + 1, max));
 }
 
-function nameSections(r, sections, h) {
+function nameSections(r, sections, h, image) {
   let shstrndx = h.shstrndx;
-  if (shstrndx === 0xffff && sections[0] && sections[0].link < sections.length) {
-    shstrndx = sections[0].link;
+  if (shstrndx === SHN_XINDEX) {
+    const link = sections[0]?.link;
+    if (link == null || link === 0 || link >= sections.length) {
+      markELFMetadataPartial(image, 'section-names:shstrndx-invalid', `ELF e_shstrndx SHN_XINDEX section-0 sh_link ${link ?? '<absent>'} does not resolve to a section`);
+      return;
+    }
+    shstrndx = link;
+  } else if (shstrndx !== 0 && shstrndx >= sections.length) {
+    markELFMetadataPartial(image, 'section-names:shstrndx-invalid', `ELF e_shstrndx ${shstrndx} is outside the section header table (${sections.length} sections)`);
+    return;
   }
   const str = sections[shstrndx];
-  if (!str || str.type !== SHT_STRTAB || str.offset + str.size > BigInt(r.length)) return;
+  if (!str || (shstrndx !== 0 && str.type !== SHT_STRTAB)) {
+    if (shstrndx !== 0) markELFMetadataPartial(image, 'section-names:shstrndx-not-strtab', `ELF e_shstrndx ${shstrndx} does not name an SHT_STRTAB section`);
+    return;
+  }
+  if (str.offset + str.size > BigInt(r.length)) return;
   for (const s of sections) {
     if (BigInt(s.nameOffset) >= str.size) continue;
     const sectionName = terminatedStringInTable(r, Number(str.offset), Number(str.size), s.nameOffset, 1 << 20);
