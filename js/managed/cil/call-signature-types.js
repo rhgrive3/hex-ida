@@ -57,7 +57,7 @@ function stackType(name, bits = null, extra = {}) {
   return Object.freeze({ stackType:name, ...(bits == null ? {} : { bits }), ...extra });
 }
 
-function parseType(bytes, offset, code, depth = 0) {
+function parseType(bytes, offset, code, depth = 0, methodGenericArity = null) {
   if (depth > 32 || offset >= bytes.length) fail(code);
   let pos = consumeCustomMods(bytes, offset, code);
   if (pos >= bytes.length) fail(code);
@@ -79,22 +79,23 @@ function parseType(bytes, offset, code, depth = 0) {
   }
   if (type === 0x13 || type === 0x1e) { // VAR / MVAR
     const index = readCompressed(bytes, pos, code);
+    if (type === 0x1e && methodGenericArity !== null && index.value >= methodGenericArity) fail(code);
     return { next:index.next, value:stackType(type === 0x13 ? 'type-generic' : 'method-generic', null,
       { genericIndex:index.value }) };
   }
   if (type === 0x0f) { // PTR
     pos = consumeCustomMods(bytes, pos, code);
     if (bytes[pos] === 0x01) pos += 1; // PTR VOID
-    else pos = parseType(bytes, pos, code, depth + 1).next;
+    else pos = parseType(bytes, pos, code, depth + 1, methodGenericArity).next;
     return { next:pos, value:stackType('native-int') };
   }
   if (type === 0x1d) { // SZARRAY
     pos = consumeCustomMods(bytes, pos, code);
-    pos = parseType(bytes, pos, code, depth + 1).next;
+    pos = parseType(bytes, pos, code, depth + 1, methodGenericArity).next;
     return { next:pos, value:stackType('object-ref') };
   }
   if (type === 0x14) { // ARRAY
-    pos = parseType(bytes, pos, code, depth + 1).next;
+    pos = parseType(bytes, pos, code, depth + 1, methodGenericArity).next;
     pos = parseArrayShape(bytes, pos, code);
     return { next:pos, value:stackType('object-ref') };
   }
@@ -105,42 +106,42 @@ function parseType(bytes, offset, code, depth = 0) {
     pos = ref.next;
     const count = readCompressed(bytes, pos, code);
     pos = count.next;
-    for (let i = 0; i < count.value; i++) pos = parseType(bytes, pos, code, depth + 1).next;
+    for (let i = 0; i < count.value; i++) pos = parseType(bytes, pos, code, depth + 1, methodGenericArity).next;
     return { next:pos, value:kind === 0x11
       ? stackType('value-type', null, { typeToken:ref.encoded })
       : stackType('object-ref', null, { typeToken:ref.encoded }) };
   }
   if (type === 0x1b) { // FNPTR
-    const nested = parseMethodSignature(bytes, pos, code, depth + 1, false);
+    const nested = parseMethodSignature(bytes, pos, code, depth + 1, false, methodGenericArity);
     return { next:nested.next, value:stackType('native-int') };
   }
   fail(code);
 }
 
-function parseReturn(bytes, offset, code, depth) {
+function parseReturn(bytes, offset, code, depth, methodGenericArity) {
   let pos = consumeCustomMods(bytes, offset, code);
   if (bytes[pos] === 0x01) return { next:pos + 1, value:null }; // VOID
   if (bytes[pos] === 0x16) return { next:pos + 1, value:stackType('typed-reference') };
   if (bytes[pos] === 0x10) { // BYREF
     pos = consumeCustomMods(bytes, pos + 1, code);
-    const inner = parseType(bytes, pos, code, depth + 1);
+    const inner = parseType(bytes, pos, code, depth + 1, methodGenericArity);
     return { next:inner.next, value:stackType('managed-pointer') };
   }
-  return parseType(bytes, pos, code, depth + 1);
+  return parseType(bytes, pos, code, depth + 1, methodGenericArity);
 }
 
-function parseParam(bytes, offset, code, depth) {
+function parseParam(bytes, offset, code, depth, methodGenericArity) {
   let pos = consumeCustomMods(bytes, offset, code);
   if (bytes[pos] === 0x16) return { next:pos + 1, value:stackType('typed-reference') };
   if (bytes[pos] === 0x10) {
     pos = consumeCustomMods(bytes, pos + 1, code);
-    const inner = parseType(bytes, pos, code, depth + 1);
+    const inner = parseType(bytes, pos, code, depth + 1, methodGenericArity);
     return { next:inner.next, value:stackType('managed-pointer') };
   }
-  return parseType(bytes, pos, code, depth + 1);
+  return parseType(bytes, pos, code, depth + 1, methodGenericArity);
 }
 
-function parseMethodSignature(bytes, offset, code, depth = 0, requireEnd = true) {
+function parseMethodSignature(bytes, offset, code, depth = 0, requireEnd = true, inheritedMethodGenericArity = null) {
   if (depth > 32 || offset >= bytes.length) fail(code);
   const callConvention = bytes[offset++];
   const kind = callConvention & 0x0f;
@@ -150,13 +151,15 @@ function parseMethodSignature(bytes, offset, code, depth = 0, requireEnd = true)
   if (explicitThis && !hasThis) fail(code);
 
   let genericParameterCount = 0;
-  if ((callConvention & 0x10) !== 0) {
+  const declaresMethodGenerics = (callConvention & 0x10) !== 0;
+  if (declaresMethodGenerics) {
     const generic = readCompressed(bytes, offset, code);
     genericParameterCount = generic.value;
     offset = generic.next;
   }
+  const methodGenericArity = declaresMethodGenerics ? genericParameterCount : inheritedMethodGenericArity;
   const count = readCompressed(bytes, offset, code);
-  const ret = parseReturn(bytes, count.next, code, depth + 1);
+  const ret = parseReturn(bytes, count.next, code, depth + 1, methodGenericArity);
   offset = ret.next;
   const parameters = [];
   let sentinelSeen = false;
@@ -166,7 +169,7 @@ function parseMethodSignature(bytes, offset, code, depth = 0, requireEnd = true)
       sentinelSeen = true;
       offset += 1;
     }
-    const param = parseParam(bytes, offset, code, depth + 1);
+    const param = parseParam(bytes, offset, code, depth + 1, methodGenericArity);
     parameters.push(param.value);
     offset = param.next;
   }
@@ -187,7 +190,7 @@ function parseMethodSignature(bytes, offset, code, depth = 0, requireEnd = true)
 
 export function parseCilMethodSignature(blob) {
   if (!(blob instanceof Uint8Array)) fail('cil-call-signature-blob-required');
-  return parseMethodSignature(blob, 0, 'cil-call-signature-invalid').value;
+  return parseMethodSignature(blob, 0, 'cil-call-signature-invalid', 0, true, 0).value;
 }
 
 export function parseCilMethodSpecInstantiation(blob) {
