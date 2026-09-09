@@ -107,6 +107,10 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobHeap 
   // netmodule authority — Flags, Name, HashValue (#Blob). Only the physical
   // row size was known, so multi-module file identity and its manifest hash
   // authority vanished from the canonical image (#7803).
+  const validManifestFileName = name => {
+    const dot = name.lastIndexOf('.');
+    return dot > 0 && dot < name.length - 1 && !/[\\/:]/.test(name);
+  };
   const files = readRows(0x26, pos => {
     const flags = view.getUint32(pos, true);
     // II.22.19: Flags is 0x0000 (ContainsMetaData) or 0x0001
@@ -114,14 +118,28 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobHeap 
     if (flags !== 0 && flags !== 1) fail('cil-file-flags-invalid');
     const name = text(index(pos + 4, s));
     if (name == null || !name.length) fail('cil-file-name-required');
+    if (!validManifestFileName(name)) fail('cil-file-name-invalid');
     const hashValueBlobIndex = index(pos + 4 + s, b);
-    let hashValue = null;
-    if (hashValueBlobIndex !== 0) {
-      if (!blobHeap) fail('cil-file-hash-blob-missing');
-      hashValue = readCilMetadataBlob(blobHeap, hashValueBlobIndex, 'cil-file-hash-blob-invalid');
-    }
+    if (hashValueBlobIndex === 0) fail('cil-file-hash-required');
+    if (!blobHeap) fail('cil-file-hash-blob-missing');
+    const hashValue = readCilMetadataBlob(blobHeap, hashValueBlobIndex, 'cil-file-hash-blob-invalid');
+    if (hashValue.length === 0) fail('cil-file-hash-empty');
     return { flags, name, hashValueBlobIndex, hashValue };
   });
+  const fileNames = new Set();
+  for (const file of files) {
+    if (fileNames.has(file.name)) fail('cil-file-name-duplicate');
+    fileNames.add(file.name);
+  }
+  // A manifest module must not list itself in File. The Module row's Name is
+  // the exact identity available at this layer; if either table is absent,
+  // leave legacy/minimal metadata behavior untouched.
+  if ((counts[0x20] || 0) > 0 && (counts[0x00] || 0) > 0) {
+    const moduleName = text(index(offsets[0x00] + 2, s));
+    if (moduleName != null && files.some(file => file.name === moduleName)) {
+      fail('cil-file-self-reference');
+    }
+  }
   // ECMA-335 II.22.14 ExportedType (0x27): exported type / type-forwarder
   // declarations — Flags, TypeDefId, TypeName, TypeNamespace, Implementation
   // (File | AssemblyRef | ExportedType coded index, never null). Dropping
@@ -129,6 +147,10 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobHeap 
   // different public type surfaces into one canonical image (#7800).
   const exportedImplementationSize = codedIndexSize(counts, [0x26, 0x23, 0x27], 2);
   const exportedImplementationTables = [0x26, 0x23, 0x27];
+  const TYPE_VISIBILITY_MASK = 0x00000007;
+  const TYPE_PUBLIC = 0x00000001;
+  const TYPE_NESTED_PUBLIC = 0x00000002;
+  const TYPE_FORWARDER = 0x00200000;
   const exportedTypes = readRows(0x27, pos => {
     const flags = view.getUint32(pos, true);
     const typeDefId = view.getUint32(pos + 4, true);
@@ -140,12 +162,35 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobHeap 
     const table = exportedImplementationTables[implementation & 0x3];
     const rid = Math.floor(implementation / 4);
     if (table == null || rid < 1 || rid > counts[table]) fail('cil-exported-type-implementation-invalid');
+    const isForwarder = (flags & TYPE_FORWARDER) !== 0;
+    if (isForwarder && typeDefId !== 0) fail('cil-exported-type-forwarder-typedefid-invalid');
+    if (isForwarder && table !== 0x23) fail('cil-exported-type-forwarder-implementation-invalid');
+    if (table === 0x23 && !isForwarder) fail('cil-exported-type-assemblyref-forwarder-required');
+    const visibility = flags & TYPE_VISIBILITY_MASK;
+    if (table === 0x26 && visibility !== TYPE_PUBLIC) fail('cil-exported-type-file-visibility-invalid');
+    if (table === 0x27 && visibility !== TYPE_NESTED_PUBLIC) fail('cil-exported-type-nested-visibility-invalid');
+    if (table === 0x27 && typeNamespace.length !== 0) fail('cil-exported-type-nested-namespace-invalid');
     return {
       flags, typeDefId, typeName, typeNamespace,
       implementation: { table, rid, token: cilMetadataToken(table, rid) },
-      isForwarder: (flags & 0x00200000) !== 0,
+      isForwarder,
     };
   });
+  const resolveExportedImplementation = row => {
+    const seen = new Set([row.rid]);
+    let implementation = row.implementation;
+    while (implementation.table === 0x27) {
+      if (seen.has(implementation.rid)) fail('cil-exported-type-implementation-cycle');
+      seen.add(implementation.rid);
+      const target = exportedTypes[implementation.rid - 1];
+      if (!target) fail('cil-exported-type-implementation-invalid');
+      implementation = target.implementation;
+    }
+    return { ...implementation };
+  };
+  for (const row of exportedTypes) {
+    row.resolvedImplementation = resolveExportedImplementation(row);
+  }
   // ECMA-335 II.22.11 DeclSecurity (0x0E): declarative security authority —
   // Action + Parent (HasDeclSecurity coded: TypeDef | MethodDef | Assembly) +
   // PermissionSet (#Blob). Only the physical row size was known, so Demand /

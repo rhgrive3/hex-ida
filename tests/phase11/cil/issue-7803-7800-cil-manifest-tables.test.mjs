@@ -23,7 +23,9 @@ function manifestFixture({
   hashByte = 0xaa,
   fileFlags = 0,
   fileFlagsRow,
+  fileRows,
   exportedRow,
+  exportedRows,
   fileHashIndex = 1,
   declSecurity = null,
 } = {}) {
@@ -44,10 +46,12 @@ function manifestFixture({
   const assemblyRefs = new Uint8Array(20), av = new DataView(assemblyRefs.buffer);
   av.setUint16(0, 1, true);
   av.setUint16(14, 25, true); // 'Widget'
+  const fileBytes = fileRows ?? fileFlagsRow ?? files;
+  const exportedBytes = exportedRows ?? exportedRow ?? exported;
   const rows = new Map([
     [0x23, { count: 1, bytes: assemblyRefs }],
-    [0x26, { count: 1, bytes: fileFlagsRow ?? files }],
-    [0x27, { count: 1, bytes: exportedRow ?? exported }],
+    [0x26, { count: fileBytes.length / 8, bytes: fileBytes }],
+    [0x27, { count: exportedBytes.length / 14, bytes: exportedBytes }],
   ]);
   if (declSecurity != null) {
     // DeclSecurity: Action(2) Parent(2) PermissionSet(2); parent = TypeDef #1
@@ -112,13 +116,12 @@ test('#7803 File.HashValue payload distinguishes manifests', () => {
   assert.notEqual(semantic(a), semantic(b));
 });
 
-test('#7803 File flags and empty hash fail closed', () => {
-  // Reserved flag bits must be rejected, not silently carried.
+test('#7803 File flags and missing/invalid hash fail closed', () => {
   assert.throws(() => parseCil(manifestFixture({ fileFlags: 0x00000002 }), { binaryId: 'badflags' }),
     /cil-file-flags-invalid|cil-unsupported-binary/);
-  // A File row's HashValue blob index must resolve inside the heap: an
-  // out-of-range index fails closed instead of publishing an unresolvable
-  // hash authority.
+  assert.throws(() => parseCil(manifestFixture({ fileHashIndex: 0 }), { binaryId: 'nohash' }),
+    /cil-file-hash-required|cil-unsupported-binary/);
+
   const strings = [0, ...utf8('A.netmodule'), ...utf8('B.netmodule'), ...utf8('Widget'), ...utf8('Example'), ...utf8('T')];
   const files = new Uint8Array(8), fv = new DataView(files.buffer);
   fv.setUint32(0, 0, true);
@@ -136,6 +139,17 @@ test('#7803 File flags and empty hash fail closed', () => {
   assert.throws(() => parseCil(bytes, { binaryId: 'badhash' }), /cil-file-hash-blob-invalid|cil-unsupported-binary/);
 });
 
+test('#7803 duplicate File.Name fails closed', () => {
+  const files = new Uint8Array(16), fv = new DataView(files.buffer);
+  for (const pos of [0, 8]) {
+    fv.setUint32(pos, 0, true);
+    fv.setUint16(pos + 4, 1, true);
+    fv.setUint16(pos + 6, 1, true);
+  }
+  assert.throws(() => parseCil(manifestFixture({ fileRows: files }), { binaryId: 'dupfile' }),
+    /cil-file-name-duplicate|cil-unsupported-binary/);
+});
+
 test('#7800 ExportedType row is decoded as forwarder identity', () => {
   const image = parseCil(manifestFixture(), { binaryId: 'exported' });
   assert.equal(image.exportedTypes.length, 1);
@@ -148,6 +162,7 @@ test('#7800 ExportedType row is decoded as forwarder identity', () => {
     typeNamespace: 'Example',
     implementation: { table: 0x23, rid: 1, token: '0x23000001' },
     isForwarder: true,
+    resolvedImplementation: { table: 0x23, rid: 1, token: '0x23000001' },
   });
 });
 
@@ -160,8 +175,6 @@ test('#7800 ExportedType.TypeName distinguishes assemblies (previously collapsed
 });
 
 test('#7800 a null ExportedType implementation fails closed', () => {
-  // Implementation is a coded index over [File, AssemblyRef, ExportedType];
-  // 0 (null) is invalid for ExportedType rows.
   const exported = new Uint8Array(14), ev = new DataView(exported.buffer);
   ev.setUint32(0, 0x00200001, true);
   ev.setUint32(4, 0, true);
@@ -170,6 +183,59 @@ test('#7800 a null ExportedType implementation fails closed', () => {
   ev.setUint16(12, 0, true);
   assert.throws(() => parseCil(manifestFixture({ exportedRow: exported }), { binaryId: 'nullimpl' }),
     /cil-exported-type-implementation-required|cil-unsupported-binary/);
+});
+
+test('#7800 Forwarder must use AssemblyRef and zero TypeDefId', () => {
+  const badTypeDefId = new Uint8Array(14), tv = new DataView(badTypeDefId.buffer);
+  tv.setUint32(0, 0x00200001, true);
+  tv.setUint32(4, 1, true);
+  tv.setUint16(8, 25, true);
+  tv.setUint16(10, 32, true);
+  tv.setUint16(12, 5, true);
+  assert.throws(() => parseCil(manifestFixture({ exportedRow: badTypeDefId }), { binaryId: 'badforwarderid' }),
+    /cil-exported-type-forwarder-typedefid-invalid|cil-unsupported-binary/);
+
+  const noForwarder = new Uint8Array(14), nv = new DataView(noForwarder.buffer);
+  nv.setUint32(0, 0x00000001, true);
+  nv.setUint32(4, 0, true);
+  nv.setUint16(8, 25, true);
+  nv.setUint16(10, 32, true);
+  nv.setUint16(12, 5, true);
+  assert.throws(() => parseCil(manifestFixture({ exportedRow: noForwarder }), { binaryId: 'noforwarder' }),
+    /cil-exported-type-assemblyref-forwarder-required|cil-unsupported-binary/);
+});
+
+test('#7800 nested ExportedType chains resolve to the ultimate target', () => {
+  const exported = new Uint8Array(28), ev = new DataView(exported.buffer);
+  ev.setUint32(0, 0x00000002, true); // NestedPublic
+  ev.setUint32(4, 0, true);
+  ev.setUint16(8, 40, true);         // T
+  ev.setUint16(10, 0, true);         // nested namespace must be null
+  ev.setUint16(12, 10, true);        // ExportedType #2: (2 << 2) | 2
+  ev.setUint32(14, 0x00200001, true);
+  ev.setUint32(18, 0, true);
+  ev.setUint16(22, 25, true);        // Widget
+  ev.setUint16(24, 32, true);        // Example
+  ev.setUint16(26, 5, true);         // AssemblyRef #1
+  const image = parseCil(manifestFixture({ exportedRows: exported }), { binaryId: 'nested' });
+  assert.deepEqual(image.exportedTypes[0].implementation,
+    { table: 0x27, rid: 2, token: '0x27000002' });
+  assert.deepEqual(image.exportedTypes[0].resolvedImplementation,
+    { table: 0x23, rid: 1, token: '0x23000001' });
+});
+
+test('#7800 cyclic nested ExportedType chains fail closed', () => {
+  const exported = new Uint8Array(28), ev = new DataView(exported.buffer);
+  ev.setUint32(0, 0x00000002, true);
+  ev.setUint16(8, 25, true);
+  ev.setUint16(10, 0, true);
+  ev.setUint16(12, 10, true); // #1 -> #2
+  ev.setUint32(14, 0x00000002, true);
+  ev.setUint16(22, 40, true);
+  ev.setUint16(24, 0, true);
+  ev.setUint16(26, 6, true);  // #2 -> #1
+  assert.throws(() => parseCil(manifestFixture({ exportedRows: exported }), { binaryId: 'cycle' }),
+    /cil-exported-type-implementation-cycle|cil-unsupported-binary/);
 });
 
 test('#7632 DeclSecurity row is decoded as declarative-security authority', () => {
