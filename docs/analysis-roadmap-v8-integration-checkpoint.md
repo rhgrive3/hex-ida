@@ -2937,6 +2937,57 @@ empty; PR #7746 remains unrelated cache work. Search results are not an
 exhaustive no-duplicate proof. All original 23 findings and the frozen135-binary
 denominator remain open; no whole requirement is closed. Acceptance stays LOCKED.
 
+## C4-03 explicit store-spelling expansion transitions
+
+The two previously noted expansion paths now issue their own actual history:
+`expand-initial-store-spelling` for the initial compound line becoming an ordinary
+C AST assignment, and `expand-projected-store-spelling` for an actual compound
+C AST node becoming the final Phase 8 assignment. The history distinguishes
+the initial renderer, C AST producer and final projection instead of presenting
+an earlier compound spelling as the current line. These records reuse the same
+expression history/ledger and `observed-store-spelling-not-memory-equivalence`
+label; original load/arithmetic/store origins remain present in both sets.
+
+The initial expansion requires the private initial line/store observation. The
+projected expansion additionally requires a private observation of the actual
+C AST node, not just its semantic-expression descriptor or equal text. That
+snapshot is taken by the producer and consumed before the owned projection
+changes/clones the node. Caller copies, edited incoming text and replaced public
+validators cannot issue a transition. Observation work shares the existing
+cumulative edge allowance; the same consumer is not counted twice merely for
+observing its node. Missing observations/record capacity are explicit incomplete
+history, while the existing printed output remains unchanged. Existing recovery
+and expression histories keep their own producer requirements.
+
+Projection records join the existing rewrite history with actual line bindings
+and survive ordinary replay once, without duplicate events. A copied published
+history loses its replay binding. The asynchronous proof path can perform its
+owned AST clone without mutating the original result and retain the spelling
+event; a real independently proved scalar operand replacement inside a store
+also retains it. Only that pure scalar operand is proved/adopted, not the memory
+update or its spelling. Unresolved memory and mismatched address spaces continue
+to be refused by the existing proof boundary.
+
+Eight new tests plus the extended two existing producer-path matrices cover
+40 direct C AST and 56 initial/public-pipeline cells (source/spelling cells, not
+96 memory-equivalence theorems), actual IDs/reverse navigation, copied/edited
+nodes, frozen observations, late callbacks, caps, replay, owned proof cloning,
+real scalar adoption and explicit memory refusals. Positive proof fixtures now
+declare their precise ordinary little-endian memory and matching address-space
+identity; the default display fixtures retain unknown qualifiers. The negative
+tests retain those original rejection cases. Typed legacy proof value IDs use
+the existing `legacy-number:` contract, never a new identity namespace.
+
+PR #3421 remains reused. PR #7814 at
+`c0227beacfdf9ce753b822fb2598ac02524d4fc5` was inspected after the spelling-title
+search: it addresses primitive integer parsing in scalar range evidence, not
+rendered store spelling. It remains a relevant central-reconciliation candidate
+owned by the parallel issue lane, alongside the previously inspected #7820;
+neither issue fix is duplicated here. The actual owner inventory gains no new
+path. All original 23 findings and the frozen135-binary denominator remain;
+the wider C4-03 class audit, C4-04 proof gating and full integration acceptance
+are not closed by this store-spelling chain. Acceptance remains LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -2971,7 +3022,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C3-03 | Versioned language metadata and unknown-version matrix |
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
-| HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi, initial RMW/C AST compound-store histories and their owned handoffs, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
+| HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi, initial RMW/C AST compound-store histories, owned handoffs and explicit assignment-expansion records, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
 | HEX-C4-04 | Proof-gated scalar projection, owned inputs, transaction coverage and optional reuse of all 64 display rules as independently verified candidates implemented; ordinary legacy-view adoption, full family/width denominator and memory/CFG/exception observables remain open |
 | HEX-C4-05 | Frozen 272-cell scalar/14-Bool/8-width producer coverage and 3 actual schedules (816 scalar cells); adopted-transform history now preserves actual rule/cost/budget/proof audits. Native proof gaps, arbitrary permutations and full acceptance remain open |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |

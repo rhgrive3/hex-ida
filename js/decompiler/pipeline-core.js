@@ -30,6 +30,7 @@ function valueOf(a) { return a?.value || null; }
 // to an expression's text or a shared input's source IDs. No public metadata
 // can issue a binding, and the expression/load identity is never modified.
 const expressionHistoryConsumers = new WeakMap();
+const storeSpellingProducers = new WeakMap();
 const buildHistoryObservations = new WeakMap();
 function valueHistoryRecord(record, valueId) {
   const copy = { ...record, valueId };
@@ -154,6 +155,30 @@ export function readExpressionHistoryConsumer(semantic, ir) {
       || data('ir') !== binding.instructionId || data('location') !== binding.location
       || !binding.isCurrent()) return null;
   return binding;
+}
+
+// A spelling transition needs the actual C AST node as well as the semantic
+// expression consumer. Equal text, copied nodes or a public descriptor cannot
+// establish which spelling this producer emitted.
+export function readStoreSpellingProducer(node, ir) {
+  const entry = storeSpellingProducers.get(node);
+  return entry && entry.ir === ir && entry.observation.matches() && entry.consumer.isCurrent() ? entry : null;
+}
+
+function bindStoreSpelling(node, known, state) {
+  if (!known?.storeSpelling || known.storeSpelling.form === 'assignment') return;
+  const consumer = readExpressionHistoryConsumer(node.semantic, state.ir);
+  if (!consumer) return;
+  const budget = consumerObservationBudget(state);
+  try {
+    if (budget.edges <= 0) throw new Error('store-spelling-observation-budget');
+    const observation = captureProjectionIrData([node], state.opts?.shouldAbort);
+    budget.edges -= observation.metrics.edges;
+    if (budget.edges < 0 || !consumer.isCurrent() || node.text !== known.text) throw new Error('store-spelling-observation-unavailable');
+    storeSpellingProducers.set(node, Object.freeze({ ir:state.ir, consumer, observation,
+      form:known.storeSpelling.form, text:known.text, valueId:known.storeSpelling.valueId,
+    }));
+  } catch { budget.edges = 0; budget.reasons.add('store-spelling-observation-unavailable'); }
 }
 function safeIdent(s, fallback = 'value') {
   const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_$]/g, '_').replace(/^([0-9])/, '_$1');
@@ -840,6 +865,25 @@ function compoundStoreHistory(instruction, value, expression, location, form, st
     && Object.getOwnPropertyDescriptor(instructions, position)?.value === instruction && observation?.matches() === true };
 }
 
+function initialStoreExpansion(initialStore, instruction, value, expression, location, state) {
+  const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
+  const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
+  if ((state.initialStoreExpansionCount || 0) >= maximum) {
+    consumerObservationBudget(state).reasons.add('initial-store-expansion-history-budget'); return [];
+  }
+  const source = mergeSource(initialStore.records[0].originHistory.after, origin(instruction, value), expression.source,
+    location.expression?.source, location.base?.source, location.index?.source);
+  const record = Object.freeze({ rule:'expand-initial-store-spelling', phase:'c-ast-render', valueId:value?.id ?? null,
+    before:`store:${initialStore.spelling.form}`, after:'store:assignment',
+    evidence:Object.freeze({ kind:'observed-store-spelling-not-memory-equivalence',
+      detail:'actual owned initial-line to C AST assignment transition; no memory equivalence proof' }),
+    originHistory:expressionOriginHistory({ source }, { source }),
+  });
+  (state.rewriteProof ??= []).push(record);
+  state.initialStoreExpansionCount = (state.initialStoreExpansionCount || 0) + 1;
+  return [record];
+}
+
 function knownStatementForLine(line, state, lineIndex, initialStore = null) {
   if (line?.row == null || line.kind !== 'stmt') return null;
   const insts = (state.ir.instructions || []).filter((i) => i.row === line.row);
@@ -873,10 +917,9 @@ function knownStatementForLine(line, state, lineIndex, initialStore = null) {
       };
     }
     const location = memoryLocation(store, state), value = valueOf(store.args?.[0]), e = expressionFor(value, state);
-    let text = `${location.text} = ${printExpression(e)};`, rendered = null;
+    let text = `${location.text} = ${printExpression(e)};`, rendered = null, form = 'assignment';
     if (e?.kind === 'binary' && ['add','sub','mul'].includes(e.op) && e.left?.kind === 'load' && e.left.location?.key === location.key) {
       const rhs = printExpression(e.right);
-      let form;
       if (e.op === 'add' && e.right?.kind === 'const' && e.right.value === 1n) { text = `${location.text}++;`; form = 'post-increment'; }
       else if (e.op === 'sub' && e.right?.kind === 'const' && e.right.value === 1n) { text = `${location.text}--;`; form = 'post-decrement'; }
       else { text = `${location.text} ${{add:'+=',sub:'-=',mul:'*='}[e.op]} ${rhs};`; form = `${e.op}-assignment`; }
@@ -884,10 +927,13 @@ function knownStatementForLine(line, state, lineIndex, initialStore = null) {
     }
     if (initialStore?.instruction === store) {
       const current = rendered;
-      rendered = { records:Object.freeze([...(current?.records || []), ...initialStore.records]),
+      const expanded = form === 'assignment' && initialStore.spelling.text !== text
+        ? initialStoreExpansion(initialStore, store, value, e, location, state) : [];
+      rendered = { records:Object.freeze([...(current?.records || []), ...initialStore.records, ...expanded]),
         isCurrent:() => (!current || current.isCurrent()) && initialStore.isCurrent() };
     }
-    return { text, semantic: semanticExpressionConsumer({ op: 'store', location, expression: e, ir: store.id }, value, store, state, false, rendered), source: mergeSource(line.source, e?.source, origin(store, store.dst)) };
+    return { text, semantic: semanticExpressionConsumer({ op: 'store', location, expression: e, ir: store.id }, value, store, state, false, rendered),
+      source: mergeSource(line.source, e?.source, origin(store, store.dst)), storeSpelling:{ form, valueId:value?.id ?? null } };
   }
   const ret = insts.find((i) => i.op === 'ret');
   if (ret && /^return\b/.test(String(line.text || ''))) {
@@ -921,6 +967,7 @@ function cAstFromLines(result, state) {
     const switched = switchHistory && readSwitchLineHistory(line, state.ir);
     if (switched && !known) semantic = { op:'switch-render', expression:null, ir:null };
     const node = { kind: line.kind || 'raw', indent: line.indent || 0, text: known?.text ?? line.text ?? '', source, semantic };
+    bindStoreSpelling(node, known, state);
     if (switched && !known) {
       const budget = consumerObservationBudget(state);
       try {

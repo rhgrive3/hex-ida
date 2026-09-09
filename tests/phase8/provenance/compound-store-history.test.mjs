@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { enhanceSemanticDecompilation } from '../../../js/decompiler/pipeline-core.js';
+import { enhanceSemanticDecompilation, readStoreSpellingProducer } from '../../../js/decompiler/pipeline-core.js';
 import { applyPhase8Projection } from '../../../js/decompiler/phase8/projection.js';
 import { validateRenderProvenance } from '../../../js/decompiler/phase8/render-provenance.js';
 import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
@@ -64,6 +64,13 @@ test('five actual compound-store spellings retain the load, arithmetic and store
     // The downstream owned projection currently reprints a full assignment.
     // This is historical spelling provenance, not a claim that ++ is current.
     assert.match(result.lines[0].text, / = /);
+    const expansions = result.renderProvenance.ledger.filter(record => record.rule === 'expand-projected-store-spelling');
+    assert.equal(expansions.length, 1);
+    assert.equal(expansions[0].before, `store:${form}`); assert.equal(expansions[0].after, 'store:assignment');
+    assert.deepEqual(expansions[0].producedRefs, ['L0:stmt']);
+    assert.equal(expansions[0].proof, 'observed-store-spelling-not-memory-equivalence');
+    assert.deepEqual(expansions[0].originHistory.elidedRefs, []);
+    for (const inst of [f.load.def, f.value.def, f.store]) assert.ok(expansions[0].originHistory.consumedRefs.includes(`ir:${inst.id}`));
     assert.equal(validateRenderProvenance(result.renderProvenance).state, 'complete');
     assertCanonical(f); cells++;
   }
@@ -76,6 +83,8 @@ test('each actual store owns its event; equal expressions and return consumers c
   const history = records(result);
   assert.equal(history.length, 2);
   assert.deepEqual(history.map(record => record.producedRefs), [['L0:stmt'], ['L1:stmt']]);
+  assert.deepEqual(result.renderProvenance.ledger.filter(record => record.rule === 'expand-projected-store-spelling')
+    .map(record => record.producedRefs), [['L0:stmt'], ['L1:stmt']]);
   for (const line of ['L2:stmt', 'L3:stmt']) {
     assert.ok(!result.renderProvenance.entities[line].recordRefs.some(index => result.renderProvenance.ledger[index].rule === 'render-compound-store'));
   }
@@ -160,6 +169,52 @@ test('a deadline-skipped rewrite still records the actual mandatory store render
   assertCanonical(f);
 });
 
+test('copied or edited C AST nodes cannot manufacture a spelling-transition producer from the same semantic consumer', () => {
+  for (const mutate of [
+    f => { f.result.cAst.body[0] = { ...f.result.cAst.body[0] }; },
+    f => { f.result.cAst.body[0].text = 'forged += input;'; },
+    f => { f.result.cAst.body[0].semantic = { ...f.result.cAst.body[0].semantic }; },
+  ]) {
+    const f = fixture(); mutate(f);
+    assert.equal(readStoreSpellingProducer(f.result.cAst.body[0], f.ir), null);
+    const result = applyPhase8Projection(f.result, analysis());
+    assert.deepEqual(result.renderProvenance.ledger.filter(record => record.rule === 'expand-projected-store-spelling'), []);
+  }
+});
+
+test('public spelling observations are immutable and cannot change the privately issued form', () => {
+  const f = fixture(), producer = readStoreSpellingProducer(f.result.cAst.body[0], f.ir);
+  assert.ok(producer); assert.ok(Object.isFrozen(producer)); assert.ok(Object.isFrozen(producer.observation));
+  assert.equal(Reflect.set(producer, 'form', 'invented'), false);
+  assert.equal(Reflect.set(producer.observation, 'matches', () => true), false);
+  const result = applyPhase8Projection(f.result, analysis());
+  assert.equal(result.renderProvenance.ledger.find(record => record.rule === 'expand-projected-store-spelling').before, 'store:add-assignment');
+});
+
+test('late incoming-text mutation and a transition-record cap preserve output without a fictitious complete history', () => {
+  const baseline = applyPhase8Projection(fixture().result, analysis()).pseudocode;
+  const f = fixture(); let calls = 0;
+  const result = applyPhase8Projection(f.result, { get:() => { calls++; f.result.cAst.body[0].text = 'forged();'; return null; } });
+  assert.ok(calls > 0); assert.equal(result.pseudocode, baseline);
+  assert.deepEqual(result.renderProvenance.ledger.filter(record => record.rule === 'expand-projected-store-spelling'), []);
+  assert.ok(result.phase8Projection.history.reasons.includes('stale-store-spelling-producer'));
+  assert.equal(result.renderProvenance.completeness, 'incomplete');
+  const capped = applyPhase8Projection(fixture().result, analysis(), { renderProvenanceBudget:{ maxTransformRecords:1 } });
+  assert.equal(capped.pseudocode, baseline);
+  assert.ok(capped.phase8Projection.history.reasons.includes('store-spelling-history-budget'));
+  assert.equal(capped.renderProvenance.completeness, 'incomplete');
+});
+
+test('a copied published transition cannot acquire a producer edge on replay', () => {
+  const f = fixture(), result = applyPhase8Projection(f.result, analysis());
+  result.rewriteProof = result.rewriteProof.map(record => ({ ...record }));
+  const replay = applyPhase8Projection(result, analysis());
+  const expansions = replay.renderProvenance.ledger.filter(record => record.rule === 'expand-projected-store-spelling');
+  assert.equal(expansions.length, 1);
+  assert.equal(expansions[0].renderedBinding, 'unresolved'); assert.deepEqual(expansions[0].producedRefs, []);
+  assert.equal(replay.renderProvenance.completeness, 'incomplete');
+});
+
 test('query navigation reaches the actual store and retains the display-only disclaimer, then rejects stale snapshots', async () => {
   const f = fixture({ one:true }), result = applyPhase8Projection(f.result, analysis());
   let epoch = 1;
@@ -175,6 +230,8 @@ test('query navigation reaches the actual store and retains the display-only dis
     assert.ok(selected.entities.some(entity => entity.lineIndex === 0));
     assert.ok(selected.transforms.some(record => record.rule === 'render-compound-store'
       && record.proof === 'observed-store-spelling-not-memory-equivalence'));
+    assert.ok(selected.transforms.some(record => record.rule === 'expand-projected-store-spelling'
+      && record.after === 'store:assignment'));
   }
   epoch++;
   assert.equal((await navigation.selectOrigin('addr', f.store.address)).reason, 'stale-query-snapshot');

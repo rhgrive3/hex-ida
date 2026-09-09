@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { decompileSemantic, readSemanticStoreLineHistory } from '../../../js/decompiler/semantic-core.js';
-import { enhanceSemanticDecompilation } from '../../../js/decompiler/pipeline.js';
+import { enhanceSemanticDecompilation, optimizeSemanticDecompilation, isProducerProjection } from '../../../js/decompiler/pipeline.js';
 import { applyPhase8Projection } from '../../../js/decompiler/phase8/projection.js';
 import { buildRenderProvenance, validateRenderProvenance } from '../../../js/decompiler/phase8/render-provenance.js';
 import { normalizeCompatibilityLine } from '../../../js/decompiler/switch.js';
@@ -9,14 +9,19 @@ import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
 import { createDecompilerNavigation } from '../../../js/ui/decompiler-provenance.js';
 import { fixture as irFixture } from '../helpers/ir-fixtures.mjs';
 import { analysis } from './fixture.js';
+import { identity } from '../helpers/proof-fixtures.mjs';
 
 const records = map => map.ledger.filter(record => record.rule === 'render-initial-compound-store');
 
-function fixture({ bits = 32, op = 'add', one = false, reversed = false, different = false, stack = false, select = false, memoryOperand = false, fork = false, options = {} } = {}) {
+function fixture({ bits = 32, op = 'add', one = false, reversed = false, different = false, stack = false, select = false, memoryOperand = false, mbaOperand = false, fork = false, proofMemory = false, options = {} } = {}) {
   const f = irFixture('initial_store_history'); f.block(0);
   const location = stack ? { locKind:'stack', locKey:'stack:16', disp:16 } : { locKind:'global', locKey:'global:32768' };
   const load = f.load(bits, location);
-  const operand = one ? f.constant(1n, bits) : memoryOperand ? f.load(bits, { locKind:'global', locKey:'global:32792' }) : f.opaque(bits);
+  let operand;
+  if (mbaOperand) {
+    const left = f.opaque(bits), right = f.opaque(bits); left.reg = 'x1'; right.reg = 'x2';
+    operand = f.binary('xor', f.binary('xor', left, right, bits), f.binary('xor', right, left, bits), bits);
+  } else operand = one ? f.constant(1n, bits) : memoryOperand ? f.load(bits, { locKind:'global', locKey:'global:32792' }) : f.opaque(bits);
   operand.reg = 'x0';
   const sum = f.binary(op, reversed ? operand : load, reversed ? load : operand, bits);
   const value = select ? f.select(f.opaque(1), sum, operand, bits) : sum;
@@ -27,6 +32,12 @@ function fixture({ bits = 32, op = 'add', one = false, reversed = false, differe
   const ir = f.build(); ir.instructions = ir.blocks.flatMap(block => block.insts);
   ir.instructions.forEach((inst, index) => { inst.id = index + 300; inst.row = index; inst.address = 0x9000n + BigInt(index * 4); });
   for (const inst of ir.instructions) if (inst.loc?.kind === 'global') inst.loc.address = BigInt(inst.loc.key.split(':')[1]);
+  if (proofMemory) for (const inst of ir.instructions) if (['load', 'store'].includes(inst.op)) {
+    // This clone-path fixture declares a concrete ordinary-memory program.
+    // The default display fixtures deliberately retain unknown qualifiers.
+    inst.extra.addressPrecise = true;
+    inst.extra.memoryAccess = { ...inst.extra.memoryAccess, volatility:false, atomic:false, ordering:'none', endian:'little' };
+  }
   for (const block of ir.blocks) block.startRow = block.insts[0].row;
   if (stack) ir.stackSlots = [{ key:location.locKey, offset:16n, name:'local_10' }];
   const ret = ir.instructions.at(-1); ret.args = [{ value }]; value.uses.push(ret);
@@ -68,6 +79,16 @@ test('seven actual initial RMW spellings retain canonical inputs across eight wi
     const index = result.lines.findIndex(line => line.kind === 'stmt' && line.source.ir.includes(f.store.id));
     assert.deepEqual(retained.producedRefs, [`L${index}:stmt`]);
     assert.match(result.lines[index].text, / = /);
+    const initialExpansions = map.ledger.filter(record => record.rule === 'expand-initial-store-spelling');
+    const projectedExpansions = map.ledger.filter(record => record.rule === 'expand-projected-store-spelling');
+    const division = ['sdiv', 'udiv'].includes(op);
+    assert.equal(initialExpansions.length, division ? 1 : 0);
+    assert.equal(projectedExpansions.length, division ? 0 : 1);
+    const expansion = [...initialExpansions, ...projectedExpansions][0];
+    assert.equal(expansion.before, `store:${form}`); assert.equal(expansion.after, 'store:assignment');
+    assert.deepEqual(expansion.producedRefs, [`L${index}:stmt`]);
+    assert.deepEqual(expansion.originHistory.elidedRefs, []);
+    for (const inst of [f.load.def, f.sum.def, f.store]) assert.ok(expansion.originHistory.consumedRefs.includes(`ir:${inst.id}`));
     assert.equal(validateRenderProvenance(map).state, 'complete');
     assertCanonical(f); cells++;
   }
@@ -83,6 +104,55 @@ test('actual initial history and the later C AST event remain distinct and stabl
   for (let i = 0; i < 3; i++) result = applyPhase8Projection(result, analysis());
   assert.deepEqual(result.renderProvenance.ledger, ledger);
   assertCanonical(f);
+});
+
+test('the public proof path carries the spelling event through its owned clone without modifying the original producer', async () => {
+  const f = fixture({ one:true, proofMemory:true });
+  const original = enhanceSemanticDecompilation(f.seed, f.model, { ...f.opts, phase8PrepareProof:true });
+  assert.ok(isProducerProjection(original));
+  const originalText = original.pseudocode, originalNode = original.cAst.body.find(node => /\+\+;$/.test(node.text));
+  assert.ok(originalNode);
+  const result = await optimizeSemanticDecompilation(original, { identity:{ ...identity, addressSpace:'memory' },
+    abiId:'generic-v1', targets:[], memory:{ addressBits:32, endian:'little', initialBytes:[[32768n, 7], [32769n, 0], [32770n, 0], [32771n, 0]] }, timeoutMs:1000 });
+  assert.equal(result.proofOptimization.status, 'complete', result.proofOptimization.reason);
+  assert.equal(result.proofOptimization.adopted, 0, 'this test does not request or prove a memory rewrite');
+  assert.ok(isProducerProjection(result)); assert.ok(isProducerProjection(original));
+  assert.equal(original.pseudocode, originalText); assert.match(originalNode.text, /\+\+;$/);
+  const [expanded] = result.renderProvenance.ledger.filter(record => record.rule === 'expand-projected-store-spelling');
+  assert.ok(expanded); assert.equal(expanded.renderedBinding, 'producer-bound');
+  assert.equal(expanded.proof, 'observed-store-spelling-not-memory-equivalence');
+  assertCanonical(f);
+});
+
+test('a genuine proved scalar replacement inside a store retains its owned spelling transition', async () => {
+  const f = fixture({ bits:8, mbaOperand:true, proofMemory:true });
+  const original = enhanceSemanticDecompilation(f.seed, f.model, { ...f.opts, phase8PrepareProof:true });
+  const originalText = original.pseudocode; assert.match(originalText, /\^/);
+  const result = await optimizeSemanticDecompilation(original, { identity:{ ...identity, addressSpace:'memory' },
+    abiId:'generic-v1', targets:[f.operand], candidateStrategy:'equality-saturation', backendTier:'tiered',
+    memory:{ addressBits:32, endian:'little', initialBytes:[[32768n, 7]] }, timeoutMs:1000 });
+  assert.equal(result.proofOptimization.status, 'complete', result.proofOptimization.reason);
+  assert.equal(result.proofOptimization.adopted, 1, 'only the pure scalar operand is independently proved');
+  assert.ok(result.phase8Projection.transforms.some(record => record.valueId === `legacy-number:${f.operand.id}` && record.queryHash));
+  assert.equal(original.pseudocode, originalText); assert.ok(isProducerProjection(original));
+  const [expanded] = result.renderProvenance.ledger.filter(record => record.rule === 'expand-projected-store-spelling');
+  assert.ok(expanded); assert.equal(expanded.renderedBinding, 'producer-bound');
+  assert.equal(expanded.proof, 'observed-store-spelling-not-memory-equivalence');
+  assert.ok(expanded.originHistory.consumedRefs.includes(`ir:${f.operand.def.id}`));
+  assertCanonical(f);
+});
+
+test('display history does not admit unresolved or mismatched memory into the public proof path', async () => {
+  for (const mismatch of [false, true]) {
+    const f = fixture({ one:true, proofMemory:mismatch });
+    const original = enhanceSemanticDecompilation(f.seed, f.model, { ...f.opts, phase8PrepareProof:true });
+    const result = await optimizeSemanticDecompilation(original, { identity:{ ...identity, addressSpace:mismatch ? 'data' : 'memory' },
+      abiId:'generic-v1', targets:[], memory:{ addressBits:32 }, timeoutMs:1000 });
+    assert.equal(result.proofOptimization.status, 'partial'); assert.equal(result.proofOptimization.adopted, 0);
+    assert.equal(result.proofOptimization.reason, mismatch ? 'address-space-mismatch' : 'unresolved-memory-address');
+    assert.equal(result.pseudocode, original.pseudocode); assert.ok(isProducerProjection(original));
+    assertCanonical(f);
+  }
 });
 
 test('RMW analysis without an actual eligible display branch does not issue a store-render record', () => {
@@ -146,6 +216,13 @@ test('a public history reader cannot replace the observed selection validator', 
   assert.equal(Reflect.set(entry.canonical, 'isCurrent', () => true), false);
   f.sum.def.sub = 'xor';
   assert.equal(readSemanticStoreLineHistory(f.line, f.ir), null);
+});
+
+test('copied initial lines cannot issue an initial-to-C-AST expansion record', () => {
+  const f = fixture({ op:'udiv' });
+  f.seed.lines[f.seed.lines.indexOf(f.line)] = { ...f.line };
+  const result = applyPhase8Projection(enhanceSemanticDecompilation(f.seed, f.model, f.opts), analysis());
+  assert.deepEqual(result.renderProvenance.ledger.filter(record => record.rule === 'expand-initial-store-spelling'), []);
 });
 
 test('initial history caps and cancellation preserve output and make the missing binding explicit', () => {
@@ -219,6 +296,7 @@ test('division spelling remains navigable through the public pipeline and reject
     const selected = await navigation.selectOrigin('addr', inst.address);
     assert.equal(selected.state, 'ready');
     assert.ok(selected.transforms.some(record => record.rule === 'render-initial-compound-store' && record.after === 'store:udiv-assignment'));
+    assert.ok(selected.transforms.some(record => record.rule === 'expand-initial-store-spelling' && record.after === 'store:assignment'));
   }
   epoch++;
   assert.equal((await navigation.selectOrigin('addr', f.store.address)).reason, 'stale-query-snapshot');

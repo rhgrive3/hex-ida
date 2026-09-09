@@ -52,6 +52,7 @@ export function normalizeSemanticCompatibilityLine(line, ir) {
   try {
     const observation = captureProjectionIrData([line]);
     storeRenderLines.set(line, Object.freeze({ ...entry,
+      spelling:Object.freeze({ ...entry.spelling, text:line.text }),
       isCurrent:() => entry.canonical.isCurrent() && observation.matches(),
     }));
   } catch { /* No inferred continuity when the exact line cannot be observed. */ }
@@ -93,6 +94,7 @@ function retainStoreRenderLine(node, inst, rendered, ctx) {
     history.edges -= observation.metrics.edges;
     if (history.edges < 0 || !canonical.isCurrent()) throw new Error('initial-store-binding-unavailable');
     storeRenderLines.set(node, Object.freeze({ ir:ctx.ir, instruction:inst, canonical, records:Object.freeze([record]),
+      spelling:Object.freeze({ form:rendered.form, text:node.text }),
       isCurrent:() => canonical.isCurrent() && observation.matches(),
     }));
   } catch { history.edges = 0; history.reasons.add('initial-store-binding-unavailable'); }

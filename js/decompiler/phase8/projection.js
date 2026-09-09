@@ -1,5 +1,6 @@
 import { isProducerProjection, producerExpressionToken, readProducerInputExpressions } from '../pipeline.js';
-import { readExpressionHistoryConsumer } from '../pipeline-core.js';
+import { readExpressionHistoryConsumer, readStoreSpellingProducer } from '../pipeline-core.js';
+import { expressionOriginHistory } from '../rewrite/engine.js';
 import { readStackPhiHistoryConsumer } from '../passes/stack-phi-recovery.js';
 import { readStackReturnHistoryConsumer } from '../passes/stack-return-recovery.js';
 import { readLegacyStackHistoryConsumer } from '../passes/legacy-stack-recovery.js';
@@ -351,6 +352,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
       : readStackReturnHistoryConsumer(node?.semantic, result.ir)
         || readStackPhiHistoryConsumer(node?.semantic, result.ir)
         || readLegacyStackHistoryConsumer(node?.semantic, result.ir) || readExpressionHistoryConsumer(node?.semantic, result.ir));
+  const storeSpellings = (result.cAst.body ?? []).map(node => hasPriorHistory ? null : readStoreSpellingProducer(node, result.ir));
   const conditionBindings = inherited ? [...inherited.conditionConsumers]
     : (result.semanticAst.conditions ?? []).map(condition => hasPriorHistory ? null : readExpressionHistoryConsumer(condition, result.ir));
   const conditionConsumers = new Map();
@@ -430,12 +432,35 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   for (const item of result.semanticAst.outputs || []) if (item.expression) item.expression = transform(item.expression);
   const conditions = conditionMap(result.semanticAst, transform);
 
-  for (const node of result.cAst.body || []) {
+  const spellingRecords = [];
+  const spellingLimit = Number.isSafeInteger(opts.renderProvenanceBudget?.maxTransformRecords)
+    && opts.renderProvenanceBudget.maxTransformRecords >= 0 ? Math.min(opts.renderProvenanceBudget.maxTransformRecords, 1024) : 1024;
+  for (const [index, node] of (result.cAst.body || []).entries()) {
     if (node?.semantic?.expression) {
       node.semantic.expression = transform(node.semantic.expression);
       if (node.semantic.op === 'return') node.text = `return ${printExpression(node.semantic.expression)};`;
       else if (node.semantic.op === 'store' && node.semantic.location?.text) {
-        node.text = `${node.semantic.location.text} = ${printExpression(node.semantic.expression)};`;
+        const text = `${node.semantic.location.text} = ${printExpression(node.semantic.expression)};`;
+        const spelling = storeSpellings[index], consumer = expressionConsumers[index];
+        if (!hasPriorHistory && !spelling && consumer?.records.some(record => record.rule === 'render-compound-store')) {
+          historyReasons.add('unavailable-store-spelling-producer');
+        }
+        if (spelling && (spelling.consumer !== consumer || spelling.text !== node.text)) historyReasons.add('stale-store-spelling-producer');
+        if (spelling && spelling.consumer === consumer && spelling.text === node.text && node.text !== text) {
+          if ((result.rewriteProof?.length || 0) + spellingRecords.length >= spellingLimit) historyReasons.add('store-spelling-history-budget');
+          else {
+            const source = mergeSource(node.source, consumer.expression?.source, node.semantic.expression.source);
+            const record = Object.freeze({ rule:'expand-projected-store-spelling', phase:'phase8-render', valueId:spelling.valueId,
+              before:`store:${spelling.form}`, after:'store:assignment',
+              evidence:Object.freeze({ kind:'observed-store-spelling-not-memory-equivalence',
+                detail:'actual owned C AST to projected assignment transition; no memory equivalence proof' }),
+              originHistory:expressionOriginHistory({ source }, { source }),
+            });
+            spellingRecords.push(record);
+            expressionConsumers[index] = Object.freeze({ ...consumer, records:Object.freeze([...consumer.records, record]) });
+          }
+        }
+        node.text = text;
       }
     }
     const rows = sourceOf(node.source).rows.map(Number);
@@ -453,6 +478,8 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
       }
     }
   }
+
+  if (spellingRecords.length) result = { ...result, rewriteProof:[...(result.rewriteProof || []), ...spellingRecords] };
 
   if (proofRequested && (opts.shouldAbort?.() || !isProducerProjection(original) || proved && !readProvedRewrites(analysis,proofContext))) return original;
   const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
