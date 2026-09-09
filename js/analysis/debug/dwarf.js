@@ -843,7 +843,14 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
     units.push(unit);
     cursor.offset = unitEnd;
     cursor.limit = info.length;   // the unit-end advance itself is not unit-local
-    if (cancelled || byteBudget.exhausted) break;
+    if (cancelled) break;
+    if (byteBudget.exhausted) {
+      if (cursor.offset < info.length) {
+        if (!diagnostics.includes(BYTE_BUDGET_DIAGNOSTIC)) diagnostics.push(BYTE_BUDGET_DIAGNOSTIC);
+        complete = false;
+      }
+      break;
+    }
   }
 
   if (complete && cursor.offset < info.length) {
