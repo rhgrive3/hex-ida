@@ -142,6 +142,44 @@ test('#4418 Promise.reject transport sends reject immediately without an unhandl
   });
 });
 
+test('#4418 Promise.reject transport sends preserve falsy rejection reasons', async () => {
+  await captureUnhandledRejections(async (unhandled) => {
+    for (const sendError of [null, undefined, false, 0, '']) {
+      const transport = new RecordingTransport((value) => value.type === 'request' ? Promise.reject(sendError) : undefined);
+      const client = new RuntimeProviderProtocolClient(transport, { timeoutMs: 100 });
+
+      try {
+        const outcome = await settleWithin(client.request('runtime.session.test'), 50);
+        assert.equal(outcome.kind, 'error');
+        assert.strictEqual(outcome.error, sendError);
+        assert.equal(client.pending.size, 0);
+      } finally {
+        client.close();
+        await drainUnhandledRejections();
+      }
+    }
+    assert.deepEqual(unhandled, []);
+  });
+});
+
+test('#4418 sync transport sends preserve falsy thrown reasons', async () => {
+  for (const sendError of [null, undefined, false, 0, '']) {
+    const transport = new RecordingTransport(() => {
+      throw sendError;
+    });
+    const client = new RuntimeProviderProtocolClient(transport, { timeoutMs: 100 });
+
+    try {
+      const outcome = await settleWithin(client.request('runtime.session.test'), 50);
+      assert.equal(outcome.kind, 'error');
+      assert.strictEqual(outcome.error, sendError);
+      assert.equal(client.pending.size, 0);
+    } finally {
+      client.close();
+    }
+  }
+});
+
 test('#4418 late send rejection after timeout cannot double-settle or become unhandled', async () => {
   await captureUnhandledRejections(async (unhandled) => {
     let rejectRequest;
