@@ -590,9 +590,9 @@ export function createWorkerAnalysisArtifactDescriptor(input = {}) {
     },
     config:input.config ?? {},
     keyExtras:{
+      ...(input.keyExtras ?? {}),
       migrationContract:WORKER_CACHE_MIGRATION_VERSION,
       payloadCodec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION,
-      ...(input.keyExtras ?? {}),
     },
     upstreamArtifactIds:input.upstreamArtifactIds ?? [],
     originRefs:input.originRefs ?? [],
@@ -639,10 +639,10 @@ export class ArtifactAnalysisOrchestrator {
         ? (encodedPayload, record, context) => validate(decodeWorkerAnalysisPayload(encodedPayload, { rejectSparseArrays:true }), record, context)
         : null,
       creation:{
+        ...(creation || {}),
         migrationContract:WORKER_CACHE_MIGRATION_VERSION,
         payloadCodec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION,
         sourceRoute:ANALYSIS_ORCHESTRATION_ROUTE.CURRENT,
-        ...(creation || {}),
       },
       produce:async (context) => {
         this.metrics.producerInvocations++;
