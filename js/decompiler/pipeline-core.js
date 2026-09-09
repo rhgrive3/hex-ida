@@ -111,6 +111,11 @@ function semanticExpressionConsumer(semantic, value, instruction, state, nested 
     if (fields.length) consumerObservationBudget(state).reasons.add('field-projection-consumer-unavailable');
     return semantic;
   }
+  return bindObservedExpressionConsumer(semantic, value, instruction, state, records, rendered);
+}
+
+function bindObservedExpressionConsumer(semantic, value, instruction, state, records, rendered = null) {
+  if (!records?.length) return semantic;
   // Bound cumulative observation work for the function, not just each
   // individual graph: many consumers may share a large definition graph.
   const budget = consumerObservationBudget(state);
@@ -132,7 +137,7 @@ function semanticExpressionConsumer(semantic, value, instruction, state, nested 
       budget.reasons.add('stale-expression-build-history'); return semantic;
     }
     if (rendered && !rendered.isCurrent()) {
-      budget.reasons.add('stale-store-render-history'); return semantic;
+      budget.reasons.add(rendered.reason ?? 'stale-store-render-history'); return semantic;
     }
     expressionHistoryConsumers.set(semantic, Object.freeze({
       ir:state.ir, expression:semantic.expression, op:semantic.op, instructionId:semantic.ir,
@@ -302,6 +307,27 @@ function nzcvCondition(value, cond) {
 function compareFromFlags(flagValue, cond, state) {
   const d = flagValue?.def;
   if (!d || d.op !== 'cmp') return expr.variable('condition_' + (cond || 'flags'), 1, false);
+  const selection = observeBuildSelection(flagValue, d, state, 'flag-condition');
+  const expression = compareFromFlagsRaw(flagValue, cond, state);
+  const observation = finishBuildSelection(expression, selection, state);
+  if (observation) {
+    const before = { source:mergeSource(origin(d, flagValue), ...(d.args || []).map(arg => {
+      const value = valueOf(arg); return origin(value?.def, value);
+    })) };
+    const record = Object.freeze({ rule:'reconstruct-flag-condition', phase:'expression-build',
+      before:`cmp:${d.sub || 'sub'}:${cond || 'flags'}`, after:`expression:${expression.kind}`,
+      evidence:Object.freeze({ kind:'observed-flag-reconstruction-not-equivalence',
+        detail:'actual existing NZCV/conditional-compare display construction and visited inputs; not an independent flag, scalar, path or CFG equivalence proof' }),
+      originHistory:expressionOriginHistory(before, expression),
+    });
+    buildHistoryObservations.set(record, observation);
+    (state.buildHistoryFrame.records ??= new Set()).add(record);
+  }
+  return expression;
+}
+
+function compareFromFlagsRaw(flagValue, cond, state) {
+  const d = flagValue.def;
   const a = buildArg(d.args?.[0], state);
   let b = buildArg(d.args?.[1], state);
   // ARM compare immediates inherit the register operand width. The IR wrapper
@@ -384,6 +410,33 @@ function branchCondition(inst, state) {
   return compareFromFlags(valueOf(inst?.args?.at?.(-1)), inst?.cond || inst?.extra?.cond, state);
 }
 
+function semanticBranchCondition(inst, state) {
+  const kind = inst.extra?.kind || inst.sub || '';
+  const direct = ['cbz', 'cbnz', 'tbz', 'tbnz'].includes(kind);
+  if (direct) {
+    const e = branchCondition(inst, state);
+    return semanticExpressionConsumer({ expression:e, text:printExpression(e), row:inst.row, address:inst.address, ir:inst.id },
+      valueOf(inst.args?.[0]), inst, state, true);
+  }
+  // Flag reconstruction consumes buildArg rather than expressionFor. Keep its
+  // actual visited frame, never borrow/overwrite an unrelated SSA value proof.
+  const flags = valueOf(inst.args?.at?.(-1)), parent = state.buildHistoryFrame, frame = { records:null };
+  const selected = flags?.def?.op === 'cmp'
+    ? observeBuildSelection(flags, inst, state, 'flag-branch', [], false) : null;
+  state.buildHistoryFrame = frame;
+  try {
+    const e = branchCondition(inst, state);
+    const semantic = { expression:e, text:printExpression(e), row:inst.row, address:inst.address, ir:inst.id };
+    const built = [...(frame.records || [])].map(record => valueHistoryRecord(record, null));
+    (state.rewriteProof ??= []).push(...built);
+    const records = Object.freeze([...built, ...fieldProjectionRecords(semantic, state)]);
+    const observation = finishBuildSelection(e, selected, state);
+    if (!observation) return semantic;
+    return bindObservedExpressionConsumer(semantic, flags, inst, state, records,
+      { isCurrent:observation.matches, reason:'stale-flag-branch-history' });
+  } finally { state.buildHistoryFrame = parent; }
+}
+
 function buildValue(v, state, flags = {}) {
   // Follow only dependencies actually visited by this existing builder. A
   // matching expression pointer/source is not evidence that a consumer used a
@@ -434,16 +487,18 @@ function recordPhiCollapse(v, instruction, incoming, expression, state) {
   state.phiHistoryCount = (state.phiHistoryCount || 0) + 1;
 }
 
-function observeBuildSelection(value, instruction, state, kind = 'mov', related = []) {
+function observeBuildSelection(value, instruction, state, kind = 'mov', related = [], reserve = true) {
   const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
   const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
   const budget = consumerObservationBudget(state);
-  if ((state.buildSelectionHistoryCount || 0) >= maximum) {
+  if (reserve && (state.buildSelectionHistoryCount || 0) >= maximum) {
     budget.reasons.add(`${kind}-selection-history-budget`); return null;
   }
   // Reserve before recursive input construction; nested selections cannot all see
   // the same last free record. Failed observations never refill this budget.
-  state.buildSelectionHistoryCount = (state.buildSelectionHistoryCount || 0) + 1;
+  // A branch consumer only observes roots; the actual CMP producer reserves its
+  // transform slot. Both observations still spend the shared edge budget.
+  if (reserve) state.buildSelectionHistoryCount = (state.buildSelectionHistoryCount || 0) + 1;
   try {
     if (budget.edges <= 0) throw new Error('build-selection-observation-budget');
     const values = state.ir.values, valueIndex = values?.indexOf(value);
@@ -928,13 +983,7 @@ function semanticFacts(state, result) {
       const runtime = /objc_msgSend/.test(name) ? 'objc' : /^_?swift_/.test(name) ? 'swift' : null;
       facts.calls.push({ name, runtime, row: inst.row, address: inst.address, ir: inst.id });
     } else if (inst.op === 'cbr') {
-      const e = branchCondition(inst, state);
-      const condition = { expression:e, text:printExpression(e), row:inst.row, address:inst.address, ir:inst.id };
-      // Only these branch producers consume expressionFor(args[0]). Flag
-      // reconstruction has a different producer and cannot borrow this edge.
-      const kind = inst.extra?.kind || inst.sub || '';
-      facts.conditions.push(['cbz', 'cbnz', 'tbz', 'tbnz'].includes(kind)
-        ? semanticExpressionConsumer(condition, valueOf(inst.args?.[0]), inst, state, true) : condition);
+      facts.conditions.push(semanticBranchCondition(inst, state));
     } else if (inst.op === 'ret') {
       const rv = returnValueAt(inst, state);
       if (rv) facts.outputs.push({ name: 'return', type: typeFor(state, rv), expression: expressionFor(rv, state) });

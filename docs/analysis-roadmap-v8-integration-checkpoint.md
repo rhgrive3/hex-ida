@@ -3191,9 +3191,56 @@ not this render-history consumer. Preserve it as a central reconciliation
 candidate rather than duplicate those parallel issue fixes. No new ownership
 path or component/main merge is added. This closes one observed producer gap,
 not the full rendered/removed-class requirement or original23findings. General
-flag reconstruction, upstream compatibility transforms, full C4-03 audit,
+upstream compatibility transforms, full C4-03 audit,
 C4-04/C4-05 proofs, frozen135compiler corpus and required integration acceptance
 remain open. Goal ACTIVE and integration acceptance LOCKED.
+
+## C4-03 actual flag-condition reconstruction history
+
+`compareFromFlags` now records `reconstruct-flag-condition` for each actually
+visited CMP reconstruction, including the recursive previous comparison of a
+conditional CMP. Existing NZCV expressions, unsupported intrinsic fallbacks,
+operand widths, always-condition output and scalar/CFG eligibility are unchanged.
+The evidence label `observed-flag-reconstruction-not-equivalence` describes a
+display producer, not an independent flag, scalar, executed-path or CFG theorem.
+Missing/non-CMP flag definitions and direct-value CBZ/TBZ branches do not invent
+a reconstruction event.
+
+Select-value construction carries these events in its existing build frame and
+SSA consumer. General flag branches now own a separate actual visited build
+frame: they consume buildArg, not expressionFor, and therefore cannot borrow or
+overwrite a value's expressionProofs entry. The branch observer validates exact
+canonical branch/value/list roots before and after construction, then the same
+private expression-consumer binder admits the observed condition. Branch records
+use valueId:null; no synthetic SSA identity or new public issuer is created.
+The CMP producer reserves its transform slot before recursion; the additional
+branch-root observation spends shared edges but is not another transform.
+
+Thirteen new tests cover288builder source cells (four producers, eighteen
+conditions, four widths), conditional CMP, selected values, distinct conditions
+on one flag value, existing field-render producer handoff inside a condition,
+public projection/replay, reverse query/staleness, unknown/
+direct-value cases, copied records/descriptors and mutated sources/roots/getters,
+malformed/ambiguous rendered conditions, fallback and nested/record/edge/consumer/
+cancellation bounds. These are provenance cells, not hardware floating-width
+coverage or288equivalence proofs. An initial bound assertion incorrectly counted
+consumer ledger copies as new producer reservations; it now checks the actual
+CMP producer count after the earlier MOV reservation. The failed receipt is
+retained, and no production limit was increased to satisfy that test.
+
+PR #3421 remains reused at `4cd5b3eb9200b1180985b9df3a74f8245a5cc928`.
+The NZCV search found relevant parallel printing PR #7839 at
+`497f81e22b5437af9f86d0ae292a243889d4b838`. Its body and complete three-file
+diff were inspected: floating-domain comparison printing plus FCMP lt/le alias
+handling, with a foundation regression. This is important central reconciliation
+work, not evidence that current floating output is correct. No duplicate printing
+fix or component merge is made here; this change only observes existing output.
+
+One exact provenance-test ownership path is added. Full rendered/removed-class
+coverage, upstream compatibility transformations, ordinary scalar proof admission,
+memory/CFG/exception/UB/loop proofs, native/arbitrary-schedule requirements,
+original23finding closure, frozen135compiler corpus and required exact integration
+acceptance remain open. Goal ACTIVE; integration acceptance remains LOCKED.
 
 ## Ownership and regression policy
 
@@ -3229,7 +3276,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C3-03 | Versioned language metadata and unknown-version matrix |
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
-| HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi, MOV/address-load/precomputed-value/canonical-numeric-load selection, initial RMW/C AST compound-store histories, owned handoffs and explicit assignment-expansion records, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
+| HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi, MOV/address-load/precomputed-value/canonical-numeric-load selection, actual flag/conditional-CMP reconstruction and branch/select consumers, initial RMW/C AST compound-store histories, owned handoffs and explicit assignment-expansion records, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
 | HEX-C4-04 | Proof-gated scalar projection, owned inputs, transaction coverage and optional reuse of all 64 display rules as independently verified candidates implemented; ordinary legacy-view adoption, full family/width denominator and memory/CFG/exception observables remain open |
 | HEX-C4-05 | Frozen 272-cell scalar/14-Bool/8-width producer coverage and 3 actual schedules (816 scalar cells); adopted-transform history now preserves actual rule/cost/budget/proof audits. Native proof gaps, arbitrary permutations and full acceptance remain open |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |
