@@ -56,12 +56,17 @@ function objcImpAddressKey(address) {
 }
 
 /** Resolve an Objective-C IMP/function pointer without pretending duplicate IMPs are unique. */
-export function resolveObjcIMP(objcIndex, address, { receiverType = null, selector = null } = {}) {
+export function resolveObjcIMP(objcIndex, address, { receiverType = null, selector = null, classMethod = null } = {}) {
   if (!objcIndex || address == null) return { resolved: null, candidates: [], confidence: 0 };
   const addressKey = objcImpAddressKey(address);
   if (addressKey == null) return { resolved: null, candidates: [], confidence: 0 };
   let candidates = (objcIndex.methodsByIMP?.get(addressKey) || []).slice();
   if (selector) candidates = candidates.filter((m) => m.selector === selector);
+  // #5177: a known classMethod bit must constrain IMP resolution exactly as
+  // the objc_msgSend dispatch path does — treating a known '+' call as its
+  // same-IMP '-foo' instance sibling would mint a high-confidence exact
+  // identity the caller's evidence cannot support.
+  if (classMethod != null) candidates = candidates.filter((m) => !!m.classMethod === !!classMethod);
   if (receiverType != null) {
     if (typeof receiverType !== 'string') return { resolved: null, candidates: [], confidence: 0 };
     // Canonical class identity: the dispatch path normalizes spellings like
@@ -118,7 +123,7 @@ export function resolveAppleCall(index, call = {}) {
     ? call.runtime
     : runtimeOriginForSymbol(name);
   const indirectTarget = call.impTarget ?? call.functionPointer ?? ((call.kind === 'imp' || call.kind === 'function-pointer') ? call.target : null);
-  const imp = indirectTarget != null ? resolveObjcIMP(index?.objc, indirectTarget, { receiverType: call.receiverType, selector: call.selector }) : null;
+  const imp = indirectTarget != null ? resolveObjcIMP(index?.objc, indirectTarget, { receiverType: call.receiverType, selector: call.selector, classMethod: call.classMethod ?? null }) : null;
   if (origin === 'unknown' && imp?.candidates?.length) origin = 'objc';
 
   // ObjC IMP evidence is origin inference for unknown origins only (the guard
