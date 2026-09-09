@@ -50,8 +50,8 @@ function fingerprintSchema(value) {
 export function assertFingerprintCompatible(value) {
   const schema = fingerprintSchema(value);
   if (!schema) return value;
-  const version = Number(value.version);
-  if (!Number.isSafeInteger(version) || version < 1) throw new FingerprintVersionError(value.version, schema);
+  const version = value.version;
+  if (typeof version !== 'number' || !Number.isSafeInteger(version) || version < 1) throw new FingerprintVersionError(version, schema);
   if (version > FUNCTION_FINGERPRINT_VERSION) throw new FingerprintVersionError(version, schema);
   return value;
 }
