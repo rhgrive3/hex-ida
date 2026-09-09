@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseCilMethodSignature } from '../../../js/managed/cil/call-signature-types.js';
+import {
+  parseCilMethodSignature,
+  parseCilMethodSpecInstantiation,
+  substituteCilMethodGeneric,
+} from '../../../js/managed/cil/call-signature-types.js';
 
 const parse = (bytes) => parseCilMethodSignature(Uint8Array.from(bytes));
 
@@ -47,6 +51,16 @@ test('#7828 differently-typed nested signatures stay distinct through the type s
   const d = parse([0x00, 0x01, 0x01, 0x1b, 0x00, 0x00, 0x08]); // static void (fnptr int32())
   assert.notDeepEqual(c.parameters[0], d.parameters[0]);
   assert.notDeepEqual(c.parameters[0].fnPtr, d.parameters[0].fnPtr);
+});
+
+test('#7828 MethodSpec substitution descends into FNPTR nested method generics', () => {
+  // outer generic method M<T>: fnptr static !!0 ()
+  const signature = parse([0x10, 0x01, 0x00, 0x1b, 0x00, 0x00, 0x1e, 0x00]);
+  assert.deepEqual(signature.returnValue.fnPtr.returnValue, { stackType: 'method-generic', genericIndex: 0 });
+  const args = parseCilMethodSpecInstantiation(Uint8Array.from([0x0a, 0x01, 0x08])); // <int32>
+  const instantiated = substituteCilMethodGeneric(signature.returnValue, args);
+  assert.deepEqual(instantiated.fnPtr.returnValue, { stackType: 'int32', bits: 32 });
+  assert.notDeepEqual(instantiated, signature.returnValue);
 });
 
 test('#7828 malformed nested signatures still fail closed', () => {
