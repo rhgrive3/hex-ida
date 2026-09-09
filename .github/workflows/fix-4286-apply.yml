@@ -78,7 +78,7 @@ jobs:
           "          fetchImpl:async () => { fetches++; throw new Error('fetch must not start'); },",
           "        }),",
           "        (error) => error?.type === 'invalid_model_output' && /AbortSignal-compatible/.test(error.message),",
-          "        `malformed signal must fail at the transport boundary: ${String(signal)}` ,",
+          "        `malformed signal must fail at the transport boundary: ${String(signal)}` ,".replace("` ,", "`,"),
           "      );",
           "    }",
           "    assert.equal(timers, 0, 'malformed signals must be rejected before timeout allocation');",
