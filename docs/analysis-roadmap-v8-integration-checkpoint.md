@@ -1099,6 +1099,119 @@ No source PR was duplicated, no remote push/merge occurred, and none of the
 remains the two blocking x86 tests and actual missing semantics, independent
 semantic evidence, current-main reconciliation and the full completion audit.
 
+## Dedicated random-instruction checkpoint — 2026-09-09
+
+Production implementation and generated output:
+`6e91742ac82c8b2027a31ee07c25b23673552e70`.
+Follow-up version/invalidation test synchronization:
+`1a386fab870dc0863d452e672d7f34a0b7dba771`. The latter changes only
+`phase2-integration.test.mjs` and `viewer-artifact-cancel.test.mjs`; it does not
+change production code, native fixtures, the random verifier or generated output.
+Evidence below remains bound to its stated head, not silently relabeled.
+
+RDRAND and RDSEED now have dedicated operand/encoding validation and normal
+register/flag transfers, instead of the extended-system catch-all partial.
+The accepted byte matrix has 544 encodings: both families, all ModRM register
+selectors, optional 66, and at most one final REX. REX.W overrides 66; 16-bit
+writes preserve upper bits, 32-bit writes zero-extend, and REX.B selects R8–R15.
+Conflicting widths/registers/access roles, missing operands, memory forms,
+unexpected bytes and unproved prefix combinations emit no definite operations.
+The original 1487-witness registry and its digest are unchanged.
+
+The hardware result and CF are distinct nondeterministic intrinsic outputs.
+CF is not inferred from whether the result is zero. OF/SF/ZF/AF/PF are cleared,
+and other flags are preserved. RDSEED failure explicitly selects zero. The
+vendor-neutral RDRAND intrinsic retains an implementation-dependent invalid
+failure result: Intel documents zero, whereas AMD's cited RDRAND contract does
+not guarantee it. No retry loop, host constant or entropy-quality claim is
+invented. Feature absence is an explicit conditional #UD; normal transfers do
+not constitute native fault-path proof.
+
+Specification sources read for this change:
+
+- Intel SDM Volume 2B, RDRAND/RDSEED, printed pp.4-541–4-544:
+  https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-2b-manual.pdf
+- AMD-authored APM Volume 3, revision 3.35 (June 2023), printed pp.299–300,
+  read from this mirror because the current AMD download endpoints failed:
+  https://kib.kiev.ua/x86docs/AMD/AMD64/24594_APM_v3-r3.35.pdf
+  This is explicitly revision-pinned evidence, not a claim to have read the
+  unavailable revision 3.37. No secondary interpretation substitutes for it.
+
+Semantic version is `5.2.5-stage2-x86-denominator`. Generated serial is
+`2322242164`, build `ea8ba82cc47da991d409018a`, release identity
+`015f3edce74d406f8b799ad1e751ff9ced9b47084c5275bff2d2d2b0116f43af`.
+Generated rebuilds passed with zero diff on both heads (2.1 s and 2.7 s).
+The existing x87 trusted-terminal-domain test now uses the real browser
+receiver, retains all its positive/negative assertions including RDRAND,
+and passes in Chromium 140.0.7339.16 and WebKit 26.0. The version fixture fix
+also proves that artifacts from 5.2.4 cannot alias the new cache identity;
+the four viewer/artifact/cancellation tests pass on `1a386fab8` (2.4 s).
+
+New independent projection tests execute 156,672 cases across direct dedicated
+lifting and both actual browser receivers. They cover zero-valued success,
+failed generation, all accepted encodings, upper-register canaries and prior
+flag patterns. Mutations of CF, zero extension and RDSEED failure selection are
+rejected. This tests result projection, not the generator's distribution.
+
+Native fixture `tools/validation/machine-effects/fixtures/random-oracle.c` was
+compiled with GCC 11.4.0 and Clang 18.1.3 using
+`-O2 -Wall -Wextra -Werror -mno-red-zone`. It checks CPUID first, executes the
+real instructions, and captures registers/flags rather than reimplementing
+the lifter. Both compiler binaries passed comparison on clean `6e91742ac`:
+
+- GCC: 53.8 s; each browser compared 1536 observations / 12 encodings.
+  RDRAND: 768 successes, no observed failures. RDSEED: 432 successes,
+  336 failures.
+- Clang: 52.8 s; each browser compared 1536 observations / 12 encodings.
+  RDRAND: 768 successes, no observed failures. RDSEED: 448 successes,
+  320 failures.
+- Native CPU: GenuineIntel, signature 657105; leaf1 ECX 4277842447,
+  leaf7 EBX 4055836651. Proofs include both browser versions and binary,
+  observation, fixture, evaluator and verifier hashes.
+- Atomically published, fsynced, non-overwriting reports:
+  `/mnt/workspace/hex-roadmap-recovery-durable.UWZe3G/random-native-gcc-6e91742ac.json`
+  and `random-native-clang-6e91742ac.json` in the same directory.
+  Status is `PASS_NORMAL_PROJECTION_ONLY`: comparisons condition on the
+  hardware's nondeterministic returned value/CF. RDRAND native failure,
+  entropy quality, other CPU implementations, feature-disabled faults,
+  unobserved native encodings and physical iPad remain unproven.
+
+Full real-receiver diagnostic on `6e91742ac` completed both browsers (47.6 s):
+**141 exact / 1209 exact-with-intrinsic / 137 partial**, status `NOT-CLOSED`.
+There are 134 extended-system gaps, INT delivery, UD0 shape and UD1 shape.
+Reports are in
+`/mnt/workspace/hex-roadmap-recovery-durable.UWZe3G/hex-x86-receiver-denominator-detyFU/`.
+A row-by-row comparison against the prior `5IAeCk` diagnostic proves that only
+IDs 625 and 626 changed; the other 1485 rows are identical in both browsers.
+The encrypted userscript browser regression also passed on `6e91742ac` (5.9 s).
+
+Canonical `npm run check`, using installed Git 2.49.1:
+
+- `6e91742ac`: FAIL (138.3 s), stale Phase 2 version pin plus the unchanged
+  closure matrix. The new random test, #6133 and independent-oracle-report pass.
+- `1a386fab8`: FAIL (111.5 s), **only**
+  `x86-long64-closure-matrix.test.mjs`. The old six-file x86 failure set is
+  reduced to this one, but the complete 1487-witness requirement is not waived.
+  The command stops at the MachineEffects invariant; later full gates, including
+  Phase 7/8/9 on this new product, are not proven by this run.
+- Latest canonical log:
+  `/mnt/workspace/hex-roadmap-recovery-durable.UWZe3G/hex-roadmap-1a386-check-d9ikwd/full.log`.
+
+Actual changed inventory remains explicitly owned: 221 paths against
+`058177e3ba15511aae290495fa98e7129fda2583`, with 23/24 Phase 7/8 slices.
+Ownership regressions pass. The shared main ref advanced concurrently to
+`99d4cf84857ca01d7b72480b9156d1ee560fb49b`; candidate tree computed for that
+main and `6e91742ac` is `59294ca7b22621f73c0359b36c5605abc4278016`.
+It was not runtime-tested or merged. Source PR search still found only the
+previously reused #6910 lineage for RDRAND/x87, not a separate implementation
+to import. No duplicate PR, remote push or merge was performed.
+
+Keep the integration checkpoint locked. Next work is the remaining canonical
+closure test's actual receiver path and the 137 real semantic gaps, followed
+by all remaining independent/candidate/runtime gates and the unchanged
+23-finding completion audit. None of those findings is newly declared done,
+and no Ghidra/IDA superiority claim follows from this checkpoint.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
