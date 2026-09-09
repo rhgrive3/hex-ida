@@ -1,0 +1,141 @@
+name: Apply issue 3783 fix
+
+on:
+  push:
+    branches:
+      - fix/issue-3783-confidence-type
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/issue-3783-confidence-type
+          fetch-depth: 1
+
+      - name: Apply exact patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+
+          source = Path('js/signature/index.js')
+          text = source.read_text()
+          old = "function clamp(value) { return Math.max(0, Math.min(1, Number(value) || 0)); }"
+          new = """function isConfidence(value) {
+            return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+          }
+          function clamp(value) {
+            if (typeof value !== 'number' || !Number.isFinite(value)) throw new TypeError('confidence must be a finite number');
+            return Math.max(0, Math.min(1, value));
+          }"""
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one clamp implementation, found {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          replacements = [
+            ("if (!(entry.confidence >= 0 && entry.confidence <= 1)) throw new Error('signature confidence must be in [0,1]');",
+             "if (!isConfidence(entry.confidence)) throw new Error('signature confidence must be in [0,1]');"),
+            ("if (!(entry.confidence >= 0 && entry.confidence <= 1)) throw new Error('mapping confidence must be in [0,1]');",
+             "if (!isConfidence(entry.confidence)) throw new Error('mapping confidence must be in [0,1]');"),
+          ]
+          for old_text, new_text in replacements:
+              if text.count(old_text) != 1:
+                  raise SystemExit(f'expected one validator match, found {text.count(old_text)}')
+              text = text.replace(old_text, new_text, 1)
+          source.write_text(text)
+
+          test = Path('tests/issue-3783-knowledge-pack-confidence-type.mjs')
+          if test.exists():
+              raise SystemExit('issue 3783 regression already exists unexpectedly')
+          test.write_text(dedent("""\
+              import test from 'node:test';
+              import assert from 'node:assert/strict';
+
+              import {
+                SIGNATURE_PACK_FORMAT,
+                SIGNATURE_PACK_VERSION,
+                createKnowledgePack,
+                importKnowledgePack,
+                validateKnowledgePack,
+              } from '../js/signature/index.js';
+
+              function rawPack(kind, confidence) {
+                const base = {
+                  format: SIGNATURE_PACK_FORMAT,
+                  version: SIGNATURE_PACK_VERSION,
+                  signatures: [],
+                  mappings: [],
+                };
+                if (kind === 'signature') {
+                  base.signatures.push({ architecture:'arm64', confidence, symbols:[], provenance:{ source:'test' }, license:'test' });
+                } else {
+                  base.mappings.push({ identity:'fn-1', confidence, provenance:{ source:'test' }, license:'test' });
+                }
+                return base;
+              }
+
+              for (const kind of ['signature', 'mapping']) {
+                test(`#3783 ${kind} validation rejects non-number confidence`, () => {
+                  for (const confidence of ['0.9', ['1'], [0.5], true, false, {}, null, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+                    const pack = rawPack(kind, confidence);
+                    assert.equal(validateKnowledgePack(pack).ok, false, `${kind} ${String(confidence)} must fail validation`);
+                    assert.equal(importKnowledgePack(JSON.stringify(pack)).ok, false, `${kind} ${String(confidence)} must fail JSON import`);
+                  }
+                });
+
+                test(`#3783 ${kind} validation preserves finite [0,1] numbers`, () => {
+                  for (const confidence of [0, 0.5, 1]) {
+                    const pack = rawPack(kind, confidence);
+                    assert.equal(validateKnowledgePack(pack).ok, true);
+                    assert.equal(importKnowledgePack(JSON.stringify(pack)).ok, true);
+                  }
+                });
+              }
+
+              test('#3783 create path fails closed on explicit malformed confidence', () => {
+                for (const confidence of ['0.9', ['1'], true, {}, Number.NaN, Number.POSITIVE_INFINITY]) {
+                  assert.throws(() => createKnowledgePack({ confidence }), /confidence must be a finite number/);
+                  assert.throws(() => createKnowledgePack({ signatures:[{ confidence }] }), /confidence must be a finite number/);
+                  assert.throws(() => createKnowledgePack({ mappings:[{ confidence }] }), /confidence must be a finite number/);
+                }
+              });
+
+              test('#3783 create path preserves defaults and numeric clamping', () => {
+                const defaults = createKnowledgePack({ signatures:[{}], mappings:[{}] });
+                assert.equal(defaults.confidence, 1);
+                assert.equal(defaults.signatures[0].confidence, 1);
+                assert.equal(defaults.mappings[0].confidence, 1);
+                assert.equal(createKnowledgePack({ confidence:1.5 }).confidence, 1);
+                assert.equal(createKnowledgePack({ confidence:-0.5 }).confidence, 0);
+              });
+          """))
+          PY
+
+      - name: Focused validation
+        shell: bash
+        run: |
+          node --check js/signature/index.js
+          node --check tests/issue-3783-knowledge-pack-confidence-type.mjs
+          node tests/issue-3783-knowledge-pack-confidence-type.mjs
+          node tests/issue-5975-knowledge-pack-string-list-leaves.mjs
+          node tests/issue-6100-knowledge-pack-null-entry.mjs
+          node tests/recognition-intelligence.mjs
+          git diff --check
+
+      - name: Commit final diff and remove bootstrap workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/issue-3783-apply.yml
+          git add js/signature/index.js tests/issue-3783-knowledge-pack-confidence-type.mjs
+          git diff --cached --check
+          git commit -m "fix(signature): reject coerced confidence values"
+          git push origin HEAD:fix/issue-3783-confidence-type
