@@ -47,7 +47,7 @@ export const SEMANTIC_V2_MIGRATION_MODES = Object.freeze({
   SHADOW_DIFFERENTIAL: 'semantic-v2-shadow-differential',
 });
 
-export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.1.0';
+export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.2.0';
 export const SEMANTIC_V2_COMPAT_PATH = Object.freeze([
   'machine-effects',
   'semantic-ir-v2',
@@ -295,6 +295,9 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   input = object(input, 'semantic-v2-integration-input-required');
   const architecturePlugin = object(input.architecturePlugin, 'semantic-v2-integration-architecture-plugin-required');
   if (typeof architecturePlugin.liftExact !== 'function') fail('semantic-v2-lift-exact-required');
+  if (architecturePlugin.liftDecodedExact != null && typeof architecturePlugin.liftDecodedExact !== 'function') {
+    fail('semantic-v2-lift-decoded-exact-invalid');
+  }
   const architectureId = nonEmpty(architecturePlugin.id, 'semantic-v2-integration-architecture-id-required');
   const architectureSemanticVersion = nonEmpty(architecturePlugin.semanticVersion, 'semantic-v2-integration-architecture-semantic-version-required');
   const decoderSemanticVersion = nonEmpty(input.decoderSemanticVersion, 'semantic-v2-integration-decoder-semantic-version-required');
@@ -394,15 +397,20 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
       });
       const origin = originWithInstruction(item, instructionId, architecturePlugin);
       const decoded = object(item.decoded ?? item, 'semantic-v2-integration-decoded-instruction-required');
-      const prepared = { ...decoded, instructionId, origin, mode };
-      let bundle = architecturePlugin.liftExact(prepared, {
+      const liftContext = {
         ...machineEffectsContext,
         instructionId,
         origin,
         mode,
         signal: options.signal,
         machineEffectsOptions: options.machineEffectsOptions ?? {},
-      });
+      };
+      // A spread copy cannot carry private receiver/decoder object identity.
+      // Let an architecture preserve its original object while binding the
+      // canonical metadata itself. Existing liftExact plugins keep their API.
+      let bundle = architecturePlugin.liftDecodedExact
+        ? architecturePlugin.liftDecodedExact(decoded, liftContext)
+        : architecturePlugin.liftExact({ ...decoded, instructionId, origin, mode }, liftContext);
       if (bundle && typeof bundle.then === 'function') fail('semantic-v2-integration-async-lifter-not-supported');
       if (bundle == null) {
         unsupportedInstructionCount++;

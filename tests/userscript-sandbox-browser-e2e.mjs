@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, webcrypto } from 'node:crypto';
 import { chromium, webkit } from 'playwright';
+import { verifyFlagTransferValues } from './machine-effects/helpers/lahf-sahf-oracle.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CHATGPT = 'https://chatgpt.com';
@@ -108,7 +109,8 @@ async function run(name, browserType) {
         try {
           decoded = await request(decoder, {
             id: 1, architecture: 'x86_64', address: 0x2000n,
-            bytes: new Uint8Array([0x48, 0x8b, 0x03, 0xc3]),
+            // MOV | FSQRT | IRETQ | SAVEPREVSSP | LAHF | REX.B+SAHF | RET
+            bytes: new Uint8Array([0x48, 0x8b, 0x03, 0xd9, 0xfa, 0x48, 0xcf, 0xf3, 0x0f, 0x01, 0xea, 0x9f, 0x41, 0x9e, 0xc3]),
           });
         } catch (error) {
           return { decodedOk: false, decodedError: `decoder: ${error?.message || error}` };
@@ -132,6 +134,7 @@ async function run(name, browserType) {
               binaryId: 'binary:userscript-sandbox-x86', sliceId: 'slice:userscript-sandbox-x86',
               decoderSemanticVersion: 'capstone-5-x86-structured-v2',
               instructions: decoded.instructions,
+              machineEffectsContext: { closureMatrixTerminal: true },
             },
           });
         } catch (error) {
@@ -141,19 +144,58 @@ async function run(name, browserType) {
         semanticWorker.terminate();
       }
       const firstMachineEffects = analyzed?.result?.pipeline?.machineEffects?.[0] || null;
+      const x87Effects = analyzed?.result?.pipeline?.machineEffects?.[1] || null;
+      const x87Summary = x87Effects?.operations?.find((op) => op.kind === 'intrinsic')?.effectSummary;
       return {
         decodedOk: true,
         decodedCount: decoded.instructions?.length || 0,
         analyzedOk: analyzed?.ok === true,
         analyzedError: analyzed?.error || null,
         firstCompleteness: firstMachineEffects?.completeness || null,
+        x87Completeness: x87Effects?.completeness || null,
+        x87TerminalizedBy: x87Effects?.metadata?.terminalizedBy || null,
+        x87Reads: x87Summary?.registersRead || [],
+        x87Writes: x87Summary?.registersWritten || [],
+        flagTransfers:[4, 5].map(index => ({
+          family:decoded.instructions[index]?.instructionFamily,
+          bundle:analyzed?.result?.pipeline?.machineEffects?.[index],
+        })),
+        system: [2, 3].map((index) => {
+          const bundle = analyzed?.result?.pipeline?.machineEffects?.[index];
+          const summary = bundle?.operations?.find((op) => op.kind === 'intrinsic')?.effectSummary;
+          return {
+            family: decoded.instructions[index]?.instructionFamily,
+            completeness: bundle?.completeness, controlKind: bundle?.controlEffect?.kind,
+            terminalizedBy: bundle?.metadata?.terminalizedBy ?? null,
+            memoryReadScope: summary?.memoryRead?.scope ?? null,
+            memoryWriteScope: summary?.memoryWrite?.scope ?? null,
+          };
+        }),
       };
     });
     assert.equal(x86WorkerState.decodedOk, true, `${name}: protected x86 decoder worker failed: ${x86WorkerState.decodedError}`);
-    assert.equal(x86WorkerState.decodedCount, 2, `${name}: protected x86 decoder returned an unexpected instruction count`);
+    assert.equal(x86WorkerState.decodedCount, 7, `${name}: protected x86 decoder returned an unexpected instruction count`);
     assert.equal(x86WorkerState.analyzedOk, true, `${name}: protected x86 semantic worker failed: ${x86WorkerState.analyzedError}`);
     assert.equal(x86WorkerState.firstCompleteness, 'exact',
-      `${name}: protected x86 semantic worker did not publish terminal exactness: ${JSON.stringify(x86WorkerState)}`);
+      `${name}: protected x86 semantic worker lost dedicated memory semantics: ${JSON.stringify(x86WorkerState)}`);
+    assert.equal(x86WorkerState.x87Completeness, 'exact-with-intrinsic', `${name}: protected FSQRT summary`);
+    assert.equal(x86WorkerState.x87TerminalizedBy, 'trusted-capstone-structured-intrinsic',
+      `${name}: FSQRT must retain actual receiver authority through the bundled pipeline`);
+    assert.ok(x86WorkerState.x87Reads.includes('x86.x87.environment'));
+    for (const flag of ['c0', 'c1', 'c2', 'c3']) assert.ok(x86WorkerState.x87Writes.includes(`fpsw.${flag}`));
+    assert.ok(![...x86WorkerState.x87Reads, ...x86WorkerState.x87Writes]
+      .some((value) => value === 'rflags' || value.startsWith('rflags.')), `${name}: FSQRT cannot write RFLAGS`);
+    assert.deepEqual(x86WorkerState.system.map((row) => row.family), ['iretq', 'saveprevssp']);
+    for (const row of x86WorkerState.system) {
+      assert.equal(row.completeness, 'partial', `${name}:${row.family}: no unproved terminal promotion`);
+      assert.equal(row.controlKind, 'unknown', `${name}:${row.family}: no invented trap/fallthrough`);
+      assert.equal(row.terminalizedBy, null);
+      assert.notEqual(row.memoryReadScope, 'none');
+      assert.notEqual(row.memoryWriteScope, 'none');
+    }
+
+    assert.deepEqual(x86WorkerState.flagTransfers.map(row => row.family), ['lahf', 'sahf']);
+    for (const { family, bundle } of x86WorkerState.flagTransfers) verifyFlagTransferValues(bundle, family);
 
     await child.evaluate(() => globalThis.__HEX_CHATGPT_BRIDGE__.requestUiClose());
     await page.waitForFunction(() => document.getElementById('hex-userscript-iframe-host')?.getAttribute('aria-hidden') === 'true');

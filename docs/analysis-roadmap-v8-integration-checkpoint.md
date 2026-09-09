@@ -13,7 +13,10 @@ requirements in `docs/解析ツール改善.md.txt` remain the objective.
 - Inherited PR head: `8254ebe98bf6060bd902837d3751428a4fc15860`.
 - Reconciliation base fetched from live main on 2026-09-09:
   `404537698d019abe9c1c685718689a34ff5ebb4d`.
-- Local integration worktree: `/mnt/workspace/hex-roadmap-v8-integration`.
+- Active persistent integration worktree: `/mnt/workspace/hex-roadmap-v8-integration`.
+  The old `/tmp/hex-roadmap-recovery.wWNZ2Z/repo` disappeared when the execution
+  environment changed. Its source patches have been recovered; old temporary
+  test logs and commit objects are not current evidence. See durable recovery below.
 - Integration, moving-main reconciliation, and generated-output owner: this
   branch. No parallel component lanes have been started.
 - The original worktree's untracked `tmp/` and `diagnostics/` are preserved.
@@ -488,9 +491,9 @@ strict-token checks, passed (19.9 s). The actual 185-path inventory validates
 with the existing Phase 7/8 slices (21/24 paths). Exact-head rebuild and full
 affected gates remain required after commit.
 
-The separate full Phase 8 process on frozen `d0da0fe57` was re-polled and is
-still live. That worktree remains unchanged; its eventual result cannot attest
-the subsequent RISC-V source restoration.
+At that checkpoint the separate full Phase 8 process on frozen `d0da0fe57`
+was still live. It subsequently terminated PASS (1152.6 s); that historical
+result cannot attest the subsequent RISC-V or x86 source restorations.
 
 Next x86 diagnosis: the #6910 head
 `e5331237de68183c0c8b11d9e7f083c0e7161d8d` contains the missing Capstone
@@ -500,6 +503,419 @@ parallel x87 classifier. Separately, the old direct parser/lifter tests do not
 enter #7483's dedicated receiver revalidation Worker. Missing worker authority
 must not be papered over by minting a brand in tests or weakening the production
 guard. These observations explain next checks, not an x86 fix or passing gate.
+
+## x86 receiver and filesystem recovery checkpoint (2026-09-09)
+
+The previous implementation turn made progress, not merely a status update.
+The active local copy remains on the same canonical integration branch at
+`b64d71cf985f5c07daf6fb160544339e14d7a0d1`, with the following uncommitted
+repairs. No new PR, push, merge, or release claim accompanies this checkpoint.
+
+- Reused #6910's missing Capstone flag-domain producer. The regression checks
+  real decoded x87 instructions and preserves public unbranded fail-closed
+  behavior. `FEMMS` stays outside the x87 flag domain.
+- The actual dedicated receiver redecoded bytes, but the shared compatibility
+  pipeline then spread the decoded row, losing its private object identity.
+  An optional architecture-owned `liftDecodedExact` hook now receives the
+  original row plus canonical context. Other architectures retain `liftExact`.
+  No cloned row is rebranded. Generic compatibility and x86 semantic versions
+  advance to `1.2.0` and `5.2.1-stage2-x86-denominator` respectively.
+- Real source-browser tests cover 13 x87 encodings through both Workers and
+  the shared pipeline in Chromium and WebKit (PASS, 4.4 s). The prior missing
+  identity failed FSQRT in `/tmp/hex-roadmap-x87-real-browser-ELu2C0/full.log`.
+  Generated encrypted-userscript coverage now also requires FSQRT terminal
+  effects; the first canonical build and both-engine run passed (7.6 s).
+- FCOMI-family Capstone union masks cannot represent their dual flag domain
+  reliably. The initial repair named six arithmetic RFLAGS outputs and FPSW C1
+  using Intel SDM Vol. 2A, document 253666-088, FCOMI/FUCOMI pages 3-366/367.
+  This is a summary, not a numerical or exception-path implementation.
+  The native oracle below exposed a C1 discrepancy. The subsequent diagnosis
+  below removes that initial C1-write claim before commit.
+- The native fixture `x87-compare-flags-oracle.c` executes four encodings and
+  twelve finite cases, compiled with GCC 11.4.0 and `-mno-red-zone`.
+  On the Xeon Platinum 8269CY/KVM host all six RFLAGS bits match, and C0/C2/C3
+  are preserved, but C1 remains set in all twelve cases rather than clearing.
+  The oracle correctly returns FAIL (12 divergences). Source SHA-256:
+  `1ae6e661190b3ea17bbf62fcad2025930c32c317a8fea1adeef36ee2c5b8b109`.
+  Neither expected values nor the acceptance threshold were weakened.
+- Focused changed-surface tests passed (2.6 s), and lint passed (3.3 s).
+  Full semantic-v2 diagnostic failed (293.2 s), log
+  `/tmp/hex-roadmap-x87-shared-pipeline-tBPvd4/full.log`: stale pipeline version
+  and missing CFG function identity in two fixtures, two ObjC corpus failures,
+  existing MachineEffects denominator failures, and stale generated sync.
+  These are not a passing integration gate.
+- The previously live full Phase 8 run on exact `d0da0fe57` terminated PASS
+  (1152.6 s). The LLVM-18-equipped Phase 6 run on `b64d71cf98` terminated FAIL
+  (171.1 s), log `/tmp/hex-roadmap-riscv-phase6-llvm18-lR9lOf/full.log`.
+  No test handles from either run remain live. Neither result attests this
+  dirty x86 repair tree.
+
+Recovery: shared `/mnt/workspace` NFS returned **Disk quota exceeded** on
+explicit `sync`, despite misleading free-space output. A patch could report
+success but fail on close, leaving the newly created native C fixture empty.
+Existing modified source files were nonempty and copied byte-for-byte into
+`/tmp/hex-roadmap-recovery.wWNZ2Z/changes`, then into a full local clone.
+The native fixture was restored and hash-checked on local disk. Nothing was
+deleted. Do not write or commit on the former NFS worktrees until writes are
+independently revalidated. The local clone uses the same branch and GitHub
+origin; recorded `origin/main` is `058177e3ba15511aae290495fa98e7129fda2583`,
+not a newly fetched live-main claim. Its dependency symlink is read-only use
+of the existing installation. Resume builds, tests, and commits in the local
+copy. All 23 findings and the integration checkpoint lock remain open.
+
+### Native C1 diagnosis and final working-tree checks
+
+Independent hardware testing reported by the QEMU patch author on 2026-09-02
+corroborates the distinction: FCOMI/FCOMIP/FUCOMI/FUCOMIP preserve C1, whereas
+FCOM/FUCOM/FICOM clear it, despite the SDM wording:
+[QEMU v3 patch and hardware results](https://www.mail-archive.com/qemu-devel@nongnu.org/msg1222232.html).
+The local native probe now includes three ordinary FCOM controls using the
+same seed/capture sequence. Those controls really clear C1 and preserve the
+arithmetic flags. The four FCOMI encodings preserve C1 and correctly write
+all six arithmetic flags. This is bounded host evidence, not all CPU models,
+NaNs, exceptions, or the complete MachineEffects denominator.
+
+The oracle requires an explicit reference; there is no default that hides a
+specification mismatch. With `--reference=observed-hardware`, all 15 cases
+pass. With `--reference=intel-sdm`, it still exits 1 with all 12 FCOMI C1
+discrepancies, log `/tmp/hex-roadmap-x87-sdm-reference-UODIdB/full.log`.
+The product and source-browser assertions now preserve all four x87 C flags
+for FCOMI while retaining six RFLAGS outputs and no invented prior-RFLAGS
+dependency. The changed test failed the initial C1-writing repair before the
+correction (`/tmp/hex-roadmap-x87-hardware-c1-before-uf2fuU/full.log`).
+Current native fixture SHA-256 is
+`f8d88a1f5095f6afa211a987dc1092fde8fe82acae3aa622c3394b31f734d571`;
+GCC binary SHA-256 is
+`aa91c2e25a8246a1cbc69cc7c71a10785c0ec5f0f7b252046a4d5ceac04a3d13`.
+This diagnoses the host/spec disagreement; formal/target-specific release
+acceptance across the required denominator remains unfinished.
+
+Both shared-pipeline fixture failures reproduced on untouched `b64d71cf98`
+in `/tmp/hex-roadmap-b64-shared-fixture-baseline-Yu1jDe/full.log`.
+The pipeline fixture now expects MemorySSA `1.0.1`, already introduced by
+#7113 (`520d8d19b`). The #5414/#5865 fixture now supplies its own CFG function
+identity; the existing #6395 head still omitted it. The budget assertion,
+accessor snapshot assertions, and separate #3908 foreign-CFG refusal remain
+unchanged. No product validator was relaxed to repair either fixture.
+
+Changed-surface tests including both fixture fixes, #3908, hook validation,
+viewer version binding and ownership passed (2.3 s). Source Chromium/WebKit
+worker proof passed again (4.3 s); lint passed (1.5 s). The actual union is
+202 paths with Phase 7/8 slices of 21/24. Canonical build passed (2.8 s), serial
+`2322242159`, build `45fb663018c02a425216eee3`, release identity
+`bac08d027996e189b7a52298dd0cba83e9b2acbf7b7562c0dec711df07878eb1`.
+The final generated encrypted-userscript browser run passed in both engines
+(7.4 s), after the hardware-aligned C1 change and this canonical generation.
+Commit, zero-diff rebuild, and exact-head checks remain required; these working
+tree results are not clean-commit attestations. Full gates still have the
+previously recorded ObjC and MachineEffects denominator failures.
+
+### Exact x86 checkpoint and ObjC fixture reconciliation
+
+The x86 repair is committed at
+`8a11036847975c0cac3d8a33c7ede6e81f61d3f9`. On that clean exact head,
+canonical rebuild passed (2.8 s) with zero generated diff; changed-surface
+tests plus #5082 receiver-provenance negatives passed (2.3 s); source browser
+proof passed (4.1 s); generated encrypted-userscript browser proof passed
+(7.4 s), both in Chromium and WebKit. No full-gate or release claim follows.
+
+The two ObjC corpus failures reproduced on that head (0/2), log
+`/tmp/hex-roadmap-8a110-objc-baseline-1bw9aL/full.log`. Existing PRs already
+contain the correct production behavior; only the stale fixtures need repair:
+
+- #6817/#3979 validates the declared `protocol_t` size/flags. The old fixture
+  left size zero yet expected complete metadata. It now declares a 72-byte
+  fixed prefix, preserves the positive completeness assertions, and separately
+  requires a zero-sized record to remain incomplete.
+- #6639/#6076 (`862a94375`) keeps selector candidates inconclusive when a
+  receiver hierarchy is missing. The old #529 fixture treated an absent class
+  as a proven contradiction. It now tests both a known unrelated root (zero
+  candidates) and an unknown class (both observed candidates, unresolved and
+  partial). Category/inheritance/override/protocol tests remain present.
+
+The focused retained-contract and ownership run passed (0.5 s), the existing
+#6076 hierarchy negative passed (0.1 s), and full `npm run decompiler:test`
+passed (15.0 s). Ownership checks validate the actual 204-path union, retaining
+Phase 7/8 slices of 21/24. No ObjC product source was duplicated or relaxed.
+One direct invocation of `integration-final-evidence.test.mjs` correctly
+refused missing in-process producer evidence; it is not a corpus result.
+The next allowed corpus check is the existing `current-corpus-group.mjs`,
+which executes the real v2 and legacy producers in their canonical order.
+Commit and exact-head reruns of this fixture-only reconciliation remain due.
+
+### Settled exact-head results and next resume command
+
+ObjC fixture reconciliation is committed at
+`2a01b75d897cff5d39ae176c5d77e253dfc573ff`. On that exact clean head:
+
+- canonical rebuild passed (2.9 s), zero generated diff;
+- all touched ObjC/ownership tests and existing boundary regressions passed
+  (0.5 s);
+- canonical Phase 3 `current-corpus-group.mjs` passed (17.0 s), retaining all
+  25 v2 commands and the same 25 legacy commands, differential/provenance and
+  downstream report checks. This is not the full semantic-v2 required-gate
+  chain or external release approval;
+- full `node scripts/run-quiet-command.mjs --label check -- npm run check`
+  terminated FAIL (119.9 s), log `/tmp/hex-check-0kK7Th/full.log`. It stopped
+  in the MachineEffects invariant gate before later check-chain stages.
+
+The seven failing files were `independent-oracle-report`, the two #6133 x87
+tests, `x86-long64-closure-matrix`, `x86-long64-extended-state`,
+`x86-long64-fp-denominator`, and `x86-long64-simd-denominator` (all `.test.mjs`).
+The first was an environment failure: `/usr/bin/git` is 2.34.1 and rejects
+`merge-tree --write-tree`. The already installed Git 2.49.1 produced candidate
+tree `9ca91a1212e708d2e375829b83c1c1b9c5993865`; with that executable in PATH,
+the unchanged independent-oracle-report test passed (11.0 s), including its
+isolated clean-head refusal proof. The other six files are still unresolved.
+The full check was NOT rerun under Git 2.49.1, so this does not turn its FAIL
+into PASS. All processes named in this checkpoint are now terminal.
+
+Use the existing toolchain for subsequent gates, without replacing system Git:
+
+```sh
+env PATH=/mnt/workspace/.local/hex-stage-a-toolchain/install/bin:$PATH node scripts/run-quiet-command.mjs --label check -- npm run check
+```
+
+Native x87 observations were also reproduced with Clang 18.1.3 at this head:
+15/15 observed-hardware cases pass; the strict SDM reference retains the same
+12 C1 discrepancies (`/tmp/hex-roadmap-x87-clang18-sdm-00pqLZ/full.log`).
+Clang's wrapper exports its own libc path, so a host `/usr/bin/ld` or shell
+wrapper cannot be used as its linker. Successful compile command:
+
+```sh
+clang-18 --ld-path=/mnt/workspace/.local/hex-stage-a-llvm18/root/usr/lib/llvm-18/bin-local/ld.lld -O2 -Wall -Wextra -Werror -mno-red-zone tools/validation/machine-effects/fixtures/x87-compare-flags-oracle.c -o /tmp/hex-roadmap-recovery.wWNZ2Z/x87-oracle-clang18
+```
+
+Clang binary SHA-256:
+`f9061a768007886a9db0f5c1becc086068787bce12f21c93ea84c7d5b2aa5a7d`.
+This corroborates the bounded GCC observations; it does not replace QEMU,
+other CPU targets, exception/NaN coverage, or the all-profile release oracle.
+
+Next: resolve the remaining x86 proof topology and semantic gaps through the
+real receiver path without minting brands, dropping witnesses, or promoting
+partial results to force the 1487-witness matrix green. Source-browser proof
+currently covers 13 x87 encodings, not that complete matrix. Preserve the
+23-finding scope and the existing integration PR. No remote write occurred.
+
+### Full real-receiver survey and #7514 reuse (2026-09-09)
+
+Previous goal turn: progress (committed runtime/fixture repairs and fresh
+evidence). This turn measured all 1,487 canonical decoder witnesses through
+the actual classic decoder Worker, dedicated receiver revalidation Worker,
+and shared semantic pipeline on clean `8bec402e86a2dbf809bc69ee16adce537f1d8969`.
+No private brand or Worker realm was fabricated. Both engines completed the
+whole denominator, with no decode or receiver errors, and identical counts:
+
+| Observed MachineEffects state | Chromium 140.0.7339.16 | WebKit 26.0 |
+|---|---:|---:|
+| exact | 139 | 139 |
+| exact-with-intrinsic | 1207 | 1207 |
+| partial | 141 | 141 |
+
+This is a structural production-path survey, **not numerical/hardware semantic
+equivalence**, and the survey exits FAIL / NOT-CLOSED (82.8 s). Of the 141
+partials, 138 require dedicated extended-system semantics, one requires INT
+delivery-state modeling, and two are UD0/UD1 operand-shape rejections. The
+UD0/UD1 decoder witness bytes are `0fff`/`0fb9`; investigate their relationship
+to the existing #6055 ModR/M-form proof, without silently changing the witness
+denominator or admitting malformed operands.
+
+Full log: `/tmp/hex-roadmap-all-x86-real-receiver-nL3Gcr/full.log`.
+Artifacts: `/tmp/hex-x86-receiver-denominator-wMBx8L/{chromium,webkit}.json`.
+SHA-256 respectively:
+`efcc1075c90087102a0b94fe05b81c45e40dcee3a804f999a25d6d2c138f8aa6`,
+`157290e559ad4736a044995a8c0b2058cd77db538f6c913d2a0d08a618c6a6f6`.
+Diagnostic driver: `/tmp/hex-roadmap-recovery.wWNZ2Z/receiver-denominator-probe.mjs`.
+It leaves unavailable outcomes explicit and does not replace the canonical
+matrix or its currently failing release assertions.
+
+Existing open PR #7514 was rechecked at
+`8c2f7453cf835206d60eb335dbeb7fea0dbceb4b`. Its #5563 and #5569 fixes are
+reused, retaining this branch's prior x87 flag-domain/comparison repairs.
+The real receiver accepts `machineEffectsContext.closureMatrixTerminal:true`.
+Before this repair, a seven-case browser probe with that option returned seven
+`exact-with-intrinsic` bundles, including IRET/IRETD/IRETQ incorrectly classified
+as traps and SAVEPREVSSP with unproven implicit memory. The survey's structural
+success is therefore explicitly **not** correctness evidence. Those records
+are in `/tmp/hex-x86-receiver-denominator-NwOGRJ/{chromium,webkit}.json`.
+
+The reused fixes prevent IRET-group trap promotion and keep operandless system
+partials conservative where the terminal helper has no proven memory surface.
+They do not implement missing interrupt-return/CET semantics. The x86 semantic
+version advances to `5.2.2-stage2-x86-denominator`. The PR's two original test
+case sets are retained, but their fake WorkerGlobalScope/prototype/brand setup
+is removed. Unit tests directly exercise the summary helper while separately
+requiring public unbranded dispatch to stay partial. Real browser regressions
+exercise all seven cases in both ordinary and closure-matrix contexts, retaining
+SGDT's explicit 80-bit memory write as a positive control.
+
+Before repair, both reused unit cases failed (0.3 s), log
+`/tmp/hex-roadmap-7514-reused-before-qAq2aS/full.log`; the actual browser test
+failed on IRET promotion (2.2 s), log
+`/tmp/hex-roadmap-7514-real-browser-before-ZOJybA/full.log`.
+After repair, changed-surface/ownership/provenance checks passed (2.3 s) and
+source Chromium/WebKit proof passed (5.1 s). These are working-tree checks,
+not exact-head evidence for a subsequently committed product.
+
+### Browser-only pointer-refinement diagnostic crash
+
+The stronger encrypted-userscript fixture analyzes MOV, FSQRT, IRETQ,
+SAVEPREVSSP and RET together under the same real receiver. It exposed an earlier
+failure: `canonicalMemoryPointerRegionEvidence` unconditionally accessed
+`process.env.HEX_DEBUG_C2_POINTER`, but browser Workers have no Node `process`.
+This diagnostic was introduced by `4ee37b74c` and is also present in existing
+#7103's head; the current fix does not duplicate an already-fixed contribution.
+The generated-runtime failure persisted after rebuilding the #7514-only fix:
+`/tmp/hex-roadmap-7514-generated-browser-after-jHUDOJ/full.log`.
+
+The diagnostic flag now requires an available Node process, explicit opt-in,
+and a callable stderr sink. Producer-brand, access-table, SSA and region proofs
+are unchanged; absent producer evidence remains unknown. A new canonical Phase
+7 alias test covers absent/undefined/null/minimal process globals, missing
+stderr and explicitly enabled diagnostics, requiring identical unknown-region
+results. Its old-code failure is recorded in
+`/tmp/hex-roadmap-region-browser-before-9BuKeD/full.log`. The focused alias and
+ownership tests passed (0.5 s). Rebuild passed (3.0 s); the stronger encrypted
+userscript test now passes in both browsers (7.8 s).
+
+The actual union validates at 208 paths, Phase 7/8 slices 23/24. Canonical
+generated serial is `2322242161`, build `3e845431ecf17b8684955245`, release
+identity `2045d84d959c9556ba2b3d37eff33994cb81258dc7bb6b6e688ad0f67ca72f85`.
+Commit, zero-diff rebuild, exact-head owned/browser checks and full affected
+Phase 7 gate are next. The six old x86 release tests, 141 real-path partials,
+and all 23 original findings remain unclosed. No PR push or merge occurred.
+
+### Exact #7514/browser checkpoint settled
+
+The repair is committed at `207e8b7dde8c48d9185061a106ca6ead4e2c8dc6`.
+On that exact clean head, canonical rebuild passed (2.8 s), generated diff was
+zero, all touched unit/ownership/provenance tests passed (2.4 s), source-browser
+proof passed (5.1 s), encrypted generated-browser proof passed (7.7 s), and the
+full canonical `npm run phase7:test` passed (58.6 s). Both browser engines are
+required by those browser tests. These results do not close the full repository
+gate, Phase 8/9 exact-head proof, or any of the original 23 findings.
+
+The seven-system-case diagnostic was repeated with real Workers and the
+closure-matrix option: both engines now report six partials and only SGDT as
+exact-with-intrinsic, preserving its explicit memory surface. The diagnostic
+correctly exits NOT-CLOSED; that is expected, not a new product regression.
+Artifacts: `/tmp/hex-x86-receiver-denominator-vvzaDT/{chromium,webkit}.json`;
+log: `/tmp/hex-roadmap-system-exact-survey-r7WCYb/full.log` (3.5 s).
+
+The full receiver driver was strengthened to bind **every input byte** and the
+decoded instruction code to the canonical witness before admitting a result.
+It also records its own SHA-256. The new full run on exact `207e8b7dd` completed
+all 1,487 witnesses in both engines (82.4 s), with zero byte/ID mismatches,
+zero decode/receiver failures, and the same 139 exact / 1207 intrinsic / 141
+partial counts. Status remains FAIL / NOT-CLOSED. This validates structural
+transport, not the numerical or architectural equivalence of opaque intrinsics.
+Driver SHA-256:
+`a036992a953cc0e8158f182e7e497ef28a3e76bf037b90e83f8d8cef7b92f529`.
+Artifacts: `/tmp/hex-x86-receiver-denominator-oppUGD/{chromium,webkit}.json`.
+Artifact SHA-256 respectively:
+`a5730cb2b965e550de750a21e0e06e05b1b49e365869b0e37326d13d141097fb`,
+`cd27065fb3b2f1761d320091f742459893183a55af27da846834cc37410e5bb3`.
+Log: `/tmp/hex-roadmap-all-x86-exact-receiver-FFjAFu/full.log`.
+
+Additional decoder diagnosis: local deployed Capstone reports length 2 and zero
+operands for all four byte strings `0fff`, `0fb9`, `0fffc0`, `0fb9c0`; simply
+adding a ModR/M byte to the witness would not make this decoder consume it.
+Do not blindly rewrite the corpus to force the #6055 synthetic operand proof
+to pass. An official Intel Vol. 2B download was attempted but not successfully
+retrieved in this turn, so no new ISA-specification claim rests on that search.
+
+All test/diagnostic handles from this turn are terminal. Resume from this
+local recovery repository; NFS writes remain unvalidated. Next substantive
+work is real dedicated semantics and independent proof for the remaining
+141 cases, plus reconciliation of the old Node-only x86 test topology without
+weakening its denominator. The same integration PR remains authoritative; no
+remote write, replacement PR, component merge, or release occurred.
+
+### Durable recovery and dedicated LAHF/SAHF semantics (2026-09-09)
+
+The execution environment was replaced after the LAHF/SAHF implementation turn.
+Both previously live handles were absent and `/tmp/hex-roadmap-recovery.wWNZ2Z`
+was gone. The persistent integration worktree remained clean at
+`b64d71cf985f5c07daf6fb160544339e14d7a0d1`; the older repair snapshot and this
+thread's session record survived. Do not report the lost local commits or
+their temporary logs as currently inspectable artifacts.
+
+The NFS quota condition was revalidated before editing: an isolated new file
+in `/mnt/workspace/hex-roadmap-recovery-durable.UWZe3G` passed write, explicit
+`fsync`, close and byte-exact readback. Source was recovered onto the existing
+integration branch from the preserved repair diff and this thread's literal
+`apply_patch` records. Historical commands, remote actions, reset redemptions
+and failed patches were not replayed. The #7514 tests were recovered from
+the same existing PR head with their recorded unbranded-unit adaptation.
+The restored x87 C fixture has the previously recorded SHA-256
+`f8d88a1f5095f6afa211a987dc1092fde8fe82acae3aa622c3394b31f734d571`.
+The literal recovery recipe is also saved in that persistent recovery directory.
+
+LAHF/SAHF now have dedicated bit-vector transfers, rather than opaque terminal
+intrinsics. LAHF writes the canonical AH view and preserves AL/RAX[63:16] and
+all flags; SAHF writes only CF/PF/AF/ZF/SF and preserves the other flags and
+RAX. Their CPUID.80000001H:ECX[0] #UD condition stays explicit; host support is
+not assumed. Malformed bytes, unproved prefix combinations and explicit
+operands cannot emit definite transfers. All 16 single REX prefixes retain
+implicit AH, including REX.B. No other extended-system family is promoted.
+Existing PR search for `lahf sahf` returned no matching PR before this work.
+
+The independent test interpreter executes only the emitted primitive subset
+and has no mnemonic-specific execution or intrinsic fallback. Its bit-mask
+reference covers 34 encodings / 104,448 input cases, and permanent mutation
+negatives reject a wrong reserved bit and wrong AH source bit. Production
+classic decoder -> dedicated receiver -> shared semantic pipeline is checked
+in both browser engines, including whole-byte identity. The encrypted opaque
+userscript fixture also includes LAHF and REX.B+SAHF.
+
+`lahf-sahf-oracle.c` captures actual native RAX and RFLAGS before/after each
+instruction. An explicit `HEX_X86_FLAG_ORACLE=<compiled-binary>` browser run
+requires the complete 73,984-member native input set, rejects duplicates and
+substitutions, and compares the real browser-produced bundles to those native
+outputs. GCC and Clang are separate builds. This proves the measured normal
+execution states on the identified host, not CPUID-disabled fault execution,
+all CPU implementations, physical iPad behavior, or the complete ME oracle.
+
+Sources: Intel SDM Vol. 2A, LAHF (253666-060US, p. 3-514), and Vol. 2B,
+SAHF (pp. 4-580/581), fetched from Intel's official manual PDFs in this thread.
+The native differential is required to corroborate, not replace, those rules.
+
+Recovered semantic/cache versions are compat 1.2.0 and x86 5.2.3. The old
+2322242161 release state was restored exactly from its recorded JSON before
+canonical generation, so the new content advances the known serial rather
+than reusing a lower serial from the older persistent checkout. Generated
+files are rebuilt, not hand-merged.
+
+Initial recovered unit/provenance/ownership checks passed except the frozen
+LLVM viewer proof, which found the reset environment's LLVM 14. The surviving
+verified LLVM 18.1.3 wrappers were re-exposed only at missing versioned paths;
+the unchanged exact toolchain probe and viewer proof then passed. Chromium
+source/generated runs passed; WebKit initially could not launch because
+libxslt.so.1 was missing. The canonical Playwright WebKit dependency installer
+completed. Both-engine, native, generated, exact-head and full-gate reruns are
+still required below; no skip-green is inferred from environment recovery.
+
+Live main was read as `cb1666bdef6a124984180caee5581b4a9a9e5c7a`; #7036 remains
+OPEN/DRAFT at `8254ebe98bf6060bd902837d3751428a4fc15860`. No component merge,
+replacement PR, remote push or cutover happened during recovery. The recorded
+reconciliation base remains 058177e3b; fresh candidate-tree reconciliation is
+required before final integration. All 23 finding acceptance obligations remain.
+
+After dependency recovery, the full touched-test selection passed (1.7 s),
+the source-browser/native GCC comparison passed in both engines (10.3 s),
+and the encrypted generated-browser test passed in both engines (8.1 s).
+These were dirty-tree diagnostics, not exact-head release proof. Generated
+serial is 2322242162, build `305ac11ff4ca34bfa9dd3090`, release identity
+`0e72145d2848805d6eb4d83a015081434047562370d34a24b67679ad7cf0981d`.
+
+The source-browser verifier now supports an explicit
+`HEX_X86_FLAG_ORACLE_REPORT=<new-persistent-path>`: it requires a clean exact
+product, both engines and the full native input set, rechecks product/oracle
+identity, and publishes a validated fsync-backed atomic report only on success.
+It records product/verifier/evaluator/fixture/binary hashes, CPU/compiler/browser
+identities and the unproven domains. Failed or interrupted runs do not publish a
+final artifact. This makes new native evidence durable without treating old
+logs or successful console chatter as recoverable proof.
 
 ## Ownership and regression policy
 

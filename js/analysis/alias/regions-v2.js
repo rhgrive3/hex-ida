@@ -161,7 +161,9 @@ function canonicalMemoryAccessRow(memorySsa, entityId, nodeId, sourceKind, role)
  * unknown and the ordinary conservative path remains in force.
  */
 function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
-  const debug = process.env.HEX_DEBUG_C2_POINTER === '1';
+  const debug = typeof process !== 'undefined'
+    && process?.env?.HEX_DEBUG_C2_POINTER === '1'
+    && typeof process?.stderr?.write === 'function';
   const memorySsa = options.canonicalMemorySsa;
   const ssa = options.ssa;
   if (debug) process.stderr.write(`pointer-hint inputs ${String(node?.id)} brand=${isCanonicalMemorySsaProducerArtifact(memorySsa)} fn=${String(memorySsa?.functionId)} irfn=${String(ir?.functionId)} md=${String(memorySsa?.identity?.semanticIrDigest)} id=${stableDigest(ir)} uses=${Array.isArray(memorySsa?.uses)} defs=${Array.isArray(memorySsa?.definitions)} meta=${Array.isArray(memorySsa?.accessMetadata)} ssa=${Boolean(ssa)}\n`);

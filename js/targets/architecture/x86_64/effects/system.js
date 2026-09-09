@@ -44,6 +44,8 @@ const FIXED_OPCODE = Object.freeze({
   cmc:Object.freeze([0xf5]),
   cld:Object.freeze([0xfc]),
   std:Object.freeze([0xfd]),
+  lahf:Object.freeze([0x9f]),
+  sahf:Object.freeze([0x9e]),
 });
 
 function rawEncodingState(instruction) {
@@ -672,6 +674,46 @@ function liftSimpleFlagControl(ctx, family) {
   });
 }
 
+function liftAhFlagTransfer(ctx, family) {
+  if (!liveEncodingMatches(ctx.instruction, family)) return malformedPartial(ctx, family);
+  if (ctx.operands.length !== 0) {
+    return ctx.partial(`x86-${family}-unexpected-explicit-operands`, ['registers','flags','other'], {
+      metadata:{ family:'system', operation:family, operandCount:ctx.operands.length },
+    });
+  }
+  // Intel SDM LAHF/SAHF: AH carries SF:ZF:0:AF:0:PF:1:CF. The
+  // register is implicit, so even REX.B does not select SPL or R8B.
+  // Use the canonical AH view to preserve both AL and RAX[63:16].
+  const fields = [['CF',0], ['PF',2], ['AF',4], ['ZF',6], ['SF',7]];
+  if (family === 'lahf') {
+    let value = ctx.constant(8, 2n);
+    for (const [flag, lsb] of fields) {
+      value = ctx.valueOp('insert', [value, ctx.readFlag(flag)], 8, { lsb, widthBits:1 });
+    }
+    ctx.writeRegister('ah', value);
+  } else {
+    const value = ctx.readRegister('ah');
+    for (const [flag, lsb] of fields) {
+      ctx.writeFlag(flag, ctx.valueOp('extract', [value], 1, { lsb, widthBits:1 }), {
+        operation:family, definedness:'defined', sourceView:'ah', sourceBit:lsb,
+      });
+    }
+  }
+  return ctx.finish({
+    family:'system',
+    possibleFaults:[invalidOpcodeFault(family, {
+      feature:'CPUID.80000001H:ECX[0]', requiredValue:1, faultWhen:'feature-bit-clear',
+      rule:'in long-64 mode, #UD when LAHF/SAHF support is absent; no transfer commits on fault',
+    })],
+    metadata:{
+      operation:family, encodingValidated:true, implicitRegister:'ah',
+      normalCompletionOnly:true, noHostFeatureAssumption:true,
+      flagsModified:family === 'sahf' ? fields.map(([flag]) => flag) : [],
+      flagsPreserved:family === 'lahf' ? 'all' : 'all-except-CF-PF-AF-ZF-SF',
+    },
+  });
+}
+
 const EXTENDED_SYSTEM_NAMES = new Set([
   'bndcl', 'bndcn', 'bndcu', 'bndldx', 'bndmk', 'bndmov', 'bndstx',
   'clac', 'stac', 'cldemote', 'clflush', 'clflushopt', 'clgi', 'stgi', 'clrssbsy', 'clts', 'clwb', 'clzero',
@@ -815,6 +857,7 @@ export function liftX86SystemEffects(instruction, context = {}) {
   const ctx = createX86EffectContext(instruction, context);
 
   if (SIMPLE_FLAG_CONTROLS[family]) return liftSimpleFlagControl(ctx, family);
+  if (family === 'lahf' || family === 'sahf') return liftAhFlagTransfer(ctx, family);
   if (FENCES.has(family)) return liftFence(ctx, family);
   if (family === 'pause') {
     if (!pauseEncodingMatches(ctx.instruction)) {

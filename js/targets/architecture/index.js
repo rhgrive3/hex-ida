@@ -4,7 +4,7 @@ import { arm64ePointerAuthenticationOperandShapeFailureBundle } from './arm64e/e
 import { ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftArm64MachineEffects } from './arm64/effects/index.js';
 import { decorateArm64BtypeEffects } from './arm64/effects/btype.js';
 import { decorateArm64BtiGuardedPageEffects } from './arm64/effects/bti-guard-state.js';
-import { X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftX86MachineEffects } from './x86_64/effects/index.js';
+import { X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftX86MachineEffects, liftX86DecodedMachineEffects } from './x86_64/effects/index.js';
 import { x86RegisterFile } from './x86_64/registers.js';
 import { RISCV64_INSTRUCTION_ALIGNMENT, RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftRiscv64MachineEffects } from './riscv64/effects/index.js';
 import { riscv64RegisterFile } from './riscv64/registers.js';
@@ -144,6 +144,7 @@ export const X86_64_ARCHITECTURE = registerArchitecturePlugin({
   id:'x86_64', semanticVersion:X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:1, fixedInstructionSize:null, viewerCompatible:false,
   modes:()=>Object.freeze(['long-64']), registerFile:x86RegisterFile,
   decodeProvider:'capstone/backend', liftExact:liftX86MachineEffects, classifyControlFlow:x86ControlFlow,
+  liftDecodedExact:liftX86DecodedMachineEffects,
   directControlTarget:x86DirectControlTarget, supportedMemoryEndianness:Object.freeze(['little']), supportedInstructionEndianness:Object.freeze(['little']),
   // P5-5's bounded variable-length viewer implementation is integrated and
   // verified under tests/phase5/viewer/**. Public capability promotion is kept
