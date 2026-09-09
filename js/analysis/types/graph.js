@@ -903,29 +903,59 @@ export function reconstructStructuralType(graphOrResult, entityId, options = {})
     });
   }
 
+  // Layout integers are exact BigInt in the canonical layer; the projection
+  // must not round >2^53 values through Number (#5339). Safe-range integers
+  // keep projecting to Number for existing consumers; anything outside the
+  // safe range stays an exact BigInt (or canonical decimal string).
+  const exactLayout = (value, fallback = 0) => {
+    if (value == null) return fallback;
+    if (typeof value === 'bigint') {
+      return value >= Number.MIN_SAFE_INTEGER && value <= Number.MAX_SAFE_INTEGER ? Number(value) : value;
+    }
+    if (typeof value === 'string') {
+      const parsed = BigInt(value);
+      return parsed >= Number.MIN_SAFE_INTEGER && parsed <= Number.MAX_SAFE_INTEGER ? Number(parsed) : parsed;
+    }
+    return Number(value);
+  };
+  const exactAdd = (a, b) => (typeof a === 'bigint' || typeof b === 'bigint')
+    ? BigInt(a) + BigInt(b)
+    : a + b;
+  const exactAlignUp = (value, align) => {
+    if (typeof value === 'bigint' || typeof align === 'bigint') {
+      const v = BigInt(value), a = BigInt(align);
+      return a > 1n ? ((v + a - 1n) / a) * a : v;
+    }
+    return align > 1 ? Math.ceil(value / align) * align : value;
+  };
+
   const members = (selected.members ?? []).map((m) => deepFreeze({
-    offset: Number(m.offset ?? 0),
-    sizeBytes: Number(m.sizeBytes ?? 0),
-    alignBytes: Number(m.alignBytes ?? defaultAlign(m.sizeBytes)),
+    offset: exactLayout(m.offset),
+    sizeBytes: exactLayout(m.sizeBytes),
+    alignBytes: exactLayout(m.alignBytes, defaultAlign(m.sizeBytes)),
     name: m.fieldName ?? m.name ?? null,
     type: deepFreeze(m.memberType ?? { kind: 'unknown' }),
   }));
 
-  let maxAlign = selected.alignBytes != null ? Number(selected.alignBytes) : 1;
+  let maxAlign = selected.alignBytes != null ? exactLayout(selected.alignBytes, 1) : 1;
   for (const m of members) {
     if (m.alignBytes > maxAlign) maxAlign = m.alignBytes;
   }
 
   let totalSize = selected.totalSizeBytes != null
-    ? Number(selected.totalSizeBytes)
+    ? exactLayout(selected.totalSizeBytes, null)
     : selected.sizeBytes != null
-      ? Number(selected.sizeBytes)
+      ? exactLayout(selected.sizeBytes, null)
       : null;
 
   if (members.length > 0) {
-    const maxOffsetSpan = Math.max(...members.map((m) => m.offset + m.sizeBytes));
+    let maxOffsetSpan = exactAdd(members[0].offset, members[0].sizeBytes);
+    for (const m of members) {
+      const span = exactAdd(m.offset, m.sizeBytes);
+      if (span > maxOffsetSpan) maxOffsetSpan = span;
+    }
     if (totalSize == null || totalSize < maxOffsetSpan) {
-      totalSize = maxAlign > 1 ? Math.ceil(maxOffsetSpan / maxAlign) * maxAlign : maxOffsetSpan;
+      totalSize = exactAlignUp(maxOffsetSpan, maxAlign);
     }
   }
 

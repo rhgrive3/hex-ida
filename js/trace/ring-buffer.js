@@ -69,9 +69,11 @@ export class TraceRingBuffer {
   push(event) {
     this.seen++;
     if (this.sampleRate > 1 && ((this.seen - 1) % this.sampleRate)) { this.dropped++; return false; }
-    if (this.filter && !this.filter(event)) { this.dropped++; return false; }
     let safe;
-    try { safe = event && typeof event === 'object' ? cloneTraceValue(event) : { type:'event', value:event }; }
+    try {
+      if (this.filter && !this.filter(event)) { this.dropped++; return false; }
+      safe = event && typeof event === 'object' ? cloneTraceValue(event) : { type:'event', value:event };
+    }
     catch { this.dropped++; return false; }
     const size = estimateBytes(safe);
     if (size > this.maxBytes) { this.dropped++; return false; }

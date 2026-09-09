@@ -169,6 +169,67 @@ async function runLocal(io, address, spec = {}, maxSteps = 100) {
   assert.equal(huge.snapshot().events.length,0);
 }
 
+// #5270: optional trace filters cannot turn instrumentation failures into execution failures.
+{
+  const failure = new Error('trace filter failed');
+  const ring = new TraceRingBuffer({ filter: (event) => {
+    if (event.decision === 'throw') throw failure;
+    return event.decision;
+  } });
+  for (const [decision, accepted] of [[true,true], [false,false], ['keep',true], [0,false], ['throw',false], [true,true]]) {
+    assert.equal(ring.push({ type:'instruction', decision }), accepted);
+  }
+  const snapshot = ring.snapshot();
+  assert.equal(snapshot.seen, 6);
+  assert.equal(snapshot.dropped, 3);
+  assert.deepEqual(snapshot.events.map((event) => event.decision), [true, 'keep', true]);
+  assert.deepEqual(snapshot.aggregates, { instruction:3 });
+  assert.ok(snapshot.bytes > 0);
+
+  let filterCalls = 0;
+  const sampled = new TraceRingBuffer({ sampleRate:2, filter:() => {
+    if (++filterCalls === 1) throw failure;
+    return true;
+  } });
+  assert.equal(sampled.push({ type:'instruction' }), false);
+  assert.equal(sampled.push({ type:'instruction' }), false);
+  assert.equal(sampled.push({ type:'instruction' }), true);
+  assert.equal(filterCalls, 2, 'sampling must still precede the filter');
+  assert.equal(sampled.snapshot().seen, 3);
+  assert.equal(sampled.snapshot().dropped, 2);
+  assert.equal(sampled.snapshot().events.length, 1);
+}
+{
+  const base = 0x600000001000n;
+  const io = program([
+    [0x1800,'ldr','x1, [x0]'], [0x1804,'add','x1, x1, #1'],
+    [0x1808,'str','x1, [x0]'], [0x180c,'mov','x0, x1'], [0x1810,'ret',''],
+  ]);
+  const adapter = new LocalFunctionSandboxAdapter(io, {
+    trace:{ filter:() => { throw new Error('observer unavailable'); } },
+  });
+  await adapter.connect();
+  try {
+    await adapter.launch({ address:0x1800n, objectAsArg0:false, arguments:[base], objectBase:base,
+      objectMemory:[{ offset:0, size:8, value:9n }], watch:[{ offset:0, size:8 }], traceMemoryReads:true });
+    await adapter.stepInto();
+    const result = await adapter.resume({ maxSteps:20 });
+    assert.equal(result.stop.kind, 'return');
+    assert.equal(result.returnValue, 10n);
+    assert.equal(result.memoryAfter.find((field) => field.offset === 0n)?.value, 10n);
+    assert.deepEqual(result.trace.events, []);
+    assert.ok(result.trace.seen > 0);
+    assert.equal(result.trace.dropped, result.trace.seen);
+    assert.equal(result.trace.incomplete, true, 'lost observations must remain explicit');
+    assert.deepEqual(result.loads, []);
+    assert.deepEqual(result.stores, []);
+    await adapter.sandbox.emulator.store(base, 8, 11n);
+    assert.equal(await adapter.sandbox.emulator.load(base, 8), 11n);
+  } finally {
+    await adapter.disconnect();
+  }
+}
+
 // Differential inputs and static -> experiment generation for all shipped real-binary fixtures.
 {
   const inputs=generateDifferentialInputs({bits:32,boundary:100,pointer:false});

@@ -24,6 +24,7 @@
     ],
     "p12-integration": [
       "js/phase12/**",
+      "js/ai/session-core/index.js",
       "tools/validation/phase12/**",
       "tests/phase12/run.mjs",
       "tests/phase12/foundation/**",

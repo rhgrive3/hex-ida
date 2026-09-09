@@ -170,11 +170,17 @@ export function applyWorkspaceProject(app, project){
     app.patches.add(BigInt(p.offset),p.before||[],p.after||[],{addr:p.addr??null,label:p.label??null,reason:p.reason??null});
   }
   if(app.symbols){for(const entry of notes.nameEntries())app.symbols.rename(entry.addr,entry.name);app.viewer?.setSymbols?.(app.symbols);}
-  if(project.findings?.confirmed?.length||project.findings?.evidence?.length){
-    app.autoReport={
-      report:{confirmed:project.findings.confirmed||[],settled:project.findings.confirmed||[],deep:project.findings.evidence||[],pinned:project.findings.confirmed||[],notes:['restored-project']},
+  const findings=project.findings;
+  if(findings&&typeof findings==='object'&&!Array.isArray(findings)
+    &&(Array.isArray(findings.confirmed)||Array.isArray(findings.evidence))){
+    const confirmed=Array.isArray(findings.confirmed)?findings.confirmed:[];
+    const evidence=Array.isArray(findings.evidence)?findings.evidence:[];
+    // Normalized empty arrays are an explicit replacement state (#3658), so
+    // an import must clear a report from the previously bound project.
+    app.autoReport=confirmed.length||evidence.length?{
+      report:{confirmed,settled:confirmed,deep:evidence,pinned:confirmed,notes:['restored-project']},
       key:app.codeRegion?.()?.id||null,gen:app.symbols?.gen||0,restored:true,
-    };
+    }:null;
   }
   if(Array.isArray(project.findings?.investigationSessions)){
     const currentHash = app?.backend?.contentHash || app?.store?.get?.('fileInfo')?.hash || null;

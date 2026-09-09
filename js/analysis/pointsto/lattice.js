@@ -20,7 +20,7 @@
  * instead (see `addRange`).
  */
 
-import { deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
+import { canonicalAddress, deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
 import { isCanonicalRootDescriptorProof } from '../alias/canonical-address-v2.js';
 
 export const POINTS_TO_LATTICE_VERSION = '1.0.0';
@@ -66,6 +66,22 @@ function big(value) {
   if (!text) return null;
   try { return BigInt(text); }
   catch { return null; }
+}
+
+/**
+ * Canonical proof-bearing concrete address.
+ *
+ * Reuse the repository's canonical address grammar as the authority boundary,
+ * while preserving valid decimal/hex spelling so existing target identities
+ * do not change merely because this proof check was tightened.
+ */
+export function canonicalPointsToAddress(value) {
+  try {
+    canonicalAddress(value);
+  } catch {
+    return null;
+  }
+  return typeof value === 'string' ? value.trim() : String(value);
 }
 
 /**
@@ -309,9 +325,7 @@ export function createPointsToTarget(input = {}) {
     rootEntityId: typeof input.rootEntityId === 'string' && input.rootEntityId.trim() ? input.rootEntityId.trim() : null,
     separationClass: typeof input.separationClass === 'string' ? input.separationClass : null,
     separationAuthority: proven ? 'root-descriptor' : null,
-    address: typeof input.address === 'string' || typeof input.address === 'bigint'
-      ? String(input.address)
-      : (typeof input.address === 'number' && Number.isSafeInteger(input.address) ? String(input.address) : null),
+    address: canonicalPointsToAddress(input.address),
     offsetRange: canonicalOffsetRange(input.offsetRange),
     widthBits: input.widthBits == null ? null : Number(input.widthBits),
     evidenceIds: [...new Set((input.evidenceIds ?? []).map(String))].sort(),
