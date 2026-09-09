@@ -164,7 +164,12 @@ export function effectSummaryAliasRelation(memoryWrite, targetRegion, classifyAc
   if (memoryWrite.scope === 'unknown') return 'may';
   if (memoryWrite.scope === 'all') {
     const targetSpace = regionAddressSpace(targetRegion);
-    const rawSpaces = Array.isArray(memoryWrite.addressSpaces) ? memoryWrite.addressSpaces : [];
+    // The canonical MachineEffects contract names the field `spaces`;
+    // `addressSpaces` is the legacy spelling kept for older summaries
+    // (#5576). Accepting only the legacy field meant every canonical
+    // intrinsic summary lost its space separation and degraded to `may`.
+    const rawSpaces = Array.isArray(memoryWrite.spaces) ? memoryWrite.spaces
+      : Array.isArray(memoryWrite.addressSpaces) ? memoryWrite.addressSpaces : [];
     const spaces = rawSpaces.map(addressSpaceString);
     if (spaces.some((space) => space == null)) return 'may';
     if (targetSpace && spaces.length && !spaces.includes(targetSpace)) return 'no';
