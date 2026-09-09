@@ -22,6 +22,7 @@
 import { stableDigest } from '../../core/identity/index.js';
 
 import { ANALYSIS_KEYS, PHASE8_CONTRACT_VERSION, snapshotCanonicalPassResult } from './contract.js';
+import { rewritePolicyFailure } from './rewrite-registry.js';
 import { PROOF_REWRITE_PASS, proofAdmissionReason, proofPublicationResult } from './pass-validation.js';
 
 function fail(code) { throw new TypeError(code); }
@@ -275,6 +276,9 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
       || result.stage !== descriptor.stage) {
     return refuse(`result-descriptor-mismatch:${descriptor.id}`);
   }
+  const policyFailure = rewritePolicyFailure(descriptor,result,
+    {required:context.requireRewritePolicy === true,proofPass:descriptor === PROOF_REWRITE_PASS});
+  if (policyFailure) return refuse(policyFailure);
   // A contract violation is refused the same way a cancellation is: nothing
   // commits and the caller gets a reason. Throwing here instead would turn a
   // withheld ledger into an uncaught exception at the vertical, which is a

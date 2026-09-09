@@ -19,6 +19,7 @@
 
 import { stableDigest } from '../../core/identity/index.js';
 import { PROOF_REWRITE_PASS, runProofRewritePass, isPhase8RewritePlan } from './pass-validation.js';
+import { buildRewriteRegistry, passRewritePolicy, rewriteCoverage, REWRITE_REGISTRY_VERSION } from './rewrite-registry.js';
 export { preparePhase8RewritePlan, isPhase8RewritePlan } from './pass-validation.js';
 
 import { PHASE8_CONTRACT_VERSION, PASS_STAGES, createPassResult } from './contract.js';
@@ -73,6 +74,8 @@ const REGISTERED = Object.freeze([
   Object.freeze({ descriptor: STRUCTURING_PASS, run: runStructuringPass }),
   Object.freeze({ descriptor: PROVIDER_PASS, run: runProviderPass }),
 ]);
+const REWRITE_REGISTRY = buildRewriteRegistry([...REGISTERED,{descriptor:PROOF_REWRITE_PASS}]);
+export function phase8RewriteRegistry() { return REWRITE_REGISTRY; }
 
 /**
  * Stages that run on the default interactive decompile.
@@ -204,6 +207,8 @@ export function passRegistryDigest(passes = phase8Passes(), providers = REGISTER
     invalidates: descriptor.invalidates,
     produces: descriptor.produces,
     contractVersion: descriptor.contractVersion,
+    rewriteRegistryVersion: REWRITE_REGISTRY_VERSION,
+    rewritePolicy: passRewritePolicy(descriptor),
     ...(descriptor.id === PROVIDER_PASS.id ? {
       providerInterfaceVersion: PROVIDER_INTERFACE_VERSION,
       providers: providerRegistry,
@@ -236,7 +241,7 @@ function clock() {
  * result that is simply absent is indistinguishable from a Phase 8 that never
  * ran, and "unknown stays explicit" is a non-negotiable principle.
  */
-function withheldLedger(status, reason, diagnostics, registryDigest, analysisVersions = null) {
+function withheldLedgerBase(status, reason, diagnostics, registryDigest, analysisVersions = null, rewriteCoverage = null) {
   const ledger = {
     contractVersion: PHASE8_CONTRACT_VERSION,
     registryDigest,
@@ -246,6 +251,7 @@ function withheldLedger(status, reason, diagnostics, registryDigest, analysisVer
     degraded: true,
     passes: Object.freeze([]),
     transformCount: 0,
+    rewriteCoverage,
     produced: Object.freeze([]),
     invalidated: Object.freeze([]),
     diagnostics: Object.freeze(diagnostics),
@@ -275,6 +281,9 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   const enabledStages = context.enabledStages ?? null;
   const proofRewritePlan = context.proofRewritePlan ?? context.opts?.phase8RewritePlan;
   const passes = phase8Passes({ stages: enabledStages, proofRewritePlan });
+  const withheldLedger = (status, reason, diagnostics, digest, versions = null) =>
+    withheldLedgerBase(status,reason,diagnostics,digest,versions,
+      rewriteCoverage(REWRITE_REGISTRY,passes,[],false,reason));
   // The digest covers the passes and refinement providers that actually ran.
   // Disabled/custom provider sets therefore cannot reuse a provider artifact
   // produced under a different refinement registry. Provider-free stage sets
@@ -356,6 +365,7 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     ...providerContext,
     analysis,
     resolvedAnalysisIdentity,
+    requireRewritePolicy: true,
   };
   const results = [];
   const timings = [];
@@ -438,6 +448,7 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     degraded: results.some((result) => result.status === 'degraded'),
     passes: Object.freeze(results),
     transformCount: results.reduce((total, result) => total + result.transforms.length, 0),
+    rewriteCoverage: rewriteCoverage(REWRITE_REGISTRY,passes,results,true),
     // Analyses this run produced, so a consumer can tell "the optimizer ran and
     // found nothing" apart from "the optimizer never ran".
     produced: Object.freeze([...new Set(results.flatMap((result) => result.produced))].sort()),

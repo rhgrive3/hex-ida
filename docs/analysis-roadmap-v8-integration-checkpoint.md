@@ -2439,6 +2439,62 @@ gates or proof of a solely environmental cause. Existing deadlines and assertion
 floors were not changed. The previous compiler/AST/production successes remain
 historical evidence; exact committed-head results must be checked separately.
 
+## C4-04 registered transaction rewrite policies
+
+The registered Phase 8 transaction denominator is now built from the actual
+eight production descriptors plus the opt-in proof descriptor. Each row records
+the pass version, stage, analysis/candidate families and allowed transform kinds.
+Unknown or duplicate registrations and an incomplete descriptor union fail the
+registry check. This is not a detached hand-maintained count of executed work.
+
+All eight ordinary passes currently publish analyses or candidates, not
+transforms. The transaction boundary rejects any reported transform from these
+analysis-only descriptors, after the existing immutable result snapshot and
+before any invalidation or staged publication. The production vertical requires
+a classified policy. The standalone generic transaction API remains available
+for other descriptors without turning them into registered production passes.
+The actual proof descriptor may report only `solver-constant` or `solver-scalar`;
+its existing private plan, receipt and final admission checks remain mandatory.
+A matching string ID, copied descriptor, registry row or digest is not proof.
+
+Every published or withheld vertical now carries frozen `rewriteCoverage` rows
+for the full registered denominator, including disabled stages/proof mode.
+Rows distinguish `analysis-only`, `unsupported`, `not-requested`, `unknown`,
+`unchanged` and `proof-committed`. Result status/completeness remain explicit;
+`accounted` counts listed rows, not proved or completed families.
+`proofTransformCount` counts actual published proof transaction records, not
+rendered adoption. Any withheld publication reports zero committed transforms
+and unknown selected rows, even after earlier private transactions succeeded.
+The registry version and policy are included in execution registry identity.
+
+`tests/phase8/substrate/rewrite-registry.test.mjs` exercises the exact union and
+policy identity, actual enabled/disabled/missing-input execution, real proof
+publication, unsupported targets, copied plans/descriptors, rejection of
+transforms from every ordinary descriptor, and cancellation at every observed
+vertical transaction check. State snapshots must remain unchanged on refusal.
+An initial test incorrectly compared registration order with dependency-sorted
+execution order; it now compares the exact ID-to-row mapping. Failed receipts
+are retained; final exact-head results belong in the persistent checkpoint.
+
+The first canonical substrate run failed nine deadline/partial-result checks
+(275.2 s), including proof preparation before the new transaction policy runs.
+The focused rerun also failed two proof-preparation deadline assertions. No
+deadline, proof backend, assertion, sample or denominator was weakened. These
+remain failed evidence, not environment-waived acceptance; later exact-head
+verification must record its own results. Live PR reuse checks still found
+#3422 at `ca25c71f1a6f18f0ba043800fb066f8068f2df73` and already-reused #3421 at
+`4cd5b3eb9200b1180985b9df3a74f8245a5cc928`, without another open C4-04 match.
+
+This closes the registered-transaction classification/enforcement step, not
+FR-C4-04A as a whole. Representation RewriteEngine/view transformations and the
+full risky scalar family/width denominator still need coverage. This check does
+not prove arbitrary trusted JavaScript passes cannot secretly mutate their raw
+IR input; it restricts staged/reported publication. Memory, CFG, exception/UB and
+bounded-loop observables remain FR-C4-04B work. Original findings and the frozen
+compiler denominator are unchanged. No component merge, moving-main acceptance,
+device/environment repair or separate performance work is included. Integration
+acceptance remains LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -2474,7 +2530,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
 | HEX-C4-03 | Navigation, observed expression/recovery histories, successive projections and actual spill statement removal/suppression implemented; other view transforms and full removed/merged class coverage still open |
-| HEX-C4-04 | Proof-gated constant/nonconstant scalar projection, requested-target decisions and producer-owned input correspondence implemented; full risky-rewrite registry and memory/CFG/exception observable coverage remain open |
+| HEX-C4-04 | Proof-gated scalar projection, target decisions, owned input correspondence and registered transaction policy/coverage implemented; representation rewrite registry, full family/width denominator and memory/CFG/exception observables remain open |
 | HEX-C4-05 | Bounded e-graph candidates, independent proofs and resource matrix |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |
 | HEX-SYM-02 | Byte-memory escalation, alias/partial-write independent oracle |
