@@ -115,7 +115,7 @@ function normalizeEngineDescriptor(engine, options) {
   });
 }
 
-async function boundedEngineOperation(operation, signal) {
+async function boundedEngineOperation(operation, signal, registerSettlement = null) {
   let onAbort;
   const aborted = new Promise((resolve) => {
     onAbort = () => resolve(ABORTED_EXECUTION);
@@ -132,6 +132,7 @@ async function boundedEngineOperation(operation, signal) {
       (value) => value === ABORTED_EXECUTION ? { kind: 'aborted' } : { kind: 'completed', value },
       (error) => ({ kind: 'failed', error }),
     );
+  if (registerSettlement) registerSettlement(execution);
   try {
     return await Promise.race([execution, aborted]);
   } finally {
@@ -148,6 +149,7 @@ export class EmulatorProvider {
     this.options = options;
     this.engineDescriptor = normalizeEngineDescriptor(engine, options);
     this.activeSession = null;
+    this.pendingEngineOperation = null;
     this._descriptor = createRuntimeProviderDescriptor({
       id: options.id ?? `emulator:${this.engineDescriptor.id}`,
       version: options.version ?? '1',
@@ -163,8 +165,22 @@ export class EmulatorProvider {
 
   descriptor() { return this._descriptor; }
 
+  _registerEngineOperation(settlement) {
+    this.pendingEngineOperation = settlement;
+    settlement.finally(() => {
+      if (this.pendingEngineOperation === settlement) this.pendingEngineOperation = null;
+    });
+  }
+
+  _assertEngineAvailable() {
+    if (this.pendingEngineOperation) {
+      throw new DebugAdapterError('emulator-engine-busy', 'emulator engine still has an unsettled operation from a prior run');
+    }
+  }
+
   async openSession(request = {}, options = {}) {
     if (this.activeSession && !this.activeSession.closed) throw new DebugAdapterError('runtime-session-active', 'emulator provider already has an open session');
+    this._assertEngineAvailable();
     let session;
     let connectedBySession = false;
     session = new RuntimeProviderSession({
@@ -195,6 +211,7 @@ export class EmulatorProvider {
 
     const run = async (input = {}, runOptions = {}) => {
       if (activeRun) throw new DebugAdapterError('already-running', 'emulator session already has an active run');
+      this._assertEngineAvailable();
       const runToken = {};
       activeRun = runToken;
       try {
@@ -243,6 +260,7 @@ export class EmulatorProvider {
           const outcome = await boundedEngineOperation(
             () => this.engine.execute(input, { ...replayOptions, signal: controller.signal }),
             controller.signal,
+            (settlement) => this._registerEngineOperation(settlement),
           );
           if (outcome.kind === 'aborted') raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' } };
           else if (outcome.kind === 'failed') throw outcome.error;
@@ -252,6 +270,7 @@ export class EmulatorProvider {
           const launch = await boundedEngineOperation(
             () => this.engine.launch(input, { signal: controller.signal }),
             controller.signal,
+            (settlement) => this._registerEngineOperation(settlement),
           );
           if (launch.kind === 'aborted') raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' } };
           else if (launch.kind === 'failed') throw launch.error;
@@ -259,6 +278,7 @@ export class EmulatorProvider {
             const resume = await boundedEngineOperation(
               () => this.engine.resume({ ...replayOptions, signal: controller.signal }),
               controller.signal,
+              (settlement) => this._registerEngineOperation(settlement),
             );
             if (resume.kind === 'aborted') raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' } };
             else if (resume.kind === 'failed') throw resume.error;

@@ -23,16 +23,20 @@ function nextTurn() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-test('#4385 provider timeout bounds an engine that never settles and absorbs a late rejection', async () => {
+test('#4385 timeout quarantines a signal-ignoring execute engine until the real operation settles', async () => {
   let signal;
   let rejectLate;
+  let calls = 0;
   const engine = {
     execute(_input, options) {
+      calls++;
       signal = options.signal;
-      return new Promise((_resolve, reject) => { rejectLate = reject; });
+      if (calls === 1) return new Promise((_resolve, reject) => { rejectLate = reject; });
+      return { termination: 'return', value: calls };
     },
   };
-  const session = await new EmulatorProvider(engine).openSession({ binaryId, sessionNonce: 'issue-4385-timeout' }, { connect: false });
+  const provider = new EmulatorProvider(engine);
+  const session = await provider.openSession({ binaryId, sessionNonce: 'issue-4385-timeout' }, { connect: false });
   const unhandled = [];
   const onUnhandled = (reason) => unhandled.push(reason);
   process.on('unhandledRejection', onUnhandled);
@@ -43,13 +47,35 @@ test('#4385 provider timeout bounds an engine that never settles and absorbs a l
     assert.equal(signal.aborted, true);
     assert.equal(session.controllers.size, 0);
     assert.equal(session.state, 'ready');
+    assert.equal(calls, 1);
+
+    await assert.rejects(
+      session.facets.emulator.run({}, { timeoutMs: 10 }),
+      /unsettled operation/,
+      'same-session reuse must fail closed while the timed-out execute is still live',
+    );
+    assert.equal(calls, 1);
+
+    await session.close();
+    await assert.rejects(
+      provider.openSession({ binaryId, sessionNonce: 'issue-4385-reopen-blocked' }, { connect: false }),
+      /unsettled operation/,
+      'close/reopen must not bypass the provider-level engine quarantine',
+    );
+    assert.equal(calls, 1);
 
     rejectLate(new Error('late engine failure'));
     await nextTurn();
     assert.deepEqual(unhandled, []);
+
+    const reopened = await provider.openSession({ binaryId, sessionNonce: 'issue-4385-reopened' }, { connect: false });
+    const reused = await bounded(reopened.facets.emulator.run({}, { timeoutMs: 100 }), 'post-settlement execute reuse');
+    assert.equal(reused.termination, 'return');
+    assert.equal(calls, 2);
+    await reopened.close();
   } finally {
     process.removeListener('unhandledRejection', onUnhandled);
-    await session.close();
+    if (!session.closed) await session.close();
   }
 });
 
@@ -88,24 +114,68 @@ test('#4385 completion before timeout keeps the normal result and session state'
   assert.equal(result.completeness, 'bounded');
   assert.equal(session.controllers.size, 0);
   assert.equal(session.state, 'ready');
+  const reused = await bounded(session.facets.emulator.run({}, { timeoutMs: 100 }), 'completed-engine reuse');
+  assert.equal(reused.termination, 'return');
   await session.close();
 });
 
-test('#4385 provider timeout also bounds the launch/resume engine shape', async () => {
+test('#4385 timeout quarantines signal-ignoring launch/resume across same-session and reopen reuse', async () => {
   let resumeSignal;
+  let settleResume;
+  let resumeCalls = 0;
   const engine = {
     async launch() {},
-    resume(_options) {
-      resumeSignal = _options.signal;
-      return new Promise(() => {});
+    resume(options) {
+      resumeCalls++;
+      resumeSignal = options.signal;
+      if (resumeCalls === 1) return new Promise((resolve) => { settleResume = resolve; });
+      return { termination: 'return' };
     },
   };
-  const session = await new EmulatorProvider(engine).openSession({ binaryId, sessionNonce: 'issue-4385-resume' }, { connect: false });
+  const provider = new EmulatorProvider(engine);
+  const session = await provider.openSession({ binaryId, sessionNonce: 'issue-4385-resume' }, { connect: false });
   const result = await bounded(session.facets.emulator.run({}, { timeoutMs: 10 }), 'resume timeout');
   assert.equal(result.termination, 'timeout');
   assert.equal(result.completeness, 'truncated');
   assert.equal(resumeSignal.aborted, true);
   assert.equal(session.controllers.size, 0);
   assert.equal(session.state, 'ready');
+  assert.equal(resumeCalls, 1);
+
+  await assert.rejects(session.facets.emulator.run({}, { timeoutMs: 10 }), /unsettled operation/);
+  assert.equal(resumeCalls, 1);
+  await session.close();
+  await assert.rejects(
+    provider.openSession({ binaryId, sessionNonce: 'issue-4385-resume-reopen-blocked' }, { connect: false }),
+    /unsettled operation/,
+  );
+
+  settleResume({ termination: 'return' });
+  await nextTurn();
+  const reopened = await provider.openSession({ binaryId, sessionNonce: 'issue-4385-resume-reopened' }, { connect: false });
+  const reused = await bounded(reopened.facets.emulator.run({}, { timeoutMs: 100 }), 'post-settlement resume reuse');
+  assert.equal(reused.termination, 'return');
+  assert.equal(resumeCalls, 2);
+  await reopened.close();
+});
+
+test('#4385 a cooperative abort settles the engine and permits reuse', async () => {
+  let calls = 0;
+  const engine = {
+    execute(_input, { signal }) {
+      calls++;
+      if (calls > 1) return { termination: 'return' };
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('cooperative abort')), { once: true });
+      });
+    },
+  };
+  const session = await new EmulatorProvider(engine).openSession({ binaryId, sessionNonce: 'issue-4385-cooperative' }, { connect: false });
+  const timedOut = await bounded(session.facets.emulator.run({}, { timeoutMs: 10 }), 'cooperative timeout');
+  assert.equal(timedOut.termination, 'timeout');
+  await nextTurn();
+  const reused = await bounded(session.facets.emulator.run({}, { timeoutMs: 100 }), 'cooperative reuse');
+  assert.equal(reused.termination, 'return');
+  assert.equal(calls, 2);
   await session.close();
 });
