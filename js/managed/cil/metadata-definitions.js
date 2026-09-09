@@ -84,7 +84,30 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
       delete type.extendsTypeSpecRid;
     }
   }
-
+  // Manifest assembly (0x20): this row is the defining assembly's identity
+  // authority (ECMA-335 II.22.2, at most one row) (#7677). Unknown flag or
+  // key encodings keep their raw values; no identity is fabricated.
+  if (counts[0x20] > 1) fail('cil-assembly-table-multi-row');
+  const assembly = counts[0x20] ? (() => {
+    const pos = offsets[0x20], publicKeyBlobIndex = index(pos + 16, b);
+    let publicKey = null;
+    if (publicKeyBlobIndex !== 0) {
+      if (!blobHeap) fail('cil-assembly-public-key-blob-missing');
+      publicKey = readCilMetadataBlob(blobHeap, publicKeyBlobIndex, 'cil-assembly-public-key-blob-invalid');
+    }
+    return {
+      rid: 1, token: cilMetadataToken(0x20, 1),
+      hashAlgId: view.getUint32(pos, true),
+      majorVersion: view.getUint16(pos + 4, true),
+      minorVersion: view.getUint16(pos + 6, true),
+      buildNumber: view.getUint16(pos + 8, true),
+      revisionNumber: view.getUint16(pos + 10, true),
+      flags: view.getUint32(pos + 12, true),
+      publicKeyBlobIndex, publicKey,
+      name: text(index(pos + 16 + b, s)),
+      culture: text(index(pos + 16 + b + s, s)),
+    };
+  })() : null;
   const bindOwners = (table, pointerTable, values, listKey, tokensKey) => {
     const pointers = counts[pointerTable] ? readRows(pointerTable, pos => ({
       target: index(pos, tableIndexSize(counts, table)),
@@ -143,5 +166,5 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
   if (new Set(manifestResources.map(row => row.name)).size !== manifestResources.length) {
     fail('cil-manifest-resource-name-duplicate');
   }
-  return { types, methods, fields, manifestResources, typeSpecs };
+  return { types, methods, fields, manifestResources, typeSpecs, assembly };
 }
