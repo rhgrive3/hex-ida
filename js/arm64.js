@@ -2387,14 +2387,16 @@ function exclusiveLoadHandler({ elementSize = null, ordering = null } = {}) {
     const destination = opShort(ops[0]);
     o.title = J('横取りされないように読む', 'Exclusive load');
     if (elementSize == null) {
-      o.pseudo = destination + ' = *(' + (mem ? memExpr(mem) : '') + ') /* 監視開始 */';
+      o.pseudo = destination + ' = *(' + (mem ? memExpr(mem) : '') + ') ' +
+        J('/* 監視開始 */', '/* start exclusive monitor */');
       o.summary = J(
         'メモリを読むと同時に「ここを見張る」と CPU に宣言する。他のスレッドが書き換えたら、次の stxr が失敗します。',
         'Load and start watching the address; a matching stxr fails if anyone else writes it.');
     } else {
       const type = cType(elementSize, false);
       const width = sizeLabel(elementSize);
-      o.pseudo = destination + ' = zero_extend(*(' + type + '*)(' + (mem ? memExpr(mem) : '') + ')) /* 監視開始 */';
+      o.pseudo = destination + ' = zero_extend(*(' + type + '*)(' + (mem ? memExpr(mem) : '') + ')) ' +
+        J('/* 監視開始 */', '/* start exclusive monitor */');
       o.summary = J(
         (mem ? memText(mem) : 'メモリ') + 'から ' + width + 'を読み、上位ビットを 0 で埋めて' + destination + 'に入れながら「ここを見張る」と CPU に宣言する。他のスレッドが書き換えたら、対応する stxr が失敗します。',
         'Read ' + width + ' from ' + (mem ? memText(mem) : 'memory') + ' into ' + destination + ', zero-extend it, and start the exclusive monitor. A matching stxr fails if another thread writes the address.');
@@ -2468,7 +2470,7 @@ function exclusiveLoadPairHandler({ ordering = null } = {}) {
       ? J('順序を守って横取りされないようにペアで読む', 'Acquire exclusive pair load')
       : J('横取りされないようにペアで読む', 'Exclusive pair load');
     o.pseudo = first + ', ' + second + ' = load_pair_exclusive(' + (mem ? memExpr(mem) : '') +
-      ', ' + type + ', ' + totalSize + ' bytes) /* 監視開始 */';
+      ', ' + type + ', ' + totalSize + ' bytes) ' + J('/* 監視開始 */', '/* start exclusive monitor */');
     o.summary = J(
       (mem ? memText(mem) : 'メモリ') + 'から ' + width + '（' + type + ' を 2 個）を読み、' +
         first + ' と ' + second + ' に入れながら「ここを見張る」と CPU に宣言する。他のスレッドが書き換えたら、対応する stxp が失敗します。',
@@ -2483,11 +2485,18 @@ function exclusiveLoadPairHandler({ ordering = null } = {}) {
         'Acquire ordering keeps later memory operations after this load when threads use the value as a synchronization signal.'));
     }
     const elementBits = elementSize * 8;
+    const atomicity = elementSize === 4
+      ? {
+        ja: 'W ペアの 2 つの 32 ビット要素は、64 ビットのダブルワード単位で single-copy atomic です。',
+        en: 'A W pair is single-copy atomic at 64-bit doubleword granularity.',
+      }
+      : {
+        ja: 'X ペアの各 64 ビット要素はダブルワード単位で single-copy atomic ですが、この読み込みで 128 ビット全体の atomicity は保証されません。',
+        en: 'Each 64-bit element of an X pair is single-copy atomic at doubleword granularity; whole 128-bit atomicity is not guaranteed by this load.',
+      };
     o.detail.push(J(
-      elementBits + ' ビットの要素を 2 個、同じ exclusive reservation の対象として読みます。' +
-        '各要素の single-copy atomicity は要素幅に従い、このペアを 128 ビット全体の single-copy atomic 転送とは説明しません。',
-      'The pair contains two ' + elementBits + '-bit elements under one exclusive reservation. ' +
-        'Each element\'s single-copy atomicity follows its element width; the pair is not one 128-bit single-copy atomic transfer.'));
+      elementBits + ' ビットの要素を 2 個、同じ exclusive reservation の対象として読みます。' + atomicity.ja,
+      'The pair contains two ' + elementBits + '-bit elements under one exclusive reservation. ' + atomicity.en));
     o.terms = ['thread', 'atomic', 'memory'];
   };
 }

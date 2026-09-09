@@ -1,7 +1,7 @@
 /**
  * ARM64 行説明器のセマンティクス回帰テスト。
  *
- * ここが守るのは 12 件の確定した欠陥です。どれも「表示が壊れている」ではなく
+ * ここが守る確定した欠陥を一覧にしています。どれも「表示が壊れている」ではなく
  * 「事実でないことを事実として見せる／本当にある参照を落とす」種類なので、
  * semantic correctness の回帰として恒久的に固定します。
  *
@@ -227,7 +227,12 @@ try {
 
   // The original word/doubleword exclusive forms retain their established
   // monitor, status, and operand ordering contracts.
+  assert.equal(explain('ldxr', 'x0, [x1]').pseudo, 'x0 = *(x1) /* start exclusive monitor */');
+  assert.equal(explain('ldxrb', 'w0, [x1]').pseudo, 'w0 = zero_extend(*(uint8*)(x1)) /* start exclusive monitor */');
+  setLang('ja');
   assert.equal(explain('ldxr', 'x0, [x1]').pseudo, 'x0 = *(x1) /* 監視開始 */');
+  assert.equal(explain('ldxrb', 'w0, [x1]').pseudo, 'w0 = zero_extend(*(uint8*)(x1)) /* 監視開始 */');
+  setLang('en');
   assert.equal(explain('stxr', 'w0, x2, [x1]').pseudo, 'w0 = try_store(x1, x2)');
   assert.match([explain('ldaxr', 'x0, [x1]').summary, ...explain('ldaxr', 'x0, [x1]').detail].join(' '), /acquire/i);
   assert.match([explain('stlxr', 'w0, x2, [x1]').summary, ...explain('stlxr', 'w0, x2, [x1]').detail].join(' '), /release/i);
@@ -285,15 +290,29 @@ try {
     const elementBits = type === 'uint32' ? 32 : 64;
     assert.match(rendered, new RegExp(`two ${elementBits}-bit elements`),
       `${mn} must distinguish W-pair and X-pair element widths (#3775)`);
-    assert.match(rendered, /single-copy atomicity follows its element width/i,
-      `${mn} must scope single-copy atomicity to each element (#3775)`);
-    assert.match(rendered, /not one 128-bit single-copy atomic transfer/i,
-      `${mn} must not claim whole-pair 128-bit atomicity (#3775)`);
+    if (type === 'uint32') {
+      assert.match(rendered, /A W pair is single-copy atomic at 64-bit doubleword granularity\./,
+        `${mn} must state the W-pair 64-bit single-copy guarantee (#3775)`);
+      assert.doesNotMatch(rendered, /whole 128-bit atomicity is not guaranteed/i,
+        `${mn} must not apply the X-pair 128-bit limitation to a W pair (#3775)`);
+    } else {
+      assert.match(rendered, /Each 64-bit element of an X pair is single-copy atomic at doubleword granularity; whole 128-bit atomicity is not guaranteed by this load\./,
+        `${mn} must scope X-pair atomicity to each element (#3775)`);
+    }
     assert.match(rendered, /exclusive monitor|watching/i, `${mn} must explain the exclusive monitor (#3775)`);
     assert.match(rendered, new RegExp(`${first}.*${second}`), `${mn} must identify both destinations (#3775)`);
     assert.ok(result.terms.includes('atomic') && result.terms.includes('memory'), `${mn} must retain atomic memory terms (#3775)`);
     if (acquire) assert.match(rendered, /acquire/i, `${mn} must explain acquire ordering (#3775)`);
   }
+
+  assert.match(explain('ldxp', 'x0, x1, [x2]', 0x1000n, {}).pseudo,
+    /\/\* start exclusive monitor \*\//,
+    'English pair-load pseudo comments must be localized through J (#3775)');
+  setLang('ja');
+  assert.match(explain('ldxp', 'w0, w1, [x2]', 0x1000n, {}).pseudo,
+    /\/\* 監視開始 \*\//,
+    'Japanese pair-load pseudo comments must remain localized through J (#3775)');
+  setLang('en');
 
   const PAIR_STORES = [
     ['stxp', 'w0, x1, x2, [x3]', 'w0', 'x1', 'x2', 'uint64', 16, false],
