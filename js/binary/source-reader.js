@@ -112,15 +112,15 @@ export class SparseByteBuffer {
     let cursor = begin;
     for (const chunk of this.chunks) {
       if (chunk.end <= cursor) continue;
-      if (chunk.start > cursor) {
-        spans.push({ start: cursor, end: chunk.start < finish ? chunk.start : finish });
-      }
+      // A chunk beyond the requested range still proves [cursor, finish) is
+      // a single gap: stop here and let the post-loop push it exactly once.
       if (chunk.start >= finish) break;
+      if (chunk.start > cursor) spans.push({ start: cursor, end: chunk.start });
       cursor = finish < chunk.end ? finish : chunk.end;
       if (cursor === finish) break;
     }
     if (cursor < finish) spans.push({ start: cursor, end: finish });
-    return spans.filter((span) => span.end > span.start);
+    return spans;
   }
 }
 
