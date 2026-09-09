@@ -33,12 +33,21 @@ function parseTypeDefOrRef(bytes, offset, code, typeDefOrRefRowCounts = null) {
   return { next:parsed.next, encoded:parsed.value };
 }
 
-function consumeCustomMods(bytes, offset, code, typeDefOrRefRowCounts = null) {
+// Custom modifiers are part of the exact type identity (#7706/#7673 R2):
+// CMOD_OPT (0x20) / CMOD_REQD (0x1f) followed by a TypeDefOrRef token.
+function readCustomMods(bytes, offset, code, typeDefOrRefRowCounts = null) {
+  const mods = [];
   let pos = offset;
   while (bytes[pos] === 0x1f || bytes[pos] === 0x20) {
-    pos = parseTypeDefOrRef(bytes, pos + 1, code, typeDefOrRefRowCounts).next;
+    const ref = parseTypeDefOrRef(bytes, pos + 1, code, typeDefOrRefRowCounts);
+    mods.push({ kind: bytes[pos] === 0x1f ? 'required' : 'optional', typeToken: ref.encoded });
+    pos = ref.next;
   }
-  return pos;
+  return { next: pos, mods };
+}
+
+function consumeCustomMods(bytes, offset, code, typeDefOrRefRowCounts = null) {
+  return readCustomMods(bytes, offset, code, typeDefOrRefRowCounts).next;
 }
 
 function parseArrayShape(bytes, offset, code) {
@@ -46,63 +55,89 @@ function parseArrayShape(bytes, offset, code) {
   const rank = parsed.value;
   if (rank < 1) fail(code);
   parsed = readCompressed(bytes, parsed.next, code);
-  const sizes = parsed.value;
-  if (sizes > rank) fail(code);
+  const sizeCount = parsed.value;
+  if (sizeCount > rank) fail(code);
+  const sizes = [];
   let pos = parsed.next;
-  for (let i = 0; i < sizes; i++) pos = readCompressed(bytes, pos, code).next;
+  for (let i = 0; i < sizeCount; i++) {
+    const size = readCompressed(bytes, pos, code);
+    sizes.push(size.value);
+    pos = size.next;
+  }
   parsed = readCompressed(bytes, pos, code);
-  const lowerBounds = parsed.value;
-  if (lowerBounds > rank) fail(code);
+  const lowerBoundCount = parsed.value;
+  if (lowerBoundCount > rank) fail(code);
+  const lowerBounds = [];
   pos = parsed.next;
-  for (let i = 0; i < lowerBounds; i++) pos = readCompressed(bytes, pos, code).next;
-  return pos;
+  for (let i = 0; i < lowerBoundCount; i++) {
+    const bound = readCompressed(bytes, pos, code);
+    lowerBounds.push(bound.value);
+    pos = bound.next;
+  }
+  // The shape is part of the exact array type identity (#7706/#7673 R2).
+  return { next:pos, shape:{ rank, sizes, lowerBounds } };
 }
 
 function stackType(name, bits = null, extra = {}) {
   return Object.freeze({ stackType:name, ...(bits == null ? {} : { bits }), ...extra });
 }
 
+// Attach identity-bearing components at their production level. Modifier
+// lists compose in source order across nested productions.
+function attachMods(value, mods) {
+  if (!mods.length || !value) return value;
+  const existing = Array.isArray(value.customModifiers) ? value.customModifiers : [];
+  return Object.freeze({ ...value, customModifiers: Object.freeze([...existing, ...mods]) });
+}
+
 function parseType(bytes, offset, code, depth = 0, methodGenericArity = null, typeDefOrRefRowCounts = null) {
   if (depth > 32 || offset >= bytes.length) fail(code);
-  let pos = consumeCustomMods(bytes, offset, code, typeDefOrRefRowCounts);
+  const lead = readCustomMods(bytes, offset, code, typeDefOrRefRowCounts);
+  let pos = lead.next;
   if (pos >= bytes.length) fail(code);
   const type = bytes[pos++];
 
   if ([0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09].includes(type)) {
-    return { next:pos, value:stackType('int32', 32) };
+    return { next:pos, value:attachMods(stackType('int32', 32), lead.mods) };
   }
-  if (type === 0x0a || type === 0x0b) return { next:pos, value:stackType('int64', 64) };
-  if (type === 0x0c || type === 0x0d) return { next:pos, value:stackType('float') };
-  if (type === 0x0e || type === 0x1c) return { next:pos, value:stackType('object-ref') };
-  if (type === 0x18 || type === 0x19) return { next:pos, value:stackType('native-int') };
+  if (type === 0x0a || type === 0x0b) return { next:pos, value:attachMods(stackType('int64', 64), lead.mods) };
+  if (type === 0x0c || type === 0x0d) return { next:pos, value:attachMods(stackType('float'), lead.mods) };
+  if (type === 0x0e || type === 0x1c) return { next:pos, value:attachMods(stackType('object-ref'), lead.mods) };
+  if (type === 0x18 || type === 0x19) return { next:pos, value:attachMods(stackType('native-int'), lead.mods) };
 
   if (type === 0x11 || type === 0x12) { // VALUETYPE / CLASS
     const ref = parseTypeDefOrRef(bytes, pos, code, typeDefOrRefRowCounts);
-    return { next:ref.next, value:type === 0x11
+    return { next:ref.next, value:attachMods(type === 0x11
       ? stackType('value-type', null, { typeToken:ref.encoded })
-      : stackType('object-ref', null, { typeToken:ref.encoded }) };
+      : stackType('object-ref', null, { typeToken:ref.encoded }), lead.mods) };
   }
   if (type === 0x13 || type === 0x1e) { // VAR / MVAR
     const index = readCompressed(bytes, pos, code);
     if (type === 0x1e && methodGenericArity !== null && index.value >= methodGenericArity) fail(code);
-    return { next:index.next, value:stackType(type === 0x13 ? 'type-generic' : 'method-generic', null,
-      { genericIndex:index.value }) };
+    return { next:index.next, value:attachMods(stackType(type === 0x13 ? 'type-generic' : 'method-generic', null,
+      { genericIndex:index.value }), lead.mods) };
   }
   if (type === 0x0f) { // PTR
-    pos = consumeCustomMods(bytes, pos, code, typeDefOrRefRowCounts);
-    if (bytes[pos] === 0x01) pos += 1; // PTR VOID
-    else pos = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts).next;
-    return { next:pos, value:stackType('native-int') };
+    const pre = readCustomMods(bytes, pos, code, typeDefOrRefRowCounts);
+    if (bytes[pre.next] === 0x01) { // PTR VOID — void is still a distinct pointee
+      return { next:pre.next + 1, value:attachMods(stackType('native-int', null, { pointee:{ stackType:'void' } }), [...lead.mods, ...pre.mods]) };
+    }
+    const pointee = parseType(bytes, pre.next, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
+    return { next:pointee.next, value:attachMods(stackType('native-int', null, { pointee:pointee.value }), [...lead.mods, ...pre.mods]) };
   }
   if (type === 0x1d) { // SZARRAY
-    pos = consumeCustomMods(bytes, pos, code, typeDefOrRefRowCounts);
-    pos = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts).next;
-    return { next:pos, value:stackType('object-ref') };
+    const pre = readCustomMods(bytes, pos, code, typeDefOrRefRowCounts);
+    const element = parseType(bytes, pre.next, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
+    // Array element identity is part of the exact type (#7706): int32[] and
+    // int64[] are different constructed array types, not the same object-ref.
+    return { next:element.next, value:attachMods(stackType('object-ref', null,
+      { arrayShape:{ rank:1, sizes:[], lowerBounds:[] }, elementType:element.value }), [...lead.mods, ...pre.mods]) };
   }
   if (type === 0x14) { // ARRAY
-    pos = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts).next;
-    pos = parseArrayShape(bytes, pos, code);
-    return { next:pos, value:stackType('object-ref') };
+    const element = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
+    const shape = parseArrayShape(bytes, element.next, code);
+    return { next:shape.next, value:attachMods(stackType('object-ref', null,
+      { arrayShape:shape.shape, elementType:element.value }), lead.mods) };
   }
   if (type === 0x15) { // GENERICINST
     const kind = bytes[pos++];
@@ -117,42 +152,52 @@ function parseType(bytes, offset, code, depth = 0, methodGenericArity = null, ty
       genericArgs.push(arg.value);
       pos = arg.next;
     }
-    return { next:pos, value:kind === 0x11
+    return { next:pos, value:attachMods(kind === 0x11
       ? stackType('value-type', null, { typeToken:ref.encoded, genericArgs })
-      : stackType('object-ref', null, { typeToken:ref.encoded, genericArgs }) };
+      : stackType('object-ref', null, { typeToken:ref.encoded, genericArgs }), lead.mods) };
   }
   if (type === 0x1b) { // FNPTR
     const nested = parseMethodSignature(bytes, pos, code, depth + 1, false, methodGenericArity, typeDefOrRefRowCounts);
-    return { next:nested.next, value:stackType('native-int') };
+    // The nested method signature is identity-bearing (#7673 R2): fnptr
+    // types differ by their exact signature, not just "native-int".
+    return { next:nested.next, value:attachMods(stackType('native-int', null,
+      { signature:nested.value }), lead.mods) };
   }
   fail(code);
 }
 
 function parseReturn(bytes, offset, code, depth, methodGenericArity, typeDefOrRefRowCounts) {
-  let pos = consumeCustomMods(bytes, offset, code, typeDefOrRefRowCounts);
+  const lead = readCustomMods(bytes, offset, code, typeDefOrRefRowCounts);
+  const pos = lead.next;
   if (bytes[pos] === 0x01) return { next:pos + 1, value:null }; // VOID
-  if (bytes[pos] === 0x16) return { next:pos + 1, value:stackType('typed-reference') };
+  if (bytes[pos] === 0x16) return { next:pos + 1, value:attachMods(stackType('typed-reference'), lead.mods) };
   if (bytes[pos] === 0x10) { // BYREF
-    pos = consumeCustomMods(bytes, pos + 1, code, typeDefOrRefRowCounts);
-    const inner = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
+    const pre = readCustomMods(bytes, pos + 1, code, typeDefOrRefRowCounts);
+    const inner = parseType(bytes, pre.next, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
     // ECMA-335 II.23.2.10: BYREF is a paired type. Dropping `inner.value`
     // collapsed int32&/int64& into one exact managed-pointer identity (#7750),
-    // so the referent is carried losslessly on the stack type.
-    return { next:inner.next, value:stackType('managed-pointer', null, { referent:inner.value }) };
+    // so the referent is carried losslessly; modifier lists compose in
+    // source order across the paired production (#7706/#7673 R2).
+    return { next:inner.next, value:attachMods(stackType('managed-pointer', null,
+      { referent:inner.value }), lead.mods, pre.mods) };
   }
-  return parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
+  const inner = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
+  return { next:inner.next, value:attachMods(inner.value, lead.mods) };
 }
 
 function parseParam(bytes, offset, code, depth, methodGenericArity, typeDefOrRefRowCounts) {
-  let pos = consumeCustomMods(bytes, offset, code, typeDefOrRefRowCounts);
-  if (bytes[pos] === 0x16) return { next:pos + 1, value:stackType('typed-reference') };
+  const lead = readCustomMods(bytes, offset, code, typeDefOrRefRowCounts);
+  const pos = lead.next;
+  if (bytes[pos] === 0x16) return { next:pos + 1, value:attachMods(stackType('typed-reference'), lead.mods) };
   if (bytes[pos] === 0x10) { // BYREF
-    pos = consumeCustomMods(bytes, pos + 1, code, typeDefOrRefRowCounts);
-    const inner = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
+    const pre = readCustomMods(bytes, pos + 1, code, typeDefOrRefRowCounts);
+    const inner = parseType(bytes, pre.next, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
     // Same referent-retention contract as the return path (#7750).
-    return { next:inner.next, value:stackType('managed-pointer', null, { referent:inner.value }) };
+    return { next:inner.next, value:attachMods(stackType('managed-pointer', null,
+      { referent:inner.value }), lead.mods, pre.mods) };
   }
-  return parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
+  const inner = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
+  return { next:inner.next, value:attachMods(inner.value, lead.mods) };
 }
 
 function parseMethodSignature(bytes, offset, code, depth = 0, requireEnd = true, inheritedMethodGenericArity = null,

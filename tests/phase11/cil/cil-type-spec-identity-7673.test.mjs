@@ -124,4 +124,94 @@ assert.equal(weirdB.typeSpecs[0].signature, null);
 assert.notDeepEqual([...weirdA.typeSpecs[0].rawSignature], [...weirdB.typeSpecs[0].rawSignature]);
 assert.notDeepEqual(weirdA.types, weirdB.types);
 
+// Representative grammar identity (R2): PTR pointee, SZARRAY/ARRAY shape +
+// element, FNPTR nested signature, and custom modifiers are all part of the
+// decoded exact TypeSpec identity — two TypeSpec rows differing only in one
+// of these components must not alias.
+function sigFixture(payload) {
+  // #Blob heap: 4-byte aligned stream (II.24.2.2) with the signature at
+  // index 5: [len byte][payload][zero padding].
+  const blobLength = 1 + payload.length;
+  const streamSize = Math.ceil((5 + blobLength) / 4) * 4;
+  const blob = new Uint8Array(streamSize);
+  blob.set([0, 1, 2, 3, 4, payload.length, ...payload]);
+  const typeSpecs = new Uint8Array(2);
+  new DataView(typeSpecs.buffer).setUint16(0, 5, true);
+  return buildCil({
+    types: [{ name: 'Derived', methodList: 1, fieldList: 1, extends: 6 }],
+    extraRows: new Map([[0x1b, { count: 1, bytes: typeSpecs }]]),
+    blobBytes: blob,
+  }).bytes;
+}
+function decodeTypeSpec(payload) {
+  return parseCil(sigFixture(payload), { binaryId: 'sig' }).typeSpecs[0].signature;
+}
+// PTR pointee identity.
+assert.deepEqual(decodeTypeSpec([0x0f, 0x08]), {
+  stackType: 'native-int', pointee: { stackType: 'int32', bits: 32 },
+});
+assert.deepEqual(decodeTypeSpec([0x0f, 0x0a]), {
+  stackType: 'native-int', pointee: { stackType: 'int64', bits: 64 },
+});
+// PTR VOID is a distinct pointee state.
+assert.deepEqual(decodeTypeSpec([0x0f, 0x01]), {
+  stackType: 'native-int', pointee: { stackType: 'void' },
+});
+// ARRAY rank/size/lower-bound identity.
+assert.deepEqual(decodeTypeSpec([0x14, 0x08, 0x02, 0x00, 0x02, 0x01, 0x01]), {
+  stackType: 'object-ref',
+  arrayShape: { rank: 2, sizes: [], lowerBounds: [1, 1] },
+  elementType: { stackType: 'int32', bits: 32 },
+});
+assert.deepEqual(decodeTypeSpec([0x14, 0x08, 0x03, 0x00, 0x00]), {
+  stackType: 'object-ref',
+  arrayShape: { rank: 3, sizes: [], lowerBounds: [] },
+  elementType: { stackType: 'int32', bits: 32 },
+});
+// FNPTR nested signature identity.
+assert.deepEqual(decodeTypeSpec([0x1b, 0x00, 0x00, 0x08]), {
+  stackType: 'native-int',
+  signature: {
+    callConvention: 0x00, kind: 0x00, hasThis: false, explicitThis: false,
+    genericParameterCount: 0, parameters: [], returnValue: { stackType: 'int32', bits: 32 },
+  },
+});
+assert.deepEqual(decodeTypeSpec([0x1b, 0x00, 0x00, 0x01]), {
+  stackType: 'native-int',
+  signature: {
+    callConvention: 0x00, kind: 0x00, hasThis: false, explicitThis: false,
+    genericParameterCount: 0, parameters: [], returnValue: null,
+  },
+});
+// Custom modifier identity: modreq token 4 vs 8 on the same SZARRAY element.
+assert.deepEqual(decodeTypeSpec([0x1d, 0x1f, 0x04, 0x08]), {
+  stackType: 'object-ref',
+  arrayShape: { rank: 1, sizes: [], lowerBounds: [] },
+  elementType: { stackType: 'int32', bits: 32 },
+  customModifiers: [{ kind: 'required', typeToken: 4 }],
+});
+assert.deepEqual(decodeTypeSpec([0x1d, 0x20, 0x04, 0x08]), {
+  stackType: 'object-ref',
+  arrayShape: { rank: 1, sizes: [], lowerBounds: [] },
+  elementType: { stackType: 'int32', bits: 32 },
+  customModifiers: [{ kind: 'optional', typeToken: 4 }],
+});
+// Differential proof across every component family.
+const identities = [
+  decodeTypeSpec([0x0f, 0x08]),
+  decodeTypeSpec([0x0f, 0x0a]),
+  decodeTypeSpec([0x0f, 0x01]),
+  decodeTypeSpec([0x14, 0x08, 0x02, 0x00, 0x02, 0x01, 0x01]),
+  decodeTypeSpec([0x14, 0x08, 0x03, 0x00, 0x00]),
+  decodeTypeSpec([0x1b, 0x00, 0x00, 0x08]),
+  decodeTypeSpec([0x1b, 0x00, 0x00, 0x01]),
+  decodeTypeSpec([0x1d, 0x1f, 0x04, 0x08]),
+  decodeTypeSpec([0x1d, 0x20, 0x04, 0x08]),
+  decodeTypeSpec([0x1d, 0x08]),
+  decodeTypeSpec([0x1d, 0x0a]),
+  decodeTypeSpec([0x15, 0x12, 0x08, 0x01, 0x08]),
+];
+assert.equal(new Set(identities.map((value) => JSON.stringify(value))).size, identities.length,
+  'every representative grammar variant must decode to a distinct identity');
+
 console.log('cil type-spec identity #7673: PASS');
