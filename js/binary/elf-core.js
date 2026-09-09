@@ -32,6 +32,7 @@ export const STO_RISCV_VARIANT_CC = 0x80;
 const SHT_RISCV_ATTRIBUTES = 0x70000003;
 const R_RISCV_JUMP_SLOT = 5;
 const DT_RISCV_VARIANT_CC = 0x70000001n;
+const ELF_RUNTIME_PAGE_SIZE = 0x1000n;
 
 export function parseELF(input, options = {}) {
   const initial = new ByteView(input, { littleEndian: true });
@@ -180,6 +181,11 @@ function alignUp(value, alignment) {
   return rem === 0n ? value : value + (a - rem);
 }
 
+function alignDown(value, alignment) {
+  const a = alignment > 0n ? alignment : 1n;
+  return value - (value % a);
+}
+
 function assignRelocatableSectionAddresses(sections, image) {
   let cursor = 0x100000000n;
   const MAX_ALIGN = 0x1000000n;
@@ -256,6 +262,88 @@ function resolveExtendedProgramHeaderCount(r, h, bits) {
   h.phnum = actual;
 }
 
+function rejectAmbiguousPtLoadOverlap(image, index, ph) {
+  // Linux maps PT_LOADs at page granularity. A later half-page claim can remap
+  // the earlier half of the same page even when the declared p_vaddr/p_memsz
+  // intervals are merely adjacent. BinaryImage is intentionally raw-range
+  // based, so those loader-page aliases must be rejected before any first-wins
+  // mapping authority can be published (#7610).
+  const vmStart = ph.vaddr;
+  const vmEnd = ph.vaddr + ph.memsz;
+  const backedEnd = ph.vaddr + ph.filesz;
+  const pageVmStart = alignDown(vmStart, ELF_RUNTIME_PAGE_SIZE);
+  const pageVmEnd = alignUp(vmEnd, ELF_RUNTIME_PAGE_SIZE);
+  const backedPageEnd = ph.filesz > 0n ? alignUp(backedEnd, ELF_RUNTIME_PAGE_SIZE) : pageVmStart;
+  const filePageStart = alignDown(ph.offset, ELF_RUNTIME_PAGE_SIZE);
+  for (const existing of image.segments) {
+    if (existing.source !== 'PT_LOAD' || existing.size === 0n) continue;
+    const eVmEnd = existing.address + existing.size;
+    const eBackedEnd = existing.address + existing.fileSize;
+
+    const ePageVmStart = alignDown(existing.address, ELF_RUNTIME_PAGE_SIZE);
+    const ePageVmEnd = alignUp(eVmEnd, ELF_RUNTIME_PAGE_SIZE);
+    const eBackedPageEnd = existing.fileSize > 0n ? alignUp(eBackedEnd, ELF_RUNTIME_PAGE_SIZE) : ePageVmStart;
+    const eFilePageStart = alignDown(existing.fileOffset, ELF_RUNTIME_PAGE_SIZE);
+    const pageOverlapStart = pageVmStart > ePageVmStart ? pageVmStart : ePageVmStart;
+    const pageOverlapEnd = pageVmEnd < ePageVmEnd ? pageVmEnd : ePageVmEnd;
+    if (pageOverlapStart < pageOverlapEnd) {
+      const pagePoints = [pageOverlapStart, pageOverlapEnd];
+      for (const point of [backedPageEnd, eBackedPageEnd]) {
+        if (point > pageOverlapStart && point < pageOverlapEnd) pagePoints.push(point);
+      }
+      pagePoints.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      for (let i = 0; i + 1 < pagePoints.length; i++) {
+        const point = pagePoints[i];
+        const newBackedPage = point >= pageVmStart && point < backedPageEnd;
+        const oldBackedPage = point >= ePageVmStart && point < eBackedPageEnd;
+        if (!newBackedPage && !oldBackedPage) continue;
+        if (newBackedPage !== oldBackedPage) {
+          const error = new Error(`PT_LOAD ${index} mapped page overlaps ${existing.name || 'PT_LOAD'} with ambiguous file/zero ownership`);
+          error.code = 'ELF_PT_LOAD_VM_OVERLAP';
+          throw error;
+        }
+        const newPageOffset = filePageStart + (point - pageVmStart);
+        const oldPageOffset = eFilePageStart + (point - ePageVmStart);
+        if (newPageOffset !== oldPageOffset) {
+          const error = new Error(`PT_LOAD ${index} mapped page overlaps ${existing.name || 'PT_LOAD'} with a different file mapping`);
+          error.code = 'ELF_PT_LOAD_VM_OVERLAP';
+          throw error;
+        }
+      }
+    }
+
+    // Preserve the byte-exact raw-range check as a second boundary. Page-level
+    // congruence alone does not prove that file-backed/zero-fill transitions
+    // inside a shared page are identical.
+    const overlapStart = vmStart > existing.address ? vmStart : existing.address;
+    const overlapEnd = vmEnd < eVmEnd ? vmEnd : eVmEnd;
+    if (overlapStart >= overlapEnd) continue;
+    const points = [overlapStart, overlapEnd];
+    for (const point of [backedEnd, eBackedEnd]) {
+      if (point > overlapStart && point < overlapEnd) points.push(point);
+    }
+    points.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    for (let i = 0; i + 1 < points.length; i++) {
+      const point = points[i];
+      const newBacked = point >= vmStart && point < backedEnd;
+      const oldBacked = point >= existing.address && point < eBackedEnd;
+      if (!newBacked && !oldBacked) continue;
+      if (newBacked !== oldBacked) {
+        const error = new Error(`PT_LOAD ${index} VM range overlaps ${existing.name || 'PT_LOAD'} with ambiguous file/zero ownership`);
+        error.code = 'ELF_PT_LOAD_VM_OVERLAP';
+        throw error;
+      }
+      const newOffset = ph.offset + (point - vmStart);
+      const oldOffset = existing.fileOffset + (point - existing.address);
+      if (newOffset !== oldOffset) {
+        const error = new Error(`PT_LOAD ${index} VM range overlaps ${existing.name || 'PT_LOAD'} with a different file mapping`);
+        error.code = 'ELF_PT_LOAD_VM_OVERLAP';
+        throw error;
+      }
+    }
+  }
+}
+
 function parseProgramHeaders(r, h, image, bits) {
   const out = [];
   const off = safeOffset(h.phoff);
@@ -281,6 +369,7 @@ function parseProgramHeaders(r, h, image, bits) {
     }
     out.push(ph);
     if (ph.type === PT_LOAD) {
+      rejectAmbiguousPtLoadOverlap(image, i, ph);
       image.addSegment({
         name: `LOAD${i}`, address: ph.vaddr, size: ph.memsz, fileOffset: ph.offset, fileSize: ph.filesz,
         perms: { read: !!(ph.flags & 4), write: !!(ph.flags & 2), execute: !!(ph.flags & 1) }, flags: ph.flags, source: 'PT_LOAD',
@@ -572,8 +661,8 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
       }
       if (name && !budget.take({
         inputBytes: Math.min(max, name.length + 1),
-        stringBytes: name.length * 2,
-        estimatedHeapBytes: name.length * 2 + 32,
+        stringBytes:name.length * 2,
+        estimatedHeapBytes:name.length * 2 + 32,
       }, 'SHT_DYNAMIC-string')) break;
       if (tag === 1n && name) image.libraries.push(name);
       else if (tag === 14n && name) image.metadata.soname = name;
