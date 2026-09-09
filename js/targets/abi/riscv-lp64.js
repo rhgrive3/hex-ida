@@ -39,9 +39,20 @@ const VECTOR_VARIANT_CALLEE_SAVED = Object.freeze([
   ...Array.from({ length:7 }, (_unused, index) => `v${1 + index}`),
   ...Array.from({ length:8 }, (_unused, index) => `v${24 + index}`),
 ]);
+// psABI vector calling convention variant: v0 and v8-v23 (the vector argument
+// window) are caller-clobbered; v1-v7 and v24-v31 are callee-saved. `vstart`
+// is deliberately absent from every preservation list: per the psABI it is
+// not a plain caller-saved register but a dedicated zero-on-call-boundary
+// contract (see RISCV_VECTOR_VSTART_CONTRACT) (#5707).
 const VECTOR_VARIANT_CALLER_SAVED = Object.freeze([
-  'v0', ...VECTOR_ARGUMENT_REGISTERS, 'vl', 'vtype', 'vxrm', 'vxsat', 'vstart',
+  'v0', ...VECTOR_ARGUMENT_REGISTERS, 'vl', 'vtype', 'vxrm', 'vxsat',
 ]);
+// Standard psABI vector convention: v0-v31 are all temporaries (not preserved
+// across calls) and vl/vtype/vxrm/vxsat carry no cross-call guarantee, so an
+// unknown call may clobber all of them regardless of the float ABI in force
+// (#5707).
+const ALL_VECTOR_REGISTERS = Object.freeze(Array.from({ length:32 }, (_unused, index) => `v${index}`));
+const VECTOR_CSR_CALLER_SAVED = Object.freeze(['vl', 'vtype', 'vxrm', 'vxsat']);
 
 // Keep the registry vocabulary and both argument/return classifiers on one
 // alias set. LLVM/Clang commonly emits the underscore spelling while the
@@ -897,21 +908,53 @@ function createClassifier(profile) {
 function createRiscvAbi(profile) {
   const { classifyArguments, classifyReturn } = createClassifier(profile);
   const abiFlenBits = profile.floatAbi === 'single' ? 32 : profile.floatAbi === 'double' ? 64 : 0;
-  const callerSavedFor = ({ valueWidthBits = null } = {}) => {
-    if (profile.floatAbi === 'soft') return CALLER_SAVED;
-    const width = Number(valueWidthBits);
-    const calleeSavedFpWidthProven = Number.isSafeInteger(width) && width > 0 && width <= abiFlenBits;
-    return calleeSavedFpWidthProven
-      ? Object.freeze([...CALLER_SAVED, ...FLOAT_CALLER_SAVED])
-      : Object.freeze([...CALLER_SAVED, ...ALL_FLOAT_REGISTERS]);
+  // The caller-saved vector set depends on the calling-convention identity in
+  // force: the standard convention leaves every vector register and the vector
+  // CSRs unpreserved, while the riscv_vector_cc variant keeps v1-v7/v24-v31
+  // alive across calls. Requests that do not carry a convention id use the
+  // standard convention's wider (safer) clobber set (#5707).
+  const vectorCallerSavedFor = (request = {}) => {
+    const explicit = canonicalRiscvVectorCallingConvention(
+      request?.callingConvention ?? request?.callingConventionId ?? request?.convention,
+    );
+    return explicit === 'riscv-vector-variant'
+      ? VECTOR_VARIANT_CALLER_SAVED
+      : [...ALL_VECTOR_REGISTERS, ...VECTOR_CSR_CALLER_SAVED];
   };
-  const calleeSavedFor = ({ valueWidthBits = null } = {}) => {
-    if (profile.floatAbi === 'soft') return CALLEE_SAVED;
-    const width = Number(valueWidthBits);
+  const callerSavedFor = (request = {}) => {
+    const vectorCallerSaved = vectorCallerSavedFor(request);
+    if (profile.floatAbi === 'soft') {
+      return Object.freeze([...CALLER_SAVED, ...vectorCallerSaved]);
+    }
+    const width = Number(request?.valueWidthBits);
     const calleeSavedFpWidthProven = Number.isSafeInteger(width) && width > 0 && width <= abiFlenBits;
     return calleeSavedFpWidthProven
-      ? Object.freeze([...CALLEE_SAVED, ...FLOAT_CALLEE_SAVED])
-      : CALLEE_SAVED;
+      ? Object.freeze([...CALLER_SAVED, ...FLOAT_CALLER_SAVED, ...vectorCallerSaved])
+      : Object.freeze([...CALLER_SAVED, ...ALL_FLOAT_REGISTERS, ...vectorCallerSaved]);
+  };
+  // The vector variant's callee-saved vector registers compose with the base
+  // integer/FP callee sets; non-variant requests keep the standard convention
+  // in which no vector register is preserved.
+  const vectorCalleeSavedFor = (request = {}) => {
+    const explicit = canonicalRiscvVectorCallingConvention(
+      request?.callingConvention ?? request?.callingConventionId ?? request?.convention,
+    );
+    return explicit === 'riscv-vector-variant' ? VECTOR_VARIANT_CALLEE_SAVED : [];
+  };
+  const calleeSavedFor = (request = {}) => {
+    const vectorCalleeSaved = vectorCalleeSavedFor(request);
+    if (profile.floatAbi === 'soft') {
+      return vectorCalleeSaved.length
+        ? Object.freeze([...CALLEE_SAVED, ...vectorCalleeSaved]) : CALLEE_SAVED;
+    }
+    const width = Number(request?.valueWidthBits);
+    const calleeSavedFpWidthProven = Number.isSafeInteger(width) && width > 0 && width <= abiFlenBits;
+    return calleeSavedFpWidthProven
+      ? (vectorCalleeSaved.length
+        ? Object.freeze([...CALLEE_SAVED, ...FLOAT_CALLEE_SAVED, ...vectorCalleeSaved])
+        : Object.freeze([...CALLEE_SAVED, ...FLOAT_CALLEE_SAVED]))
+      : (vectorCalleeSaved.length
+        ? Object.freeze([...CALLEE_SAVED, ...vectorCalleeSaved]) : CALLEE_SAVED);
   };
   return new ABIPlugin({
     id:profile.id,
@@ -1003,6 +1046,20 @@ export const RISCV_ABI_ALIAS = ABI_ALIAS;
 export const RISCV_VECTOR_ARGUMENT_REGISTERS = VECTOR_ARGUMENT_REGISTERS;
 export const RISCV_VECTOR_VARIANT_CALLEE_SAVED = VECTOR_VARIANT_CALLEE_SAVED;
 export const RISCV_VECTOR_VARIANT_CALLER_SAVED = VECTOR_VARIANT_CALLER_SAVED;
+
+/* psABI vector calling convention: `vstart` is not a plain caller-saved
+ * register. A procedure may assume vstart=0 at entry, and any procedure that
+ * writes a non-zero vstart must zero it again before returning or calling
+ * another procedure. It therefore belongs to no preservation set — both
+ * callerSavedFor()/calleeSavedFor() exclude it — and its cross-call behaviour
+ * is pinned by this dedicated contract descriptor (#5707). */
+export const RISCV_VECTOR_VSTART_CONTRACT = Object.freeze({
+  register:'vstart',
+  contract:'zero-on-call-boundary',
+  preservedAcrossCalls:false,
+  zeroAssumedAtProcedureEntry:true,
+  mustZeroBeforeReturnOrCall:true,
+});
 
 /*
  * psABI variant selection from ELF e_flags.
