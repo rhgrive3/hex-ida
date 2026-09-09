@@ -142,6 +142,7 @@ assert.deepEqual(
     'js/ai/control/runtime-support.js',
     'js/ai/control/turn-executor.js',
     'js/ai/runtime.js',
+    'js/ai/tools/registry-core.js',
     'js/binary/macho-source-cache.js',
     'js/diff/runtime.js',
     'js/diff/symmetric-function-set.js',
