@@ -231,13 +231,19 @@ export const PROVEN_SEPARATION_CLASSES = Object.freeze(['global-like', 'heap-lik
 const ROOT_DESCRIPTOR_PROOF = Symbol('phase7.pointsto.root-descriptor-proof');
 
 function rootKeyOf(target) {
+  // Root identity is storage identity only (space/kind/identity/entity/address).
+  // separationClass/separationAuthority are *proofs about* the root, not what
+  // storage it designates: the same allocation observed through a producing
+  // path that attached a proof and one that did not must share one rootKey, or
+  // pointsToAlias() treats identical storage as distinct roots and can mint a
+  // false strong NoAlias off escape evidence keyed on the forked key (#5261).
+  // Consumers that need the proof read it from the target boundary
+  // (provenSeparationAuthority()/target.separationClass), never from this key.
   return stableStringify({
     addressSpace: target.addressSpace,
     rootKind: target.rootKind,
     rootIdentity: target.rootIdentity ?? null,
     rootEntityId: target.rootEntityId ?? null,
-    separationClass: target.separationClass ?? null,
-    separationAuthority: target.separationAuthority ?? null,
     address: target.address ?? null,
   });
 }
