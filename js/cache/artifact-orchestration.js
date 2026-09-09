@@ -62,7 +62,10 @@ export function requireCanonicalBinaryId(value) {
 }
 
 export function normalizeAnalysisRoute(route) {
-  const value = String(route ?? '').trim();
+  if (typeof route !== 'string') {
+    throw new TypeError(`analysis-orchestration-route-invalid:${route == null ? '<empty>' : '<non-string>'}`);
+  }
+  const value = route.trim();
   if (value === ANALYSIS_ORCHESTRATION_ROUTE.CURRENT || value === ANALYSIS_ORCHESTRATION_ROUTE.ARTIFACT) return value;
   throw new TypeError(`analysis-orchestration-route-invalid:${value || '<empty>'}`);
 }
