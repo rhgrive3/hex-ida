@@ -181,12 +181,10 @@ export class AgentJobManager {
       id = value;
     }
     if (typeof id !== 'string' || !id) throw new Error(`Unknown agent job: ${value}`);
-    let job = await this.get(id);
-    if (!job && value && typeof value === 'object' && validateCheckpoint(value, id)) {
-      const live = isLiveRunningCheckpoint(value);
-      job = recoverPersistedRunningCheckpoint(value);
-      if (!live) this.jobs.set(id, job);
-    }
+    const job = await this.get(id);
+    // An unregistered checkpoint object is never canonical state (#4459):
+    // only a registered (or persistence-loadable) job can run. Persisted
+    // running checkpoints recover through the load path (#4389).
     if (!job) throw new Error(`Unknown agent job: ${id}`);
     return job;
   }
