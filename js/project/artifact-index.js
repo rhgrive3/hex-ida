@@ -16,11 +16,10 @@ function artifactId(value, missingCode = 'artifact-ref-id-required') {
 }
 
 function normalizeMaxEntries(value = MAX_PROJECT_ARTIFACT_REFS) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 1 || number > MAX_PROJECT_ARTIFACT_REFS) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > MAX_PROJECT_ARTIFACT_REFS) {
     throw new RangeError('artifact-index-max-entries-invalid');
   }
-  return number;
+  return value;
 }
 
 function expectedArtifactId(options = {}) {

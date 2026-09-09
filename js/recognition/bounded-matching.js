@@ -1,8 +1,13 @@
 import { createMatchBudget } from './match-budget.js';
 
+function isValidConfidence(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
 function candidateComponents(candidates) {
   const left = new Map(), right = new Map();
   for (const c of candidates) {
+    if (!isValidConfidence(c?.confidence)) continue;
     let a = left.get(c.i); if (!a) left.set(c.i, a = []); a.push(c);
     let b = right.get(c.j); if (!b) right.set(c.j, b = []); b.push(c);
   }
@@ -47,7 +52,7 @@ function maximumWeightComponent(candidates, budget) {
   for (let k=0;k<leftIds.length;k++) addEdge(source,leftBase+k,1,0);
   for (let k=0;k<rightIds.length;k++) addEdge(rightBase+k,sink,1,0);
   const candidateEdges = [];
-  for (const c of candidates) candidateEdges.push(addEdge(leftBase+leftIndex.get(c.i),rightBase+rightIndex.get(c.j),1,-Number(c.confidence),c));
+  for (const c of candidates) candidateEdges.push(addEdge(leftBase+leftIndex.get(c.i),rightBase+rightIndex.get(c.j),1,-c.confidence,c));
 
   const EPS = 1e-12;
   while (true) {
