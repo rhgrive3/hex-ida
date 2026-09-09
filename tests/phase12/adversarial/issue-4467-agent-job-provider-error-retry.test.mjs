@@ -77,6 +77,27 @@ test('#4467 a reasonless non-exhausted result remains a normal completion', asyn
   assert.equal(manager.pendingCheckpoints.size, 0, 'normal completion must clear its pending checkpoint');
 });
 
+test('#4467 a non-exhausted provider_error still honors the slice hard limit', async () => {
+  let calls = 0;
+  const manager = new AgentJobManager({
+    maxSlices: 1,
+    runtime: { async turn() { calls += 1; return providerFailure(); } },
+  });
+  const job = await manager.create({ jobId: 'job-4467-provider-hard-limit', goal: 'provider failure at slice limit' });
+
+  const result = await manager.runSlice(job.id);
+  assert.equal(result.status, 'hard-limit');
+  assert.deepEqual(result.lastResult.limits, { exhausted: false, reason: 'provider_error' });
+  assert.deepEqual(result.unresolvedWork, ['resume-after:provider_error']);
+  assert.equal(calls, 1);
+  assert.equal(manager.runningJobIds.size, 0, 'provider hard-limit must release the run lease');
+  assert.equal(manager.pendingCheckpoints.size, 0, 'provider hard-limit must clear its pending checkpoint');
+
+  const blocked = await manager.resume(job.id);
+  assert.equal(blocked.status, 'hard-limit');
+  assert.equal(calls, 1, 'a hard-limited provider failure must not retry');
+});
+
 test('#4467 budget exhaustion keeps checkpoint and hard-limit semantics', async () => {
   const manager = new AgentJobManager({
     maxSlices: 1,
