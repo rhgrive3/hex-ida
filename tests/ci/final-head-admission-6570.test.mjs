@@ -52,7 +52,6 @@ const greenEvidence = () => ({
   statuses: [
     status('ci/circleci: phase7-ownership', 'success'),
     status('ci/circleci: migration-guardrails', 'success'),
-    codeRabbitStatus(),
   ],
   checkRuns: [check('PR fast gate')],
 });
@@ -144,8 +143,8 @@ assert.doesNotMatch(
   assert.ok(result.pending.includes('no required CI status contexts configured'));
 }
 
-// Exact-head trusted approval + CodeRabbit + complete required CI + resolved
-// review threads is admitted.
+// Exact-head trusted approval + complete required CI + resolved review threads
+// is admitted without external-review evidence.
 {
   const result = evaluate({
     headSha: HEAD,
@@ -159,53 +158,66 @@ assert.doesNotMatch(
   assert.equal(result.evidence.missingRequiredStatusCount, 0);
 }
 
-// CodeRabbit authority requires a positive terminal receipt from the trusted
-// provider. A success status that says no review completed must fail closed.
+// External review is advisory: no provider status/check, pending/skipped,
+// rate-limited, or failure evidence changes an otherwise admissible head.
 {
-  for (const description of ['Review rate limited', 'Review skipped', 'Review paused', '']) {
+  const cases = [
+    { statuses: [], checkRuns: [] },
+    { statuses: [codeRabbitStatus('Review pending', 'pending')], checkRuns: [] },
+    { statuses: [codeRabbitStatus('Review skipped')], checkRuns: [] },
+    { statuses: [codeRabbitStatus('Review rate limited')], checkRuns: [] },
+    { statuses: [codeRabbitStatus('Review failed', 'failure')], checkRuns: [] },
+    { statuses: [], checkRuns: [codeRabbitCheck('skipped')] },
+    { statuses: [], checkRuns: [codeRabbitCheck('failure')] },
+    { statuses: [], checkRuns: [codeRabbitCheck('success', 'in_progress')] },
+    {
+      statuses: [codeRabbitStatus('Review failed', 'failure')],
+      checkRuns: [codeRabbitCheck('skipped')],
+    },
+  ];
+  for (const { statuses, checkRuns } of cases) {
+    const baseEvidence = greenEvidence();
     const result = evaluate({
       headSha: HEAD,
       reviews: [auto(HEAD)],
-      statuses: [
-        status('ci/circleci: phase7-ownership', 'success'),
-        status('ci/circleci: migration-guardrails', 'success'),
-        codeRabbitStatus(description),
-      ],
-      checkRuns: [check('PR fast gate')],
+      ...baseEvidence,
+      statuses: [...baseEvidence.statuses, ...statuses],
+      checkRuns: [...baseEvidence.checkRuns, ...checkRuns],
     });
-    assert.equal(result.state, 'pending');
-    assert.ok(result.pending.includes('CodeRabbit exact-head result is pending'));
+    assert.equal(result.state, 'success');
+    assert.equal(result.pending.some((reason) => reason.includes('CodeRabbit')), false);
+    assert.equal(result.blockers.some((reason) => reason.includes('CodeRabbit')), false);
   }
 
-  const forgedProvider = evaluate({
+  // A provider success cannot substitute for independent exact-head AUTO
+  // approval, even when all required CI contexts are green.
+  const providerOnly = evaluate({
     headSha: HEAD,
-    reviews: [auto(HEAD)],
+    reviews: [],
     statuses: [
       status('ci/circleci: phase7-ownership', 'success'),
       status('ci/circleci: migration-guardrails', 'success'),
-      codeRabbitStatus('Review completed', 'success', '2026-09-07T00:00:00Z', 'untrusted-bot'),
+      codeRabbitStatus('Review completed'),
     ],
     checkRuns: [check('PR fast gate')],
   });
-  assert.equal(forgedProvider.state, 'pending');
-  assert.ok(forgedProvider.pending.includes('CodeRabbit exact-head result is pending'));
+  assert.equal(providerOnly.state, 'pending');
+  assert.ok(providerOnly.pending.includes('missing exact-head AUTO approval'));
+  assert.equal(providerOnly.pending.some((reason) => reason.includes('CodeRabbit')), false);
 }
 
-// CodeRabbit check-runs use a stricter policy than generic CI: only a trusted
-// app's completed success is review authority; neutral/skipped are not passes.
+// Provider check-runs are excluded from generic CI accounting, but independent
+// required CI and AUTO evidence remain authoritative.
 {
-  for (const conclusion of ['neutral', 'skipped']) {
+  for (const conclusion of ['neutral', 'skipped', 'failure']) {
+    const baseEvidence = greenEvidence();
     const result = evaluate({
       headSha: HEAD,
       reviews: [auto(HEAD)],
-      statuses: [
-        status('ci/circleci: phase7-ownership', 'success'),
-        status('ci/circleci: migration-guardrails', 'success'),
-      ],
-      checkRuns: [check('PR fast gate'), codeRabbitCheck(conclusion)],
+      ...baseEvidence,
+      checkRuns: [...baseEvidence.checkRuns, codeRabbitCheck(conclusion)],
     });
-    assert.equal(result.state, 'pending');
-    assert.ok(result.pending.includes('CodeRabbit exact-head result is pending'));
+    assert.equal(result.state, 'success');
   }
 
   const completed = evaluate({
@@ -219,6 +231,21 @@ assert.doesNotMatch(
   });
   assert.equal(completed.state, 'success');
 
+  const configuredAsRequired = evaluateFinalHeadAdmission({
+    headSha: HEAD,
+    reviews: [auto(HEAD)],
+    statuses: [
+      status('ci/circleci: phase7-ownership', 'success'),
+      status('ci/circleci: migration-guardrails', 'success'),
+      codeRabbitStatus('Review failed', 'failure'),
+    ],
+    checkRuns: [check('PR fast gate')],
+    trustedAutoReviewers: [TRUSTED],
+    requiredStatusContexts: [...REQUIRED, 'CodeRabbit'],
+  });
+  assert.equal(configuredAsRequired.state, 'success');
+  assert.equal(configuredAsRequired.evidence.requiredStatusContextCount, REQUIRED.length);
+
   const genericNeutral = evaluate({
     headSha: HEAD,
     reviews: [auto(HEAD)],
@@ -228,8 +255,8 @@ assert.doesNotMatch(
   assert.equal(genericNeutral.state, 'success');
 }
 
-// Conflicting/ambiguous CodeRabbit receipts are never laundered by a positive
-// sibling receipt, whether the ambiguity is another status or a check-run.
+// Conflicting/ambiguous provider receipts remain advisory and cannot affect an
+// otherwise complete independent admission.
 {
   const at = '2026-09-07T00:05:00Z';
   const duplicateStatus = evaluate({
@@ -243,8 +270,7 @@ assert.doesNotMatch(
     ],
     checkRuns: [check('PR fast gate')],
   });
-  assert.equal(duplicateStatus.state, 'pending');
-  assert.ok(duplicateStatus.pending.includes('CodeRabbit exact-head result is pending'));
+  assert.equal(duplicateStatus.state, 'success');
 
   const mixedEvidence = evaluate({
     headSha: HEAD,
@@ -256,8 +282,7 @@ assert.doesNotMatch(
     ],
     checkRuns: [check('PR fast gate'), codeRabbitCheck('neutral')],
   });
-  assert.equal(mixedEvidence.state, 'pending');
-  assert.ok(mixedEvidence.pending.includes('CodeRabbit exact-head result is pending'));
+  assert.equal(mixedEvidence.state, 'success');
 }
 
 // Do not transiently succeed just because one required CI context appeared
@@ -515,4 +540,4 @@ assert.throws(
   /final-head-admission-invalid-head-sha/,
 );
 
-console.log('final-head admission #6570 regression: PASS');
+console.log('final-head admission #6570/#7647 regressions: PASS');
