@@ -57,6 +57,7 @@ function translatePureTarget(root, guard) {
   const state = { byteMemory: resources, values: new Map(), scalarCache: new Map(),
     valueIdentities: new Map(), semanticIdentities: new Map() };
   let inputOrdinal = 0;
+  const inputs = [];
   for (const value of ordered) {
     // Universal inputs, not the concrete/path-configured symbolicArgs used to
     // execute this invocation. Each SSA dependency is lowered once, in order.
@@ -68,11 +69,31 @@ function translatePureTarget(root, guard) {
     if (value.kind === 'arg' && expression.kind === 'fresh_symbol') {
       expression = restoreFreshSymbol(expression.sort, expression.name,
         `sym_${++inputOrdinal}_${expression.name}`, expression.meta);
+      guard.take('allocationUnits');
+      inputs.push(Object.freeze({ value, valueId:semanticValueIdentity(value), rawValueId:value.id,
+        bits:value.bits, symbol:expression }));
     }
     assertMemoryExpr(expression, guard);
     guard.take('allocationUnits'); state.values.set(value.id, expression);
   }
-  return state.values.get(root.id);
+  return Object.freeze({ scope:'query-local-universal-inputs', expression:state.values.get(root.id),
+    inputs:Object.freeze(inputs) });
+}
+
+/** Read only the actual translator-produced input relation for this issued
+ * query and exact target. Names, serialized manifests and matching IDs cannot
+ * issue it. It conveys input correspondence, not proof/adoption authority. */
+export function readSymbolicTargetInputs(result, target, identity) {
+  try {
+    const record = issued.get(result), binding = record?.targetInputs.get(target);
+    if (!binding || !isSymbolicAnalysisResult(result, identity === undefined ? result.identity : identity)) return null;
+    for (const input of binding.inputs) {
+      const value = queryRecord(input.value);
+      if (value.kind !== 'arg' || value.id !== input.rawValueId || value.bits !== input.bits
+          || semanticValueIdentity(value) !== input.valueId) return null;
+    }
+    return binding;
+  } catch { return null; }
 }
 
 export function isSymbolicAnalysisResult(result, identity) {
@@ -112,14 +133,14 @@ export async function querySymbolicAnalysis(ir, inputOptions = {}) {
     guard.check();
     if (taint.status !== 'complete') throw new QueryFailure(taint.reason ?? 'incomplete-taint');
     if (!isTaintQueryResult(taint, guard.identity)) throw new QueryFailure('stale-analysis-input');
-    const seen = new Set(), output = [];
+    const seen = new Set(), output = [], targetInputs = new Map();
     for (const target of targets) {
       guard.take('workItems');
       if (!taint.execution.paths.some(path => isExecutionSnapshotTarget(path.snapshot, target, guard.identity, ir))) throw new QueryFailure('target-not-bound-to-execution');
       const valueId = semanticValueIdentity(target);
       if (seen.has(valueId)) throw new QueryFailure('duplicate-analysis-target');
       seen.add(valueId);
-      const expression = translatePureTarget(target, guard);
+      const translated = translatePureTarget(target, guard), expression = translated.expression;
       guard.check();
       candidateQueries++;
       const equalitySaturation = options.candidateStrategy === 'equality-saturation';
@@ -137,13 +158,14 @@ export async function querySymbolicAnalysis(ir, inputOptions = {}) {
       guard.take('candidates', candidates.candidates.length);
       guard.take('allocationUnits', candidates.candidates.length + 1);
       output.push(Object.freeze({ valueId, expression, candidates: candidates.candidates, metrics: candidates.metrics }));
+      targetInputs.set(target, translated);
     }
     guard.check();
     if (!isTaintQueryResult(taint, guard.identity)) throw new QueryFailure('stale-analysis-input');
     const complete = result('complete', null, taint, output);
     guard.check();
     if (!isTaintQueryResult(taint,guard.identity)) throw new QueryFailure('stale-analysis-input');
-    issued.set(complete, { taint });
+    issued.set(complete, { taint, targetInputs });
     return complete;
   } catch (error) {
     if (!(error instanceof QueryFailure)) throw error;

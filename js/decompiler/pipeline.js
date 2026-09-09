@@ -63,6 +63,28 @@ export function isProducerProjection(result) {
   } catch { return false; }
 }
 
+/** Resolve actual SSA input objects through this producer's observed value/AST
+ * relation. No caller-provided ID/name map can stand in for either endpoint. */
+export function readProducerInputExpressions(result, values) {
+  try {
+    if (!isProducerProjection(result)) return null;
+    const requested = queryArray(values, null, 4096);
+    const record = producerProjections.get(result.semanticAst), byValue = new Map();
+    for (const [index, value] of record.irRoots.entries()) {
+      byValue.set(value, byValue.has(value) ? null : result.semanticAst.values[index].expression);
+    }
+    const inputs = [];
+    for (const value of requested) {
+      const fields = queryRecord(value), expression = byValue.get(value);
+      if (fields.kind !== 'arg' || !expression || expression.effect !== 'pure' || expression.bits !== fields.bits) return null;
+      const token = record.observation.tokenOf(expression);
+      if (token == null) return null;
+      inputs.push(Object.freeze({ value, expression, token }));
+    }
+    return Object.freeze(inputs);
+  } catch { return null; }
+}
+
 function valueOf(arg) { return arg?.value || null; }
 
 const INVERSE_CONDITION = {

@@ -142,6 +142,7 @@
       "tests/phase9/browser/review-cases.test.mjs",
       "tests/phase9/egraph/equality-saturation.test.mjs",
       "tests/phase9/egraph/query-boundary-v6.test.mjs",
+      "tests/phase9/egraph/target-input-binding.test.mjs",
       "tests/phase9/fixtures/memory-taint-performance-locks.json",
       "tests/phase9/foundation/preflight.test.mjs",
       "tests/phase9/helpers/tiered-solver-metrics.mjs",

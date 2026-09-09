@@ -2331,6 +2331,49 @@ projection and memory/CFG/exception observables remain open, alongside all other
 original findings. No main reconciliation or component acceptance occurs here;
 integration remains LOCKED.
 
+## C4-04 producer-owned input correspondence
+
+The scalar extension now carries the existing translator's actual query-local
+input symbols and SSA value objects through the private proof plan and committed
+overlay to the representation producer. Translation and proof semantics are not
+duplicated. Public entry input IDs are immutable audit data, not authority. A
+staged/copied overlay, copied result/value/AST, stale identity, changed input or
+cancelled query cannot provide the relation. The display endpoint is resolved
+through the producer's already-observed IR/AST pairing, not register spelling or
+a caller-supplied ID map. Current constant projection consumes that correspondence.
+
+The mapping is target-local: equal query-local symbol IDs can designate different
+SSA values in different target translations. Equal register spellings remain
+distinct actual inputs; the existing ambiguous-name proof refusal remains in
+force. A separate distinct-name fixture proves a real nonconstant candidate and
+resolves its surviving input, but this checkpoint does not yet adopt that term.
+
+Twelve added regressions (nine canonical Phase 9 egraph tests and three Phase 8
+substrate tests) exercise both actual endpoints, per-target ordering, shared
+dependencies, numeric/string IDs, universal versus execution-configured inputs,
+immutable audit records, unissued identity getters, copied/staged artifacts,
+mutation, cancellation and budget refusal. The existing transaction, provenance
+and optimizer tests remain part of validation. Persistent precommit receipts:
+
+- vertical input/projection/optimizer tests PASS 9.3 s:
+  `c4-04-input-binding-vertical-60eae22e-b206-4b7a-9f0d-41b106017682.json`;
+- canonical substrate PASS 63.5 s:
+  `c4-04-input-binding-substrate-5eb21753-3449-45f8-a24e-d54fd86cee58.json`.
+
+An earlier render run failed two proof deadlines (receipt
+`c4-04-input-binding-render-df1eef0d-b0fd-4592-b9e2-ba2a65502aa5.json`). Its log
+is retained; it is not a passing run. No timeout or assertion was relaxed.
+Final committed-head receipts are recorded in the persistent resume checkpoint.
+
+Next: use these actual input endpoints when projecting independently proved
+nonconstant scalar candidates, with exact width/operator semantics and explicit
+refusal for unrepresentable terms. Arbitrary nonconstant construction/adoption,
+the full risky-rewrite denominator, and memory/CFG/exception observables remain
+open. Existing #3422 proof/unknown intent and #3421 provenance work remain reused.
+Main performance changes announced by the user are reserved for the defined
+reconciliation lane; none are overwritten or reimplemented here. This is source
+progress, not a component acceptance or integration unlock.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -2366,7 +2409,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
 | HEX-C4-03 | Navigation, observed expression/recovery histories, successive projections and actual spill statement removal/suppression implemented; other view transforms and full removed/merged class coverage still open |
-| HEX-C4-04 | Pure constant projection and requested-target decision audit implemented; nonconstant projection and memory/CFG/exception observable coverage remain open |
+| HEX-C4-04 | Pure constant projection, requested-target decisions and producer-owned input correspondence implemented; nonconstant projection and memory/CFG/exception observable coverage remain open |
 | HEX-C4-05 | Bounded e-graph candidates, independent proofs and resource matrix |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |
 | HEX-SYM-02 | Byte-memory escalation, alias/partial-write independent oracle |

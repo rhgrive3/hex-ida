@@ -1,4 +1,4 @@
-import { isProducerProjection, producerExpressionToken } from '../pipeline.js';
+import { isProducerProjection, producerExpressionToken, readProducerInputExpressions } from '../pipeline.js';
 import { readExpressionHistoryConsumer } from '../pipeline-core.js';
 import { readStackPhiHistoryConsumer } from '../passes/stack-phi-recovery.js';
 import { readStackReturnHistoryConsumer } from '../passes/stack-return-recovery.js';
@@ -6,7 +6,7 @@ import { readLegacyStackHistoryConsumer } from '../passes/legacy-stack-recovery.
 import { captureProjectionIrData, PROJECTION_LIMITS } from './projection-origin.js';
 import { expr, mapChildren, mergeSource, sourceOf } from '../ast/nodes.js';
 import { expressionReadability, printExpression, printProgram } from '../pretty/c.js';
-import { readProvedRewrites } from './pass-validation.js';
+import { readProvedRewrites, readProvedInputBindings } from './pass-validation.js';
 import {
   analysisIdentityMatches,
   canonicalAnalysisIdentity,
@@ -361,7 +361,8 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   const renderedConditions = new Map();
   const proofRequested = opts.phase8RewritePlan != null;
   const proofContext = {ir:result.ir,opts};
-  const proved = proofRequested ? readProvedRewrites(analysis,proofContext) : null;
+  const provedInputs = proofRequested ? readProvedInputBindings(analysis,proofContext) : null;
+  const proved = provedInputs?.artifact ?? null;
   if (proofRequested) {
     if (!isProducerProjection(original)) return original;
     if (!proved && opts.phase8RewritePlan.entries.length) return original;
@@ -373,11 +374,17 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   }
   const records = [], replacements = new Map(), memo = new Map();
   if (proved) {
+    const inputValues = [...new Set(provedInputs.bindings.flatMap(input => input.binding.inputs.map(input => input.value)))];
+    const renderedInputs = readProducerInputExpressions(original, inputValues);
+    if (!renderedInputs) return original;
+    const inputExpressions = new Map(renderedInputs.map(input => [input.value, input.expression]));
     const byId = new Map();
     for (const item of result.semanticAst.values ?? []) {
       byId.set(item.valueId,byId.has(item.valueId)?null:item);
     }
     for (const entry of proved.entries) {
+      const inputBinding = provedInputs.bindings.find(input => input.entry === entry)?.binding;
+      if (!inputBinding || inputBinding.inputs.some(input => inputExpressions.get(input.value)?.bits !== input.bits)) return original;
       const item = byId.get(entry.rawValueId), root = item?.expression;
       if (!root || root.bits !== entry.bits || root.effect !== 'pure') continue;
       if (root.kind === 'const' && root.value === entry.value) continue;

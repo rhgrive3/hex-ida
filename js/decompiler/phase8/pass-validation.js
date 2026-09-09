@@ -96,7 +96,7 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
     guard = createQueryGuard({...submitted, timeoutMs:submitted.timeoutMs ?? 1000}, LIMITS);
     guard.check();
     // Do not load the solver/e-graph on the ordinary synchronous decompile path.
-    const [{querySymbolicAnalysis,isSymbolicAnalysisResult},{isAdoptableCandidate}]=await Promise.all([
+    const [{querySymbolicAnalysis,isSymbolicAnalysisResult,readSymbolicTargetInputs},{isAdoptableCandidate}]=await Promise.all([
       import('../../symbolic/query/analysis.js'),import('../../symbolic/taint/proof-consumer.js')]);
     guard.check();
     const raw = queryRecord(ir, guard, 128);
@@ -133,6 +133,8 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
     for (let index=0; index<analysis.targets.length; index++) {
       guard.take('workItems');
       const item = analysis.targets[index], target = selected[index];
+      const inputBinding = readSymbolicTargetInputs(analysis, target, guard.identity);
+      if (!inputBinding || inputBinding.expression !== item.expression) return reject('unavailable-target-input-binding');
       const candidate = item.candidates.find(c => c.after?.kind === 'const' && c.after.sort.kind === 'bv'
         && c.eligible && isAdoptableCandidate(c.verification,{identity:guard.identity}));
       const requestIndex = selectedIndices[index];
@@ -146,12 +148,14 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
             : allRefuted ? 'all-generated-candidates-refuted' : 'no-eligible-constant-candidate', candidateCount:item.candidates.length });
         continue;
       }
-      guard.take('rewrites'); guard.take('allocationUnits',3);
+      guard.take('rewrites'); guard.take('allocationUnits',3 + inputBinding.inputs.length);
       const binding = candidate.verification.binding;
       const entry = Object.freeze({valueId:item.valueId,rawValueId:target.id,bits:candidate.after.sort.width,
         value:candidate.after.value,beforeHash:binding.beforeHash,afterHash:binding.afterHash,
-        queryHash:candidate.verification.evidence.queryHash,originRefs:Object.freeze([item.valueId])});
-      entries.push(entry); internal.push({entry,target,candidate});
+        queryHash:candidate.verification.evidence.queryHash,originRefs:Object.freeze([item.valueId]),
+        inputBindings:Object.freeze(inputBinding.inputs.map(input => Object.freeze({ valueId:input.valueId,
+          rawValueId:input.rawValueId, bits:input.bits, symbolId:input.symbol.symbolId }))) });
+      entries.push(entry); internal.push({entry,target,candidate,inputBinding});
       decisions[requestIndex] = Object.freeze({ ...requested[requestIndex], disposition:'selected',
         reason:'eligible-constant-projection', candidateCount:item.candidates.length, queryHash:entry.queryHash });
     }
@@ -172,7 +176,8 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
     // materialization, before issuing a capability or exposing the analysis.
     guard.check();
     if (!isSymbolicAnalysisResult(analysis,guard.identity)) return reject('stale-symbolic-analysis');
-    plans.set(plan,{ir,analysis,internal,submitted,isSymbolicAnalysisResult,isAdoptableCandidate});
+    const inputBindings = Object.freeze(internal.map(item => Object.freeze({ entry:item.entry, binding:item.inputBinding })));
+    plans.set(plan,{ir,analysis,internal,inputBindings,submitted,isSymbolicAnalysisResult,isAdoptableCandidate,readSymbolicTargetInputs});
     return plan;
   } catch (error) {
     if (error instanceof QueryFailure) return reject(error.reason);
@@ -194,7 +199,8 @@ export function isPhase8RewritePlan(plan, context = {}) {
     const scope = contextScope(context);
     if (scope.ir !== record.ir || scope.abiId !== plan.abiId || !sameMemoryIdentity(queryRecord(scope.identity),plan.identity)) return false;
     if (queryArray(scope.preconditions).length || queryArray(queryRecord(scope.correspondence).inputs).length) return false;
-    return record.internal.every(({candidate,target,entry}) => target.id === entry.rawValueId
+    return record.internal.every(({candidate,target,entry,inputBinding}) => target.id === entry.rawValueId
+      && record.readSymbolicTargetInputs(record.analysis,target,plan.identity) === inputBinding
       && record.isAdoptableCandidate(candidate.verification,{identity:plan.identity}))
       && record.isSymbolicAnalysisResult(record.analysis,plan.identity);
   } catch { return false; }
@@ -279,4 +285,14 @@ export function proofPublicationResult(result) {
 export function readProvedRewrites(analysis, context) {
   const artifact = committedProofOverlay(analysis), plan = artifacts.get(artifact);
   return plan && isPhase8RewritePlan(plan,context) ? artifact : null;
+}
+
+/** Private producer correspondence crosses the render boundary only through a
+ * currently valid committed overlay. Public inputBindings on entries are audit
+ * IDs; neither those IDs nor a staged/copied artifact authorizes this relation. */
+export function readProvedInputBindings(analysis, context) {
+  const artifact = readProvedRewrites(analysis, context);
+  if (!artifact) return null;
+  const record = plans.get(artifacts.get(artifact));
+  return Object.freeze({ artifact, bindings:record.inputBindings });
 }

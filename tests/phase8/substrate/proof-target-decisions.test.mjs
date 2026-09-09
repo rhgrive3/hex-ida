@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { preparePhase8RewritePlan, isPhase8RewritePlan } from '../../../js/decompiler/phase8/pass-validation.js';
-import { optimizeSemanticDecompilation } from '../../../js/decompiler/pipeline.js';
+import { preparePhase8RewritePlan, isPhase8RewritePlan, readProvedInputBindings, runProofRewritePass } from '../../../js/decompiler/phase8/pass-validation.js';
+import { runPhase8Stage, createAnalysisState } from '../../../js/decompiler/phase8/index.js';
+import { optimizeSemanticDecompilation, readProducerInputExpressions } from '../../../js/decompiler/pipeline.js';
 import { proofFixture, projectionFixture, identity } from '../helpers/proof-fixtures.mjs';
 
 test('C4-04 every requested target has an ordered decision without calling a selected proof adopted', async () => {
@@ -107,4 +108,45 @@ test('C4-04 supported and unsupported operator families keep the same exact widt
     }
   }
   assert.equal(new Set(observed).size, 10);
+});
+
+test('C4-04 only the real committed overlay exposes the original input correspondence to projection', async () => {
+  const f = proofFixture(4), plan = await preparePhase8RewritePlan(f.ir, f.options);
+  const context = { ir:f.ir, proofIdentity:identity, abiId:f.options.abiId, proofRewritePlan:plan };
+  let staged;
+  runProofRewritePass(context, {}, { stage(_key, value) { staged = value; } });
+  assert.equal(readProvedInputBindings({ get:() => staged }, context), null);
+  assert.equal(readProvedInputBindings(createAnalysisState({ provedRewrites:staged }), context), null);
+  const stage = runPhase8Stage(context, { stages:['canonical-facts', 'rendering'], timeBudgetMs:120 });
+  assert.equal(stage.ledger.published, true);
+  const correspondence = readProvedInputBindings(stage.analysis, context);
+  assert.equal(correspondence.artifact, stage.analysis.get('provedRewrites'));
+  assert.equal(correspondence.bindings[0].entry, plan.entries[0]);
+  assert.equal(correspondence.bindings[0].binding.inputs[0].value, f.input);
+  assert.ok(Object.isFrozen(correspondence) && Object.isFrozen(correspondence.bindings));
+  f.input.bits = 8;
+  assert.equal(readProvedInputBindings(stage.analysis, context), null);
+});
+
+test('C4-04 the real representation producer resolves SSA inputs without an ID or name substitute', () => {
+  const f = projectionFixture(4);
+  const inputs = readProducerInputExpressions(f.result, [f.input, f.other]);
+  assert.equal(inputs.length, 2);
+  assert.equal(inputs[0].value, f.input);
+  assert.equal(inputs[0].expression, f.result.semanticAst.values.find(item => item.valueId === f.input.id).expression);
+  assert.equal(inputs[1].value, f.other);
+  assert.ok(Object.isFrozen(inputs) && inputs.every(Object.isFrozen));
+  assert.equal(readProducerInputExpressions(f.result, [{ ...f.input }]), null);
+  assert.equal(readProducerInputExpressions(f.result, [f.target]), null);
+  assert.equal(readProducerInputExpressions({ ...f.result, semanticAst:{ ...f.result.semanticAst } }, [f.input]), null);
+});
+
+test('C4-04 copied or changed input expressions invalidate the observed representation relation', () => {
+  for (const mode of ['copy', 'edit']) {
+    const f = projectionFixture(4);
+    const item = f.result.semanticAst.values.find(item => item.valueId === f.input.id);
+    if (mode === 'copy') item.expression = { ...item.expression };
+    else item.expression.name = 'other_input';
+    assert.equal(readProducerInputExpressions(f.result, [f.input]), null);
+  }
 });
