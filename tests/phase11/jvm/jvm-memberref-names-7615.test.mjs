@@ -73,10 +73,9 @@ assert.throws(
   /jvm-invalid-cp-memberref-name/,
 );
 for (const name of ['<init>', '<clinit>']) {
-  assert.throws(
+  assert.doesNotThrow(
     () => parseJvm(buildMemberRef(11, name, '()V')),
-    /jvm-invalid-cp-memberref-name/,
-    `InterfaceMethodref ${name} must be rejected`,
+    `unused InterfaceMethodref ${name} is structurally valid`,
   );
 }
 

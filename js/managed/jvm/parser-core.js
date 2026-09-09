@@ -88,7 +88,6 @@ export function parseJvm(bytes,options={}){
     const nameAndType=parseNameAndTypeDescriptor(entry.nameAndTypeIndex,method?'method':'field','jvm-invalid-cp-memberref-name-and-type-index');
     const name=requireMemberName(nameAndType.nameIndex,'jvm-invalid-cp-memberref-name',{method});
     if(entry.tag===10&&name==='<clinit>')fail('jvm-invalid-cp-memberref-name');
-    if(entry.tag===11&&(name==='<init>'||name==='<clinit>'))fail('jvm-invalid-cp-memberref-name');
   }
   function validateConstantPool(){for(let i=1;i<constantPool.length;i++){const entry=constantPool[i];if(!entry)continue;switch(entry.tag){
     case 7:requireClassName(i,'jvm-invalid-cp-class-name-index');break;
