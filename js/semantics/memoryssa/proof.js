@@ -19,6 +19,9 @@ export const CANONICAL_ALIAS_ISSUER_VERSIONS = Object.freeze({
   'phase7.alias.solver': '1.1.0',
 });
 export const CANONICAL_ACCESS_ISSUER = 'semantic-memoryssa.access';
+export const CANONICAL_ACCESS_ISSUER_VERSIONS = Object.freeze({
+  [CANONICAL_ACCESS_ISSUER]: MEMORY_SSA_PROOF_VERSION,
+});
 export const CANONICAL_STORE_VALUE_ISSUER = 'semantic-memoryssa.store-operand';
 
 function weakObject(value) {
@@ -198,6 +201,16 @@ export function canonicalAliasProof({
   };
 }
 
+function canonicalAccessProviderIssuer(provider) {
+  const issuer = provider?.issuer;
+  if (!issuer || typeof issuer !== 'object' || Array.isArray(issuer)) return null;
+  if (issuer.type !== 'canonical-memory-access-provider') return null;
+  if (typeof issuer.id !== 'string' || !issuer.id.trim()) return null;
+  if (typeof issuer.version !== 'string' || !issuer.version.trim()) return null;
+  if (CANONICAL_ACCESS_ISSUER_VERSIONS[issuer.id] !== issuer.version) return null;
+  return issuer;
+}
+
 export function canonicalAccessProof({ raw, descriptor, identity, functionId }) {
   const memory = descriptor?.memory;
   if (!memory) return null;
@@ -207,7 +220,9 @@ export function canonicalAccessProof({ raw, descriptor, identity, functionId }) 
   const sourceQualifiersKnown = memory.volatility === false
     && memory.atomic === false
     && (memory.ordering == null || memory.ordering === 'unknown');
-  const providerQualifiersKnown = provider.kind === 'canonical-memory-access-qualifiers'
+  const providerIssuer = canonicalAccessProviderIssuer(provider);
+  const providerQualifiersKnown = providerIssuer !== null
+    && provider.kind === 'canonical-memory-access-qualifiers'
     && String(provider.sourceEntityId ?? '') === sourceEntityId
     && provider.volatility === false
     && provider.atomic === false
