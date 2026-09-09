@@ -274,6 +274,21 @@ export function parseCilMethodSpecInstantiation(blob, typeDefOrRefRowCounts = nu
 
 export function substituteCilMethodGeneric(value, args) {
   if (!value || typeof value !== 'object') return value;
+  if (value.stackType === 'native-int' && value.fnPtr) {
+    const parameters = value.fnPtr.parameters.map((parameter) => substituteCilMethodGeneric(parameter, args));
+    const returnValue = substituteCilMethodGeneric(value.fnPtr.returnValue, args);
+    const changed = returnValue !== value.fnPtr.returnValue
+      || parameters.some((parameter, index) => parameter !== value.fnPtr.parameters[index]);
+    if (!changed) return value;
+    return {
+      ...value,
+      fnPtr:Object.freeze({
+        ...value.fnPtr,
+        parameters:Object.freeze(parameters),
+        returnValue,
+      }),
+    };
+  }
   if (value.stackType !== 'method-generic' && value.stackType !== 'managed-pointer') return value;
   if (value.stackType === 'managed-pointer') {
     // A BYREF referent may itself be a method generic; substitution must walk
