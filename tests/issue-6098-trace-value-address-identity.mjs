@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './issue-4519-evidence-row-identity.mjs';
 import { addressesEqual, createActionRunner } from '../js/ai/interaction/actions.js';
 
 // Canonical string address vs BigInt instruction identity.
