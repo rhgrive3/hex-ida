@@ -92,7 +92,13 @@ export function recognizeLibraries(input = {}, signatures = LIBRARIES) {
   return results.sort((a,b) => b.confidence - a.confidence);
 }
 
-function clamp(value) { return Math.max(0, Math.min(1, Number(value) || 0)); }
+function isConfidence(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+function clamp(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new TypeError('confidence must be a finite number');
+  return Math.max(0, Math.min(1, value));
+}
 /*
  * Default parameters only replace `undefined`, so a null entry would reach the
  * property accesses below and crash with a raw TypeError. Creator-level
@@ -138,7 +144,7 @@ export function validateKnowledgePack(pack) {
     for (const entry of [...pack.signatures, ...pack.mappings]) if (!entry || typeof entry !== 'object') throw new Error('knowledge pack entry must be an object');
     for (const entry of pack.signatures) {
       if (!entry.architecture || typeof entry.architecture !== 'string') throw new Error('signature architecture is required');
-      if (!(entry.confidence >= 0 && entry.confidence <= 1)) throw new Error('signature confidence must be in [0,1]');
+      if (!isConfidence(entry.confidence)) throw new Error('signature confidence must be in [0,1]');
       if (!Array.isArray(entry.symbols)) throw new Error('signature symbols must be an array');
       for (const symbol of entry.symbols) {
         if (typeof symbol !== 'string') throw new Error('signature symbols must contain only primitive strings');
@@ -147,7 +153,7 @@ export function validateKnowledgePack(pack) {
       if (typeof entry.license !== 'string' || !entry.license) throw new Error('signature license is required');
     }
     for (const entry of pack.mappings) {
-      if (!(entry.confidence >= 0 && entry.confidence <= 1)) throw new Error('mapping confidence must be in [0,1]');
+      if (!isConfidence(entry.confidence)) throw new Error('mapping confidence must be in [0,1]');
       if (!entry.provenance || typeof entry.provenance !== 'object') throw new Error('mapping provenance is required');
       if (typeof entry.license !== 'string' || !entry.license) throw new Error('mapping license is required');
       const identity = typeof entry.identity === 'string' ? entry.identity.trim() : '';
