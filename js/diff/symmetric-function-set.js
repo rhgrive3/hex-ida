@@ -74,7 +74,11 @@ function concat(parts, length) {
   return cursor === length ? out : out.subarray(0, cursor);
 }
 function finalize(descriptor, output) {
-  const bytes = descriptor.missing ? null : concat(descriptor.parts, descriptor.size);
+  let bytes = descriptor.missing ? null : concat(descriptor.parts, descriptor.size);
+  if (bytes && bytes.length !== descriptor.size) {
+    descriptor.missing = true;
+    bytes = null;
+  }
   const fingerprint = fingerprintFunction({
     address:descriptor.address,
     name:descriptor.name,
@@ -140,7 +144,10 @@ export async function createSymmetricCodeFunctionSet({
       try { response = await requestWithSignal(request, signal); }
       catch (error) { if (signal?.aborted || error?.name === 'AbortError') throw error; }
       const chunkEnd = cursor + BigInt(length);
-      const bytes = response?.found && response?.bytes ? response.bytes : null;
+      const rawBytes = response?.found && response?.bytes ? response.bytes : null;
+      const bytes = rawBytes && (rawBytes.subarray ? rawBytes : new Uint8Array(rawBytes));
+      const observedLength = bytes ? Math.min(length, bytes.length) : 0;
+      const observedEnd = cursor + BigInt(observedLength);
 
       while (rowIndex < rows.length && rows[rowIndex].end <= cursor) rowIndex++;
       for (let index = rowIndex; index < rows.length; index++) {
@@ -151,12 +158,16 @@ export async function createSymmetricCodeFunctionSet({
         if (overlapEnd <= overlapStart) continue;
         if (!bytes) row.missing = true;
         else {
-          const from = Number(overlapStart - cursor), to = Number(overlapEnd - cursor);
-          row.parts.push(bytes.subarray ? bytes.subarray(from, to) : new Uint8Array(bytes).subarray(from, to));
+          const observedOverlapEnd = overlapEnd < observedEnd ? overlapEnd : observedEnd;
+          if (observedOverlapEnd > overlapStart) {
+            const from = Number(overlapStart - cursor), to = Number(observedOverlapEnd - cursor);
+            row.parts.push(bytes.subarray(from, to));
+          }
+          if (observedOverlapEnd < overlapEnd) row.missing = true;
         }
         if (row.end <= chunkEnd && !output[row.index]) {
-          if (row.missing) missing++;
           finalize(row, output);
+          if (row.missing) missing++;
           completed++;
           try { onProgress?.({ phase:'diff-fingerprint', done:completed, all:count, region:region.id }); } catch { /* observer only */ }
         }
