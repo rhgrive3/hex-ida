@@ -52,7 +52,7 @@ guarded saturating shifts, comparisons, Boolean connectives, selection, casts,
 extraction and concatenation within 1–64 bits. C integer promotions and odd BV
 widths are made explicit with native-width casts/masks; sign extension is widened
 before arithmetic. Division, memory and unknown terms remain unsupported.
-The legacy pass ID `phase8.solver-constants` is retained at version `2.0.0`;
+The legacy pass ID `phase8.solver-constants` is retained at version `2.1.0`;
 new nonconstant records use `solver-scalar`, constants retain `solver-constant`.
 
 Each inspected request has a decision row. `selected` means a current eligible
@@ -61,6 +61,38 @@ unsupported recipes or resource refusal never count as adoption. Decision
 coverage is a requested-target denominator, not proof that all targets are
 supported. A privately recorded published recipe is retained on replay without
 counting it again. Source/IR remain unchanged; history retains the original proof.
+
+## Reusing the existing display rules
+
+`candidateStrategy: 'representation-rules'` runs the actual 64 `DEFAULT_RULES`
+through the existing RewriteEngine on a disposable, bounded typed pattern tree.
+This is an alternative candidate source, not a replacement solver or a second
+definition of Semantic IR. The source is the canonical translator's issued
+universal-input relation, obtained using its `translate-only` analysis mode.
+Each tree leaf keeps an object binding to the actual canonical input; equal
+display names never establish that relation.
+
+The resulting proposal is compiled into the existing Expr DAG, then independently
+checked against the **original canonical target**, not against a rewritten view
+or the rule's own `proof` text. Only the existing private receipt/plan/transaction
+path can adopt it. The temporary pattern tree is never published: the proved
+canonical term goes through the same native-width-safe display compiler as the
+other strategies. Generator work/allocation counts also charge the parent plan.
+
+`targetDecisions[].ruleCoverage` lists all registered rules, including rules that
+did not contribute. `candidateApplications` counts work on the private candidate
+tree; `proved-candidate` describes a contributor to a proved whole proposal, not
+a universal theorem about the rule or an applied legacy render transform.
+`adopted` remains solely the actual projection count. A cancelled or exhausted
+candidate batch reports unknown rows and no candidates. Refuted and unsupported
+proposals cannot enter the proof plan; replay does not count adoption twice.
+
+The regression matrix keeps an actual BV1 add-to-multiply/shift proposal and an
+unsigned-select-to-abs proposal as refuted cases. Their legacy rule evidence is
+truthy but the independent verifier finds a behavioral difference. This path
+does not repair or certify the ordinary synchronous legacy rendering rules.
+Full rule-by-width/operator/idiom closure, every legacy view transition, and
+memory/CFG/exception observables remain separate unfinished roadmap work.
 
 ## Authority and lifecycle
 

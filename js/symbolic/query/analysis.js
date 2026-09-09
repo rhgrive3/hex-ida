@@ -121,7 +121,7 @@ export async function querySymbolicAnalysis(ir, inputOptions = {}) {
   });
   try {
     guard.check();
-    if (options.candidateStrategy != null && !['local-rewrites','equality-saturation'].includes(options.candidateStrategy)) throw new QueryFailure('unknown-candidate-strategy');
+    if (options.candidateStrategy != null && !['local-rewrites','equality-saturation','translate-only'].includes(options.candidateStrategy)) throw new QueryFailure('unknown-candidate-strategy');
     if (Object.hasOwn(options, 'executionSnapshot')) throw new QueryFailure('execution-path-proof-handoff');
     if (options.preconditions != null && (!Array.isArray(options.preconditions) || options.preconditions.length)) throw new QueryFailure('analysis-precondition-handoff');
     if (['memoryObservables', 'effectObservables'].some(key => options[key] != null && (!Array.isArray(options[key]) || options[key].length))) throw new QueryFailure('memory-effect-judge-handoff');
@@ -142,10 +142,11 @@ export async function querySymbolicAnalysis(ir, inputOptions = {}) {
       seen.add(valueId);
       const translated = translatePureTarget(target, guard), expression = translated.expression;
       guard.check();
-      candidateQueries++;
+      const translateOnly = options.candidateStrategy === 'translate-only';
+      if (!translateOnly) candidateQueries++;
       const equalitySaturation = options.candidateStrategy === 'equality-saturation';
       const queryCandidates = equalitySaturation ? queryEqualitySaturation : queryDeobfuscationCandidates;
-      const candidates = await queryCandidates({
+      const candidates = translateOnly ? {status:'complete',candidates:Object.freeze([]),metrics:null} : await queryCandidates({
         expression, valueId, identity: guard.identity,
         memoryObservables: [], effectObservables: [], taintResult: taint,
         signal: options.signal, isCancelled: options.isCancelled, getCurrentIdentity: options.getCurrentIdentity,

@@ -27,7 +27,7 @@ const TOTAL_UNARY = new Set(['not','neg','trunc','zext','sext']);
 const DEFAULT_MODELS = createTaintModels({id:'phase8-empty', version:'1', provenance:'hex.phase8.explicit-empty-model/v1',sources:[],sinks:[]});
 
 export const PROOF_REWRITE_PASS = createPassDescriptor({
-  id:'phase8.solver-constants', version:'2.0.0', stage:'rendering',
+  id:'phase8.solver-constants', version:'2.1.0', stage:'rendering',
   consumes:['ssa','origins'], produces:['provedRewrites'],
   preserves:ANALYSIS_KEYS.filter(key => key !== 'provedRewrites'),
   description:'Project unconditional solver-proved BV scalars without changing canonical IR or effects (legacy pass ID).',
@@ -124,7 +124,11 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
     }
     // The canonical query captures the exact IR, models, execution values and
     // lifecycle before solver work. It also enforces universal input scope.
+    const representationRules = submitted.candidateStrategy === 'representation-rules';
+    const representationQuery = representationRules ? (await import('./representation-candidates.js')).queryRepresentationCandidates : null;
+    guard.check();
     const analysis = await querySymbolicAnalysis(ir, {...submitted, targets:selected,
+      candidateStrategy:representationRules ? 'translate-only' : submitted.candidateStrategy,
       timeoutMs:Math.max(0,Math.floor(guard.remainingMilliseconds()))});
     guard.check();
     if (analysis.status !== 'complete' || !isSymbolicAnalysisResult(analysis,guard.identity)) {
@@ -136,8 +140,20 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
       const item = analysis.targets[index], target = selected[index];
       const inputBinding = readSymbolicTargetInputs(analysis, target, guard.identity);
       if (!inputBinding || inputBinding.expression !== item.expression) return reject('unavailable-target-input-binding');
+      const generated = representationQuery ? await representationQuery({expression:item.expression,
+        valueId:item.valueId,inputBinding,identity:guard.identity,taintResult:analysis.taint,
+        backendTier:submitted.backendTier,signal:submitted.signal,isCancelled:submitted.isCancelled,
+        getCurrentIdentity:submitted.getCurrentIdentity,timeoutMs:Math.max(0,Math.floor(guard.remainingMilliseconds()))}) : null;
+      guard.check();
+      if (generated && generated.status !== 'complete') return reject(generated.reason);
+      if (generated) {
+        guard.take('workItems',generated.metrics.workItems);
+        guard.take('allocationUnits',generated.metrics.allocationUnits);
+      }
+      const candidates = generated?.candidates ?? item.candidates;
+      const generatorDecision = generated ? {ruleCoverage:generated.ruleCoverage} : {};
       let candidate, projection;
-      for (const option of item.candidates) {
+      for (const option of candidates) {
         if (option.after?.sort.kind !== 'bv' || !option.eligible
           || !isAdoptableCandidate(option.verification,{identity:guard.identity})) continue;
         const recipe = compileProofExpression(option.after,inputBinding,guard);
@@ -145,13 +161,13 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
       }
       const requestIndex = selectedIndices[index];
       if (!candidate) {
-        const unsupportedProjection = item.candidates.some(c => c.eligible
+        const unsupportedProjection = candidates.some(c => c.eligible
           && isAdoptableCandidate(c.verification,{identity:guard.identity}));
-        const allRefuted = item.candidates.length > 0 && item.candidates.every(c => c.verification?.verdict === 'refuted');
-        const disposition = unsupportedProjection ? 'unsupported' : !item.candidates.length ? 'unchanged' : allRefuted ? 'refuted' : 'unknown';
-        decisions[requestIndex] = Object.freeze({ ...requested[requestIndex], disposition,
-          reason:unsupportedProjection ? 'proved-candidate-outside-scalar-projection' : !item.candidates.length ? 'no-generated-candidate'
-            : allRefuted ? 'all-generated-candidates-refuted' : 'no-eligible-scalar-candidate', candidateCount:item.candidates.length });
+        const allRefuted = candidates.length > 0 && candidates.every(c => c.verification?.verdict === 'refuted');
+        const disposition = unsupportedProjection ? 'unsupported' : !candidates.length ? 'unchanged' : allRefuted ? 'refuted' : 'unknown';
+        decisions[requestIndex] = Object.freeze({ ...requested[requestIndex], ...generatorDecision, disposition,
+          reason:unsupportedProjection ? 'proved-candidate-outside-scalar-projection' : !candidates.length ? 'no-generated-candidate'
+            : allRefuted ? 'all-generated-candidates-refuted' : 'no-eligible-scalar-candidate', candidateCount:candidates.length });
         continue;
       }
       guard.take('rewrites'); guard.take('allocationUnits',3 + inputBinding.inputs.length);
@@ -163,8 +179,8 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
         inputBindings:Object.freeze(inputBinding.inputs.map(input => Object.freeze({ valueId:input.valueId,
           rawValueId:input.rawValueId, bits:input.bits, symbolId:input.symbol.symbolId }))) });
       entries.push(entry); internal.push({entry,target,candidate,inputBinding});
-      decisions[requestIndex] = Object.freeze({ ...requested[requestIndex], disposition:'selected',
-        reason:kind === 'solver-constant' ? 'eligible-constant-projection' : 'eligible-scalar-projection', candidateCount:item.candidates.length, queryHash:entry.queryHash });
+      decisions[requestIndex] = Object.freeze({ ...requested[requestIndex], ...generatorDecision, disposition:'selected',
+        reason:kind === 'solver-constant' ? 'eligible-constant-projection' : 'eligible-scalar-projection', candidateCount:candidates.length, queryHash:entry.queryHash });
     }
     if (decisions.length !== requested.length || requested.some((_target, index) => !decisions[index])) {
       return reject('incomplete-target-decisions');
@@ -173,6 +189,7 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
     // an audit of the requested denominator, never another proof capability.
     const binding = Object.freeze({identity:guard.identity,abiId:submitted.abiId,passId:PROOF_REWRITE_PASS.id,
       passVersion:PROOF_REWRITE_PASS.version,transformKind:'solver-scalar',preconditions:EMPTY,
+      candidateStrategy:submitted.candidateStrategy ?? 'local-rewrites',
       correspondence:EMPTY,observableScope:'total-pure-bv-value-only',modelIdentity:analysis.taint.modelIdentity,
       entries:Object.freeze(entries), targetDecisions:Object.freeze(decisions),
       decisionCoverage:Object.freeze({ requested:requested.length, complete:true }) });

@@ -2495,6 +2495,64 @@ compiler denominator are unchanged. No component merge, moving-main acceptance,
 device/environment repair or separate performance work is included. Integration
 acceptance remains LOCKED.
 
+## C4-04 existing representation rules as independently verified candidates
+
+The optional proof entry now accepts `candidateStrategy:'representation-rules'`.
+It reuses all 64 actual `DEFAULT_RULES` and the existing RewriteEngine. Canonical
+symbolic analysis has an explicit `translate-only` mode: it still issues the
+real target/input/taint relation and retains stale/mutation checks, but runs zero
+candidate queries and returns frozen empty candidate arrays. The Phase 8 owner
+then generates proposals without introducing a symbolic-to-decompiler import
+dependency or an external callback/rule injection interface.
+
+`phase8/representation-candidates.js` creates a disposable exact-width pattern
+tree from the existing bounded expression recipe. Repeated input occurrences
+have explicit bindings to the same actual canonical symbol, not equality inferred
+from a display name. The existing rule matcher, preconditions, cost gate, phase
+order and work/iteration/application bounds remain in use. The proposal syntax
+adapter invokes existing canonical Expr constructors; it neither evaluates a
+program nor determines proof eligibility. A proposed after term is independently
+verified against the original canonical before term by the existing candidate
+judge. Only an eligible private receipt can enter the existing plan, transaction
+and projection path; the temporary AST never becomes a published representation.
+
+All 64 registered rules appear in each generated batch's frozen coverage report.
+Counts mean candidate-tree work, not committed transformations. A contributor to
+a proved whole proposal is not a universally proved rule. Refuted candidates,
+unsupported source/output, cancellation, stale identity and exhausted budgets
+cannot authorize publication. Child generator resource counts charge the parent
+plan. Pass version is 2.1.0, and the chosen strategy plus per-target generator
+coverage enter the plan's audit identity. The ordinary synchronous decompile
+does not load the optional module or change its rendering behavior.
+
+Permanent tests exercise: the exact 64-rule union; an 18-cell width/operator
+matrix (1/4/8/16/32/64 by xor/or/add) retaining the refuted BV1 add cell; the actual
+unsigned-select-to-abs rule's refuted candidate; no plan entry for a refuted
+chain; object-bound inputs; unsupported effects/accessors/cycles/depth; exhaustive
+small-width adapter checks; resource/lifecycle refusal; translation-only issued
+input ownership; actual producer -> private plan -> transaction -> projection,
+including the public ARM64 machine-to-decompiler entry's proved-but-already-
+rendered EOR and explicitly unsupported ADD-auxiliary cases;
+no adoption on replay or withheld publication. The first fixtures assumed a
+shared-DAG pattern cost equaled tree cost and that an already rendered constant
+would be newly adopted. The pattern view now explicitly expands only the already
+bounded tree and binds each leaf; the production test verifies an actual changed
+nonconstant output. Failed runs remain retained, not waived proof.
+
+The first public ADD fixture was rejected by the existing executor because its
+lifted stream contains BFX/is-zero auxiliaries outside that execution profile.
+No instruction was removed and no opcode/environment/issue repair was made to
+force success. The permanent machine-entry test retains that unsupported cell
+and separately verifies EOR's real proof transaction without falsely counting
+its already-rendered constant as new adoption. This is not whole ARM64 coverage.
+
+This adds a working proof-gated use of existing display rules. It does not mark
+all 64 rules universally sound or close FR-C4-04A/C4-05A. Full family/width/idiom
+coverage and the remaining ordinary legacy-view adoption boundaries stay open,
+as do C4-04B memory/CFG/exception/UB observables and all original findings. Existing
+e-graph/solver/transaction implementations remain reused. No issue/performance/
+environment/device lane is repaired here. Integration acceptance stays LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -2530,7 +2588,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
 | HEX-C4-03 | Navigation, observed expression/recovery histories, successive projections and actual spill statement removal/suppression implemented; other view transforms and full removed/merged class coverage still open |
-| HEX-C4-04 | Proof-gated scalar projection, target decisions, owned input correspondence and registered transaction policy/coverage implemented; representation rewrite registry, full family/width denominator and memory/CFG/exception observables remain open |
+| HEX-C4-04 | Proof-gated scalar projection, owned inputs, transaction coverage and optional reuse of all 64 display rules as independently verified candidates implemented; ordinary legacy-view adoption, full family/width denominator and memory/CFG/exception observables remain open |
 | HEX-C4-05 | Bounded e-graph candidates, independent proofs and resource matrix |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |
 | HEX-SYM-02 | Byte-memory escalation, alias/partial-write independent oracle |
