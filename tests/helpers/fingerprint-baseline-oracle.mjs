@@ -1,8 +1,10 @@
-import { sectionHasMappedAddress } from './audit.js';
-import { fnv64ByteView } from '../core/identity/fnv64.js';
+// Test-only, original Drive 45311ca2f26a9e41c6e87a11e5c791d8ea4ae417 algorithm.
+import { sectionHasMappedAddress } from '../../js/binary/audit.js';
 
 const FNV_OFFSET_HI = 0xcbf29ce4;
 const FNV_OFFSET_LO = 0x84222325;
+const FNV_PRIME_LO = 0x1b3;
+const FNV_PRIME_HI = 0x100;
 
 /*
  * FNV-1a 64-bit without a BigInt operation per byte.
@@ -43,10 +45,19 @@ function fnv1a64State(bytes, seed = null) {
     lo = loLimb >>> 0;
   } else throw new TypeError('FNV seed must be BigInt or {hi, lo}');
 
-  // Keep the seed boundary and indexed byte coercion unchanged; the
-  // shared integer-carry multiply computes the same limbs without divisions.
-  const state = fnv64ByteView(bytes, lo, hi);
-  return { hi: state.high, lo: state.low };
+  for (let i = 0; i < bytes.length; i++) {
+    lo = (lo ^ bytes[i]) >>> 0;
+    const a0 = lo & 0xffff;
+    const a1 = lo >>> 16;
+    const p0 = a0 * FNV_PRIME_LO;
+    const p1 = a1 * FNV_PRIME_LO;
+    const lowWide = p0 + ((p1 & 0xffff) * 0x10000);
+    const carry = Math.floor(lowWide / 0x100000000) + Math.floor(p1 / 0x10000);
+    const nextLo = lowWide >>> 0;
+    hi = (Math.imul(hi, FNV_PRIME_LO) + carry + Math.imul(lo, FNV_PRIME_HI)) >>> 0;
+    lo = nextLo;
+  }
+  return { hi, lo };
 }
 
 export function fnv1a64(bytes, seed = null) {
