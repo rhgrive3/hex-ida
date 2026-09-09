@@ -108,6 +108,20 @@ assert.equal(typeof facade.brief("add", "x0, x1, x2"), "string");
 facade.clearBriefCache();
 console.log("  ok 5 public facade smoke");
 
+// #3677: LDR literal presentation must use the destination register width.
+for (const [reg, ctype] of [
+  ["w0", "uint32"],
+  ["x0", "uint64"],
+  ["s0", "uint32"],
+  ["d0", "uint64"],
+  ["q0", "uint128"],
+]) {
+  const explained = facade.explain("ldr", `${reg}, #0x1000`);
+  assert.equal(explained.pseudo, `${reg} = *(${ctype}*)0x1000`, `LDR literal width must follow ${reg}`);
+}
+assert.notEqual(facade.explain("ldr", "w0, [x1]").title.en, "Load from a literal pool", "register-indirect LDR must keep the ordinary load handler");
+console.log("  ok 5a LDR literal width presentation (#3677)");
+
 // 6. Atomic ordering/size variants must stay in the atomic category (#1827).
 for (const mnemonic of [
   "casb", "cash", "casab", "caslh", "casalb",
