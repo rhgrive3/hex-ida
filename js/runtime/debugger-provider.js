@@ -188,9 +188,22 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
           parentInterventionIds: normalizedCallOptions.parentInterventionIds,
           sequence: ++interventionSequence,
         });
-        const raw = await this.adapter.writeRegister(name, value, normalizedCallOptions.threadId);
-        const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
-        return { result: raw, intervention };
+        // #5696: a mutation started before an epoch switch must not commit its
+        // stale result after newProviderEpoch() (same contract as #5878).
+        const controller = session.controller();
+        const startedEpoch = session.epoch;
+        try {
+          const raw = await this.adapter.writeRegister(name, value, normalizedCallOptions.threadId);
+          if (controller.signal.aborted || session.epoch !== startedEpoch) {
+            throw new DebugAdapterError('runtime-session-stale', 'register write completed after its runtime epoch changed', {
+              startedEpoch, currentEpoch: session.epoch,
+            });
+          }
+          const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
+          return { result: raw, intervention };
+        } finally {
+          session.releaseController(controller);
+        }
       },
       writeMemory: async (address, bytes, callOptions = {}) => {
         const draft = validateInterventionDraft(interventions, {
@@ -202,9 +215,20 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
           sequence: ++interventionSequence,
         });
-        const raw = await this.adapter.writeMemory(address, bytes, callOptions);
-        const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
-        return { result: raw, intervention };
+        const controller = session.controller();
+        const startedEpoch = session.epoch;
+        try {
+          const raw = await this.adapter.writeMemory(address, bytes, callOptions);
+          if (controller.signal.aborted || session.epoch !== startedEpoch) {
+            throw new DebugAdapterError('runtime-session-stale', 'memory write completed after its runtime epoch changed', {
+              startedEpoch, currentEpoch: session.epoch,
+            });
+          }
+          const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
+          return { result: raw, intervention };
+        } finally {
+          session.releaseController(controller);
+        }
       },
       events: Object.freeze({
         ingest,
