@@ -1,9 +1,126 @@
-import assert from "node:assert/strict";
+class ContractAssertionError extends Error {
+  constructor(message, actual, expected, operator) {
+    super(message || `${operator} assertion failed`);
+    this.name = 'AssertionError';
+    this.code = 'ERR_ASSERTION';
+    this.actual = actual;
+    this.expected = expected;
+    this.operator = operator;
+  }
+}
+
+function fail(message, actual, expected, operator) {
+  throw new ContractAssertionError(message, actual, expected, operator);
+}
+
+function assert(condition, message) {
+  if (!condition) fail(message, condition, true, 'ok');
+}
+
+function assertEqual(actual, expected, message) {
+  if (!Object.is(actual, expected)) fail(message, actual, expected, 'strictEqual');
+}
+
+function bytesView(value) {
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  return null;
+}
+
+function assertBytesEqual(actual, expected, message) {
+  const left = bytesView(actual);
+  const right = bytesView(expected);
+  if (!left || !right || left.byteLength !== right.byteLength) {
+    fail(message, actual, expected, 'bytesEqual');
+  }
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) fail(message, actual, expected, 'bytesEqual');
+  }
+}
+
+function deepEqualKind(value) {
+  if (Array.isArray(value)) return 'array';
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype === Object.prototype || prototype === null) return 'record';
+  return null;
+}
+
+function enumerableOwnKeys(value) {
+  return Reflect.ownKeys(value).filter((key) => Object.prototype.propertyIsEnumerable.call(value, key));
+}
+
+// The contract only deep-compares capability records and nested arrays. Binary
+// values use assertBytesEqual above. Fail closed for other built-ins so an
+// empty-own-key Map/Set cannot compare equal while hiding different contents.
+function strictDeepEqual(actual, expected, pairs = []) {
+  if (Object.is(actual, expected)) return true;
+  if (actual === null || expected === null || typeof actual !== 'object' || typeof expected !== 'object') return false;
+  if (Object.getPrototypeOf(actual) !== Object.getPrototypeOf(expected)) return false;
+
+  const actualKind = deepEqualKind(actual);
+  const expectedKind = deepEqualKind(expected);
+  if (!actualKind || actualKind !== expectedKind) return false;
+
+  const prior = pairs.find(([left]) => left === actual);
+  if (prior) return prior[1] === expected;
+  pairs.push([actual, expected]);
+
+  if (actualKind === 'array' && actual.length !== expected.length) return false;
+
+  const actualKeys = enumerableOwnKeys(actual);
+  const expectedKeys = enumerableOwnKeys(expected);
+  if (actualKeys.length !== expectedKeys.length) return false;
+  for (const key of actualKeys) {
+    if (!expectedKeys.includes(key)) return false;
+    const left = Object.getOwnPropertyDescriptor(actual, key);
+    const right = Object.getOwnPropertyDescriptor(expected, key);
+    if (!left || !right) return false;
+    if ('value' in left) {
+      if (!('value' in right)) return false;
+      if (!strictDeepEqual(left.value, right.value, pairs)) return false;
+    } else if ('value' in right || left.get !== right.get || left.set !== right.set) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function assertDeepEqual(actual, expected, message) {
+  if (!strictDeepEqual(actual, expected)) fail(message, actual, expected, 'deepStrictEqual');
+}
+
+function matchesRejection(error, matcher) {
+  if (matcher === undefined) return true;
+  if (typeof matcher === 'function') {
+    if (matcher === Error || matcher.prototype instanceof Error) return error instanceof matcher;
+    return matcher(error);
+  }
+  if (matcher instanceof RegExp) return matcher.test(error?.message ?? String(error));
+  if (matcher && typeof matcher === 'object') {
+    return Object.keys(matcher).every((key) => Object.is(error?.[key], matcher[key]));
+  }
+  return false;
+}
+
+async function assertRejects(asyncFn, matcher, message) {
+  let error;
+  let rejected = false;
+  try {
+    await (typeof asyncFn === 'function' ? asyncFn() : asyncFn);
+  } catch (caught) {
+    rejected = true;
+    error = caught;
+  }
+  if (!rejected) fail(message || 'Missing expected rejection', undefined, 'rejection', 'rejects');
+  const matches = await matchesRejection(error, matcher);
+  if (!matches) fail(message || 'Rejected value did not match expectation', error, matcher, 'rejects');
+  return error;
+}
+
 import {
   createArtifactDescriptor,
   createArtifactRecord,
   encodeArtifactPayload,
-  ArtifactStorageError,
 } from "../../../js/core/artifacts/contracts.js";
 
 export async function runArtifactBackendContract({
@@ -37,12 +154,12 @@ export async function runArtifactBackendContract({
     const backend = await createBackend();
     try {
       const caps = backend.capabilities();
-      assert.ok(caps && typeof caps === "object");
-      assert.ok(typeof caps.backend === "string" && caps.backend.length > 0);
-      assert.ok(typeof caps.persistent === "boolean");
-      assert.ok(Object.isFrozen(caps));
+      assert(caps && typeof caps === "object");
+      assert(typeof caps.backend === "string" && caps.backend.length > 0);
+      assert(typeof caps.persistent === "boolean");
+      assert(Object.isFrozen(caps));
       const caps2 = backend.capabilities();
-      assert.deepEqual(caps, caps2);
+      assertDeepEqual(caps, caps2);
     } finally {
       await backend.close();
       await destroyBackend(backend);
@@ -54,8 +171,8 @@ export async function runArtifactBackendContract({
   {
     const backend = await createBackend();
     try {
-      assert.equal(await backend.getRaw("non-existent-id"), null);
-      assert.equal(await backend.has("non-existent-id"), false);
+      assertEqual(await backend.getRaw("non-existent-id"), null);
+      assertEqual(await backend.has("non-existent-id"), false);
     } finally {
       await backend.close();
       await destroyBackend(backend);
@@ -69,11 +186,11 @@ export async function runArtifactBackendContract({
     try {
       const { record, payloadBytes } = fixture(1);
       const res = await backend.putAtomic(record, payloadBytes);
-      assert.equal(res.duplicate, false);
-      assert.equal(await backend.has(record.artifactId), true);
+      assertEqual(res.duplicate, false);
+      assertEqual(await backend.has(record.artifactId), true);
       const raw = await backend.getRaw(record.artifactId);
-      assert.ok(raw);
-      assert.deepEqual(raw.record.artifactId, record.artifactId);
+      assert(raw);
+      assertDeepEqual(raw.record.artifactId, record.artifactId);
     } finally {
       await backend.close();
       await destroyBackend(backend);
@@ -89,7 +206,7 @@ export async function runArtifactBackendContract({
       const res = await backend.putAtomic(record, payloadBytes);
       if (res.payload && res.payload.length > 0) res.payload[0] = 0xff;
       const raw = await backend.getRaw(record.artifactId);
-      assert.deepEqual([...raw.payload], [...payloadBytes]);
+      assertBytesEqual(raw.payload, payloadBytes);
     } finally {
       await backend.close();
       await destroyBackend(backend);
@@ -103,9 +220,9 @@ export async function runArtifactBackendContract({
     try {
       const { record, payloadBytes } = fixture(1);
       const r1 = await backend.putAtomic(record, payloadBytes);
-      assert.equal(r1.duplicate, false);
+      assertEqual(r1.duplicate, false);
       const r2 = await backend.putAtomic(record, payloadBytes);
-      assert.equal(r2.duplicate, true);
+      assertEqual(r2.duplicate, true);
     } finally {
       await backend.close();
       await destroyBackend(backend);
@@ -122,7 +239,7 @@ export async function runArtifactBackendContract({
       const diffBytes = new Uint8Array(payloadBytes.length);
       diffBytes.set(payloadBytes);
       diffBytes[diffBytes.length - 1] ^= 1;
-      await assert.rejects(async () => {
+      await assertRejects(async () => {
         await backend.putAtomic(record, diffBytes);
       }, (err) => {
         return err.name === "ArtifactStorageError" && err.code === "artifact-immutable-conflict";
@@ -140,10 +257,10 @@ export async function runArtifactBackendContract({
     try {
       const { record, payloadBytes } = fixture(1);
       await backend.putAtomic(record, payloadBytes);
-      assert.equal(await backend.delete(record.artifactId), true);
-      assert.equal(await backend.has(record.artifactId), false);
-      assert.equal(await backend.getRaw(record.artifactId), null);
-      assert.equal(await backend.delete(record.artifactId), false);
+      assertEqual(await backend.delete(record.artifactId), true);
+      assertEqual(await backend.has(record.artifactId), false);
+      assertEqual(await backend.getRaw(record.artifactId), null);
+      assertEqual(await backend.delete(record.artifactId), false);
     } finally {
       await backend.close();
       await destroyBackend(backend);
@@ -158,8 +275,8 @@ export async function runArtifactBackendContract({
       const { record, payloadBytes } = fixture(1);
       await backend.putAtomic(record, payloadBytes);
       const fakeRec = { ...record, completeness: "partial" };
-      assert.equal(await backend.deleteIfMatches(record.artifactId, fakeRec, payloadBytes), false);
-      assert.equal(await backend.has(record.artifactId), true);
+      assertEqual(await backend.deleteIfMatches(record.artifactId, fakeRec, payloadBytes), false);
+      assertEqual(await backend.has(record.artifactId), true);
     } finally {
       await backend.close();
       await destroyBackend(backend);
@@ -173,8 +290,8 @@ export async function runArtifactBackendContract({
     try {
       const { record, payloadBytes } = fixture(1);
       await backend.putAtomic(record, payloadBytes);
-      assert.equal(await backend.deleteIfMatches(record.artifactId, record, payloadBytes), true);
-      assert.equal(await backend.has(record.artifactId), false);
+      assertEqual(await backend.deleteIfMatches(record.artifactId, record, payloadBytes), true);
+      assertEqual(await backend.has(record.artifactId), false);
     } finally {
       await backend.close();
       await destroyBackend(backend);
@@ -189,10 +306,10 @@ export async function runArtifactBackendContract({
       const { record, payloadBytes } = fixture(1);
       const ac = new AbortController();
       ac.abort();
-      await assert.rejects(async () => {
+      await assertRejects(async () => {
         await backend.putAtomic(record, payloadBytes, { signal: ac.signal });
       });
-      assert.equal(await backend.has(record.artifactId), false);
+      assertEqual(await backend.has(record.artifactId), false);
     } finally {
       await backend.close();
       await destroyBackend(backend);
@@ -209,8 +326,8 @@ export async function runArtifactBackendContract({
         backend.putAtomic(record, payloadBytes),
         backend.putAtomic(record, payloadBytes),
       ]);
-      assert.equal([r1.duplicate, r2.duplicate].sort().join(","), "false,true");
-      assert.equal(await backend.has(record.artifactId), true);
+      assertEqual([r1.duplicate, r2.duplicate].sort().join(","), "false,true");
+      assertEqual(await backend.has(record.artifactId), true);
     } finally {
       await backend.close();
       await destroyBackend(backend);
@@ -232,9 +349,9 @@ export async function runArtifactBackendContract({
       ]);
       const fulfilled = res.filter((r) => r.status === "fulfilled");
       const rejected = res.filter((r) => r.status === "rejected");
-      assert.equal(fulfilled.length, 1);
-      assert.equal(rejected.length, 1);
-      assert.equal(rejected[0].reason.code, "artifact-immutable-conflict");
+      assertEqual(fulfilled.length, 1);
+      assertEqual(rejected.length, 1);
+      assertEqual(rejected[0].reason.code, "artifact-immutable-conflict");
     } finally {
       await backend.close();
       await destroyBackend(backend);
@@ -261,11 +378,11 @@ export async function runArtifactBackendContract({
       await backend.has(record.artifactId);
       await backend.delete(record.artifactId);
       const st = backend.stats();
-      assert.ok(st && typeof st === "object");
-      assert.ok(st.reads >= 1);
-      assert.ok(st.writes >= 1);
-      assert.ok(st.hasChecks >= 1);
-      assert.ok(st.deletes >= 1);
+      assert(st && typeof st === "object");
+      assert(st.reads >= 1);
+      assert(st.writes >= 1);
+      assert(st.hasChecks >= 1);
+      assert(st.deletes >= 1);
     } finally {
       await backend.close();
       await destroyBackend(backend);
