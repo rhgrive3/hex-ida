@@ -1212,6 +1212,166 @@ by all remaining independent/candidate/runtime gates and the unchanged
 23-finding completion audit. None of those findings is newly declared done,
 and no Ghidra/IDA superiority claim follows from this checkpoint.
 
+## 2026-09-09 real-receiver closure gate — unaccepted working checkpoint
+
+The working tree above `fb8a1207e88791958552ec229d0d78a48a5ccddf` now exercises
+all unchanged 1487 canonical witnesses through the existing production decoder
+and semantic receiver in Chromium 140.0.7339.16 and WebKit 26.0. This is a
+**dirty-tree diagnostic, not exact-head release evidence**. The modified
+closure gate remains red; under EP-031 it is not ready for PR acceptance and
+is left as uncommitted work. Integration remains checkpoint-locked.
+
+The earlier working test stopped with 81 unowned rows because it mistook
+`metadata.family` labels (`flags`, `bit-manipulation`, `foundation`) for
+dispatcher ownership. The pre-existing decoder-denominator ownership contract
+already documents that distinction. The corrected test uses the canonical
+dispatcher only to obtain `ownerId`, discarding its unbranded Node effect
+result. Actual completeness, operations, summaries and faults are taken only
+from the real receiver. Identity/origin fields needed for the ownership call
+come from its observed bundle. No private provenance is minted or transferred.
+
+The matrix evaluator no longer supplies `closureMatrixTerminal:true`, and its
+self-test rejects that override. Missing/invalid completeness cannot default
+to exact merely because an owner exists. Register/flag operations and intrinsic
+register/memory declarations now contribute to the structural summary;
+memory counts denote declared effects/access entries, not bus transactions or
+an independent proof of the full architectural footprint. These changes alter
+acceptance/reporting semantics: affected old matrix evidence is invalidated
+even though the structural schema remains v1. This is not a hardware oracle.
+
+Verification on this working tree:
+
+- New `x86-closure-matrix-summary.test.mjs`: PASS. Includes missing-evidence,
+  ownership-label, hidden register/flag, memory-summary and override negatives.
+  Replaying it against the committed old evaluator fails at the override
+  assertion (`2 !== 1`), confirming an old-behavior regression.
+- Both Phase 7/8 ownership regression files: 8 tests PASS. The actual union
+  against frozen base `058177e3ba15511aae290495fa98e7129fda2583`, including
+  uncommitted/untracked paths, is 224 files; Phase 7/8 slices remain 23/24.
+- Canonical closure gate: FAIL after **both** browser scans, 40.7 s.
+  Each engine reports 141 exact / 1209 exact-with-intrinsic / 137 partial /
+  0 unowned. The unchanged zero-partial acceptance assertion fails at 137.
+  Log: `/mnt/workspace/hex-roadmap-recovery-durable.UWZe3G/hex-roadmap-real-closure-owner-identity-uiaZWe/full.log`.
+  The browser helper's PASS messages attest transport/test callback completion,
+  not semantic closure; the whole-command exit is 1.
+- Full canonical `npm run check` with installed Git 2.49.1: FAIL, 113.2 s,
+  only `x86-long64-closure-matrix.test.mjs` in the MachineEffects failure set.
+  The new summary regression is discovered and passes in the canonical runner.
+  Both browser scans again report the same 137 partial / 0 unowned result.
+  Log: `/mnt/workspace/hex-roadmap-recovery-durable.UWZe3G/hex-roadmap-closure-wip-check-vdQbQe/full.log`.
+  The invariant chain stops here; later gates are not proven. This run does
+  not satisfy EP-031 for the changed closure test and is not a green release.
+
+Working verifier SHA-256:
+`3e576d352b4178f66d52c7a7cd41f21b96442e959a85f8d404adfd143b123903`.
+Working canonical test SHA-256:
+`c1aa34a93c7b44f2f3fed408331721823304c0d356fba36310895d3af78acd53`.
+Working summary self-test SHA-256:
+`d372959eb0b6c483630aa237cf622000322b871d03cfdd1775f93ad866ace829`.
+
+FSGSBASE remains unimplemented, not newly promoted. A dependency probe used
+actual receiver effects for `488b00`, `64488b00` and `65488b00` in both browsers,
+then the canonical `lowerMachineEffectBundleToSemanticIr` in Node. All six
+observations had exact MachineEffects but partial IR with
+`unsupported-machine-expression:x86-effective-address`. Source inspection of
+`js/semantics/compat/index.js` confirms this same lowerer consumes bundles in
+the shared pipeline. The TLS calculation additionally carries
+`tls-segment-base-unknown`, with no explicit FS/GS base added. This establishes
+a representation/precision dependency, not proof of an unsafe optimizer
+rewrite. Do not implement FSGSBASE by promoting an opaque summary or inventing
+a TLS memory mutation; first establish shared address/base dependencies and
+their conservative lowering/invalidation behavior.
+
+Fresh PR inspection found the same OPEN/DRAFT #7036 at remote head
+`8254ebe98bf6060bd902837d3751428a4fc15860`; searches for `x86-effective-address`
+and `FSGSBASE` returned no matching PR. No duplicate PR, push, merge, production
+source change or generated-output change was performed at this checkpoint.
+All 23 findings and competitive evidence remain required; none is newly done.
+All test/probe processes started for this checkpoint have exited. Resume from
+the six preserved dirty/untracked paths reported by Git, not by recreating
+the browser gate. Next semantic work must address the canonical address
+lowering/base-state dependency with actual receiver-to-IR regressions and
+independent address projections, then continue the remaining 137 gaps and
+the unchanged whole-roadmap completion audit.
+
+## 2026-09-09 scalar-address IR integration — local WIP, not release acceptance
+
+The x86 address producer now projects ordinary scalar effective addresses
+using existing generic register/constant/add/shift/zero-extend expressions.
+No x86 opcode or expression names were added to shared Semantic IR. Legacy
+address descriptors remain diagnostic; the executable expression is the
+generic projection. Address-size arithmetic wraps at 32 or 64 bits before
+the 32-bit result is zero-extended. RIP/EIP-relative addressing uses the
+actual decoded instruction length. LEA's existing materialized offset path
+is unchanged.
+
+FS/GS and VSIB are **not** newly promoted. An FS/GS offset alone is not a
+linear address, and the prefix alone cannot prove separation from ordinary
+memory. The next dependency includes explicit hidden bases, all base writers
+(including segment-selector writes), and conservative alias/invalidation
+behavior. The old unresolved wrappers remain for those cases until that
+contract is implemented. The four FSGSBASE families and all 23 roadmap
+findings remain in scope. Relevant primary architectural reference:
+https://docs.kernel.org/arch/x86/x86_64/fsgs.html
+
+Semantic/cache identity advances to `5.2.6-stage2-x86-denominator`. Existing
+version fixtures are updated, with an explicit 5.2.5 artifact non-alias check.
+Canonical generated build: serial `2322242165`, build ID
+`62dab945407dbe8d21c98274`, release identity
+`9afe50180bf1bf1adfb3777a7b0c5df51318aa28277e2991333ae67441bd6c55`.
+An initial build passed (2.9 s); exact-head rebuild verification is still
+required before accepting this checkpoint.
+
+New `tests/machine-effects/x86-address-ir.test.mjs` uses 632 independently
+constructed MOV load/store encodings and eight initial-register patterns
+in each browser: **10,112 address projections**. Coverage includes all 16
+base registers, legal SIB index registers, every scale, REX extensions,
+address-size override, ignored legacy segments, signed displacement,
+no-base forms and RIP/EIP wrapping. The test observes the actual receiver's
+whole pre-SSA IR, not a Node re-lift. A decoded UD2 terminator closes the CFG;
+it is not executed on the host and is not counted as an address fixture.
+Three deliberately incorrect IR transformations (add/sub, scale direction,
+sign/zero extension) are detected. Four FS/GS cases per browser stay partial.
+The helper returns whole-function IR only when explicitly requested, without
+changing receiver semantics or exposing a terminalization override.
+
+Working-tree evidence before a local checkpoint commit:
+
+- Address IR regression: PASS, 61.6 s, Chromium 140.0.7339.16 and WebKit 26.0.
+  This proves scalar address projection only, not native instruction execution,
+  fault behavior, physical iPad operation or complete MachineEffects semantics.
+- Existing memory denominator: PASS, 13.1 s; unchanged **100,992 address +
+  7,231 semantic + 16 moffs** cases. Its evaluator now reads the generic
+  `fromBits` field while retaining the old wrapper's `fromWidthBits` form.
+  No encoding, expected arithmetic value or denominator was removed.
+- Old producer replay: the committed pre-fix address module loaded without
+  editing the worktree still produces partial IR for `488b00`, rejected by
+  the new complete-address requirement.
+- Existing address unit tests: 20 PASS; segment-authority and Phase 2
+  integration PASS. Ownership plus viewer/artifact tests: 12 PASS. Actual
+  inventory is 227 paths with unchanged Phase 7/8 slices 23/24.
+- `npm run semantic-v2:test`: 96 ordinary files and the current-corpus group
+  PASS; userscript synchronization PASS (45.7 s). Core, migration, semantic,
+  runtime, UI, platform, decompiler, compiler-truth and benchmark child commands
+  PASS. The complete command is **FAIL**: required `effects:test` and
+  `invariants:test` each report the closure matrix and independent-oracle-report.
+  This invocation mistakenly inherited system Git 2.34; it is not accepted
+  as the required toolchain run. Log:
+  `/mnt/workspace/hex-roadmap-recovery-durable.UWZe3G/hex-roadmap-address-semantic-v2-qB3sE6/full.log`.
+
+To prevent another wrong-Git campaign invocation, use the durable local runner:
+`bash /mnt/workspace/hex-roadmap-recovery-durable.UWZe3G/run-roadmap-gate.sh LABEL COMMAND ...`.
+It pins the already-installed Git/Node directories, asserts Git 2.49.1 and
+Node v24.20.0, selects the
+durable log directory, and invokes the unchanged whole-command quiet wrapper.
+This is a campaign execution guard, not a replacement gate or repository-wide
+toolchain policy. The original failing closure test remains a release blocker.
+
+All work here is local WIP. No new PR, push, component acceptance or merge is
+authorized by these results. Full exact-head gates, the 137 semantic gaps,
+FS/GS shared-state work, native/browser/device proofs, reconciliation and the
+complete 23-finding audit remain required. Competitive superiority is unproven.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

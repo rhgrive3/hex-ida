@@ -66,7 +66,7 @@ export async function forEachX86BrowserSession(test) {
             worker.onmessageerror = () => finish(new Error('x86 browser Worker message error'));
             try { worker.postMessage(message); } catch (error) { finish(error); }
           });
-          globalThis.decodeAndLiftX86Fixture = async ({ bytes, address }) => {
+          globalThis.decodeAndLiftX86Fixture = async ({ bytes, address, includeSemanticIr }) => {
             if (failed) throw new Error('x86 browser session failed');
             if (busy) throw new Error('x86 browser session is busy');
             busy = true;
@@ -80,19 +80,21 @@ export async function forEachX86BrowserSession(test) {
                   binaryId:'binary:machine-effects-browser', sliceId:'slice:machine-effects-browser',
                   decoderSemanticVersion:'capstone-5-x86-structured-v2', instructions:decoded.instructions },
               });
-              return { decoded:decoded.instructions, effects:semantic.result?.pipeline?.machineEffects };
+              return { decoded:decoded.instructions, effects:semantic.result?.pipeline?.machineEffects,
+                ...(includeSemanticIr ? { pipelineSemanticIr:semantic.result?.pipeline?.semanticIr } : {}) };
             } finally { busy = false; }
           };
         });
         await test({
           engine,
           browserVersion:browser.version(),
-          async decodeAndLift(bytes, address = 0x1000n, expectedInstructionCount = 1) {
+          async decodeAndLift(bytes, address = 0x1000n, expectedInstructionCount = 1, { includeSemanticIr = false } = {}) {
             assert.ok((Array.isArray(bytes) || bytes instanceof Uint8Array) && bytes.length > 0
               && Array.from(bytes).every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255),
             `${engine}: nonempty byte-exact fixture required`);
             assert.ok(typeof address === 'bigint' && address >= 0n, `${engine}: exact nonnegative address required`);
-            const result = await page.evaluate(input => globalThis.decodeAndLiftX86Fixture(input), { bytes:Array.from(bytes), address });
+            assert.equal(typeof includeSemanticIr, 'boolean', `${engine}: explicit IR observation flag`);
+            const result = await page.evaluate(input => globalThis.decodeAndLiftX86Fixture(input), { bytes:Array.from(bytes), address, includeSemanticIr });
             assert.equal(result.decoded?.length, expectedInstructionCount, `${engine}: exact fixture instruction count`);
             assert.equal(result.effects?.length, result.decoded.length, `${engine}: every instruction needs effects`);
             let offset = 0;
@@ -102,7 +104,9 @@ export async function forEachX86BrowserSession(test) {
               assert.equal(decoded.length, raw.length, `${engine}: exact instruction length`);
               assert.deepEqual(raw, Array.from(bytes).slice(offset, offset + raw.length), `${engine}: exact input bytes`);
               offset += raw.length;
-              return { decoded, effects:result.effects[index] };
+              // This is the whole function's pre-SSA IR, not an instruction
+              // fragment. It is returned by the same actual receiver pipeline.
+              return { decoded, effects:result.effects[index], pipelineSemanticIr:result.pipelineSemanticIr };
             });
             assert.equal(offset, bytes.length, `${engine}: no ignored suffix`);
             return rows;

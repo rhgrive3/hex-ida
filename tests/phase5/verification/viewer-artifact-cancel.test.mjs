@@ -33,11 +33,13 @@ function nop(address) {
 }
 
 test('P5-6 artifact identity is deterministic and x86 semantic-version sensitive', () => {
-  assert.equal(X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, '5.2.5-stage2-x86-denominator');
+  assert.equal(X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, '5.2.6-stage2-x86-denominator');
   const currentA = createArtifactId(artifactInput(X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION));
   const currentB = createArtifactId({ ...artifactInput(X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION), inputArtifactIds:['input-a','input-b'] });
   assert.notEqual(currentA, createArtifactId(artifactInput('5.2.4-stage2-x86-denominator')),
     'artifacts from before dedicated random-instruction semantics must be invalidated');
+  assert.notEqual(currentA, createArtifactId(artifactInput('5.2.5-stage2-x86-denominator')),
+    'artifacts from before scalar-address IR projection must be invalidated');
   const stale = createArtifactId(artifactInput('5.0.0-phase5-pre-integration'));
   const failures = Number(currentA !== currentB) + Number(currentA === stale);
   console.log(`P5_6_ARTIFACT_DETERMINISM=${JSON.stringify({ productSha:PRODUCT_SHA, currentSemanticVersion:X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, sameInputA:currentA, sameInputB:currentB, staleArtifactId:stale, artifactDeterminismFailures:failures })}`);
