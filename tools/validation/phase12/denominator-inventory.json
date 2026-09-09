@@ -169,7 +169,9 @@
             "type": "source-includes",
             "path": "js/phase12/package-envelope.js",
             "markers": [
-              "const entries = Array.isArray(value.items) ? value.items : Array.isArray(value.results) ? value.results : [];"
+              "const hasItems = Object.hasOwn(value, 'items');",
+              "if (hasItems && !Array.isArray(value.items)) throw new PackageValidationError('provider-output-schema-invalid', 'items must be an array when supplied');",
+              "const entries = hasItems ? value.items : hasResults ? value.results : [];"
             ]
           }
         },
