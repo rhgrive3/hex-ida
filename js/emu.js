@@ -390,6 +390,10 @@ export class Emulator {
     } catch (err) {
       if (signal?.aborted) throw abortError(signal);
       this.stopped = (err && err.message) || String(err);
+      // Keep the structured EmulatorFault.code resident on the emulator so a
+      // later step()/stepInto() after this fault still classifies by code
+      // instead of re-deriving the taxonomy from the message wording (#5838).
+      this.faultCode = (err && err.code) || null;
       return { ok: false, text, reason: this.stopped, code:err && err.code || null };
     } finally {
       this._runSignal = null;
