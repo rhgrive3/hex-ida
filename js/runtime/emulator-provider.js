@@ -5,6 +5,7 @@ import { createRuntimeEvent, createRuntimeEventBatch } from './events.js';
 import { RuntimeEvidenceBridge } from './evidence-bridge.js';
 
 const TERMINATIONS = Object.freeze(['return', 'halted', 'paused', 'fault', 'unsupported', 'timeout', 'cancelled', 'exception']);
+const ABORTED_EXECUTION = Symbol('aborted-execution');
 
 function terminationAlias(raw) {
   switch (raw) {
@@ -55,6 +56,48 @@ function completenessFor(termination) {
   if (termination === 'unsupported') return 'unsupported';
   if (termination === 'timeout' || termination === 'cancelled' || termination === 'exception') return 'truncated';
   return 'bounded';
+}
+
+function invalidExternalSignal() {
+  return new DebugAdapterError('invalid-signal', 'signal must be AbortSignal-compatible');
+}
+
+function externalSignalAuthority(value) {
+  if (value == null) return null;
+  if (typeof value !== 'object' && typeof value !== 'function') throw invalidExternalSignal();
+  let addEventListener;
+  let removeEventListener;
+  let aborted;
+  try {
+    addEventListener = value.addEventListener;
+    removeEventListener = value.removeEventListener;
+    aborted = value.aborted;
+  } catch {
+    throw invalidExternalSignal();
+  }
+  if (
+    typeof aborted !== 'boolean'
+    || typeof addEventListener !== 'function'
+    || typeof removeEventListener !== 'function'
+  ) throw invalidExternalSignal();
+  return { signal: value, addEventListener, removeEventListener, aborted };
+}
+
+function currentSignalAborted(authority) {
+  let aborted;
+  try { aborted = authority.signal.aborted; }
+  catch { throw invalidExternalSignal(); }
+  if (typeof aborted !== 'boolean') throw invalidExternalSignal();
+  return aborted;
+}
+
+function detachExternalSignal(authority, listener) {
+  try {
+    Reflect.apply(authority.removeEventListener, authority.signal, ['abort', listener]);
+  } catch {
+    // Caller-owned listener cleanup is best-effort and must not mask the run
+    // result or prevent release of the provider-owned session controller.
+  }
 }
 
 function engineText(value, fallback, code) {
@@ -114,6 +157,31 @@ function normalizeEngineDescriptor(engine, options) {
   });
 }
 
+async function boundedEngineOperation(operation, signal, registerSettlement = null) {
+  let onAbort;
+  const aborted = new Promise((resolve) => {
+    onAbort = () => resolve(ABORTED_EXECUTION);
+    if (signal.aborted) resolve(ABORTED_EXECUTION);
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+  // Observe both outcomes explicitly. A signal-ignoring engine may settle
+  // after the provider has already returned its bounded cancellation result;
+  // attaching the rejection branch here prevents that late failure from
+  // becoming an unhandled rejection (#4385).
+  const execution = Promise.resolve()
+    .then(() => signal.aborted ? ABORTED_EXECUTION : operation())
+    .then(
+      (value) => value === ABORTED_EXECUTION ? { kind: 'aborted' } : { kind: 'completed', value },
+      (error) => ({ kind: 'failed', error }),
+    );
+  if (registerSettlement) registerSettlement(execution);
+  try {
+    return await Promise.race([execution, aborted]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
 export class EmulatorProvider {
   constructor(engine, options = {}) {
     if (!engine || (typeof engine.execute !== 'function' && (typeof engine.launch !== 'function' || typeof engine.resume !== 'function'))) {
@@ -123,6 +191,8 @@ export class EmulatorProvider {
     this.options = options;
     this.engineDescriptor = normalizeEngineDescriptor(engine, options);
     this.activeSession = null;
+    this.pendingEngineOperation = null;
+    this.pendingEngineReady = null;
     this._descriptor = createRuntimeProviderDescriptor({
       id: options.id ?? `emulator:${this.engineDescriptor.id}`,
       version: options.version ?? '1',
@@ -138,8 +208,44 @@ export class EmulatorProvider {
 
   descriptor() { return this._descriptor; }
 
+  _registerEngineOperation(settlement) {
+    this.pendingEngineOperation = settlement;
+    this.pendingEngineReady = null;
+    settlement.finally(() => {
+      if (this.pendingEngineOperation !== settlement) return;
+      this.pendingEngineOperation = null;
+      const ready = this.pendingEngineReady;
+      this.pendingEngineReady = null;
+      if (!ready || ready.settlement !== settlement) return;
+      const { session, epoch } = ready;
+      if (
+        this.activeSession === session
+        && !session.closed
+        && session.state === 'running'
+        && session.epoch === epoch
+      ) {
+        session.setState('ready');
+      }
+    });
+  }
+
+  _holdSessionUntilEngineSettles(session, epoch) {
+    const settlement = this.pendingEngineOperation;
+    if (!settlement) return false;
+    this.pendingEngineReady = { settlement, session, epoch };
+    session.setState('running');
+    return true;
+  }
+
+  _assertEngineAvailable() {
+    if (this.pendingEngineOperation) {
+      throw new DebugAdapterError('emulator-engine-busy', 'emulator engine still has an unsettled operation from a prior run');
+    }
+  }
+
   async openSession(request = {}, options = {}) {
     if (this.activeSession && !this.activeSession.closed) throw new DebugAdapterError('runtime-session-active', 'emulator provider already has an open session');
+    this._assertEngineAvailable();
     let session;
     let connectedBySession = false;
     session = new RuntimeProviderSession({
@@ -170,6 +276,8 @@ export class EmulatorProvider {
 
     const run = async (input = {}, runOptions = {}) => {
       if (activeRun) throw new DebugAdapterError('already-running', 'emulator session already has an active run');
+      this._assertEngineAvailable();
+      const externalSignal = externalSignalAuthority(runOptions.signal);
       const runToken = {};
       activeRun = runToken;
       try {
@@ -189,15 +297,27 @@ export class EmulatorProvider {
       const startedEpoch = session.epoch;
       let externalAbort = null;
       let externalCancelled = false;
-      if (runOptions.signal) {
+      let externalListenerTouched = false;
+      if (externalSignal) {
         externalAbort = () => {
           externalCancelled = true;
           if (!controller.signal.aborted) controller.abort('cancelled');
         };
-        if (runOptions.signal.aborted) externalAbort();
-        else {
-          runOptions.signal.addEventListener('abort', externalAbort, { once: true });
-          if (runOptions.signal.aborted) externalAbort();
+        try {
+          if (externalSignal.aborted) externalAbort();
+          else {
+            // Mark before invoking caller-owned code: addEventListener may throw
+            // after partially installing the listener, so cleanup must still
+            // attempt a detach before the controller is released (#4331).
+            externalListenerTouched = true;
+            Reflect.apply(externalSignal.addEventListener, externalSignal.signal, ['abort', externalAbort, { once: true }]);
+            if (currentSignalAborted(externalSignal)) externalAbort();
+          }
+        } catch (error) {
+          if (externalListenerTouched) detachExternalSignal(externalSignal, externalAbort);
+          session.releaseController(controller);
+          if (error instanceof DebugAdapterError && error.code === 'invalid-signal') throw error;
+          throw invalidExternalSignal();
         }
       }
       let timeoutTriggered = false;
@@ -214,10 +334,34 @@ export class EmulatorProvider {
       let abortTermination = null;
       try {
         if (controller.signal.aborted) raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' } };
-        else if (typeof this.engine.execute === 'function') raw = await this.engine.execute(input, { ...replayOptions, signal: controller.signal });
+        else if (typeof this.engine.execute === 'function') {
+          const outcome = await boundedEngineOperation(
+            () => this.engine.execute(input, { ...replayOptions, signal: controller.signal }),
+            controller.signal,
+            (settlement) => this._registerEngineOperation(settlement),
+          );
+          if (outcome.kind === 'aborted') raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' } };
+          else if (outcome.kind === 'failed') throw outcome.error;
+          else raw = outcome.value;
+        }
         else {
-          await this.engine.launch(input, { signal: controller.signal });
-          raw = await this.engine.resume({ ...replayOptions, signal: controller.signal });
+          const launch = await boundedEngineOperation(
+            () => this.engine.launch(input, { signal: controller.signal }),
+            controller.signal,
+            (settlement) => this._registerEngineOperation(settlement),
+          );
+          if (launch.kind === 'aborted') raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' } };
+          else if (launch.kind === 'failed') throw launch.error;
+          else {
+            const resume = await boundedEngineOperation(
+              () => this.engine.resume({ ...replayOptions, signal: controller.signal }),
+              controller.signal,
+              (settlement) => this._registerEngineOperation(settlement),
+            );
+            if (resume.kind === 'aborted') raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' } };
+            else if (resume.kind === 'failed') throw resume.error;
+            else raw = resume.value;
+          }
         }
       } catch (error) {
         if (controller.signal.aborted) raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' }, error: String(error?.message || error) };
@@ -226,8 +370,11 @@ export class EmulatorProvider {
         if (timeoutTriggered) abortTermination = 'timeout';
         else if (externalCancelled || controller.signal.aborted) abortTermination = 'cancelled';
         if (timer) clearTimeout(timer);
-        if (runOptions.signal && externalAbort) runOptions.signal.removeEventListener('abort', externalAbort);
-        session.releaseController(controller);
+        try {
+          if (externalSignal && externalAbort && externalListenerTouched) detachExternalSignal(externalSignal, externalAbort);
+        } finally {
+          session.releaseController(controller);
+        }
       }
 
       const termination = abortTermination ?? terminationOf(raw || {});
@@ -255,7 +402,11 @@ export class EmulatorProvider {
         throw new DebugAdapterError('emulator-invalid-events', 'emulator engine events must be an array');
       }
       const sourceEvents = eventSource ?? [];
-      session.setState(termination === 'paused' ? 'paused' : termination === 'exception' ? 'degraded' : 'ready');
+      const waitForEngine = (termination === 'timeout' || termination === 'cancelled')
+        && this._holdSessionUntilEngineSettles(session, startedEpoch);
+      if (!waitForEngine) {
+        session.setState(termination === 'paused' ? 'paused' : termination === 'exception' ? 'degraded' : 'ready');
+      }
       const events = sourceEvents.map((source, index) => {
         const identity = eventIdentity(source, index, runOccurrence);
         return createRuntimeEvent({
