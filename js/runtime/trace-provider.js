@@ -258,6 +258,13 @@ function normalizedEventFromRecord(record, context, index) {
   });
 }
 
+class TraceProviderSession extends RuntimeProviderSession {
+  newEpoch() {
+    if (this.closed) return super.newEpoch();
+    throw new DebugAdapterError('runtime-epoch-unsupported', 'trace provider sessions use an immutable event epoch');
+  }
+}
+
 export class TraceProvider {
   constructor(recording, options = {}) {
     this.recording = normalizeRecording(recording, options);
@@ -279,7 +286,7 @@ export class TraceProvider {
     const binaryId = this.recording.binaryId ?? request.binaryId ?? request.binaryHash;
     if (!binaryId) throw new DebugAdapterError('trace-binary-identity-required', 'trace provider requires source binary identity for a canonical runtime session');
     let session;
-    session = new RuntimeProviderSession({
+    session = new TraceProviderSession({
       provider: this,
       request: {
         ...request,

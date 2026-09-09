@@ -450,6 +450,11 @@ export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET)
   if (previous == null) return next;
   if (previous.top) return previous;
   const priorByRoot = new Map(previous.targets.map((target) => [target.rootKey, target]));
+  // A root that only `previous` holds must survive widening: widening may lose
+  // precision but never drops a known reachable root — dropping it broke the
+  // upper-bound law (previous ⊑ widened) and let the fixed point "converge"
+  // below its own past state (#5358).
+  const rootsOnlyInPrevious = previous.targets.filter((target) => !next.targets.some((candidate) => candidate.rootKey === target.rootKey));
   let anyWidened = false;
   const targets = next.targets.map((target) => {
     const prior = priorByRoot.get(target.rootKey);
@@ -463,12 +468,14 @@ export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET)
     }
     return createPointsToTarget({ ...target, offsetRange: widenedRange });
   });
-  if (targets.length > targetLimit) {
+  if (rootsOnlyInPrevious.length) anyWidened = true;
+  const merged = [...targets, ...rootsOnlyInPrevious];
+  if (merged.length > targetLimit) {
     return topPointsTo('target-cap');
   }
   return createPointsToSet({
-    targets,
-    lossReasons: [...next.lossReasons, ...(anyWidened ? ['widened'] : [])],
+    targets: merged,
+    lossReasons: [...previous.lossReasons, ...next.lossReasons, ...(anyWidened ? ['widened'] : [])],
   });
 }
 
