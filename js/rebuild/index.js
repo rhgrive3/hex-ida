@@ -140,7 +140,7 @@ export async function validateRebuildOutput(plan, materialized, options = {}) {
       results.set('loader-reparse', validatorResult('loader-reparse', 'failed', error?.message || String(error)));
     }
   } else {
-    results.set('unchanged-regions', validatorResult('loader-reparse', 'unavailable', 'loader-reparse-oracle-unavailable'));
+    results.set('loader-reparse', validatorResult('loader-reparse', 'unavailable', 'loader-reparse-oracle-unavailable'));
   }
 
   for (const validator of required) {
