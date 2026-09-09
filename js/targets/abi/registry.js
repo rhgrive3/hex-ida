@@ -607,24 +607,36 @@ export function isRegisteredABIPlugin(plugin) {
 
 export function registerABIPlugin(definition, { replace = false } = {}) {
   const plugin = definition instanceof ABIPlugin ? definition : new ABIPlugin(definition);
+  const id = plugin.id;
+  const incumbent = ABI_PLUGINS.get(id);
   // A duplicate object may not silently steal publication.  An explicit
   // replacement is allowed for registry lifecycle tooling, but it makes the
   // previous object non-canonical immediately: isRegisteredABIPlugin() checks
   // the map's exact object identity as well as each object's digest.
-  if (ABI_PLUGINS.has(plugin.id) && !replace) {
-    throw new Error(`ABI already registered: ${plugin.id}`);
+  if (incumbent && !replace) {
+    throw new Error(`ABI already registered: ${id}`);
   }
-  ABI_PLUGINS.set(plugin.id, plugin);
-  const generation = ++ABI_REGISTRY_GENERATION;
+
+  // String coercion and calling-convention discovery can execute provider code.
+  // Finish those operations before choosing the next generation or publishing
+  // any registry state. The prepared descriptor is plain canonical data, so the
+  // remaining digest step cannot re-enter provider hooks.
   const classifierDigest = stableDigest(classifierDescriptor(plugin));
+  const preparedDescriptor = registryDescriptor(plugin, { classifierDigest });
+  if (ABI_PLUGINS.get(id) !== incumbent) {
+    throw new Error(`ABI registry changed during registration: ${id}`);
+  }
+  const generation = ABI_REGISTRY_GENERATION + 1;
   const binding = {
-    id:plugin.id,
+    id,
     generation,
     classifierDigest,
-    digest:null,
+    digest:`abi-registry:${stableDigest({ ...preparedDescriptor, generation })}`,
   };
-  binding.digest = expectedRegistryDigest(plugin, binding);
+
   ABI_REGISTRY_BINDINGS.set(plugin, binding);
+  ABI_PLUGINS.set(id, plugin);
+  ABI_REGISTRY_GENERATION = generation;
   return plugin;
 }
 
