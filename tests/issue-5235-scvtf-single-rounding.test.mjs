@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { Emulator } from '../../js/emu.js';
+import { Emulator } from '../js/emu.js';
 
 // #5235: SCVTF/UCVTF to an S register must round once (integer -> binary32).
 // x0 = 0x0020000020000001 = 9007199791611905 sits 1 above the binary32

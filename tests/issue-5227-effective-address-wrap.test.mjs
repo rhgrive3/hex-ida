@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { Emulator } from '../../js/emu.js';
+import { Emulator } from '../js/emu.js';
 
 function faultOf(promise) {
   return promise.then(
