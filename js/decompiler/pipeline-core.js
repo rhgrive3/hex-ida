@@ -19,7 +19,8 @@ import { explainSemanticFacts } from './explain.js';
 import { readSwitchLineHistory, readSwitchRenderHistory } from './switch.js';
 import { readSemanticStoreLineHistory, readSemanticStoreRenderHistory } from './semantic-core.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
-import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionExpected } from '../semantics/compat/semantic-ir-v2-to-v1.js';
+import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionExpected,
+  readProjectedConstantTransitions, projectedConstantTransitionExpected } from '../semantics/compat/semantic-ir-v2-to-v1.js';
 import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
@@ -697,6 +698,64 @@ function recordCompatMemorySelection(value, expression, selected, state) {
   (state.buildHistoryFrame.records ??= new Set()).add(record);
 }
 
+function compatConstantSelection(value, state) {
+  const pending = [value.def], seen = new Set(), selected = [];
+  const budget = consumerObservationBudget(state);
+  const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
+  const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
+  while (pending.length && seen.size < 512) {
+    const source = pending.pop();
+    if (!source || seen.has(source)) continue;
+    seen.add(source);
+    if (!projectedConstantTransitionExpected(state.ir, source)) continue;
+    if ((state.buildSelectionHistoryCount || 0) >= maximum || budget.edges <= 0) {
+      observeBuildSelection(value, source, state, 'compat-constant'); return selected;
+    }
+    const transition = readProjectedConstantTransitions(state.ir, source);
+    if (!transition) { budget.reasons.add('compat-constant-transition-unavailable'); continue; }
+    for (const event of transition.events) {
+      // Traverse actual recorded input definitions, not a guessed upstream pass
+      // inferred from a supplied constant. Precomputed rendering need not visit
+      // these expressions, but it still consumes their observed folding chain.
+      pending.push(...event.inputs.map(input => input.definition));
+      if ((state.buildSelectionHistoryCount || 0) >= maximum || budget.edges <= 0) {
+        observeBuildSelection(value, source, state, 'compat-constant'); return selected;
+      }
+      const origins = event.op === 'load' ? selectedValueOrigins(event.output, state) : null;
+      const related = [...new Set([...event.beforeInputs.map(input => input.def), ...(origins?.definitions || [])])]
+        .filter(definition => definition && definition !== source);
+      if (origins?.incomplete) budget.reasons.add('compat-constant-source-history-incomplete');
+      selected.push({ event, transition, origins,
+        observation:observeBuildSelection(value, source, state, 'compat-constant', related) });
+    }
+  }
+  if (pending.length) budget.reasons.add('compat-constant-dependency-budget');
+  return selected;
+}
+
+function recordCompatConstantSelection(value, expression, selected, state) {
+  for (const { event, transition, origins, observation:selection } of selected) {
+    const observation = finishBuildSelection(expression, selection, state);
+    if (!observation) continue;
+    if (!transition.isCurrent()) {
+      consumerObservationBudget(state).reasons.add('compat-constant-transition-stale'); continue;
+    }
+    const source = mergeSource(origin(event.source, event.output), origin(value.def, value), origins?.source,
+      ...event.beforeInputs.map(input => origin(input.def, input)));
+    const history = expressionOriginHistory({ source }, expression);
+    const record = Object.freeze({ rule:'fold-compatibility-constant', phase:'compatibility-projection',
+      before:`${event.stage}:${event.round}:${event.ordinal}:${event.op}:${event.sub ?? ''}:${String(event.beforeConstant)}`,
+      after:`constant:${event.bits}:${String(event.afterConstant)}`,
+      evidence:Object.freeze({ kind:'observed-compat-constant-write-not-equivalence',
+        detail:'actual compatibility constant write and its original input facts, retained through the consuming expression; not a new scalar or memory theorem' }),
+      originHistory:origins?.incomplete ? Object.freeze({ ...history, truncated:true }) : history,
+    });
+    buildHistoryObservations.set(record, Object.freeze({ matches:() => observation.matches() && transition.isCurrent()
+      && (origins?.memoryChecks || []).every(current => current()) }));
+    (state.buildHistoryFrame.records ??= new Set()).add(record);
+  }
+}
+
 function buildValueRaw(v, state, flags = {}) {
   if (!v) return expr.variable('unknown', 64, null);
   const memoKey = `${v.id}:${flags.forAddress ? 'a' : 'v'}`;
@@ -706,6 +765,7 @@ function buildValueRaw(v, state, flags = {}) {
   let out = null;
   const d = v.def;
   const compatSelection = compatMemorySelection(v, state);
+  const compatConstants = compatConstantSelection(v, state);
   if (v.constKind === 'float' || v.floatConst != null || (v.float != null && v.const == null)) {
     const selected = constantValueSelection(v, state);
     out = expr.floatConstant(v.floatConst ?? v.float, v.bits || 64, origin(d, v));
@@ -799,6 +859,7 @@ function buildValueRaw(v, state, flags = {}) {
   }
   if (!out) out = expr.variable(argumentName(v, state), v.bits || 64, signedFor(state, v), origin(d, v), { ssaId: v.id, range: v.range ? { ...v.range } : null });
   recordCompatMemorySelection(v, out, compatSelection, state);
+  recordCompatConstantSelection(v, out, compatConstants, state);
   state.expressionActive.delete(v.id);
   state.expressionMemo.set(memoKey, out);
   return out;

@@ -134,7 +134,11 @@ test('explicit canonical numeric-load selection retains load/store sources at fo
       assert.ok(record.originHistory.consumedRefs.includes(`ir:${inst.id}`));
       assert.ok(result.renderProvenance.reverse[`addr:${inst.address}`].includes('L0:stmt'));
     }
-    assert.equal(validateRenderProvenance(result.renderProvenance).state, 'complete');
+    // This fixture deliberately clears a finalized compatibility constant to
+    // reach the lower builder branch. Its new upstream write history must be
+    // revoked, even though the lower canonical numeric selection remains valid.
+    assert.equal(validateRenderProvenance(result.renderProvenance).state, 'incomplete');
+    assert.ok(f.result.expressionHistoryBinding.reasons.includes('compat-constant-transition-unavailable'));
     assert.deepEqual(records(result), [], 'a visited lower branch is not a supplied precomputed-value selection');
     const ledger = result.renderProvenance.ledger;
     for (let i = 0; i < 3; i++) result = applyPhase8Projection(result, analysis());
@@ -198,8 +202,8 @@ test('canonical numeric-load fallback and history limits preserve scalar output 
   }
 });
 
-test('canonical numeric-load query navigates its selected-away store and rejects stale snapshots', async () => {
-  const m = explicitLoad(), f = render(m.ir, m.load.dst, null);
+test('unmodified canonical numeric-load folding query navigates its store and rejects stale snapshots', async () => {
+  const m = canonicalLoad(), f = render(m.ir, m.load.dst, null);
   const result = applyPhase8Projection(f.result, analysis());
   let epoch = 1;
   const api = new AnalysisQueryAPI({
@@ -211,9 +215,24 @@ test('canonical numeric-load query navigates its selected-away store and rejects
   const selected = await navigation.selectOrigin('addr', m.store.address);
   assert.equal(selected.state, 'ready');
   assert.deepEqual(selected.entities.map(entity => entity.lineIndex), [0]);
-  assert.ok(selected.transforms.some(record => record.rule === loadRule));
+  assert.ok(selected.transforms.some(record => record.rule === 'fold-compatibility-constant'));
   epoch++;
   assert.equal((await navigation.selectOrigin('addr', m.store.address)).reason, 'stale-query-snapshot');
+});
+
+test('forcing a lower numeric-load branch by clearing a finalized constant cannot authorize complete query navigation', async () => {
+  const m = explicitLoad(), f = render(m.ir, m.load.dst, null);
+  const result = applyPhase8Projection(f.result, analysis());
+  assert.equal(loadRecords(result)[0].renderedBinding, 'producer-bound');
+  const api = new AnalysisQueryAPI({
+    currentIdentity:async () => ({ binaryId:'cleared-load-history', projectRevision:1, analysisEpoch:1, artifactVersions:{} }),
+    decompile:async () => ({ value:{ lines:result.lines, pseudocode:result.pseudocode, renderProvenance:result.renderProvenance }, status:{ completeness:'complete' } }),
+  });
+  const snapshot = await api.snapshot(), query = await api.decompile(snapshot, 'function');
+  const navigation = createDecompilerNavigation(query, { currentSnapshot:() => api.snapshot() });
+  const selected = await navigation.selectOrigin('addr', m.store.address);
+  assert.equal(selected.state, 'unavailable');
+  assert.equal(selected.reason, 'incomplete-map');
 });
 
 test('ambiguous canonical store-source projection preserves the numeric result but cannot claim complete navigation', () => {
@@ -285,6 +304,12 @@ test('real canonical MemorySSA numeric constants retain their contributing store
     assert.ok(record.originHistory.consumedRefs.includes(`ir:${m.store.id}`));
     assert.ok(result.renderProvenance.reverse[`addr:${m.store.address}`].includes('L0:stmt'));
     assert.equal(record.originHistory.completeness, 'complete');
+    const folding = result.renderProvenance.ledger.find(record => record.rule === 'fold-compatibility-constant');
+    assert.ok(folding);
+    assert.equal(folding.proof, 'observed-compat-constant-write-not-equivalence');
+    assert.match(folding.before, /^finalize-constants:\d+:\d+:load:/);
+    assert.equal(folding.after, `constant:${bits}:37`);
+    assert.ok(folding.originHistory.consumedRefs.includes(`ir:${m.store.id}`));
     assertCanonical(f);
   }
 });

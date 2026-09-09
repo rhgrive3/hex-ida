@@ -259,9 +259,9 @@ function replaceLoadWithForwardedValue(source, forwardedValue, proof) {
   };
 }
 
-export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null) {
+export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null, constantObserver = null) {
   const operandTransitions = [];
-  propagateScalarConstants(projected);
+  propagateScalarConstants(projected, constantObserver);
   const regionById = new Map(memorySsa.regions.map((region) => [region.id, region]));
   const locationByRegion = new Map();
   for (const region of memorySsa.regions) {

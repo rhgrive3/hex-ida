@@ -7,7 +7,7 @@ import { loadManifest as loadPhase8, validateFiles as validatePhase8 } from '../
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 export const BRANCH = 'feat/analysis-roadmap-v8-current-main-20260907';
 const SPECIAL_PATHS = Object.freeze({
-  semanticCompat: ['js/core/identity/live-data.js', 'js/ir-core.js', 'js/semantics/compat/index.js', 'js/semantics/compat/semantic-ir-v2-to-v1.js', 'js/semantics/compat/semantic-ir-v2-to-v1-memory.js'],
+  semanticCompat: ['js/core/identity/live-data.js', 'js/ir-core.js', 'js/ir-base.js', 'js/semantics/compat/index.js', 'js/semantics/compat/legacy-value-ranges.js', 'js/semantics/compat/semantic-ir-v2-to-v1.js', 'js/semantics/compat/semantic-ir-v2-to-v1-finalize.js', 'js/semantics/compat/semantic-ir-v2-to-v1-memory.js'],
   integration: ['.circleci/config.yml', '.github/workflows/phase7-ownership.yml', '.github/workflows/phase8-ownership.yml',
     'scripts/build-userscript.mjs', 'scripts/userscript-publication.mjs',
     'tests/userscript-publication.mjs', 'tests/userscript-release-version.mjs',

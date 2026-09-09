@@ -82,18 +82,47 @@ export function captureProjectionIrData(roots, shouldAbort = null) {
     if (expandedUnits > PROJECTION_LIMITS.expandedUnits) throw new TypeError('projection-expansion-budget');
   }
   check();
-  return Object.freeze({metrics:Object.freeze({nodes,edges,expandedUnits}),matches() {
+  function matches(writes = null) {
     try {
+      let changed = null;
+      if (writes != null) {
+        if (!Array.isArray(writes) || writes.length > PROJECTION_LIMITS.nodes) return false;
+        changed = new WeakMap();
+        for (const write of writes) {
+          const own = key => Object.getOwnPropertyDescriptor(write, key)?.value;
+          const object = own('object'), key = own('key');
+          if (!object || typeof object !== 'object' || typeof key !== 'string') return false;
+          if (!changed.has(object)) changed.set(object, new Map());
+          const byKey = changed.get(object);
+          if (!byKey.has(key)) byKey.set(key, []);
+          byKey.get(key).push({ before:own('before'), after:own('after') });
+        }
+      }
       for (const {value,prototype,entries,arrayLength} of records) {
         if (Object.getPrototypeOf(value)!==prototype || arrayLength!=null && value.length!==arrayLength) return false;
         const keys=Reflect.ownKeys(value);
         if(keys.length!==entries.length+(arrayLength!=null?1:0)) return false;
         for(const [key,previous] of entries) {
           const descriptor=Object.getOwnPropertyDescriptor(value,key);
-          if(!descriptor || !Object.hasOwn(descriptor,'value') || !descriptor.enumerable || !Object.is(descriptor.value,previous)) return false;
+          if(!descriptor || !Object.hasOwn(descriptor,'value') || !descriptor.enumerable) return false;
+          if (!Object.is(descriptor.value,previous)) {
+            let expected = previous, started = false;
+            for (const write of changed?.get(value)?.get(key) || []) {
+              if (!started && !Object.is(write.before, expected)) continue;
+              started = true;
+              if (!Object.is(write.before, expected)) return false;
+              expected = write.after;
+            }
+            if (!started || !Object.is(descriptor.value, expected)) return false;
+          }
         }
       }
       return true;
     } catch { return false; }
-  }});
+  }
+  return Object.freeze({metrics:Object.freeze({nodes,edges,expandedUnits}), matches:() => matches(),
+    // Data matching is not write authority. Callers must authenticate the actual
+    // writer and bind its new object graphs before supplying a transition list.
+    matchesThroughWrites:writes => matches(writes),
+  });
 }

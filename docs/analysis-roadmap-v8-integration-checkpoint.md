@@ -3318,6 +3318,67 @@ proof requirements, frozen135compiler corpus and required exact integration
 acceptance remain open. The current consumer history does not substitute for
 those upstream operations. Goal ACTIVE and integration acceptance LOCKED.
 
+## C4-03 actual compatibility constant writes and range handoff
+
+Both existing compatibility constant-propagation loops now describe only actual
+changes to `dst.const`, immediately before the existing write. Descriptions
+retain original source/output/input objects, input constant/width facts, before
+and after constants, stage, round and bounded operation ordinal. There is no new
+evaluator, scalar/memory proof, semantic ID, forwarding decision or pass schedule.
+The final owning projector seals those events with the existing finalized-root,
+instruction/value-position and bounded plain-data observation. Calling exported
+propagation/finalization helpers with copied data cannot register that authority.
+Descriptions cap at 1024; skipped descriptions keep their real sources marked
+unavailable rather than silently becoming unobserved.
+
+The actual display build consumes the private events as
+`fold-compatibility-constant` / `observed-compat-constant-write-not-equivalence`.
+It follows recorded input definitions even when precomputed display skips their
+expressions. Existing build frames, consumer bindings and ledger remain the only
+route to rendered lines. Separate semantic-value consumers may have separate
+ledger copies of one original operation; stage/round/ordinal do not invent new
+executions. Existing budgets/cancellation still withhold complete mapping without
+changing pseudocode. Unknown or unchanged values do not invent fold operations.
+
+Canonical provenance testing exposed a real handoff requirement: the public IR
+facade's existing range annotator changes `value.range` after projector sealing.
+Temporary diagnostics located the first mismatch at that range write and were
+removed. The six existing range helpers/annotator moved to the shared semantic
+compatibility range module; the facade calls the same algorithm, with unchanged
+range formulas and six-round limit. Only actual range writes publish a private,
+bounded owner-bound chain. The original data observer still rejects any mutation
+by default; its non-authoritative write-chain comparison is used only with those
+privately issued range events and separately bound new range graphs. Manual
+range edits, copied owners, interrupted chains, changed scalar facts and later
+range-object mutation cannot authorize a successor. This is an observed handoff,
+not an independent range theorem or a general public resealing API.
+
+Seventeen new tests cover ten real stage/width source cells, seventeen scalar
+operation fixtures, producer/copy/getter/budget boundaries, dependency histories,
+public rendering/replay and range handoff/forgery/exhaustion. Existing canonical
+MemorySSA tests now also check actual LOAD constant-write history at four widths.
+The lower-load test deliberately clears a finalized constant: its lower numeric
+selection remains observed, but its upstream history must now be incomplete and
+query navigation refused. The positive query uses the unmodified canonical
+projection and retains stale-snapshot rejection. Existing switch/runtime-omission
+positive tests remain mandatory, not changed to accept the integration failure.
+
+Retained red receipts include the initial semantic-consumer copy-count fixture
+error, the old full-navigation assertion on a deliberately invalidated constant,
+missing intrinsic-summary fixture metadata, and pre-handoff canonical failures.
+No success criterion or production timeout was relaxed. Prior broad gate failures
+at c0e0270fe remain recorded separately; scoped checks do not establish a full
+repository, independent, compiler/device or current-main acceptance pass.
+
+PR #3421 is reused at `4cd5b3eb9200b1180985b9df3a74f8245a5cc928`. Scoped
+constant/provenance search also returned #7550 at
+`6ebaa3477c5e720d7bdf756c60a4a590bd254764`; its inspected inventory/body concern
+points-to constant authority and string-state cache identity, not this producer.
+No duplicate implementation, component/main merge or parallel issue/performance/
+environment repair was made. Other public-facade constant writes, state-alias and
+normalization operations, full rendered/removed-class coverage, original findings
+and C4-02/04/05 proof obligations remain open. Goal ACTIVE; acceptance LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

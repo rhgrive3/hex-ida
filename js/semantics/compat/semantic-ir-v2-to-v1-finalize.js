@@ -260,13 +260,33 @@ function foldInstruction(inst) {
   return null;
 }
 
-function propagateConstants(projected) {
+function observeConstantWrite(inst, value, round, stage, observer) {
+  if (!observer) return;
+  observer.expected.add(inst);
+  if (observer.records.length >= 1024 || (inst.args?.length ?? 0) > 512) {
+    observer.unavailable.add(inst); return;
+  }
+  const inputs = Object.freeze((inst.args || []).map(arg => Object.freeze({
+    argument:arg, value:arg?.value, definition:arg?.value?.def,
+    constant:arg?.value?.const ?? null, bits:arg?.value?.bits ?? null,
+  })));
+  observer.records.push(Object.freeze({
+    source:inst, output:inst.dst, op:inst.op, sub:inst.sub, bits:inst.dst.bits,
+    beforeConstant:inst.dst.const, afterConstant:value, round, stage, ordinal:observer.records.length, inputs,
+    beforeInputs:Object.freeze([...new Set([...inputs.map(input => input.value),
+      inst.addr?.base, inst.addr?.index, inst.loc?.base].filter(Boolean))]),
+    memoryForwarding:inst.op === V1_OP.LOAD ? inst.memoryForwarding : null,
+  }));
+}
+
+function propagateConstants(projected, observer) {
   const maximum = Math.max(4, projected.instructions.length * 2);
   for (let round = 0; round < maximum; round++) {
     let changed = false;
     for (const inst of projected.instructions) {
       const value = foldInstruction(inst);
       if (value == null || !inst.dst || inst.dst.const === value) continue;
+      observeConstantWrite(inst, value, round, 'finalize-constants', observer);
       inst.dst.const = value;
       changed = true;
     }
@@ -277,7 +297,7 @@ function propagateConstants(projected) {
 // The canonical MemorySSA query may need the already-owned scalar SSA fact
 // feeding a store.  Populate those scalar constants before the query without
 // evaluating any memory load; memory loads remain gated by MemorySSA below.
-export function propagateScalarConstants(projected) {
+export function propagateScalarConstants(projected, observer = null) {
   const maximum = Math.max(4, projected.instructions.length * 2);
   for (let round = 0; round < maximum; round++) {
     let changed = false;
@@ -285,6 +305,7 @@ export function propagateScalarConstants(projected) {
       if (inst.op === V1_OP.LOAD) continue;
       const value = foldInstruction(inst);
       if (value == null || !inst.dst || inst.dst.const === value) continue;
+      observeConstantWrite(inst, value, round, 'pre-memory-scalar-constants', observer);
       inst.dst.const = value;
       changed = true;
     }
@@ -342,14 +363,14 @@ function recoverStackSlots(projected) {
   projected.stackSlots = slots.sort((left, right) => left.offset < right.offset ? -1 : left.offset > right.offset ? 1 : left.key.localeCompare(right.key));
 }
 
-export function finalizeLegacyProjection(projected) {
+export function finalizeLegacyProjection(projected, observer = null) {
   compactProjectedState(projected);
   rebuildDefUse(projected);
   suppressUnusedIncomingState(projected);
   normalizePublicStateDefinitionOrder(projected);
   renumberPublicStateVersions(projected);
   recoverLocalStackFlow(projected);
-  propagateConstants(projected);
+  propagateConstants(projected, observer);
   recoverStackSlots(projected);
   return projected;
 }
