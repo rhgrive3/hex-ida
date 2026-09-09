@@ -160,6 +160,13 @@ function createRecognitionApprovalAuthority() {
     // A trusted approval gesture delivered to the control's surface: a real
     // platform Event, browser-trusted, of a direct gesture type, and
     // currently being delivered BY THE PLATFORM to exactly that surface.
+    // A trusted approval gesture delivered to the control's surface: a real
+    // platform Event, browser-trusted, of a direct gesture type, delivered
+    // to exactly that surface, while the host carries a project binding
+    // (review R2 round 5: an unbound record must never exist — the issue
+    // requires the project/binary binding as part of the approval
+    // authority's identity, so minting fails closed while the host has not
+    // bound a project yet; the control stays armed for the real gesture).
     requireTrustedDelivery(event, surface) {
       if (!HOST_EVENT || !HOST_EVENT_IS_TRUSTED_GETTER || !HOST_EVENT_CURRENT_TARGET_GETTER) throw new TypeError('recognition approval is unavailable in this realm: no platform Event API');
       if (!event || typeof event !== 'object') throw new TypeError('recognition approval requires the user interaction event of a direct approval gesture');
@@ -167,6 +174,7 @@ function createRecognitionApprovalAuthority() {
       if (HOST_EVENT_IS_TRUSTED_GETTER.call(event) !== true) throw new TypeError('recognition approval requires a browser-trusted user interaction; synthetic events are not approval evidence');
       if (HOST_EVENT_CURRENT_TARGET_GETTER.call(event) !== surface) throw new TypeError('recognition approval requires the gesture to be delivered to this approval surface; events observed on other UIs are not approval evidence');
       if (!APPROVAL_INTERACTION_TYPES.has(event.type)) throw new TypeError('recognition approval requires a direct approval gesture (click/pointer/keydown), not an indirect event');
+      if (projectBinding == null) throw new TypeError('recognition approval requires the host project/binary binding to be configured before an approval can be minted');
     },
     // Mint the approval record from a verified control delivery. The record
     // never leaves this module as data.
@@ -205,6 +213,9 @@ function createRecognitionApprovalAuthority() {
       // consumption time (review R4): a record minted under one project
       // binding cannot be spent after the host re-binds, and an unbound
       // record cannot be spent under any binding.
+      // Fail closed on a missing binding on either side (review R2 round 5):
+      // an unbound record can never be spent, even against an unbound host.
+      if (projectBinding == null || record.projectBinding == null) throw new Error('recognition approval record is bound to a different project binding');
       if ((projectBinding ?? null) !== (record.projectBinding ?? null)) throw new Error('recognition approval record is bound to a different project binding');
       approved.delete(result.id);
       return record;

@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { createPackageEnvelope, parseBoundedPackageInput, resolvePackageDependencies, validatePackageEnvelope, validateProviderOutput } from '../../../js/phase12/package-envelope.js';
 import { validatePhase12ProviderResult } from '../../../js/phase12/provider-boundary.js';
 import '../knowledge/harness-event-realm.mjs';
-import { fireTrustedApprovalGesture } from '../knowledge/harness-event-realm.mjs';
-import { createMatchResult, promoteKnowledgeSuggestion, createRecognitionApprovalControl } from '../../../js/knowledge/phase12-recognition.js';
+import { fireTrustedApprovalGesture, hostRecognitionCapability } from '../knowledge/harness-event-realm.mjs';
+import { createMatchResult, promoteKnowledgeSuggestion, createRecognitionApprovalControl, configureRecognitionApprovalHost } from '../../../js/knowledge/phase12-recognition.js';
 import { ChangeLog, createProjectOperation } from '../../../js/collaboration/index.js';
 import { compilePattern, evaluatePattern } from '../../../js/pattern/index.js';
 import { createRebuildPlan, materializeRebuildPlan, validateRebuildOutput } from '../../../js/rebuild/index.js';
@@ -27,6 +27,9 @@ assert.throws(
   /cannot be supplied/,
   'a duck-typed caller-supplied authority must not become the issuer (review R2)',
 );
+// The trusted runner plays the host: the project binding is required host
+// identity for approval minting (review R2 round 5).
+configureRecognitionApprovalHost({ projectBinding: 'trust-test-project', capability: hostRecognitionCapability() });
 let localApproved = false;
 const approvalControl = createRecognitionApprovalControl(suggestion, { actorId: 'local-actor', onApproved: () => { localApproved = true; } });
 fireTrustedApprovalGesture(approvalControl.surface, 'click');

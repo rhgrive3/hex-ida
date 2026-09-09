@@ -43,6 +43,12 @@ function uniqueResult(overrides = {}) {
 
 const result = uniqueResult();
 
+// The trusted runner plays the host: it carries the bootstrap capability and
+// a default project binding so approvals can be minted at all (the binding
+// is required host identity — review R2 round 5).
+const HOST_CAPABILITY = hostRecognitionCapability();
+recognition.configureRecognitionApprovalHost({ projectBinding: 'test-project', capability: HOST_CAPABILITY });
+
 // Mint an approval for `match` through the only legitimate path: a
 // platform-trusted gesture delivered to the module-minted approval surface.
 function approveThroughControl(match, { actorId = 'actor-a', onApproved = () => {} } = {}) {
@@ -256,23 +262,41 @@ test('#5216 the host project binding is recorded and re-verified at consumption 
     const fact = promoteKnowledgeSuggestion(bindingMatch, { actorId: 'actor-a' });
     assert.equal(fact.confirmation, 'user-confirmed');
   } finally {
-    recognition.configureRecognitionApprovalHost({ projectBinding: null, capability });
+    recognition.configureRecognitionApprovalHost({ projectBinding: 'test-project', capability });
   }
 });
 
-test('#5216 an unbound approval cannot be spent once the host carries a binding', () => {
-  const unboundMatch = uniqueResult({ sourceEntityId: 'fn:binding-b', packageEntryId: 'pkg:binding-b' });
+test('#5216 an unbound host cannot mint at all: unbound→unbound promotion fails closed (review R2 round 5)', () => {
   const capability = hostRecognitionCapability();
-  approveThroughControl(unboundMatch, { actorId: 'actor-a' });
-  recognition.configureRecognitionApprovalHost({ projectBinding: 'project-A', capability });
+  const unboundMatch = uniqueResult({ sourceEntityId: 'fn:binding-b', packageEntryId: 'pkg:binding-b' });
+  recognition.configureRecognitionApprovalHost({ projectBinding: null, capability });
   try {
+    let approved = 0;
+    const control = createRecognitionApprovalControl(unboundMatch, { actorId: 'actor-a', onApproved: () => { approved++; } });
+    // A genuine trusted gesture on the module-minted surface: without the
+    // host project binding it must not mint (the issue requires the
+    // project/binary binding as part of the approval authority identity).
+    const event = fireTrustedApprovalGesture(control.surface, 'click');
+    assert.equal(event.isTrusted, true, 'the gesture itself is genuinely trusted');
+    assert.equal(approved, 0, 'minting fails closed while the host has no project binding');
     assert.throws(
       () => promoteKnowledgeSuggestion(unboundMatch, { actorId: 'actor-a' }),
-      /bound to a different project binding/,
-      'an unbound record cannot be spent under any binding',
+      /approval is required/,
+      'no unbound record exists to consume: unbound→unbound promotion is impossible',
     );
+    assert.throws(
+      () => promoteKnowledgeSuggestion({ ...unboundMatch, projectBinding: null }, { actorId: 'actor-a' }),
+      /approval is required/,
+    );
+    // Once the host binds, the still-armed control mints on the next real
+    // gesture — and the fresh record carries the binding.
+    recognition.configureRecognitionApprovalHost({ projectBinding: 'project-A', capability });
+    fireTrustedApprovalGesture(control.surface, 'click');
+    assert.equal(approved, 1, 'the armed control mints once the host binds');
+    const fact = promoteKnowledgeSuggestion(unboundMatch, { actorId: 'actor-a' });
+    assert.equal(fact.authority, 'L4-local-canonical');
   } finally {
-    recognition.configureRecognitionApprovalHost({ projectBinding: null, capability });
+    recognition.configureRecognitionApprovalHost({ projectBinding: 'test-project', capability });
   }
 });
 
@@ -336,5 +360,5 @@ test('#5216 the host binding setter is a host-held capability: an importer canno
   const fact = promoteKnowledgeSuggestion(staleMatch, { actorId: 'attacker' });
   assert.equal(fact.authority, 'L4-local-canonical', 'only a fresh approval under the current binding promotes');
   assert.throws(() => promoteKnowledgeSuggestion(staleMatch, { actorId: 'attacker' }), /approval is required/, 'and it is single-use');
-  recognition.configureRecognitionApprovalHost({ projectBinding: null, capability });
+  recognition.configureRecognitionApprovalHost({ projectBinding: 'test-project', capability });
 });

@@ -5,9 +5,13 @@ import { fileURLToPath } from 'node:url';
 import { createKnowledgePack } from '../../../js/signature/index.js';
 import { createPackageEnvelope, importPhase12Package, parseBoundedPackageInput, resolvePackageDependencies, validateProviderOutput } from '../../../js/phase12/package-envelope.js';
 import './harness-event-realm.mjs';
-import { createMatchResult, promoteKnowledgeSuggestion, recognitionCanClaimUnique, createRecognitionApprovalControl } from '../../../js/knowledge/phase12-recognition.js';
-import { fireTrustedApprovalGesture } from './harness-event-realm.mjs';
+import { createMatchResult, promoteKnowledgeSuggestion, recognitionCanClaimUnique, createRecognitionApprovalControl, configureRecognitionApprovalHost } from '../../../js/knowledge/phase12-recognition.js';
+import { fireTrustedApprovalGesture, hostRecognitionCapability } from './harness-event-realm.mjs';
 import '../../issue-3783-knowledge-pack-confidence-types.mjs';
+
+// The trusted runner plays the host: the project binding is required host
+// identity for approval minting (review R2 round 5).
+configureRecognitionApprovalHost({ projectBinding: 'package-test-project', capability: hostRecognitionCapability() });
 
 const fixturePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures/profile-evidence/knowledge-package.json');
 const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
