@@ -1,4 +1,4 @@
-import { ArtifactStorageError, ArtifactUnsupportedError } from './contracts.js';
+import { ArtifactStorageError, ArtifactUnsupportedError, normalizeArtifactPayloadBytes } from './contracts.js';
 import {
   compatiblePublishedArtifact,
   createStorageEnvelopeFields,
@@ -6,7 +6,7 @@ import {
 } from './storage/integrity.js';
 
 function exactArrayBuffer(bytes) {
-  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const view = normalizeArtifactPayloadBytes(bytes);
   if (view.byteOffset === 0 && view.byteLength === view.buffer.byteLength && view.buffer instanceof ArrayBuffer) return view.buffer.slice(0);
   const copy = new Uint8Array(view.byteLength);
   copy.set(view);
@@ -157,9 +157,10 @@ export class MemoryArtifactBackend {
 
   async deleteIfMatches(artifactId, record, payload) {
     const id = requireArtifactId(artifactId);
+    const expectedPayload = exactArrayBuffer(payload);
     const previous = this.entries.get(id);
     if (!previous) return false;
-    if (!sameObservedArtifact(previous.record, record, previous.payload, payload)) return false;
+    if (!sameObservedArtifact(previous.record, record, previous.payload, expectedPayload)) return false;
     return this.delete(id);
   }
 
@@ -377,6 +378,7 @@ export class IndexedDbArtifactBackend {
 
   async deleteIfMatches(artifactId, record, payload) {
     const id = requireArtifactId(artifactId);
+    const expectedPayload = exactArrayBuffer(payload);
     let done = null;
     try {
       const db = await this.#db();
@@ -384,7 +386,7 @@ export class IndexedDbArtifactBackend {
       done = transactionPromise(tx);
       const store = tx.objectStore('artifacts');
       const previous = await requestPromise(store.get(id));
-      if (!previous || !sameObservedArtifact(previous.record, record, previous.payload, payload)) {
+      if (!previous || !sameObservedArtifact(previous.record, record, previous.payload, expectedPayload)) {
         await done;
         return false;
       }
