@@ -9,7 +9,7 @@ import { chainedImportSymbols } from '../js/chained.js';
 
 const LE = true;
 
-function fixture(pool, symbolsOffset) {
+function fixture(pool, symbolsOffset, { importNameOffsets = [0] } = {}) {
   const file = new Uint8Array(0x9000);
   const dv = new DataView(file.buffer);
   dv.setUint32(0, 0xfeedfacf, LE);
@@ -40,17 +40,22 @@ function fixture(pool, symbolsOffset) {
   dv.setUint32(q + 48, 0x4100, LE); dv.setUint32(q + 64, 0, LE); dv.setUint32(q + 72, 0, LE);
   p += 152;
   const fixoff = 0x8000;
+  const fixupSize = Math.max(0x60, symbolsOffset + (pool?.length ?? 0));
   dv.setUint32(p, 0x80000034, LE); dv.setUint32(p + 4, 16, LE);
-  dv.setUint32(p + 8, fixoff, LE); dv.setUint32(p + 12, 0x60, LE);
+  dv.setUint32(p + 8, fixoff, LE); dv.setUint32(p + 12, fixupSize, LE);
   const F = fixoff;
   dv.setUint32(F + 0, 0, LE);
   dv.setUint32(F + 4, 28, LE);
   dv.setUint32(F + 8, 76, LE);
   dv.setUint32(F + 12, symbolsOffset, LE);
-  dv.setUint32(F + 16, 1, LE);
+  dv.setUint32(F + 16, importNameOffsets.length, LE);
   dv.setUint32(F + 20, 2, LE);
   dv.setUint32(F + 24, 0, LE);
-  dv.setUint32(F + 76, 0, LE); // imports entry 0: name_offset 0, ordinal 0
+  for (let i = 0; i < importNameOffsets.length; i++) {
+    const entry = F + 76 + i * 8;
+    dv.setUint32(entry, importNameOffsets[i] << 9, LE);
+    dv.setUint32(entry + 4, 0, LE);
+  }
   dv.setUint32(F + 28, 2, LE);
   dv.setUint32(F + 32, 0, LE);
   dv.setUint32(F + 36, 24, LE);
@@ -95,14 +100,15 @@ test('#5656 valid multibyte names still recover through the strict decoder', asy
 });
 
 test('#5656 a malformed name later in the pool does not corrupt earlier entries', async () => {
-  // "one\0" (valid) then "tw\xFF" + NUL (invalid trailing byte)
+  // Import 0 is valid and referenced by the GOT. Import 1 is malformed and
+  // deliberately unreferenced: parsing it must not poison import 0.
   const pool = Buffer.concat([Buffer.from('one\0'), Buffer.from([0x74, 0x77, 0xff, 0x00])]);
-  const file = fixture(pool, 86);
-  // name_offset for the second string: 4 (in uleb-encoded imports entry) — patch the entry
-  const buf = new Uint8Array(await file.arrayBuffer());
-  new DataView(buf.buffer).setUint32(0x8000 + 76, 4 << 9, LE);
-  const out = await chainedImportSymbols(new Blob([buf]), 0);
-  assert.deepEqual(out, [], 'the second string is invalid UTF-8 and must resolve to no name');
+  const out = await chainedImportSymbols(
+    fixture(pool, 96, { importNameOffsets: [0, 4] }),
+    0,
+  );
+  assert.deepEqual([...new Set(out.map((e) => e.name))], ['one']);
+  assert.ok(out.every((e) => e.name === 'one'), 'the malformed second import must not become symbol evidence');
 });
 
 console.log('issue #5656 chained import name strict UTF-8 regression: ok');
