@@ -1372,6 +1372,47 @@ authorized by these results. Full exact-head gates, the 137 semantic gaps,
 FS/GS shared-state work, native/browser/device proofs, reconciliation and the
 complete 23-finding audit remain required. Competitive superiority is unproven.
 
+### Exact local WIP checkpoint `5835cc929`
+
+Local commit `5835cc9294016176061ffff2f22adb35795aa149` records the scalar
+address implementation, generated outputs and previously uncommitted verifier
+work. It is a local WIP commit, not the remote PR head and not EP-031/phase
+acceptance of the still-failing closure test. The source worktree was clean
+for the following runs:
+
+- Canonical generated rebuild: PASS, 2.7 s; explicit diff over template,
+  release-version and deployment-identity output was zero.
+- `npm run check` through the pinned local runner: FAIL, 115.6 s. The new
+  632-encoding address test passes in both engines (5056 projections each),
+  and the closure matrix still reports 137 partial / 0 unowned. There are
+  **two** failing MachineEffects files: `independent-oracle-report.test.mjs`
+  and `x86-long64-closure-matrix.test.mjs`. Later invariant gates were not run.
+  Log: `/mnt/workspace/hex-roadmap-recovery-durable.UWZe3G/hex-roadmap-5835-check-UpSsHW/full.log`.
+- Encrypted userscript browser regression: PASS, 5.5 s.
+- Independent report isolated with Git 2.49.1: FAIL, 0.6 s. This is now a
+  real moving-main reconciliation failure, not an unsupported Git option.
+  Shared `origin/main` advanced from `99d4cf84857ca01d7b72480b9156d1ee560fb49b`
+  to `4e869019d2d26592932bcf6f80d25132ebb982a5`. Git reports conflicts in
+  `js/analysis/types/graph.js`, `userscript/hex.user.template.js` and
+  `userscript/release-version.json`. The reported tree hash
+  `2c0db2ffaf868a1bdd97b427e3d2a7346f86ddec` accompanies conflict stages; it is
+  **not** a clean or verified candidate tree. Do not silence this gate by
+  extracting its first output line or dropping the candidate requirement.
+  Log: `/mnt/workspace/hex-roadmap-recovery-durable.UWZe3G/hex-roadmap-5835-independent-report-dHaQM7/full.log`.
+
+The local runner's toolchain guard was tested from a deliberately restricted
+`PATH=/usr/bin:/bin`; it selected and asserted installed Git 2.49.1 and Node
+v24.20.0 successfully. It does not resolve actual source conflicts.
+
+All test processes started in this checkpoint have exited. Next action is
+read-only review and in-place reconciliation with freshly resolved live main,
+preserving both current-main pointer/field claim fixes and the roadmap's type
+work. Regenerate outputs, never hand-merge their conflict text. Re-audit the
+integration inventory against the explicitly recorded new reconciliation
+base, then verify the actual resolved candidate. Do not create a replacement
+PR. After reconciliation, continue FS/GS state/address dependencies, the
+remaining semantic gaps and all 23 findings; none is newly declared complete.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
