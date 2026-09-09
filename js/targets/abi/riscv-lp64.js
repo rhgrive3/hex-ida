@@ -761,7 +761,10 @@ function createClassifier(profile) {
     const aggregate = prototype.aggregate === true || !!returnAggregate || malformedReturnAggregate
       || aggregateLayoutDescriptorPresent(prototype)
       || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
-    const declaredBits = prototype.returnBits ?? prototype.bits ?? options.returnBits;
+    // A call-site options.returnBits is a return-width override (#5636): it
+    // outranks the prototype's own (possibly stale/coarser) width metadata,
+    // matching the scalar override order used by the other ABI surfaces.
+    const declaredBits = options.returnBits ?? prototype.returnBits ?? prototype.bits;
     const declaredBitsNumber = Number(declaredBits);
     // Preserve every top-level and nested descriptor alias until the shared
     // canonicalizer sees it.  Spreading returnAggregate here would let a

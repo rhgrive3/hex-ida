@@ -18,12 +18,18 @@ function storeValue(app, key) {
 }
 
 function addressOf(value) {
-  if (typeof value === 'bigint') return value;
+  // The canonical address query boundary enforces one address-domain
+  // invariant regardless of input representation: an address is a
+  // non-negative integer. Only the number branch checked the sign before
+  // (#5196), so -1n / '-1' / 'function:-1' laundered a negative address
+  // into backend calls that the same logical value as a number could not
+  // reach.
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
   if (typeof value === 'string') {
     const text = value.trim().replace(/^(?:fn|function):/i, '');
     if (!text) return null;
-    try { return BigInt(text); } catch { return null; }
+    try { const parsed = BigInt(text); return parsed >= 0n ? parsed : null; } catch { return null; }
   }
   if (value && typeof value === 'object') return addressOf(value.address ?? value.startAddress ?? value.startAddr ?? value.start ?? value.functionId ?? value.id);
   return null;

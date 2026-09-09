@@ -28,12 +28,16 @@ function abortError(signal, message = 'Analysis query aborted') {
 function abortIfNeeded(signal) { if (signal?.aborted) throw abortError(signal); }
 function optionalCallback(value) { return typeof value === 'function' ? value : null; }
 function addressOf(value) {
-  if (typeof value === 'bigint') return value;
+  // Same canonical address-domain contract as the query adapter: an address
+  // is a non-negative integer regardless of representation. Only the number
+  // branch checked the sign before (#5196), letting -1n / '-1' /
+  // 'function:-1' reach demand-driven backend calls.
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
   if (typeof value === 'string') {
     const text = value.trim().replace(/^(?:fn|function):/i, '');
     if (!text) return null;
-    try { return BigInt(text); } catch { return null; }
+    try { const parsed = BigInt(text); return parsed >= 0n ? parsed : null; } catch { return null; }
   }
   if (value && typeof value === 'object') return addressOf(value.address ?? value.startAddress ?? value.startAddr ?? value.start ?? value.functionId ?? value.id);
   return null;
