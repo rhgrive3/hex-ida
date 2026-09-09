@@ -41,11 +41,16 @@ function canonicalVerdict(value, fallback = 'unverified') {
   return fallback;
 }
 
+function canonicalEvidenceId(value) {
+  return typeof value === 'string' && value.length > 0 && value.trim() === value ? value : null;
+}
+
 function projectEvidence(kind, value, extra = {}, fallbackVerdict = 'unverified') {
   const evidence = value?.evidence ?? value;
   const source = extra.source ?? value?.source ?? evidence?.source ?? evidence?.provenance?.source ?? null;
   const detail = extra.detail ?? value?.detail ?? evidence?.detail ?? evidence?.reason ?? null;
-  const evidenceId = extra.evidenceId ?? value?.evidenceId ?? value?.id ?? evidence?.evidenceId ?? evidence?.id ?? null;
+  const rawEvidenceId = extra.evidenceId ?? value?.evidenceId ?? value?.id ?? evidence?.evidenceId ?? evidence?.id ?? null;
+  const evidenceId = canonicalEvidenceId(rawEvidenceId);
   return { ...extra, evidenceId, kind: typeof value?.kind === 'string' && value.kind.trim() ? value.kind : kind, verdict: canonicalVerdict(value, fallbackVerdict), source, detail, evidence };
 }
 
