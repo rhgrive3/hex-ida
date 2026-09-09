@@ -78,47 +78,72 @@ export async function recognizeWithKnowledgeDB({ db, input, packageEnvelope = nu
   return createMatchResult({ ...input, packageContentHash: packageHash, candidates, candidateSearchTruncated: matches.truncated === true, ambiguityWindow: options.ambiguityWindow });
 }
 
-// Host-held approval authority for L4 promotion (#5216, review R2–R4): a
+// Host-held approval authority for L4 promotion (#5216, review R2–R5): a
 // plain { approved:true, targetMatchId } self-declaration is not approval
 // evidence, and neither is any caller-fabricated authority — a duck-typed
 // { consumeGrant(){…} } option or an importer of this module must not be
-// able to mint approval. Two boundaries make issuance real rather than
+// able to mint approval. Three boundaries make issuance real rather than
 // self-asserted:
-// 1. Grant issuance requires a browser-trusted user interaction: the caller
-//    must present the actual platform Event of a direct approval gesture.
-//    The module captures the realm's Event constructor and the Event.prototype
-//    isTrusted getter once, at evaluation time (host boot). Issuance then
-//    requires (a) `interaction instanceof <captured Event>` — a caller-made
-//    plain object like { type:'click', isTrusted:true } is not an Event and
-//    can never pass — and (b) the browser-managed isTrusted internal slot,
-//    read through the captured prototype getter so an own-property
-//    `isTrusted` shadow on the instance cannot forge it. User-agent
-//    dispatched gestures are the only Events whose isTrusted slot is true,
-//    so AI/plugin/alternate-UI code running in the page cannot mint an
-//    approval by importing this module, no matter what actorId it
-//    self-reports. (Replacing globalThis.Event before host boot is out of
-//    the threat model: that is pre-application code execution, the same
-//    trust tier as the host bundle itself; post-boot replacement cannot
-//    affect the captured references.)
-// 2. Consumption is module-private: promotion verifies the grant against
-//    this module's own authority instance (match id, target entity, package
-//    identity/hash, algorithm version, actor identity, interaction type,
-//    single-use) AND re-verifies the grant's project binding against the
-//    host binding current at consumption time — a grant minted under one
-//    binding cannot be spent after the host re-binds.
-// The Node test harness is the trusted-runner domain: it runs this module in
-// a realm whose Event platform API is the harness stand-in (see
-// tests/phase12/knowledge/harness-event-realm.mjs); the privilege boundary
-// in production remains the browser-enforced user activation.
+// 1. The realm's platform Event boundary, captured once at module evaluation
+//    (host boot): approval gestures must be real platform Events whose
+//    browser-managed isTrusted internal slot is true — read through the
+//    captured Event.prototype getters so an own-property shadow
+//    (`Object.defineProperty(ev, 'isTrusted', { value: true })`) cannot forge
+//    them, and so a caller-built plain object ({ type:'click',
+//    isTrusted:true }) can never pass (it is not a platform Event at all).
+//    User-agent dispatched gestures are the only Events whose isTrusted slot
+//    is true, so code running in the page cannot fabricate one.
+// 2. Approval controls bind the gesture to the target match (review R5): an
+//    arbitrary trusted click observed elsewhere (navigation, another panel,
+//    any unrelated button) must not be launderable into an approval for an
+//    attacker-chosen result. The module therefore does not hand out any
+//    "issue a grant for this event" seam at all — `Event.isTrusted` proves
+//    that user input happened, never that THIS suggestion was approved.
+//    Issuance is bound host-side: `createRecognitionApprovalControl(result, …)`
+//    creates a one-shot approval control for exactly that match. The control
+//    becomes an approval only for a trusted approval gesture DELIVERED TO THE
+//    SURFACE the control is attached to (the captured
+//    `Event.prototype.currentTarget` getter must report the attached surface
+//    during delivery — the platform sets it only for listeners the dispatch
+//    reaches, so an event captured on another surface fails the check both
+//    live and when replayed after the dispatch ended). On such a delivery the
+//    module mints the approval record into its own private state and invokes
+//    the creator's onApproved continuation; approval evidence never crosses
+//    the module boundary as caller-forgeable data, and `promoteKnowledge-
+//    Suggestion` consumes the record keyed to the match identity. An importer
+//    can create a control only for a match whose rendered approval surface
+//    the user actually activates — laundering unrelated clicks is impossible.
+//    (A hostile UI that draws its own "approve X" surface and talks the user
+//    into clicking it is browser-security/clickjacking territory, outside
+//    any in-page JS authority; the module requires only what a gesture on an
+//    approval surface for that match proves.)
+// 3. Consumption is module-private and re-verifies the host project binding
+//    current at consumption time (review R4): a record minted under one
+//    binding cannot be spent after the host re-binds, and an unbound record
+//    cannot be spent under any binding. Records are single-use; match id,
+//    target entity, package identity/hash, algorithm version, actor identity
+//    and interaction type are all verified from the minted record.
+// The Node test harness (and the phase12 denominator behavior probe) is the
+// trusted-runner domain: it runs this module in a realm whose platform Event
+// API is a stand-in that can mark gestures trusted exactly where the browser
+// would (tests/phase12/knowledge/harness-event-realm.mjs and
+// tools/validation/phase12/recognition-probe-realm.mjs). Replacing
+// globalThis.Event before host boot is out of the threat model: that is
+// pre-application code execution, the same trust tier as the host bundle
+// itself; post-boot replacement cannot affect the captured references.
 const APPROVAL_INTERACTION_TYPES = new Set(['click', 'pointerdown', 'pointerup', 'keydown']);
 
 const HOST_EVENT = typeof Event === 'function' ? Event : null;
 const HOST_EVENT_IS_TRUSTED_GETTER = HOST_EVENT
   ? Object.getOwnPropertyDescriptor(Event.prototype, 'isTrusted')?.get ?? null
   : null;
+const HOST_EVENT_CURRENT_TARGET_GETTER = HOST_EVENT
+  ? Object.getOwnPropertyDescriptor(Event.prototype, 'currentTarget')?.get ?? null
+  : null;
 
 function createRecognitionApprovalAuthority() {
-  const pending = new Map();
+  // matchId -> minted approval record. Single-use, keyed to the match.
+  const approved = new Map();
   let projectBinding = null;
   return deepFreeze({
     configureHost({ projectBinding: binding = null } = {}) {
@@ -131,95 +156,134 @@ function createRecognitionApprovalAuthority() {
       }
     },
     hostProjectBinding() { return projectBinding; },
-    requireTrustedInteraction(interaction) {
-      if (!interaction || typeof interaction !== 'object') throw new TypeError('recognition approval requires the user interaction event of a direct approval gesture');
-      // The interaction must be a real platform Event of this realm — a
-      // caller-made plain object ({ type:'click', isTrusted:true }) is not
-      // approval evidence (review R4).
-      if (!HOST_EVENT || !HOST_EVENT_IS_TRUSTED_GETTER) throw new TypeError('recognition approval is unavailable in this realm: no platform Event API');
-      if (!(interaction instanceof HOST_EVENT)) throw new TypeError('recognition approval requires the platform Event of a direct approval gesture; caller-built objects are not approval evidence');
-      // Read the browser-managed isTrusted internal slot through the captured
-      // prototype getter: an own `isTrusted` property on the instance cannot
-      // shadow it.
-      if (HOST_EVENT_IS_TRUSTED_GETTER.call(interaction) !== true) throw new TypeError('recognition approval requires a browser-trusted user interaction; synthetic events are not approval evidence');
-      if (!APPROVAL_INTERACTION_TYPES.has(interaction.type)) throw new TypeError('recognition approval requires a direct approval gesture (click/pointer/keydown), not an indirect event');
+    // A trusted approval gesture delivered to the control's surface: a real
+    // platform Event, browser-trusted, of a direct gesture type, and
+    // currently being delivered BY THE PLATFORM to exactly that surface.
+    requireTrustedDelivery(event, surface) {
+      if (!HOST_EVENT || !HOST_EVENT_IS_TRUSTED_GETTER || !HOST_EVENT_CURRENT_TARGET_GETTER) throw new TypeError('recognition approval is unavailable in this realm: no platform Event API');
+      if (!event || typeof event !== 'object') throw new TypeError('recognition approval requires the user interaction event of a direct approval gesture');
+      if (!(event instanceof HOST_EVENT)) throw new TypeError('recognition approval requires the platform Event of a direct approval gesture; caller-built objects are not approval evidence');
+      if (HOST_EVENT_IS_TRUSTED_GETTER.call(event) !== true) throw new TypeError('recognition approval requires a browser-trusted user interaction; synthetic events are not approval evidence');
+      if (HOST_EVENT_CURRENT_TARGET_GETTER.call(event) !== surface) throw new TypeError('recognition approval requires the gesture to be delivered to this approval surface; events observed on other UIs are not approval evidence');
+      if (!APPROVAL_INTERACTION_TYPES.has(event.type)) throw new TypeError('recognition approval requires a direct approval gesture (click/pointer/keydown), not an indirect event');
     },
-    issueGrant(result, { actorId, interaction } = {}) {
+    // Mint the approval record from a verified control delivery. The record
+    // never leaves this module as data.
+    recordApproval(result, { actorId, interactionType }) {
       if (!result || result.authority !== 'L2-suggestion' || !result.id) throw new TypeError('recognition suggestion required');
       const actor = String(actorId || '').trim();
       if (!actor) throw new TypeError('local approving actor identity is required');
-      this.requireTrustedInteraction(interaction);
-      const nonce = Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)));
-      const token = `recognition-grant_${stableDigest({ nonce, matchId: result.id, actor, projectBinding })}`;
-      const grant = deepFreeze({
-        token,
+      // A fresh trusted gesture re-arms the approval: an unconsumed stale
+      // record (e.g. left behind by a failed consumption after a host
+      // re-bind) is replaced by the latest verified gesture. Consumption
+      // itself stays single-use, and only a real delivery can mint.
+      const record = deepFreeze({
         matchId: result.id,
         sourceEntityId: result.sourceEntityId,
         packageEntryId: result.packageEntryId,
         packageContentHash: result.packageContentHash ?? null,
         algorithmVersion: result.algorithmVersion,
         actorId: actor,
-        interactionType: interaction.type,
+        interactionType: String(interactionType || ''),
         projectBinding,
       });
-      pending.set(token, grant);
-      return grant;
+      approved.set(result.id, record);
+      return record;
     },
-    consumeGrant(result, token, { actorId = null } = {}) {
-      const value = String(token || '');
-      if (!value) throw new Error('explicit recognition approval is required');
-      const grant = pending.get(value);
-      if (!grant) throw new Error('recognition approval grant is not valid');
-      const matches = (field, expected) => (grant[field] ?? null) === (expected ?? null);
-      if (!matches('matchId', result?.id)) throw new Error('recognition approval grant is bound to a different match');
-      if (!matches('sourceEntityId', result?.sourceEntityId)) throw new Error('recognition approval grant is bound to a different target entity');
-      if (!matches('packageEntryId', result?.packageEntryId)) throw new Error('recognition approval grant is bound to a different package entry');
-      if (!matches('packageContentHash', result?.packageContentHash)) throw new Error('recognition approval grant is bound to a different package content');
-      if (!matches('algorithmVersion', result?.algorithmVersion)) throw new Error('recognition approval grant is bound to a different algorithm version');
-      const actor = actorId == null ? grant.actorId : String(actorId).trim();
-      if (actor !== grant.actorId) throw new Error('recognition approval grant is bound to a different actor');
+    consumeFor(result, actorId = null) {
+      const record = approved.get(result?.id);
+      if (!record) throw new Error('explicit recognition approval is required');
+      const matches = (field, expected) => (record[field] ?? null) === (expected ?? null);
+      if (!matches('sourceEntityId', result?.sourceEntityId)) throw new Error('recognition approval record is bound to a different target entity');
+      if (!matches('packageEntryId', result?.packageEntryId)) throw new Error('recognition approval record is bound to a different package entry');
+      if (!matches('packageContentHash', result?.packageContentHash)) throw new Error('recognition approval record is bound to a different package content');
+      if (!matches('algorithmVersion', result?.algorithmVersion)) throw new Error('recognition approval record is bound to a different algorithm version');
+      const actor = actorId == null ? record.actorId : String(actorId).trim();
+      if (actor !== record.actorId) throw new Error('recognition approval record is bound to a different actor');
       // The binding is re-verified against the host binding CURRENT at
-      // consumption time (review R4): a grant minted under one project
+      // consumption time (review R4): a record minted under one project
       // binding cannot be spent after the host re-binds, and an unbound
-      // grant cannot be spent under any binding.
-      if ((projectBinding ?? null) !== (grant.projectBinding ?? null)) throw new Error('recognition approval grant is bound to a different project binding');
-      pending.delete(value);
-      return grant;
+      // record cannot be spent under any binding.
+      if ((projectBinding ?? null) !== (record.projectBinding ?? null)) throw new Error('recognition approval record is bound to a different project binding');
+      approved.delete(result.id);
+      return record;
     },
   });
 }
 
 // The one consuming authority. It is not reachable through the module
-// surface: only this module can consume grants, so callers cannot duck-type,
-// swap or self-mint their way into the approval boundary. Issuance is bound
-// to a browser-trusted user interaction (see above) — importing this module
-// from AI/plugin/alternate-UI code yields no way to mint a grant.
+// surface: only this module can consume approval records, so callers cannot
+// duck-type, swap or self-mint their way into the approval boundary.
 const HOST_APPROVAL_AUTHORITY = createRecognitionApprovalAuthority();
 
 export function configureRecognitionApprovalHost({ projectBinding = null } = {}) {
   HOST_APPROVAL_AUTHORITY.configureHost({ projectBinding });
 }
 
-export function issueRecognitionApprovalGrant(result, { actorId, interaction } = {}) {
-  return HOST_APPROVAL_AUTHORITY.issueGrant(result, { actorId, interaction });
+// The only issuance seam: a one-shot approval control bound to exactly one
+// recognition suggestion. The host renders an approval surface (button) for
+// the suggestion and attaches the control's handleEvent as its event
+// listener; only a browser-trusted gesture the platform delivers to that
+// surface mints the approval record, and the grant never crosses the module
+// boundary as data — the creator's onApproved continuation runs the local
+// promotion. See the boundary comment above for the threat model.
+export function createRecognitionApprovalControl(result, { actorId, onApproved } = {}) {
+  if (!result || result.authority !== 'L2-suggestion' || !result.id) throw new TypeError('recognition suggestion required');
+  if (result.candidateSearchTruncated || result.status === 'ambiguous') throw new Error('ambiguous or truncated recognition cannot be promoted');
+  const actor = String(actorId || '').trim();
+  if (!actor) throw new TypeError('local approving actor identity is required');
+  if (typeof onApproved !== 'function') throw new TypeError('an onApproved continuation is required to run the local promotion');
+  let state = 'pending';
+  let surface = null;
+  let continuation = onApproved;
+  const handleEvent = (event) => {
+    if (state !== 'pending') return;
+    try {
+      HOST_APPROVAL_AUTHORITY.requireTrustedDelivery(event, surface);
+    } catch {
+      // Not a trusted gesture on this approval surface: no approval is
+      // minted and the control stays armed for the real one.
+      return;
+    }
+    HOST_APPROVAL_AUTHORITY.recordApproval(result, { actorId: actor, interactionType: event.type });
+    state = 'approved';
+    const run = continuation;
+    continuation = null;
+    run();
+  };
+  return deepFreeze({
+    matchId: result.id,
+    handleEvent,
+    // Bind the control to the rendered approval surface. One surface per
+    // control, bound before delivery; rebinding is refused (fail-closed).
+    attach(approvalSurface) {
+      if (state !== 'pending') throw new Error('approval control is no longer pending');
+      if (surface != null && approvalSurface !== surface) throw new Error('approval control is already bound to its approval surface');
+      if (approvalSurface == null || (typeof approvalSurface !== 'object' && typeof approvalSurface !== 'function')) throw new TypeError('an approval surface (the rendered control target) is required');
+      surface = approvalSurface;
+    },
+    release() { state = 'released'; },
+  });
 }
 
 export function promoteKnowledgeSuggestion(result, options = {}) {
   if (!result || result.authority !== 'L2-suggestion') throw new TypeError('recognition suggestion required');
   if (result.candidateSearchTruncated || result.status === 'ambiguous') throw new Error('ambiguous or truncated recognition cannot be promoted');
-  if ('approvalAuthority' in options || 'approvalToken' in options) {
-    throw new Error('recognition approval evidence is a host-issued single-use grant token');
+  for (const forbidden of ['approvalGrant', 'approvalToken', 'approvalAuthority', 'interaction']) {
+    if (forbidden in options) {
+      throw new Error('recognition approval evidence is minted by the host approval control and cannot be supplied');
+    }
   }
-  // The opaque token is verified against the module-private host authority;
-  // verified actor/provenance come from the consumed grant, not caller
-  // fields (#5216).
-  const grant = HOST_APPROVAL_AUTHORITY.consumeGrant(result, options.approvalGrant, { actorId: options.actorId ?? null });
-  const actorId = String(grant.actorId || '').trim();
+  // The approval record is verified against the module-private host
+  // authority; verified actor/provenance come from the minted record, not
+  // caller fields (#5216).
+  const record = HOST_APPROVAL_AUTHORITY.consumeFor(result, options.actorId ?? null);
+  const actorId = String(record.actorId || '').trim();
   if (!actorId) throw new TypeError('local approving actor identity is required');
   return deepFreeze({
     kind: 'knowledge-fact', targetEntityId: result.sourceEntityId, value: options.value || { packageEntryId: result.packageEntryId, name: options.name || null },
     confirmation: 'user-confirmed', authority: 'L4-local-canonical',
-    provenance: { source: 'local-user', actorId, approvedMatchId: grant.matchId },
+    provenance: { source: 'local-user', actorId, approvedMatchId: record.matchId, approvalGesture: record.interactionType },
     externalProvenance: { packageContentHash: result.packageContentHash, packageEntryId: result.packageEntryId, algorithmVersion: result.algorithmVersion, evidenceIds: result.evidenceIds },
   });
 }

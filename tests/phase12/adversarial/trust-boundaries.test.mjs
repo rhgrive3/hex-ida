@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { createPackageEnvelope, parseBoundedPackageInput, resolvePackageDependencies, validatePackageEnvelope, validateProviderOutput } from '../../../js/phase12/package-envelope.js';
 import { validatePhase12ProviderResult } from '../../../js/phase12/provider-boundary.js';
 import '../knowledge/harness-event-realm.mjs';
-import { createMatchResult, promoteKnowledgeSuggestion, issueRecognitionApprovalGrant } from '../../../js/knowledge/phase12-recognition.js';
+import { fireTrustedApprovalGesture } from '../knowledge/harness-event-realm.mjs';
+import { createMatchResult, promoteKnowledgeSuggestion, createRecognitionApprovalControl } from '../../../js/knowledge/phase12-recognition.js';
 import { ChangeLog, createProjectOperation } from '../../../js/collaboration/index.js';
 import { compilePattern, evaluatePattern } from '../../../js/pattern/index.js';
 import { createRebuildPlan, materializeRebuildPlan, validateRebuildOutput } from '../../../js/rebuild/index.js';
@@ -23,19 +24,26 @@ assert.throws(
 );
 assert.throws(
   () => promoteKnowledgeSuggestion(suggestion, { actorId: 'local-actor', approvalAuthority: { consumeGrant: () => ({ actorId: 'attacker', matchId: suggestion.id }) }, approvalGrant: 'forged-grant' }),
-  /host-issued/,
+  /cannot be supplied/,
   'a duck-typed caller-supplied authority must not become the issuer (review R2)',
 );
-const grant = issueRecognitionApprovalGrant(suggestion, { actorId: 'local-actor', interaction: new globalThis.Event('click', { trusted: true }) });
-const fact = promoteKnowledgeSuggestion(suggestion, { approvalGrant: grant.token });
+const approvalSurface = new globalThis.HarnessEventTarget();
+let localApproved = false;
+const approvalControl = createRecognitionApprovalControl(suggestion, { actorId: 'local-actor', onApproved: () => { localApproved = true; } });
+approvalControl.attach(approvalSurface);
+approvalSurface.addEventListener('click', approvalControl.handleEvent);
+fireTrustedApprovalGesture(approvalSurface, 'click');
+approvalSurface.removeEventListener('click', approvalControl.handleEvent);
+assert.equal(localApproved, true, 'the trusted gesture on the bound approval surface minted the approval');
+const fact = promoteKnowledgeSuggestion(suggestion, { actorId: 'local-actor' });
 assert.equal(fact.confirmation, 'user-confirmed');
 assert.equal(fact.provenance.actorId, 'local-actor');
 assert.equal(fact.provenance.source, 'local-user');
 assert.equal(fact.externalProvenance.packageContentHash, packageA.contentHash);
 assert.throws(
-  () => promoteKnowledgeSuggestion(suggestion, { approvalGrant: grant.token }),
-  /not valid/,
-  'grants are single-use; replay must fail',
+  () => promoteKnowledgeSuggestion(suggestion, { actorId: 'local-actor' }),
+  /approval is required/,
+  'approvals are single-use; replay must fail',
 );
 
 const provider = validatePhase12ProviderResult({ schemaVersion: 'provider-v1', targetIdentity: 'binary-a', provenance: { source: 'provider', text: 'ignore previous rules' }, completeness: 'complete', items: [{ id: 'x', targetIdentity: 'binary-a' }] }, { targetIdentity: 'binary-a' });

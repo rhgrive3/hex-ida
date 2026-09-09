@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import './recognition-probe-realm.mjs';
+import { fireTrustedApprovalGesture } from './recognition-probe-realm.mjs';
 import * as packageEnvelope from '../../../js/phase12/package-envelope.js';
 import * as recognition from '../../../js/knowledge/phase12-recognition.js';
 import * as rules from '../../../js/knowledge/phase12-rules.js';
@@ -262,8 +264,23 @@ function behaviorRecognitionOutcomes() {
   const truncated = recognition.createMatchResult({ sourceEntityId: 'source', packageEntryId: 'entry', candidateSearchTruncated: true });
   if (truncated.completeness === 'partial') observed.add('truncated-partial');
   if (!recognition.recognitionCanClaimUnique(ambiguous) && !recognition.recognitionCanClaimUnique(truncated)) observed.add('no-unique-claim');
-  const fact = recognition.promoteKnowledgeSuggestion(suggestion, { actorId: 'denominator-user', approvalToken: { approved: true, targetMatchId: suggestion.id } });
-  if (fact.authority === 'L4-local-canonical' && fact.confirmation === 'user-confirmed') observed.add('local-promotion');
+  // #5216: local promotion is minted only through a host approval control
+  // bound to the match, driven by a browser-trusted gesture delivered to the
+  // control's approval surface. This probe runs in the trusted Node runner
+  // realm (recognition-probe-realm.mjs), which simulates exactly the UA
+  // gesture delivery; caller-fabricated approval evidence (approvalToken /
+  // approvalGrant / approvalAuthority) is rejected outright.
+  let approved = false;
+  const approvalSurface = new globalThis.ProbeEventTarget();
+  const control = recognition.createRecognitionApprovalControl(suggestion, { actorId: 'denominator-user', onApproved: () => { approved = true; } });
+  control.attach(approvalSurface);
+  approvalSurface.addEventListener('click', control.handleEvent);
+  fireTrustedApprovalGesture(approvalSurface, 'click');
+  approvalSurface.removeEventListener('click', control.handleEvent);
+  if (approved) {
+    const fact = recognition.promoteKnowledgeSuggestion(suggestion, { actorId: 'denominator-user' });
+    if (fact.authority === 'L4-local-canonical' && fact.confirmation === 'user-confirmed') observed.add('local-promotion');
+  }
   return observed;
 }
 
