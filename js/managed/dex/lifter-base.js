@@ -14,11 +14,12 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
   // Find class and direct/virtual method entry to check codeOff and accessFlags
   let codeOff = 0;
   let accessFlags = 0;
+  let enclosingClass = null;
   for (const cls of dexImage.classes) {
     const dm = cls.directMethods.find((m) => m.methodIdx === methodIdx);
-    if (dm) { codeOff = dm.codeOff; accessFlags = dm.accessFlags; break; }
+    if (dm) { codeOff = dm.codeOff; accessFlags = dm.accessFlags; enclosingClass = cls; break; }
     const vm = cls.virtualMethods.find((m) => m.methodIdx === methodIdx);
-    if (vm) { codeOff = vm.codeOff; accessFlags = vm.accessFlags; break; }
+    if (vm) { codeOff = vm.codeOff; accessFlags = vm.accessFlags; enclosingClass = cls; break; }
   }
 
   const isNative = (accessFlags & 0x0100) !== 0; // ACC_NATIVE
@@ -349,11 +350,27 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
           for (const reg of argRegs) {
             locationReads.push({ kind: 'register', index: reg, bits: 32 });
           }
-          callEffects.push({
+          const callEffect = {
             target: `${targetMeth.classType}->${targetMeth.name}`,
             dispatchKind: kinds[opcode],
             argRegisters: argRegs,
-          });
+          };
+          if (opcode === 0x72) {
+            // invoke-interface resolves through the receiver's implemented
+            // interfaces — the class_def interfaces_off authority (#7620).
+            // The decoded rows reach the dispatch/assignability consumer as
+            // the exact candidate edge set, plus the derived fact that the
+            // enclosing class itself implements the target interface.
+            // `unresolved` stays true: the runtime receiver may be any
+            // implementor, so dispatch is never narrowed beyond the file.
+            const interfaceRows = Array.isArray(enclosingClass?.interfaceTypes)
+              ? enclosingClass.interfaceTypes
+              : [];
+            callEffect.interfaceTypes = interfaceRows;
+            callEffect.enclosingClassImplementsTarget = interfaceRows.includes(targetMeth.classType);
+            callEffect.unresolved = true;
+          }
+          callEffects.push(callEffect);
         }
         break;
 
