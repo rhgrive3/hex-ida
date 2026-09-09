@@ -226,9 +226,10 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     const type = info & 0xf;
     const sectionIdentity = resolveDynamicSectionIndex(r, image, tags, i, shndx);
     const defined = sectionIdentity.known ? sectionIdentity.index !== SHN_UNDEF : null;
-    const common = sectionIdentity.known && sectionIdentity.index === SHN_COMMON;
-    const unallocatedOrUndefined = sectionIdentity.known
-      && (sectionIdentity.index === SHN_COMMON || sectionIdentity.index === SHN_UNDEF);
+    const common = sectionIdentity.known
+      && sectionIdentity.source === 'st_shndx'
+      && sectionIdentity.index === SHN_COMMON;
+    const unallocatedOrUndefined = common || defined === false;
     if (!sectionIdentity.known) markDynamicPartial(image, `dynamic symbol ${i} has unresolved section identity (${sectionIdentity.reason})`);
     // STB_GNU_UNIQUE (10) is a process-wide unique global binding (GNU ELF
     // ABI): it must stay in the export/linkage truth, not be lumped into an
