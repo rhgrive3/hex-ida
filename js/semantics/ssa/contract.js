@@ -247,6 +247,15 @@ export function createSemanticSsaContract(input, options = {}) {
     if (stableStringify(incomingPreds.slice().sort()) !== stableStringify(block.predecessors.slice().sort())) {
       fail('semantic-ssa-phi-predecessor-set-incomplete');
     }
+    // Each phi argument must be the definition produced on its own edge:
+    // a branch-local value attributed to the opposite predecessor is not
+    // canonical SSA (#5413). Definitions without a block stay unpinned.
+    for (const incoming of definition.incoming) {
+      const prior = definitionByValue.get(incoming.valueId);
+      if (prior?.blockId != null && prior.blockId !== incoming.predecessorBlockId) {
+        fail('semantic-ssa-phi-incoming-edge-mismatch');
+      }
+    }
   }
 
   const useDefLinks = uses
