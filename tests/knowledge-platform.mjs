@@ -141,4 +141,47 @@ assert.equal(toolResult.result.truncated, true, 'tool result must retain the bou
 assert.equal(toolResult.completeness.complete, false, 'tool completeness must reflect a bounded knowledge scan');
 assert.equal(toolResult.completeness.reason, 'scan-budget');
 assert.equal(toolResult.modelData.completeness.complete, false, 'model projection must preserve bounded-scan incompleteness');
+
+// Detail retrieval must preserve the source scan state even when paging has
+// exhausted the returned prefix. Exercise the complete control first, then
+// keep two matches inside the bounded prefix and a third one beyond it.
+const completeRegistry = createHexToolRegistry({ knowledge:memorySearch, functions:searchFunctions });
+const completeLookup = await completeRegistry.execute('lookup_known_function', { query:'foo', limit:10 }, { scope:'binary' });
+const completeDetail = await completeRegistry.execute('get_observation_detail', { detailRef:completeLookup.detailRef, path:'$', limit:100 }, { scope:'binary' });
+for (const meta of [completeLookup.completeness, completeDetail.result.completeness, completeDetail.completeness, completeDetail.modelData.completeness]) {
+  assert.equal(meta.complete, true, 'an exhaustive lookup/detail/model path remains complete');
+}
+
+const partialEntries = boundedEntries.slice(0, 2000).map(([id, record]) => [id, { ...record }]);
+partialEntries[0][1] = { ...partialEntries[0][1], names:['late'], searchTerms:['late'] };
+partialEntries[1][1] = { ...rememberedRecords[1], id:partialEntries[1][0], names:['late'], searchTerms:['late'] };
+partialEntries.push(['zz-outside', { ...template, id:'zz-outside', names:['late'], searchTerms:['late'] }]);
+const partialMemory = new KnowledgeDB({ indexedDB:null, memory:new Map(partialEntries), negativeMemory:new Map() });
+const partialIndexed = new KnowledgeDB({ indexedDB:{} });
+partialIndexed._db = createIndexedDBSearchFixture(partialEntries.map(([, record]) => record));
+for (const knowledge of [partialMemory, partialIndexed]) {
+  const partialRegistry = createHexToolRegistry({ knowledge, functions:[searchFunctionA, searchFunctionB] });
+  const partialLookup = await partialRegistry.execute('lookup_known_function', { query:'late', limit:10 }, { scope:'binary' });
+  assert.equal(partialLookup.result.length, 2, 'bounded lookup retains matches inside the scanned prefix');
+  assert.equal(partialLookup.completeness.complete, false);
+  assert.equal(partialLookup.completeness.reason, 'scan-budget');
+
+  const fullDetail = await partialRegistry.execute('get_observation_detail', { detailRef:partialLookup.detailRef, path:'$', limit:100 }, { scope:'binary' });
+  assert.equal(fullDetail.result.data.length, 2, 'detail retains all returned knowledge rows');
+  for (const meta of [fullDetail.result.completeness, fullDetail.completeness, fullDetail.modelData.completeness]) {
+    assert.equal(meta.complete, false, 'an exhausted detail page cannot upgrade a partial source');
+    assert.equal(meta.reason, 'scan-budget');
+  }
+
+  const firstPage = await partialRegistry.execute('get_observation_detail', { detailRef:partialLookup.detailRef, path:'$', limit:1 }, { scope:'binary' });
+  assert.equal(firstPage.result.data.length, 1);
+  assert.ok(firstPage.continuation?.cursor, 'the detail page still exposes its continuation');
+  const lastPage = await partialRegistry.execute('get_observation_detail', { detailRef:partialLookup.detailRef, cursor:firstPage.continuation.cursor, limit:1 }, { scope:'binary' });
+  assert.equal(lastPage.result.data.length, 1);
+  assert.equal(lastPage.continuation, undefined, 'the final page has no page continuation');
+  for (const meta of [firstPage.completeness, lastPage.completeness, lastPage.modelData.completeness]) {
+    assert.equal(meta.complete, false, 'page navigation cannot erase source incompleteness');
+  }
+  assert.equal(lastPage.completeness.reason, 'scan-budget', 'the final page retains the source reason');
+}
 console.log('issue #4681 bounded knowledge search: PASS');
