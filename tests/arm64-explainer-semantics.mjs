@@ -473,7 +473,7 @@ try {
         assert.equal(result.handlerError, undefined);
         assert.equal(result.pseudo, `flags = ${width}0 ⋛ ${width}1`);
         assert.ok(result.terms.includes('flags'));
-        if (mnemonic === 'fcmpe') assert.match(result.detail.join(' '), /NaN/);
+        if (mnemonic === 'fcmpe') assert.match(result.detail.join(' '), /quiet NaN.*Invalid Operation/);
       }
       for (const [mnemonic, condition, fallback] of [['fccmp', 'eq', 0], ['fccmpe', 'ne', 15]]) {
         const result = explain(mnemonic, `${width}0, ${width}1, #${fallback}, ${condition}`);
@@ -481,7 +481,7 @@ try {
         assert.equal(result.pseudo, `if (${condition}) flags = ${width}0 ⋛ ${width}1 else flags = ${fallback}`);
         assert.match(result.summary, /NZCV/);
         assert.ok(result.terms.includes('float') && result.terms.includes('flags'));
-        if (mnemonic === 'fccmpe') assert.match(result.detail.join(' '), /NaN/);
+        if (mnemonic === 'fccmpe') assert.match(result.detail.join(' '), /quiet NaN.*Invalid Operation/);
       }
       for (const [mnemonic, operator] of [['fadd', '+'], ['fsub', '−'], ['fmul', '×'], ['fdiv', '÷']]) {
         assert.equal(explain(mnemonic, `${width}0, ${width}1, ${width}2`).pseudo,
