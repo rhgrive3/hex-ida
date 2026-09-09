@@ -90,7 +90,7 @@ test('#5577: store/load mixing at one offset still counts every width', () => {
   assert.equal(layout.kind, 'struct-or-object', '0+8 <= 8: disjoint extents stay non-overlapping');
 });
 
-test('#5577: malformed (zero/negative) widths never mint exact layout evidence', () => {
+test('#5577: malformed widths sharing an offset with a valid width are ignored', () => {
   const layout = layoutFor([
     [1, 1, 'load', 0n, 0, 'f0-bad'],
     [2, 2, 'load', 0n, 8, 'f0'],
@@ -98,4 +98,17 @@ test('#5577: malformed (zero/negative) widths never mint exact layout evidence',
   ]);
   assert.equal(layout.fields.find((f) => f.offset === 0n).size, 8, 'zero width is ignored, not trusted');
   assert.equal(layout.kind, 'struct-or-object');
+});
+
+test('#5577: invalid-only width group withholds non-overlap authority', () => {
+  const layout = layoutFor([
+    [1, 1, 'load', 0n, 0, 'f0-unknown'],
+    [2, 2, 'load', 4n, 4, 'f4'],
+  ]);
+  assert.equal(layout.fields.find((f) => f.offset === 0n).size, 0,
+    'an invalid-only group must retain an unknown extent');
+  assert.equal(layout.kind, 'object', 'unknown extent cannot prove non-overlap');
+  assert.equal(layout.confidence, 0.45);
+  assert.ok(!layout.evidence.includes('multiple non-overlapping fixed-offset fields'),
+    'unknown extent must not mint the 0.68 non-overlap verdict');
 });
