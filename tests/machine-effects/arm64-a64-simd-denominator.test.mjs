@@ -181,7 +181,9 @@ try {
     assert.ok(exact(effects), `${label}:not-exact:${raw.mnemonic} ${raw.opStr}:${effects.unknownEffects?.reason}`);
     assert.equal(effects.metadata.family, 'arm64-simd', `${label}:wrong-family`);
     assert.equal(effects.operations.some((operation) => operation.kind === 'unknown'), false, `${label}:unknown-effect`);
-    assert.deepEqual(effects.possibleFaults, [], `${label}:unexpected-fault`);
+    const readsFpcr = effects.operations.some((operation) => operation.kind === 'register-read' && operation.register.registerId === 'fpcr');
+    const fpExceptionFaults = effects.possibleFaults.filter((fault) => fault?.kind === 'arm64-floating-point-exception');
+    assert.equal(fpExceptionFaults.length, readsFpcr ? 1 : 0, `${label}:fpcr-trap-fault-contract`);
     assert.equal(effects.controlEffect.kind, 'fallthrough', `${label}:control`);
     assert.doesNotThrow(() => validateMachineEffectBundle(effects), label);
     assertClosedDataflow(effects, label);
