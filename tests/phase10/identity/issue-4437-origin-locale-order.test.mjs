@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 
-import { createEvidenceNode, EvidenceGraph } from '../js/core/evidence/index.js';
-import { stableStringify } from '../js/core/identity/index.js';
-import { createOriginSet } from '../js/core/identity/origin.js';
+import { createEvidenceNode, EvidenceGraph } from '../../../js/core/evidence/index.js';
+import { stableStringify } from '../../../js/core/identity/index.js';
+import { createOriginSet } from '../../../js/core/identity/origin.js';
 
 const IDs = ['ä', 'z'];
 
