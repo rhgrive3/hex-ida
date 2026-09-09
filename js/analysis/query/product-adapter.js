@@ -112,16 +112,17 @@ function canonicalIdentityDimension(value, fallback) {
 // any of the static identity dimensions above. Without a dimension of its own,
 // a runtime trace/experiment recorded between two queries mutates the visible
 // rows while the snapshotId stays constant and every stale check passes
-// (#5630). The dimension is a digest over the corpus membership the adapter
-// can surface; a missing runtime state digests identically to an empty corpus.
+// (#5630). The dimension is a canonical digest over the FULL corpus the
+// adapter can surface — every field of every record, not a field subset — so
+// even a 4096-cap shift()+push replacement whose evicted/added rows share the
+// same id/kind/verdict/timestamp tuple still changes snapshot identity
+// (R1 review of PR #7675). A missing runtime state digests identically to an
+// empty corpus.
 function runtimeEvidenceIdentity(app) {
   let rows = null;
   try { rows = runtimeEvidenceForApp(app); } catch { rows = null; }
   if (!Array.isArray(rows)) return 'unavailable';
-  return canonicalIdentityDimension(
-    rows.map((row) => `${String(row?.id ?? '')}|${String(row?.kind ?? '')}|${String(row?.verdict ?? '')}|${String(row?.timestamp ?? '')}`),
-    [],
-  );
+  return canonicalIdentityDimension(rows, []);
 }
 
 function artifactVersionsFor(app) {
