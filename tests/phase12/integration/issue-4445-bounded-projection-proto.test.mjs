@@ -5,8 +5,8 @@ import {
   projectBounded,
   projectDetail,
   projectSearch,
-} from '../js/ai/tools/projections/index.js';
-import { jsonSafe } from '../js/ai/validation.js';
+} from '../../../js/ai/tools/projections/index.js';
+import { jsonSafe } from '../../../js/ai/validation.js';
 
 function hostileResult() {
   return JSON.parse('{"safe":1,"__proto__":{"injected":"yes"},"nested":{"__proto__":{"nestedInjected":true},"value":2}}');
