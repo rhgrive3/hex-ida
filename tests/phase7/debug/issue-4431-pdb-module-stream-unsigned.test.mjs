@@ -30,6 +30,7 @@ function procedureStream() {
   view.setUint32(16, 16, true); // code length
   view.setUint32(28, 0x0074, true); // primitive int type index
   view.setUint32(32, 0x1000, true);
+  view.setUint32(36, 1, true); // FreeBlockMapBlock: spec-legal value (#5672)
   view.setUint16(36, 1, true);
   record.set(name, 39);
   const stream = new Uint8Array(4 + record.length);
@@ -100,6 +101,7 @@ function buildSyntheticPdb({
   const view = new DataView(bytes.buffer);
   bytes.set(new TextEncoder().encode(MSF_MAGIC), 0);
   view.setUint32(32, BLOCK_SIZE, true);
+  view.setUint32(36, 1, true); // FreeBlockMapBlock: spec-legal value (#5672)
   view.setUint32(40, numBlocks, true);
   view.setUint32(44, directoryBytes, true);
   view.setUint32(52, blockMapAddr, true);

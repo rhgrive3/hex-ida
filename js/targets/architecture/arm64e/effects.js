@@ -32,6 +32,11 @@ const SIGN = Object.freeze({
   pacizb: { key: 'ib', modifier: 'zero' },
   pacdza: { key: 'da', modifier: 'zero' },
   pacdzb: { key: 'db', modifier: 'zero' },
+  // PACIAZ/PACIBZ are the HINT-space implicit-X30 zero-modifier members of the
+  // same architectural family as PACIZA/PACIZB; omitting them silently loses
+  // sign effects for valid A64 encodings.
+  paciaz: { key: 'ia', destination: 'x30', modifier: 'zero' },
+  pacibz: { key: 'ib', destination: 'x30', modifier: 'zero' },
   paciasp: { key: 'ia', destination: 'x30', modifier: 'sp', secondModifier: 'pc' },
   pacibsp: { key: 'ib', destination: 'x30', modifier: 'sp', secondModifier: 'pc' },
   pacia1716: { key: 'ia', destination: 'x17', modifier: 'x16', secondModifier: 'x15' },
@@ -47,6 +52,8 @@ const AUTH = Object.freeze({
   autizb: { key: 'ib', modifier: 'zero' },
   autdza: { key: 'da', modifier: 'zero' },
   autdzb: { key: 'db', modifier: 'zero' },
+  autiaz: { key: 'ia', destination: 'x30', modifier: 'zero' },
+  autibz: { key: 'ib', destination: 'x30', modifier: 'zero' },
   autiasp: { key: 'ia', destination: 'x30', modifier: 'sp', secondModifier: 'x16' },
   autibsp: { key: 'ib', destination: 'x30', modifier: 'sp', secondModifier: 'x16' },
   autia1716: { key: 'ia', destination: 'x17', modifier: 'x16', secondModifier: 'x15' },

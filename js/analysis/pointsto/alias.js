@@ -24,6 +24,31 @@ function widthBytes(widthBits) {
   return BigInt(Math.ceil(bits / 8));
 }
 
+function absoluteInterval(target, accessWidth) {
+  const range = target?.offsetRange;
+  if (target?.address == null || range?.min == null || range?.max == null) {
+    return { interval: null, reason: null };
+  }
+  const pointerWidth = target.widthBits;
+  if (typeof pointerWidth !== 'number'
+      || !Number.isSafeInteger(pointerWidth) || pointerWidth <= 0 || pointerWidth > 512) {
+    return { interval: null, reason: 'provenance-lost' };
+  }
+  let base;
+  try {
+    base = BigInt(target.address);
+  } catch {
+    return { interval: null, reason: 'provenance-lost' };
+  }
+  const addressSpaceSize = 1n << BigInt(pointerWidth);
+  const min = base + range.min;
+  const max = base + range.max;
+  if (min < 0n || max < min || max + accessWidth > addressSpaceSize) {
+    return { interval: null, reason: 'provenance-lost' };
+  }
+  return { interval: { min, max }, reason: null };
+}
+
 function isProvenAddressSpace(value) {
   // Canonical spelling only: a value that is not already trimmed was never
   // canonicalized at the target boundary (e.g. a raw passthrough object), and
@@ -100,24 +125,28 @@ export function pointsToAlias(left, right, options = {}) {
         const hasCanonicalAddressB = addressB != null && addressB === b.address;
 
         if (hasCanonicalAddressA && hasCanonicalAddressB) {
-          const baseA = BigInt(addressA);
-          const baseB = BigInt(addressB);
-          if (a.offsetRange?.min != null && a.offsetRange?.max != null && b.offsetRange?.min != null && b.offsetRange?.max != null) {
-            const spanA_min = baseA + a.offsetRange.min;
-            const spanA_max = baseA + a.offsetRange.max;
-            const spanB_min = baseB + b.offsetRange.min;
-            const spanB_max = baseB + b.offsetRange.max;
-            if (spanA_max + widthA <= spanB_min || spanB_max + widthB <= spanA_min) {
-              relations.push('no');
-              reasonCodes.add('disjoint-global-interval');
-              continue;
+          try {
+            const absoluteA = absoluteInterval(a, widthA);
+            const absoluteB = absoluteInterval(b, widthB);
+            if (absoluteA.reason) reasonCodes.add(absoluteA.reason);
+            if (absoluteB.reason) reasonCodes.add(absoluteB.reason);
+            if (absoluteA.interval && absoluteB.interval) {
+              const spanA_min = absoluteA.interval.min;
+              const spanA_max = absoluteA.interval.max;
+              const spanB_min = absoluteB.interval.min;
+              const spanB_max = absoluteB.interval.max;
+              if (spanA_max + widthA <= spanB_min || spanB_max + widthB <= spanA_min) {
+                relations.push('no');
+                reasonCodes.add('disjoint-global-interval');
+                continue;
+              }
+              if (a.offsetRange.exact && b.offsetRange.exact && spanA_min === spanB_min && widthA === widthB) {
+                relations.push('must');
+                reasonCodes.add('identical-root-and-exact-offset');
+                continue;
+              }
             }
-            if (a.offsetRange.exact && b.offsetRange.exact && spanA_min === spanB_min && widthA === widthB) {
-              relations.push('must');
-              reasonCodes.add('identical-root-and-exact-offset');
-              continue;
-            }
-          }
+          } catch {}
         }
 
         const pair = new Set([a.rootKind, b.rootKind]);
