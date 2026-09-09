@@ -286,7 +286,10 @@ export function parseModuleInfo(bytes, dbi) {
   if (end < declaredEnd) complete = false;
   let offset = DBI_HEADER_SIZE;
   while (offset + 64 <= end) {
-    const streamIndex = view.getInt16(offset + 34, true);
+    // ModInfo::ModuleSymStream is uint16_t. Treat only 0xffff as the PDB nil
+    // sentinel; the upper half of the 16-bit namespace contains valid stream
+    // indices and must not become negative through a signed read (#4431).
+    const streamIndex = view.getUint16(offset + 34, true);
     const symbolByteSize = view.getUint32(offset + 36, true);
     const moduleNameEntry = cstringWithNext(bytes, offset + 64, end);
     if (!moduleNameEntry) { complete = false; break; }
@@ -822,7 +825,13 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
         symbols.complete = false;
         continue;
       }
-      if (module.streamIndex < 0 || module.streamIndex >= msf.streams.length) {
+      if (module.streamIndex === 0xffff) {
+        // A nil ModuleSymStream is valid for modules with no private symbols;
+        // a nonempty declared range is still missing evidence.
+        if (declaredSize > 4) symbols.complete = false;
+        continue;
+      }
+      if (module.streamIndex >= msf.streams.length) {
         if (declaredSize > 4) symbols.complete = false;
         continue;
       }
