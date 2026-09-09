@@ -16,9 +16,15 @@ export function integerText(v, bits = 64, signed = null) {
 
   // C has no portable integer-literal suffix for __int128.  Build the value
   // from 64-bit chunks so the printed program preserves every source bit.
-  const uv = BigInt.asUintN(width, n);
-  const lo = uv & ((1n << 64n) - 1n);
-  const hi = uv >> 64n;
+  // A signed width below 128 must first be sign-extended into the 128-bit
+  // pattern: zero-extending a negative width-bit value would print a positive
+  // __int128 and silently lose the sign (#5249). Unsigned keeps zero
+  // extension.
+  const pattern = signed === true
+    ? BigInt.asUintN(128, sv)
+    : BigInt.asUintN(width, n);
+  const lo = pattern & ((1n << 64n) - 1n);
+  const hi = pattern >> 64n;
   const wide = `(((unsigned __int128)0x${hi.toString(16).toUpperCase()}ULL << 64) | 0x${lo.toString(16).toUpperCase()}ULL)`;
   return signed === true ? `((__int128)${wide})` : wide;
 }
@@ -77,6 +83,25 @@ function moduloArithmeticExpression(n, opts) {
   const needsTruncation = !(exactWidth && arithmetic === exactUnsignedType(bits));
   const truncated = needsTruncation ? `(${exactUnsignedType(bits)})(${raw})` : `(${raw})`;
   return n.signed === true ? `(${exactSignedType(bits)})${truncated}` : truncated;
+}
+
+// Machine integer division (AArch64 SDIV/UDIV and every other architecture
+// that defines it) writes 0 when the divisor is 0. Plain C division by zero is
+// undefined, so printing `/` changes the meaning; guard the divisor with a
+// select that restores the architectural result (#4689). The constant-zero
+// divisor is already folded by the truth evaluator and never reaches a
+// printed division, so this guard only fires where the divisor is unknown.
+function guardedDivision(n, opts) {
+  if (!['sdiv', 'udiv'].includes(n.op)) return null;
+  const bits = normalizedIntegerWidth(n.bits || n.left?.bits || n.right?.bits || 64);
+  const signed = n.op === 'sdiv' && n.compareSigned !== false ? true : false;
+  const left = printExpression(n.left, PREC.unary, opts);
+  const right = printExpression(n.right, PREC.unary, opts);
+  // A divisor statically known to be 0 makes the whole quotient the
+  // architectural 0; printing any division there would be UB-in-C.
+  const divisor = n.right;
+  if (divisor?.kind === 'const' && divisor.value === 0n) return '0';
+  return `(${signed ? exactSignedType(bits) : exactUnsignedType(bits)})(${right} == 0 ? 0 : ${left} / ${right})`;
 }
 
 function integerWidth(...nodes) {
@@ -176,6 +201,8 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
       return wrap(`${left} ${OP_TEXT[n.op] || n.op} ${right}`, p, parentPrec);
     }
     case 'binary': {
+      const guarded = guardedDivision(n, opts);
+      if (guarded) return guarded;
       const exact = moduloArithmeticExpression(n, opts);
       if (exact) return exact;
       const p = PREC[n.op] || 11;

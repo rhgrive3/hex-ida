@@ -16,6 +16,7 @@
  * accepted — the provider contract rejects it outright.
  */
 
+import { parseELF as parseELFImage } from '../../binary/elf.js';
 import { createAnalysisStatus } from '../status.js';
 import {
   DEBUG_DEFAULT_BUDGET,
@@ -41,6 +42,7 @@ const DW_TAG = Object.freeze({
   member: 0x0d,
   pointer_type: 0x0f,
   compile_unit: 0x11,
+  partial_unit: 0x12,
   base_type: 0x24,
   const_type: 0x26,
   subprogram: 0x2e,
@@ -196,7 +198,12 @@ function parseAbbrev(bytes, tableOffset, state = null) {
   // declaration makes the DIE→declaration mapping ambiguous, so the table is
   // marked malformed and its duplicates must not silently overwrite (#5728).
   let duplicateCode = false;
-  if (!bytes || tableOffset >= bytes.length) return { table, stopReason: null, duplicateCode };
+  // DWARF v5 Table 7.4: the child determination encodes exactly
+  // DW_CHILDREN_no (0x00) or DW_CHILDREN_yes (0x01). Any other byte collapses
+  // to a legal value under a boolean read and must fail the table closed
+  // instead (#5237).
+  let invalidChildByte = false;
+  if (!bytes || tableOffset >= bytes.length) return { table, stopReason: null, duplicateCode, invalidChildByte };
   const cursor = new Cursor(bytes, tableOffset);
   while (!cursor.eof) {
     if (state?.isCancelled?.()) return { table: null, stopReason: 'cancelled' };
@@ -207,7 +214,9 @@ function parseAbbrev(bytes, tableOffset, state = null) {
       if (state.declarations > state.maxDeclarations) return { table: null, stopReason: 'declaration-budget' };
     }
     const tag = Number(cursor.uleb());
-    const hasChildren = cursor.u8() === 1;
+    const childByte = cursor.u8();
+    if (childByte > 1) invalidChildByte = true;
+    const hasChildren = childByte === 1;
     const attributes = [];
     for (;;) {
       if (state?.isCancelled?.()) return { table: null, stopReason: 'cancelled' };
@@ -224,7 +233,7 @@ function parseAbbrev(bytes, tableOffset, state = null) {
     if (table.has(code)) duplicateCode = true;
     else table.set(code, { tag, hasChildren, attributes });
   }
-  return { table, stopReason: null, duplicateCode };
+  return { table, stopReason: null, duplicateCode, invalidChildByte };
 }
 
 /** Reads a bounded little-endian unsigned integer of exactly `width` bytes. */
@@ -541,10 +550,12 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
     const unit = { start: unitStart, version, addressSize, offsetSize, abbrevOffset, unitType, strOffsetsBase: null, addrBase: null };
     let abbrev;
     let duplicateCode = false;
+    let invalidChildByte = false;
     if (abbrevCache.has(abbrevOffset)) {
       const cached = abbrevCache.get(abbrevOffset);
       abbrev = cached.table;
       duplicateCode = cached.duplicateCode;
+      invalidChildByte = cached.invalidChildByte ?? false;
     } else {
       const parsedAbbrev = parseAbbrev(sections.debug_abbrev, abbrevOffset, abbrevState);
       if (parsedAbbrev.stopReason != null) {
@@ -561,7 +572,8 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       }
       abbrev = parsedAbbrev.table;
       duplicateCode = parsedAbbrev.duplicateCode;
-      abbrevCache.set(abbrevOffset, { table: abbrev, duplicateCode });
+      invalidChildByte = parsedAbbrev.invalidChildByte;
+      abbrevCache.set(abbrevOffset, { table: abbrev, duplicateCode, invalidChildByte });
     }
     if (abbrev.size === 0) {
       diagnostics.push(`no abbreviations for unit at 0x${unitStart.toString(16)}`);
@@ -574,9 +586,20 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       diagnostics.push(`duplicate abbreviation code in table at 0x${abbrevOffset.toString(16)}`);
       complete = false;
     }
+    if (invalidChildByte) {
+      // DWARF v5 Table 7.4: only 0x00/0x01 are child determination encodings;
+      // anything else made the declaration structure unreliable (#5237).
+      diagnostics.push(`abbreviation table at 0x${abbrevOffset.toString(16)} has an invalid child determination byte`);
+      complete = false;
+    }
 
     const stack = [];
+    let rootDie = null;
     let unitComplete = true;
+    // A structural violation (wrong root tag, extra top-level DIE) fails the
+    // unit closed but does not stop the walk: later DIE offsets and their
+    // facts stay available, and only the completeness claim is withheld.
+    let unitStructurallyMalformed = false;
     while (cursor.offset < unitEnd) {
       if (abbrevState.isCancelled()) {
         diagnostics.push('debug parse cancelled');
@@ -603,13 +626,45 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
         unitComplete = false;
         break;
       }
-      if (code === 0) { stack.pop(); continue; }
+      if (code === 0) {
+        // DWARF4 §2.3 / v5 §2.3: sibling chains terminate with a null entry.
+        // A null entry with no open sibling chain is structure nobody declared,
+        // not a no-op (#5244).
+        if (stack.length === 0) {
+          diagnostics.push(`unmatched null DIE entry at 0x${dieOffset.toString(16)}`);
+          complete = false;
+          unitComplete = false;
+          continue;
+        }
+        stack.pop();
+        continue;
+      }
       const declaration = abbrev.get(code);
       if (!declaration) {
         diagnostics.push(`unknown abbreviation code ${code} at 0x${dieOffset.toString(16)}`);
         complete = false;
         unitComplete = false;
         break;
+      }
+      // A .debug_info compilation unit roots at exactly one DW_TAG_compile_unit
+      // or DW_TAG_partial_unit DIE (DWARF4 §7.5). Any other root tag, or a
+      // second top-level DIE, is a structure the format cannot express (#5251).
+      // The unit fails closed; the remaining DIEs keep parsing so their facts
+      // stay available without the result ever claiming completeness. DWARF5
+      // roots are a per-unit-type contract and are validated separately.
+      if (stack.length === 0 && version < 5) {
+        if (rootDie == null) {
+          rootDie = dieOffset;
+          if (declaration.tag !== DW_TAG.compile_unit && declaration.tag !== DW_TAG.partial_unit) {
+            diagnostics.push(`unit at 0x${unitStart.toString(16)} does not start with a compilation or partial unit DIE (tag 0x${declaration.tag.toString(16)})`);
+            complete = false;
+            unitStructurallyMalformed = true;
+          }
+        } else {
+          diagnostics.push(`multiple top-level DIEs in unit at 0x${unitStart.toString(16)}`);
+          complete = false;
+          unitStructurallyMalformed = true;
+        }
       }
       const attributes = new Map();
       // Keep the first declaration for deterministic decoding, but never
@@ -705,6 +760,16 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       if (die.parent != null) dies.get(die.parent)?.children.push(dieOffset);
       if (declaration.hasChildren) stack.push(dieOffset);
     }
+    // A unit whose bytes exactly fill its declared length can still end with a
+    // child/sibling chain that was never closed by its terminating null entry;
+    // physical truncation and structural truncation are different defects and
+    // both must withhold completeness (#5244).
+    if (unitComplete && stack.length > 0) {
+      diagnostics.push(`unterminated DIE tree at end of unit at 0x${unitStart.toString(16)}`);
+      unitComplete = false;
+      complete = false;
+    }
+    if (unitStructurallyMalformed) unitComplete = false;
     if (!unitComplete) complete = false;
     units.push(unit);
     cursor.offset = unitEnd;
@@ -946,6 +1011,33 @@ export function readDebugLink(section) {
   return { name, crc32: view.getUint32(crcOffset, true) >>> 0 };
 }
 
+/**
+ * A CRC-verified split-debug companion is an ELF that carries the .debug_*
+ * sections the stripped binary lacks. Verification alone is not restoration:
+ * after the identity matches, the companion's DWARF sections must become the
+ * parse source or the split-debug configuration loses every symbol/type
+ * (#5461). Anything that is not a readable ELF simply yields no sections.
+ */
+function companionDebugSections(companion) {
+  if (!(companion instanceof Uint8Array) || companion.length < 64) return null;
+  if (companion[0] !== 0x7f || companion[1] !== 0x45 || companion[2] !== 0x4c || companion[3] !== 0x46) return null;
+  let parsed;
+  try {
+    parsed = parseELFImage(companion);
+  } catch {
+    return null;
+  }
+  const out = {};
+  for (const section of parsed.sections) {
+    if (!section.name?.startsWith('.debug_') || section.type === 8) continue;
+    const start = Number(section.fileOffset);
+    const size = Number(section.fileSize);
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(size) || size <= 0 || start < 0 || start + size > companion.length) continue;
+    out[section.name] = companion.slice(start, start + size);
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 export class DwarfDebugInfoProvider extends DebugInfoProvider {
   constructor() {
     super({ id: DWARF_PROVIDER_ID, version: DWARF_PROVIDER_VERSION, ecosystem: 'dwarf' });
@@ -1015,11 +1107,27 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
       detail = expected == null ? 'binary carries no build id' : 'debug source carries no build id';
     }
 
-    if (!sections.debug_info && !sections['.debug_info']) {
+    // Split debug: once the companion is CRC-verified, its .debug_* sections
+    // become the parse source for everything the stripped binary lacks. The
+    // identity verdict is unaffected by whether the extraction succeeds
+    // (#5461).
+    let parseSource = sections;
+    if (verdict === 'matched-authoritative' && method === 'gnu-debuglink-crc32') {
+      const companionSections = companionDebugSections(image?.companionBytes ?? null);
+      if (companionSections) {
+        parseSource = { ...sections };
+        for (const [name, sectionBytes] of Object.entries(companionSections)) {
+          const withoutDot = name.slice(1);
+          if (parseSource[name] == null && parseSource[withoutDot] == null) parseSource[name] = sectionBytes;
+        }
+      }
+    }
+
+    if (!parseSource.debug_info && !parseSource['.debug_info']) {
       diagnostics.push('no .debug_info section');
     }
 
-    const normalized = normalizeSections(sections);
+    const normalized = normalizeSections(parseSource);
     const parsed = parseDebugInfo(normalized, budget, { signal });
     diagnostics.push(...parsed.diagnostics);
 
