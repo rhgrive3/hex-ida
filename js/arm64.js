@@ -149,8 +149,8 @@ cat('add adds sub subs adc adcs sbc sbcs neg negs mul madd msub mneg smull umull
 cat('and ands orr orn eor eon bic bics lsl lsr asr ror lslv lsrv asrv rorv extr ubfm sbfm bfm ubfx sbfx ubfiz sbfiz bfi bfxil bfc rev rev16 rev32 rev64 clz cls rbit sxtb sxth sxtw uxtb uxth', 'logic');
 cat('cmp cmn tst ccmp ccmn fcmp fcmpe', 'compare');
 cat('csel csinc csinv csneg cset csetm cinc cinv cneg', 'select');
-cat('ldr ldrb ldrh ldrsb ldrsh ldrsw ldur ldurb ldurh ldursb ldursh ldursw ldp ldpsw ldnp ldtr ldxr ldaxr ldxrb ldxrh ldaxrb ldaxrh ldar ldarb ldarh ld1 ld2 ld3 ld4 prfm', 'load');
-cat('str strb strh stur sturb sturh stp stnp sttr stxr stlxr stxrb stxrh stlxrb stlxrh stlr stlrb stlrh st1 st2 st3 st4', 'store');
+cat('ldr ldrb ldrh ldrsb ldrsh ldrsw ldur ldurb ldurh ldursb ldursh ldursw ldp ldpsw ldnp ldtr ldxr ldaxr ldxrb ldxrh ldaxrb ldaxrh ldxp ldaxp ldar ldarb ldarh ld1 ld2 ld3 ld4 prfm', 'load');
+cat('str strb strh stur sturb sturh stp stnp sttr stxr stlxr stxrb stxrh stlxrb stlxrh stxp stlxp stlr stlrb stlrh st1 st2 st3 st4', 'store');
 cat('b bl br blr ret cbz cbnz tbz tbnz braa brab braaz brabz blraa blrab blraaz blrabz retaa retab', 'flow');
 cat('adr adrp', 'address');
 cat('nop hint bti svc hvc smc brk hlt dmb dsb isb yield wfe wfi sev sevl mrs msr sys eret eretaa eretab clrex paciasp pacibsp pacia pacib pacda pacdb paciza pacizb pacdza pacdzb paciaz pacibz pacia1716 pacib1716 autiasp autibsp autia autib autda autdb autiza autizb autdza autdzb autiaz autibz autia1716 autib1716 xpaci xpacd xpaclri pacga dc ic tlbi', 'system');
@@ -2448,6 +2448,84 @@ function exclusiveStoreHandler({ elementSize = null, ordering = null } = {}) {
   };
 }
 
+function pairElementSize(ops, index) {
+  const operand = ops[index];
+  return operand && operand.k === 'reg' && (operand.bits === 32 || operand.bits === 64)
+    ? operand.bits / 8
+    : 8;
+}
+
+function exclusiveLoadPairHandler({ ordering = null } = {}) {
+  return (o, ops) => {
+    const mem = ops.find((x) => x.k === 'mem');
+    const first = opShort(ops[0]);
+    const second = opShort(ops[1]);
+    const elementSize = pairElementSize(ops, 0);
+    const totalSize = elementSize * 2;
+    const type = cType(elementSize, false);
+    const width = sizeLabel(totalSize);
+    o.title = ordering === 'acquire'
+      ? J('順序を守って横取りされないようにペアで読む', 'Acquire exclusive pair load')
+      : J('横取りされないようにペアで読む', 'Exclusive pair load');
+    o.pseudo = first + ', ' + second + ' = load_pair_exclusive(' + (mem ? memExpr(mem) : '') +
+      ', ' + type + ', ' + totalSize + ' bytes) /* 監視開始 */';
+    o.summary = J(
+      (mem ? memText(mem) : 'メモリ') + 'から ' + width + '（' + type + ' を 2 個）を読み、' +
+        first + ' と ' + second + ' に入れながら「ここを見張る」と CPU に宣言する。他のスレッドが書き換えたら、対応する stxp が失敗します。',
+      'Read two ' + type + ' values (' + width + ' total) from ' + (mem ? memText(mem) : 'memory') +
+        ' into ' + first + ' and ' + second + ', and start the exclusive monitor. A matching stxp fails if another thread writes the pair.');
+    if (ordering === 'acquire') {
+      o.summary += J(
+        ' acquire load なので、この読み込みより後のメモリアクセスをこの命令より前へ並べ替えない。',
+        ' This acquire load also prevents later memory operations from being reordered before this load.');
+      o.detail.push(J(
+        'acquire は、合図を読み取った後のメモリアクセスを、この読み込みより先に実行したことにしないためのスレッド間の順序付けです。',
+        'Acquire ordering keeps later memory operations after this load when threads use the value as a synchronization signal.'));
+    }
+    o.detail.push(J(
+      '2 個の値を 1 組として読むので、ペアの一部だけを別のスレッドに書き換えられた状態で受け取らないための仕組みです。',
+      'Both values are one exclusive pair: the operation does not accept a separately modified half of the pair.'));
+    o.terms = ['thread', 'atomic', 'memory'];
+  };
+}
+
+function exclusiveStorePairHandler({ ordering = null } = {}) {
+  return (o, ops) => {
+    const mem = ops.find((x) => x.k === 'mem');
+    const status = opShort(ops[0]);
+    const first = opShort(ops[1]);
+    const second = opShort(ops[2]);
+    const elementSize = pairElementSize(ops, 1);
+    const totalSize = elementSize * 2;
+    const type = cType(elementSize, false);
+    const width = sizeLabel(totalSize);
+    o.title = ordering === 'release'
+      ? J('順序を守って横取りされていなければペアで書く', 'Release exclusive pair store')
+      : J('横取りされていなければペアで書く', 'Exclusive pair store');
+    o.pseudo = status + ' = try_store_pair(' + (mem ? memExpr(mem) : '') + ', ' + first + ', ' + second +
+      ', ' + type + ', ' + totalSize + ' bytes)';
+    o.summary = J(
+      '見張っていた間に誰も書き換えていなければ、' + first + ' と ' + second + ' の ' + type +
+        ' を 2 個（合計 ' + width + '）として条件付きで書き込み、' + status +
+        ' に 0（成功）を入れる。失敗なら 1 が入り、ふつうは上に戻ってやり直します。',
+      'Conditionally store ' + first + ' and ' + second + ' as two ' + type + ' values (' + width + ' total) to ' +
+        (mem ? memText(mem) : 'memory') + ' only if the matching exclusive monitor is still valid; ' +
+        status + ' gets 0 on success and 1 on failure.');
+    if (ordering === 'release') {
+      o.summary += J(
+        ' release store なので、この書き込みより前のメモリアクセスをこの命令より後へ並べ替えない。',
+        ' This release store also prevents earlier memory operations from being reordered after this store.');
+      o.detail.push(J(
+        'release は、共有データを書き終えてから合図を書き込むように、先行するメモリアクセスをこの書き込みより後へ動かさないためのスレッド間の順序付けです。',
+        'Release ordering keeps earlier memory operations before this store when it publishes a synchronization signal.'));
+    }
+    o.detail.push(J(
+      status + ' はメモリへ書く値ではなく、ペアの書き込みが成功したかを返すステータスです。',
+      status + ' is a status result, not store data; ' + first + ' and ' + second + ' are the two data sources.'));
+    o.terms = ['thread', 'atomic', 'memory'];
+  };
+}
+
 const EXCLUSIVE_LOAD_TABLE = [
   { mnemonic: 'ldxr' },
   { mnemonic: 'ldaxr', ordering: 'acquire' },
@@ -2470,6 +2548,18 @@ const EXCLUSIVE_STORE_TABLE = [
 ];
 for (const entry of EXCLUSIVE_STORE_TABLE) {
   HANDLERS[entry.mnemonic] = exclusiveStoreHandler(entry);
+}
+for (const entry of [
+  { mnemonic: 'ldxp' },
+  { mnemonic: 'ldaxp', ordering: 'acquire' },
+]) {
+  HANDLERS[entry.mnemonic] = exclusiveLoadPairHandler(entry);
+}
+for (const entry of [
+  { mnemonic: 'stxp' },
+  { mnemonic: 'stlxp', ordering: 'release' },
+]) {
+  HANDLERS[entry.mnemonic] = exclusiveStorePairHandler(entry);
 }
 for (const n of ['casal', 'cas', 'casa', 'casl']) {
   HANDLERS[n] = (o, ops) => {
