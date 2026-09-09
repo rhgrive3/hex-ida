@@ -22,7 +22,7 @@ for (const kind of ['signature','mapping']) {
   }
 }
 
-for (const confidence of ['0.9', [0.5], true, false, {}, NaN, Infinity, -Infinity]) {
+for (const confidence of ['0.9', ['1'], [0.5], true, false, {}, NaN, Infinity, -Infinity]) {
   assert.throws(() => createKnowledgePack({ confidence }), TypeError, `top-level ${String(confidence)} must fail closed`);
 }
 
@@ -30,7 +30,7 @@ for (const [kind, inputFor] of [
   ['signature', (confidence) => ({ signatures:[{ architecture:'arm64', confidence }] })],
   ['mapping', (confidence) => ({ mappings:[{ identity:'id', confidence }] })],
 ]) {
-  for (const confidence of ['0.9', [0.5], true, false, {}, NaN, Infinity, -Infinity]) {
+  for (const confidence of ['0.9', ['1'], [0.5], true, false, {}, NaN, Infinity, -Infinity]) {
     assert.throws(() => createKnowledgePack(inputFor(confidence)), TypeError, `${kind} ${String(confidence)} must fail closed`);
   }
 }
@@ -42,6 +42,7 @@ assert.equal(defaults.signatures[0].confidence, 1);
 assert.equal(defaults.mappings[0].confidence, 1);
 assert.equal(createKnowledgePack({ confidence:0.4 }).confidence, 0.4);
 assert.equal(createKnowledgePack({ confidence:-0.5 }).confidence, 0, 'finite numeric create values retain lower clamp semantics');
+assert.equal(createKnowledgePack({ confidence:1.5 }).confidence, 1, 'finite numeric create values retain upper clamp semantics');
 assert.equal(createKnowledgePack({ confidence:2 }).confidence, 1, 'finite numeric create values retain clamp semantics');
 
 console.log('issue-3783 knowledge pack confidence typed boundary: PASS');
