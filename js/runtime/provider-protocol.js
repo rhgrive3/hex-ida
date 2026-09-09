@@ -196,15 +196,13 @@ export class RuntimeProviderProtocolClient {
     this.epoch = value;
     for (const [id, pending] of [...this.pending]) {
       this.#finish(id, pending, new DebugAdapterError('cancelled', 'provider request invalidated by epoch change'));
-      try {
-        this.transport.send(validateProviderPacket({
-          protocol: RUNTIME_PROVIDER_PROTOCOL,
-          version: RUNTIME_PROVIDER_PROTOCOL_VERSION,
-          type: 'cancel',
-          id,
-          epoch: pending.epoch,
-        }));
-      } catch {}
+      this.#send(validateProviderPacket({
+        protocol: RUNTIME_PROVIDER_PROTOCOL,
+        version: RUNTIME_PROVIDER_PROTOCOL_VERSION,
+        type: 'cancel',
+        id,
+        epoch: pending.epoch,
+      }));
     }
     return value;
   }
@@ -236,13 +234,13 @@ export class RuntimeProviderProtocolClient {
       this.pending.set(id, pending);
       pending.timer = setTimeout(() => {
         this.#finish(id, pending, new DebugAdapterError('timeout', `provider request timed out: ${method}`));
-        try { this.transport.send(validateProviderPacket({ protocol: RUNTIME_PROVIDER_PROTOCOL, version: 1, type: 'cancel', id, epoch: pending.epoch })); } catch {}
+        this.#send(validateProviderPacket({ protocol: RUNTIME_PROVIDER_PROTOCOL, version: 1, type: 'cancel', id, epoch: pending.epoch }));
       }, timeoutMs);
       if (signal) {
         pending.abort = () => {
           if (this.pending.get(id) !== pending) return;
           this.#finish(id, pending, new DebugAdapterError('cancelled', `provider request cancelled: ${method}`));
-          try { this.transport.send(validateProviderPacket({ protocol: RUNTIME_PROVIDER_PROTOCOL, version: 1, type: 'cancel', id, epoch: pending.epoch })); } catch {}
+          this.#send(validateProviderPacket({ protocol: RUNTIME_PROVIDER_PROTOCOL, version: 1, type: 'cancel', id, epoch: pending.epoch }));
         };
         try {
           signal.addEventListener('abort', pending.abort, { once: true });
@@ -256,8 +254,10 @@ export class RuntimeProviderProtocolClient {
         }
       }
       if (!this.pending.has(id)) return;
-      try { this.transport.send(packet); }
-      catch (error) { this.#finish(id, pending, error); }
+      this.#send(packet, (error) => {
+        if (this.pending.get(id) !== pending) return;
+        this.#finish(id, pending, error);
+      });
     });
   }
 
@@ -288,15 +288,13 @@ export class RuntimeProviderProtocolClient {
     for (const [id, pending] of [...this.pending]) {
       this.#finish(id, pending, new DebugAdapterError('disconnected', 'provider protocol client closed'));
       if (!notifyPeer) continue;
-      try {
-        this.transport.send(validateProviderPacket({
-          protocol: RUNTIME_PROVIDER_PROTOCOL,
-          version: RUNTIME_PROVIDER_PROTOCOL_VERSION,
-          type: 'cancel',
-          id,
-          epoch: pending.epoch,
-        }));
-      } catch {}
+      this.#send(validateProviderPacket({
+        protocol: RUNTIME_PROVIDER_PROTOCOL,
+        version: RUNTIME_PROVIDER_PROTOCOL_VERSION,
+        type: 'cancel',
+        id,
+        epoch: pending.epoch,
+      }));
     }
     if (typeof this.unsubscribe === 'function') { try { this.unsubscribe(); } catch {} }
     this.unsubscribe = null;
@@ -307,6 +305,18 @@ export class RuntimeProviderProtocolClient {
     if (this.nextId > Number.MAX_SAFE_INTEGER) this.nextId = 1;
     while (this.pending.has(this.nextId)) this.nextId++;
     return this.nextId++;
+  }
+
+  #send(packet, onError = null) {
+    let result;
+    try { result = this.transport.send(packet); }
+    catch (error) {
+      if (onError) onError(error);
+      return;
+    }
+    Promise.resolve(result).catch((error) => {
+      if (onError) onError(error);
+    });
   }
 
   #finish(id, pending, error = null, value = undefined) {
