@@ -240,6 +240,13 @@ export class RemoteCollaborationGate {
     this.supportedOperationSchemas = new Set(list(input.supportedOperationSchemas || [CHANGELOG_SCHEMA_VERSION]));
     this.maxBatch = positive(input.maxBatch, 256, 4096, 'remote-gate-max-batch-invalid');
     this.maxMessageBytes = positive(input.maxMessageBytes, 1024 * 1024, 32 * 1024 * 1024, 'remote-gate-max-message-invalid');
+    // #5257: retained replay identity must be bounded. Per-actor strict
+    // monotonic sequence (lastSequenceByActor) already rejects stale replays
+    // in O(actors); the identity Sets exist as duplicate-id authority within
+    // a bounded window. When the window fills, the oldest half is evicted —
+    // an attacker replaying an evicted id still fails the per-actor
+    // sequence check, so eviction cannot open a replay hole.
+    this.maxTrackedMessageIds = positive(input.maxTrackedMessageIds, 4096, 1_000_000, 'remote-gate-max-tracked-ids-invalid');
     this.seenMessages = new Set();
     this.seenEnvelopeIds = new Set();
     this.lastSequenceByActor = new Map();
@@ -306,13 +313,23 @@ export class RemoteCollaborationGate {
     return VALIDATED_REMOTE_SNAPSHOTS.get(envelope) ?? null;
   }
 
+  trackReplayIdentity(messageId, envelopeId) {
+    this.seenMessages.add(messageId);
+    this.seenEnvelopeIds.add(envelopeId);
+    if (this.seenMessages.size > this.maxTrackedMessageIds) {
+      for (const oldest of this.seenMessages) { this.seenMessages.delete(oldest); break; }
+    }
+    if (this.seenEnvelopeIds.size > this.maxTrackedMessageIds) {
+      for (const oldest of this.seenEnvelopeIds) { this.seenEnvelopeIds.delete(oldest); break; }
+    }
+  }
+
   accept(envelope) {
     const checked = this.validate(envelope);
     if (!checked.ok) return Object.freeze({ status: 'rejected', reason: checked.reason });
     const snap = this.validatedSnapshot(envelope);
     if (!snap) return Object.freeze({ status: 'rejected', reason: 'remote-ingress-snapshot-required' });
-    this.seenMessages.add(snap.messageId);
-    this.seenEnvelopeIds.add(snap.envelopeId);
+    this.trackReplayIdentity(snap.messageId, snap.envelopeId);
     this.lastSequenceByActor.set(snap.actorIdentity, snap.sequence);
     return Object.freeze({ status: 'accepted', envelopeId: snap.envelopeId, operationCount: snap.operations.length });
   }

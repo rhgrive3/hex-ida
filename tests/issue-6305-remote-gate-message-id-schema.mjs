@@ -54,20 +54,20 @@ test('#6305 producer output still passes the gate', async () => {
 
 test('#6305 missing messageId is rejected', async () => {
   const { makeGate, rawWith } = await setup();
-  assert.deepEqual(makeGate().validate(rawWith(undefined)), { ok: false, reason: 'remote-message-id-invalid' });
+  assert.deepEqual(makeGate().validate(rawWith(undefined)), { ok: false, reason: 'remote-message-id-required' });
 });
 
 test('#6305 null / empty / whitespace messageId is rejected', async () => {
   const { makeGate, rawWith } = await setup();
   for (const bad of [null, '', '   ']) {
-    assert.deepEqual(makeGate().validate(rawWith(bad)), { ok: false, reason: 'remote-message-id-invalid' });
+    assert.deepEqual(makeGate().validate(rawWith(bad)), { ok: false, reason: 'remote-message-id-required' });
   }
 });
 
 test('#6305 structured and non-string messageId values are rejected', async () => {
   const { makeGate, rawWith } = await setup();
   for (const bad of [{ id: 'm1' }, ['m1'], 7, true]) {
-    assert.deepEqual(makeGate().validate(rawWith(bad)), { ok: false, reason: 'remote-message-id-invalid' });
+    assert.deepEqual(makeGate().validate(rawWith(bad)), { ok: false, reason: 'remote-message-id-required' });
   }
 });
 
@@ -114,7 +114,7 @@ test('#6305 structured messageId with same logical content cannot collide via Se
     const { envelopeId: _old, ...payload } = raw;
     raw.envelopeId = `remote-envelope:${stableDigest(payload)}`;
   }
-  assert.deepEqual(gate.validate(first), { ok: false, reason: 'remote-message-id-invalid' });
-  assert.deepEqual(gate.validate(second), { ok: false, reason: 'remote-message-id-invalid' });
+  assert.deepEqual(gate.validate(first), { ok: false, reason: 'remote-message-id-required' });
+  assert.deepEqual(gate.validate(second), { ok: false, reason: 'remote-message-id-required' });
   assert.equal(gate.seenMessages.size, 0);
 });
