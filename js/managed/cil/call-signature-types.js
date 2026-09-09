@@ -111,12 +111,15 @@ function parseType(bytes, offset, code, depth = 0, methodGenericArity = null, ty
     pos = ref.next;
     const count = readCompressed(bytes, pos, code);
     pos = count.next;
+    const genericArgs = [];
     for (let i = 0; i < count.value; i++) {
-      pos = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts).next;
+      const arg = parseType(bytes, pos, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
+      genericArgs.push(arg.value);
+      pos = arg.next;
     }
     return { next:pos, value:kind === 0x11
-      ? stackType('value-type', null, { typeToken:ref.encoded })
-      : stackType('object-ref', null, { typeToken:ref.encoded }) };
+      ? stackType('value-type', null, { typeToken:ref.encoded, genericArgs })
+      : stackType('object-ref', null, { typeToken:ref.encoded, genericArgs }) };
   }
   if (type === 0x1b) { // FNPTR
     const nested = parseMethodSignature(bytes, pos, code, depth + 1, false, methodGenericArity, typeDefOrRefRowCounts);
@@ -255,6 +258,18 @@ export function parseCilMethodSpecInstantiation(blob, typeDefOrRefRowCounts = nu
   }
   if (pos !== blob.length) fail(code);
   return Object.freeze(args);
+}
+
+// TypeSpec.Signature is a bare Type production (ECMA-335 II.23.2.12/II.23.2.14):
+// custom modifiers, CLASS/VALUETYPE, GENERICINST, SZARRAY, ARRAY, PTR, VAR/MVAR,
+// FNPTR. The whole blob must be one Type; anything unrepresentable is the
+// caller's signal to retain the raw blob authority instead of an exact decode.
+export function parseCilTypeSpecSignature(blob, typeDefOrRefRowCounts = null) {
+  const code = 'cil-type-spec-signature-invalid';
+  if (!(blob instanceof Uint8Array) || blob.length === 0) fail(code);
+  const parsed = parseType(blob, 0, code, 0, null, typeDefOrRefRowCounts);
+  if (parsed.next !== blob.length) fail(code);
+  return Object.freeze(parsed.value);
 }
 
 export function substituteCilMethodGeneric(value, args) {
