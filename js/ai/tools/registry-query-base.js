@@ -91,7 +91,35 @@ function installQueryOverrides(registry, context) {
     };
     const paging = queryPaging(registry, 'inspect_function_region', params, args.cursor);
     const count = Math.max(1, Math.min(500, Number(args.count || (args.radius ? args.radius * 2 + 1 : 160))));
-    const offset = args.cursor ? paging.offset : Math.max(0, Number(args.start) || 0);
+    let offset = args.cursor ? paging.offset : Math.max(0, Number(args.start) || 0);
+    // Mirror the base implementation: without a cursor, anchor the window on
+    // the requested instruction instead of silently returning the first page.
+    if (!args.cursor && args.aroundInstructionId != null) {
+      const radius = Math.max(0, Math.min(250, Number(args.radius ?? 20) || 0));
+      const target = Number(args.aroundInstructionId);
+      const basis = [];
+      // Bounded full-corpus scan (20 pages x 500 rows) so targets beyond the
+      // first window are still anchored; stops at the first match or when the
+      // upstream reports a complete page.
+      for (let pageOffset = 0, pages = 0; pages < 20 && basis.length < 10000; pages++) {
+        const window = await context.getInstructions(args.functionAddress, {
+          offset: pageOffset,
+          limit: 500,
+          signal:registry.executionSignal,
+        });
+        const rows = pageRows(window);
+        if (!rows.length) break;
+        basis.push(...rows);
+        pageOffset += rows.length;
+        if (window?.complete === true) break;
+        const found = rows.some((item) =>
+          Number(item?.id ?? item?.instructionId ?? item?.row) === target);
+        if (found) break;
+      }
+      const index = basis.findIndex((item) =>
+        Number(item?.id ?? item?.instructionId ?? item?.row) === target);
+      if (index >= 0) offset = Math.max(0, index - radius);
+    }
     const page = await context.getInstructions(args.functionAddress, {
       offset,
       limit:count,
