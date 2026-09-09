@@ -120,7 +120,22 @@ function parseType(bytes, offset, code, depth = 0, methodGenericArity = null, ty
   }
   if (type === 0x1b) { // FNPTR
     const nested = parseMethodSignature(bytes, pos, code, depth + 1, false, methodGenericArity, typeDefOrRefRowCounts);
-    return { next:nested.next, value:stackType('native-int') };
+    // The nested calling convention / parameters / return type are the
+    // function-pointer's semantic identity (#7828); only its evaluation-stack
+    // storage category is native-int. Dropping the nested signature made every
+    // function pointer type identical while claiming exact.
+    return {
+      next:nested.next,
+      value:stackType('native-int', null, {
+        fnPtr:Object.freeze({
+          callConvention:nested.value.callConvention,
+          hasThis:nested.value.hasThis,
+          genericParameterCount:nested.value.genericParameterCount,
+          parameters:nested.value.parameters,
+          returnValue:nested.value.returnValue,
+        }),
+      }),
+    };
   }
   fail(code);
 }
