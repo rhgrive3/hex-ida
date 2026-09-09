@@ -33,5 +33,13 @@ export function overlayCilMetadata(bytes,parsed){
  const meta=readCilMetadataStreams(u8,pe.metadataOffset,pe.metadataSize),tablesStream=meta.streams.find(s=>s.name==='#~'||s.name==='#-'),stringsStream=meta.streams.find(s=>s.name==='#Strings');if(!tablesStream)fail('cil-metadata-tables-missing');
  const layout=tableLayout(u8,view,tablesStream),defs=readCilDefinitions(u8,view,layout,stringsStream);const byOffset=new Map((parsed.methodBodies??[]).map(b=>[b.headerOffset,b])),methodBodies=[],methods=[];
  for(const method of defs.methods){const out={...method,bodyIndex:null};if(method.rva!==0){const off=pe.mapRva(method.rva,1,'cil-method-rva-unmapped'),body=byOffset.get(off);if(!body)fail('cil-method-rva-unmapped');out.bodyIndex=methodBodies.length;methodBodies.push({...body,token:method.token,rid:method.rid})}methods.push(out)}
+ // II.22.18: each FieldRVA must map into the loaded PE image. The metadata
+ // root is metadata, not initial data, so an RVA aliasing it is invalid (#7545).
+ const metadataStart=pe.metadataOffset,metadataEnd=pe.metadataOffset+pe.metadataSize;
+ for(const row of defs.fieldRvas??[]){
+  const off=pe.mapRva(row.rva,1,'cil-fieldrva-rva-unmapped');
+  if(off>=metadataStart&&off<metadataEnd)fail('cil-fieldrva-rva-metadata-area');
+  row.fileOffset=off;
+ }
  return deepFreeze({...parsed,runtimeVersion:meta.runtimeVersion,vmSpecEdition:meta.runtimeVersion,types:defs.types,fields:defs.fields,methods,methodBodies});
 }

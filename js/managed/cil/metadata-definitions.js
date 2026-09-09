@@ -171,17 +171,26 @@ export function readCilDefinitions(bytes, view, layout, stringsStream) {
   }
   // II.22.18 FieldRVA: a static field's initial data lives at an RVA in the
   // PE image. Without decoding it, changing the mapping or the backing bytes
-  // never reaches the canonical image (#7545).
+  // never reaches the canonical image (#7545). Validation is fail-closed:
+  // RVA != 0, the RVA must map inside the loaded PE image (it may not alias
+  // the metadata root), and one Field binds at most one FieldRVA row.
   const fieldRvas = readRows(0x1d, pos => {
     const rva = view.getUint32(pos, true);
     const fieldRid = index(pos + 4, tableIndexSize(counts, 4));
     failIf(fieldRid < 1 || fieldRid > counts[4], 'cil-fieldrva-field-invalid');
+    if (rva === 0) fail('cil-fieldrva-rva-required');
     return { rva, fieldToken: cilMetadataToken(4, fieldRid) };
   });
+  if (new Set(fieldRvas.map(row => row.fieldToken)).size !== fieldRvas.length) {
+    fail('cil-fieldrva-field-duplicate');
+  }
   const fieldByToken = new Map(fields.map(field => [field.token, field]));
   for (const row of fieldRvas) {
     const field = fieldByToken.get(row.fieldToken);
     if (field == null) fail('cil-fieldrva-field-invalid');
+    // II.23.1.5: a FieldRVA row targets a field carrying HasFieldRVA (0x0100);
+    // binding initial data to a plain field contradicts its own attributes.
+    if ((field.accessFlags & 0x0100) === 0) fail('cil-fieldrva-field-flag-missing');
     field.rva = row.rva;
   }
 
