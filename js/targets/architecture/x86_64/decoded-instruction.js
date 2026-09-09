@@ -9,6 +9,17 @@ const OPERAND_TYPES = new Set(['register','immediate','memory','invalid']);
 const ACCESS = new Set(['read','write','read-write','unknown']);
 const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed']);
 const SEGMENT_REGISTERS = new Set(['cs','ds','es','fs','gs','ss']);
+const X86_64_ARCHITECTURE_ID = 'x86_64';
+
+function x86ArchitectureIdentityOf(input) {
+  for (const value of [input.architecture, input.architectureId]) {
+    if (value == null) continue;
+    if (typeof value !== 'string' || value.trim().toLowerCase() !== X86_64_ARCHITECTURE_ID) {
+      throw new TypeError('x86-decoded-instruction-architecture-mismatch');
+    }
+  }
+  return X86_64_ARCHITECTURE_ID;
+}
 // Per-decode-mode legal effective address sizes. 64-bit mode supports 64-bit
 // and 0x67-prefixed 32-bit addressing only; 16-bit addresses are unsupported.
 const ADDRESS_SIZE_BITS_BY_MODE = Object.freeze({ 'long-64': Object.freeze([32, 64]) });
@@ -274,8 +285,11 @@ export function createX86DecodedInstruction(input = {}) {
   // Legacy detailAvailable-only callers still map to complete/unavailable.
   const detailStatus = detailStatusOf(input.detailStatus, input.detailAvailable);
   const rawBytes = bytesOf(input.rawBytes ?? input.bytes, length);
+  const architecture = x86ArchitectureIdentityOf(input);
   const result = {
     ...input,
+    architecture,
+    architectureId:architecture,
     contractVersion,
     decoderSemanticVersion:text(input.decoderSemanticVersion ?? X86_DECODER_SEMANTIC_VERSION, 'x86-decoder-semantic-version-required'),
     address:bigint(input.address, 'x86-decoded-instruction-address-required'),

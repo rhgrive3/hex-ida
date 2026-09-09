@@ -8,9 +8,9 @@ const source = await readFile(new URL('../../../js/ai/control/turn-executor.js',
 const guard = 'assertLiveBindingsUnchanged(this.localContext, snapshot);';
 const plannerBranch = source.indexOf('if (this.planner && shouldRunPlanner(request, snapshot, intent))');
 const plannerAwait = source.indexOf('plan = await this.planner(', plannerBranch);
-const ingest = source.indexOf('const plannedEvidence = this.evidenceStore.ingestPlan(plan);', plannerAwait);
+const ingest = source.indexOf('const plannedEvidence = evidenceStore.ingestPlan(plan);', plannerAwait);
 const caughtDecision = source.indexOf('if (!decision) decision = deterministicDecision(plan, request, normalized);', ingest);
-const finalize = source.indexOf('const result = this.finalize(', caughtDecision);
+const finalize = source.indexOf('const result = await this.finalize(', caughtDecision);
 
 assert.ok(plannerBranch >= 0 && plannerAwait > plannerBranch && ingest > plannerAwait, 'planner path markers must remain discoverable');
 assert.ok(
@@ -241,14 +241,11 @@ function makeDriftRuntime(local, mutate) {
 {
   // Stable control: unchanged bindings complete normally through the same fixture.
   const local = { binaryHash: 'A', projectId: 'P1' };
-  const runtime = new AIRuntime({
-    context: local,
-    provider: null,
-    planner: async () => ({ candidates: [], best: null, missingEvidence: [] }),
-  });
-  const result = await runtime.turn({ mode: 'agent', goal: 'find function foo' });
+  const probe = makeDriftRuntime(local, () => {});
+  const result = await probe.runtime.turn({ mode: 'agent', goal: 'find function foo' });
   assert.ok(result?.sessionId, 'stable turn must finalize with a session');
-  assert.equal(runtime.sessionStore.list().flatMap((s) => s.messages || []).filter((m) => m.role === 'assistant').length, 1);
+  assert.equal(probe.ingestCalls(), 1, 'stable plan must reach the turn-local evidence store');
+  assert.equal(probe.assistantMessages().length, 1);
 }
 
 console.log('issue-4047-ai-planner-binding: ok');
