@@ -29,6 +29,16 @@ function valueOf(a) { return a?.value || null; }
 // to an expression's text or a shared input's source IDs. No public metadata
 // can issue a binding, and the expression/load identity is never modified.
 const expressionHistoryConsumers = new WeakMap();
+const buildHistoryObservations = new WeakMap();
+function valueHistoryRecord(record, valueId) {
+  const copy = { ...record, valueId };
+  const observation = buildHistoryObservations.get(record);
+  if (observation) buildHistoryObservations.set(copy, observation);
+  return copy;
+}
+function currentBuildHistory(records) {
+  return records.every(record => buildHistoryObservations.get(record)?.matches() !== false);
+}
 function consumerObservationBudget(state) {
   const requested = state.opts?.renderProvenanceBindingBudget;
   const cap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
@@ -116,10 +126,13 @@ function semanticExpressionConsumer(semantic, value, instruction, state, nested 
       budget.reasons.add('binding-budget');
       return semantic;
     }
+    if (!currentBuildHistory(records)) {
+      budget.reasons.add('stale-expression-build-history'); return semantic;
+    }
     expressionHistoryConsumers.set(semantic, Object.freeze({
       ir:state.ir, expression:semantic.expression, op:semantic.op, instructionId:semantic.ir,
       location:semantic.location, records,
-      isCurrent:() => observation.matches(),
+      isCurrent:() => observation.matches() && currentBuildHistory(records),
     }));
   } catch {
     // A failed bounded observation must not be retried for every later line.
@@ -343,6 +356,56 @@ function branchCondition(inst, state) {
 }
 
 function buildValue(v, state, flags = {}) {
+  // Follow only dependencies actually visited by this existing builder. A
+  // matching expression pointer/source is not evidence that a consumer used a
+  // collapsed phi: unrelated values can legitimately share the same AST node.
+  const parent = state.buildHistoryFrame, frame = { records:null };
+  const key = `${v?.id}:${flags.forAddress ? 'a' : 'v'}`;
+  state.buildHistoryFrame = frame;
+  try {
+    const result = buildValueRaw(v, state, flags);
+    const cached = state.buildHistories?.get(key);
+    const records = frame.records ? Object.freeze([...frame.records]) : cached;
+    if (records?.length) {
+      if (state.expressionMemo.get(key) === result) (state.buildHistories ??= new Map()).set(key, records);
+      if (parent) for (const record of records) (parent.records ??= new Set()).add(record);
+    }
+    return result;
+  } finally { state.buildHistoryFrame = parent; }
+}
+
+function recordPhiCollapse(v, instruction, incoming, expression, state) {
+  const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
+  const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
+  if ((state.phiHistoryCount || 0) >= maximum) {
+    consumerObservationBudget(state).reasons.add('phi-collapse-history-unavailable'); return;
+  }
+  const budget = consumerObservationBudget(state);
+  let observation;
+  try {
+    if (budget.edges <= 0) throw new Error('phi-history-budget');
+    // Observe the actual choice before polling a caller callback. A later
+    // change cannot attach yesterday's selected input to today's phi edges.
+    observation = captureProjectionIrData([instruction, incoming]);
+    budget.edges = Math.max(-1, budget.edges - observation.metrics.edges);
+    if (budget.edges < 0 || state.opts?.shouldAbort?.() || !observation.matches()) throw new Error('phi-history-unavailable');
+  } catch {
+    budget.edges = 0; budget.reasons.add('phi-collapse-observation-unavailable'); return;
+  }
+  const before = { source:mergeSource(origin(instruction, v), ...incoming.map(node => node?.source),
+    ...(instruction.incoming || []).map(item => origin(item.value?.def, item.value))) };
+  const record = Object.freeze({ rule:'collapse-equal-incoming-phi', phase:'expression-build',
+    before:'phi:equal-incoming-expressions', after:`expression:${expression.kind}`,
+    evidence:Object.freeze({ kind:'observed-phi-view-collapse-not-equivalence',
+      detail:'actual legacy expression-builder selection; canonical phi/edges are retained, not independently proved eliminated' }),
+    originHistory:expressionOriginHistory(before, expression),
+  });
+  buildHistoryObservations.set(record, observation);
+  (state.buildHistoryFrame.records ??= new Set()).add(record);
+  state.phiHistoryCount = (state.phiHistoryCount || 0) + 1;
+}
+
+function buildValueRaw(v, state, flags = {}) {
   if (!v) return expr.variable('unknown', 64, null);
   const memoKey = `${v.id}:${flags.forAddress ? 'a' : 'v'}`;
   if (state.expressionMemo.has(memoKey)) return state.expressionMemo.get(memoKey);
@@ -421,6 +484,7 @@ function buildValue(v, state, flags = {}) {
       const incoming = (d.incoming || []).map((x) => buildValue(x.value, state));
       const unique = new Map(incoming.map((x) => [structuralKey(x), x]));
       out = unique.size === 1 ? incoming[0] : expr.variable(`local_phi_${v.id}`, v.bits || 64, signedFor(state, v), origin(d, v), { phi: true, incoming });
+      if (unique.size === 1) recordPhiCollapse(v, d, incoming, out, state);
     }
   }
   if (!out) out = expr.variable(argumentName(v, state), v.bits || 64, signedFor(state, v), origin(d, v), { ssaId: v.id, range: v.range ? { ...v.range } : null });
@@ -444,7 +508,8 @@ function rewriteAll(state, budget) {
     // input and the rules. Work bounds still apply. Production leaves it unset.
     const r = engine.rewrite(root, { state, deterministicTransforms: state.opts?.deterministicTransforms === true });
     state.expressions.set(v.id, r.root);
-    const records = Object.freeze([...idiomRecords, ...r.proof].map((p) => ({ ...p, valueId: v.id })));
+    const built = state.buildHistories?.get(`${v.id}:v`) || [];
+    const records = Object.freeze([...built, ...idiomRecords, ...r.proof].map(p => valueHistoryRecord(p, v.id)));
     state.rewriteProof.push(...records);
     state.expressionProofs.set(v.id, { expression:r.root, records });
     state.rewriteStats.applications += r.stats.applications;
@@ -592,7 +657,8 @@ function expressionFor(v, state) {
   // optional passes did not run. Retain those actual events and their current
   // consumer instead of treating a degraded pipeline as history-free.
   const history = [], root = walkIdiom(buildValue(v, state), state, history);
-  const records = Object.freeze(history.map(record => ({ ...record, valueId:v?.id ?? null })));
+  const built = state.buildHistories?.get(`${v?.id}:v`) || [];
+  const records = Object.freeze([...built, ...history].map(record => valueHistoryRecord(record, v?.id ?? null)));
   (state.rewriteProof ??= []).push(...records);
   (state.expressionProofs ??= new Map()).set(v?.id, { expression:root, records });
   return root;

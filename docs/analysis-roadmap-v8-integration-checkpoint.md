@@ -2798,6 +2798,51 @@ One exact new Phase 8 test path is added to the ownership union. All original
 23 findings and the frozen 135-binary compiler denominator remain; integration
 acceptance stays LOCKED and no whole finding is newly closed.
 
+## C4-03 actual equal-incoming phi view collapse
+
+The existing expression builder selects the first incoming expression when all
+phi inputs have the same structural key. This is a separate path from the
+already integrated stack/phi recovery pass. It now retains a bounded source
+history containing the canonical phi and every incoming value/definition, and
+binds that history to the actual rendered consumers through the existing
+per-value histories and private producer observations.
+
+Dependency histories follow the actual builder call/memo path, not a second
+SSA traversal or equality-of-rendered-node inference. This distinction matters
+when a phi and an unrelated value share the exact same expression object. The
+unrelated consumer must not inherit the phi history. Nested uses propagate the
+actual event; already-constant values that bypass the phi builder do not invent
+one. Unequal inputs retain the existing phi representation without a collapse
+event. The canonical phi, incoming edges, chosen expression, memo semantics and
+display predicates are unchanged.
+
+Records explicitly say `observed-phi-view-collapse-not-equivalence`: no new
+CFG-edge or equivalence proof is claimed. Before exposing a binding, the actual
+selection-time instruction/input observation and the existing rendered-consumer
+observation must both remain current. Copies do not carry this private binding.
+A later renderer callback changing incoming edges leaves earlier history
+unbound/incomplete. Observation work consumes the same cumulative function
+budget; history count and origin snapshots are bounded. Missing/cancelled
+observations and exhausted budgets preserve the actual output but cannot claim
+complete provenance. Mandatory deadline-skipped representation fallback retains
+its actual selection history as well.
+
+Nine new canonical provenance tests cover distinct equal definitions and shared
+AST inputs across eight widths (16 source-history cells, not equivalence proofs),
+nested/repeated consumers, unequal and unvisited/precomputed negatives, changed
+edges/definitions, copied metadata, callback mutation, history/observation limits,
+the real mandatory fallback, replay and snapshot-bound query navigation from
+the phi and second incoming definition to the actual return. Canonical data and
+original root identity are checked separately. Existing idiom and canonical
+provenance regressions remain required; no device/environment or issue/performance
+repair is included. One exact Phase 8 test path is added to the ownership union.
+
+Existing PR #3421 remains reused; the open phi-title PR search found no additional
+implementation. All 23 original findings, the 135-binary compiler denominator,
+C4-04 legacy proof gating and the remaining C4-03 class denominator remain open.
+The preceding checkpoint's broad deadline-related failures are retained, not
+waived as baseline or silently converted into acceptance. Integration stays LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -2832,7 +2877,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C3-03 | Versioned language metadata and unknown-version matrix |
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
-| HEX-C4-03 | Navigation, expression/recovery/legacy-idiom histories, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
+| HEX-C4-03 | Navigation, expression/recovery/legacy-idiom and equal-incoming-phi histories, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
 | HEX-C4-04 | Proof-gated scalar projection, owned inputs, transaction coverage and optional reuse of all 64 display rules as independently verified candidates implemented; ordinary legacy-view adoption, full family/width denominator and memory/CFG/exception observables remain open |
 | HEX-C4-05 | Frozen 272-cell scalar/14-Bool/8-width producer coverage and 3 actual schedules (816 scalar cells); adopted-transform history now preserves actual rule/cost/budget/proof audits. Native proof gaps, arbitrary permutations and full acceptance remain open |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |
