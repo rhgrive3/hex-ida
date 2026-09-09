@@ -1,9 +1,10 @@
 import { codedIndexSize, tableIndexSize, cilMetadataToken } from './metadata-layout.js';
+import { readCilMetadataBlob } from './call-signature-metadata.js';
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 function fail(code) { throw new TypeError(code); }
 
 // Read only definitions, but use the complete, already-bounds-checked table layout.
-export function readCilDefinitions(bytes, view, layout, stringsStream) {
+export function readCilDefinitions(bytes, view, layout, stringsStream, blobHeap = null) {
   const { rowCounts: counts, tableOffsets: offsets, rowSizes, heapSizes } = layout;
   const s = heapSizes & 1 ? 4 : 2, b = heapSizes & 4 ? 4 : 2;
   const index = (pos, width) => width === 2 ? view.getUint16(pos, true) : view.getUint32(pos, true);
@@ -102,5 +103,48 @@ export function readCilDefinitions(bytes, view, layout, stringsStream) {
   if (new Set(manifestResources.map(row => row.name)).size !== manifestResources.length) {
     fail('cil-manifest-resource-name-duplicate');
   }
-  return { types, methods, fields, manifestResources };
+  // ECMA-335 II.22.19 File (0x26): the assembly manifest's external file /
+  // netmodule authority — Flags, Name, HashValue (#Blob). Only the physical
+  // row size was known, so multi-module file identity and its manifest hash
+  // authority vanished from the canonical image (#7803).
+  const files = readRows(0x26, pos => {
+    const flags = view.getUint32(pos, true);
+    // II.22.19: Flags is 0x0000 (ContainsMetaData) or 0x0001
+    // (ContainsNoMetaData); every other bit is reserved.
+    if (flags !== 0 && flags !== 1) fail('cil-file-flags-invalid');
+    const name = text(index(pos + 4, s));
+    if (name == null || !name.length) fail('cil-file-name-required');
+    const hashValueBlobIndex = index(pos + 4 + s, b);
+    let hashValue = null;
+    if (hashValueBlobIndex !== 0) {
+      if (!blobHeap) fail('cil-file-hash-blob-missing');
+      hashValue = readCilMetadataBlob(blobHeap, hashValueBlobIndex, 'cil-file-hash-blob-invalid');
+    }
+    return { flags, name, hashValueBlobIndex, hashValue };
+  });
+  // ECMA-335 II.22.14 ExportedType (0x27): exported type / type-forwarder
+  // declarations — Flags, TypeDefId, TypeName, TypeNamespace, Implementation
+  // (File | AssemblyRef | ExportedType coded index, never null). Dropping
+  // this table erased type-forwarding edges, collapsing assemblies with
+  // different public type surfaces into one canonical image (#7800).
+  const exportedImplementationSize = codedIndexSize(counts, [0x26, 0x23, 0x27], 2);
+  const exportedImplementationTables = [0x26, 0x23, 0x27];
+  const exportedTypes = readRows(0x27, pos => {
+    const flags = view.getUint32(pos, true);
+    const typeDefId = view.getUint32(pos + 4, true);
+    const typeName = text(index(pos + 8, s));
+    if (typeName == null || !typeName.length) fail('cil-exported-type-name-required');
+    const typeNamespace = text(index(pos + 8 + s, s)) ?? '';
+    const implementation = index(pos + 8 + s * 2, exportedImplementationSize);
+    if (implementation === 0) fail('cil-exported-type-implementation-required');
+    const table = exportedImplementationTables[implementation & 0x3];
+    const rid = Math.floor(implementation / 4);
+    if (table == null || rid < 1 || rid > counts[table]) fail('cil-exported-type-implementation-invalid');
+    return {
+      flags, typeDefId, typeName, typeNamespace,
+      implementation: { table, rid, token: cilMetadataToken(table, rid) },
+      isForwarder: (flags & 0x00200000) !== 0,
+    };
+  });
+  return { types, methods, fields, manifestResources, files, exportedTypes };
 }
