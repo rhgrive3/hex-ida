@@ -1,6 +1,7 @@
 import {
   ARTIFACT_STORE_VERSION,
   ArtifactCorruptionError,
+  ArtifactError,
   assertCanonicalArtifactDescriptor,
   createArtifactRecord,
   decodeArtifactPayload,
@@ -402,8 +403,17 @@ export class ArtifactStore {
     }
 
     if (typeof options.validate === 'function') {
-      try { await options.validate(stagedPayload, record, { signal:options.signal }); }
+      let validatorResult;
+      try { validatorResult = await options.validate(stagedPayload, record, { signal:options.signal }); }
       catch (error) { this.metrics.validationFailures++; throw error; }
+      // Validators are used as boolean predicates in production (route/instrumentation/ABI
+      // postconditions). An explicit `false` verdict is a failed validation, not an
+      // ignored return value: the artifact must not reach CAS/hot cache. Void-style
+      // validators (undefined) keep their signal/abort contract.
+      if (validatorResult === false) {
+        this.metrics.validationFailures++;
+        throw new ArtifactError('artifact-publish-validator-rejected');
+      }
     }
     aborted(options.signal);
 
