@@ -38,6 +38,28 @@ function mapFor(root, app) {
   if (!map) { map = new Map(); root.set(app, map); }
   return map;
 }
+function evictSettledEntry(root, app, key, entry) {
+  if (!entry.evictWhenSettled) return;
+  const map = mapFor(root, app);
+  if (map.get(key) === entry) map.delete(key);
+}
+function pruneStaleEntries(root, app, epoch) {
+  const map = mapFor(root, app);
+  for (const [key, entry] of map) {
+    if (entry.epoch === epoch) continue;
+    entry.evictWhenSettled = true;
+    if (entry.settled) {
+      map.delete(key);
+      continue;
+    }
+    if (entry.waiters === 0) {
+      if (!entry.controller.signal.aborted) entry.controller.abort('stale-epoch');
+      map.delete(key);
+      entry.promise?.catch?.(() => { /* no waiters left: swallow stale abort */ });
+    }
+  }
+  return map;
+}
 // A map entry is reusable only while it can still serve the next consumer:
 // an aborted-but-unsettled entry is doomed and would infect newcomers with
 // the old rejection (#5349), while a settled retryable-incomplete entry must
@@ -228,7 +250,7 @@ function createStringEntry(app, key, initialOptions = {}) {
   const controller = new AbortController();
   const entry = {
     controller, waiters:0, settled:false, subscribers:new Set(), result:null, promise:null,
-    producerOptions:producerOptions(initialOptions), retryableIncomplete:false,
+    producerOptions:producerOptions(initialOptions), retryableIncomplete:false, epoch:epochOf(app), evictWhenSettled:false,
   };
   const epoch = epochOf(app);
   entry.promise = (async () => {
@@ -307,7 +329,11 @@ function createStringEntry(app, key, initialOptions = {}) {
     app.stringIndex = rows;
     entry.result = rows;
     return rows;
-  })().then((value) => { entry.settled = true; return value; }).catch((error) => {
+  })().then((value) => {
+    entry.settled = true;
+    evictSettledEntry(STRING_ENTRIES, app, key, entry);
+    return value;
+  }).catch((error) => {
     const live = mapFor(STRING_ENTRIES, app);
     if (live.get(key) === entry) live.delete(key);
     throw error;
@@ -327,22 +353,31 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
   const controller = new AbortController();
   const entry = {
     controller, waiters:0, settled:false, subscribers:new Set(), result:null, promise:null,
-    producerOptions:producerOptions(initialOptions), retryableIncomplete:false,
+    producerOptions:producerOptions(initialOptions), retryableIncomplete:false, epoch:epochOf(app), evictWhenSettled:false,
   };
   const epoch = epochOf(app);
-  const initialCacheKey = programCacheKey(epoch, symbolsGenerationOf(app), key);
+  const requestedSymbolsGeneration = symbolsGenerationOf(app);
+  const initialCacheKey = programCacheKey(epoch, requestedSymbolsGeneration, key);
   let cacheKey = initialCacheKey;
   entry.promise = (async () => {
     const primary = regions.find((region) => region.section === '__text') || regions[0];
-    await app.ensureFunctions?.(primary, {
+    const discovery = app.ensureFunctions?.(primary, {
       signal:controller.signal,
       onProgress:(progress) => publishProgress(entry, progress),
       priority:entry.producerOptions.priority,
       budget:entry.producerOptions.budget,
     });
+    // A synchronous discovery pass may refine symbols before its promise is
+    // awaited; that generation is the one this entry should project. A
+    // generation change that happens only while the pass is suspended is an
+    // external refinement and must invalidate this entry instead of being
+    // silently adopted as its own result (#4487).
+    const discoveryGeneration = symbolsGenerationOf(app);
+    const symbolsGeneration = discoveryGeneration === requestedSymbolsGeneration
+      ? requestedSymbolsGeneration : discoveryGeneration;
+    await discovery;
     throwIfAborted(controller.signal);
     if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared program'), { stale:true });
-    const symbolsGeneration = symbolsGenerationOf(app);
     cacheKey = programCacheKey(epoch, symbolsGeneration, key);
     if (cacheKey !== initialCacheKey) {
       const live = mapFor(PROGRAM_ENTRIES, app);
@@ -401,7 +436,11 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     app.program = program;
     entry.result = program;
     return program;
-  })().then((value) => { entry.settled = true; return value; }).catch((error) => {
+  })().then((value) => {
+    entry.settled = true;
+    evictSettledEntry(PROGRAM_ENTRIES, app, cacheKey, entry);
+    return value;
+  }).catch((error) => {
     const live = mapFor(PROGRAM_ENTRIES, app);
     if (live.get(cacheKey) === entry) live.delete(cacheKey);
     throw error;
@@ -423,12 +462,12 @@ export function installSharedAppArtifacts(app) {
   app.ensureStrings = function sharedStrings(rawOptions = {}) {
     const options = normalizeOptions(rawOptions);
     throwIfAborted(options.signal);
+    const epoch = epochOf(app);
+    const key = String(epoch);
+    const map = pruneStaleEntries(STRING_ENTRIES, app, epoch);
     // Only a complete artifact short-circuits: a pinned partial would make a
     // transient backend gap permanent (#5337).
     if (app.stringIndex?.complete === true) return Promise.resolve(app.stringIndex);
-    const epoch = epochOf(app);
-    const key = String(epoch);
-    const map = mapFor(STRING_ENTRIES, app);
     let entry = liveEntry(map, key, map.get(key));
     if (!entry) {
       entry = createStringEntry(app, key, options);
@@ -451,12 +490,12 @@ export function installSharedAppArtifacts(app) {
     throwIfAborted(options.signal);
     const regions = executableRegions(app);
     if (!regions.length) return Promise.resolve(null);
+    const epoch = epochOf(app);
     const key = regions.map((region) => region.id).join('|');
+    const mapKey = programCacheKey(epoch, symbolsGenerationOf(app), key);
+    const map = pruneStaleEntries(PROGRAM_ENTRIES, app, epoch);
     if (app.program && app.programKey === key && app.program.gen === app.symbols?.gen && app.program.globalReferenceStats
       && app.program.completeness?.complete === true) return Promise.resolve(app.program);
-    const epoch = epochOf(app);
-    const mapKey = programCacheKey(epoch, symbolsGenerationOf(app), key);
-    const map = mapFor(PROGRAM_ENTRIES, app);
     let entry = liveEntry(map, mapKey, map.get(mapKey));
     if (!entry) {
       entry = createProgramEntry(app, key, regions, options);
@@ -486,4 +525,10 @@ export const __sharedAppArtifactInternalsForTests = Object.freeze({
   normalizeOptions,
   accumulateGlobalRefs,
   statsFor,
+  cacheSizes(app) {
+    return Object.freeze({
+      stringEntries: STRING_ENTRIES.get(app)?.size ?? 0,
+      programEntries: PROGRAM_ENTRIES.get(app)?.size ?? 0,
+    });
+  },
 });

@@ -11,9 +11,17 @@ export class ProposalExecutor {
 
   async approveAndApply(id) {
     if (!this.store) throw new AIError('tool_failed', 'No proposal store is available.');
+    // Read the target state before changing the proposal lifecycle. If the
+    // backend/state adapter rejects here, the proposal must remain pending so
+    // the caller can retry instead of losing an unreachable approval token.
+    const previewProposal = typeof this.store.executionView === 'function'
+      ? this.store.executionView(id)
+      : this.store.get?.(id);
+    if (!previewProposal) throw new AIError('tool_failed', 'Proposal execution payload is unavailable.');
+    const currentState = await this.currentState(previewProposal);
+
     const { proposal, approvalToken } = this.store.approve(id);
     const executionProposal = typeof this.store.executionView === 'function' ? this.store.executionView(id) : proposal;
-    const currentState = await this.currentState(executionProposal);
     let execution = null;
     const applied = await this.store.apply(id, {
       approvalToken, currentState,
