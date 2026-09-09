@@ -82,7 +82,7 @@ test('#5888: a section whose sh_size runs past EOF cannot shadow a valid PT_LOAD
   assert.equal(image.sections.find((s) => s.index === 1)?.source, 'unmapped-section');
 });
 
-test('#5888: SHT_NOBITS keeps zero-fill mapping semantics without file bytes', () => {
+test('#5888: SHT_NOBITS has no file bytes and cannot shadow PT_LOAD file-backed bytes (#7611)', () => {
   const image = parseELF(buildELF({ secOffset: 0x1000, secSize: 0x10 }));
   const nobits = buildELF({ secOffset: 0x1000, secSize: 0x10 });
   const b = new DataView(nobits.buffer);
@@ -91,5 +91,12 @@ test('#5888: SHT_NOBITS keeps zero-fill mapping semantics without file bytes', (
   void image;
   const sec = nobitsImage.sections.find((s) => s.index === 1);
   assert.equal(sec?.fileSize, 0n);
-  assert.equal(sec?.source, 'section-header', 'NOBITS needs no file bytes');
+  // Reconciled with #7611: the PT_LOAD has filesz === memsz (no zero-fill
+  // tail), so this NOBITS section's VA range overlaps file-backed loader
+  // bytes. Zero-fill authority there would shadow runtime bytes; the section
+  // stays listed for metadata but loses mapping authority fail-closed.
+  assert.equal(sec?.source, 'unmapped-section', 'NOBITS over file-backed PT_LOAD bytes has no zero-fill authority');
+  assert.ok(nobitsImage.warnings.some((w) => w.includes('excluded from virtual mapping authority')));
+  assert.equal(nobitsImage.addressToOffset(0x400020n), 0x120n, 'the validated PT_LOAD owns the mapping');
+  assert.ok(nobitsImage.readVirtual(0x400020n, 1n), 'the VA stays readable via the PT_LOAD');
 });
