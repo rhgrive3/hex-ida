@@ -194,13 +194,16 @@ export class Emulator {
     let bytes;
     // A backing read that never settles must not hold the emulator hostage
     // after the caller aborted the run (#5594): race it against the active
-    // run's AbortSignal, cancelling it if possible.
+    // run's AbortSignal, cancelling it if possible. The io.read invocation
+    // itself stays inside the error boundary so a synchronous throw keeps the
+    // existing 'memory-read-failed' taxonomy; only a real abort rethrows as
+    // AbortError.
     const runSignal = this._runSignal;
-    const raced = runSignal
-      ? awaitAbortable(this.io.read(page, PAGE), runSignal)
-      : this.io.read(page, PAGE);
-    try { bytes = await raced; }
-    catch (error) {
+    try {
+      bytes = await (runSignal
+        ? awaitAbortable(this.io.read(page, PAGE), runSignal)
+        : this.io.read(page, PAGE));
+    } catch (error) {
       if (runSignal?.aborted) throw abortError(runSignal);
       throw new EmulatorFault('memory-read-failed', `backing read failed at 0x${page.toString(16)}`, { address, page, cause:String(error && error.message || error) });
     }
