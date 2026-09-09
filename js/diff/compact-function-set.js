@@ -8,6 +8,16 @@ function boundedFunctionCount(value, maximum) {
   return Number.isNaN(count) ? 0 : Math.min(maximum, Math.max(0, Math.floor(count)));
 }
 
+function addressKey(value) {
+  let address;
+  if (typeof value === 'bigint') address = value;
+  else if (typeof value === 'number' && Number.isSafeInteger(value)) address = BigInt(value);
+  else if (typeof value === 'string' && /^(?:0|[1-9]\d*|0x[0-9a-f]+)$/i.test(value)) {
+    try { address = BigInt(value); } catch { return null; }
+  } else return null;
+  return address >= 0n ? address.toString() : null;
+}
+
 export function createCompactFunctionSet(symbols, architecture, limit = 350000) {
   const functionAddresses = symbols?.funcs || [];
   const total = Number(functionAddresses.length || 0);
@@ -34,7 +44,9 @@ export function materializeCompactFunctionSet(input) {
   const symbolNames = input.symbolNames || [];
   const names = new Map();
   for (let i = 0; i < Math.min(symbolAddresses.length, symbolNames.length); i++) {
-    if (symbolNames[i]) names.set(String(symbolAddresses[i]), symbolNames[i]);
+    const key = addressKey(symbolAddresses[i]);
+    const name = symbolNames[i];
+    if (key != null && typeof name === 'string' && name) names.set(key, name);
   }
   const out = new Array(count);
   for (let i = 0; i < count; i++) {
@@ -42,7 +54,7 @@ export function materializeCompactFunctionSet(input) {
     const next = i + 1 < functions.length ? functions[i + 1] : null;
     out[i] = {
       address,
-      name: names.get(String(address)) || null,
+      name: names.get(addressKey(address)) || null,
       size: next != null && next > address ? Number(next - address) : 0,
       architecture: input.architecture,
       strings: [], calls: [], imports: [], semantic: { writes: [], thresholds: [] }, fieldAccessShape: [],
