@@ -295,6 +295,11 @@ function segmentStarts(starts, segIndex, slot, seg) {
   const chainStarts = [];
   if (start & 0x8000) {
     let oi = start & 0x7fff;
+    /* The trailing chain_starts[] area begins at combined pool index
+       pageCount; a MULTI index that points back into the page_start[] domain
+       self-references the page's own marker and proves nothing (#5388
+       review). */
+    if (oi < st.pageCount || oi >= st.pool.length) return null;
     let terminated = false;
     for (let guard = 0; guard < 4096 && oi < st.pool.length; guard++, oi++) {
       const x = st.pool[oi];

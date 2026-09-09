@@ -162,6 +162,21 @@ test('#5388 a slot on the first chain of a multi-start page is accepted', async 
   ]);
 });
 
+test('#5388 a MULTI start indexing the page_start[] domain fails closed', async () => {
+  /* pageCount=1 with page_start[0]=0x8000 and no trailing chain_starts[]:
+     the MULTI marker must not self-index its own entry (pool[0]=0x8000 →
+     'terminated' chainStart 0 at page offset 0). */
+  const file = fixture({ pageStarts: [0x8000], overflow: [], nodes: { 0: { ordinal: 0, next: 0 } }, slot: 0 });
+  const out = await chainedImportSymbols(file, 0);
+  assert.deepEqual(out, [], 'a MULTI index into the page_start[] domain proves no membership');
+});
+
+test('#5388 a valid MULTI index into the trailing overflow area still works (control)', async () => {
+  const file = fixture({ pageStarts: [0x8000 | 1], overflow: [0x100 | 0x8000], nodes: { 0x100: { ordinal: 0, next: 0 } }, slot: 0x100 });
+  const out = await chainedImportSymbols(file, 0);
+  assert.deepEqual([...new Set(out.map((e) => e.name))], ['puts'], 'stub and slot both carry the chain-covered name');
+});
+
 test('#5388 an out-of-range multi-start pool index fails closed', async () => {
   const file = fixture({ pageStarts: [0x8000 | 5], overflow: [0x100 | 0x8000], nodes: { 0x100: { ordinal: 0, next: 0 } }, slot: 0x100 });
   const out = await chainedImportSymbols(file, 0);
