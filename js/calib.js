@@ -89,8 +89,12 @@ export function groupedFusion(items, opts) {
   };
 }
 
+function booleanLabelRows(samples) {
+  return (samples || []).filter((s) => s && typeof s.correct === 'boolean');
+}
+
 function finiteProbabilityRows(samples) {
-  return (samples || []).filter((s) => s && Number.isFinite(s.probability) && typeof s.correct === 'boolean');
+  return booleanLabelRows(samples).filter((s) => Number.isFinite(s.probability));
 }
 
 export function brierScore(samples) {
@@ -148,7 +152,7 @@ function normalizeBinCount(value) {
 }
 
 export function accuracyReport(rows) {
-  const all = finiteProbabilityRows(rows);
+  const all = booleanLabelRows(rows);
   const total = all.length;
   if (!total) {
     return { total: 0, top1: null, top3: null, precision: null, recall: null,

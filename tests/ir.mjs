@@ -444,6 +444,15 @@ test('calib: correct label は primitive boolean だけを評価する (#4345)',
     'malformed labels must not enter reliability bins');
   eq(accuracyReport(malformed).total, 0, 'accuracy report must use the same label policy');
 
+  const noProbability = accuracyReport([
+    { correct: false, verdict: 'confirmed', rank: 1 },
+  ]);
+  eq(noProbability.total, 1, 'valid accuracy rows must not require a probability');
+  eq(noProbability.confirmed, 1, 'confirmed accuracy rows without probability stay in the denominator');
+  eq(noProbability.falseConfirmRate, 1, 'missing probability must not hide a false confirmation');
+  eq(noProbability.brier, null, 'Brier still requires finite probability evidence');
+  eq(noProbability.ece, null, 'ECE still requires finite probability evidence');
+
   const valid = [
     { probability: 0.9, correct: true, verdict: 'confirmed', rank: 1 },
     { probability: 0.1, correct: false, verdict: 'none', rank: 9 },
