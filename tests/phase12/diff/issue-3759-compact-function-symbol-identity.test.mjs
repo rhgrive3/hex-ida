@@ -31,6 +31,20 @@ test('#3759 structured symbol addresses cannot alias canonical function addresse
   }
 });
 
+test('#3759 malformed primitive address values fail closed', () => {
+  for (const address of [false, 4096.5, -1, '']) {
+    const rows = materializeCompactFunctionSet(compact([address], ['forged_name']));
+    assert.equal(rows[0].name, null, `malformed primitive address ${String(address)} must not bind a symbol name`);
+  }
+});
+
+test('#3759 padded primitive decimal addresses retain canonical normalization', () => {
+  for (const address of ['04096', ' 4096 ']) {
+    const rows = materializeCompactFunctionSet(compact([address], ['normalized_name']));
+    assert.equal(rows[0].name, 'normalized_name', `primitive address ${JSON.stringify(address)} must use the existing canonical identity`);
+  }
+});
+
 test('#3759 non-string symbol names are not retained as function identity', () => {
   for (const name of [['forged_name'], { toString: () => 'forged_name' }, true, 1]) {
     const rows = materializeCompactFunctionSet(compact([0x1000n], [name]));
