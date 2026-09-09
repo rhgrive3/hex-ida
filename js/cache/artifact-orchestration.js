@@ -560,13 +560,19 @@ export function createWorkerAnalysisArtifactDescriptor(input = {}) {
   const binaryId = requireCanonicalBinaryId(input.binaryId);
   const artifactKind = required(input.artifactKind ?? 'worker-analysis-result', 'analysis-artifact-kind-required');
   const architecture = required(input.architecture ?? 'unknown', 'analysis-artifact-architecture-required');
+  // Canonical identity must have exactly one text representation. The
+  // generated slice/entity ids are lowercase hex (stableDigest toString(16)),
+  // so caller-supplied canonical ids are case-normalized here the same way
+  // requireCanonicalBinaryId() normalizes binaryId: accepting both cases while
+  // letting them collapse onto the same identity material would fork the
+  // canonical namespace and mint distinct ArtifactIds for the same slice.
   const sliceId = input.sliceId == null
     ? createSliceId({ binaryId, index:input.sliceIndex ?? 0, architecture })
-    : required(input.sliceId, 'analysis-artifact-slice-id-required');
+    : required(input.sliceId, 'analysis-artifact-slice-id-required').toLowerCase();
   if (!CANONICAL_SLICE_ID.test(sliceId)) throw new TypeError('analysis-artifact-slice-id-not-canonical');
   const entityId = input.entityId == null
     ? createEntityId({ binaryId, sliceId, kind:'worker-analysis', identity:{ artifactKind, sliceIndex:input.sliceIndex ?? 0 } })
-    : required(input.entityId, 'analysis-artifact-entity-id-required');
+    : required(input.entityId, 'analysis-artifact-entity-id-required').toLowerCase();
   if (!CANONICAL_ENTITY_ID.test(entityId)) throw new TypeError('analysis-artifact-entity-id-not-canonical');
 
   return createArtifactDescriptor({

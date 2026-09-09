@@ -1,5 +1,6 @@
 import { createAppAnalysisQueryAdapter as createProductAdapter } from './product-adapter.js';
 import { runtimeEvidenceForApp } from '../../runtime/app-runtime.js';
+import { weakestCompleteness } from '../status.js';
 
 const CANONICAL_VERDICTS = new Set([
   'confirmed', 'supported', 'likely', 'unverified', 'contradicted', 'unknown',
@@ -52,11 +53,11 @@ function projectEvidence(kind, value, extra = {}, fallbackVerdict = 'unverified'
 function combinedCompleteness(base, functionResult, baseHasNext) {
   const baseCompleteness = base?.status?.completeness ?? 'partial';
   const functionCompleteness = functionResult?.status?.completeness ?? 'complete';
-  if (baseCompleteness === 'truncated' || functionCompleteness === 'truncated') return 'truncated';
-  if (baseHasNext || baseCompleteness === 'partial' || functionCompleteness === 'partial') return 'partial';
-  if (baseCompleteness === 'unsupported' && functionCompleteness === 'unsupported') return 'unsupported';
-  if (baseCompleteness === 'unsupported' || functionCompleteness === 'unsupported') return 'partial';
-  return 'complete';
+  return weakestCompleteness(
+    baseCompleteness,
+    functionCompleteness,
+    baseHasNext ? 'partial' : 'complete',
+  );
 }
 
 export function createAppAnalysisQueryAdapter(app) {
