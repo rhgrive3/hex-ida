@@ -162,3 +162,4 @@ import '../js/worker-budget.js';
 console.log('issues 550-559 regressions: ok');
 
 await import('./issue-840-rtti-pointer-formats.mjs');
+await import('./issue-5444-address-provenance-entrykills-boundary.mjs');
