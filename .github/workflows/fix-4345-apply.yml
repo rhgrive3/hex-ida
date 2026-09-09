@@ -1,0 +1,104 @@
+name: Apply issue 4345 patch
+
+on:
+  push:
+    branches:
+      - fix/issue-4345-calibration-label-types
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/issue-4345-calibration-label-types
+          fetch-depth: 1
+      - name: Verify base and apply exact patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object js/calib.js)" = "e5d5ce048b2fb52ae8aad51fa3a241dc587437ac"
+          test "$(git hash-object tests/ir.mjs)" = "11965085b8f852e3a93bb5b2c6737cefd9413a21"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('js/calib.js')
+          text = source.read_text()
+          old1 = "  return (samples || []).filter((s) => s && Number.isFinite(s.probability));"
+          new1 = "  return (samples || []).filter((s) => s && Number.isFinite(s.probability) && typeof s.correct === 'boolean');"
+          old2 = "  const all = (rows || []).filter(Boolean);"
+          new2 = "  const all = finiteProbabilityRows(rows);"
+          if text.count(old1) != 1 or text.count(old2) != 1:
+              raise SystemExit('source anchor mismatch')
+          source.write_text(text.replace(old1, new1).replace(old2, new2))
+
+          test = Path('tests/ir.mjs')
+          text = test.read_text()
+          old_import = "import { groupedFusion, brierScore, expectedCalibrationError, accuracyReport } from '../js/calib.js';"
+          new_import = "import { groupedFusion, brierScore, expectedCalibrationError, reliabilityBins, accuracyReport, fitCalibration } from '../js/calib.js';"
+          anchor = "test('calib: 「確定」と言って外した率を出せる', () => {"
+          block = '\n'.join([
+          "test('calib: correct label は primitive boolean だけを評価する (#4345)', () => {",
+          "  const malformed = [",
+          "    { probability: 0.9, correct: 'false', verdict: 'confirmed', rank: 1 },",
+          "    { probability: 0.8, correct: 1, verdict: 'confirmed', rank: 1 },",
+          "    { probability: 0.7, correct: [], verdict: 'likely', rank: 1 },",
+          "    { probability: 0.6, correct: {}, verdict: 'none', rank: 9 },",
+          "  ];",
+          "  eq(brierScore(malformed), null, 'malformed labels must not become Brier targets');",
+          "  eq(expectedCalibrationError(malformed, 5), null, 'malformed labels must not enter ECE');",
+          "  eq(reliabilityBins(malformed, 5).reduce((n, bin) => n + bin.n, 0), 0,",
+          "    'malformed labels must not enter reliability bins');",
+          "  eq(accuracyReport(malformed).total, 0, 'accuracy report must use the same label policy');",
+          "",
+          "  const valid = [",
+          "    { probability: 0.9, correct: true, verdict: 'confirmed', rank: 1 },",
+          "    { probability: 0.1, correct: false, verdict: 'none', rank: 9 },",
+          "  ];",
+          "  const mixed = [...malformed, ...valid];",
+          "  eq(brierScore(mixed), brierScore(valid), 'malformed labels cannot improve Brier score');",
+          "  eq(expectedCalibrationError(mixed, 5), expectedCalibrationError(valid, 5),",
+          "    'malformed labels cannot improve ECE');",
+          "  eq(JSON.stringify(accuracyReport(mixed)), JSON.stringify(accuracyReport(valid)),",
+          "    'accuracy report must ignore malformed labels consistently');",
+          "",
+          "  const calibration = Array.from({ length: 39 }, (_, i) => ({",
+          "    probability: i < 20 ? 0.1 : 0.9,",
+          "    correct: i >= 20,",
+          "  }));",
+          "  calibration.push({ probability: 0.99, correct: 'false' });",
+          "  eq(fitCalibration(calibration, 5), null,",
+          "    'malformed labels must not satisfy the minimum calibration sample count');",
+          "});",
+          "",
+          "",
+          ])
+          if text.count(old_import) != 1 or text.count(anchor) != 1 or '#4345' in text:
+              raise SystemExit('test anchor mismatch')
+          test.write_text(text.replace(old_import, new_import).replace(anchor, block + anchor, 1))
+          PY
+          test "$(git hash-object js/calib.js)" = "1236e49c9b66690feba9dd36d43be6875fccaf91"
+          test "$(git hash-object tests/ir.mjs)" = "d41d69420cb0d1552fe2415c2535b5d145b99a4b"
+          git diff --check
+      - name: Focused validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 60s node tests/ir.mjs
+          timeout 60s node tests/evidence-verdict.mjs
+          timeout 60s node tests/issues-245-298.mjs
+          timeout 90s npm run lint
+      - name: Commit exact patch and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name rhgrive3
+          git config user.email rhgrive@gmail.com
+          git rm .github/workflows/fix-4345-apply.yml
+          git add js/calib.js tests/ir.mjs
+          git commit -m "fix(calib): require boolean correctness labels (#4345)"
+          git push origin HEAD:fix/issue-4345-calibration-label-types
