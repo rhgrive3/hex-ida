@@ -18,7 +18,7 @@ function memoryPersistence({ failFinalSave = false } = {}) {
   };
 }
 
-test('#4389 a persisted running slice is recoverable after final checkpoint failure', async () => {
+test('#4389 a completed slice is not replayed when final and marker saves both fail', async () => {
   let turns = 0;
   const runtime = {
     async turn() {
@@ -37,13 +37,13 @@ test('#4389 a persisted running slice is recoverable after final checkpoint fail
 
   const restarted = new AgentJobManager({ runtime, persistence });
   const loaded = await restarted.get('issue-4389');
-  assert.equal(loaded.status, 'checkpointed');
-  assert.match(loaded.unresolvedWork.at(-1), /^resume-after:/);
+  assert.equal(loaded.status, 'complete');
+  assert.equal(loaded.executionRecoveryPending, true);
 
   persistence.setFailFinalSave(false);
   const resumed = await restarted.resume('issue-4389');
   assert.equal(resumed.status, 'complete');
-  assert.equal(turns, 2);
+  assert.equal(turns, 1);
   assert.equal(persistence.records.get('issue-4389').status, 'complete');
 });
 

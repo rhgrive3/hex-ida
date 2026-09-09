@@ -3,6 +3,13 @@ const MAX_JOB_SLICES = 32;
 const MAX_JOB_ELAPSED_MS = 4 * 60 * 60 * 1000;
 let fallbackRandomSequence = 0n;
 const activeExecutionLeases = new Map();
+// A final-status write can fail after the provider turn has completed, and a
+// fallback marker write can fail for the same transient reason. Keep a
+// process-local hand-off keyed by the lease that ran the turn so a fresh
+// manager in this process can recover the completed outcome without replaying
+// provider/tool side effects. A true process crash has no entry here and still
+// follows the interrupted-slice recovery path.
+const completedExecutionOutcomes = new Map();
 // Persistence adapters are often thin wrappers created per manager. Object
 // identity therefore cannot identify a durable execution scope: two wrappers
 // over one store could otherwise acquire independent leases. Use the job ID as
@@ -89,6 +96,7 @@ export class AgentJobManager {
           job.executionRecoveryPending = true;
           throw error;
         }
+        forgetCompletedExecutionOutcome(id);
         return checkpoint(job);
       }
       // A successful slice is never replayed to recover a failed checkpoint
@@ -166,9 +174,12 @@ export class AgentJobManager {
       else if (hardLimit(job)) job.status = 'hard-limit';
       else job.status = 'checkpointed';
       const completedStatus = job.status;
+      const completedLeaseId = executionLeaseId;
       delete job.executionLeaseId;
       job.updatedAt = new Date().toISOString();
-      this.pendingCheckpoints.set(id, checkpoint(job));
+      const completedCheckpoint = checkpoint(job);
+      this.pendingCheckpoints.set(id, completedCheckpoint);
+      rememberCompletedExecutionOutcome(job, completedLeaseId, completedCheckpoint);
       try {
         await this.persistPendingCheckpoint(job);
       } catch (error) {
@@ -203,6 +214,7 @@ export class AgentJobManager {
       throw error;
     }
     this.pendingCheckpoints.delete(job.id);
+    forgetCompletedExecutionOutcome(job.id);
     delete job.checkpointSavePending;
     delete job.checkpointSaveError;
   }
@@ -214,6 +226,7 @@ export class AgentJobManager {
     marker.executionRecoveryPending = true;
     try {
       await this.save(marker);
+      forgetCompletedExecutionOutcome(job.id);
     } catch {
       // The original persistence error is the actionable failure. A later
       // manager can still classify an unmarked running checkpoint as an
@@ -322,6 +335,21 @@ function hardLimit(job) { return job.budgetUsage.slices >= job.limits.maxSlices 
 function compactResult(result) { return { answer: result?.answer || '', confidence: result?.confidence ?? null, limits: result?.limits || { exhausted: false }, usage: result?.usage || {}, sessionId: result?.sessionId || null }; }
 function checkpoint(job) { return JSON.parse(JSON.stringify(job)); }
 function unique(values) { return [...new Set(values)]; }
+function rememberCompletedExecutionOutcome(job, leaseId, completedCheckpoint) {
+  if (typeof leaseId !== 'string' || !leaseId) return;
+  completedExecutionOutcomes.set(job.id, {
+    scopeId: typeof job.executionScopeId === 'string' && job.executionScopeId ? job.executionScopeId : null,
+    leaseId,
+    checkpoint: completedCheckpoint,
+  });
+  // A failed persistence adapter must not allow this process-local guard to
+  // grow without bound when many jobs finish at once.
+  while (completedExecutionOutcomes.size > 256) {
+    const oldest = completedExecutionOutcomes.keys().next().value;
+    completedExecutionOutcomes.delete(oldest);
+  }
+}
+function forgetCompletedExecutionOutcome(jobId) { completedExecutionOutcomes.delete(jobId); }
 function executionLeaseScope(runtime, persistence, jobId, executionScopeId) {
   void runtime;
   void persistence;
@@ -365,6 +393,12 @@ function recoverPersistedRunningCheckpoint(value) {
     return recovered;
   }
   if (isLiveRunningCheckpoint(value)) return value;
+  const completed = completedExecutionOutcomes.get(value.id);
+  if (completed
+    && completed.leaseId === value.executionLeaseId
+    && (completed.scopeId === null || completed.scopeId === value.executionScopeId)) {
+    return { ...completed.checkpoint, executionRecoveryPending: true };
+  }
   // Only a running checkpoint whose process-local execution lease is no
   // longer active is treated as interrupted. A second manager in the same
   // process cannot turn a live owner's checkpoint into resumable work.
