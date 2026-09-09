@@ -198,7 +198,12 @@ function parseAbbrev(bytes, tableOffset, state = null) {
   // declaration makes the DIE→declaration mapping ambiguous, so the table is
   // marked malformed and its duplicates must not silently overwrite (#5728).
   let duplicateCode = false;
-  if (!bytes || tableOffset >= bytes.length) return { table, stopReason: null, duplicateCode };
+  // DWARF v5 Table 7.4: the child determination encodes exactly
+  // DW_CHILDREN_no (0x00) or DW_CHILDREN_yes (0x01). Any other byte collapses
+  // to a legal value under a boolean read and must fail the table closed
+  // instead (#5237).
+  let invalidChildByte = false;
+  if (!bytes || tableOffset >= bytes.length) return { table, stopReason: null, duplicateCode, invalidChildByte };
   const cursor = new Cursor(bytes, tableOffset);
   while (!cursor.eof) {
     if (state?.isCancelled?.()) return { table: null, stopReason: 'cancelled' };
@@ -209,7 +214,9 @@ function parseAbbrev(bytes, tableOffset, state = null) {
       if (state.declarations > state.maxDeclarations) return { table: null, stopReason: 'declaration-budget' };
     }
     const tag = Number(cursor.uleb());
-    const hasChildren = cursor.u8() === 1;
+    const childByte = cursor.u8();
+    if (childByte > 1) invalidChildByte = true;
+    const hasChildren = childByte === 1;
     const attributes = [];
     for (;;) {
       if (state?.isCancelled?.()) return { table: null, stopReason: 'cancelled' };
@@ -226,7 +233,7 @@ function parseAbbrev(bytes, tableOffset, state = null) {
     if (table.has(code)) duplicateCode = true;
     else table.set(code, { tag, hasChildren, attributes });
   }
-  return { table, stopReason: null, duplicateCode };
+  return { table, stopReason: null, duplicateCode, invalidChildByte };
 }
 
 /** Reads a bounded little-endian unsigned integer of exactly `width` bytes. */
@@ -543,10 +550,12 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
     const unit = { start: unitStart, version, addressSize, offsetSize, abbrevOffset, unitType, strOffsetsBase: null, addrBase: null };
     let abbrev;
     let duplicateCode = false;
+    let invalidChildByte = false;
     if (abbrevCache.has(abbrevOffset)) {
       const cached = abbrevCache.get(abbrevOffset);
       abbrev = cached.table;
       duplicateCode = cached.duplicateCode;
+      invalidChildByte = cached.invalidChildByte ?? false;
     } else {
       const parsedAbbrev = parseAbbrev(sections.debug_abbrev, abbrevOffset, abbrevState);
       if (parsedAbbrev.stopReason != null) {
@@ -563,7 +572,8 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       }
       abbrev = parsedAbbrev.table;
       duplicateCode = parsedAbbrev.duplicateCode;
-      abbrevCache.set(abbrevOffset, { table: abbrev, duplicateCode });
+      invalidChildByte = parsedAbbrev.invalidChildByte;
+      abbrevCache.set(abbrevOffset, { table: abbrev, duplicateCode, invalidChildByte });
     }
     if (abbrev.size === 0) {
       diagnostics.push(`no abbreviations for unit at 0x${unitStart.toString(16)}`);
@@ -574,6 +584,12 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
     }
     if (duplicateCode) {
       diagnostics.push(`duplicate abbreviation code in table at 0x${abbrevOffset.toString(16)}`);
+      complete = false;
+    }
+    if (invalidChildByte) {
+      // DWARF v5 Table 7.4: only 0x00/0x01 are child determination encodings;
+      // anything else made the declaration structure unreliable (#5237).
+      diagnostics.push(`abbreviation table at 0x${abbrevOffset.toString(16)} has an invalid child determination byte`);
       complete = false;
     }
 
