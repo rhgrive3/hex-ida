@@ -193,8 +193,8 @@ function knownExpression(expression, values) {
 }
 
 function staticSize(type, ctx, values = {}, resolving = new Set()) {
-  if (type.kind === 'primitive') return PRIMITIVES.get(type.name).bytes;
-  if (type.kind === 'pointer' || type.kind === 'offset') return 8;
+  if (type.kind === 'primitive') return BigInt(PRIMITIVES.get(type.name).bytes);
+  if (type.kind === 'pointer' || type.kind === 'offset') return 8n;
   if (type.kind === 'named') {
     if (resolving.has(type.name)) return null;
     const target = ctx.types?.get(type.name);
@@ -205,11 +205,11 @@ function staticSize(type, ctx, values = {}, resolving = new Set()) {
   }
   if (type.kind === 'enum' || type.kind === 'bitfield') return staticSize(type.base, ctx, values, resolving);
   if (type.kind === 'array' && Number.isSafeInteger(type.count)) {
-    if (type.count === 0) return 0;
-    const item = staticSize(type.element, ctx, values, resolving); return item == null ? null : item * type.count;
+    if (type.count === 0) return 0n;
+    const item = staticSize(type.element, ctx, values, resolving); return item == null ? null : item * BigInt(type.count);
   }
   if (type.kind === 'struct') {
-    let total = 0;
+    let total = 0n;
     for (const field of type.fields) {
       if (field.when) {
         const state = knownExpression(field.when, values);
@@ -226,7 +226,7 @@ function staticSize(type, ctx, values = {}, resolving = new Set()) {
     const state = knownExpression(type.when, values);
     if (!state.known) return null;
     if (state.value) return staticSize(type.then, ctx, values, resolving);
-    return type.else ? staticSize(type.else, ctx, values, resolving) : 0;
+    return type.else ? staticSize(type.else, ctx, values, resolving) : 0n;
   }
   if (type.kind === 'union') {
     // A fixed-alternative union occupies at least its largest alternative
@@ -250,7 +250,7 @@ function consumedSize(type, result, ctx, values) {
   const length = result?.provenance?.length;
   if (typeof length === 'string' && /^\d+$/.test(length)) return { size: BigInt(length) };
   const size = staticSize(type, ctx, values);
-  return size == null ? null : { size: BigInt(size) };
+  return size == null ? null : { size };
 }
 
 function readType(type, offset, space, ctx, values, depth = 0) {
@@ -292,7 +292,7 @@ function readType(type, offset, space, ctx, values, depth = 0) {
           continue;
         }
         if (!ctx.budget.consumeEntries()) return ctx.budget.partial();
-        const at = elementSize == null ? next : BigInt(offset) + BigInt(j) * BigInt(elementSize);
+        const at = elementSize == null ? next : BigInt(offset) + BigInt(j) * elementSize;
         const item = readType(type.element, at, space, ctx, values, depth + 1);
         if (item.status) return item;
         const measured = consumedSize(type.element, item, ctx, values);
@@ -307,7 +307,7 @@ function readType(type, offset, space, ctx, values, depth = 0) {
     };
     out[ARRAY_CONSUMED_SIZE] = () => {
       if (count === 0) return { size: 0n };
-      if (elementSize != null) return { size: BigInt(elementSize) * BigInt(count) };
+      if (elementSize != null) return { size: elementSize * BigInt(count) };
       const result = ensureElements(count - 1);
       if (result?.status) return result;
       return { size: elementOffsets[count - 1] + elementLengths[count - 1] - BigInt(offset) };
