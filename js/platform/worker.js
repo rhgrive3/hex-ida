@@ -3,6 +3,7 @@ import { CachedByteSource } from '../bytesource/cached.js';
 import { describeBinaryImage } from './describe.js';
 import { fingerprintVendors } from '../knowledge/index.js';
 import { hashByteSource } from './hash.js';
+import { compileBytePattern } from './byte-search.js';
 import { boundedOffset, checkedChunkIndex, chunkLength, exactExternalInteger, regionSize, utf8Len, isExactFunctionSeed } from './worker-validation.js';
 import { analysisFromBinaryImage, emptyAnalysis } from './analysis-result.js';
 import { analyzeDecodedSemanticFunction } from '../targets/architecture/x86_64/semantic-function.js';
@@ -376,14 +377,22 @@ async function runSearch(msg, signal) {
     const block = await readFileRange(BigInt(region.fileOffset) + pos, chunkLength(total - pos, SCAN_BLOCK), signal);
     const joined = carry.length ? concat(carry, block) : block;
     const base = pos - BigInt(carry.length);
+    // Capture after each awaited read, so mutable caller data is not cached
+    // across chunks. Small/oversized or exotic patterns keep the old path.
+    const matcher = compileBytePattern(pattern, mask, msg.kind === 'text');
     for (let i = 0; i <= joined.length - pattern.length; i++) {
-      let ok = true;
-      for (let j = 0; j < pattern.length; j++) {
-        const actual = msg.kind === 'text' ? lower(joined[i + j]) : joined[i + j];
-        const expected = msg.kind === 'text' ? lower(pattern[j]) : pattern[j];
-        if (msg.kind === 'hex' ? ((actual & mask[j]) !== expected) : actual !== expected) { ok = false; break; }
+      if (matcher) {
+        i = matcher.find(joined, i);
+        if (i < 0) break;
+      } else {
+        let ok = true;
+        for (let j = 0; j < pattern.length; j++) {
+          const actual = msg.kind === 'text' ? lower(joined[i + j]) : joined[i + j];
+          const expected = msg.kind === 'text' ? lower(pattern[j]) : pattern[j];
+          if (msg.kind === 'hex' ? ((actual & mask[j]) !== expected) : actual !== expected) { ok = false; break; }
+        }
+        if (!ok) continue;
       }
-      if (!ok) continue;
       const byteOff = base + BigInt(i);
       results.push({ row: exactExternalInteger(byteOff / BigInt(ROW_BYTES)), addr: BigInt(region.vmAddr) + byteOff, byteOff: exactExternalInteger(byteOff) });
       if (results.length >= SEARCH_LIMIT) { capped = true; break; }

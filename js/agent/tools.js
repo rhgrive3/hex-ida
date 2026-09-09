@@ -212,6 +212,10 @@ export function createAgentTools(context, opts = {}) {
   tools.get_callees = async (address, options) => {
     const addr = asAddress(address);
     let range = null;
+    // Let the core report an unavailable Program query when no Program was
+    // supplied.  A missing range on an existing Program remains a distinct
+    // bounded-query failure; forwarding it would make calleesOf unbounded.
+    if (!ctx.program) return originalCallees(address, options);
     if (addr != null && ctx.program && typeof ctx.program.functionRange === 'function') {
       try { range = ctx.program.functionRange(addr); }
       catch (error) { throw new AgentToolError('tool-failed', 'functionRange failed', { method:'functionRange', cause:String(error?.message ?? error) }); }

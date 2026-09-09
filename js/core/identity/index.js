@@ -1,3 +1,5 @@
+import { fnv64Text } from './fnv64.js';
+
 const ID_SCHEMA_VERSION = 1;
 const HEX_RE = /^[0-9a-f]+$/i;
 
@@ -66,12 +68,18 @@ export function jsonSafe(value, seen = new WeakSet()) {
     for (const key of Object.keys(value).sort()) {
       const normalized = jsonSafe(value[key], seen);
       if (normalized !== null || value[key] === null) {
-        Object.defineProperty(out, key, {
-          value: normalized,
-          enumerable: true,
-          configurable: true,
-          writable: true,
-        });
+        // Assignment creates the same own data descriptor for a fresh key,
+        // without allocating a descriptor on every property. Inherited names
+        // (including __proto__, setters and non-writable prototype properties)
+        // still require DefineProperty: never invoke an inherited setter.
+        if (key in out) {
+          Object.defineProperty(out, key, {
+            value: normalized,
+            enumerable: true,
+            configurable: true,
+            writable: true,
+          });
+        } else out[key] = normalized;
       }
     }
   }
@@ -83,18 +91,9 @@ export function stableStringify(value) {
   return JSON.stringify(jsonSafe(value));
 }
 
-function fnv64(text, seed) {
-  let hash = BigInt.asUintN(64, seed);
-  for (let i = 0; i < text.length; i++) {
-    hash ^= BigInt(text.charCodeAt(i));
-    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
-  }
-  return hash.toString(16).padStart(16, '0');
-}
-
 export function stableDigest(value) {
   const text = stableStringify(value);
-  return fnv64(text, 0xcbf29ce484222325n) + fnv64(text, 0x84222325cbf29ce4n);
+  return fnv64Text(text) + fnv64Text(text, 0xcbf29ce4, 0x84222325);
 }
 
 function canonicalWitnessParts(value, seen = new WeakSet()) {
