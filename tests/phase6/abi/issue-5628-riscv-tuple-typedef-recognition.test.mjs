@@ -40,9 +40,35 @@ test('#5628 the next tuple argument continues after the previous group', () => {
     'NFIELDS=2 at LMUL=2 needs 4 registers after v8..v13');
 });
 
-test('#5628 explicit metadata still outranks the type-string spelling', () => {
+test('#5628 explicit metadata consistent with the spelling stays authoritative', () => {
+  const result = classify([{ type: 'vint32m2x3_t', abiClass: 'vector', lmul: 2, tupleCount: 3 }]);
+  assert.deepEqual(regsOf(result, 0), ['v8', 'v9', 'v10', 'v11', 'v12', 'v13'],
+    'consistent explicit lmul/tupleCount metadata is preserved');
+});
+
+test('#5628 conflicting explicit metadata fails closed instead of silent override', () => {
+  // Issue-required #7: explicit lmul=1/tupleCount=2 contradicts the m2x3
+  // spelling — the descriptor must not silently reconcile to either side.
   const result = classify([{ type: 'vint32m2x3_t', abiClass: 'vector', lmul: 1, tupleCount: 2 }]);
-  assert.equal(regsOf(result, 0).length, 2, 'explicit lmul/tupleCount metadata stays authoritative');
+  const argument = result.arguments.find((entry) => entry?.index === 0);
+  assert.equal(argument.exact, false, 'no exact group may be minted from conflicting evidence');
+  assert.equal(argument.location, 'unknown');
+  assert.equal(argument.abiClass, 'vector-descriptor-conflict');
+});
+
+test('#5628 out-of-range NFIELDS x0/x9 are rejected, not clamped to exact', () => {
+  // Issue-required #8: m1x0_t and m1x9_t are malformed spellings; clamping
+  // NFIELDS to 1/8 must not mint exact groups.
+  for (const type of ['vint32m1x0_t', 'vint32m1x9_t']) {
+    const result = classify([{ type, abiClass: 'vector' }]);
+    const argument = result.arguments.find((entry) => entry?.index === 0);
+    assert.equal(argument.exact, false, `${type} must not classify exactly`);
+    assert.equal(argument.location, 'unknown', `${type} must fail closed`);
+  }
+  const returned = RISCV_LP64D_ABI.classifyFunctionReturn({
+    functionPrototype: { returnType: 'vint32m1x9_t', abiClass: 'vector', callingConvention: VECTOR_CC },
+  });
+  assert.equal(returned?.exact !== true, true, 'a malformed tuple return must fail closed');
 });
 
 test('#5628 non-tuple vector spellings keep their previous recognition', () => {
