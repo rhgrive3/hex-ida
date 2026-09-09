@@ -2,10 +2,11 @@ import { sourceOf } from '../ast/nodes.js';
 import { renderProvenanceRecord } from './contract.js';
 import { readLineExpressionHistory } from './projection.js';
 import { readSwitchLineHistory, readSwitchRenderHistory } from '../switch.js';
-import { readSemanticSuppressionHistory } from '../semantic-core.js';
+import { readSemanticSuppressionHistory, readSemanticStoreLineHistory, readSemanticStoreRenderHistory } from '../semantic-core.js';
 
 function readRenderedHistory(line, ir) {
-  return readLineExpressionHistory(line, ir) || readSwitchLineHistory(line, ir)?.records || null;
+  return readLineExpressionHistory(line, ir) || readSwitchLineHistory(line, ir)?.records
+    || readSemanticStoreLineHistory(line, ir)?.records || null;
 }
 
 export const RENDER_PROVENANCE_VERSION = 1;
@@ -233,13 +234,17 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   const switches = readSwitchRenderHistory(result);
   if (result.switchRenderHistory?.completeness === 'incomplete') reasons.add('incomplete-switch-history');
   if (result.switchRenderHistory && !switches && !result.cAst) reasons.add('unavailable-switch-history');
+  const initialStores = readSemanticStoreRenderHistory(result);
+  if (result.semanticStoreRenderHistory?.completeness === 'incomplete') reasons.add('incomplete-initial-store-history');
+  if (result.semanticStoreRenderHistory && !initialStores && !result.cAst) reasons.add('unavailable-initial-store-history');
   if (result.phase8Projection?.history?.completeness === 'incomplete') reasons.add('incomplete-projection-history');
   const truncatedScopes = [];
   let entitiesTruncated = 0;
   let ledgerTruncated = 0;
 
   const rewritten = Array.isArray(result.rewriteProof) ? result.rewriteProof : [];
-  const expressionRecords = switches ? [...new Set([...rewritten, ...switches.records])] : rewritten;
+  const expressionRecords = switches || initialStores
+    ? [...new Set([...rewritten, ...(switches?.records || []), ...(initialStores?.records || [])])] : rewritten;
   const projection = result.phase8Projection;
   const rawRecords = Array.isArray(projection?.history?.transforms) ? projection.history.transforms
     : Array.isArray(projection?.transforms) ? projection.transforms : [];

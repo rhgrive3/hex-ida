@@ -2886,6 +2886,57 @@ exhaustive proof that no other implementation exists. All original 23 findings,
 the 135-binary denominator and existing broad substrate failures remain open;
 no requirement is narrowed or marked complete. Acceptance remains LOCKED.
 
+## C4-03 initial RMW-render history and owned consumer handoff
+
+The initial semantic renderer's actual seven RMW spelling branches now record
+post-increment/decrement, add/sub/mul assignment and signed/unsigned division
+assignment through the same expression-origin history and final render ledger.
+The earlier C AST compound-store event remains a separate actual later event;
+neither is inferred from RMW facts alone or from source/text equality. All
+load/arithmetic/store dependencies remain canonical inputs, not deleted semantic
+entities. The proof label stays `observed-store-spelling-not-memory-equivalence`.
+This does not certify the existing RMW predicate or issue alias, atomicity,
+overflow or memory-observable equivalence proof.
+
+Only the initial emitter privately binds its actual line. It snapshots the
+selected instruction/RMW inputs before operand rendering can invoke symbol
+callbacks, then observes the emitted line and rechecks the selection. Original
+instruction root/position, operand mutation, copied lines, copied dispositions
+and copied downstream records are checked. Historical events remain available
+without a current binding when inputs become stale. The faithful-CFG fallback
+discards events for its abandoned structured attempt, retaining only final
+emission events; it does not replenish the cumulative observation budget.
+
+The existing compatibility-name normalization has one implementation and carries
+only an observed line through that exact spelling transition. Its switch-line
+handoff is retained. The C AST producer consumes the exact initial line/store
+pair and carries its history through the public pipeline, Phase 8 projection,
+replay and query navigation. Division receives this handoff even though the
+later C AST renderer prints it as a full assignment. That is historical-event
+continuity, not an assertion that compound spelling survives every projection.
+Explicit later spelling-transition records and other C4-03 transform classes
+remain open.
+
+Twelve new canonical provenance tests cover seven actual branches across eight
+widths (56 source-history cells through the public pipeline, not RMW theorems),
+distinct initial/later events and replay, non-emitted analysis facts, real stack
+name normalization, stale/copy/root/validator-tampering refusal, caps/cancellation, symbol callbacks
+during and after emission, faithful fallback, late map-construction mutation
+and snapshot-bound division navigation. The initial naming fixture was corrected
+to use the renderer's real `stackSlots` name input; no production naming behavior
+or expected output predicate was changed to satisfy it.
+
+PR #3421 remains the reused foundation at
+`4cd5b3eb9200b1180985b9df3a74f8245a5cc928`. A new relevant query-layer PR #7820
+was inspected at `e1380aec9468c865ad276379656b801f1ada6931`: it preserves
+inconclusive runtime verdicts and fixes omitted-epoch snapshot defaults. Its
+four changed paths do not implement initial RMW rendering. It remains a central
+reconciliation/reuse candidate owned by the parallel issue lane; no duplicate
+query fix or ad-hoc component merge was made here. The RMW-title search was
+empty; PR #7746 remains unrelated cache work. Search results are not an
+exhaustive no-duplicate proof. All original 23 findings and the frozen135-binary
+denominator remain open; no whole requirement is closed. Acceptance stays LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -2920,7 +2971,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C3-03 | Versioned language metadata and unknown-version matrix |
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
-| HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi and C AST compound-store histories, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
+| HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi, initial RMW/C AST compound-store histories and their owned handoffs, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
 | HEX-C4-04 | Proof-gated scalar projection, owned inputs, transaction coverage and optional reuse of all 64 display rules as independently verified candidates implemented; ordinary legacy-view adoption, full family/width denominator and memory/CFG/exception observables remain open |
 | HEX-C4-05 | Frozen 272-cell scalar/14-Bool/8-width producer coverage and 3 actual schedules (816 scalar cells); adopted-transform history now preserves actual rule/cost/budget/proof audits. Native proof gaps, arbitrary permutations and full acceptance remain open |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |

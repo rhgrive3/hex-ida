@@ -2,6 +2,7 @@
 import { mergeSource, sourceOf } from './ast/nodes.js';
 import { expressionOriginHistory } from './rewrite/engine.js';
 import { captureProjectionIrData, PROJECTION_LIMITS } from './phase8/projection-origin.js';
+import { normalizeSemanticCompatibilityLine } from './semantic-core.js';
 
 const switchLines = new WeakMap(), switchHistories = new WeakMap();
 const cap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
@@ -21,11 +22,10 @@ export function readSwitchRenderHistory(result) {
 // arbitrary line edits or a public binding-registration function.
 export function normalizeCompatibilityLine(line, ir) {
   if (!line || typeof line.text !== 'string') return;
-  const text = line.text.replace(/\blocal_([0-9a-f]+)\b/gi, (_m, h) => 'var_' + h.toUpperCase())
-    .replace(/\bvar_([0-9a-f]+)\b/gi, (_m, h) => 'var_' + h.toUpperCase());
-  if (text === line.text) return;
+  const previousText = line.text;
   const entry = readSwitchLineHistory(line, ir);
-  line.text = text;
+  normalizeSemanticCompatibilityLine(line, ir);
+  if (previousText === line.text) return;
   if (!entry) return;
   try {
     const observation = captureProjectionIrData([line]);

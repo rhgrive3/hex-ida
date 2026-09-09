@@ -17,6 +17,7 @@ import { INTERACTIVE_STAGES as PHASE8_INTERACTIVE_STAGES, PASS_STAGES as PHASE8_
 import { printExpression, printProgram, expressionReadability } from './pretty/c.js';
 import { explainSemanticFacts } from './explain.js';
 import { readSwitchLineHistory, readSwitchRenderHistory } from './switch.js';
+import { readSemanticStoreLineHistory, readSemanticStoreRenderHistory } from './semantic-core.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -839,7 +840,7 @@ function compoundStoreHistory(instruction, value, expression, location, form, st
     && Object.getOwnPropertyDescriptor(instructions, position)?.value === instruction && observation?.matches() === true };
 }
 
-function knownStatementForLine(line, state, lineIndex) {
+function knownStatementForLine(line, state, lineIndex, initialStore = null) {
   if (line?.row == null || line.kind !== 'stmt') return null;
   const insts = (state.ir.instructions || []).filter((i) => i.row === line.row);
   const store = insts.find((i) => i.op === 'store');
@@ -881,6 +882,11 @@ function knownStatementForLine(line, state, lineIndex) {
       else { text = `${location.text} ${{add:'+=',sub:'-=',mul:'*='}[e.op]} ${rhs};`; form = `${e.op}-assignment`; }
       rendered = compoundStoreHistory(store, value, e, location, form, state);
     }
+    if (initialStore?.instruction === store) {
+      const current = rendered;
+      rendered = { records:Object.freeze([...(current?.records || []), ...initialStore.records]),
+        isCurrent:() => (!current || current.isCurrent()) && initialStore.isCurrent() };
+    }
     return { text, semantic: semanticExpressionConsumer({ op: 'store', location, expression: e, ir: store.id }, value, store, state, false, rendered), source: mergeSource(line.source, e?.source, origin(store, store.dst)) };
   }
   const ret = insts.find((i) => i.op === 'ret');
@@ -893,13 +899,19 @@ function knownStatementForLine(line, state, lineIndex) {
 
 function cAstFromLines(result, state) {
   const body = [];
+  const initialStores = readSemanticStoreRenderHistory(result);
+  if (initialStores) {
+    state.rewriteProof.push(...initialStores.records);
+    for (const reason of initialStores.reasons) consumerObservationBudget(state).reasons.add(reason);
+  } else if (result.semanticStoreRenderHistory) consumerObservationBudget(state).reasons.add('initial-store-history-unavailable');
   const switchHistory = readSwitchRenderHistory(result);
   if (switchHistory) {
     state.rewriteProof.push(...switchHistory.records);
     for (const reason of switchHistory.reasons) consumerObservationBudget(state).reasons.add(reason);
   } else if (result.switchRenderHistory) consumerObservationBudget(state).reasons.add('switch-history-unavailable');
   for (const line of result.lines || []) {
-    const known = knownStatementForLine(line, state, body.length);
+    const initialStore = initialStores && readSemanticStoreLineHistory(line, state.ir);
+    const known = knownStatementForLine(line, state, body.length, initialStore);
     const carried = line.source || { address: line.addr, row: line.row };
     const source = known?.source || sourceOf({
       ...carried,

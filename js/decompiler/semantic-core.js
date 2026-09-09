@@ -15,7 +15,8 @@ import { sourceOf, mergeSource } from './ast/nodes.js';
 import { isNZCVCondition, renderNZCVCondition } from './flag-semantics.js';
 import { renderIndexedMemory } from './address-semantics.js';
 import { integerText } from './pretty/c.js';
-import { captureProjectionIrData } from './phase8/projection-origin.js';
+import { captureProjectionIrData, PROJECTION_LIMITS } from './phase8/projection-origin.js';
+import { expressionOriginHistory } from './rewrite/engine.js';
 import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
@@ -24,6 +25,89 @@ import {
 const MAX_EXPR_DEPTH = 48;
 const MAX_EXPR_NODES = 512;
 const MAX_BLOCKS = 6000;
+
+const storeRenderLines = new WeakMap(), storeRenderHistories = new WeakMap();
+const historyCap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
+
+export function readSemanticStoreLineHistory(line, ir) {
+  const entry = storeRenderLines.get(line);
+  return entry && entry.ir === ir && entry.isCurrent() ? entry : null;
+}
+
+export function readSemanticStoreRenderHistory(result) {
+  const entry = storeRenderHistories.get(result);
+  return entry && entry.ir === result.ir && entry.disposition === result.semanticStoreRenderHistory ? entry : null;
+}
+
+// The compatibility facade's existing spelling normalization is an owned
+// transition. Public copies/edits cannot substitute for the observed input line.
+export function normalizeSemanticCompatibilityLine(line, ir) {
+  if (!line || typeof line.text !== 'string') return;
+  const text = line.text.replace(/\blocal_([0-9a-f]+)\b/gi, (_m, h) => 'var_' + h.toUpperCase())
+    .replace(/\bvar_([0-9a-f]+)\b/gi, (_m, h) => 'var_' + h.toUpperCase());
+  if (text === line.text) return;
+  const entry = readSemanticStoreLineHistory(line, ir);
+  line.text = text;
+  if (!entry) return;
+  try {
+    const observation = captureProjectionIrData([line]);
+    storeRenderLines.set(line, Object.freeze({ ...entry,
+      isCurrent:() => entry.canonical.isCurrent() && observation.matches(),
+    }));
+  } catch { /* No inferred continuity when the exact line cannot be observed. */ }
+}
+
+function observeStoreSelection(inst, rmw, upd, ctx) {
+  const history = ctx.storeRenderHistory;
+  if (history.events.length >= history.limit) { history.reasons.add('initial-store-history-budget'); return null; }
+  const source = storeSource(inst, ctx), ir = ctx.ir, instructions = ir.instructions, position = instructions.indexOf(inst);
+  let observation = null;
+  try {
+    if (history.edges <= 0 || history.consumers <= 0 || position < 0) throw new Error('initial-store-binding-budget');
+    // Capture before renderValue can invoke a symbol callback. This is a
+    // display selection, not an independent proof of the RMW analysis fact.
+    observation = captureProjectionIrData([inst, rmw, upd]);
+    history.edges -= observation.metrics.edges;
+    if (history.edges < 0) throw new Error('initial-store-binding-budget');
+  } catch { observation = null; history.edges = 0; history.reasons.add('initial-store-observation-unavailable'); }
+  return Object.freeze({ source, valueId:valueOf(inst.args?.[0])?.id ?? null,
+    isCurrent:() => Object.getOwnPropertyDescriptor(ir, 'instructions')?.value === instructions
+    && Object.getOwnPropertyDescriptor(instructions, position)?.value === inst && observation?.matches() === true });
+}
+
+function retainStoreRenderLine(node, inst, rendered, ctx) {
+  const canonical = rendered.history;
+  if (!canonical) return;
+  const history = ctx.storeRenderHistory;
+  const record = Object.freeze({ rule:'render-initial-compound-store', phase:'initial-semantic-render',
+    before:'store:assignment', after:`store:${rendered.form}`, valueId:canonical.valueId,
+    evidence:Object.freeze({ kind:'observed-store-spelling-not-memory-equivalence',
+      detail:'actual initial RMW renderer output, not an independent alias/atomicity/overflow/memory proof' }),
+    originHistory:expressionOriginHistory({ source:canonical.source }, { source:canonical.source }),
+  });
+  history.events.push({ node, record });
+  try {
+    if (history.consumers <= 0 || history.edges <= 0 || !canonical.isCurrent()) throw new Error('initial-store-binding-unavailable');
+    history.consumers--;
+    const observation = captureProjectionIrData([node], ctx.opts.shouldAbort);
+    history.edges -= observation.metrics.edges;
+    if (history.edges < 0 || !canonical.isCurrent()) throw new Error('initial-store-binding-unavailable');
+    storeRenderLines.set(node, Object.freeze({ ir:ctx.ir, instruction:inst, canonical, records:Object.freeze([record]),
+      isCurrent:() => canonical.isCurrent() && observation.matches(),
+    }));
+  } catch { history.edges = 0; history.reasons.add('initial-store-binding-unavailable'); }
+}
+
+function bindStoreRenderHistory(result, ctx) {
+  const history = ctx.storeRenderHistory;
+  if (!history.events.length && !history.reasons.size) return result;
+  const disposition = Object.freeze({ scope:'initial-store-render-producer',
+    completeness:history.reasons.size ? 'incomplete' : 'complete', reasons:Object.freeze([...history.reasons]) });
+  result.semanticStoreRenderHistory = disposition;
+  storeRenderHistories.set(result, Object.freeze({ ir:ctx.ir, disposition,
+    records:Object.freeze(history.events.map(event => event.record)), reasons:disposition.reasons }));
+  return result;
+}
 
 // Historical display events, not a proof that the suppressed operation is
 // semantically dead. Only the actual emitter can issue this private binding.
@@ -778,15 +862,16 @@ function statementForStore(inst, ctx) {
     const hasSelect = (rmw.chain || []).some((x) => x.op === OP.SEL);
     const upd = rmwOperand(rmw, ctx);
     if (upd && !hasSelect && !upd.reversed) {
+      const history = observeStoreSelection(inst, rmw, upd, ctx);
       const rhs = renderValue(upd.other, ctx);
       const op = { add: '+=', sub: '-=', mul: '*=', sdiv: '/=', udiv: '/=' }[upd.op];
-      if (upd.op === 'add' && upd.other?.const === 1n) return `${lhs}++;`;
-      if (upd.op === 'sub' && upd.other?.const === 1n) return `${lhs}--;`;
-      if (op) return `${lhs} ${op} ${rhs};`;
+      if (upd.op === 'add' && upd.other?.const === 1n) return { text:`${lhs}++;`, form:'post-increment', history };
+      if (upd.op === 'sub' && upd.other?.const === 1n) return { text:`${lhs}--;`, form:'post-decrement', history };
+      if (op) return { text:`${lhs} ${op} ${rhs};`, form:`${upd.op}-assignment`, history };
     }
   }
   const rhs = renderValue(valueOf(inst.args?.[0]), ctx, { noMemoryFold: true });
-  return `${lhs} = ${rhs};`;
+  return { text:`${lhs} = ${rhs};` };
 }
 
 function evidenceOf(inst, reason) {
@@ -802,8 +887,10 @@ function emitBlockStatements(block, out, ctx, indent) {
         recordSuppression(ctx, inst, 'compiler-only stack spill', 'omit-mechanical-stack-spill');
         continue;
       }
-      const text = statementForStore(inst, ctx);
-      out.push(line('stmt', indent, text, inst.row, inst.address, { source: storeSource(inst, ctx) }));
+      const rendered = statementForStore(inst, ctx);
+      const node = line('stmt', indent, rendered.text, inst.row, inst.address, { source: storeSource(inst, ctx) });
+      retainStoreRenderLine(node, inst, rendered, ctx);
+      out.push(node);
       ctx.evidence.push(evidenceOf(inst, 'Memory SSA store'));
     } else if (inst.op === OP.CALL) {
       const c = callRecord(inst, ctx);
@@ -1038,6 +1125,9 @@ export function decompileSemantic(model, opts = {}) {
     callCache: new Map(), evidence: [], suppressed: [], unknown: 0, unknownCallArities: 0,
     suppressionHistory: { events:[], reasons:new Set(), limit:Number.isSafeInteger(opts.renderProvenanceBudget?.maxTransformRecords)
       && opts.renderProvenanceBudget.maxTransformRecords >= 0 ? Math.min(opts.renderProvenanceBudget.maxTransformRecords, 1024) : 1024 },
+    storeRenderHistory: { events:[], reasons:new Set(), limit:historyCap(opts.renderProvenanceBudget?.maxTransformRecords, 1024),
+      consumers:historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096),
+      edges:historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges) },
     materialNames: new Map(), switchByRow: new Map((opts.switches || model.switches || []).map((s) => [s.row, s])),
     blockAddress: (bi) => model.instructions?.find((x) => x.row === ir.blocks[bi]?.startRow)?.address ?? firstAddr + BigInt(ir.blocks[bi]?.startRow || 0) * 4n,
   };
@@ -1058,6 +1148,7 @@ export function decompileSemantic(model, opts = {}) {
     // Only the selected final emission belongs to the history. Keep legacy
     // ctx.suppressed diagnostics unchanged, including the abandoned attempt.
     ctx.suppressionHistory.events.length = 0; ctx.suppressionHistory.reasons.clear();
+    ctx.storeRenderHistory.events.length = 0; ctx.storeRenderHistory.reasons.clear();
     body.push(...faithfulCfg(ctx, 1));
     coverage = { mode: 'linear', reachable: reachable.size, emitted: reachable.size, missing: 0, recovered: missing.length, structuredMissing: missing.length };
   }
@@ -1077,10 +1168,10 @@ export function decompileSemantic(model, opts = {}) {
   if (ir.truncated) warnings.push('Semantic IR budget truncated this function; the result is partial.');
 
   const summary = summarize(body, ctx);
-  return bindSuppressionHistory({
+  return bindStoreRenderHistory(bindSuppressionHistory({
     lines, signature, types, summary, pseudocode: pseudocode(lines),
     evidence: ctx.evidence, warnings, labels: new Set(body.filter((l) => l.kind === 'label').map((l) => l.text.replace(/:$/, ''))),
     coverage, ir, ctx: { runtime, suppressed: ctx.suppressed, inductions: ctx.inductions, irPrimary: true, unknownInstructions: ctx.unknown },
     semantic: true,
-  }, ctx);
+  }, ctx), ctx);
 }
