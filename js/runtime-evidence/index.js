@@ -144,7 +144,8 @@ export function fuseStaticDynamic(staticCandidate, runtimeEvidence = []) {
   let ignoredEvidence = 0;
   for (const item of evidence) {
     if (candidateHash && item.binaryHash !== candidateHash) { ignoredEvidence++; continue; }
-    if (item.sliceIdentity && (!candidateSlice || item.sliceIdentity !== candidateSlice)) { ignoredEvidence++; continue; }
+    const itemSlice = item.sliceIdentity || null;
+    if (itemSlice !== candidateSlice) { ignoredEvidence++; continue; }
     if (candidateFunction != null && (item.function == null || !sameAddress(candidateFunction,item.function))) { ignoredEvidence++; continue; }
     compatible.push(item);
   }
