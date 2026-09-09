@@ -20,6 +20,43 @@ function firstMalformedBoundary(bytecode) {
   return null;
 }
 
+const SYNCHRONIZED_MONITOR_REASON = 'jvm-synchronized-method-monitor-unrepresented';
+
+function applySynchronizedMethodSemantics(lifted, method, options = {}) {
+  if ((method?.accessFlags & 0x0020) === 0) return lifted; // ACC_SYNCHRONIZED
+
+  const firstBundle = lifted.bundles[0] ?? null;
+  const alreadyMarked = firstBundle?.unknownEffects?.some((effect) =>
+    effect?.reason === SYNCHRONIZED_MONITOR_REASON) === true;
+  const bundles = firstBundle ? [{
+    ...firstBundle,
+    completeness: firstBundle.completeness === 'unknown' ? 'unknown' : 'partial',
+    unknownEffects: alreadyMarked
+      ? firstBundle.unknownEffects
+      : [...firstBundle.unknownEffects, {
+        category: 'other',
+        reason: SYNCHRONIZED_MONITOR_REASON,
+      }],
+  }, ...lifted.bundles.slice(1)] : lifted.bundles;
+
+  return createVMEffectFunction({
+    ...lifted,
+    bundles,
+    aggregateCompleteness: lifted.aggregateCompleteness === 'unknown' ? 'unknown' : 'partial',
+    metadata: {
+      ...lifted.metadata,
+      synchronization: {
+        kind: 'implicit-jvm-monitor',
+        monitor: (method.accessFlags & 0x0008) !== 0 ? 'declaring-class' : 'receiver', // ACC_STATIC
+        acquire: 'method-entry',
+        release: 'normal-or-abrupt-exit',
+        reentrant: true,
+        completeness: 'unrepresented',
+      },
+    },
+  }, options);
+}
+
 function cloneWithBytecodePrefix(jvmClass, methodIdx, method, bytecode) {
   const methods = jvmClass.methods.slice();
   methods[methodIdx] = {
@@ -34,11 +71,15 @@ function cloneWithBytecodePrefix(jvmClass, methodIdx, method, bytecode) {
 
 export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
   const method = jvmClass?.methods?.[methodIdx];
-  if (!method?.code) return liftJvmMethodCore(methodIdx, jvmClass, options);
+  if (!method?.code) {
+    return applySynchronizedMethodSemantics(liftJvmMethodCore(methodIdx, jvmClass, options), method, options);
+  }
 
   const bytecode = method.code.bytecode;
   const malformed = firstMalformedBoundary(bytecode);
-  if (!malformed) return liftJvmMethodCore(methodIdx, jvmClass, options);
+  if (!malformed) {
+    return applySynchronizedMethodSemantics(liftJvmMethodCore(methodIdx, jvmClass, options), method, options);
+  }
 
   const methodId = createManagedMethodId(jvmClass.moduleId, methodIdx, method.name);
   let prefixBundles = [];
@@ -92,7 +133,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
     catchType: exc.catchType,
   }));
 
-  return createVMEffectFunction({
+  const lifted = createVMEffectFunction({
     methodId,
     profileId: jvmClass.vmSpecEdition,
     frontendId: 'jvm',
@@ -104,4 +145,5 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
     exceptionRegions,
     aggregateCompleteness: 'partial',
   }, options);
+  return applySynchronizedMethodSemantics(lifted, method, options);
 }

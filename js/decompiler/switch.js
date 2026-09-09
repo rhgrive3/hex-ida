@@ -164,12 +164,20 @@ export function structureKnownSwitches(result, model, opts = {}) {
     }
     const allTargets = cases.map((c) => c.address);
     if (defaultAddress != null) allTargets.push(defaultAddress);
+    const linesBeforeMaterialization = result.lines.slice();
+    const labelsBeforeMaterialization = new Set(index.labels);
     if (!materializeVerifiedLabels(result, index, allTargets)) {
       result.warnings = [...(result.warnings || []), `Switch at row ${sw.row} was not structured because one or more case targets are not exact instruction addresses.`];
       continue;
     }
     const at = insertionIndex(result.lines, sw.row);
-    if (!at) continue;
+    if (!at) {
+      // Restore the exact pre-materialization state. Filtering by target text
+      // can erase a legitimate label that existed before this switch (#5535).
+      result.lines = linesBeforeMaterialization;
+      index.labels = labelsBeforeMaterialization;
+      continue;
+    }
     const expr = String(sw.expr || sw.reg || 'switch_value');
     const repl = [{ kind: 'ctrl', indent: at.indent, text: `switch (${expr}) {`, row: sw.row, addr: null, note: null }];
     for (let i = 0; i < cases.length; i++) repl.push({ kind: 'ctrl', indent: at.indent + 1, text: `case ${values[i]}: goto ${cases[i].label};`, row: sw.row, addr: cases[i].address, note: null });
