@@ -31,7 +31,7 @@ export const EDGE = {
  */
 export function buildCfg(model, opts) {
   const o = opts || {};
-  const rowOf = o.rowOfAddress || (() => null);
+  const rowOf = typeof o.rowOfAddress === 'function' ? o.rowOfAddress : (() => null);
   const blocks = model.basicBlocks || [];
   const insnByRow = new Map();
   for (const i of model.instructions || []) insnByRow.set(i.row, i);
