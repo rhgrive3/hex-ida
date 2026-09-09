@@ -34,7 +34,10 @@ const SPECIAL_PATHS = Object.freeze({
     'tests/machine-effects/x86-lahf-sahf.test.mjs',
     'tests/machine-effects/helpers/lahf-sahf-oracle.mjs',
     'tests/machine-effects/helpers/x86-browser-effects.mjs',
+    'tests/machine-effects/helpers/random-oracle.mjs',
+    'tests/machine-effects/x86-random.test.mjs',
     'tests/machine-effects/issue-6133-x87-terminal-family-authority.test.mjs',
+    'tests/machine-effects/issue-6133-x87-trusted-terminal-domain.test.mjs',
     'tests/machine-effects/x86-long64-extended-state.test.mjs',
     'tests/machine-effects/x86-long64-fp-denominator.test.mjs',
     'tests/machine-effects/x86-long64-simd-denominator.test.mjs',
@@ -47,6 +50,7 @@ const SPECIAL_PATHS = Object.freeze({
     'tools/validation/machine-effects/fixtures/move-extension-register-oracle.c',
     'tools/validation/machine-effects/fixtures/x87-compare-flags-oracle.c',
     'tools/validation/machine-effects/fixtures/lahf-sahf-oracle.c',
+    'tools/validation/machine-effects/fixtures/random-oracle.c',
     'tools/validation/analysis-roadmap/ownership.mjs', 'tools/validation/analysis-roadmap/ownership.json',
     'userscript/hex.user.template.js', 'userscript/release-version.json'],
 });

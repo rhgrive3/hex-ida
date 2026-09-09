@@ -86,6 +86,7 @@ export async function forEachX86BrowserSession(test) {
         });
         await test({
           engine,
+          browserVersion:browser.version(),
           async decodeAndLift(bytes, address = 0x1000n, expectedInstructionCount = 1) {
             assert.ok((Array.isArray(bytes) || bytes instanceof Uint8Array) && bytes.length > 0
               && Array.from(bytes).every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255),

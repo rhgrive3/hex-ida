@@ -720,6 +720,71 @@ function liftAhFlagTransfer(ctx, family) {
   });
 }
 
+function liftRandom(ctx, family) {
+  const state = rawEncodingState(ctx.instruction);
+  // One optional operand-size override, followed by at most one final REX.
+  // In particular F2/F3/LOCK, duplicate prefixes and memory ModRM forms do
+  // not authorize a register transfer. REX.W takes precedence over 66.
+  const prefixes = [...state.prefixes];
+  if (prefixes[0] === 0x66) prefixes.shift();
+  const prefixValid = prefixes.length === 0 || (prefixes.length === 1 && isRex(prefixes[0]));
+  const regField = family === 'rdrand' ? 6 : 7;
+  const modrm = state.body[2];
+  if (!prefixValid || state.body.length !== 3 || state.body[0] !== 0x0f || state.body[1] !== 0xc7
+      || (modrm >>> 6) !== 3 || ((modrm >>> 3) & 7) !== regField) return malformedPartial(ctx, family);
+  const bits = state.rex != null && (state.rex & 8) ? 64 : state.operandSize66 ? 16 : 32;
+  const index = (modrm & 7) | (state.rex != null && (state.rex & 1) ? 8 : 0);
+  const physical = ['rax','rcx','rdx','rbx','rsp','rbp','rsi','rdi',
+    'r8','r9','r10','r11','r12','r13','r14','r15'][index];
+  const destination = ctx.operands[0];
+  if (ctx.operands.length !== 1 || destination?.type !== 'register'
+      || destination.access !== 'write'
+      || destination.register.physicalId !== physical || destination.register.viewBits !== bits
+      || destination.widthBits !== bits || destination.register.lsb !== 0) {
+    return malformedPartial(ctx, family, `x86-${family}-destination-encoding-mismatch`);
+  }
+
+  // Hardware randomness is intrinsically nondeterministic, not a pure call
+  // or a function of the old destination. The two outputs are the returned
+  // value and hardware CF; zero is a valid successful value.
+  // Intel SDM Vol.2B RDRAND/RDSEED; AMD APM Vol.3 rev.3.35 pp.299-300.
+  // AMD specifies a zero failure result for RDSEED, but only an invalid
+  // result for RDRAND. Do not import Intel's RDRAND zero guarantee into the
+  // vendor-neutral target, or infer entropy quality from CF=1.
+  const [sample, ready] = systemIntrinsic(ctx, `x86.system.${family}`, [], [bits,1], {
+    registersRead:[EXECUTION_ENV, 'sys:x86.random-generator-state'],
+    registersWritten:[physical, 'sys:x86.random-generator-state',
+      'rflags.cf','rflags.of','rflags.sf','rflags.zf','rflags.af','rflags.pf'],
+    determinism:'nondeterministic',
+    metadata:{
+      ...virtualizationMetadata(family),
+      outputs:['hardware-returned-value','hardware-carry-success'],
+      outputWidthBits:bits, noHostConstant:true, noEntropyQualityClaim:true,
+      failureDestination:family === 'rdseed' ? 'zero' : 'implementation-dependent-invalid: Intel zero; AMD unspecified',
+      successDoesNotImplyNonzero:true, retryLoopNotSynthesized:true,
+    },
+  });
+  const value = family === 'rdseed'
+    ? ctx.valueOp('select', [ready, sample, ctx.constant(bits, 0n)], bits)
+    : sample;
+  ctx.writeRegister(destination, value);
+  ctx.writeFlag('CF', ready, { operation:family, definedness:'defined', source:'hardware-success-not-value-test' });
+  for (const flag of ['OF','SF','ZF','AF','PF']) {
+    ctx.writeFlag(flag, ctx.constant(1, 0n), { operation:family, definedness:'fixed', fixedValue:0 });
+  }
+  return ctx.finish({
+    family:'system',
+    possibleFaults:[invalidOpcodeFault(family, {
+      feature:family === 'rdrand' ? 'CPUID.01H:ECX[30]' : 'CPUID.07H.0:EBX[18]',
+      requiredValue:1, faultWhen:'feature-bit-clear',
+      rule:'#UD when the instruction feature is unavailable; no destination or flag transfer commits on fault',
+    })],
+    metadata:{ operation:family, encodingValidated:true, widthBits:bits,
+      normalCompletionOnly:true, noHostFeatureAssumption:true, privileged:false,
+      flagsModified:['CF','OF','SF','ZF','AF','PF'], flagsPreserved:'all-except-CF-OF-SF-ZF-AF-PF' },
+  });
+}
+
 const EXTENDED_SYSTEM_NAMES = new Set([
   'bndcl', 'bndcn', 'bndcu', 'bndldx', 'bndmk', 'bndmov', 'bndstx',
   'clac', 'stac', 'cldemote', 'clflush', 'clflushopt', 'clgi', 'stgi', 'clrssbsy', 'clts', 'clwb', 'clzero',
@@ -864,6 +929,7 @@ export function liftX86SystemEffects(instruction, context = {}) {
 
   if (SIMPLE_FLAG_CONTROLS[family]) return liftSimpleFlagControl(ctx, family);
   if (family === 'lahf' || family === 'sahf') return liftAhFlagTransfer(ctx, family);
+  if (family === 'rdrand' || family === 'rdseed') return liftRandom(ctx, family);
   if (FENCES.has(family)) return liftFence(ctx, family);
   if (family === 'pause') {
     if (!pauseEncodingMatches(ctx.instruction)) {
