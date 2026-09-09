@@ -228,6 +228,8 @@ function parseThin(bytes, opts) {
 
 function validateMappedRange(label, address, size, fileOffset, fileSize, image) {
   const inputSize = BigInt(image.bytes?.length ?? image.fileSize ?? 0);
+  const vmLimit = 1n << BigInt(image.bits);
+  if (address >= vmLimit || size >= vmLimit || address > vmLimit - size) throw new Error(`${label} VM range exceeds ${image.bits}-bit address space`);
   if (fileSize > size) throw new Error(`${label} file size exceeds VM size`);
   if (fileOffset > inputSize || fileSize > inputSize - fileOffset) throw new Error(`${label} file range exceeds input`);
   return { vmEnd: address + size, fileEnd: fileOffset + fileSize };

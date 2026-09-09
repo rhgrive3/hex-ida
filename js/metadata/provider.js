@@ -311,7 +311,7 @@ export function createLanguageMetadataRecord(input = {}) {
     providerVersion: nonEmpty(input.providerVersion, 'metadata-record-provider-version-required'),
     ecosystem: nonEmpty(input.ecosystem ?? 'generic', 'metadata-record-ecosystem-required'),
     buildIdentity: input.buildIdentity == null ? null : strictNonEmptyString(input.buildIdentity, 'metadata-record-invalid-build-identity'),
-    evidenceIds: [...new Set((input.evidenceIds ?? []).map((value) => strictNonEmptyString(value, 'metadata-record-invalid-evidence-id')))].sort(),
+    evidenceIds: [...new Set(arrayField(input.evidenceIds, 'metadata-record-evidence-ids-must-be-array').map((value) => strictNonEmptyString(value, 'metadata-record-invalid-evidence-id')))].sort(),
   });
   CANONICAL_RECORDS.add(record);
   return record;

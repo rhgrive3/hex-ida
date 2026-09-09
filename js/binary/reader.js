@@ -25,8 +25,9 @@ function integerValue(value, label = 'value') {
 }
 
 function finiteBound(value, fallback) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : fallback;
 }
 
 function byteOffset(value) {

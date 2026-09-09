@@ -79,11 +79,12 @@ function validateType(type, depth = 0, names = new Set()) {
   if (type.kind === 'array') {
     const countType = typeof type.count;
     if (countType === 'number') {
-      if (!Number.isSafeInteger(type.count) || type.count < 0) fail('pattern-array-count-invalid');
+      if (!isArrayCountNumber(type.count)) fail('pattern-array-count-invalid');
     } else if (countType === 'string') {
       if (!/^[A-Za-z_][A-Za-z0-9_.]*$/.test(type.count)) fail('pattern-array-count-ref-invalid');
     } else if (type.count && countType === 'object' && !Array.isArray(type.count)) {
       validateExpression(type.count);
+      if (type.count.op === 'const' && !isArrayCountNumber(type.count.value)) fail('pattern-array-count-invalid');
     } else {
       fail('pattern-array-count-invalid');
     }
@@ -138,6 +139,8 @@ function createSource(input, options = {}) {
   throw new TypeError('pattern ByteSource is required');
 }
 function safeNumber(value, code = 'pattern-integer-overflow') { const number = Number(value); if (!Number.isSafeInteger(number) || number < 0) fail(code); return number; }
+function isArrayCountNumber(value) { return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0; }
+function arrayCountNumber(value) { if (!isArrayCountNumber(value)) fail('pattern-array-count-invalid'); return value; }
 function primitiveValue(raw, name) { return typeof raw === 'bigint' && raw <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(raw) : raw; }
 function provenance(ctx, offset, length, space = 'file') { return { patternId: ctx.patternId, snapshotId: ctx.source.snapshotId, space, offset: String(offset), length: String(length) }; }
 function fieldValue(type, value, ctx, offset, length, space = 'file', extra = {}) { return { type: type.kind === 'primitive' ? type.name : type.kind, value, provenance: provenance(ctx, offset, length, space), ...extra }; }
@@ -279,7 +282,7 @@ function readType(type, offset, space, ctx, values, depth = 0) {
   }
   if (type.kind === 'array') {
     const countValue = typeof type.count === 'number' ? type.count : typeof type.count === 'string' ? valueAt(values, type.count) : evaluateExpression(type.count, values);
-    const count = safeNumber(countValue, 'pattern-array-count-invalid');
+    const count = arrayCountNumber(countValue);
     const out = fieldValue(type, null, ctx, offset, 0, space, { length: count, lazy: true, materialized: [] });
     const elementSize = staticSize(type.element, ctx, values);
     const elementOffsets = [];
