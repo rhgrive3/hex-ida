@@ -45,9 +45,23 @@ assert.ok(texts.includes('EF') && texts.includes('GH') && texts.includes('IJ'));
 assert.ok(texts.includes('\u0800\uD7FF\u{10000}\u{10FFFF}'), 'well-formed boundary sequences still decode');
 assert.ok(texts.includes('攻撃報酬'), 'ordinary multi-byte UTF-8 still decodes');
 
-// The same root cause in decodeUtf8Text()/readAtAddress({text:true}).
-const overlongOffset = 2; // right after 'AB'
-const read = await backend.readAt(0n + BigInt(overlongOffset), 16, true);
-assert.equal(read?.text ?? read, 'AB', 'readAt text decode must stop at the invalid lead constraint, not emit U+FFFD');
+// The same root cause in decodeUtf8Text()/readAtAddress({text:true}). The
+// production readAt text path delegates to decodeUtf8Text on the booted
+// classic worker (readAt itself cannot resolve raw-region addresses:
+// vmToFile skips the 'raw' region), so assert that exact function with
+// real bytes: an invalid lead constraint must stop the decode, never mint
+// U+FFFD, and a well-formed sequence must keep decoding.
+const decodeText = globalThis.decodeUtf8Text;
+assert.equal(typeof decodeText, 'function', 'classic worker must expose decodeUtf8Text');
+assert.equal(decodeText(new Uint8Array([0x41, 0x42, 0xE0, 0x80, 0x80, 0x43, 0x44])), 'AB',
+  'overlong E0 80 80 stops the run instead of emitting U+FFFD');
+assert.equal(decodeText(new Uint8Array([0x41, 0x42, 0xED, 0xA0, 0x80, 0x43])), 'AB',
+  'UTF-16 surrogate ED A0 80 stops the run');
+assert.equal(decodeText(new Uint8Array([0x41, 0x42, 0xF0, 0x80, 0x80, 0x80, 0x43])), 'AB',
+  'overlong F0 80 80 80 stops the run');
+assert.equal(decodeText(new Uint8Array([0x41, 0x42, 0xF4, 0x90, 0x80, 0x80, 0x43])), 'AB',
+  'beyond-U+10FFFF F4 90 stops the run');
+assert.equal(decodeText(new Uint8Array([0x41, 0x42, 0xC3, 0xA9, 0x43, 0x44])), 'ABéCD',
+  'well-formed 2-byte sequences still decode');
 
 console.log('issue #5376 utf-8 well-formedness gate regressions: PASS');

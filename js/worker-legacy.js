@@ -1986,16 +1986,27 @@ function decodeUtf8Text(bytes) {
   while (n < bytes.length) {
     const c = bytes[n];
     let need;
+    // Well-formed UTF-8 constrains the SECOND byte per lead (RFC 3629):
+    // overlong encodings, UTF-16 surrogates and >U+10FFFF lead bytes must
+    // terminate the run instead of being laundered into U+FFFD (#5376).
+    let lo = 0x80, hi = 0xbf;
     if (c < 0x80) {
       if (!((c >= 0x20 && c < 0x7f) || c === 9 || c === 10 || c === 13)) break;
       need = 0;
     } else if (c >= 0xc2 && c <= 0xdf) need = 1;
-    else if (c >= 0xe0 && c <= 0xef) need = 2;
-    else if (c >= 0xf0 && c <= 0xf4) need = 3;
+    else if (c === 0xe0) { need = 2; lo = 0xa0; }
+    else if ((c >= 0xe1 && c <= 0xec) || (c >= 0xee && c <= 0xef)) need = 2;
+    else if (c === 0xed) { need = 2; hi = 0x9f; }
+    else if (c === 0xf0) { need = 3; lo = 0x90; }
+    else if (c >= 0xf1 && c <= 0xf3) need = 3;
+    else if (c === 0xf4) { need = 3; hi = 0x8f; }
     else break;
     if (n + need >= bytes.length) break;
     let ok = true;
-    for (let k = 1; k <= need; k++) if ((bytes[n + k] & 0xc0) !== 0x80) { ok = false; break; }
+    for (let k = 1; k <= need; k++) {
+      const b = bytes[n + k];
+      if ((b & 0xc0) !== 0x80 || (k === 1 && (b < lo || b > hi))) { ok = false; break; }
+    }
     if (!ok) break;
     n += need + 1;
   }
@@ -2035,13 +2046,20 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
     const c = buf[i];
     if (c < 0x80) return (c >= 0x20 && c < 0x7f) || c === 9 || c === 10 || c === 13 ? 1 : 0;
     let need = 0;
+    // #5376: lead byte ごとの第2 byte 制約（overlong / surrogate / >U+10FFFF を拒否）
+    let lo = 0x80, hi = 0xbf;
     if (c >= 0xc2 && c <= 0xdf) need = 1;
-    else if (c >= 0xe0 && c <= 0xef) need = 2;
-    else if (c >= 0xf0 && c <= 0xf4) need = 3;
+    else if (c === 0xe0) { need = 2; lo = 0xa0; }
+    else if ((c >= 0xe1 && c <= 0xec) || (c >= 0xee && c <= 0xef)) need = 2;
+    else if (c === 0xed) { need = 2; hi = 0x9f; }
+    else if (c === 0xf0) { need = 3; lo = 0x90; }
+    else if (c >= 0xf1 && c <= 0xf3) need = 3;
+    else if (c === 0xf4) { need = 3; hi = 0x8f; }
     else return 0;
     if (i + need >= buf.length) return -1;               // 続きは次の塊にある
     for (let k = 1; k <= need; k++) {
-      if ((buf[i + k] & 0xc0) !== 0x80) return 0;
+      const b = buf[i + k];
+      if ((b & 0xc0) !== 0x80 || (k === 1 && (b < lo || b > hi))) return 0;
     }
     return need + 1;
   };
