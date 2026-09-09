@@ -85,7 +85,12 @@ function totalTarget(target, guard) {
 /** Prepare asynchronously; commit/projection remain in the existing Phase 8 runner. */
 export async function preparePhase8RewritePlan(ir, options = {}) {
   let guard, submitted;
-  const reject = reason => Object.freeze({schemaVersion:'hex-phase8-proof-plan/v1',status:'partial',reason,entries:EMPTY});
+  let requested = null;
+  const reject = reason => Object.freeze({schemaVersion:'hex-phase8-proof-plan/v1',status:'partial',reason,entries:EMPTY,
+    targetDecisions:Object.freeze((requested ?? []).map(target => Object.freeze({ ...target,
+      disposition:'unknown', reason, candidateCount:null }))),
+    decisionCoverage:Object.freeze({ requested:requested?.length ?? null, complete:false }),
+  });
   try {
     submitted = scopeOptions(options);
     guard = createQueryGuard({...submitted, timeoutMs:submitted.timeoutMs ?? 1000}, LIMITS);
@@ -97,10 +102,24 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
     const raw = queryRecord(ir, guard, 128);
     const targets = queryArray(submitted.targets ?? raw.values ?? EMPTY, guard, 4096);
     guard.take('targets',targets.length); guard.take('allocationUnits',targets.length);
-    const selected = [], rejected = [];
-    for (const target of targets) {
-      if (totalTarget(target,guard)) selected.push(target);
-      else rejected.push(Object.freeze({valueId:semanticValueIdentity(target),reason:'non-total-or-effectful-target'}));
+    requested = targets.map((target, requestedIndex) => {
+      guard.take('allocationUnits');
+      const value = queryRecord(target, guard), definition = value.def == null ? null : queryRecord(value.def, guard);
+      const operator = definition?.sub ?? definition?.subOp ?? definition?.op ?? value.kind ?? null;
+      const rawValueId = typeof value.id === 'string' && value.id.length <= 1024
+        || typeof value.id === 'number' && Number.isSafeInteger(value.id) ? value.id : null;
+      return Object.freeze({ requestedIndex, valueId:semanticValueIdentity(target), rawValueId,
+        bits:Number.isSafeInteger(value.bits) ? value.bits : null,
+        operator:typeof operator === 'string' && operator.length <= 128 ? operator : null });
+    });
+    const selected = [], selectedIndices = [], rejected = [], decisions = [];
+    for (const [index, target] of targets.entries()) {
+      if (totalTarget(target,guard)) { selected.push(target); selectedIndices.push(index); }
+      else {
+        rejected.push(Object.freeze({valueId:semanticValueIdentity(target),reason:'non-total-or-effectful-target'}));
+        decisions[index] = Object.freeze({ ...requested[index], disposition:'unsupported',
+          reason:'non-total-or-effectful-target', candidateCount:0 });
+      }
     }
     // The canonical query captures the exact IR, models, execution values and
     // lifecycle before solver work. It also enforces universal input scope.
@@ -116,18 +135,36 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
       const item = analysis.targets[index], target = selected[index];
       const candidate = item.candidates.find(c => c.after?.kind === 'const' && c.after.sort.kind === 'bv'
         && c.eligible && isAdoptableCandidate(c.verification,{identity:guard.identity}));
-      if (!candidate) continue;
+      const requestIndex = selectedIndices[index];
+      if (!candidate) {
+        const unsupportedProjection = item.candidates.some(c => c.eligible
+          && isAdoptableCandidate(c.verification,{identity:guard.identity}));
+        const allRefuted = item.candidates.length > 0 && item.candidates.every(c => c.verification?.verdict === 'refuted');
+        const disposition = unsupportedProjection ? 'unsupported' : !item.candidates.length ? 'unchanged' : allRefuted ? 'refuted' : 'unknown';
+        decisions[requestIndex] = Object.freeze({ ...requested[requestIndex], disposition,
+          reason:unsupportedProjection ? 'proved-candidate-outside-constant-projection' : !item.candidates.length ? 'no-generated-candidate'
+            : allRefuted ? 'all-generated-candidates-refuted' : 'no-eligible-constant-candidate', candidateCount:item.candidates.length });
+        continue;
+      }
       guard.take('rewrites'); guard.take('allocationUnits',3);
       const binding = candidate.verification.binding;
       const entry = Object.freeze({valueId:item.valueId,rawValueId:target.id,bits:candidate.after.sort.width,
         value:candidate.after.value,beforeHash:binding.beforeHash,afterHash:binding.afterHash,
         queryHash:candidate.verification.evidence.queryHash,originRefs:Object.freeze([item.valueId])});
       entries.push(entry); internal.push({entry,target,candidate});
+      decisions[requestIndex] = Object.freeze({ ...requested[requestIndex], disposition:'selected',
+        reason:'eligible-constant-projection', candidateCount:item.candidates.length, queryHash:entry.queryHash });
     }
+    if (decisions.length !== requested.length || requested.some((_target, index) => !decisions[index])) {
+      return reject('incomplete-target-decisions');
+    }
+    // Complete decision coverage can contain unknown/unsupported rows. It is
+    // an audit of the requested denominator, never another proof capability.
     const binding = Object.freeze({identity:guard.identity,abiId:submitted.abiId,passId:PROOF_REWRITE_PASS.id,
       passVersion:PROOF_REWRITE_PASS.version,transformKind:'solver-constant',preconditions:EMPTY,
       correspondence:EMPTY,observableScope:'total-pure-bv-value-only',modelIdentity:analysis.taint.modelIdentity,
-      entries:Object.freeze(entries)});
+      entries:Object.freeze(entries), targetDecisions:Object.freeze(decisions),
+      decisionCoverage:Object.freeze({ requested:requested.length, complete:true }) });
     const plan = Object.freeze({schemaVersion:'hex-phase8-proof-plan/v1',status:'complete',reason:null,
       planId:stableDigest(binding),...binding,rejected:Object.freeze(rejected),metrics:guard.metrics(),
       taintEvidence:analysis.taint.evidence,taintMetrics:analysis.taint.metrics,taintResult:analysis.taint});
@@ -178,7 +215,7 @@ export function runProofRewritePass(context, budget, area) {
       rewrite:Object.freeze({beforeHash:entry.beforeHash,afterHash:entry.afterHash}),validation});
   }
   const artifact = Object.freeze({version:1,completeness:'complete',planId:plan.planId,identity:plan.identity,
-    abiId:plan.abiId,entries:plan.entries});
+    abiId:plan.abiId,entries:plan.entries,targetDecisions:plan.targetDecisions,decisionCoverage:plan.decisionCoverage});
   artifacts.set(artifact,plan);
   area.stage('provedRewrites',artifact);
   return createPassResult({descriptor:PROOF_REWRITE_PASS,status:'changed',produced:['provedRewrites'],transforms});

@@ -344,8 +344,11 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
  * projection, never a second optimizer or an in-place IR rewrite. */
 export async function optimizeSemanticDecompilation(result, options = {}) {
   const started = globalThis.performance?.now?.() ?? Date.now();
-  let submitted, original = {};
+  let submitted, original = {}, preparedPlan = null;
   const fail = reason => ({...original, proofOptimization:Object.freeze({status:'partial',reason,adopted:0,
+    targetDecisions:Object.freeze((preparedPlan?.targetDecisions ?? []).map(decision => Object.freeze({ ...decision,
+      disposition:'unknown', reason }))),
+    decisionCoverage:Object.freeze({ requested:preparedPlan?.decisionCoverage?.requested ?? null, complete:false }),
     phase8OptimizeStage:null,elapsedMs:(globalThis.performance?.now?.() ?? Date.now())-started})});
   try {
     submitted = queryRecord(options);
@@ -363,6 +366,7 @@ export async function optimizeSemanticDecompilation(result, options = {}) {
     }
     const targets = queryArray(submitted.targets ?? auto);
     const plan = await preparePhase8RewritePlan(result.ir,{...submitted,identity,targets,backendTier:submitted.backendTier ?? 'tiered'});
+    preparedPlan = plan;
     const proofContext = {ir:result.ir,proofIdentity:identity,abiId:submitted.abiId};
     if (!isProducerProjection(result) || plan.status !== 'complete' || !isPhase8RewritePlan(plan,proofContext)) return fail(plan.reason ?? 'stale-proof-plan');
     // Keep hot-loop cancellation checks O(1). Full IR/proof freshness is
@@ -375,8 +379,15 @@ export async function optimizeSemanticDecompilation(result, options = {}) {
       phase8TimeBudgetMs:submitted.phase8TimeBudgetMs ?? 120,
       phase8WorkBudget:submitted.phase8WorkBudget ?? 1000000,shouldAbort:aborted});
     if (aborted() || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext) || projected.phase8?.published !== true || projected.phase8?.completeness !== 'complete') return fail('optimizer-withheld');
+    const applied = projected.phase8Projection?.transforms.filter(t=>t.kind==='solver-constant') ?? [];
+    const targetDecisions = Object.freeze(plan.targetDecisions.map(decision => {
+      if (decision.disposition !== 'selected') return decision;
+      const adopted = applied.some(transform => transform.valueId === decision.valueId && transform.queryHash === decision.queryHash);
+      return Object.freeze({ ...decision, disposition:adopted ? 'adopted' : 'unknown',
+        reason:adopted ? 'committed-and-rendered-constant-projection' : 'selected-projection-not-rendered' });
+    }));
     const proofOptimization = Object.freeze({status:'complete',reason:null,
-      adopted:projected.phase8Projection?.transforms.filter(t=>t.kind==='solver-constant').length ?? 0,
+      adopted:applied.length,targetDecisions,decisionCoverage:plan.decisionCoverage,
       planId:plan.planId,scope:plan.observableScope,taintEvidence:plan.taintEvidence,taintMetrics:plan.taintMetrics,taint:plan.taintResult,
       phase8OptimizeStage:projected.ctx?.decompilerPipeline?.phase8ElapsedMs ?? null,
       elapsedMs:(globalThis.performance?.now?.() ?? Date.now())-started});

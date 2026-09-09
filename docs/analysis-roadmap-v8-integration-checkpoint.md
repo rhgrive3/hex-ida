@@ -2285,6 +2285,52 @@ its candidates must not be reported as executed transformations. Integration
 acceptance remains LOCKED. Concurrent main performance work is preserved for the
 defined reconciliation point.
 
+## C4-04 requested-target decision coverage
+
+The actual proof-plan and optimizer APIs now retain one ordered audit row for
+every inspected requested target: semantic/raw identity, width/operator,
+candidate count and selected/unsupported/unchanged/refuted/unknown disposition.
+In particular, independently proved nonconstant candidates no longer disappear
+from the result: they explicitly report the existing constant-only projection
+boundary. A complete decision denominator is not complete proof coverage.
+
+The existing private plan/receipt and atomic transaction remain the only adoption
+authority. A selected proof is not called adopted until the actual published
+projection contains its semantic value ID and exact query hash. Failed/stale/
+cancelled publication resets all reported target decisions to unknown and keeps
+aggregate adoption zero. An uninspected request has unknown target count, not an
+invented empty completed denominator. Decision rows and coverage are immutable;
+the inspected request set participates in the plan's audit identity. No new
+solver, transaction core, semantic rule or nonconstant/memory/CFG adoption is
+introduced.
+
+Eight new tests cover ordered mixed target decisions, real independently proved
+nonconstant refusal, non-total target refusal, resource/early failure, immutable
+audit vs private authority, actual adopted transforms, publication withholding,
+and a 10-cell exact width/operator denominator (1/4/8/32/64 x xor/udiv). This is
+the decision-reporting prerequisite, not the entire risky-rewrite registry or a
+claim that C4-04 is complete.
+
+Precommit persistent receipts (`evidence/analysis-roadmap-20260909`):
+
+- canonical substrate PASS 62.1 s:
+  `c4-04-decisions-substrate-62c3bc80-a027-4a29-b37f-6e343d3cf3c4.json`;
+- optimizer/publication/performance/ownership boundaries PASS 6.3 s:
+  `c4-04-decisions-boundaries-5cf743c6-635d-4607-8456-e608c525b0f5.json`;
+- canonical provenance PASS 19.8 s:
+  `c4-04-decisions-provenance-ff1acda8-ce83-4755-a130-10b81041f722.json`.
+
+The full original backlog table was reread. C1 boundary bridges and the C4-05
+candidate generator already exist and are not reimplemented. Live #3422 remains
+`ca25c71f1a6f18f0ba043800fb066f8068f2df73`; its no-adoption/explicit-unknown
+intent is reused, not its incompatible older transaction core. The next scalar
+extension requires a producer-owned mapping from the canonical translator's
+query-local input symbols to actual rendered input expressions; parsing symbol
+names or recreating an evaluator would not establish that mapping. Nonconstant
+projection and memory/CFG/exception observables remain open, alongside all other
+original findings. No main reconciliation or component acceptance occurs here;
+integration remains LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -2320,7 +2366,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
 | HEX-C4-03 | Navigation, observed expression/recovery histories, successive projections and actual spill statement removal/suppression implemented; other view transforms and full removed/merged class coverage still open |
-| HEX-C4-04 | v8 pure constant projection plus remaining risky rewrite observables |
+| HEX-C4-04 | Pure constant projection and requested-target decision audit implemented; nonconstant projection and memory/CFG/exception observable coverage remain open |
 | HEX-C4-05 | Bounded e-graph candidates, independent proofs and resource matrix |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |
 | HEX-SYM-02 | Byte-memory escalation, alias/partial-write independent oracle |
