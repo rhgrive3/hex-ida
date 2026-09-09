@@ -461,6 +461,10 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
     let nsyms = info.symtab.nsyms;
     if (nsyms > SYMBOL_MAX) { nsyms = SYMBOL_MAX; capped = true; }
     const symBuf = await readRange(base + BigInt(info.symtab.symoff), nsyms * entry);
+    /* A string table beyond STRTAB_MAX is truncated below: symbols past the
+     * clamp parse as '' and vanish from definedSymbols(). That budget cut is
+     * an incompleteness the result must report, not hide (#5372). */
+    if (info.symtab.strsize > STRTAB_MAX) capped = true;
     const strLen = Math.min(info.symtab.strsize, STRTAB_MAX);
     const strBuf = await readRange(base + BigInt(info.symtab.stroff), strLen);
     if (symBuf.length >= entry && strBuf.length) {
