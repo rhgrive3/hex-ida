@@ -66,6 +66,100 @@ test('Issue #5671: the anchor scan reaches targets beyond the first upstream win
   assert.equal(result.results[0]?.id, 545);
 });
 
+test('Issue #5671 R0: an >10,000-row function still anchors the requested instruction (scan is not capped below the corpus)', async () => {
+  const rows = instructionRows(11000);
+  const registry = createHexToolRegistry(queryContext(rows));
+  const result = await pageFor(registry, {
+    functionAddress: '0x1000',
+    aroundInstructionId: 10050,
+    radius: 5,
+    count: 11,
+  });
+  assert.equal(result.offset, 10045, 'the >10k target must be anchored, not silently ignored');
+  assert.equal(result.results[0]?.id, 10045);
+  assert.ok(result.results.some((row) => row.id === 10050), 'the requested instruction must be inside the page');
+});
+
+test('Issue #5671 R0: a scan that exhausts its budget without upstream completion is fail-closed, never a first-page answer', async () => {
+  // A hostile/incomplete producer: always 500 rows, never complete, target
+  // never present. The old code silently returned the first page.
+  const registry = createHexToolRegistry({
+    analysisAuthority: 'AnalysisQueryAPI',
+    binaryId: 'query-anchor-fixture',
+    analysisRevision: 'rev-1',
+    addressExists: () => true,
+    getInstructions: async (functionAddress, options = {}) => {
+      const offset = typeof options.offset === 'number' && options.offset >= 0 ? options.offset : 0;
+      return {
+        results: instructionRows(500).map((row) => ({ ...row, id: row.id + offset })),
+        offset,
+        returned: 500,
+        total: null,
+        complete: false,
+        truncated: true,
+        reason: 'upstream-incomplete',
+      };
+    },
+  });
+  const result = await pageFor(registry, {
+    functionAddress: '0x1000',
+    aroundInstructionId: 99999,
+    radius: 5,
+    count: 11,
+  });
+  assert.equal(result.reason, 'anchor-unresolved', 'unresolved anchor without corpus exhaustion must be explicit');
+  assert.equal(result.complete, false);
+  assert.equal(result.truncated, true);
+  assert.deepEqual(result.results, [], 'no rows may be presented as an anchored window');
+  assert.equal(result.returned, 0);
+});
+
+test('Issue #5671 R0: base-vs-Query anchor parity — the QueryAPI page equals the base implementation window', async () => {
+  const rows = instructionRows(1000);
+  const baseRegistry = createHexToolRegistry({
+    analyze: async () => ({ instructions: rows }),
+  });
+  const basePage = await baseRegistry.execute('inspect_function_region', {
+    functionAddress: '0x1000',
+    view: 'assembly',
+    aroundInstructionId: 500,
+    radius: 10,
+    count: 21,
+  }, { scope: 'function' });
+  const baseResult = basePage.result ?? basePage;
+
+  const queryRegistry = createHexToolRegistry(queryContext(rows));
+  const queryResult = await pageFor(queryRegistry, {
+    functionAddress: '0x1000',
+    aroundInstructionId: 500,
+    radius: 10,
+    count: 21,
+  });
+
+  assert.deepEqual(
+    queryResult.results.map((row) => row.id),
+    baseResult.results.map((row) => row.id),
+    'the QueryAPI route must anchor exactly like the base implementation',
+  );
+});
+
+test('Issue #5671 R0: semantic-ir view is untouched by the assembly anchor logic (base delegation preserved)', async () => {
+  const rows = instructionRows(1000);
+  const registry = createHexToolRegistry({
+    ...queryContext(rows),
+    analyze: async () => ({ instructions: rows }),
+  });
+  const result = await pageFor(registry, {
+    functionAddress: '0x1000',
+    view: 'semantic-ir',
+    aroundInstructionId: 500,
+    radius: 10,
+    count: 21,
+  });
+  assert.equal(result.view, 'semantic-ir', 'semantic-ir must stay on the base implementation path');
+  assert.notEqual(result.reason, 'anchor-unresolved', 'the anchor scan must not run for semantic-ir');
+});
+
 test('Issue #5671: an unknown aroundInstructionId keeps the explicit start page (no forgery, no crash)', async () => {
   const registry = createHexToolRegistry(queryContext(instructionRows(1000)));
   const result = await pageFor(registry, {

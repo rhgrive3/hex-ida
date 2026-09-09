@@ -98,27 +98,43 @@ function installQueryOverrides(registry, context) {
       const radius = Math.max(0, Math.min(250, Number(args.radius ?? 20) || 0));
       const target = Number(args.aroundInstructionId);
       const basis = [];
-      // Bounded full-corpus scan (20 pages x 500 rows) so targets beyond the
-      // first window are still anchored; stops at the first match or when the
-      // upstream reports a complete page.
-      for (let pageOffset = 0, pages = 0; pages < 20 && basis.length < 10000; pages++) {
+      let scannedComplete = false;
+      // Bounded full-corpus scan so targets beyond the first window are still
+      // anchored. The scan budget is an upper bound on a single window, never
+      // a silent truncation of the searched corpus.
+      for (let pageOffset = 0, pages = 0; pages < 40 && basis.length < 20000; pages++) {
         const window = await context.getInstructions(args.functionAddress, {
           offset: pageOffset,
           limit: 500,
           signal:registry.executionSignal,
         });
         const rows = pageRows(window);
-        if (!rows.length) break;
+        if (!rows.length) { scannedComplete = true; break; }
         basis.push(...rows);
         pageOffset += rows.length;
-        if (window?.complete === true) break;
-        const found = rows.some((item) =>
-          Number(item?.id ?? item?.instructionId ?? item?.row) === target);
-        if (found) break;
+        if (window?.complete === true) { scannedComplete = true; break; }
+        if (rows.some((item) => Number(item?.id ?? item?.instructionId ?? item?.row) === target)) break;
       }
       const index = basis.findIndex((item) =>
         Number(item?.id ?? item?.instructionId ?? item?.row) === target);
       if (index >= 0) offset = Math.max(0, index - radius);
+      else if (!scannedComplete) {
+        // The instruction corpus was not exhausted, so absence here is NOT a
+        // proof of absence: refuse to masquerade the first page as an anchored
+        // result (#5671; fail-closed parity with the find_paths/#5662 rule).
+        return {
+          functionAddress:addressText(args.functionAddress),
+          view:'assembly',
+          results:[],
+          offset,
+          returned:0,
+          total:null,
+          complete:false,
+          truncated:true,
+          reason:'anchor-unresolved',
+          analysisAuthority:'AnalysisQueryAPI',
+        };
+      }
     }
     const page = await context.getInstructions(args.functionAddress, {
       offset,
