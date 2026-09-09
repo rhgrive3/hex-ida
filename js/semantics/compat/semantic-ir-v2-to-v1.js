@@ -12,6 +12,67 @@ import {
   assignInstructionIds, memorySafetySummary,
 } from './semantic-ir-v2-to-v1-memory.js';
 import { isCanonicalMemorySsaProducerArtifact } from '../memoryssa/build.js';
+import { captureProjectionIrData } from '../../core/identity/live-data.js';
+
+const memoryOperandTransitions = new WeakMap();
+const expectedMemoryOperandTransitions = new WeakMap();
+
+// Private finalization is the issuer. Calling attachMemorySsa separately or
+// copying its descriptions cannot register a transition on another projection.
+function sealMemoryOperandTransitions(projected, transitions) {
+  if (!transitions?.length) return;
+  expectedMemoryOperandTransitions.set(projected, new WeakSet(transitions.map(transition => transition.source)));
+  try {
+    const own = (object, key) => Object.getOwnPropertyDescriptor(object, key)?.value;
+    const rootKeys = ['instructions', 'values', 'blocks', 'compat', 'functionId', 'semanticIrVersion', 'origin'];
+    const prototype = Object.getPrototypeOf(projected);
+    const roots = rootKeys.map(key => own(projected, key));
+    const valid = transitions.filter(({ source, input, store, proof, memory }) => source?.op === V1_OP.MOV
+      && source.sub === 'memory-forward' && source.memoryOperandForwarding === proof
+      && source.extra?.memoryOperandForwarding === proof && source.extra?.originalMemoryOp === V1_OP.LOAD
+      && source.extra?.memoryAccess === memory && source.semanticNodeId === proof.loadSourceEntityId
+      && source.dst?.semanticValueId === proof.outputValueId && input?.semanticValueId === proof.storedValueId
+      && source.args?.length === 1 && source.args[0]?.value === input
+      && store?.op === V1_OP.STORE && store.semanticNodeId === proof.storedSourceEntityId
+      && store.args?.[0]?.value === input);
+    const locations = valid.flatMap(({ source, store, input, beforeInputs }) => [source, store, input.def,
+      ...beforeInputs.map(value => value.def)]).filter(Boolean).map(instruction => {
+      const blockIndex = projected.blocks.findIndex(block => block.index === instruction.block);
+      const block = projected.blocks[blockIndex], key = block?.phis?.includes(instruction) ? 'phis' : 'insts';
+      const list = block?.[key], index = list?.indexOf(instruction), flatIndex = projected.instructions.indexOf(instruction);
+      if (!(index >= 0) || flatIndex < 0) throw new Error('memory-transition-definition-missing');
+      return { instruction, blockIndex, block, blockId:block.index, key, list, index, flatIndex };
+    });
+    const values = [...new Set(valid.flatMap(({ source, input, beforeInputs }) => [source.dst, input, ...beforeInputs]))]
+      .map(value => {
+        const index = projected.values.indexOf(value);
+        if (index < 0) throw new Error('memory-transition-value-missing');
+        return { value, index };
+      });
+    const captured = captureProjectionIrData([projected.compat,
+      ...valid.flatMap(({ source, store, input, beforeInputs, memory }) => [source, store, input, ...beforeInputs, memory])]);
+    const isCurrent = () => Object.getPrototypeOf(projected) === prototype && rootKeys.every((key, i) => own(projected, key) === roots[i])
+      && values.every(({ value, index }) => own(roots[1], index) === value)
+      && locations.every(({ instruction, blockIndex, block, blockId, key, list, index, flatIndex }) =>
+        own(roots[2], blockIndex) === block && own(block, 'index') === blockId && own(block, key) === list && own(list, index) === instruction
+        && own(roots[0], flatIndex) === instruction) && captured.matches();
+    const records = new Map();
+    for (const transition of valid) records.set(transition.source, Object.freeze({ ...transition, isCurrent }));
+    memoryOperandTransitions.set(projected, records);
+  } catch {
+    // The projection is still returned unchanged. Missing bounded observation
+    // cannot be relabelled complete by a later reader of public proof metadata.
+  }
+}
+
+export function readProjectedMemoryOperandTransition(projected, instruction) {
+  const record = memoryOperandTransitions.get(projected)?.get(instruction);
+  return record?.isCurrent() ? record : null;
+}
+
+export function projectedMemoryOperandTransitionExpected(projected, instruction) {
+  return expectedMemoryOperandTransitions.get(projected)?.has(instruction) === true;
+}
 
 function rowForNode(node, fallback, options) {
   if (typeof options.rowOfNode === 'function') {
@@ -447,8 +508,9 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   addScalarSsaPhis(projected, ssa, valuesById, blockIndexById, instructionBySemanticId);
   appendFunctionUnknowns(projected, ir);
 
-  if (memorySsa) attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir);
-  else attachFallbackMemory(projected);
+  const memoryTransitions = memorySsa
+    ? attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir) : null;
+  if (!memorySsa) attachFallbackMemory(projected);
 
   for (const inst of projected.instructions) {
     const mustClobberMemory = inst.memoryBarrier === true
@@ -473,6 +535,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   populateLegacyArguments(projected);
   projected.memorySafety = memorySafetySummary(projected);
   projected.defUse = () => projected.values;
+  sealMemoryOperandTransitions(projected, memoryTransitions);
   return projected;
 }
 

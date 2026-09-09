@@ -3242,6 +3242,82 @@ memory/CFG/exception/UB/loop proofs, native/arbitrary-schedule requirements,
 original23finding closure, frozen135compiler corpus and required exact integration
 acceptance remain open. Goal ACTIVE; integration acceptance remains LOCKED.
 
+## C4-03 actual compatibility stack LOAD-to-operand history
+
+The existing canonical stack operand-identity path now describes each actual
+LOAD-to-MOV compatibility operation at its mutation site. The owning projector
+privately seals those descriptions only after instruction IDs, def-use links,
+public-state normalization and final projection metadata have been assigned.
+Calling the exported memory attachment helper or copying a description cannot
+issue this finalization authority. The original projected memory-access object,
+LOAD/address inputs, contributing STORE, forwarded SSA input and existing
+canonical operand proof are retained without changing forwarding eligibility.
+
+The decompiler consumes that privately observed transition in its actual build
+frame and existing ledger as `project-stack-load-to-operand`, labelled
+`observed-compat-memory-transition-not-new-proof`. It is distinct from the later
+`select-mov-operand` display event and can be carried through a precomputed-value
+consumer without inventing a second upstream operation. No semantic IDs or new
+memory theorem are introduced. The original LOAD identity still links to its
+canonical access; a return of the same stored input that never consumed the LOAD
+does not inherit its history.
+
+Finalized canonical instruction/value/block positions and root descriptors,
+forwarded input/store/access/proof identity and mutable dependency data remain
+bound. Later changes, public copies, getters, missing observation, post-projection
+alias changes or exhausted bounds refuse complete history. A private expected-
+transition marker survives deletion of public descriptive metadata, so removing
+that metadata cannot turn a known stale operation into apparently complete
+history. Observations are capped by the existing graph limits, transition
+descriptions by1024, and downstream work uses the existing cumulative selection/
+edge/consumer budgets without rescanning after exhaustion.
+
+To reuse one observer without importing decompiler code into semantic projection,
+the existing ownDataEntries and captureProjectionIrData implementations and
+limits moved unchanged to `js/core/identity/live-data.js`. Their original solver
+and Phase 8 entry points re-export the same function/limit objects. A byte-level
+comparison against parent8e31ecf93 confirms the moved implementations are
+unchanged. There is no new observer, serializer, proof engine or canonical memory
+model. Exact ownership adds only this shared utility, the projector-finalization
+file and the new provenance test; a regression rejects unreviewed sibling paths.
+
+Eleven tests exercise the real canonical IR/CFG/MemorySSA/compatibility path at
+four widths and both endiannesses (eight source cells, not new memory proofs),
+public projection/replay, original STORE/address navigation and stale snapshots,
+before/after-render mutations, actual position/root replacement, copied proofs/
+descriptors, metadata removal, getters, unknown/atomic negatives, fallback,
+resource bounds, exact shared utility identity/ownership and independent calls
+to the attachment helper. The latter can perform a real operation but cannot
+mint a projector-owned history record. Initial fixture failures compared an
+input canonical object to its normalized projected copy by identity, and used
+the wrong SSA reference spelling; they are corrected to the actual access
+identity plus canonical content and existing `ssa:def:` format. Both failure
+receipts are retained; production success criteria were not relaxed.
+
+The precommit canonical `semantic-v2:test` run was RED, not a full-gate pass.
+Its required-regression lane reported WebKit launch failure because
+`libxslt.so.1` is unavailable; environment repair remains outside this task.
+Separately, its userscript-sync lane detected this change's not-yet-generated
+template (`f9c924414e2f67449b76be50`). The canonical build subsequently succeeded;
+exact committed-head sync verification is still required before reporting that
+generated-output failure resolved. Both full nested logs and the failed outer
+receipt are retained in persistent evidence. Scoped passes do not replace the
+red canonical gate, real-device evidence or full integration acceptance.
+
+PR #3421 remains reused at `4cd5b3eb9200b1180985b9df3a74f8245a5cc928`.
+Scoped operand-forwarding search found no matching implementation. Broader stack
+operand search returned #7508 at `768b660bb0d215aa25fd1171c2b3df9a39f13c19`;
+its inspected file inventory is string scanning, RISC-V ABI and structured-target
+issue work, not this compatibility producer. Preserve parallel changes for
+central reconciliation rather than duplicate them. No component/main merge or
+printing/issue/performance/device/environment repair is made here.
+
+Actual upstream constant-fold operations and state-alias/normalization handoffs,
+the full rendered/removed-class audit, original23finding closure, C4-04/C4-05
+proof requirements, frozen135compiler corpus and required exact integration
+acceptance remain open. The current consumer history does not substitute for
+those upstream operations. Goal ACTIVE and integration acceptance LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -3276,7 +3352,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C3-03 | Versioned language metadata and unknown-version matrix |
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
-| HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi, MOV/address-load/precomputed-value/canonical-numeric-load selection, actual flag/conditional-CMP reconstruction and branch/select consumers, initial RMW/C AST compound-store histories, owned handoffs and explicit assignment-expansion records, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
+| HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi, actual compatibility stack LOAD-to-MOV and MOV/address-load/precomputed-value/canonical-numeric-load selection, actual flag/conditional-CMP reconstruction and branch/select consumers, initial RMW/C AST compound-store histories, owned handoffs and explicit assignment-expansion records, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
 | HEX-C4-04 | Proof-gated scalar projection, owned inputs, transaction coverage and optional reuse of all 64 display rules as independently verified candidates implemented; ordinary legacy-view adoption, full family/width denominator and memory/CFG/exception observables remain open |
 | HEX-C4-05 | Frozen 272-cell scalar/14-Bool/8-width producer coverage and 3 actual schedules (816 scalar cells); adopted-transform history now preserves actual rule/cost/budget/proof audits. Native proof gaps, arbitrary permutations and full acceptance remain open |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |

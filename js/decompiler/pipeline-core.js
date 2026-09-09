@@ -19,6 +19,7 @@ import { explainSemanticFacts } from './explain.js';
 import { readSwitchLineHistory, readSwitchRenderHistory } from './switch.js';
 import { readSemanticStoreLineHistory, readSemanticStoreRenderHistory } from './semantic-core.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
+import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionExpected } from '../semantics/compat/semantic-ir-v2-to-v1.js';
 import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
@@ -653,6 +654,49 @@ function recordConstantValueSelection(value, expression, selected, state) {
   (state.buildHistoryFrame.records ??= new Set()).add(record);
 }
 
+function compatMemorySelection(value, state) {
+  const instruction = value.def;
+  const expected = projectedMemoryOperandTransitionExpected(state.ir, instruction);
+  const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
+  const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
+  // Do not repeatedly scan the sealed upstream graph after the downstream
+  // cumulative observation/record allowance has already been exhausted.
+  if (expected && ((state.buildSelectionHistoryCount || 0) >= maximum || consumerObservationBudget(state).edges <= 0)) {
+    observeBuildSelection(value, instruction, state, 'compat-memory'); return null;
+  }
+  const transition = readProjectedMemoryOperandTransition(state.ir, instruction);
+  if (!transition) {
+    if (expected
+      || instruction?.sub === 'memory-forward' || instruction?.extra?.originalMemoryOp === 'load') {
+      consumerObservationBudget(state).reasons.add('compat-memory-transition-unavailable');
+    }
+    return null;
+  }
+  const related = [transition.store, transition.input.def, ...transition.beforeInputs.map(input => input.def)]
+    .filter(instruction => instruction && instruction !== value.def);
+  return { transition, observation:observeBuildSelection(value, instruction, state, 'compat-memory', [...new Set(related)]) };
+}
+
+function recordCompatMemorySelection(value, expression, selected, state) {
+  if (!selected) return;
+  const observation = finishBuildSelection(expression, selected.observation, state);
+  if (!observation) return;
+  const transition = selected.transition;
+  if (!transition.isCurrent()) {
+    consumerObservationBudget(state).reasons.add('compat-memory-transition-stale'); return;
+  }
+  const before = { source:mergeSource(origin(transition.source, value), origin(transition.store),
+    origin(transition.input.def, transition.input), ...transition.beforeInputs.map(input => origin(input.def, input))) };
+  const record = Object.freeze({ rule:'project-stack-load-to-operand', phase:'compatibility-projection',
+    before:'load:canonical-stack-operand', after:'mov:memory-forward',
+    evidence:Object.freeze({ kind:'observed-compat-memory-transition-not-new-proof',
+      detail:'actual compatibility LOAD-to-MOV operation admitted by the existing canonical stack operand-identity query; original access and store sources retained, not a new memory theorem' }),
+    originHistory:expressionOriginHistory(before, expression),
+  });
+  buildHistoryObservations.set(record, Object.freeze({ matches:() => observation.matches() && transition.isCurrent() }));
+  (state.buildHistoryFrame.records ??= new Set()).add(record);
+}
+
 function buildValueRaw(v, state, flags = {}) {
   if (!v) return expr.variable('unknown', 64, null);
   const memoKey = `${v.id}:${flags.forAddress ? 'a' : 'v'}`;
@@ -661,6 +705,7 @@ function buildValueRaw(v, state, flags = {}) {
   state.expressionActive.add(v.id);
   let out = null;
   const d = v.def;
+  const compatSelection = compatMemorySelection(v, state);
   if (v.constKind === 'float' || v.floatConst != null || (v.float != null && v.const == null)) {
     const selected = constantValueSelection(v, state);
     out = expr.floatConstant(v.floatConst ?? v.float, v.bits || 64, origin(d, v));
@@ -753,6 +798,7 @@ function buildValueRaw(v, state, flags = {}) {
     }
   }
   if (!out) out = expr.variable(argumentName(v, state), v.bits || 64, signedFor(state, v), origin(d, v), { ssaId: v.id, range: v.range ? { ...v.range } : null });
+  recordCompatMemorySelection(v, out, compatSelection, state);
   state.expressionActive.delete(v.id);
   state.expressionMemo.set(memoKey, out);
   return out;

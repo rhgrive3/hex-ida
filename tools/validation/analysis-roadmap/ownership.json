@@ -61,6 +61,7 @@
       "tests/phase8/provenance/address-load-selection-history.test.mjs",
       "tests/phase8/provenance/precomputed-value-history.test.mjs",
       "tests/phase8/provenance/flag-condition-history.test.mjs",
+      "tests/phase8/provenance/compat-operand-history.test.mjs",
       "tests/phase8/provenance/compound-store-history.test.mjs",
       "tests/phase8/provenance/initial-store-history.test.mjs",
       "tests/phase8/provenance/field-render.test.mjs",
@@ -225,8 +226,10 @@
       "tests/phase9/verify/wide-memory-v6.test.mjs"
     ],
     "semanticCompat": [
+      "js/core/identity/live-data.js",
       "js/ir-core.js",
       "js/semantics/compat/index.js",
+      "js/semantics/compat/semantic-ir-v2-to-v1.js",
       "js/semantics/compat/semantic-ir-v2-to-v1-memory.js"
     ],
     "integration": [

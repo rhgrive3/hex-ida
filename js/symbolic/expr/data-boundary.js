@@ -2,28 +2,8 @@
  * DAG storage and its eventual JSON tree expansion are different budgets.
  * This utility interprets no Expr, alias, type or machine semantics.
  */
-export function ownDataEntries(value, maxEntries = 40000) {
-  if (!value || typeof value !== 'object') throw new TypeError('noncanonical-data-object');
-  const array = Array.isArray(value), prototype = Object.getPrototypeOf(value);
-  if (array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) {
-    throw new TypeError('noncanonical-data-prototype');
-  }
-  if (array && value.length > maxEntries) throw new TypeError('data-entry-budget-exceeded');
-  const keys = Reflect.ownKeys(value);
-  if (keys.length > maxEntries + (array ? 1 : 0)) throw new TypeError('data-entry-budget-exceeded');
-  const entries = [];
-  for (const key of keys) {
-    if (array && key === 'length') continue;
-    if (typeof key !== 'string') throw new TypeError('symbol-keyed-data');
-    if (array && (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= value.length)) throw new TypeError('noncanonical-data-array');
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor || !Object.hasOwn(descriptor, 'value')) throw new TypeError('accessor-data');
-    if (!descriptor.enumerable) throw new TypeError('non-enumerable-data');
-    entries.push([key, descriptor.value]);
-  }
-  if (array && entries.length !== value.length) throw new TypeError('sparse-data-array');
-  return entries;
-}
+import { ownDataEntries } from '../../core/identity/live-data.js';
+export { ownDataEntries } from '../../core/identity/live-data.js';
 
 export function inspectCanonicalData(roots, { maxNodes = 10000, maxEdges = 40000, maxDepth = 64, maxExpansion = 40000, maxString = 4096 } = {}) {
   const memo = new WeakMap(), active = new WeakSet(), objects = [];

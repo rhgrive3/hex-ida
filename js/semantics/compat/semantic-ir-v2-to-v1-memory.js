@@ -260,6 +260,7 @@ function replaceLoadWithForwardedValue(source, forwardedValue, proof) {
 }
 
 export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null) {
+  const operandTransitions = [];
   propagateScalarConstants(projected);
   const regionById = new Map(memorySsa.regions.map((region) => [region.id, region]));
   const locationByRegion = new Map();
@@ -437,6 +438,15 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
       }
     }
     for (const [source, { forwardedValue, operandProof }] of deferredStackOperandRewrites) {
+      // This is a description of an operation actually performed below, not a
+      // public provenance issuer. Only the owning projector can seal it after
+      // final IDs and def-use links have been assigned.
+      if (operandTransitions.length < 1024) operandTransitions.push(Object.freeze({
+        source, input:forwardedValue, store:instructionBySemanticId.get(operandProof.storedSourceEntityId),
+        proof:operandProof, memory:source.extra?.memoryAccess,
+        beforeInputs:Object.freeze([...new Set([...(source.args || []).map(arg => arg.value),
+          source.addr?.base, source.addr?.index, source.loc?.base].filter(Boolean))]),
+      }));
       // Deferral allowed the structural compatibility link to be populated in
       // the loop. The MOV publishes only the canonical operand proof.
       delete source.reachingStore;
@@ -475,6 +485,7 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
     sourceSemanticNodeId: node.inst?.sourceEntityId ?? null,
     previousDefinitionIds: definitionById.get(id)?.previousDefinitionIds?.slice() ?? [],
   }]));
+  return Object.freeze(operandTransitions);
 }
 
 export function attachFallbackMemory(projected) {
