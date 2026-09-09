@@ -262,7 +262,7 @@ async function schedulerOracles(report) {
   await addCase(report, 'budget behavior', 'E', 'p4-2', async () => {
     const backend = new MemoryArtifactBackend(); const scheduler = new AnalysisScheduler({ store: new ArtifactStore({ backend }), maxConcurrency: 1 });
     const d = descriptor({ entityId: 'budget' }); let error = null;
-    try { await scheduler.request({ descriptor: d, budget: { workUnits: 1 }, produce: async ({ budget }) => { budget.consume('workUnits', 2); return {}; } }); }
+    try { await scheduler.request({ descriptor: d, budget: { workUnits: 1 }, produce: async ({ budget }) => { budget.consume('workUnits', 2); return {}; } });
     catch (caught) { error = caught; }
     const published = await backend.has(d.artifactId);
     if (!(error instanceof BudgetExceededError) || published) count(report, 'budgetFailures');
@@ -281,7 +281,7 @@ async function projectOracles(report) {
   });
 
   await addCase(report, '.hexproj payload prohibition', 'I', 'p4-7', () => {
-    const project = createHexProject({ binaryHash: 'binary:p4-6', cacheReferences: [{ version: 1, scope: 'function:1', kind: 'ssa', artifactId: 'artifact_payload_probe', payload: { derived: 'MUST-NOT-BE-IN-HEXPROJ' } }] });
+    const project = createHexProject({ binaryHash: 'binary:p4-6', cacheReferences: [{ version: 1, scope: 'function:1', kind: 'ssa', artifactId: `artifact_${'f'.repeat(32)}`, payload: { derived: 'MUST-NOT-BE-IN-HEXPROJ' } }] });
     const serialized = serializeHexProject(project); const containsPayload = serialized.includes('MUST-NOT-BE-IN-HEXPROJ') || /"payload"\s*:/.test(serialized);
     if (containsPayload) count(report, 'hexprojPayloadProhibitionFailures');
     assert.equal(containsPayload, false, '.hexproj serialized derived artifact payload');

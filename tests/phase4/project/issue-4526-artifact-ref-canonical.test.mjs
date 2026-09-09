@@ -28,6 +28,7 @@ assert.equal(new ProjectArtifactIndex([valid]).get('analysis', 'semantic-ir')?.a
 for (const malformed of [
   'artifact_not-a-canonical-digest',
   'artifact_0123456789abcdef',
+  `artifact_${'A'.repeat(32)}`,
   'artifact_0123456789abcdef0123456789abcdeG',
 ]) {
   assert.throws(
