@@ -409,12 +409,20 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
     const value = bits === 64 ? r.u64(p + 8) : BigInt(r.u32(p + 8));
     if (type & 0xe0) continue;
     let name = '';
-    if (strx < st.strsize) {
-      const span = r.bytes.subarray(st.stroff + strx, st.stroff + st.strsize);
-      if (span.indexOf(0) !== -1) {
-        name = r.cstring(st.stroff + strx, st.strsize - strx);
-      }
+    if (strx >= st.strsize) {
+      markMachOMetadataPartial(image, 'symbol-name-index-out-of-range');
+      budget.warn(`Mach-O symbol ${i} has n_strx ${strx} outside string table`);
+      continue;
     }
+    const span = r.bytes.subarray(st.stroff + strx, st.stroff + st.strsize);
+    if (span.indexOf(0) === -1) {
+      markMachOMetadataPartial(image, 'symbol-name-not-terminated');
+      budget.warn(`Mach-O symbol ${i} name has no NUL terminator before string-table end`);
+      continue;
+    }
+    // An empty name at n_strx==0 is the string-table sentinel, not a malformed
+    // symbol. Keep the existing behavior for any other valid empty entry too.
+    name = r.cstring(st.stroff + strx, st.strsize - strx);
     if (!name) continue;
     if (!budget.take({ stringBytes:name.length*2, estimatedHeapBytes:name.length*2+32 }, 'symbol-name')) break;
     const ntype = type & 0x0e;
