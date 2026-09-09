@@ -329,6 +329,7 @@ function collectDynamicRelocations(r, tags, image, bits, budget) {
     const e = toSafeNumber(requested);
     const span = n == null ? null : mappedELFFileSpanForVa(image, va, n);
     if (!span || e == null || e <= 0) { markDynamicPartial(image, `${source} table crosses a file-backed PT_LOAD boundary`); return; }
+    if (n % e !== 0) markDynamicPartial(image, `${source} size ${n} is not a multiple of entry size ${e}`);
     const off = span.start;
     if (!budget.claimInput(n, source)) return;
     const count = Math.floor(n / e);
