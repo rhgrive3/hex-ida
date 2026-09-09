@@ -126,7 +126,11 @@ export function resolveAppleCall(index, call = {}) {
   // even when the numeric target happens to match a known IMP address, and
   // the objc message path is entered for objc origins or real msgSend entry
   // points (#5608).
-  if (origin === 'objc' || isObjcMsgSendSymbol(name)) {
+  // #5631: the message path is selector dispatch. A plain Objective-C runtime
+  // C call (`_objc_retain`, `_objc_release`, …) has no selector and must keep
+  // its direct-call target instead of becoming a selector-less `message`.
+  const hasSelectorEvidence = call.selector != null || call.selectorFor != null || call.stubAddress != null;
+  if ((origin === 'objc' || isObjcMsgSendSymbol(name)) && (isObjcMsgSendSymbol(name) || hasSelectorEvidence || imp?.candidates?.length)) {
     if (imp?.candidates?.length && !isObjcMsgSendSymbol(name)) {
       return {
         runtime: 'objc', kind: 'imp', imp,
