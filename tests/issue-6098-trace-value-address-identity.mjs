@@ -212,6 +212,7 @@ try {
   // BigInt values while resolving the same semantic instruction row.
   await assertValueFlow({ kind: 'trace-value', target: '0x1000' }, '0x00001000');
   await assertValueFlow({ kind: 'trace-value', target: '4096' }, '0x00001000');
+  await assertValueFlow({ kind: 'trace-value', target: 4096 }, '0x00001000');
   await assertValueFlow({ kind: 'trace-value', target: 0x1000n }, '0x00001000');
   await assertValueFlow({ kind: 'trace-value', address: '0x1001' }, '0x00001001');
 
@@ -219,13 +220,30 @@ try {
   // are present; the distinct row must stay distinct from 0x1000.
   await assertValueFlow({ kind: 'trace-value', address: '0x1001', target: '0x1000' }, '0x00001001');
 
+  // Null and omitted addresses are no-ops, preserving the runner's existing
+  // null guard instead of manufacturing a navigation target.
+  const beforeNoTarget = valueFlowSheets().length;
+  await run({ kind: 'trace-value', target: null });
+  await run({ kind: 'trace-value' });
+  assert.equal(navigations.length, 0, 'null and omitted addresses must not navigate');
+  assert.equal(valueFlowSheets().length, beforeNoTarget,
+    'null and omitted addresses must not open a Value flow sheet');
+
+  // A valid but unmatched address uses the normal overview fallback. This is
+  // distinct from the null/omitted no-op while still leaving the runner safe.
+  await run({ kind: 'trace-value', target: '0xdead' });
+  assert.deepEqual(navigations, ['/function/0xdead/overview'],
+    'a valid unmatched address must use the overview fallback');
+  assert.equal(valueFlowSheets().length, 6,
+    'a valid unmatched address must not open a Value flow sheet');
+
   // Invalid input remains a normal overview fallback and never escapes as an
   // exception. There is intentionally no catch around run(): valid routing
   // above must fail the test if the DOM path throws.
   await run({ kind: 'trace-value', address: 'not-an-address', target: '0x1000' });
-  assert.deepEqual(navigations, ['/function/not-an-address/overview'],
+  assert.deepEqual(navigations, ['/function/0xdead/overview', '/function/not-an-address/overview'],
     'invalid address must keep the existing overview fallback');
-  assert.equal(valueFlowSheets().length, 5,
+  assert.equal(valueFlowSheets().length, 6,
     'invalid address must not open a Value flow sheet');
 } finally {
   closeAllSheets();
