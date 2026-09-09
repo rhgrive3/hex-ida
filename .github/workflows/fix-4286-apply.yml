@@ -1,0 +1,118 @@
+name: Apply issue 4286 patch
+
+on:
+  push:
+    branches:
+      - fix/issue-4286-transport-signal-contract
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/issue-4286-transport-signal-contract
+          fetch-depth: 1
+      - name: Verify base and apply exact patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object js/ai/transport.js)" = "19d1f729baa3cfc4bc7b514fb1d822f24326456d"
+          test "$(git hash-object tests/abort-reason-preservation.mjs)" = "f4a7e2c0561c62d76baf27c565206fa2bad93ffb"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('js/ai/transport.js')
+          text = source.read_text()
+          anchor = "const DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;\n\n"
+          helper = '\n'.join([
+          "const DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;",
+          "",
+          "function normalizeExternalSignal(value) {",
+          "  if (value == null) return null;",
+          "  if ((typeof value !== 'object' && typeof value !== 'function')",
+          "      || typeof value.aborted !== 'boolean'",
+          "      || typeof value.addEventListener !== 'function'",
+          "      || typeof value.removeEventListener !== 'function') {",
+          "    throw new AIError('invalid_model_output', 'AI transport signal must be AbortSignal-compatible.');",
+          "  }",
+          "  return value;",
+          "}",
+          "",
+          "",
+          ])
+          old = "} = {}) {\n  if (typeof fetchImpl !== 'function') throw new AIError('provider_error', 'Fetch is unavailable.');\n  if (signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');\n"
+          new = "} = {}) {\n  if (typeof fetchImpl !== 'function') throw new AIError('provider_error', 'Fetch is unavailable.');\n  signal = normalizeExternalSignal(signal);\n  if (signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');\n"
+          if text.count(anchor) != 1 or text.count(old) != 1:
+              raise SystemExit('source anchor mismatch')
+          source.write_text(text.replace(anchor, helper, 1).replace(old, new, 1))
+
+          test = Path('tests/abort-reason-preservation.mjs')
+          text = test.read_text()
+          anchor = "console.log('  ok 1 AI transport forwards explicit falsy reasons (#1345)');\n\n"
+          block = '\n'.join([
+          "console.log('  ok 1 AI transport forwards explicit falsy reasons (#1345)');",
+          "",
+          "/* ── 1a. malformed external signals fail before timer/fetch setup (#4286) ── */",
+          "",
+          "{",
+          "  const originalSetTimeout = globalThis.setTimeout;",
+          "  let timers = 0;",
+          "  let fetches = 0;",
+          "  globalThis.setTimeout = (...args) => { timers++; return originalSetTimeout(...args); };",
+          "  try {",
+          "    const invalidSignals = [",
+          "      {}, true, [],",
+          "      { aborted:false, addEventListener() {} },",
+          "      { aborted:false, removeEventListener() {} },",
+          "      { aborted:'false', addEventListener() {}, removeEventListener() {} },",
+          "    ];",
+          "    for (const signal of invalidSignals) {",
+          "      await assert.rejects(",
+          "        () => requestJSON('/x', {}, {",
+          "          signal, timeoutMs:30_000,",
+          "          fetchImpl:async () => { fetches++; throw new Error('fetch must not start'); },",
+          "        }),",
+          "        (error) => error?.type === 'invalid_model_output' && /AbortSignal-compatible/.test(error.message),",
+          "        `malformed signal must fail at the transport boundary: ${String(signal)}` ,",
+          "      );",
+          "    }",
+          "    assert.equal(timers, 0, 'malformed signals must be rejected before timeout allocation');",
+          "    assert.equal(fetches, 0, 'malformed signals must be rejected before fetch starts');",
+          "  } finally {",
+          "    globalThis.setTimeout = originalSetTimeout;",
+          "  }",
+          "}",
+          "console.log('  ok 2 malformed transport signals fail before timer/fetch setup (#4286)');",
+          "",
+          "",
+          ])
+          if text.count(anchor) != 1 or '#4286' in text:
+              raise SystemExit('test anchor mismatch')
+          test.write_text(text.replace(anchor, block, 1))
+          PY
+          test "$(git hash-object js/ai/transport.js)" = "e0997f71cc2ec9209dc0eabd803a88312e01c838"
+          test "$(git hash-object tests/abort-reason-preservation.mjs)" = "7a7b99c883f95dea30f8ae64ddeefc0a46bfd6de"
+          git diff --check
+      - name: Focused validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 60s node tests/abort-reason-preservation.mjs
+          timeout 60s node tests/ai-boundary-hardening.mjs
+          timeout 60s node tests/issue-5430-response-byte-limit-identity.mjs
+          timeout 90s npm run lint
+      - name: Commit exact patch and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name rhgrive3
+          git config user.email rhgrive@gmail.com
+          git rm .github/workflows/fix-4286-apply.yml
+          git add js/ai/transport.js tests/abort-reason-preservation.mjs
+          git commit -m "fix(ai): validate transport AbortSignal before setup (#4286)"
+          git push origin HEAD:fix/issue-4286-transport-signal-contract
