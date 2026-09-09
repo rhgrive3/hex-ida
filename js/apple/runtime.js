@@ -1,4 +1,4 @@
-import { buildObjcRuntimeIndex, classifyObjcRuntimeCall, isObjcMsgSendSymbol, objcMessage } from './objc-runtime.js';
+import { buildObjcRuntimeIndex, cleanClassName, classifyObjcRuntimeCall, isObjcMsgSendSymbol, objcMessage } from './objc-runtime.js';
 import { buildSelectorIndex, resolveSelectorStub } from './selector-stubs.js';
 import { buildSwiftRuntimeIndex, classifySwiftRuntimeCall, resolveSwiftDispatch, swiftCallingConvention, formatSwiftCall } from '../swift.js';
 import { classifyLanguageRuntimeCall } from '../metadata/index.js';
@@ -64,7 +64,12 @@ export function resolveObjcIMP(objcIndex, address, { receiverType = null, select
   if (selector) candidates = candidates.filter((m) => m.selector === selector);
   if (receiverType != null) {
     if (typeof receiverType !== 'string') return { resolved: null, candidates: [], confidence: 0 };
-    const type = receiverType.replace(/\s*\*+\s*$/, '');
+    // Canonical class identity: the dispatch path normalizes spellings like
+    // 'class Foo', '@"Foo"', whitespace and pointer suffixes via
+    // cleanClassName(); the direct IMP path must accept the same equivalences
+    // or equal-type receivers resolve to zero candidates (#5649).
+    const type = cleanClassName(receiverType);
+    if (!type) return { resolved: null, candidates: [], confidence: 0 };
     const chain = new Set();
     let cur = type, guard = 0;
     let hierarchyComplete = true;
