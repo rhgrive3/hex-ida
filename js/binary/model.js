@@ -9,8 +9,10 @@ export function sectionHasMappedAddress(sec) {
 // Loader/provider output is fixed into canonical BinaryImage mappings here.
 // Raw BigInt() is a conversion API (BigInt(true) === 1n, BigInt(['16']) === 16n),
 // so a structured value would fabricate a real segment/section mapping (#5195).
-// Accept only exact integers: bigint, safe-integer number, or canonical integer
-// decimal string — the same discipline the query surface already applies.
+// Accept only exact integers: bigint, safe-integer number, or a strict
+// decimal/hex string — the same shared exact-integer grammar the canonical
+// address surface applies (/^-?(?:0x[0-9a-f]+|\d+)$/i). Anything else, and
+// BigInt() success in general, is not schema validation.
 function canonicalMappingBigInt(value, fallback, field) {
   if (value == null) return fallback;
   if (typeof value === 'bigint') return value;
@@ -20,7 +22,7 @@ function canonicalMappingBigInt(value, fallback, field) {
     }
     return BigInt(value);
   }
-  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+  if (typeof value === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(value.trim())) {
     return BigInt(value.trim());
   }
   throw new TypeError(`${field} must be an exact integer`);

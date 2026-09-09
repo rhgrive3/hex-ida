@@ -56,12 +56,13 @@ function expectExactIntegerRejected(operation) {
   }));
 }
 
-// Exact-integer strings that BigInt() would launder through hex spelling.
+// Strict hex spellings are contract-exact integers, not BigInt() laundering:
+// the shared exact-integer grammar (/^-?(?:0x[0-9a-f]+|\d+)$/i) accepts them
+// while BigInt()'s object/boolean coercions stay rejected.
 {
   const image = new BinaryImage(new Uint8Array(32), { format: 'test' });
-  expectExactIntegerRejected(() => image.addSegment({
-    name: 'hex', address: '0x10', size: 0x10n, fileOffset: 0n, fileSize: 0x10n,
-  }));
+  image.addSegment({ name: 'hex', address: '0x10', size: 0x10n, fileOffset: 0n, fileSize: 0x10n });
+  assert.equal(image.segments[0].address, 0x10n, 'strict hex is an exact integer spelling');
 }
 
 // Fractional and unsafe numbers must fail closed.
@@ -89,4 +90,31 @@ function expectExactIntegerRejected(operation) {
   image.addSection({ name: '.s', address: '4112', size: 16n, fileOffset: 16n, fileSize: 16n });
   assert.equal(image.sections[0].address, 4112n);
   assert.equal(image.addressToOffset(4100n), 4n);
+}
+
+// Strict hex spellings are exact-integer representations, not structured
+// coercion: they parse exactly like decimals and must not be rejected.
+{
+  const image = new BinaryImage(new Uint8Array(32), {
+    format: 'test', imageBase: '0x1000', entrypoint: '0x1002',
+  });
+  assert.equal(image.imageBase, 0x1000n);
+  assert.equal(image.entrypoint, 0x1002n);
+  image.addSegment({
+    address: '0x1000', size: '0x10', fileOffset: '0x0', fileSize: '0x10',
+  });
+  assert.equal(image.segments[0].address, 0x1000n);
+  assert.equal(image.segments[0].size, 0x10n);
+  image.addSection({
+    name: '.hex', address: '0x1010', size: '0x10', fileOffset: '0x10', fileSize: '0x10',
+  });
+  assert.equal(image.sections[0].address, 0x1010n);
+  assert.equal(image.addressToOffset(0x1004n), 4n);
+  // Hex-looking but non-exact shapes stay rejected.
+  expectExactIntegerRejected(() => image.addSegment({
+    name: 'bad-hex', address: '0x10zz', size: 0x10n, fileOffset: 0n, fileSize: 0x10n,
+  }));
+  expectExactIntegerRejected(() => image.addSegment({
+    name: 'blank-hex', address: '0x', size: 0x10n, fileOffset: 0n, fileSize: 0x10n,
+  }));
 }
