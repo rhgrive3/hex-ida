@@ -4,6 +4,19 @@ export function uiRoot() {
   return globalThis.__HEX_UI_ROOT__ || globalThis.document?.documentElement || null;
 }
 
+function hasNativeElementBrand(value) {
+  const getAttribute = globalThis.Element?.prototype?.getAttribute;
+  if (typeof getAttribute !== 'function') return false;
+  try {
+    // Calling the ambient native Web IDL method performs a realm-safe Element
+    // brand check without trusting constructors supplied by the candidate.
+    getAttribute.call(value, 'data-hex-ui-root-brand-check');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function isUiRoot(value) {
   try {
     const classList = value?.classList;
@@ -11,6 +24,7 @@ function isUiRoot(value) {
     return !!value
       && typeof value === 'object'
       && value.nodeType === 1
+      && hasNativeElementBrand(value)
       && typeof classList?.add === 'function'
       && typeof classList?.remove === 'function'
       && typeof classList?.toggle === 'function'
