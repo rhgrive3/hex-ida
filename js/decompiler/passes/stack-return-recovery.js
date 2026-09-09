@@ -2,6 +2,7 @@ import { expr, structuralKey, mergeSource } from '../ast/nodes.js';
 import { RewriteEngine, RewriteHistoryJournal, expressionOriginHistory } from '../rewrite/engine.js';
 import { captureRecoveryIrData, PROJECTION_LIMITS } from '../phase8/projection-origin.js';
 import { readStackPhiHistoryConsumer } from './stack-phi-recovery.js';
+import { readLegacyStackHistoryConsumer } from './legacy-stack-recovery.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { printExpression, printProgram } from '../pretty/c.js';
 import { buildNZCVConditionExpression } from '../flag-semantics.js';
@@ -593,7 +594,8 @@ export function recoverExactStackReturn(result, opts = {}) {
     .filter(node => node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim()))
     .map(node => ({ node, before:node.semantic?.expression || root,
       prior:readStackReturnHistoryConsumer(node.semantic, result.ir)
-        || readStackPhiHistoryConsumer(node.semantic, result.ir) }));
+        || readStackPhiHistoryConsumer(node.semantic, result.ir)
+        || readLegacyStackHistoryConsumer(node.semantic, result.ir) }));
   // A stack load means no useful reconstruction happened. A committed non-stack
   // field/global load is an intentional high-level return and must be retained.
   if (!recovered || (recovered.kind === 'load' && recovered.location?.kind === 'stack') || !rewriteReturn(result, recovered, opts)) return result;

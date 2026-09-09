@@ -2098,6 +2098,57 @@ performance/issue work is included. Other legacy recovery transitions and the
 full CSE/DCE/switch/struct-field removed/merged class coverage remain open.
 The original finding scope and integration acceptance lock are unchanged.
 
+### C4-03 legacy stack-value and return histories — TODO implementation, 2026-09-09
+
+The existing same-block legacy stack recovery moved from `pipeline.js` into
+`passes/legacy-stack-recovery.js`; its reaching-store, width and barrier
+predicate is unchanged, and its old exported helper remains reexported by the
+pipeline. Actual load replacements now produce immutable source histories and
+private bindings to the corresponding return consumers. Valid observed core
+store-expression rewrites are retained, without assigning a shared input's
+history to unrelated returns.
+
+The real public-pipeline test exposed an earlier producer:
+`materializeLegacyExactStackValues` had already replaced semantic-value loads
+before same-block return recovery ran. That existing producer now records its
+actual replacements and issues observed value-entry histories. Nested local
+transitions are collected privately and published with one bounded final
+observation, not one whole-graph observation per value or recursive observer
+chains. Same-block recovery consumes these exact histories; final stack-return
+recovery carries the valid earlier consumer through its owned transition.
+
+This changes provenance only. It does not strengthen the earlier legacy
+materializer's admission checks or claim that its predicate equals canonical
+v2 MemorySSA forwarding. Canonical v2 remains excluded from both legacy paths.
+Actual expression/load/IR identities and decompiled semantics remain unchanged.
+
+History allocation is capped at 1024 new records per producer invocation, with
+lower requested limits supported. Value/return consumer and graph-observation
+limits remain bounded. Exhaustion is explicit even when the only retained
+history slot holds an inherited core rewrite and the later materialization
+record itself cannot be retained. Copied value entries/descriptors, changed
+canonical roots/widths and accessor replay cannot mint a binding.
+
+Evidence before final commit:
+
+- 10 new canonical-discovered legacy tests: single/nested spill, actual stored
+  producer history, unrelated-return negatives, full public pipeline, existing
+  gate exclusions, mutation/copy/accessor rejection, materialization chain,
+  budget propagation and no-op reruns;
+- canonical provenance PASS 14.4 s:
+  `c4-03-legacy-stack-owned-settled-4ad55864-7194-40ca-a307-47f04794073e.json`;
+- deterministic/width/proof/publication/reanchor/ownership boundaries PASS 2.3 s:
+  `c4-03-legacy-stack-boundaries-491afb93-edc8-48d7-966b-d263bd595ba0.json`;
+- semantic pipeline PASS 0.6 s:
+  `c4-03-legacy-stack-pipeline-bc804e98-9bf0-4fd9-9a76-c588d7d8d495.json`.
+
+The already-reused #3421 still has head
+`4cd5b3eb9200b1180985b9df3a74f8245a5cc928`. No component merge, main
+reconciliation or unrelated issue/performance work is included. Actual
+rendered-entity removal/merge coverage (including proof-only spill removal),
+other view transformations, CSE/DCE/switch/struct-field denominator coverage and
+all original findings remain open. Integration acceptance remains LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -2132,7 +2183,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C3-03 | Versioned language metadata and unknown-version matrix |
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
-| HEX-C4-03 | Product/legacy navigation, expression histories, observed consumers, successive projections and stack/phi/return histories including internal simplifications implemented; other legacy transitions and full removed/merged class coverage still open |
+| HEX-C4-03 | Product/legacy navigation, observed expression/recovery histories, successive projections and legacy stack-value/return transitions implemented; other view transforms and full removed/merged class coverage still open |
 | HEX-C4-04 | v8 pure constant projection plus remaining risky rewrite observables |
 | HEX-C4-05 | Bounded e-graph candidates, independent proofs and resource matrix |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |

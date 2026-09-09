@@ -2,6 +2,7 @@ import { isProducerProjection, producerExpressionToken } from '../pipeline.js';
 import { readExpressionHistoryConsumer } from '../pipeline-core.js';
 import { readStackPhiHistoryConsumer } from '../passes/stack-phi-recovery.js';
 import { readStackReturnHistoryConsumer } from '../passes/stack-return-recovery.js';
+import { readLegacyStackHistoryConsumer } from '../passes/legacy-stack-recovery.js';
 import { captureProjectionIrData, PROJECTION_LIMITS } from './projection-origin.js';
 import { expr, mapChildren, mergeSource, sourceOf } from '../ast/nodes.js';
 import { expressionReadability, printExpression, printProgram } from '../pretty/c.js';
@@ -347,7 +348,8 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   const expressionConsumers = inherited ? [...inherited.expressions]
     : (result.cAst.body ?? []).map(node => hasPriorHistory ? null
       : readStackReturnHistoryConsumer(node?.semantic, result.ir)
-        || readStackPhiHistoryConsumer(node?.semantic, result.ir) || readExpressionHistoryConsumer(node?.semantic, result.ir));
+        || readStackPhiHistoryConsumer(node?.semantic, result.ir)
+        || readLegacyStackHistoryConsumer(node?.semantic, result.ir) || readExpressionHistoryConsumer(node?.semantic, result.ir));
   const conditionBindings = inherited ? [...inherited.conditionConsumers]
     : (result.semanticAst.conditions ?? []).map(condition => hasPriorHistory ? null : readExpressionHistoryConsumer(condition, result.ir));
   const conditionConsumers = new Map();
