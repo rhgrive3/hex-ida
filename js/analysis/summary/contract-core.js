@@ -204,9 +204,15 @@ export function createUnknownCallEffect(input = {}) {
 }
 
 export function createDirectCall(input = {}) {
+  // A direct call record with zero resolved targets is an unresolved call,
+  // not a call that contributes nothing: publishing it lets the summary pass
+  // the fail-closed consistency checks while its callee resolves to nothing
+  // (#5328, P7-INV-004). Unresolved calls belong in `unknownCallEffects`.
+  const targetEntityIds = sortedIds(input.targetEntityIds, 'function-summary-invalid-target-ids');
+  if (targetEntityIds.length === 0) fail('function-summary-direct-call-target-required');
   return deepFreeze({
     callSiteId: nonEmpty(input.callSiteId, 'function-summary-call-site-required'),
-    targetEntityIds: sortedIds(input.targetEntityIds, 'function-summary-invalid-target-ids'),
+    targetEntityIds,
     summaryId: input.summaryId == null ? null : nonEmpty(input.summaryId, 'function-summary-invalid-summary-id'),
     effectSource: canonicalEffectSource(input.effectSource, 'unknown-call-fallback'),
   });
