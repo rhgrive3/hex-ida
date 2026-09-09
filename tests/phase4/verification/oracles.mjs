@@ -273,7 +273,7 @@ async function schedulerOracles(report) {
 
 async function projectOracles(report) {
   await addCase(report, 'user-fact separation', 'I', 'p4-3', () => {
-    const valid = createArtifactRef({ scope: 'function:1', kind: 'ssa', artifactId: 'artifact_example' });
+    const valid = createArtifactRef({ scope: 'function:1', kind: 'ssa', artifactId: `artifact_${'e'.repeat(32)}` });
     const refs = new ProjectArtifactIndex([valid]).toProjectReferences(); const invalid = { ...valid, payload: { derived: true } };
     const separated = refs.length === 1 && !Object.hasOwn(refs[0], 'payload') && !Object.hasOwn(refs[0], 'record') && !isArtifactRef(invalid);
     if (!separated) count(report, 'projectSeparationFailures'); assert.equal(separated, true);
@@ -331,7 +331,7 @@ async function scalingOracle(report) {
     for (const size of SCALE) {
       let started = nowMs(); for (let i = 0; i < size; i++) descriptor({ entityId: `scale:id:${size}:${i}` }); const identityMs = nowMs() - started;
       const index = new ProjectArtifactIndex(); started = nowMs();
-      for (let i = 0; i < size; i++) index.bind({ scope: `function:${i}`, kind: 'ssa', artifactId: `artifact_scale_${i}` });
+      for (let i = 0; i < size; i++) index.bind({ scope: `function:${i}`, kind: 'ssa', artifactId: `artifact_${i.toString(16).padStart(32, '0')}` });
       assert.equal(index.list().length, size); const projectIndexMs = nowMs() - started;
       const coalescing = await coalescingScale(size);
       if (coalescing.invocations !== 1 || coalescing.scheduler.coalescedRequests !== size - 1) count(report, 'coalescingFailures');
