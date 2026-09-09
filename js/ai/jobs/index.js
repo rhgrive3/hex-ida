@@ -108,7 +108,9 @@ export class AgentJobManager {
         throw error;
       }
       mergeResult(job, result);
-      if (!result?.limits?.exhausted) job.status = 'complete';
+      const failureReason = nonBudgetFailureReason(result);
+      if (failureReason) job.status = hardLimit(job) ? 'hard-limit' : 'checkpointed';
+      else if (!result?.limits?.exhausted) job.status = 'complete';
       else if (hardLimit(job)) job.status = 'hard-limit';
       else job.status = 'checkpointed';
       job.updatedAt = new Date().toISOString();
@@ -193,7 +195,11 @@ function mergeResult(job, result) {
   job.hypothesisIds = unique([...job.hypothesisIds, ...(result?.hypotheses || []).map((item) => identityString(item?.id)).filter(Boolean)]);
   job.completedTools = unique([...job.completedTools, ...(result?.activity || []).filter((item) => item.type === 'tool-result').map((item) => identityString(item?.tool) || identityString(item?.label)).filter(Boolean)]);
   job.continuationRefs = unique([...job.continuationRefs, ...collectRefs(result)]);
-  job.unresolvedWork = unique([...(result?.followups || []), ...(result?.limits?.exhausted ? [`resume-after:${result.limits.reason || 'slice-budget'}`] : [])]).slice(-32);
+  const failureReason = nonBudgetFailureReason(result);
+  const resumeReason = result?.limits?.exhausted
+    ? `resume-after:${result.limits.reason || 'slice-budget'}`
+    : failureReason == null ? null : `resume-after:${failureReason}`;
+  job.unresolvedWork = unique([...(result?.followups || []), ...(resumeReason == null ? [] : [resumeReason])]).slice(-32);
   const usage = result?.usage || {};
   // Usage counters feed the job hard-limit authority (`maxElapsedMs` etc.).
   // `Number()` coercion admitted NaN (silently disabling the elapsed ceiling
@@ -203,6 +209,10 @@ function mergeResult(job, result) {
   job.budgetUsage.slices += 1; job.budgetUsage.modelCalls += usageDelta(usage.modelCalls); job.budgetUsage.toolCalls += usageDelta(usage.toolCalls);
   job.budgetUsage.elapsedMs += usageDelta(usage.elapsedMs); job.budgetUsage.contextBytes += usageDelta(usage.contextBytes);
   job.lastResult = compactResult(result);
+}
+function nonBudgetFailureReason(result) {
+  const reason = result?.limits?.reason;
+  return result?.limits?.exhausted !== true && typeof reason === 'string' && reason.trim() ? reason.trim() : null;
 }
 function collectRefs(result) {
   const refs = [];
