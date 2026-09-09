@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { createX86DecodedInstruction } from '../../js/targets/architecture/x86_64/decoded-instruction.js';
-import { liftX86MachineEffects } from '../../js/targets/architecture/x86_64/effects/index.js';
 import { x86RegisterDescriptor } from '../../js/targets/architecture/x86_64/registers.js';
-import { createCapstoneX86Session } from '../phase5/helpers/capstone-session.mjs';
+import { forEachX86BrowserSession } from './helpers/x86-browser-effects.mjs';
 import { X86_LONG64_SIMD_DENOMINATOR_ID,X86_LONG64_SIMD_EXACT_FORMS,X86_LONG64_SIMD_OWNED_REMAINING,X86_LONG64_SIMD_SHARED_BLOCKERS,validateX86Long64SimdDenominator } from '../../tools/validation/machine-effects/x86-long64-simd-denominator.mjs';
 import { effects,reg,imm,legacy,vex128,vex256,evex,operations } from './helpers/x86-long64-fp-simd.mjs';
 const d=validateX86Long64SimdDenominator();assert.equal(d.denominatorId,X86_LONG64_SIMD_DENOMINATOR_ID);assert.equal(d.exactFormCount,125);assert.equal(d.ownedRemainingCount,0);assert.equal(d.sharedBlockerCount,0);assert.equal(d.closed,true);assert.equal(X86_LONG64_SIMD_OWNED_REMAINING.length,0);assert.deepEqual(X86_LONG64_SIMD_SHARED_BLOCKERS,[]);
@@ -23,6 +22,25 @@ const emms=effects('emms',[],legacy(),[0x0f,0x77]);assert.ok(['exact','exact-wit
 const legacyXor=effects('xorps',[reg('xmm0'),reg('xmm1')],legacy());assert.ok(operations(legacyXor,'value').some((op)=>op.opcode==='insert'&&op.metadata?.writePolicy==='legacy-preserve-upper-128'));
 const vexXor=effects('vxorps',[reg('xmm0'),reg('xmm1'),reg('xmm2')],vex128(0));assert.ok(operations(vexXor,'value').some((op)=>op.opcode==='zext'&&op.metadata?.toBits===256));assert.ok(operations(vexXor,'register-write').some((op)=>op.register.registerId==='zmmh0'&&op.metadata?.writePolicy==='vex-zero-upper-maxvl'));
 const zmm0Physical=x86RegisterDescriptor('zmm0'),k1=x86RegisterDescriptor('k1'),mm0=x86RegisterDescriptor('mm0'),st0=x86RegisterDescriptor('st(0)');assert.equal(zmm0Physical?.viewBits,512);assert.equal(Array.isArray(zmm0Physical?.compositeParts),true);assert.equal(k1?.kind,'opmask');assert.equal(mm0?.physicalId,'x87-stack');assert.equal(st0?.physicalId,'x87-stack');
-const capstone=await createCapstoneX86Session();try{for(const [name,bytes] of Object.entries({vpaddd:[0xc5,0xf5,0xfe,0xc2],vpcmpeqd:[0xc5,0xf5,0x76,0xc2],vpslld:[0xc5,0xf5,0x72,0xf1,0x03],vpshufd:[0xc5,0xfd,0x70,0xc1,0x1b],vpunpckldq:[0xc5,0xf5,0x62,0xc2]})){const raw=capstone.decode(bytes,0x710000n)[0];assert.equal(raw.mnemonic,name);const b=liftX86MachineEffects(raw,{instructionId:`capstone:${name}`});assert.ok(['exact','exact-with-intrinsic'].includes(b.completeness),`${name}:${b.unknownEffects?.reason}`);}const zmm=capstone.decode([0x62,0xf1,0x7c,0x48,0x57,0xc0],0x710100n)[0];assert.equal(zmm.mnemonic,'vxorps');const decodedZmm=createX86DecodedInstruction(zmm);const zmm0=decodedZmm.detail.operands[0]?.register;assert.equal(zmm0?.id,'zmm0');assert.equal(zmm0?.viewBits,512);assert.equal(Array.isArray(zmm0?.compositeParts),true);const zmmEffects=liftX86MachineEffects(decodedZmm,{instructionId:'simd:real-evex-vxorps'});assert.ok(['exact','exact-with-intrinsic'].includes(zmmEffects?.completeness),zmmEffects?.unknownEffects?.reason);assert.equal(zmmEffects?.metadata?.family,'simd');}finally{capstone.close();}
+await forEachX86BrowserSession(async ({ decodeAndLift }) => {
+  for(const [name,bytes] of Object.entries({
+    vpaddd:[0xc5,0xf5,0xfe,0xc2], vpcmpeqd:[0xc5,0xf5,0x76,0xc2],
+    vpslld:[0xc5,0xf5,0x72,0xf1,0x03], vpshufd:[0xc5,0xfd,0x70,0xc1,0x1b],
+    vpunpckldq:[0xc5,0xf5,0x62,0xc2],
+  })) {
+    const [{ decoded:raw, effects:b }] = await decodeAndLift(bytes,0x710000n);
+    assert.equal(raw.mnemonic,name);
+    assert.ok(['exact','exact-with-intrinsic'].includes(b.completeness),`${name}:${b.unknownEffects?.reason}`);
+  }
+  const [{ decoded:zmm, effects:zmmEffects }] = await decodeAndLift([0x62,0xf1,0x7c,0x48,0x57,0xc0],0x710100n);
+  assert.equal(zmm.mnemonic,'vxorps');
+  const decodedZmm=createX86DecodedInstruction(zmm);
+  const zmm0=decodedZmm.detail.operands[0]?.register;
+  assert.equal(zmm0?.id,'zmm0');
+  assert.equal(zmm0?.viewBits,512);
+  assert.equal(Array.isArray(zmm0?.compositeParts),true);
+  assert.ok(['exact','exact-with-intrinsic'].includes(zmmEffects?.completeness),zmmEffects?.unknownEffects?.reason);
+  assert.equal(zmmEffects?.metadata?.family,'simd');
+});
 console.log(`x86 long64 SIMD denominator: ${d.exactFormCount} exact forms + ${d.ownedRemainingCount} owned + ${d.sharedBlockerCount} shared blockers: PASS`);
 const unqualifiedEvex=effects('vpmulld',[reg('xmm0'),reg('xmm1'),reg('xmm2')],evex(),[0x62,0xf1,0x7c,0x08,0x40,0xc1]);assert.equal(unqualifiedEvex,null);
