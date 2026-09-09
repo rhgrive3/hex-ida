@@ -5,6 +5,23 @@ import {
 } from '../../../js/project/artifact-index.js';
 
 const MAX = 4096;
+
+const defaultIndex = new ProjectArtifactIndex();
+assert.ok(Number.isSafeInteger(defaultIndex.maxEntries), 'default maxEntries remains a numeric safe integer');
+for (const invalid of ['2', ['2'], true, false, {}, 2.5, Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 50_001]) {
+  assert.throws(
+    () => new ProjectArtifactIndex([], { maxEntries:invalid }),
+    /artifact-index-max-entries-invalid/,
+    `constructor must reject non-canonical maxEntries ${String(invalid)}`,
+  );
+  assert.throws(
+    () => artifactIndexFromProject({ analysis:{ cacheReferences:[] } }, { maxEntries:invalid }),
+    /artifact-index-max-entries-invalid/,
+    `import must reject non-canonical maxEntries ${String(invalid)}`,
+  );
+}
+assert.equal(new ProjectArtifactIndex([], { maxEntries:2 }).maxEntries, 2, 'primitive integer maxEntries remains valid');
+
 const TOTAL = 100_000;
 const index = new ProjectArtifactIndex([], { maxEntries:MAX });
 for (let i = 0; i < TOTAL; i++) {
