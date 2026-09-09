@@ -103,18 +103,32 @@ function asMask(value, bits) {
   try { return unsignedOf(value ?? 0n, bits); } catch { return 0n; }
 }
 
+/**
+ * Scalar evidence crosses an analysis boundary, so only explicit primitive
+ * integer spellings are valid: bigint, safe-integer number, or a strict
+ * integer literal string. `BigInt(x)` itself accepts booleans, arrays and
+ * other ToPrimitive-coercible shapes (#5222), so it is used only after the
+ * shape contract has already held.
+ */
+function scalarEvidenceBigInt(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) ? BigInt(value) : null;
+  }
+  if (typeof value === 'string') {
+    return /^-?(?:0|[1-9]\d*)$/.test(value) ? BigInt(value) : null;
+  }
+  return null;
+}
+
 function parseBoundedMaskEvidence(value, bits) {
   if (value == null) return { value: null, malformed: false };
   if (typeof value === 'number' && (!Number.isSafeInteger(value) || value < 0)) {
     return { value: null, malformed: true };
   }
-  try {
-    const parsed = BigInt(value);
-    if (parsed < 0n || parsed > widthMask(bits)) return { value: null, malformed: true };
-    return { value: parsed, malformed: false };
-  } catch {
-    return { value: null, malformed: true };
-  }
+  const parsed = scalarEvidenceBigInt(value);
+  if (parsed == null || parsed < 0n || parsed > widthMask(bits)) return { value: null, malformed: true };
+  return { value: parsed, malformed: false };
 }
 
 function gcd(left, right) {
@@ -141,17 +155,14 @@ function normalizeCongruenceValue(congruence, bits) {
 function parseCongruenceValue(congruence, bits) {
   const width = 1n << BigInt(bits);
   if (congruence == null || typeof congruence !== 'object') return null;
-  let modulus;
-  let remainder;
-  try {
-    modulus = BigInt(congruence.modulus);
-    remainder = BigInt(congruence.remainder);
-  } catch {
-    return null;
-  }
+  // Residue evidence is a scalar contract: ToPrimitive-coercible shapes
+  // (boolean, array, boxed) must fail closed, not launder into a class (#5222).
+  const modulus = scalarEvidenceBigInt(congruence.modulus);
+  const remainder = scalarEvidenceBigInt(congruence.remainder);
+  if (modulus == null || remainder == null) return null;
   if (modulus <= 0n || modulus > width) return null;
-  remainder = ((remainder % modulus) + modulus) % modulus;
-  return Object.freeze({ remainder, modulus });
+  const normalizedRemainder = ((remainder % modulus) + modulus) % modulus;
+  return Object.freeze({ remainder: normalizedRemainder, modulus });
 }
 
 /** Normalize a residue without exposing an alternate scalar domain. */
@@ -501,17 +512,19 @@ function validPointerOffsetEvidence(pointerOffset, provenance, valueId) {
   if (binding == null || !sameTypedIdentity(pointerOffset.baseId, binding.baseId)) return false;
   const sourceValueId = pointerOffset.sourceValueId ?? pointerOffset.valueId ?? valueId ?? binding.valueId;
   if (sourceValueId == null || !sameTypedIdentity(sourceValueId, binding.valueId)) return false;
-  try {
-    if (typeof pointerOffset.offset === 'number' && !Number.isSafeInteger(pointerOffset.offset)) return false;
-    BigInt(pointerOffset.offset);
-    return true;
-  } catch {
-    return false;
-  }
+  const offset = scalarEvidenceBigInt(pointerOffset.offset);
+  if (offset == null) return false;
+  return true;
 }
 
 function validRangeShape(range) {
   if (range == null || !isSupportedWidth(range.bits)) return false;
+  // Bounds are scalar evidence like any other: a boolean or array bound
+  // coerces through unsignedOf() and must fail closed, not normalize (#5222).
+  if (typeof range.lower !== 'bigint' && typeof range.lower !== 'number') return false;
+  if (typeof range.upper !== 'bigint' && typeof range.upper !== 'number') return false;
+  if (typeof range.lower === 'number' && !Number.isSafeInteger(range.lower)) return false;
+  if (typeof range.upper === 'number' && !Number.isSafeInteger(range.upper)) return false;
   if (!['full', 'empty', 'interval', 'wrapped'].includes(range.kind)) return false;
   try {
     const lower = unsignedOf(range.lower, range.bits);
@@ -549,6 +562,7 @@ function validFactConstant(constant, range) {
   if (constant == null) return true;
   if (typeof constant !== 'object' || Array.isArray(constant)) return false;
   if (!isSupportedWidth(constant.bits) || Number(constant.bits) !== Number(range.bits)) return false;
+  if (typeof constant.value !== 'bigint' && typeof constant.value !== 'number') return false;
   const value = singletonValue(range);
   if (value == null) return false;
   try {
