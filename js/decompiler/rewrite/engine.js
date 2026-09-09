@@ -1,13 +1,30 @@
-import { children, mapChildren, nodeCount, structuralKey } from '../ast/nodes.js';
+import { children, mapChildren, nodeCount, sourceOf, structuralKey } from '../ast/nodes.js';
 
 export const DEFAULT_REWRITE_BUDGET = Object.freeze({
   maxIterations: 12,
   nodeBudget: 4096,
   timeBudgetMs: 18,
   maxApplications: 2048,
+  maxHistoryOrigins: 512,
 });
 
 function now() { return globalThis.performance?.now ? globalThis.performance.now() : Date.now(); }
+
+// A historical source snapshot, not a new AST/semantic identity. Do not retain
+// mutable nodes or evidence chains here: later rewrites and callers may mutate
+// them, and recursively retaining proof evidence would grow the history.
+function sourceSnapshot(node, cap) {
+  const { evidence, ...origins } = sourceOf(node?.source);
+  let remaining = cap, truncated = false;
+  const snapshot = {};
+  for (const [kind, values] of Object.entries(origins)) {
+    const retained = values.slice(0, remaining);
+    remaining -= retained.length;
+    truncated ||= retained.length !== values.length;
+    snapshot[kind] = Object.freeze(retained);
+  }
+  return { origins:Object.freeze(snapshot), truncated };
+}
 
 function validTimeBudgetMs(value, fallback) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
@@ -38,6 +55,7 @@ export class RewriteEngine {
     this.budget.maxIterations = validWorkLimit(this.budget.maxIterations, DEFAULT_REWRITE_BUDGET.maxIterations);
     this.budget.nodeBudget = validWorkLimit(this.budget.nodeBudget, DEFAULT_REWRITE_BUDGET.nodeBudget);
     this.budget.maxApplications = validWorkLimit(this.budget.maxApplications, DEFAULT_REWRITE_BUDGET.maxApplications);
+    this.budget.maxHistoryOrigins = validWorkLimit(this.budget.maxHistoryOrigins, DEFAULT_REWRITE_BUDGET.maxHistoryOrigins);
   }
 
   rewrite(root, context = {}) {
@@ -100,6 +118,7 @@ export class RewriteEngine {
           if (!match) continue;
           if (rule.precondition && !rule.precondition(candidate, match, context)) continue;
           const beforeKey = structuralKey(candidate);
+          const beforeOrigins = sourceSnapshot(candidate, this.budget.maxHistoryOrigins);
           const next = rule.rewrite(candidate, match, context);
           if (!next) continue;
           const afterKey = structuralKey(next);
@@ -109,7 +128,10 @@ export class RewriteEngine {
           if (!rule.allowExpansion && afterCost > beforeCost) continue;
           const evidence = typeof rule.proof === 'function' ? rule.proof(candidate, next, match, context) : rule.proof;
           if (!evidence) continue;
-          proof.push({ rule: rule.name, phase: rule.phase, before: beforeKey, after: afterKey, evidence });
+          const afterOrigins = sourceSnapshot(next, this.budget.maxHistoryOrigins);
+          proof.push({ rule: rule.name, phase: rule.phase, before: beforeKey, after: afterKey, evidence,
+            originHistory:Object.freeze({ before:beforeOrigins.origins, after:afterOrigins.origins,
+              truncated:beforeOrigins.truncated || afterOrigins.truncated }) });
           stats.applications++;
           stats.byRule[rule.name] = (stats.byRule[rule.name] || 0) + 1;
           candidate = next;

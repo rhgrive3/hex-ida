@@ -43,6 +43,7 @@
       "js/decompiler/phase8/range.js",
       "js/decompiler/phase8/transaction.js",
       "js/decompiler/pipeline.js",
+      "js/decompiler/rewrite/engine.js",
       "js/decompiler/semantic-core.js",
       "tests/phase8/helpers/proof-fixtures.mjs",
       "tests/phase8/integration/proof-optimizer.test.mjs",
@@ -68,6 +69,7 @@
       "tests/phase8/provenance/ledger.test.mjs",
       "tests/phase8/provenance/navigation.test.mjs",
       "tests/phase8/provenance/removal.test.mjs",
+      "tests/phase8/provenance/expression-history.test.mjs",
       "tests/phase8/provenance/safety-counter.test.mjs",
       "tests/phase8/provenance/validation.test.mjs"
     ],

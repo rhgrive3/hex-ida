@@ -1784,6 +1784,69 @@ or unrelated issue work was added. No new component was accepted and the
 integration acceptance lock remains in force. Main has not been reconciled in
 this step; the user's performance changes must be preserved at reconciliation.
 
+### C4-03 actual expression history — TODO implementation, 2026-09-09
+
+Live #3421 remains OPEN at `4cd5b3eb9200b1180985b9df3a74f8245a5cc928`.
+Its already-reused render mapper does not capture the earlier RewriteEngine
+source transitions. This step extends that existing producer and mapper, not
+another rewrite engine, AST identity, solver or cache.
+
+Every accepted RewriteEngine application now snapshots its before/after
+canonical source arrays alongside the existing rule, phase, structural keys
+and proof kind. Snapshots are immutable, do not retain recursive evidence,
+and do not change the resulting expression object or its source IDs. This is
+important for source-derived load identities: merging an eliminated operator's
+IDs into a surviving load would not be mere bookkeeping. Rejected/no-op/cancelled
+applications produce no new history. Retained source arrays have a separate
+512-origin default cap per side; truncation is carried into the public map.
+The existing rewrite rules, time/work limits and semantic admission are unchanged.
+
+The existing `renderProvenance.ledger` includes these chronological expression
+records before the final Phase 8 view records, sharing the same record budget.
+Their nested `originHistory` distinguishes consumed, produced and elided
+canonical origin references. Its explicit scope is
+`replacement-expression-source`: these are not deleted canonical IR entities.
+A truncated snapshot never certifies an absent origin as elided. Historical
+proofs with missing snapshots remain explicitly unavailable. `transformReverse`
+indexes origins to this same ledger, separately from the existing line index.
+
+The shared product/legacy UI can display these histories from an instruction
+lookup, including all origin references and paged record lists. A history with
+no established rendered consumer says so explicitly; it does not select a
+nearby/shared-input line or authorize an assembly callback. History lookup and
+paging use the existing fresh-query snapshot and disposal checks. Code copying
+still copies only pseudocode. Public history addresses are decimal strings.
+
+Focused evidence on the settled source:
+
+- 12 expression-history regressions (actual engine, snapshots, query, omission,
+  chronology, limits, cancellation and malformed history);
+- 18 navigation/UI-handler regressions, including history display/paging;
+- both roadmap ownership suites, 8 tests;
+- canonical provenance group PASS 13.1 s, receipt
+  `c4-03-expression-settled-owned-4b276ca2-d949-46d7-a678-b60cd56fcb6d.json`;
+- existing semantic pipeline PASS 0.7 s, receipt
+  `c4-03-expression-pipeline-cea2ff4a-020f-446c-acc6-1a15c734d5b2.json`;
+- existing rewrite semantic properties PASS 0.2 s, receipt
+  `c4-03-expression-settled-rewrite-6ffd9c10-b497-4ea4-be2a-c53c6f510828.json`;
+- existing pass-manager/rewrite-budget regressions PASS, 7 tests;
+- full actual inventory: 254 paths, Phase 7: 22, Phase 8: 42.
+
+Canonical generation PASS 3.6 s, receipt
+`c4-03-expression-settled-build-e8f62f95-bf06-4d60-bf14-76de91fd3ef2.json`.
+Settled serial `2322242174`, build `36d45bf11b49224245a2d096`, release identity
+`d99291604f2cd7345b06e3f64be2d4c92c30ca3e0c050943ced974375c33c875`.
+Second-rebuild and exact-commit evidence follow in the durable resume checkpoint.
+
+Not done: this records actual expression-source elimination, not complete
+raw/optimized/rendered entity correspondence. These expression histories have
+`renderedBinding: unresolved`; exact consumer binding and the full
+CSE/DCE/phi/switch/struct-field removal/merge denominator remain TODOs. Existing
+view-collapse line navigation remains available, but is not used as proof of
+the unresolved history bindings. C4-04 and the rest of the original findings
+remain open. No component acceptance/merge, full gate, browser/device/runtime
+claim, main reconciliation, or unrelated issue/performance work occurred.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -1818,7 +1881,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C3-03 | Versioned language metadata and unknown-version matrix |
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
-| HEX-C4-03 | Product query/UI bidirectional navigation implemented; raw/deleted histories and remaining surfaces still open |
+| HEX-C4-03 | Product/legacy navigation and actual expression-source histories implemented; exact history-to-render binding and full removed/merged class coverage still open |
 | HEX-C4-04 | v8 pure constant projection plus remaining risky rewrite observables |
 | HEX-C4-05 | Bounded e-graph candidates, independent proofs and resource matrix |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |

@@ -6,6 +6,8 @@ import { applyPhase8Projection } from '../../../js/decompiler/phase8/projection.
 import { buildRenderProvenance } from '../../../js/decompiler/phase8/render-provenance.js';
 import { createDecompilerNavigation, createDecompilerProvenanceView } from '../../../js/ui/decompiler-provenance.js';
 import { showDecompilerProvenanceSheet } from '../../../js/ui/decompiler-provenance-sheet.js';
+import { RewriteEngine } from '../../../js/decompiler/rewrite/engine.js';
+import { DEFAULT_RULES } from '../../../js/decompiler/rewrite/rules.js';
 import { analysis, expr, resultWith, source } from './fixture.js';
 
 test('C4-03 production pseudocode route consumes the snapshot-bound provenance view', () => {
@@ -161,6 +163,68 @@ class Element {
   focus() { this.focused = true; }
   scrollIntoView() { this.scrolled = true; }
 }
+
+test('C4-03 UI exposes actual elided-origin history without selecting a guessed output row', async () => {
+  const previous = globalThis.document;
+  globalThis.document = { createElement:tag => new Element(tag) };
+  try {
+    const value = expr.variable('input', 64, false, source(1, 1));
+    const root = expr.binary('add', value, expr.constant(0, 64, false, source(2, 2)), 64, false, source(3, 3));
+    const rewritten = new RewriteEngine(DEFAULT_RULES, { deterministic:true }).rewrite(root);
+    const result = resultWith(rewritten.root);
+    result.rewriteProof = rewritten.proof;
+    const f = await queryFixture(applyPhase8Projection(result, analysis()));
+    const view = createDecompilerProvenanceView(f.query, f.options);
+    const [controls, code, status, details, history] = view.root.children;
+    const originalText = code.textContent;
+    controls.children[0].value = '0x1008';
+    await controls.children[1].click();
+    assert.match(status.textContent, /history exists.*binding is unresolved/);
+    assert.equal(code.children.some(row => row.classList.contains('selected')), false);
+    assert.equal(details.children.length, 0, 'no assembly callback is authorized by an unbound history');
+    assert.equal(history.children[0].tagName, 'DETAILS');
+    assert.match(history.textContent, /add-zero-right \(integer-algebra\)/);
+    assert.match(history.textContent, /Elided expression origins: .*row:2/);
+    assert.match(history.textContent, /does not mean canonical IR was deleted/);
+    assert.equal(code.textContent, originalText);
+    f.advance();
+    await controls.children[1].click();
+    assert.match(status.textContent, /stale-query-snapshot/);
+    assert.equal(history.children.length, 0, 'stale histories clear with the existing selection lifecycle');
+  } finally {
+    if (previous === undefined) delete globalThis.document; else globalThis.document = previous;
+  }
+});
+
+test('C4-03 history paging retains records after the first sixteen without changing copied code', async () => {
+  const previous = globalThis.document;
+  globalThis.document = { createElement:tag => new Element(tag) };
+  try {
+    const value = expr.variable('input', 64, false, source(1, 1));
+    const root = expr.binary('add', value, expr.constant(0, 64, false, source(2, 2)), 64, false, source(3, 3));
+    const rewritten = new RewriteEngine(DEFAULT_RULES, { deterministic:true }).rewrite(root);
+    const result = resultWith(rewritten.root);
+    result.rewriteProof = Array.from({ length:18 }, (_, valueId) => ({ ...rewritten.proof[0], valueId }));
+    const f = await queryFixture(applyPhase8Projection(result, analysis()));
+    const view = createDecompilerProvenanceView(f.query, f.options);
+    const [controls, code, , , history] = view.root.children;
+    const originalText = code.textContent;
+    controls.children[0].value = '0x1008';
+    await controls.children[1].click();
+    assert.equal(history.children.filter(node => node.tagName === 'DETAILS').length, 16);
+    await history.children.find(node => node.textContent === 'Next history').click();
+    assert.equal(history.children.filter(node => node.tagName === 'DETAILS').length, 2);
+    await history.children.find(node => node.textContent === 'Previous history').click();
+    assert.equal(history.children.filter(node => node.tagName === 'DETAILS').length, 16);
+    assert.equal(code.textContent, originalText);
+    f.advance();
+    await history.children.find(node => node.textContent === 'Next history').click();
+    assert.equal(history.children.length, 0, 'paging revalidates the query snapshot too');
+    assert.match(view.root.children[2].textContent, /stale-query-snapshot/);
+  } finally {
+    if (previous === undefined) delete globalThis.document; else globalThis.document = previous;
+  }
+});
 
 test('C4-03 product view preserves copied text and connects address lookup, line origins and assembly navigation', async () => {
   const previous = globalThis.document;

@@ -122,6 +122,10 @@ function originKeySet(origins) {
 }
 
 function recordFeedsEntity(record, entityOriginKeys) {
+  // A rewrite's consumed/remaining sources do not establish which C line
+  // uses its result. In particular, a shared input is not a replacement edge.
+  // Keep these records queryable without inventing a rendered consumer.
+  if (record.originHistory) return false;
   const recordOrigins = canonicalOrigins(record?.origin ?? {});
   return entityOriginEntries(recordOrigins)
     .some(([kind, value]) => entityOriginKeys.has(originKey(kind, value)));
@@ -155,6 +159,37 @@ function freezeOrigins(origins) {
   });
 }
 
+function expressionHistoryRecord(record, cap) {
+  const before = canonicalOrigins(record.originHistory.before);
+  const after = canonicalOrigins(record.originHistory.after);
+  const truncated = record.originHistory.truncated === true || originsTotalSize(before) > cap || originsTotalSize(after) > cap;
+  const consumed = [...originKeySet(truncateOrigins(before, cap))];
+  const produced = [...originKeySet(truncateOrigins(after, cap))];
+  const producedSet = new Set(produced);
+  return renderProvenanceRecord({
+    kind:'expression-rewrite',
+    proof:nonEmptyString(typeof record.evidence === 'string' ? record.evidence : record.evidence?.kind,
+      'phase8-expression-proof-kind-required'),
+    rule:nonEmptyString(record.rule, 'phase8-expression-rule-required'),
+    phase:record.phase,
+    before:record.before,
+    after:record.after,
+    valueId:record.valueId ?? null,
+    targets:consumed,
+    // This is a transform history, not evidence for an inferred rendered line.
+    origin:{},
+    originHistory:Object.freeze({
+      scope:'replacement-expression-source',
+      consumedRefs:Object.freeze(consumed),
+      producedRefs:Object.freeze(produced),
+      // A truncated after-set cannot prove that an origin was removed.
+      elidedRefs:Object.freeze(truncated ? [] : consumed.filter(ref => !producedSet.has(ref))),
+      completeness:truncated ? 'incomplete' : 'complete',
+    }),
+    renderedBinding:'unresolved',
+  });
+}
+
 export function buildRenderProvenance({ result, snapshotId = null, budget = null, shouldAbort = null } = {}) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) fail('phase8-render-provenance-result-required');
   if (!Array.isArray(result.lines)) fail('phase8-render-provenance-result-required');
@@ -167,12 +202,31 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   let entitiesTruncated = 0;
   let ledgerTruncated = 0;
 
+  const expressionRecords = Array.isArray(result.rewriteProof) ? result.rewriteProof : [];
   const rawRecords = Array.isArray(result.phase8Projection?.transforms) ? result.phase8Projection.transforms : [];
-  const rawRecordCount = rawRecords.length;
-  const retainedRawRecords = rawRecords.slice(0, resolvedBudget.maxTransformRecords);
-  const ledgerRecords = retainedRawRecords.map((record) => renderProvenanceRecord(record));
-  if (rawRecordCount > ledgerRecords.length) {
-    ledgerTruncated = rawRecordCount - ledgerRecords.length;
+  const rawRecordCount = expressionRecords.length + rawRecords.length;
+  const ledgerRecords = [];
+  let unavailableExpressionHistory = 0;
+  for (const record of expressionRecords) {
+    if (typeof shouldAbort === 'function' && shouldAbort() === true) return cancelledMap(resolvedBudget);
+    if (!record?.originHistory?.before || !record?.originHistory?.after) {
+      unavailableExpressionHistory++;
+      continue;
+    }
+    if (ledgerRecords.length >= resolvedBudget.maxTransformRecords) break;
+    const normalized = expressionHistoryRecord(record, resolvedBudget.maxOriginsPerEntity);
+    ledgerRecords.push(normalized);
+    if (normalized.originHistory.completeness !== 'complete') {
+      truncatedScopes.push('expression-history-origins');
+      reasons.add('truncated');
+    }
+  }
+  if (unavailableExpressionHistory) reasons.add('missing-expression-history');
+  for (const record of rawRecords.slice(0, Math.max(0, resolvedBudget.maxTransformRecords - ledgerRecords.length))) {
+    ledgerRecords.push(renderProvenanceRecord(record));
+  }
+  if (rawRecordCount > ledgerRecords.length + unavailableExpressionHistory) {
+    ledgerTruncated = rawRecordCount - ledgerRecords.length - unavailableExpressionHistory;
     truncatedScopes.push('ledger');
     reasons.add('truncated');
   }
@@ -261,6 +315,18 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     version:RENDER_PROVENANCE_VERSION,
   }));
 
+  // Canonical origin -> transform record. Kept separate from origin -> line:
+  // an elided source can have a history even when no rendered consumer is known.
+  const transformReverse = {};
+  for (let index = 0; index < ledger.length; index++) {
+    const record = ledger[index];
+    const refs = record.originHistory
+      ? [...record.originHistory.consumedRefs, ...record.originHistory.producedRefs]
+      : [...originKeySet(canonicalOrigins(record.origin))];
+    for (const ref of new Set(refs)) (transformReverse[ref] ??= []).push(index);
+  }
+  for (const refs of Object.values(transformReverse)) Object.freeze(refs);
+
   let completeness = 'complete';
   if (snapshotId == null) {
     reasons.add('missing-snapshot');
@@ -274,6 +340,7 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     snapshotId,
     entities:Object.freeze(entities),
     reverse:Object.freeze(reverseObject),
+    transformReverse:Object.freeze(transformReverse),
     ledger:Object.freeze(ledger),
     transformCount:rawRecordCount,
     budget:Object.freeze({
@@ -290,6 +357,7 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
       ledgerTruncated,
       provenanceLoss,
       structuralEntities,
+      unavailableExpressionHistory,
     }),
   });
 }
@@ -300,6 +368,7 @@ function cancelledMap(resolvedBudget) {
     snapshotId:null,
     entities:Object.freeze({}),
     reverse:Object.freeze({}),
+    transformReverse:Object.freeze({}),
     ledger:Object.freeze([]),
     transformCount:0,
     budget:Object.freeze({ ...resolvedBudget, truncated:false, truncatedScopes:Object.freeze([]) }),
@@ -329,6 +398,31 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
     else if (provenanceMap.snapshotId !== snapshotId) reasons.add('stale-snapshot');
   }
   let validationCancelled = reasons.has('cancelled');
+  if (!validationCancelled) {
+    for (const record of provenanceMap.ledger) {
+      if (typeof shouldAbort === 'function' && shouldAbort() === true) {
+        reasons.add('cancelled'); validationCancelled = true; break;
+      }
+      const history = record?.originHistory;
+      if (!history) continue;
+      const fields = ['consumedRefs', 'producedRefs', 'elidedRefs'];
+      if (history.scope !== 'replacement-expression-source'
+          || !['complete', 'incomplete'].includes(history.completeness)
+          || record.renderedBinding !== 'unresolved'
+          || fields.some(field => !Array.isArray(history[field])
+            || history[field].some(ref => typeof ref !== 'string' || !/^(row|addr|ir|ssa):.+/.test(ref))
+            || new Set(history[field]).size !== history[field].length)) {
+        reasons.add('invalid-expression-history');
+        continue;
+      }
+      if (history.completeness !== 'complete') reasons.add('incomplete-expression-history');
+      const expected = history.completeness === 'complete'
+        ? history.consumedRefs.filter(ref => !history.producedRefs.includes(ref)) : [];
+      if (expected.length !== history.elidedRefs.length || expected.some(ref => !history.elidedRefs.includes(ref))) {
+        reasons.add('inconsistent-expression-history');
+      }
+    }
+  }
   if (!validationCancelled) {
     for (const entity of Object.values(provenanceMap.entities)) {
       if (typeof shouldAbort === 'function' && shouldAbort() === true) {

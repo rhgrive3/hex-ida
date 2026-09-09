@@ -23,7 +23,7 @@ export function createDecompilerNavigation(query, { currentSnapshot, isCurrent =
     else if (!Array.isArray(result.lines)) reason = 'missing-rendered-lines';
   } catch { reason = 'invalid-map'; }
 
-  const unavailable = value => Object.freeze({ state:'unavailable', reason:value, entities:EMPTY });
+  const unavailable = value => Object.freeze({ state:'unavailable', reason:value, entities:EMPTY, transforms:EMPTY });
   const check = async () => {
     if (reason) return reason;
     if (signal?.aborted || !isCurrent()) return 'stale-view';
@@ -34,7 +34,7 @@ export function createDecompilerNavigation(query, { currentSnapshot, isCurrent =
     } catch { return signal?.aborted ? 'cancelled' : 'snapshot-unavailable'; }
     return null;
   };
-  const publish = refs => {
+  const publish = (refs, recordRefs = []) => {
     const entries = [];
     for (const ref of [...new Set(refs)]) {
       const entity = Object.hasOwn(map.entities, ref) ? map.entities[ref] : null;
@@ -44,13 +44,22 @@ export function createDecompilerNavigation(query, { currentSnapshot, isCurrent =
           || entity.kind !== result.lines[index]?.kind) return unavailable('unresolved-rendered-entity');
       entries.push(entity);
     }
+    const transforms = [];
+    for (const index of new Set([...recordRefs, ...entries.flatMap(entity => entity.recordRefs)])) {
+      if (!Number.isSafeInteger(index) || index < 0 || index >= map.ledger.length) return unavailable('unresolved-transform-record');
+      transforms.push(map.ledger[index]);
+    }
     selected = Object.freeze(entries.sort((a, b) => a.lineIndex - b.lineIndex));
-    return Object.freeze({ state:'ready', reason:null, entities:selected });
+    return Object.freeze({ state:'ready', reason:null, entities:selected, transforms:Object.freeze(transforms) });
   };
 
   return Object.freeze({
     available:reason == null,
     reason,
+    async checkSnapshot() {
+      const refusal = await check();
+      return refusal ? unavailable(refusal) : Object.freeze({ state:'ready', reason:null, entities:EMPTY, transforms:EMPTY });
+    },
     async selectLine(index) {
       const request = ++revision;
       selected = EMPTY;
@@ -77,7 +86,18 @@ export function createDecompilerNavigation(query, { currentSnapshot, isCurrent =
       if (refs.some(ref => !map.entities[ref]?.origins?.[field]?.some(origin => String(origin) === String(value)))) {
         return unavailable('inconsistent-reverse-map');
       }
-      return publish(refs);
+      const recordRefs = map.transformReverse && Object.hasOwn(map.transformReverse, key) ? map.transformReverse[key] : EMPTY;
+      if (!Array.isArray(recordRefs)) return unavailable('invalid-transform-reverse-map');
+      for (const index of recordRefs) {
+        const record = map.ledger[index];
+        const history = record?.originHistory;
+        const matches = history
+          ? history.consumedRefs?.includes(key) || history.producedRefs?.includes(key)
+          : record?.origin?.[{ addr:'addresses', row:'rows', ir:'ir', ssa:value?.startsWith?.('def:') ? 'ssaDefs' : 'ssaUses' }[kind]]
+            ?.some(origin => String(origin) === (kind === 'ssa' ? String(value).replace(/^(def|use):/, '') : String(value)));
+        if (!matches) return unavailable('inconsistent-transform-reverse-map');
+      }
+      return publish(refs, recordRefs);
     },
     async openAddress(address, navigate) {
       const selection = selected;
@@ -108,6 +128,7 @@ export function createDecompilerProvenanceView(query, options = {}) {
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
   const details = h('div', 'ui-code-toolbar');
+  const history = h('div', 'ui-provenance-history');
   const controls = h('div', 'ui-code-toolbar');
   const input = h('input', 'mono');
   input.type = 'text';
@@ -118,6 +139,7 @@ export function createDecompilerProvenanceView(query, options = {}) {
   const label = value => addrHex(BigInt(value));
   const show = outcome => {
     details.replaceChildren();
+    history.replaceChildren();
     const active = new Set(outcome.entities.map(entity => entity.lineIndex));
     for (let index = 0; index < rows.length; index++) {
       rows[index].classList.toggle('selected', active.has(index));
@@ -127,8 +149,36 @@ export function createDecompilerProvenanceView(query, options = {}) {
       status.textContent = text('対応表を利用できません。再解析してください。', 'Mapping unavailable. Refresh the analysis.') + ` (${outcome.reason})`;
       return;
     }
+    const recordsWithHistory = (outcome.transforms ?? EMPTY).filter(record => record.originHistory);
+    const changeHistoryPage = async offset => {
+      const serial = ++action;
+      const current = await navigation.checkSnapshot();
+      if (serial !== action) return;
+      if (current.state !== 'ready') show(current);
+      else showHistory(offset);
+    };
+    const showHistory = offset => {
+      history.replaceChildren();
+      for (const record of recordsWithHistory.slice(offset, offset + 16)) {
+        const item = h('details');
+        item.append(h('summary', 'ui-hint', `${record.rule} (${record.proof})`));
+        const origins = record.originHistory;
+        item.append(h('pre', 'mono',
+          text('変換前: ', 'Consumed: ') + origins.consumedRefs.join(', ') + '\n'
+          + text('変換後: ', 'Produced: ') + origins.producedRefs.join(', ') + '\n'
+          + text('式の出典から除去: ', 'Elided expression origins: ') + origins.elidedRefs.join(', ') + '\n'
+          + text('表示行への対応は未確定です。IRの削除を意味しません。',
+            'Rendered binding is unresolved. This does not mean canonical IR was deleted.')));
+        history.append(item);
+      }
+      if (offset > 0) history.append(uiButton(text('前の履歴', 'Previous history'), { onClick:() => changeHistoryPage(offset - 16) }));
+      if (offset + 16 < recordsWithHistory.length) history.append(uiButton(text('次の履歴', 'Next history'), { onClick:() => changeHistoryPage(offset + 16) }));
+    };
+    showHistory(0);
     if (!outcome.entities.length) {
-      status.textContent = text('この命令に対応する表示行はありません。', 'No rendered line maps to this instruction.');
+      status.textContent = recordsWithHistory.length
+        ? text('変換履歴がありますが、表示行への対応は未確定です。', 'Transform history exists, but its rendered binding is unresolved.')
+        : text('この命令に対応する表示行はありません。', 'No rendered line maps to this instruction.');
       return;
     }
     status.textContent = `${outcome.entities.length} ` + text('行が対応しています。', 'matching lines.');
@@ -208,6 +258,6 @@ export function createDecompilerProvenanceView(query, options = {}) {
   status.textContent = navigation.available
     ? text('行を選ぶと元の命令を表示します。命令アドレスから逆引きもできます。', 'Select a line to inspect its instructions, or look up an instruction address.')
     : text('この結果には利用できる対応表がありません。', 'No usable provenance map is available for this result.') + ` (${navigation.reason})`;
-  root.append(controls, code, status, details);
+  root.append(controls, code, status, details, history);
   return Object.freeze({ root, code, navigation });
 }
