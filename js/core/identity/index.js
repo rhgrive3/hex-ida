@@ -238,7 +238,13 @@ export function lossyTypeWitness(value, path = '', seen = new WeakSet(), out = [
     } else if (ArrayBuffer.isView(value)) out.push([path, 'bytes']);
     else if (value instanceof ArrayBuffer) out.push([path, 'bytes']);
     else if (value instanceof Date) out.push([path, 'date']);
-    else if (Array.isArray(value)) value.forEach((item, index) => lossyTypeWitness(item, `${path}[${index}]`, seen, out));
+    else if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index++) {
+        const itemPath = `${path}[${index}]`;
+        if (!Object.hasOwn(value, index)) out.push([itemPath, 'array-hole']);
+        else lossyTypeWitness(value[index], itemPath, seen, out);
+      }
+    }
     else for (const key of Object.keys(value).sort()) lossyTypeWitness(value[key], `${path}.${key}`, seen, out);
     seen.delete(value);
   }
