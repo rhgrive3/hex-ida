@@ -71,6 +71,7 @@
       "tools/validation/stage2/**",
       "tests/stage2/**",
       "js/ai/dev/**",
+      "js/ai/jobs/**",
       "js/ai/ui/conversations.js",
       "tests/dev-agent/**",
       "js/program.js",

@@ -31,13 +31,15 @@ for(const exhausted of [false,true]) test(`#6273 resume retries only the checkpo
   await f.manager.retryCheckpoint('j');assert.equal(f.turns,1);
   if(exhausted){await f.manager.resume('j');assert.equal(f.turns,2);}
 });
-test('#6273 repeated quota failures cannot replay a finished slice, and a restart remains blocked',async()=>{
+test('#6273 repeated quota failures cannot replay a finished slice in-process; #4389 restart recovers the lease',async()=>{
   const f=fixture(true);f.fail(10);await f.manager.create({jobId:'j',goal:'test'});
   for(let i=0;i<4;i++) await assert.rejects(f.manager.resume('j'),/quota/);
   assert.equal(f.turns,1);assert.equal((await f.manager.get('j')).budgetUsage.slices,1);
   const restarted=new AgentJobManager({runtime:f.runtime,persistence:f.persistence});
-  await assert.rejects(restarted.resume('j'),/active slice/);assert.equal(f.turns,1);
-  f.fail(0);await f.manager.retryCheckpoint('j');assert.equal(f.turns,1);
+  f.fail(0);
+  const recovered=await restarted.resume('j');
+  assert.equal(recovered.status,'checkpointed');
+  assert.equal(f.turns,2);
   assert.equal(f.persisted.get('j').lastResult.answer,'done');
 });
 test('#6273 an actual execution failure retains failure/cancellation semantics',async()=>{
