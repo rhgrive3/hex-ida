@@ -27,6 +27,26 @@ assert.equal(withSourceRef.records.size, 2);
 assert.deepEqual(rooted.map((record) => record.sourceRef.path), ['$.updates[0]', '$.updates[1]']);
 assert.notEqual(rooted[0].id, rooted[1].id);
 
+// Identity-bearing sourceRef paths are canonical primitive strings only. Values
+// that previously String()-coerced to '$' must fail closed rather than minting
+// the same permanent row IDs as the canonical path.
+const canonicalPathIds = rooted.map((record) => record.id);
+for (const path of [
+  ['$'],
+  0,
+  false,
+  { toString() { return '$'; } },
+]) {
+  const invalidPath = new EvidenceStore();
+  const rejected = invalidPath.ingest('verify_field_update', updates(), {
+    sourceRef: { evidenceSourceId: 'tool-result-4519', path },
+  });
+  assert.deepEqual(rejected, []);
+  assert.equal(invalidPath.records.size, 0);
+  assert.deepEqual(rejected.map((record) => record.id), []);
+  assert.notDeepEqual(rejected.map((record) => record.id), canonicalPathIds);
+}
+
 // Re-ingesting the same row coordinate remains a deterministic dedupe.
 const dedupe = new EvidenceStore();
 const first = dedupe.ingest('verify_field_update', updates());
