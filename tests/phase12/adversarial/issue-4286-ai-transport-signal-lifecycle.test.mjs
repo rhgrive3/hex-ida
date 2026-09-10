@@ -151,6 +151,57 @@ await withTimerProbe(async (timers) => {
   assert.equal(timers.active, 0);
 });
 
+await withTimerProbe(async (timers) => {
+  let listener = null;
+  let resolveFetch = null;
+  let fetchSignal = null;
+  const hostileSignal = {
+    aborted: false,
+    get reason() { throw new Error('reason-getter-boom'); },
+    addEventListener(type, callback) {
+      if (type === 'abort') listener = callback;
+    },
+    removeEventListener() {},
+  };
+  const pending = requestJSON('/turn', {}, {
+    signal: hostileSignal,
+    timeoutMs: 60_000,
+    fetchImpl: async (_url, options) => {
+      fetchSignal = options.signal;
+      return await new Promise((resolve) => { resolveFetch = () => resolve(successResponse()); });
+    },
+  });
+  await Promise.resolve();
+  assert.equal(typeof listener, 'function', 'external abort listener must be registered before transport I/O settles');
+  hostileSignal.aborted = true;
+  assert.doesNotThrow(() => listener(), 'throwing reason getter must not escape the abort listener');
+  assert.equal(fetchSignal?.aborted, true, 'inner controller must abort even when external reason cannot be read');
+  resolveFetch();
+  await assert.rejects(
+    pending,
+    (error) => error instanceof AIError && error.type === 'cancelled' && !/reason-getter-boom/.test(error.message),
+    'a transport that ignores its signal still must not return success after external cancellation',
+  );
+  assert.equal(timers.created, 1);
+  assert.equal(timers.cleared, 1);
+  assert.equal(timers.active, 0);
+});
+
+await withTimerProbe(async (timers) => {
+  const preAborted = {
+    aborted: true,
+    get reason() { throw new Error('pre-abort-reason-boom'); },
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  await assert.rejects(
+    requestJSON('/turn', {}, { signal: preAborted, fetchImpl: async () => successResponse() }),
+    (error) => error instanceof AIError && error.type === 'cancelled' && !/pre-abort-reason-boom/.test(error.message),
+    'pre-aborted hostile reason must fall back to canonical cancellation',
+  );
+  assert.equal(timers.created, 0, 'pre-aborted requests must still fail before timeout allocation');
+});
+
 {
   const controller = new AbortController();
   let fetchSignal = null;
