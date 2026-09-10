@@ -51,6 +51,27 @@ async function rejectsUnmapped(run) {
   await rejectsUnmapped(() => emu.load(0xfffffn, 1));
 }
 
+// Synthetic spans are ADDITIVE to pre-existing backing authority: an
+// IO-backed valid prefix loaded by ensure() must survive a disjoint
+// mapZero() on the same page (review blocker on the first cut).
+{
+  const emu = new Emulator({
+    read: () => new Uint8Array(16).fill(0x5a),
+  });
+  assert.equal(await emu.load(0x2001n, 1), 0x5an, 'IO-backed prefix byte is readable before any mapping');
+  emu.mapZero(0x2020n, 1);
+  assert.equal(await emu.load(0x2001n, 1), 0x5an, 'pre-existing IO-backed prefix authority survives a disjoint mapZero');
+  assert.equal(await emu.load(0x2020n, 1), 0n, 'the declared synthetic byte is backed');
+  assert.equal(await emu.load(0x200fn, 1), 0x5an, 'the rest of the IO prefix stays backed');
+  await rejectsUnmapped(() => emu.load(0x2011n, 1));
+  await rejectsUnmapped(() => emu.load(0x201fn, 1));
+  await emu.store(0x2002n, 1, 0x7en);
+  assert.equal(await emu.load(0x2002n, 1), 0x7en, 'prefix writes keep working');
+  await emu.store(0x2020n, 1, 0x11n);
+  assert.equal(await emu.load(0x2020n, 1), 0x11n, 'in-span writes keep working');
+  await rejectsUnmapped(() => emu.store(0x2011n, 1, 0x1n));
+}
+
 // Non-mapped legacy paths keep their existing authority: stack pages created
 // by ensure() remain page-granular and writes there still work.
 {

@@ -238,9 +238,14 @@ export class Emulator {
     const off = Number(address - page);
     const ranges = this.syntheticRanges.get(key);
     if (ranges) {
-      // #5685: mapping-scoped page — only bytes inside a declared mapZero()
-      // span are backed, regardless of the page-granular buffer.
-      if (!syntheticRangeCovers(ranges, address, address + 1n)) {
+      // #5685: mapping-scoped spans are authoritative for the bytes mapZero()
+      // declared, but they are ADDITIVE — pre-existing backing authority on
+      // the page (an IO-backed valid prefix from ensure(), or a whole-page
+      // stack/heap synthetic page) must not be revoked by a later disjoint
+      // mapZero() on the same page.
+      const covered = syntheticRangeCovers(ranges, address, address + 1n);
+      const prefixValid = this.loadedValid.get(key) || 0;
+      if (!covered && off >= prefixValid) {
         throw new EmulatorFault('unmapped-memory', `byte is outside the mapped region at 0x${address.toString(16)}`, { address });
       }
       const w = this.mem.get(key);
@@ -261,13 +266,19 @@ export class Emulator {
     const address = BigInt(addr);
     const page = (address / BigInt(PAGE)) * BigInt(PAGE);
     const key = page.toString();
+    const off = Number(address - page);
     const ranges = this.syntheticRanges.get(key);
-    if (ranges && !syntheticRangeCovers(ranges, address, address + 1n)) {
-      throw new EmulatorFault('unmapped-memory', `write is outside the mapped region at 0x${address.toString(16)}`, { address });
+    if (ranges) {
+      // Additive authority, matching byteAt(): a declared mapZero() span or
+      // the page's pre-existing valid prefix may both be written (#5685).
+      const covered = syntheticRangeCovers(ranges, address, address + 1n);
+      const prefixValid = this.loadedValid.get(key) || 0;
+      if (!covered && off >= prefixValid) {
+        throw new EmulatorFault('unmapped-memory', `write is outside the mapped region at 0x${address.toString(16)}`, { address });
+      }
     }
     let w = this.mem.get(key);
     if (!w) { w = { data: new Uint8Array(PAGE), mask: new Uint8Array(PAGE) }; this.mem.set(key, w); }
-    const off = Number(address - page);
     if (off < 0 || off >= PAGE) throw new EmulatorFault('unmapped-memory', 'write offset is outside page', { address });
     w.data[off] = Number(value) & 0xff;
     w.mask[off] = 1;
