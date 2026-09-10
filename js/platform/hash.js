@@ -39,6 +39,30 @@ function positiveChunkSize(value, fallback) {
   return requested;
 }
 
+// Keep sha256tree:v2's leaf-size identity contract while bounding the amount of
+// retained per-leaf metadata and WebCrypto work a caller can request. With the
+// 4 MiB default leaf this still admits sources up to 256 GiB; tiny explicit
+// leaves remain supported for bounded inputs instead of becoming an OOM/stall
+// primitive.
+const MAX_SHA256_TREE_LEAVES = 64n * 1024n;
+const MAX_SHA256_TREE_MANIFEST_BYTES = 4n * 1024n * 1024n;
+const SHA256_DIGEST_BYTES = 32n;
+
+function enforceSha256TreePlanBudget(sourceSize, leafSize) {
+  const leafBytes = BigInt(leafSize);
+  const leafCount = sourceSize === 0n ? 0n : ((sourceSize - 1n) / leafBytes) + 1n;
+  // The v2 header is ASCII-only, so string length is the exact encoded byte
+  // length. Compute the plan with BigInt before any source read/digest/allocation.
+  const headerBytes = BigInt(
+    `hex-sha256-tree-v2\0${sourceSize.toString()}\0${leafSize}\0${leafCount.toString()}\0`.length,
+  );
+  const manifestBytes = headerBytes + leafCount * SHA256_DIGEST_BYTES;
+  if (leafCount <= MAX_SHA256_TREE_LEAVES && manifestBytes <= MAX_SHA256_TREE_MANIFEST_BYTES) return;
+  const error = new RangeError('sha256 tree plan exceeds the resource limit');
+  error.code = 'SHA256_TREE_RESOURCE_LIMIT';
+  throw error;
+}
+
 export async function hashByteSource(input, options = {}) {
   const source = asByteSource(input);
   const onProgress = optionalProgressCallback(options.onProgress);
@@ -90,6 +114,7 @@ export async function sha256TreeByteSource(input, options = {}) {
   // chunks its reads. Reads larger than maxReadLength are assembled from
   // multiple bounded reads before digesting.
   const leafSize = positiveChunkSize(options.chunkSize, 4 * 1024 * 1024);
+  enforceSha256TreePlanBudget(source.size, leafSize);
   const readSize = Math.max(1, Math.min(leafSize, source.maxReadLength));
   const reportProgress = (done) => {
     if (onProgress) Reflect.apply(onProgress, options, [{ done, total: source.size }]);
