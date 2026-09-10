@@ -593,13 +593,21 @@ function machoSectionSizePlan(source, image, mutation) {
   let availableGap = nextSectionOffset - (target.offset + target.size);
   /* Mach-O section file offsets and VM addresses are independent invariants:
      extending within the file gap can still drive the section's VM range into
-     the next section's address range. Bound the extension by the smaller of
-     the two gaps (#5001). */
-  const nextByAddress = image.sections
-    .filter((section) => section.segment === segmentName && section.address > target.address)
+     the next section's address range. Sections are identified by their owning
+     LC_SEGMENT_64 command (commandIndex), not by the segment name string, and
+     the source state must be overlap-free against every same-segment section
+     before any extension is planned (#5001). */
+  const segmentSections = image.sections.filter((section) => section.commandIndex === target.commandIndex);
+  for (const section of segmentSections) {
+    if (section === target || !section.size) continue;
+    if (section.address < target.address + target.size && target.address < section.address + section.size) {
+      fail('format-safe-macho-layout-source-vm-overlap');
+    }
+  }
+  const nextByAddress = segmentSections
+    .filter((section) => section.address > target.address)
     .sort((left, right) => left.address - right.address)[0];
   if (nextByAddress) {
-    if (target.address + target.size > nextByAddress.address) fail('format-safe-macho-layout-source-vm-overlap');
     const availableVmGap = nextByAddress.address - (target.address + target.size);
     if (availableVmGap < availableGap) availableGap = availableVmGap;
   }

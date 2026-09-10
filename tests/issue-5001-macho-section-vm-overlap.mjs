@@ -62,6 +62,29 @@ const attempt = (source, size) => {
   assert.equal(attempt(source, 0x101).reason, 'format-safe-macho-layout-size-invalid');
 }
 
+// A same-segment section below the target whose VM range intersects the
+// target's range is a source-state overlap: the planner rejects outright.
+{
+  const source = buildSource();
+  const base = { binaryId: 'bin', source, format: 'macho', architecture: 'x86_64', loaderVersion: 'test' };
+  u64(source, 104 + 80 + 32, 0xff8n); // __const addr 0xff8..0x1008 intersects __text 0x1000..
+  const result = attempt(source, 0x18);
+  assert.equal(result.thrown, true, 'a source-state VM overlap must be rejected');
+  assert.equal(result.reason, 'format-safe-macho-layout-source-vm-overlap');
+}
+
+// A forged transaction whose safeState claims a size the plan rejects is
+// typed-rejected through the recomputation error path (not a thrown error).
+{
+  const source = buildSource();
+  const transaction = attempt(source, 0x18);
+  const forged = JSON.parse(JSON.stringify(transaction));
+  forged.expectedOriginalState.formatSafe.size = 0x20;
+  const verdict = validateFormatSafeMutation({ transaction: forged, original: source, output: source });
+  assert.equal(verdict.ok, false, 'a forged oversized safeState fails validation');
+  assert.equal(verdict.reason, 'format-safe-macho-layout-size-invalid');
+}
+
 // A forged transaction whose claimed size exceeds the VM gap is typed-rejected
 // by the validator (recomputed plan), not a thrown error.
 {
