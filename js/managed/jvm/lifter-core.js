@@ -135,6 +135,20 @@ function resolveJvmLdcConstant(jvmClass, cpIndex, isCategory2) {
       if (!Number.isInteger(entry.referenceIndex) || entry.referenceIndex <= 0 || entry.referenceIndex >= pool.length) return null;
       const ref = pool[entry.referenceIndex];
       if (!ref || (ref.tag !== 9 && ref.tag !== 10 && ref.tag !== 11)) return null;
+      // JVMS §4.4.8: the reference kind determines which reference tag the
+      // constant may name. A kind/tag mismatch is invalid bytecode and must
+      // not publish an exact MethodHandle identity (#8004; contract precedent
+      // #5083 — incompatible CP tags never become exact facts).
+      const FIELDREF = 9, METHODREF = 10, INTERFACEMETHODREF = 11;
+      const kindTagOk = {
+        1: [FIELDREF], 2: [FIELDREF], 3: [FIELDREF], 4: [FIELDREF],
+        5: [METHODREF],
+        6: [METHODREF, INTERFACEMETHODREF],
+        7: [METHODREF, INTERFACEMETHODREF],
+        8: [METHODREF],
+        9: [INTERFACEMETHODREF],
+      }[entry.referenceKind].includes(ref.tag);
+      if (!kindTagOk) return null;
       const owner = className(ref.classIndex);
       const nameAndType = pool[ref.nameAndTypeIndex];
       if (owner == null || !nameAndType || nameAndType.tag !== 12) return null;

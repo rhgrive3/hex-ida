@@ -52,7 +52,7 @@ const pool = [null,
   { tag: 8, stringIndex: 1 },                    // 12: String
   { tag: 7, nameIndex: 2 },                      // 13: Class
   { tag: 16, descriptorIndex: 3 },               // 14: MethodType
-  { tag: 9, classIndex: 13, nameAndTypeIndex: 16 }, // 15: Fieldref for handle
+  { tag: 10, classIndex: 13, nameAndTypeIndex: 16 }, // 15: Methodref for handle (kind 6 = REF_invokeStatic)
   { tag: 12, nameIndex: 4, descriptorIndex: 3 }, // 16: NameAndType
   { tag: 15, referenceKind: 6, referenceIndex: 15 }, // 17: MethodHandle
   { tag: 4, value: NaN },                        // 18: Float NaN
@@ -141,6 +141,64 @@ test('#8004 ldc_w accepts the same loadable constants as ldc', () => {
   assert.deepEqual(bundle.producedValues, [
     { bits: 32, cpIndex: 6, category: 1, constant: 123456789 },
   ]);
+});
+
+test('#8004 MethodHandle kind/tag mismatches fail closed (JVMS 4.4.8)', () => {
+  // REF_invokeStatic (6) may not name a Fieldref.
+  const kind6Fieldref = lift({
+    constantPool: [null,
+      { tag: 1, value: 'T' }, { tag: 1, value: 'f' }, { tag: 1, value: '(I)V' },
+      { tag: 9, classIndex: 1, nameAndTypeIndex: 2 },
+      { tag: 12, nameIndex: 1, descriptorIndex: 3 },
+      { tag: 15, referenceKind: 6, referenceIndex: 4 }],
+    bytecode: ldc(6),
+  });
+  assert.equal(kind6Fieldref.completeness, 'partial');
+  assert.deepEqual(kind6Fieldref.unknownEffects.map((u) => u.reason),
+    ['jvm-ldc-constant-unresolved:6']);
+
+  // REF_getField (1) may not name a Methodref.
+  const kind1Methodref = lift({
+    constantPool: [null,
+      { tag: 1, value: 'T' }, { tag: 1, value: 'f' }, { tag: 1, value: '(I)V' },
+      { tag: 10, classIndex: 1, nameAndTypeIndex: 2 },
+      { tag: 12, nameIndex: 1, descriptorIndex: 3 },
+      { tag: 15, referenceKind: 1, referenceIndex: 4 }],
+    bytecode: ldc(6),
+  });
+  assert.equal(kind1Methodref.completeness, 'partial');
+  assert.deepEqual(kind1Methodref.unknownEffects.map((u) => u.reason),
+    ['jvm-ldc-constant-unresolved:6']);
+
+  // REF_invokeInterface (9) may only name an InterfaceMethodref.
+  const kind9Methodref = lift({
+    constantPool: [null,
+      { tag: 1, value: 'T' }, { tag: 1, value: 'f' }, { tag: 1, value: '(I)V' },
+      { tag: 10, classIndex: 1, nameAndTypeIndex: 2 },
+      { tag: 12, nameIndex: 1, descriptorIndex: 3 },
+      { tag: 15, referenceKind: 9, referenceIndex: 4 }],
+    bytecode: ldc(6),
+  });
+  assert.equal(kind9Methodref.completeness, 'partial');
+  assert.deepEqual(kind9Methodref.unknownEffects.map((u) => u.reason),
+    ['jvm-ldc-constant-unresolved:6']);
+
+  // REF_invokeInterface (9) with an InterfaceMethodref resolves.
+  const kind9Interface = lift({
+    constantPool: [null,
+      { tag: 1, value: 'T' }, { tag: 1, value: 'f' }, { tag: 1, value: '(I)V' },
+      { tag: 7, nameIndex: 1 },
+      { tag: 11, classIndex: 4, nameAndTypeIndex: 6 },
+      { tag: 12, nameIndex: 2, descriptorIndex: 3 },
+      { tag: 15, referenceKind: 9, referenceIndex: 5 }],
+    bytecode: ldc(7),
+  });
+  assert.equal(kind9Interface.completeness, 'exact');
+  assert.deepEqual(kind9Interface.producedValues, [{
+    bits: 32, cpIndex: 7, category: 1,
+    stackType: 'reference', valueType: 'method-handle', referenceKind: 9,
+    constant: 'T.f:(I)V', type: REF_TYPE,
+  }]);
 });
 
 test('#8004 constants that cannot be resolved losslessly fail closed', () => {
