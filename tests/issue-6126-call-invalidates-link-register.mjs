@@ -1,3 +1,5 @@
+import './issue-5227-effective-address-wrap.test.mjs';
+import './issue-5235-scvtf-single-rounding.test.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { makeInstruction, analyzeDataFlow, buildSemanticModel } from '../js/blocks-base.js';

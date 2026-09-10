@@ -10,6 +10,18 @@ const PROPOSAL_CAPABILITIES = Object.freeze({
 const EXECUTION_PAYLOADS = new WeakMap();
 const PROPOSAL_AUTHORITIES = new WeakMap();
 const EXECUTION_AUTHORIZATIONS = new WeakMap();
+// Fingerprint authority must read binary-container internal slots through
+// captured intrinsic getters. Ordinary property lookup and @@toStringTag are
+// userland-controlled and can otherwise disguise one typed view as another.
+const TYPED_ARRAY_PROTOTYPE = Object.getPrototypeOf(Uint8Array.prototype);
+const TYPED_ARRAY_TAG_GETTER = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, Symbol.toStringTag)?.get;
+const TYPED_ARRAY_BUFFER_GETTER = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, 'buffer')?.get;
+const TYPED_ARRAY_BYTE_OFFSET_GETTER = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, 'byteOffset')?.get;
+const TYPED_ARRAY_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, 'byteLength')?.get;
+const DATA_VIEW_BUFFER_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer')?.get;
+const DATA_VIEW_BYTE_OFFSET_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteOffset')?.get;
+const DATA_VIEW_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteLength')?.get;
+const ARRAY_BUFFER_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')?.get;
 let proposalSequence = 1;
 
 export class ProposalStore {
@@ -474,6 +486,47 @@ function fingerprint(value) {
  * Strings are JSON-quoted after their tag, numbers and bigints are terminated,
  * so concatenating elements with `,` stays unambiguous.
  */
+function intrinsicBinaryContainer(value) {
+  if (typeof ARRAY_BUFFER_BYTE_LENGTH_GETTER === 'function') {
+    try {
+      const byteLength = ARRAY_BUFFER_BYTE_LENGTH_GETTER.call(value);
+      return { kind: 'ArrayBuffer', buffer: value, byteOffset: 0, byteLength };
+    } catch {
+      // Not an ArrayBuffer internal-slot receiver; continue with view brands.
+    }
+  }
+  if (!ArrayBuffer.isView(value)) return null;
+  if (typeof TYPED_ARRAY_TAG_GETTER === 'function'
+      && typeof TYPED_ARRAY_BUFFER_GETTER === 'function'
+      && typeof TYPED_ARRAY_BYTE_OFFSET_GETTER === 'function'
+      && typeof TYPED_ARRAY_BYTE_LENGTH_GETTER === 'function') {
+    const kind = TYPED_ARRAY_TAG_GETTER.call(value);
+    if (typeof kind === 'string' && kind) {
+      return {
+        kind,
+        buffer: TYPED_ARRAY_BUFFER_GETTER.call(value),
+        byteOffset: TYPED_ARRAY_BYTE_OFFSET_GETTER.call(value),
+        byteLength: TYPED_ARRAY_BYTE_LENGTH_GETTER.call(value),
+      };
+    }
+  }
+  if (typeof DATA_VIEW_BUFFER_GETTER === 'function'
+      && typeof DATA_VIEW_BYTE_OFFSET_GETTER === 'function'
+      && typeof DATA_VIEW_BYTE_LENGTH_GETTER === 'function') {
+    try {
+      return {
+        kind: 'DataView',
+        buffer: DATA_VIEW_BUFFER_GETTER.call(value),
+        byteOffset: DATA_VIEW_BYTE_OFFSET_GETTER.call(value),
+        byteLength: DATA_VIEW_BYTE_LENGTH_GETTER.call(value),
+      };
+    } catch {
+      // ArrayBuffer.isView() was true but no supported intrinsic brand matched.
+    }
+  }
+  throw new AIError('tool_failed', 'Proposal binary-container identity cannot be determined safely.');
+}
+
 function canonicalIdentity(value, stack = new Set()) {
   if (value === null) return 'z';
   if (value === undefined) return 'v';
@@ -509,13 +562,18 @@ function canonicalIdentity(value, stack = new Set()) {
       throw new AIError('tool_failed', 'Proposal state contains symbol-keyed own properties and cannot be fingerprinted safely.');
     }
     if (value instanceof Date) return `t${JSON.stringify(Number.isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString())}`;
-    if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
-      const bytes = value instanceof ArrayBuffer
-        ? new Uint8Array(value)
-        : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    const binary = intrinsicBinaryContainer(value);
+    if (binary) {
+      const bytes = new Uint8Array(binary.buffer, binary.byteOffset, binary.byteLength);
       let hexText = '';
       for (const byte of bytes) hexText += byte.toString(16).padStart(2, '0');
-      return `y${JSON.stringify(hexText)}`;
+      // Raw bytes are not the whole state for binary containers: the same
+      // bytes can represent a different typed-array/DataView kind or a view
+      // with different bounds. Read kind/offset/length from intrinsic slots,
+      // never caller-controlled properties or @@toStringTag (#6215). The patch
+      // path canonicalizes its accepted byte containers before this point
+      // (#6171), so its deliberate Uint8Array/Array parity is preserved.
+      return `y${JSON.stringify(binary.kind)}:${binary.byteOffset}:${binary.byteLength}:${JSON.stringify(hexText)}`;
     }
     // Map/Set entry order is part of the value, so it is preserved rather than
     // sorted: two maps built in a different order are different states.

@@ -252,7 +252,12 @@ function parsePe(bytes) {
   let certificateTableOffset = 0;
   let certificateTableSize = 0;
   if (optional.numberOfRvaAndSizes > 4) {
-    ensureRange(bytes, dataDirectoryOffset, 5 * 8, 'format-safe-pe-data-directory-truncated');
+    /* Microsoft PE/COFF: probing the Data Directory must not read past
+     * SizeOfOptionalHeader. NumberOfRvaAndSizes alone is not a boundary
+     * authority — with a minimal header the Certificate Table entry would
+     * alias section-table bytes (#5568). The optional header was already
+     * range-checked in-file, so header containment implies file bounds. */
+    if (dataDirectoryOffset + 5 * 8 > optionalOffset + optionalHeaderSize) fail('format-safe-pe-data-directory-truncated');
     certificateTableOffset = u32(bytes, dataDirectoryOffset + 4 * 8);
     certificateTableSize = u32(bytes, dataDirectoryOffset + 4 * 8 + 4);
     if ((certificateTableOffset === 0) !== (certificateTableSize === 0)) fail('format-safe-pe-certificate-directory-invalid');

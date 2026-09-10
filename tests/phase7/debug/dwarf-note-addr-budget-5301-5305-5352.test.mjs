@@ -45,16 +45,22 @@ function unitWithDies(die, abbrev) {
 }
 
 test('#5305 DW_FORM_addr consumes the CU address size', () => {
-  // abbrev 1: subprogram, no children, low_pc/addr + external/flag.
-  const abbrev = Uint8Array.from([0x01, 0x2e, 0x00, 0x11, 0x01, 0x3f, 0x0c, 0x00, 0x00]);
-  // DIE: code 1, 2-byte addr 0x1234, flag 1, null DIE.
-  const die = Uint8Array.from([0x01, 0x34, 0x12, 0x01, 0x00]);
+  // abbrev 1: compile_unit with children; abbrev 2: subprogram, no children,
+  // low_pc/addr + external/flag.
+  const abbrev = Uint8Array.from([
+    0x01, 0x11, 0x01, 0x00, 0x00,
+    0x02, 0x2e, 0x00, 0x11, 0x01, 0x3f, 0x0c, 0x00, 0x00,
+    0x00,
+  ]);
+  // DIE: root CU, subprogram child with 2-byte addr 0x1234 + flag, then the
+  // single null entry that terminates the root's child chain.
+  const die = Uint8Array.from([0x01, 0x02, 0x34, 0x12, 0x01, 0x00]);
   const { info } = unitWithDies(die, abbrev);
   info[10] = 2; // address_size = 2
   info.set(die, 11);
   const parsed = parseDebugInfo({ debug_info: info, debug_abbrev: abbrev });
   assert.equal(parsed.complete, true);
-  const first = [...parsed.dies.values()][0];
+  const first = [...parsed.dies.values()].find((d) => d.tag === 0x2e);
   assert.equal(first?.attributes?.get?.(0x11)?.value, 0x1234n);
   assert.equal(first?.attributes?.get?.(0x3f)?.value, 1n);
 });

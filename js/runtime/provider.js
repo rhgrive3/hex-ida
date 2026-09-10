@@ -67,25 +67,53 @@ export class RuntimeProviderSession {
     const descriptor = provider.descriptor();
     this.providerId = descriptor.id;
     this.providerVersion = descriptor.version;
+
+    // Snapshot identity-bearing inputs once. RuntimeSessionId and target binding
+    // must be derived from the same request values even when a provider boundary
+    // exposes stateful accessors.
+    const requestBinaryValue = request.binaryId ?? request.binaryHash;
     this.runtimeSessionId = createRuntimeProviderSessionId({
-      binaryId: request.binaryId ?? request.binaryHash,
+      binaryId: requestBinaryValue,
       providerId: this.providerId,
       targetIdentity: request.targetIdentity ?? request.target ?? { processKey: request.processKey ?? 'default' },
       sessionNonce: request.sessionNonce ?? request.startedAt ?? `${Date.now()}:${Math.random()}`,
     });
-    this.target = createRuntimeTargetBinding({
+    const requestBinaryId = requestBinaryValue.trim(); // validated and canonicalized by createRuntimeProviderSessionId()
+    const requestSliceValue = request.sliceId;
+    const targetInput = target == null ? {} : { ...target };
+    const requestSliceId = requestSliceValue == null
+      ? null
+      : required(requestSliceValue, 'invalid-runtime-identity', 'sliceId must be a non-empty string');
+    const targetBinaryValue = targetInput.primaryBinaryId ?? targetInput.binaryId ?? requestBinaryId;
+    const targetSliceValue = targetInput.primarySliceId ?? targetInput.sliceId ?? requestSliceId;
+    const targetBinding = createRuntimeTargetBinding({
       processKey: request.processKey,
       platform: request.platform,
       architecture: request.architecture,
-      primaryBinaryId: request.binaryId ?? request.binaryHash,
-      primarySliceId: request.sliceId,
       startedAt: request.startedAt,
       bindingEvidenceIds: request.bindingEvidenceIds,
-      ...target,
+      ...targetInput,
+      primaryBinaryId: targetBinaryValue,
+      primarySliceId: targetSliceValue,
       runtimeSessionId: this.runtimeSessionId,
       providerId: this.providerId,
       providerVersion: this.providerVersion,
     });
+    if (targetBinding.primaryBinaryId !== requestBinaryId) {
+      throw new DebugAdapterError(
+        'runtime-target-identity-mismatch',
+        'runtime target binary identity does not match the session request',
+        { field: 'primaryBinaryId', requested: requestBinaryId, target: targetBinding.primaryBinaryId },
+      );
+    }
+    if (requestSliceId != null && targetBinding.primarySliceId !== requestSliceId) {
+      throw new DebugAdapterError(
+        'runtime-target-identity-mismatch',
+        'runtime target slice identity does not match the session request',
+        { field: 'primarySliceId', requested: requestSliceId, target: targetBinding.primarySliceId },
+      );
+    }
+    this.target = targetBinding;
     this.facets = Object.freeze({ ...facets });
     this.modules = new RuntimeModuleBindingTable(this.runtimeSessionId);
     this.state = 'opening';
