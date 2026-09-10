@@ -287,8 +287,19 @@ export function classifyCallArguments(insn, opts = {}) {
       }
     }
     const slots=Math.max(1,Math.ceil((c.hfa?c.members*c.bits:c.bits)/64));
-    const entry={index,location:'stack',offset:stackOffset,bytes:slots*8,abiClass:c.hfa?'hfa':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits};
-    stackArguments.push(entry);arguments_.push(entry);stackOffset+=slots*8;
+    // AAPCS64 Stage C: NSAA is rounded up to the argument's natural alignment
+    // before stack placement (C.4 for HFA/short-vector candidates, C.14
+    // max(8, natural alignment) otherwise) (#4942). Only primitive declared
+    // alignments are honored; structured evidence is never coerced.
+    const declaredAlign = param?.alignment;
+    const naturalAlign = c.hfa || c.vector
+      ? Math.max(8, Math.ceil(c.bits / 8))
+      : (typeof declaredAlign === 'number' && Number.isSafeInteger(declaredAlign) && declaredAlign > 0
+        ? Math.max(8, declaredAlign)
+        : 8);
+    const alignedOffset = Math.ceil(stackOffset / naturalAlign) * naturalAlign;
+    const entry={index,location:'stack',offset:alignedOffset,bytes:slots*8,abiClass:c.hfa?'hfa':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits};
+    stackArguments.push(entry);arguments_.push(entry);stackOffset=alignedOffset+slots*8;
     if(c.pointer || param?.mayContainPointers === true || param?.containsPointers === true) stackArgsMayContainPointers=true;
   });
   return { srcs, arguments:arguments_, stackArguments, stackArgsUnknown:proto?.variadic===true||proto?.varargs===true, stackArgsMayContainPointers, evidence:'prototype-aapcs64' };
