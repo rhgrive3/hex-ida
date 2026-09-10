@@ -363,6 +363,92 @@ function memberTypesConflict(aType, bType) {
   return canonicalDescriptorString('structural', aType) !== canonicalDescriptorString('structural', bType);
 }
 
+function aggregateMembersConflict(aMembers, bMembers) {
+  // Preserve exact/canonically-equivalent member sets, including legacy
+  // descriptors whose nested layout is incomplete. Once the sets differ,
+  // however, compatibility needs interval evidence; an unknown interval must
+  // fail closed rather than mint compatibility from absence of proof.
+  if (!Array.isArray(aMembers) || !Array.isArray(bMembers)) {
+    return canonicalDescriptorString('structural', aMembers) !== canonicalDescriptorString('structural', bMembers);
+  }
+  if (aMembers.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))
+    && bMembers.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))) {
+    const aCanonicalSet = aMembers.map((member) => canonicalDescriptorString('structural', member)).sort();
+    const bCanonicalSet = bMembers.map((member) => canonicalDescriptorString('structural', member)).sort();
+    if (aCanonicalSet.length === bCanonicalSet.length
+      && aCanonicalSet.every((entry, index) => entry === bCanonicalSet[index])) return false;
+  }
+
+  const prepare = (members) => {
+    const prepared = [];
+    const seen = new Set();
+    for (const member of members) {
+      if (member == null || typeof member !== 'object' || Array.isArray(member)) return null;
+      const canonical = canonicalDescriptorString('structural', member);
+      if (seen.has(canonical)) continue;
+      seen.add(canonical);
+      if (member.offset == null || member.sizeBytes == null) return null;
+      const start = toBigInt(member.offset, null);
+      const size = toBigInt(member.sizeBytes, null);
+      if (start == null || size == null || start < 0n || size <= 0n) return null;
+      prepared.push({ member, canonical, start, size, end: start + size });
+    }
+    prepared.sort((left, right) => {
+      if (left.start < right.start) return -1;
+      if (left.start > right.start) return 1;
+      if (left.end < right.end) return -1;
+      if (left.end > right.end) return 1;
+      return left.canonical.localeCompare(right.canonical);
+    });
+
+    // A differing aggregate claim cannot safely add facts to an already
+    // internally-overlapping set without a union/overlay model. Exact-equal
+    // sets returned above; otherwise keep the previous fail-closed behavior.
+    for (let index = 1; index < prepared.length; index += 1) {
+      if (prepared[index - 1].end > prepared[index].start) return null;
+    }
+    return prepared;
+  };
+
+  const aPrepared = prepare(aMembers);
+  const bPrepared = prepare(bMembers);
+  if (aPrepared == null || bPrepared == null) return true;
+
+  // Both lists are now canonical, deduplicated, and non-overlapping within
+  // themselves, so a two-pointer sweep checks every cross-list overlap in
+  // O(n log n + m log m) rather than bypassing graph comparison budgets with
+  // an unbounded quadratic member-pair loop.
+  let aIndex = 0;
+  let bIndex = 0;
+  while (aIndex < aPrepared.length && bIndex < bPrepared.length) {
+    const aEntry = aPrepared[aIndex];
+    const bEntry = bPrepared[bIndex];
+    if (aEntry.end <= bEntry.start) {
+      aIndex += 1;
+      continue;
+    }
+    if (bEntry.end <= aEntry.start) {
+      bIndex += 1;
+      continue;
+    }
+
+    if (aEntry.canonical !== bEntry.canonical) {
+      if (aEntry.start === bEntry.start) {
+        if (aEntry.size !== bEntry.size) return true;
+        if (aEntry.member.alignBytes != null && bEntry.member.alignBytes != null
+          && numericValuesDiffer(aEntry.member.alignBytes, bEntry.member.alignBytes)) return true;
+      }
+
+      if (aEntry.member.memberType == null || bEntry.member.memberType == null) return true;
+      if (memberTypesConflict(aEntry.member.memberType, bEntry.member.memberType)) return true;
+    }
+
+    if (aEntry.end <= bEntry.end) aIndex += 1;
+    if (bEntry.end <= aEntry.end) bIndex += 1;
+  }
+  return false;
+}
+
 /**
  * Do two claims at the same layer conflict?
  *
@@ -467,7 +553,7 @@ export function claimsConflict(left, right) {
       return false;
     }
     if (a.members != null && b.members != null) {
-      return canonicalDescriptorString('structural', a.members) !== canonicalDescriptorString('structural', b.members);
+      return aggregateMembersConflict(a.members, b.members);
     }
     if (a.offset != null && b.offset != null && !numericValuesDiffer(a.offset, b.offset)) {
       return canonicalDescriptorString('structural', a) !== canonicalDescriptorString('structural', b);
