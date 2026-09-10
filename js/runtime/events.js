@@ -280,12 +280,20 @@ export class RuntimeEventNormalizer {
         dropped++;
       }
     }
+    // #5680: the batch must never upgrade its weakest queued evidence. Events
+    // accepted as 'truncated' (gap/dropped-events) or 'unsupported' ride in
+    // the same flush; requesting 'partial' for them throws
+    // runtime-completeness-upgrade inside createRuntimeEventBatch.
+    let completeness = dropped > 0 ? 'truncated' : (events.length ? 'partial' : 'bounded');
+    for (const event of events) {
+      if (COMPLETENESS_RANK[event.completeness] < COMPLETENESS_RANK[completeness]) completeness = event.completeness;
+    }
     return createRuntimeEventBatch({
       runtimeSessionId: this.context.runtimeSessionId,
       providerId: this.context.providerId,
       sessionEpoch: this.context.sessionEpoch ?? 1,
       events,
-      completeness: dropped > 0 ? 'truncated' : (events.length ? 'partial' : 'bounded'),
+      completeness,
       dropped,
     });
   }
