@@ -167,3 +167,37 @@ const int = { type:'int' };
   assert.equal(conflict.abiClass, 'vector-descriptor-conflict');
   assert.equal(conflict.exact, false);
 }
+
+// 10. Conflicting width aliases never mint an exact placement; consistent
+//     aliases and the documented options.returnBits override stay exact.
+{
+  const conflicting = RISCV_LP64_ABI.classifyArguments({
+    callPrototype:{ args:[{ type:'fixed vector', vector:true, fixedLengthVector:true, bits:128, sizeBits:256 }] },
+  }).arguments[0];
+  assert.equal(conflicting.location, 'unknown', 'conflicting width aliases stay unknown');
+  assert.equal(conflicting.abiClass, 'fixed-vector-width-evidence-conflict');
+  assert.equal(conflicting.exact, false);
+
+  const consistent = RISCV_LP64_ABI.classifyArguments({
+    callPrototype:{ args:[{ type:'fixed vector', vector:true, fixedLengthVector:true, bits:128, sizeBits:128 }] },
+  }).arguments[0];
+  assert.deepEqual(consistent.regs, ['x10', 'x11'], 'consistent width aliases keep the exact a0-a1 placement');
+
+  const returnConflict = RISCV_LP64_ABI.classifyFunctionReturn({
+    functionPrototype:{ returnType:'fixed vector', returnVector:{ vector:true, fixedLengthVector:true }, returnBits:128, bits:256 },
+  });
+  assert.equal(returnConflict.reason, 'fixed-vector-return-width-evidence-conflict');
+  assert.equal(returnConflict.partial, true);
+
+  const returnConsistent = RISCV_LP64_ABI.classifyFunctionReturn({
+    functionPrototype:{ returnType:'fixed vector', returnVector:{ vector:true, fixedLengthVector:true }, returnBits:128, bits:128 },
+  });
+  assert.deepEqual(returnConsistent.regs, ['x10', 'x11'], 'consistent return aliases keep a0-a1');
+
+  const overridden = RISCV_LP64_ABI.classifyFunctionReturn({
+    functionPrototype:{ returnType:'fixed vector', returnVector:{ vector:true, fixedLengthVector:true }, returnBits:128, bits:256 },
+    returnBits:128,
+  });
+  assert.deepEqual(overridden.regs, ['x10', 'x11'],
+    'call-site returnBits override outranks prototype aliases (#5636), no fabricated conflict');
+}

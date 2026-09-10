@@ -251,10 +251,15 @@ function parameterClass(parameter) {
   const vector = !aggregate ? vectorDescriptor(parameter) : null;
   const floating = !aggregate && !vector && (parameter?.floating === true || isFloatingType(type) || /\bfp\b/.test(abiClass));
   const declaredBits = parameter?.bits ?? parameter?.sizeBits;
+  // Width aliases must agree when several are declared: a silent `bits`-wins
+  // pick would launder conflicting evidence into an exact placement (#5713).
+  const declaredWidthAliases = [parameter?.bits, parameter?.sizeBits].filter((alias) => alias != null);
+  const widthConflict = declaredWidthAliases.length > 1
+    && new Set(declaredWidthAliases.map((alias) => Number(alias))).size > 1;
   // Exact placement of a fixed-length vector needs a *declared* width: the
   // type name alone carries no size, so the riscvTypeBits fallback must not
   // stand in for one (#5713).
-  const bitsDeclared = declaredBits != null
+  const bitsDeclared = !widthConflict && declaredBits != null
     && Number.isSafeInteger(Number(declaredBits)) && Number(declaredBits) > 0;
   const aggregateLayout = aggregate ? canonicalAggregateLayout(parameter) : null;
   const aggregateLayoutProven = !aggregate || aggregateLayout != null;
@@ -270,7 +275,7 @@ function parameterClass(parameter) {
   // triviality, while any explicit nontrivial evidence selects the sound
   // by-reference convention (#5623).
   const nonTrivialForCalls = aggregate && (parameter?.nonTrivialForCalls === true || parameter?.nonTrivial === true);
-  return { type, abiClass, pointer, aggregate, aggregateLayoutProven, aggregateLayout, floating, vector, bits, bytes, nonTrivialForCalls, bitsDeclared };
+  return { type, abiClass, pointer, aggregate, aggregateLayoutProven, aggregateLayout, floating, vector, bits, bytes, nonTrivialForCalls, bitsDeclared, widthConflict };
 }
 
 function registerSource(reg, bits = XLEN, extra = {}) {
@@ -520,6 +525,10 @@ function createClassifier(profile) {
          * descriptor stays fail-closed (#6018).
          */
         if (classified.vector.fixedLength === true && classified.vector.conflict !== true) {
+          if (classified.widthConflict) {
+            unknownArgument(index, classified, 'fixed-vector-width-evidence-conflict', {});
+            return;
+          }
           if (!(classified.bits > 0 && classified.bitsDeclared)) {
             unknownArgument(index, classified, 'fixed-length-vector-size-unproven', { vector:classified.vector });
             return;
@@ -973,6 +982,17 @@ function createClassifier(profile) {
           return returnVector.conflict
             ? { reg:null, partial:true, location:'unknown', reason:'vector-return-descriptor-conflict', vector:returnVector }
             : { reg:null, partial:true, location:'unknown', reason:'vector-return-calling-convention-unknown' };
+        }
+        // Prototype-internal width aliases must agree before an exact return
+        // placement is minted. A call-site options.returnBits is the documented
+        // override (#5636) and is not part of the conflict set.
+        const returnWidthAliases = [
+          Object.hasOwn(prototype, 'returnBits') ? prototype.returnBits : null,
+          Object.hasOwn(prototype, 'bits') ? prototype.bits : null,
+        ].filter((alias) => alias != null);
+        if (options?.returnBits == null && returnWidthAliases.length > 1
+          && new Set(returnWidthAliases.map((alias) => Number(alias))).size > 1) {
+          return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-width-evidence-conflict' };
         }
         if (!(bits > 0 && Number.isSafeInteger(declaredBitsNumber) && declaredBitsNumber > 0)) {
           return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-size-unproven' };
