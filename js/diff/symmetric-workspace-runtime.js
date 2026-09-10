@@ -4,6 +4,16 @@ import { createSymmetricCodeFunctionSet, SYMMETRIC_CODE_PROFILE } from './symmet
 const INSTALL_VERSION = 'symmetric-workspace-diff/v2';
 const MAX_DIFF_FUNCTIONS = 350000;
 const DISCOVERY_GLOBAL_CAP = 400000;
+// #5452: full symmetric diffs widen the matcher budget. The key must be
+// `maxCandidateEdges` — that is the authority `createMatchBudget()` honors
+// (100k default); a `maxEdges` key is silently dropped and the widened
+// budget never applies.
+export const DEFAULT_SYMMETRIC_MATCH_BUDGET = Object.freeze({
+  maxCandidateEvaluations: 1500000,
+  maxCandidateEdges: 300000,
+  maxComponentNodes: 4096,
+  maxComponentEdges: 65536,
+});
 
 function abortError(signal) {
   const error = signal?.reason instanceof Error ? signal.reason : new Error('Binary diff aborted');
@@ -66,9 +76,13 @@ async function discoverBaselineFunctions(baseline, { signal = null, onProgress =
     try {
       const result = await requestWithSignal(request, signal);
       if (result?.starts?.length) {
-        symbols.addFunctions(result.starts, { source:'heuristic', confidence:0.55, confirmed:false });
+        // #5558: addFunctions() deduplicates known starts and returns the
+        // number actually added. The global discovery budget must be debited
+        // by that count — duplicate re-discovery from independent region
+        // scans must never exhaust the budget ahead of unscanned regions.
+        const added = symbols.addFunctions(result.starts, { source:'heuristic', confidence:0.55, confirmed:false });
         symbols.guessed = true;
-        remaining = Math.max(0, remaining - result.starts.length);
+        remaining = Math.max(0, remaining - added);
       }
       const complete = result?.discoveryComplete === true || result?.completeness?.complete === true || result?.complete === true;
       results.push({ regionId:region.id, complete, capped:!!result?.capped, discovered:result?.starts?.length || 0 });
@@ -221,7 +235,7 @@ export function installSymmetricWorkspaceDiff(app) {
         mode:'full',
         signal:options.signal,
         threshold:options.threshold ?? 0.62,
-        matchBudget:options.matchBudget || { maxCandidateEvaluations:1500000, maxEdges:300000, maxComponentNodes:4096, maxComponentEdges:65536 },
+        matchBudget:options.matchBudget || DEFAULT_SYMMETRIC_MATCH_BUDGET,
       });
       assertCurrent();
       const inputsComplete = before.complete === true && current.complete === true;
