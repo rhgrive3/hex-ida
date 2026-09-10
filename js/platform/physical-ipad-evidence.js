@@ -144,7 +144,9 @@ export function validatePhysicalIPadScenarioOutput(record, expected = {}) {
   for (const key of REQUIRED_IPAD_CHECKS) {
     const check = record.checks[key];
     if (!check || check.status !== 'passed') return { ok: false, reason: 'ipad-scenario-required-check-failed', check: key };
-    if (!Number.isFinite(Date.parse(check.observedAt || ''))) return { ok: false, reason: 'ipad-scenario-check-time-invalid', check: key };
+    const observedAt = Date.parse(check.observedAt || '');
+    if (!Number.isFinite(observedAt)) return { ok: false, reason: 'ipad-scenario-check-time-invalid', check: key };
+    if (observedAt < startedAt || observedAt > completedAt) return { ok: false, reason: 'ipad-scenario-check-time-outside-run', check: key };
     if (typeof check.observationIdentity !== 'string' || !check.observationIdentity.trim() || observations.has(check.observationIdentity)) {
       return { ok: false, reason: 'ipad-scenario-check-identity-invalid', check: key };
     }
