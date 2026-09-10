@@ -535,6 +535,39 @@ assert.doesNotMatch(
   assert.equal(result.state, 'success');
 }
 
+// The AUTO reviewer interleaves a [BASE:<sha>] segment between HEAD and
+// VERDICT on current-base reviews; the marker must stay parseable so exact
+// approvals are not silently dropped (#fleet: BASE marker regression).
+{
+  const baseMarker = (sha, verdict = 'APPROVED') => ({
+    state: 'COMMENTED',
+    commit_id: sha,
+    submitted_at: '2026-09-10T00:00:00Z',
+    author: { login: TRUSTED },
+    body: `[AUTO-REVIEW:R2][HEAD:${sha}][BASE:${sha.slice(0, 4)}${'a'.repeat(36)}][VERDICT:${verdict}]`,
+  });
+  const result = evaluate({
+    headSha: HEAD,
+    reviews: [baseMarker(HEAD)],
+    statuses: [
+      codeRabbitStatus(),
+      status('ci/circleci: phase7-ownership', 'success'),
+      status('ci/circleci: migration-guardrails', 'success'),
+    ],
+  });
+  assert.equal(result.state, 'success', 'an exact-head APPROVED marker with a BASE segment admits');
+  const rejected = evaluate({
+    headSha: HEAD,
+    reviews: [baseMarker(HEAD, 'CHANGES_REQUESTED')],
+    statuses: [
+      codeRabbitStatus(),
+      status('ci/circleci: phase7-ownership', 'success'),
+      status('ci/circleci: migration-guardrails', 'success'),
+    ],
+  });
+  assert.equal(rejected.state, 'failure', 'a BASE-segment CHANGES_REQUESTED marker still blocks');
+}
+
 assert.throws(
   () => evaluate({ headSha: 'not-a-sha' }),
   /final-head-admission-invalid-head-sha/,

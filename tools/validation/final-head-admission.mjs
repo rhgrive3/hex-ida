@@ -107,8 +107,11 @@ function parseAutoReviewMarker(review) {
   const body = string(review?.body);
   const autoTokens = body.match(/\[AUTO-REVIEW:/g) ?? [];
   if (autoTokens.length !== 1) return null;
+  // The AUTO reviewer may interleave a [BASE:<sha>] segment between HEAD and
+  // VERDICT (current-base review evidence). Accept it as optional so the
+  // marker stays parseable; base identity is informational and never gates.
   const match = body.match(
-    /^\[AUTO-REVIEW:([^\]\s]+)\]\[HEAD:([0-9a-f]{40})\]\[VERDICT:(APPROVED|CHANGES_REQUESTED)\]/,
+    /^\[AUTO-REVIEW:([^\]\s]+)\]\[HEAD:([0-9a-f]{40})\](?:\[BASE:[0-9a-f]{40}\])?\[VERDICT:(APPROVED|CHANGES_REQUESTED)\]/,
   );
   if (!match) return null;
   return Object.freeze({
