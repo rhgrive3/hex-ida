@@ -108,16 +108,17 @@ function parseAutoReviewMarker(review) {
   const autoTokens = body.match(/\[AUTO-REVIEW:/g) ?? [];
   if (autoTokens.length !== 1) return null;
   // The AUTO reviewer may interleave a [BASE:<sha>] segment between HEAD and
-  // VERDICT (current-base review evidence). Accept it as optional so the
-  // marker stays parseable; base identity is informational and never gates.
+  // VERDICT (current-base review evidence). It is preserved so the evaluator
+  // can bind approvals to the authoritative current base.
   const match = body.match(
-    /^\[AUTO-REVIEW:([^\]\s]+)\]\[HEAD:([0-9a-f]{40})\](?:\[BASE:[0-9a-f]{40}\])?\[VERDICT:(APPROVED|CHANGES_REQUESTED)\]/,
+    /^\[AUTO-REVIEW:([^\]\s]+)\]\[HEAD:([0-9a-f]{40})\](?:\[BASE:([0-9a-f]{40})\])?\[VERDICT:(APPROVED|CHANGES_REQUESTED)\]/,
   );
   if (!match) return null;
   return Object.freeze({
     reviewerId: string(match[1]).trim().toUpperCase(),
     headSha: match[2].toLowerCase(),
-    verdict: match[3],
+    baseSha: match[3] ? match[3].toLowerCase() : null,
+    verdict: match[4],
   });
 }
 
@@ -207,6 +208,7 @@ export function evaluateFinalHeadAdmission({
   unresolvedReviewThreads = 0,
   trustedAutoReviewers = [],
   requiredStatusContexts = [],
+  currentBaseSha = null,
 } = {}) {
   if (!/^[0-9a-f]{40}$/i.test(string(headSha))) {
     throw new TypeError('final-head-admission-invalid-head-sha');
@@ -223,8 +225,24 @@ export function evaluateFinalHeadAdmission({
   const requiredContexts = normalizedContextList(requiredStatusContexts)
     .filter((context) => !isCodeRabbitStatus({ context }));
   const exactAutoReviews = latestExactAutoReviews(reviews, headSha, trustedReviewers);
-  const exactAutoApprovals = exactAutoReviews.filter((review) => autoVerdict(review) === 'APPROVED');
-  const exactAutoChanges = exactAutoReviews.filter((review) => autoVerdict(review) === 'CHANGES_REQUESTED');
+  // Current-base review identity: when the caller provides an authoritative
+  // current base, an approval only counts when its marker is bound to that
+  // exact base (tuple match). Legacy BASE-less markers stay parseable for
+  // diagnostics but never admit under the current-base contract. Callers that
+  // do not pass currentBaseSha keep the exact-head-only contract.
+  const hasBaseAuthority = string(currentBaseSha).length === 40;
+  const baseBinding = (review) => {
+    const marker = parseAutoReviewMarker(review);
+    return marker?.baseSha ?? null;
+  };
+  const baseMatches = (review) => {
+    if (!hasBaseAuthority) return true;
+    const markerBase = baseBinding(review);
+    return markerBase != null && markerBase === string(currentBaseSha).toLowerCase();
+  };
+  const exactAutoApprovals = exactAutoReviews.filter((review) => autoVerdict(review) === 'APPROVED' && baseMatches(review));
+  const exactAutoChanges = exactAutoReviews.filter((review) => autoVerdict(review) === 'CHANGES_REQUESTED'
+    && (!hasBaseAuthority || baseMatches(review) || baseBinding(review) == null));
 
   if (draft) pending.push('pull request is draft');
   if (trustedReviewers.size === 0) pending.push('no trusted AUTO reviewer configured');

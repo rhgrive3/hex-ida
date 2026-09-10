@@ -568,6 +568,66 @@ assert.doesNotMatch(
   assert.equal(rejected.state, 'failure', 'a BASE-segment CHANGES_REQUESTED marker still blocks');
 }
 
+// Current-base review identity: approvals are bound to the authoritative
+// current base. Same HEAD + advanced BASE, BASE-less legacy markers, matching
+// (HEAD, BASE) tuples, and matching-tuple CHANGES_REQUESTED are all pinned.
+{
+  const NEW_BASE = 'b'.repeat(40);
+  const marker = (sha, verdict, base) => ({
+    state: 'COMMENTED',
+    commit_id: sha,
+    submitted_at: '2026-09-10T00:00:00Z',
+    author: { login: TRUSTED },
+    body: base
+      ? `[AUTO-REVIEW:R2][HEAD:${sha}][BASE:${base}][VERDICT:${verdict}]`
+      : `[AUTO-REVIEW:R2][HEAD:${sha}][VERDICT:${verdict}]`,
+  });
+  const greenContexts = [
+    codeRabbitStatus(),
+    status('ci/circleci: phase7-ownership', 'success'),
+    status('ci/circleci: migration-guardrails', 'success'),
+  ];
+  // Same HEAD, BASE advanced: the old (HEAD, BASE_old) approval must not admit.
+  const staleBase = evaluate({
+    headSha: HEAD,
+    reviews: [marker(HEAD, 'APPROVED', 'a'.repeat(40))],
+    statuses: greenContexts,
+    currentBaseSha: NEW_BASE,
+  });
+  assert.equal(staleBase.state, 'pending', 'an approval bound to an older base cannot admit');
+  // BASE-less legacy evidence stays parseable but never satisfies the gate.
+  const legacy = evaluate({
+    headSha: HEAD,
+    reviews: [marker(HEAD, 'APPROVED', null)],
+    statuses: greenContexts,
+    currentBaseSha: NEW_BASE,
+  });
+  assert.equal(legacy.state, 'pending', 'a BASE-less marker cannot satisfy current-base admission');
+  // Exact (HEAD, BASE) match admits.
+  const matched = evaluate({
+    headSha: HEAD,
+    reviews: [marker(HEAD, 'APPROVED', NEW_BASE)],
+    statuses: greenContexts,
+    currentBaseSha: NEW_BASE,
+  });
+  assert.equal(matched.state, 'success', 'the exact (HEAD, BASE) tuple admits');
+  // Matching-tuple CHANGES_REQUESTED blocks.
+  const blocked = evaluate({
+    headSha: HEAD,
+    reviews: [marker(HEAD, 'CHANGES_REQUESTED', NEW_BASE)],
+    statuses: greenContexts,
+    currentBaseSha: NEW_BASE,
+  });
+  assert.equal(blocked.state, 'failure', 'a matching-tuple CHANGES_REQUESTED still blocks');
+  // Without currentBaseSha (legacy callers), the previous behavior holds.
+  const legacyCaller = evaluate({
+    headSha: HEAD,
+    reviews: [marker(HEAD, 'APPROVED', null)],
+    statuses: greenContexts,
+  });
+  assert.equal(legacyCaller.state, 'success', 'legacy callers without a current base keep the old contract');
+}
+
 assert.throws(
   () => evaluate({ headSha: 'not-a-sha' }),
   /final-head-admission-invalid-head-sha/,
