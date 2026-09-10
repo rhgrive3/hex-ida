@@ -24,6 +24,7 @@ import { stableDigest } from '../../core/identity/index.js';
 import { ANALYSIS_KEYS, PHASE8_CONTRACT_VERSION, snapshotCanonicalPassResult } from './contract.js';
 import { rewritePolicyFailure } from './rewrite-registry.js';
 import { PROOF_REWRITE_PASS, proofAdmissionReason, proofPublicationResult } from './pass-validation.js';
+import { DCE_PASS, runDcePass } from './dce.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -31,6 +32,7 @@ const ANALYSIS_SET = new Set(ANALYSIS_KEYS);
 const ANALYSIS_MUTATORS = new WeakMap();
 const ANALYSIS_LINEAGE = new WeakMap();
 const COMMITTED_PROOF_OVERLAYS = new WeakMap();
+const COMMITTED_DCE_ARTIFACTS = new WeakMap();
 
 
 /**
@@ -104,6 +106,7 @@ export function forkAnalysisState(source) {
   if (COMMITTED_PROOF_OVERLAYS.has(source)) {
     COMMITTED_PROOF_OVERLAYS.set(working, COMMITTED_PROOF_OVERLAYS.get(source));
   }
+  if (COMMITTED_DCE_ARTIFACTS.has(source)) COMMITTED_DCE_ARTIFACTS.set(working, COMMITTED_DCE_ARTIFACTS.get(source));
   ANALYSIS_LINEAGE.set(working, Object.freeze({
     source,
     before: Object.freeze(Object.fromEntries(ANALYSIS_KEYS.map((key) => [key, versions[key]]))),
@@ -144,6 +147,9 @@ export function commitAnalysisState(target, working, before) {
   } else {
     COMMITTED_PROOF_OVERLAYS.delete(target);
   }
+  if (COMMITTED_DCE_ARTIFACTS.has(working) && working.get('deadCode') === COMMITTED_DCE_ARTIFACTS.get(working)) {
+    COMMITTED_DCE_ARTIFACTS.set(target, COMMITTED_DCE_ARTIFACTS.get(working));
+  } else COMMITTED_DCE_ARTIFACTS.delete(target);
   return true;
 }
 
@@ -151,6 +157,11 @@ export function commitAnalysisState(target, working, before) {
 export function committedProofOverlay(state) {
   const overlay = COMMITTED_PROOF_OVERLAYS.get(state);
   return overlay && ANALYSIS_MUTATORS.has(state) && state.get('provedRewrites') === overlay ? overlay : null;
+}
+
+export function committedDceArtifact(state) {
+  const facts = COMMITTED_DCE_ARTIFACTS.get(state);
+  return facts && ANALYSIS_MUTATORS.has(state) && state.get('deadCode') === facts ? facts : null;
 }
 
 /**
@@ -312,6 +323,10 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
   const actuallyInvalidated = [];
   for (const key of invalidated) if (mutators.drop(key)) actuallyInvalidated.push(key);
   for (const [key, value] of stagedWrites) mutators.write(key, value);
+  if (stagedWrites.has('deadCode')) {
+    if (descriptor === DCE_PASS && pass.run === runDcePass) COMMITTED_DCE_ARTIFACTS.set(state, stagedWrites.get('deadCode'));
+    else COMMITTED_DCE_ARTIFACTS.delete(state);
+  } else if (actuallyInvalidated.includes('deadCode')) COMMITTED_DCE_ARTIFACTS.delete(state);
   if (stagedWrites.has('provedRewrites')) {
     COMMITTED_PROOF_OVERLAYS.set(state, stagedWrites.get('provedRewrites'));
   } else if (actuallyInvalidated.includes('provedRewrites')) {

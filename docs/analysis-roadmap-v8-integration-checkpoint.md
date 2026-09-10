@@ -4946,6 +4946,46 @@ full rendered-entity denominator. Existing PR #3421 provenance foundations remai
 reused. No matching open CSE/DCE PR was found in the current search. Same-PR
 backup and exact-head/generated-output verification are separate required facts.
 
+## C4-03 actual dead CALL-result binding elimination
+
+The existing DCE fixed point now has its first actual rendered-result consumer.
+When a CALL result is used only by dead pure computations, the initial renderer
+previously kept `call_N = callee();`. Projection version3 discards that unused
+binding and retains the exact emitted CALL RHS, source and execution position.
+It never removes the CALL, changes canonical SSA/IR, or infers liveness from text.
+An additional bounded scan rejects residual printed references to the binding.
+
+The actual registered DCE transaction publishes a private artifact, carried only
+through the canonical analysis fork/commit path. Its bounded observer covers the
+canonical graph and every reverse SSA `uses` array that the fixed point reads;
+the ordinary expression observer intentionally does not recursively read those
+reverse edges. Complete/current facts and the actual initial CALL spelling/history
+consumer are both required. Shape-similar, uncommitted, partial, stale or copied
+artifacts do not authorize removal. The existing provenance path records the old
+rendered assignment tombstone and exactly one surviving CALL entity, with reverse
+navigation and replay. Missing history, cancellation or incomplete provenance
+withholds the new transformation and preserves the input AST.
+
+Owned `provenance/dead-call-result.test.mjs` exercises 16 actual-adoption cells:
+8/16/32/64 bits x dead-chain depth1/3 x one/two observable calls. Every cell checks
+immutable input AST/IR, one removal and retained call per binding, complete
+provenance and replay, and compiles/executes the actual before/after statements
+with UBSan over 256 inputs (4,096 total). The compiler harness supplies only
+signatures and local declarations; call order/count and return values must agree.
+Live and potentially trapping uses, stale reverse uses/definitions/facts, copied
+emitters, residual references, transaction impersonation, uncommitted/partial
+facts and cancellation/history budgets are negative controls. The initial missing
+consumer failed its test before wiring. Two expanded-test setup errors (missing
+transaction analysis context and invalid zero entity-budget configuration) were
+corrected without changing runtime acceptance rules or dropping matrix cells.
+
+This is result-binding DCE, not general instruction elimination or closure of
+FR-C4-03A's full transform-class denominator. Existing PR #3421 foundations are
+reused; no duplicate candidate engine, evaluator or provenance format was added.
+Canonical gates, generated synchronization, exact-head and same-PR remote backup
+remain separately required evidence. Other-owner issue/performance and physical
+device work remain outside this TODO increment.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

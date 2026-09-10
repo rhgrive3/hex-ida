@@ -22,10 +22,25 @@
  */
 
 import { createPassDescriptor, createPassResult } from './contract.js';
+import { captureProjectionIrData, captureRecoveryIrData, PROJECTION_LIMITS } from './projection-origin.js';
+import { committedDceArtifact } from './transaction.js';
+
+const DCE_OBSERVATIONS = new WeakMap();
+
+/** Only a committed canonical pass with unchanged inputs may authorize a view. */
+export function readDceResultProof(analysis, ir) {
+  const facts = committedDceArtifact(analysis), known = facts && DCE_OBSERVATIONS.get(facts);
+  if (!known || known.ir !== ir || facts.completeness !== 'complete') return null;
+  const isCurrent = () => committedDceArtifact(analysis) === facts
+    && analysis.get('cfg') === known.cfg && analysis.get('ssa') === known.ssa
+    && known.cfg.blocks === ir.blocks && known.ssa.values === ir.values
+    && known.source.matches() && known.output.matches();
+  return isCurrent() ? Object.freeze({ facts, isCurrent }) : null;
+}
 
 export const DCE_PASS = createPassDescriptor({
   id: 'phase8.dce',
-  version: '1.0.0',
+  version: '1.1.0',
   stage: 'memory-optimization',
   budgetClass: 'standard',
   // It reads the CFG and SSA and nothing else. Declaring `valueNumbers` here
@@ -127,6 +142,16 @@ export function runDcePass(context = {}, budget = {}, area = null) {
   const values = ssa?.values ?? [];
   const blocks = cfg?.blocks ?? [];
   if (area == null) throw new TypeError('phase8-dce-requires-staging-area');
+  let source = null;
+  try {
+    if (values.length > PROJECTION_LIMITS.nodes || values !== context.ir?.values || blocks !== context.ir?.blocks) throw new TypeError('dce-canonical-inputs-required');
+    // Unlike expression rendering, liveness reads the reverse SSA index.
+    // Observe every uses array explicitly; the shared IR observer intentionally
+    // does not traverse that reverse edge by default. Envelope Maps are not
+    // liveness inputs and must not disable the existing plain-data observer.
+    source = captureRecoveryIrData(context.ir, [values, blocks, ...values.map(value => value.uses)], budget.shouldAbort);
+  }
+  catch { /* Candidate analysis may continue; unobserved facts cannot authorize removal. */ }
 
   // The defining operation is read from the value itself. Walking block
   // instruction lists instead looks equivalent and is not: a value whose
@@ -196,6 +221,12 @@ export function runDcePass(context = {}, budget = {}, area = null) {
     completeness: budgetExhausted ? 'partial' : 'complete',
   });
   area.stage('deadCode', facts);
+  if (context.ir && !budgetExhausted && source?.matches()) {
+    try {
+      const output = captureProjectionIrData([facts.candidates, facts.deadButObservable], budget.shouldAbort);
+      if (source.matches() && output.matches()) DCE_OBSERVATIONS.set(facts, { ir:context.ir, cfg, ssa, source, output });
+    } catch { /* Missing bounded observation is no removal authority. */ }
+  }
 
   const diagnostics = [];
   if (budgetExhausted) {

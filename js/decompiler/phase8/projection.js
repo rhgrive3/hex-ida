@@ -1,5 +1,5 @@
 import { isProducerProjection, producerExpressionToken, readProducerInputExpressions, producerUsesProofOnlyRewrites } from '../pipeline.js';
-import { readExpressionHistoryConsumer, readStoreSpellingProducer, readInitialControlConsumer } from '../pipeline-core.js';
+import { readExpressionHistoryConsumer, readStoreSpellingProducer, readInitialControlConsumer, readCallResultSpellingProducer } from '../pipeline-core.js';
 import { expressionOriginHistory } from '../rewrite/engine.js';
 import { readStackPhiHistoryConsumer } from '../passes/stack-phi-recovery.js';
 import { readStackReturnHistoryConsumer } from '../passes/stack-return-recovery.js';
@@ -15,8 +15,9 @@ import {
   isValidatedAnalysisIdentity,
 } from './analysis-identity.js';
 import { buildRenderProvenance } from './render-provenance.js';
+import { readDceResultProof } from './dce.js';
 
-export const PHASE8_PROJECTION_VERSION = 2;
+export const PHASE8_PROJECTION_VERSION = 3;
 
 const lineExpressionHistories = new WeakMap();
 const controlConsumerSources = new WeakMap();
@@ -435,6 +436,43 @@ function boundAnalysisIdentity(result, analysis, supplied) {
  * high-level projection while retaining the union of the original source/evidence.
  * Refused or ambiguous facts remain unchanged.
  */
+// The canonical fixed point authorizes discarding a dead result, never the
+// observable CALL. Its RHS comes only from the actual initial emitter. Text
+// scanning below is a rejection guard for residual rendered references, not
+// positive liveness or expression authority.
+function deadCallResultPlans(result, analysis, consumers, shouldAbort) {
+  const body = result.cAst.body ?? [];
+  if (body.length > 4096 || shouldAbort?.()) return [];
+  const spellings = body.map(node => readCallResultSpellingProducer(node, result.ir));
+  if (!spellings.some(Boolean)) return [];
+  const proof = readDceResultProof(analysis, result.ir);
+  if (!proof) return [];
+  const dead = new Set(proof.facts.deadButObservable.map(row => row.valueId));
+  const values = new Set(result.ir.values), instructions = new Set(result.ir.instructions);
+  const plans = [];
+  for (const [index, spelling] of spellings.entries()) {
+    if (shouldAbort?.()) return [];
+    if (!spelling || spelling.consumer !== consumers[index]) continue;
+    const value = spelling.value, node = body[index];
+    if (!dead.has(value.id) || !values.has(value) || !instructions.has(value.def)
+        || value.def.op !== 'call' || value.def.dst !== value || node.kind !== 'stmt'
+        || node.semantic?.op !== 'call-render' || node.semantic.ir !== value.def.id
+        || !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(spelling.name)
+        || node.text !== `${spelling.name} = ${spelling.callText}`) continue;
+    plans.push({ index, spelling, proof });
+  }
+  const mentions = new Map(plans.map(plan => [plan.spelling.name, 0]));
+  let units = PROJECTION_LIMITS.expandedUnits, edges = PROJECTION_LIMITS.edges;
+  for (const node of body) {
+    if (shouldAbort?.() || typeof node.text !== 'string' || (units -= node.text.length) < 0) return [];
+    for (const match of node.text.matchAll(/[A-Za-z_$][A-Za-z0-9_$]*/g)) {
+      if (--edges < 0 || shouldAbort?.()) return [];
+      if (mentions.has(match[0])) mentions.set(match[0], mentions.get(match[0]) + 1);
+    }
+  }
+  return proof.isCurrent() ? plans.filter(plan => mentions.get(plan.spelling.name) === 1) : [];
+}
+
 export function applyPhase8Projection(result, analysis, opts = {}) {
   if (!result?.semantic || !result.semanticAst || !result.cAst || !analysis) return result;
   const original = result;
@@ -468,9 +506,14 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   const proofContext = {ir:result.ir,opts};
   const provedInputs = proofRequested ? readProvedInputBindings(analysis,proofContext) : null;
   const proved = provedInputs?.artifact ?? null;
+  const dcePlans = hasPriorHistory ? [] : deadCallResultPlans(result, analysis, expressionConsumers, opts.shouldAbort);
+  const currentDce = () => !opts.shouldAbort?.() && (!dcePlans.length || dcePlans[0].proof.isCurrent())
+    && dcePlans.every(plan => readCallResultSpellingProducer(original.cAst.body[plan.index], original.ir) === plan.spelling);
   if (proofRequested) {
     if (!isProducerProjection(original)) return original;
     if (!proved && opts.phase8RewritePlan.entries.length) return original;
+  }
+  if (proofRequested || dcePlans.length) {
     // The input projection remains intact on a late cancellation or refusal.
     result = {...result,semanticAst:{...result.semanticAst},cAst:{...result.cAst,
       body:(result.cAst.body ?? []).map(n=>({...n,semantic:n.semantic?{...n.semantic}:n.semantic}))}};
@@ -594,12 +637,31 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   for (const item of result.semanticAst.outputs || []) if (item.expression) item.expression = transform(item.expression);
   const conditions = conditionMap(result.semanticAst, transform);
 
-  const spellingRecords = [], controlRecords = [];
+  const spellingRecords = [], controlRecords = [], dceRecords = [];
   const spellingLimit = Number.isSafeInteger(opts.renderProvenanceBudget?.maxTransformRecords)
     && opts.renderProvenanceBudget.maxTransformRecords >= 0 ? Math.min(opts.renderProvenanceBudget.maxTransformRecords, 1024) : 1024;
   let controlHandoffEdges = Number.isSafeInteger(opts.renderProvenanceBindingBudget?.maxEdges)
     ? Math.max(0, Math.min(PROJECTION_LIMITS.edges, opts.renderProvenanceBindingBudget.maxEdges)) : PROJECTION_LIMITS.edges;
+  const dceByIndex = new Map(dcePlans.map(plan => [plan.index, plan]));
   for (const [index, node] of (result.cAst.body || []).entries()) {
+    const dce = dceByIndex.get(index);
+    if (dce) {
+      // Whole-batch observations are rechecked before publication. Do not
+      // rewalk every other call's history for each isolated text write.
+      if ((result.rewriteProof?.length || 0) + dceRecords.length >= spellingLimit || opts.shouldAbort?.()) return original;
+      const source = sourceOf(node.source), consumer = expressionConsumers[index];
+      const record = Object.freeze({ rule:'eliminate-dead-call-result', phase:'phase8-render', valueId:dce.spelling.value.id,
+        before:'call:result-assignment', after:'call:discarded-result',
+        evidence:Object.freeze({ kind:'canonical-dce-dead-result-call-retained',
+          detail:'committed fixed-point liveness; only the result binding is removed, with the exact observable call retained' }),
+        originHistory:expressionOriginHistory({ source }, { source }),
+        renderedRemoval:Object.freeze({ scope:'pre-transform-render', operation:'remove', lineIndex:index, kind:node.kind }),
+      });
+      node.text = dce.spelling.callText;
+      dceRecords.push(record);
+      expressionConsumers[index] = Object.freeze({ ...consumer, records:Object.freeze([...consumer.records, record]),
+        isCurrent:() => consumer.isCurrent() && dce.proof.isCurrent() });
+    }
     if (node?.semantic?.expression) {
       const retainedBinding = node.semantic.op === 'cse-binding' && inherited?.proofExpressions.get(node.semantic.expression);
       if (retainedBinding) {
@@ -687,10 +749,11 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     }
   }
 
-  if (spellingRecords.length || controlRecords.length) result = { ...result, rewriteProof:[...(result.rewriteProof || []), ...spellingRecords, ...controlRecords] };
+  if (spellingRecords.length || controlRecords.length || dceRecords.length) result = { ...result, rewriteProof:[...(result.rewriteProof || []), ...spellingRecords, ...controlRecords, ...dceRecords] };
 
   if (proved && (!hasPriorHistory || inherited)) shareProvedScalars(result, proofExpressions, expressionConsumers, records, opts.shouldAbort);
 
+  if (dceRecords.length && !currentDce()) return original;
   if (proofRequested && (opts.shouldAbort?.() || !isProducerProjection(original) || proved && !readProvedRewrites(analysis,proofContext))) return original;
   const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
   const lines = (result.cAst.body || []).map((node, index) => {
@@ -735,7 +798,8 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   const pendingHistory = prepareProjectionHistory(result, expressionConsumers, conditionBindings,
     retainedRecords, opts, historyReasons, proofExpressions);
   const adoptedCse = records.some(record => record.kind === 'proved-scalar-cse');
-  if (adoptedCse && (!pendingHistory || historyReasons.size)) return original;
+  const requiresCompleteHistory = adoptedCse || dceRecords.length > 0;
+  if (requiresCompleteHistory && (!pendingHistory || historyReasons.size)) return original;
   const withLines = {
     ...result,
     lines,
@@ -763,11 +827,13 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     budget:opts.renderProvenanceBudget,
     shouldAbort:opts.shouldAbort,
   });
-  if (adoptedCse && renderProvenance.completeness !== 'complete') return original;
+  if (requiresCompleteHistory && renderProvenance.completeness !== 'complete') return original;
+  if (dceRecords.length && !currentDce()) return original;
   if (proofRequested && (opts.shouldAbort?.() || !isProducerProjection(original) || proved && !readProvedRewrites(analysis,proofContext))) return original;
   const cancelled = opts.shouldAbort?.() === true;
   const stillCurrent = pendingHistory && pendingHistory.observation.matches()
     && pendingHistory.consumers.every(consumer => consumer.isCurrent());
+  if (requiresCompleteHistory && (cancelled || !stillCurrent)) return original;
   if (cancelled) {
     if (proofRequested) return original;
     renderProvenance = buildRenderProvenance({ result:withLines, budget:opts.renderProvenanceBudget, shouldAbort:() => true });

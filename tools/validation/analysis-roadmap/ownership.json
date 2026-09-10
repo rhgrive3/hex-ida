@@ -113,6 +113,8 @@
       "tests/phase8/provenance/forward.test.mjs",
       "tests/phase8/provenance/ledger.test.mjs",
       "tests/phase8/provenance/cse-adoption.test.mjs",
+      "tests/phase8/provenance/dead-call-result.test.mjs",
+      "js/decompiler/phase8/dce.js",
       "tests/phase8/provenance/navigation.test.mjs",
       "tests/phase8/provenance/removal.test.mjs",
       "tests/phase8/provenance/expression-history.test.mjs",

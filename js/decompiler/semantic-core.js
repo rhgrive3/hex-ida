@@ -177,7 +177,7 @@ function beginControlRenderHistory(ctx) {
   } catch { history.edges = 0; }
 }
 
-function retainStatementRenderLine(node, inst, detail, ctx, control = null) {
+function retainStatementRenderLine(node, inst, detail, ctx, control = null, resultBinding = null) {
   const history = control ? ctx.controlRenderHistory : ctx.statementRenderHistory;
   const expressions = takeInitialValueRecords(ctx, history);
   const prefix = control ? 'initial-control' : 'initial-statement';
@@ -197,11 +197,11 @@ function retainStatementRenderLine(node, inst, detail, ctx, control = null) {
   try {
     if (history.edges <= 0 || history.consumers <= 0 || !history.canonical?.isCurrent()) throw new Error(`${prefix}-binding-unavailable`);
     history.consumers--;
-    const inputs = captureProjectionIrData([detail]), output = captureProjectionIrData([node]);
+    const inputs = captureProjectionIrData([detail, resultBinding]), output = captureProjectionIrData([node]);
     history.edges -= inputs.metrics.edges + output.metrics.edges;
     const canonical = Object.freeze({ isCurrent:() => history.canonical.isCurrent() && inputs.matches() });
     if (history.edges < 0 || ctx.opts.shouldAbort?.() || !canonical.isCurrent() || !output.matches()) throw new Error(`${prefix}-binding-unavailable`);
-    (control ? controlRenderLines : statementRenderLines).set(node, Object.freeze({ ir:ctx.ir, instruction:inst, canonical, records,
+    (control ? controlRenderLines : statementRenderLines).set(node, Object.freeze({ ir:ctx.ir, instruction:inst, canonical, records, resultBinding,
       isCurrent:() => canonical.isCurrent() && output.matches() }));
   } catch { history.edges = 0; history.reasons.add(`${prefix}-binding-unavailable`); }
 }
@@ -1178,7 +1178,9 @@ function emitBlockStatements(block, out, ctx, indent) {
       const node = inst.dst && ctx.materialNames.has(inst.dst.id)
         ? line('stmt', indent, `${ctx.materialNames.get(inst.dst.id)} = ${call};`, inst.row, inst.address, extra)
         : line('stmt', indent, `${call};`, inst.row, inst.address, extra);
-      retainStatementRenderLine(node, inst, c, ctx);
+      const resultBinding = inst.dst && ctx.materialNames.has(inst.dst.id)
+        ? Object.freeze({ name:ctx.materialNames.get(inst.dst.id), callText:`${call};`, value:inst.dst }) : null;
+      retainStatementRenderLine(node, inst, c, ctx, null, resultBinding);
       out.push(node);
       ctx.evidence.push(evidenceOf(inst, c.resolved.runtime === 'objc' ? 'Objective-C dispatch' : c.resolved.runtime === 'swift' ? 'Swift dispatch' : 'call'));
     } else if (inst.op === OP.UNKNOWN) {

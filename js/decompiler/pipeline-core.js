@@ -48,6 +48,12 @@ export function readInitialControlConsumer(consumer) {
   return initialControlConsumers.get(consumer) || null;
 }
 const storeSpellingProducers = new WeakMap();
+const callResultSpellingProducers = new WeakMap();
+
+export function readCallResultSpellingProducer(node, ir) {
+  const entry = callResultSpellingProducers.get(node);
+  return entry && entry.ir === ir && entry.observation.matches() && entry.consumer.isCurrent() ? entry : null;
+}
 const buildHistoryObservations = new WeakMap();
 function valueHistoryRecord(record, valueId) {
   const copy = { ...record, valueId };
@@ -1569,6 +1575,17 @@ function cAstFromLines(result, state) {
           isCurrent:() => switched.isCurrent() && observation.matches(),
         }));
       } catch { budget.edges = 0; budget.reasons.add('switch-consumer-unavailable'); }
+    }
+    if (initialStatement?.resultBinding && initialStatement.instruction?.op === 'call') {
+      const consumer = readExpressionHistoryConsumer(node.semantic, state.ir), binding = initialStatement.resultBinding;
+      const budget = consumerObservationBudget(state);
+      try {
+        if (!consumer || budget.edges <= 0 || node.text !== `${binding.name} = ${binding.callText}`) throw new Error('call-result-spelling-unavailable');
+        const observation = captureProjectionIrData([node], state.opts?.shouldAbort);
+        budget.edges -= observation.metrics.edges;
+        if (budget.edges < 0) throw new Error('call-result-spelling-budget');
+        callResultSpellingProducers.set(node, Object.freeze({ ir:state.ir, consumer, observation, ...binding }));
+      } catch { budget.reasons.add('call-result-spelling-unavailable'); }
     }
     body.push(node);
   }
