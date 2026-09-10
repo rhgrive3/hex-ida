@@ -127,7 +127,7 @@ function classifyClass(cls, ctx) {
     add(hit.id, hit.weak ? 1 : NAME_POINTS - 1, 'class-name', { name: cls.name });
   }
 
-  const methods = (cls.methods || []).slice(0, MAX_METHODS_PER_CLASS);
+  const methods = [...(cls.methods || []), ...(cls.classMethods || [])].slice(0, MAX_METHODS_PER_CLASS);
   let stringHits = 0;
   let apiHits = 0;
   for (const m of methods) {
