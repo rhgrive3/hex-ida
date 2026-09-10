@@ -21,6 +21,7 @@ import { createAnalysisStatus, isCompleteStatus } from '../status.js';
 import { createPhase7ArtifactDescriptor } from '../artifact-identity.js';
 import {
   classifyCallTargetProof,
+  RETURN_SUMMARY_CANDIDATE_LIMIT,
   functionSummaryDigest,
   summaryIdentityMatches,
 } from '../summary/contract.js';
@@ -58,7 +59,7 @@ import {
 } from './lattice.js';
 
 export const A2_ANALYZER_ID = 'phase7.pointsto.a2-local';
-export const A2_ANALYZER_VERSION = '1.2.0';
+export const A2_ANALYZER_VERSION = '1.3.0';
 
 function configuredSummaryArtifactIds(options, calleeId) {
   const ids = [];
@@ -846,29 +847,32 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
     }
     if (node.kind === 'call') {
       const targetProof = classifyCallTargetProof(node.call);
-      const calleeId = targetProof.exactSingletonEntityId;
-      const calleeSummary = calleeId == null
-        ? null
-        : (options.summaries?.get(String(calleeId))
-          ?? (typeof options.summaryProvider === 'function' ? options.summaryProvider(String(calleeId)) : null));
-      if (calleeId != null && calleeSummary != null) {
-        const dependencyIds = summaryDependencyIds(options, calleeId, calleeSummary);
-        if (dependencyIds == null) {
-          markSummaryDependencyFailure();
-          return topPointsTo('unresolved-call');
-        }
-        for (const dependencyId of dependencyIds) calleeSummaryDependencyIds.add(dependencyId);
-      }
+      const targets = targetProof.candidateEntityIds;
+      if (!targetProof.exhaustive || !targets.length || targets.length > RETURN_SUMMARY_CANDIDATE_LIMIT) return topPointsTo('unresolved-call');
       const configuredSummaryIdentity = options.summaryIdentity ?? options.expectedSummaryIdentity;
       const summaryIdentity = configuredSummaryIdentity
         && typeof configuredSummaryIdentity === 'object'
         && !Array.isArray(configuredSummaryIdentity)
         ? configuredSummaryIdentity
         : {};
-      let identityMatches = false;
-      let summaryUsable = false;
-      if (calleeSummary != null) {
-        identityMatches = summaryIdentityMatches(calleeSummary, {
+      if (!Array.isArray(node.outputs)) return topPointsTo('unresolved-call');
+      const returnIndex = node.outputs.indexOf(id);
+      if (returnIndex < 0) return topPointsTo('unresolved-call');
+      const argumentIds = Array.isArray(node.call?.arguments) ? node.call.arguments : node.inputs;
+      let merged = BOTTOM_POINTS_TO;
+      for (const calleeId of targets) {
+        if (options.signal?.aborted) return topPointsTo('unresolved-call');
+        const calleeSummary = options.summaries?.get(calleeId)
+          ?? (typeof options.summaryProvider === 'function' ? options.summaryProvider(calleeId) : null);
+        if (options.signal?.aborted) return topPointsTo('unresolved-call');
+        if (calleeSummary == null) return topPointsTo('unresolved-call');
+        const dependencyIds = summaryDependencyIds(options, calleeId, calleeSummary);
+        if (dependencyIds == null) {
+          markSummaryDependencyFailure();
+          return topPointsTo('unresolved-call');
+        }
+        for (const dependencyId of dependencyIds) calleeSummaryDependencyIds.add(dependencyId);
+        const identityMatches = summaryIdentityMatches(calleeSummary, {
           functionId: calleeId,
           snapshotId: options.snapshotId ?? 'snapshot-unbound',
           analyzerId: options.summaryAnalyzerId ?? options.expectedSummaryAnalyzerId ?? summaryIdentity.analyzerId ?? null,
@@ -877,60 +881,38 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
             ?? summaryIdentity.analyzerVersion
             ?? null,
         });
-        if (identityMatches) {
-          try {
-            summaryUsable = isCompleteStatus(calleeSummary.status)
-              && (calleeSummary.unknownCallEffects || []).length === 0;
-          } catch {
-            summaryUsable = false;
-            markSummaryDependencyFailure();
+        if (!identityMatches) {
+          // A supplied summary for a different function/snapshot/analyzer is a
+          // dependency mismatch, not an ordinary unresolved call. Keep the
+          // known callee edge in the result but never publish this run complete.
+          markSummaryDependencyFailure();
+          return topPointsTo('unresolved-call');
+        }
+        if (!isCompleteStatus(calleeSummary.status) || calleeSummary.unknownCallEffects.length) return topPointsTo('unresolved-call');
+        const alternatives = calleeSummary.returnProvenance.filter(
+          (prov) => Number(prov.returnIndex ?? 0) === returnIndex,
+        );
+        if (!alternatives.length) return topPointsTo('unresolved-call');
+        // Join every return alternative from every proven candidate. A missing
+        // alternative is unknown, never an empty contribution to this union.
+        for (const prov of alternatives) {
+          let candidate;
+          if (prov.kind === 'arg' && prov.argIndex != null && argumentIds?.[prov.argIndex] != null) {
+            const argSet = irGet(argumentIds[prov.argIndex]);
+            if (argSet.top || pointsToIsBottom(argSet)) return topPointsTo('unresolved-call');
+            let offset;
+            try { offset = BigInt(prov.offset ?? 0n); }
+            catch { return topPointsTo('unresolved-call'); }
+            candidate = offset !== 0n ? shiftSet(argSet, offset, width ?? 64) : argSet;
+          } else {
+            const target = targetFromReturnProvenance(prov, width ?? 64, evidenceIds);
+            if (!target) return topPointsTo('unresolved-call');
+            candidate = createPointsToSet({ targets: [target] });
           }
+          if (candidate.top || pointsToIsBottom(candidate)) return topPointsTo('unresolved-call');
+          merged = joinPointsTo(merged, candidate, budget);
+          if (merged.top) return merged;
         }
-      }
-      if (calleeSummary != null && !identityMatches) {
-        // A supplied summary for a different function/snapshot/analyzer is a
-        // dependency mismatch, not an ordinary unresolved call. Keep the
-        // known callee edge in the result but never publish this run complete.
-        markSummaryDependencyFailure();
-      }
-      if (!calleeSummary
-        || !identityMatches
-        || !summaryUsable) {
-        return topPointsTo('unresolved-call');
-      }
-      if (!Array.isArray(node.outputs)) return topPointsTo('unresolved-call');
-      const returnIndex = node.outputs.indexOf(id);
-      if (returnIndex < 0) return topPointsTo('unresolved-call');
-      const alternatives = (calleeSummary.returnProvenance ?? []).filter(
-        (prov) => Number(prov.returnIndex ?? 0) === returnIndex,
-      );
-      if (!alternatives.length) return topPointsTo('unresolved-call');
-
-      // Canonical Semantic IR carries the argument list independently from a
-      // runtime target value; an explicit empty array means a zero-argument
-      // call, not a missing field. node.inputs is retained only as a legacy
-      // fallback for fixtures that predate the canonical field entirely.
-      const argumentIds = Array.isArray(node.call?.arguments)
-        ? node.call.arguments
-        : node.inputs;
-      let merged = BOTTOM_POINTS_TO;
-      for (const prov of alternatives) {
-        let candidate;
-        if (prov.kind === 'arg' && prov.argIndex != null && argumentIds?.[prov.argIndex] != null) {
-          const argSet = irGet(argumentIds[prov.argIndex]);
-          if (argSet.top || pointsToIsBottom(argSet)) return topPointsTo('unresolved-call');
-          let offset;
-          try { offset = BigInt(prov.offset ?? 0n); }
-          catch { return topPointsTo('unresolved-call'); }
-          candidate = offset !== 0n ? shiftSet(argSet, offset, width ?? 64) : argSet;
-        } else {
-          const target = targetFromReturnProvenance(prov, width ?? 64, evidenceIds);
-          if (!target) return topPointsTo('unresolved-call');
-          candidate = createPointsToSet({ targets: [target] });
-        }
-        if (candidate.top || pointsToIsBottom(candidate)) return topPointsTo('unresolved-call');
-        merged = joinPointsTo(merged, candidate, budget);
-        if (merged.top) return merged;
       }
       return pointsToIsBottom(merged) ? topPointsTo('unresolved-call') : merged;
     }

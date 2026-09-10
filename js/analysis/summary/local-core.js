@@ -16,6 +16,7 @@
 import { createAnalysisStatus, isCompleteStatus, mergeAnalysisStatus } from '../status.js';
 import {
   classifyCallTargetProof,
+  RETURN_SUMMARY_CANDIDATE_LIMIT,
   createFunctionSummary,
   createMemoryEffect,
   createUnknownCallEffect,
@@ -23,7 +24,7 @@ import {
 } from './contract.js';
 
 export const LOCAL_SUMMARY_ANALYZER_ID = 'phase7.summary.local';
-export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.2.0';
+export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.3.0';
 
 const DEFAULT_ADDRESS_SPACES = Object.freeze(['memory']);
 
@@ -223,18 +224,21 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   const callInfo = (node) => {
     const targetProof = classifyCallTargetProof(node.call);
     const targets = targetProof.candidateEntityIds;
-    const calleeId = targetProof.exactSingletonEntityId;
-    const supplied = calleeId == null ? null : calleeSummaries.get(calleeId);
-    const current = supplied != null && summaryIdentityMatches(supplied, summaryIdentityOptions(calleeId))
-      ? supplied
-      : null;
-    return {
-      targetProof,
-      targets,
-      supplied,
-      resolved: current,
-      identityMismatch: supplied != null && current == null,
-    };
+    const info = { targetProof, targets, resolved:null, identityMismatch:false };
+    if (!targetProof.exhaustive || !targets.length || targets.length > RETURN_SUMMARY_CANDIDATE_LIMIT) return info;
+    const resolved = [];
+    for (const calleeId of targets) {
+      if (options.signal?.aborted) return info;
+      const supplied = calleeSummaries.get(calleeId);
+      if (supplied == null) continue;
+      if (!summaryIdentityMatches(supplied, summaryIdentityOptions(calleeId))) {
+        info.identityMismatch = true;
+        continue;
+      }
+      resolved.push(supplied);
+    }
+    if (resolved.length === targets.length) info.resolved = resolved;
+    return info;
   };
 
   /**
@@ -245,14 +249,20 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
    */
   const composeCallReturnProvenance = (callNode, outputValueId, outerReturnIndex, outerOffset) => {
     const info = callInfo(callNode);
-    const callee = info.resolved;
-    if (!callee || !isCompleteStatus(callee.status) || callee.unknownCallEffects.length > 0) return null;
+    const callees = info.resolved;
+    if (!callees || callees.some(callee => !isCompleteStatus(callee.status) || callee.unknownCallEffects.length > 0)) return null;
     const callReturnIndex = (callNode.outputs ?? []).indexOf(outputValueId);
     if (callReturnIndex < 0) return null;
-    const alternatives = (callee.returnProvenance ?? []).filter(
-      (provenance) => Number(provenance.returnIndex ?? 0) === callReturnIndex,
-    );
-    if (!alternatives.length) return null;
+    const alternatives = [];
+    for (const callee of callees) {
+      const returns = callee.returnProvenance.filter(
+        (provenance) => Number(provenance.returnIndex ?? 0) === callReturnIndex,
+      );
+      // One missing candidate return is unknown, not an empty set. It must
+      // never disappear while composing the remaining finite alternatives.
+      if (!returns.length) return null;
+      alternatives.push(...returns);
+    }
     // Canonical Semantic IR carries the argument list independently from a
     // runtime target value; an explicit empty array means a zero-argument
     // call, not a missing field. `callNode.inputs` is a legacy fallback for
@@ -434,25 +444,28 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     if (resolved) {
       // A callee summary can be exact only after the call-site target universe
       // itself is proven. A non-exhaustive singleton must not take this branch.
-      statuses.push(resolved.status);
       // Consuming an identity-matched callee summary authorizes folding its
       // effects in, not re-grading their authority: each effect keeps the
       // source it was built with, so a library-model or abi-rule fact cannot
       // be laundered into proven-summary by one composition step.
-      memoryReadRegions.push(...resolved.memoryReadRegions.map((effect) => createMemoryEffect({ ...effect })));
-      memoryWriteRegions.push(...resolved.memoryWriteRegions.map((effect) => createMemoryEffect({ ...effect })));
-      for (const unknown of resolved.unknownCallEffects) {
-        // Keep the originating call site. Composing a path prefix here would
-        // make the effect set grow every time a summary is recomposed, which is
-        // what stops a recursive fixed point from converging.
-        unknownCallEffects.push(unknown);
-        controlUnknown = true;
-        ensureBroadWrite(node);
+      for (const callee of resolved) {
+        statuses.push(callee.status);
+        memoryReadRegions.push(...callee.memoryReadRegions.map((effect) => createMemoryEffect({ ...effect })));
+        memoryWriteRegions.push(...callee.memoryWriteRegions.map((effect) => createMemoryEffect({ ...effect })));
+        for (const unknown of callee.unknownCallEffects) {
+          // Keep the originating call site. Composing a path prefix here would
+          // make the effect set grow every time a summary is recomposed, which is
+          // what stops a recursive fixed point from converging.
+          unknownCallEffects.push(unknown);
+          controlUnknown = true;
+          ensureBroadWrite(node);
+        }
+        if (callee.mayThrow === true) mayThrow = true;
+        if (callee.mayThrow === 'unknown' || callee.noreturn === 'unknown') controlUnknown = true;
       }
-      if (resolved.mayThrow === true) mayThrow = true;
-      if (resolved.mayThrow === 'unknown') controlUnknown = true;
-      if (resolved.noreturn === true) sawNoreturnCall = true;
-      if (resolved.noreturn === 'unknown') controlUnknown = true;
+      // A possible non-returning target does not prove that the call cannot
+      // return. That fact requires agreement of the entire candidate set.
+      if (resolved.every(callee => callee.noreturn === true)) sawNoreturnCall = true;
       if (targetProof.kind === 'indirect') {
         indirectCallSets.push({
           callSiteId: node.id,
@@ -463,7 +476,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       } else {
         directCalls.push({
           callSiteId: node.id, targetEntityIds: targets,
-          summaryId: resolved.functionId, effectSource: 'proven-summary',
+          summaryId: resolved[0].functionId, effectSource: 'proven-summary',
         });
       }
       continue;

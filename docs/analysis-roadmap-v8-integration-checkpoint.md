@@ -4986,6 +4986,54 @@ Canonical gates, generated synchronization, exact-head and same-PR remote backup
 remain separately required evidence. Other-owner issue/performance and physical
 device work remain outside this TODO increment.
 
+## C1-02 exhaustive indirect return-summary consumption
+
+The existing canonical target classifier now authorizes consumption of every
+candidate in a complete indirect target universe, not only singleton calls.
+A2 and local-summary analyzer versions advance to 1.3.0. Existing points-to
+joins and return-provenance records are reused: absent, partial, incompatible,
+stale or unknown candidate returns withhold the finite result. Every consumed
+A2 callee contributes its canonical summary digest to caller dependencies.
+The real local-summary producer composes the same union through wrappers,
+folds every candidate's memory/control effects without changing source authority,
+and requires all candidates to agree before inferring a non-returning call.
+
+An explicit 256-candidate consumption cap is separate from points-to root-set
+budgets: 256 callees returning one root can fit a one-root budget, while an
+over-cap universe stays unknown without querying providers. Cancellation is
+checked after provider callbacks as well as before candidate consumption; a
+new test first exposed finite-return publication on final-candidate cancellation.
+
+The frozen 72-cell denominator is three return-root kinds (argument, root,
+allocation) x four graph shapes (leaf, two-wrapper chain, self-recursive,
+mutually recursive) x six target modes (direct, exhaustive, nonexhaustive,
+missing, stale, unknown). All 24 positive cells require actual caller precision
+gain and another outer caller consuming the generated wrapper; all 48 negative
+cells retain unknown. Recursive rows preserve finite local return facts through
+the actual SCC solver, **not discovery of values returned through recursive
+calls**. Input immutability, replay and complete candidate digest dependencies
+are asserted. Additional tests cover mixed-root candidate permutations and
+deduplication, per-candidate semantic/digest changes, 27 incomplete/malformed
+candidate positions, memory-effect source preservation, unanimous noreturn,
+candidate/root-budget boundaries and cancellation at every candidate position.
+
+Working-tree matrix, canonical summary, points-to and foundation groups,
+module boundaries and lint passed. The previous points-to version expectation
+was updated from 1.2.0 to 1.3.0 without weakening semantic assertions. Generated
+synchronization, clean exact-head evidence and normal backup to existing PR
+#7036 remain separate transaction steps. No full FR-C1-02A, recursive-value
+discovery, full-roadmap or release completion is claimed. The performance ZIP
+requested separately is still unavailable as a local/downloadable archive;
+none of its reported source changes are represented by this TODO increment.
+
+Live-main read-only reconciliation audit found `5e2f87c20` has newer separate
+return-contract work, including required `addressSpace` on root/allocation facts
+and its versioned constructor/consumer changes. This increment is verified on
+the existing integration lineage, not that candidate merge tree. Absorbing live
+main must preserve those changes and update these fixtures to the new contract;
+old branch green evidence is not proof of current-main compatibility. No main
+or component merge is performed as part of this increment.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

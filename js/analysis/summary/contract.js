@@ -160,6 +160,10 @@ function validateSummaryInput(input) {
   if (input.stackDelta != null) optionalInteger(input.stackDelta, 'function-summary-invalid-stack-delta');
 }
 
+// Bound newly consumed return-summary universes without confusing the number
+// of callees with the number of distinct points-to roots after their union.
+export const RETURN_SUMMARY_CANDIDATE_LIMIT = 256;
+
 export function classifyCallTargetProof(call = {}) {
   const result = core.classifyCallTargetProof(call);
   if (result.kind !== 'indirect' || result.candidateEntityIds.length > 0 || !result.exhaustive) return result;

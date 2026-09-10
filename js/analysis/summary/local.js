@@ -2,13 +2,14 @@
 import { createAnalysisStatus } from '../status.js';
 import {
   classifyCallTargetProof,
+  RETURN_SUMMARY_CANDIDATE_LIMIT,
   createFunctionSummary,
   summaryIdentityMatches,
 } from './contract.js';
 import * as core from './local-core.js';
 
 export const LOCAL_SUMMARY_ANALYZER_ID = core.LOCAL_SUMMARY_ANALYZER_ID;
-export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.2.0';
+export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.3.0';
 
 function summaryForTarget(options, target) {
   return options?.calleeSummaries?.get?.(String(target))
@@ -19,14 +20,14 @@ function summaryForTarget(options, target) {
 }
 function needsConservativeCall(callNode, options) {
   const proof = classifyCallTargetProof(callNode.call ?? {});
-  if (!proof.exhaustive) return true;
-  const target = proof.exactSingletonEntityId;
-  if (target == null) return false;
-  const candidate = summaryForTarget(options, target);
-  if (candidate == null) return false;
-  return !summaryIdentityMatches(candidate, {
-    functionId:String(target),
-    snapshotId:options?.snapshotId ?? candidate?.status?.snapshotId ?? null,
+  if (!proof.exhaustive || proof.candidateEntityIds.length > RETURN_SUMMARY_CANDIDATE_LIMIT) return true;
+  return proof.candidateEntityIds.some(target => {
+    const candidate = summaryForTarget(options, target);
+    if (candidate == null) return false;
+    return !summaryIdentityMatches(candidate, {
+      functionId:target,
+      snapshotId:options?.snapshotId ?? candidate?.status?.snapshotId ?? null,
+    });
   });
 }
 function conservativeIr(ir, options) {
