@@ -40,10 +40,16 @@ assert.notEqual(first.id, second.id, 're-run observations must own distinct evid
 legacyEvidenceToCanonicalGraph({ runtimeEvidence: [first, second] });
 assert.ok(true, 'canonical graph accepts both runs without evidence-id-conflict');
 
-// identical observation content at the same explicit observation time keeps
-// one identity (content-addressed)
+// identical observation content at the same explicit observation time is
+// still its own occurrence: two created records own distinct ids unless the
+// caller pins the same explicit occurrence identity
 const third = createRuntimeEvidenceRecord({ ...base, timestamp: '2026-09-03T00:00:00.000Z', observedState: { returnValue: 1 }, verdict: 'supported' });
-assert.equal(first.id, third.id);
+assert.notEqual(first.id, third.id, 'every generated record is its own occurrence');
+const pinnedA = createRuntimeEvidenceRecord({ ...base, timestamp: '2026-09-03T00:00:00.000Z', observedState: { returnValue: 1 }, verdict: 'supported', occurrence: 'run-1' });
+const pinnedB = createRuntimeEvidenceRecord({ ...base, timestamp: '2026-09-03T00:00:00.000Z', observedState: { returnValue: 1 }, verdict: 'supported', occurrence: 'run-1' });
+assert.equal(pinnedA.id, pinnedB.id, 'an explicit occurrence identity makes rebuilds deterministic');
+const pinnedC = createRuntimeEvidenceRecord({ ...base, timestamp: '2026-09-03T00:00:00.000Z', observedState: { returnValue: 1 }, verdict: 'supported', occurrence: 'run-2' });
+assert.notEqual(pinnedA.id, pinnedC.id, 'different occurrences of the same content stay distinct');
 
 // separate runs of the same payload at different observation times stay
 // individual occurrences (R0 review: run occurrence identity)
@@ -51,6 +57,14 @@ const fourth = createRuntimeEvidenceRecord({
   ...base, timestamp: '2026-09-03T00:00:02.000Z', observedState: { returnValue: 1 }, verdict: 'supported',
 });
 assert.notEqual(first.id, fourth.id, 'a re-run of the same payload is its own occurrence');
+
+// the review's decisive case: identical payload AND identical timestamp still
+// own distinct identities (two runs inside one millisecond)
+{
+  const r1 = createRuntimeEvidenceRecord({ sessionId: 's', experimentId: 'e', caseId: 'c', kind: 'experiment', provenanceGroup: 'runtime:s:e:c', timestamp: '2026-09-10T00:00:00.000Z', observedState: { returnValue: 1 }, verdict: 'supported' });
+  const r2 = createRuntimeEvidenceRecord({ sessionId: 's', experimentId: 'e', caseId: 'c', kind: 'experiment', provenanceGroup: 'runtime:s:e:c', timestamp: '2026-09-10T00:00:00.000Z', observedState: { returnValue: 1 }, verdict: 'supported' });
+  assert.notEqual(r1.id, r2.id, 'same content + same timestamp are still distinct occurrences');
+}
 
 // verdict-only re-runs without payload own distinct identities (R0 review)
 const bareSupported = createRuntimeEvidenceRecord({ sessionId: 's', experimentId: 'e', caseId: 'c', kind: 'experiment', provenanceGroup: 'runtime:s:e:c', verdict: 'supported' });

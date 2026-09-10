@@ -3,6 +3,8 @@ import { GROUP } from '../evidence.js';
 import { stableDigest } from '../core/identity/index.js';
 
 function nowIso() { return new Date().toISOString(); }
+// #5546: monotonic per-process occurrence ordinal — see createRuntimeEvidenceRecord.
+let RUN_OCCURRENCE_SEQUENCE = 0;
 function safeConfidence(value, fallback = 0.5) { return typeof value === 'number' && Number.isFinite(value) ? Math.max(0,Math.min(1,value)) : fallback; }
 // #5495: identity components must not collide. Clean components pass through
 // unchanged; anything containing characters outside the canonical class (or
@@ -88,6 +90,17 @@ export function createRuntimeEvidenceRecord(input = {}) {
   const isBare4327Shape = !hasObservationPayload
     && (input.verdict ?? 'inconclusive') === 'inconclusive'
     && input.timestamp == null;
+  // #5546 review: every generated occurrence needs its own identity even when
+  // the observation content AND the observation time are identical (two runs
+  // inside one millisecond). A module-local occurrence sequence disambiguates
+  // same-content/same-time runs; records minted from the same input twice in
+  // one process are distinct observations by construction. Replayable
+  // identity is preserved via an explicit input.occurrence — callers that
+  // rebuild the same record deterministically pass the same occurrence value
+  // and get the same id.
+  const occurrenceIdentity = input.occurrence == null
+    ? `#${(RUN_OCCURRENCE_SEQUENCE++).toString(36)}`
+    : `#${idPart(String(input.occurrence))}`;
   const observationContent = {
     input: input.input ?? null,
     initialState: input.initialState ?? null,
@@ -96,7 +109,7 @@ export function createRuntimeEvidenceRecord(input = {}) {
     verdict: input.verdict ?? 'inconclusive',
     runTimestamp: isBare4327Shape ? null : resolvedTimestamp,
   };
-  const occurrence = isBare4327Shape ? '' : `:${stableDigest(observationContent)}`;
+  const occurrence = isBare4327Shape ? '' : `:${stableDigest(observationContent)}${occurrenceIdentity}`;
   const generatedId = `${traceGroup}:${idPart(input.kind || 'observation')}${occurrence}`;
   return {
     id:runtimeEvidenceId(input.id, generatedId),
