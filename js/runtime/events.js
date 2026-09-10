@@ -510,12 +510,22 @@ export class RuntimeEventNormalizer {
         dropped++;
       }
     }
+    /* #5680: the batch must never claim stronger completeness than its
+       weakest queued event. createRuntimeEventBatch() rejects upgrades, so
+       a successfully accepted truncated/unsupported source event must
+       demote the requested completeness instead of failing the flush. */
+    let requested = dropped > 0 ? 'truncated' : (events.length ? 'partial' : 'bounded');
+    for (const event of events) {
+      if (COMPLETENESS_RANK[event.completeness] < COMPLETENESS_RANK[requested]) {
+        requested = event.completeness;
+      }
+    }
     return createRuntimeEventBatch({
       runtimeSessionId: this.context.runtimeSessionId,
       providerId: this.context.providerId,
       sessionEpoch: this.context.sessionEpoch ?? 1,
       events,
-      completeness: dropped > 0 ? 'truncated' : (events.length ? 'partial' : 'bounded'),
+      completeness: requested,
       dropped,
     });
   }
