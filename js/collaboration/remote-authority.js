@@ -1,6 +1,6 @@
-import { deepFreeze, jsonSafe, stableDigest } from '../core/identity/index.js';
+import { deepFreeze, jsonSafe } from '../core/identity/index.js';
 import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';
-import { CHANGELOG_SCHEMA_VERSION, ChangeLog, createProjectOperation, canonicalizeProjectOperation, isCanonicalProjectOperation } from './index.js';
+import { CHANGELOG_SCHEMA_VERSION, ChangeLog, collaborationDigest, createProjectOperation, canonicalizeProjectOperation, isCanonicalProjectOperation } from './index.js';
 import { applyRemoteEnvelopeQueued } from './remote-delivery.js';
 
 export const REMOTE_COLLAB_SCHEMA = 'hex-remote-collaboration-envelope/v1';
@@ -166,7 +166,7 @@ function isCanonicalRemoteOperation(operation) {
   const canonical = canonicalizeProjectOperation(operation);
   return canonical != null
     && isCanonicalProjectOperation(canonical)
-    && stableDigest(operation) === stableDigest(canonical);
+    && collaborationDigest(operation) === collaborationDigest(canonical);
 }
 
 function authorized(permissions, operation) {
@@ -179,7 +179,7 @@ function authorized(permissions, operation) {
 
 export function envelopeIdentity(envelope) {
   const { envelopeId, ...payload } = envelope;
-  return `remote-envelope:${stableDigest(payload)}`;
+  return `remote-envelope:${collaborationDigest(payload)}`;
 }
 
 export function createRemoteCollaborationEnvelope(input = {}) {

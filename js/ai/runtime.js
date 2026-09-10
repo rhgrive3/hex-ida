@@ -4,10 +4,10 @@ import { EvidenceStore } from './evidence.js';
 import { HypothesisStore } from './hypothesis.js';
 import { ProposalStore } from './proposals.js';
 import { createAgentJobManager } from './jobs/index.js';
-import { InvestigationSessionStore } from './session-core/index.js';
+import { InvestigationSessionStore, isValidSessionId } from './session-core/index.js';
 import { sanitizeActions, addressText } from './validation.js';
 import { executeTurn } from './control/turn-executor.js';
-import { addressExistsAsync, assertLiveBindingsUnchanged, deterministicConfidence, fallbackEvidence, presentAnswer } from './control/runtime-support.js';
+import { addressExistsAsync, assertLiveBindingsUnchanged, defaultMonotonicNow, deterministicConfidence, fallbackEvidence, presentAnswer } from './control/runtime-support.js';
 
 const BUDGET_LIMIT_REASONS = new Set([
   'budget_exhausted',
@@ -62,7 +62,7 @@ export class AIRuntime {
   async runJobSlice(jobOrId, options = {}) { return this.jobs.runSlice(jobOrId, options); }
   async resumeJob(id, options = {}) { return this.jobs.resume(id, options); }
 
-  async finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope, stores, signal }) {
+  async finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, monotonicNow = defaultMonotonicNow, limitReason, registry, snapshot, effectiveScope, stores, signal }) {
     // Store authority comes from the turn's captured namespace, never from the
     // shared fields: a concurrent turn re-points `this.*Store` across awaits
     // and would otherwise swap this turn's evidence/hypothesis/proposal
@@ -82,8 +82,11 @@ export class AIRuntime {
     if (missingIds.length) activity.push({ type: 'consistency-check', label: `${missingIds.length} 件の存在しない evidence 参照を除外`, timestamp: new Date().toISOString() });
     const finalEvidence = evidence.length ? evidence : fallbackEvidence(evidenceStore, plan);
     for (const modelHypothesis of decision.hypotheses || []) hypothesisStore.upsert(modelHypothesis);
+    const hasExplicitHypothesisSelection = Array.isArray(decision.hypothesisIds);
     const hypothesisIds = new Set((decision.hypothesisIds || []).map(String));
-    const hypotheses = hypothesisIds.size ? hypothesisStore.all().filter((item) => hypothesisIds.has(item.id)) : hypothesisStore.all();
+    const hypotheses = hasExplicitHypothesisSelection
+      ? hypothesisStore.all().filter((item) => hypothesisIds.has(item.id))
+      : hypothesisStore.all();
     // Suggested actions must respect an async-only `addressExists`: resolve the
     // authority for every candidate target before sanitizing, so a `false`
     // cannot be dropped by the synchronous wrapper (#5790).
@@ -98,19 +101,23 @@ export class AIRuntime {
     let confidence = Number.isFinite(decision.confidence) ? Math.max(0, Math.min(1, decision.confidence)) : deterministicConfidence(plan);
     if (!finalEvidence.length) confidence = Math.min(confidence, 0.5);
     const budgetReason = BUDGET_LIMIT_REASONS.has(limitReason) ? limitReason : null;
+    const elapsedNow = typeof monotonicNow === 'function' ? monotonicNow() : defaultMonotonicNow();
+    const elapsedMs = Number.isFinite(elapsedNow) && Number.isFinite(started)
+      ? Math.max(0, elapsedNow - started)
+      : 0;
     return {
       mode: request.mode, style: request.style,
       answer: presentAnswer(String(decision.answer || ''), request.style, finalEvidence, plan), confidence, evidence: finalEvidence, hypotheses, actions,
       followups: (decision.followups || []).map(String).slice(0, 8), activity,
-      usage: { modelCalls, toolCalls, elapsedMs: Date.now() - started, contextBytes, ...wireUsage, candidateCount: plan?.candidates?.length || 0, analyzedFunctions: plan?.stats?.analyzedFunctions || 0, disassembly: Math.max(plan?.stats?.disassembly || 0, registry.analysisStats?.disassembly || 0), toolCost: registry.accounting.cost },
+      usage: { modelCalls, toolCalls, elapsedMs, contextBytes, ...wireUsage, candidateCount: plan?.candidates?.length || 0, analyzedFunctions: plan?.stats?.analyzedFunctions || 0, disassembly: Math.max(plan?.stats?.disassembly || 0, registry.analysisStats?.disassembly || 0), toolCost: registry.accounting.cost },
       scope: { requested: request.scope, effective: effectiveScope }, turnSnapshotId: snapshot.id,
       limits: { exhausted: !!budgetReason, reason: limitReason || undefined },
     };
   }
 
   async releaseSession(sessionId, { deletePersisted = false } = {}) {
-    if (sessionId == null) return false;
-    const id = String(sessionId);
+    if (!isValidSessionId(sessionId)) return false;
+    const id = sessionId;
     for (const [key, ownerId] of Array.from(this.storeNamespaceOwners.entries())) {
       if (ownerId !== id) continue;
       this.storeNamespaces.delete(key);

@@ -53,18 +53,24 @@ export function recoverAggregateLayouts(ir, types, opts = {}) {
   const layouts=[];
   for (const g of groups.values()) {
     let kind='object'; let confidence=0.45; const evidence=[];
+    const widthsOf = (xs) => {
+      const widths=[...new Set(xs.map((x)=>x.size).filter((s)=>Number.isSafeInteger(s)&&s>0))];
+      return { size: widths.length ? Math.max(...widths) : 0, mixed: widths.length > 1 };
+    };
+    const fixedWidths=new Map([...g.fixed.entries()].map(([offset,xs])=>[offset,widthsOf(xs)]));
+    const hasUnknownFixedExtent=[...fixedWidths.values()].some(({size})=>size===0);
     if (g.indexed.length >= 2) {
       const consistent = g.indexed.every((x)=>x.size>0 && x.scale===x.size);
       if (consistent) { kind='array'; confidence=0.86; evidence.push('multiple indexed accesses with element-size scale'); }
     }
     if (kind !== 'array' && g.fixed.size >= 2) {
-      const fixed=[...g.fixed.entries()].map(([offset,xs])=>({ offset:BigInt(offset), size:xs[0].size, reads:xs.filter(x=>x.op==='load').length, writes:xs.filter(x=>x.op==='store').length }));
-      const noOverlap=fixed.every((a,i)=>fixed.every((b,j)=>i===j || a.offset+BigInt(a.size||0)<=b.offset || b.offset+BigInt(b.size||0)<=a.offset));
+      const fixed=[...g.fixed.entries()].map(([offset,xs])=>({ offset:BigInt(offset), size:fixedWidths.get(offset).size, reads:xs.filter(x=>x.op==='load').length, writes:xs.filter(x=>x.op==='store').length }));
+      const noOverlap=!hasUnknownFixedExtent && fixed.every((a,i)=>fixed.every((b,j)=>i===j || a.offset+BigInt(a.size)<=b.offset || b.offset+BigInt(b.size)<=a.offset));
       if (noOverlap) { kind='struct-or-object'; confidence=0.68; evidence.push('multiple non-overlapping fixed-offset fields'); }
     }
     const owner = resolverOwner(g, types);
     const fields=[...g.fixed.entries()].map(([offset,xs])=>{
-      const off=BigInt(offset); let known=null;
+      const off=BigInt(offset); const width=fixedWidths.get(offset); let known=null;
       if (owner) {
         try {
           known=opts.fieldFor?.(owner.key,off,xs[0]?.row,{
@@ -74,14 +80,15 @@ export function recoverAggregateLayouts(ir, types, opts = {}) {
           })||null;
         } catch { known=null; }
       }
-      return {
-        offset:off,
-        size:xs[0]?.size||0,
+      const field={ offset:off,
+        size:width.size,
         name:known?.name || `field_${off.toString(16).toUpperCase()}`,
         type:known?.type || types?.locations?.get?.(xs[0]?.key) || null,
         confidence:known?.name ? (owner?.nominal ? 0.95 : 0.75) : 0.5,
         owner:owner?.key || null,
       };
+      if (width.mixed) field.ambiguousWidths = true;
+      return field;
     });
     layouts.push({ root:g.root, owner:owner?.key || null, kind, confidence, fields, indexed:g.indexed, evidence });
   }

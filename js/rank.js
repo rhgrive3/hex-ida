@@ -64,7 +64,7 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
   if (!goal) return { candidates: [], matchedStrings: [], notes: ['no-goal'] };
   const numericLimit = Number(limit);
   const resultLimit = Number.isFinite(numericLimit) && numericLimit > 0 ? Math.floor(numericLimit) : 0;
-  const hasProgram = !!(program && program.callCount + program.refCount > 0);
+  const hasProgram = !!program;
   if (!hasProgram) notes.push('no-program-index');
 
   const candidate = (addr, site) => {

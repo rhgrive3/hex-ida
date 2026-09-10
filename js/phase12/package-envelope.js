@@ -14,7 +14,8 @@ export class PackageValidationError extends Error {
 }
 
 function required(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new PackageValidationError(code);
+  const text = value.trim();
   if (!text) throw new PackageValidationError(code);
   return text;
 }
@@ -278,10 +279,12 @@ export function validateProviderOutput(value, options = {}) {
     }
     const encoded = stableStringify(value);
     if (new TextEncoder().encode(encoded).byteLength > maxBytes) throw new PackageValidationError('provider-output-too-large');
-    const hasItems = Array.isArray(value.items);
-    const hasResults = Array.isArray(value.results);
+    const hasItems = Object.hasOwn(value, 'items');
+    const hasResults = Object.hasOwn(value, 'results');
+    if (hasItems && !Array.isArray(value.items)) throw new PackageValidationError('provider-output-schema-invalid', 'items must be an array when supplied');
+    if (hasResults && !Array.isArray(value.results)) throw new PackageValidationError('provider-output-schema-invalid', 'results must be an array when supplied');
     if (hasItems && hasResults) throw new PackageValidationError('provider-output-entry-collection-ambiguous');
-    const entries = Array.isArray(value.items) ? value.items : Array.isArray(value.results) ? value.results : [];
+    const entries = hasItems ? value.items : hasResults ? value.results : [];
     if (entries.length > maxEntries) throw new PackageValidationError('provider-output-entry-budget-exceeded');
     if (value.schemaVersion !== PHASE12_PROVIDER_OUTPUT_SCHEMA) throw new PackageValidationError('provider-output-schema-unsupported');
     if (!value.provenance || typeof value.provenance !== 'object' || Array.isArray(value.provenance)) throw new PackageValidationError('provider-output-provenance-required');

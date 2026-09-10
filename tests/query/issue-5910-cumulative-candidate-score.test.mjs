@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import './issue-4357-strict-candidate-address.test.mjs';
 import { planAnalysisGoal } from '../../js/query/planner.js';
 
 const TARGET = 0x9000n;

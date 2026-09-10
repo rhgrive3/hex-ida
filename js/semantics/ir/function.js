@@ -1,5 +1,5 @@
 import { deepFreeze, stableStringify } from '../../core/identity/index.js';
-import { createOriginSet } from '../../core/identity/origin.js';
+import { createOriginSet, isReusableOriginSet } from '../../core/identity/origin.js';
 import {
   SEMANTIC_IR_CONTRACT_VERSION,
   SEMANTIC_IR_SCHEMA_VERSION,
@@ -115,6 +115,11 @@ function cloneReferenceTarget(value) {
 function cacheReferenceReads(value, seen = new WeakMap()) {
   if (!value || typeof value !== 'object'
     || ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date) return value;
+  // Only this producer-owned, recursively checked immutable payload is safe
+  // to retain. Proxying it would discard the normalizer's ownership brand and
+  // copy/normalize the whole provenance tree again for each semantic entity.
+  // Caller-owned frozen objects, accessors and mutable children still capture.
+  if (isReusableOriginSet(value)) return value;
   const cached = seen.get(value);
   if (cached) return cached;
   const target = needsReferenceClone(value) ? cloneReferenceTarget(value) : value;
@@ -208,6 +213,26 @@ function countRawReferences(blocks, values, nodes, seen) {
   return count;
 }
 
+function sameStringSequence(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function callInputsMatchNode(node) {
+  const argumentInputs = node.call.arguments;
+  // An unresolved call with no target or argument summary may still carry
+  // opaque generic inputs for conservative accounting. There is no embedded
+  // I/O claim to contradict in that shape, so preserve the legacy boundary.
+  if (node.call.targetEntityIds.length === 0
+    && node.call.targetValueIds.length === 0
+    && argumentInputs.length === 0) return true;
+  // Direct calls and enriched indirect calls keep the target separate from
+  // the ABI argument list; ABI-neutral lowering may also expose the target as
+  // the leading generic input. Both are canonical, but no third value may
+  // appear in either representation.
+  if (sameStringSequence(node.inputs, argumentInputs)) return true;
+  return sameStringSequence(node.inputs, [...node.call.targetValueIds, ...argumentInputs]);
+}
+
 function validateNormalizedFunction(out, options) {
   assertNotAborted(options);
   const blockById = new Map();
@@ -253,6 +278,8 @@ function validateNormalizedFunction(out, options) {
     }
     if (node.memory && !valueById.has(node.memory.addressExpr.valueId)) fail('semantic-ir-dangling-address-value-id');
     if (node.call) {
+      if (!callInputsMatchNode(node)) fail('semantic-ir-call-input-mismatch');
+      if (!sameStringSequence(node.outputs, node.call.returns)) fail('semantic-ir-call-output-mismatch');
       for (const id of [...node.call.targetValueIds, ...node.call.arguments, ...node.call.returns]) {
         if (!valueById.has(id)) fail('semantic-ir-dangling-call-value-id');
       }
@@ -263,6 +290,8 @@ function validateNormalizedFunction(out, options) {
       }
     }
     if (node.intrinsic) {
+      if (!sameStringSequence(node.inputs, node.intrinsic.inputs)) fail('semantic-ir-intrinsic-input-mismatch');
+      if (!sameStringSequence(node.outputs, node.intrinsic.outputs)) fail('semantic-ir-intrinsic-output-mismatch');
       for (const id of [...node.intrinsic.inputs, ...node.intrinsic.outputs]) {
         if (!valueById.has(id)) fail('semantic-ir-dangling-intrinsic-value-id');
       }
@@ -281,7 +310,10 @@ function validateNormalizedFunction(out, options) {
     if (!node || !node.outputs.includes(value.id)) fail('semantic-ir-value-definition-mismatch');
   }
 
-  const hasUnknownNode = out.nodes.some((node) => SEMANTIC_SETS.unknownOperations.has(node.kind) || node.completeness !== 'complete');
+  // A node-local unknown payload is explicit unknown evidence even on an
+  // ordinary node, so it must keep the function from claiming completeness
+  // (defense in depth alongside the constructor's own conflict check; #5390).
+  const hasUnknownNode = out.nodes.some((node) => SEMANTIC_SETS.unknownOperations.has(node.kind) || node.completeness !== 'complete' || node.unknown != null);
   if (out.completeness === 'complete' && (hasUnknownNode || out.unknowns.length)) fail('semantic-ir-completeness-conflict');
   if (out.completeness !== 'complete' && out.unknowns.length === 0) fail('semantic-ir-function-unknowns-required');
 }

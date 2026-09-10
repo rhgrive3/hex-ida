@@ -84,6 +84,13 @@ function discoverPostTestInduction(result, loop, ordinal) {
     if (!init && prior.const != null) init = prior;
     if (!init) continue;
 
+    // A constant initializer does not by itself prove recurrence. Unknown or
+    // out-of-loop BIN provenance must fail closed; only an explicit in-loop
+    // definition (or the validated PHI path above) can authorize the rewrite.
+    const hasLoopCarriedState = prior.def?.op === OP.PHI
+      || (prior.def?.op === OP.BIN && prior.def.block != null && loop.nodes.has(prior.def.block));
+    if (phi == null && !hasLoopCarriedState) continue;
+
     return {
       loop, phi, value: prior, inside: updated,
       name: ordinal ? `i${ordinal}` : 'i', init, step,

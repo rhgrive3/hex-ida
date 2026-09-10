@@ -26,6 +26,23 @@ export const MANAGED_BRIDGE_VERSION = '1.0.0';
 
 function fail(code) { throw new TypeError(code); }
 
+const MANAGED_UNARY_OPERATORS = new Set(['neg', 'not', 'clz', 'ctz', 'popcnt', 'trunc', 'zext', 'sext']);
+
+function managedUnaryOperator(mnemonic) {
+  const text = typeof mnemonic === 'string' ? mnemonic.trim().toLowerCase() : '';
+  if (text === 'neg' || text === 'not') return text;
+  const wasm = /^(?:i32|i64)\.(clz|ctz|popcnt)$/.exec(text);
+  return wasm?.[1] || null;
+}
+
+function managedUnaryOperatorForNode(node, mnemonic) {
+  const mnemonicOperator = managedUnaryOperator(mnemonic);
+  if (node?.operator == null) return mnemonicOperator;
+  if (!MANAGED_UNARY_OPERATORS.has(node.operator)) return null;
+  if (mnemonicOperator && mnemonicOperator !== node.operator) return null;
+  return node.operator;
+}
+
 function safeIdent(s, fallback = 'value') {
   const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_$]/g, '_').replace(/^([0-9])/, '_$1');
   return x || fallback;
@@ -852,9 +869,11 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
       res = expr.compare(op, left, right);
     } else if (n.kind === 'unary') {
       const arg = n.inputs[0] ? buildValueExpr(n.inputs[0]) : expr.constant(0n, bits);
-      const mn = (n.metadata?.mnemonic || '').toLowerCase();
-      const op = mn.includes('neg') ? 'neg' : mn.includes('not') ? 'not' : 'trunc';
-      res = expr.unary(op, arg, bits);
+      const mnemonic = typeof n.metadata?.mnemonic === 'string' ? n.metadata.mnemonic : '';
+      const operator = managedUnaryOperatorForNode(n, mnemonic);
+      res = operator
+        ? expr.unary(operator, arg, bits)
+        : expr.intrinsic(mnemonic || 'unsupported_unary', [arg], bits);
     } else if (n.kind === 'call') {
       const callee = n.call?.targetEntityIds?.[0] || 'callee';
       const args = (n.inputs || []).map(buildValueExpr);
