@@ -418,3 +418,136 @@ test('C4-04 Boolean proof uncertainty and stale predicates retain the original p
     assert.equal(result.cAst,f.result.cAst);assert.equal(result.semanticAst,f.result.semanticAst);assert.equal(result.pseudocode,f.result.pseudocode);
   }
 });
+
+function castProjectionFixture(from=8,to=32,operator='zext',{kind='mov',defer=true,keepInput=false,storeOverrides={}}={}) {
+  const f=fixture('proof-cast');f.block(0);
+  const input=f.opaque(from);input.index=0;input.reg='x0';
+  const zero=f.binary('xor',input,input,from),operand=f.binary('add',input,zero,from);
+  const target=kind==='mov'?f.cast(operator,operand,to):f.unary(operator,operand,to);
+  if(keepInput) {
+    // The generic fixture defaults to unknown memory qualifiers. Opt into an
+    // explicit ordinary absolute store in this query's real address space;
+    // the scalar proof still must not change or remove that independent store.
+    f.store(input,{locKind:'global',locKey:'global:64'});
+    const store=f.current.insts.at(-1);store.loc.address=0x40n;
+    Object.assign(store.extra.memoryAccess,{addressSpace:identity.addressSpace,volatility:false,atomic:false,ordering:'none',endian:'little'},storeOverrides);
+  }
+  f.ret();const ir=f.build();ir.instructions=ir.blocks.flatMap(block=>block.insts);
+  ir.instructions.forEach((inst,index)=>{inst.id=`cast_${index}`;inst.address=0x3000n+BigInt(index*4);});
+  const ret=ir.instructions.at(-1);ret.args=[{value:target}];target.uses.push(ret);
+  const canonical=structuredClone(ir);
+  const result=enhanceSemanticDecompilation({semantic:true,ir,types:null,
+    lines:ir.instructions.filter(inst=>['ret','store'].includes(inst.op)).map(inst=>({kind:'stmt',indent:0,
+      text:inst.op==='ret'?'return pending;':'global_value = pending;',row:inst.row,addr:inst.address})),metrics:{},ctx:{}},null,
+  {phase8PrepareProof:true,phase8ProofOnlyRewrites:defer,deterministicTransforms:true,decompilerTimeBudgetMs:1000});
+  return {ir,input,operand,target,canonical,result,options:{identity,abiId:'generic-v1',memory:{addressBits:8},targets:[target],
+    timeoutMs:1000,backendTier:'tiered',requireProofOnlyRewrites:true}};
+}
+
+test('C4-04 proof preparation retains explicit MOV cast endpoints for actual width-changing adoption',async()=>{
+  for(const candidateStrategy of ['local-rewrites','representation-rules','equality-saturation']) {
+    const f=castProjectionFixture(),result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy});
+    assert.equal(result.proofOptimization.status,'complete',result.proofOptimization.reason);
+    assert.equal(result.proofOptimization.adopted,1,candidateStrategy);
+    const root=f.result.semanticAst.values.find(item=>item.valueId===f.target.id).expression;
+    assert.equal(root.kind,'unary');assert.equal(root.op,'zext');assert.equal(root.bits,32);assert.equal(root.arg.bits,8);
+    assert.notEqual(root,f.result.semanticAst.values.find(item=>item.valueId===f.operand.id).expression);
+    assert.deepEqual(structuredClone(f.ir),f.canonical);
+  }
+});
+
+test('C4-04 unary and cast families cross the actual proof boundary on the frozen width pairs',async t=>{
+  const widths=[1,2,3,4,8,16,32,64],cases=[],rows=[];
+  for(const from of widths) {
+    for(const operator of ['not','neg'])cases.push({from,to:from,operator,kind:'un'});
+    for(const to of widths)if(to!==from)for(const operator of to<from?['trunc']:['zext','sext']) {
+      for(const kind of ['mov','un'])cases.push({from,to,operator,kind});
+    }
+  }
+  assert.equal(cases.length,184);
+  const models=createTaintModels({id:'cast-width-test',version:'1',provenance:'test',sources:[],sinks:[]});
+  for(const cell of cases) {
+    const {from,to,operator,kind}=cell,f=castProjectionFixture(from,to,operator,{kind});
+    const originalAst=structuredClone(f.result.cAst),originalSemantic=structuredClone(f.result.semanticAst);
+    const before=f.result.semanticAst.values.find(item=>item.valueId===f.target.id).expression;
+    assert.equal(before.bits,to);assert.notEqual(before,f.result.semanticAst.values.find(item=>item.valueId===f.operand.id).expression);
+    assert.equal(f.result.rewriteProof.some(row=>row.rule==='render-proof-mov-cast'),kind==='mov');
+    const translated=await querySymbolicAnalysis(f.ir,{...f.options,models,candidateStrategy:'translate-only'});
+    assert.equal(translated.status,'complete',translated.reason);
+    const binding=readSymbolicTargetInputs(translated,f.target,identity);
+    assert.equal(binding.inputs.length,1);assert.equal(binding.inputs[0].value,f.input);
+    const input=f.result.semanticAst.values.find(item=>item.valueId===f.input.id).expression;
+    const mask=(1n<<BigInt(from))-1n,sign=1n<<BigInt(from-1);
+    const values=from<=8?Array.from({length:2**from},(_,i)=>BigInt(i)):[0n,1n,BigInt(from-1),BigInt(from),mask,mask-1n,sign,sign-1n];
+    for(const candidateStrategy of ['local-rewrites','representation-rules','equality-saturation']) {
+      const label=`${from}/${to}/${operator}/${kind}/${candidateStrategy}`;
+      const result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy}),report=result.proofOptimization;
+      assert.equal(report.status,'complete',`${label}: ${report.reason}`);assert.equal(report.adopted,1,label);
+      assert.deepEqual(report.decisionCoverage,{requested:1,complete:true});assert.equal(report.targetDecisions[0].disposition,'adopted');
+      const row=report.targetDecisions[0],transform=result.phase8Projection.transforms.find(item=>item.queryHash===row.queryHash);
+      assert.ok(transform?.planId&&transform.beforeHash&&transform.afterHash,label);
+      assert.ok(result.renderProvenance.ledger.some(item=>item.queryHash===row.queryHash),label);
+      const after=result.semanticAst.values.find(item=>item.valueId===f.target.id).expression;
+      assert.equal(after.bits,to);assert.equal(after.effect,'pure');
+      for(const value of values) {
+        const expected=BigInt.asUintN(to,operator==='sext'?BigInt.asIntN(from,value):operator==='not'?~value:operator==='neg'?-value:value);
+        const canonical=evaluateExpr(binding.expression,new Map([[binding.inputs[0].symbol.symbolId,value]]));
+        assert.equal(canonical.status,EVAL_STATUS.VALUE);assert.equal(canonical.value,expected,`${label}: canonical ${value}`);
+        assert.equal(evaluateExpression(before,{[input.name]:value}),expected,`${label}: prepared AST ${value}`);
+        assert.equal(evaluateExpression(after,{[input.name]:value}),expected,`${label}: adopted ${value}`);
+      }
+      assert.deepEqual(structuredClone(f.ir),f.canonical,label);assert.deepEqual(f.result.cAst,originalAst);assert.deepEqual(f.result.semanticAst,originalSemantic);
+      rows.push({...cell,candidateStrategy,disposition:row.disposition,kind:transform.kind,encoding:kind,comparisons:values.length});
+    }
+  }
+  assert.equal(rows.length,552);
+  assert.equal(new Set(rows.map(row=>`${row.from}/${row.to}/${row.operator}/${row.encoding}/${row.candidateStrategy}`)).size,552);
+  t.diagnostic(JSON.stringify({schema:'c4-04-cast-production-widths-v1',rows}));
+});
+
+test('C4-04 explicit proof MOV casts keep separate consumers and observed history through replay',async()=>{
+  for(const [from,to,operator] of [[32,8,'trunc'],[8,32,'zext'],[8,64,'sext']]) {
+    const f=castProjectionFixture(from,to,operator,{keepInput:true}),options={...f.options,candidateStrategy:'representation-rules'};
+    const originalStores=structuredClone(f.result.semanticAst.stores);
+    assert.equal(originalStores.length,1);
+    const storeIndex=f.result.cAst.body.findIndex(node=>node.semantic?.op==='store');assert.ok(storeIndex>=0);
+    const result=await optimizeSemanticDecompilation(f.result,options),replay=await optimizeSemanticDecompilation(result,options);
+    assert.equal(result.proofOptimization.status,'complete',result.proofOptimization.reason);
+    const observed=result.renderProvenance.ledger.filter(row=>row.rule==='render-proof-mov-cast');
+    assert.ok(observed.length);assert.ok(observed.every(row=>row.proof==='observed-explicit-mov-cast-not-equivalence'));
+    assert.ok(observed.every(row=>!row.producedRefs.includes(`L${storeIndex}:stmt`)),'the independent input store is not the cast consumer');
+    assert.equal(result.proofOptimization.adopted,1);assert.equal(replay.proofOptimization.status,'complete');assert.equal(replay.proofOptimization.adopted,0);
+    assert.deepEqual(result.semanticAst.stores,originalStores);assert.deepEqual(replay.semanticAst.stores,originalStores);
+    assert.equal(replay.pseudocode,result.pseudocode);
+    assert.ok(replay.phase8Projection.history.transforms.includes(result.phase8Projection.transforms[0]));
+    const ordinary=castProjectionFixture(from,to,operator,{defer:false});
+    assert.ok(!ordinary.result.rewriteProof.some(row=>row.rule==='render-proof-mov-cast'));
+    assert.ok(ordinary.result.rewriteProof.some(row=>row.rule==='select-mov-operand'));
+    assert.deepEqual(structuredClone(f.ir),f.canonical);
+  }
+});
+
+test('C4-04 explicit proof MOV casts preserve the prepared output on refusal and reject stale widths',async()=>{
+  for(const candidateStrategy of ['local-rewrites','representation-rules','equality-saturation']) {
+    for(const refused of [{timeoutMs:0},{isCancelled:()=>true},{phase8WorkBudget:0}]) {
+      const f=castProjectionFixture(),result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy,...refused});
+      assert.equal(result.proofOptimization.status,'partial');assert.equal(result.proofOptimization.adopted,0);
+      assert.equal(result.cAst,f.result.cAst);assert.equal(result.semanticAst,f.result.semanticAst);assert.equal(result.pseudocode,f.result.pseudocode);
+      assert.deepEqual(structuredClone(f.ir),f.canonical);
+    }
+    const f=castProjectionFixture();f.target.bits=16;
+    const result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy});
+    assert.equal(result.proofOptimization.reason,'unissued-or-stale-projection');assert.equal(result.proofOptimization.adopted,0);
+    assert.equal(result.cAst,f.result.cAst);assert.equal(result.pseudocode,f.result.pseudocode);
+  }
+});
+
+test('C4-04 cast input stores retain the existing unknown-qualifier and address-space refusal boundaries',async()=>{
+  for(const [storeOverrides,reason] of [[{volatility:'unknown'},'unknown-memory-qualifiers'],[{addressSpace:'memory'},'address-space-mismatch']]) {
+    const f=castProjectionFixture(8,32,'zext',{keepInput:true,storeOverrides});
+    const result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy:'representation-rules'});
+    assert.equal(result.proofOptimization.status,'partial');assert.equal(result.proofOptimization.reason,reason);
+    assert.equal(result.proofOptimization.adopted,0);assert.equal(result.semanticAst,f.result.semanticAst);assert.equal(result.cAst,f.result.cAst);
+    assert.equal(result.pseudocode,f.result.pseudocode);assert.deepEqual(structuredClone(f.ir),f.canonical);
+  }
+});

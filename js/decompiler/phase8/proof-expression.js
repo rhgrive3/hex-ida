@@ -87,6 +87,18 @@ function signed(value, bits) {
   return expr.unary('sext',signExtend(value,bits,width),width,true);
 }
 
+/** Shared bounded cast lowering for typed preparation and proved recipes.
+ * This renders an explicit operation; it does not issue proof/adoption authority.
+ * Keep native C carriers and sign-bit handling identical on both paths.
+ */
+export function renderBitvectorCast(value, operation, bits) {
+  if (!value || value.effect !== 'pure' || !['trunc','zext','sext'].includes(operation)
+    || !Number.isInteger(value.bits) || value.bits < 1 || value.bits > 64
+    || !Number.isInteger(bits) || bits < 1 || bits > 64
+    || (operation === 'trunc' ? bits >= value.bits : bits <= value.bits)) return null;
+  return operation === 'sext' ? signExtend(value,value.bits,bits) : unsigned(value,bits);
+}
+
 /** Caller supplies actual producer expressions, in the compiled input order.
  * The recipe is immutable private-plan data at the publication callsite.
  */
@@ -116,7 +128,8 @@ export function renderProofExpression(recipe, inputs, shouldAbort) {
           shift(count),fallback,bits,false);
       } else value = unsigned(expr.binary(node.op,unsigned(left,bits),unsigned(right,bits),bits,false),bits);
     } else if (node.kind === 'cast') {
-      value = node.op === 'sext' ? signExtend(args[0],args[0].bits,bits) : unsigned(args[0],bits);
+      value = renderBitvectorCast(args[0],node.op,bits);
+      if (!value) return null;
     } else if (node.kind === 'extract') {
       const width = carrier(args[0].bits);
       value = unsigned(expr.binary('lshr',unsigned(args[0],args[0].bits),expr.constant(BigInt(node.low),width,false),width,false),bits);

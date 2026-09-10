@@ -4338,6 +4338,54 @@ build/rebuild evidence are retained in persistent storage. Goal ACTIVE;
 integration/release acceptance remains LOCKED, with no independent, full-product,
 candidate-merge-tree, device or release completion claimed.
 
+## C4-04 explicit MOV cast endpoints in proof preparation
+
+Proof-only preparation now preserves an explicit pure `trunc/zext/sext` MOV as
+its own correctly sized observed expression endpoint. Previously the legacy MOV
+operand selection could discard this endpoint; a valid canonical cast proof
+then could not be projected because the rendered root retained a different
+width. The new adoption test fails on that old behavior. Ordinary rendering
+continues through the existing MOV selection path, using the captured private
+proof-only mode rather than a late mutable option.
+
+Both preparation and proved recipes reuse `renderBitvectorCast`, extracted from
+the existing bounded scalar lowering. Native carriers, masking and sign-bit
+extension are shared; no second evaluator, verifier or rewrite engine is added.
+Unsupported/effectful inputs and invalid cast directions/widths are not lowered
+by this helper. Rendering an explicit cast is not itself proof authority. The
+real builder records `render-proof-mov-cast` through the existing private
+observation and consumer-history machinery, with an explicit observed-not-proof
+classification. The operand expression is not modified or relabeled as the cast.
+
+The new production matrix covers **552 adopted cells**: all ordered valid cast
+pairs on the existing `1/2/3/4/8/16/32/64` axis, truncation/zero/sign extension
+through both MOV and UN encodings, and both same-width unary `not/neg`, each
+through all three existing candidate strategies. Canonical before, prepared AST
+and actually adopted expression are compared with a BigInt oracle over every
+small input and native boundary values. This is not arbitrary-width/all-operand
+or whole printed-program equivalence. Initial UN display construction outside
+the adopted recipe retains its existing separate obligations.
+
+Additional tests retain an independent input store while adopting the cast,
+require the cast history not to claim that store's rendered consumer, preserve
+the store AST/IR through replay and keep the ordinary MOV history path. The
+store fixture explicitly supplies the canonical query's address space, absolute
+address, endian and known ordinary qualifiers. Unknown qualifiers and a different
+address space have permanent refusal cases; no memory gate is weakened to make
+the scalar fixture pass. Timeout/cancel/publication exhaustion and stale target
+widths retain the prepared output. Five permanent tests are in the existing
+owned `proof-target-decisions` suite; existing scalar-printer/compiler and MOV
+provenance suites remain part of verification.
+
+This fills a real width-changing proof-preparation handoff and the stated finite
+unary/cast integration denominator. It does not close broader risky-rule/width
+coverage, original lifting/type/ABI/layout obligations, memory/CFG/exception
+proof adoption, C4-02/03/05 or original23/frozen135 acceptance. Scoped exact-head
+receipts, previous Bool/BV matrices, unchanged ordinary comparison and generated
+build/rebuild evidence are retained in persistent storage. Goal ACTIVE;
+integration/release acceptance remains LOCKED. No independent, full-product,
+candidate-merge-tree, main/device/runtime or release completion is claimed.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -4373,7 +4421,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
 | HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi, actual compatibility stack LOAD-to-MOV and MOV/address-load/precomputed-value/canonical-numeric-load selection, actual flag/conditional-CMP reconstruction and branch/select consumers, initial RMW/C AST compound-store histories, owned handoffs and explicit assignment-expansion records, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
-| HEX-C4-04 | Proof-gated Bool/BV scalar projection, owned inputs, transaction coverage, optional reuse of all 64 display rules and proof-only preparation implemented; finite binary-root denominator covers 432 cells (430 adopted, two refuted), 432 publication-unknown rows and 96 non-total refusals; canonical one-bit Boolean comparison adoption adds 480 cells. Ordinary legacy-view adoption, full family/width/rule denominator and memory/CFG/exception observables remain open |
+| HEX-C4-04 | Proof-gated Bool/BV scalar projection, owned inputs, transaction coverage, all 64 display rules as candidates and proof-only preparation with explicit MOV cast endpoints implemented; finite binary denominator covers 432 cells (430 adopted, two refuted), 432 publication-unknown rows and 96 non-total refusals; Boolean comparison adoption adds 480 cells and unary/cast adoption adds 552. Ordinary legacy-view adoption, full width/rule denominator and memory/CFG/exception observables remain open |
 | HEX-C4-05 | Frozen 272-cell scalar/14-Bool/8-width producer coverage and 3 actual schedules (816 scalar cells); adopted-transform history now preserves actual rule/cost/budget/proof audits. Native proof gaps, arbitrary permutations and full acceptance remain open |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |
 | HEX-SYM-02 | Byte-memory escalation, alias/partial-write independent oracle |

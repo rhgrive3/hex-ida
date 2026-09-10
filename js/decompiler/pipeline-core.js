@@ -8,6 +8,7 @@ import { children, expr, mergeSource, sourceOf, mapChildren, structuralKey, same
 import { RewriteEngine, expressionOriginHistory } from './rewrite/engine.js';
 import { DEFAULT_RULES } from './rewrite/rules.js';
 import { captureProjectionIrData, PROJECTION_LIMITS } from './phase8/projection-origin.js';
+import { renderBitvectorCast } from './phase8/proof-expression.js';
 import { recoverArm64ClangIdiom, recognizeClamp, recognizeDivisionByConstant } from './idioms/arm64-clang.js';
 import { recoverHighVariables } from './types/high-variables.js';
 import { recoverFunctionPrototype } from './types/prototype.js';
@@ -577,15 +578,16 @@ function finishBuildSelection(expression, selection, state) {
   return observation;
 }
 
-function recordMovSelection(value, instruction, expression, selection, state, flags) {
+function recordMovSelection(value, instruction, expression, selection, state, flags, cast = null) {
   const observation = finishBuildSelection(expression, selection, state);
   if (!observation) return;
   const input = valueOf(instruction.args?.[0]);
   const before = { source:mergeSource(origin(instruction, value), origin(input?.def, input), expression.source) };
-  const record = Object.freeze({ rule:'select-mov-operand', phase:'expression-build',
-    before:`mov:${flags.forAddress ? 'address' : 'value'}`, after:`expression:${expression.kind}`,
-    evidence:Object.freeze({ kind:'observed-mov-view-selection-not-equivalence',
-      detail:'actual legacy builder operand selection including existing operand-width/shift views; canonical MOV and memory facts remain, not independently proved copy elimination or forwarding' }),
+  const record = Object.freeze({ rule:cast ? 'render-proof-mov-cast' : 'select-mov-operand', phase:'expression-build',
+    before:cast ? `mov:${cast}:${input?.bits}->${value.bits}` : `mov:${flags.forAddress ? 'address' : 'value'}`, after:`expression:${expression.kind}`,
+    evidence:Object.freeze({ kind:cast ? 'observed-explicit-mov-cast-not-equivalence' : 'observed-mov-view-selection-not-equivalence',
+      detail:cast ? 'actual proof-preparation rendering of an explicit MOV cast through shared bounded scalar lowering; not a proof or copy/forwarding elimination'
+        : 'actual legacy builder operand selection including existing operand-width/shift views; canonical MOV and memory facts remain, not independently proved copy elimination or forwarding' }),
     originHistory:expressionOriginHistory(before, expression),
   });
   buildHistoryObservations.set(record, observation);
@@ -967,7 +969,12 @@ function buildValueRaw(v, state, flags = {}) {
     else if (d.op === 'mov') {
       const selection = observeBuildSelection(v, d, state);
       out = buildArg(d.args?.[0], state, flags);
-      recordMovSelection(v, d, out, selection, state, flags);
+      // A width-changing MOV must retain its own observed endpoint in proof
+      // preparation. Reusing the operand root loses the target width and can
+      // alias unrelated consumers. Ordinary legacy rendering stays unchanged.
+      const cast = state.proofOnlyRewrites ? renderBitvectorCast(out,d.sub,v.bits) : null;
+      if (cast) out = {...cast,source:mergeSource(cast.source,origin(d,v))};
+      recordMovSelection(v, d, out, selection, state, flags, cast ? d.sub : null);
     }
     else if (d.op === 'bin') {
       const a = buildArg(d.args?.[0], state), b = d.args?.[1] ? buildArg(d.args[1], state) : expr.constant(0, v.bits || 64);
