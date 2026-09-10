@@ -97,3 +97,30 @@ test('#4646 keeps ordinary in-budget canonical and legacy events admissible', ()
   assert.ok(legacy.push({ type:'trace', payload:{ value:1 }, predecessorIds:['a'], interventionIds:['b'] }));
   assert.equal(legacy.flush().dropped, 0);
 });
+
+test('#4646 bounds long scalar event metadata before canonical serialization', () => {
+  for (const field of ['eventId', 'timestamp', 'streamId', 'providerEventId', 'processKey']) {
+    const n = normalizer();
+    assert.equal(n.push({ ...context, kind:'trace-marker', payload:{}, [field]:'x'.repeat(4096) }), null, field);
+    const batch = n.flush();
+    assert.equal(batch.dropped, 1, field);
+    assert.equal(batch.completeness, 'truncated', field);
+  }
+});
+
+test('#4646 snapshots admitted scalar metadata once before use', () => {
+  let reads = 0;
+  const input = { ...context, kind:'trace-marker', payload:{} };
+  Object.defineProperty(input, 'timestamp', {
+    enumerable:true,
+    get() {
+      reads += 1;
+      return reads === 1 ? '2026-09-10T00:00:00.000Z' : 'x'.repeat(4096);
+    },
+  });
+  const n = normalizer();
+  const event = n.push(input);
+  assert.ok(event);
+  assert.equal(event.timestamp, '2026-09-10T00:00:00.000Z');
+  assert.equal(reads, 1);
+});

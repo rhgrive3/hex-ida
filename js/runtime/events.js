@@ -63,7 +63,7 @@ function jsonStringByteLength(value, limit) {
   return total;
 }
 
-function runtimeEventMaterialFits(values, maxBytes) {
+function createRuntimeEventAdmission(maxBytes) {
   let chargedBytes = 0;
   const active = new WeakSet();
   const charge = (amount) => {
@@ -154,10 +154,14 @@ function runtimeEventMaterialFits(values, maxBytes) {
     }
   };
 
-  for (const value of values) {
-    if (!visit(value, 0)) return false;
+  return (value) => visit(value, 0);
+}
+
+function admitRuntimeEventMaterial(admit, value, maxBytes) {
+  if (admit && !admit(value)) {
+    throw new DebugAdapterError('runtime-event-resource-limit', `runtime event exceeds pre-normalization byte budget (${maxBytes})`);
   }
-  return true;
+  return value;
 }
 
 function required(value, code, message) {
@@ -221,64 +225,75 @@ function dedupeIdentity(input) {
 }
 
 export function createRuntimeEvent(input = {}, options = {}) {
-  const rawPayload = input.payload ?? {};
-  const rawPredecessorIds = input.predecessorIds;
-  const rawInterventionIds = input.interventionIds;
-  if (options.maxBytes != null && !runtimeEventMaterialFits([rawPayload, rawPredecessorIds, rawInterventionIds], options.maxBytes)) {
-    throw new DebugAdapterError('runtime-event-resource-limit', `runtime event exceeds pre-normalization byte budget (${options.maxBytes})`);
-  }
-  const runtimeSessionId = required(input.runtimeSessionId, 'runtime-session-id-required', 'runtime event requires runtimeSessionId');
-  const providerId = required(input.providerId, 'runtime-provider-required', 'runtime event requires providerId');
-  const providerVersion = input.providerVersion ?? '1';
+  const admit = options.maxBytes == null ? null : createRuntimeEventAdmission(options.maxBytes);
+  const admitted = (value) => admitRuntimeEventMaterial(admit, value, options.maxBytes);
+
+  const rawRuntimeSessionId = admitted(input.runtimeSessionId);
+  const runtimeSessionId = required(rawRuntimeSessionId, 'runtime-session-id-required', 'runtime event requires runtimeSessionId');
+  const rawProviderId = admitted(input.providerId);
+  const providerId = required(rawProviderId, 'runtime-provider-required', 'runtime event requires providerId');
+  const providerVersion = admitted(input.providerVersion ?? '1');
   if (typeof providerVersion !== 'string') throw new DebugAdapterError('runtime-invalid-provider-version', 'providerVersion must be a string');
-  const sessionEpoch = safeInteger(input.sessionEpoch, 1, 'sessionEpoch', { min: 1 });
-  const sequence = input.sequence == null ? null : safeInteger(input.sequence, null, 'sequence');
-  const moduleGeneration = input.moduleGeneration == null ? null : safeInteger(input.moduleGeneration, null, 'moduleGeneration', { min: 1 });
-  const kind = normalizeKind(input.kind);
-  const observationMode = normalizeMode(input.observationMode);
-  const completeness = normalizeCompleteness(input.completeness, kind === 'gap' || kind === 'dropped-events' ? 'truncated' : 'partial');
+  const rawSessionEpoch = admitted(input.sessionEpoch);
+  const sessionEpoch = safeInteger(rawSessionEpoch, 1, 'sessionEpoch', { min: 1 });
+  const rawSequence = admitted(input.sequence);
+  const sequence = rawSequence == null ? null : safeInteger(rawSequence, null, 'sequence');
+  const rawModuleGeneration = admitted(input.moduleGeneration);
+  const moduleGeneration = rawModuleGeneration == null ? null : safeInteger(rawModuleGeneration, null, 'moduleGeneration', { min: 1 });
+  const kind = normalizeKind(admitted(input.kind));
+  const observationMode = normalizeMode(admitted(input.observationMode));
+  const completeness = normalizeCompleteness(admitted(input.completeness), kind === 'gap' || kind === 'dropped-events' ? 'truncated' : 'partial');
+  const rawPayload = admitted(input.payload ?? {});
   const payload = jsonSafe(rawPayload);
+  const streamId = optionalIdentity(admitted(input.streamId), 'streamId');
+  const providerEventId = optionalIdentity(admitted(input.providerEventId), 'providerEventId');
+  const processKey = optionalText(admitted(input.processKey));
+  const threadKey = optionalText(admitted(input.threadKey));
+  const moduleBindingKey = optionalText(admitted(input.moduleBindingKey));
   const identity = {
     runtimeSessionId,
     providerId,
     providerVersion,
     sessionEpoch,
-    streamId: optionalIdentity(input.streamId, 'streamId'),
+    streamId,
     sequence,
-    providerEventId: optionalIdentity(input.providerEventId, 'providerEventId'),
+    providerEventId,
     kind,
-    processKey: optionalText(input.processKey),
-    threadKey: optionalText(input.threadKey),
-    moduleBindingKey: optionalText(input.moduleBindingKey),
+    processKey,
+    threadKey,
+    moduleBindingKey,
     moduleGeneration,
     payload,
   };
-  const eventId = input.eventId == null
+  const rawEventId = admitted(input.eventId);
+  const eventId = rawEventId == null
     ? `runtimeevent_${stableDigest(identity)}`
-    : required(input.eventId, 'runtime-event-id-invalid', 'runtime event id must be a non-empty string');
+    : required(rawEventId, 'runtime-event-id-invalid', 'runtime event id must be a non-empty string');
+  const predecessorIds = arrayOfStrings(admitted(input.predecessorIds), 'predecessorIds');
+  const timestamp = optionalText(admitted(input.timestamp));
+  const interventionIds = arrayOfStrings(admitted(input.interventionIds), 'interventionIds');
   return deepFreeze({
     eventId,
     runtimeSessionId,
     providerId,
     providerVersion,
     sessionEpoch,
-    streamId: optionalIdentity(input.streamId, 'streamId'),
+    streamId,
     sequence,
-    predecessorIds: arrayOfStrings(rawPredecessorIds, 'predecessorIds'),
-    providerEventId: optionalIdentity(input.providerEventId, 'providerEventId'),
-    timestamp: input.timestamp == null ? null : String(input.timestamp),
-    processKey: optionalText(input.processKey),
-    threadKey: optionalText(input.threadKey),
-    moduleBindingKey: optionalText(input.moduleBindingKey),
+    predecessorIds,
+    providerEventId,
+    timestamp,
+    processKey,
+    threadKey,
+    moduleBindingKey,
     moduleGeneration,
     kind,
     payload,
     observationMode,
     completeness,
-    interventionIds: arrayOfStrings(rawInterventionIds, 'interventionIds'),
+    interventionIds,
   });
 }
-
 export function normalizeLegacyRuntimeEvent(input, context = {}, options = {}) {
   const protocolEnvelope = input && input.type === 'event' && typeof input.event === 'string';
   const source = protocolEnvelope
