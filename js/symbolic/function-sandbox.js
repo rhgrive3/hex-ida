@@ -133,6 +133,16 @@ export class FunctionSandbox {
 
   async setup(address, opts) {
     const o = opts || {};
+    // #5268: setup is the longest launch phase (mapping + memory stores); an
+    // aborted signal must stop the remaining setup work, not just be observed
+    // by the caller afterwards. Each checkpoint re-samples signal.aborted.
+    const signal = o.signal && typeof o.signal === 'object' && typeof o.signal.addEventListener === 'function' ? o.signal : null;
+    const throwIfCancelled = () => {
+      if (signal && signal.aborted) {
+        throw Object.assign(new Error('sandbox setup cancelled'), { code: 'sandbox-setup-cancelled' });
+      }
+    };
+    throwIfCancelled();
     const args = (o.args || []).map(asBig);
     const objectBase = o.objectBase != null ? asBig(o.objectBase) : this.objectBase;
     this.objectBase = objectBase;
@@ -151,32 +161,39 @@ export class FunctionSandbox {
     let remaining = this.maxObjectSize;
     let currentBase = objectBase;
     while (remaining > 0) {
+      throwIfCancelled();
       const chunkSize = Math.min(remaining, CHUNK_SIZE);
       this.emulator.mapZero(currentBase, chunkSize, 'sandbox-object');
       currentBase += BigInt(chunkSize);
       remaining -= chunkSize;
     }
+    throwIfCancelled();
     this.emulator.setup(asBig(address), args);
 
     for (const [reg, value] of Object.entries(o.registers || {})) this.emulator.set(reg, asBig(value));
 
     if (Array.isArray(o.objectMemory)) {
       for (const item of o.objectMemory) {
+        throwIfCancelled();
         if (!item) continue;
         await this.emulator.store(objectBase + asBig(item.offset || 0), Number(item.size || 8), asBig(item.value));
       }
     } else if (o.objectMemory && typeof o.objectMemory === 'object') {
       for (const [offset, value] of Object.entries(o.objectMemory)) {
+        throwIfCancelled();
         await this.emulator.store(objectBase + BigInt(offset), 8, asBig(value));
       }
     }
 
     for (const item of o.stackMemory || []) {
+      throwIfCancelled();
       if (!item) continue;
       await this.emulator.store(this.emulator.sp + asBig(item.offset || 0), Number(item.size || 8), asBig(item.value));
     }
+    throwIfCancelled();
     for (const bp of o.breakpoints || []) this.emulator.breakpoints.add(asBig(bp).toString());
 
+    throwIfCancelled();
     this.watch = watchesFromOptions(o, objectBase);
     this.before = await snapshot(this.emulator, this.watch);
     this.beforeObjectBytes = sparseObjectBytes(this.emulator, objectBase, this.maxObjectSize);
