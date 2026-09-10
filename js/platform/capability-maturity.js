@@ -355,8 +355,12 @@ const MANAGED_PROFILES = Object.freeze({
   }),
 });
 
+function normalizeCapabilityScalar(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
 export function normalizeArchitectureCapabilityId(value) {
-  const id = String(value || '').trim().toLowerCase();
+  const id = normalizeCapabilityScalar(value);
   if (id === 'aarch64') return 'arm64';
   if (id === 'amd64' || id === 'x64') return 'x86_64';
   // `riscv64` is canonical. A bare `riscv` is deliberately NOT aliased: it does
@@ -367,7 +371,7 @@ export function normalizeArchitectureCapabilityId(value) {
 }
 
 export function normalizeFormatCapabilityId(value) {
-  const id = String(value || '').trim().toLowerCase();
+  const id = normalizeCapabilityScalar(value);
   if (id === 'mach-o' || id === 'mach_o') return 'macho';
   if (id === 'pe32' || id === 'pe32+') return 'pe';
   return id || 'unknown';
@@ -428,7 +432,7 @@ export function formatMaturity(format) {
 }
 
 export function normalizeManagedCapabilityId(value) {
-  const id = String(value || '').trim().toLowerCase();
+  const id = normalizeCapabilityScalar(value);
   if (id === 'webassembly' || id === 'wat') return 'wasm';
   if (id === 'dalvik' || id === 'apk') return 'dex';
   if (id === 'clr' || id === 'dotnet' || id === '.net') return 'cil';
