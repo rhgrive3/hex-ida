@@ -160,8 +160,15 @@ function executableRegions(app) {
 function aggregate(parts, regions, completedIds) {
   const results = [];
   const reasons = [];
+  const scannedRegionIds = [];
+  const seenRegionIds = new Set();
   let sourcesComplete = true;
-  for (const part of parts.values()) {
+  for (const region of regions) {
+    if (seenRegionIds.has(region.id) || !completedIds.has(region.id)) continue;
+    seenRegionIds.add(region.id);
+    const part = parts.get(region.id);
+    if (!part) continue;
+    scannedRegionIds.push(region.id);
     results.push(...part.results);
     if (!part.complete) { sourcesComplete = false; if (part.reason) reasons.push(part.reason); }
   }
@@ -170,7 +177,7 @@ function aggregate(parts, regions, completedIds) {
   return Object.freeze({
     results:Object.freeze(results),
     complete,
-    scannedRegionIds:Object.freeze(Array.from(completedIds)),
+    scannedRegionIds:Object.freeze(scannedRegionIds),
     unscannedRegionIds:Object.freeze(unscannedRegionIds),
     reason:complete ? null : (reasons[0] || (unscannedRegionIds.length ? 'regions-pending' : 'field-access-incomplete')),
   });

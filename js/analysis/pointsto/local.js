@@ -200,7 +200,7 @@ function storedPointerSetIsValid(set, value, widthBits) {
   if (!originIds.size) return false;
   for (const target of set.targets) {
     if (!target || typeof target !== 'object' || !target.rootKey) return false;
-    if (!['rooted', 'stack-like', 'absolute'].includes(String(target.rootKind))) return false;
+    if (!['rooted', 'stack-like', 'absolute', 'allocation'].includes(String(target.rootKind))) return false;
     if (target.widthBits !== widthBits) return false;
     if (!target.offsetRange || typeof target.offsetRange !== 'object') return false;
     const { min, max } = target.offsetRange;
