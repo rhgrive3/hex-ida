@@ -152,11 +152,17 @@ function parseInteger(candidate) {
  * does, so A2 and the root service never disagree about what "constant" means.
  */
 function constantOf(value, node) {
+  let resolved = null;
   for (const candidate of [value?.metadata?.constant, node?.attributes?.constant, node?.metadata?.constant]) {
     const parsed = parseInteger(candidate);
-    if (parsed != null) return parsed;
+    if (parsed == null) continue;
+    if (resolved == null) {
+      resolved = parsed;
+      continue;
+    }
+    if (parsed !== resolved) return null;
   }
-  return null;
+  return resolved;
 }
 
 function widthOf(value, node) {
@@ -200,7 +206,7 @@ function storedPointerSetIsValid(set, value, widthBits) {
   if (!originIds.size) return false;
   for (const target of set.targets) {
     if (!target || typeof target !== 'object' || !target.rootKey) return false;
-    if (!['rooted', 'stack-like', 'absolute'].includes(String(target.rootKind))) return false;
+    if (!['rooted', 'stack-like', 'absolute', 'allocation'].includes(String(target.rootKind))) return false;
     if (target.widthBits !== widthBits) return false;
     if (!target.offsetRange || typeof target.offsetRange !== 'object') return false;
     const { min, max } = target.offsetRange;

@@ -14,6 +14,24 @@ function integerBigInt(value, name) {
 }
 function canonicalAddress(value) { try { return integerBigInt(value, 'address').toString(); } catch { return null; } }
 
+// Patch bytes are literal integers 0..255: TypedArray conversion would coerce
+// schema-invalid values (256 -> 0, -1 -> 255, 1.5 -> 1, '1' -> 1) into a
+// different valid byte, so the stored patch would no longer match the
+// caller's request (#5311). Existing Uint8Array input is copied as-is.
+function patchBytes(value, name) {
+  if (value instanceof Uint8Array) return Uint8Array.from(value);
+  if (!Array.isArray(value)) throw new TypeError(`${name} must be an array of integers 0..255 or a Uint8Array`);
+  const out = new Uint8Array(value.length);
+  for (let i = 0; i < value.length; i++) {
+    const byte = value[i];
+    if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 255) {
+      throw new TypeError(`${name}[${i}] must be an integer 0..255`);
+    }
+    out[i] = byte;
+  }
+  return out;
+}
+
 export class PatchSet {
   constructor() { this.items = new Map(); }
   get size() { return this.items.size; }
@@ -21,8 +39,8 @@ export class PatchSet {
   add(fileOffset, before, after, meta) {
     const offset = integerBigInt(fileOffset, 'fileOffset');
     if (offset < 0n) throw new RangeError('fileOffset must be non-negative');
-    const beforeBytes = Uint8Array.from(before || []);
-    const afterBytes = Uint8Array.from(after || []);
+    const beforeBytes = patchBytes(before, 'before');
+    const afterBytes = patchBytes(after, 'after');
     if (!beforeBytes.length || beforeBytes.length !== afterBytes.length) throw new RangeError('patch before/after must have the same non-zero length');
     const end = offset + BigInt(afterBytes.length);
     for (const item of this.items.values()) {

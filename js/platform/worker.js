@@ -126,7 +126,7 @@ async function handle(msg, signal) {
     case 'scanProgram': return emptyProgramScan(msg.regionId);
     case 'fieldAccess': return msg.offsets ? { groups: Object.fromEntries((msg.offsets || []).map((x) => [String(x), []])), unsupported: true } : { results: [], unsupported: true };
     case 'valueShapes': return { groups: [], unsupported: true };
-    case 'metadata': return metadataPage(msg);
+    case 'metadata': return metadataPage(msg, signal);
     case 'hash': return { hash: await hashByteSource(source, { signal, onProgress: ({ done, total }) => self.postMessage({ t: 'analysisProgress', requestId: msg.id, epoch: msg.epoch, phase: 'hash', done, total }) }) };
     case 'memoryStats': return memoryStats();
     case 'cleanupMemory': source?.clear?.(); return memoryStats();
@@ -439,17 +439,35 @@ async function readAtAddress(msg, signal) {
   return result;
 }
 
-function metadataPage(msg) {
+function metadataPageInteger(value, fallback, minimum, label) {
+  const resolved = value ?? fallback;
+  if (typeof resolved !== 'number' || !Number.isSafeInteger(resolved) || resolved < minimum) {
+    throw new RangeError(`metadata ${label} must be a ${minimum === 0 ? 'non-negative' : 'positive'} safe integer`);
+  }
+  return resolved === 0 ? 0 : resolved;
+}
+
+async function metadataPage(msg, signal) {
   if (!image) throw new Error('No parsed universal binary is open.');
+  const selected = await pointerImageForSlice(msg.sliceIndex, signal);
+  if (!selected) throw new Error('Invalid Mach-O slice index.');
   const collections = {
-    segments: image.segments, sections: image.sections, imports: image.imports, exports: image.exports,
-    symbols: image.symbols, relocations: image.relocations, functions: image.functions, libraries: image.libraries,
+    segments: selected.segments, sections: selected.sections, imports: selected.imports, exports: selected.exports,
+    symbols: selected.symbols, relocations: selected.relocations, functions: selected.functions, libraries: selected.libraries,
   };
-  if (msg.kind === 'summary') return { summary: image.summary(), metadata: image.metadata, capability: descriptor?.capability || null };
+  if (msg.kind === 'summary') {
+    const capability = selected === image
+      ? descriptor?.capability || null
+      : describeBinaryImage(selected, {
+        name:file?.name || 'binary',
+        engine:{ arm64:selected.arch === 'arm64' || selected.arch === 'arm64e', arm64e:selected.arch === 'arm64e', verified:false },
+      }).capability;
+    return { summary:selected.summary(), metadata:selected.metadata, capability };
+  }
   const list = collections[msg.kind];
   if (!list) throw new Error(`Unknown metadata kind: ${msg.kind}`);
-  const start = Math.max(0, Number(msg.start) || 0);
-  const limit = Math.min(5000, Math.max(1, Number(msg.limit) || 500));
+  const start = metadataPageInteger(msg.start, 0, 0, 'start');
+  const limit = Math.min(5000, metadataPageInteger(msg.limit, 500, 1, 'limit'));
   return { kind: msg.kind, start, total: list.length, items: list.slice(start, start + limit), next: start + limit < list.length ? start + limit : null };
 }
 

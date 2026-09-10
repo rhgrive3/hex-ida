@@ -133,6 +133,16 @@ export class FunctionSandbox {
 
   async setup(address, opts) {
     const o = opts || {};
+    // #5268: setup is the longest launch phase (mapping + memory stores); an
+    // aborted signal must stop the remaining setup work, not just be observed
+    // by the caller afterwards. Each checkpoint re-samples signal.aborted.
+    const signal = o.signal && typeof o.signal === 'object' && typeof o.signal.addEventListener === 'function' ? o.signal : null;
+    const throwIfCancelled = () => {
+      if (signal && signal.aborted) {
+        throw Object.assign(new Error('sandbox setup cancelled'), { code: 'sandbox-setup-cancelled' });
+      }
+    };
+    throwIfCancelled();
     const args = (o.args || []).map(asBig);
     const objectBase = o.objectBase != null ? asBig(o.objectBase) : this.objectBase;
     this.objectBase = objectBase;
@@ -151,32 +161,65 @@ export class FunctionSandbox {
     let remaining = this.maxObjectSize;
     let currentBase = objectBase;
     while (remaining > 0) {
+      throwIfCancelled();
       const chunkSize = Math.min(remaining, CHUNK_SIZE);
       this.emulator.mapZero(currentBase, chunkSize, 'sandbox-object');
       currentBase += BigInt(chunkSize);
       remaining -= chunkSize;
     }
+    throwIfCancelled();
     this.emulator.setup(asBig(address), args);
 
     for (const [reg, value] of Object.entries(o.registers || {})) this.emulator.set(reg, asBig(value));
 
     if (Array.isArray(o.objectMemory)) {
       for (const item of o.objectMemory) {
+        throwIfCancelled();
         if (!item) continue;
-        await this.emulator.store(objectBase + asBig(item.offset || 0), Number(item.size || 8), asBig(item.value));
+        const itemOffset = asBig(item.offset || 0);
+        // itemSize authority (#5318): only an omitted size defaults to 8; an
+        // explicit size must be a primitive positive safe integer, otherwise
+        // numeric-string/fractional coercion or a 0/negative value could
+        // rewrite or bypass the object-region bounds arithmetic.
+        let itemSize = 8;
+        if (item.size !== undefined && item.size !== null) {
+          if (typeof item.size !== 'number' || !Number.isSafeInteger(item.size) || item.size <= 0) {
+            throw new TypeError(`objectMemory size must be a positive safe integer, got ${String(item.size)}`);
+          }
+          itemSize = item.size;
+        }
+        // objectMemory initializers are bounded by the same object region that
+        // mapZero/modifiedRanges use: an offset beyond maxObjectSize must not
+        // fall through into the synthetic heap backing (#5318).
+        if (itemOffset < 0n || itemOffset + BigInt(itemSize) > BigInt(this.maxObjectSize)) {
+          throw new RangeError(`objectMemory offset ${itemOffset} (+${itemSize}) is outside the sandbox object region (maxObjectSize=${this.maxObjectSize})`);
+        }
+        await this.emulator.store(objectBase + itemOffset, itemSize, asBig(item.value));
       }
     } else if (o.objectMemory && typeof o.objectMemory === 'object') {
       for (const [offset, value] of Object.entries(o.objectMemory)) {
-        await this.emulator.store(objectBase + BigInt(offset), 8, asBig(value));
+        throwIfCancelled();
+        // objectMemory initializers are bounded by the same object region that
+        // mapZero/modifiedRanges use: an offset beyond maxObjectSize must not
+        // fall through into the synthetic heap backing (#5318).
+        const itemOffset = asBig(offset);
+        const itemSize = 8;
+        if (itemOffset < 0n || itemOffset + BigInt(itemSize) > BigInt(this.maxObjectSize)) {
+          throw new RangeError(`objectMemory offset ${itemOffset} (+${itemSize}) is outside the sandbox object region (maxObjectSize=${this.maxObjectSize})`);
+        }
+        await this.emulator.store(objectBase + itemOffset, itemSize, asBig(value));
       }
     }
 
     for (const item of o.stackMemory || []) {
+      throwIfCancelled();
       if (!item) continue;
       await this.emulator.store(this.emulator.sp + asBig(item.offset || 0), Number(item.size || 8), asBig(item.value));
     }
+    throwIfCancelled();
     for (const bp of o.breakpoints || []) this.emulator.breakpoints.add(asBig(bp).toString());
 
+    throwIfCancelled();
     this.watch = watchesFromOptions(o, objectBase);
     this.before = await snapshot(this.emulator, this.watch);
     this.beforeObjectBytes = sparseObjectBytes(this.emulator, objectBase, this.maxObjectSize);

@@ -55,8 +55,10 @@ function atPath(root, path) {
 }
 
 function boundedLimit(value, fallback = 100, max = 500) {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(1, Math.min(max, Math.floor(n))) : fallback;
+  // Paging budgets are schema numbers: structured values must never coerce
+  // into a page limit authority (#5428).
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(1, Math.min(max, Math.floor(value)));
 }
 
 const DEFAULT_MAX_ENTRIES = 256;
@@ -85,8 +87,9 @@ function observationRefKey(detailRef) {
 }
 
 function finiteConfiguredNumber(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) && number !== 0 ? number : fallback;
+  // Retention budgets are schema numbers: only a primitive finite number is
+  // an explicit configured value; strings/arrays/booleans fall back (#5428).
+  return typeof value === 'number' && Number.isFinite(value) && value !== 0 ? value : fallback;
 }
 
 function pageValue(value, offset, limit) {

@@ -57,14 +57,20 @@ export function collectRelrRelocations(r, tags, image, bits, context = null) {
   if(off==null||size==null){partial(image,'DT_RELR table crosses a file-backed PT_LOAD boundary');return out;}
   if (!budget.claimInput(size, 'DT_RELR')) return out;
   if (size % word) partial(image,'DT_RELRSZ is not a multiple of DT_RELRENT');
-  let base=0n, hasBase=false; const wordBits=BigInt(word*8);
+  let base=0n, hasBase=false; const wordBits=BigInt(word*8), wordSize=BigInt(word), addressBits=bits===64?64:32, maxAddress=(1n<<BigInt(addressBits))-1n;
+  const checkedAddressAdd=(value,delta,label)=>{
+    if(value>maxAddress-delta){partial(image,`DT_RELR ${label} exceeds ${addressBits}-bit address range`);return null;}
+    return value+delta;
+  };
   const count=Math.floor(size/word);
   outer: for(let i=0;i<count;i++){
     if (!budget.step()) break;
     const entry=word===8?r.u64(off+i*word):BigInt(r.u32(off+i*word));
     if((entry&1n)===0n){
       if (!budget.push(out,{address:entry,symIndex:0,type:null,addend:null,source:'PT_DYNAMIC-RELR',relative:true},'DT_RELR')) break;
-      base=entry+BigInt(word);
+      const nextBase=checkedAddressAdd(entry,wordSize,'base advance');
+      if(nextBase==null)break;
+      base=nextBase;
       hasBase=true;
       continue;
     }
@@ -72,10 +78,14 @@ export function collectRelrRelocations(r, tags, image, bits, context = null) {
     for(let bit=1n;bit<wordBits;bit++) {
       if (!budget.step()) break outer;
       if(entry&(1n<<bit)) {
-        if (!budget.push(out,{address:base+(bit-1n)*BigInt(word),symIndex:0,type:null,addend:null,source:'PT_DYNAMIC-RELR',relative:true},'DT_RELR')) break outer;
+        const address=checkedAddressAdd(base,(bit-1n)*wordSize,'bitmap relocation');
+        if(address==null)break outer;
+        if (!budget.push(out,{address,symIndex:0,type:null,addend:null,source:'PT_DYNAMIC-RELR',relative:true},'DT_RELR')) break outer;
       }
     }
-    base+=(wordBits-1n)*BigInt(word);
+    const nextBase=checkedAddressAdd(base,(wordBits-1n)*wordSize,'bitmap base advance');
+    if(nextBase==null)break;
+    base=nextBase;
   }
   return out;
 }
@@ -112,6 +122,7 @@ function decodeAndroidTable(r, va, size64, image, bits, rela, source, budget, ou
       const groupSize=readSleb(r,st,end), flags=readSleb(r,st,end);
       if(groupSize<=0n||groupSize>relocationCount-decoded) throw new Error('invalid relocation group size');
       const groupedDelta=!!(flags&GROUPED_BY_OFFSET_DELTA), groupedInfo=!!(flags&GROUPED_BY_INFO), hasAddend=!!(flags&GROUP_HAS_ADDEND), groupedAddend=!!(flags&GROUPED_BY_ADDEND);
+      if (!rela && hasAddend) throw new Error('unexpected r_addend in Android REL packed relocation group');
       const groupDelta=groupedDelta?readSleb(r,st,end):0n, groupInfo=groupedInfo?readSleb(r,st,end):0n, groupAddend=hasAddend&&groupedAddend?readSleb(r,st,end):0n;
       for(let i=0n;i<groupSize && !budget.stopped;i++,decoded++){
         if (!budget.step()) break;
