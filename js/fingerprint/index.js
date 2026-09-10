@@ -147,8 +147,14 @@ function canonicalIntegerValue(raw) {
   if (typeof raw === 'number' && Number.isSafeInteger(raw)) return BigInt(raw);
   if (typeof raw === 'string') {
     const text = raw.trim();
-    if (/^[+-]?(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) {
-      try { return BigInt(text); } catch { return null; }
+    // BigInt() rejects signed hex ('-0x10'), so split an optional sign from
+    // the magnitude before parsing and reapply it afterwards (#5036).
+    const match = /^([+-]?)(0[xX][0-9a-fA-F]+|\d+)$/.exec(text);
+    if (match) {
+      try {
+        const magnitude = BigInt(match[2]);
+        return match[1] === '-' ? -magnitude : magnitude;
+      } catch { return null; }
     }
   }
   return null;

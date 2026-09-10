@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { normalizeInstruction, fingerprintFunction } from '../js/fingerprint/index.js';
+import { normalizeInstruction, fingerprintFunction, fingerprintFunctionFast } from '../js/fingerprint/index.js';
 
 // Issue #5036: canonicalImmediate() ran BigInt() over structured
 // parsedOperands values, laundering booleans/arrays into real immediates
@@ -27,6 +27,18 @@ for (const [value, expected] of [[16, '#16'], [1n, '#1'], [0n, '#0'], [-8n, '#-8
   assert.equal(normalized.operands, expected, `value ${String(value)} canonicalizes to ${expected}`);
 }
 
+// Signed hex is sign-aware: BigInt() itself rejects '-0x10', so the parser
+// must split the sign from the magnitude before parsing (#5036 R2).
+for (const [value, expected] of [['-0x10', '#-16'], ['+0x10', '#16'], ['-0X1F', '#-31'], ['-16', '#-16']]) {
+  const normalized = normalizeInstruction({ mnemonic: 'mov', parsedOperands: [{ k: 'imm', value }] });
+  assert.equal(normalized.operands, expected, `signed hex ${String(value)} canonicalizes to ${expected}`);
+}
+assert.equal(
+  normalizeInstruction({ mnemonic: 'mov', parsedOperands: [{ k: 'imm', value: '-0x10' }] }).operands,
+  normalizeInstruction({ mnemonic: 'mov', parsedOperands: [{ k: 'imm', value: -16n }] }).operands,
+  'signed hex and the equivalent bigint canonicalize identically',
+);
+
 // Float immediates stay numeric evidence; structured junk falls back to text.
 assert.equal(normalizeInstruction({ mnemonic: 'fmov', parsedOperands: [{ k: 'imm', float: 0.5 }] }).operands, '0.5');
 assert.notEqual(normalizeInstruction({ mnemonic: 'fmov', parsedOperands: [{ k: 'imm', float: '0.5' }] }).operands, '0.5');
@@ -41,6 +53,21 @@ assert.equal(normalizeInstruction({ mnemonic: 'ldr', parsedOperands: [{ k: 'reg'
 assert.ok(normalizeInstruction({ mnemonic: 'ldr', parsedOperands: [{ k: 'reg', text: 'x0' }, { k: 'mem', base: { text: 'x1' }, disp: { value: 8n } }] }).operands.includes('#8]'), 'canonical displacements unchanged');
 
 // Function fingerprints differ between a real constant and a boolean payload.
+
+const fastReal = fingerprintFunctionFast({ architecture: 'arm64', bytes: new Uint8Array(4), instructions: [
+  { mnemonic: 'mov', parsedOperands: [{ k: 'reg', text: 'x0' }, { k: 'imm', value: 1n }] },
+  { mnemonic: 'ret' },
+] });
+const fastJunk = fingerprintFunctionFast({ architecture: 'arm64', bytes: new Uint8Array(4), instructions: [
+  { mnemonic: 'mov', parsedOperands: [{ k: 'reg', text: 'x0' }, { k: 'imm', value: true }] },
+  { mnemonic: 'ret' },
+] });
+assert.notEqual(fastReal.normalizedOperandsHash, fastJunk.normalizedOperandsHash, 'the fast fingerprint path also rejects type-corrupted immediates');
+assert.notEqual(fingerprintFunctionFast({ architecture: 'arm64', bytes: new Uint8Array(4), instructions: [
+  { mnemonic: 'mov', parsedOperands: [{ k: 'reg', text: 'x0' }, { k: 'imm', value: '-0x10' }] },
+  { mnemonic: 'ret' },
+] }), fastJunk, 'signed hex survives the fast path');
+
 const realFn = fingerprintFunction([
   { mnemonic: 'mov', parsedOperands: [{ k: 'reg', text: 'x0' }, { k: 'imm', value: 1n }] },
   { mnemonic: 'ret' },
