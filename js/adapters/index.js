@@ -7,6 +7,15 @@ import { symbolicExecute } from '../symbolic/executor.js';
 import { STACK_TOP } from '../emu.js';
 
 const REMOTE_ARRAY_LIMITS = Object.freeze({ threads:1024, modules:4096, backtrace:4096, breakpoints:4096, trace:20000 });
+// #5842: individual trace capabilities multiplex into trace({capability})
+// via DebugAdapter._traceCapability; each advertised capability must return
+// only its own event class instead of the whole buffer snapshot.
+const TRACE_CAPABILITY_EVENT_TYPES = Object.freeze({
+  traceCall: 'call',
+  traceReturn: 'return',
+  traceBranch: 'branch',
+  traceMemoryWrite: 'memory-write',
+});
 const REMOTE_CALL_METHODS = new Set(['attach','launch','pause','resume','stepInto','stepOver','stepOut','removeBreakpoint','listBreakpoints','readRegisters','writeRegister','readMemory','writeMemory','getThreads','getModules','getBacktrace','evaluate','trace','watchMemory']);
 
 // Listener isolation must cover async failures too: a listener returning a
@@ -509,7 +518,13 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const text = String(expression || '').trim(); if (/^(x([0-9]|[12][0-9]|30)|sp|pc)$/.test(text)) return this.ensureSandbox().getRegister(text);
     throw new DebugAdapterError('unsupported-expression','local evaluate only accepts register names');
   }
-  async trace(options = {}) { if (options.run) await this.resume(options); return this.traceBuffer.snapshot({ limit:options.limit ?? 4096 }); }
+  async trace(options = {}) {
+    if (options.run) await this.resume(options);
+    const snap = this.traceBuffer.snapshot({ limit:options.limit ?? 4096 });
+    const filter = TRACE_CAPABILITY_EVENT_TYPES[options?.capability];
+    if (!filter) return snap;
+    return { ...snap, events: snap.events.filter((e) => e?.type === filter) };
+  }
   async watchMemory(spec) { const bp = normalizeBreakpoint({ ...spec, kind:'memory' }); throw new DebugAdapterError('unsupported','hardware-style watchpoints are unavailable in local sandbox; use memory trace/watch fields', { breakpoint:bp }); }
   _normalizeResult(result, memoryEvents = []) {
     const fullTrace = result.trace || [];
