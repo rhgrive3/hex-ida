@@ -158,12 +158,11 @@ export function pointsToAlias(left, right, options = {}) {
           } catch {}
         }
 
-        const pair = new Set([a.rootKind, b.rootKind]);
-        if ((pair.has('stack-fixed') || pair.has('stack-like')) && (pair.has('global-absolute') || pair.has('absolute') || hasCanonicalAddressA || hasCanonicalAddressB)) {
-          relations.push('no');
-          reasonCodes.add('distinct-proven-root');
-          continue;
-        }
+        // A stack-shaped root and a concrete absolute address are not, by
+        // themselves, proof of distinct storage (#4214). The absolute value can
+        // denote the live stack at runtime, so separation must come from one of
+        // the proof-bearing paths below (non-escape/root descriptor), not from
+        // rootKind or the presence of a numeric address.
 
         const aNonEscaping = nonEscaping.has(a.rootKey) || (a.rootEntityId && nonEscaping.has(a.rootEntityId));
         const bNonEscaping = nonEscaping.has(b.rootKey) || (b.rootEntityId && nonEscaping.has(b.rootEntityId));
