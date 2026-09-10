@@ -127,7 +127,7 @@ for (const [name, mutate] of [
   ['sparse write set', (s) => { s.memoryWriteRegions = new Array(1); }],
   ['sparse provenance', (s) => { s.returnProvenance = new Array(1); }],
   ['noncanonical ID', (s) => { s.inputs = [['arg']]; }],
-  ['unresolved region', (s) => { s.memoryWriteRegions = [createMemoryEffect({})]; }],
+  ['unresolved region', (s) => { s.memoryWriteRegions = [{ regionId:null, regionKind:'unknown', broad:false, addressSpaces:[], source:'proven-summary', evidenceIds:[] }]; }],
 ]) {
   test(`#4320: serialized ${name} cannot prove absence of caller writes`, () => {
     const raw = copy(); mutate(raw);
