@@ -95,19 +95,37 @@ export function captureProjectionIrData(roots, shouldAbort = null) {
           if (!changed.has(object)) changed.set(object, new Map());
           const byKey = changed.get(object);
           if (!byKey.has(key)) byKey.set(key, []);
-          byKey.get(key).push({ before:own('before'), after:own('after') });
+          byKey.get(key).push({ before:own('before'), after:own('after'), beforePresent:own('beforePresent') });
         }
       }
       for (const {value,prototype,entries,arrayLength} of records) {
         if (Object.getPrototypeOf(value)!==prototype || arrayLength!=null && value.length!==arrayLength) return false;
         const keys=Reflect.ownKeys(value);
-        if(keys.length!==entries.length+(arrayLength!=null?1:0)) return false;
+        if(keys.length!==entries.length+(arrayLength!=null?1:0)) {
+          // Only an explicitly described absent-to-own-data write can account
+          // for a new field. This remains pure matching, never writer admission.
+          if (arrayLength != null || !changed?.has(value) || keys.length < entries.length) return false;
+          const originalKeys = new Set(entries.map(([key]) => key));
+          for (const key of keys) if (!originalKeys.has(key)) {
+            const writes = changed.get(value).get(key), first = writes?.[0];
+            if (!first || first.beforePresent !== false || first.before !== undefined) return false;
+            let expected = first.after;
+            for (const write of writes.slice(1)) {
+              if (write.beforePresent === false || !Object.is(write.before, expected)) return false;
+              expected = write.after;
+            }
+            const descriptor = Object.getOwnPropertyDescriptor(value, key);
+            if (!descriptor || !Object.hasOwn(descriptor, 'value') || !descriptor.enumerable
+                || !Object.is(descriptor.value, expected)) return false;
+          }
+        }
         for(const [key,previous] of entries) {
           const descriptor=Object.getOwnPropertyDescriptor(value,key);
           if(!descriptor || !Object.hasOwn(descriptor,'value') || !descriptor.enumerable) return false;
           if (!Object.is(descriptor.value,previous)) {
             let expected = previous, started = false;
             for (const write of changed?.get(value)?.get(key) || []) {
+              if (write.beforePresent === false) continue;
               if (!started && !Object.is(write.before, expected)) continue;
               started = true;
               if (!Object.is(write.before, expected)) return false;

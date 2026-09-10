@@ -1,16 +1,22 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildSemanticModel } from '../../../js/blocks.js';
-import { buildIR, readFacadeConstantTransitions, facadeConstantTransitionExpected } from '../../../js/ir-core.js';
+import { buildIR, readFacadeConstantTransitions, facadeConstantTransitionExpected,
+  readFacadePreservedStateHistory, facadePreservedStateTransitionExpected, readFacadeStateNormalization } from '../../../js/ir-core.js';
+import { captureProjectionIrData } from '../../../js/core/identity/live-data.js';
 import { observeProjectedOperationData, readProjectedConstantTransitions } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 import { annotateValueRanges } from '../../../js/semantics/compat/legacy-value-ranges.js';
 import { enhanceSemanticDecompilation, readExpressionHistoryConsumer } from '../../../js/decompiler/pipeline-core.js';
 import { enhanceSemanticDecompilation as enhancePublic } from '../../../js/decompiler/pipeline.js';
 import { applyPhase8Projection } from '../../../js/decompiler/phase8/projection.js';
+import { buildRenderProvenance, validateRenderProvenance } from '../../../js/decompiler/phase8/render-provenance.js';
+import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
+import { createDecompilerNavigation } from '../../../js/ui/decompiler-provenance.js';
 import { analysis } from './fixture.js';
 import { BRANCH, loadRoadmapManifest, validateRoadmapInventory } from '../../../tools/validation/analysis-roadmap/ownership.mjs';
 
 const rule = 'fold-facade-constant';
+const preservedRule = 'restore-abi-preserved-state';
 const clone = ir => structuredClone(Object.fromEntries(Object.entries(ir).filter(([, value]) => typeof value !== 'function')));
 
 function fixture({ bits = 64, op = 'add', lines = null } = {}) {
@@ -38,6 +44,199 @@ function render(f, opts = {}, publicPipeline = false) {
   f.result = (publicPipeline ? enhancePublic : enhanceSemanticDecompilation)(seed, f.model, { deterministicTransforms:true, ...opts });
   return f;
 }
+
+test('actual ABI preserved-state restoration retains replaced operands and the actual reaching candidate order', () => {
+  for (const bits of [32, 64]) {
+    const f = fixture({ bits }), before = clone(f.ir), history = readFacadePreservedStateHistory(f.ir);
+    assert.ok(history?.events.length, `${bits}: actual restoration must be observed`);
+    assert.equal(history.completeness, 'complete');
+    assert.ok(Object.isFrozen(history) && Object.isFrozen(history.events));
+    for (const event of history.events) {
+      assert.equal(event.stage, 'facade-preserved-state');
+      assert.equal(event.source.args[0], event.argument);
+      assert.equal(event.argument.value, event.after);
+      assert.notEqual(event.before, event.after);
+      assert.equal(event.before.def, event.call);
+      assert.equal(event.call.op, 'call');
+      assert.equal(event.candidates[0].value, event.after);
+      assert.equal(event.abiId, 'aapcs64');
+      assert.equal(event.registerId, 'x19');
+      assert.equal(event.callerSaved.includes(event.registerId), false);
+      assert.ok(event.candidates.every(input => event.beforeInputs.includes(input.value)));
+      assert.ok(event.inputs.some(input => input.value === event.before));
+      assert.ok(event.inputs.some(input => input.value === event.after));
+      assert.ok(f.ir.values.includes(event.before) && f.ir.values.includes(event.after));
+      assert.equal(facadePreservedStateTransitionExpected(f.ir, event.source), true);
+      assert.equal(readFacadePreservedStateHistory(f.ir, event.source).events[0], event);
+    }
+    assert.deepEqual(clone(f.ir), before);
+  }
+});
+
+test('ordinary values, caller-clobbered registers and copied ABI metadata cannot issue restoration history', () => {
+  for (const lines of [['mov x0, #5', 'ret'], ['mov x9, #5', 'bl #0x100001000', 'add x0, x9, #3', 'ret']]) {
+    const f = fixture({ lines });
+    assert.equal(facadePreservedStateTransitionExpected(f.ir), false);
+    assert.equal(readFacadePreservedStateHistory(f.ir), null);
+  }
+  const f = fixture(), history = readFacadePreservedStateHistory(f.ir);
+  assert.ok(history);
+  assert.equal(readFacadePreservedStateHistory({ ...f.ir }), null);
+  assert.equal(readFacadePreservedStateHistory(f.ir, { ...history.events[0].source }), null);
+  const legacy = buildIR(f.model, { semanticMigrationMode:'legacy-v1' });
+  assert.equal(readFacadePreservedStateHistory(legacy), null);
+});
+
+test('ABI restoration observes rejected candidates, dominance sets, live operands, input positions and getter mutations', () => {
+  for (const mutate of [
+    (f, e) => { e.argument.value = e.before; },
+    (f, e) => { e.source.extra.abiPreservedStateEvidence = 'copied'; },
+    (f, e) => { e.call.args = [...e.call.args]; },
+    (f, e) => { e.after.const = 99n; },
+    (f, e) => { e.call.row++; },
+    f => { f.ir.values.push({ id:'new-candidate', reg:'x19', kind:'arg', bits:64 }); },
+    (f, e) => { f.ir.values.find(value => !e.beforeInputs.includes(value) && value !== e.output).reg = 'x19'; },
+    f => { f.ir.dominators[0].add(999); },
+    f => { f.ir.dominators = [...f.ir.dominators]; },
+    f => { f.ir.values = [...f.ir.values]; },
+    f => { f.ir.instructions = [...f.ir.instructions]; },
+  ]) {
+    const f = fixture(), history = readFacadePreservedStateHistory(f.ir);
+    assert.ok(history);
+    mutate(f, history.events[0]);
+    assert.equal(history.isCurrent(), false);
+    assert.equal(readFacadePreservedStateHistory(f.ir), null);
+    assert.equal(facadePreservedStateTransitionExpected(f.ir), true);
+    assert.ok(buildRenderProvenance({ result:{ ir:f.ir, lines:[] }, snapshotId:'abi' }).reasons.includes('unavailable-abi-state-history'));
+  }
+  const f = fixture(), event = readFacadePreservedStateHistory(f.ir).events[0];
+  let reads = 0;
+  Object.defineProperty(event.after, 'reg', { configurable:true, enumerable:true, get:() => { reads++; return 'x19'; } });
+  assert.equal(readFacadePreservedStateHistory(f.ir), null);
+  assert.equal(reads, 0);
+});
+
+test('ABI restoration history follows only actual range annotation and cannot be reissued by a data matcher', () => {
+  const f = fixture(), history = readFacadePreservedStateHistory(f.ir);
+  for (let i = 0; i < 2; i++) {
+    annotateValueRanges(f.ir);
+    assert.equal(readFacadePreservedStateHistory(f.ir), history);
+  }
+  history.events[0].after.range = { min:0n, max:0n, bits:64, signed:false };
+  assert.equal(readFacadePreservedStateHistory(f.ir), null);
+  assert.equal(observeProjectedOperationData(f.ir, history.events)(), true);
+  assert.equal(readFacadePreservedStateHistory(f.ir), null, 'pure data matching does not reseal');
+});
+
+test('ABI restoration reaches direct reverse history without a rendered line or a deleted canonical value', () => {
+  const f = fixture(), events = readFacadePreservedStateHistory(f.ir).events, before = clone(f.ir);
+  const map = buildRenderProvenance({ result:{ ir:f.ir, lines:[] }, snapshotId:'abi' });
+  const records = map.ledger.filter(record => record.kind === 'abi-state-restoration');
+  assert.equal(records.length, events.length);
+  for (const record of records) {
+    const transition = record.abiStateTransition;
+    assert.equal(record.rule, preservedRule);
+    assert.equal(transition.canonicalValuesRetained, true);
+    assert.deepEqual(record.producedRefs, []);
+    assert.deepEqual(record.removedRefs, []);
+    for (const ref of transition.consumedRefs) assert.ok(map.transformReverse[ref].includes(map.ledger.indexOf(record)));
+    assert.ok(map.transformReverse[transition.callRef].includes(map.ledger.indexOf(record)));
+  }
+  assert.deepEqual(clone(f.ir), before);
+});
+
+test('actual rendered consumers retain ABI restoration inputs through core/public projection and replay', () => {
+  for (const publicPipeline of [false, true]) {
+    const f = render(fixture(), {}, publicPipeline), events = readFacadePreservedStateHistory(f.ir).events;
+    let result = applyPhase8Projection(f.result, analysis());
+    const records = result.renderProvenance.ledger.filter(record => record.rule === preservedRule && record.kind === 'expression-rewrite');
+    assert.ok(records.length);
+    for (const event of events) assert.ok(records.some(record => record.producedRefs.length
+      && record.originHistory.consumedRefs.includes(`ssa:def:${event.before.id}`)
+      && record.originHistory.consumedRefs.includes(`ssa:def:${event.after.id}`)));
+    const ledger = result.renderProvenance.ledger;
+    result = applyPhase8Projection(result, analysis());
+    assert.deepEqual(result.renderProvenance.ledger, ledger);
+  }
+});
+
+test('ABI restoration direct metadata cannot bind visible lines, claim deletions or survive copied admission', () => {
+  const f = fixture(), original = buildRenderProvenance({ result:{ ir:f.ir, lines:[] }, snapshotId:'abi' });
+  const record = original.ledger.find(record => record.kind === 'abi-state-restoration');
+  const visible = buildRenderProvenance({ result:{ ir:f.ir, lines:[{ kind:'stmt', row:record.origin.rows[0], text:'copied;' }] }, snapshotId:'abi' });
+  assert.ok(visible.ledger.filter(item => item.kind === record.kind).every(item => !item.producedRefs.length));
+  const forged = buildRenderProvenance({ result:{ lines:[], phase8Projection:{ transforms:[structuredClone(record)] } }, snapshotId:'abi' });
+  assert.ok(forged.reasons.includes('unissued-abi-state-history'));
+  for (const mutate of [
+    r => { r.producedRefs = ['L0:stmt']; }, r => { r.removedRefs = ['ssa:def:1']; },
+    r => { r.abiStateTransition.beforeRef = r.abiStateTransition.afterRef; },
+    r => { r.abiStateTransition.canonicalValuesRetained = false; },
+    r => { r.abiStateTransition.argumentIndex = -1; },
+    r => { r.abiStateTransition.consumedRefs = []; },
+    r => { r.proof = 'equivalent'; },
+  ]) {
+    const changed = structuredClone(original);
+    mutate(changed.ledger.find(item => item.kind === record.kind));
+    assert.ok(validateRenderProvenance(changed).reasons.includes('invalid-abi-state-history'));
+  }
+});
+
+test('ABI history budgets, cancellation and mutations during ledger construction stay explicit', () => {
+  const f = fixture(), before = clone(f.ir), result = { ir:f.ir, lines:[] };
+  for (const budget of [{ maxTransformRecords:1 }, { maxOriginsPerEntity:1 }]) {
+    const map = buildRenderProvenance({ result, snapshotId:'abi', budget });
+    assert.equal(map.completeness, 'incomplete');
+    assert.ok(map.reasons.includes('truncated'));
+  }
+  assert.equal(buildRenderProvenance({ result, snapshotId:'abi', shouldAbort:() => true }).completeness, 'incomplete');
+  assert.deepEqual(clone(f.ir), before);
+  let calls = 0;
+  const map = buildRenderProvenance({ result, snapshotId:'abi', shouldAbort:() => {
+    if (++calls === 2) readFacadePreservedStateHistory(f.ir).events[0].source.row++;
+    return false;
+  } });
+  assert.ok(map.reasons.includes('stale-abi-state-history'));
+});
+
+test('query navigation reaches replaced ABI input history with no current entity and rejects stale snapshots', async () => {
+  const f = fixture(), event = readFacadePreservedStateHistory(f.ir).events[0];
+  const map = buildRenderProvenance({ result:{ ir:f.ir, lines:[] }, snapshotId:'abi' });
+  assert.ok(readFacadeStateNormalization(f.ir), 'actual restoration and constant writes must carry predecessor state history');
+  assert.equal(map.completeness, 'complete', JSON.stringify(map.reasons));
+  let epoch = 1;
+  const api = new AnalysisQueryAPI({ currentIdentity:async () => ({ binaryId:'abi', projectRevision:1, analysisEpoch:epoch, artifactVersions:{} }),
+    decompile:async () => ({ value:{ lines:[], pseudocode:'', renderProvenance:map }, status:{ completeness:'complete' } }) });
+  const snapshot = await api.snapshot(), query = await api.decompile(snapshot, 'function');
+  const navigation = createDecompilerNavigation(query, { currentSnapshot:() => api.snapshot() });
+  const selected = await navigation.selectOrigin('ssa', `def:${event.before.id}`);
+  assert.equal(selected.state, 'ready', JSON.stringify({ selected, reasons:map.reasons }));
+  assert.deepEqual(selected.entities, []);
+  assert.ok(selected.transforms.some(record => record.rule === preservedRule));
+  epoch++;
+  assert.equal((await navigation.selectOrigin('ssa', `def:${event.before.id}`)).reason, 'stale-query-snapshot');
+});
+
+test('pure live-data matching requires explicit absent-field writes and cannot admit arbitrary added metadata', () => {
+  const value = { existing:1 }, observation = captureProjectionIrData([value]);
+  value.added = 2;
+  const write = { object:value, key:'added', before:undefined, after:2, beforePresent:false };
+  assert.equal(observation.matches(), false);
+  assert.equal(observation.matchesThroughWrites([{ ...write, beforePresent:undefined }]), false);
+  assert.equal(observation.matchesThroughWrites([{ ...write, before:1 }]), false);
+  assert.equal(observation.matchesThroughWrites([write]), true);
+  value.added = 3;
+  assert.equal(observation.matchesThroughWrites([write]), false);
+  const next = { object:value, key:'added', before:2, after:3 };
+  assert.equal(observation.matchesThroughWrites([write, next]), true);
+  assert.equal(observation.matchesThroughWrites([write, { ...next, before:9 }]), false);
+  let reads = 0;
+  Object.defineProperty(value, 'added', { configurable:true, enumerable:true, get:() => { reads++; return 3; } });
+  assert.equal(observation.matchesThroughWrites([write, next]), false);
+  assert.equal(reads, 0);
+  const array = [], arrayObservation = captureProjectionIrData([array]);
+  array.push(1);
+  assert.equal(arrayObservation.matchesThroughWrites([{ object:array, key:'0', before:undefined, after:1, beforePresent:false }]), false);
+});
 
 test('actual public facade writes preserve recursive read facts rather than hypothetical intermediate writes', () => {
   const f = fixture(), before = clone(f.ir);

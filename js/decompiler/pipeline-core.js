@@ -22,7 +22,8 @@ import { buildNZCVConditionExpression } from './flag-semantics.js';
 import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionExpected,
   projectedConstantTransitionCandidate, projectedConstantTransitionExpected,
   projectedStateTransitionCandidates, projectedStateTransitionExpected } from '../semantics/compat/semantic-ir-v2-to-v1.js';
-import { readFacadeConstantTransitions, facadeConstantTransitionExpected, facadeStateTransitionCandidates } from '../ir-core.js';
+import { readFacadeConstantTransitions, facadeConstantTransitionExpected, facadeStateTransitionCandidates,
+  readFacadePreservedStateHistory, facadePreservedStateTransitionExpected } from '../ir-core.js';
 import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
@@ -758,13 +759,15 @@ function compatOperationSelection(value, state, roots = [value?.def, value], fol
     const expectedProjection = projectedConstantTransitionExpected(state.ir, key);
     const expectedFacade = facadeConstantTransitionExpected(state.ir, key);
     const expectedState = projectedStateTransitionExpected(state.ir, key);
-    if (!expectedProjection && !expectedFacade && !expectedState) continue;
+    const expectedPreserved = facadePreservedStateTransitionExpected(state.ir, key);
+    if (!expectedProjection && !expectedFacade && !expectedState && !expectedPreserved) continue;
     if ((state.buildSelectionHistoryCount || 0) >= maximum || budget.edges <= 0) {
       budget.reasons.add('compat-constant-selection-history-budget'); return observeSelected();
     }
     const transitions = [];
     for (const [expected, read, kind] of [[expectedProjection, (ir, key) => readCandidate(projectedConstantTransitionCandidate(ir, key)), 'constant'],
-      [expectedFacade, readFacadeConstantTransitions, 'constant'], [expectedState, (_, key) => readCandidate(stateCandidates?.get(key)), 'state']]) {
+      [expectedFacade, readFacadeConstantTransitions, 'constant'], [expectedState, (_, key) => readCandidate(stateCandidates?.get(key)), 'state'],
+      [expectedPreserved, readFacadePreservedStateHistory, 'preserved-state']]) {
       if (!expected) continue;
       const transition = read(state.ir, key);
       if (transition) transitions.push(transition);
@@ -817,15 +820,17 @@ function recordCompatOperationSelection(value, expression, selected, state) {
       ...event.beforeInputs.map(input => origin(input.def, input)));
     const history = expressionOriginHistory({ source }, expression);
     const facade = event.stage === 'facade-exact-constants';
+    const preserved = event.stage === 'facade-preserved-state';
     const stateOperation = !!event.kind;
     const identityText = identity => `${String(identity.reg)}:${String(identity.stateKey)}:${String(identity.version)}:${String(identity.compatDerived)}`;
-    const record = Object.freeze({ rule:stateOperation ? 'compact-public-state' : facade ? 'fold-facade-constant' : 'fold-compatibility-constant', phase:'compatibility-projection',
-      before:stateOperation ? `${event.kind}:${event.ordinal}:${event.path || 'identity'}:${event.identity ? identityText(event.before) : event.before.id}`
+    const record = Object.freeze({ rule:preserved ? 'restore-abi-preserved-state' : stateOperation ? 'compact-public-state' : facade ? 'fold-facade-constant' : 'fold-compatibility-constant', phase:'compatibility-projection',
+      before:preserved ? `${event.stage}:${event.ordinal}:value:${event.before.id}` : stateOperation ? `${event.kind}:${event.ordinal}:${event.path || 'identity'}:${event.identity ? identityText(event.before) : event.before.id}`
         : `${event.stage}:${event.round}:${event.ordinal}:${event.op}:${event.sub ?? ''}:${String(event.beforeConstant)}`,
-      after:stateOperation ? `${event.identity ? identityText(event.after) : event.after.id}` : `constant:${event.bits}:${String(event.afterConstant)}`,
-      evidence:Object.freeze({ kind:stateOperation ? 'observed-state-compaction-not-equivalence'
+      after:preserved ? `value:${event.after.id}:${event.evidence}` : stateOperation ? `${event.identity ? identityText(event.after) : event.after.id}` : `constant:${event.bits}:${String(event.afterConstant)}`,
+      evidence:Object.freeze({ kind:preserved ? 'observed-abi-state-restoration-not-equivalence' : stateOperation ? 'observed-state-compaction-not-equivalence'
         : facade ? 'observed-facade-constant-write-not-equivalence' : 'observed-compat-constant-write-not-equivalence',
-        detail:stateOperation ? 'actual public-state shadow or reference replacement with original values and alias-producing operations; not an independent state, scalar, memory or CFG proof'
+        detail:preserved ? 'actual facade operand restoration through the selected canonical ABI adapter, with original call-clobbered and reaching state sources; not a new ABI or scalar theorem'
+          : stateOperation ? 'actual public-state shadow or reference replacement with original values and alias-producing operations; not an independent state, scalar, memory or CFG proof'
           : 'actual compatibility constant write and its original input facts, retained through the consuming expression; not a new scalar or memory theorem' }),
       originHistory:origins?.incomplete ? Object.freeze({ ...history, truncated:true }) : history,
     });

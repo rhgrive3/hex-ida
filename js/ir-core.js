@@ -32,6 +32,19 @@ import { observeProjectedOperationData, projectedStateTransitionCandidates } fro
 const facadeConstantTransitions = new WeakMap();
 const expectedFacadeConstantTransitions = new WeakMap();
 const facadeStateTransitions = new WeakMap();
+const facadePreservedStateHistories = new WeakMap();
+const expectedFacadePreservedState = new WeakMap();
+
+export function facadePreservedStateTransitionExpected(projected, instruction = null) {
+  const expected = expectedFacadePreservedState.get(projected);
+  return instruction == null ? (expected?.count || 0) > 0 : expected?.sources.has(instruction) === true;
+}
+
+export function readFacadePreservedStateHistory(projected, instruction = null) {
+  const entry = facadePreservedStateHistories.get(projected);
+  if (!entry?.history.isCurrent()) return null;
+  return instruction == null ? entry.history : entry.bySource.get(instruction) ?? null;
+}
 
 export function facadeStateTransitionCandidates(projected) {
   return facadeStateTransitions.get(projected) ?? null;
@@ -282,7 +295,7 @@ function detachLegacyArguments(inst) {
   inst.args = [];
 }
 
-function selectReachingRegisterValue(projected, inst, reg, bits = null, excluded = null) {
+function selectReachingRegisterValue(projected, inst, reg, bits = null, excluded = null, observation = null) {
   const candidates = (projected.values ?? [])
     .filter((value) => value !== excluded && value.reg === reg && value.kind !== LEGACY_VK.UNDEF
       && valueDominatesLegacyInstruction(value, inst, projected))
@@ -297,6 +310,11 @@ function selectReachingRegisterValue(projected, inst, reg, bits = null, excluded
       if (leftWidth !== rightWidth) return rightWidth - leftWidth;
       return (right.id ?? 0) - (left.id ?? 0);
     });
+  if (observation && !observation.unavailable) {
+    if (candidates.length > 512) observation.unavailable = true;
+    else observation.candidates = Object.freeze(candidates.map(value => Object.freeze({ value,
+      definition:value.def, reg:value.reg, kind:value.kind, bits:value.bits, constant:value.const })));
+  }
   return candidates[0] ?? null;
 }
 
@@ -316,13 +334,57 @@ function replaceLegacyArg(inst, from, to) {
   return true;
 }
 
+function observePreservedStateSelection(projected) {
+  const own = (object, key) => {
+    if (object == null) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(object, key);
+    if (descriptor && !Object.hasOwn(descriptor, 'value')) throw Error('selection-accessor');
+    return descriptor?.value;
+  };
+  const values = own(projected, 'values'), length = own(values, 'length');
+  if (!Array.isArray(values) || length > 512) throw Error('selection-value-budget');
+  const fields = ['reg', 'kind', 'bits', 'def'];
+  const facts = Array.from({ length }, (_, index) => {
+    const value = own(values, String(index)), definition = own(value, 'def');
+    return { value, fields:fields.map(key => own(value, key)), definition,
+      row:own(definition, 'row'), block:own(definition, 'block') };
+  });
+  const dominators = own(projected, 'dominators'), prototype = dominators == null ? null : Object.getPrototypeOf(dominators);
+  const keys = dominators == null ? [] : Reflect.ownKeys(dominators);
+  if (keys.length > 512 || keys.some(key => typeof key !== 'string')) throw Error('selection-dominator-budget');
+  let edges = 0;
+  const size = Object.getOwnPropertyDescriptor(Set.prototype, 'size').get;
+  const sets = keys.map(key => {
+    const value = own(dominators, key);
+    if (key === 'length' || value == null) return { key, value, members:null };
+    if (Object.getPrototypeOf(value) !== Set.prototype || Reflect.ownKeys(value).length) throw Error('selection-dominator-shape');
+    edges += size.call(value);
+    if (edges > 4096) throw Error('selection-dominator-edge-budget');
+    return { key, value, members:[...Set.prototype.values.call(value)] };
+  });
+  return () => {
+    try {
+      return own(projected, 'values') === values && own(values, 'length') === length
+        && facts.every((fact, index) => own(values, String(index)) === fact.value
+          && fields.every((key, i) => own(fact.value, key) === fact.fields[i])
+          && own(fact.definition, 'row') === fact.row && own(fact.definition, 'block') === fact.block)
+        && own(projected, 'dominators') === dominators
+        && (dominators == null || Object.getPrototypeOf(dominators) === prototype && Reflect.ownKeys(dominators).length === keys.length)
+        && sets.every(({ key, value, members }) => own(dominators, key) === value
+          && (members == null || Object.getPrototypeOf(value) === Set.prototype && !Reflect.ownKeys(value).length
+            && size.call(value) === members.length && members.every(member => Set.prototype.has.call(value, member))));
+    } catch { return false; }
+  };
+}
+
 /*
  * Generic SSA is deliberately ABI-neutral and therefore treats an unknown call's
  * state category as a broad clobber. The selected canonical ABI adapter may
  * recover only a callee-preserved physical register state. Memory effects are
  * not changed.
  */
-function restoreCanonicalPreservedStateReads(projected, adapter) {
+function restoreCanonicalPreservedStateReads(projected, adapter, history = null) {
+  const observer = { records:[], sources:new WeakSet(), count:0, selection:null };
   let callerSaved = [];
   try { callerSaved = adapter?.callerSaved?.() ?? []; } catch { callerSaved = []; }
   const callerSavedSet = new Set(callerSaved.map(String));
@@ -335,12 +397,63 @@ function restoreCanonicalPreservedStateReads(projected, adapter) {
     const unknown = inst.args[0]?.value;
     const call = unknown?.def;
     if (unknown?.kind !== LEGACY_VK.UNDEF || call?.op !== LEGACY_OP.CALL) continue;
-    const reaching = selectReachingRegisterValue(projected, call, reg, inst.dst?.bits ?? unknown.bits, unknown);
+    const selection = { candidates:[], unavailable:observer.records.length >= 1024 || callerSavedSet.size > 512 };
+    const reaching = selectReachingRegisterValue(projected, call, reg, inst.dst?.bits ?? unknown.bits, unknown, selection);
     if (!reaching) continue;
+    if (observer.count === 0) {
+      try { observer.selection = observePreservedStateSelection(projected); } catch { /* bounded observation unavailable */ }
+    }
+    const argument = inst.args[0], beforeBits = argument.bits;
+    const fields = history && !history.unavailable ? [[argument, 'value'], [argument, 'bits'], [unknown, 'uses'],
+      [reaching, 'uses'], [inst.extra, 'abiPreservedState'], [inst.extra, 'abiPreservedStateEvidence']].map(([object, key]) => {
+      const descriptor = Object.getOwnPropertyDescriptor(object, key);
+      return { object, key, before:descriptor?.value, beforePresent:descriptor != null };
+    }) : null;
     replaceLegacyArg(inst, unknown, reaching);
     inst.extra.abiPreservedState = true;
     inst.extra.abiPreservedStateEvidence = `canonical-${adapter?.id || 'abi'}-callee-preserved`;
+    retainFacadeArgumentWrites(fields, history);
+    observer.count++;
+    observer.sources.add(inst);
+    if (!selection.unavailable) {
+      const inputs = Object.freeze([unknown, reaching].map(value => Object.freeze({ value, definition:value.def })));
+      observer.records.push(Object.freeze({ source:inst, output:inst.dst, input:reaching, call,
+        op:inst.op, sub:inst.sub, stage:'facade-preserved-state', ordinal:observer.count - 1,
+        argument, before:unknown, after:reaching, beforeBits, afterBits:argument.bits,
+        registerId:reg, abiId:String(adapter?.id || 'abi'), evidence:inst.extra.abiPreservedStateEvidence,
+        callerSaved:Object.freeze([...callerSavedSet]), candidates:selection.candidates, inputs,
+        beforeInputs:Object.freeze([...new Set([unknown, reaching, ...selection.candidates.map(item => item.value)])]) }));
+    }
   }
+  return observer;
+}
+
+// Only the actual private restoration writer supplies these before-images.
+// The final seal observes later facade output, never reconstructs a restoration
+// from public ABI flags, and does not certify scalar/ABI semantic equivalence.
+function sealFacadePreservedStateHistory(projected, observer, constants) {
+  expectedFacadePreservedState.set(projected, observer);
+  if (!observer.count) return;
+  try {
+    if (!observer.selection?.()) return;
+    const written = new Map(constants.records.map(event => [event.output, event.afterConstant]));
+    const valid = observer.records.filter(event => event.source.op === event.op && event.source.sub === event.sub
+      && event.source.dst === event.output && event.source.args?.length === 1 && event.source.args[0] === event.argument
+      && event.argument.value === event.after && event.argument.bits === event.afterBits
+      && event.source.extra?.abiPreservedState === true && event.source.extra?.abiPreservedStateEvidence === event.evidence
+      && event.before.def === event.call && event.call.op === LEGACY_OP.CALL
+      && event.inputs.every(input => input.value.def === input.definition)
+      && event.candidates[0]?.value === event.after && !event.callerSaved.includes(event.registerId)
+      && event.candidates.every(input => input.value.def === input.definition && input.value.reg === input.reg
+        && input.value.kind === input.kind && input.value.bits === input.bits
+        && (input.value.const === input.constant || written.has(input.value) && written.get(input.value) === input.value.const)));
+    const output = observeProjectedOperationData(projected, valid);
+    const isCurrent = () => observer.selection() && output();
+    const events = Object.freeze(valid), history = Object.freeze({ events, isCurrent,
+      completeness:valid.length === observer.count ? 'complete' : 'incomplete' });
+    facadePreservedStateHistories.set(projected, { history, bySource:new Map(valid.map(event => [event.source,
+      Object.freeze({ events:Object.freeze([event]), isCurrent })])) });
+  } catch { /* Actual restoration is retained; unavailable history cannot become complete. */ }
 }
 
 function exactLegacyConstant(value, active = new Set(), observation = null) {
@@ -397,7 +510,7 @@ function observeExactConstantRead(value, observation) {
   } catch { observation.unavailable = true; }
 }
 
-function propagateExactLegacyConstants(projected) {
+function propagateExactLegacyConstants(projected, history = null) {
   const observer = { records:[], expected:new WeakSet(), unavailable:new WeakSet() };
   for (const value of projected.values ?? []) {
     if (value.const != null) continue;
@@ -406,6 +519,10 @@ function propagateExactLegacyConstants(projected) {
     if (constant != null) {
       const beforeConstant = value.const;
       value.const = BigInt.asUintN(Number(value.bits || 64), constant);
+      if (history && !history.unavailable) {
+        if (history.writes.length >= 4096) history.unavailable = true;
+        else history.writes.push(Object.freeze({ object:value, key:'const', before:beforeConstant, after:value.const }));
+      }
       const source = value.def;
       if (!source) continue;
       observer.expected.add(source);
@@ -833,17 +950,18 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
       coverage: result.memorySsa.byteCoverage?.find((coverage) => String(coverage.useId) === String(item.memorySsaEntityId)),
     })), null, 2) + '\n');
   }
-  restoreCanonicalPreservedStateReads(result.legacyV1, abiAdapter);
-  restoreAapcs64PublicLocations(result.legacyV1);
-  const constantObserver = propagateExactLegacyConstants(result.legacyV1);
   const stateSource = projectedStateTransitionCandidates(result.legacyV1);
   const stateHistory = stateSource?.isCurrent() ? { source:stateSource, writes:[], unavailable:false } : null;
+  const preservedStateObserver = restoreCanonicalPreservedStateReads(result.legacyV1, abiAdapter, stateHistory);
+  restoreAapcs64PublicLocations(result.legacyV1);
+  const constantObserver = propagateExactLegacyConstants(result.legacyV1, stateHistory);
   attachCanonicalCallArguments(result.legacyV1, stateHistory);
   attachCanonicalTypedCallResults(result.legacyV1, instructionByRow, abiAdapter, opts);
   invalidateEscapedStackForwarding(result.legacyV1);
   attachCanonicalFunctionReturns(result.legacyV1, abiAdapter, opts, stateHistory);
   sealFacadeStateTransitions(result.legacyV1, stateHistory);
   sealFacadeConstantTransitions(result.legacyV1, constantObserver);
+  sealFacadePreservedStateHistory(result.legacyV1, preservedStateObserver, constantObserver);
   if (typeof process !== 'undefined' && process.env?.HEX_DEBUG_C2_LEGACY === '1' && typeof process.stderr?.write === 'function') {
     process.stderr.write(JSON.stringify(result.legacyV1.instructions.filter((item) => item.op === 'load').map((item) => ({
       row: item.row,

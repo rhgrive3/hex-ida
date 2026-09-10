@@ -3590,6 +3590,65 @@ Full raw call/location consumers, other facade writes, the complete removed/
 merged-class denominator, C4-02/04/05 proofs and the original compiler corpus
 remain open. No whole finding is closed. Goal ACTIVE; acceptance LOCKED.
 
+## C4-03 actual ABI preserved-state restoration history
+
+The existing public facade now records the operand replacement actually performed
+by `restoreCanonicalPreservedStateReads`. Each event retains the call-clobbered
+input, selected reaching input, original output, actual sorted candidate list,
+canonical ABI identity/caller-saved classification and the writer's evidence.
+The selection predicate, dominance/recency comparator, argument writes, constant
+evaluation and pass order are unchanged. No new semantic ID, ABI classifier or
+equivalence theorem is introduced.
+
+The private issuer bounds operation descriptions at 1024 and selection observation
+at 512 values/512 dominator entries/4096 dominance edges. It observes the complete
+scanned value identities and selection fields, including rejected candidates,
+array positions and actual dominance Set identities/membership. This prevents a
+later rejected candidate or dominance mutation from silently retaining a current
+history. Final input/output graphs and actual source positions are also observed;
+only real later range annotation can carry those observations. Unsupported/large
+observations remain expected but unavailable, with the actual IR unchanged.
+
+The existing expression consumer carries `restore-abi-preserved-state` with proof
+`observed-abi-state-restoration-not-equivalence`. Direct `abi-state-restoration`
+ledger records additionally retain consumed/produced canonical references even
+with no rendered line. They do not bind lines merely through shared origins, do
+not remove canonical values and do not invent pre-transform rendered tombstones.
+Raw/copied metadata cannot issue these histories. Ledger budgets retain existing
+class priority; incomplete/truncated/cancelled/stale coverage is explicit.
+
+The first navigation regression exposed missing predecessor continuity. The
+private facade state handoff now starts before restoration and retains its actual
+argument/use-reference/ABI-field writes plus actual following constant writes.
+Plain-data matching accepts an added own field only through an explicit recorded
+absent-to-present write chain; accessors, array growth and undescribed additions
+remain rejected. This matcher issues no authority: the private writer and fresh
+final output observation are still required to carry projector histories.
+Other location/typed-result/escaped-stack writers are not authorized by this change.
+
+The existing canonical-discovered facade test file now contains 21 tests (11
+previous constant-history tests and 10 new ABI/history-matcher tests). New coverage
+includes both native widths, caller-clobbered/no-call controls, candidate/dominance
+and source mutations, getter non-invocation, current range handoff, raw history,
+rendered consumers/replay, invalid metadata, bounds/cancellation, and stale-query
+navigation. Intentional old-matcher and missing-selection-observation overlays
+fail the new tests without modifying production source. The original failed
+navigation run and an invalid zero-budget test input remain retained diagnostics;
+the budget test now uses the existing minimum valid budget of one.
+
+A full-public-IR comparison against parent `526a72f76` passes 12 parsed-instruction
+fixtures across 32/64-bit arithmetic, caller-clobbered/no-call controls, branching
+and large observation-unavailable cases. This is synthetic semantic-invariance
+evidence, not a real compiler oracle. The canonical provenance runner and lint
+also pass. Exact-head receipts and generated identity belong to the subsequent
+durable checkpoint, not an implicit full repository/release acceptance claim.
+
+The exact writer-name PR search found no separate implementation. Existing #3421
+remains the reused C4-03 foundation; no main/component merge or replacement PR.
+Other facade location/typed-result/escape histories, standalone call/return
+transforms, full removed/merged-class coverage, C4-02/04/05 proofs and the original
+23 findings/135-binary corpus remain open. Goal ACTIVE; acceptance LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
