@@ -206,8 +206,17 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     this.traceCursor = 0;
     this.branchCursor = 0;
   }
-  async launch(spec = {}) {
+  async launch(spec = {}, options = {}) {
     this.require('launch');
+    // #5268: HypothesisVerifier forwards { signal } so a caller can cancel
+    // during the launch phase (sandbox setup, initial stores); dropping the
+    // second argument left slow setups unstoppable. The same
+    // AbortSignal-compatible contract as resume() applies, and a signal that
+    // is already aborted fails fast before any setup work.
+    const signal = resumeSignal(options?.signal);
+    if (signal && signal.aborted) {
+      throw new DebugAdapterError('cancelled', 'local sandbox launch was cancelled before it started', { kind: 'cancelled' });
+    }
     const address = asAddress(spec.address ?? spec.functionAddress);
     const objectBase = spec.objectBase == null ? DEFAULT_OBJECT_BASE : asAddress(spec.objectBase);
     const heapBase = spec.heapBase == null ? RUNTIME_HEAP_BASE : asAddress(spec.heapBase,'heapBase');
@@ -244,15 +253,32 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
         if (accepted && Array.isArray(traceState.runMemoryEvents)) traceState.runMemoryEvents.push(event);
       }
     };
-    await sandbox.setup(address, {
-      args:spec.arguments || spec.args || [], registers:spec.registers || {}, objectBase, objectAsArg0:spec.objectAsArg0,
-      objectMemory:spec.objectMemory || spec.fakeObject || [], stackMemory:spec.stack || spec.stackMemory || [], watch:spec.watch || [],
-      breakpoints:[...this.breakpoints.values()].filter((b) => b.enabled && b.address != null).map((b) => b.address)
-    });
-    for (const item of spec.heap || []) await emu.store(asAddress(item.address), initialMemorySize(item.size), initialMemoryValue(item.value));
-    for (const item of spec.globalValues || []) await emu.store(asAddress(item.address), initialMemorySize(item.size), initialMemoryValue(item.value));
+    try {
+      await sandbox.setup(address, {
+        args:spec.arguments || spec.args || [], registers:spec.registers || {}, objectBase, objectAsArg0:spec.objectAsArg0,
+        objectMemory:spec.objectMemory || spec.fakeObject || [], stackMemory:spec.stack || spec.stackMemory || [], watch:spec.watch || [],
+        breakpoints:[...this.breakpoints.values()].filter((b) => b.enabled && b.address != null).map((b) => b.address),
+        // #5268: setup itself observes the launch signal so an abort during
+        // slow initialization stops the remaining setup work.
+        signal,
+      });
+    } catch (error) {
+      if (error && error.code === 'sandbox-setup-cancelled') {
+        throw new DebugAdapterError('cancelled', 'local sandbox launch was cancelled during setup', { kind: 'cancelled' });
+      }
+      throw error;
+    }
+    for (const item of spec.heap || []) {
+      if (signal?.aborted) throw new DebugAdapterError('cancelled', 'local sandbox launch was cancelled during setup', { kind: 'cancelled' });
+      await emu.store(asAddress(item.address), initialMemorySize(item.size), initialMemoryValue(item.value));
+    }
+    for (const item of spec.globalValues || []) {
+      if (signal?.aborted) throw new DebugAdapterError('cancelled', 'local sandbox launch was cancelled during setup', { kind: 'cancelled' });
+      await emu.store(asAddress(item.address), initialMemorySize(item.size), initialMemoryValue(item.value));
+    }
     const initialRegisters = cloneRegisters(emu);
     initializing = false;
+    if (signal?.aborted) throw new DebugAdapterError('cancelled', 'local sandbox launch was cancelled during setup', { kind: 'cancelled' });
     if (launchGeneration !== this.launchGeneration) {
       throw new DebugAdapterError('stale-launch', 'local sandbox launch was invalidated by a newer launch or disconnect', { launchGeneration, currentGeneration:this.launchGeneration });
     }
@@ -592,11 +618,14 @@ export class RemoteDebugAdapter extends DebugAdapter {
   }
   async listBreakpoints(){return remoteArray(await this.call('listBreakpoints'),'breakpoints',REMOTE_ARRAY_LIMITS.breakpoints,'breakpoints')}
   async readRegisters(threadId){return remoteRegisters(await this.call('readRegisters',{threadId}))}
-  writeRegister(reg,value,threadId){const name=registerSelector(reg); const normalized=registerWriteValue(name,value); return this.call('writeRegister',{reg:name,value:normalized.toString(),threadId})}
+  // #5696: canonical trailing options carry the session-owned AbortSignal into
+  // the protocol request, so a session epoch switch/close cancels the in-flight
+  // remote mutation at the transport instead of letting it run to completion.
+  writeRegister(reg,value,threadId,requestOptions={}){const name=registerSelector(reg); const normalized=registerWriteValue(name,value); return this.call('writeRegister',{reg:name,value:normalized.toString(),threadId},{ signal:requestOptions?.signal })}
   async readMemory(address,size){const n=memoryReadSize(size,1); if(n>256*1024) throw new DebugAdapterError('too-large','remote memory read exceeds 256 KiB'); return remoteBytes(await this.call('readMemory',{address:String(asAddress(address)),size:n}),n)}
-  async writeMemory(address,bytes){this.require('writeMemory'); const LIMIT=64*1024; let data; if(bytes instanceof Uint8Array)data=bytes; else { const it=bytes?.[Symbol.iterator]; if(typeof it==='function'&&typeof bytes!=='string'){ // bounded consumption (#5750): never enumerate past the limit
+  async writeMemory(address,bytes,requestOptions={}){this.require('writeMemory'); const LIMIT=64*1024; let data; if(bytes instanceof Uint8Array)data=bytes; else { const it=bytes?.[Symbol.iterator]; if(typeof it==='function'&&typeof bytes!=='string'){ // bounded consumption (#5750): never enumerate past the limit
     data=new Uint8Array(LIMIT+1); let n=0; for(const b of bytes){ if(n>=LIMIT) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); if(!Number.isInteger(b)||b<0||b>255)throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value'); data[n++]=b; } data=data.subarray(0,n); } else { data=Array.from(bytes||[]); for(const b of data)if(!Number.isInteger(b)||b<0||b>255)throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value'); } }
-    if(data.length>LIMIT) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); const result=await this.call('writeMemory',{address:String(asAddress(address)),bytes:data}); if(result&&result.written!=null){const written=result.written;if(typeof written!=='number'||!Number.isSafeInteger(written)||written<0)throw new DebugAdapterError('malformed-remote','remote writeMemory returned a malformed written count');if(written!==data.length)throw new DebugAdapterError('short-write',`remote memory write wrote ${written} of ${data.length} bytes`);} return result||{written:data.length}}
+    if(data.length>LIMIT) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); const result=await this.call('writeMemory',{address:String(asAddress(address)),bytes:data},{ signal:requestOptions?.signal }); if(result&&result.written!=null){const written=result.written;if(typeof written!=='number'||!Number.isSafeInteger(written)||written<0)throw new DebugAdapterError('malformed-remote','remote writeMemory returned a malformed written count');if(written!==data.length)throw new DebugAdapterError('short-write',`remote memory write wrote ${written} of ${data.length} bytes`);} return result||{written:data.length}}
   async getThreads(){return remoteArray(await this.call('getThreads'),'threads',REMOTE_ARRAY_LIMITS.threads,'threads')}
   async getModules(){return remoteArray(await this.call('getModules'),'modules',REMOTE_ARRAY_LIMITS.modules,'modules')}
   async getBacktrace(threadId){return remoteArray(await this.call('getBacktrace',{threadId}),'frames',REMOTE_ARRAY_LIMITS.backtrace,'backtrace')}
