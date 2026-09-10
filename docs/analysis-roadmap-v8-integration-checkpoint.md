@@ -4286,6 +4286,58 @@ remain outside this proof claim. C4-02/03/05 and original23/frozen135 acceptance
 remain OPEN; integration/release acceptance remains LOCKED. No performance,
 issue, moving-main, device or environment lane is claimed complete.
 
+## C4-04 canonical Boolean results reach scalar proof adoption
+
+The existing canonical query and proof-expression lowering already support Bool,
+but the pass admission loop and representation candidate adapter admitted only
+BV results. The proof API now carries **canonical one-bit Boolean SSA results**
+through the same issued plan, transaction and observed-producer projection as BV
+results. It does not add a verifier, expression evaluator, rewrite engine or
+synthetic output mapping. Proof-pass version is `2.6.0` and the declared scalar
+scope is `total-pure-bool-bv-value-only`.
+
+The representation adapter (`hex.representation-candidates/3`) continues to use
+the existing typed display rules as untrusted proposals. A Boolean display
+proposal must remain exactly BV1; it is converted back to canonical Bool before
+the existing independent verifier sees it. Constants become canonical true/false;
+nonconstants use the existing nonzero comparison. No Bool/BV sort mismatch is
+silently accepted. Constant plan values are normalized to BigInt 0/1, matching
+the unchanged display recipe and replay/no-op contract. The later admission
+check additionally requires the original canonical result to be Bool and the
+actual SSA target width to be one. Ordinary BV behavior and memory/CFG/effect
+exclusions remain in place.
+
+Five permanent tests in the existing `proof-target-decisions` suite cover the
+new path. The production matrix has **480 adopted cells**: ten comparison
+operators, the existing eight-width input axis, constant/nonconstant expressions
+and all three existing candidate strategies. Before expressions come from the
+actual translation-only query and privately observed input relation; the
+BigInt oracle checks exhaustive small inputs and native-width boundary values
+against canonical before and actually adopted output. Each adoption must reach
+the real transform/provenance ledger while preserving canonical IR and the
+source producer AST. This is actual generic scalar CMP-result/return projection,
+not a manually asserted AST map or a claim about reconstructed NZCV conditions.
+The existing initial builder may retain a fallback variable for this generic
+CMP value; no initial raw-renderer equivalence is inferred from later proof.
+
+True/false plan constants and replay are checked separately. Twelve wrong-width
+requests (four result widths times three strategies) must fail at the existing
+earlier `boolean-carrier-width-mismatch` translation boundary, retain an explicit
+unknown row and keep the original AST. Timeout/cancel/publication exhaustion and
+stale comparison predicates preserve the original output for each strategy.
+The old BV-only gate fails the new adoption test before implementation; diagnostics
+also retain an over-specific constant-shape expectation and corrections to the
+test's assumptions about the earlier carrier-refusal path.
+
+This implements the missing one-bit canonical Boolean result handoff, not general
+NZCV/PAC/exception-state proof, arbitrary Boolean input/connective IR, CFG edge
+deletion or a new architecture lifting rule. Other scalar families/widths/rules,
+initial lifting and typed construction, C4-02/03/05 and original23/frozen135
+acceptance remain OPEN. Scoped exact-head receipts, matrix rows and generated
+build/rebuild evidence are retained in persistent storage. Goal ACTIVE;
+integration/release acceptance remains LOCKED, with no independent, full-product,
+candidate-merge-tree, device or release completion claimed.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -4321,7 +4373,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
 | HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi, actual compatibility stack LOAD-to-MOV and MOV/address-load/precomputed-value/canonical-numeric-load selection, actual flag/conditional-CMP reconstruction and branch/select consumers, initial RMW/C AST compound-store histories, owned handoffs and explicit assignment-expansion records, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
-| HEX-C4-04 | Proof-gated scalar projection, owned inputs, transaction coverage, optional reuse of all 64 display rules and proof-only preparation implemented; finite binary-root production denominator covers 432 cells (430 adopted, two refuted), 432 publication-unknown rows and 96 non-total refusals. Ordinary legacy-view adoption, full family/width/rule denominator and memory/CFG/exception observables remain open |
+| HEX-C4-04 | Proof-gated Bool/BV scalar projection, owned inputs, transaction coverage, optional reuse of all 64 display rules and proof-only preparation implemented; finite binary-root denominator covers 432 cells (430 adopted, two refuted), 432 publication-unknown rows and 96 non-total refusals; canonical one-bit Boolean comparison adoption adds 480 cells. Ordinary legacy-view adoption, full family/width/rule denominator and memory/CFG/exception observables remain open |
 | HEX-C4-05 | Frozen 272-cell scalar/14-Bool/8-width producer coverage and 3 actual schedules (816 scalar cells); adopted-transform history now preserves actual rule/cost/budget/proof audits. Native proof gaps, arbitrary permutations and full acceptance remain open |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |
 | HEX-SYM-02 | Byte-memory escalation, alias/partial-write independent oracle |

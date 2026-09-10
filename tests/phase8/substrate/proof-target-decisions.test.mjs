@@ -296,3 +296,125 @@ test('C4-04 copied or changed input expressions invalidate the observed represen
     assert.equal(readProducerInputExpressions(f.result, [f.input]), null);
   }
 });
+
+function booleanProjectionFixture(bits=4, operator='eq', {constant=true,resultBits=1}={}) {
+  const f=fixture('proof-boolean');f.block(0);
+  const input=f.opaque(bits);input.index=0;input.reg='x0';
+  const zero=f.binary('xor',input,input,bits);
+  const left=constant?zero:f.binary('add',input,zero,bits), right=f.constant(constant?0:1,bits);
+  const target=f.binary(operator,left,right,resultBits);target.def.op='cmp';target.def.cond=operator;
+  f.ret();const ir=f.build();ir.instructions=ir.blocks.flatMap(block=>block.insts);
+  ir.instructions.forEach((inst,index)=>{inst.id=`boolean_${index}`;inst.address=0x2000n+BigInt(index*4);});
+  const ret=ir.instructions.at(-1);ret.args=[{value:target}];target.uses.push(ret);
+  const canonical=structuredClone(ir);
+  const result=enhanceSemanticDecompilation({semantic:true,ir,types:null,
+    lines:[{kind:'stmt',indent:0,text:'return pending;',row:ret.row,addr:ret.address}],metrics:{},ctx:{}},null,
+  {phase8PrepareProof:true,phase8ProofOnlyRewrites:true,deterministicTransforms:true,decompilerTimeBudgetMs:1000});
+  return {ir,input,target,canonical,result,options:{identity,abiId:'generic-v1',memory:{addressBits:8},targets:[target],
+    timeoutMs:1000,backendTier:'tiered',requireProofOnlyRewrites:true}};
+}
+
+test('C4-04 Boolean proof results reach the real producer transaction and output instead of remaining BV-only',async()=>{
+  for(const candidateStrategy of ['local-rewrites','representation-rules','equality-saturation']) {
+    const f=booleanProjectionFixture(),r=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy});
+    assert.equal(r.proofOptimization.status,'complete',r.proofOptimization.reason);
+    assert.equal(r.proofOptimization.adopted,1,candidateStrategy);
+    assert.equal(r.proofOptimization.targetDecisions[0].disposition,'adopted');
+    const expression=r.semanticAst.values.find(item=>item.valueId===f.target.id).expression;
+    assert.equal(expression.bits,1);assert.equal(evaluateExpression(expression),1n);
+    assert.notEqual(r.pseudocode,f.result.pseudocode);
+    assert.deepEqual(structuredClone(f.ir),f.canonical);
+  }
+});
+
+test('C4-04 Boolean comparison families preserve canonical truth through all three production strategies',async t=>{
+  const models=createTaintModels({id:'boolean-width-test',version:'1',provenance:'test',sources:[],sinks:[]}),rows=[];
+  for(const bits of [1,2,3,4,8,16,32,64]) for(const operator of ['eq','ne','ult','ule','ugt','uge','slt','sle','sgt','sge']) {
+    for(const constant of [false,true]) {
+      const f=booleanProjectionFixture(bits,operator,{constant}),originalAst=structuredClone(f.result.cAst),originalSemantic=structuredClone(f.result.semanticAst);
+      const translated=await querySymbolicAnalysis(f.ir,{...f.options,models,candidateStrategy:'translate-only'});
+      assert.equal(translated.status,'complete',translated.reason);
+      const binding=readSymbolicTargetInputs(translated,f.target,identity);
+      assert.equal(binding.expression.sort.kind,'bool');assert.equal(binding.inputs.length,1);assert.equal(binding.inputs[0].value,f.input);
+      const input=f.result.semanticAst.values.find(item=>item.valueId===f.input.id).expression;
+      const mask=(1n<<BigInt(bits))-1n;
+      const values=bits<=8?Array.from({length:2**bits},(_,index)=>BigInt(index)):[0n,1n,mask,mask-1n,1n<<BigInt(bits-1)];
+      for(const candidateStrategy of ['local-rewrites','representation-rules','equality-saturation']) {
+        const label=`${bits}/${operator}/${constant}/${candidateStrategy}`;
+        const result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy}),report=result.proofOptimization;
+        assert.equal(report.status,'complete',`${label}: ${report.reason}`);assert.equal(report.adopted,1,label);
+        assert.deepEqual(report.decisionCoverage,{requested:1,complete:true});
+        const row=report.targetDecisions[0];assert.equal(row.disposition,'adopted',label);assert.equal(row.bits,1);assert.equal(row.operator,operator);
+        const expression=result.semanticAst.values.find(item=>item.valueId===f.target.id).expression;
+        assert.equal(expression.bits,1);assert.equal(expression.effect,'pure');
+        const transform=result.phase8Projection.transforms.find(item=>item.queryHash===row.queryHash);
+        assert.ok(transform?.beforeHash&&transform.afterHash&&transform.planId,label);
+        assert.ok(result.renderProvenance.ledger.some(item=>item.queryHash===row.queryHash),label);
+        for(const value of values) {
+          const a=constant?0n:value,b=constant?0n:1n;
+          const left=operator.startsWith('s')?BigInt.asIntN(bits,a):a,right=operator.startsWith('s')?BigInt.asIntN(bits,b):b;
+          const op=['eq','ne'].includes(operator)?operator:operator.slice(1);
+          const expected=({eq:()=>left===right,ne:()=>left!==right,lt:()=>left<right,le:()=>left<=right,gt:()=>left>right,ge:()=>left>=right})[op]();
+          const before=evaluateExpr(binding.expression,new Map([[binding.inputs[0].symbol.symbolId,value]]));
+          assert.equal(before.status,EVAL_STATUS.VALUE);assert.equal(before.value,expected,`${label}: canonical before ${value}`);
+          assert.equal(evaluateExpression(expression,{[input.name]:value}),BigInt(expected),`${label}: after ${value}`);
+        }
+        assert.deepEqual(structuredClone(f.ir),f.canonical,label);
+        assert.deepEqual(f.result.cAst,originalAst);assert.deepEqual(f.result.semanticAst,originalSemantic);
+        rows.push({bits,operator,constant,candidateStrategy,disposition:row.disposition,kind:transform.kind,comparisons:values.length});
+      }
+    }
+  }
+  assert.equal(rows.length,480);
+  assert.equal(new Set(rows.map(row=>`${row.bits}/${row.operator}/${row.constant}/${row.candidateStrategy}`)).size,480);
+  t.diagnostic(JSON.stringify({schema:'c4-04-boolean-production-widths-v1',rows}));
+});
+
+test('C4-04 Boolean constants keep typed plan values and replay without a second adoption',async()=>{
+  for(const operator of ['eq','ne']) {
+    const f=booleanProjectionFixture(64,operator),options={...f.options,candidateStrategy:'representation-rules'};
+    const plan=await preparePhase8RewritePlan(f.ir,options),entry=plan.entries[0];
+    assert.equal(plan.status,'complete',plan.reason);assert.equal(entry.kind,'solver-constant');
+    assert.equal(entry.bits,1);assert.equal(entry.value,operator==='eq'?1n:0n);
+    assert.equal(plan.observableScope,'total-pure-bool-bv-value-only');
+    assert.equal(isPhase8RewritePlan({...plan},{ir:f.ir,proofIdentity:identity,abiId:options.abiId}),false);
+    const result=await optimizeSemanticDecompilation(f.result,options),replay=await optimizeSemanticDecompilation(result,options);
+    assert.equal(result.proofOptimization.adopted,1);assert.equal(replay.proofOptimization.adopted,0);
+    assert.equal(replay.proofOptimization.status,'complete');assert.equal(replay.pseudocode,result.pseudocode);
+    assert.equal(result.pseudocode,operator==='eq'?'return 1;':'return 0;');
+    assert.ok(replay.phase8Projection.history.transforms.includes(result.phase8Projection.transforms[0]));
+    assert.deepEqual(structuredClone(f.ir),f.canonical);
+  }
+});
+
+test('C4-04 Boolean results cannot certify wider flags or result widths',async()=>{
+  for(const resultBits of [2,8,32,64]) for(const candidateStrategy of ['local-rewrites','representation-rules','equality-saturation']) {
+    const f=booleanProjectionFixture(8,'eq',{resultBits}),options={...f.options,candidateStrategy};
+    const plan=await preparePhase8RewritePlan(f.ir,options);
+    // The canonical translator rejects this malformed carrier before the
+    // later Boolean admission check; do not weaken that earlier boundary.
+    assert.equal(plan.status,'partial');assert.equal(plan.reason,'boolean-carrier-width-mismatch');assert.deepEqual(plan.entries,[]);
+    assert.equal(plan.targetDecisions[0].disposition,'unknown');
+    assert.equal(plan.targetDecisions[0].reason,'boolean-carrier-width-mismatch');
+    const result=await optimizeSemanticDecompilation(f.result,options);
+    assert.equal(result.proofOptimization.status,'partial');assert.equal(result.proofOptimization.adopted,0);
+    assert.equal(result.phase8Projection,f.result.phase8Projection);
+    assert.equal(result.cAst,f.result.cAst);assert.equal(result.semanticAst,f.result.semanticAst);
+    assert.equal(result.pseudocode,f.result.pseudocode);assert.deepEqual(structuredClone(f.ir),f.canonical);
+  }
+});
+
+test('C4-04 Boolean proof uncertainty and stale predicates retain the original producer',async()=>{
+  for(const candidateStrategy of ['local-rewrites','representation-rules','equality-saturation']) {
+    for(const refusal of [{timeoutMs:0},{isCancelled:()=>true},{phase8WorkBudget:0}]) {
+      const f=booleanProjectionFixture(),result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy,...refusal});
+      assert.equal(result.proofOptimization.status,'partial');assert.equal(result.proofOptimization.adopted,0);
+      assert.equal(result.cAst,f.result.cAst);assert.equal(result.semanticAst,f.result.semanticAst);assert.equal(result.pseudocode,f.result.pseudocode);
+      assert.deepEqual(structuredClone(f.ir),f.canonical);
+    }
+    const f=booleanProjectionFixture();f.target.def.cond='ne';f.target.def.sub='ne';
+    const result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy});
+    assert.equal(result.proofOptimization.reason,'unissued-or-stale-projection');assert.equal(result.proofOptimization.adopted,0);
+    assert.equal(result.cAst,f.result.cAst);assert.equal(result.semanticAst,f.result.semanticAst);assert.equal(result.pseudocode,f.result.pseudocode);
+  }
+});

@@ -4,7 +4,7 @@
  * These are capabilities, not signed-looking JSON. Only the existing symbolic
  * query/judge can issue a usable plan. Serialization is audit evidence only.
  * The original IR is NEVER modified. The admitted domain is an unconditional,
- * total pure BV expression replaced by an independently proved scalar; no instruction,
+ * total pure Bool/BV expression replaced by an independently proved scalar; no instruction,
  * memory access, exceptional edge or architectural side effect is removed.
  */
 import { stableDigest } from '../../core/identity/index.js';
@@ -27,10 +27,10 @@ const TOTAL_UNARY = new Set(['not','neg','trunc','zext','sext']);
 const DEFAULT_MODELS = createTaintModels({id:'phase8-empty', version:'1', provenance:'hex.phase8.explicit-empty-model/v1',sources:[],sinks:[]});
 
 export const PROOF_REWRITE_PASS = createPassDescriptor({
-  id:'phase8.solver-constants', version:'2.5.0', stage:'rendering',
+  id:'phase8.solver-constants', version:'2.6.0', stage:'rendering',
   consumes:['ssa','origins'], produces:['provedRewrites'],
   preserves:ANALYSIS_KEYS.filter(key => key !== 'provedRewrites'),
-  description:'Project unconditional solver-proved BV scalars without changing canonical IR or effects (legacy pass ID).',
+  description:'Project unconditional solver-proved Bool/BV scalars without changing canonical IR or effects (legacy pass ID).',
 });
 
 function string(value, name) {
@@ -193,7 +193,11 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
         : item.ruleOrder ? {ruleOrder:item.ruleOrder} : {};
       let candidate, projection;
       for (const option of candidates) {
-        if (option.after?.sort.kind !== 'bv' || !option.eligible
+        // Bool is not interchangeable with an arbitrary-width flags/register
+        // value. Only the canonical Boolean result of an actual one-bit SSA
+        // target may use the existing one-bit display lowering.
+        const booleanResult = option.after?.sort.kind === 'bool' && item.expression.sort.kind === 'bool' && target.bits === 1;
+        if ((option.after?.sort.kind !== 'bv' && !booleanResult) || !option.eligible
           || !isAdoptableCandidate(option.verification,{identity:guard.identity})) continue;
         const recipe = compileProofExpression(option.after,inputBinding,guard);
         if (recipe) { candidate = option; projection = recipe; break; }
@@ -219,9 +223,10 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
         || generatorAudit.proofQueryHash !== candidate.verification.evidence.queryHash)) {
         throw new QueryFailure('unavailable-representation-generator-audit');
       }
-      const entry = Object.freeze({valueId:item.valueId,rawValueId:target.id,bits:candidate.after.sort.width,kind,projection,
+      const entry = Object.freeze({valueId:item.valueId,rawValueId:target.id,
+        bits:candidate.after.sort.kind === 'bool' ? 1 : candidate.after.sort.width,kind,projection,
         ...(generatorAudit ? {generatorAudit} : {}),
-        value:kind === 'solver-constant' ? candidate.after.value : null,beforeHash:binding.beforeHash,afterHash:binding.afterHash,
+        value:kind === 'solver-constant' ? BigInt(candidate.after.value) : null,beforeHash:binding.beforeHash,afterHash:binding.afterHash,
         queryHash:candidate.verification.evidence.queryHash,originRefs:Object.freeze([item.valueId]),
         inputBindings:Object.freeze(inputBinding.inputs.map(input => Object.freeze({ valueId:input.valueId,
           rawValueId:input.rawValueId, bits:input.bits, symbolId:input.symbol.symbolId }))) });
@@ -238,7 +243,7 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
       passVersion:PROOF_REWRITE_PASS.version,transformKind:'solver-scalar',preconditions:EMPTY,
       candidateStrategy:submitted.candidateStrategy ?? 'local-rewrites',
       ...(submitted.candidateStrategy === 'equality-saturation' ? {ruleOrder:submitted.ruleOrder ?? 'canonical'} : {}),
-      correspondence:EMPTY,observableScope:'total-pure-bv-value-only',modelIdentity:analysis.taint.modelIdentity,
+      correspondence:EMPTY,observableScope:'total-pure-bool-bv-value-only',modelIdentity:analysis.taint.modelIdentity,
       entries:Object.freeze(entries), targetDecisions:Object.freeze(decisions),
       decisionCoverage:Object.freeze({ requested:requested.length, complete:true }) });
     const plan = Object.freeze({schemaVersion:'hex-phase8-proof-plan/v1',status:'complete',reason:null,
@@ -289,7 +294,7 @@ export function runProofRewritePass(context, budget, area) {
       verifier:'hex.symbolic.verify.bounded-equivalence',planId:plan.planId,queryHash:entry.queryHash});
     validations.set(validation,{plan,entry});
     transforms.push({kind:entry.kind,targets:[entry.valueId],originRefs:entry.originRefs,
-      proof:'canonical solver proved unconditional total BV value equivalence',
+      proof:'canonical solver proved unconditional total Bool/BV value equivalence',
       rewrite:Object.freeze({beforeHash:entry.beforeHash,afterHash:entry.afterHash}),validation});
   }
   const artifact = Object.freeze({version:1,completeness:'complete',planId:plan.planId,identity:plan.identity,

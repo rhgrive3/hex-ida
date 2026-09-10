@@ -14,7 +14,7 @@ import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { RewriteEngine } from '../rewrite/engine.js';
 import { compileProofExpression } from './proof-expression.js';
 
-export const REPRESENTATION_CANDIDATE_VERSION = 'hex.representation-candidates/2';
+export const REPRESENTATION_CANDIDATE_VERSION = 'hex.representation-candidates/3';
 const RULES = Object.freeze(DEFAULT_RULES.map(rule => Object.freeze({...rule})));
 if (new Set(RULES.map(rule => rule.name)).size !== RULES.length) throw new TypeError('duplicate-representation-rule');
 export const REPRESENTATION_RULES = Object.freeze(RULES.map(rule => Object.freeze({name:rule.name,phase:rule.phase})));
@@ -180,7 +180,7 @@ export async function queryRepresentationCandidates(options = {}) {
     if (binding.expression !== expression) throw new QueryFailure('representation-input-binding-mismatch');
     const sourceInputs = queryArray(binding.inputs,guard,128).map(input => queryRecord(input,guard));
     assertMemoryExpr(expression,guard);
-    if (expression.sort.kind !== 'bv') throw new QueryFailure('unsupported-representation-target');
+    if (!['bool','bv'].includes(expression.sort.kind)) throw new QueryFailure('unsupported-representation-target');
     const recipe = compileProofExpression(expression,{inputs:sourceInputs},guard);
     if (!recipe) throw new QueryFailure('unsupported-representation-source');
     const variables = sourceInputs.map((input,index) => expr.variable(`proof_input_${index}`,input.bits,false));
@@ -197,7 +197,15 @@ export async function queryRepresentationCandidates(options = {}) {
     // The display carrier can be wider than the semantic result (e.g. BV4
     // uses uint8_t). Propose the original target width, then prove that term;
     // never let a carrier-width change redefine the verification obligation.
-    const after = resize(compileRepresentationProposal(rewritten.root,inputMap,guard),expression.sort.width);
+    const proposed = compileRepresentationProposal(rewritten.root,inputMap,guard);
+    // Display comparisons carry integer 0/1, whereas the canonical verifier
+    // distinguishes Bool from BV1. Restore the original sort before proof;
+    // never compare mismatched sorts or infer Boolean semantics for a wider
+    // machine flags/register result.
+    const booleanResult = expression.sort.kind === 'bool';
+    if (booleanResult && (proposed.sort.kind !== 'bv' || proposed.sort.width !== 1)) throw new QueryFailure('boolean-representation-width');
+    const after = booleanResult ? proposed.kind === 'const' ? E.createBool(proposed.value !== 0n) : truth(proposed)
+      : resize(proposed,expression.sort.width);
     const afterHash = E.computeStructuralHash(after);
     if (E.computeStructuralHash(expression) === afterHash) return result('complete',null,EMPTY,'unchanged');
     guard.take('candidates');
