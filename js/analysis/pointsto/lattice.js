@@ -248,6 +248,83 @@ function rootKeyOf(target) {
   });
 }
 
+/**
+ * Canonical, replay-safe root identity (#5172).
+ *
+ * `rootKey` is strong same-storage authority: if normalization erases a
+ * caller-visible distinction, `pointsToAlias()` can turn that collision into
+ * MustAlias. Accept only ordinary JSON-shaped data whose serialization is
+ * lossless for the values we retain, and copy it without executing accessors.
+ */
+function canonicalRootIdentity(value, seen = new WeakSet()) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))
+        || Object.is(value, -0)) fail('points-to-invalid-root-identity');
+    return value;
+  }
+  if (typeof value !== 'object' || seen.has(value)) fail('points-to-invalid-root-identity');
+
+  let isArray;
+  let prototype;
+  let descriptors;
+  try {
+    isArray = Array.isArray(value);
+    prototype = Object.getPrototypeOf(value);
+    descriptors = Object.getOwnPropertyDescriptors(value);
+  } catch {
+    fail('points-to-invalid-root-identity');
+  }
+  if ((isArray && prototype !== Array.prototype)
+      || (!isArray && prototype !== Object.prototype && prototype !== null)) {
+    fail('points-to-invalid-root-identity');
+  }
+
+  seen.add(value);
+  try {
+    const keys = Reflect.ownKeys(descriptors);
+    if (isArray) {
+      const length = descriptors.length?.value;
+      if (!Number.isSafeInteger(length) || length < 0 || keys.length !== length + 1) {
+        fail('points-to-invalid-root-identity');
+      }
+      const out = new Array(length);
+      for (let index = 0; index < length; index++) {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+          fail('points-to-invalid-root-identity');
+        }
+        out[index] = canonicalRootIdentity(descriptor.value, seen);
+      }
+      for (const key of keys) {
+        if (key === 'length') continue;
+        if (typeof key !== 'string' || !/^(?:0|[1-9][0-9]*)$/.test(key) || Number(key) >= length) {
+          fail('points-to-invalid-root-identity');
+        }
+      }
+      return out;
+    }
+
+    const out = {};
+    for (const key of keys) {
+      if (typeof key !== 'string') fail('points-to-invalid-root-identity');
+      const descriptor = descriptors[key];
+      if (!descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+        fail('points-to-invalid-root-identity');
+      }
+      Object.defineProperty(out, key, {
+        value: canonicalRootIdentity(descriptor.value, seen),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return out;
+  } finally {
+    seen.delete(value);
+  }
+}
+
 function proofRootKind(proof) {
   return proof?.kind === 'root-only' ? proof.rootKind : proof?.kind;
 }
@@ -275,15 +352,18 @@ function canonicalAddressSpace(value) {
   return text ? text : 'unknown';
 }
 
-function targetMatchesCanonicalProof(input, proof) {
+function targetMatchesCanonicalProof(input, proof, rootIdentity) {
   if (!canonicalProofMetadataIsValid(proof)) return false;
+  const canonicalIdentity = rootIdentity === undefined
+    ? canonicalRootIdentity(input.rootIdentity ?? null)
+    : rootIdentity;
   const addressSpace = canonicalAddressSpace(input.addressSpace);
   const rootKind = typeof input.rootKind === 'string' ? input.rootKind : 'unknown';
   const rootEntityId = typeof input.rootEntityId === 'string' && input.rootEntityId.trim()
     ? input.rootEntityId : null;
   return addressSpace === canonicalAddressSpace(proof.addressSpace)
     && rootKind === proofRootKind(proof)
-    && stableStringify(input.rootIdentity ?? null) === stableStringify(proof.rootIdentity ?? null)
+    && stableStringify(canonicalIdentity) === stableStringify(proof.rootIdentity ?? null)
     && rootEntityId === (proof.rootEntityId ?? null)
     && input.separationClass === proof.separationClass
     && input.separationAuthority === 'root-descriptor';
@@ -307,7 +387,7 @@ function inputMatchesCanonicalProof(input, proof) {
       : key === 'rootEntityId' && input[key] != null
         ? String(input[key]) : (input[key] ?? null);
     if (key === 'rootIdentity') {
-      if (stableStringify(actual) !== stableStringify(expected)) return false;
+      if (stableStringify(canonicalRootIdentity(actual)) !== stableStringify(expected)) return false;
     } else if (actual !== expected) {
       return false;
     }
@@ -317,14 +397,15 @@ function inputMatchesCanonicalProof(input, proof) {
 
 /** One (root, offset-range) member of a points-to set. */
 export function createPointsToTarget(input = {}) {
+  const rootIdentity = canonicalRootIdentity(input.rootIdentity ?? null);
   // A plain object can never mint authority. Internal copies are accepted only
   // when the exact canonical proof object and its root identity are preserved.
   const proof = input[ROOT_DESCRIPTOR_PROOF];
-  const proven = targetMatchesCanonicalProof(input, proof);
+  const proven = targetMatchesCanonicalProof(input, proof, rootIdentity);
   const target = {
     addressSpace: canonicalAddressSpace(input.addressSpace),
     rootKind: typeof input.rootKind === 'string' ? input.rootKind : 'unknown',
-    rootIdentity: input.rootIdentity ?? null,
+    rootIdentity,
     // Canonical root token, not the raw spelling (#6063): 'A' and '  A  ' are
     // the same root, and storing the raw string split one root into two
     // identities — a false strong NoAlias between them.
