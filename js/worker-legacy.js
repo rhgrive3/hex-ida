@@ -2088,11 +2088,15 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
       if (n === -1 && !last) break;                      // 途中で切れた。次の塊と合わせる
       if (n <= 0) { flush(); if (out.length >= cap) break; continue; }
       if (runStart < 0) { runStart = baseOff + i; runBytes = []; }
-      if (runBytes.length < MAX_STRING_CHARS * 4) {
+      if (!runTruncated && runBytes.length + n <= MAX_STRING_CHARS * 4) {
         for (let k = 0; k < n; k++) runBytes.push(buf[i + k]);
       } else {
-        // 保存上限を超えた分は捨てられている。走査自体は元の文字列の終端まで
-        // 進むので、prefix だけを「完全な文字列」として返さないよう印をつける (#5381)。
+        // 保存上限は MAX_STRING_CHARS*4 = 1600 byte。code point 全体で判定する:
+        // 追加前の長さだけ見ると残容量へ収まらない 4-byte 文字が丸ごと push され
+        // 1603 byte のように上限を越えて保存され、そのまま走査が終わると捨てた
+        // byte が無いのに truncated:false を返していた (#5381)。収まらない
+        // code point は部分 byte も保存せず、truncated を立てて文字列の終端まで
+        // 走査を継続する。以後は prefix を凍結する（途中欠落のない完全な prefix）。
         runTruncated = true;
       }
       i += n - 1;
