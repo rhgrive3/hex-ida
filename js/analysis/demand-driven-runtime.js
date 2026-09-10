@@ -207,6 +207,9 @@ function installWorkerBackedIdentity(app) {
     if (this.binaryId) return Promise.resolve(this.binaryId);
     if (!this.file) return Promise.reject(new Error('binary-id-file-unavailable'));
     let entry = this._binaryIdEntry;
+    // #4611: a single-flight entry whose last waiter aborted is cancelled but
+    // may not have settled yet; the owner must not hand it to a new caller.
+    if (entry?.cancelled) entry = null;
     if (!entry) {
       const file = this.file; const epoch = this.gen;
       const controller = new AbortController();
@@ -365,6 +368,7 @@ function installCancellableFunctionDiscovery(app) {
       const key = `${epoch}:${unique.map((item) => item.id).join('|')}`;
       if (symbols.functionDiscovery?.attempted === true && symbols.functionDiscovery?.regionSetKey === unique.map((item) => item.id).join('|')) return symbols;
       let entry = producers.get(key);
+      if (entry?.cancelled) entry = null;
       if (!entry) {
         const producerController = new AbortController();
         entry = {
@@ -473,6 +477,7 @@ function installDemandQueryAPI(app, recognitionVersion) {
     const profile = `${limits.callLimit}:${limits.refLimit}:${limits.kindLimit}`;
     const key = `${epoch}:${region.id}:${profile}`;
     let entry = regionScans.get(key);
+    if (entry?.cancelled) entry = null;
     if (!entry) {
       const request = app.backend.scanProgram(region.id, options.onProgress, { ...limits, analysisPriority:options.priority || 'interactive' });
       entry = { request, promise:null, settled:false, waiters:0 };
