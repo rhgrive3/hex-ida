@@ -100,6 +100,96 @@ test('C3-02 invalidated evidence never publishes exact prototype facts', () => {
   }
 });
 
+const adapterUncertaintyCases = [
+  ['thunkAmbiguous', true, 'ambiguous'],
+  ['tailCallAmbiguous', true, 'ambiguous'],
+  ['callerCalleeConflict', true, 'conflict'],
+  ['callerCalleeAgreement', false, 'conflict'],
+];
+
+test('C3-02 adapter-bound uncertainty reaches prototype recovery without consumer flags', () => {
+  const functionPrototype = {
+    parameters:[{ type:'int64', bits:64 }], returnType:'int64', returnBits:64, returnsValue:true,
+  };
+  for (const [abi, architecture, reg] of [
+    [AAPCS64_ABI, 'arm64', 'x0'], [SYSV_AMD64_ABI, 'x86_64', 'rdi'],
+    [RISCV_LP64_ABI, 'riscv64', 'a0'],
+  ]) {
+    const options = { architecture, platform:'linux' };
+    const recoverAdapter = (adapter) => recover(adapter, [reg], {
+      ret:{ type:'int64', bits:64 },
+    }, { functionPrototype });
+    // Warm the real consumer caches with a positive result before checking
+    // uncertainty carried only by the adapter's producer-side input.
+    const known = recoverAdapter(semanticAbiAdapter(abi, options));
+    assert.equal(known.conventionKnown, true, abi.id);
+    assert.equal(known.arguments.length, 1, abi.id);
+    assert.equal(known.returnLocations.length, 1, abi.id);
+    for (const [flag, value, state] of adapterUncertaintyCases) {
+      const adapter = semanticAbiAdapter(abi, { ...options, [flag]:value });
+      const result = recoverAdapter(adapter);
+      assert.equal(result.conventionKnown, false, `${abi.id} ${flag}`);
+      assert.equal(result.completeness, state, `${abi.id} ${flag} reason`);
+      assert.equal(result.abiIdentity, null);
+      assert.deepEqual(result.arguments, []);
+      assert.deepEqual(result.returnLocations, []);
+      assert.equal(adapter.classifyArguments({ functionPrototype }), null);
+      assert.equal(adapter.classifyFunctionReturn({ functionPrototype }), null);
+      assert.deepEqual(adapter.argumentLocations({ functionPrototype }), []);
+      assert.deepEqual(adapter.returnLocations({ functionPrototype }), []);
+    }
+  }
+});
+
+test('C3-02 callsite ambiguity withholds placements without poisoning other calls', () => {
+  const adapter = semanticAbiAdapter(AAPCS64_ABI, { architecture:'arm64', platform:'linux' });
+  const callPrototype = {
+    parameters:[{ type:'int64', bits:64 }], returnType:'int64', returnBits:64, returnsValue:true,
+  };
+  const knownCall = { callPrototype, completeness:'unknown' };
+  const known = adapter.classifyCall({ call:knownCall });
+  assert.equal(known.arguments.length, 1);
+  assert.equal(known.returnLocations.length, 1);
+  for (const [flag, value, state] of adapterUncertaintyCases) {
+    const call = { ...knownCall, [flag]:value };
+    assert.equal(adapter.classifyArguments({ call, functionPrototype:callPrototype }), null, flag);
+    const result = adapter.classifyCall({ call });
+    assert.equal(result.completeness, state, flag);
+    assert.equal(result.arguments, null);
+    assert.deepEqual(result.returnLocations, []);
+    assert.equal(result.returnReg, null);
+    assert.equal(result.partial, true);
+    assert.deepEqual(adapter.classifyCall({ call:knownCall }), known,
+      'call-local ABI uncertainty must not change another call or conflate memory-effect unknown');
+  }
+});
+
+test('C3-02 adapter evidence remains live after construction and cache warmup', () => {
+  const controller = new AbortController();
+  const options = { architecture:'arm64', platform:'linux', signal:controller.signal };
+  const adapter = semanticAbiAdapter(AAPCS64_ABI, options);
+  const functionPrototype = { parameters:[{ type:'int64', bits:64 }], returnType:'int64', returnsValue:true };
+  const recoverAdapter = () => recover(adapter, ['x0'], { ret:{ type:'int64', bits:64 } }, { functionPrototype });
+  assert.equal(recoverAdapter().conventionKnown, true);
+  for (const [flag, value, state] of adapterUncertaintyCases) {
+    options[flag] = value;
+    assert.equal(adapter.completeness, state, flag);
+    const result = recoverAdapter();
+    assert.equal(result.completeness, state);
+    assert.deepEqual(result.arguments, []);
+    assert.deepEqual(result.returnLocations, []);
+    delete options[flag];
+    assert.equal(adapter.completeness, 'canonical');
+    assert.equal(recoverAdapter().conventionKnown, true);
+  }
+  controller.abort();
+  assert.equal(adapter.completeness, 'cancelled');
+  const cancelled = recoverAdapter();
+  assert.equal(cancelled.completeness, 'cancelled');
+  assert.deepEqual(cancelled.arguments, []);
+  assert.deepEqual(cancelled.returnLocations, []);
+});
+
 test('C3-02 every classifier terminal state rejects ABI publication', () => {
   const states = [
     'stale', 'partial', 'incomplete', 'unsupported', 'malformed', 'cancelled',

@@ -71,6 +71,8 @@ function abiEvidenceState(options = {}, call = null, adapter = null) {
     || call?.budgetLimited === true || call?.resourceBudgetLimited === true) return 'budget-limited';
   if (options.callerCalleeConflict === true || options.callerCalleeAgreement === false
     || call?.callerCalleeConflict === true || call?.callerCalleeAgreement === false) return 'conflict';
+  if (options.thunkAmbiguous === true || options.tailCallAmbiguous === true
+    || call?.thunkAmbiguous === true || call?.tailCallAmbiguous === true) return 'ambiguous';
   if (options.malformedEvidence === true || options.classifierFailed === true
     || call?.malformedEvidence === true || call?.classifierFailed === true) return 'malformed';
   const callState = abiResultInvalidState(call && {
@@ -808,7 +810,13 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
     identity,
     provenance,
     invalidation,
-    completeness:supported ? 'canonical' : 'unsupported',
+    // The shared decompiler receives this adapter, not the driver's original
+    // options. Publish the same evidence state used by the classifiers so
+    // consumers cannot recover cached placements after producer invalidation.
+    // Keep it live: the options and AbortSignal can change after construction.
+    get completeness() {
+      return supported ? abiEvidenceState(options, null, plugin) || 'canonical' : 'unsupported';
+    },
     stackRules:() => stackRules,
     unwindRules:() => unwindRules,
     callerSaved:() => { try { return Object.freeze([...(plugin?.callerSaved?.(options) ?? [])]); } catch { return Object.freeze([]); } },
