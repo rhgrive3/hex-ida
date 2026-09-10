@@ -29,6 +29,7 @@ function buildPeCliFixture(stringsBytes) {
   view.setUint32(sectionTableOffset + 20, 0x200, true);
 
   const cliOffset = 0x200;
+  view.setUint32(cliOffset, 72, true);
   view.setUint32(cliOffset + 8, 0x1048, true);
   view.setUint32(cliOffset + 12, 0x100, true);
 
