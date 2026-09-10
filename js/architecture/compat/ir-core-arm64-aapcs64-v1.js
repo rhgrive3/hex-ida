@@ -215,7 +215,11 @@ function parameterAbiClass(param) {
   const abiCount = (value, fallback) =>
     typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
   const members = Math.max(1, Math.min(4, abiCount(param?.members ?? param?.elements ?? param?.count, 1)));
-  const bits = Math.max(8, Math.min(128, abiCount(param?.bits ?? param?.sizeBits, fp ? 64 : 64)));
+  // Keep the declared ABI width before the compatibility display clamp.  The
+  // AAPCS64 large-composite rule needs to distinguish >16-byte values from a
+  // real 16-byte value; clamping first erases that decision authority (#4984).
+  const declaredBits = abiCount(param?.bits ?? param?.sizeBits, fp ? 64 : 64);
+  const bits = Math.max(8, Math.min(128, declaredBits));
   // Stage C C.10/C.11: a 16-byte Integral Type needs a consecutive GP
   // register pair. Only records with an explicit integral authority (int128
   // type spelling, or an integer class at a proven 128-bit width) may take
@@ -227,8 +231,9 @@ function parameterAbiClass(param) {
     || /^(struct|union|class)[\s_]/.test(type);
   const integral128 = /(?:unsigned\s+)?__int128|int128_t|uint128_t/.test(type + ' ' + cls)
     || (cls.includes('integer') && bits === 128);
+  const indirectComposite = !pointer && !hfa && !vector && !fp && composite && declaredBits > 128;
   const wideIntegral = !pointer && !hfa && !vector && !fp && !composite && integral128;
-  return { pointer, hfa, vector, fp, members, bits, wideIntegral };
+  return { pointer, hfa, vector, fp, members, bits, declaredBits, composite, indirectComposite, wideIntegral };
 }
 
 function abiReturnBits(value) {
@@ -267,6 +272,25 @@ export function classifyCallArguments(insn, opts = {}) {
       fp = 8;
     }
     if (!c.fp) {
+      if (c.indirectComposite) {
+        // AAPCS64: a non-homogeneous Composite Type larger than 16 bytes is
+        // copied to caller memory and the argument is replaced by a pointer to
+        // that copy.  Allocate the pointer as one ordinary 64-bit GP/stack
+        // argument while retaining the original aggregate width as pointee
+        // evidence; never expose the earlier 128-bit clamp as the value (#4984).
+        const reg = gp < 8 ? `x${gp++}` : null;
+        const entry = reg
+          ? { index, location:'register', reg, abiClass:'aggregate-indirect-copy', pointer:true,
+            bits:64, bytes:8, pointeeBits:c.declaredBits, aggregate:true, callerCopy:true }
+          : { index, location:'stack', offset:stackOffset, bytes:8,
+            abiClass:'aggregate-indirect-copy', pointer:true, bits:64,
+            pointeeBits:c.declaredBits, aggregate:true, callerCopy:true };
+        if (reg) srcs.push({ t:'reg', reg, bits:64, purpose:'aggregate-indirect-copy' });
+        else { stackArguments.push(entry); stackOffset += 8; }
+        arguments_.push(entry);
+        stackArgsMayContainPointers = true;
+        return;
+      }
       if (c.wideIntegral) {
         // AAPCS64 Stage C rules C.10/C.11 (#4939): a 16-byte Integral Type
         // rounds NGRN up to an even register and consumes the consecutive
@@ -1169,7 +1193,7 @@ export function pointerProvenance(value, active = null, memo = defaultPointerPro
   }
 
   if (!out) out = { kind:'unknown', root:'value:' + value.id, rootValue:value, offset:0n, must:true, valueId:value.id };
-  visiting.delete(value);
+  visiting.delete(value.id);
   memo.set(value, out);
   return out;
 }
