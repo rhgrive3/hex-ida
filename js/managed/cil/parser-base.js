@@ -179,7 +179,7 @@ function metadataRowSize(table, rowCounts, heapSizes) {
     case 0x05: // MethodPtr
       return tableIndexSize(rowCounts, METHOD_DEF_TABLE);
     case METHOD_DEF_TABLE: // MethodDef
-      return 4 + 2 + 2 + stringIndexSize + blobIndexSize + tableIndexSize(rowCounts, 0x08);
+      return 4 + 2 + 2 + stringIndexSize + blobIndexSize + tableIndexSize(rowCounts, rowCounts[0x07] ? 0x07 : 0x08);
     case 0x07: // ParamPtr
       return tableIndexSize(rowCounts, 0x08);
     case 0x08: // Param
