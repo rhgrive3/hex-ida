@@ -77,6 +77,16 @@ function removeSignalListeners(listeners) {
   }
 }
 function requestCompleteness(request) { return request?.completeness ?? 'complete'; }
+function cachedCompletenessCompatible(record, request) {
+  const available = record?.completeness;
+  // ArtifactStore hits always carry a record. Preserve the scheduler's legacy
+  // compatibility with minimal store adapters that expose only hit/payload.
+  if (available == null) return true;
+  const required = requestCompleteness(request);
+  // A complete artifact can satisfy any weaker request. Incomplete states are
+  // not a total order (#3813), so only the exact requested state is reusable.
+  return available === 'complete' || available === required;
+}
 function inflightRequirementsCompatible(producerRequest, consumerRequest) {
   // Only identical completeness requirements share a producer. In particular,
   // bounded/truncated/unsupported are not treated as an ordered lattice.
@@ -325,13 +335,23 @@ export class AnalysisScheduler {
     if (task.controller.signal.aborted) throw abortError(task.controller.signal);
 
     task.phase='cache';
-    const cached=await this.store.get(task.descriptor,{signal:task.controller.signal});
+    const requiredCompleteness=requestCompleteness(task.request);
+    const allowIncomplete=requiredCompleteness!=='complete';
+    const cached=await this.store.get(task.descriptor,{signal:task.controller.signal,allowIncomplete});
     if (task.controller.signal.aborted) throw abortError(task.controller.signal);
-    if (cached.status==='hit') {
+    if (cached.status==='hit'&&cachedCompletenessCompatible(cached.record,task.request)) {
       this.metrics.cacheHits++;
       this.states.set(task.artifactId,'completed');
       this.#emit('cache.hit', task, { source:'store' });
       return {...cached,state:'completed',reused:true};
+    }
+    if (cached.status==='hit') {
+      // The store has one immutable row per artifactId. A different incomplete
+      // state cannot satisfy this request, so route the observed row through
+      // the store's strict, CAS-safe incompatibility invalidation before the
+      // replacement producer runs. This avoids a stale read/delete race.
+      await this.store.get(task.descriptor,{signal:task.controller.signal});
+      if (task.controller.signal.aborted) throw abortError(task.controller.signal);
     }
     return this.#enqueue(task,dependencyResults);
   }
