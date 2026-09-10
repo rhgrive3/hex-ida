@@ -206,20 +206,31 @@ function parameterAbiClass(param) {
   const type = String(param?.type || param?.name || '').toLowerCase();
   const cls = String(param?.abiClass || param?.class || param?.kind || '').toLowerCase();
   const pointer = param?.pointer === true || param?.isPointer === true || /\*|pointer|ptr|object|class|block|closure/.test(type + ' ' + cls);
-  const hfa = param?.hfa === true || cls.includes('hfa') || cls.includes('homogeneous');
+  const hva = param?.hva === true || cls.includes('hva');
+  const hfa = !hva && (param?.hfa === true || cls.includes('hfa') || cls.includes('homogeneous'));
   const vector = cls.includes('vector') || /vector|simd/.test(type);
-  const fp = hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type);
   // AAPCS64 classification authorities (#3285): member counts and bit widths
   // accept only primitive safe-integer numbers. Structured values fail closed
   // to the defaults instead of laundering through Number().
   const abiCount = (value, fallback) =>
     typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
-  const members = Math.max(1, Math.min(4, abiCount(param?.members ?? param?.elements ?? param?.count, 1)));
+  const rawMembers = param?.members ?? param?.elements ?? param?.count;
+  const members = Math.max(1, Math.min(4, abiCount(rawMembers, 1)));
   // Keep the declared ABI width before the compatibility display clamp.  The
   // AAPCS64 large-composite rule needs to distinguish >16-byte values from a
   // real 16-byte value; clamping first erases that decision authority (#4984).
-  const declaredBits = abiCount(param?.bits ?? param?.sizeBits, fp ? 64 : 64);
+  const declaredBits = abiCount(param?.bits ?? param?.sizeBits, 64);
   const bits = Math.max(8, Math.min(128, declaredBits));
+  // HVA is homogeneous aggregate authority, not ordinary-composite authority.
+  // This compat owner only has enough shape information to place 1..4 fixed
+  // 64/128-bit short-vector members. Other HVA records fail closed below
+  // instead of being laundered through the >16-byte caller-copy rule (#4984).
+  const hvaLayoutProven = !hva || (
+    typeof rawMembers === 'number' && Number.isSafeInteger(rawMembers)
+    && rawMembers >= 1 && rawMembers <= 4
+    && (declaredBits === 64 || declaredBits === 128)
+  );
+  const fp = hfa || (hva && hvaLayoutProven) || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type);
   // Stage C C.10/C.11: a 16-byte Integral Type needs a consecutive GP
   // register pair. Only records with an explicit integral authority (int128
   // type spelling, or an integer class at a proven 128-bit width) may take
@@ -231,9 +242,9 @@ function parameterAbiClass(param) {
     || /^(struct|union|class)[\s_]/.test(type);
   const integral128 = /(?:unsigned\s+)?__int128|int128_t|uint128_t/.test(type + ' ' + cls)
     || (cls.includes('integer') && bits === 128);
-  const indirectComposite = !pointer && !hfa && !vector && !fp && composite && declaredBits > 128;
-  const wideIntegral = !pointer && !hfa && !vector && !fp && !composite && integral128;
-  return { pointer, hfa, vector, fp, members, bits, declaredBits, composite, indirectComposite, wideIntegral };
+  const indirectComposite = !pointer && !hfa && !hva && !vector && !fp && composite && declaredBits > 128;
+  const wideIntegral = !pointer && !hfa && !hva && !vector && !fp && !composite && integral128;
+  return { pointer, hfa, hva, hvaLayoutProven, vector, fp, members, bits, declaredBits, composite, indirectComposite, wideIntegral };
 }
 
 function abiReturnBits(value) {
@@ -258,11 +269,19 @@ export function classifyCallArguments(insn, opts = {}) {
   }
   params.forEach((param,index) => {
     const c=parameterAbiClass(param);
-    const regsNeeded=c.hfa ? c.members : 1;
+    if (c.hva && !c.hvaLayoutProven) {
+      arguments_.push({
+        index, location:'unknown', abiClass:'hva-unproven', pointer:false,
+        bits:c.declaredBits, aggregate:true, partial:true,
+        reason:'aapcs64-hva-layout-unmodelled',
+      });
+      return;
+    }
+    const regsNeeded=(c.hfa || c.hva) ? c.members : 1;
     if (c.fp && fp + regsNeeded <= 8) {
       const regs=[];
       for(let n=0;n<regsNeeded;n++){const reg=`v${fp++}`;regs.push(reg);srcs.push({t:'reg',reg,bits:c.vector?128:c.bits});}
-      arguments_.push({index,location:'register',regs,reg:regs[0],abiClass:c.hfa?'hfa':c.vector?'vector':'fp',pointer:c.pointer,bits:c.bits});
+      arguments_.push({index,location:'register',regs,reg:regs[0],abiClass:c.hfa?'hfa':c.hva?'hva':c.vector?'vector':'fp',pointer:c.pointer,bits:c.bits});
       return;
     }
     if (c.fp) {
@@ -310,8 +329,8 @@ export function classifyCallArguments(insn, opts = {}) {
         return;
       }
     }
-    const slots=Math.max(1,Math.ceil((c.hfa?c.members*c.bits:c.bits)/64));
-    const entry={index,location:'stack',offset:stackOffset,bytes:slots*8,abiClass:c.hfa?'hfa':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits};
+    const slots=Math.max(1,Math.ceil(((c.hfa || c.hva)?c.members*c.bits:c.bits)/64));
+    const entry={index,location:'stack',offset:stackOffset,bytes:slots*8,abiClass:c.hfa?'hfa':c.hva?'hva':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits};
     stackArguments.push(entry);arguments_.push(entry);stackOffset+=slots*8;
     if(c.pointer || param?.mayContainPointers === true || param?.containsPointers === true) stackArgsMayContainPointers=true;
   });
@@ -1797,7 +1816,7 @@ function prototypeParameterSignature(param) {
   if (!param) return '-';
   return JSON.stringify([
     param.type ?? '', param.name ?? '', param.abiClass ?? '', param.class ?? '', param.kind ?? '',
-    param.pointer ?? '', param.isPointer ?? '', param.hfa ?? '',
+    param.pointer ?? '', param.isPointer ?? '', param.hfa ?? '', param.hva ?? '',
     param.members ?? '', param.elements ?? '', param.count ?? '',
     param.bits ?? '', param.sizeBits ?? '',
     param.mayContainPointers ?? '', param.containsPointers ?? '',

@@ -84,6 +84,54 @@ test('#4984 HFA keeps its FP-register rule even when aggregate payload exceeds 1
   assert.notEqual(arg.pointer, true);
 });
 
+test('#4984 unproven >16-byte HVA fails closed instead of fabricating caller-copy pointer authority', () => {
+  const out = classifyCallArguments({
+    callPrototype:{ args:[{ hva:true, aggregate:true, members:4, bits:256 }] },
+  }, {});
+  const arg = out.arguments[0];
+  assert.equal(arg.location, 'unknown');
+  assert.equal(arg.abiClass, 'hva-unproven');
+  assert.equal(arg.pointer, false);
+  assert.equal(arg.aggregate, true);
+  assert.equal(arg.partial, true);
+  assert.equal(arg.reason, 'aapcs64-hva-layout-unmodelled');
+  assert.notEqual(arg.abiClass, 'aggregate-indirect-copy');
+  assert.equal(arg.callerCopy, undefined);
+  assert.deepEqual(out.srcs, []);
+});
+
+test('#4984 abiClass:hva with proven short-vector member width uses one SIMD register per member', () => {
+  const out = classifyCallArguments({
+    callPrototype:{ args:[{ abiClass:'hva', aggregate:true, members:2, bits:128 }] },
+  }, {});
+  const arg = out.arguments[0];
+  assert.deepEqual(arg.regs, ['v0','v1']);
+  assert.equal(arg.reg, 'v0');
+  assert.equal(arg.abiClass, 'hva');
+  assert.equal(arg.bits, 128);
+  assert.equal(arg.pointer, false);
+  assert.deepEqual(out.srcs, [
+    { t:'reg', reg:'v0', bits:128 },
+    { t:'reg', reg:'v1', bits:128 },
+  ]);
+});
+
+test('#4984 proven HVA spill keeps homogeneous stack extent and exhausts NSRN', () => {
+  const fp64 = () => ({ type:'double', bits:64 });
+  const out = classifyCallArguments({
+    callPrototype:{ args:[...Array.from({ length:7 }, fp64), { abiClass:'hva', members:2, bits:128 }, fp64()] },
+  }, {});
+  const hva = out.arguments[7];
+  const after = out.arguments[8];
+  assert.equal(hva.location, 'stack');
+  assert.equal(hva.offset, 0);
+  assert.equal(hva.bytes, 32);
+  assert.equal(hva.abiClass, 'hva');
+  assert.equal(hva.pointer, false);
+  assert.equal(after.location, 'stack');
+  assert.equal(after.offset, 32);
+});
+
 test('type spelling alone preserves large-composite indirect authority', () => {
   const result = classifyCallArguments({ callPrototype:{ args:[{ type:'struct Big', bits:192 }] } });
   const arg = result.arguments[0];
