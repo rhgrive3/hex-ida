@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 
-import { semanticAbiAdapter } from '../../../js/analysis/semantic-function.js';
+import {
+  semanticAbiAdapter, createSemanticCallPrototypeAuthority, partitionDecodedFunction,
+} from '../../../js/analysis/semantic-function.js';
+import { architecturePluginV2 } from '../../../js/targets/architecture/index.js';
+import { createRiscv64DecodedInstruction } from '../../../js/targets/architecture/riscv64/decoded-instruction.js';
+import { buildSemanticV2CompatibilityPipeline } from '../../../js/semantics/compat/index.js';
 import { recoverFunctionPrototype } from '../../../js/decompiler/types/prototype.js';
 import { projectSemanticIrV2ToLegacyV1 } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 import { classifyCallArguments } from '../../../js/ir-core.js';
@@ -1734,5 +1739,178 @@ test('C3-02 a null callback resolution cannot authorize an exact call ABI', () =
     `${abi.id} null resolver candidates must be conservative`);
     assert.deepEqual(call.returnLocations, [], `${abi.id} null resolver must not publish return placement`);
     assert.equal(call.returnReg, null, `${abi.id} null resolver must not publish return register`);
+  }
+});
+
+function decodedCallObservationPipeline(prototypes, targets = prototypes.map(() => 0x2000n)) {
+  const architecture = architecturePluginV2('riscv64');
+  const instructions = prototypes.map((_prototype, index) => {
+    const address = 0x1000n + BigInt(index * 4);
+    const displacement = Number(targets[index] - address);
+    // JAL ra, displacement: bytes, not an injected control classification,
+    // remain the RISC-V lifter's authority in this production-path fixture.
+    const word = (((displacement >>> 20) & 1) << 31)
+      | (((displacement >>> 1) & 0x3ff) << 21)
+      | (((displacement >>> 11) & 1) << 20)
+      | (((displacement >>> 12) & 0xff) << 12) | (1 << 7) | 0x6f;
+    return createRiscv64DecodedInstruction({
+      address, size:4, rawBytes:Uint8Array.from([word & 0xff, (word >>> 8) & 0xff, (word >>> 16) & 0xff, word >>> 24]),
+      mode:'rv64imc', instructionId:`c3-observation-call-${index}`,
+      origin:{ instructionIds:[`c3-observation-call-${index}`] },
+    });
+  });
+  const callsites = instructions.map(instruction => ({
+    instruction, address:instruction.address, target:architecture.directControlTarget(instruction),
+  }));
+  let resolutions = 0;
+  const authority = createSemanticCallPrototypeAuthority(callsites, {
+    callPrototypeFor(_target, call) {
+      resolutions++;
+      return prototypes[Number((call.address - 0x1000n) / 4n)];
+    },
+  });
+  instructions.push(createRiscv64DecodedInstruction({
+    address:0x1000n + BigInt(prototypes.length * 4), size:4,
+    rawBytes:Uint8Array.from([0x67, 0x80, 0, 0]), mode:'rv64imc', instructionId:'c3-observation-ret',
+    origin:{ instructionIds:['c3-observation-ret'] },
+  }));
+  const blocks = partitionDecodedFunction(instructions, architecture, { callPrototypeAuthority:authority });
+  const adapter = semanticAbiAdapter(RISCV_LP64_ABI, {
+    architecture:'riscv64', platform:'linux', binaryId:'c3-observation-binary', sliceId:'0',
+  }, { callPrototypeAuthority:authority });
+  const pipeline = buildSemanticV2CompatibilityPipeline({
+    architecturePlugin:architecture, decoderSemanticVersion:'c3-observation-decoder',
+    binaryId:'c3-observation-binary', sliceId:'0', addressWidthBits:64, mode:'rv64imc',
+    entryBlockKey:blocks[0].key, blocks, abiAdapter:adapter,
+  }, { abiAdapter:adapter });
+  assert.equal(resolutions, prototypes.length, 'CFG and ABI must share one resolver evaluation per callsite');
+  assert.ok(pipeline.ssa.definitions.length > 0);
+  assert.ok(pipeline.memorySsa.definitions.length > 0);
+  const calls = pipeline.legacyV1.instructions.filter(instruction => instruction.op === 'call');
+  assert.equal(calls.length, prototypes.length);
+  return calls;
+}
+
+test('C3-02 contradictory direct-call observations survive the decoded SSA compatibility path', () => {
+  const one = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
+  const two = { parameters:[{ type:'int64', bits:64 }, { type:'int64', bits:64 }], returnType:'int64' };
+  for (const observations of [[one, two], [two, one]]) {
+    const calls = decodedCallObservationPipeline([...observations, one], [0x2000n, 0x2000n, 0x3000n]);
+    for (const call of calls.slice(0, 2)) {
+      assert.equal(call.extra.abiCompleteness, 'conflict');
+      assert.equal(call.callArguments, null);
+      assert.deepEqual(call.extra.returnLocations, []);
+      assert.match(call.argumentEvidence, /callsite-observations-conflict/);
+    }
+    assert.equal(calls[2].extra.abiCompleteness, 'complete', 'another target must not inherit the conflict');
+    assert.equal(calls[2].callArguments.length, 1);
+    assert.equal(calls[2].extra.returnLocations.length, 1);
+  }
+});
+
+test('C3-02 matching direct-call observations preserve canonical placements without consensus promotion', () => {
+  const one = { parameters:[{ name:'left', type:'int64', bits:64 }], returnType:'int64' };
+  const renamed = { parameters:[{ name:'renamed', type:'int64', bits:64 }], returnType:'int64' };
+  for (const call of decodedCallObservationPipeline([one, renamed])) {
+    assert.equal(call.extra.abiCompleteness, 'complete');
+    assert.equal(call.callArguments.length, 1);
+    assert.equal(call.extra.returnLocations.length, 1);
+    assert.notEqual(call.extra.callerCalleeAgreement, true, 'callsite consistency is not independent callee proof');
+  }
+});
+
+function callObservationAdapter(abi, options, prototypes, target = 0x2000n) {
+  const instructions = prototypes.map((callPrototype, index) => ({ address:BigInt(index * 4), callPrototype }));
+  const authority = createSemanticCallPrototypeAuthority(instructions.map(instruction => ({
+    instruction, address:instruction.address, target,
+  })), { callPrototypeFor() { assert.fail('instruction-bound evidence must not invoke the resolver'); } });
+  const adapter = semanticAbiAdapter(abi, options, { callPrototypeAuthority:authority });
+  return { adapter, call:index => adapter.classifyCall({ call:{ address:BigInt(index * 4), target } }) };
+}
+
+test('C3-02 direct-call observation conflicts compare canonical banks and return pieces across profiles', () => {
+  for (const [abi, architecture, platform] of [
+    [AAPCS64_ABI, 'arm64', 'linux'], [DARWIN_ARM64_ABI, 'arm64', 'darwin'],
+    [SYSV_AMD64_ABI, 'x86_64', 'linux'], [MICROSOFT_X64_ABI, 'x86_64', 'windows'],
+    [RISCV_LP64D_ABI, 'riscv64', 'linux'],
+  ]) {
+    const integer = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
+    for (const peer of [
+      { parameters:[{ type:'double', bits:64 }], returnType:'int64' },
+      { parameters:[{ type:'int64', bits:64 }], returnType:'double' },
+    ]) {
+      const { call } = callObservationAdapter(abi, { architecture, platform }, [integer, peer]);
+      for (const index of [0, 1]) {
+        const result = call(index);
+        assert.equal(result.completeness, 'conflict', `${abi.id} ${index}`);
+        assert.equal(result.arguments, null);
+        assert.deepEqual(result.returnLocations, []);
+      }
+    }
+  }
+});
+
+test('C3-02 direct-call observation conflicts do not use incomplete or anonymous declarations', () => {
+  const integer = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
+  for (const peer of [
+    null,
+    { parameters:[{ type:'double', bits:64 }], returnType:'int64', status:'stale' },
+    { parameters:[{ type:'double', bits:64 }], returnType:'int64', variadic:true },
+    { parameters:[{ type:'struct Unknown', aggregate:true }], returnType:'int64' },
+  ]) {
+    // No resolver is supplied here: a missing prototype stays missing.
+    const instructions = [integer, peer].map((callPrototype, index) => ({ address:BigInt(index * 4), callPrototype }));
+    const authority = createSemanticCallPrototypeAuthority(instructions.map(instruction => ({ instruction, target:0x2000n })));
+    const adapter = semanticAbiAdapter(AAPCS64_ABI, { architecture:'arm64', platform:'linux' }, { callPrototypeAuthority:authority });
+    assert.equal(adapter.classifyCall({ call:{ address:0n } }).completeness, 'complete',
+      'incomplete peer is neither contradiction nor independent agreement');
+  }
+});
+
+test('C3-02 direct-call observation groups retain target identity and observe prototype mutation', () => {
+  const integer = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
+  const peer = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
+  const options = { architecture:'arm64', platform:'linux' };
+  const { call } = callObservationAdapter(AAPCS64_ABI, options, [integer, peer], 0n);
+  assert.equal(call(0).completeness, 'complete', 'address zero is a real direct target');
+  peer.parameters[0] = { type:'double', bits:64 };
+  assert.equal(call(0).completeness, 'conflict', 'no stale cached physical comparison');
+  assert.equal(call(1).completeness, 'conflict');
+  const indirect = callObservationAdapter(AAPCS64_ABI, options, [integer, peer], null);
+  assert.equal(indirect.call(0).completeness, 'complete', 'unknown targets must not be grouped together');
+  peer.parameters[0] = { type:'int64', bits:64 };
+  assert.equal(call(0).completeness, 'complete');
+});
+
+test('C3-02 direct-call observation budget never treats a sampled prefix as agreement', () => {
+  const prototype = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
+  const { call } = callObservationAdapter(AAPCS64_ABI, { architecture:'arm64', platform:'linux' },
+    Array.from({ length:65 }, () => prototype));
+  const result = call(0);
+  assert.equal(result.completeness, 'budget-limited');
+  assert.equal(result.arguments, null);
+  assert.deepEqual(result.returnLocations, []);
+  assert.match(result.argumentEvidence, /callsite-observations-budget-limited/);
+});
+
+test('C3-02 direct-call argument contradictions do not depend on available return proof', () => {
+  for (const returnType of ['void', 'struct Unknown']) {
+    const one = { parameters:[{ type:'int64', bits:64 }], returnType };
+    const two = { parameters:[{ type:'int64', bits:64 }, { type:'int64', bits:64 }], returnType };
+    for (const call of decodedCallObservationPipeline([one, two])) {
+      if (returnType === 'void') {
+        assert.equal(call.extra.abiCompleteness, 'conflict', returnType);
+        assert.equal(call.callArguments, null);
+      } else {
+        // Unknown aggregate return layout makes the hidden-result input and
+        // hence argument placement itself unproven in canonical LP64. There
+        // is no complete argument observation to use as contradiction proof.
+        assert.equal(call.extra.abiCompleteness, 'partial', returnType);
+        assert.ok(call.callArguments.length > 0);
+        assert.ok(call.callArguments.every(argument => argument.possible === true
+          && argument.mustUse === false && argument.exact === false));
+      }
+      assert.deepEqual(call.extra.returnLocations, []);
+    }
   }
 });

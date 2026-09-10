@@ -63,6 +63,37 @@ or stack evidence. Unknown prototypes, indirect calls, and contradictory
 caller/callee observations retain alternatives and cannot become exact merely
 because a register is live.
 
+## Direct-call observation contradictions
+
+Within one decoded function, the existing callsite prototype authority groups
+observations by validated direct target address. Unknown targets are not grouped.
+Instruction-bound declarations keep precedence over resolver declarations, and
+each callsite resolver result is evaluated once and shared with CFG construction.
+
+The canonical adapter compares complete, non-variadic argument placements and
+proven return placements for that target. Contradictory physical facts publish
+`conflict`, withhold argument/return locations, and retain the
+`abi-callsite-observations-conflict` diagnostic through the compatibility IR.
+Names, type spelling, confidence and observation majority are not comparison
+authority. Contradictions do not propagate to another target.
+
+Argument and return proofs are checked independently: a missing return placement
+does not erase a complete argument contradiction. Conversely, an unknown aggregate
+return may make hidden-sret and argument placement unproven, in which case those
+partial argument observations cannot prove contradiction. A null return classifier
+result is not itself proof of a void return.
+
+Matching observations only preserve the original classifier result; they do not
+prove independent caller/callee agreement or upgrade partial evidence. Missing,
+stale and anonymous variadic observations are not contradiction proofs. Comparison
+reads current prototype objects rather than caching an old physical signature.
+Groups larger than 64 observations publish `budget-limited` without sampling a
+prefix or claiming agreement. The per-target index is constructed once, and each
+classification performs at most 64 observation comparisons.
+
+This local contradiction evidence is not automatic thunk/tail-call discovery or
+an independent callee-definition proof. Those remain separate required evidence.
+
 ## Invalidation dependencies
 
 The following invalidate a published fact or summary: architecture/platform/ABI

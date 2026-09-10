@@ -210,6 +210,7 @@ export function createSemanticCallPrototypeAuthority(callsites, options = {}) {
   if (!Array.isArray(callsites)) throw new TypeError('semantic-function-callsite-list-required');
   const entries = [];
   const byAddress = new Map();
+  const byTarget = new Map();
   const byInstruction = new WeakMap();
   for (const raw of callsites) {
     if (!raw || typeof raw !== 'object' || !raw.instruction || typeof raw.instruction !== 'object') {
@@ -234,6 +235,11 @@ export function createSemanticCallPrototypeAuthority(callsites, options = {}) {
     entries.push(entry);
     byAddress.set(addressKey, entry);
     byInstruction.set(entry.instruction, entry);
+    const targetKey = authorityAddressKey(entry.target);
+    if (targetKey != null) {
+      if (!byTarget.has(targetKey)) byTarget.set(targetKey, []);
+      byTarget.get(targetKey).push(entry);
+    }
   }
 
   const resolver = typeof options?.callPrototypeFor === 'function' ? options.callPrototypeFor : null;
@@ -276,6 +282,22 @@ export function createSemanticCallPrototypeAuthority(callsites, options = {}) {
       const entry = entryForNode(node, call);
       return entry ? { matched:true, prototype:resolveEntry(entry), address:entry.address, target:entry.target }
         : { matched:false, prototype:null, address:null, target:null };
+    },
+    prototypeObservationsForNode(node, call = null) {
+      const entry = entryForNode(node, call);
+      const targetKey = authorityAddressKey(entry?.target);
+      const group = targetKey == null ? null : byTarget.get(targetKey);
+      if (!group || group.length < 2) return null;
+      // Grouping is linear in the input, and each comparison is bounded. Do
+      // not turn a large direct-call group into quadratic classifier work or
+      // pretend a sampled prefix proves the absence of contradictions.
+      if (group.length > 64) return Object.freeze({ status:'budget-limited', target:entry.target });
+      return Object.freeze({
+        status:'complete', target:entry.target,
+        observations:Object.freeze(group.map(peer => Object.freeze({
+          address:peer.address, prototype:resolveEntry(peer),
+        }))),
+      });
     },
   });
   SEMANTIC_CALL_PROTOTYPE_AUTHORITIES.add(authority);
@@ -677,6 +699,62 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
     } catch { return null; }
   }
 
+  // Compare canonical physical facts only. Source names, confidence and type
+  // spelling are not ABI evidence; this is not a second placement classifier.
+  function physicalObservation(entry) {
+    const fields = ['index', 'kind', 'role', 'location', 'reg', 'regs', 'abiClass', 'bits', 'bytes',
+      'offset', 'stackOffset', 'calleeEntryOffset', 'stackBytes', 'stackAlignment',
+      'alignmentBytes', 'aggregate', 'byReference', 'indirect', 'pieceIndex', 'order', 'byteOffset'];
+    const scalar = value => fields.map(field => value?.[field] ?? null);
+    const pieces = entry?.pieces ?? entry?.parts;
+    return [scalar(entry), Array.isArray(pieces) ? pieces.map(scalar) : null];
+  }
+
+  function callObservationState(node, call, prototype, classified, returned) {
+    const group = callPrototypeAuthority?.prototypeObservationsForNode(node, call);
+    if (!group) return null;
+    if (group.status !== 'complete') return group.status;
+    const argumentSignatures = new Set();
+    const returnSignatures = new Set();
+    for (const observation of group.observations) {
+      const peer = observation.prototype;
+      // Anonymous variadic arguments and missing declarations cannot prove
+      // contradictory fixed signatures. They also never become agreement.
+      if (!peer || abiResultInvalidState(peer) || peer.variadic === true || peer.varargs === true
+        || !['parameters', 'params', 'args', 'arguments'].some(field => Array.isArray(peer[field]))) continue;
+      const arguments_ = peer === prototype ? classified
+        : classifyCanonicalArguments({ functionPrototype:peer, resolvePrototype:false });
+      let returns = peer === prototype ? returned : null;
+      if (peer !== prototype) {
+        try {
+          returns = annotateCanonicalResult(plugin?.classifyCallReturn?.(
+            { callTarget:group.target, callPrototype:peer }, { ...options, callPrototype:peer },
+          ) ?? null);
+        } catch { returns = null; }
+      }
+      if (!arguments_ || abiResultInvalidState(arguments_) || !Array.isArray(arguments_.arguments)) continue;
+      if (arguments_.arguments.some(argument => !argument || argument.possible === true
+        || argument.exact === false || argument.mustUse === false)) continue;
+      try {
+        argumentSignatures.add(JSON.stringify(arguments_.arguments.map(physicalObservation)));
+        if (argumentSignatures.size > 1) return 'conflict';
+        // Missing return proof must not hide a proven argument contradiction.
+        // Conversely, only canonical return locations can contradict another
+        // return observation; a null classifier result is not a void proof.
+        if (returns && !abiResultInvalidState(returns)) {
+          const returnLocations = canonicalReturnLocations(returns);
+          if (returnLocations.length) returnSignatures.add(JSON.stringify([
+            returnLocations.map(physicalObservation), returns.indirect === true,
+          ]));
+        }
+      } catch { continue; }
+      if (returnSignatures.size > 1) return 'conflict';
+    }
+    // Even unanimous callsite observations are NOT independent callee proof.
+    // Leave each original classifier's completeness and uncertainty unchanged.
+    return null;
+  }
+
   function canonicalReturnLocations(classified) {
     if (!classified || classified.partial === true || classified.unsupported === true
       || abiResultInvalidState(classified) || !canonicalAbiEvidence(classified)
@@ -963,7 +1041,8 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
       let returned = null;
       try { returned = annotateCanonicalResult(plugin?.classifyCallReturn?.(instruction, { ...options, callPrototype:instruction.callPrototype }) ?? null); }
       catch { returned = null; }
-      const evidenceState = abiEvidenceState(options, call, plugin);
+      const observationState = callObservationState(node, call, callPrototype, classified, returned);
+      const evidenceState = abiEvidenceState(options, call, plugin) || observationState;
       const classifierState = abiResultInvalidState(classified);
       const returnState = abiResultInvalidState(returned);
       // A classifier's partial result may still carry a conservative set of
@@ -1022,7 +1101,8 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
         stackArguments:hardInvalid || partial ? null : classified?.stackArguments ?? null,
         stackArgsUnknown:hardInvalid || partial ? true : classified?.stackArgsUnknown ?? true,
         stackArgsMayContainPointers:hardInvalid || partial ? true : classified?.stackArgsMayContainPointers ?? true,
-        argumentEvidence:classified?.evidence ?? `abi-${pluginId}`,
+        argumentEvidence:observationState ? `abi-callsite-observations-${observationState}`
+          : classified?.evidence ?? `abi-${pluginId}`,
         clobbers:(() => { try { return plugin?.callerSaved?.(options) ?? []; } catch { return []; } })(),
         returnReg:returnRegister,
         returnBits:publishableReturn ? returned?.bits ?? null : null,
