@@ -2,7 +2,8 @@
 // result cap through finiteListMax() -> Number(), so numeric strings, arrays
 // and booleans became real count authorities (Number(['1']) === 1) and
 // fractional caps like 0.5 truncated the list to a "0.5 result" bound. A
-// count authority must be a primitive positive safe integer.
+// count authority must be a primitive non-negative safe integer; 0 stays a
+// legal zero-cap boundary value.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -18,12 +19,18 @@ function index() {
   });
 }
 
-test('#5250 structured and fractional caps are rejected, not coerced', () => {
+test('#5250 structured, fractional and negative caps are rejected, not coerced', () => {
   const si = index();
-  for (const bad of [0.5, 1.5, ['1'], true, false, '1', NaN, Infinity, 0, -1]) {
+  for (const bad of [0.5, 1.5, ['1'], true, false, '1', NaN, Infinity, -1, -0.5]) {
     assert.throws(() => si.functionList(null, bad), TypeError, `functionList max ${String(bad)} must be rejected`);
     assert.throws(() => si.symbolList({ max: bad }), TypeError, `symbolList max ${String(bad)} must be rejected`);
   }
+});
+
+test('#5250 zero is a legal zero-cap boundary value', () => {
+  const si = index();
+  assert.deepEqual(si.functionList(null, 0), []);
+  assert.deepEqual(si.symbolList({ max: 0 }), []);
 });
 
 test('#5250 omitted and positive-integer caps keep the exact prior behavior', () => {

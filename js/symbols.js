@@ -12,11 +12,12 @@ export const SYM_POINTER = 2;   // 外部関数のアドレスを入れる箱 (_
 
 function finiteListMax(value, fallback = 50000) {
   if (value == null) return fallback;
-  // 件数上限は primitive な正の safe integer だけが authority (#5250):
+  // 件数上限は primitive な非負 safe integer だけが authority (#5250):
   // numeric string / Array / boolean を Number() で昇格させない。
   // fractional 値は「最大件数」契約を満たさないので採用しない。
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
-    throw new TypeError('result limit must be a positive safe integer');
+  // 0 は正当な zero-cap（0件）であり、除外しない。
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError('result limit must be a non-negative safe integer');
   }
   return value;
 }
