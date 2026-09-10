@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createCapabilityCatalog } from '../js/ai/capabilities/catalog.js';
 import { CapabilityExecutor } from '../js/ai/capabilities/executor.js';
-import { ProposalStore } from '../js/ai/proposals.js';
+import { ProposalStore, proposalArguments } from '../js/ai/proposals.js';
 
 const evidenceStore = { has: (id) => id === 'e1' };
 const app = { projectAnnotations: [], workspace: { autosave() {} } };
@@ -15,7 +15,7 @@ await assert.rejects(
 const store = new ProposalStore({ evidenceStore });
 const proposal = store.create({
   kind: 'project-annotation',
-  target: {},
+  target: { id: 'scope-probe' },
   before: null,
   after: 'project-value',
   evidenceIds: ['e1'],
@@ -27,7 +27,7 @@ await store.apply(proposal.id, {
   apply: async (execution, authorization) => {
     const result = await executor.execute(
       'annotation.project',
-      { value: execution.after },
+      proposalArguments(execution),
       { scope: 'project', authorization },
     );
     assert.equal(result.value, 'project-value');
