@@ -103,3 +103,54 @@ test('#7943 cil div keeps its operator while main #7937 fails closed on exceptio
   assert.ok(node.unknown, 'div node carries the fail-closed unknown');
   assert.equal(node.unknown.reason, 'cil-div-exception-authority-unresolved');
 });
+
+// #7943 review blocker: `i32.div_s`/`i32.div_u`, `i32.rem_s`/`i32.rem_u` and
+// `i32.shr_s`/`i32.shr_u` are semantically distinct exact operations — the
+// review's counterexamples are `0xffffffff / 2` => 0 signed but 2147483647
+// unsigned, and `0x80000000 >> 1` => 0xc0000000 arithmetic but 0x40000000
+// logical — so the bridge must not collapse either pair into one complete
+// `div`/`rem`/`shr` operator without signedness authority.
+test('#7943 wasm signed/unsigned binary variants stay canonically distinguishable', async () => {
+  const pairs = [
+    [0x6d, 0x6e, 'div-s', 'div-u'],
+    [0x6f, 0x70, 'rem-s', 'rem-u'],
+    [0x75, 0x76, 'shr-s', 'shr-u'],
+  ];
+  for (const [signedOpcode, unsignedOpcode, signedOperator, unsignedOperator] of pairs) {
+    const signed = await wasmBinaryNode(signedOpcode);
+    const unsigned = await wasmBinaryNode(unsignedOpcode);
+    assert.ok(signed.node, `binary node exists for opcode 0x${signedOpcode.toString(16)}`);
+    assert.ok(unsigned.node, `binary node exists for opcode 0x${unsignedOpcode.toString(16)}`);
+    assert.equal(signed.node.operator, signedOperator);
+    assert.equal(unsigned.node.operator, unsignedOperator);
+    assert.notEqual(signed.node.operator, unsigned.node.operator);
+    assert.equal(signed.node.attributes.signed, true, `opcode 0x${signedOpcode.toString(16)} signed attribute`);
+    assert.equal(unsigned.node.attributes.signed, false, `opcode 0x${unsignedOpcode.toString(16)} signed attribute`);
+    assert.equal(signed.node.completeness, 'complete');
+    assert.equal(unsigned.node.completeness, 'complete');
+  }
+});
+
+test('#7943 wasm signed/unsigned binary variants project distinct v1 sub spellings', async () => {
+  const v1Sub = async (opcode) => {
+    const { bridged, node } = await wasmBinaryNode(opcode);
+    const legacy = projectSemanticIrV2ToLegacyV1(bridged.semanticIr, { cfg: bridged.cfg, ssa: bridged.ssa });
+    return legacy.instructions.find((i) => i.semanticNodeId === node.id)?.sub ?? null;
+  };
+  assert.equal(await v1Sub(0x6d), 'div-s');
+  assert.equal(await v1Sub(0x6e), 'div-u');
+  assert.equal(await v1Sub(0x6f), 'rem-s');
+  assert.equal(await v1Sub(0x70), 'rem-u');
+  assert.equal(await v1Sub(0x75), 'shr-s');
+  assert.equal(await v1Sub(0x76), 'shr-u');
+});
+
+test('#7943 non-suffixed binary mnemonics keep their bare operator spelling', () => {
+  // CIL `shr` (0x63) is the arithmetic shift itself and `rem` (0x5d) has no
+  // signedness suffix in the lifted mnemonic: neither may gain a fabricated
+  // `-s`/`-u` operator spelling.
+  assert.equal(cilBinaryNode(0x63).operator, 'shr');
+  assert.equal(cilBinaryNode(0x5d).operator, 'rem');
+  assert.equal(cilBinaryNode(0x62).operator, 'shl');
+  assert.deepEqual(cilBinaryNode(0x63).attributes, {});
+});
