@@ -64,6 +64,23 @@ function requireLocalAccess(maxLocals, index, slots, unknownEffects) {
   return true;
 }
 
+// JVM local opcodes already carry definitive float/double authority in the
+// bytecode grammar. Preserve that authority at the first VMEffect projection
+// so the shared bridge never has to guess from width alone (#7971).
+function jvmFloatingLocalType(prefix) {
+  if (prefix === 'fload' || prefix === 'fstore') {
+    return { kind: 'float', widthBits: 32, format: 'binary32' };
+  }
+  if (prefix === 'dload' || prefix === 'dstore') {
+    return { kind: 'float', widthBits: 64, format: 'binary64' };
+  }
+  return null;
+}
+
+function withJvmLocalType(value, type) {
+  return type ? { ...value, type } : value;
+}
+
 export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
   const method = jvmClass.methods[methodIdx];
   if (!method) fail('jvm-invalid-method-index');
@@ -203,10 +220,11 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const isCategory2 = opcode === 0x16 || opcode === 0x18;
           const names = { 0x15: 'iload', 0x16: 'lload', 0x17: 'fload', 0x18: 'dload', 0x19: 'aload' };
           mnemonic = names[opcode];
+          const valueType = jvmFloatingLocalType(mnemonic);
           if (!requireLocalAccess(codeAttr.maxLocals, locIdx, isCategory2 ? 2 : 1, unknownEffects)) completeness = 'partial';
           else {
-            locationReads.push({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 });
-            producedValues.push({ bits: isCategory2 ? 64 : 32 });
+            locationReads.push(withJvmLocalType({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 }, valueType));
+            producedValues.push(withJvmLocalType({ bits: isCategory2 ? 64 : 32 }, valueType));
             currentStackHeight += isCategory2 ? 2 : 1;
           }
         }
@@ -223,11 +241,12 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const prefix = opcode < 0x1e ? 'iload' : opcode < 0x22 ? 'lload' : opcode < 0x26 ? 'fload' : opcode < 0x2a ? 'dload' : 'aload';
           const locIdx = opcode - base;
           const isCategory2 = prefix === 'lload' || prefix === 'dload';
+          const valueType = jvmFloatingLocalType(prefix);
           mnemonic = `${prefix}_${locIdx}`;
           if (!requireLocalAccess(codeAttr.maxLocals, locIdx, isCategory2 ? 2 : 1, unknownEffects)) completeness = 'partial';
           else {
-            locationReads.push({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 });
-            producedValues.push({ bits: isCategory2 ? 64 : 32 });
+            locationReads.push(withJvmLocalType({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 }, valueType));
+            producedValues.push(withJvmLocalType({ bits: isCategory2 ? 64 : 32 }, valueType));
             currentStackHeight += isCategory2 ? 2 : 1;
           }
         }
@@ -240,10 +259,11 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const isCategory2 = opcode === 0x37 || opcode === 0x39;
           const names = { 0x36: 'istore', 0x37: 'lstore', 0x38: 'fstore', 0x39: 'dstore', 0x3a: 'astore' };
           mnemonic = names[opcode];
+          const valueType = jvmFloatingLocalType(mnemonic);
           if (!requireLocalAccess(codeAttr.maxLocals, locIdx, isCategory2 ? 2 : 1, unknownEffects)) completeness = 'partial';
           else {
-            locationWrites.push({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 });
-            consumedValues.push({ id: 'top' });
+            locationWrites.push(withJvmLocalType({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 }, valueType));
+            consumedValues.push(withJvmLocalType({ id: 'top' }, valueType));
             currentStackHeight -= isCategory2 ? 2 : 1;
           }
         }
@@ -260,11 +280,12 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const prefix = opcode < 0x3f ? 'istore' : opcode < 0x43 ? 'lstore' : opcode < 0x47 ? 'fstore' : opcode < 0x4b ? 'dstore' : 'astore';
           const locIdx = opcode - base;
           const isCategory2 = prefix === 'lstore' || prefix === 'dstore';
+          const valueType = jvmFloatingLocalType(prefix);
           mnemonic = `${prefix}_${locIdx}`;
           if (!requireLocalAccess(codeAttr.maxLocals, locIdx, isCategory2 ? 2 : 1, unknownEffects)) completeness = 'partial';
           else {
-            locationWrites.push({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 });
-            consumedValues.push({ id: 'top' });
+            locationWrites.push(withJvmLocalType({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 }, valueType));
+            consumedValues.push(withJvmLocalType({ id: 'top' }, valueType));
             currentStackHeight -= isCategory2 ? 2 : 1;
           }
         }
