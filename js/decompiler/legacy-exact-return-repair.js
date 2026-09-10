@@ -77,6 +77,9 @@ function exactStoredExpression(value, astById, result, stores, localHistories, t
 }
 
 export function materializeLegacyExactStackValues(result) {
+  // The core captures this policy before callbacks. A scalar proof preparation
+  // retains the pre-materialization value; memory recovery is outside its scope.
+  if (result?.proofOnlyRewrites === true) return result;
   if (!result?.ir || !Array.isArray(result?.semanticAst?.values)) return result;
   if (result.ir.compat?.projection === 'semantic-ir-v2-to-v1') return result;
 

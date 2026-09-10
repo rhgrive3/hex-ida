@@ -53,6 +53,19 @@ function assertCanonical(f) {
   for (const [key, value] of f.roots) assert.equal(f.ir[key], value, `canonical root ${key}`);
 }
 
+test('C4-04 proof preparation defers all four legacy idiom families including deadline fallback', () => {
+  for (const family of families) {
+    assert.ok(idioms(fixture(family).result).length > 0, 'ordinary producer actually recognizes this idiom');
+    for (const fallback of [false,true]) {
+      const f = fixture(family,32,{options:{phase8ProofOnlyRewrites:true,
+        ...(fallback ? {deterministicTransforms:false,decompilerTimeBudgetMs:1e-12} : {})}});
+      assert.deepEqual(idioms(f.result),[]);
+      if (fallback) assert.ok(f.result.passMetrics.some(pass => pass.skipped));
+      assertCanonical(f);
+    }
+  }
+});
+
 test('every existing idiom family retains its actual producer history across eight widths', () => {
   let cells = 0;
   for (const family of families) for (const bits of widths) {

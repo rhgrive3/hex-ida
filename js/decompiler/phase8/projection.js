@@ -1,4 +1,4 @@
-import { isProducerProjection, producerExpressionToken, readProducerInputExpressions } from '../pipeline.js';
+import { isProducerProjection, producerExpressionToken, readProducerInputExpressions, producerUsesProofOnlyRewrites } from '../pipeline.js';
 import { readExpressionHistoryConsumer, readStoreSpellingProducer, readInitialControlConsumer } from '../pipeline-core.js';
 import { expressionOriginHistory } from '../rewrite/engine.js';
 import { readStackPhiHistoryConsumer } from '../passes/stack-phi-recovery.js';
@@ -243,11 +243,12 @@ function provenValueId(node, names) {
   return ids[0];
 }
 
-function transformExpression(root, names, records, memo = new Map(), replacements = new Map(), tokenOf = () => null) {
+function transformExpression(root, names, records, memo = new Map(), replacements = new Map(), tokenOf = () => null, proofOnly = false) {
   if (!root || memo.has(root)) return memo.get(root) ?? root;
   const replacement = replacements.get(root) ?? replacements.get(tokenOf(root));
   if (replacement) { memo.set(root,replacement); return replacement; }
-  let mapped = mapChildren(root, (child) => transformExpression(child, names, records, memo, replacements, tokenOf));
+  let mapped = mapChildren(root, (child) => transformExpression(child, names, records, memo, replacements, tokenOf, proofOnly));
+  if (proofOnly) { memo.set(root,mapped); return mapped; }
   mapped = collapseExactNestedTruncation(mapped, records);
   mapped = collapseExactExtensionUnderTruncation(mapped, records);
   mapped = collapseExactRepeatedExtension(mapped, records);
@@ -340,6 +341,7 @@ function boundAnalysisIdentity(result, analysis, supplied) {
 export function applyPhase8Projection(result, analysis, opts = {}) {
   if (!result?.semantic || !result.semanticAst || !result.cAst || !analysis) return result;
   const original = result;
+  const proofOnly = opts.phase8ProofOnlyRewrites === true || producerUsesProofOnlyRewrites(original);
   const inherited = readProjectionHistory(original);
   const historyReasons = new Set();
   const hasPriorHistory = projectionHistories.has(original.cAst) || original.phase8Projection != null;
@@ -428,7 +430,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     }
   }
   const names = inductionNames(analysis);
-  const transform = (expression) => transformExpression(expression, names, records, memo, replacements, node=>producerExpressionToken(original,node));
+  const transform = (expression) => transformExpression(expression, names, records, memo, replacements, node=>producerExpressionToken(original,node), proofOnly);
 
   for (const item of result.semanticAst.values || []) item.expression = transform(item.expression);
   for (const item of result.semanticAst.stores || []) if (item.expression) item.expression = transform(item.expression);

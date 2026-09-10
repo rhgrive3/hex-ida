@@ -1054,6 +1054,20 @@ function rewriteAll(state, budget) {
   state.expressionProofs = new Map();
   state.rewriteProof = [];
   state.rewriteStats = { applications: 0, budgetExceeded: false, byRule: {} };
+  if (state.proofOnlyRewrites) {
+    // Keep the ordinary builder's typed expression as the fallback. Optional
+    // rule/idiom proposals are generated and verified by the existing async
+    // Phase 8 path; their truthy local evidence cannot pre-apply them here.
+    state.rewriteStats.deferred = 'phase8-proof-projection';
+    for (const v of state.ir.values || []) {
+      const root = buildValue(v, state);
+      const records = Object.freeze((state.buildHistories?.get(`${v.id}:v`) || []).map(p => valueHistoryRecord(p, v.id)));
+      state.expressions.set(v.id, root);
+      state.expressionProofs.set(v.id, { expression:root, records });
+      state.rewriteProof.push(...records);
+    }
+    return state;
+  }
   for (const v of state.ir.values || []) {
     let root = buildValue(v, state);
     const idiomRecords = [];
@@ -1211,7 +1225,8 @@ function expressionFor(v, state) {
   // The mandatory representation fallback also executes the recognizer when
   // optional passes did not run. Retain those actual events and their current
   // consumer instead of treating a degraded pipeline as history-free.
-  const history = [], root = walkIdiom(buildValue(v, state), state, history);
+  const history = [], builtRoot = buildValue(v, state);
+  const root = state.proofOnlyRewrites ? builtRoot : walkIdiom(builtRoot, state, history);
   const built = state.buildHistories?.get(`${v?.id}:v`) || [];
   const records = Object.freeze([...built, ...history].map(record => valueHistoryRecord(record, v?.id ?? null)));
   (state.rewriteProof ??= []).push(...records);
@@ -1605,6 +1620,7 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
   if (!result?.semantic || !result.ir) return result;
   const state = {
     ir: result.ir, model, opts, types: result.types || null,
+    proofOnlyRewrites:opts.phase8ProofOnlyRewrites === true,
     expressionMemo: new Map(), expressionActive: new Set(),
     warnings: [],
   };

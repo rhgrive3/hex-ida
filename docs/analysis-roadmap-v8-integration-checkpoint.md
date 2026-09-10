@@ -4186,6 +4186,58 @@ controls and normal PR #7036 backup are recorded in persistent storage. No main,
 component merge, independent/full-product/device/runtime or release acceptance
 is claimed. Goal ACTIVE; integration/release acceptance LOCKED.
 
+## C4-04 proof API defers optional rewrites until eligible scalar adoption
+
+Starting product: `eadfedf8371332bb04e8807b642275a285569311`. Previously
+`decompileWithProof` prepared an already simplified ordinary view, so withholding
+an independent candidate could still return a view changed by the optional legacy
+rule/idiom passes. The proof API now explicitly prepares the pre-optional-rewrite
+view and requires a genuinely issued producer with that preparation policy.
+
+The existing synchronous `decompile` default is unchanged. In proof preparation,
+`pipeline-core.js` retains its typed builder expressions without applying
+`DEFAULT_RULES` or `walkIdiom`; mandatory deadline fallback also respects this
+policy. The late legacy stack-value materializer and wrapper memory/stack
+recoveries are deferred as well. `phase8/projection.js` only applies actual
+committed scalar replacements in this mode, not additional view-collapse or
+induction-name transforms. Candidate generation and verification reuse the three
+existing strategies, the canonical translator/verifier, the private proof plan
+and the existing projection transaction. No second optimizer or evaluator is
+introduced; proof-pass version is `2.5.0`.
+
+Preparation policy is captured before rendering callbacks and privately retained
+with the issued projection. Caller metadata cannot relabel a previously simplified
+view, downgrade an owned replay, or disable the proof API's preparation requirement.
+An already-produced canonical snapshot is not re-decompiled to fabricate this
+policy: if it lacks an actual prepared producer, the proof API returns explicit
+`proof-only-preparation-required` with zero adoption. Direct optimization of an
+older ordinary projection remains supported but is explicitly reported as
+`existing-projection`, not the deferred policy.
+
+Tests cover six widths across all three existing candidate strategies (18 cells),
+actual ordinary `xor-self` versus deferred expressions, retained BV1/add refutation,
+unknown/cancelled/exhausted requests preserving the original prepared AST, sticky
+replay, late option mutation, ordinary induction facts, deadline fallback and
+pre-existing canonical snapshots. Existing idiom fixtures test four real families
+in both normal and deadline paths; existing nested-stack fixtures exercise both
+the late materializer and wrapper recovery boundaries. The public decoded EOR
+test now verifies that ordinary decompile still returns zero, uncertain proof
+retains XOR despite attempted request overrides, and eligible proof performs the
+two real scalar adoptions. These replace the former already-simplified no-op
+expectation, not the original two-value proof denominator.
+
+Scope is **optional scalar rewrite preparation**, not whole-decompiler refinement:
+initial semantic lifting/rendering, typed expression construction, ABI/layout and
+other structural/observable correctness still have their separate obligations.
+Memory/CFG/exception-bearing proof adoption is not enabled. Ordinary unrequested
+synchronous rewrites are not newly certified. This implements a real proof-API
+adoption boundary but does not close all C4-04 families/observables, C4-03 applied
+CSE/DCE/other-writer coverage, C4-02/05 or original23/frozen135 acceptance.
+Exact scoped receipts, unchanged ordinary-stage comparison evidence, generated
+synchronization and normal PR #7036 backup are retained in persistent storage.
+Goal ACTIVE; integration/release acceptance LOCKED. No component/main merge,
+independent/full-product/device/activation or release acceptance is claimed.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

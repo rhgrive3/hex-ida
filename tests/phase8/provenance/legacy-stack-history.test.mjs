@@ -143,6 +143,19 @@ test('C4-03 limited legacy observation/history stays incomplete without changing
   }
 });
 
+test('C4-04 proof preparation defers both semantic-value materialization and wrapper spill recovery', () => {
+  const ordinary = fixture({nested:true,publicPipeline:true});
+  assert.ok(ordinary.result.rewriteProof.some(record => record.rule === 'legacy-stack-value-materialization'));
+  for (const publicPipeline of [false,true]) {
+    const f = fixture({nested:true,publicPipeline,options:{phase8PrepareProof:true,phase8ProofOnlyRewrites:true}});
+    const value = f.result.semanticAst.values.find(item => item.valueId === f.lastLoad.dst.id);
+    assert.equal(value.expression.kind,'load');
+    assert.equal(readLegacyStackValueHistory(value,f.result.ir),null);
+    assert.ok(!f.result.rewriteProof.some(record => ['legacy-stack-value-materialization','legacy-stack-spill-forwarding',
+      'remove-proof-only-stack-spill','add-zero-right'].includes(record.rule)));
+  }
+});
+
 test('C4-03 earlier semantic-value materialization retains its actual nested producer records', () => {
   const f = fixture({ nested:true });
   const entry = f.result.semanticAst.values.find(item => item.valueId === f.lastLoad.dst.id);

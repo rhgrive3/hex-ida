@@ -47,13 +47,20 @@ function rememberProducerProjection(result, options) {
     const observation = captureProjectionData([result.semanticAst,result.cAst],options.shouldAbort);
     const irRoots = producerIrRoots(result);
     const irObservation = captureProjectionIrData(irRoots,options.shouldAbort);
-    producerProjections.set(result.semanticAst,{ir:result.ir,cAst:result.cAst,observation,irRoots,irObservation});
+    producerProjections.set(result.semanticAst,{ir:result.ir,cAst:result.cAst,observation,irRoots,irObservation,
+      proofOnlyRewrites:options.phase8ProofOnlyRewrites === true});
   } catch { /* The ordinary decompile still works; optional proof is withheld. */ }
   return result;
 }
 export function producerExpressionToken(result, expression) {
   const record = producerProjections.get(result?.semanticAst);
   return record?.ir === result?.ir && record?.cAst === result?.cAst ? record.observation.tokenOf(expression) : null;
+}
+/** Sticky policy of an actual prepared producer, not caller/result metadata.
+ * Full freshness/admission checks remain at the existing proof boundaries. */
+export function producerUsesProofOnlyRewrites(result) {
+  const record = producerProjections.get(result?.semanticAst);
+  return record?.ir === result?.ir && record?.cAst === result?.cAst && record?.proofOnlyRewrites === true;
 }
 export function isProducerProjection(result) {
   try {
@@ -345,6 +352,7 @@ function fullPhase8Projection(result, model, opts) {
 }
 
 export function enhanceSemanticDecompilation(result, model, opts = {}) {
+  const proofOnlyRewrites = opts.phase8ProofOnlyRewrites === true;
   const restore = normalizeConditionalSelectAliases(result?.ir);
   let core;
   try {
@@ -352,13 +360,21 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
     // the existing representation pipeline reaches its stable AST. The core is
     // kept on its interactive/canonical lane here so the optimizer is not run
     // twice and does not borrow the PassManager rewrite deadline.
-    core = constrainSemanticValueWidths(enhanceCore(result, model, { ...opts, phase8Optimize:false }));
+    core = constrainSemanticValueWidths(enhanceCore(result, model, { ...opts, phase8Optimize:false,phase8ProofOnlyRewrites:proofOnlyRewrites }));
   } finally { restore(); }
+  if (proofOnlyRewrites) {
+    // Recovery uses additional optional scalar rewrite engines and may remove
+    // memory-bearing statements. Preserve the pre-recovery view while this
+    // proof path is restricted to independently checked total scalar values.
+    const prepared = {...opts,phase8ProofOnlyRewrites:proofOnlyRewrites};
+    return rememberProducerProjection(fullPhase8Projection(core, model, prepared), prepared);
+  }
   const reanchored = reanchorExactStackReturn(core, opts);
   const legacySpillsRecovered = recoverLegacySameBlockStackSpills(reanchored, opts);
   const stackPhiRecovered = recoverExactStackPhiExpressions(legacySpillsRecovered, opts);
   const recovered = recoverExactStackReturn(reanchorExactStackReturn(stackPhiRecovered, opts), opts);
-  return rememberProducerProjection(fullPhase8Projection(reanchorRecoveredReturnSource(recovered, opts), model, opts),opts);
+  const prepared = {...opts,phase8ProofOnlyRewrites:proofOnlyRewrites};
+  return rememberProducerProjection(fullPhase8Projection(reanchorRecoveredReturnSource(recovered, opts), model, prepared),prepared);
 }
 
 /** Demand-driven asynchronous proof path. The representation result comes from
@@ -366,8 +382,9 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
  * projection, never a second optimizer or an in-place IR rewrite. */
 export async function optimizeSemanticDecompilation(result, options = {}) {
   const started = globalThis.performance?.now?.() ?? Date.now();
-  let submitted, original = {}, preparedPlan = null;
+  let submitted, original = {}, preparedPlan = null, rewritePolicy = 'unavailable';
   const fail = reason => ({...original, proofOptimization:Object.freeze({status:'partial',reason,adopted:0,
+    rewritePolicy,
     targetDecisions:Object.freeze((preparedPlan?.targetDecisions ?? []).map(decision => Object.freeze({ ...decision,
       disposition:'unknown', reason }))),
     decisionCoverage:Object.freeze({ requested:preparedPlan?.decisionCoverage?.requested ?? null, complete:false }),
@@ -377,6 +394,9 @@ export async function optimizeSemanticDecompilation(result, options = {}) {
     original = queryRecord(result,null,256);
     if (!result?.semantic || !result.ir || !result.semanticAst || !result.cAst) return fail('semantic-projection-required');
     if (!isProducerProjection(result)) return fail('unissued-or-stale-projection');
+    const proofOnlyRewrites = producerUsesProofOnlyRewrites(result);
+    rewritePolicy = proofOnlyRewrites ? 'deferred-optional-scalar-rewrites' : 'existing-projection';
+    if (submitted.requireProofOnlyRewrites === true && !proofOnlyRewrites) return fail('proof-only-preparation-required');
     // Snapshot request scope before any asynchronous work. The prepared plan
     // will separately bind the exact execution-relevant IR graph.
     const identity = queryRecord(submitted.identity);
@@ -397,6 +417,7 @@ export async function optimizeSemanticDecompilation(result, options = {}) {
     // fullPhase8Projection is also the synchronous production callsite. The
     // plan is opt-in and never reaches the ordinary interactive stage.
     const projected = fullPhase8Projection(result,null,{phase8Optimize:true,phase8RewritePlan:plan,
+      phase8ProofOnlyRewrites:proofOnlyRewrites,
       phase8ProofIdentity:identity,phase8AbiId:submitted.abiId,
       phase8TimeBudgetMs:submitted.phase8TimeBudgetMs ?? 120,
       phase8WorkBudget:submitted.phase8WorkBudget ?? 1000000,shouldAbort:aborted});
@@ -409,12 +430,14 @@ export async function optimizeSemanticDecompilation(result, options = {}) {
         reason:adopted ? 'committed-and-rendered-scalar-projection' : 'selected-projection-not-rendered' });
     }));
     const proofOptimization = Object.freeze({status:'complete',reason:null,
+      rewritePolicy,
       adopted:applied.length,targetDecisions,decisionCoverage:plan.decisionCoverage,
       planId:plan.planId,scope:plan.observableScope,taintEvidence:plan.taintEvidence,taintMetrics:plan.taintMetrics,taint:plan.taintResult,
       phase8OptimizeStage:projected.ctx?.decompilerPipeline?.phase8ElapsedMs ?? null,
       elapsedMs:(globalThis.performance?.now?.() ?? Date.now())-started});
     if (aborted() || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext)) return fail('cancelled-before-projection-publication');
-    const final=rememberProducerProjection({...projected,proofOptimization},{phase8PrepareProof:true,shouldAbort:aborted});
+    const final=rememberProducerProjection({...projected,proofOptimization},{phase8PrepareProof:true,
+      phase8ProofOnlyRewrites:proofOnlyRewrites,shouldAbort:aborted});
     if(aborted() || !isProducerProjection(final) || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext)) return fail('cancelled-or-stale-at-final-publication');
     return final;
   } catch { return fail('invalid-or-unsupported-proof-optimization'); }

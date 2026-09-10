@@ -5,6 +5,121 @@ import { decompile,decompileWithProof,optimizeSemanticDecompilation } from '../.
 import { proofFixture,projectionFixture,identity } from '../helpers/proof-fixtures.mjs';
 import { preparePhase8RewritePlan,createAnalysisState } from '../../../js/decompiler/phase8/index.js';
 import {runProofRewritePass,readProvedRewrites} from '../../../js/decompiler/phase8/pass-validation.js';
+import { enhanceSemanticDecompilation, producerUsesProofOnlyRewrites } from '../../../js/decompiler/pipeline.js';
+import { fixture as irFixture } from '../helpers/ir-fixtures.mjs';
+import { applyPhase8Projection } from '../../../js/decompiler/phase8/projection.js';
+import { analysis as viewAnalysis, inductionFact } from '../provenance/fixture.js';
+
+function deferredFixture({bits=4,op='xor',defer=true,store=false,mutateOptions=false,options={}}={}) {
+ const f=irFixture('deferred-scalar');f.block(0);
+ const input=f.opaque(bits);input.reg='x0';input.index=0;
+ const target=f.binary(op,input,input,bits);
+ if(store)f.store(target,{locKind:'global',locKey:'global:32768'});
+ f.ret();const ir=f.build();ir.instructions=ir.blocks.flatMap(b=>b.insts);
+ ir.instructions.forEach((inst,index)=>{inst.id=`defer_${index}`;inst.address=0x1000n+BigInt(index*4);});
+ const ret=ir.instructions.at(-1);ret.args=[{value:target}];target.uses.push(ret);
+ const canonical=structuredClone(ir);
+ const seed={semantic:true,ir,types:null,lines:ir.instructions.filter(inst=>['ret','store'].includes(inst.op)).map(inst=>({
+  kind:'stmt',indent:0,text:inst.op==='ret'?'return old;':'old = value;',row:inst.row,addr:inst.address})),metrics:{},ctx:{}};
+ const opts={phase8PrepareProof:true,phase8ProofOnlyRewrites:defer,deterministicTransforms:true,decompilerTimeBudgetMs:1000,...options};
+ if(mutateOptions)opts.symbolFor=()=>{opts.phase8ProofOnlyRewrites=!defer;return 'global_value';};
+ const result=enhanceSemanticDecompilation(seed,null,opts);
+ return {ir,input,target,result,canonical,opts,proof:{identity,abiId:'generic-v1',memory:{addressBits:8},targets:[target],
+  timeoutMs:1000,backendTier:'tiered',candidateStrategy:'representation-rules',requireProofOnlyRewrites:true}};
+}
+
+test('C4-04 proof preparation retains the real pre-rule expression across six widths and three existing strategies',async()=>{
+ for(const bits of [1,4,8,16,32,64]) {
+  const ordinary=deferredFixture({bits,defer:false}),f=deferredFixture({bits});
+  assert.ok(ordinary.result.rewriteProof.some(row=>row.rule==='xor-self'));
+  assert.equal(ordinary.result.pseudocode,'return 0;');
+  assert.ok(!f.result.rewriteProof.some(row=>row.rule==='xor-self'));
+  assert.match(f.result.pseudocode,/\^/);
+  assert.equal(f.result.rewriteStats.applications,0);
+  assert.equal(f.result.rewriteStats.deferred,'phase8-proof-projection');
+  assert.equal(producerUsesProofOnlyRewrites(f.result),true);
+  for(const candidateStrategy of ['local-rewrites','representation-rules','equality-saturation']) {
+   const r=await optimizeSemanticDecompilation(f.result,{...f.proof,candidateStrategy});
+   assert.equal(r.proofOptimization.status,'complete',r.proofOptimization.reason);
+   assert.equal(r.proofOptimization.rewritePolicy,'deferred-optional-scalar-rewrites');
+   assert.equal(r.proofOptimization.adopted,1);assert.equal(r.pseudocode,'return 0;');
+   assert.ok(r.phase8Projection.transforms.every(row=>row.kind==='solver-constant'&&row.queryHash));
+   assert.match(f.result.pseudocode,/\^/);assert.deepEqual(structuredClone(f.ir),f.canonical);
+  }
+ }
+});
+
+test('C4-04 a refuted BV1 proposal leaves the exact prepared expression and no adoption',async()=>{
+ const f=deferredFixture({bits:1,op:'add'}),before=f.result.pseudocode;
+ const r=await optimizeSemanticDecompilation(f.result,f.proof);
+ assert.equal(r.proofOptimization.status,'complete',r.proofOptimization.reason);
+ assert.equal(r.proofOptimization.targetDecisions[0].disposition,'refuted');
+ assert.equal(r.proofOptimization.adopted,0);assert.equal(r.pseudocode,before);
+ assert.deepEqual(r.phase8Projection.transforms,[]);
+ assert.deepEqual(structuredClone(f.ir),f.canonical);
+});
+
+test('C4-04 unknown, exhausted and cancelled proof requests preserve the prepared AST',async()=>{
+ for(const options of [{timeoutMs:0},{isCancelled:()=>true},{phase8WorkBudget:0}]) {
+  const f=deferredFixture(),r=await optimizeSemanticDecompilation(f.result,{...f.proof,...options});
+  assert.equal(r.proofOptimization.status,'partial');assert.equal(r.proofOptimization.adopted,0);
+  assert.equal(r.pseudocode,f.result.pseudocode);assert.equal(r.cAst,f.result.cAst);assert.equal(r.semanticAst,f.result.semanticAst);
+  assert.ok(!(r.phase8Projection?.transforms??[]).length);
+  assert.deepEqual(structuredClone(f.ir),f.canonical);
+ }
+});
+
+test('C4-04 proof-only policy survives replays and cannot be downgraded through request metadata',async()=>{
+ const f=deferredFixture(),r=await optimizeSemanticDecompilation(f.result,f.proof);
+ const replay=await optimizeSemanticDecompilation({...r,phase8ProofOnlyRewrites:false,
+  proofOptimization:{...r.proofOptimization,rewritePolicy:'existing-projection'}},
+  {...f.proof,phase8ProofOnlyRewrites:false,requireProofOnlyRewrites:false});
+ assert.equal(replay.proofOptimization.status,'complete',replay.proofOptimization.reason);
+ assert.equal(replay.proofOptimization.adopted,0);assert.equal(replay.pseudocode,r.pseudocode);
+ assert.equal(producerUsesProofOnlyRewrites(replay),true);
+ assert.equal(replay.proofOptimization.rewritePolicy,'deferred-optional-scalar-rewrites');
+ const legacy=deferredFixture({defer:false});
+ const refused=await optimizeSemanticDecompilation({...legacy.result,phase8ProofOnlyRewrites:true,
+  proofOptimization:{rewritePolicy:'deferred-optional-scalar-rewrites'}},legacy.proof);
+ assert.equal(refused.proofOptimization.reason,'proof-only-preparation-required');
+ assert.equal(refused.proofOptimization.adopted,0);assert.equal(refused.cAst,legacy.result.cAst);
+});
+
+test('C4-04 ordinary projection facts cannot bypass a privately prepared proof-only policy',()=>{
+ const ordinary=deferredFixture({defer:false,options:{argNames:['v123']}}),f=deferredFixture({options:{argNames:['v123']}});
+ const a=applyPhase8Projection(ordinary.result,viewAnalysis(inductionFact(ordinary.input.id)));
+ assert.ok(a.phase8Projection.transforms.some(row=>row.kind==='induction-variable'));
+ const b=applyPhase8Projection(f.result,viewAnalysis(inductionFact(f.input.id)),{phase8ProofOnlyRewrites:false});
+ assert.deepEqual(b.phase8Projection.transforms,[]);
+ assert.equal(b.pseudocode,f.result.pseudocode);
+});
+
+test('C4-04 late configuration changes cannot relabel which preparation path actually ran',()=>{
+ for(const defer of [false,true]) {
+  const f=deferredFixture({defer,store:true,mutateOptions:true});
+  assert.equal(f.opts.phase8ProofOnlyRewrites,!defer,'the real location renderer invoked the callback');
+  assert.equal(producerUsesProofOnlyRewrites(f.result),defer);
+  assert.equal(f.result.rewriteProof.some(row=>row.rule==='xor-self'),!defer);
+ }
+});
+
+test('C4-04 deadline fallback cannot silently re-enable optional scalar rewrites',async()=>{
+ const f=deferredFixture({options:{deterministicTransforms:false,decompilerTimeBudgetMs:1e-12}});
+ assert.ok(f.result.passMetrics.some(pass=>pass.skipped));
+ assert.match(f.result.pseudocode,/\^/);assert.ok(!f.result.rewriteProof.some(row=>row.rule==='xor-self'));
+ assert.equal(producerUsesProofOnlyRewrites(f.result),true);
+ const r=await optimizeSemanticDecompilation(f.result,{...f.proof,timeoutMs:0});
+ assert.equal(r.proofOptimization.adopted,0);assert.equal(r.pseudocode,f.result.pseudocode);
+});
+
+test('C4-04 proof API does not re-decompile or certify an already simplified canonical snapshot',async()=>{
+ const f=deferredFixture({defer:false});
+ const r=await decompileWithProof({__canonicalDecompiler:f.result},{phase8ProofOnlyRewrites:true},
+  {...f.proof,requireProofOnlyRewrites:false});
+ assert.equal(r.proofOptimization.reason,'proof-only-preparation-required');
+ assert.equal(r.proofOptimization.adopted,0);assert.equal(r.pseudocode,f.result.pseudocode);
+ assert.equal(r.ir,f.ir);assert.equal(r.cAst,f.result.cAst);
+});
 
 test('v8 production optimizer commits, projects and preserves source/IR identity',async()=>{
  const f=projectionFixture();const item=f.result.semanticAst.values.find(v=>v.valueId===f.target.id);const original=item.expression;const originalText=f.result.pseudocode;

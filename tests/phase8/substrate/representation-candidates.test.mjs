@@ -14,7 +14,7 @@ import { enhanceSemanticDecompilation, optimizeSemanticDecompilation } from '../
 import { proofFixture, identity } from '../helpers/proof-fixtures.mjs';
 import { fixture } from '../helpers/ir-fixtures.mjs';
 import { buildSemanticModel } from '../../../js/blocks.js';
-import { decompileWithProof } from '../../../js/decompile.js';
+import { decompile, decompileWithProof } from '../../../js/decompile.js';
 import { runPhase8Stage } from '../../../js/decompiler/phase8/index.js';
 import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
 import { createDecompilerNavigation } from '../../../js/ui/decompiler-provenance.js';
@@ -337,7 +337,7 @@ test('C4-04 representation coverage cannot copy plan authority or publish after 
   assert.equal(isPhase8RewritePlan(plan,scope),false);
 });
 
-test('C4-04 the public machine entry separates proved no-op projection from unsupported instruction refusal', async () => {
+test('C4-04 the public machine entry defers ordinary simplification until proof and keeps unsupported instruction refusal', async () => {
   const base = 0x1000n, rowOfAddress = address => Number((address - base) / 4n);
   const model = mn => buildSemanticModel([
     {row:0,address:base,mn,ops:'x0, x0, x0'},
@@ -345,10 +345,20 @@ test('C4-04 the public machine entry separates proved no-op projection from unsu
   ],{startRow:0,endRow:1,rowOfAddress});
   const opts = {addr:base,name:'machine_example',rowOfAddress,beginner:false,returnType:'uint64',decompilerTimeBudgetMs:5000};
   const proofOpts = {identity:{...identity,architecture:'arm64'},abiId:'aapcs64',candidateStrategy:'representation-rules',timeoutMs:1000};
+  const ordinary = decompile(model('eor'),opts);
+  assert.match(ordinary.pseudocode,/return 0;/);
+  const withheld = await decompileWithProof(model('eor'),{...opts,phase8ProofOnlyRewrites:false},
+    {...proofOpts,timeoutMs:0,requireProofOnlyRewrites:false});
+  assert.equal(withheld.proofOptimization.status,'partial');
+  assert.equal(withheld.proofOptimization.rewritePolicy,'deferred-optional-scalar-rewrites');
+  assert.equal(withheld.proofOptimization.adopted,0);
+  assert.match(withheld.pseudocode,/\^/,'uncertain proof does not inherit the ordinary xor-self simplification');
+  assert.ok(!withheld.rewriteProof.some(row => row.rule === 'xor-self'));
   const result = await decompileWithProof(model('eor'),opts,proofOpts);
   assert.equal(result.proofOptimization.status,'complete',result.proofOptimization.reason);
   assert.ok(result.phase8.transformCount > 0, 'real proved transaction, not a helper-only query');
-  assert.equal(result.proofOptimization.adopted,0,'the ordinary renderer already emitted this constant');
+  assert.equal(result.proofOptimization.adopted,2,'the two scalar values are now projected only after proof');
+  assert.equal(result.proofOptimization.rewritePolicy,'deferred-optional-scalar-rewrites');
   assert.ok(result.proofOptimization.targetDecisions.some(row => row.ruleCoverage?.rows.some(
     rule => rule.name === 'xor-self' && rule.disposition === 'proved-candidate')));
   assert.ok(result.ir.instructions.some(inst => inst.op === 'bin' && inst.sub === 'xor'));

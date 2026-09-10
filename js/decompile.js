@@ -29,6 +29,6 @@ export function decompile(model, opts = {}) {
 
 /** Explicit asynchronous optimization; the default decompile stays synchronous. */
 export async function decompileWithProof(model, options = {}, proofOptions = {}) {
-  const result = decompile(model,{...options,phase8Optimize:false,phase8PrepareProof:true});
-  return optimizeSemanticDecompilation(result,proofOptions);
+  const result = decompile(model,{...options,phase8Optimize:false,phase8PrepareProof:true,phase8ProofOnlyRewrites:true});
+  return optimizeSemanticDecompilation(result,{...proofOptions,requireProofOnlyRewrites:true});
 }
