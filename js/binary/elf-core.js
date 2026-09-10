@@ -559,6 +559,7 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
   const symbolTable=sections[sec.link];
   const symbolMinEnt=BigInt(bits===64?24:16);
   const linkedSymbolTable=symbolTable&&(symbolTable.type===SHT_SYMTAB||symbolTable.type===SHT_DYNSYM);
+  if(!linkedSymbolTable){budget.partial(`relocations:${sec.index}:symbol-table-link`,`ELF relocation section ${sec.index} has invalid sh_link ${sec.link}; expected SHT_SYMTAB or SHT_DYNSYM`);return;}
   let symbolEntryCount=null;
   if(linkedSymbolTable){
     if(symbolTable.entsize<symbolMinEnt){
