@@ -27,7 +27,7 @@ import {
 import { ARM64_ARCHITECTURE } from './targets/architecture/index.js';
 import { resolveABIPlugin } from './targets/abi/index.js';
 import { semanticAbiAdapter } from './analysis/semantic-function-base.js';
-import { observeProjectedOperationData, projectedStateTransitionCandidates } from './semantics/compat/semantic-ir-v2-to-v1.js';
+import { observeProjectedOperationData, projectedStateTransitionCandidates, projectedConstantTransitionCandidate } from './semantics/compat/semantic-ir-v2-to-v1.js';
 
 const facadeConstantTransitions = new WeakMap();
 const expectedFacadeConstantTransitions = new WeakMap();
@@ -38,6 +38,24 @@ const facadeLocationHistories = new WeakMap();
 const expectedFacadeLocations = new WeakMap();
 const facadeTypedResultHistories = new WeakMap();
 const expectedFacadeTypedResults = new WeakMap();
+const facadeStackEscapeHistories = new WeakMap();
+const expectedFacadeStackEscapes = new WeakMap();
+const facadeProjectedConstants = new WeakMap();
+
+export function facadeProjectedConstantTransitionCandidate(projected, instruction) {
+  return facadeProjectedConstants.get(projected)?.get(instruction) ?? null;
+}
+
+export function facadeStackEscapeTransitionExpected(projected, instruction = null) {
+  const expected = expectedFacadeStackEscapes.get(projected);
+  return instruction == null ? (expected?.count || 0) > 0 : expected?.sources.has(instruction) === true;
+}
+
+export function readFacadeStackEscapeHistory(projected, instruction = null) {
+  const entry = facadeStackEscapeHistories.get(projected);
+  if (!entry?.history.isCurrent()) return null;
+  return instruction == null ? entry.history : entry.bySource.get(instruction) ?? null;
+}
 
 export function facadeTypedResultTransitionExpected(projected, instruction = null) {
   const expected = expectedFacadeTypedResults.get(projected);
@@ -113,7 +131,7 @@ function retainFacadeArgumentWrites(fields, history) {
 }
 
 function sealFacadeStateTransitions(projected, history) {
-  if (!history || history.unavailable || !history.writes.length) return;
+  if (!history?.source || history.unavailable || !history.writes.length) return;
   const source = history.source, writes = Object.freeze(history.writes);
   try {
     if (!source.matchesThroughWrites(writes)) return;
@@ -132,6 +150,23 @@ function sealFacadeStateTransitions(projected, history) {
       return cached.get(original);
     } }));
   } catch { /* Missing bounded handoff never authorizes a stale predecessor. */ }
+}
+
+function sealFacadeProjectedConstants(projected, history, candidates) {
+  if (!history || history.unavailable || !history.writes.length || !candidates.size) return;
+  try {
+    const writes = Object.freeze(history.writes), checks = new Map(), records = new Map();
+    const output = observeProjectedOperationData(projected, projected.instructions.map(source => ({ source, beforeInputs:[] })));
+    for (const [source, candidate] of candidates) {
+      if (!checks.has(candidate.isCurrent)) {
+        const current = () => candidate.isCurrent.matchesThroughWrites(writes) && output();
+        checks.set(candidate.isCurrent, current() ? current : null);
+      }
+      const isCurrent = checks.get(candidate.isCurrent);
+      if (isCurrent) records.set(source, Object.freeze({ ...candidate, isCurrent }));
+    }
+    facadeProjectedConstants.set(projected, records);
+  } catch { /* Only the actual bounded facade writes can carry old constants. */ }
 }
 
 export function readFacadeConstantTransitions(projected, instruction) {
@@ -671,19 +706,22 @@ function retainPublicLocation(observer, projected, source, before, details, hist
   }));
 }
 
-function sealFacadeLocationHistory(projected, observer) {
+function sealFacadeLocationHistory(projected, observer, escapes = null) {
   expectedFacadeLocations.set(projected, observer);
   if (!observer.count) return;
   try {
     const locations = projected.locations, size = Object.getOwnPropertyDescriptor(Map.prototype, 'size').get;
     if (Object.getPrototypeOf(locations) !== Map.prototype || Reflect.ownKeys(locations).length || size.call(locations) > 1024) return;
     const bindings = [...Map.prototype.entries.call(locations)];
+    const following = (escapes?.records || []).filter(event => event.source.extra === event.afterExtra
+      && event.source.memUse === event.afterUse && event.source.reachingStore === undefined);
     const valid = observer.records.filter(event => event.locations === locations && event.source.op === event.op
-      && event.source.sub === event.sub && event.source.loc === event.location && event.source.extra === event.extra
+      && event.source.sub === event.sub && event.source.loc === event.location
+      && (event.source.extra === event.extra || following.some(next => next.source === event.source && next.beforeExtra === event.extra))
       && event.source.addr === event.address && event.source.dst === event.output
       && event.inputs.every(input => input.value.def === input.definition));
-    const output = observeProjectedOperationData(projected, valid.flatMap(event => [event,
-      ...event.related.map(source => ({ source, beforeInputs:[] }))]));
+    const output = observeProjectedOperationData(projected, [...valid.flatMap(event => [event,
+      ...event.related.map(source => ({ source, beforeInputs:[] }))]), ...following]);
     const proofsCurrent = () => valid.every(event => !event.memory || event.base?.def?.op === LEGACY_OP.LOAD
       && event.base.def.memoryForwarding === event.memory && isCanonicalExactMemoryForwarding(event.memory,
         canonicalMemoryForwardingContextForLoad(event.memory, event.base.def, event.proofContext)));
@@ -944,30 +982,72 @@ function attachCanonicalTypedCallResults(projected, instructionByRow, adapter, o
   return observer;
 }
 
-function valueMayCarryStackAddress(value) {
+function valueMayCarryStackAddress(value, observation = null) {
   const proof = legacyStackPointerProvenanceOf(value);
+  if (observation) observation.proof = proof ? Object.freeze({ ...proof }) : null;
   return proof?.must === true || proof?.may === true;
 }
 
 /*
- * Keep canonical MemorySSA conservative across unknown calls. For the legacy-v1
- * compatibility shape only, reconnect one same-block stack load to its previous
- * stack store when the address of caller-local stack storage is proven not to
- * escape across any intervening call/barrier. The canonical memUse remains the
- * call-clobber node, so this cannot turn MemorySSA's unknown into NoAlias.
+ * Invalidate a legacy compatibility store link when an intervening call receives
+ * a stack address. Canonical MemorySSA/forwarding evidence is not rewritten; this
+ * conservative public-view clobber cannot issue a new alias or numeric theorem.
  */
 
-function invalidateEscapedStackForwarding(projected) {
+function stackEscapeMemoryIdentity(memory) {
+  return Object.freeze({ kind:memory?.kind ?? null, definitionId:memory?.definitionId ?? null,
+    regionId:memory?.regionId ?? null, clobberingInstructionId:memory?.clobberingInstructionId ?? null,
+    previousDefinitionId:memory?.previousDefinitionId ?? null, compatibilityDerived:memory?.compatibilityDerived === true,
+    evidence:memory?.evidence ?? null });
+}
+
+function sealFacadeStackEscapeHistory(projected, observer) {
+  expectedFacadeStackEscapes.set(projected, observer);
+  if (!observer.count) return;
+  try {
+    const valid = observer.records.filter(event => event.source.op === LEGACY_OP.LOAD && event.source.dst === event.output
+      && event.source.reachingStore === undefined && event.source.memUse === event.afterUse && event.source.extra === event.afterExtra
+      && event.source.memoryForwarding === event.memory && event.call.op === LEGACY_OP.CALL
+      && event.call.args[event.argumentIndex] === event.argument && event.argument.value === event.input
+      && (event.proof?.must === true || event.proof?.may === true));
+    if (!valid.length) return;
+    const scanned = [...new Set(valid.flatMap(event => event.selection))];
+    const output = observeProjectedOperationData(projected, [...valid,
+      ...scanned.map(source => ({ source, beforeInputs:[] }))]);
+    if (!output()) return;
+    const history = Object.freeze({ events:Object.freeze(valid), isCurrent:output,
+      completeness:valid.length === observer.count ? 'complete' : 'incomplete' });
+    facadeStackEscapeHistories.set(projected, { history, bySource:new Map(valid.map(event => [event.source,
+      Object.freeze({ events:Object.freeze([event]), isCurrent:output })])) });
+  } catch { /* The actual conservative write remains; bounded history is unavailable. */ }
+}
+
+function invalidateEscapedStackForwarding(projected, history = null) {
+  const observer = { records:[], sources:new WeakSet(), count:0 };
   for (const load of projected.instructions ?? []) {
     if (load.op !== LEGACY_OP.LOAD || load.loc?.kind !== LEGACY_MK.STACK || !load.reachingStore) continue;
     const store = load.reachingStore;
     const block = projected.blocks?.[load.block];
     if (!block || store.block !== load.block) continue;
+    let available = observer.records.length < 1024 && Array.isArray(block.insts) && block.insts.length <= 512;
+    const tested = [];
     for (const inst of block.insts ?? []) {
       if (Number(inst.row) <= Number(store.row) || Number(inst.row) >= Number(load.row)) continue;
       if (inst.op !== LEGACY_OP.CALL) continue;
-      if (!(inst.args ?? []).some((arg) => valueMayCarryStackAddress(arg?.value))) continue;
+      if (!(inst.args ?? []).some((arg, index) => {
+        const value = arg?.value;
+        if (tested.length >= 512) available = false;
+        const observed = available ? { call:inst, argument:arg, argumentIndex:index, value } : null;
+        const matches = valueMayCarryStackAddress(value, observed);
+        if (observed) tested.push(Object.freeze(observed));
+        return matches;
+      })) continue;
       const priorMemoryUse = load.memUse ?? null;
+      const beforeExtra = load.extra;
+      const fields = history && !history.unavailable ? ['reachingStore', 'memUse', 'extra'].map(key => {
+        const descriptor = Object.getOwnPropertyDescriptor(load, key);
+        return { object:load, key, before:descriptor?.value, beforePresent:descriptor != null };
+      }) : null;
       load.reachingStore = undefined;
       load.memUse = {
         kind:'clobber',
@@ -985,9 +1065,26 @@ function invalidateEscapedStackForwarding(projected) {
         canonicalMemoryUseKind:priorMemoryUse?.kind ?? null,
         canonicalMemoryDefinitionId:priorMemoryUse?.definitionId ?? null,
       };
+      retainFacadeArgumentWrites(fields, history);
+      observer.sources.add(load); observer.count++;
+      if (available) {
+        const selected = tested[tested.length - 1];
+        const values = [...new Set([load.addr?.base, ...(store.args || []).map(arg => arg.value), ...tested.map(test => test.value)].filter(Boolean))];
+        if (values.length <= 512) observer.records.push(Object.freeze({ source:load, output:load.dst, store, call:inst,
+          op:load.op, sub:load.sub, stage:'facade-stack-escape', ordinal:observer.count - 1,
+          operation:'invalidate-escaped-stack-forwarding', input:selected.value, proof:selected.proof,
+          argument:selected.argument, argumentIndex:selected.argumentIndex,
+          beforeUse:priorMemoryUse, afterUse:load.memUse, beforeExtra, afterExtra:load.extra,
+          before:stackEscapeMemoryIdentity(priorMemoryUse), after:stackEscapeMemoryIdentity(load.memUse),
+          memory:load.memoryForwarding, related:Object.freeze([...new Set([store, ...tested.map(test => test.call)])]),
+          inputs:Object.freeze(values.map(value => Object.freeze({ value, definition:value.def }))), beforeInputs:Object.freeze(values),
+          selection:block.insts, object:Object.freeze({ before:priorMemoryUse, beforeExtra, selection:block.insts, tested:Object.freeze(tested) }),
+        }));
+      }
       break;
     }
   }
+  return observer;
 }
 
 /**
@@ -1163,19 +1260,30 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
     })), null, 2) + '\n');
   }
   const stateSource = projectedStateTransitionCandidates(result.legacyV1);
-  const stateHistory = stateSource?.isCurrent() ? { source:stateSource, writes:[], unavailable:false } : null;
+  const constantCandidates = new Map(), constantChecks = new Map();
+  for (const source of result.legacyV1.instructions) {
+    const candidate = projectedConstantTransitionCandidate(result.legacyV1, source);
+    if (!candidate) continue;
+    if (!constantChecks.has(candidate.isCurrent)) constantChecks.set(candidate.isCurrent, candidate.isCurrent());
+    if (constantChecks.get(candidate.isCurrent)) constantCandidates.set(source, candidate);
+  }
+  const currentStateSource = stateSource?.isCurrent() ? stateSource : null;
+  const stateHistory = currentStateSource || constantCandidates.size
+    ? { source:currentStateSource, writes:[], unavailable:false } : null;
   const preservedStateObserver = restoreCanonicalPreservedStateReads(result.legacyV1, abiAdapter, stateHistory);
   const locationObserver = restoreAapcs64PublicLocations(result.legacyV1, stateHistory);
   const constantObserver = propagateExactLegacyConstants(result.legacyV1, stateHistory);
   attachCanonicalCallArguments(result.legacyV1, stateHistory);
   const typedResultObserver = attachCanonicalTypedCallResults(result.legacyV1, instructionByRow, abiAdapter, opts, stateHistory);
-  invalidateEscapedStackForwarding(result.legacyV1);
+  const stackEscapeObserver = invalidateEscapedStackForwarding(result.legacyV1, stateHistory);
   attachCanonicalFunctionReturns(result.legacyV1, abiAdapter, opts, stateHistory);
   sealFacadeStateTransitions(result.legacyV1, stateHistory);
+  sealFacadeProjectedConstants(result.legacyV1, stateHistory, constantCandidates);
   sealFacadeConstantTransitions(result.legacyV1, constantObserver);
   sealFacadePreservedStateHistory(result.legacyV1, preservedStateObserver, constantObserver, typedResultObserver);
-  sealFacadeLocationHistory(result.legacyV1, locationObserver);
+  sealFacadeLocationHistory(result.legacyV1, locationObserver, stackEscapeObserver);
   sealFacadeTypedResultHistory(result.legacyV1, typedResultObserver);
+  sealFacadeStackEscapeHistory(result.legacyV1, stackEscapeObserver);
   if (typeof process !== 'undefined' && process.env?.HEX_DEBUG_C2_LEGACY === '1' && typeof process.stderr?.write === 'function') {
     process.stderr.write(JSON.stringify(result.legacyV1.instructions.filter((item) => item.op === 'load').map((item) => ({
       row: item.row,

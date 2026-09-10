@@ -3,6 +3,7 @@ import { RewriteEngine, RewriteHistoryJournal, expressionOriginHistory } from '.
 import { captureRecoveryIrData, PROJECTION_LIMITS } from '../phase8/projection-origin.js';
 import { readStackPhiHistoryConsumer } from './stack-phi-recovery.js';
 import { readLegacyStackHistoryConsumer } from './legacy-stack-recovery.js';
+import { readExpressionHistoryConsumer } from '../pipeline-core.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { printExpression, printProgram } from '../pretty/c.js';
 import { buildNZCVConditionExpression } from '../flag-semantics.js';
@@ -40,12 +41,15 @@ function bindReturnHistory(result, transitions, opts) {
         const semantic = item.node.semantic;
         if (!semantic || (item.prior && !item.prior.isCurrent())) { reasons.add('recovery-consumer-unavailable'); continue; }
         if (remaining-- <= 0) { reasons.add('recovery-binding-budget'); continue; }
+        const upstreamChecks = item.prior?.upstreamChecks || Object.freeze(item.prior ? [item.prior.isCurrent] : []);
         returnHistoryConsumers.set(semantic, Object.freeze({ ir,
           expression:semantic.expression, op:semantic.op, instructionId:semantic.ir,
           location:semantic.location, records:item.records,
-          // Re-observe the original data, rather than retaining a chain of
-          // earlier consumer closures across recovery invocations.
-          isCurrent:() => observation.matches(),
+          // Re-observe current IR once while retaining the original producer's
+          // displaced before-images. Repeated return recovery reuses this fixed
+          // check list rather than nesting all earlier return closures.
+          upstreamChecks,
+          isCurrent:() => observation.matches() && upstreamChecks.every(check => check()),
         }));
       }
     }
@@ -609,7 +613,8 @@ export function recoverExactStackReturn(result, opts = {}) {
     .map(node => ({ node, before:node.semantic?.expression || root,
       prior:readStackReturnHistoryConsumer(node.semantic, result.ir)
         || readStackPhiHistoryConsumer(node.semantic, result.ir)
-        || readLegacyStackHistoryConsumer(node.semantic, result.ir) }));
+        || readLegacyStackHistoryConsumer(node.semantic, result.ir)
+        || readExpressionHistoryConsumer(node.semantic, result.ir) }));
   // A stack load means no useful reconstruction happened. A committed non-stack
   // field/global load is an intentional high-level return and must be retained.
   if (!recovered || (recovered.kind === 'load' && recovered.location?.kind === 'stack') || !rewriteReturn(result, recovered, opts)) return result;

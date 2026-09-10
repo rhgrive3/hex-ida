@@ -3,6 +3,34 @@
 import { ownDataEntries, PROJECTION_LIMITS, captureProjectionIrData } from '../../core/identity/live-data.js';
 export { PROJECTION_LIMITS, captureProjectionIrData } from '../../core/identity/live-data.js';
 
+// Dominance is an existing array of native Sets, not a plain-data graph. Observe
+// that exact representation separately; never convert or recompute the IR facts.
+function captureRecoveryDominators(value, shouldAbort) {
+  if (value == null) return { edges:0, matches:() => true };
+  if (!Array.isArray(value)) throw new TypeError('recovery-dominators-array-required');
+  const entries = ownDataEntries(value, PROJECTION_LIMITS.nodes), length = value.length;
+  const size = Object.getOwnPropertyDescriptor(Set.prototype, 'size').get;
+  let edges = entries.length;
+  const sets = entries.map(([key, set]) => {
+    if (shouldAbort?.()) throw new TypeError('recovery-dominators-cancelled');
+    if (Object.getPrototypeOf(set) !== Set.prototype || Reflect.ownKeys(set).length) throw new TypeError('recovery-dominator-set-required');
+    edges += size.call(set);
+    if (edges > PROJECTION_LIMITS.edges) throw new TypeError('recovery-dominators-budget');
+    const members = [...Set.prototype.values.call(set)];
+    if (members.some(member => !Number.isSafeInteger(member) || member < 0)) throw new TypeError('recovery-dominator-index-required');
+    return { key, set, members };
+  });
+  return { edges, matches() {
+    try {
+      const current = ownDataEntries(value, PROJECTION_LIMITS.nodes);
+      return value.length === length && current.length === entries.length && sets.every(({ key, set, members }, index) =>
+        current[index][0] === key && current[index][1] === set
+        && Object.getPrototypeOf(set) === Set.prototype && !Reflect.ownKeys(set).length
+        && size.call(set) === members.length && members.every(member => Set.prototype.has.call(set, member)));
+    } catch { return false; }
+  } };
+}
+
 
 // Recovery depends on these canonical roots, not on envelope caches or Map
 // indexes. Preserve their own-data descriptors so getters cannot replay a root.
@@ -13,14 +41,17 @@ export function captureRecoveryIrData(ir, extraRoots, shouldAbort = null) {
   if (descriptors.some(descriptor => descriptor && (!Object.hasOwn(descriptor, 'value') || !descriptor.enumerable))) {
     throw new TypeError('recovery-ir-data-roots-required');
   }
-  const observation = captureProjectionIrData([...descriptors.map(descriptor => descriptor?.value), ...extraRoots], shouldAbort);
-  return Object.freeze({ metrics:observation.metrics, matches() {
+  const dominance = captureRecoveryDominators(descriptors.at(-1)?.value, shouldAbort);
+  const observation = captureProjectionIrData([...descriptors.slice(0, -1).map(descriptor => descriptor?.value), ...extraRoots], shouldAbort);
+  const edges = observation.metrics.edges + dominance.edges;
+  if (edges > PROJECTION_LIMITS.edges) throw new TypeError('recovery-binding-budget');
+  return Object.freeze({ metrics:Object.freeze({ ...observation.metrics, edges }), matches() {
     try {
       return Object.getPrototypeOf(ir) === prototype && keys.every((key, index) => {
         const current = Object.getOwnPropertyDescriptor(ir, key), prior = descriptors[index];
         return prior ? !!current && Object.hasOwn(current, 'value') && current.enumerable
           && Object.is(current.value, prior.value) : current === undefined;
-      }) && observation.matches();
+      }) && dominance.matches() && observation.matches();
     } catch { return false; }
   } });
 }

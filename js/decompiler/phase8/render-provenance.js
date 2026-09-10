@@ -6,7 +6,8 @@ import { readSemanticSuppressionHistory, readSemanticStoreLineHistory, readSeman
 import { readProjectedStateNormalization, projectedStateNormalizationExpected } from '../../semantics/compat/semantic-ir-v2-to-v1.js';
 import { readFacadeStateNormalization, readFacadePreservedStateHistory, facadePreservedStateTransitionExpected,
   readFacadeLocationHistory, facadeLocationTransitionExpected,
-  readFacadeTypedResultHistory, facadeTypedResultTransitionExpected } from '../../ir-core.js';
+  readFacadeTypedResultHistory, facadeTypedResultTransitionExpected,
+  readFacadeStackEscapeHistory, facadeStackEscapeTransitionExpected } from '../../ir-core.js';
 
 const PUBLIC_STATE_RULES = Object.freeze(['suppress-unused-entry-state', 'reorder-public-state-slot', 'renumber-public-state-version']);
 const readPublicStateNormalization = ir => readFacadeStateNormalization(ir) || readProjectedStateNormalization(ir);
@@ -139,7 +140,7 @@ function originKeySet(origins) {
 function recordFeedsEntity(record, entityOriginKeys, bound) {
   // An initial omission has no pre-existing C line and no known replacement.
   // Sharing an origin with a visible expression is not a producer edge.
-  if (['display-suppression', 'public-state-normalization', 'abi-state-restoration', 'public-location-restoration', 'typed-call-result'].includes(record.kind)) return false;
+  if (['display-suppression', 'public-state-normalization', 'abi-state-restoration', 'public-location-restoration', 'typed-call-result', 'stack-escape-invalidation'].includes(record.kind)) return false;
   // A rewrite's consumed/remaining sources do not establish which C line
   // uses its result. In particular, a shared input is not a replacement edge.
   // Keep these records queryable without inventing a rendered consumer.
@@ -306,6 +307,28 @@ function typedCallResultRecord(event, cap) {
   }) };
 }
 
+function stackEscapeRecord(event, cap) {
+  const values = [...new Set([event.output, ...event.beforeInputs].filter(Boolean))];
+  const definitions = [...new Set([event.source, event.store, event.call, ...event.related, ...values.map(value => value.def)].filter(Boolean))];
+  const full = canonicalOrigins({ addresses:definitions.map(inst => inst.address), rows:definitions.map(inst => inst.row),
+    ir:definitions.map(inst => inst.id), ssaDefs:values.map(value => value.id), ssaUses:[] });
+  const refs = [...definitions.map(inst => `ir:${inst.id}`), ...values.map(value => `ssa:def:${value.id}`)];
+  const bounded = truncateOrigins(full, cap), truncated = originsTotalSize(full) > cap || refs.length > cap;
+  const consumedRefs = Object.freeze(refs.slice(0, cap));
+  return { truncated, record:renderProvenanceRecord({ kind:'stack-escape-invalidation', rule:event.operation,
+    proof:'observed-stack-escape-invalidation-not-new-memory-proof', targets:consumedRefs,
+    origin:{ addresses:bounded.addresses, rows:bounded.rows, ir:bounded.ir,
+      ssaDefs:bounded.ssaRefs.map(ref => ref.slice(4)), ssaUses:[] },
+    stackEscapeTransition:Object.freeze({ scope:'compatibility-stack-escape', ordinal:event.ordinal,
+      before:event.before, after:event.after, storeRef:`ir:${event.store.id}`, callRef:`ir:${event.call.id}`,
+      argumentRef:`ssa:def:${event.input.id}`, argumentIndex:event.argumentIndex,
+      stackProof:Object.freeze({ must:event.proof.must === true, may:event.proof.may === true,
+        offset:event.proof.offset == null ? null : String(event.proof.offset), via:event.proof.via ?? null }),
+      consumedRefs, producedRefs:Object.freeze([`ir:${event.source.id}`]), canonicalValuesRetained:true,
+      canonicalMemoryUnchanged:true, completeness:truncated ? 'incomplete' : 'complete' }),
+  }) };
+}
+
 export function buildRenderProvenance({ result, snapshotId = null, budget = null, shouldAbort = null } = {}) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) fail('phase8-render-provenance-result-required');
   if (!Array.isArray(result.lines)) fail('phase8-render-provenance-result-required');
@@ -318,6 +341,9 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   const preservedState = readFacadePreservedStateHistory(result.ir);
   const publicLocation = readFacadeLocationHistory(result.ir);
   const typedResult = readFacadeTypedResultHistory(result.ir);
+  const stackEscape = readFacadeStackEscapeHistory(result.ir);
+  if (facadeStackEscapeTransitionExpected(result.ir) && !stackEscape) reasons.add('unavailable-stack-escape-history');
+  if (stackEscape?.completeness === 'incomplete') reasons.add('incomplete-stack-escape-history');
   if (facadeTypedResultTransitionExpected(result.ir) && !typedResult) reasons.add('unavailable-typed-call-result-history');
   if (typedResult?.completeness === 'incomplete') reasons.add('incomplete-typed-call-result-history');
   if (facadeLocationTransitionExpected(result.ir) && !publicLocation) reasons.add('unavailable-public-location-history');
@@ -354,7 +380,8 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   const preservedStateEvents = preservedState?.events || [];
   const publicLocationEvents = publicLocation?.events || [];
   const typedResultEvents = typedResult?.events || [];
-  const rawRecordCount = expressionRecords.length + rawRecords.length + suppressionRecords.length + publicStateEvents.length + preservedStateEvents.length + publicLocationEvents.length + typedResultEvents.length;
+  const stackEscapeEvents = stackEscape?.events || [];
+  const rawRecordCount = expressionRecords.length + rawRecords.length + suppressionRecords.length + publicStateEvents.length + preservedStateEvents.length + publicLocationEvents.length + typedResultEvents.length + stackEscapeEvents.length;
   const ledgerRecords = [];
   for (const record of suppressionRecords.slice(0, Math.max(0, resolvedBudget.maxTransformRecords - ledgerRecords.length))) {
     ledgerRecords.push(renderProvenanceRecord(record));
@@ -378,6 +405,9 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   }
   if (unavailableExpressionHistory) reasons.add('missing-expression-history');
   for (const record of rawRecords.slice(0, Math.max(0, resolvedBudget.maxTransformRecords - ledgerRecords.length))) {
+    if (record?.kind === 'stack-escape-invalidation' || record?.stackEscapeTransition) {
+      reasons.add('unissued-stack-escape-history'); continue;
+    }
     if (record?.kind === 'typed-call-result' || record?.typedCallResultTransition) {
       reasons.add('unissued-typed-call-result-history'); continue;
     }
@@ -420,6 +450,12 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     const normalized = typedCallResultRecord(event, resolvedBudget.maxOriginsPerEntity);
     ledgerRecords.push(normalized.record);
     if (normalized.truncated) { reasons.add('truncated'); truncatedScopes.push('typed-call-result-origins'); }
+  }
+  for (const event of stackEscapeEvents.slice(0, Math.max(0, resolvedBudget.maxTransformRecords - ledgerRecords.length))) {
+    if (typeof shouldAbort === 'function' && shouldAbort() === true) return cancelledMap(resolvedBudget);
+    const normalized = stackEscapeRecord(event, resolvedBudget.maxOriginsPerEntity);
+    ledgerRecords.push(normalized.record);
+    if (normalized.truncated) { reasons.add('truncated'); truncatedScopes.push('stack-escape-origins'); }
   }
   if (rawRecordCount > ledgerRecords.length + unavailableExpressionHistory) {
     ledgerTruncated = rawRecordCount - ledgerRecords.length - unavailableExpressionHistory;
@@ -536,6 +572,7 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   if (preservedState && readFacadePreservedStateHistory(result.ir) !== preservedState) reasons.add('stale-abi-state-history');
   if (publicLocation && readFacadeLocationHistory(result.ir) !== publicLocation) reasons.add('stale-public-location-history');
   if (typedResult && readFacadeTypedResultHistory(result.ir) !== typedResult) reasons.add('stale-typed-call-result-history');
+  if (stackEscape && readFacadeStackEscapeHistory(result.ir) !== stackEscape) reasons.add('stale-stack-escape-history');
   if (suppressions && readSemanticSuppressionHistory(result) !== suppressions) reasons.add('stale-semantic-suppression-history');
   if (boundLines.some(([line, binding]) => readRenderedHistory(line, result.ir) !== binding)) {
     reasons.add('stale-expression-binding');
@@ -731,6 +768,43 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
             || record.originHistory || record.renderedRemoval || record.suppressedRender || record.publicStateTransition || record.abiStateTransition || record.publicLocationTransition
             || !Array.isArray(record.producedRefs) || record.producedRefs.length
             || !Array.isArray(record.removedRefs) || record.removedRefs.length) reasons.add('invalid-typed-call-result-history');
+      }
+      if (record?.kind === 'stack-escape-invalidation' || record?.stackEscapeTransition) {
+        const transition = record.stackEscapeTransition;
+        const validMemory = memory => memory && typeof memory === 'object' && !Array.isArray(memory)
+          && Object.keys(memory).length === 7
+          && ['kind', 'definitionId', 'regionId', 'clobberingInstructionId', 'previousDefinitionId', 'compatibilityDerived', 'evidence'].every(key => Object.hasOwn(memory, key))
+          && ['kind', 'regionId', 'evidence'].every(key => memory[key] === null || typeof memory[key] === 'string')
+          && ['definitionId', 'clobberingInstructionId', 'previousDefinitionId'].every(key => memory[key] === null || typeof memory[key] === 'string' || Number.isSafeInteger(memory[key]))
+          && typeof memory.compatibilityDerived === 'boolean';
+        const proof = transition?.stackProof;
+        if (record.kind !== 'stack-escape-invalidation' || record.rule !== 'invalidate-escaped-stack-forwarding'
+            || record.proof !== 'observed-stack-escape-invalidation-not-new-memory-proof'
+            || transition?.scope !== 'compatibility-stack-escape' || !Number.isSafeInteger(transition.ordinal) || transition.ordinal < 0
+            || !validMemory(transition.before) || !validMemory(transition.after)
+            || transition.after.kind !== 'clobber' || !transition.after.compatibilityDerived || transition.after.definitionId !== null
+            || transition.after.previousDefinitionId !== transition.before.definitionId
+            || transition.before.regionId !== null && transition.after.regionId !== transition.before.regionId
+            || transition.after.evidence !== 'aapcs64-stack-argument-escape'
+            || !Number.isSafeInteger(transition.argumentIndex) || transition.argumentIndex < 0
+            || typeof transition.storeRef !== 'string' || !/^ir:.+/.test(transition.storeRef)
+            || typeof transition.callRef !== 'string' || !/^ir:.+/.test(transition.callRef)
+            || transition.callRef !== `ir:${transition.after.clobberingInstructionId}`
+            || typeof transition.argumentRef !== 'string' || !/^ssa:def:.+/.test(transition.argumentRef)
+            || !proof || Object.keys(proof).length !== 4 || typeof proof.must !== 'boolean' || typeof proof.may !== 'boolean'
+            || (!proof.must && !proof.may) || (proof.offset !== null && (typeof proof.offset !== 'string' || !/^-?\d+$/.test(proof.offset)))
+            || (proof.via !== null && typeof proof.via !== 'string')
+            || transition.canonicalValuesRetained !== true || transition.canonicalMemoryUnchanged !== true
+            || !['complete', 'incomplete'].includes(transition.completeness)
+            || ['consumedRefs', 'producedRefs'].some(key => !Array.isArray(transition[key]) || !transition[key].length
+              || transition[key].some(ref => typeof ref !== 'string' || !/^(ir|ssa:def):.+/.test(ref))
+              || new Set(transition[key]).size !== transition[key].length)
+            || transition.producedRefs.length !== 1 || !transition.producedRefs[0].startsWith('ir:')
+            || !transition.consumedRefs.includes(transition.producedRefs[0])
+            || transition.completeness === 'complete' && ![transition.storeRef, transition.callRef, transition.argumentRef].every(ref => transition.consumedRefs.includes(ref))
+            || record.originHistory || record.renderedRemoval || record.suppressedRender || record.publicStateTransition || record.abiStateTransition || record.publicLocationTransition || record.typedCallResultTransition
+            || !Array.isArray(record.producedRefs) || record.producedRefs.length
+            || !Array.isArray(record.removedRefs) || record.removedRefs.length) reasons.add('invalid-stack-escape-history');
       }
       const history = record?.originHistory;
       if (!history) continue;

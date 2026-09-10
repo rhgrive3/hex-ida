@@ -3765,6 +3765,71 @@ invalidation and standalone call/return histories, the full removed/merged-class
 denominator, C4-02/04/05proofs and original23/frozen135requirements remain open.
 Goal ACTIVE; integration/release acceptance LOCKED.
 
+## C4-03 actual escaped-stack forwarding invalidation history
+
+The existing facade `invalidateEscapedStackForwarding` now records its actual
+same-block LOAD/store relation, first qualifying intervening call, tested
+arguments and original stack-pointer proof. The original short-circuit predicate
+and writes are unchanged: only the compatibility store link/memory-use view is
+invalidated, while the canonical numeric forwarding fact and original store stay
+intact. This records a view invalidation, not a new alias or numeric theorem.
+
+Private issuance observes before/after memory-use objects, prior extra metadata,
+the original input definitions and the actual scanned block list/flat positions.
+Records and input observations are bounded; unavailable observation leaves the
+actual conservative writer intact and explicitly marks missing history. An
+oversized block no longer produces a misleading empty issued history. Direct
+ledger records retain navigation to load/store/call without claiming any rendered
+replacement or canonical deletion. Only real expression consumers create rendered
+edges, and repeated projection retains the same ledger.
+
+Actual escape writes now carry the earlier state/location observations. The
+facade also carries projector-issued constant histories only through its private
+observed write chain, with original preconditions and final graphs checked. It
+does not reselect inputs or recreate an old constant from its current value.
+
+The public return test exposed two deterministic predecessor gaps: canonical
+dominators are native Sets rejected by the plain-data recovery observation, and
+return recovery did not inherit the actual core expression consumer. Recovery now
+observes that exact array/Set representation with bounded intrinsic membership
+checks and descriptor/root identity, leaving the common plain-data matcher strict.
+Its private consumer retains the original producer checks (including displaced
+location-map identity) without nesting successive return-recovery closures.
+Recovery selection, output expression and memory interpretation are unchanged.
+
+Sixteen owned regressions cover32/64-bit canonical-link fixtures, original first
+call/short-circuit behavior, no-call/non-stack/no-link/row/block controls, actual
+state/location continuity, direct and core/public rendering, stale/copy/getter
+rejection, native dominance mutation, bounds, cancellation and query navigation.
+The positive conditional-writer input uses real canonical IR/CFG/MemorySSA builders
+through a test-worker-only seam. It is not decoded/compiler positive coverage.
+The ordinary decoded unknown-call control stays conservatively unlinked and emits
+no fake escape event. A diagnostic `memoryWrite:all` input also retained its
+canonical link; that probe is not claimed as a conservative negative or a repaired
+memory-analysis issue. Those semantics remain outside this history-only change.
+
+Parent223eb5286 full-public-IR comparison passes20cases (18canonical synthetic
+projection/selection cells and2decoded controls); original stack-pointer helper
+evaluation counts match. Canonical provenance/decompiler regression passed before
+the final additional mutation assertions. Exact-head gates and generated sync
+must be rerun and recorded separately before remote checkpoint closure. Original
+failed fixtures/tests and diagnostic receipts remain retained. The first upstream-
+check negative overlay did not fail; the test was strengthened with actual
+location-map replacement rather than counting that ineffective negative as proof.
+The strengthened issuer/location/constant/recovery/predecessor-check overlays all
+fail their intended regressions. One intermediate predecessor diagnostic ended
+with terminal session status143 before publishing a receipt; its log is retained
+and is not a completed test. The assertion now reports a bounded boolean instead
+of formatting the entire cyclic consumer/IR on failure, and the rerun proves the
+intended regression. Final owned16tests pass.
+
+Existing #3421 remains reused at4cd5b3eb9; live exact-title stack-escape/history and
+stack-return/history searches found no additional matching PR. Work remains on
+existing #7036, without component/main merge or replacement PR. Standalone
+call-argument/function-return histories and the full rendered/removed/merged class
+denominator remain open, as do C4-02/04/05 and original23/frozen135requirements.
+Goal ACTIVE; integration/release acceptance LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
