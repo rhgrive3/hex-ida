@@ -1,4 +1,4 @@
-import { isExactFunctionSeed } from './worker-validation.js';
+import { functionSeedConfidence, isExactFunctionSeed } from './worker-validation.js';
 
 function provenance(source, confidence = 1) {
   return { source: source || 'binary-metadata', confidence, confirmed: true };
@@ -135,8 +135,7 @@ export function analysisFromBinaryImage(image) {
   const seedConfidence = (seed, exact) => {
     const raw = seed?.confidence;
     if (raw == null) return exact ? 1 : 0.5;
-    const confidence = Number(raw);
-    return Number.isFinite(confidence) ? confidence : (exact ? 1 : 0.5);
+    return functionSeedConfidence(raw) ?? (exact ? 1 : 0.5);
   };
   const seedIsStronger = (next, current) => {
     const nextExact = isExactFunctionSeed(next), currentExact = isExactFunctionSeed(current);
@@ -151,8 +150,8 @@ export function analysisFromBinaryImage(image) {
     const key = address.toString();
     const existing = seedByAddress.get(key);
     if (existing == null || seedIsStronger(seed, existing)) seedByAddress.set(key, seed);
-    const extentConfidence = Number(seed.extentConfidence ?? 0);
-    if (!isExactFunctionSeed(seed) || seed.extentInferred === true || !Number.isFinite(extentConfidence) || extentConfidence < 0.9) continue;
+    const extentConfidence = functionSeedConfidence(seed.extentConfidence);
+    if (!isExactFunctionSeed(seed) || seed.extentInferred === true || extentConfidence == null || extentConfidence < 0.9) continue;
     let end = null;
     try {
       if (seed.end != null) end = u64Address(seed.end);
