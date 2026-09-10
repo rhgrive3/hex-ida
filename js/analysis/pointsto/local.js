@@ -142,8 +142,16 @@ function parseInteger(candidate) {
     if (typeof raw === 'number') return Number.isSafeInteger(raw) ? BigInt(raw) : null;
     if (typeof raw !== 'string') return null;
     const text = raw.trim();
-    if (!/^[+-]?(0x[0-9a-fA-F]+|\d+)$/.test(text)) return null;
-    return BigInt(text);
+    // Grammar accepts an explicit `+`/`-` on hex and decimal literals.
+    // `BigInt()` rejects signed radix-prefixed spellings ('-0x10', '+0x10')
+    // and even a signed decimal ('+16'), so the sign is separated before the
+    // magnitude parse; otherwise an accepted input class silently degrades to
+    // an unknown constant while the equivalent spelling stays exact (#5011).
+    if (!/^[+-]?(?:0x[0-9a-fA-F]+|\d+)$/.test(text)) return null;
+    const negative = text.startsWith('-');
+    const magnitude = /^[+-]/.test(text) ? text.slice(1) : text;
+    const parsed = BigInt(magnitude);
+    return negative ? -parsed : parsed;
   } catch { return null; }
 }
 
