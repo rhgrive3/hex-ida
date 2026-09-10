@@ -206,7 +206,9 @@ function canonicalDescriptorString(layer, descriptor) {
 }
 
 function validateDescriptor(layer, descriptor) {
-  if (descriptor == null || typeof descriptor !== 'object') fail('type-claim-descriptor-required');
+  if (descriptor == null || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
+    fail('type-claim-descriptor-required');
+  }
   if (layer === 'structural') {
     if (descriptor.offset != null) {
       const offset = toBigInt(descriptor.offset, null);

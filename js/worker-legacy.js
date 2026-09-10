@@ -2017,10 +2017,13 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
 
   const flush = () => {
     if (runStart >= 0 && runBytes.length) {
+      // Keep the raw run's byte extent: the display text is a decoded,
+      // control-escaped string whose .length is not an address span (#5698).
+      const byteLength = runBytes.length;
       const text = UTF8.decode(new Uint8Array(runBytes))
         .replace(/\t/g, '\\t').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
       if (text.length >= minLen) {
-        out.push({ addr: region.vmAddr + BigInt(runStart), offset: runStart, text });
+        out.push({ addr: region.vmAddr + BigInt(runStart), offset: runStart, text, byteLength });
       }
     }
     runStart = -1;

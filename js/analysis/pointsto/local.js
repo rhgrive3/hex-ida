@@ -152,11 +152,17 @@ function parseInteger(candidate) {
  * does, so A2 and the root service never disagree about what "constant" means.
  */
 function constantOf(value, node) {
+  let resolved = null;
   for (const candidate of [value?.metadata?.constant, node?.attributes?.constant, node?.metadata?.constant]) {
     const parsed = parseInteger(candidate);
-    if (parsed != null) return parsed;
+    if (parsed == null) continue;
+    if (resolved == null) {
+      resolved = parsed;
+      continue;
+    }
+    if (parsed !== resolved) return null;
   }
-  return null;
+  return resolved;
 }
 
 function widthOf(value, node) {

@@ -215,7 +215,7 @@ test('#5353 parseCilLocalVarSignature preserves BYREF and pinned locals', () => 
   const locals = parseCilLocalVarSignature(Uint8Array.from([0x07, 0x01, 0x45, 0x10, 0x0a]));
   assert.equal(locals.length, 1);
   assert.equal(locals[0].stackType, 'managed-pointer');
-  assert.equal(locals[0].referent.stackType, 'int64');
+  assert.equal(locals[0].pointee.stackType, 'int64');
   // 1 local: int32
   const plain = parseCilLocalVarSignature(Uint8Array.from([0x07, 0x01, 0x08]));
   assert.equal(plain[0].stackType, 'int32');
@@ -274,7 +274,7 @@ test('#7735 native entrypoint flag treats the union field as an RVA, not a token
 });
 
 // ===========================================================================
-// #7750 — BYREF referent type identity
+// #7750 — BYREF pointee type identity
 // ===========================================================================
 
 test('#7750 int32& and int64& call results stay distinct exact types', async () => {
@@ -295,13 +295,13 @@ test('#7750 int32& and int64& call results stay distinct exact types', async () 
   assert.equal(callA.completeness, 'exact');
   assert.equal(callB.completeness, 'exact');
   assert.equal(callA.producedValues[0].stackType, 'managed-pointer');
-  assert.equal(callA.producedValues[0].referent.stackType, 'int32');
-  assert.equal(callB.producedValues[0].referent.stackType, 'int64');
+  assert.equal(callA.producedValues[0].pointee.stackType, 'int32');
+  assert.equal(callB.producedValues[0].pointee.stackType, 'int64');
   assert.notDeepEqual(callA.producedValues, callB.producedValues);
-  // Target's own ret consumes the byref return with its referent.
+  // Target's own ret consumes the byref return with its pointee.
   const daTarget = await fa.frontend.decodeMethod(fa.methods[0], { image: a });
   const retA = daTarget.bundles.find((bundle) => bundle.mnemonic === 'ret');
-  assert.equal(retA.consumedValues[0].referent.stackType, 'int32');
+  assert.equal(retA.consumedValues[0].pointee.stackType, 'int32');
 });
 
 test('#7750 BYREF parameters distinguish ref int32 from ref int64', async () => {
@@ -317,8 +317,8 @@ test('#7750 BYREF parameters distinguish ref int32 from ref int64', async () => 
   const ldargA = da.bundles.find((bundle) => bundle.mnemonic === 'ldarg.0');
   const ldargB = db.bundles.find((bundle) => bundle.mnemonic === 'ldarg.0');
   assert.equal(ldargA.completeness, 'exact');
-  assert.equal(ldargA.producedValues[0].referent.stackType, 'int32');
-  assert.equal(ldargB.producedValues[0].referent.stackType, 'int64');
+  assert.equal(ldargA.producedValues[0].pointee.stackType, 'int32');
+  assert.equal(ldargB.producedValues[0].pointee.stackType, 'int64');
   assert.notDeepEqual(ldargA.producedValues, ldargB.producedValues);
 });
 

@@ -176,12 +176,38 @@ export class FunctionSandbox {
       for (const item of o.objectMemory) {
         throwIfCancelled();
         if (!item) continue;
-        await this.emulator.store(objectBase + asBig(item.offset || 0), Number(item.size || 8), asBig(item.value));
+        const itemOffset = asBig(item.offset || 0);
+        // itemSize authority (#5318): only an omitted size defaults to 8; an
+        // explicit size must be a primitive positive safe integer, otherwise
+        // numeric-string/fractional coercion or a 0/negative value could
+        // rewrite or bypass the object-region bounds arithmetic.
+        let itemSize = 8;
+        if (item.size !== undefined && item.size !== null) {
+          if (typeof item.size !== 'number' || !Number.isSafeInteger(item.size) || item.size <= 0) {
+            throw new TypeError(`objectMemory size must be a positive safe integer, got ${String(item.size)}`);
+          }
+          itemSize = item.size;
+        }
+        // objectMemory initializers are bounded by the same object region that
+        // mapZero/modifiedRanges use: an offset beyond maxObjectSize must not
+        // fall through into the synthetic heap backing (#5318).
+        if (itemOffset < 0n || itemOffset + BigInt(itemSize) > BigInt(this.maxObjectSize)) {
+          throw new RangeError(`objectMemory offset ${itemOffset} (+${itemSize}) is outside the sandbox object region (maxObjectSize=${this.maxObjectSize})`);
+        }
+        await this.emulator.store(objectBase + itemOffset, itemSize, asBig(item.value));
       }
     } else if (o.objectMemory && typeof o.objectMemory === 'object') {
       for (const [offset, value] of Object.entries(o.objectMemory)) {
         throwIfCancelled();
-        await this.emulator.store(objectBase + BigInt(offset), 8, asBig(value));
+        // objectMemory initializers are bounded by the same object region that
+        // mapZero/modifiedRanges use: an offset beyond maxObjectSize must not
+        // fall through into the synthetic heap backing (#5318).
+        const itemOffset = asBig(offset);
+        const itemSize = 8;
+        if (itemOffset < 0n || itemOffset + BigInt(itemSize) > BigInt(this.maxObjectSize)) {
+          throw new RangeError(`objectMemory offset ${itemOffset} (+${itemSize}) is outside the sandbox object region (maxObjectSize=${this.maxObjectSize})`);
+        }
+        await this.emulator.store(objectBase + itemOffset, itemSize, asBig(value));
       }
     }
 

@@ -92,9 +92,9 @@ export function analysisFromBinaryImage(image) {
   if (!image) return emptyAnalysis();
   const entries = new Map();
   const add = (address, name, kind, exported, prov, priority) => {
-    if (address == null || !name) return;
+    if (address == null || typeof name !== 'string' || !name) return;
     const addr = u64Address(address), key = addr.toString();
-    const next = { address: addr, name: String(name), kind, exported: !!exported, provenance: prov, priority };
+    const next = { address: addr, name, kind, exported: !!exported, provenance: prov, priority };
     const current = entries.get(key);
     if (!current) { entries.set(key, next); return; }
     current.exported ||= next.exported;

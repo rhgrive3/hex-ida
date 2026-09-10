@@ -44,6 +44,16 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
   const methodBody = cilImage.methodBodies[bodyIndex];
   if (!methodBody) fail('cil-invalid-method-body-index');
 
+  // Native-size width authority (#7775): `O`, `&`, `native int`, and
+  // `native unsigned int` map to the target processor's native pointer size
+  // (ECMA-335 I.12.1.1). A `32BITREQUIRED` image may only be loaded into a
+  // 32-bit process (II.25.3.3.1), so its object references are 32-bit; a
+  // known 64-bit target keeps 64; any other case keeps the width unstated
+  // instead of minting an unsupported 64-bit exact claim.
+  const nativePointerBits = cilImage.requires32Bit === true ? 32
+    : cilImage.requires64Bit === true ? 64
+      : null;
+
   const methodId = createManagedMethodId(cilImage.moduleId, methodTokenText(bodyIndex, methodAuthority));
   const returnSignature = methodAuthority?.complete ? methodAuthority?.signature : null;
   const returnStackSlots = returnSignature ? (returnSignature.returnValue === null ? 0 : 1) : null;
@@ -247,7 +257,10 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
 
         case 0x14: // ldnull
           mnemonic = 'ldnull';
-          producedValues.push({ bits: 64, isNull: true });
+          // `O` is a native-size type (ECMA-335 I.12.1.1): the width follows
+          // the image's pointer-size authority, or stays unstated when the
+          // target width is unresolved (#7775).
+          producedValues.push({ ...(nativePointerBits == null ? {} : { bits: nativePointerBits }), isNull: true });
           currentStackHeight++;
           break;
 
@@ -321,7 +334,8 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
               dispatchKind: kind === 'callvirt' ? 'virtual' : kind === 'newobj' ? 'constructor' : 'direct',
             });
             if (kind === 'newobj') {
-              producedValues.push({ bits: 64 });
+              // Constructed-object references are native-size too (#7775).
+              producedValues.push({ ...(nativePointerBits == null ? {} : { bits: nativePointerBits }) });
               currentStackHeight++;
             }
           }
@@ -438,6 +452,19 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             consumedValues.push({ id: 'rhs', bits: 32 }, { id: 'lhs', bits: 32 });
             producedValues.push({ bits: 32 });
             currentStackHeight--;
+            // ECMA-335 Partition III: integral `div` throws
+            // System.DivideByZeroException (divisor == 0) and
+            // System.ArithmeticException (MIN_VALUE / -1); floating-point `div`
+            // throws neither. This lifter has no typed operand-stack authority,
+            // so the integral-vs-floating distinction that selects the
+            // exception contract cannot be resolved losslessly. Publishing the
+            // integral predicates would let FP division inherit them; staying
+            // exception-free is the #7937 defect. Fail closed instead of
+            // minting exception-free exact semantics.
+            if (opcode === 0x5b) {
+              completeness = 'partial';
+              unknownEffects.push({ category: 'control', reason: 'cil-div-exception-authority-unresolved' });
+            }
           }
           break;
 
@@ -454,7 +481,8 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             const token = view.getUint32(pc, true);
             pc += 4;
             mnemonic = 'ldstr';
-            producedValues.push({ bits: 64, stringToken: token });
+            // A string reference is an `O` native-size value (#7775).
+            producedValues.push({ ...(nativePointerBits == null ? {} : { bits: nativePointerBits }), stringToken: token });
             currentStackHeight++;
           }
           break;
