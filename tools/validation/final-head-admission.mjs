@@ -6,9 +6,7 @@ const FAILING_CHECK_CONCLUSIONS = new Set([
   'failure', 'cancelled', 'timed_out', 'action_required', 'stale', 'startup_failure',
 ]);
 const CODERABBIT_STATUS_CONTEXT = 'coderabbit';
-const CODERABBIT_BOT_LOGIN = 'coderabbitai[bot]';
 const CODERABBIT_CHECK_APP_SLUG = 'coderabbitai';
-const CODERABBIT_COMPLETED_DESCRIPTION = 'review completed';
 
 function string(value) {
   return typeof value === 'string' ? value : '';
@@ -102,27 +100,6 @@ function statusState(status) {
   const state = string(status?.state).toLowerCase();
   if (state === 'success') return 'success';
   if (state === 'failure' || state === 'error') return 'failure';
-  return 'pending';
-}
-
-function codeRabbitStatusState(status) {
-  const creator = string(status?.creator?.login).trim().toLowerCase();
-  if (creator !== CODERABBIT_BOT_LOGIN) return 'pending';
-  const state = statusState(status);
-  if (state !== 'success') return state;
-  return string(status?.description).trim().toLowerCase() === CODERABBIT_COMPLETED_DESCRIPTION
-    ? 'success'
-    : 'pending';
-}
-
-function codeRabbitCheckState(check) {
-  const name = string(check?.name).trim().toLowerCase();
-  const appSlug = string(check?.app?.slug).trim().toLowerCase();
-  if (name !== CODERABBIT_STATUS_CONTEXT || appSlug !== CODERABBIT_CHECK_APP_SLUG) return 'pending';
-  if (string(check?.status).toLowerCase() !== 'completed') return 'pending';
-  const conclusion = string(check?.conclusion).toLowerCase();
-  if (conclusion === 'success') return 'success';
-  if (FAILING_CHECK_CONCLUSIONS.has(conclusion)) return 'failure';
   return 'pending';
 }
 
@@ -237,7 +214,11 @@ export function evaluateFinalHeadAdmission({
   const latest = latestStatuses(statuses);
   const latestStatusByContext = new Map(latest.map((status) => [string(status?.context), status]));
   const trustedReviewers = trustedReviewerSet(trustedAutoReviewers);
-  const requiredContexts = normalizedContextList(requiredStatusContexts);
+  // External review providers are advisory and must never become required CI
+  // contexts through caller configuration. Independent exact-head AUTO
+  // approval remains the only review authority here.
+  const requiredContexts = normalizedContextList(requiredStatusContexts)
+    .filter((context) => !isCodeRabbitStatus({ context }));
   const exactAutoReviews = latestExactAutoReviews(reviews, headSha, trustedReviewers);
   const exactAutoApprovals = exactAutoReviews.filter((review) => autoVerdict(review) === 'APPROVED');
   const exactAutoChanges = exactAutoReviews.filter((review) => autoVerdict(review) === 'CHANGES_REQUESTED');
@@ -249,23 +230,12 @@ export function evaluateFinalHeadAdmission({
   if (activeFormalChangesRequested(reviews)) blockers.push('active GitHub changes-requested review');
   if (Number(unresolvedReviewThreads) > 0) blockers.push(`${Number(unresolvedReviewThreads)} unresolved review thread(s)`);
 
-  const reviewStatuses = latest.filter(isCodeRabbitStatus);
-  const reviewChecks = checkRuns.filter(isCodeRabbitCheck);
-  const reviewEvidence = [
-    ...reviewStatuses.map((item) => ({ kind: 'status', item })),
-    ...reviewChecks.map((item) => ({ kind: 'check', item })),
+  // Keep provider evidence visible for diagnostics, but never let its absence,
+  // pending state, skipped/rate-limited result, or failure affect admission.
+  const advisoryReviewEvidence = [
+    ...latest.filter(isCodeRabbitStatus).map((item) => ({ kind: 'status', item })),
+    ...checkRuns.filter(isCodeRabbitCheck).map((item) => ({ kind: 'check', item })),
   ];
-  if (reviewEvidence.length === 0) {
-    pending.push('missing CodeRabbit exact-head result');
-  } else {
-    for (const evidence of reviewEvidence) {
-      const state = evidence.kind === 'status'
-        ? codeRabbitStatusState(evidence.item)
-        : codeRabbitCheckState(evidence.item);
-      if (state === 'failure') blockers.push('CodeRabbit exact-head result is not green');
-      else if (state === 'pending') pending.push('CodeRabbit exact-head result is pending');
-    }
-  }
 
   if (requiredContexts.length === 0) {
     pending.push('no required CI status contexts configured');
@@ -326,7 +296,7 @@ export function evaluateFinalHeadAdmission({
       requiredStatusContextCount: requiredContexts.length,
       missingRequiredStatusCount,
       unresolvedReviewThreads: Number(unresolvedReviewThreads) || 0,
-      codeRabbitEvidenceCount: reviewEvidence.length,
+      codeRabbitEvidenceCount: advisoryReviewEvidence.length,
       ciStatusCount: ciStatuses.length,
       ciCheckCount: ciChecks.length,
     }),

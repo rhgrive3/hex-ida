@@ -26,7 +26,7 @@ export function readCilDefinitions(bytes, view, layout, stringsStream) {
     rva: view.getUint32(pos, true), implFlags: view.getUint16(pos + 4, true),
     accessFlags: view.getUint16(pos + 6, true), name: text(index(pos + 8, s)),
     signatureBlobIndex: index(pos + 8 + s, b),
-    paramList: index(pos + 8 + s + b, tableIndexSize(counts, 8)),
+    paramList: index(pos + 8 + s + b, tableIndexSize(counts, counts[7] ? 7 : 8)),
   }));
   const fields = readRows(4, pos => ({
     accessFlags: view.getUint16(pos, true), name: text(index(pos + 2, s)),
@@ -71,5 +71,200 @@ export function readCilDefinitions(bytes, view, layout, stringsStream) {
   };
   bindOwners(4, 3, fields, 'fieldList', 'fieldTokens');
   bindOwners(6, 5, methods, 'methodList', 'methodTokens');
-  return { types, methods, fields };
+  // ECMA-335 II.22.28 ManifestResource (0x28): Offset / Flags / Name /
+  // Implementation (File | AssemblyRef | ExportedType coded index). Skipping
+  // this table discarded every named embedded resource from the canonical
+  // image, so payload-only changes were semantically invisible (#7753).
+  const implementationSize = codedIndexSize(counts, [0x26, 0x23, 0x27], 2);
+  const implementationTables = [0x26, 0x23, 0x27];
+  const manifestResources = readRows(0x28, pos => {
+    const offset = view.getUint32(pos, true);
+    const flags = view.getUint32(pos + 4, true);
+    const name = text(index(pos + 8, s));
+    if (name == null || !name.length) fail('cil-manifest-resource-name-required');
+    const implementation = index(pos + 8 + s, implementationSize);
+    if ((flags & ~0x3) !== 0 || (flags & 0x3) === 0 || (flags & 0x3) === 0x3) {
+      // II.23.1.5: Visibility mask 0x0003 — Public (1) or Private (2); all
+      // other bits are reserved and must be zero.
+      fail('cil-manifest-resource-flags-invalid');
+    }
+    let target = null;
+    if (implementation !== 0) {
+      const table = implementationTables[implementation & 0x3];
+      const rid = Math.floor(implementation / 4);
+      if (table == null || rid < 1 || rid > counts[table]) {
+        fail('cil-manifest-resource-implementation-invalid');
+      }
+      target = { table, rid, token: cilMetadataToken(table, rid) };
+    }
+    return { offset, flags, visibility: flags & 0x3, name, ...(target ? { implementation: target } : {}) };
+  });
+  if (new Set(manifestResources.map(row => row.name)).size !== manifestResources.length) {
+    fail('cil-manifest-resource-name-duplicate');
+  }
+  // Param/ParamPtr authority. In an unoptimized #- stream MethodDef.ParamList
+  // indexes ParamPtr when that table exists; the pointer target is the Param RID.
+  const params = readRows(0x08, pos => ({
+    flags: view.getUint16(pos, true),
+    sequence: view.getUint16(pos + 2, true),
+    name: text(index(pos + 4, s)),
+  }));
+  const paramSlots = counts[0x07]
+    ? readRows(0x07, pos => ({ target:index(pos, tableIndexSize(counts, 0x08)) })).map(row => row.target)
+    : params.map(row => row.rid);
+  if (counts[0x07] && (paramSlots.length !== params.length
+      || new Set(paramSlots).size !== paramSlots.length
+      || paramSlots.some(rid => rid < 1 || rid > params.length))) fail('cil-param-pointer-table-invalid');
+  const paramOwners = new Map();
+  for (let i = 0; i < methods.length; i++) {
+    const first = methods[i].paramList || paramSlots.length + 1;
+    const last = methods[i + 1]?.paramList || paramSlots.length + 1;
+    if (first < 1 || last < first || last > paramSlots.length + 1 || (i === 0 && first !== 1)) {
+      fail('cil-param-list-invalid');
+    }
+    methods[i].params = [];
+    for (let slot = first; slot < last; slot++) {
+      const rid = paramSlots[slot - 1];
+      if (paramOwners.has(rid)) fail('cil-param-owner-duplicate');
+      paramOwners.set(rid, methods[i].token);
+      methods[i].params.push(cilMetadataToken(0x08, rid));
+    }
+  }
+  for (const param of params) {
+    if (!paramOwners.has(param.rid)) fail('cil-param-owner-missing');
+    if ((param.flags & ~0x301f) !== 0) fail('cil-param-flags-invalid');
+    if (param.sequence === 0 && (param.flags & 0x0003) !== 0) fail('cil-param-return-direction-invalid');
+    param.ownerToken = paramOwners.get(param.rid);
+  }
+
+  // Property/PropertyPtr + PropertyMap.
+  const properties = readRows(0x17, pos => ({
+    flags: view.getUint16(pos, true),
+    name: text(index(pos + 2, s)),
+    typeBlobIndex: index(pos + 2 + s, b),
+  }));
+  const propertySlots = counts[0x16]
+    ? readRows(0x16, pos => ({ target:index(pos, tableIndexSize(counts, 0x17)) })).map(row => row.target)
+    : properties.map(row => row.rid);
+  if (counts[0x16] && (propertySlots.length !== properties.length || new Set(propertySlots).size !== propertySlots.length
+      || propertySlots.some(rid => rid < 1 || rid > properties.length))) fail('cil-property-pointer-table-invalid');
+  const propertyListTable = counts[0x16] ? 0x16 : 0x17;
+  const propertyMaps = readRows(0x15, pos => ({
+    parent: index(pos, tableIndexSize(counts, 0x02)),
+    propertyList: index(pos + tableIndexSize(counts, 0x02), tableIndexSize(counts, propertyListTable)),
+  }));
+  const propertyOwners = new Map();
+  for (let i = 0; i < propertyMaps.length; i++) {
+    const { parent, propertyList } = propertyMaps[i];
+    if (parent < 1 || parent > types.length) fail('cil-property-map-parent-invalid');
+    const next = propertyMaps[i + 1]?.propertyList ?? propertySlots.length + 1;
+    if (propertyList < 1 || next < propertyList || next > propertySlots.length + 1
+        || (i === 0 && propertyList !== 1)) fail('cil-property-map-list-invalid');
+    for (let slot = propertyList; slot < next; slot++) {
+      const rid = propertySlots[slot - 1];
+      if (propertyOwners.has(rid)) fail('cil-property-map-overlap');
+      propertyOwners.set(rid, types[parent - 1].token);
+    }
+  }
+  for (const property of properties) {
+    if (property.name == null || !property.name.length) fail('cil-property-name-required');
+    if (!propertyOwners.has(property.rid)) fail('cil-property-owner-missing');
+    property.ownerToken = propertyOwners.get(property.rid);
+  }
+
+  // Event/EventPtr + EventMap.
+  const events = readRows(0x14, pos => {
+    const flags = view.getUint16(pos, true);
+    const eventType = index(pos + 2 + s, codedIndexSize(counts, [0x02, 0x01, 0x1b], 2));
+    if (eventType === 0) fail('cil-event-type-required');
+    const table = [0x02, 0x01, 0x1b][eventType & 3];
+    const rid = Math.floor(eventType / 4);
+    if (table == null || rid < 1 || rid > counts[table]) fail('cil-event-type-invalid');
+    return { flags, name:text(index(pos + 2, s)), eventTypeToken:cilMetadataToken(table, rid) };
+  });
+  const eventSlots = counts[0x13]
+    ? readRows(0x13, pos => ({ target:index(pos, tableIndexSize(counts, 0x14)) })).map(row => row.target)
+    : events.map(row => row.rid);
+  if (counts[0x13] && (eventSlots.length !== events.length || new Set(eventSlots).size !== eventSlots.length
+      || eventSlots.some(rid => rid < 1 || rid > events.length))) fail('cil-event-pointer-table-invalid');
+  const eventListTable = counts[0x13] ? 0x13 : 0x14;
+  const eventMaps = readRows(0x12, pos => ({
+    parent: index(pos, tableIndexSize(counts, 0x02)),
+    eventList: index(pos + tableIndexSize(counts, 0x02), tableIndexSize(counts, eventListTable)),
+  }));
+  const eventOwners = new Map();
+  for (let i = 0; i < eventMaps.length; i++) {
+    const { parent, eventList } = eventMaps[i];
+    if (parent < 1 || parent > types.length) fail('cil-event-map-parent-invalid');
+    const next = eventMaps[i + 1]?.eventList ?? eventSlots.length + 1;
+    if (eventList < 1 || next < eventList || next > eventSlots.length + 1
+        || (i === 0 && eventList !== 1)) fail('cil-event-map-list-invalid');
+    for (let slot = eventList; slot < next; slot++) {
+      const rid = eventSlots[slot - 1];
+      if (eventOwners.has(rid)) fail('cil-event-map-overlap');
+      eventOwners.set(rid, types[parent - 1].token);
+    }
+  }
+  for (const event of events) {
+    if (event.name == null || !event.name.length) fail('cil-event-name-required');
+    if (!eventOwners.has(event.rid)) fail('cil-event-owner-missing');
+    event.ownerToken = eventOwners.get(event.rid);
+  }
+
+  // MethodSemantics.Method is a plain MethodDef RID. Association is HasSemantics:
+  // tag 0 Event, tag 1 Property. Semantic kind must match that association.
+  const semanticKinds = new Map([[0x0001, 'setter'], [0x0002, 'getter'], [0x0004, 'other'],
+    [0x0008, 'addOn'], [0x0010, 'removeOn'], [0x0020, 'fire']]);
+  const methodIndexSize = tableIndexSize(counts, 0x06);
+  const associationSize = codedIndexSize(counts, [0x14, 0x17], 1);
+  const methodSemantics = readRows(0x18, pos => {
+    const semantics = view.getUint16(pos, true);
+    const kind = semanticKinds.get(semantics);
+    if (!kind) fail('cil-method-semantics-kind-invalid');
+    const methodRid = index(pos + 2, methodIndexSize);
+    if (methodRid < 1 || methodRid > counts[0x06]) fail('cil-method-semantics-method-invalid');
+    const encodedAssociation = index(pos + 2 + methodIndexSize, associationSize);
+    const table = [0x14, 0x17][encodedAssociation & 1];
+    const rid = Math.floor(encodedAssociation / 2);
+    if (table == null || rid < 1 || rid > counts[table]) fail('cil-method-semantics-association-invalid');
+    if ((table === 0x17 && !['setter', 'getter', 'other'].includes(kind))
+        || (table === 0x14 && !['addOn', 'removeOn', 'fire', 'other'].includes(kind))) {
+      fail('cil-method-semantics-association-kind-invalid');
+    }
+    return { semantics, kind, methodToken:cilMetadataToken(0x06, methodRid),
+      association:{ table, rid, token:cilMetadataToken(table, rid) } };
+  });
+
+  for (const type of types) { type.propertyTokens = []; type.eventTokens = []; }
+  for (const [rid, ownerToken] of propertyOwners) {
+    types[(parseInt(ownerToken, 16) & 0xffffff) - 1].propertyTokens.push(cilMetadataToken(0x17, rid));
+  }
+  for (const [rid, ownerToken] of eventOwners) {
+    types[(parseInt(ownerToken, 16) & 0xffffff) - 1].eventTokens.push(cilMetadataToken(0x14, rid));
+  }
+
+  const accessorSingletons = new Set(['setter', 'getter', 'addOn', 'removeOn', 'fire']);
+  const seenSingleton = new Set(), seenRows = new Set(), seenAccessorMethod = new Set();
+  const methodByToken = new Map(methods.map(method => [method.token, method]));
+  for (const row of methodSemantics) {
+    const { table, rid } = row.association;
+    const owner = table === 0x17 ? properties[rid - 1] : events[rid - 1];
+    if (methodByToken.get(row.methodToken)?.declaringTypeToken !== owner.ownerToken) {
+      fail('cil-method-semantics-owner-mismatch');
+    }
+    const tuple = `${table}:${rid}:${row.kind}:${row.methodToken}`;
+    if (seenRows.has(tuple)) fail('cil-method-semantics-duplicate');
+    seenRows.add(tuple);
+    if (accessorSingletons.has(row.kind)) {
+      const key = `${table}:${rid}:${row.kind}`;
+      if (seenSingleton.has(key)) fail('cil-method-semantics-accessor-duplicate');
+      seenSingleton.add(key);
+      const methodKey = `${table}:${rid}:${row.methodToken}`;
+      if (seenAccessorMethod.has(methodKey)) fail('cil-method-semantics-method-conflict');
+      seenAccessorMethod.add(methodKey);
+    }
+    (owner.accessors ??= []).push({ kind:row.kind, methodToken:row.methodToken });
+  }
+
+  return { types, methods, fields, manifestResources, params, properties, events, methodSemantics };
 }

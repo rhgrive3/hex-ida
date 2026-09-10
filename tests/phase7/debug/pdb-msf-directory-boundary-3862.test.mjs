@@ -10,6 +10,7 @@ function msfWithDirectoryBytes(numDirectoryBytes) {
   bytes.set(new TextEncoder().encode(MSF_MAGIC), 0);
   const view = new DataView(bytes.buffer);
   view.setUint32(32, blockSize, true);
+  view.setUint32(36, 1, true); // FreeBlockMapBlock: spec-legal value (#5672)
   view.setUint32(40, 8, true);
   view.setUint32(44, numDirectoryBytes, true);
   view.setUint32(52, 1, true);

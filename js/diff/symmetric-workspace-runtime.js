@@ -23,12 +23,14 @@ function requestWithSignal(request, signal) {
       fn(value);
     };
     const onAbort = () => {
+      if (settled) return;
       try { request?.cancel?.(); } catch { /* best effort */ }
       finish(reject, abortError(signal));
     };
     if (signal?.aborted) { onAbort(); return; }
     signal?.addEventListener?.('abort', onAbort, { once:true });
     Promise.resolve(request).then((value) => finish(resolve, value), (error) => finish(reject, error));
+    if (signal?.aborted) { onAbort(); return; }
   });
 }
 function executableRegions(regions) {

@@ -60,6 +60,8 @@ function fixture({ symbolsFormat = 0, symbolPool = new TextEncoder().encode('_ta
   dv.setUint16(fixups + 40, 0x1000, true);
   dv.setUint16(fixups + 42, 2, true);
   dv.setUint16(fixups + 56, 1, true);
+  // page_start[0]: the bind chain starts at the stub-referenced GOT slot (#5388).
+  dv.setUint16(fixups + 58, 0x300, true);
 
   assert.ok(symbolPool.length <= 0x80 - 68, 'test symbol pool exceeds fixup payload');
   thin.set(symbolPool, fixups + 68);
