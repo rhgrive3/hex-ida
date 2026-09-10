@@ -1,4 +1,5 @@
 import { parseMachOSource as parseMachOSourceRaw } from './source-loaders.js';
+import { resolveMachOMetadataLimits } from './macho-budget.js';
 
 /*
  * Selected FAT Mach-O slices are shared producer artifacts. Keep the cache at
@@ -125,6 +126,7 @@ function cacheKey(options = {}) {
   return JSON.stringify({
     sliceIndex: normalizeScalar(options.sliceIndex),
     strings,
+    metadataLimits: resolveMachOMetadataLimits(options.metadataLimits || {}),
     source: {
       maxReadLength: normalizeScalar(source.maxReadLength),
     },
