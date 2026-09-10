@@ -253,6 +253,33 @@ export class Emulator {
     return l[off];
   }
 
+  /* #5685/#7968 write-admission authority for one byte of a backed page.
+     A mapZero-created page backs exactly its declared windows; a page with
+     pre-existing backing (IO/file/stack/heap) admits its backing prefix plus
+     the additive windows; an existing explicit write keeps its authority
+     (mem-mask precedence mirrors byteAt()). Throws EmulatorFault when the
+     byte has no write authority. */
+  _assertWriteAuthority(key, off, address) {
+    if (this.syntheticRangeGated.has(key)) {
+      const w = this.mem.get(key);
+      if (w && w.mask[off]) return;
+      const ranges = this.syntheticRanges.get(key) || [];
+      if (!ranges.some((r) => off >= r.lo && off < r.hi)) {
+        throw new EmulatorFault('unmapped-memory', `write is outside synthetic mapping at 0x${address.toString(16)}`, { address });
+      }
+      return;
+    }
+    if (this.loaded.has(key)) {
+      const w = this.mem.get(key);
+      if (w && w.mask[off]) return;
+      const valid = this.loadedValid.get(key) || 0;
+      const inWindow = (this.syntheticRanges.get(key) || []).some((r) => off >= r.lo && off < r.hi);
+      if (off >= valid && !inWindow) {
+        throw new EmulatorFault('unmapped-memory', `write is outside backed memory at 0x${address.toString(16)}`, { address });
+      }
+    }
+  }
+
   writeByte(addr, value) {
     const address = BigInt(addr);
     const page = (address / BigInt(PAGE)) * BigInt(PAGE);
@@ -261,15 +288,7 @@ export class Emulator {
     if (!w) { w = { data: new Uint8Array(PAGE), mask: new Uint8Array(PAGE) }; this.mem.set(key, w); }
     const off = Number(address - page);
     if (off < 0 || off >= PAGE) throw new EmulatorFault('unmapped-memory', 'write offset is outside page', { address });
-    /* #5685: writes through a mapZero-created page must stay inside a
-       declared [lo, hi) window; pages with other backing or an existing
-       explicit write keep their own authority. */
-    if (this.syntheticRangeGated.has(key) && !(w && w.mask[off])) {
-      const ranges = this.syntheticRanges.get(key) || [];
-      if (!ranges.some((r) => off >= r.lo && off < r.hi)) {
-        throw new EmulatorFault('unmapped-memory', `write is outside synthetic mapping at 0x${address.toString(16)}`, { address });
-      }
-    }
+    this._assertWriteAuthority(key, off, address);
     w.data[off] = Number(value) & 0xff;
     w.mask[off] = 1;
   }
@@ -292,9 +311,22 @@ export class Emulator {
       const endExclusive = start + BigInt(n), monitorEnd = this.exclusive.addr + BigInt(this.exclusive.size);
       if (!(endExclusive <= this.exclusive.addr || monitorEnd <= start)) this.exclusive = null;
     }
-    await this.ensure(start);
+    /* #7968: materialize every page the store touches — ensuring only the
+       start/end pages left interior pages unbacked, where the pre-admission
+       below would fail open and writeByte() would mint undeclared mem
+       backing. An interior page without backing fails closed here. */
     const end = start + BigInt(n - 1);
-    if (end / BigInt(PAGE) !== start / BigInt(PAGE)) await this.ensure(end);
+    for (let p = (start / BigInt(PAGE)) * BigInt(PAGE); p <= end; p += BigInt(PAGE)) {
+      await this.ensure(p);
+    }
+    /* #7968: admit every byte of the store before committing any of it — a
+       range that straddles the write-authority boundary fails closed without
+       partially writing the bytes inside the prefix. */
+    for (let i = 0n; i < BigInt(n); i++) {
+      const a = start + i;
+      const p = (a / BigInt(PAGE)) * BigInt(PAGE);
+      this._assertWriteAuthority(p.toString(), Number(a - p), a);
+    }
     if (value instanceof Uint8Array) {
       if (value.length < n) throw new EmulatorFault('short-write-value', `byte vector has ${value.length} bytes but store needs ${n}`, { size:n, length:value.length });
       for (let i = 0; i < n; i++) this.writeByte(start + BigInt(i), value[i]);
