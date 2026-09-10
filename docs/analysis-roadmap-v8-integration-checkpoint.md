@@ -4104,6 +4104,44 @@ no main/component merge, independent/candidate-tree/full repository/device/activ
 runtime or release proof is claimed. Other owners retain issue/performance and
 environment/device work.
 
+## Explicit C4-03 class audit: candidates are not applied transforms
+
+Starting product: `d1798105c5ae5e6a4779961e322ea031a444181d`. This audit
+distinguishes all five classes named by FR-C4-03A; it does not substitute an
+in-place cast collapse or an empty `removedRefs` array for CSE/DCE adoption.
+
+| Required class | Actual current writer/consumer | Evidence and remaining boundary |
+|---|---|---|
+| CSE | `phase8/valuenumber.js` publishes `valueNumbers`; its registered transaction is analysis-only and returns `transforms:[]`. The ordinary projection does not adopt these candidates. | `provenance/ledger.test.mjs` now runs the real vertical on congruent live computations at 8/16/32/64 bits, requires a real reuse candidate, compares the actual core/projected AST, output and entire provenance with candidate artifacts withheld, and checks that both definitions still navigate to their own stores. Applied CSE many-to-one coverage remains **OPEN**, not satisfied by `exact-view-collapse`. |
+| DCE | `phase8/dce.js` publishes `deadCode`; its registered transaction is analysis-only and returns `transforms:[]`. It does not remove instructions or rendered statements. | The same four-width fixture requires a real pure dead candidate and an unused observable call that is kept; candidates create no removal records, canonical IR is unchanged, and replay creates no adoption. General applied DCE coverage remains **OPEN**. Initial omission of an unused scalar expression is not a pass-local DCE deletion. |
+| Phi elimination | `pipeline-core.js` emits `collapse-equal-incoming-phi` for an actual equal-incoming expression-view selection. | Existing `equal-phi-history.test.mjs` covers both incoming definitions, the phi, 16 width/input cells, nested/shared consumers, replay, unavailable observations and stale query navigation. This is a view collapse, **not** general CFG/SSA phi elimination. |
+| Switch recovery | `switch.js` emits `render-switch` from the actual descriptor/line insertion. | Existing `switch-render.test.mjs` covers individual case targets, raw-branch replacement tombstone, copied/changed descriptors, replay, budgets and snapshot-bound public navigation. General CFG equivalence is not established by this display history. |
+| Struct field rendering | `pipeline-core.js` emits `render-field-access` at actual accesses. | Existing `field-render.test.mjs` covers equal spelling with distinct owners, nested bases, unused accesses, copied/changed descriptors, budgets, replay and stale public query navigation. Field naming is presentation metadata, not an independent type/layout proof. |
+
+The separate real removal classes remain directly tested by
+`provenance/render-removal.test.mjs`: `remove-proof-only-stack-spill` in
+`passes/stack-return-recovery.js` and `suppress-return-spill-statement` in
+`pipeline-core.js`. Their pre-transform tombstones and surviving return
+navigation do not imply a general DCE consumer. The older in-place removal-list
+test has been renamed to make its narrower assertion explicit.
+
+No new optimizer, provenance authority, semantic IDs or production code is added
+by this increment. The existing canonical runner discovers the changed tests.
+PR #3421 remains the reused provenance foundation at
+`4cd5b3eb9200b1180985b9df3a74f8245a5cc928`; live PR #3422 remains at
+`ca25c71f1a6f18f0ba043800fb066f8068f2df73`. Its proof/unknown admission intent
+is already incorporated through the current proof-plan/transaction path; its
+older transaction core is not copied over the current implementation.
+
+This closes the ambiguity in the five named class descriptions, **not**
+FR-C4-03A acceptance. The next adoption work must account for actual observed
+before/after consumers and C4-04 proof eligibility, rather than generating
+history from a candidate fact. C4-02/04/05, exhaustive other-writer coverage and
+original23/frozen135 requirements remain open. Goal ACTIVE; integration/release
+acceptance LOCKED. Exact scoped test receipts and remote backup are recorded in
+the persistent checkpoint; no full-product, independent, main, device or release
+acceptance is claimed.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

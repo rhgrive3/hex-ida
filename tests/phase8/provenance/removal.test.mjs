@@ -4,7 +4,7 @@ import test from 'node:test';
 import { applyPhase8Projection } from '../../../js/decompiler/phase8/projection.js';
 import { analysis, expr, resultWith, source } from './fixture.js';
 
-test('P8-PROV ledger records auditable removal state for every transform', () => {
+test('P8-PROV in-place view collapse exposes an empty removal list, not a DCE receipt', () => {
   const value = expr.variable('a1', 64, true, source(1));
   const wide = expr.unary('trunc', value, 32, false, source(2));
   const narrow = expr.unary('trunc', wide, 8, false, source(3));
