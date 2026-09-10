@@ -154,10 +154,12 @@ function createPclntab12Header({ little = true, minLC = 1, pad1 = 0, pad2 = 0 } 
 
   const probe = provider.probe();
   assert.equal(probe.authoritative, true);
-  assert.equal(probe.completeness.complete, true);
+  assert.equal(probe.completeness.complete, false);
   assert.equal(probe.completeness.parsed, 2);
+  assert.deepEqual(probe.completeness.reasons, ['go-runtime-types-unscanned']);
   assert.equal(probe.identity.toolchainVersion, 'go1.20+');
-  assert.equal(probe.identity.verdict, 'matched-authoritative');
+  assert.equal(probe.identity.verdict, 'matched-partial');
+  assert.deepEqual(probe.identity.coverage?.recordKinds, ['symbol']);
 
   const syms = provider.symbols();
   assert.equal(syms.records.length, 2);
@@ -397,3 +399,6 @@ console.log('Go Metadata Provider tests passed.');
 // denominator.
 await import('./issue-5877-go-pclntab-section-without-buffer.test.mjs');
 await import('./issue-5347-go-rtype-nameoff.test.mjs');
+
+// Keep the Go runtime-type completeness regression in metadata:test.
+await import('./issue-7879-go-runtime-types-completeness.mjs');

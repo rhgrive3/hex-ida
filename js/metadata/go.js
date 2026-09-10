@@ -2,7 +2,8 @@
  * HEX-C3-03 — Go Runtime Metadata Provider.
  *
  * Implements toolchain-aware Go runtime metadata extraction from `.gopclntab`,
- * `.gosymtab`, `.go.buildinfo`, and moduledata structures.
+ * build-version discovery, and bounded type-descriptor decoding. Runtime type
+ * enumeration through moduledata/typelinks is not implemented yet.
  *
  * Supported Go pclntab formats:
  * - Go 1.2  (magic: 0xfffffffb)
@@ -552,8 +553,20 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
     const funcResult = parseGoFunctions(this.pclntabBuffer, header, this.options);
     this.cachedFunctions = funcResult;
 
+    // pclntab only proves the function-symbol domain. Runtime type metadata
+    // (moduledata/typelinks) is not enumerated by this provider yet, so a
+    // complete function-table scan must not become whole-provider completeness.
+    const completeness = {
+      ...funcResult.completeness,
+      complete: false,
+      reasons: [
+        ...(funcResult.completeness.reasons ?? []),
+        'go-runtime-types-unscanned',
+      ],
+    };
+
     const identity = createLanguageMetadataIdentity({
-      verdict: funcResult.completeness.complete ? 'matched-authoritative' : 'matched-partial',
+      verdict: 'matched-partial',
       providerId: this.id,
       providerVersion: this.version,
       ecosystem: 'go',
@@ -565,8 +578,8 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
       platform: this.platform,
       method: 'pclntab-magic',
       detail: `Go ${header.versionName} (${funcResult.functions.length} functions)`,
-      coverage: funcResult.completeness.complete ? null : {
-        recordKinds: ['symbol', 'type'],
+      coverage: {
+        recordKinds: ['symbol'],
         addresses: funcResult.functions.map((f) => f.address),
       },
     });
@@ -580,7 +593,7 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
       counts: {
         symbols: funcResult.functions.length,
       },
-      completeness: funcResult.completeness,
+      completeness,
     });
   }
 
