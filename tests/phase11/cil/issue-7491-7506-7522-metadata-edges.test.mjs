@@ -97,6 +97,45 @@ test('#7506 malformed MethodImpl rows fail closed', () => {
   assert.throws(() => parseCil(buildCil({ ...base, extraRows: new Map([[0x19, { count:1, bytes: Uint8Array.of(2,0, (1 << 1) | 1, 0, 2,0) }]]) }).bytes), /cil-unsupported-binary/);
 });
 
+test('#7506 a non-virtual MethodImpl body fails closed (II.22.27)', () => {
+  const base = {
+    types: [
+      { name:'Base', namespace:'T', methodList:1, fieldList:1, flags:0x81 },
+      { name:'Child', namespace:'T', methodList:2, fieldList:1, extends:4, flags:1 },
+    ],
+    methods: [{ name:'M', body:null, flags:0x5c6 }, { name:'Impl', body:[0x2a], flags:0x086 }],
+  };
+  // Child::Impl without the Virtual attribute may not carry an explicit
+  // override: the row must fail closed instead of publishing exact authority.
+  assert.throws(
+    () => parseCil(buildCil({ ...base, extraRows: new Map([[0x19, { count:1, bytes: Uint8Array.of(2,0, 4,0, 2,0) }]]) }).bytes),
+    /cil-unsupported-binary/,
+  );
+});
+
+test('#7506 two MethodImpl rows for one declaration with different bodies fail closed', () => {
+  const base = {
+    types: [
+      { name:'Base', namespace:'T', methodList:1, fieldList:1, flags:0x81 },
+      { name:'Child', namespace:'T', methodList:3, fieldList:1, extends:4, flags:1 },
+    ],
+    methods: [
+      { name:'M', body:null, flags:0x5c6 },
+      { name:'Impl1', body:[0x2a], flags:0x0c6 },
+      { name:'Impl2', body:[0x2a], flags:0x0c6 },
+    ],
+  };
+  // Same Class + MethodDeclaration with a second, different body: the
+  // dispatch target is ambiguous and must be rejected.
+  assert.throws(
+    () => parseCil(buildCil({
+      ...base,
+      extraRows: new Map([[0x19, { count:2, bytes: Uint8Array.of(2,0, 4,0, 2,0, 2,0, 6,0, 2,0) }]]),
+    }).bytes),
+    /cil-unsupported-binary/,
+  );
+});
+
 test('#7522 an ImplMap row binds the P/Invoke target to the method', () => {
   const image = parseCil(buildCil({
     types: [{ name:'KERNEL32', namespace:'Interop', methodList:1, fieldList:1 }],

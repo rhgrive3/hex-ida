@@ -1,6 +1,7 @@
 import { codedIndexSize, tableIndexSize, cilMetadataToken } from './metadata-layout.js';
 import { readCilMetadataBlob } from './call-signature-metadata.js';
-import { parseCilTypeSpecSignature } from './call-signature-types.js';
+import { parseCilMethodSignature, parseCilTypeSpecSignature } from './call-signature-types.js';
+import { stableStringify } from '../../core/identity/index.js';
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 function fail(code) { throw new TypeError(code); }
 
@@ -383,8 +384,39 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     return { classToken: cilMetadataToken(2, classRid), methodBodyToken: bodyToken, methodDeclarationToken: declarationToken };
   });
   const overridesByClass = new Map();
+  const seenImplDeclarations = new Set();
+  // ECMA-335 II.22.27: an explicit override must be a virtual method pair
+  // owned consistently by the Class, must not declare the same target twice,
+  // and — where both signatures decode from the #Blob heap — must agree on
+  // shape. Only the checks derivable from existing rows run here; MemberRef
+  // targets keep their token-level binding (#7506).
+  const CIL_METHOD_VIRTUAL = 0x0040;
+  const typeDefOrRefRows = [counts[0x02] ?? 0, counts[0x01] ?? 0, counts[0x1b] ?? 0];
   for (const row of methodImpls) {
     const body = methodByToken.get(row.methodBodyToken);
+    const declaration = methodByToken.get(row.methodDeclarationToken);
+    if (body != null) {
+      failIf((body.accessFlags & CIL_METHOD_VIRTUAL) === 0, 'cil-methodimpl-body-not-virtual');
+      failIf(body.declaringTypeToken !== row.classToken, 'cil-methodimpl-body-owner-mismatch');
+    }
+    if (declaration != null) {
+      failIf((declaration.accessFlags & CIL_METHOD_VIRTUAL) === 0, 'cil-methodimpl-declaration-not-virtual');
+    }
+    if (body != null && declaration != null && blobStream != null
+        && Number.isSafeInteger(body.signatureBlobIndex) && Number.isSafeInteger(declaration.signatureBlobIndex)) {
+      try {
+        const bodySig = parseCilMethodSignature(readCilMetadataBlob(blobStream, body.signatureBlobIndex, 'cil-methodimpl-signature-invalid'), typeDefOrRefRows);
+        const declarationSig = parseCilMethodSignature(readCilMetadataBlob(blobStream, declaration.signatureBlobIndex, 'cil-methodimpl-signature-invalid'), typeDefOrRefRows);
+        failIf(stableStringify({ parameters: bodySig.parameters, returnValue: bodySig.returnValue })
+          !== stableStringify({ parameters: declarationSig.parameters, returnValue: declarationSig.returnValue }),
+          'cil-methodimpl-signature-mismatch');
+      } catch {
+        // Undecodable signatures keep the pinned degradation behavior
+        // (#7603/#7604): the token-level binding stays, no extra authority.
+      }
+    }
+    failIf(seenImplDeclarations.has(`${row.classToken}\u0000${row.methodDeclarationToken}`), 'cil-methodimpl-declaration-duplicate');
+    seenImplDeclarations.add(`${row.classToken}\u0000${row.methodDeclarationToken}`);
     if (body != null) body.explicitOverrideTokens = Object.freeze([...(body.explicitOverrideTokens ?? []), row.methodDeclarationToken]);
     const list = overridesByClass.get(row.classToken) ?? [];
     if (list.some(entry => entry.methodDeclarationToken === row.methodDeclarationToken && entry.methodBodyToken === row.methodBodyToken)) {
