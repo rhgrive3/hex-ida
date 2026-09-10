@@ -27,7 +27,7 @@ function decodeDeclSecurity({
   rowSizes[0x06] = 14;
   rowSizes[0x0e] = 6;
 
-  const bytes = new Uint8Array(34);
+  const bytes = new Uint8Array(37);
   const view = new DataView(bytes.buffer);
 
   // TypeDef: Flags, Name, Namespace, Extends, FieldList, MethodList.
@@ -45,8 +45,8 @@ function decodeDeclSecurity({
   view.setUint16(32, 1, true);
 
   const layout = { rowCounts: counts, tableOffsets: offsets, rowSizes, heapSizes: 0 };
-  const blobHeap = Uint8Array.of(0, 1, 0xaa);
-  return readCilDefinitions(bytes, view, layout, null, blobHeap).declSecurity[0];
+  bytes.set(Uint8Array.of(0, 1, 0xaa), 34);
+  return readCilDefinitions(bytes, view, layout, null, { offset: 34, size: 3 }).declSecurity[0];
 }
 
 test('#7632 accepts the complete defined CorDeclSecurity action domain', () => {
