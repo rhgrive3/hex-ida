@@ -3432,6 +3432,65 @@ histories and their owned handoffs remain open, as do complete removed/merged
 coverage, original findings, C4-02/04/05 and required integration acceptance.
 Goal ACTIVE; acceptance LOCKED.
 
+## C4-03 actual state compaction and alias-edge history
+
+`compactProjectedState` now describes its actual state-read, state-write-source
+and state-write-address shadow operations and missing-source-state-key transfer.
+The same existing resolver still chooses every replacement. Each actual changed
+reference retains its original slot/value, selected value and actual earlier
+alias-creating operations. Covered writer slots are instruction arguments,
+condition values, address base/index, location base, incoming phi values and
+locations-map bases. Transitive shortcuts preserve their earlier creating
+operations, not merely the final value or a public shadow flag. Descriptions cap
+at 1024 and causal/value traversal at 512; the extra alias-history index stores
+only retained events. Exhaustion leaves expected/unavailable markers and does
+not change state projection.
+
+Only final owning projection seals these records. Changed identity fields and
+actual selected references must still match the owned operations; final
+instruction/value positions, original sources and slot objects are observed by
+the shared bounded data matcher. Shared location-map entries are owner-bound.
+The existing private range handoff applies. Public finalizer descriptions cannot
+register authority on copied IR. Missing causal predecessors are rejected in
+original operation order rather than recovered from metadata.
+
+The existing expression-build machinery now consumes state operations alongside
+projector/facade constant histories, including original inputs hidden by a
+precomputed expression. Actual return/store/branch/flag consumers also retain
+their own rewritten edges instead of borrowing history from the selected value.
+The ledger uses `compact-public-state` with proof kind
+`observed-state-compaction-not-equivalence`, existing origin IDs, consumer
+bindings and cumulative budgets. Unrelated consumers cannot inherit an edge just
+because they share its selected value. This is observed projection history, not
+a new state, memory, scalar or CFG equivalence theorem.
+
+The canonical provenance runner discovers the new state-compaction test file.
+Tests cover four source widths, all seven writer slots, the three shadow classes,
+state-key transfer and later unchanged version normalization, transitive alias
+causes, original/selected values, private issuance/getter/copy/stale boundaries,
+range handoff, core/public rendering, replay, query reverse navigation and stale
+snapshot refusal, cancellation/budgets and mandatory representation fallback.
+The unchanged parent finalizer and current finalizer additionally produce equal
+complete fixture IR for four operation configurations with normal/exhausted
+observation, including a repeated pass. These are synthetic operation checks,
+not a replacement for compiler-corpus or independent-verifier requirements.
+
+Retained diagnostic failures show an initial fixture incorrectly expecting a
+canonical SSA read to take the separate local-physical-view path, and a query
+fixture passing function-bearing IR instead of the existing cloneable rendered
+result fields. The corrected tests exercise the actual local-state and query
+paths; production admission was not relaxed. PR #3421 remains the reused
+foundation. #7548 changes alias binary/cache identity, not this writer; #7097's
+projector patch adds undefined-result-attribute admission, not state history.
+Its oversized full diff was unavailable (HTTP 406); the per-file API supplied
+the relevant patch. No component/main merge or parallel repair was performed.
+
+Unused-entry suppression, public-state ordering/version changes as explicit
+operation classes, other facade normalization handoffs, and raw call/location
+consumers without an existing observed expression remain open. Full C4-03 class
+coverage, original findings, C4-02/04/05, compiler corpus and integration
+acceptance are not closed. Goal ACTIVE; acceptance LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

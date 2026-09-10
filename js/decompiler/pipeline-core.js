@@ -20,7 +20,8 @@ import { readSwitchLineHistory, readSwitchRenderHistory } from './switch.js';
 import { readSemanticStoreLineHistory, readSemanticStoreRenderHistory } from './semantic-core.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
 import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionExpected,
-  readProjectedConstantTransitions, projectedConstantTransitionExpected } from '../semantics/compat/semantic-ir-v2-to-v1.js';
+  readProjectedConstantTransitions, projectedConstantTransitionExpected,
+  readProjectedStateTransitions, projectedStateTransitionExpected } from '../semantics/compat/semantic-ir-v2-to-v1.js';
 import { readFacadeConstantTransitions, facadeConstantTransitionExpected } from '../ir-core.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -103,11 +104,14 @@ function containsExpression(root, expression) {
   return false;
 }
 function semanticExpressionConsumer(semantic, value, instruction, state, nested = false, rendered = null) {
+  const selected = compatOperationSelection(value, state, [instruction], false);
+  const operations = recordCompatOperationSelection(value, semantic.expression, selected, state).map(record => valueHistoryRecord(record, value?.id ?? null));
+  (state.rewriteProof ??= []).push(...operations);
   const produced = state.expressionProofs?.get(value?.id);
   const elisions = state.renderElisions?.get(instruction?.id);
   const fields = fieldProjectionRecords(semantic, state);
-  const records = elisions?.length || fields.length || rendered?.records.length
-    ? Object.freeze([...(produced?.records || []), ...(elisions || []), ...fields, ...(rendered?.records || [])]) : produced?.records;
+  const records = elisions?.length || fields.length || rendered?.records.length || operations.length
+    ? Object.freeze([...(produced?.records || []), ...(elisions || []), ...fields, ...(rendered?.records || []), ...operations]) : produced?.records;
   if (!records?.length) return semantic;
   if (!produced || (produced.expression !== semantic.expression
       && (!nested || !containsExpression(semantic.expression, produced.expression)))) {
@@ -312,6 +316,7 @@ function compareFromFlags(flagValue, cond, state) {
   if (!d || d.op !== 'cmp') return expr.variable('condition_' + (cond || 'flags'), 1, false);
   const selection = observeBuildSelection(flagValue, d, state, 'flag-condition');
   const expression = compareFromFlagsRaw(flagValue, cond, state);
+  recordCompatOperationSelection(flagValue, expression, compatOperationSelection(flagValue, state, [d], false), state);
   const observation = finishBuildSelection(expression, selection, state);
   if (observation) {
     const before = { source:mergeSource(origin(d, flagValue), ...(d.args || []).map(arg => {
@@ -430,6 +435,7 @@ function semanticBranchCondition(inst, state) {
   try {
     const e = branchCondition(inst, state);
     const semantic = { expression:e, text:printExpression(e), row:inst.row, address:inst.address, ir:inst.id };
+    recordCompatOperationSelection(flags, e, compatOperationSelection(flags, state, [inst], false), state);
     const built = [...(frame.records || [])].map(record => valueHistoryRecord(record, null));
     (state.rewriteProof ??= []).push(...built);
     const records = Object.freeze([...built, ...fieldProjectionRecords(semantic, state)]);
@@ -699,33 +705,45 @@ function recordCompatMemorySelection(value, expression, selected, state) {
   (state.buildHistoryFrame.records ??= new Set()).add(record);
 }
 
-function compatConstantSelection(value, state) {
-  const pending = [value.def], seen = new Set(), selected = [];
+function compatOperationSelection(value, state, roots = [value?.def, value], followInputs = true) {
+  const pending = [...roots], seen = new Set(), events = new Set(), selected = [];
   const budget = consumerObservationBudget(state);
   const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
   const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
   while (pending.length && seen.size < 512) {
-    const source = pending.pop();
-    if (!source || seen.has(source)) continue;
-    seen.add(source);
-    const expectedProjection = projectedConstantTransitionExpected(state.ir, source);
-    const expectedFacade = facadeConstantTransitionExpected(state.ir, source);
-    if (!expectedProjection && !expectedFacade) continue;
+    const key = pending.pop();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const expectedProjection = projectedConstantTransitionExpected(state.ir, key);
+    const expectedFacade = facadeConstantTransitionExpected(state.ir, key);
+    const expectedState = projectedStateTransitionExpected(state.ir, key);
+    if (!expectedProjection && !expectedFacade && !expectedState) continue;
     if ((state.buildSelectionHistoryCount || 0) >= maximum || budget.edges <= 0) {
-      observeBuildSelection(value, source, state, 'compat-constant'); return selected;
+      observeBuildSelection(value, key, state, 'compat-constant'); return selected;
     }
     const transitions = [];
-    for (const [expected, read] of [[expectedProjection, readProjectedConstantTransitions], [expectedFacade, readFacadeConstantTransitions]]) {
+    for (const [expected, read, kind] of [[expectedProjection, readProjectedConstantTransitions, 'constant'],
+      [expectedFacade, readFacadeConstantTransitions, 'constant'], [expectedState, readProjectedStateTransitions, 'state']]) {
       if (!expected) continue;
-      const transition = read(state.ir, source);
+      const transition = read(state.ir, key);
       if (transition) transitions.push(transition);
-      else budget.reasons.add('compat-constant-transition-unavailable');
+      else budget.reasons.add(`compat-${kind}-transition-unavailable`);
     }
-    for (const transition of transitions) for (const event of transition.events) {
+    for (const transition of transitions) {
+    const candidates = [...transition.events], queued = new Set(candidates);
+    for (const event of candidates) {
+      if (events.has(event)) continue;
+      events.add(event);
+      for (const cause of event.causes || []) if (!events.has(cause) && !queued.has(cause)) {
+        if (queued.size >= 1024) { budget.reasons.add('compat-state-cause-budget'); return selected; }
+        queued.add(cause); candidates.push(cause);
+      }
+      const source = event.source;
+      if (!source) { budget.reasons.add('compat-state-consumer-unavailable'); continue; }
       // Traverse actual recorded input definitions, not a guessed upstream pass
       // inferred from a supplied constant. Precomputed rendering need not visit
       // these expressions, but it still consumes their observed folding chain.
-      pending.push(...event.inputs.map(input => input.definition));
+      if (followInputs) pending.push(...event.inputs.flatMap(input => [input.definition, input.value]));
       if ((state.buildSelectionHistoryCount || 0) >= maximum || budget.edges <= 0) {
         observeBuildSelection(value, source, state, 'compat-constant'); return selected;
       }
@@ -736,12 +754,14 @@ function compatConstantSelection(value, state) {
       selected.push({ event, transition, origins,
         observation:observeBuildSelection(value, source, state, 'compat-constant', related) });
     }
+    }
   }
   if (pending.length) budget.reasons.add('compat-constant-dependency-budget');
   return selected;
 }
 
-function recordCompatConstantSelection(value, expression, selected, state) {
+function recordCompatOperationSelection(value, expression, selected, state) {
+  const records = [];
   for (const { event, transition, origins, observation:selection } of selected) {
     const observation = finishBuildSelection(expression, selection, state);
     if (!observation) continue;
@@ -752,17 +772,24 @@ function recordCompatConstantSelection(value, expression, selected, state) {
       ...event.beforeInputs.map(input => origin(input.def, input)));
     const history = expressionOriginHistory({ source }, expression);
     const facade = event.stage === 'facade-exact-constants';
-    const record = Object.freeze({ rule:facade ? 'fold-facade-constant' : 'fold-compatibility-constant', phase:'compatibility-projection',
-      before:`${event.stage}:${event.round}:${event.ordinal}:${event.op}:${event.sub ?? ''}:${String(event.beforeConstant)}`,
-      after:`constant:${event.bits}:${String(event.afterConstant)}`,
-      evidence:Object.freeze({ kind:facade ? 'observed-facade-constant-write-not-equivalence' : 'observed-compat-constant-write-not-equivalence',
-        detail:'actual compatibility constant write and its original input facts, retained through the consuming expression; not a new scalar or memory theorem' }),
+    const stateOperation = !!event.kind;
+    const identityText = identity => `${String(identity.reg)}:${String(identity.stateKey)}:${String(identity.version)}:${String(identity.compatDerived)}`;
+    const record = Object.freeze({ rule:stateOperation ? 'compact-public-state' : facade ? 'fold-facade-constant' : 'fold-compatibility-constant', phase:'compatibility-projection',
+      before:stateOperation ? `${event.kind}:${event.ordinal}:${event.path || 'identity'}:${event.identity ? identityText(event.before) : event.before.id}`
+        : `${event.stage}:${event.round}:${event.ordinal}:${event.op}:${event.sub ?? ''}:${String(event.beforeConstant)}`,
+      after:stateOperation ? `${event.identity ? identityText(event.after) : event.after.id}` : `constant:${event.bits}:${String(event.afterConstant)}`,
+      evidence:Object.freeze({ kind:stateOperation ? 'observed-state-compaction-not-equivalence'
+        : facade ? 'observed-facade-constant-write-not-equivalence' : 'observed-compat-constant-write-not-equivalence',
+        detail:stateOperation ? 'actual public-state shadow or reference replacement with original values and alias-producing operations; not an independent state, scalar, memory or CFG proof'
+          : 'actual compatibility constant write and its original input facts, retained through the consuming expression; not a new scalar or memory theorem' }),
       originHistory:origins?.incomplete ? Object.freeze({ ...history, truncated:true }) : history,
     });
     buildHistoryObservations.set(record, Object.freeze({ matches:() => observation.matches() && transition.isCurrent()
       && (origins?.memoryChecks || []).every(current => current()) }));
-    (state.buildHistoryFrame.records ??= new Set()).add(record);
+    records.push(record);
+    if (state.buildHistoryFrame) (state.buildHistoryFrame.records ??= new Set()).add(record);
   }
+  return records;
 }
 
 function buildValueRaw(v, state, flags = {}) {
@@ -774,7 +801,7 @@ function buildValueRaw(v, state, flags = {}) {
   let out = null;
   const d = v.def;
   const compatSelection = compatMemorySelection(v, state);
-  const compatConstants = compatConstantSelection(v, state);
+  const compatOperations = compatOperationSelection(v, state);
   if (v.constKind === 'float' || v.floatConst != null || (v.float != null && v.const == null)) {
     const selected = constantValueSelection(v, state);
     out = expr.floatConstant(v.floatConst ?? v.float, v.bits || 64, origin(d, v));
@@ -868,7 +895,7 @@ function buildValueRaw(v, state, flags = {}) {
   }
   if (!out) out = expr.variable(argumentName(v, state), v.bits || 64, signedFor(state, v), origin(d, v), { ssaId: v.id, range: v.range ? { ...v.range } : null });
   recordCompatMemorySelection(v, out, compatSelection, state);
-  recordCompatConstantSelection(v, out, compatConstants, state);
+  recordCompatOperationSelection(v, out, compatOperations, state);
   state.expressionActive.delete(v.id);
   state.expressionMemo.set(memoKey, out);
   return out;

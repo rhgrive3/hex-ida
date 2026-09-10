@@ -44,19 +44,71 @@ function valueFeedsAddressOrCall(projected, root) {
   return false;
 }
 
-function compactProjectedState(projected) {
+const stateIdentityKeys = ['reg', 'stateKey', 'version', 'compatPublicIdentity', 'compatDerived'];
+
+function stateIdentity(value) {
+  return Object.freeze(Object.fromEntries(stateIdentityKeys.map(key => [key, value?.[key]])));
+}
+
+function describeStateOperation(observer, description) {
+  if (!observer) return null;
+  const keys = [description.source, description.identity ? description.output : description.object].filter(Boolean);
+  for (const key of keys) observer.expected.add(key);
+  if (observer.records.length >= 1024 || description.beforeInputs.length > 512 || description.unavailable) {
+    for (const key of keys) observer.unavailable.add(key);
+    return null;
+  }
+  const event = Object.freeze({ ...description, op:description.source?.op, sub:description.source?.sub,
+    bits:description.output?.bits, ordinal:observer.records.length,
+    identityFields:description.identity ? Object.freeze(stateIdentityKeys.filter(key => !Object.is(description.before[key], description.after[key]))) : null,
+    keys:Object.freeze(keys), beforeInputs:Object.freeze(description.beforeInputs),
+    inputs:Object.freeze(description.beforeInputs.map(value => Object.freeze({ value, definition:value.def }))) });
+  observer.records.push(event);
+  return event;
+}
+
+// Read the actual already-established alias decisions without deciding any new
+// aliases. A missing/bounded cause cannot be reconstructed from public flags.
+function stateAliasLineage(before, aliases, aliasEvents) {
+  const causes = [], values = new Set([before]), seen = new Set();
+  let current = before, unavailable = false;
+  while (current && aliases.has(current.id) && !seen.has(current.id)) {
+    if (seen.size >= 512) { unavailable = true; break; }
+    seen.add(current.id);
+    const event = aliasEvents.get(current.id);
+    if (!event) { unavailable = true; break; }
+    causes.push(event);
+    for (const value of event.beforeInputs) values.add(value);
+    if (values.size > 512) { unavailable = true; break; }
+    current = aliases.get(current.id);
+  }
+  return { causes:Object.freeze(causes), values, unavailable };
+}
+
+function compactProjectedState(projected, observer = null) {
   const aliases = new Map();
+  const aliasEvents = new Map();
   for (const inst of projected.instructions) {
     if (inst.op !== V1_OP.MOV || !inst.dst || inst.args?.length !== 1) continue;
     const rawSource = inst.args[0]?.value;
     const source = resolveAlias(rawSource, aliases);
     if (!source) continue;
+    const lineage = observer && stateAliasLineage(rawSource, aliases, aliasEvents);
+    const history = output => ({ causes:lineage?.causes, unavailable:lineage?.unavailable,
+      beforeInputs:[...new Set([rawSource, source, output, ...(lineage?.values || [])])] });
     if (inst.extra?.stateWrite && samePublicState(inst, source, inst.dst)) {
       const shadow = inst.dst;
       const provenExactLoadSource = source.compatDerived === 'exact-state-write-source' && source.def?.op === V1_OP.LOAD;
       if (provenExactLoadSource || valueFeedsAddressOrCall(projected, shadow)) {
+        const before = observer && stateIdentity(shadow);
         aliases.set(shadow.id, source);
-        if (source.stateKey == null && shadow.stateKey != null) source.stateKey = shadow.stateKey;
+        if (source.stateKey == null && shadow.stateKey != null) {
+          const sourceBefore = observer && stateIdentity(source);
+          source.stateKey = shadow.stateKey;
+          describeStateOperation(observer, { source:inst, output:source, input:shadow, identity:true,
+            kind:'state-key-transfer', before:sourceBefore, after:observer && stateIdentity(source),
+            ...history(shadow) });
+        }
         shadow.compatPublicIdentity = shadow.reg;
         shadow.reg = null;
         shadow.stateKey = null;
@@ -64,7 +116,12 @@ function compactProjectedState(projected) {
         shadow.compatDerived = 'state-ssa-address-shadow';
         inst.extra.compatPublicStateSourceValueId = source.id;
         inst.extra.compatStateShadowValueId = shadow.id;
+        const event = describeStateOperation(observer, { source:inst, output:shadow, input:source, identity:true,
+          kind:'state-write-address-shadow', before, after:observer && stateIdentity(shadow),
+          ...history(shadow) });
+        if (observer && event) aliasEvents.set(shadow.id, event);
       } else if (source.kind !== V1_VK.ARG && source.def && source !== shadow) {
+        const before = observer && stateIdentity(source);
         source.compatPublicIdentity = source.reg;
         source.reg = null;
         source.stateKey = null;
@@ -72,28 +129,46 @@ function compactProjectedState(projected) {
         source.compatDerived = 'state-write-source-shadow';
         inst.extra.compatPublicStateSourceValueId = source.id;
         inst.extra.compatStateDestinationValueId = shadow.id;
+        describeStateOperation(observer, { source:inst, output:source, input:shadow, identity:true,
+          kind:'state-write-source-shadow', before, after:observer && stateIdentity(source),
+          ...history(shadow) });
       }
     } else if (inst.extra?.stateRead && inst.extra?.localPhysicalViewProjection === true && Number(source.bits || 0) === Number(inst.dst.bits || 0)) {
       const read = inst.dst;
+      const before = observer && stateIdentity(read);
       aliases.set(read.id, source);
       read.reg = null;
       read.stateKey = null;
       read.version = 0;
       read.compatDerived = 'state-read-shadow';
       inst.extra.compatReachingPublicValueId = source.id;
+      const event = describeStateOperation(observer, { source:inst, output:read, input:source, identity:true,
+        kind:'state-read-shadow', before, after:observer && stateIdentity(read),
+        ...history(read) });
+      if (observer && event) aliasEvents.set(read.id, event);
     }
   }
 
   if (!aliases.size) return aliases;
+  const replace = (object, key, inst, path) => {
+    const before = object[key], after = resolveAlias(before, aliases);
+    object[key] = after;
+    if (!observer || before === after) return;
+    const { causes, values, unavailable } = stateAliasLineage(before, aliases, aliasEvents);
+    values.add(after);
+    describeStateOperation(observer, { source:inst, output:inst?.dst, input:after,
+      kind:'resolve-state-alias', object, key, path, before, after,
+      causes, beforeInputs:[...values], unavailable });
+  };
   for (const inst of projected.instructions) {
-    for (const arg of inst.args || []) if (arg?.value) arg.value = resolveAlias(arg.value, aliases);
-    if (inst.conditionValue) inst.conditionValue = resolveAlias(inst.conditionValue, aliases);
-    if (inst.addr?.base) inst.addr.base = resolveAlias(inst.addr.base, aliases);
-    if (inst.addr?.index) inst.addr.index = resolveAlias(inst.addr.index, aliases);
-    if (inst.loc?.base) inst.loc.base = resolveAlias(inst.loc.base, aliases);
-    for (const incoming of inst.incoming || []) if (incoming?.value) incoming.value = resolveAlias(incoming.value, aliases);
+    for (const [index, arg] of (inst.args || []).entries()) if (arg?.value) replace(arg, 'value', inst, `args:${index}`);
+    if (inst.conditionValue) replace(inst, 'conditionValue', inst, 'conditionValue');
+    if (inst.addr?.base) replace(inst.addr, 'base', inst, 'addr:base');
+    if (inst.addr?.index) replace(inst.addr, 'index', inst, 'addr:index');
+    if (inst.loc?.base) replace(inst.loc, 'base', inst, 'loc:base');
+    for (const [index, incoming] of (inst.incoming || []).entries()) if (incoming?.value) replace(incoming, 'value', inst, `incoming:${index}`);
   }
-  for (const loc of projected.locations?.values?.() ?? []) if (loc?.base) loc.base = resolveAlias(loc.base, aliases);
+  for (const loc of projected.locations?.values?.() ?? []) if (loc?.base) replace(loc, 'base', null, 'locations:base');
   return aliases;
 }
 
@@ -363,8 +438,8 @@ function recoverStackSlots(projected) {
   projected.stackSlots = slots.sort((left, right) => left.offset < right.offset ? -1 : left.offset > right.offset ? 1 : left.key.localeCompare(right.key));
 }
 
-export function finalizeLegacyProjection(projected, observer = null) {
-  compactProjectedState(projected);
+export function finalizeLegacyProjection(projected, observer = null, stateObserver = null) {
+  compactProjectedState(projected, stateObserver);
   rebuildDefUse(projected);
   suppressUnusedIncomingState(projected);
   normalizePublicStateDefinitionOrder(projected);
