@@ -163,7 +163,11 @@ function parseThin(bytes, opts) {
   if (image.entrypoint != null && image.entrypoint !== 0n) {
     const entrySegment = image.segmentAt(image.entrypoint);
     const alignment = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
-    if (entrySegment?.perms?.execute && image.entrypoint % alignment === 0n) {
+    // The LC_UNIXTHREAD PC is an absolute address: unlike the LC_MAIN path
+    // (whose entryoff maps through the file-backed table), it can land in a
+    // segment's zero-fill tail, where no instruction byte exists. Require
+    // file backing before calling it a valid entrypoint (#5555).
+    if (entrySegment?.perms?.execute && image.entrypoint % alignment === 0n && image.addressToOffset(image.entrypoint) != null) {
       image.metadata.entrypointValid = true;
       image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
     } else {
@@ -218,7 +222,11 @@ function parseThin(bytes, opts) {
     for (const sym of image.symbols) {
       if (!sym.defined || sym.address == null) continue;
       const sec = image.sectionAt(sym.address);
-      if (sec && sec.perms.execute && sym.name !== '__mh_execute_header' && metadataBudget.take({ objects:1, operations:1, estimatedHeapBytes:128 }, 'symbol-function-fallback')) image.functions.push(functionSeed(sym.address, { name: sym.name, source: 'symbol', confidence: 0.9 }));
+      // A symbol is only a high-confidence function seed when its section is
+      // explicitly S_ATTR_PURE_INSTRUCTIONS. S_ATTR_SOME_INSTRUCTIONS alone
+      // only proves a mixed section contains some code, not this symbol (#5559).
+      const hasInstructions = !!sec && (sec.flags & 0x80000000) !== 0;
+      if (sec && hasInstructions && sec.perms.execute && sym.name !== '__mh_execute_header' && metadataBudget.take({ objects:1, operations:1, estimatedHeapBytes:128 }, 'symbol-function-fallback')) image.functions.push(functionSeed(sym.address, { name: sym.name, source: 'symbol', confidence: 0.9 }));
     }
   }
 
@@ -367,7 +375,6 @@ function parseDylib(r, p, cmdsize, image, isId) {
   if (isId) image.metadata.installName = name;
   else if (name) image.libraries.push(name);
 }
-
 function parseBuildVersion(r, p, image) {
   const platform = r.u32(p + 8);
   const minos = r.u32(p + 12);
@@ -497,6 +504,14 @@ function parseFunctionStarts(r, dc, image, sharedBudget = null) {
       image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)}`);
       break;
     }
+    // A segment's vm size may exceed its file size; the difference is loader
+    // zero-fill. A start with no file-backed instruction byte is not static
+    // evidence and must not become a 0.995-confidence seed (#5551).
+    if (image.addressToOffset(addr) == null) {
+      status.complete = false; status.partialReason = 'invalid-entry';
+      image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)} (no file-backed instruction bytes)`);
+      break;
+    }
     if (!budget.take({ inputBytes:x.bytes, objects:1, estimatedHeapBytes:128 }, 'function-start-output')) { status.complete=false; status.partialReason='metadata-budget'; break; }
     image.functions.push(functionSeed(addr, { source: 'function_starts', confidence: 0.995 }));
     status.recovered++;
@@ -599,7 +614,6 @@ function selectFatSlice(bytes, kind, preferredArch, opts = {}) {
   const chosen = indexed || want || all.find((s) => sliceArchName(s) === 'arm64e') || all.find((s) => sliceArchName(s) === 'arm64') || all.find((s) => sliceArchName(s) === 'x86_64') || all[0];
   return chosen ? { ...chosen, all } : null;
 }
-
 export function parseCompactUnwind(r, image, metadataBudget = null) {
   const sec = image.sections.find((s) => s.name === '__unwind_info' || s.name === '__TEXT,__unwind_info');
   if (!sec) return;
@@ -719,7 +733,6 @@ export function parseCompactUnwind(r, image, metadataBudget = null) {
     const nextPhysical = physicalPageOffsets[i + 1] ?? fileSize;
     pageEndByOffset.set(pageOff, Math.min(fileSize, pageOff + 4096, nextPhysical));
   }
-
   const candidateRanges = [];
   for (let i = 0; i < indexCount - 1; i++) {
     const lower = indexes[i].functionOffset;
