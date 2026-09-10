@@ -269,7 +269,30 @@ function plannerDisassemblyShare(total, ratio = 0.4) {
   if (total <= 64) return total;
   return Math.max(64, Math.min(total - 1, Math.floor(total * ratio)));
 }
+function normalizeExternalSignal(value) {
+  if (value == null) return null;
+  let aborted, addEventListener, removeEventListener;
+  try {
+    aborted = value.aborted;
+    addEventListener = value.addEventListener;
+    removeEventListener = value.removeEventListener;
+  } catch {
+    throw new TypeError('query-planner-signal-invalid');
+  }
+  if ((typeof value !== 'object' && typeof value !== 'function')
+      || typeof aborted !== 'boolean'
+      || typeof addEventListener !== 'function'
+      || typeof removeEventListener !== 'function') {
+    throw new TypeError('query-planner-signal-invalid');
+  }
+  return value;
+}
+function externalSignalReason(signal) {
+  try { return signal.reason ?? 'cancelled'; }
+  catch { return 'cancelled'; }
+}
 function budgetState(opts) {
+  const externalSignal = normalizeExternalSignal(opts?.signal);
   const controller = new AbortController();
   const timeoutMs = explicitBudget(opts && opts.timeoutMs, 3000, 1);
   const requestedMaxFunctions = explicitBudget(opts && opts.maxFunctions, 48, 0);
@@ -291,19 +314,27 @@ function budgetState(opts) {
     candidateTruncated: false, candidateCount: 0, unaccountedToolCost: false,
     analysisAccountedExternally: !!(opts && opts.tools),
     searchIncomplete: false, searchReports: [], sourceTotals: Object.fromEntries(POOL_ORDER.map((name) => [name, 0])),
-    controller, signal: controller.signal, timeout: null, externalSignal: opts && opts.signal || null, externalAbort: null,
+    controller, signal: controller.signal, timeout: null, externalSignal, externalAbort: null,
   };
-  b.timeout = setTimeout(() => { if (!b.signal.aborted) controller.abort('timeout'); }, timeoutMs);
   if (b.externalSignal) {
-    b.externalAbort = () => { if (!b.signal.aborted) controller.abort(b.externalSignal.reason ?? 'cancelled'); };
+    b.externalAbort = () => { if (!b.signal.aborted) controller.abort(externalSignalReason(b.externalSignal)); };
     if (b.externalSignal.aborted) b.externalAbort();
-    else b.externalSignal.addEventListener('abort', b.externalAbort, { once:true });
+    else {
+      try { b.externalSignal.addEventListener('abort', b.externalAbort, { once:true }); }
+      catch {
+        try { b.externalSignal.removeEventListener('abort', b.externalAbort); } catch {}
+        throw new TypeError('query-planner-signal-invalid');
+      }
+    }
   }
+  b.timeout = setTimeout(() => { if (!b.signal.aborted) controller.abort('timeout'); }, timeoutMs);
   return b;
 }
 function disposeBudget(b) {
   if (b.timeout) clearTimeout(b.timeout);
-  if (b.externalSignal && b.externalAbort) b.externalSignal.removeEventListener('abort', b.externalAbort);
+  if (b.externalSignal && b.externalAbort) {
+    try { b.externalSignal.removeEventListener('abort', b.externalAbort); } catch {}
+  }
 }
 function timedOut(b) { return b.signal.aborted && String(b.signal.reason || '') === 'timeout' || Date.now() - b.started >= b.timeoutMs; }
 function cancelled(b) {
