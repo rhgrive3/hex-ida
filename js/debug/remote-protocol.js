@@ -359,8 +359,43 @@ export class RemoteProtocolClient {
         ? this.pending.get(wire.id) : null;
       if (!pendingForWire || pendingForWire.epoch !== wire.epoch) return false;
     }
+
+    // Apply event admission to the encoded packet before materializing tagged
+    // BigInt/byte payloads. A saturated window must not spend decode/allocation
+    // work on an event that is guaranteed to be dropped (#5245). Keep the
+    // prospective window state local until decode succeeds so malformed events
+    // that fit the quota still do not consume it.
+    let eventAdmission = null;
+    if (wire.type === 'event') {
+      const now = this._monotonicNow();
+      const reset = now - this.eventWindowStart >= 1000;
+      const count = reset ? 0 : this.eventWindowCount;
+      const usedBytes = reset ? 0 : this.eventWindowBytes;
+      const dropped = reset ? 0 : this.droppedEvents;
+      const bytes = jsonByteSize(wire);
+      if (count + 1 > this.maxEventsPerSecond || usedBytes + bytes > this.maxEventBytesPerSecond) {
+        if (reset) {
+          this.eventWindowStart = now;
+          this.eventWindowCount = 0;
+          this.eventWindowBytes = 0;
+          this.droppedEvents = 0;
+        }
+        this.droppedEvents++;
+        if (dropped === 0) {
+          const notice={version:DEBUG_PROTOCOL_VERSION,type:'event',epoch:this.epoch,event:'stream-truncated',data:{reason:'event-backpressure'}};
+          for (const fn of this.listeners) { invokeListener(fn, notice); }
+        }
+        return false;
+      }
+      eventAdmission = { now, reset, bytes };
+    }
+
     let packet;
     try { packet = decodeWireValue(wire); } catch { return false; }
+    // Accessor-backed input must not be able to change packet class across the
+    // admission/decode boundary and thereby bypass event quotas (or trip a
+    // missing admission record).
+    if ((packet.type === 'event') !== (eventAdmission !== null)) return false;
     if (packet.type === 'response') {
       const pending = this.pending.get(packet.id);
       // The request's own epoch is the settle authority: a pending opened at
@@ -373,18 +408,17 @@ export class RemoteProtocolClient {
       return true;
     }
     if (packet.type === 'event') {
-      const now=this._monotonicNow();
-      if (now-this.eventWindowStart >= 1000) { this.eventWindowStart=now; this.eventWindowCount=0; this.eventWindowBytes=0; this.droppedEvents=0; }
-      const bytes=jsonByteSize(wire);
-      if (this.eventWindowCount + 1 > this.maxEventsPerSecond || this.eventWindowBytes + bytes > this.maxEventBytesPerSecond) {
-        this.droppedEvents++;
-        if (this.droppedEvents === 1) {
-          const notice={version:DEBUG_PROTOCOL_VERSION,type:'event',epoch:this.epoch,event:'stream-truncated',data:{reason:'event-backpressure'}};
-          for (const fn of this.listeners) { invokeListener(fn, notice); }
-        }
-        return false;
+      // `wire.type` was validated before decode, so every decoded event has a
+      // matching admission record. Commit its window accounting only now that
+      // decode succeeded.
+      if (eventAdmission.reset) {
+        this.eventWindowStart = eventAdmission.now;
+        this.eventWindowCount = 0;
+        this.eventWindowBytes = 0;
+        this.droppedEvents = 0;
       }
-      this.eventWindowCount++; this.eventWindowBytes+=bytes;
+      this.eventWindowCount++;
+      this.eventWindowBytes += eventAdmission.bytes;
       for (const fn of this.listeners) { invokeListener(fn, packet); }
       return true;
     }
