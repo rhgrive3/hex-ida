@@ -7,6 +7,7 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import { isCompleteStatus } from '../status.js';
 import * as core from './contract-core.js';
+import { canonicalReturnEquations } from './return-equations.js';
 
 export * from './contract-core.js';
 
@@ -180,6 +181,7 @@ function validateSummaryInput(input) {
   if (input.functionId != null) nonEmptyString(input.functionId, 'function-summary-function-id-required');
   for (const field of ['inputs','returnValues','registerEffects','allocations','frees']) validateStringList(input[field], `function-summary-invalid-${field}`);
   for (const value of denseArray(input.returnProvenance, 'function-summary-invalid-return-provenance')) validateReturnProvenance(value);
+  canonicalReturnEquations(input.returnEquations, input, value => { validateReturnProvenance(value); return value; });
   for (const value of denseArray(input.memoryReadRegions, 'function-summary-invalid-read-regions')) {
     validateMemoryEffectInput(value);
     if (value.broad !== true && value.regionId == null) throw new TypeError('function-summary-unresolved-memory-region');

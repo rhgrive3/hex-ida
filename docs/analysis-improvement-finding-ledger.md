@@ -95,3 +95,30 @@ verification. Denominators and tests may not be weakened.
   canonical points-to analysis and no second reaching-definition implementation. Lint validated
   1,505 files; changed-module syntax and `git diff --check` pass.
 - Next action: T017 Spec Kit convergence, candidate merge tree, and exact-product gates.
+
+## FR-C1-02A recursive-return discovery increment (2026-09-11, not accepted)
+
+This is progress on the final 21-task backlog, not a redefinition of the
+historical HEX-C1-02 matrix above as the final task's completion proof.
+
+- Frozen component base: `cea67c63ffa88cfb9f0df897c8a9468ffea70363`.
+- Local producers now retain versioned, serializable return equations in the
+  FunctionSummary 1.4 contract. The dependency digest includes these equations;
+  null means legacy/no transfer evidence. Coverage and call-site identities are
+  validated at construction. Local wrapper composition and the existing SCC
+  solver share one argument/root/allocation substitution function.
+- The existing SCC iteration discovers returns from self recursion, swapped
+  arguments, mutual recursion and exhaustive indirect candidate unions. It does
+  not invoke a separate semantic engine. Empty recursive solutions become
+  unknown before publication; growing offsets hit the existing iteration cap.
+- Actual IR/CFG/SSA/MemorySSA producer fixtures verify that initially unknown
+  recursive summaries improve the real outer points-to consumer. JSON replay,
+  root/allocation address spaces, incomplete/missing/stale summaries, malformed
+  equations and iteration exhaustion are included in the 14 new regressions.
+- Working-tree evidence: canonical summary group 366/366 passed; points-to
+  132/133 passed with the existing #4165 `may` versus `must` failure retained.
+  These are development results, not exact committed-head acceptance evidence.
+- Remaining: exact component-head evidence, generated-output build, actual
+  inventory ownership, full new-failure comparison, and candidate integration
+  acceptance. The integration verifier is still red; no phase completion,
+  release readiness, or full FR-C1-02A matrix completion is claimed here.

@@ -17,9 +17,10 @@ import { deepFreeze, stableDigest } from '../../core/identity/index.js';
 import { aliasMemoryRegions } from '../alias/legacy-safety-floor.js';
 import { deriveMemoryRegion, isPreciseMemoryRegion } from '../alias/regions-v2.js';
 import { createAnalysisStatus, isCompleteStatus } from '../status.js';
+import { canonicalReturnEquations } from './return-equations.js';
 
 export const FUNCTION_SUMMARY_SCHEMA_VERSION = 3;
-export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.3.0';
+export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.4.0';
 
 /**
  * Where an effect's authority comes from, in the priority order P7-INV-004
@@ -434,6 +435,8 @@ export function createFunctionSummary(input = {}) {
     status,
   };
 
+  summary.returnEquations = canonicalReturnEquations(input.returnEquations, summary, createReturnProvenance);
+
   // An unresolved call is not purity. A summary that carries one may not also
   // claim it looked at everything.
   if (unknownCallEffects.length > 0 && isCompleteStatus(status)) {
@@ -470,6 +473,7 @@ export function functionSummaryDigest(summary) {
     inputs: summary.inputs,
     returnValues: summary.returnValues,
     returnProvenance: summary.returnProvenance,
+    returnEquations: summary.returnEquations,
     registerEffects: summary.registerEffects,
     memoryReadRegions: summary.memoryReadRegions,
     memoryWriteRegions: summary.memoryWriteRegions,

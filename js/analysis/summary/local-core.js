@@ -23,8 +23,10 @@ import {
   summaryIdentityMatches,
 } from './contract.js';
 
+import { substituteReturnFact, RETURN_EQUATION_LIMIT, RETURN_ARGUMENT_LIMIT } from './return-equations.js';
+
 export const LOCAL_SUMMARY_ANALYZER_ID = 'phase7.summary.local';
-export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.3.0';
+export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.4.0';
 
 const DEFAULT_ADDRESS_SPACES = Object.freeze(['memory']);
 
@@ -222,6 +224,8 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   }
 
   const returnProvenance = [];
+  const returnEquationRows = [];
+  let returnEquationsBounded = true;
   const nodeByOutput = new Map();
   const valueById = new Map((ir.values ?? []).map((value) => [String(value.id), value]));
   for (const n of ir.nodes ?? []) {
@@ -279,6 +283,16 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     return info;
   };
 
+  const callArgumentFacts = (callNode) => {
+    const ids = Array.isArray(callNode.call?.arguments) ? callNode.call.arguments : (callNode.inputs ?? []);
+    return ids.map(argument => {
+      const valueId = argument && typeof argument === 'object'
+        ? (!Array.isArray(argument) && Object.hasOwn(argument, 'valueId') ? argument.valueId : null) : argument;
+      const argIndex = formalArgumentIndex(valueId);
+      return argIndex < 0 ? { kind:'unknown' } : { kind:'arg', argIndex, offset:'0' };
+    });
+  };
+
   /**
    * Compose a call-produced return through the current function. A call result
    * is a boundary, not an argument of the current function; only a complete,
@@ -308,69 +322,8 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     // when the canonical field exists. Arguments may be plain value ids or
     // the canonical structured spelling ({ valueId }); the structured form is
     // unwrapped exactly as escape analysis does (#6151).
-    const argumentIds = Array.isArray(callNode.call?.arguments)
-      ? callNode.call.arguments.map((argument) => {
-        if (argument == null || typeof argument !== 'object') return argument;
-        if (Array.isArray(argument) || !Object.hasOwn(argument, 'valueId')) return null;
-        const valueId = argument.valueId;
-        return typeof valueId === 'string' && valueId.trim() ? valueId : null;
-      })
-      : callNode.inputs;
-    const composed = [];
-    for (const provenance of alternatives) {
-      let offset;
-      try { offset = BigInt(outerOffset ?? 0n) + BigInt(provenance.offset ?? 0n); }
-      catch {
-        composed.push({ kind: 'unknown', returnIndex: outerReturnIndex });
-        continue;
-      }
-      if (provenance.kind === 'arg') {
-        const argumentId = provenance.argIndex == null ? null : argumentIds?.[provenance.argIndex];
-        if (argumentId == null) {
-          composed.push({ kind: 'unknown', returnIndex: outerReturnIndex });
-          continue;
-        }
-        // Semantic IR v2 carries actual call argument values. Use the
-        // explicit formal mapping (legacy `ir.inputs` or value metadata); an
-        // ABI call ordinal alone is not proof that an internal value is a
-        // current function argument.
-        const callerArgIndex = formalArgumentIndex(argumentId);
-        if (!Number.isSafeInteger(callerArgIndex) || callerArgIndex < 0) {
-          composed.push({ kind: 'unknown', returnIndex: outerReturnIndex });
-          continue;
-        }
-        composed.push({
-          kind: 'arg',
-          returnIndex: outerReturnIndex,
-          argIndex: callerArgIndex,
-          offset: offset.toString(10),
-        });
-        continue;
-      }
-      if (provenance.kind === 'root' || provenance.kind === 'allocation') {
-        const rootEntityId = provenance.rootEntityId ?? provenance.allocationSiteId ?? null;
-        if (rootEntityId == null || !String(rootEntityId).trim()
-          // Storage space is required canonical identity on root/allocation
-          // facts (#5242): composing without it would silently degrade a
-          // non-memory return to flat memory at the caller.
-          || typeof provenance.addressSpace !== 'string' || !provenance.addressSpace.trim()) {
-          composed.push({ kind: 'unknown', returnIndex: outerReturnIndex });
-          continue;
-        }
-        const fact = {
-          kind: provenance.kind,
-          returnIndex: outerReturnIndex,
-          rootEntityId: String(rootEntityId),
-          offset: offset.toString(10),
-          addressSpace: provenance.addressSpace.trim(),
-        };
-        if (provenance.allocationSiteId != null) fact.allocationSiteId = String(provenance.allocationSiteId);
-        composed.push(fact);
-        continue;
-      }
-      composed.push({ kind: 'unknown', returnIndex: outerReturnIndex });
-    }
-    return composed;
+    const args = callArgumentFacts(callNode);
+    return alternatives.map(provenance => substituteReturnFact(provenance, args, outerReturnIndex, outerOffset));
   };
 
   for (const node of ir.nodes ?? []) {
@@ -437,6 +390,19 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
           } else break;
         }
         const terminalProducer = nodeByOutput.get(curr);
+        const inputIndex = formalArgumentIndex(curr);
+        const fact = inputIndex >= 0
+          ? { kind:'arg', returnIndex:retIdx, argIndex:inputIndex, offset:offset.toString() }
+          : { kind:'unknown', returnIndex:retIdx };
+        const row = { siteId:String(node.id), valueId:String(inputValId), returnIndex:retIdx, kind:'fact', fact };
+        if (terminalProducer?.kind === 'call' && classifyCallTargetProof(terminalProducer.call).candidateEntityIds.length) {
+          delete row.fact;
+          Object.assign(row, { kind:'call', callSiteId:String(terminalProducer.id),
+            callReturnIndex:terminalProducer.outputs.indexOf(curr), offset:offset.toString(), arguments:callArgumentFacts(terminalProducer) });
+          if (row.arguments.length > RETURN_ARGUMENT_LIMIT) returnEquationsBounded = false;
+        }
+        if (returnEquationRows.length < RETURN_EQUATION_LIMIT) returnEquationRows.push(row);
+        else returnEquationsBounded = false;
         const composed = terminalProducer?.kind === 'call'
           ? composeCallReturnProvenance(terminalProducer, curr, retIdx, offset)
           : null;
@@ -444,7 +410,6 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
           returnProvenance.push(...composed);
           continue;
         }
-        const inputIndex = formalArgumentIndex(curr);
         if (inputIndex >= 0) {
           returnProvenance.push({
             kind: 'arg',
@@ -610,6 +575,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     inputs: [...readVariables],
     returnValues: [...returnValues],
     returnProvenance,
+    returnEquations: returnEquationsBounded ? { version:1, rows:returnEquationRows } : null,
     registerEffects: [...registerEffects],
     memoryReadRegions,
     memoryWriteRegions,

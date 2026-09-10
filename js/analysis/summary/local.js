@@ -9,7 +9,7 @@ import {
 import * as core from './local-core.js';
 
 export const LOCAL_SUMMARY_ANALYZER_ID = core.LOCAL_SUMMARY_ANALYZER_ID;
-export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.3.0';
+export const LOCAL_SUMMARY_ANALYZER_VERSION = core.LOCAL_SUMMARY_ANALYZER_VERSION;
 
 function summaryForTarget(options, target) {
   return options?.calleeSummaries?.get?.(String(target))

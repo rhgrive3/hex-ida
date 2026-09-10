@@ -15,10 +15,10 @@ const ROOT_PROVENANCE = {
 
 test('#5242 contract version has one source of truth at the public boundary', () => {
   assert.equal(FUNCTION_SUMMARY_CONTRACT_VERSION, core.FUNCTION_SUMMARY_CONTRACT_VERSION);
-  assert.equal(FUNCTION_SUMMARY_CONTRACT_VERSION, '1.3.0');
+  assert.equal(FUNCTION_SUMMARY_CONTRACT_VERSION, '1.4.0');
 });
 
-test('#5242 the public wrapper stamps the current 1.3 wire version', () => {
+test('#5242 the public wrapper stamps the current 1.4 wire version', () => {
   const summary = createFunctionSummary({
     functionId: 'fn-a',
     returnProvenance: [ROOT_PROVENANCE],
@@ -27,7 +27,7 @@ test('#5242 the public wrapper stamps the current 1.3 wire version', () => {
     memoryWriteRegions: [],
     status: STATUS,
   });
-  assert.equal(summary.contractVersion, '1.3.0');
+  assert.equal(summary.contractVersion, '1.4.0');
   assert.equal(summaryIdentityMatches(summary), true);
 });
 

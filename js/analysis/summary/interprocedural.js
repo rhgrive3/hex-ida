@@ -31,10 +31,13 @@ import {
   createMemoryEffect,
   createUnknownCallEffect,
   functionSummaryDigest,
+  summaryIdentityMatches,
+  RETURN_SUMMARY_CANDIDATE_LIMIT,
 } from './contract.js';
+import { substituteReturnFact, RETURN_FACT_LIMIT } from './return-equations.js';
 
 export const INTERPROCEDURAL_ANALYZER_ID = 'phase7.summary.interprocedural';
-export const INTERPROCEDURAL_ANALYZER_VERSION = '1.3.0';
+export const INTERPROCEDURAL_ANALYZER_VERSION = '1.4.0';
 
 export const INTERPROCEDURAL_DEFAULT_BUDGET = Object.freeze({
   maxIterationsPerComponent: 16,
@@ -463,6 +466,24 @@ export function solveInterproceduralSummaries({
           changed = true;
         }
       }
+      if (!changed) {
+        // A closed recursive equation with no finite seed has bottom as its
+        // mathematical solution. That is not a public noreturn proof. Seed
+        // unknown for each still-empty return position and let THIS SAME SCC
+        // transfer propagate it before anything can escape to callers.
+        for (const functionId of component) {
+          const current = solved.get(functionId);
+          if (!current.returnEquations) continue;
+          const positions = new Set(current.returnEquations.rows.map(row => row.returnIndex));
+          for (const fact of current.returnProvenance) positions.delete(fact.returnIndex ?? 0);
+          if (!positions.size) continue;
+          const conservative = createFunctionSummary({ ...current, returnProvenance:[...current.returnProvenance,
+            ...[...positions].map(returnIndex => ({ kind:'unknown', returnIndex }))] });
+          solved.set(functionId, conservative);
+          componentDigests.set(functionId, functionSummaryDigest(conservative));
+          changed = true;
+        }
+      }
       if (!recursive) break;
     }
 
@@ -494,6 +515,46 @@ export function solveInterproceduralSummaries({
     iterations: totalIterations,
     status: status(worstCompleteness, worstStopReason),
   };
+}
+
+function composeReturns(local, locals, solved, component, snapshotId) {
+  if (!local.returnEquations) return local.returnProvenance;
+  const rows = local.returnEquations.rows;
+  const unknowns = () => [...new Set(rows.map(row => row.returnIndex))].map(returnIndex => ({ kind:'unknown', returnIndex }));
+  if (!summaryIdentityMatches(local, { functionId:local.functionId, snapshotId })
+    || local.status.completeness !== 'complete') return unknowns();
+  const facts = new Map();
+  let work = 0;
+  const add = fact => { facts.set(JSON.stringify(fact), fact); };
+  for (const row of rows) {
+    if (row.kind === 'fact') { add(row.fact); continue; }
+    const direct = local.directCalls.find(call => call.callSiteId === row.callSiteId);
+    const indirect = local.indirectCallSets.find(call => call.callSiteId === row.callSiteId);
+    const targets = direct?.targetEntityIds ?? indirect?.candidateEntityIds ?? [];
+    if ((!direct && !indirect?.exhaustive) || !targets.length || targets.length > RETURN_SUMMARY_CANDIDATE_LIMIT) {
+      add({ kind:'unknown', returnIndex:row.returnIndex }); continue;
+    }
+    for (const target of targets) {
+      if (!summaryIdentityMatches(locals.get(target), { functionId:target, snapshotId })) {
+        add({ kind:'unknown', returnIndex:row.returnIndex }); continue;
+      }
+      const callee = solved.get(target);
+      if (!callee && component.includes(target)) continue; // private bottom, revisited by the same SCC
+      if (!summaryIdentityMatches(callee, { functionId:target, snapshotId })
+        || callee.status.completeness !== 'complete' || callee.unknownCallEffects.length) {
+        add({ kind:'unknown', returnIndex:row.returnIndex }); continue;
+      }
+      const alternatives = callee.returnProvenance.filter(fact => (fact.returnIndex ?? 0) === row.callReturnIndex);
+      if (!alternatives.length && !(component.includes(target) && callee.returnEquations?.rows.some(
+        candidate => candidate.returnIndex === row.callReturnIndex))) add({ kind:'unknown', returnIndex:row.returnIndex });
+      for (const alternative of alternatives) {
+        if (++work > 65536) return unknowns();
+        add(substituteReturnFact(alternative, row.arguments, row.returnIndex, row.offset));
+        if (facts.size > RETURN_FACT_LIMIT) return unknowns();
+      }
+    }
+  }
+  return [...facts.values()];
 }
 
 function composeSummary({ functionId, locals, models, solved, component, limits, status, snapshotId, unconverged = false }) {
@@ -670,11 +731,10 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     functionId,
     inputs: local.inputs,
     returnValues: local.returnValues,
-    // Return provenance is a local return-expression fact. Composition must
-    // preserve it exactly once the component converges; otherwise the solved
-    // A3 summary becomes less informative than its local input. An unconverged
-    // optimistic state is never allowed to publish exact provenance.
-    returnProvenance: unconverged ? [] : local.returnProvenance,
+    // Legacy summaries keep their facts. New local producers preserve the
+    // return expressions so the existing SCC can discover recursive values.
+    returnProvenance: unconverged ? [] : composeReturns(local, locals, solved, component, snapshotId),
+    returnEquations: local.returnEquations,
     registerEffects: local.registerEffects,
     memoryReadRegions: mergeEffects(reads, limits.maxEffectsPerSummary),
     memoryWriteRegions: mergeEffects(writes, limits.maxEffectsPerSummary),
