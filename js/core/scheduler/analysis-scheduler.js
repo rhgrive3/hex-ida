@@ -340,7 +340,11 @@ export class AnalysisScheduler {
     if (!dependencies.length) return [];
     const waitController=new AbortController();
     const onParentAbort=()=>waitController.abort(abortError(task.controller.signal));
-    if (task.controller.signal.aborted) onParentAbort(); else task.controller.signal.addEventListener('abort',onParentAbort,{once:true});
+    if (task.controller.signal.aborted) onParentAbort();
+    else {
+      task.controller.signal.addEventListener('abort',onParentAbort,{once:true});
+      if (task.controller.signal.aborted) onParentAbort();
+    }
     const promises=dependencies.map((dependency)=>this.#request(dependency,ancestry,waitController.signal));
     try { return await Promise.all(promises); }
     catch (error) {
