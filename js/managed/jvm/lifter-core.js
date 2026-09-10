@@ -432,6 +432,12 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
             valueBits: field.bits,
             valueCategory: field.category,
             isWrite,
+            // Canonical field location identity: downstream semantic memory
+            // reasoning needs same-field write→read and distinct-field
+            // non-alias facts, which the receiver-derived address alone
+            // cannot express (#7861 review).
+            kind: isStatic ? 'static' : 'instance',
+            fieldIdentity: { owner: field.owner, name: field.name, descriptor: field.descriptor },
             // JLS §17.4.5: a resolved volatile access carries synchronizes-with
             // authority; an unresolved owner must not be silently treated as
             // plain (fail-closed partial, #7861).

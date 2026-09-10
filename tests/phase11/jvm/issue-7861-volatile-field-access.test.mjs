@@ -116,3 +116,16 @@ test('#7861 the shared bridge carries volatile authority into the Semantic IR', 
   const plainStoreAccess = plainWrite.semanticIr.nodes.find((n) => n.kind === 'store').memory;
   assert.equal(plainStoreAccess.volatility, 'unknown');
 });
+
+test('#7861 the bridge preserves canonical field identity on semantic memory nodes', () => {
+  const lower = (options) => lowerVMEffectsToSemanticIr(
+    liftJvmMethod(0, parseJvm(buildClass(options))),
+  );
+  const loadNode = lower({ opcode: 0xb2, volatileField: true }).semanticIr.nodes.find((n) => n.kind === 'load');
+  const storeNode = lower({ opcode: 0xb3, volatileField: true }).semanticIr.nodes.find((n) => n.kind === 'store');
+  const loadIdentity = loadNode.attributes.fieldIdentity;
+  const storeIdentity = storeNode.attributes.fieldIdentity;
+  assert.deepEqual(loadIdentity, { owner: 'A', name: 'x', descriptor: 'I', static: true });
+  assert.deepEqual(storeIdentity, loadIdentity);
+  assert.deepEqual(loadNode.attributes.fieldIdentity, storeNode.attributes.fieldIdentity);
+});
