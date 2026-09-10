@@ -1,3 +1,4 @@
+import { stableDigest } from '../core/identity/index.js';
 import { validatePluginManifest, checkManifestCompatibility, PluginCompatibilityError } from './plugin-manifest.js';
 
 const TYPES = new Set(['format', 'architecture', 'analyzer', 'knowledgeProvider', 'signatureProvider', 'recognitionProvider', 'viewContribution', 'goalProvider']);
@@ -190,6 +191,25 @@ function validateContributionId(id) {
   return id;
 }
 
+const LEGACY_ANALYZER_PLUGIN_PREFIX = 'legacy.analyzer.';
+const LEGACY_ANALYZER_HASHED_PLUGIN_PREFIX = 'legacy.analyzer-hash.';
+const PLUGIN_ID_MAX_LENGTH = 128;
+
+function legacyAnalyzerPluginId(id) {
+  const direct = `${LEGACY_ANALYZER_PLUGIN_PREFIX}${id}`;
+  if (direct.length <= PLUGIN_ID_MAX_LENGTH) return direct;
+
+  // Keep long synthetic IDs in a disjoint namespace so no valid short legacy
+  // analyzer ID can alias the bounded representation. The contribution ID
+  // itself remains untouched and continues to carry the public identity.
+  const digest = stableDigest(id);
+  const retainedLength = PLUGIN_ID_MAX_LENGTH
+    - LEGACY_ANALYZER_HASHED_PLUGIN_PREFIX.length
+    - 1
+    - digest.length;
+  return `${LEGACY_ANALYZER_HASHED_PLUGIN_PREFIX}${id.slice(0, retainedLength)}.${digest}`;
+}
+
 export class PlatformPluginRegistry {
   constructor(options = {}) {
     this.entries = new Map([...TYPES].map((type) => [type, new Map()]));
@@ -205,7 +225,7 @@ export class PlatformPluginRegistry {
     if (!contribution || typeof contribution !== 'object') throw new TypeError('plugin contribution must be an object');
     const validId = validateContributionId(id);
     const legacyManifest = {
-      id: `legacy.analyzer.${validId}`,
+      id: legacyAnalyzerPluginId(validId),
       name: `Legacy analyzer ${validId}`,
       version: '1.0.0',
       apiVersion: '2.0.0',
