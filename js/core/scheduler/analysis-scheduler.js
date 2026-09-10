@@ -329,7 +329,7 @@ export class AnalysisScheduler {
     if (task.controller.signal.aborted) throw abortError(task.controller.signal);
     if (cached.status==='hit') {
       this.metrics.cacheHits++;
-      this.states.set(task.artifactId,'completed');
+      task.state='completed'; this.states.set(task.artifactId,'completed');
       this.#emit('cache.hit', task, { source:'store' });
       return {...cached,state:'completed',reused:true};
     }
@@ -422,7 +422,7 @@ export class AnalysisScheduler {
     budget.checkCancelled();
     task.phase='publish';
     const published=await this.store.publish(task.descriptor,payload,{ signal,completeness:task.request.completeness??'complete',validate:task.request.validate,creation:task.request.creation });
-    this.metrics.completedJobs++; this.states.set(task.artifactId,'completed'); task.phase='completed';
+    this.metrics.completedJobs++; task.state='completed'; this.states.set(task.artifactId,'completed'); task.phase='completed';
     this.#emit('job.completed', task, { published: true });
     return {...published,state:'completed',reused:false,budget:budget.snapshot()};
   }
@@ -431,12 +431,13 @@ export class AnalysisScheduler {
     if (task.superseded&&task.controller.signal.aborted) {
       this.metrics.cancelledJobs++;
       const phase = task.state === 'running' ? 'running' : (task.state === 'ready' || task.phase === 'ready') ? 'queued' : 'waiting-dependency';
+      task.state='cancelled';
       this.#emit('job.cancelled', task, { phase, superseded:true });
       return;
     }
     if (error instanceof BudgetExceededError) {
       this.metrics.budgetExhaustions++;
-      this.states.set(task.artifactId,'budget-exhausted');
+      task.state='budget-exhausted'; this.states.set(task.artifactId,'budget-exhausted');
       this.#emit('budget.exhausted', task, {
         resource: error.resource ?? null,
         limit: error.limit ?? null,
@@ -446,14 +447,14 @@ export class AnalysisScheduler {
     }
     if (task.controller.signal.aborted) {
       this.metrics.cancelledJobs++;
-      this.states.set(task.artifactId,'cancelled');
       const phase = task.state === 'running' ? 'running' : (task.state === 'ready' || task.phase === 'ready') ? 'queued' : 'waiting-dependency';
+      task.state='cancelled'; this.states.set(task.artifactId,'cancelled');
       this.#emit('job.cancelled', task, { phase });
       return;
     }
     if (error instanceof SchedulerDependencyError) {
       this.metrics.failedJobs++;
-      this.states.set(task.artifactId,'failed');
+      task.state='failed'; this.states.set(task.artifactId,'failed');
       this.#emit('dependency.failed', task, {
         dependencyArtifactId: error.cause?.artifactId || error.artifactId || null,
       });
@@ -462,13 +463,13 @@ export class AnalysisScheduler {
     if (task.phase==='cache'||task.phase==='publish'||isStorageFailure(error)) {
       this.metrics.failedJobs++;
       this.metrics.storageFailures++;
-      this.states.set(task.artifactId,'failed');
+      task.state='failed'; this.states.set(task.artifactId,'failed');
       this.#emit('storage.failed', task, { code: error.code || null });
       return;
     }
     this.metrics.failedJobs++;
     if (task.phase==='producer') this.metrics.producerFailures++;
-    this.states.set(task.artifactId,'failed');
+    task.state='failed'; this.states.set(task.artifactId,'failed');
     this.#emit('job.failed', task, { code: error.code || null, name: error.name || 'Error' });
   }
 
