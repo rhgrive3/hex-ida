@@ -249,7 +249,9 @@ function installDemandRecognition(app) {
   const originalApplySlice = typeof app.applySlice === 'function' ? app.applySlice.bind(app) : null;
   const originalObjc = typeof app.ensureObjc === 'function' ? app.ensureObjc.bind(app) : null;
   const originalSwift = typeof app.ensureSwift === 'function' ? app.ensureSwift.bind(app) : null;
-  const bootstrapEpochs = new Set(); let acceptedKey = null;
+  const bootstrapEpochs = new Map(); let acceptedKey = null;
+  const beginBootstrap = (epoch) => bootstrapEpochs.set(epoch, (bootstrapEpochs.get(epoch) ?? 0) + 1);
+  const endBootstrap = (epoch) => { const owners = bootstrapEpochs.get(epoch) ?? 0; if (owners <= 1) bootstrapEpochs.delete(epoch); else bootstrapEpochs.set(epoch, owners - 1); };
   const invalidate = (before) => { const after = recognitionInputKey(app); if (before !== after && app.recognition) app.recognition = null; if (before !== after) acceptedKey = null; };
   if (originalObjc) app.ensureObjc = async function (...args) { const before = recognitionInputKey(app); try { return await originalObjc(...args); } finally { invalidate(before); } };
   if (originalSwift) app.ensureSwift = async function (...args) { const before = recognitionInputKey(app); try { return await originalSwift(...args); } finally { invalidate(before); } };
@@ -282,8 +284,13 @@ function installDemandRecognition(app) {
   throw error;
 };
 if (originalApplySlice) app.applySlice = function demandApplySlice(...args) {
-    const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0); bootstrapEpochs.add(epoch);
-    const result = originalApplySlice(...args); const clearBootstrap = () => bootstrapEpochs.delete(epoch); void Promise.resolve(app.symbolsReady).then(clearBootstrap, clearBootstrap); return result;
+    const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0); beginBootstrap(epoch);
+    try {
+      const result = originalApplySlice(...args); const clearBootstrap = () => endBootstrap(epoch); void Promise.resolve(app.symbolsReady).then(clearBootstrap, clearBootstrap); return result;
+    } catch (error) {
+      endBootstrap(epoch);
+      throw error;
+    }
   };
   return () => `${RUNTIME_VERSION}:${acceptedKey ?? recognitionInputKey(app)}`;
 }
