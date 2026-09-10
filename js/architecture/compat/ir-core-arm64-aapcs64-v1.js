@@ -288,11 +288,14 @@ export function classifyCallArguments(insn, opts = {}) {
     }
     const slots=Math.max(1,Math.ceil((c.hfa?c.members*c.bits:c.bits)/64));
     // AAPCS64 Stage C: NSAA is rounded up to the argument's natural alignment
-    // before stack placement (C.4 for HFA/short-vector candidates, C.14
-    // max(8, natural alignment) otherwise) (#4942). Only primitive declared
-    // alignments are honored; structured evidence is never coerced.
+    // before stack placement (C.4 for HFA/short-vector/quad-FP candidates,
+    // C.14 max(8, natural alignment) otherwise) (#4942). Quad-precision FP is
+    // a canonical classifier record (fp class at a proven 128-bit width), not
+    // broadened metadata. Only primitive declared alignments are honored;
+    // structured evidence is never coerced.
     const declaredAlign = param?.alignment;
-    const naturalAlign = c.hfa || c.vector
+    const quadFp = c.fp && !c.hfa && !c.vector && c.bits === 128;
+    const naturalAlign = c.hfa || c.vector || quadFp
       ? Math.max(8, Math.ceil(c.bits / 8))
       : (typeof declaredAlign === 'number' && Number.isSafeInteger(declaredAlign) && declaredAlign > 0
         ? Math.max(8, declaredAlign)

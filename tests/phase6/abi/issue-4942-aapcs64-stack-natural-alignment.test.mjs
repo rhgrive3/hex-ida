@@ -75,6 +75,40 @@ test('#4942: an HFA with 128-bit members rounds NSAA to 16', () => {
   assert.equal(hfa.offset, 16);
 });
 
+test('#4942: a 128-bit quad-FP stack argument rounds NSAA to 16 (C.4)', () => {
+  const out = classifyCallArguments({
+    callPrototype: {
+      args: [
+        ...EIGHT_DOUBLES,
+        { type: 'double', bits: 64 },
+        { abiClass: 'fp', type: '__float128', bits: 128 },
+      ],
+    },
+  }, {});
+  const [, quad] = out.arguments.slice(8);
+  const spill = out.arguments[8];
+  assert.equal(spill.location, 'stack');
+  assert.equal(spill.offset, 0, 'the 8-byte spill keeps the first stack slot');
+  assert.equal(quad.location, 'stack');
+  assert.equal(quad.offset, 16, 'quad FP natural alignment inserts the C.4 hole');
+  assert.equal(quad.bytes, 16);
+});
+
+test('#4942: a 64-bit FP stack argument keeps 8-byte NSAA steps', () => {
+  const out = classifyCallArguments({
+    callPrototype: {
+      args: [
+        ...EIGHT_DOUBLES,
+        { type: 'double', bits: 64 },
+        { type: 'double', bits: 64 },
+      ],
+    },
+  }, {});
+  const [, next] = out.arguments.slice(8);
+  assert.equal(next.location, 'stack');
+  assert.equal(next.offset, 8, 'doubles are not quad-FP candidates');
+});
+
 test('#4942: an explicitly declared 16-byte alignment is honored on the stack', () => {
   const out = classifyCallArguments({
     callPrototype: {
