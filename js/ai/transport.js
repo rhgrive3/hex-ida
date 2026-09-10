@@ -10,8 +10,8 @@ export async function requestJSON(url, body, {
   fetchImpl = globalThis.fetch,
 } = {}) {
   if (typeof fetchImpl !== 'function') throw new AIError('provider_error', 'Fetch is unavailable.');
-  const externalSignal = normalizeExternalSignal(signal);
-  if (externalSignal?.aborted) throw externalAbortError(readExternalAbortReason(externalSignal));
+  const external = normalizeExternalSignal(signal);
+  if (external?.initiallyAborted) throw externalAbortError(readExternalAbortReason(external.source));
   const responseLimit = normalizeLimit(maxResponseBytes);
   const timeoutDelay = normalizeTimeout(timeoutMs);
   const controller = new AbortController();
@@ -21,22 +21,28 @@ export async function requestJSON(url, body, {
   let externalAbortReason = 'cancelled';
   const abort = () => {
     externalAborted = true;
-    externalAbortReason = readExternalAbortReason(externalSignal);
+    externalAbortReason = readExternalAbortReason(external?.source);
     controller.abort(externalAbortReason);
   };
   try {
-    if (externalSignal) {
+    if (external) {
       try {
-        externalSignal.addEventListener('abort', abort, { once: true });
+        external.addEventListener('abort', abort, { once: true });
         listenerAttached = true;
       } catch {
         // EventTarget-like shims can throw after partially registering. Roll
         // back best-effort before any timeout or transport I/O is allocated.
-        try { externalSignal.removeEventListener('abort', abort); } catch { /* best effort */ }
+        try { external.removeEventListener('abort', abort); } catch { /* best effort */ }
         throw new AIError('provider_error', 'AI transport signal must be AbortSignal-compatible.');
       }
-      // Close the race between the synchronous check above and listener setup.
-      if (externalSignal.aborted) abort();
+      // Close the race between the initial snapshot and listener setup. A
+      // hostile/unreadable live abort state is a malformed signal, not a
+      // reason to proceed with transport I/O after validation.
+      const afterRegistrationAborted = readExternalAborted(external.source);
+      if (afterRegistrationAborted === null) {
+        throw new AIError('provider_error', 'AI transport signal must be AbortSignal-compatible.');
+      }
+      if (afterRegistrationAborted) abort();
     }
     timeout = setTimeout(() => controller.abort('timeout'), timeoutDelay);
     if (controller.signal.aborted) {
@@ -79,7 +85,7 @@ export async function requestJSON(url, body, {
   } finally {
     if (timeout != null) clearTimeout(timeout);
     if (listenerAttached) {
-      try { externalSignal.removeEventListener('abort', abort); } catch { /* cleanup must not replace the request outcome */ }
+      try { external.removeEventListener('abort', abort); } catch { /* cleanup must not replace the request outcome */ }
     }
   }
 }
@@ -87,17 +93,36 @@ export async function requestJSON(url, body, {
 function normalizeExternalSignal(value) {
   if (value == null) return null;
   try {
-    if ((typeof value !== 'object' && typeof value !== 'function')
-        || typeof value.aborted !== 'boolean'
-        || typeof value.addEventListener !== 'function'
-        || typeof value.removeEventListener !== 'function') {
+    if (typeof value !== 'object' && typeof value !== 'function') {
       throw new AIError('provider_error', 'AI transport signal must be AbortSignal-compatible.');
     }
+    const initiallyAborted = value.aborted;
+    const addEventListener = value.addEventListener;
+    const removeEventListener = value.removeEventListener;
+    if (typeof initiallyAborted !== 'boolean'
+        || typeof addEventListener !== 'function'
+        || typeof removeEventListener !== 'function') {
+      throw new AIError('provider_error', 'AI transport signal must be AbortSignal-compatible.');
+    }
+    return {
+      source: value,
+      initiallyAborted,
+      addEventListener: (...args) => Reflect.apply(addEventListener, value, args),
+      removeEventListener: (...args) => Reflect.apply(removeEventListener, value, args),
+    };
   } catch (error) {
     if (error instanceof AIError) throw error;
     throw new AIError('provider_error', 'AI transport signal must be AbortSignal-compatible.');
   }
-  return value;
+}
+
+function readExternalAborted(signal) {
+  try {
+    const aborted = signal?.aborted;
+    return typeof aborted === 'boolean' ? aborted : null;
+  } catch {
+    return null;
+  }
 }
 
 function readExternalAbortReason(signal) {
