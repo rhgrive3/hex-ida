@@ -385,9 +385,20 @@ export class AnalysisScheduler {
     const next=(this.dagInbound.get(artifactId)||0)+delta;
     if (next<0) throw new Error('scheduler-dag-inbound-underflow');
     this.dagInbound.set(artifactId,next);
+    if (next===0&&this.#dropOrphanDagPlaceholder(artifactId)) return next;
     if (next===0&&this.terminalHistory.has(artifactId)&&!this.inflight.has(artifactId)) this.terminalRoots.add(artifactId);
     else this.terminalRoots.delete(artifactId);
     return next;
+  }
+
+  #dropOrphanDagPlaceholder(artifactId) {
+    if (this.inflight.has(artifactId)||this.terminalHistory.has(artifactId)||this.states.has(artifactId)) return false;
+    const dependencies=this.dag.get(artifactId);
+    if (!dependencies||dependencies.length!==0) return false;
+    this.dag.delete(artifactId);
+    this.dagInbound.delete(artifactId);
+    this.terminalRoots.delete(artifactId);
+    return true;
   }
 
   #rememberTerminal(artifactId) {

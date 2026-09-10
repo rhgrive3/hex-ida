@@ -113,4 +113,27 @@ const quietStore = {
   assert.equal(s.stats().dagNodes, 1);
 }
 
+// Failed dependency admission must not leave zero-inbound placeholder DAG nodes.
+// A canonical parent may name the dependency while the child request itself is
+// rejected before becoming a task; repeated failures must remain fully bounded.
+{
+  const { scheduler: s } = scheduler({ store: quietStore, terminalHistoryLimit: 0 });
+  for (let i = 0; i < 8; i++) {
+    const dependency = descriptor(`terminal-history-invalid-dependency-${i}`);
+    const parent = descriptor(`terminal-history-invalid-parent-${i}`, [dependency]);
+    await assert.rejects(s.request({
+      descriptor: parent,
+      dependencies: [{ descriptor: { artifactId: dependency.artifactId }, produce: async () => ({ unreachable: true }) }],
+      produce: async () => ({ unreachable: true }),
+    }));
+    const stats = s.stats();
+    assert.equal(stats.inflight, 0, JSON.stringify(stats));
+    assert.equal(stats.queued, 0, JSON.stringify(stats));
+    assert.equal(stats.running, 0, JSON.stringify(stats));
+    assert.equal(stats.terminalHistoryNodes, 0, JSON.stringify(stats));
+    assert.equal(stats.dagNodes, 0, JSON.stringify(stats));
+    assert.equal(stats.dagEdges, 0, JSON.stringify(stats));
+  }
+}
+
 console.log('phase4 scheduler issue #5928 terminal history bound: PASS');
