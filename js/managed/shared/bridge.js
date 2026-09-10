@@ -834,6 +834,11 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
         exprMemo.set(valId, c);
         return c;
       }
+      if (val.metadata?.stringRef != null) {
+        const s = expr.variable(JSON.stringify(val.metadata.stringRef), val.machineType?.widthBits || 32);
+        exprMemo.set(valId, s);
+        return s;
+      }
       const vExpr = expr.variable(safeIdent(val.id || `v_${valId}`));
       exprMemo.set(valId, vExpr);
       return vExpr;
@@ -844,6 +849,11 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
     let res = null;
 
     if (n.kind === 'const') {
+      if (val.metadata?.stringRef != null) {
+        res = expr.variable(JSON.stringify(val.metadata.stringRef), bits);
+        exprMemo.set(valId, res);
+        return res;
+      }
       const cVal = val.metadata?.constant != null ? BigInt(val.metadata.constant) : 0n;
       res = expr.constant(cVal, bits);
     } else if (n.kind === 'binary') {
