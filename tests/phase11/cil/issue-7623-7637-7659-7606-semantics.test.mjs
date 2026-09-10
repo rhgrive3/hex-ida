@@ -116,7 +116,7 @@ test('#7637/#7659 bind spec-valid Property/Event accessors and preserve Property
   assert.equal(image.events.length, 1);
   assert.deepEqual(image.properties[0].rawSignature, [0x28,0x01,0x08,0x08]);
   assert.equal(image.properties[0].signature.hasThis, true);
-  assert.deepEqual(image.properties[0].signature.propertyType, { stackType:'int32', bits:32 });
+  assert.deepEqual(image.properties[0].signature.propertyType, { stackType:'int32', bits:32, primitive:'i4' });
   assert.equal(image.properties[0].signature.parameters.length, 1);
   assert.deepEqual(image.properties[0].accessors.map(x => x.kind), ['getter','setter']);
   assert.deepEqual(image.events[0].accessors.map(x => x.kind), ['addOn','removeOn','fire']);
