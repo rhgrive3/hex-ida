@@ -2,7 +2,8 @@ import { sourceOf } from '../ast/nodes.js';
 import { renderProvenanceRecord } from './contract.js';
 import { readLineExpressionHistory } from './projection.js';
 import { readSwitchLineHistory, readSwitchRenderHistory } from '../switch.js';
-import { readSemanticSuppressionHistory, readSemanticStoreLineHistory, readSemanticStoreRenderHistory } from '../semantic-core.js';
+import { readSemanticSuppressionHistory, readSemanticStoreLineHistory, readSemanticStoreRenderHistory,
+  readSemanticStatementLineHistory, readSemanticStatementRenderHistory } from '../semantic-core.js';
 import { readProjectedStateNormalization, projectedStateNormalizationExpected } from '../../semantics/compat/semantic-ir-v2-to-v1.js';
 import { readFacadeStateNormalization, readFacadePreservedStateHistory, facadePreservedStateTransitionExpected,
   readFacadeLocationHistory, facadeLocationTransitionExpected,
@@ -15,7 +16,7 @@ const readPublicStateNormalization = ir => readFacadeStateNormalization(ir) || r
 
 function readRenderedHistory(line, ir) {
   return readLineExpressionHistory(line, ir) || readSwitchLineHistory(line, ir)?.records
-    || readSemanticStoreLineHistory(line, ir)?.records || null;
+    || readSemanticStoreLineHistory(line, ir)?.records || readSemanticStatementLineHistory(line, ir)?.records || null;
 }
 
 export const RENDER_PROVENANCE_VERSION = 1;
@@ -393,14 +394,17 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   const initialStores = readSemanticStoreRenderHistory(result);
   if (result.semanticStoreRenderHistory?.completeness === 'incomplete') reasons.add('incomplete-initial-store-history');
   if (result.semanticStoreRenderHistory && !initialStores && !result.cAst) reasons.add('unavailable-initial-store-history');
+  const initialStatements = readSemanticStatementRenderHistory(result);
+  if (result.semanticStatementRenderHistory?.completeness === 'incomplete') reasons.add('incomplete-initial-statement-history');
+  if (result.semanticStatementRenderHistory && !initialStatements && !result.cAst) reasons.add('unavailable-initial-statement-history');
   if (result.phase8Projection?.history?.completeness === 'incomplete') reasons.add('incomplete-projection-history');
   const truncatedScopes = [];
   let entitiesTruncated = 0;
   let ledgerTruncated = 0;
 
   const rewritten = Array.isArray(result.rewriteProof) ? result.rewriteProof : [];
-  const expressionRecords = switches || initialStores
-    ? [...new Set([...rewritten, ...(switches?.records || []), ...(initialStores?.records || [])])] : rewritten;
+  const expressionRecords = switches || initialStores || initialStatements
+    ? [...new Set([...rewritten, ...(switches?.records || []), ...(initialStores?.records || []), ...(initialStatements?.records || [])])] : rewritten;
   const projection = result.phase8Projection;
   const rawRecords = Array.isArray(projection?.history?.transforms) ? projection.history.transforms
     : Array.isArray(projection?.transforms) ? projection.transforms : [];

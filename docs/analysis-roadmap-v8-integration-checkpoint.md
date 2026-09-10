@@ -3890,6 +3890,67 @@ transforms and the full rendered/removed/merged class audit. C4-02/04/05 and
 original23/frozen135requirements are still open. Goal ACTIVE; integration/release
 acceptance LOCKED. No issue/performance/device/environment lane is closed here.
 
+## C4-03 actual initial call/return rendered owners
+
+Continuation from ABI argument-binding checkpoint `18d7ebb046c2aa02c607050a97f8100a0a14e1ef`,
+on the same integration branch and existing PR #7036. Existing #3421 remains
+the reused provenance foundation at `4cd5b3eb9200b1180985b9df3a74f8245a5cc928`.
+The live scoped call/render PR search found no additional matching title;
+this is not an exhaustive no-duplicate claim. No main/component merge occurred.
+
+The actual semantic emitter now retains private CALL and RET line producers,
+including materialized call assignments, standalone calls, value-bearing and
+empty returns, and the selected final faithful-CFG fallback emission. Folded
+runtime calls retain their existing omission history and receive no invented
+emitted call owner. An abandoned structured attempt is not published as final
+render history. Each initial record retains canonical origins and the explicit
+proof kind `observed-call-return-render-not-abi-equivalence`.
+
+One bounded pre-render IR observation precedes symbol/prototype callbacks. It
+retains scanned values, instruction/block positions, dominance and the native
+argument Map, plus actual reverse-use arrays consumed by materialization.
+Reverse-use getters are not invoked by the observer. Output lines and selected
+render data are separately observed. Canonical changes, copied lines, changed
+output, getter roots and budget/cancellation failures cannot issue a binding.
+Owned compatibility spelling normalization retains the original producer check.
+
+The original graph implementation uses both native dominance Sets and lazy
+DominanceView objects. The latter previously failed the recovery observer's
+native-Set-only boundary. The existing control-flow producer now exposes only
+its privately issued view's backing data to the shared observer. Neither
+dominance membership nor the CFG is recomputed. The class algorithms and public
+enumerable data are unchanged. Copied class-shaped objects, changed methods,
+backing index/idom/reachability changes and replaced roots are rejected.
+`js/controlflow.js` is explicitly integration-owned for this narrow observation
+bridge; the existing Phase 8 lane still rejects ownership of that shared path.
+The exact routing and its negative relabeling case have a permanent regression.
+
+The actual C AST consumer carries initial records and canonical ABI bindings for
+standalone calls and void returns with an intentionally null scalar expression.
+It does not create a fake scalar AST or infer ownership from a row/text match.
+Value-bearing returns reuse their existing expression consumer and retain the
+earlier initial-emitter check. Existing Phase 8 handoffs, replay and query
+navigation carry these privately bound records without new semantic IDs.
+
+Owned regression scope: 17 tests covering normal decoded scalar/FP/void/unknown/
+aggregate returns, materialized/standalone/folded calls, initial and core/public
+consumers, stale/copy/getter/callback boundaries, normalization, budgets,
+cancellation, live query snapshots, faithful fallback, lazy dominance inputs and
+exact ownership. A separate 24-case comparison checks full initial public result,
+IR and original reaching/return/call helper and symbol/prototype callback counts
+against the parent: 23 decoded synthetic cases plus one explicit canonical CFG
+fallback, not compiler corpus proof. Five targeted negative controls remove the
+issuer, original preimage, reverse-use observation, original consumer handoff and
+normalization predecessor check. Failed diagnostics remain retained and are not
+counted as green proof. Fixed-head verification, generated zero-diff rebuild and
+remote-head equality are recorded separately in durable checkpoint receipts.
+
+Remaining: the exhaustive rendered/removed/merged transformation-class audit,
+other initial control/unsupported expression histories, C4-02/04/05 requirements
+and the original23/frozen135 denominator. This increment does not close C4-03,
+claim full-repository or independent verification, or unlock integration/release.
+Goal ACTIVE; device/environment/issues/performance work remains with its owners.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

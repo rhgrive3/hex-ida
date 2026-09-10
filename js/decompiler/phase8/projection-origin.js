@@ -1,32 +1,44 @@
 /** Bounded data snapshot of an existing producer's projection. No evaluation,
  * proof minting or AST semantics live here. Issuance belongs to pipeline.js. */
 import { ownDataEntries, PROJECTION_LIMITS, captureProjectionIrData } from '../../core/identity/live-data.js';
+import { readDominanceViewInputs } from '../../controlflow.js';
 export { PROJECTION_LIMITS, captureProjectionIrData } from '../../core/identity/live-data.js';
 
-// Dominance is an existing array of native Sets, not a plain-data graph. Observe
-// that exact representation separately; never convert or recompute the IR facts.
+// Dominance uses native Sets or the control-flow producer's issued lazy views.
+// Observe their backing data; never convert or recompute the canonical facts.
 function captureRecoveryDominators(value, shouldAbort) {
   if (value == null) return { edges:0, matches:() => true };
   if (!Array.isArray(value)) throw new TypeError('recovery-dominators-array-required');
   const entries = ownDataEntries(value, PROJECTION_LIMITS.nodes), length = value.length;
   const size = Object.getOwnPropertyDescriptor(Set.prototype, 'size').get;
   let edges = entries.length;
-  const sets = entries.map(([key, set]) => {
-    if (shouldAbort?.()) throw new TypeError('recovery-dominators-cancelled');
+  const nativeSets = new Map(), roots = [];
+  const captureSet = set => {
+    if (nativeSets.has(set)) return;
     if (Object.getPrototypeOf(set) !== Set.prototype || Reflect.ownKeys(set).length) throw new TypeError('recovery-dominator-set-required');
     edges += size.call(set);
     if (edges > PROJECTION_LIMITS.edges) throw new TypeError('recovery-dominators-budget');
     const members = [...Set.prototype.values.call(set)];
     if (members.some(member => !Number.isSafeInteger(member) || member < 0)) throw new TypeError('recovery-dominator-index-required');
-    return { key, set, members };
+    nativeSets.set(set, members);
+  };
+  const sets = entries.map(([key, set]) => {
+    if (shouldAbort?.()) throw new TypeError('recovery-dominators-cancelled');
+    const view = readDominanceViewInputs(set);
+    if (view) { captureSet(view.reachable); roots.push(view.idom, view.index); }
+    else captureSet(set);
+    return { key, set, view };
   });
+  const data = captureProjectionIrData(roots, shouldAbort); edges += data.metrics.edges;
+  if (edges > PROJECTION_LIMITS.edges) throw new TypeError('recovery-dominators-budget');
   return { edges, matches() {
     try {
       const current = ownDataEntries(value, PROJECTION_LIMITS.nodes);
-      return value.length === length && current.length === entries.length && sets.every(({ key, set, members }, index) =>
+      return value.length === length && current.length === entries.length && sets.every(({ key, set, view }, index) =>
         current[index][0] === key && current[index][1] === set
-        && Object.getPrototypeOf(set) === Set.prototype && !Reflect.ownKeys(set).length
-        && size.call(set) === members.length && members.every(member => Set.prototype.has.call(set, member)));
+        && (!view || (() => { const now = readDominanceViewInputs(set); return now && Object.keys(view).every(key => now[key] === view[key]); })()))
+        && [...nativeSets].every(([set, members]) => Object.getPrototypeOf(set) === Set.prototype && !Reflect.ownKeys(set).length
+          && size.call(set) === members.length && members.every(member => Set.prototype.has.call(set, member))) && data.matches();
     } catch { return false; }
   } };
 }

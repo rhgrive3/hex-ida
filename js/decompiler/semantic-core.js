@@ -15,7 +15,7 @@ import { sourceOf, mergeSource } from './ast/nodes.js';
 import { isNZCVCondition, renderNZCVCondition } from './flag-semantics.js';
 import { renderIndexedMemory } from './address-semantics.js';
 import { integerText } from './pretty/c.js';
-import { captureProjectionIrData, PROJECTION_LIMITS } from './phase8/projection-origin.js';
+import { captureProjectionIrData, captureRecoveryIrData, PROJECTION_LIMITS } from './phase8/projection-origin.js';
 import { expressionOriginHistory } from './rewrite/engine.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -27,7 +27,81 @@ const MAX_EXPR_NODES = 512;
 const MAX_BLOCKS = 6000;
 
 const storeRenderLines = new WeakMap(), storeRenderHistories = new WeakMap();
+const statementRenderLines = new WeakMap(), statementRenderHistories = new WeakMap();
 const historyCap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
+
+export function readSemanticStatementLineHistory(line, ir) {
+  const entry = statementRenderLines.get(line);
+  return entry && entry.ir === ir && entry.isCurrent() ? entry : null;
+}
+
+export function readSemanticStatementRenderHistory(result) {
+  const entry = statementRenderHistories.get(result);
+  return entry && entry.ir === result.ir && entry.disposition === result.semanticStatementRenderHistory ? entry : null;
+}
+
+function beginStatementRenderHistory(ctx) {
+  const history = ctx.statementRenderHistory;
+  if (!ctx.ir.instructions.some(inst => inst.op === OP.CALL || inst.op === OP.RET)) return;
+  try {
+    if (history.limit <= 0 || history.edges <= 0 || history.consumers <= 0) throw new Error('initial-statement-budget');
+    // One bounded preimage, before rendering or prototype/symbol callbacks.
+    // Reaching selection scans values beyond the finally selected operands;
+    // reusing the existing IR observer keeps those rejected candidates too.
+    const callsDescriptor = Object.getOwnPropertyDescriptor(ctx.model, 'calls');
+    if (callsDescriptor && (!Object.hasOwn(callsDescriptor, 'value') || !callsDescriptor.enumerable)) throw new Error('initial-statement-model-data-required');
+    const calls = callsDescriptor?.value, argsDescriptor = Object.getOwnPropertyDescriptor(ctx.ir, 'args');
+    if (argsDescriptor && (!Object.hasOwn(argsDescriptor, 'value') || !argsDescriptor.enumerable)) throw new Error('initial-statement-args-data-required');
+    const args = argsDescriptor?.value;
+    if (args != null && (Object.getPrototypeOf(args) !== Map.prototype || Reflect.ownKeys(args).length)) throw new Error('initial-statement-args-map-required');
+    const bindings = args == null ? [] : [...Map.prototype.entries.call(args)];
+    if (bindings.length > 512) throw new Error('initial-statement-args-budget');
+    const observation = captureRecoveryIrData(ctx.ir, [calls, bindings, ...ctx.ir.values.map(value => Object.getOwnPropertyDescriptor(value, 'uses')?.value)]);
+    history.edges -= observation.metrics.edges;
+    if (history.edges < 0) throw new Error('initial-statement-budget');
+    const sameData = (object, key, descriptor) => {
+      const now = Object.getOwnPropertyDescriptor(object, key);
+      return descriptor ? !!now && Object.hasOwn(now, 'value') && now.enumerable && now.value === descriptor.value : !now;
+    };
+    const size = Object.getOwnPropertyDescriptor(Map.prototype, 'size').get;
+    history.canonical = { isCurrent:() => sameData(ctx.model, 'calls', callsDescriptor) && sameData(ctx.ir, 'args', argsDescriptor)
+      && (args == null || Object.getPrototypeOf(args) === Map.prototype && !Reflect.ownKeys(args).length && size.call(args) === bindings.length
+        && bindings.every(([key, value]) => Map.prototype.has.call(args, key) && Map.prototype.get.call(args, key) === value)) && observation.matches() };
+  } catch { history.edges = 0; }
+}
+
+function retainStatementRenderLine(node, inst, detail, ctx) {
+  const history = ctx.statementRenderHistory;
+  if (history.events.length >= history.limit) { history.reasons.add('initial-statement-history-budget'); return; }
+  const record = Object.freeze({ rule:inst.op === OP.CALL ? 'render-initial-call' : 'render-initial-return', phase:'initial-semantic-render',
+    before:`canonical:${inst.op}:${inst.id}`, after:`statement:${inst.op}`,
+    evidence:Object.freeze({ kind:'observed-call-return-render-not-abi-equivalence',
+      detail:'actual emitted call/return statement; existing source identities retained, not a new ABI, scalar or control-flow proof' }),
+    originHistory:expressionOriginHistory({ source:node.source }, { source:node.source }),
+  });
+  history.events.push({ node, record });
+  try {
+    if (history.edges <= 0 || history.consumers <= 0 || !history.canonical?.isCurrent()) throw new Error('initial-statement-binding-unavailable');
+    history.consumers--;
+    const inputs = captureProjectionIrData([detail]), output = captureProjectionIrData([node]);
+    history.edges -= inputs.metrics.edges + output.metrics.edges;
+    const canonical = { isCurrent:() => history.canonical.isCurrent() && inputs.matches() };
+    if (history.edges < 0 || ctx.opts.shouldAbort?.() || !canonical.isCurrent() || !output.matches()) throw new Error('initial-statement-binding-unavailable');
+    statementRenderLines.set(node, Object.freeze({ ir:ctx.ir, instruction:inst, canonical, records:Object.freeze([record]),
+      isCurrent:() => canonical.isCurrent() && output.matches() }));
+  } catch { history.edges = 0; history.reasons.add('initial-statement-binding-unavailable'); }
+}
+
+function bindStatementRenderHistory(result, ctx) {
+  const history = ctx.statementRenderHistory;
+  if (!history.events.length && !history.reasons.size) return result;
+  const disposition = Object.freeze({ scope:'initial-call-return-render-producer',
+    completeness:history.reasons.size ? 'incomplete' : 'complete', reasons:Object.freeze([...history.reasons]) });
+  result.semanticStatementRenderHistory = disposition;
+  statementRenderHistories.set(result, Object.freeze({ ir:ctx.ir, disposition,
+    records:Object.freeze(history.events.map(event => event.record)), reasons:disposition.reasons }));
+  return result;
+}
 
 export function readSemanticStoreLineHistory(line, ir) {
   const entry = storeRenderLines.get(line);
@@ -47,15 +121,18 @@ export function normalizeSemanticCompatibilityLine(line, ir) {
     .replace(/\bvar_([0-9a-f]+)\b/gi, (_m, h) => 'var_' + h.toUpperCase());
   if (text === line.text) return;
   const entry = readSemanticStoreLineHistory(line, ir);
+  const statement = readSemanticStatementLineHistory(line, ir);
   line.text = text;
-  if (!entry) return;
-  try {
-    const observation = captureProjectionIrData([line]);
-    storeRenderLines.set(line, Object.freeze({ ...entry,
-      spelling:Object.freeze({ ...entry.spelling, text:line.text }),
-      isCurrent:() => entry.canonical.isCurrent() && observation.matches(),
-    }));
-  } catch { /* No inferred continuity when the exact line cannot be observed. */ }
+  for (const [binding, table] of [[entry, storeRenderLines], [statement, statementRenderLines]]) {
+    if (!binding) continue;
+    try {
+      const observation = captureProjectionIrData([line]);
+      table.set(line, Object.freeze({ ...binding,
+        ...(binding.spelling ? { spelling:Object.freeze({ ...binding.spelling, text:line.text }) } : {}),
+        isCurrent:() => binding.canonical.isCurrent() && observation.matches(),
+      }));
+    } catch { /* No inferred continuity when the exact line cannot be observed. */ }
+  }
 }
 
 function observeStoreSelection(inst, rmw, upd, ctx) {
@@ -901,8 +978,11 @@ function emitBlockStatements(block, out, ctx, indent) {
       }
       const call = renderCall(inst, ctx);
       const extra = { source: callSource(inst, c, ctx) };
-      if (inst.dst && ctx.materialNames.has(inst.dst.id)) out.push(line('stmt', indent, `${ctx.materialNames.get(inst.dst.id)} = ${call};`, inst.row, inst.address, extra));
-      else out.push(line('stmt', indent, `${call};`, inst.row, inst.address, extra));
+      const node = inst.dst && ctx.materialNames.has(inst.dst.id)
+        ? line('stmt', indent, `${ctx.materialNames.get(inst.dst.id)} = ${call};`, inst.row, inst.address, extra)
+        : line('stmt', indent, `${call};`, inst.row, inst.address, extra);
+      retainStatementRenderLine(node, inst, c, ctx);
+      out.push(node);
       ctx.evidence.push(evidenceOf(inst, c.resolved.runtime === 'objc' ? 'Objective-C dispatch' : c.resolved.runtime === 'swift' ? 'Swift dispatch' : 'call'));
     } else if (inst.op === OP.UNKNOWN) {
       // Unknown semantics do not erase known SSA inputs. In particular, an
@@ -1000,7 +1080,9 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
     if (term2.op === OP.RET) {
       const rv = returnValueAt(term2, ctx);
       const text = rv && ((rv.uses || []).length || rv.const != null || rv.def) ? `return ${renderValue(rv, ctx)};` : 'return;';
-      out.push(line('stmt', indent, text, term2.row, term2.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term2, 'return')) })); ctx.evidence.push(evidenceOf(term2, 'return')); return;
+      const node = line('stmt', indent, text, term2.row, term2.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term2, 'return')) });
+      retainStatementRenderLine(node, term2, rv, ctx);
+      out.push(node); ctx.evidence.push(evidenceOf(term2, 'return')); return;
     }
     if (term2.op === OP.BR) {
       const next = block.succ[0] ?? null;
@@ -1065,7 +1147,9 @@ function faithfulCfg(ctx, indent = 1) {
     if (!term) continue;
     if (term.op === OP.RET) {
       const rv = returnValueAt(term, ctx);
-      out.push(line('stmt', indent + 1, rv ? `return ${renderValue(rv, ctx)};` : 'return;', term.row, term.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term, 'return')) }));
+      const node = line('stmt', indent + 1, rv ? `return ${renderValue(rv, ctx)};` : 'return;', term.row, term.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term, 'return')) });
+      retainStatementRenderLine(node, term, rv, ctx);
+      out.push(node);
     } else if (term.op === OP.CBR) {
       const { yes, no } = branchSucc(ctx.ir, block, term, ctx);
       if (yes != null) out.push(line('ctrl', indent + 1, `if (${renderBranchCondition(term, ctx)}) goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address, { source: controlSource(term, ctx) }));
@@ -1130,9 +1214,13 @@ export function decompileSemantic(model, opts = {}) {
     storeRenderHistory: { events:[], reasons:new Set(), limit:historyCap(opts.renderProvenanceBudget?.maxTransformRecords, 1024),
       consumers:historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096),
       edges:historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges) },
+    statementRenderHistory: { events:[], reasons:new Set(), limit:historyCap(opts.renderProvenanceBudget?.maxTransformRecords, 1024),
+      consumers:historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096),
+      edges:historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges), canonical:null },
     materialNames: new Map(), switchByRow: new Map((opts.switches || model.switches || []).map((s) => [s.row, s])),
     blockAddress: (bi) => model.instructions?.find((x) => x.row === ir.blocks[bi]?.startRow)?.address ?? firstAddr + BigInt(ir.blocks[bi]?.startRow || 0) * 4n,
   };
+  beginStatementRenderHistory(ctx);
   ctx.materialNames = materialization(ctx);
   ctx.inductions = recoverInductionVariables(ir, ctx);
 
@@ -1151,6 +1239,7 @@ export function decompileSemantic(model, opts = {}) {
     // ctx.suppressed diagnostics unchanged, including the abandoned attempt.
     ctx.suppressionHistory.events.length = 0; ctx.suppressionHistory.reasons.clear();
     ctx.storeRenderHistory.events.length = 0; ctx.storeRenderHistory.reasons.clear();
+    ctx.statementRenderHistory.events.length = 0; ctx.statementRenderHistory.reasons.clear();
     body.push(...faithfulCfg(ctx, 1));
     coverage = { mode: 'linear', reachable: reachable.size, emitted: reachable.size, missing: 0, recovered: missing.length, structuredMissing: missing.length };
   }
@@ -1170,10 +1259,10 @@ export function decompileSemantic(model, opts = {}) {
   if (ir.truncated) warnings.push('Semantic IR budget truncated this function; the result is partial.');
 
   const summary = summarize(body, ctx);
-  return bindStoreRenderHistory(bindSuppressionHistory({
+  return bindStatementRenderHistory(bindStoreRenderHistory(bindSuppressionHistory({
     lines, signature, types, summary, pseudocode: pseudocode(lines),
     evidence: ctx.evidence, warnings, labels: new Set(body.filter((l) => l.kind === 'label').map((l) => l.text.replace(/:$/, ''))),
     coverage, ir, ctx: { runtime, suppressed: ctx.suppressed, inductions: ctx.inductions, irPrimary: true, unknownInstructions: ctx.unknown },
     semantic: true,
-  }, ctx), ctx);
+  }, ctx), ctx), ctx);
 }

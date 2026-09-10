@@ -11,7 +11,7 @@ const SPECIAL_PATHS = Object.freeze({
   integration: ['.circleci/config.yml', '.github/workflows/phase7-ownership.yml', '.github/workflows/phase8-ownership.yml',
     'scripts/build-userscript.mjs', 'scripts/userscript-publication.mjs',
     'tests/userscript-publication.mjs', 'tests/userscript-release-version.mjs',
-    'docs/symbolic-proof-optimizer-v8.md', 'docs/analysis-roadmap-v8-integration-checkpoint.md', 'js/decompile.js', 'js/decompile-base.js',
+    'docs/symbolic-proof-optimizer-v8.md', 'docs/analysis-roadmap-v8-integration-checkpoint.md', 'js/decompile.js', 'js/decompile-base.js', 'js/controlflow.js',
     'js/ui/decompiler-provenance.js', 'js/ui/product-base.js', 'css/components.css',
     'js/ui/decompiler-provenance-sheet.js', 'js/tools-base.js',
     'tests/issue-5498-eligibility-result-status-authority.mjs',

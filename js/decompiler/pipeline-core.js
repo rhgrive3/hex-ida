@@ -17,7 +17,8 @@ import { INTERACTIVE_STAGES as PHASE8_INTERACTIVE_STAGES, PASS_STAGES as PHASE8_
 import { printExpression, printProgram, expressionReadability } from './pretty/c.js';
 import { explainSemanticFacts } from './explain.js';
 import { readSwitchLineHistory, readSwitchRenderHistory } from './switch.js';
-import { readSemanticStoreLineHistory, readSemanticStoreRenderHistory } from './semantic-core.js';
+import { readSemanticStoreLineHistory, readSemanticStoreRenderHistory,
+  readSemanticStatementLineHistory, readSemanticStatementRenderHistory } from './semantic-core.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
 import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionExpected,
   projectedConstantTransitionCandidate, projectedConstantTransitionExpected,
@@ -532,7 +533,7 @@ function observeBuildSelection(value, instruction, state, kind = 'mov', related 
       const blockIndex = blocks?.indexOf(block), listKey = block?.phis?.includes(selected) ? 'phis' : 'insts';
       const instructions = block?.[listKey];
       const instructionIndex = instructions?.indexOf(selected), flatIndex = flat?.indexOf(selected);
-      if (!(valueIndex >= 0) || !(instructionIndex >= 0) || flat != null && !(flatIndex >= 0)) throw new Error('build-definition-unavailable');
+      if (value != null && !(valueIndex >= 0) || !(instructionIndex >= 0) || flat != null && !(flatIndex >= 0)) throw new Error('build-definition-unavailable');
       return { selected, block, blockIndex, blockId:block.index, listKey, instructions, instructionIndex, flatIndex };
     });
     // Snapshot BEFORE buildArg can invoke an input's symbol/type callback.
@@ -541,7 +542,7 @@ function observeBuildSelection(value, instruction, state, kind = 'mov', related 
     budget.edges -= captured.metrics.edges;
     if (budget.edges < 0) throw new Error('build-selection-observation-budget');
     const own = (object, key) => Object.getOwnPropertyDescriptor(object, key)?.value;
-    return Object.freeze({ kind, matches:() => own(state.ir, 'values') === values && own(values, valueIndex) === value
+    return Object.freeze({ kind, matches:() => own(state.ir, 'values') === values && (value == null || own(values, valueIndex) === value)
       && own(state.ir, 'blocks') === blocks && own(state.ir, 'instructions') === flat
       && locations.every(({ selected, block, blockIndex, blockId, listKey, instructions, instructionIndex, flatIndex }) =>
         own(blocks, blockIndex) === block && own(block, 'index') === blockId
@@ -828,7 +829,7 @@ function recordCompatOperationSelection(value, expression, selected, state) {
     if (!finished.has(selection)) finished.set(selection, finishBuildSelection(expression, selection, state));
     const observation = finished.get(selection);
     if (!observation) continue;
-    const source = mergeSource(origin(event.source, event.output), origin(value.def, value), origins?.source,
+    const source = mergeSource(origin(event.source, event.output), origin(value?.def, value), origins?.source,
       ...event.beforeInputs.map(input => origin(input.def, input)), ...(event.related || []).map(inst => origin(inst)));
     const history = expressionOriginHistory({ source }, expression);
     const facade = event.stage === 'facade-exact-constants';
@@ -1397,7 +1398,7 @@ function initialStoreExpansion(initialStore, instruction, value, expression, loc
   return [record];
 }
 
-function knownStatementForLine(line, state, lineIndex, initialStore = null) {
+function knownStatementForLine(line, state, lineIndex, initialStore = null, initialStatement = null) {
   if (line?.row == null || line.kind !== 'stmt') return null;
   const insts = (state.ir.instructions || []).filter((i) => i.row === line.row);
   const store = insts.find((i) => i.op === 'store');
@@ -1451,13 +1452,19 @@ function knownStatementForLine(line, state, lineIndex, initialStore = null) {
   const ret = insts.find((i) => i.op === 'ret');
   if (ret && /^return\b/.test(String(line.text || ''))) {
     const rv = returnValueAt(ret, state);
-    if (rv) { const e = expressionFor(rv, state); return { text: `return ${printExpression(e)};`, semantic: semanticExpressionConsumer({ op: 'return', expression: e, ir: ret.id }, rv, ret, state), source: mergeSource(line.source, e?.source, origin(ret, rv)) }; }
+    if (rv) { const e = expressionFor(rv, state); return { text: `return ${printExpression(e)};`, semantic: semanticExpressionConsumer({ op: 'return', expression: e, ir: ret.id }, rv, ret, state, false,
+      initialStatement?.instruction === ret ? initialStatement : null), source: mergeSource(line.source, e?.source, origin(ret, rv)) }; }
   }
   return null;
 }
 
 function cAstFromLines(result, state) {
   const body = [];
+  const initialStatements = readSemanticStatementRenderHistory(result);
+  if (initialStatements) {
+    state.rewriteProof.push(...initialStatements.records);
+    for (const reason of initialStatements.reasons) consumerObservationBudget(state).reasons.add(reason);
+  } else if (result.semanticStatementRenderHistory) consumerObservationBudget(state).reasons.add('initial-statement-history-unavailable');
   const initialStores = readSemanticStoreRenderHistory(result);
   if (initialStores) {
     state.rewriteProof.push(...initialStores.records);
@@ -1470,7 +1477,8 @@ function cAstFromLines(result, state) {
   } else if (result.switchRenderHistory) consumerObservationBudget(state).reasons.add('switch-history-unavailable');
   for (const line of result.lines || []) {
     const initialStore = initialStores && readSemanticStoreLineHistory(line, state.ir);
-    const known = knownStatementForLine(line, state, body.length, initialStore);
+    const initialStatement = initialStatements && readSemanticStatementLineHistory(line, state.ir);
+    const known = knownStatementForLine(line, state, body.length, initialStore, initialStatement);
     const carried = line.source || { address: line.addr, row: line.row };
     const source = known?.source || sourceOf({
       ...carried,
@@ -1480,6 +1488,23 @@ function cAstFromLines(result, state) {
     const switched = switchHistory && readSwitchLineHistory(line, state.ir);
     if (switched && !known) semantic = { op:'switch-render', expression:null, ir:null };
     const node = { kind: line.kind || 'raw', indent: line.indent || 0, text: known?.text ?? line.text ?? '', source, semantic };
+    if (initialStatement && !known && !switched) {
+      // This exact line was emitted by the earlier CALL/RET producer. A null
+      // expression is intentional: do not manufacture a scalar AST for it.
+      const instruction = initialStatement.instruction;
+      semantic = node.semantic = { op:`${instruction.op}-render`, expression:null, ir:instruction.id };
+      const selected = compatOperationSelection(null, state, [instruction], false);
+      const operations = recordCompatOperationSelection(null, null, selected, state);
+      state.rewriteProof.push(...operations);
+      const records = Object.freeze([...initialStatement.records, ...operations]);
+      const budget = consumerObservationBudget(state);
+      try {
+        const output = captureProjectionIrData([node]);
+        budget.edges -= output.metrics.edges;
+        const rendered = { isCurrent:() => initialStatement.isCurrent() && output.matches() };
+        bindObservedExpressionConsumer(semantic, null, instruction, state, records, rendered);
+      } catch { budget.edges = 0; budget.reasons.add('initial-statement-consumer-unavailable'); }
+    }
     bindStoreSpelling(node, known, state);
     if (switched && !known) {
       const budget = consumerObservationBudget(state);
