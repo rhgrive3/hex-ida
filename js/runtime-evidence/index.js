@@ -3,24 +3,30 @@ import { GROUP } from '../evidence.js';
 import { stableDigest } from '../core/identity/index.js';
 
 function nowIso() { return new Date().toISOString(); }
-// #5546: monotonic per-process occurrence ordinal — see createRuntimeEvidenceRecord.
 let RUN_OCCURRENCE_SEQUENCE = 0;
 function safeConfidence(value, fallback = 0.5) { return typeof value === 'number' && Number.isFinite(value) ? Math.max(0,Math.min(1,value)) : fallback; }
-// #5495: identity components must not collide. Clean components pass through
-// unchanged; anything containing characters outside the canonical class (or
-// longer than the 160-component budget) keeps a readable prefix plus a
-// deterministic digest of the full value, so 'a/b' and 'a?b' can no longer
-// collapse into one group and distinct ids stay distinct after truncation.
 function idPart(value) {
   const raw = String(value == null ? '' : value);
   if (/^[a-zA-Z0-9_.:-]*$/.test(raw)) {
     if (raw.length <= 160) return raw;
-    // Truncation alone would collapse ids that differ only past the budget;
-    // the digest of the full value keeps them distinct ('~' is outside the
-    // canonical class, so suffixed components never collide with clean ones).
     return `${raw.slice(0, 160)}~${stableDigest(raw)}`;
   }
   return `${raw.slice(0, 160).replace(/[^a-zA-Z0-9_.:-]/g, '_')}~${stableDigest(raw)}`;
+}
+function occurrencePart(value) {
+  if (typeof value === 'string') {
+    if (!value || idPart(value) !== value) throw new TypeError('runtime evidence occurrence must be a canonical primitive identity');
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) throw new TypeError('runtime evidence occurrence must be a canonical primitive identity');
+    return String(value);
+  }
+  if (typeof value === 'bigint') {
+    if (value < 0n) throw new TypeError('runtime evidence occurrence must be a canonical primitive identity');
+    return value.toString();
+  }
+  throw new TypeError('runtime evidence occurrence must be a canonical primitive identity');
 }
 function provenanceIdentity(value, fallback, field) {
   const identity = value == null ? fallback : value;
@@ -75,32 +81,12 @@ export function createRuntimeEvidenceRecord(input = {}) {
   const caseId = rawCaseId == null ? null : provenanceIdentity(rawCaseId, null, 'caseId');
   const explicitGroup = rawProvenanceGroup == null ? null : provenanceIdentity(rawProvenanceGroup, null, 'provenanceGroup');
   const traceGroup = explicitGroup || `runtime:${idPart(sessionId || 'session')}:${idPart(experimentId || input.function || 'observation')}:${idPart(caseId || 'case')}`;
-  // #5546: re-running the same experiment case with different observations
-  // must produce distinct evidence ids, or the canonical EvidenceGraph
-  // rejects the second run as an evidence-id-conflict. The group stays the
-  // correlation key; generated records carry a deterministic digest of their
-  // observation content including the resolved run timestamp, so separate
-  // runs of the same payload stay individual occurrences and verdict-only
-  // re-runs own distinct identities. Only the exact bare content-free shape
-  // (no payload, default verdict, no explicit timestamp) keeps the canonical
-  // 4327 format verbatim.
   const resolvedTimestamp = input.timestamp || nowIso();
   const hasObservationPayload = input.input != null || input.initialState != null
     || input.observedState != null || (Array.isArray(input.branchPath) && input.branchPath.length > 0);
   const isBare4327Shape = !hasObservationPayload
     && (input.verdict ?? 'inconclusive') === 'inconclusive'
     && input.timestamp == null;
-  // #5546 review: every generated occurrence needs its own identity even when
-  // the observation content AND the observation time are identical (two runs
-  // inside one millisecond). A module-local occurrence sequence disambiguates
-  // same-content/same-time runs; records minted from the same input twice in
-  // one process are distinct observations by construction. Replayable
-  // identity is preserved via an explicit input.occurrence — callers that
-  // rebuild the same record deterministically pass the same occurrence value
-  // and get the same id.
-  const occurrenceIdentity = input.occurrence == null
-    ? `#${(RUN_OCCURRENCE_SEQUENCE++).toString(36)}`
-    : `#${idPart(String(input.occurrence))}`;
   const observationContent = {
     input: input.input ?? null,
     initialState: input.initialState ?? null,
@@ -109,7 +95,13 @@ export function createRuntimeEvidenceRecord(input = {}) {
     verdict: input.verdict ?? 'inconclusive',
     runTimestamp: isBare4327Shape ? null : resolvedTimestamp,
   };
-  const occurrence = isBare4327Shape ? '' : `:${stableDigest(observationContent)}${occurrenceIdentity}`;
+  let occurrence = '';
+  if (input.id == null && !isBare4327Shape) {
+    const identity = input.occurrence == null
+      ? `auto-${(RUN_OCCURRENCE_SEQUENCE++).toString(36)}`
+      : occurrencePart(input.occurrence);
+    occurrence = `:${stableDigest(observationContent)}#${identity}`;
+  }
   const generatedId = `${traceGroup}:${idPart(input.kind || 'observation')}${occurrence}`;
   return {
     id:runtimeEvidenceId(input.id, generatedId),
