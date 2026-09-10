@@ -1,9 +1,11 @@
 import { codedIndexSize, tableIndexSize, cilMetadataToken } from './metadata-layout.js';
+import { readCilMetadataBlob } from './call-signature-metadata.js';
+import { parseCilTypeSpecSignature } from './call-signature-types.js';
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 function fail(code) { throw new TypeError(code); }
 
 // Read only definitions, but use the complete, already-bounds-checked table layout.
-export function readCilDefinitions(bytes, view, layout, stringsStream) {
+export function readCilDefinitions(bytes, view, layout, stringsStream, blobStream = null) {
   const { rowCounts: counts, tableOffsets: offsets, rowSizes, heapSizes } = layout;
   const s = heapSizes & 1 ? 4 : 2, b = heapSizes & 4 ? 4 : 2;
   const index = (pos, width) => width === 2 ? view.getUint16(pos, true) : view.getUint32(pos, true);
@@ -33,6 +35,35 @@ export function readCilDefinitions(bytes, view, layout, stringsStream) {
     signatureBlobIndex: index(pos + 2 + s, b),
   }));
   const extendsSize = codedIndexSize(counts, [2, 1, 0x1b], 2);
+  // #Blob heap for signature-bearing rows: a row referencing an out-of-range
+  // or malformed blob fails closed rather than silently dropping identity.
+  const blobHeap = blobStream && blobStream.size
+    ? bytes.subarray(blobStream.offset, blobStream.offset + blobStream.size)
+    : null;
+  const typeSpecRowCounts = () => [counts[2], counts[1], counts[0x1b]];
+  // TypeSpec (0x1b) rows are the constructed-type authority (#7673): each row
+  // keeps its Signature blob index, the raw blob bytes, and the decoded exact
+  // type specification. A grammar this decoder cannot represent keeps the raw
+  // blob authority (signature stays null) instead of collapsing two distinct
+  // constructed types into one opaque token; structural blob violations fail
+  // closed.
+  const typeSpecs = counts[0x1b] ? Array.from({ length: counts[0x1b] }, (_, i) => {
+    const rid = i + 1, pos = offsets[0x1b] + i * rowSizes[0x1b];
+    const signatureBlobIndex = index(pos, b);
+    if (!blobHeap) fail('cil-type-spec-blob-missing');
+    const rawSignature = readCilMetadataBlob(blobHeap, signatureBlobIndex, 'cil-type-spec-blob-index-invalid');
+    let signature = null;
+    try {
+      signature = parseCilTypeSpecSignature(rawSignature, typeSpecRowCounts());
+    } catch (error) {
+      if (!(error instanceof TypeError)
+        || !String(error.message ?? error).startsWith('cil-type-spec-signature-invalid')) throw error;
+    }
+    return {
+      rid, token: cilMetadataToken(0x1b, rid), signatureBlobIndex,
+      rawSignature, signature,
+    };
+  }) : [];
   const types = readRows(2, pos => {
     const base = index(pos + 4 + s * 2, extendsSize), table = [2, 1, 0x1b][base & 3], rid = Math.floor(base / 4);
     if (base !== 0 && (table == null || rid < 1 || rid > counts[table])) fail('cil-typedef-extends-invalid');
@@ -40,10 +71,43 @@ export function readCilDefinitions(bytes, view, layout, stringsStream) {
       accessFlags: view.getUint32(pos, true), name: text(index(pos + 4, s)),
       namespace: text(index(pos + 4 + s, s)) ?? '',
       extendsToken: base === 0 ? null : cilMetadataToken(table, rid),
+      extendsTypeSpecRid: base !== 0 && table === 0x1b ? rid : null,
       fieldList: index(pos + 4 + s * 2 + extendsSize, tableIndexSize(counts, 4)),
       methodList: index(pos + 4 + s * 2 + extendsSize + tableIndexSize(counts, 4), tableIndexSize(counts, 6)),
     };
   });
+  // TypeDefOrRef consumers resolve a TypeSpec extends token to the canonical
+  // TypeSpec row authority instead of an opaque token (#7673).
+  for (const type of types) {
+    if (type.extendsTypeSpecRid != null) {
+      type.extendsTypeSpec = typeSpecs[type.extendsTypeSpecRid - 1];
+      delete type.extendsTypeSpecRid;
+    }
+  }
+  // Manifest assembly (0x20): this row is the defining assembly's identity
+  // authority (ECMA-335 II.22.2, at most one row) (#7677). Unknown flag or
+  // key encodings keep their raw values; no identity is fabricated.
+  if (counts[0x20] > 1) fail('cil-assembly-table-multi-row');
+  const assembly = counts[0x20] ? (() => {
+    const pos = offsets[0x20], publicKeyBlobIndex = index(pos + 16, b);
+    let publicKey = null;
+    if (publicKeyBlobIndex !== 0) {
+      if (!blobHeap) fail('cil-assembly-public-key-blob-missing');
+      publicKey = readCilMetadataBlob(blobHeap, publicKeyBlobIndex, 'cil-assembly-public-key-blob-invalid');
+    }
+    return {
+      rid: 1, token: cilMetadataToken(0x20, 1),
+      hashAlgId: view.getUint32(pos, true),
+      majorVersion: view.getUint16(pos + 4, true),
+      minorVersion: view.getUint16(pos + 6, true),
+      buildNumber: view.getUint16(pos + 8, true),
+      revisionNumber: view.getUint16(pos + 10, true),
+      flags: view.getUint32(pos + 12, true),
+      publicKeyBlobIndex, publicKey,
+      name: text(index(pos + 16 + b, s)),
+      culture: text(index(pos + 16 + b + s, s)),
+    };
+  })() : null;
   const bindOwners = (table, pointerTable, values, listKey, tokensKey) => {
     const pointers = counts[pointerTable] ? readRows(pointerTable, pos => ({
       target: index(pos, tableIndexSize(counts, table)),
@@ -266,5 +330,5 @@ export function readCilDefinitions(bytes, view, layout, stringsStream) {
     (owner.accessors ??= []).push({ kind:row.kind, methodToken:row.methodToken });
   }
 
-  return { types, methods, fields, manifestResources, params, properties, events, methodSemantics };
+  return { types, methods, fields, manifestResources, typeSpecs, assembly, params, properties, events, methodSemantics };
 }
