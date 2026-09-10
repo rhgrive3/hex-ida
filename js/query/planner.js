@@ -271,6 +271,9 @@ function plannerDisassemblyShare(total, ratio = 0.4) {
 }
 function normalizeExternalSignal(value) {
   if (value == null) return null;
+  if (typeof value !== 'object' && typeof value !== 'function') {
+    throw new TypeError('query-planner-signal-invalid');
+  }
   let aborted, addEventListener, removeEventListener;
   try {
     aborted = value.aborted;
@@ -279,17 +282,12 @@ function normalizeExternalSignal(value) {
   } catch {
     throw new TypeError('query-planner-signal-invalid');
   }
-  if ((typeof value !== 'object' && typeof value !== 'function')
-      || typeof aborted !== 'boolean'
+  if (typeof aborted !== 'boolean'
       || typeof addEventListener !== 'function'
       || typeof removeEventListener !== 'function') {
     throw new TypeError('query-planner-signal-invalid');
   }
-  return value;
-}
-function externalSignalReason(signal) {
-  try { return signal.reason ?? 'cancelled'; }
-  catch { return 'cancelled'; }
+  return Object.freeze({ source: value, aborted, addEventListener, removeEventListener });
 }
 function budgetState(opts) {
   const externalSignal = normalizeExternalSignal(opts?.signal);
@@ -317,12 +315,13 @@ function budgetState(opts) {
     controller, signal: controller.signal, timeout: null, externalSignal, externalAbort: null,
   };
   if (b.externalSignal) {
-    b.externalAbort = () => { if (!b.signal.aborted) controller.abort(externalSignalReason(b.externalSignal)); };
-    if (b.externalSignal.aborted) b.externalAbort();
+    const external = b.externalSignal;
+    b.externalAbort = () => { if (!b.signal.aborted) controller.abort('cancelled'); };
+    if (external.aborted) b.externalAbort();
     else {
-      try { b.externalSignal.addEventListener('abort', b.externalAbort, { once:true }); }
+      try { Reflect.apply(external.addEventListener, external.source, ['abort', b.externalAbort, { once:true }]); }
       catch {
-        try { b.externalSignal.removeEventListener('abort', b.externalAbort); } catch {}
+        try { Reflect.apply(external.removeEventListener, external.source, ['abort', b.externalAbort]); } catch {}
         throw new TypeError('query-planner-signal-invalid');
       }
     }
@@ -333,7 +332,7 @@ function budgetState(opts) {
 function disposeBudget(b) {
   if (b.timeout) clearTimeout(b.timeout);
   if (b.externalSignal && b.externalAbort) {
-    try { b.externalSignal.removeEventListener('abort', b.externalAbort); } catch {}
+    try { Reflect.apply(b.externalSignal.removeEventListener, b.externalSignal.source, ['abort', b.externalAbort]); } catch {}
   }
 }
 function timedOut(b) { return b.signal.aborted && String(b.signal.reason || '') === 'timeout' || Date.now() - b.started >= b.timeoutMs; }

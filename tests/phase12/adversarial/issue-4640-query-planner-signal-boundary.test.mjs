@@ -69,6 +69,63 @@ test('#4640 rejects signal accessors that cannot establish AbortSignal compatibi
   await rejectsInvalidSignal(signal);
 });
 
+test('#4640 snapshots the validated aborted state instead of re-reading an untrusted getter', async () => {
+  let abortedReads = 0;
+  const signal = {
+    get aborted() {
+      abortedReads += 1;
+      if (abortedReads > 1) throw new Error('second read');
+      return false;
+    },
+    addEventListener() {},
+    removeEventListener() {},
+  };
+
+  const result = await plan({ signal });
+  assert.ok(result && typeof result === 'object');
+  assert.equal(result.missingEvidence.includes('cancelled'), false);
+  assert.equal(abortedReads, 1, 'aborted must be read only while establishing the validated signal descriptor');
+});
+
+test('#4640 invokes captured listener methods without re-reading mutable method properties', async () => {
+  let addReads = 0;
+  let removeReads = 0;
+  let added = 0;
+  let removed = 0;
+  let installed = null;
+  const signal = {
+    aborted: false,
+    get addEventListener() {
+      addReads += 1;
+      if (addReads > 1) throw new Error('addEventListener re-read');
+      return function add(type, listener) {
+        assert.equal(this, signal);
+        assert.equal(type, 'abort');
+        installed = listener;
+        added += 1;
+      };
+    },
+    get removeEventListener() {
+      removeReads += 1;
+      if (removeReads > 1) throw new Error('removeEventListener re-read');
+      return function remove(type, listener) {
+        assert.equal(this, signal);
+        assert.equal(type, 'abort');
+        assert.equal(listener, installed);
+        removed += 1;
+      };
+    },
+  };
+
+  const result = await plan({ signal });
+  assert.ok(result && typeof result === 'object');
+  assert.equal(result.missingEvidence.includes('cancelled'), false);
+  assert.equal(addReads, 1);
+  assert.equal(removeReads, 1);
+  assert.equal(added, 1);
+  assert.equal(removed, 1);
+});
+
 test('#4640 preserves normal and already-aborted AbortSignal semantics', async () => {
   const active = new AbortController();
   const normal = await plan({ signal: active.signal });
