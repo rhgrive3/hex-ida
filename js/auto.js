@@ -117,18 +117,23 @@ export function notableFunctions(program, symbols, region, limit = 12) {
  */
 // The xref span must be the string's original UTF-8 byte extent (#5698).
 // Producer contract (worker scanStrings): display text is control-escaped
-// (`\t`/`\r`/`\n`), each escape stands for exactly one raw byte, every other
-// display code point came from 1..4 raw UTF-8 bytes, and the emitted
-// byteLength is the raw run's extent. From the display text alone that gives
-// a provable [minRaw, maxRaw] window; a carried byteLength outside it (or of
-// the wrong type) is a forged/malformed authority and fails closed.
+// (`\t`/`\r`/`\n`), every non-escape display code point came from 1..4 raw
+// UTF-8 bytes, and the emitted byteLength is the raw run's extent. An escape
+// is ambiguous from the display alone — a real escaped control is 1 raw byte
+// but a literal backslash+letter is 2 — so it counts 1..2. From the display
+// text that gives a provable [minRaw, maxRaw] window; a carried byteLength
+// outside it (or of the wrong type) is a forged/malformed authority and
+// fails closed.
 function producerByteExtentWindow(text) {
   let minRaw = 0;
   let maxRaw = 0;
   for (let i = 0; i < text.length; i++) {
     if (text.charCodeAt(i) === 0x5c && (text[i + 1] === 't' || text[i + 1] === 'r' || text[i + 1] === 'n')) {
+      // Ambiguous from the display alone: a real escaped control is 1 raw
+      // byte, a literal backslash+letter is 2. The window admits both so a
+      // genuine producer extent is never rejected (#5698 completeness).
       minRaw += 1;
-      maxRaw += 1;
+      maxRaw += 2;
       i++;
       continue;
     }

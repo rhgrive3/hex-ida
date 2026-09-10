@@ -231,6 +231,50 @@ test('#5698 the buildStringMap 128-byte cap is byte-denominated at its boundary'
     'a ref at byte 130 lies beyond the 128-byte cap');
 });
 
+test('#5698 a literal backslash-letter sequence keeps its true raw extent authority', async () => {
+  // R1 completeness counterexample: raw bytes contain a literal `\t`
+  // (0x5c 0x74, 2 bytes). scanStrings leaves literal backslashes unescaped,
+  // so the display is identical to an escaped control — the window must
+  // admit both origins (1..2 raw bytes per ambiguous display pair) or a
+  // genuine producer byteLength would be rejected as forged and real in-run
+  // xrefs would be dropped again.
+  const { NodeBackend } = await import('./harness.mjs');
+  const raw = new TextEncoder().encode('debug: C:\\tmp');
+  assert.equal(raw.length, 13);
+  const bytes = new Uint8Array(raw.length + 2);
+  bytes.set(raw, 1);
+  const file = {
+    name: 'issue-5698-literal-backslash.bin',
+    size: bytes.length,
+    slice(start, end) {
+      const part = bytes.subarray(start, end);
+      return { arrayBuffer: async () => part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength) };
+    },
+  };
+  const backend = new NodeBackend();
+  const info = await backend.open(file);
+  const scan = await backend.strings({ regionId: info.raw.id, min: 2, limit: 8 });
+  const entry = scan.results.find((candidate) => candidate.text.includes('debug'));
+  assert.ok(entry, 'the literal-backslash string must be scanned');
+  assert.equal(entry.byteLength, 13, 'the raw extent counts both literal-sequence bytes');
+
+  // A ref to the LAST raw byte (inside the true run, past the provable
+  // minimum) must stay covered by the carried authority.
+  const consumerProgram = indexWithRefs([entry.addr + 12n]);
+  const out = findings([{ addr: entry.addr, text: entry.text, byteLength: entry.byteLength }],
+    consumerProgram, null, 40);
+  assert.equal(out.length, 1, 'the debuglog signal fires');
+  assert.equal(out[0].actionable, true,
+    'a genuine producer extent is honored even for ambiguous display sequences');
+
+  // A forged extent beyond even the ambiguous-window maximum stays rejected.
+  const forged = indexWithRefs([entry.addr + 100n]);
+  const outForged = findings([{ addr: entry.addr, text: entry.text, byteLength: 128 }],
+    forged, null, 40);
+  assert.equal(outForged[0].actionable, false,
+    'a byteLength beyond the provable window is still fail-closed');
+});
+
 test('#5698 the real worker scanStrings producer carries the raw run byte extent', async () => {
   // Producer→consumer contract: the classic worker's scanStrings() is the
   // producer of the strings consumed by buildStringMap()/findings(). It
