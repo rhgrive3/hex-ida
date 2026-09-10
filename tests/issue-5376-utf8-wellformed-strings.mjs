@@ -64,4 +64,56 @@ assert.equal(decodeText(new Uint8Array([0x41, 0x42, 0xF4, 0x90, 0x80, 0x80, 0x43
 assert.equal(decodeText(new Uint8Array([0x41, 0x42, 0xC3, 0xA9, 0x43, 0x44])), 'ABéCD',
   'well-formed 2-byte sequences still decode');
 
+// Review-required scan-path controls: a truncated multibyte sequence must
+// never be promoted to string evidence — neither at the tail of the region
+// nor when it spans a scan-block boundary (carry re-validation).
+const tailBytes = new Uint8Array([...enc.encode('TAIL'), 0, 0xE3, 0x81]);
+const tailFile = {
+  name: 'issue-5376-tail.bin',
+  size: tailBytes.length,
+  slice(start, end) {
+    const part = tailBytes.subarray(start, end);
+    return { arrayBuffer: async () => part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength) };
+  },
+};
+const tailBackend = new NodeBackend();
+const tailInfo = await tailBackend.open(tailFile);
+const tailRes = await tailBackend.strings({ regionId: tailInfo.raw.id, min: 2, limit: 50 });
+assert.equal(tailRes.cancelled, false);
+assert.deepEqual(tailRes.results.map((r) => r.text), ['TAIL'],
+  'the incomplete 3-byte sequence at EOF is dropped, not decoded or promoted');
+
+// Block-boundary control: an incomplete sequence whose bytes straddle the
+// SCAN_BLOCK boundary must fail closed after the carry merge. Layout: short
+// valid runs, an E3 81 pair ending exactly at the 1MiB block edge, an invalid
+// continuation (0x41) opening the next block, then a valid run, then an
+// incomplete 4-byte sequence at EOF.
+const SCAN_BLOCK = 1024 * 1024;
+const blockBytes = new Uint8Array(SCAN_BLOCK + 16);
+blockBytes.set(enc.encode('ok'), 0);
+blockBytes.set([0xE3, 0x81], SCAN_BLOCK - 2);
+blockBytes.set(enc.encode('AB'), SCAN_BLOCK);
+blockBytes.set([0], SCAN_BLOCK + 2);
+blockBytes.set([0xF0, 0x90], SCAN_BLOCK + 3);
+const blockFile = {
+  name: 'issue-5376-block-boundary.bin',
+  size: blockBytes.length,
+  slice(start, end) {
+    const part = blockBytes.subarray(start, end);
+    return { arrayBuffer: async () => part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength) };
+  },
+};
+const blockBackend = new NodeBackend();
+const blockInfo = await blockBackend.open(blockFile);
+const blockRes = await blockBackend.strings({ regionId: blockInfo.raw.id, min: 2, limit: 50 });
+assert.equal(blockRes.cancelled, false);
+const blockTexts = blockRes.results.map((r) => r.text);
+for (const text of blockTexts) {
+  assert.ok(!text.includes('\uFFFD'), `no replacement character may be minted, got ${JSON.stringify(text)}`);
+  assert.ok(!text.includes('あ'), 'no partial multibyte sequence may be decoded into string evidence');
+}
+assert.ok(blockTexts.includes('ok'), 'the run before the boundary stays its own string');
+assert.ok(blockTexts.includes('AB'), 'the invalid continuation drops the carried sequence; AB is not merged into it');
+assert.deepEqual(blockTexts, ['ok', 'AB'], 'only the two valid runs are evidence');
+
 console.log('issue #5376 utf-8 well-formedness gate regressions: PASS');
