@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { discoverPhase8Tests } from '../run.mjs';
+import * as requiredMatrix from './hex-c3-02-required-profile-matrix.mjs';
 
 import { semanticAbiAdapter } from '../../../js/analysis/semantic-function.js';
 import { recoverFunctionPrototype } from '../../../js/decompiler/types/prototype.js';
@@ -65,4 +68,46 @@ test('HEX-C3-02: canonical aggregate pieces remain one prototype argument', () =
   assert.deepEqual(canonical.arguments[0].regs, ['x0','x1']);
   assert.equal(prototype.arguments.length, 1);
   assert.deepEqual(prototype.arguments[0].regs, ['x0','x1']);
+});
+
+test('FR-C3-02 required profile matrix runs under canonical ABI test discovery', () => {
+  assert.ok(discoverPhase8Tests().includes(fileURLToPath(import.meta.url)));
+  assert.equal(typeof requiredMatrix.runRequiredProfileMatrix, 'function', 'required matrix must have a reusable canonical invocation');
+  const report = requiredMatrix.runRequiredProfileMatrix();
+  assert.equal(report.denominator, 99, 'all existing atomic examples plus the missing-alignment negative are required');
+  requiredMatrix.assertRequiredProfileMatrix(report);
+  assert.equal(report.rows.filter(row => row.status === 'PASS').length, 99);
+});
+
+test('FR-C3-02 missing, duplicate, unknown, skipped and malformed matrix rows fail closed', () => {
+  assert.equal(typeof requiredMatrix.runRequiredProfileMatrix, 'function');
+  const original = requiredMatrix.runRequiredProfileMatrix();
+  for (const mutate of [
+    report => { report.rows.pop(); },
+    report => { report.rows[1] = report.rows[0]; },
+    report => { report.rows[0].name = 'invented-profile'; },
+    report => { report.rows[0].status = 'SKIP'; },
+    report => { report.rows[0].status = 'FAIL'; },
+    report => { delete report.rows[0]; },
+    report => { report.denominator = 98; },
+    report => { report.version = 999; },
+  ]) {
+    const invalid = structuredClone(original); mutate(invalid);
+    assert.throws(() => requiredMatrix.assertRequiredProfileMatrix(invalid));
+  }
+  const reversed = structuredClone(original); reversed.rows.reverse();
+  requiredMatrix.assertRequiredProfileMatrix(reversed);
+});
+
+test('FR-C3-02 one aggregate failure does not suppress later HFA or other profile cases', () => {
+  assert.equal(typeof requiredMatrix.runRequiredProfileMatrix, 'function');
+  const report = requiredMatrix.runRequiredProfileMatrix({ beforeCase(name) {
+    if (name === 'Darwin aggregate arguments') throw new Error('injected-first-aggregate-failure');
+  } });
+  assert.equal(report.rows.length, 99);
+  assert.deepEqual(report.rows.filter(row => row.status === 'FAIL').map(row => row.name), ['Darwin aggregate arguments']);
+  assert.equal(report.rows.find(row => row.name === 'Darwin HFA arguments').status, 'PASS');
+  assert.equal(report.rows.find(row => row.name === 'consumer projects SysV aggregate return pieces').status, 'PASS');
+  assert.throws(() => requiredMatrix.assertRequiredProfileMatrix(report));
+  requiredMatrix.assertRequiredProfileMatrix(requiredMatrix.runRequiredProfileMatrix());
 });
