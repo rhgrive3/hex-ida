@@ -78,7 +78,18 @@ function createRuntimeEventAdmission(maxBytes) {
     const length = jsonStringByteLength(value, remaining);
     return length <= remaining && charge(length);
   };
+  // Reject impossible sequence cardinalities before allocating/copying a
+  // snapshot. Each sequence has a fixed base cost, at least elementCost per
+  // member, and one separator byte after the first member.
+  const canFitSequence = (length, baseCost, elementCost) => {
+    if (!Number.isSafeInteger(length) || length < 0) return false;
+    const remaining = maxBytes - chargedBytes;
+    if (remaining < baseCost) return false;
+    if (length === 0) return true;
+    return length <= Math.floor((remaining - baseCost + 1) / (elementCost + 1));
+  };
   const visitBytes = (view) => {
+    if (!canFitSequence(view.length, 2, 1)) return reject();
     if (!charge(2)) return reject();
     const snapshot = new Uint8Array(view.length);
     for (let index = 0; index < view.length; index += 1) {
@@ -117,8 +128,9 @@ function createRuntimeEventAdmission(maxBytes) {
       if (value instanceof ArrayBuffer) return visitBytes(new Uint8Array(value));
       if (ArrayBuffer.isView(value)) return visitBytes(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
       if (Array.isArray(value)) {
-        if (!charge(2)) return reject();
         const length = value.length;
+        if (!canFitSequence(length, 2, 1)) return reject();
+        if (!charge(2)) return reject();
         const snapshot = new Array(length);
         for (let index = 0; index < length; index += 1) {
           if (index > 0 && !charge(1)) return reject();
@@ -130,6 +142,7 @@ function createRuntimeEventAdmission(maxBytes) {
         return snapshot;
       }
       if (value instanceof Map) {
+        if (!canFitSequence(value.size, 10, 2)) return reject();
         if (!charge(10)) return reject();
         const snapshot = new Map();
         let index = 0;
@@ -144,6 +157,7 @@ function createRuntimeEventAdmission(maxBytes) {
         return snapshot;
       }
       if (value instanceof Set) {
+        if (!canFitSequence(value.size, 10, 1)) return reject();
         if (!charge(10)) return reject();
         const snapshot = new Set();
         let index = 0;
@@ -268,6 +282,13 @@ export function createRuntimeEvent(input = {}, options = {}) {
   const admit = options.maxBytes == null ? null : createRuntimeEventAdmission(options.maxBytes);
   const admitted = (value) => admitRuntimeEventMaterial(admit, value, options.maxBytes);
   const admittedSnapshot = (value) => admitRuntimeEventMaterial(admit, value, options.maxBytes, { snapshot:true });
+  const admittedOptionalText = (value, name) => {
+    const raw = admitted(value);
+    if (admit && raw != null && typeof raw !== 'string') {
+      throw new DebugAdapterError('runtime-invalid-event-text', `${name} must be a string`);
+    }
+    return optionalText(raw);
+  };
 
   const rawRuntimeSessionId = admitted(input.runtimeSessionId);
   const runtimeSessionId = required(rawRuntimeSessionId, 'runtime-session-id-required', 'runtime event requires runtimeSessionId');
@@ -288,9 +309,9 @@ export function createRuntimeEvent(input = {}, options = {}) {
   const payload = jsonSafe(rawPayload);
   const streamId = optionalIdentity(admitted(input.streamId), 'streamId');
   const providerEventId = optionalIdentity(admitted(input.providerEventId), 'providerEventId');
-  const processKey = optionalText(admitted(input.processKey));
-  const threadKey = optionalText(admitted(input.threadKey));
-  const moduleBindingKey = optionalText(admitted(input.moduleBindingKey));
+  const processKey = admittedOptionalText(input.processKey, 'processKey');
+  const threadKey = admittedOptionalText(input.threadKey, 'threadKey');
+  const moduleBindingKey = admittedOptionalText(input.moduleBindingKey, 'moduleBindingKey');
   const identity = {
     runtimeSessionId,
     providerId,
@@ -311,7 +332,7 @@ export function createRuntimeEvent(input = {}, options = {}) {
     ? `runtimeevent_${stableDigest(identity)}`
     : required(rawEventId, 'runtime-event-id-invalid', 'runtime event id must be a non-empty string');
   const predecessorIds = arrayOfStrings(admittedSnapshot(input.predecessorIds), 'predecessorIds');
-  const timestamp = optionalText(admitted(input.timestamp));
+  const timestamp = admittedOptionalText(input.timestamp, 'timestamp');
   const interventionIds = arrayOfStrings(admittedSnapshot(input.interventionIds), 'interventionIds');
   return deepFreeze({
     eventId,
