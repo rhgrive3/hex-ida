@@ -209,6 +209,25 @@ function validateRestoredStateFactKeys(state, projectIdentity, binaryIdentity) {
   return state;
 }
 
+function validateRestoredResolutionAuthority(state, operations, projectIdentity, binaryIdentity) {
+  for (const record of Object.values(state.facts ?? {})) {
+    if (record?.resolutionOperationId == null) continue;
+    const resolutionOperationId = required(record.resolutionOperationId, 'changelog-state-resolution-operation-id-invalid');
+    const resolvedOperationId = required(record.resolvedOperationId, 'changelog-state-resolved-operation-id-invalid');
+    if (resolvedOperationId !== record.resolvedOperationId) throw new TypeError('changelog-state-resolved-operation-id-invalid');
+    const operation = operations.get(resolutionOperationId);
+    if (!operation
+      || operation.action !== 'resolve'
+      || operation.projectIdentity !== projectIdentity
+      || (operation.binaryIdentity ?? null) !== binaryIdentity
+      || operation.targetEntityId !== record.targetEntityId
+      || operation.factKind !== record.factKind
+      || operation.payload?.operationId !== resolvedOperationId) {
+      throw new TypeError('changelog-state-resolution-operation-provenance-invalid');
+    }
+  }
+}
+
 function permanentlyBlockedOp(log, operationId) {
   return (log.state?.unresolved || []).some((item) => item?.operationId === operationId && item?.reason === 'tombstone-protects-state');
 }
@@ -224,6 +243,7 @@ export class ChangeLog {
     for (const input of options.operations ?? []) {
       rememberRestoredOperation(this.operations, requireCanonicalProjectOperation(input));
     }
+    validateRestoredResolutionAuthority(this.state, this.operations, this.projectIdentity, this.binaryIdentity);
     this.pending = new Map();
     for (const [key, input] of options.pending ?? []) {
       const operation = requireCanonicalProjectOperation(input);
@@ -417,7 +437,15 @@ export class ChangeLog {
   }
 
   checkpoint() {
-    return deepFreeze({ schemaVersion: CHECKPOINT_SCHEMA_VERSION, projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: cloneState(this.state), operationIds: [...this.operations.keys()].sort(), digest: this.digest() });
+    const resolutionOperations = Object.values(this.state.facts ?? {})
+      .filter((record) => record?.resolutionOperationId != null)
+      .map((record) => {
+        const operation = this.operations.get(record.resolutionOperationId);
+        if (!operation) throw new TypeError('changelog-state-resolution-operation-provenance-invalid');
+        return clone(operation);
+      })
+      .sort(compareOperations);
+    return deepFreeze({ schemaVersion: CHECKPOINT_SCHEMA_VERSION, projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: cloneState(this.state), operationIds: [...this.operations.keys()].sort(), resolutionOperations, digest: this.digest() });
   }
 
   digest() { return payloadDigest({ state: this.state, operationIds: [...this.operations.keys()].sort() }); }
@@ -439,13 +467,26 @@ function validateCheckpointDigest(checkpoint) {
   if (typeof digest !== 'string' || !digest) throw new TypeError('checkpoint-digest-invalid');
   const expectedDigest = payloadDigest({ state, operationIds });
   if (digest !== expectedDigest) throw new TypeError('checkpoint-digest-mismatch');
-  return { state, operationIds };
+  const rawResolutionOperations = checkpoint?.resolutionOperations ?? [];
+  if (!Array.isArray(rawResolutionOperations)) throw new TypeError('checkpoint-resolution-operations-invalid');
+  const resolutionOperationMap = new Map();
+  for (const input of rawResolutionOperations) {
+    const operation = requireCanonicalProjectOperation(input);
+    if (operation.action !== 'resolve' || !operationIds.includes(operation.operationId)) throw new TypeError('checkpoint-resolution-operation-invalid');
+    rememberRestoredOperation(resolutionOperationMap, operation);
+  }
+  return { state, operationIds, resolutionOperations: [...resolutionOperationMap.values()].sort(compareOperations) };
+}
+
+function restoredCheckpointOperations(checkpointMaterial, projectIdentity, binaryIdentity) {
+  const resolutions = new Map(checkpointMaterial.resolutionOperations.map((operation) => [operation.operationId, operation]));
+  return checkpointMaterial.operationIds.map((operationId) => resolutions.get(operationId) ?? ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity, binaryIdentity, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } }));
 }
 
 export function replayOperations({ projectIdentity, binaryIdentity = null, operations = [], checkpoint = null } = {}) {
   if (checkpoint && checkpoint.schemaVersion !== CHECKPOINT_SCHEMA_VERSION) throw new TypeError('checkpoint-schema-invalid');
-  const checkpointMaterial = checkpoint ? validateCheckpointDigest(checkpoint) : { state: null, operationIds: [] };
-  const log = new ChangeLog({ projectIdentity, binaryIdentity, state: checkpointMaterial.state, operations: checkpointMaterial.operationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity, binaryIdentity, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } })) });
+  const checkpointMaterial = checkpoint ? validateCheckpointDigest(checkpoint) : { state: null, operationIds: [], resolutionOperations: [] };
+  const log = new ChangeLog({ projectIdentity, binaryIdentity, state: checkpointMaterial.state, operations: restoredCheckpointOperations(checkpointMaterial, projectIdentity, binaryIdentity) });
   const filtered = checkpoint ? operations.filter((operation) => !checkpointMaterial.operationIds.includes(operation.operationId)) : operations;
   const result = log.applyBatch(filtered);
   return Object.freeze({ ...result, state: log.snapshot(), digest: log.digest(), unresolved: result.status === 'unresolved' ? result.operationIds : result.unresolvedOperationIds || [] });
@@ -462,7 +503,7 @@ export function restoreCheckpoint(checkpoint, options = {}) {
   // foreign state stays valid, so the digest alone cannot catch the swap (#5497).
   assertIdentityMatch(checkpointMaterial.state?.projectIdentity ?? '', options.projectIdentity, 'checkpoint-state-project-identity-mismatch');
   assertIdentityMatch(checkpointMaterial.state?.binaryIdentity || '', options.binaryIdentity || '', 'checkpoint-state-binary-identity-mismatch');
-  const checkpointOperations = checkpointMaterial.operationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } }));
+  const checkpointOperations = restoredCheckpointOperations(checkpointMaterial, options.projectIdentity, options.binaryIdentity || null);
   const log = new ChangeLog({ projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, state: checkpointMaterial.state, operations: checkpointOperations });
   const restoreResults = [];
   for (const operation of options.operations || []) {

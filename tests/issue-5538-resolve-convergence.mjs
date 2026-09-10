@@ -125,7 +125,9 @@ test('#5538 checkpoint preserves resolution ordering authority for later concurr
   const lower = op('resolve-a', 'resolve', { operationId: 'value-b' });
   const log = seeded();
   assert.equal(log.applyOperation(high).status, 'applied');
-  const restored = restoreCheckpoint(createCheckpoint(log), { ...base });
+  const checkpoint = createCheckpoint(log);
+  assert.deepEqual(checkpoint.resolutionOperations.map((operation) => operation.operationId), ['resolve-m']);
+  const restored = restoreCheckpoint(checkpoint, { ...base });
   assert.equal(restored.applyOperation(lower).status, 'applied');
   assert.equal(winner(restored), 'value-a');
 });
@@ -157,6 +159,43 @@ test('#5538 restored resolution ordering marker rejects structured or noncanonic
       /changelog-state-resolution-operation-id-invalid/,
     );
   }
+});
+
+test('#5538 restored canonical resolution marker must name an applied resolve operation', () => {
+  const log = seeded();
+  assert.equal(log.applyOperation(op('resolve-z', 'resolve', { operationId: 'value-a' })).status, 'applied');
+  const state = structuredClone(log.snapshot());
+  state.facts['entity-5538\u0000name'].resolutionOperationId = 'resolve-unknown';
+  assert.throws(
+    () => new ChangeLog({ ...base, state, operations: [...log.operations.values()] }),
+    /changelog-state-resolution-operation-provenance-invalid/,
+  );
+});
+
+test('#5538 restored resolution marker cannot borrow authority from another fact or winner', () => {
+  const log = seeded();
+  assert.equal(log.applyOperation(op('resolve-z', 'resolve', { operationId: 'value-a' })).status, 'applied');
+  const state = structuredClone(log.snapshot());
+  const operations = [...log.operations.values()].filter((operation) => operation.operationId !== 'resolve-z');
+
+  const wrongFact = createProjectOperation({
+    ...base,
+    operationId: 'resolve-z',
+    targetEntityId: 'entity-other',
+    factKind: 'name',
+    action: 'resolve',
+    payload: { operationId: 'value-a' },
+  });
+  assert.throws(
+    () => new ChangeLog({ ...base, state, operations: [...operations, wrongFact] }),
+    /changelog-state-resolution-operation-provenance-invalid/,
+  );
+
+  const wrongWinner = op('resolve-z', 'resolve', { operationId: 'value-b' });
+  assert.throws(
+    () => new ChangeLog({ ...base, state, operations: [...operations, wrongWinner] }),
+    /changelog-state-resolution-operation-provenance-invalid/,
+  );
 });
 
 
