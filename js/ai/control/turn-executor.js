@@ -174,6 +174,9 @@ export async function executeTurn(input = {}, options = {}) {
                 signal,
                 ...(Number.isFinite(turnTimeoutMs) ? { timeoutMs: remainingTime(started, turnTimeoutMs, monotonicNow) } : {}),
               });
+              // Provider cooperation is not deadline authority: discard a late
+              // result before it can be validated or adopted (#5815).
+              ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
               const visibleToolNames = tools.map((tool) => tool.name);
               const previousTool = observations.length ? observations[observations.length - 1]?.tool : null;
               if (

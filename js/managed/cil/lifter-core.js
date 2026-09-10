@@ -452,6 +452,19 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             consumedValues.push({ id: 'rhs', bits: 32 }, { id: 'lhs', bits: 32 });
             producedValues.push({ bits: 32 });
             currentStackHeight--;
+            // ECMA-335 Partition III: integral `div` throws
+            // System.DivideByZeroException (divisor == 0) and
+            // System.ArithmeticException (MIN_VALUE / -1); floating-point `div`
+            // throws neither. This lifter has no typed operand-stack authority,
+            // so the integral-vs-floating distinction that selects the
+            // exception contract cannot be resolved losslessly. Publishing the
+            // integral predicates would let FP division inherit them; staying
+            // exception-free is the #7937 defect. Fail closed instead of
+            // minting exception-free exact semantics.
+            if (opcode === 0x5b) {
+              completeness = 'partial';
+              unknownEffects.push({ category: 'control', reason: 'cil-div-exception-authority-unresolved' });
+            }
           }
           break;
 

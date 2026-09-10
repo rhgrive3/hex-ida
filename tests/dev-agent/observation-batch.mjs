@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { DEV_ADMIN_TOOL, DEV_ADMIN_TOOLS, createDevAdminToolSurface } from '../../js/ai/dev/admin/tool-surface.js';
+import { DEV_TOOL_ERROR_SAFE_MESSAGE } from '../../js/ai/dev/supervisor/tool-error-recovery.js';
 import {
   DEV_BATCH_POLICY,
   DEV_OPERATION_CLASS,
@@ -175,8 +176,24 @@ async function aFailureIsDistinctAndDoesNotStopLaterValidatedObservations() {
   assert.equal(results[0].result, undefined);
   assert.ok(results[0].error && typeof results[0].error === 'object');
   assert.equal(results[0].error.code, 'observation-failed');
-  assert.equal(results[0].error.message, 'synthetic observation failure');
+  /* #5137: batch errors are provider-bound tool results; free-form tool text
+     must not cross the boundary. */
+  assert.equal(results[0].error.message, DEV_TOOL_ERROR_SAFE_MESSAGE);
   assert.equal(results[0].error.message.length <= 512, true, 'batch errors must be bounded');
+
+  /* #5137: a tool that echoes a secret through its error message must not
+     resurrect it through the batch result either. */
+  const secret = 'must-not-leak';
+  const echoFixture = makeClient();
+  echoFixture.failNext('pageScripts', Object.assign(new Error(`Authorization failed: ${secret}`), { code: 'observation-failed' }));
+  const echoAdmin = adminFor(echoFixture);
+  const echoResults = resultEntries(await echoAdmin.execute(BATCH_TOOL, {
+    calls: [call(DEV_ADMIN_TOOL.PAGE_SCRIPTS)],
+  }));
+  assert.equal(echoResults[0].ok, false);
+  assert.equal(echoResults[0].error.code, 'observation-failed', 'the safe error code still reaches the result');
+  assert.equal(echoResults[0].error.message, DEV_TOOL_ERROR_SAFE_MESSAGE, 'the provider-bound message stays fixed');
+  assert.doesNotMatch(JSON.stringify(echoResults), /must-not-leak/, 'the secret must not survive in any batch result field');
 
   assertSuccessfulEntry(results[1], 1, DEV_ADMIN_TOOL.PAGE_SNAPSHOT, 'pageSnapshot');
 }
