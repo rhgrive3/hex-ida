@@ -1,5 +1,5 @@
 import { isProducerProjection, producerExpressionToken, readProducerInputExpressions } from '../pipeline.js';
-import { readExpressionHistoryConsumer, readStoreSpellingProducer } from '../pipeline-core.js';
+import { readExpressionHistoryConsumer, readStoreSpellingProducer, readInitialControlConsumer } from '../pipeline-core.js';
 import { expressionOriginHistory } from '../rewrite/engine.js';
 import { readStackPhiHistoryConsumer } from '../passes/stack-phi-recovery.js';
 import { readStackReturnHistoryConsumer } from '../passes/stack-return-recovery.js';
@@ -17,6 +17,7 @@ import {
 import { buildRenderProvenance } from './render-provenance.js';
 
 const lineExpressionHistories = new WeakMap();
+const controlConsumerSources = new WeakMap();
 // One current snapshot per owned AST, never a chain of previous projections.
 // Ordinary result wrappers may retain this AST; copied/replaced AST data cannot
 // manufacture the private transition that carries the original consumers.
@@ -353,6 +354,8 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
         || readStackPhiHistoryConsumer(node?.semantic, result.ir)
         || readLegacyStackHistoryConsumer(node?.semantic, result.ir) || readExpressionHistoryConsumer(node?.semantic, result.ir));
   const storeSpellings = (result.cAst.body ?? []).map(node => hasPriorHistory ? null : readStoreSpellingProducer(node, result.ir));
+  const controlSources = expressionConsumers.map(consumer => consumer
+    ? controlConsumerSources.get(consumer) || readInitialControlConsumer(consumer) : null);
   const conditionBindings = inherited ? [...inherited.conditionConsumers]
     : (result.semanticAst.conditions ?? []).map(condition => hasPriorHistory ? null : readExpressionHistoryConsumer(condition, result.ir));
   const conditionConsumers = new Map();
@@ -432,9 +435,11 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   for (const item of result.semanticAst.outputs || []) if (item.expression) item.expression = transform(item.expression);
   const conditions = conditionMap(result.semanticAst, transform);
 
-  const spellingRecords = [];
+  const spellingRecords = [], controlRecords = [];
   const spellingLimit = Number.isSafeInteger(opts.renderProvenanceBudget?.maxTransformRecords)
     && opts.renderProvenanceBudget.maxTransformRecords >= 0 ? Math.min(opts.renderProvenanceBudget.maxTransformRecords, 1024) : 1024;
+  let controlHandoffEdges = Number.isSafeInteger(opts.renderProvenanceBindingBudget?.maxEdges)
+    ? Math.max(0, Math.min(PROJECTION_LIMITS.edges, opts.renderProvenanceBindingBudget.maxEdges)) : PROJECTION_LIMITS.edges;
   for (const [index, node] of (result.cAst.body || []).entries()) {
     if (node?.semantic?.expression) {
       node.semantic.expression = transform(node.semantic.expression);
@@ -469,17 +474,56 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
       const expression = printExpression(candidates[0]);
       const keyword = String(node.text || '').includes('if (') ? 'if' : String(node.text || '').includes('while (') ? 'while' : null;
       if (keyword) {
+        const beforeText = node.text, control = controlSources[index];
+        let priorControl = null;
+        if (control && expressionConsumers[index]?.isCurrent()) {
+          try {
+            if (controlHandoffEdges <= 0) throw new Error('initial-control-handoff-budget');
+            const captured = captureProjectionIrData([node]);
+            controlHandoffEdges -= captured.metrics.edges;
+            if (controlHandoffEdges < 0) throw new Error('initial-control-handoff-budget');
+            priorControl = captured;
+          }
+          catch { historyReasons.add('initial-control-handoff-unavailable'); }
+        }
         const replacement = replaceCondition(node.text, keyword, expression);
         // Only a condition actually printed by this owned replacement can
         // supply a rendered edge. Ambiguous source rows remain unbound.
         const consumers = [...new Set(rows.map(row => conditionConsumers.get(row)).filter(Boolean))];
         if (replacement.replaced && consumers.length === 1) renderedConditions.set(node, consumers[0]);
         node.text = replacement.text;
+        if (replacement.replaced && priorControl) {
+          // This exact owned text write is the only permitted difference.
+          // Keep the original emitter/IR check, refresh the output observation,
+          // and never accumulate a chain of old output snapshots on replay.
+          const writes = Object.freeze([Object.freeze({ object:node, key:'text', before:beforeText, after:replacement.text })]);
+          try {
+            const output = captureProjectionIrData([node], opts.shouldAbort);
+            controlHandoffEdges -= output.metrics.edges;
+            if (controlHandoffEdges < 0 || !priorControl.matchesThroughWrites(writes)
+                || !control.isCurrent() || !output.matches()) throw new Error('initial-control-handoff-unavailable');
+            const retained = expressionConsumers[index].records;
+            let record = null;
+            if (beforeText !== replacement.text) {
+              if ((result.rewriteProof?.length || 0) + spellingRecords.length + controlRecords.length >= spellingLimit) throw new Error('initial-control-handoff-budget');
+              const source = mergeSource(node.source, candidates[0].source);
+              record = Object.freeze({ rule:'replace-initial-control-condition', phase:'phase8-render',
+                before:`control:${keyword}:initial-condition`, after:`control:${keyword}:canonical-condition`,
+                evidence:Object.freeze({ kind:'observed-control-render-not-cfg-equivalence', detail:'actual owned condition spelling replacement; not a new CFG/flag equivalence proof' }),
+                originHistory:expressionOriginHistory({ source }, { source }),
+              });
+              controlRecords.push(record);
+            }
+            const next = Object.freeze({ ...expressionConsumers[index], records:record ? Object.freeze([...retained, record]) : retained,
+              isCurrent:() => control.isCurrent() && priorControl.matchesThroughWrites(writes) && output.matches() });
+            expressionConsumers[index] = next; controlConsumerSources.set(next, control);
+          } catch { historyReasons.add('initial-control-handoff-unavailable'); }
+        }
       }
     }
   }
 
-  if (spellingRecords.length) result = { ...result, rewriteProof:[...(result.rewriteProof || []), ...spellingRecords] };
+  if (spellingRecords.length || controlRecords.length) result = { ...result, rewriteProof:[...(result.rewriteProof || []), ...spellingRecords, ...controlRecords] };
 
   if (proofRequested && (opts.shouldAbort?.() || !isProducerProjection(original) || proved && !readProvedRewrites(analysis,proofContext))) return original;
   const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });

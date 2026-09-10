@@ -3951,6 +3951,60 @@ and the original23/frozen135 denominator. This increment does not close C4-03,
 claim full-repository or independent verification, or unlock integration/release.
 Goal ACTIVE; device/environment/issues/performance work remains with its owners.
 
+## C4-03 actual initial control rendered owners
+
+The actual initial control emitters now retain their selected canonical origins
+and consumed graph inputs, without re-running branch, dominance, loop, switch,
+induction or expression decisions. The explicit denominator is 18 render forms:
+unsupported statement, while/for, revisit goto, continue/break, residual branch,
+initial switch header/case/default, one-sided if, if/else, residual conditional
+and false goto, and faithful CFG label/conditional/false/branch goto. Formatting
+braces and else punctuation are not invented semantic operations.
+
+Private issued histories observe the existing canonical IR preimage, native loop
+sets, actual dominance backing data, switch descriptors and emitted nodes. Proof
+is explicitly `observed-control-render-not-cfg-equivalence`; target-only output
+does not fabricate a branch or scalar expression. Abandoned structured attempts
+are not published as the final faithful-CFG history. Bounded/cancelled or changed
+inputs preserve existing output but withhold current provenance.
+
+The actual C AST consumer retains the initial producer. The existing Phase 8
+condition writer refreshes that consumer only through its exact observed text
+write, rejecting extra callback mutations and retaining the original structural
+preimage through later replay. Owned compatibility normalization also retains
+the original producer. These changes reuse existing condition and switch
+history mechanisms rather than introducing another control-flow engine.
+
+The new owned control-render-history suite has 15 tests. Its form denominator
+observes all 18 forms: 17 have current positive fixtures; the break arm is reached
+through an actual name callback that changes loop membership, and is correctly
+invalidated. That negative case is not positive evidence for a canonical break
+render. Three normal decoded branch/loop public paths are also exercised.
+Five worker-only negative controls separately remove issuer, graph observation,
+original handoff, exact-write and normalization guards; each produces the intended
+single assertion failure on the otherwise green baseline. Failure receipts and
+source hashes remain in persistent evidence.
+
+The stage-level comparison uses 12 canonical recipes and three decoded inputs,
+30 cells across initial rendering and C AST construction. It compares displayed
+output, IR, helper/callback counts and the stage's public semantic AST against
+parent e69da7fe40027d370ac5cb02bfce522fbf05f5a6. Only the newly additive control
+disposition is excluded from the initial public-result comparison. The previous
+24-case statement verifier was updated for the same additive field; its original
+bytes are preserved and its new hash requires fresh verification. Neither
+synthetic comparison is compiler-corpus or full provenance-trust equivalence.
+
+Generated output, actual ten-file inventory, exact-head scoped regressions and
+normal non-force push are a checkpoint transaction; their final SHA, identities,
+receipts and remote equality are recorded in persistent checkpoint evidence.
+Existing PR #3421 remains reused at
+4cd5b3eb9200b1180985b9df3a74f8245a5cc928; this work continues in PR #7036.
+No component/main merge, replacement PR, independent verifier, candidate merge
+tree, full repository, device, runtime activation or release acceptance is claimed.
+Integration/release remains LOCKED. C4-03 exhaustive rendered/removed/merged
+transform coverage, C4-02/04/05 and the original 23/frozen 135 requirements remain
+open. Issue, performance, environment and device work remains with other owners.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

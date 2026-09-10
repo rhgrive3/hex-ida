@@ -18,7 +18,8 @@ import { printExpression, printProgram, expressionReadability } from './pretty/c
 import { explainSemanticFacts } from './explain.js';
 import { readSwitchLineHistory, readSwitchRenderHistory } from './switch.js';
 import { readSemanticStoreLineHistory, readSemanticStoreRenderHistory,
-  readSemanticStatementLineHistory, readSemanticStatementRenderHistory } from './semantic-core.js';
+  readSemanticStatementLineHistory, readSemanticStatementRenderHistory,
+  readSemanticControlLineHistory, readSemanticControlRenderHistory } from './semantic-core.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
 import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionExpected,
   projectedConstantTransitionCandidate, projectedConstantTransitionExpected,
@@ -40,6 +41,11 @@ function valueOf(a) { return a?.value || null; }
 // to an expression's text or a shared input's source IDs. No public metadata
 // can issue a binding, and the expression/load identity is never modified.
 const expressionHistoryConsumers = new WeakMap();
+const initialControlConsumers = new WeakMap();
+
+export function readInitialControlConsumer(consumer) {
+  return initialControlConsumers.get(consumer) || null;
+}
 const storeSpellingProducers = new WeakMap();
 const buildHistoryObservations = new WeakMap();
 function valueHistoryRecord(record, valueId) {
@@ -1460,6 +1466,11 @@ function knownStatementForLine(line, state, lineIndex, initialStore = null, init
 
 function cAstFromLines(result, state) {
   const body = [];
+  const initialControls = readSemanticControlRenderHistory(result);
+  if (initialControls) {
+    state.rewriteProof.push(...initialControls.records);
+    for (const reason of initialControls.reasons) consumerObservationBudget(state).reasons.add(reason);
+  } else if (result.semanticControlRenderHistory) consumerObservationBudget(state).reasons.add('initial-control-history-unavailable');
   const initialStatements = readSemanticStatementRenderHistory(result);
   if (initialStatements) {
     state.rewriteProof.push(...initialStatements.records);
@@ -1478,6 +1489,7 @@ function cAstFromLines(result, state) {
   for (const line of result.lines || []) {
     const initialStore = initialStores && readSemanticStoreLineHistory(line, state.ir);
     const initialStatement = initialStatements && readSemanticStatementLineHistory(line, state.ir);
+    const initialControl = initialControls && readSemanticControlLineHistory(line, state.ir);
     const known = knownStatementForLine(line, state, body.length, initialStore, initialStatement);
     const carried = line.source || { address: line.addr, row: line.row };
     const source = known?.source || sourceOf({
@@ -1488,21 +1500,36 @@ function cAstFromLines(result, state) {
     const switched = switchHistory && readSwitchLineHistory(line, state.ir);
     if (switched && !known) semantic = { op:'switch-render', expression:null, ir:null };
     const node = { kind: line.kind || 'raw', indent: line.indent || 0, text: known?.text ?? line.text ?? '', source, semantic };
-    if (initialStatement && !known && !switched) {
+    const initial = initialStatement || initialControl;
+    if (initial && !known && !switched) {
       // This exact line was emitted by the earlier CALL/RET producer. A null
       // expression is intentional: do not manufacture a scalar AST for it.
-      const instruction = initialStatement.instruction;
-      semantic = node.semantic = { op:`${instruction.op}-render`, expression:null, ir:instruction.id };
-      const selected = compatOperationSelection(null, state, [instruction], false);
+      const instruction = initial.instruction;
+      semantic = node.semantic = { op:initialControl ? 'control-render' : `${instruction.op}-render`, expression:null, ir:instruction?.id ?? null };
+      const selected = compatOperationSelection(null, state, instruction ? [instruction] : [], false);
       const operations = recordCompatOperationSelection(null, null, selected, state);
       state.rewriteProof.push(...operations);
-      const records = Object.freeze([...initialStatement.records, ...operations]);
+      const records = Object.freeze([...initial.records, ...operations]);
       const budget = consumerObservationBudget(state);
       try {
         const output = captureProjectionIrData([node]);
         budget.edges -= output.metrics.edges;
-        const rendered = { isCurrent:() => initialStatement.isCurrent() && output.matches() };
+        const rendered = { isCurrent:() => initial.isCurrent() && output.matches() };
         bindObservedExpressionConsumer(semantic, null, instruction, state, records, rendered);
+        if (initialControl) {
+          const consumer = readExpressionHistoryConsumer(semantic, state.ir);
+          if (consumer) {
+            const inputs = captureProjectionIrData([semantic, records]);
+            budget.edges -= inputs.metrics.edges;
+            if (budget.edges < 0) throw new Error('initial-control-consumer-budget');
+            // Only the actual Phase8 condition replacement may refresh its
+            // output-node observation. This retained check never forgets the
+            // original emitter, canonical inputs or semantic descriptor.
+            initialControlConsumers.set(consumer, Object.freeze({
+              isCurrent:() => initial.isCurrent() && inputs.matches() && currentBuildHistory(records),
+            }));
+          }
+        }
       } catch { budget.edges = 0; budget.reasons.add('initial-statement-consumer-unavailable'); }
     }
     bindStoreSpelling(node, known, state);

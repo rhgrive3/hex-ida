@@ -6,7 +6,7 @@ export { PROJECTION_LIMITS, captureProjectionIrData } from '../../core/identity/
 
 // Dominance uses native Sets or the control-flow producer's issued lazy views.
 // Observe their backing data; never convert or recompute the canonical facts.
-function captureRecoveryDominators(value, shouldAbort) {
+export function captureRecoveryDominators(value, shouldAbort = null) {
   if (value == null) return { edges:0, matches:() => true };
   if (!Array.isArray(value)) throw new TypeError('recovery-dominators-array-required');
   const entries = ownDataEntries(value, PROJECTION_LIMITS.nodes), length = value.length;

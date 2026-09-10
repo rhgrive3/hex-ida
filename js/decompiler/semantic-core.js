@@ -15,7 +15,8 @@ import { sourceOf, mergeSource } from './ast/nodes.js';
 import { isNZCVCondition, renderNZCVCondition } from './flag-semantics.js';
 import { renderIndexedMemory } from './address-semantics.js';
 import { integerText } from './pretty/c.js';
-import { captureProjectionIrData, captureRecoveryIrData, PROJECTION_LIMITS } from './phase8/projection-origin.js';
+import { captureProjectionIrData, captureRecoveryIrData, captureRecoveryDominators, PROJECTION_LIMITS } from './phase8/projection-origin.js';
+import { ownDataEntries } from '../core/identity/live-data.js';
 import { expressionOriginHistory } from './rewrite/engine.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -28,6 +29,12 @@ const MAX_BLOCKS = 6000;
 
 const storeRenderLines = new WeakMap(), storeRenderHistories = new WeakMap();
 const statementRenderLines = new WeakMap(), statementRenderHistories = new WeakMap();
+const controlRenderLines = new WeakMap(), controlRenderHistories = new WeakMap();
+export const INITIAL_CONTROL_RENDER_FORMS = Object.freeze([
+  'unsupported-statement', 'while-loop', 'for-loop', 'revisit-goto', 'loop-continue', 'loop-break',
+  'residual-branch-goto', 'switch-header', 'switch-case-goto', 'switch-default-goto', 'one-sided-if', 'if-else',
+  'residual-conditional-goto', 'residual-false-goto', 'cfg-label', 'cfg-conditional-goto', 'cfg-false-goto', 'cfg-branch-goto',
+]);
 const historyCap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
 
 export function readSemanticStatementLineHistory(line, ir) {
@@ -42,7 +49,7 @@ export function readSemanticStatementRenderHistory(result) {
 
 function beginStatementRenderHistory(ctx) {
   const history = ctx.statementRenderHistory;
-  if (!ctx.ir.instructions.some(inst => inst.op === OP.CALL || inst.op === OP.RET)) return;
+  if (!ctx.ir.instructions.some(inst => [OP.CALL, OP.RET, OP.BR, OP.CBR, OP.UNKNOWN].includes(inst.op))) return;
   try {
     if (history.limit <= 0 || history.edges <= 0 || history.consumers <= 0) throw new Error('initial-statement-budget');
     // One bounded preimage, before rendering or prototype/symbol callbacks.
@@ -70,35 +77,100 @@ function beginStatementRenderHistory(ctx) {
   } catch { history.edges = 0; }
 }
 
-function retainStatementRenderLine(node, inst, detail, ctx) {
-  const history = ctx.statementRenderHistory;
-  if (history.events.length >= history.limit) { history.reasons.add('initial-statement-history-budget'); return; }
-  const record = Object.freeze({ rule:inst.op === OP.CALL ? 'render-initial-call' : 'render-initial-return', phase:'initial-semantic-render',
-    before:`canonical:${inst.op}:${inst.id}`, after:`statement:${inst.op}`,
-    evidence:Object.freeze({ kind:'observed-call-return-render-not-abi-equivalence',
-      detail:'actual emitted call/return statement; existing source identities retained, not a new ABI, scalar or control-flow proof' }),
-    originHistory:expressionOriginHistory({ source:node.source }, { source:node.source }),
+export function readSemanticControlLineHistory(line, ir) {
+  const entry = controlRenderLines.get(line);
+  return entry && entry.ir === ir && entry.isCurrent() ? entry : null;
+}
+
+export function readSemanticControlRenderHistory(result) {
+  const entry = controlRenderHistories.get(result);
+  return entry && entry.ir === result.ir && entry.disposition === result.semanticControlRenderHistory ? entry : null;
+}
+
+function beginControlRenderHistory(ctx) {
+  const history = ctx.controlRenderHistory;
+  if (!ctx.ir.instructions.some(inst => [OP.BR, OP.CBR, OP.UNKNOWN].includes(inst.op))) return;
+  try {
+    if (history.limit <= 0 || history.edges <= 0 || !ctx.statementRenderHistory.canonical) throw new Error('initial-control-budget');
+    // Structural facts are the existing graph producer's data, not a second
+    // CFG/dominance calculation. Sets are observed natively and not iterated
+    // through caller-supplied has()/iterator implementations.
+    const loops = ctx.graph.loops, loopEntries = ownDataEntries(loops, MAX_BLOCKS);
+    const members = [ctx.graph.reachable], plain = [ctx.graph.immediatePostDominators, ctx.model.instructions];
+    const records = loopEntries.map(([key, loop]) => {
+      const fields = ownDataEntries(loop, 16);
+      for (const [name, value] of fields) {
+        if (['nodes', 'exits', 'latches'].includes(name)) members.push(value); else plain.push(value);
+      }
+      return { key, loop, fields };
+    });
+    const roots = [[ctx.ir, 'loops'], [ctx.ir, 'ipdom'], [ctx.ir, 'postDominators'], [ctx.model, 'instructions'],
+      [ctx.opts, 'switches'], [ctx.model, 'switches']].map(([object, key]) => {
+      const descriptor = Object.getOwnPropertyDescriptor(object, key);
+      if (descriptor && (!Object.hasOwn(descriptor, 'value') || !descriptor.enumerable)) throw new Error('initial-control-data-required');
+      if (key === 'switches') plain.push(descriptor?.value);
+      return { object, key, descriptor };
+    });
+    const switches = [...Map.prototype.entries.call(ctx.switchByRow)];
+    plain.push(switches);
+    const sets = captureRecoveryDominators(members), post = captureRecoveryDominators(ctx.graph.postDominators);
+    const data = captureProjectionIrData(plain);
+    history.edges -= sets.edges + post.edges + data.metrics.edges;
+    if (history.edges < 0) throw new Error('initial-control-budget');
+    history.canonical = { isCurrent:() => { try { return ctx.statementRenderHistory.canonical.isCurrent()
+      && roots.every(({ object, key, descriptor }) => {
+        const now = Object.getOwnPropertyDescriptor(object, key);
+        return descriptor ? !!now && Object.hasOwn(now, 'value') && now.enumerable && now.value === descriptor.value : !now;
+      }) && loops.length === loopEntries.length && records.every(({ key, loop, fields }) => {
+        if (Object.getOwnPropertyDescriptor(loops, key)?.value !== loop) return false;
+        const now = ownDataEntries(loop, 16);
+        return now.length === fields.length && fields.every(([name, value], index) => now[index][0] === name && now[index][1] === value);
+      }) && sets.matches() && post.matches() && data.matches(); } catch { return false; } } };
+  } catch { history.edges = 0; }
+}
+
+function retainStatementRenderLine(node, inst, detail, ctx, control = null) {
+  const history = control ? ctx.controlRenderHistory : ctx.statementRenderHistory;
+  const prefix = control ? 'initial-control' : 'initial-statement';
+  if (history.events.length >= history.limit) { history.reasons.add(`${prefix}-history-budget`); return; }
+  const own = (object, key) => object == null ? undefined : Object.getOwnPropertyDescriptor(object, key)?.value;
+  const source = control ? mergeSource(node.source, inst ? sourceOf({ address:own(inst, 'address'), row:own(inst, 'row'),
+    ir:own(inst, 'id'), ssaDef:own(own(inst, 'dst'), 'id') }) : null, detail?.source) : node.source;
+  const record = Object.freeze({ rule:control ? `render-initial-${control}` : inst.op === OP.CALL ? 'render-initial-call' : 'render-initial-return', phase:'initial-semantic-render',
+    before:`canonical:${inst?.op ?? 'block'}:${inst?.id ?? 'target'}`, after:control ? `control:${control}` : `statement:${inst.op}`,
+    evidence:Object.freeze({ kind:control ? 'observed-control-render-not-cfg-equivalence' : 'observed-call-return-render-not-abi-equivalence',
+      detail:control ? 'actual selected control/unsupported-statement emission; source/target identities retained, not a new CFG, flag or scalar equivalence proof'
+        : 'actual emitted call/return statement; existing source identities retained, not a new ABI, scalar or control-flow proof' }),
+    originHistory:expressionOriginHistory({ source }, { source }),
   });
   history.events.push({ node, record });
   try {
-    if (history.edges <= 0 || history.consumers <= 0 || !history.canonical?.isCurrent()) throw new Error('initial-statement-binding-unavailable');
+    if (history.edges <= 0 || history.consumers <= 0 || !history.canonical?.isCurrent()) throw new Error(`${prefix}-binding-unavailable`);
     history.consumers--;
     const inputs = captureProjectionIrData([detail]), output = captureProjectionIrData([node]);
     history.edges -= inputs.metrics.edges + output.metrics.edges;
     const canonical = { isCurrent:() => history.canonical.isCurrent() && inputs.matches() };
-    if (history.edges < 0 || ctx.opts.shouldAbort?.() || !canonical.isCurrent() || !output.matches()) throw new Error('initial-statement-binding-unavailable');
-    statementRenderLines.set(node, Object.freeze({ ir:ctx.ir, instruction:inst, canonical, records:Object.freeze([record]),
+    if (history.edges < 0 || ctx.opts.shouldAbort?.() || !canonical.isCurrent() || !output.matches()) throw new Error(`${prefix}-binding-unavailable`);
+    (control ? controlRenderLines : statementRenderLines).set(node, Object.freeze({ ir:ctx.ir, instruction:inst, canonical, records:Object.freeze([record]),
       isCurrent:() => canonical.isCurrent() && output.matches() }));
-  } catch { history.edges = 0; history.reasons.add('initial-statement-binding-unavailable'); }
+  } catch { history.edges = 0; history.reasons.add(`${prefix}-binding-unavailable`); }
 }
 
-function bindStatementRenderHistory(result, ctx) {
-  const history = ctx.statementRenderHistory;
+function retainControlRenderLine(node, inst, form, selection, ctx) {
+  if (!INITIAL_CONTROL_RENDER_FORMS.includes(form)) {
+    ctx.controlRenderHistory.reasons.add('unregistered-control-render-form'); return node;
+  }
+  retainStatementRenderLine(node, inst, selection, ctx, form);
+  return node;
+}
+
+function bindStatementRenderHistory(result, ctx, control = false) {
+  const history = control ? ctx.controlRenderHistory : ctx.statementRenderHistory;
   if (!history.events.length && !history.reasons.size) return result;
-  const disposition = Object.freeze({ scope:'initial-call-return-render-producer',
+  const disposition = Object.freeze({ scope:control ? 'initial-control-render-producer' : 'initial-call-return-render-producer',
     completeness:history.reasons.size ? 'incomplete' : 'complete', reasons:Object.freeze([...history.reasons]) });
-  result.semanticStatementRenderHistory = disposition;
-  statementRenderHistories.set(result, Object.freeze({ ir:ctx.ir, disposition,
+  result[control ? 'semanticControlRenderHistory' : 'semanticStatementRenderHistory'] = disposition;
+  (control ? controlRenderHistories : statementRenderHistories).set(result, Object.freeze({ ir:ctx.ir, disposition,
     records:Object.freeze(history.events.map(event => event.record)), reasons:disposition.reasons }));
   return result;
 }
@@ -122,8 +194,9 @@ export function normalizeSemanticCompatibilityLine(line, ir) {
   if (text === line.text) return;
   const entry = readSemanticStoreLineHistory(line, ir);
   const statement = readSemanticStatementLineHistory(line, ir);
+  const control = readSemanticControlLineHistory(line, ir);
   line.text = text;
-  for (const [binding, table] of [[entry, storeRenderLines], [statement, statementRenderLines]]) {
+  for (const [binding, table] of [[entry, storeRenderLines], [statement, statementRenderLines], [control, controlRenderLines]]) {
     if (!binding) continue;
     try {
       const observation = captureProjectionIrData([line]);
@@ -992,7 +1065,8 @@ function emitBlockStatements(block, out, ctx, indent) {
       const seen = new Set();
       const source = mergeSource(sourceForInst(inst, 'unsupported instruction'),
         ...(inst.args || []).map(arg => dependencySource(valueOf(arg), ctx, seen)));
-      out.push(line('stmt', indent, `__asm(${JSON.stringify(inst.text || 'unknown')});`, inst.row, inst.address, { source })); ctx.unknown++;
+      out.push(retainControlRenderLine(line('stmt', indent, `__asm(${JSON.stringify(inst.text || 'unknown')});`, inst.row, inst.address, { source }),
+        inst, 'unsupported-statement', { op:inst.op }, ctx)); ctx.unknown++;
       ctx.evidence.push(evidenceOf(inst, 'unsupported IR instruction retained faithfully'));
     }
   }
@@ -1036,15 +1110,17 @@ function loopRender(loop, block, term, ctx, state, indent, stop) {
   const exit = yesInside ? no : yes;
   const invert = !yesInside;
   const iv = ctx.inductions.find((x) => x.loop.header === loop.header);
-  let head;
+  let head, form = 'while-loop';
   if (iv && iv.init && iv.conditionInst === term) {
+    form = 'for-loop';
     ctx.materialNames.set(iv.value.id, iv.name);
     const init = renderValue(iv.init, ctx, { ignoreMaterial: true });
     let cond = renderBranchCondition(term, ctx, invert);
     const step = iv.step === 1n ? `${iv.name}++` : iv.step === -1n ? `${iv.name}--` : `${iv.name} += ${iv.step}`;
     head = `for (${typeNameOf(ctx.types.values.get(iv.value.id)) === 'unknown' ? 'int64' : typeNameOf(ctx.types.values.get(iv.value.id))} ${iv.name} = ${init}; ${cond}; ${step})`;
   } else head = `while (${renderBranchCondition(term, ctx, invert)})`;
-  const lines = [line('ctrl', indent, `${head} {`, term.row, term.address, { source: controlSource(term, ctx) })];
+  const lines = [retainControlRenderLine(line('ctrl', indent, `${head} {`, term.row, term.address, { source: controlSource(term, ctx) }),
+    term, form, { header:loop.header, bodyStart, exit, invert, inductionValueId:form === 'for-loop' ? iv.value.id : null }, ctx)];
   const local = { ...state, activeLoop: loop, loopHeader: loop.header, loopExit: exit };
   emitRegion(bodyStart, loop.header, lines, ctx, local, indent + 1, loop.nodes);
   lines.push(line('ctrl', indent, '}'));
@@ -1060,7 +1136,8 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
       // HEX-C4-03: a residual goto is a control-flow claim, so it must carry
       // the canonical origin of the block it jumps into. Emitting it
       // sourceless made the claim unauditable from the rendered line.
-      out.push(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(bi))};`, null, null, { source: jumpTargetSource(bi, ctx) }));
+      out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(bi))};`, null, null, { source: jumpTargetSource(bi, ctx) }),
+        null, 'revisit-goto', { target:bi, stop, loopHeader:state.loopHeader ?? null }, ctx));
       state.gotos++; return;
     }
     state.visited.add(bi);
@@ -1086,23 +1163,29 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
     }
     if (term2.op === OP.BR) {
       const next = block.succ[0] ?? null;
-      if (state.activeLoop && next === state.loopHeader) { out.push(line('ctrl', indent, 'continue;', term2.row, term2.address, { source: controlSource(term2, ctx) })); return; }
-      if (state.activeLoop && next === state.loopExit) { out.push(line('ctrl', indent, 'break;', term2.row, term2.address, { source: controlSource(term2, ctx) })); return; }
+      if (state.activeLoop && next === state.loopHeader) { out.push(retainControlRenderLine(line('ctrl', indent, 'continue;', term2.row, term2.address, { source: controlSource(term2, ctx) }),
+        term2, 'loop-continue', { target:next, header:state.loopHeader }, ctx)); return; }
+      if (state.activeLoop && next === state.loopExit) { out.push(retainControlRenderLine(line('ctrl', indent, 'break;', term2.row, term2.address, { source: controlSource(term2, ctx) }),
+        term2, 'loop-break', { target:next, header:state.loopHeader }, ctx)); return; }
       if (next === stop) return;
       if (next != null && !state.visited.has(next) && (!allowed || allowed.has(next))) { bi = next; continue; }
-      if (next != null) { out.push(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(next))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(next, ctx)) })); state.gotos++; }
+      if (next != null) { out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(next))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(next, ctx)) }),
+        term2, 'residual-branch-goto', { target:next, stop }, ctx)); state.gotos++; }
       return;
     }
     if (term2.op === OP.CBR) {
       const sw = ctx.switchByRow.get(term2.row);
       if (sw) {
         const expr = sw.expr || renderValue(reachingRegisterValue(ctx.ir, term2, sw.reg || 'x0'), ctx);
-        out.push(line('ctrl', indent, `switch (${expr}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }));
+        out.push(retainControlRenderLine(line('ctrl', indent, `switch (${expr}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
+          term2, 'switch-header', { switch:sw }, ctx));
         for (const c of sw.cases || []) {
-          out.push(line('ctrl', indent + 1, `case ${c.value}: goto loc_${hex(ctx.blockAddress(c.block))};`, null, null, { source: jumpTargetSource(c.block, ctx) }));
+          out.push(retainControlRenderLine(line('ctrl', indent + 1, `case ${c.value}: goto loc_${hex(ctx.blockAddress(c.block))};`, null, null, { source: jumpTargetSource(c.block, ctx) }),
+            term2, 'switch-case-goto', { switch:sw, case:c }, ctx));
         }
         if (sw.defaultBlock != null) {
-          out.push(line('ctrl', indent + 1, `default: goto loc_${hex(ctx.blockAddress(sw.defaultBlock))};`, null, null, { source: jumpTargetSource(sw.defaultBlock, ctx) }));
+          out.push(retainControlRenderLine(line('ctrl', indent + 1, `default: goto loc_${hex(ctx.blockAddress(sw.defaultBlock))};`, null, null, { source: jumpTargetSource(sw.defaultBlock, ctx) }),
+            term2, 'switch-default-goto', { switch:sw, target:sw.defaultBlock }, ctx));
         }
         out.push(line('ctrl', indent, '}')); state.gotos += (sw.cases || []).length + (sw.defaultBlock != null ? 1 : 0); return;
       }
@@ -1116,12 +1199,14 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
           const invert = yesEmpty;
           const bodyStart = yesEmpty ? no : yes;
           const cond = renderBranchCondition(term2, ctx, invert);
-          out.push(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }));
+          out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
+            term2, 'one-sided-if', { yes, no, join, invert, bodyStart }, ctx));
           emitRegion(bodyStart, join, out, ctx, state, indent + 1, allowed);
           out.push(line('ctrl', indent, '}'));
         } else {
           const cond = renderBranchCondition(term2, ctx);
-          out.push(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }));
+          out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
+            term2, 'if-else', { yes, no, join }, ctx));
           emitRegion(yes, join, out, ctx, state, indent + 1, allowed);
           out.push(line('ctrl', indent, '} else {'));
           emitRegion(no, join, out, ctx, state, indent + 1, allowed);
@@ -1130,8 +1215,10 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
         bi = join; continue;
       }
       const cond = renderBranchCondition(term2, ctx);
-      if (yes != null) out.push(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: controlSource(term2, ctx) }));
-      if (no != null) out.push(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(no))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(no, ctx)) }));
+      if (yes != null) out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
+        term2, 'residual-conditional-goto', { yes, no, join }, ctx));
+      if (no != null) out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(no))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(no, ctx)) }),
+        term2, 'residual-false-goto', { yes, no, join }, ctx));
       state.gotos += (yes != null ? 1 : 0) + (no != null ? 1 : 0); return;
     }
   }
@@ -1142,7 +1229,11 @@ function faithfulCfg(ctx, indent = 1) {
   const reachable = ctx.graph.reachable || new Set(ctx.ir.blocks.map((b) => b.index));
   for (const bi of [...reachable].sort((a, b) => ctx.ir.blocks[a].startRow - ctx.ir.blocks[b].startRow)) {
     const block = ctx.ir.blocks[bi];
-    out.push(line('label', indent, `loc_${hex(ctx.blockAddress(bi))}:`, block.startRow, ctx.blockAddress(bi)));
+    const label = line('label', indent, `loc_${hex(ctx.blockAddress(bi))}:`, block.startRow, ctx.blockAddress(bi));
+    // Keep the public label shape unchanged; its private producer retains the
+    // canonical destination source without inventing a branch instruction.
+    out.push(retainControlRenderLine(label, null, 'cfg-label', { target:bi,
+      source:sourceOf({ row:block.startRow, address:label.addr, ir:block.insts.map(inst => Object.getOwnPropertyDescriptor(inst, 'id')?.value) }) }, ctx));
     const term = emitBlockStatements(block, out, ctx, indent + 1);
     if (!term) continue;
     if (term.op === OP.RET) {
@@ -1152,11 +1243,14 @@ function faithfulCfg(ctx, indent = 1) {
       out.push(node);
     } else if (term.op === OP.CBR) {
       const { yes, no } = branchSucc(ctx.ir, block, term, ctx);
-      if (yes != null) out.push(line('ctrl', indent + 1, `if (${renderBranchCondition(term, ctx)}) goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address, { source: controlSource(term, ctx) }));
-      if (no != null) out.push(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(no))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(no, ctx)) }));
+      if (yes != null) out.push(retainControlRenderLine(line('ctrl', indent + 1, `if (${renderBranchCondition(term, ctx)}) goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address, { source: controlSource(term, ctx) }),
+        term, 'cfg-conditional-goto', { yes, no }, ctx));
+      if (no != null) out.push(retainControlRenderLine(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(no))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(no, ctx)) }),
+        term, 'cfg-false-goto', { yes, no }, ctx));
     } else if (term.op === OP.BR && block.succ[0] != null) {
       const next = block.succ[0];
-      out.push(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(next))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(next, ctx)) }));
+      out.push(retainControlRenderLine(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(next))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(next, ctx)) }),
+        term, 'cfg-branch-goto', { target:next }, ctx));
     }
   }
   return out;
@@ -1217,10 +1311,14 @@ export function decompileSemantic(model, opts = {}) {
     statementRenderHistory: { events:[], reasons:new Set(), limit:historyCap(opts.renderProvenanceBudget?.maxTransformRecords, 1024),
       consumers:historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096),
       edges:historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges), canonical:null },
+    controlRenderHistory: { events:[], reasons:new Set(), limit:historyCap(opts.renderProvenanceBudget?.maxTransformRecords, 1024),
+      consumers:historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096),
+      edges:historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges), canonical:null },
     materialNames: new Map(), switchByRow: new Map((opts.switches || model.switches || []).map((s) => [s.row, s])),
     blockAddress: (bi) => model.instructions?.find((x) => x.row === ir.blocks[bi]?.startRow)?.address ?? firstAddr + BigInt(ir.blocks[bi]?.startRow || 0) * 4n,
   };
   beginStatementRenderHistory(ctx);
+  beginControlRenderHistory(ctx);
   ctx.materialNames = materialization(ctx);
   ctx.inductions = recoverInductionVariables(ir, ctx);
 
@@ -1240,6 +1338,7 @@ export function decompileSemantic(model, opts = {}) {
     ctx.suppressionHistory.events.length = 0; ctx.suppressionHistory.reasons.clear();
     ctx.storeRenderHistory.events.length = 0; ctx.storeRenderHistory.reasons.clear();
     ctx.statementRenderHistory.events.length = 0; ctx.statementRenderHistory.reasons.clear();
+    ctx.controlRenderHistory.events.length = 0; ctx.controlRenderHistory.reasons.clear();
     body.push(...faithfulCfg(ctx, 1));
     coverage = { mode: 'linear', reachable: reachable.size, emitted: reachable.size, missing: 0, recovered: missing.length, structuredMissing: missing.length };
   }
@@ -1259,10 +1358,10 @@ export function decompileSemantic(model, opts = {}) {
   if (ir.truncated) warnings.push('Semantic IR budget truncated this function; the result is partial.');
 
   const summary = summarize(body, ctx);
-  return bindStatementRenderHistory(bindStoreRenderHistory(bindSuppressionHistory({
+  return bindStatementRenderHistory(bindStatementRenderHistory(bindStoreRenderHistory(bindSuppressionHistory({
     lines, signature, types, summary, pseudocode: pseudocode(lines),
     evidence: ctx.evidence, warnings, labels: new Set(body.filter((l) => l.kind === 'label').map((l) => l.text.replace(/:$/, ''))),
     coverage, ir, ctx: { runtime, suppressed: ctx.suppressed, inductions: ctx.inductions, irPrimary: true, unknownInstructions: ctx.unknown },
     semantic: true,
-  }, ctx), ctx), ctx);
+  }, ctx), ctx), ctx), ctx, true);
 }
