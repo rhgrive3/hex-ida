@@ -53,7 +53,7 @@ function buildUnit({ form, raw, highForm = null, highRaw = null, addrBase = 8, v
   const fnName = 'fn';
   const hasAddrBase = addrBase != null;
   const abbrev = Uint8Array.from([
-    0x01, DW_TAG_compile_unit, 0x00,
+    0x01, DW_TAG_compile_unit, 0x01,
     DW_AT_name, DW_FORM_string,
     ...(hasAddrBase ? [DW_AT_addr_base, DW_FORM_sec_offset] : []),
     0x00, 0x00,
@@ -95,6 +95,7 @@ function buildUnit({ form, raw, highForm = null, highRaw = null, addrBase = 8, v
   if (trailingRaw != null) {
     payload.push(0x02, ...Buffer.from(trailingName), 0, ...(Array.isArray(trailingRaw) ? trailingRaw : [trailingRaw]));
   }
+  payload.push(0x00); // sibling-chain terminator closing the compile_unit's children
 
   const info = [];
   const bodyLength = payload.length;

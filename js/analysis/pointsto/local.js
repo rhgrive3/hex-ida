@@ -556,17 +556,27 @@ function targetFromReturnProvenance(provenance, widthBits, evidenceIds) {
   if (provenance?.kind !== 'root' && provenance?.kind !== 'allocation') return null;
   const rootEntityId = provenance.rootEntityId ?? provenance.allocationSiteId ?? null;
   if (rootEntityId == null || !String(rootEntityId).trim()) return null;
+  // Storage space is required canonical identity on root/allocation facts
+  // (#5242), so the caller's target keeps the callee's storage semantics.
+  // A fact without one is a legacy/under-specified shape: fail closed to
+  // unresolved rather than fabricating a memory root (#5956 refused the
+  // self-asserted addressSpace; #5242 makes the canonical one real).
+  const addressSpace = typeof provenance.addressSpace === 'string' && provenance.addressSpace.trim()
+    ? provenance.addressSpace.trim()
+    : null;
+  if (addressSpace == null) return null;
   let offset;
   try { offset = BigInt(provenance.offset ?? 0n); }
   catch { return null; }
   // Only canonical wire-contract fields are read here. Extra fields a forged
-  // serialized summary might carry (addressSpace/separationClass/
-  // separationAuthority) are not producer-emittable and must never become
-  // target authority (#5956).
+  // serialized summary might carry (separationClass/separationAuthority/
+  // rootIdentity) are not producer-emittable and must never become target
+  // authority (#5956): separation authority stays at the mint boundary
+  // (#6066), and rootIdentity is not part of the FunctionSummary contract.
   return createPointsToTarget({
-    addressSpace: 'memory',
+    addressSpace,
     rootKind: provenance.kind === 'allocation' ? 'allocation' : 'rooted',
-    rootIdentity: provenance.rootIdentity ?? null,
+    rootIdentity: null,
     rootEntityId: String(rootEntityId),
     offsetRange: exactRange(offset),
     widthBits,
@@ -621,6 +631,20 @@ function entryRootTarget(definition, functionId, values) {
  */
 export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
   const budget = { ...POINTS_TO_DEFAULT_BUDGET, ...(options.budget ?? {}) };
+  // The termination gates compare against these numbers, so a non-finite or
+  // non-integer cap (e.g. NaN) would silently disable both the iteration cap
+  // and the widening switch and hang the synchronous solve (#5322). Fail
+  // closed at the option boundary, matching the lattice's budget contract.
+  for (const key of ['maxIterations', 'widenAfterIterations']) {
+    const value = budget[key];
+    const minimum = key === 'maxIterations' ? 1 : 0;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) {
+      throw new TypeError('points-to-invalid-budget-value');
+    }
+  }
+  if (typeof budget.maxValues !== 'number' || !Number.isSafeInteger(budget.maxValues) || budget.maxValues <= 0) {
+    throw new TypeError('points-to-invalid-budget-value');
+  }
   const values = new Map((ir.values ?? []).map((value) => [String(value.id), value]));
   const nodes = new Map((ir.nodes ?? []).map((node) => [String(node.id), node]));
   const functionId = String(ir.functionId);

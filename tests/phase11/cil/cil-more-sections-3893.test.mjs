@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { parseCil } from '../../../js/managed/cil/parser.js';
+import { parseCil } from '../../../js/managed/cil/parser-base.js';
 
 const METHOD_OFFSET = 0x500;
 const CODE_SIZE = 16;
@@ -83,12 +83,17 @@ function buildCil({
 
   const tablesOffset = metadataOffset + 0x80;
   // ECMA-335 II.22.26 rule 2: the MethodDef row needs a TypeDef owner (#7301).
-  view.setUint32(tablesOffset + 8, (1 << 2) | (1 << 6), true);
+  view.setUint32(tablesOffset + 8, (1 << 1) | (1 << 2) | (1 << 6), true);
   let tablePos = tablesOffset + 24;
+  const typeRefCount = Math.min(sectionCount, 3);
+  view.setUint32(tablePos, typeRefCount, true); // enough TypeRef rows for distinct catch tokens in focused controls
+  tablePos += 4;
   view.setUint32(tablePos, 1, true); // one TypeDef row
   tablePos += 4;
   view.setUint32(tablePos, 1, true); // one MethodDef row
   tablePos += 4;
+  // TypeRef rows (6 bytes each): null ResolutionScope + empty namespace/name.
+  tablePos += typeRefCount * 6;
   // TypeDef row (14 bytes): Flags, Name, Namespace, Extends, FieldList, MethodList.
   view.setUint32(tablePos, 0, true); tablePos += 4;
   view.setUint16(tablePos, 0, true); tablePos += 2;
@@ -133,7 +138,7 @@ function buildCil({
     const more = index + 1 < terminalAfter;
     extraOffset = writeFatEhSection(bytes, extraOffset, {
       more,
-      token: 0x01000001 + index,
+      token: sectionCount > 3 ? 0x01000001 : 0x01000001 + index,
       clauseIndex: index,
     });
     if (truncateAfterFirst) break;

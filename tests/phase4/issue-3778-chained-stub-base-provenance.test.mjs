@@ -69,7 +69,15 @@ function fixture(words, { slotOffset = 0x300 } = {}) {
   dv.setUint32(fixups + 36, 24, true);
   dv.setUint16(fixups + 40, 0x1000, true);
   dv.setUint16(fixups + 42, 2, true);
-  dv.setUint16(fixups + 56, 1, true);
+  const slotPage = Math.floor(slotOffset / 0x1000);
+  const slotInPage = slotOffset & 0xfff;
+  dv.setUint16(fixups + 56, slotPage + 1, true);
+  // page_start[]: the bind chain starts at the stub-referenced GOT slot (#5388).
+  for (let pg = 0; pg <= slotPage; pg++) {
+    dv.setUint16(fixups + 58 + pg * 2, pg === slotPage ? slotOffset & 0xfff : 0xffff, true);
+  }
+  // struct size must cover the grown page_start[] table.
+  dv.setUint32(fixups + 36, 24 + slotPage * 2, true);
   new TextEncoder().encodeInto('_target\0', thin.subarray(fixups + 68));
 
   return { file: new Blob([thin]), stub, slot };

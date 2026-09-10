@@ -209,8 +209,19 @@ function discoveryKey(app, region) {
   const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);
   let regions = [];
   try { regions = typeof app?.programRegions === 'function' ? app.programRegions() || [] : []; } catch { regions = []; }
-  const ids = regions.filter((item) => item?.exec !== false).map((item) => String(item?.id ?? ''));
-  if (region?.exec !== false && region?.id != null && !ids.includes(String(region.id))) ids.push(String(region.id));
+  // Region identity in the shared key must be the same typed value the
+  // producer receives. String()-ing structured ids (`['text']` → 'text')
+  // collided the single-flight keys of different region values and let one
+  // region's producer be shared by another (#5580). Non-string ids are not
+  // scannable, so they key uniquely by their own spelling instead of being
+  // coerced behind the caller's back.
+  const ids = regions
+    .filter((item) => item?.exec !== false)
+    .map((item) => (typeof item?.id === 'string' ? item.id : JSON.stringify(item?.id ?? null)));
+  if (region?.exec !== false && region?.id != null) {
+    const id = typeof region.id === 'string' ? region.id : JSON.stringify(region.id);
+    if (!ids.includes(id)) ids.push(id);
+  }
   return `${epoch}:${ids.join('|')}`;
 }
 

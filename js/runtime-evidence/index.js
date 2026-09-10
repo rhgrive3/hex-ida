@@ -1,9 +1,33 @@
 import { boundedInteger } from '../debug/adapter.js';
 import { GROUP } from '../evidence.js';
+import { stableDigest } from '../core/identity/index.js';
 
 function nowIso() { return new Date().toISOString(); }
+let RUN_OCCURRENCE_SEQUENCE = 0;
 function safeConfidence(value, fallback = 0.5) { return typeof value === 'number' && Number.isFinite(value) ? Math.max(0,Math.min(1,value)) : fallback; }
-function idPart(value) { return String(value == null ? '' : value).replace(/[^a-zA-Z0-9_.:-]/g,'_').slice(0,160); }
+function idPart(value) {
+  const raw = String(value == null ? '' : value);
+  if (/^[a-zA-Z0-9_.:-]*$/.test(raw)) {
+    if (raw.length <= 160) return raw;
+    return `${raw.slice(0, 160)}~${stableDigest(raw)}`;
+  }
+  return `${raw.slice(0, 160).replace(/[^a-zA-Z0-9_.:-]/g, '_')}~${stableDigest(raw)}`;
+}
+function occurrencePart(value) {
+  if (typeof value === 'string') {
+    if (!value || idPart(value) !== value) throw new TypeError('runtime evidence occurrence must be a canonical primitive identity');
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) throw new TypeError('runtime evidence occurrence must be a canonical primitive identity');
+    return String(value);
+  }
+  if (typeof value === 'bigint') {
+    if (value < 0n) throw new TypeError('runtime evidence occurrence must be a canonical primitive identity');
+    return value.toString();
+  }
+  throw new TypeError('runtime evidence occurrence must be a canonical primitive identity');
+}
 function provenanceIdentity(value, fallback, field) {
   const identity = value == null ? fallback : value;
   if (typeof identity !== 'string' || identity.length === 0 || idPart(identity) !== identity) {
@@ -57,13 +81,34 @@ export function createRuntimeEvidenceRecord(input = {}) {
   const caseId = rawCaseId == null ? null : provenanceIdentity(rawCaseId, null, 'caseId');
   const explicitGroup = rawProvenanceGroup == null ? null : provenanceIdentity(rawProvenanceGroup, null, 'provenanceGroup');
   const traceGroup = explicitGroup || `runtime:${idPart(sessionId || 'session')}:${idPart(experimentId || input.function || 'observation')}:${idPart(caseId || 'case')}`;
-  const generatedId = `${traceGroup}:${idPart(input.kind || 'observation')}`;
+  const resolvedTimestamp = input.timestamp || nowIso();
+  const hasObservationPayload = input.input != null || input.initialState != null
+    || input.observedState != null || (Array.isArray(input.branchPath) && input.branchPath.length > 0);
+  const isBare4327Shape = !hasObservationPayload
+    && (input.verdict ?? 'inconclusive') === 'inconclusive'
+    && input.timestamp == null;
+  const observationContent = {
+    input: input.input ?? null,
+    initialState: input.initialState ?? null,
+    observedState: input.observedState ?? null,
+    branchPath: Array.isArray(input.branchPath) ? input.branchPath : [],
+    verdict: input.verdict ?? 'inconclusive',
+    runTimestamp: isBare4327Shape ? null : resolvedTimestamp,
+  };
+  let occurrence = '';
+  if (input.id == null && !isBare4327Shape) {
+    const identity = input.occurrence == null
+      ? `auto-${(RUN_OCCURRENCE_SEQUENCE++).toString(36)}`
+      : occurrencePart(input.occurrence);
+    occurrence = `:${stableDigest(observationContent)}#${identity}`;
+  }
+  const generatedId = `${traceGroup}:${idPart(input.kind || 'observation')}${occurrence}`;
   return {
     id:runtimeEvidenceId(input.id, generatedId),
     source:'runtime', backend:String(input.backend || 'unknown').slice(0,128), binaryHash:input.binaryHash || null, sliceIdentity:input.sliceIdentity || null,
     function:input.function == null ? null : input.function, address:input.address == null ? null : input.address,
     input:input.input || null, initialState:input.initialState || null, observedState:input.observedState || null,
-    branchPath:Array.isArray(input.branchPath) ? input.branchPath.slice(0,4096) : [], timestamp:input.timestamp || nowIso(), sessionId,
+    branchPath:Array.isArray(input.branchPath) ? input.branchPath.slice(0,4096) : [], timestamp:resolvedTimestamp, sessionId,
     reproducibility:input.reproducibility || { replayable:false, runs:1, consistent:null },
     confidence:safeConfidence(input.confidence), verdict:input.verdict || 'inconclusive', kind:input.kind || 'observation',
     provenance:{ group:GROUP.RUNTIME, observationGroup:traceGroup, independent:false, parent:input.parentEvidenceId || null },
