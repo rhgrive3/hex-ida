@@ -2,7 +2,7 @@ import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
 import { parseEhFrameHeader } from './elf-unwind.js';
 import { parseProgramDynamic } from './elf-dynamic.js';
-import { createELFMetadataBudget } from './elf-budget.js';
+import { createELFMetadataBudget, markELFMetadataPartial } from './elf-budget.js';
 import { executableELFRange, mappedELFFileSpanForVa } from './elf-mapping.js';
 import { parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
 
@@ -32,6 +32,7 @@ export const STO_RISCV_VARIANT_CC = 0x80;
 const SHT_RISCV_ATTRIBUTES = 0x70000003;
 const R_RISCV_JUMP_SLOT = 5;
 const DT_RISCV_VARIANT_CC = 0x70000001n;
+const ELF_RUNTIME_PAGE_SIZE = 0x1000n;
 
 export function parseELF(input, options = {}) {
   const initial = new ByteView(input, { littleEndian: true });
@@ -56,7 +57,7 @@ export function parseELF(input, options = {}) {
 
   const programHeaders = parseProgramHeaders(r, h, image, bits);
   const rawSections = parseSectionHeaders(r, h, bits, image);
-  nameSections(r, rawSections, h);
+  nameSections(r, rawSections, h, image);
   let riscvFileIsa = null;
   if (image.arch === 'riscv64') {
     const namedAttributeSections = rawSections.filter((section) => section.name === '.riscv.attributes');
@@ -149,6 +150,7 @@ export function parseELF(input, options = {}) {
   const hasRelocations = rawSections.some((s) => s.type === SHT_REL || s.type === SHT_RELA);
   const hasDynamic = rawSections.some((s) => s.type === SHT_DYNAMIC);
   parseProgramDynamic(r, programHeaders, image, bits, {
+    signal: options.signal,
     symbols: !hasDynsym,
     relocations: !hasRelocations,
     sectionDynamicPresent: hasDynamic,
@@ -180,6 +182,11 @@ function alignUp(value, alignment) {
   return rem === 0n ? value : value + (a - rem);
 }
 
+function alignDown(value, alignment) {
+  const a = alignment > 0n ? alignment : 1n;
+  return value - (value % a);
+}
+
 function assignRelocatableSectionAddresses(sections, image) {
   let cursor = 0x100000000n;
   const MAX_ALIGN = 0x1000000n;
@@ -205,9 +212,9 @@ function actualSectionIndex(index, sections) {
 }
 
 function symbolAddressForELF(elfType, value, sectionIndex, sections, extendedSectionIndex = false) {
-  if (elfType !== ET_REL) return value;
   if (!extendedSectionIndex && sectionIndex === SHN_ABS) return value;
   if (!extendedSectionIndex && (sectionIndex === SHN_COMMON || sectionIndex === SHN_UNDEF)) return null;
+  if (elfType !== ET_REL) return value;
   const valid = extendedSectionIndex
     ? actualSectionIndex(sectionIndex, sections)
     : normalSectionIndex(sectionIndex, sections);
@@ -256,6 +263,88 @@ function resolveExtendedProgramHeaderCount(r, h, bits) {
   h.phnum = actual;
 }
 
+function rejectAmbiguousPtLoadOverlap(image, index, ph) {
+  // Linux maps PT_LOADs at page granularity. A later half-page claim can remap
+  // the earlier half of the same page even when the declared p_vaddr/p_memsz
+  // intervals are merely adjacent. BinaryImage is intentionally raw-range
+  // based, so those loader-page aliases must be rejected before any first-wins
+  // mapping authority can be published (#7610).
+  const vmStart = ph.vaddr;
+  const vmEnd = ph.vaddr + ph.memsz;
+  const backedEnd = ph.vaddr + ph.filesz;
+  const pageVmStart = alignDown(vmStart, ELF_RUNTIME_PAGE_SIZE);
+  const pageVmEnd = alignUp(vmEnd, ELF_RUNTIME_PAGE_SIZE);
+  const backedPageEnd = ph.filesz > 0n ? alignUp(backedEnd, ELF_RUNTIME_PAGE_SIZE) : pageVmStart;
+  const filePageStart = alignDown(ph.offset, ELF_RUNTIME_PAGE_SIZE);
+  for (const existing of image.segments) {
+    if (existing.source !== 'PT_LOAD' || existing.size === 0n) continue;
+    const eVmEnd = existing.address + existing.size;
+    const eBackedEnd = existing.address + existing.fileSize;
+
+    const ePageVmStart = alignDown(existing.address, ELF_RUNTIME_PAGE_SIZE);
+    const ePageVmEnd = alignUp(eVmEnd, ELF_RUNTIME_PAGE_SIZE);
+    const eBackedPageEnd = existing.fileSize > 0n ? alignUp(eBackedEnd, ELF_RUNTIME_PAGE_SIZE) : ePageVmStart;
+    const eFilePageStart = alignDown(existing.fileOffset, ELF_RUNTIME_PAGE_SIZE);
+    const pageOverlapStart = pageVmStart > ePageVmStart ? pageVmStart : ePageVmStart;
+    const pageOverlapEnd = pageVmEnd < ePageVmEnd ? pageVmEnd : ePageVmEnd;
+    if (pageOverlapStart < pageOverlapEnd) {
+      const pagePoints = [pageOverlapStart, pageOverlapEnd];
+      for (const point of [backedPageEnd, eBackedPageEnd]) {
+        if (point > pageOverlapStart && point < pageOverlapEnd) pagePoints.push(point);
+      }
+      pagePoints.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      for (let i = 0; i + 1 < pagePoints.length; i++) {
+        const point = pagePoints[i];
+        const newBackedPage = point >= pageVmStart && point < backedPageEnd;
+        const oldBackedPage = point >= ePageVmStart && point < eBackedPageEnd;
+        if (!newBackedPage && !oldBackedPage) continue;
+        if (newBackedPage !== oldBackedPage) {
+          const error = new Error(`PT_LOAD ${index} mapped page overlaps ${existing.name || 'PT_LOAD'} with ambiguous file/zero ownership`);
+          error.code = 'ELF_PT_LOAD_VM_OVERLAP';
+          throw error;
+        }
+        const newPageOffset = filePageStart + (point - pageVmStart);
+        const oldPageOffset = eFilePageStart + (point - ePageVmStart);
+        if (newPageOffset !== oldPageOffset) {
+          const error = new Error(`PT_LOAD ${index} mapped page overlaps ${existing.name || 'PT_LOAD'} with a different file mapping`);
+          error.code = 'ELF_PT_LOAD_VM_OVERLAP';
+          throw error;
+        }
+      }
+    }
+
+    // Preserve the byte-exact raw-range check as a second boundary. Page-level
+    // congruence alone does not prove that file-backed/zero-fill transitions
+    // inside a shared page are identical.
+    const overlapStart = vmStart > existing.address ? vmStart : existing.address;
+    const overlapEnd = vmEnd < eVmEnd ? vmEnd : eVmEnd;
+    if (overlapStart >= overlapEnd) continue;
+    const points = [overlapStart, overlapEnd];
+    for (const point of [backedEnd, eBackedEnd]) {
+      if (point > overlapStart && point < overlapEnd) points.push(point);
+    }
+    points.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    for (let i = 0; i + 1 < points.length; i++) {
+      const point = points[i];
+      const newBacked = point >= vmStart && point < backedEnd;
+      const oldBacked = point >= existing.address && point < eBackedEnd;
+      if (!newBacked && !oldBacked) continue;
+      if (newBacked !== oldBacked) {
+        const error = new Error(`PT_LOAD ${index} VM range overlaps ${existing.name || 'PT_LOAD'} with ambiguous file/zero ownership`);
+        error.code = 'ELF_PT_LOAD_VM_OVERLAP';
+        throw error;
+      }
+      const newOffset = ph.offset + (point - vmStart);
+      const oldOffset = existing.fileOffset + (point - existing.address);
+      if (newOffset !== oldOffset) {
+        const error = new Error(`PT_LOAD ${index} VM range overlaps ${existing.name || 'PT_LOAD'} with a different file mapping`);
+        error.code = 'ELF_PT_LOAD_VM_OVERLAP';
+        throw error;
+      }
+    }
+  }
+}
+
 function parseProgramHeaders(r, h, image, bits) {
   const out = [];
   const off = safeOffset(h.phoff);
@@ -281,6 +370,7 @@ function parseProgramHeaders(r, h, image, bits) {
     }
     out.push(ph);
     if (ph.type === PT_LOAD) {
+      rejectAmbiguousPtLoadOverlap(image, i, ph);
       image.addSegment({
         name: `LOAD${i}`, address: ph.vaddr, size: ph.memsz, fileOffset: ph.offset, fileSize: ph.filesz,
         perms: { read: !!(ph.flags & 4), write: !!(ph.flags & 2), execute: !!(ph.flags & 1) }, flags: ph.flags, source: 'PT_LOAD',
@@ -307,7 +397,6 @@ function parseSectionHeaders(r, h, bits, image) {
       out.push({ index: i, nameOffset: r.u32(p), type: r.u32(p + 4), flags: BigInt(r.u32(p + 8)), addr: BigInt(r.u32(p + 12)), offset: BigInt(r.u32(p + 16)), size: BigInt(r.u32(p + 20)), link: r.u32(p + 24), info: r.u32(p + 28), addralign: BigInt(r.u32(p + 32)), entsize: BigInt(r.u32(p + 36)), name: '' });
     }
   }
-  if (h.shstrndx === 0xffff && out[0] && out[0].link < out.length) h.shstrndx = out[0].link;
   return out;
 }
 
@@ -326,13 +415,25 @@ function terminatedStringInTable(r, strStart, strSize, offset, maxSpan) {
   return r.cstring(strStart + offset, Math.min(nul + 1, max));
 }
 
-function nameSections(r, sections, h) {
+function nameSections(r, sections, h, image) {
   let shstrndx = h.shstrndx;
-  if (shstrndx === 0xffff && sections[0] && sections[0].link < sections.length) {
-    shstrndx = sections[0].link;
+  if (shstrndx === SHN_XINDEX) {
+    const link = sections[0]?.link;
+    if (link == null || link === 0 || link >= sections.length) {
+      markELFMetadataPartial(image, 'section-names:shstrndx-invalid', `ELF e_shstrndx SHN_XINDEX section-0 sh_link ${link ?? '<absent>'} does not resolve to a section`);
+      return;
+    }
+    shstrndx = link;
+  } else if (shstrndx !== 0 && shstrndx >= sections.length) {
+    markELFMetadataPartial(image, 'section-names:shstrndx-invalid', `ELF e_shstrndx ${shstrndx} is outside the section header table (${sections.length} sections)`);
+    return;
   }
   const str = sections[shstrndx];
-  if (!str || str.type !== SHT_STRTAB || str.offset + str.size > BigInt(r.length)) return;
+  if (!str || (shstrndx !== 0 && str.type !== SHT_STRTAB)) {
+    if (shstrndx !== 0) markELFMetadataPartial(image, 'section-names:shstrndx-not-strtab', `ELF e_shstrndx ${shstrndx} does not name an SHT_STRTAB section`);
+    return;
+  }
+  if (str.offset + str.size > BigInt(r.length)) return;
   for (const s of sections) {
     if (BigInt(s.nameOffset) >= str.size) continue;
     const sectionName = terminatedStringInTable(r, Number(str.offset), Number(str.size), s.nameOffset, 1 << 20);
@@ -357,7 +458,8 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
   const count = Math.min(declared,fileCapacity);
   if (declaredBig > BigInt(fileCapacity)) budget.partial(`symbols:${table.index}:truncated`, `ELF symbol table ${table.index} exceeds its file-backed capacity`);
   const xindex = sections.find((sec) => sec.type === SHT_SYMTAB_SHNDX && sec.link === table.index) || null;
-  const xindexValid = !!xindex && (!xindex.entsize || xindex.entsize === 4n)
+  const xindexValid = !!xindex && xindex.entsize === 4n
+    && xindex.size === BigInt(count) * 4n
     && xindex.offset <= BigInt(r.length) && xindex.size <= BigInt(r.length) - xindex.offset;
   if (xindex && !xindexValid) budget.partial(`symbols:${table.index}:xindex-malformed`, `ELF SHT_SYMTAB_SHNDX for table ${table.index} is malformed`);
 
@@ -386,6 +488,7 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     const specialKnown=!extendedSectionIndex&&(resolvedShndx===SHN_UNDEF||resolvedShndx===SHN_ABS||resolvedShndx===SHN_COMMON);
     if(sectionIdentityKnown&&!normal&&!specialKnown){sectionIdentityKnown=false;image.warnings.push(`ELF symbol ${i} uses unsupported reserved section index ${resolvedShndx}`);}
     const defined=sectionIdentityKnown?(resolvedShndx!==SHN_UNDEF):null;
+    const common=sectionIdentityKnown&&!extendedSectionIndex&&resolvedShndx===SHN_COMMON;
     // STT_TLS: a defined TLS symbol's st_value is its TLS offset, not a
     // virtual address (ELF gABI). It must never enter the VA domain or
     // image.exports as a canonical address (#5843).
@@ -396,11 +499,11 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     // anonymous `bind-N` bucket (#5844).
     const binding=bind===0?'local':bind===1?'global':bind===2?'weak':bind===STB_GNU_UNIQUE?'gnu-unique':`bind-${bind}`;
     const kind=type===2?'function':type===1?'object':type===3?'section':tls?'tls':type===STT_GNU_IFUNC?'indirect-function':`type-${type}`;
-    const ifunc=type===STT_GNU_IFUNC&&defined===true;
+    const ifunc=type===STT_GNU_IFUNC&&defined===true&&!common;
     const riscvVariantCcFlag=image.metadata.machine===EM_RISCV&&(other&STO_RISCV_VARIANT_CC)!==0;
     const riscvVariantCc=riscvVariantCcFlag&&type===2;
     const sym={name,address:tls?null:(address??0n),originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??value,resolution:'runtime-resolver'}:{}),
-      ...(tls?{tlsOffset:value}:{}),sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:value}:null,addressDomain:tls?'tls-offset':elfType===ET_REL&&normal?'section-relative-synthetic':'virtual'};
+      ...(tls?{tlsOffset:value}:{}),...(common?{commonAlignment:value,commonSize:size,allocation:'common-unallocated'}:{}),sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:value}:null,addressDomain:tls?'tls-offset':common?'common-unallocated':elfType===ET_REL&&normal?'section-relative-synthetic':'virtual'};
     image.symbols.push(sym);
     const externallyVisible=bind===1||bind===2||bind===STB_GNU_UNIQUE;
     if(defined===false&&externallyVisible){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'symbol-import'))break;image.imports.push({name,library:null,ordinal:null,weak:bind===2,symbolIndex:i,tableIndex:table.index,source:'elf-dynsym',sites:[]});}
@@ -485,7 +588,7 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
     if(symIndex!==0&&symbolEntryCount!=null&&BigInt(symIndex)>=symbolEntryCount){budget.partial(`relocations:${sec.index}:symbol-index-range`,`ELF relocation section ${sec.index} references symbol index ${symIndex} outside its associated table count ${symbolEntryCount}`);continue;}
     const sym=byIndex.get(symIndex)||null;
     image.relocations.push({address,fileOffset,type,symbol:sym?sym.name:null,symbolIndex:symIndex,addend,section:sec.name,source:sec.type===SHT_RELA?'RELA':'REL',symbolTableIndex:sec.link,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null,addressDomain});
-    if(sym&&sym.defined===false){const imp=image.imports.find((x)=>x.name===sym.name&&x.library==null);if(imp){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:96},'relocation-import-site'))break;imp.sites.push({address,offset:fileOffset,kind:'relocation',type,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null});}}
+    if(sym&&sym.defined===false){const imp=image.imports.find((x)=>x.symbolIndex===symIndex&&x.tableIndex===sec.link&&x.name===sym.name&&x.library==null);if(imp){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:96},'relocation-import-site'))break;imp.sites.push({address,offset:fileOffset,kind:'relocation',type,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null});}}
   }
 }
 
@@ -559,8 +662,8 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
       }
       if (name && !budget.take({
         inputBytes: Math.min(max, name.length + 1),
-        stringBytes: name.length * 2,
-        estimatedHeapBytes: name.length * 2 + 32,
+        stringBytes:name.length * 2,
+        estimatedHeapBytes:name.length * 2 + 32,
       }, 'SHT_DYNAMIC-string')) break;
       if (tag === 1n && name) image.libraries.push(name);
       else if (tag === 14n && name) image.metadata.soname = name;

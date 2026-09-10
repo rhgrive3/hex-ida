@@ -38,7 +38,7 @@ function ensureBudget(image, budget) {
 }
 
 export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget = null) {
-  if (!dir || !dir.rva || dir.size < 8) return;
+  if (!dir || !dir.rva || dir.size === 0) return;
   const budget = ensureBudget(image, sharedBudget);
   const warningStart = image.warnings.length;
   parseBaseRelocationsCore(r, dir, image, machine, budget);

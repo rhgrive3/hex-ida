@@ -404,7 +404,15 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     if (this.sandbox && bp.address != null && !this._hasEnabledAddressBreakpoint(bp.address)) this.sandbox.removeBreakpoint(bp.address);
     return true;
   }
-  async listBreakpoints() { this.require('listBreakpoints'); return [...this.breakpoints.values()]; }
+  async listBreakpoints() {
+    this.require('listBreakpoints');
+    // Snapshot copies: normalizeBreakpoint() results are unfrozen, so handing
+    // out the internal Map's objects let a caller edit the ledger (and its
+    // addresses) without touching the emulator's registered breakpoints,
+    // desyncing management state from runtime state and leaving stale
+    // breakpoints behind on removal (#5679).
+    return [...this.breakpoints.values()].map((bp) => ({ ...bp }));
+  }
   async readRegisters() { this.require('readRegisters'); return cloneRegisters(this.ensureSandbox().emulator); }
   async writeRegister(reg,value) {
     this.require('writeRegister');

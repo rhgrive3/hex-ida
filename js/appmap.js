@@ -134,8 +134,14 @@ function classifyClass(cls, ctx) {
     if (m.addr == null) continue;
     const range = ctx.program ? ctx.program.functionRange(m.addr) : null;
     if (!range) continue;
+    // #5208: a method whose function end is unproven owns no bounded extent.
+    // refsFrom/calleesOf treat a null upper bound as "scan to the query
+    // limit", so the next function's strings/API calls would be adopted as
+    // this method's classification evidence. Skip the extent-derived sources;
+    // name/vendor evidence above is unaffected.
+    const bounded = range.end != null;
 
-    if (ctx.program && ctx.textOf && stringHits < 24) {
+    if (ctx.program && ctx.textOf && bounded && stringHits < 24) {
       for (const ref of ctx.program.refsFrom(range.start, range.end, 24)) {
         const text = ctx.textOf(ref.target);
         if (!text) continue;
@@ -146,7 +152,7 @@ function classifyClass(cls, ctx) {
         if (stringHits >= 24) break;
       }
     }
-    if (ctx.program && ctx.symbols && apiHits < 16) {
+    if (ctx.program && ctx.symbols && bounded && apiHits < 16) {
       for (const callee of ctx.program.calleesOf(range.start, range.end, 12)) {
         const name = ctx.symbols.nameAt(callee.addr);
         if (!name) continue;
