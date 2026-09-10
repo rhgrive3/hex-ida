@@ -124,3 +124,59 @@ test('#4646 snapshots admitted scalar metadata once before use', () => {
   assert.equal(event.timestamp, '2026-09-10T00:00:00.000Z');
   assert.equal(reads, 1);
 });
+
+test('#4646 canonicalizes payload from the admitted owned snapshot without rereading getters', () => {
+  let reads = 0;
+  const payload = {};
+  Object.defineProperty(payload, 'x', {
+    enumerable:true,
+    get() {
+      reads += 1;
+      return reads === 1 ? 'a' : 'x'.repeat(10_000_000);
+    },
+  });
+  const n = normalizer();
+  const event = n.push({ ...context, kind:'trace-marker', payload });
+  assert.ok(event);
+  assert.deepEqual(event.payload, { x:'a' });
+  assert.equal(reads, 1);
+  assert.equal(n.flush().dropped, 0);
+});
+
+test('#4646 dedupes predecessorIds from the admitted owned snapshot without rereading elements', () => {
+  let reads = 0;
+  const ids = ['placeholder'];
+  Object.defineProperty(ids, 0, {
+    enumerable:true,
+    configurable:true,
+    get() {
+      reads += 1;
+      return reads === 1 ? 'a' : 'x'.repeat(10_000_000);
+    },
+  });
+  const n = normalizer();
+  const event = n.push({ ...context, kind:'trace-marker', payload:{}, predecessorIds:ids });
+  assert.ok(event);
+  assert.deepEqual(event.predecessorIds, ['a']);
+  assert.equal(reads, 1);
+  assert.equal(n.flush().dropped, 0);
+});
+
+test('#4646 dedupes interventionIds from the admitted owned snapshot without rereading elements', () => {
+  let reads = 0;
+  const ids = ['placeholder'];
+  Object.defineProperty(ids, 0, {
+    enumerable:true,
+    configurable:true,
+    get() {
+      reads += 1;
+      return reads === 1 ? 'b' : 'x'.repeat(10_000_000);
+    },
+  });
+  const n = normalizer();
+  const event = n.push({ ...context, kind:'trace-marker', payload:{}, interventionIds:ids });
+  assert.ok(event);
+  assert.deepEqual(event.interventionIds, ['b']);
+  assert.equal(reads, 1);
+  assert.equal(n.flush().dropped, 0);
+});

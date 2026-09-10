@@ -25,6 +25,7 @@ const UTF8_ENCODER = new TextEncoder();
 function encodedByteLength(value) { return UTF8_ENCODER.encode(value).byteLength; }
 
 const MAX_EVENT_ADMISSION_DEPTH = 64;
+const RUNTIME_EVENT_ADMISSION_REJECTED = Symbol('runtime-event-admission-rejected');
 
 function jsonStringByteLength(value, limit) {
   let total = 2;
@@ -66,6 +67,7 @@ function jsonStringByteLength(value, limit) {
 function createRuntimeEventAdmission(maxBytes) {
   let chargedBytes = 0;
   const active = new WeakSet();
+  const reject = () => RUNTIME_EVENT_ADMISSION_REJECTED;
   const charge = (amount) => {
     if (!Number.isSafeInteger(amount) || amount < 0 || chargedBytes > maxBytes - amount) return false;
     chargedBytes += amount;
@@ -77,91 +79,129 @@ function createRuntimeEventAdmission(maxBytes) {
     return length <= remaining && charge(length);
   };
   const visitBytes = (view) => {
-    if (!charge(2)) return false;
+    if (!charge(2)) return reject();
+    const snapshot = new Uint8Array(view.length);
     for (let index = 0; index < view.length; index += 1) {
-      if (index > 0 && !charge(1)) return false;
-      const text = String(view[index]);
-      if (!charge(text.length)) return false;
+      if (index > 0 && !charge(1)) return reject();
+      const byte = view[index];
+      const text = String(byte);
+      if (!charge(text.length)) return reject();
+      snapshot[index] = byte;
     }
-    return true;
+    return snapshot;
   };
   const visit = (value, depth, arrayElement = false) => {
-    if (depth > MAX_EVENT_ADMISSION_DEPTH) return false;
-    if (value === null) return charge(4);
+    if (depth > MAX_EVENT_ADMISSION_DEPTH) return reject();
+    if (value === null) return charge(4) ? null : reject();
     const type = typeof value;
-    if (type === 'undefined' || type === 'function' || type === 'symbol') return arrayElement ? charge(4) : true;
-    if (type === 'string') return chargeString(value);
-    if (type === 'boolean') return charge(value ? 4 : 5);
-    if (type === 'number') {
-      if (!Number.isFinite(value)) return arrayElement ? charge(4) : true;
-      return charge(String(value).length);
+    if (type === 'undefined' || type === 'function' || type === 'symbol') {
+      return !arrayElement || charge(4) ? value : reject();
     }
-    if (type === 'bigint') return chargeString(value.toString());
-    if (type !== 'object') return true;
-    if (active.has(value)) return false;
+    if (type === 'string') return chargeString(value) ? value : reject();
+    if (type === 'boolean') return charge(value ? 4 : 5) ? value : reject();
+    if (type === 'number') {
+      if (!Number.isFinite(value)) return !arrayElement || charge(4) ? value : reject();
+      return charge(String(value).length) ? value : reject();
+    }
+    if (type === 'bigint') return chargeString(value.toString()) ? value : reject();
+    if (type !== 'object') return value;
+    if (active.has(value)) return reject();
     active.add(value);
     try {
       if (value instanceof Date) {
-        if (!Number.isFinite(value.getTime())) return true;
-        return chargeString(value.toISOString());
+        const time = Date.prototype.getTime.call(value);
+        if (!Number.isFinite(time)) return new Date(NaN);
+        const iso = Date.prototype.toISOString.call(value);
+        return chargeString(iso) ? new Date(time) : reject();
       }
       if (value instanceof ArrayBuffer) return visitBytes(new Uint8Array(value));
       if (ArrayBuffer.isView(value)) return visitBytes(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
       if (Array.isArray(value)) {
-        if (!charge(2)) return false;
-        for (let index = 0; index < value.length; index += 1) {
-          if (index > 0 && !charge(1)) return false;
-          if (!visit(value[index], depth + 1, true)) return false;
+        if (!charge(2)) return reject();
+        const length = value.length;
+        const snapshot = new Array(length);
+        for (let index = 0; index < length; index += 1) {
+          if (index > 0 && !charge(1)) return reject();
+          const entryValue = value[index];
+          const entrySnapshot = visit(entryValue, depth + 1, true);
+          if (entrySnapshot === RUNTIME_EVENT_ADMISSION_REJECTED) return reject();
+          snapshot[index] = entrySnapshot;
         }
-        return true;
+        return snapshot;
       }
       if (value instanceof Map) {
-        if (!charge(10)) return false;
+        if (!charge(10)) return reject();
+        const snapshot = new Map();
         let index = 0;
         for (const [key, entryValue] of value) {
-          if (index++ > 0 && !charge(1)) return false;
-          if (!visit(key, depth + 1, true) || !visit(entryValue, depth + 1, true)) return false;
+          if (index++ > 0 && !charge(1)) return reject();
+          const keySnapshot = visit(key, depth + 1, true);
+          if (keySnapshot === RUNTIME_EVENT_ADMISSION_REJECTED) return reject();
+          const valueSnapshot = visit(entryValue, depth + 1, true);
+          if (valueSnapshot === RUNTIME_EVENT_ADMISSION_REJECTED) return reject();
+          snapshot.set(keySnapshot, valueSnapshot);
         }
-        return true;
+        return snapshot;
       }
       if (value instanceof Set) {
-        if (!charge(10)) return false;
+        if (!charge(10)) return reject();
+        const snapshot = new Set();
         let index = 0;
         for (const entryValue of value) {
-          if (index++ > 0 && !charge(1)) return false;
-          if (!visit(entryValue, depth + 1, true)) return false;
+          if (index++ > 0 && !charge(1)) return reject();
+          const entrySnapshot = visit(entryValue, depth + 1, true);
+          if (entrySnapshot === RUNTIME_EVENT_ADMISSION_REJECTED) return reject();
+          snapshot.add(entrySnapshot);
         }
-        return true;
+        return snapshot;
       }
-      if (!charge(2)) return false;
+      if (!charge(2)) return reject();
+      const snapshot = {};
       let index = 0;
       for (const key in value) {
         if (!Object.hasOwn(value, key)) continue;
         // Even values jsonSafe() later omits still cost raw traversal work.
         // Charge one byte-equivalent per property so malformed/irrelevant
         // metadata cannot defeat the bounded preflight with omitted values.
-        if (!charge(1)) return false;
+        if (!charge(1)) return reject();
         const entryValue = value[key];
         const entryType = typeof entryValue;
-        if (entryType === 'undefined' || entryType === 'function' || entryType === 'symbol'
-          || (entryType === 'number' && !Number.isFinite(entryValue))) continue;
-        if (index++ > 0 && !charge(1)) return false;
-        if (!chargeString(key) || !charge(1) || !visit(entryValue, depth + 1)) return false;
+        let entrySnapshot = entryValue;
+        if (entryType !== 'undefined' && entryType !== 'function' && entryType !== 'symbol'
+          && !(entryType === 'number' && !Number.isFinite(entryValue))) {
+          if (index++ > 0 && !charge(1)) return reject();
+          if (!chargeString(key) || !charge(1)) return reject();
+          entrySnapshot = visit(entryValue, depth + 1);
+          if (entrySnapshot === RUNTIME_EVENT_ADMISSION_REJECTED) return reject();
+        }
+        Object.defineProperty(snapshot, key, {
+          value:entrySnapshot,
+          enumerable:true,
+          configurable:true,
+          writable:true,
+        });
       }
-      return true;
+      return snapshot;
     } finally {
       active.delete(value);
     }
   };
 
-  return (value) => visit(value, 0);
+  return (value) => {
+    const snapshot = visit(value, 0);
+    return snapshot === RUNTIME_EVENT_ADMISSION_REJECTED
+      ? { ok:false, snapshot:null }
+      : { ok:true, snapshot };
+  };
 }
 
-function admitRuntimeEventMaterial(admit, value, maxBytes) {
-  if (admit && !admit(value)) {
+function admitRuntimeEventMaterial(admit, value, maxBytes, { snapshot = false } = {}) {
+  if (!admit) return value;
+  const result = admit(value);
+  if (!result.ok) {
     throw new DebugAdapterError('runtime-event-resource-limit', `runtime event exceeds pre-normalization byte budget (${maxBytes})`);
   }
-  return value;
+  return snapshot ? result.snapshot : value;
 }
 
 function required(value, code, message) {
@@ -227,6 +267,7 @@ function dedupeIdentity(input) {
 export function createRuntimeEvent(input = {}, options = {}) {
   const admit = options.maxBytes == null ? null : createRuntimeEventAdmission(options.maxBytes);
   const admitted = (value) => admitRuntimeEventMaterial(admit, value, options.maxBytes);
+  const admittedSnapshot = (value) => admitRuntimeEventMaterial(admit, value, options.maxBytes, { snapshot:true });
 
   const rawRuntimeSessionId = admitted(input.runtimeSessionId);
   const runtimeSessionId = required(rawRuntimeSessionId, 'runtime-session-id-required', 'runtime event requires runtimeSessionId');
@@ -243,7 +284,7 @@ export function createRuntimeEvent(input = {}, options = {}) {
   const kind = normalizeKind(admitted(input.kind));
   const observationMode = normalizeMode(admitted(input.observationMode));
   const completeness = normalizeCompleteness(admitted(input.completeness), kind === 'gap' || kind === 'dropped-events' ? 'truncated' : 'partial');
-  const rawPayload = admitted(input.payload ?? {});
+  const rawPayload = admittedSnapshot(input.payload ?? {});
   const payload = jsonSafe(rawPayload);
   const streamId = optionalIdentity(admitted(input.streamId), 'streamId');
   const providerEventId = optionalIdentity(admitted(input.providerEventId), 'providerEventId');
@@ -269,9 +310,9 @@ export function createRuntimeEvent(input = {}, options = {}) {
   const eventId = rawEventId == null
     ? `runtimeevent_${stableDigest(identity)}`
     : required(rawEventId, 'runtime-event-id-invalid', 'runtime event id must be a non-empty string');
-  const predecessorIds = arrayOfStrings(admitted(input.predecessorIds), 'predecessorIds');
+  const predecessorIds = arrayOfStrings(admittedSnapshot(input.predecessorIds), 'predecessorIds');
   const timestamp = optionalText(admitted(input.timestamp));
-  const interventionIds = arrayOfStrings(admitted(input.interventionIds), 'interventionIds');
+  const interventionIds = arrayOfStrings(admittedSnapshot(input.interventionIds), 'interventionIds');
   return deepFreeze({
     eventId,
     runtimeSessionId,
