@@ -4687,6 +4687,45 @@ and compiler denominators remain open; FR-C2-02A is not newly declared complete.
 Other roadmap obligations, including the retained bitfield proof deadlines,
 remain open. Goal ACTIVE and integration/release LOCKED.
 
+### C2-02 executable-phi product precision regression (2026-09-10)
+
+A new frozen flow evaluation on `b3ef046b6` checked 192 signed/unsigned branch
+edges and 18 modular loop recurrences across SCCP widths 1/8/16/32/64/128.
+Branch edge and entry partitions passed. Loop soundness, work bounds and partial
+withholding passed, but native strided loops showed no product precision gain.
+The first deterministic divergence was an unevaluated executable backedge: its
+scalar cell was TOP while its missing product fact was joined as full range,
+destroying known-bit/congruence precision before widening. The failed original
+evaluation, frozen cases and read-only trace remain in persistent evidence.
+
+The canonical SCCP owner now defers that unevaluated product input along with
+its TOP cell. Outstanding phi inputs are discharged conservatively when ordinary
+queues drain: unresolved sources become overdefined/full, notify consumers and
+revisit conditional terminators through the same bounded worklist. An absent
+unregistered input cannot borrow a constant from an initialized arm. Existing
+work/visit/cancellation bounds and partial withholding are unchanged; there is
+no second analysis engine. Descriptor version is 2.1.0, and the integration
+ownership manifest adds the exact SCCP runtime path.
+
+The original branch/loop assertions are retained unchanged as regressions after
+this fix, not relabeled as an untuned passing holdout. Independent modular coset
+counts check containment of every loop-header recurrence value, with 512 concrete
+iterations per loop, deterministic replay, unchanged IR, and forced partial
+withholding. Additional regressions cover unresolved cycles at all six widths
+under two instruction orders, every work cutoff before their fixed point,
+reconsideration of both conditional outcomes, delayed constant producers, and
+absent producers. Worker-only negative controls remove deferral or final debt
+processing; they must fail the precision or no-false-constant assertion. These
+are regression-sensitivity controls, not independent release verification.
+
+Exact-head matrix, canonical scalar, downstream range, ownership, module/lint,
+and generated rebuild receipts are recorded in the durable checkpoint. The
+straight-line 54-cell denominator is rerun as regression on this changed runtime;
+its earlier untuned evaluation remains historical evidence only. Fresh loop
+holdout, full width/operator/compiler denominators and original FR acceptance
+remain open. No performance-owner deadline was relaxed and no device, unrelated
+issue, next-component merge or release completion is claimed.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

@@ -188,3 +188,180 @@ test('C2: held-out compositions measure actual SCCP precision without losing con
  for(const bits of HOLDOUT_WIDTHS.filter(isSupportedWidth))assert.ok(rows.some(row=>row.bits===bits&&row.strictGain),`no held-out gain at width ${bits}`);
  t.diagnostic(JSON.stringify({schema:'c2-heldout-precision-v1',rows,scope:'fixed straight-line component compositions; branch/loop and compiler holdouts separate'}));
 });
+
+const FLOW_HOLDOUT_WIDTHS=Object.freeze([1,8,16,32,64,128]);
+function flowHoldoutAnalysis(ir,context={}) {
+ const state=seedAnalysisState(ir);
+ const outcome=runPassTransaction(state,{descriptor:SCCP_PASS,run:runSccpPass},{analysis:state,ir,...context},{});
+ assert.equal(outcome.committed,true);
+ return state.get('ranges');
+}
+// Reference comparison set in integer order, converted once to modular bits.
+// No production comparison/refinement routine is used to construct this oracle.
+function comparisonDenotation(bits,operator,bound,truth) {
+ const signed=operator.startsWith('s'),sign=1n<<BigInt(bits-1),max=(1n<<BigInt(bits))-1n;
+ const threshold=signed?BigInt.asIntN(bits,bound):bound;
+ const less=operator.endsWith('lt')===truth,min=signed?-sign:0n,last=signed?sign-1n:max;
+ const low=less?min:threshold,high=less?threshold-1n:last;
+ if(low>high)return {count:0n,range:{bits,kind:'empty',lower:0n,upper:0n}};
+ const lower=BigInt.asUintN(bits,low),upper=BigInt.asUintN(bits,high);
+ return {count:high-low+1n,range:{bits,kind:lower<=upper?'interval':'wrapped',lower,upper}};
+}
+
+test('C2: held-out branch edge and entry facts match independent signed and unsigned partitions',t=>{
+ const rows=[];
+ for(const bits of FLOW_HOLDOUT_WIDTHS){
+  const sign=1n<<BigInt(bits-1),total=1n<<BigInt(bits);
+  for(const [boundary,bound] of [['zero',0n],['positive-max',sign-1n],['sign-bit',sign],['unsigned-max',total-1n]]){
+   for(const operator of ['ult','uge','slt','sge']){
+    const f=fixture(`c2-branch-holdout-${bits}-${boundary}-${operator}`);f.block(0);
+    const input=f.opaque(bits),condition=f.binary(operator,input,f.constant(bound,bits),1);
+    f.conditionalBranch(condition,1,2);f.block(1).ret();f.block(2).ret();
+    const ir=f.build(),before=structuredClone(ir),artifact=flowHoldoutAnalysis(ir);
+    assert.equal(artifact.completeness,'complete');
+    const global=artifact.facts.get(input.id);assert.ok(global);
+    assert.equal(representedCount(global),total,'an edge restriction must not leak into the global input');
+    for(const truth of [true,false]){
+     const key=`0->${truth?1:2}:conditional-${truth?'true':'false'}`,edge=artifact.edgeFacts.get(key);
+     assert.ok(edge,'actual edge publication is required');
+     const expected=comparisonDenotation(bits,operator,bound,truth);
+     const local=edge.facts.get(input.id)??global; // Existing edge overlay inherits global facts.
+     assert.equal(edge.reachable,expected.count>0n,'impossible edges must not claim a reachable partition');
+     const actualCount=edge.reachable?representedCount(local):0n;
+     assert.equal(actualCount,expected.count,`${bits}/${boundary}/${operator}/${truth}`);
+     if(edge.reachable){
+      assert.equal(representedWithin(local,expected.range),actualCount,'equal counts alone are not equal partitions');
+      const entry=artifact.blockEntryFacts.get(truth?1:2)?.get(input.id)??global;
+      assert.equal(representedCount(entry),expected.count);
+      assert.equal(representedWithin(entry,expected.range),expected.count);
+     }
+     const inputs=[...new Set([...holdoutInputs(bits),BigInt.asUintN(bits,bound-1n),bound,BigInt.asUintN(bits,bound+1n)])];
+     for(const value of inputs){
+      const left=operator.startsWith('s')?BigInt.asIntN(bits,value):value;
+      const right=operator.startsWith('s')?BigInt.asIntN(bits,bound):bound;
+      const goesTrue=operator.endsWith('lt')?left<right:left>=right;
+      assert.equal(edge.reachable&&allows(local,value),goesTrue===truth,'concrete branch membership');
+     }
+     rows.push({bits,boundary,operator,truth,reachable:edge.reachable,expectedCount:String(expected.count),
+      actualCount:String(actualCount),globalCount:String(total),strictGain:edge.reachable&&actualCount<total,concreteChecks:inputs.length});
+    }
+    assert.equal(flowHoldoutAnalysis(ir).publicationDigest,artifact.publicationDigest,'same-input replay must be deterministic');
+    assert.deepEqual(structuredClone(ir),before);
+   }
+  }
+ }
+ assert.equal(rows.length,192);
+ assert.equal(new Set(rows.map(row=>`${row.bits}/${row.boundary}/${row.operator}/${row.truth}`)).size,192);
+ for(const bits of FLOW_HOLDOUT_WIDTHS)assert.ok(rows.some(row=>row.bits===bits&&row.strictGain));
+ t.diagnostic(JSON.stringify({schema:'c2-heldout-branch-v1',rows,scope:'exact edge/entry partition vs edge-insensitive global fact; not whole-program transformation proof'}));
+});
+
+test('C2: held-out loop header facts retain modular reachability and terminate without partial exactness',t=>{
+ const rows=[];
+ for(const bits of FLOW_HOLDOUT_WIDTHS)for(const mode of ['unit-up','strided-up','strided-down']){
+  const total=1n<<BigInt(bits),mask=total-1n;
+  const step=mode==='unit-up'?1n:1n<<BigInt(Math.min(2,bits-1));
+  const start=mode==='strided-down'?mask:1n,operator=mode==='strided-down'?'sub':'add';
+  const f=fixture(`c2-loop-holdout-${bits}-${mode}`);f.block(0);
+  const initial=f.constant(start,bits);f.branch(1);f.block(1);
+  const counter=f.phi([[0,initial]],bits),next=f.binary(operator,counter,f.constant(step,bits),bits);
+  counter.def.incoming.push({from:1,value:next});next.uses.push(counter.def);
+  f.conditionalBranch(f.opaque(1),1,2);f.block(2).ret();
+  const ir=f.build(),before=structuredClone(ir),artifact=flowHoldoutAnalysis(ir);
+  assert.equal(artifact.completeness,'complete');assert.ok(artifact.workItems<50000,'existing work bound, not a wall-clock performance target');
+  const actual=artifact.facts.get(counter.id);assert.ok(actual);
+  const residue=start%step,low=step-1n;
+  const reachable={...intervalFact(fullRange(bits)),knownZero:low^residue,knownOne:residue,congruence:{modulus:step,remainder:residue}};
+  const reachableCount=total/step;
+  assert.equal(representedCount(reachable),reachableCount);
+  assert.equal(actual.knownZero&~reachable.knownZero,0n,'no free reachable bit may be fixed to zero');
+  assert.equal(actual.knownOne&~reachable.knownOne,0n,'no free reachable bit may be fixed to one');
+  assert.ok(actual.congruence.modulus<=step);assert.equal(actual.congruence.remainder,start%actual.congruence.modulus);
+  assert.equal(representedWithin(reachable,actual.range),reachableCount,'all iterations of the modular recurrence must remain represented');
+  const actualCount=representedCount(actual),intervalCount=representedCount(intervalFact(actual.range));
+  assert.ok(actualCount>=reachableCount&&actualCount<=intervalCount);
+  let value=start;
+  for(let iteration=0;iteration<512;iteration++){
+   assert.ok(allows(actual,value));value=BigInt.asUintN(bits,operator==='add'?value+step:value-step);
+  }
+  assert.equal(flowHoldoutAnalysis(ir).publicationDigest,artifact.publicationDigest);
+  const partial=flowHoldoutAnalysis(ir,{sccpLimits:{maxWorkItems:2}});
+  assert.equal(partial.completeness,'partial');assert.equal(partial.constants.size,0);
+  for(const fact of partial.facts.values()){
+   assert.equal(fact.status,'partial');assert.equal(fact.constant,null);assert.equal(fact.range.kind,'full');
+  }
+  assert.deepEqual(structuredClone(ir),before);
+  rows.push({bits,mode,step:String(step),reachableCount:String(reachableCount),actualCount:String(actualCount),
+   intervalCount:String(intervalCount),strictGain:actualCount<intervalCount,workItems:artifact.workItems,widened:artifact.widenedValueCount,
+   concreteChecks:512,partialWithheld:true});
+ }
+ assert.equal(rows.length,18);
+ for(const bits of FLOW_HOLDOUT_WIDTHS.filter(bits=>bits>1))assert.ok(rows.some(row=>row.bits===bits&&row.strictGain),`no loop precision gain at width ${bits}`);
+ t.diagnostic(JSON.stringify({schema:'c2-heldout-loop-v1',rows,scope:'loop-header modular recurrence and analysis termination; not program termination or return-value proof'}));
+});
+
+test('C2: unresolved executable phi cycles discharge to unknown and revisit conditional edges',()=>{
+ for(const bits of FLOW_HOLDOUT_WIDTHS)for(const reverse of [false,true]){
+  const f=fixture(`c2-phi-debt-${bits}-${reverse}`);f.block(0);
+  const initial=f.constant(1n,bits);f.branch(1);f.block(1);
+  const counter=f.phi([[0,initial]],bits),step=f.constant(1n,bits);
+  const cycle=f.binary('add',step,step,bits);
+  cycle.def.args[0].value=cycle;cycle.uses.push(cycle.def);
+  counter.def.incoming.push({from:1,value:cycle});cycle.uses.push(counter.def);
+  f.conditionalBranch(f.opaque(1),1,2);
+  f.block(2);
+  const condition=bits===1?cycle:f.binary('eq',cycle,f.constant(0n,bits),1);
+  f.conditionalBranch(condition,3,4);f.block(3).ret();f.block(4).ret();
+  const ir=f.build();
+  if(reverse){
+   ir.values.reverse();
+   for(const block of ir.blocks)block.insts.splice(0,block.insts.length-1,...block.insts.slice(0,-1).reverse());
+  }
+  const before=structuredClone(ir),artifact=flowHoldoutAnalysis(ir);
+  assert.equal(artifact.completeness,'complete');
+  for(const value of [counter,cycle]){
+   assert.equal(artifact.constants.has(value.id),false,'an initialized arm is not proof about an unresolved arm');
+   assert.equal(representedCount(artifact.facts.get(value.id)),1n<<BigInt(bits));
+  }
+  for(const key of ['2->3:conditional-true','2->4:conditional-false']){
+   assert.equal(artifact.edgeFacts.get(key)?.reachable,true,'discharged branch condition must revisit both outcomes');
+  }
+  assert.equal(flowHoldoutAnalysis(ir).publicationDigest,artifact.publicationDigest);
+  // Exercise every work cutoff before this fixed point, including debt
+  // discharge itself. None may publish a provisional exact constant.
+  for(let maxWorkItems=1;maxWorkItems<artifact.workItems;maxWorkItems++){
+   const partial=flowHoldoutAnalysis(ir,{sccpLimits:{maxWorkItems}});
+   assert.equal(partial.completeness,'partial');assert.equal(partial.constants.size,0);
+   for(const fact of partial.facts.values()){
+    assert.equal(fact.status,'partial');assert.equal(fact.constant,null);
+    assert.equal(representedCount(fact),1n<<BigInt(fact.bits));
+   }
+  }
+  assert.deepEqual(structuredClone(ir),before);
+ }
+});
+
+test('C2: delayed executable phi producers resolve independently of instruction order',()=>{
+ for(const reverse of [false,true]){
+  const f=fixture(`c2-phi-delayed-${reverse}`);f.block(0);
+  const initial=f.constant(7n,8);f.branch(1);f.block(1);
+  const phi=f.phi([[0,initial]],8),source=f.binary('add',f.constant(2n,8),f.constant(5n,8),8);
+  phi.def.incoming.push({from:1,value:source});source.uses.push(phi.def);
+  f.conditionalBranch(f.opaque(1),1,2);f.block(2).ret();
+  const ir=f.build();
+  if(reverse)ir.blocks[1].insts.splice(0,ir.blocks[1].insts.length-1,...ir.blocks[1].insts.slice(0,-1).reverse());
+  const artifact=flowHoldoutAnalysis(ir);
+  assert.equal(artifact.completeness,'complete');assert.equal(artifact.constants.get(phi.id)?.value,7n);
+  assert.equal(representedCount(artifact.facts.get(phi.id)),1n);
+ }
+});
+
+test('C2: absent phi producers cannot borrow exactness from an initialized arm',()=>{
+ const f=fixture('c2-phi-unregistered');f.block(0);
+ const initial=f.constant(7n,8);f.branch(1);f.block(1);
+ const missing={id:900000001,bits:8,kind:'def',def:null,uses:[]};
+ const phi=f.phi([[0,initial],[0,missing]],8);f.ret(phi);
+ const artifact=flowHoldoutAnalysis(f.build());
+ assert.equal(artifact.completeness,'complete');assert.equal(artifact.constants.has(phi.id),false);
+ assert.equal(representedCount(artifact.facts.get(phi.id)),256n);
+});

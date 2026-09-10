@@ -42,6 +42,7 @@
       "js/decompiler/phase8/projection-origin.js",
       "js/decompiler/phase8/projection.js",
       "js/decompiler/phase8/range.js",
+      "js/decompiler/phase8/sccp.js",
       "js/decompiler/phase8/rewrite-registry.js",
       "js/decompiler/phase8/representation-candidates.js",
       "js/decompiler/phase8/transaction.js",

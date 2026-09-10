@@ -38,7 +38,7 @@ import { canonicalAnalysisIdentity } from './analysis-identity.js';
 
 export const SCCP_PASS = createPassDescriptor({
   id: 'phase8.sccp',
-  version: '2.0.1',
+  version: '2.1.0',
   stage: 'scalar-optimization',
   budgetClass: 'standard',
   consumes: ['cfg', 'ssa'],
@@ -318,6 +318,7 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
 
   const valueById = new Map(values.map((value) => [value.id, value]));
   const blockByIndex = new Map(blocks.map((block) => [block.index, block]));
+  const pendingPhiInputs = new Map();
 
   const cellOf = (value) => (value == null ? overdefined('missing operand') : cells.get(value.id) ?? TOP);
   const factOfValue = (value) => {
@@ -480,6 +481,8 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     let range = bits == null ? null : emptyRange(bits);
     let fact = bits == null ? null : emptyFact(bits, { valueId: value.id });
     let contributed = false;
+    const pending = new Set();
+    pendingPhiInputs.delete(value.id);
     for (const incoming of definition?.incoming ?? []) {
       const from = incoming?.from;
       const source = incoming?.value;
@@ -492,7 +495,16 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       // "conditional" in SCCP.
       if (!executablePredecessors.get(definition.block)?.has(from)) continue;
       contributed = true;
-      cell = meet(cell, cellOf(source));
+      const sourceCell = cellOf(source);
+      // TOP is not an unknown full-range value: an executable backedge may
+      // simply not have been evaluated yet. Defer its entire product join,
+      // just as the scalar cell meet defers TOP, and discharge the obligation
+      // conservatively if ordinary work reaches a fixed point first.
+      if (sourceCell.state === UNDEFINED && source != null && valueById.get(source.id) === source) {
+        pending.add(source.id);
+        continue;
+      }
+      cell = meet(cell, sourceCell.state === UNDEFINED ? overdefined('unregistered phi input') : sourceCell);
       const sourceFact = factOfValue(source);
       const sourceRange = sourceFact?.range ?? rangeOfValue(source);
       if (bits != null && sourceFact != null && sourceFact.bits === bits) fact = joinFacts(fact, sourceFact, { provenance: false });
@@ -501,6 +513,8 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       }), { provenance: false });
       else if (bits != null) fact = fullFact(bits, { valueId: value.id, reason: 'phi incoming width disagrees' });
     }
+    if (pending.size > 0) pendingPhiInputs.set(value.id, pending);
+    if (pending.size > 0 && cell.state === UNDEFINED) return { cell: TOP, range: null, fact: null };
     // A reachable phi with no executable incoming edge is not the empty set.
     // The empty seed is an implementation detail; publishing it would let a
     // missing predecessor masquerade as a proof that the value is dead.
@@ -1045,9 +1059,28 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     catch { return true; }
   };
 
-  while ((hasBlockWork() || hasValueWork()) && !budgetExhausted) {
+  while ((hasBlockWork() || hasValueWork() || pendingPhiInputs.size > 0) && !budgetExhausted) {
     if (work >= limits.maxWorkItems || aborted()) { budgetExhausted = true; break; }
     work += 1;
+
+    if (!hasBlockWork() && !hasValueWork()) {
+      const [phiId, sources] = pendingPhiInputs.entries().next().value;
+      pendingPhiInputs.delete(phiId);
+      for (const sourceId of sources) {
+        if (work >= limits.maxWorkItems || aborted()) { budgetExhausted = true; break; }
+        work += 1;
+        if ((cells.get(sourceId) ?? TOP).state !== UNDEFINED) continue;
+        const bits = widthOf(valueById.get(sourceId));
+        setCell(sourceId, overdefined('unresolved executable phi input'),
+          bits == null ? null : fullRange(bits),
+          bits == null ? null : fullFact(bits, { valueId: sourceId, reason: 'unresolved executable phi input' }));
+        // Reconsider any terminator decided by this value through the normal
+        // worklist path too; setCell alone only notifies value/phi users.
+        enqueueValue(sourceId);
+      }
+      enqueueValue(phiId);
+      continue;
+    }
 
     if (hasBlockWork()) {
       const index = takeBlock();
