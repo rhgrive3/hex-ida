@@ -76,9 +76,13 @@ async function discoverBaselineFunctions(baseline, { signal = null, onProgress =
     try {
       const result = await requestWithSignal(request, signal);
       if (result?.starts?.length) {
-        symbols.addFunctions(result.starts, { source:'heuristic', confidence:0.55, confirmed:false });
+        // #5558: addFunctions() deduplicates known starts and returns the
+        // number actually added. The global discovery budget must be debited
+        // by that count — duplicate re-discovery from independent region
+        // scans must never exhaust the budget ahead of unscanned regions.
+        const added = symbols.addFunctions(result.starts, { source:'heuristic', confidence:0.55, confirmed:false });
         symbols.guessed = true;
-        remaining = Math.max(0, remaining - result.starts.length);
+        remaining = Math.max(0, remaining - added);
       }
       const complete = result?.discoveryComplete === true || result?.completeness?.complete === true || result?.complete === true;
       results.push({ regionId:region.id, complete, capped:!!result?.capped, discovered:result?.starts?.length || 0 });
