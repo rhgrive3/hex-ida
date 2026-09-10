@@ -4565,6 +4565,46 @@ generated rebuild. General CSE/DCE, full C4-02/03/04/05 and original23/frozen135
 acceptance remain open. No independent/candidate-merge/main/runtime/device or
 release proof is claimed; goal ACTIVE and integration/release LOCKED.
 
+### C4-04 canonical bitfield bridge — in-progress backup (2026-09-10)
+
+The raw translator and actual proof API previously refused BFX/BFI before any
+candidate could be verified. The canonical scalar bridge now lowers unsigned and
+signed extraction, unsigned and signed insert-zero, BFI and BFXIL through the
+existing extract/concat/cast factories. Field position, field width, independent
+source/result widths and conflicting producer aliases are checked explicitly.
+No new evaluator, semantic identity or solver is introduced. Byte execution,
+definition validation, pure-target eligibility and automatic proof-target
+discovery use the same bridge. The proof pass version is 2.10.0.
+
+Execution freshness now observes `extra.lsb`, `width`, `toward` and
+`bitfieldKind`. The initial production test reproduced an issued plan remaining
+valid after its field offset changed. Permanent regression now checks both the
+actual execution capability and plan rejection for all four field mutations.
+Malformed layouts, cancellation and zero publication budgets never adopt.
+Actual automatic discovery, rendered consumer lineage, independent-store
+isolation and replay passed the focused production precheck.
+
+The raw/executed matrix passed 4,640 cases (9,280 value comparisons) over six
+variants and widths 1, 2, 3, 4, 8, 16, 32 and 64. Additional mixed-width, producer
+alias, contradictory-layout and descriptor-classification cases pass. These
+checks certify the declared scalar bridge, not the initial legacy renderer.
+
+**This increment is not complete.** A same-budget isolated run reproduced the
+8-bit BFI/local-rewrites deadline. The subsequent all-cell diagnostic retained
+141 successful adoption/value-comparison cells out of 144; local-rewrites timed
+out for 1-bit unsigned extraction, 8-bit BFI and 8-bit BFXIL. The strict matrix
+still fails: its complete/adopted assertions, inputs and timeouts are unchanged.
+It now collects failures so one early deadline cannot conceal later cells.
+Failed runs are retained under the persistent bitfield evidence prefix, never
+published as a passing matrix. Solver timing/performance is not repaired in this
+lane, per the user's separate ownership. No timeout is counted as proof.
+
+This backup preserves unfinished source/tests and canonical generated output on
+the existing PR; exact-head regression and generated rebuild receipts are tracked
+in the persistent bitfield checkpoint. It does not close C4-04, the broader
+roadmap, integration or release. Main reconciliation, independent/candidate-tree,
+real-binary, runtime and device acceptance remain separate and unclaimed.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

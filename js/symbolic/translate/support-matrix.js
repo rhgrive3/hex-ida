@@ -6,7 +6,7 @@
  * partial, and unsupported boundaries.
  */
 
-import { scalarOperationSupported } from './scalar.js';
+import { scalarOperationSupported, scalarBitfieldSupported } from './scalar.js';
 import { OP, MK } from '../../ir-base.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -85,7 +85,7 @@ export function classifyOpSupport(op, inst = null) {
 
     case OP.BFX:
     case OP.BFI:
-      return TRANSLATION_STATUS.UNSUPPORTED;
+      return inst?.op===op && scalarBitfieldSupported(inst) ? TRANSLATION_STATUS.EXACT : TRANSLATION_STATUS.UNSUPPORTED;
 
     case OP.LOAD: {
       if (!inst?.loc) return TRANSLATION_STATUS.UNSUPPORTED;

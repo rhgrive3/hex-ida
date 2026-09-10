@@ -3,7 +3,7 @@
  * It does not evaluate ISA instructions or implement a second expression engine.
  */
 import { OP } from '../../ir-base.js';
-import { createBv, createBool, createCast, createIte, createCompare, createBinary,
+import { createBv, createBool, createCast, createIte, createCompare, createBinary, createExtract, createConcat,
   createUnary, createUnknownSemantic, bvSort } from '../expr/index.js';
 const undef = (bits, reason) => createUnknownSemantic(bvSort(bits), reason);
 export function floatingSemantics(value) {
@@ -34,6 +34,10 @@ const ALIASES = Object.freeze({ orr: 'or', eor: 'xor' });
 const BINARY = new Set(['add','sub','mul','and','or','xor','shl','lshr','ashr','udiv','sdiv','urem','srem']);
 const UNARY = new Set(['not','neg']);
 const CASTS = new Set(['trunc','zext','sext']);
+const BITFIELD_ALIASES = Object.freeze({
+  ubfx:{signed:false,toward:'right'},sbfx:{signed:true,toward:'right'},
+  ubfiz:{signed:false,toward:'left'},sbfiz:{signed:true,toward:'left'},
+});
 /** Both spellings are public producer contracts; neither may silently override the other. */
 export function scalarOperation(inst) {
   const declarations = [inst?.subOp, inst?.sub, inst?.name].filter(x => x != null);
@@ -53,6 +57,69 @@ export function scalarOperationSupported(inst) {
   if (inst?.op === OP.UN) return UNARY.has(operation) || CASTS.has(operation);
   return true;
 }
+
+// Interpret only declared field layout. Range checks precede Expr allocation;
+// the existing extract/concat/cast factories own the resulting BV semantics.
+function bitfieldLayout(inst, widths, bits) {
+  if (![OP.BFX,OP.BFI].includes(inst?.op) || !Array.isArray(widths)
+      || widths.length !== (inst.op===OP.BFX ? 1 : 2)
+      || !Number.isSafeInteger(bits) || bits < 1 || bits > 65536) return null;
+  for (let index=0;index<widths.length;index++) {
+    if (!Number.isSafeInteger(widths[index]) || widths[index]<1 || widths[index]>65536) return null;
+  }
+  const extra = inst.extra;
+  if (!extra || typeof extra !== 'object' || Array.isArray(extra)) return null;
+  const {lsb,width} = extra, operation = scalarOperation(inst);
+  if (!Number.isSafeInteger(lsb) || lsb < 0 || !Number.isSafeInteger(width) || width < 1
+      || width > 65536 || lsb > 65536
+      || operation == null && [inst.sub,inst.subOp,inst.name].some(value => value != null)) return null;
+  if (inst.op === OP.BFX) {
+    if (widths.length !== 1 || width > widths[0] || width > bits) return null;
+    const aliases = [operation,extra.bitfieldKind].filter(value => value != null);
+    if (aliases.some(value => typeof value!=='string' || !['extract','bfx'].includes(value) && !Object.hasOwn(BITFIELD_ALIASES,value))) return null;
+    const hints = aliases.filter(value => Object.hasOwn(BITFIELD_ALIASES,value)).map(value => BITFIELD_ALIASES[value]);
+    const signs = [inst.signed,extra.signed,...hints.map(hint=>hint.signed)].filter(value=>value!=null);
+    const directions = [extra.toward,...hints.map(hint=>hint.toward)].filter(value=>value!=null);
+    if (signs.some(value=>typeof value!=='boolean' || value!==signs[0])
+        || directions.some(value=>!['left','right'].includes(value) || value!==directions[0])) return null;
+    const toward = directions[0] ?? 'right';
+    if (lsb+width > (toward==='left' ? bits : widths[0])) return null;
+    return {kind:'extract',lsb,width,toward,signed:signs[0] ?? false};
+  }
+  if (widths.length !== 2 || widths[0] !== bits || width > widths[1] || width > bits
+      || operation != null && !['insert','bfi','bfxil'].includes(operation) || extra.toward != null) return null;
+  const kinds = [operation==='insert' ? null : operation,extra.bitfieldKind].filter(value=>value!=null);
+  if (kinds.some(value=>!['bfi','bfxil'].includes(value) || value!==kinds[0])) return null;
+  const kind = kinds[0] ?? 'bfi';
+  if (lsb+width > (kind==='bfxil' ? widths[1] : bits)) return null;
+  return {kind,lsb,width};
+}
+
+export function scalarBitfieldSupported(inst) {
+  if (!Array.isArray(inst?.args) || inst.args.length !== (inst.op===OP.BFX ? 1 : 2)
+      || floatingSemantics(inst) || floatingSemantics(inst.dst)) return false;
+  return bitfieldLayout(inst,inst.args.map(arg=>arg?.value?.bits),inst.dst?.bits ?? inst.bits) != null;
+}
+
+function lowerBitfieldInstruction(inst, args, bits) {
+  if (args.some(arg=>arg?.sort?.kind!=='bv')) return undef(bits,'bitfield-input-sort');
+  const layout = bitfieldLayout(inst,args.map(arg=>arg.sort.width),bits);
+  if (!layout) return undef(bits,'bitfield-contract');
+  const {kind,lsb,width} = layout;
+  if (kind==='extract') {
+    const low = layout.toward==='left' ? 0 : lsb;
+    let field = createExtract(args[0],low+width-1,low);
+    if (layout.toward==='left' && lsb>0) field = createConcat(field,createBv(lsb,0n));
+    return field.sort.width===bits ? field : createCast(layout.signed ? 'sext' : 'zext',field,bits);
+  }
+  const targetLow = kind==='bfxil' ? 0 : lsb, sourceLow = kind==='bfxil' ? lsb : 0;
+  const parts = [];
+  if (targetLow+width<bits) parts.push(createExtract(args[0],bits-1,targetLow+width));
+  parts.push(createExtract(args[1],sourceLow+width-1,sourceLow));
+  if (targetLow>0) parts.push(createExtract(args[0],targetLow-1,0));
+  return parts.reduce((high,low)=>createConcat(high,low));
+}
+
 export function lowerScalarInstruction(inst, args, bits, condition = null) {
   if (!Number.isSafeInteger(bits) || bits < 1 || bits > 65536) throw new TypeError('scalar-width');
   if (floatingSemantics(inst) || floatingSemantics(inst.dst)) return undef(bits, 'unsupported-floating-semantics');
@@ -95,6 +162,7 @@ export function lowerScalarInstruction(inst, args, bits, condition = null) {
     if (args.some(x => x?.sort?.kind !== 'bv' || x.sort.width !== bits)) return undef(bits, 'select-sort-contract');
     return createIte(condition, args[0], args[1]);
   }
+  if ([OP.BFX,OP.BFI].includes(inst.op)) return lowerBitfieldInstruction(inst,args,bits);
   if (args.some(x => x?.sort?.kind !== 'bv' || x.sort.width !== bits)) return undef(bits, 'scalar-input-width-mismatch');
   if ([OP.MOV, OP.ADDR].includes(inst.op)) {
     if (args.length !== 1) return undef(bits, 'ambiguous-move-operands');

@@ -21,7 +21,7 @@ const SHAPES = Object.freeze({
   argument: {value:'value',bits:null}, incomingItem: {from:null,value:'value'},
   addr: {base:'value',index:'value',disp:null,size:null,widthBits:null,precise:null,addressSpace:null},
   loc: {kind:null,key:null,address:null,size:null,disp:null,addressSpace:null,volatile:null,atomic:null},
-  extra: {stateWrite:null,value:null,constKind:null,kind:null,bit:null,target:null,size:null,widthBits:null,memoryAccess:'descriptor',signed:null,float:null,sourceBits:null,targetBits:null,volatile:null,atomic:null,addressPrecise:null,addressSemantic:null,completeness:null,attributes:'attributes'},
+  extra: {stateWrite:null,value:null,constKind:null,kind:null,bit:null,target:null,size:null,widthBits:null,memoryAccess:'descriptor',signed:null,float:null,sourceBits:null,targetBits:null,lsb:null,width:null,toward:null,bitfieldKind:null,volatile:null,atomic:null,addressPrecise:null,addressSemantic:null,completeness:null,attributes:'attributes'},
   attributes: {float:null,machineAddressExpression:'expression',machineEffects:'machineEffects'},
   machineEffects: {bundleCompleteness:null,operationMetadata:'operationMetadata'},
   operationMetadata: {divisionByZero:null,signedOverflow:null,widthBits:null},

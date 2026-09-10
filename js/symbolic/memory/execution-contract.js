@@ -6,7 +6,7 @@ import { OP } from '../../ir-base.js';
 import { QueryFailure } from './query-state.js';
 
 const TERMINATORS = new Set([OP.RET, OP.BR, OP.CBR]);
-const DEFINITIONS = new Set([OP.CONST, OP.ADDR, OP.MOV, OP.BIN, OP.UN, OP.CMP, OP.SEL, OP.LOAD, OP.PHI]);
+const DEFINITIONS = new Set([OP.CONST, OP.ADDR, OP.MOV, OP.BIN, OP.UN, OP.CMP, OP.SEL, OP.BFX, OP.BFI, OP.LOAD, OP.PHI]);
 function fail(reason) { throw new QueryFailure(reason); }
 function addressKey(value) {
   if (typeof value === 'bigint') return value.toString();

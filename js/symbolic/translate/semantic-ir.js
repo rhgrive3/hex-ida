@@ -180,7 +180,7 @@ export function translateSemanticIR(target, options = {}) {
       }
       return unknown(width, inst.loc && inst.loc.kind !== MK.UNKNOWN ? 'missing-canonical-memory-proof' : 'unknown-load-alias', inst);
     }
-    const scalarOps = [OP.CONST,OP.MOV,OP.ADDR,OP.BIN,OP.UN,OP.CMP,OP.SEL];
+    const scalarOps = [OP.CONST,OP.MOV,OP.ADDR,OP.BIN,OP.UN,OP.CMP,OP.SEL,OP.BFX,OP.BFI];
     if (!scalarOps.includes(inst.op)) return unknown(width, 'unsupported-instruction-op', inst);
     const values = argumentsOf(inst);
     const operandFallback = inst.op === OP.CMP ? defaultWidth : width;

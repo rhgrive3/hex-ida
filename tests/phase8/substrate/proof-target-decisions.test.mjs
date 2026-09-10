@@ -7,6 +7,7 @@ import { evaluateExpression } from '../../../js/decompiler/verify/equivalence.js
 import { evaluateExpr, EVAL_STATUS } from '../../../js/symbolic/expr/index.js';
 import { querySymbolicAnalysis, readSymbolicTargetInputs } from '../../../js/symbolic/query/analysis.js';
 import { createTaintModels } from '../../../js/symbolic/taint/models.js';
+import { isExecutionResult } from '../../../js/symbolic/memory/execution-snapshot.js';
 import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
 import { createDecompilerNavigation } from '../../../js/ui/decompiler-provenance.js';
 import { buildRenderProvenance } from '../../../js/decompiler/phase8/render-provenance.js';
@@ -895,5 +896,125 @@ test('C4-03 constant Boolean proof output retains the elided canonical operand d
       assert.ok(proof.origin.addresses.includes(String(argument.value.def.address)));
     }
     assert.deepEqual(structuredClone(f.ir),f.canonical);
+  }
+});
+
+function bitfieldProjectionFixture(bits=8,mode='extract-unsigned',{keepInput=false,configure=()=>{}}={}) {
+  const f=fixture('proof-bitfield');f.block(0);
+  const a=f.opaque(bits),b=f.opaque(bits);a.index=0;a.reg='x0';b.index=1;b.reg='x1';
+  const zero=f.binary('xor',a,a,bits),source=f.binary('add',a,zero,bits);
+  const insert=['bfi','bfxil'].includes(mode),lsb=bits===1?0:1,width=Math.max(1,Math.floor(bits/2));
+  const target=insert?f.binary('insert',b,source,bits):f.unary('extract',source,bits);
+  target.def.op=insert?'bfi':'bfx';
+  target.def.extra={lsb,width,...(insert?{bitfieldKind:mode}:{toward:mode.startsWith('insert-zero')?'left':'right',signed:mode.endsWith('-signed')})};
+  let store=null;
+  if(keepInput){
+    f.store(a,{locKind:'global',locKey:'global:64'});store=f.current.insts.at(-1);store.loc.address=0x40n;
+    Object.assign(store.extra.memoryAccess,{addressSpace:identity.addressSpace,volatility:false,atomic:false,ordering:'none',endian:'little'});
+  }
+  f.ret();const ir=f.build();ir.instructions=ir.blocks.flatMap(block=>block.insts);
+  ir.instructions.forEach((inst,index)=>{inst.id='field_'+index;inst.address=0x6000n+BigInt(index*4);});
+  const ret=ir.instructions.at(-1);ret.args=[{value:target}];target.uses.push(ret);
+  configure({ir,a,b,source,target,store});const canonical=structuredClone(ir);
+  const result=enhanceSemanticDecompilation({semantic:true,ir,types:null,
+    lines:ir.instructions.filter(inst=>['ret','store'].includes(inst.op)).map(inst=>({kind:'stmt',indent:0,
+      text:inst.op==='ret'?'return pending;':'global_value = pending;',row:inst.row,addr:inst.address})),metrics:{},ctx:{}},null,
+    {phase8PrepareProof:true,phase8ProofOnlyRewrites:true,deterministicTransforms:true,decompilerTimeBudgetMs:1000});
+  return {ir,a,b,source,target,store,ret,lsb,width,canonical,result,options:{identity,abiId:'generic-v1',memory:{addressBits:8},targets:[target],
+    timeoutMs:1000,backendTier:'tiered',requireProofOnlyRewrites:true}};
+}
+function bitfieldExpected(mode,bits,lsb,width,a,b) {
+  const mask=(1n<<BigInt(width))-1n,offset=BigInt(lsb);
+  if(mode==='bfi')return BigInt.asUintN(bits,(b&~(mask<<offset))|((a&mask)<<offset));
+  if(mode==='bfxil')return BigInt.asUintN(bits,(b&~mask)|((a>>offset)&mask));
+  const left=mode.startsWith('insert-zero'),field=left?(a&mask)<<offset:(a>>offset)&mask;
+  return BigInt.asUintN(bits,mode.endsWith('-signed')?BigInt.asIntN(left?width+lsb:width,field):field);
+}
+
+test('C4-04 bitfield families reach actual proof adoption across the frozen width axis',async t=>{
+  const modes=['extract-unsigned','extract-signed','insert-zero-unsigned','insert-zero-signed','bfi','bfxil'],rows=[];
+  const failures=[];
+  const models=createTaintModels({id:'bitfield-proof-test',version:'1',provenance:'test',sources:[],sinks:[]});
+  for(const bits of [1,2,3,4,8,16,32,64])for(const mode of modes){
+    const f=bitfieldProjectionFixture(bits,mode),translated=await querySymbolicAnalysis(f.ir,{...f.options,models,candidateStrategy:'translate-only'});
+    assert.equal(translated.status,'complete',`${bits}/${mode}: ${translated.reason}`);
+    const binding=readSymbolicTargetInputs(translated,f.target,identity);assert.ok(binding);
+    const mask=(1n<<BigInt(bits))-1n,sign=1n<<BigInt(bits-1);
+    const values=bits<=4?Array.from({length:2**bits},(_,index)=>BigInt(index)):[0n,1n,mask,mask-1n,sign,sign-1n];
+    const inputViews=[f.a,f.b].map(value=>f.result.semanticAst.values.find(item=>item.valueId===value.id)?.expression);
+    for(const candidateStrategy of ['local-rewrites','representation-rules','equality-saturation']){
+      const label=`${bits}/${mode}/${candidateStrategy}`;
+      try {
+      const result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy});
+      assert.equal(result.proofOptimization.status,'complete',`${label}: ${result.proofOptimization.reason}`);
+      assert.equal(result.proofOptimization.adopted,1,label);
+      const decision=result.proofOptimization.targetDecisions[0];assert.equal(decision.disposition,'adopted');
+      const after=result.semanticAst.values.find(item=>item.valueId===f.target.id).expression;assert.equal(after.bits,bits);
+      for(const a of values)for(const b of values){
+        const expected=bitfieldExpected(mode,bits,f.lsb,f.width,a,b),inputs=new Map([[f.a,a],[f.b,b]]);
+        const canonical=evaluateExpr(binding.expression,new Map(binding.inputs.map(input=>[input.symbol.symbolId,inputs.get(input.value)])));
+        assert.equal(canonical.status,EVAL_STATUS.VALUE);assert.equal(canonical.value,expected,label);
+        const environment=Object.fromEntries(inputViews.flatMap((view,index)=>view?[[view.name,[a,b][index]]]:[]));
+        assert.equal(evaluateExpression(after,environment),expected,label);
+      }
+      assert.deepEqual(structuredClone(f.ir),f.canonical);
+      rows.push({bits,mode,candidateStrategy,disposition:decision.disposition,canonicalComparisons:values.length**2,adoptedComparisons:values.length**2});
+      } catch(error) {
+        failures.push({label,message:error.message});
+      }
+    }
+  }
+  if(failures.length)t.diagnostic(JSON.stringify({schema:'c4-04-bitfield-failures-v1',failures,passed:rows.length}));
+  assert.deepEqual(failures,[],'every bitfield adoption cell must pass; failures are collected without dropping later cells');
+  assert.equal(rows.length,144);assert.equal(new Set(rows.map(row=>`${row.bits}/${row.mode}/${row.candidateStrategy}`)).size,144);
+  t.diagnostic(JSON.stringify({schema:'c4-04-bitfield-production-widths-v1',rows}));
+});
+
+test('C4-04 bitfield automatic discovery and actual consumers retain field lineage without claiming an independent store',async()=>{
+  for(const mode of ['extract-signed','insert-zero-signed','bfi','bfxil']){
+    const f=bitfieldProjectionFixture(8,mode,{keepInput:true});
+    const options={...f.options,candidateStrategy:'equality-saturation',targets:undefined};
+    const result=await optimizeSemanticDecompilation(f.result,options);
+    assert.equal(result.proofOptimization.status,'complete',`${mode}: ${result.proofOptimization.reason}`);
+    const decision=result.proofOptimization.targetDecisions.find(row=>row.rawValueId===f.target.id);
+    assert.equal(decision?.disposition,'adopted');
+    const proof=result.renderProvenance.ledger.find(row=>row.queryHash===decision.queryHash);
+    const line=result.lines.findIndex(row=>/\breturn\b/.test(row.text));assert.ok(line>=0);
+    assert.deepEqual(proof.producedRefs,[`L${line}:stmt`]);
+    assert.ok(proof.origin.addresses.includes(String(f.source.def.address)));
+    assert.ok(result.renderProvenance.reverse[`addr:${f.source.def.address}`].includes(`L${line}:stmt`));
+    assert.ok(!result.renderProvenance.reverse[`addr:${f.store.address}`].includes(`L${line}:stmt`));
+    const replay=await optimizeSemanticDecompilation(result,options);
+    assert.equal(replay.proofOptimization.status,'complete',replay.proofOptimization.reason);
+    assert.equal(replay.proofOptimization.adopted,0);assert.equal(replay.pseudocode,result.pseudocode);
+    assert.deepEqual(replay.renderProvenance.ledger,result.renderProvenance.ledger);
+    assert.deepEqual(structuredClone(f.ir),f.canonical);
+  }
+});
+
+test('C4-04 bitfield malformed layouts, cancellation, publication budgets and stale field identities never adopt',async()=>{
+  for(const mode of ['extract-unsigned','bfi']){
+    for(const configure of [({target})=>{target.def.extra.width=9;},({target})=>{target.def.extra.lsb=-1;},
+      ({target})=>{target.def.extra.bitfieldKind='unmodeled';}]){
+      const f=bitfieldProjectionFixture(8,mode,{configure});
+      const result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy:'equality-saturation'});
+      assert.equal(result.proofOptimization.adopted,0);assert.equal(result.proofOptimization.status,'partial');
+      assert.equal(result.pseudocode,f.result.pseudocode);assert.deepEqual(structuredClone(f.ir),f.canonical);
+    }
+    for(const options of [{signal:AbortSignal.abort()},{timeoutMs:0},{phase8WorkBudget:0}]){
+      const f=bitfieldProjectionFixture(8,mode),result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy:'equality-saturation',...options});
+      assert.equal(result.proofOptimization.adopted,0);assert.equal(result.pseudocode,f.result.pseudocode);
+      assert.deepEqual(structuredClone(f.ir),f.canonical);
+    }
+    for(const [key,value] of [['lsb',0],['width',3],['toward','left'],['bitfieldKind',mode==='bfi'?'bfxil':'ubfx']]){
+      const f=bitfieldProjectionFixture(8,mode),plan=await preparePhase8RewritePlan(f.ir,{...f.options,candidateStrategy:'equality-saturation'});
+      assert.equal(plan.status,'complete',plan.reason);assert.ok(plan.entries.length);
+      const context={ir:f.ir,proofIdentity:identity,abiId:'generic-v1'};
+      assert.equal(isPhase8RewritePlan(plan,context),true);
+      assert.equal(isExecutionResult(plan.taintResult.execution,identity,f.ir),true);
+      f.target.def.extra[key]=value;
+      assert.equal(isExecutionResult(plan.taintResult.execution,identity,f.ir),false,`${mode}/${key}`);
+      assert.equal(isPhase8RewritePlan(plan,context),false,`${mode}/${key}`);
+    }
   }
 });

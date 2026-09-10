@@ -5,6 +5,7 @@ import { translateSemanticIR } from '../../../js/symbolic/translate/semantic-ir.
 import { evaluateExpr } from '../../../js/symbolic/expr/index.js';
 import { translateMemoryScalar } from '../../../js/symbolic/translate/memory.js';
 import { createBv } from '../../../js/symbolic/expr/index.js';
+import { classifyOpSupport } from '../../../js/symbolic/translate/support-matrix.js';
 const literal = (id, bits, n) => ({ id, bits, const: BigInt(n) });
 const instruction = (op, fields, values, bits) => {
   const dst = { id: 'result', bits };
@@ -76,4 +77,116 @@ test('raw and executed lowering share machine division policy', () => {
   const inst = instruction(OP.BIN, { sub: 'udiv', extra: { completeness: 'complete', attributes: { machineEffects: policy } } }, [literal('a', 32, 4), literal('b', 32, 0)], 32);
   assert.equal(value(inst), 0n);
   assert.equal(evaluateExpr(translateMemoryScalar(inst, [createBv(32, 4n), createBv(32, 0n)], 32)).value, 0n);
+});
+
+function bitfieldInstruction(mode, bits, lsb, width, source, prior = 0n, sourceBits = bits) {
+  const insert = ['bfi','bfxil'].includes(mode);
+  return instruction(insert ? OP.BFI : OP.BFX, { sub:insert ? 'insert' : 'extract',
+    extra:{ lsb,width,...(insert ? {bitfieldKind:mode} : {
+      toward:mode.startsWith('insert-zero') ? 'left' : 'right',signed:mode.endsWith('-signed'),
+    }) } }, insert ? [literal('prior',bits,prior),literal('source',sourceBits,source)] : [literal('source',sourceBits,source)], bits);
+}
+function expectedBitfield(mode, bits, lsb, width, source, prior = 0n) {
+  const fieldMask=(1n<<BigInt(width))-1n,offset=BigInt(lsb);
+  if(mode==='bfi')return BigInt.asUintN(bits,(prior&~(fieldMask<<offset))|((source&fieldMask)<<offset));
+  if(mode==='bfxil')return BigInt.asUintN(bits,(prior&~fieldMask)|((source>>offset)&fieldMask));
+  const left=mode.startsWith('insert-zero');
+  const field=left ? (source&fieldMask)<<offset : (source>>offset)&fieldMask;
+  return BigInt.asUintN(bits,mode.endsWith('-signed') ? BigInt.asIntN(left ? width+lsb : width,field) : field);
+}
+function checkBitfield(inst, expected) {
+  assert.equal(classifyOpSupport(inst.op,inst),'exact');
+  const raw=translated(inst);
+  assert.equal(raw.status,'exact',JSON.stringify({op:inst.op,extra:inst.extra,unsupported:raw.unsupportedEntities}));
+  assert.equal(raw.expression.sort.width,inst.dst.bits);
+  assert.equal(evaluateExpr(raw.expression).value,expected);
+  const args=inst.args.map(arg=>createBv(arg.value.bits,arg.value.const));
+  const executed=translateMemoryScalar(inst,args,inst.dst.bits);
+  assert.equal(executed.sort.width,inst.dst.bits);
+  assert.equal(evaluateExpr(executed).value,expected);
+}
+
+test('C4-04 canonical bitfield variants agree across raw and executed width boundaries', t => {
+  let cells=0;
+  const modes=['extract-unsigned','extract-signed','insert-zero-unsigned','insert-zero-signed','bfi','bfxil'];
+  for(const bits of [1,2,3,4,8,16,32,64]){
+    const mask=(1n<<BigInt(bits))-1n,sign=1n<<BigInt(bits-1);
+    const values=bits<=4 ? Array.from({length:2**bits},(_,index)=>BigInt(index)) : [0n,1n,mask,mask-1n,sign,sign-1n];
+    const spans=[...new Set([[0,1],[bits-1,1],[0,bits],[Math.floor(bits/3),Math.max(1,Math.floor(bits/2))]].map(pair=>pair.join(':')))]
+      .map(pair=>pair.split(':').map(Number));
+    for(const mode of modes)for(const [lsb,width] of spans)for(const source of values){
+      for(const prior of ['bfi','bfxil'].includes(mode) ? values : [0n]){
+        checkBitfield(bitfieldInstruction(mode,bits,lsb,width,source,prior),expectedBitfield(mode,bits,lsb,width,source,prior));
+        cells++;
+      }
+    }
+  }
+  assert.equal(cells,4640);
+  t.diagnostic(JSON.stringify({schema:'c4-04-bitfield-raw-executed-v1',cells,comparisons:cells*2,widths:[1,2,3,4,8,16,32,64],variants:6}));
+});
+
+test('C4-04 bitfields preserve distinct source, field and destination widths and consistent producer aliases', () => {
+  for(const [mode,bits,sourceBits,lsb,width] of [
+    ['extract-unsigned',8,32,24,8],['extract-signed',32,8,4,4],
+    ['extract-signed',16,64,48,16],['insert-zero-signed',32,8,16,8],
+    ['bfi',32,8,16,8],['bfi',8,32,2,4],['bfxil',16,64,48,16],
+  ]){
+    const source=(1n<<BigInt(sourceBits))-1n,prior=0x55n;
+    checkBitfield(bitfieldInstruction(mode,bits,lsb,width,source,prior,sourceBits),expectedBitfield(mode,bits,lsb,width,source,prior));
+  }
+  for(const [mode,alias] of [['extract-unsigned','ubfx'],['extract-signed','sbfx'],
+    ['insert-zero-unsigned','ubfiz'],['insert-zero-signed','sbfiz'],['bfi','bfi'],['bfxil','bfxil']]){
+    for(const sub of [undefined,alias]){
+      const inst=bitfieldInstruction(mode,8,2,4,0xffn,0xa5n);inst.sub=sub;
+      checkBitfield(inst,expectedBitfield(mode,8,2,4,0xffn,0xa5n));
+    }
+  }
+});
+
+test('C4-04 bitfield metadata, arity, widths and contradictory variants never become exact', () => {
+  const cases=[
+    ['extract-unsigned',inst=>{delete inst.extra.width;}],
+    ['extract-unsigned',inst=>{inst.extra.width=0;}],
+    ['extract-unsigned',inst=>{inst.extra.width=9;}],
+    ['extract-unsigned',inst=>{inst.extra.lsb=-1;}],
+    ['extract-unsigned',inst=>{inst.extra.lsb='2';}],
+    ['extract-unsigned',inst=>{inst.extra.lsb=8;}],
+    ['extract-unsigned',inst=>{inst.extra.signed='false';}],
+    ['extract-unsigned',inst=>{inst.extra.toward='diagonal';}],
+    ['extract-unsigned',inst=>{inst.subOp='insert';}],
+    ['extract-unsigned',inst=>{inst.args=[];}],
+    ['extract-unsigned',inst=>{inst.args.push({value:literal('extra',8,1)});}],
+    ['extract-unsigned',inst=>{inst.dst.bits=2;}],
+    ['extract-unsigned',inst=>{inst.extra.bitfieldKind='bfxil';}],
+    ['extract-unsigned',inst=>{inst.sub='sbfx';}],
+    ['extract-unsigned',inst=>{inst.sub='ubfiz';}],
+    ['bfi',inst=>{inst.extra.bitfieldKind='unknown';}],
+    ['bfi',inst=>{inst.extra.toward='left';}],
+    ['bfi',inst=>{inst.sub='bfxil';}],
+    ['bfi',inst=>{inst.args.pop();}],
+    ['bfi',inst=>{inst.args[0].value.bits=4;}],
+    ['bfi',inst=>{inst.args[1].value.bits=2;}],
+    ['bfi',inst=>{inst.extra.lsb=6;}],
+    ['bfxil',inst=>{inst.extra.lsb=6;}],
+  ];
+  for(const [mode,configure] of cases){
+    const inst=bitfieldInstruction(mode,8,2,4,0xffn,0xa5n);configure(inst);
+    assert.equal(classifyOpSupport(inst.op,inst),'unsupported',mode);
+    assert.notEqual(translated(inst).status,'exact',mode);
+    const executed=translateMemoryScalar(inst,inst.args.map(arg=>createBv(arg.value.bits,arg.value.const)),inst.dst.bits);
+    assert.equal(executed.kind,'unknown_semantic',mode);
+  }
+});
+
+test('C4-04 bitfield classifier requires a matching complete integer descriptor',()=>{
+  for(const op of [OP.BFX,OP.BFI])assert.equal(classifyOpSupport(op),'unsupported');
+  for(const mode of ['extract-unsigned','bfi']){
+    for(const configure of [inst=>{delete inst.args[0];},inst=>{inst.extra.bitfieldKind={};},
+      inst=>{inst.extra.float=true;},inst=>{inst.dst.float=true;},inst=>{inst.args[0].value.bits=0;}]){
+      const inst=bitfieldInstruction(mode,8,2,4,0xffn,0xa5n);configure(inst);
+      assert.equal(classifyOpSupport(inst.op,inst),'unsupported',mode);
+    }
+    const inst=bitfieldInstruction(mode,8,2,4,0xffn,0xa5n);
+    assert.equal(classifyOpSupport(inst.op===OP.BFX?OP.BFI:OP.BFX,inst),'unsupported');
+  }
 });

@@ -18,7 +18,7 @@ import { isAdoptableCandidate } from '../taint/proof-consumer.js';
 
 const issued = new WeakMap();
 const LIMITS = Object.freeze({ targets: 32, candidates: 64, workItems: 250000, allocationUnits: 100000 });
-const PURE = new Set([OP.CONST, OP.ADDR, OP.MOV, OP.BIN, OP.UN, OP.CMP, OP.SEL]);
+const PURE = new Set([OP.CONST, OP.ADDR, OP.MOV, OP.BIN, OP.UN, OP.CMP, OP.SEL, OP.BFX, OP.BFI]);
 
 // Eligibility only. Meaning is lowered by the same typed scalar bridge used by
 // execution, not by reinterpreting legacy sub/width fields in the raw translator.

@@ -16,7 +16,7 @@ import { createBv, createExtract, createConnective, computeStructuralHash } from
 import { createExecutionCapture } from './memory/execution-snapshot.js';
 import { semanticValueIdentity, registerExecutionValue } from './memory/value-identity.js';
 
-const BYTE_EXECUTION_OPS = new Set([OP.CONST,OP.MOV,OP.BIN,OP.UN,OP.CMP,OP.SEL,OP.LOAD,OP.STORE,OP.ADDR,OP.CALL,OP.RET,OP.BR,OP.CBR,OP.PHI,OP.CLOBBER,OP.UNKNOWN]);
+const BYTE_EXECUTION_OPS = new Set([OP.CONST,OP.MOV,OP.BIN,OP.UN,OP.CMP,OP.SEL,OP.BFX,OP.BFI,OP.LOAD,OP.STORE,OP.ADDR,OP.CALL,OP.RET,OP.BR,OP.CBR,OP.PHI,OP.CLOBBER,OP.UNKNOWN]);
 
 export const SYM = Object.freeze({ CONST: 'const', SYMBOL: 'symbol', OP: 'op', ITE: 'ite', UNKNOWN: 'unknown' });
 
