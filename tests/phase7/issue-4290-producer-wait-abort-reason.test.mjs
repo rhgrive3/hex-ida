@@ -113,3 +113,31 @@ test('#4290 throwing reason getter falls back without bypassing cleanup', async 
   assert.equal(producer.waiters, 0);
   assert.equal(producer.controller.signal.aborted, true);
 });
+
+function signalThatAbortsDuringSubscription(controller) {
+  const source = controller.signal;
+  return {
+    get aborted() { return source.aborted; },
+    get reason() { return source.reason; },
+    addEventListener(type, listener, options) {
+      if (type === 'abort' && !source.aborted) controller.abort('raced-before-listener');
+      source.addEventListener(type, listener, options);
+    },
+    removeEventListener(type, listener, options) {
+      source.removeEventListener(type, listener, options);
+    },
+  };
+}
+
+test('#4290 preserves #3195 subscribe-race cleanup while keeping exact reason', async () => {
+  const consumer = new AbortController();
+  const producer = pendingEntry();
+  const signal = signalThatAbortsDuringSubscription(consumer);
+
+  const rejected = await rejectionOf(waitForAppProducer(producer, signal));
+
+  assert.equal(rejected, 'raced-before-listener');
+  assert.equal(producer.waiters, 0, 'raced consumer must detach exactly once');
+  assert.equal(producer.controller.signal.aborted, true, 'raced final consumer must still cancel producer');
+  assert.equal(producer.controller.signal.reason, 'analysis-producer-no-consumers');
+});
