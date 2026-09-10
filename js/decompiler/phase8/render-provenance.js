@@ -5,7 +5,8 @@ import { readSwitchLineHistory, readSwitchRenderHistory } from '../switch.js';
 import { readSemanticSuppressionHistory, readSemanticStoreLineHistory, readSemanticStoreRenderHistory } from '../semantic-core.js';
 import { readProjectedStateNormalization, projectedStateNormalizationExpected } from '../../semantics/compat/semantic-ir-v2-to-v1.js';
 import { readFacadeStateNormalization, readFacadePreservedStateHistory, facadePreservedStateTransitionExpected,
-  readFacadeLocationHistory, facadeLocationTransitionExpected } from '../../ir-core.js';
+  readFacadeLocationHistory, facadeLocationTransitionExpected,
+  readFacadeTypedResultHistory, facadeTypedResultTransitionExpected } from '../../ir-core.js';
 
 const PUBLIC_STATE_RULES = Object.freeze(['suppress-unused-entry-state', 'reorder-public-state-slot', 'renumber-public-state-version']);
 const readPublicStateNormalization = ir => readFacadeStateNormalization(ir) || readProjectedStateNormalization(ir);
@@ -138,7 +139,7 @@ function originKeySet(origins) {
 function recordFeedsEntity(record, entityOriginKeys, bound) {
   // An initial omission has no pre-existing C line and no known replacement.
   // Sharing an origin with a visible expression is not a producer edge.
-  if (['display-suppression', 'public-state-normalization', 'abi-state-restoration', 'public-location-restoration'].includes(record.kind)) return false;
+  if (['display-suppression', 'public-state-normalization', 'abi-state-restoration', 'public-location-restoration', 'typed-call-result'].includes(record.kind)) return false;
   // A rewrite's consumed/remaining sources do not establish which C line
   // uses its result. In particular, a shared input is not a replacement edge.
   // Keep these records queryable without inventing a rendered consumer.
@@ -286,6 +287,25 @@ function publicLocationRecord(event, cap) {
   }) };
 }
 
+function typedCallResultRecord(event, cap) {
+  const definitions = [...new Set([event.source, ...event.beforeInputs.map(value => value.def)].filter(Boolean))];
+  const full = canonicalOrigins({ addresses:definitions.map(inst => inst.address), rows:definitions.map(inst => inst.row),
+    ir:definitions.map(inst => inst.id), ssaDefs:event.beforeInputs.map(value => value.id), ssaUses:[] });
+  const refs = [...definitions.map(inst => `ir:${inst.id}`), ...event.beforeInputs.map(value => `ssa:def:${value.id}`)];
+  const bounded = truncateOrigins(full, cap), truncated = originsTotalSize(full) > cap || refs.length > cap;
+  const consumedRefs = Object.freeze(refs.slice(0, cap));
+  return { truncated, record:renderProvenanceRecord({ kind:'typed-call-result', rule:event.operation,
+    proof:'observed-typed-call-result-not-new-abi-proof', targets:consumedRefs,
+    origin:{ addresses:bounded.addresses, rows:bounded.rows, ir:bounded.ir,
+      ssaDefs:bounded.ssaRefs.map(ref => ref.slice(4)), ssaUses:[] },
+    typedCallResultTransition:Object.freeze({ scope:'compatibility-typed-call-result', ordinal:event.ordinal,
+      abiId:event.abiId, registerId:event.registerId, bits:event.bits, evidence:event.evidence,
+      before:event.before, after:event.after, removedFields:event.removedFields,
+      consumedRefs, producedRefs:Object.freeze([`ir:${event.source.id}`]), canonicalValuesRetained:true,
+      newCanonicalValue:false, completeness:truncated ? 'incomplete' : 'complete' }),
+  }) };
+}
+
 export function buildRenderProvenance({ result, snapshotId = null, budget = null, shouldAbort = null } = {}) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) fail('phase8-render-provenance-result-required');
   if (!Array.isArray(result.lines)) fail('phase8-render-provenance-result-required');
@@ -297,6 +317,9 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   const publicState = readPublicStateNormalization(result.ir);
   const preservedState = readFacadePreservedStateHistory(result.ir);
   const publicLocation = readFacadeLocationHistory(result.ir);
+  const typedResult = readFacadeTypedResultHistory(result.ir);
+  if (facadeTypedResultTransitionExpected(result.ir) && !typedResult) reasons.add('unavailable-typed-call-result-history');
+  if (typedResult?.completeness === 'incomplete') reasons.add('incomplete-typed-call-result-history');
   if (facadeLocationTransitionExpected(result.ir) && !publicLocation) reasons.add('unavailable-public-location-history');
   if (publicLocation?.completeness === 'incomplete') reasons.add('incomplete-public-location-history');
   if (facadePreservedStateTransitionExpected(result.ir) && !preservedState) reasons.add('unavailable-abi-state-history');
@@ -330,7 +353,8 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   const publicStateEvents = publicState?.events || [];
   const preservedStateEvents = preservedState?.events || [];
   const publicLocationEvents = publicLocation?.events || [];
-  const rawRecordCount = expressionRecords.length + rawRecords.length + suppressionRecords.length + publicStateEvents.length + preservedStateEvents.length + publicLocationEvents.length;
+  const typedResultEvents = typedResult?.events || [];
+  const rawRecordCount = expressionRecords.length + rawRecords.length + suppressionRecords.length + publicStateEvents.length + preservedStateEvents.length + publicLocationEvents.length + typedResultEvents.length;
   const ledgerRecords = [];
   for (const record of suppressionRecords.slice(0, Math.max(0, resolvedBudget.maxTransformRecords - ledgerRecords.length))) {
     ledgerRecords.push(renderProvenanceRecord(record));
@@ -354,6 +378,9 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   }
   if (unavailableExpressionHistory) reasons.add('missing-expression-history');
   for (const record of rawRecords.slice(0, Math.max(0, resolvedBudget.maxTransformRecords - ledgerRecords.length))) {
+    if (record?.kind === 'typed-call-result' || record?.typedCallResultTransition) {
+      reasons.add('unissued-typed-call-result-history'); continue;
+    }
     if (record?.kind === 'public-location-restoration' || record?.publicLocationTransition) {
       reasons.add('unissued-public-location-history'); continue;
     }
@@ -387,6 +414,12 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     const normalized = publicLocationRecord(event, resolvedBudget.maxOriginsPerEntity);
     ledgerRecords.push(normalized.record);
     if (normalized.truncated) { reasons.add('truncated'); truncatedScopes.push('public-location-origins'); }
+  }
+  for (const event of typedResultEvents.slice(0, Math.max(0, resolvedBudget.maxTransformRecords - ledgerRecords.length))) {
+    if (typeof shouldAbort === 'function' && shouldAbort() === true) return cancelledMap(resolvedBudget);
+    const normalized = typedCallResultRecord(event, resolvedBudget.maxOriginsPerEntity);
+    ledgerRecords.push(normalized.record);
+    if (normalized.truncated) { reasons.add('truncated'); truncatedScopes.push('typed-call-result-origins'); }
   }
   if (rawRecordCount > ledgerRecords.length + unavailableExpressionHistory) {
     ledgerTruncated = rawRecordCount - ledgerRecords.length - unavailableExpressionHistory;
@@ -502,6 +535,7 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   if (publicState && readPublicStateNormalization(result.ir) !== publicState) reasons.add('stale-public-state-history');
   if (preservedState && readFacadePreservedStateHistory(result.ir) !== preservedState) reasons.add('stale-abi-state-history');
   if (publicLocation && readFacadeLocationHistory(result.ir) !== publicLocation) reasons.add('stale-public-location-history');
+  if (typedResult && readFacadeTypedResultHistory(result.ir) !== typedResult) reasons.add('stale-typed-call-result-history');
   if (suppressions && readSemanticSuppressionHistory(result) !== suppressions) reasons.add('stale-semantic-suppression-history');
   if (boundLines.some(([line, binding]) => readRenderedHistory(line, result.ir) !== binding)) {
     reasons.add('stale-expression-binding');
@@ -666,6 +700,37 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
             || record.originHistory || record.renderedRemoval || record.suppressedRender || record.publicStateTransition || record.abiStateTransition
             || !Array.isArray(record.producedRefs) || record.producedRefs.length
             || !Array.isArray(record.removedRefs) || record.removedRefs.length) reasons.add('invalid-public-location-history');
+      }
+      if (record?.kind === 'typed-call-result' || record?.typedCallResultTransition) {
+        const transition = record.typedCallResultTransition;
+        const validIdentity = value => value && typeof value === 'object' && !Array.isArray(value)
+          && Object.keys(value).length === 8
+          && ['id', 'kind', 'reg', 'bits', 'sourceEntityId', 'compatDerived', 'unknown', 'compatibilityShapeOnly'].every(key => Object.hasOwn(value, key))
+          && Number.isSafeInteger(value.id) && value.id >= 0
+          && typeof value.kind === 'string' && (value.reg === null || typeof value.reg === 'string')
+          && (value.bits === null || Number.isSafeInteger(value.bits) && value.bits > 0)
+          && ['sourceEntityId', 'compatDerived'].every(key => value[key] === null || typeof value[key] === 'string')
+          && typeof value.unknown === 'boolean' && typeof value.compatibilityShapeOnly === 'boolean';
+        if (record.kind !== 'typed-call-result' || !['attach-new-typed-call-result', 'attach-existing-typed-call-result'].includes(record.rule)
+            || record.proof !== 'observed-typed-call-result-not-new-abi-proof'
+            || transition?.scope !== 'compatibility-typed-call-result' || !Number.isSafeInteger(transition.ordinal) || transition.ordinal < 0
+            || !['abiId', 'registerId', 'evidence'].every(key => typeof transition[key] === 'string' && transition[key])
+            || !Number.isSafeInteger(transition.bits) || transition.bits <= 0
+            || (record.rule === 'attach-new-typed-call-result' ? transition.before !== null : !validIdentity(transition.before))
+            || !validIdentity(transition.after) || transition.after.reg !== transition.registerId || transition.after.bits !== transition.bits
+            || transition.after.compatDerived !== 'typed-abi-call-result' || !transition.after.unknown
+            || transition.canonicalValuesRetained !== true || transition.newCanonicalValue !== false
+            || !['complete', 'incomplete'].includes(transition.completeness)
+            || !Array.isArray(transition.removedFields) || transition.removedFields.some(key => !['undefined', 'clobbered'].includes(key))
+            || new Set(transition.removedFields).size !== transition.removedFields.length
+            || ['consumedRefs', 'producedRefs'].some(key => !Array.isArray(transition[key]) || !transition[key].length
+              || transition[key].some(ref => typeof ref !== 'string' || !/^(ir|ssa:def):.+/.test(ref))
+              || new Set(transition[key]).size !== transition[key].length)
+            || transition.producedRefs.length !== 1 || !transition.producedRefs[0].startsWith('ir:')
+            || !transition.consumedRefs.includes(transition.producedRefs[0])
+            || record.originHistory || record.renderedRemoval || record.suppressedRender || record.publicStateTransition || record.abiStateTransition || record.publicLocationTransition
+            || !Array.isArray(record.producedRefs) || record.producedRefs.length
+            || !Array.isArray(record.removedRefs) || record.removedRefs.length) reasons.add('invalid-typed-call-result-history');
       }
       const history = record?.originHistory;
       if (!history) continue;

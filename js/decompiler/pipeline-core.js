@@ -24,7 +24,8 @@ import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionE
   projectedStateTransitionCandidates, projectedStateTransitionExpected } from '../semantics/compat/semantic-ir-v2-to-v1.js';
 import { readFacadeConstantTransitions, facadeConstantTransitionExpected, facadeStateTransitionCandidates,
   readFacadePreservedStateHistory, facadePreservedStateTransitionExpected,
-  readFacadeLocationHistory, facadeLocationTransitionExpected } from '../ir-core.js';
+  readFacadeLocationHistory, facadeLocationTransitionExpected,
+  readFacadeTypedResultHistory, facadeTypedResultTransitionExpected } from '../ir-core.js';
 import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
@@ -762,7 +763,8 @@ function compatOperationSelection(value, state, roots = [value?.def, value], fol
     const expectedState = projectedStateTransitionExpected(state.ir, key);
     const expectedPreserved = facadePreservedStateTransitionExpected(state.ir, key);
     const expectedLocation = facadeLocationTransitionExpected(state.ir, key);
-    if (!expectedProjection && !expectedFacade && !expectedState && !expectedPreserved && !expectedLocation) continue;
+    const expectedTypedResult = facadeTypedResultTransitionExpected(state.ir, key);
+    if (!expectedProjection && !expectedFacade && !expectedState && !expectedPreserved && !expectedLocation && !expectedTypedResult) continue;
     if ((state.buildSelectionHistoryCount || 0) >= maximum || budget.edges <= 0) {
       budget.reasons.add('compat-constant-selection-history-budget'); return observeSelected();
     }
@@ -770,7 +772,8 @@ function compatOperationSelection(value, state, roots = [value?.def, value], fol
     for (const [expected, read, kind] of [[expectedProjection, (ir, key) => readCandidate(projectedConstantTransitionCandidate(ir, key)), 'constant'],
       [expectedFacade, readFacadeConstantTransitions, 'constant'], [expectedState, (_, key) => readCandidate(stateCandidates?.get(key)), 'state'],
       [expectedPreserved, readFacadePreservedStateHistory, 'preserved-state'],
-      [expectedLocation, readFacadeLocationHistory, 'public-location']]) {
+      [expectedLocation, readFacadeLocationHistory, 'public-location'],
+      [expectedTypedResult, readFacadeTypedResultHistory, 'typed-call-result']]) {
       if (!expected) continue;
       const transition = read(state.ir, key);
       if (transition) transitions.push(transition);
@@ -825,15 +828,17 @@ function recordCompatOperationSelection(value, expression, selected, state) {
     const facade = event.stage === 'facade-exact-constants';
     const preserved = event.stage === 'facade-preserved-state';
     const location = event.stage === 'facade-public-location';
+    const typedResult = event.stage === 'facade-typed-call-result';
     const stateOperation = !!event.kind;
     const identityText = identity => `${String(identity.reg)}:${String(identity.stateKey)}:${String(identity.version)}:${String(identity.compatDerived)}`;
-    const record = Object.freeze({ rule:location ? event.operation : preserved ? 'restore-abi-preserved-state' : stateOperation ? 'compact-public-state' : facade ? 'fold-facade-constant' : 'fold-compatibility-constant', phase:'compatibility-projection',
-      before:location ? `${event.stage}:${event.ordinal}:${event.before.key}` : preserved ? `${event.stage}:${event.ordinal}:value:${event.before.id}` : stateOperation ? `${event.kind}:${event.ordinal}:${event.path || 'identity'}:${event.identity ? identityText(event.before) : event.before.id}`
+    const record = Object.freeze({ rule:location || typedResult ? event.operation : preserved ? 'restore-abi-preserved-state' : stateOperation ? 'compact-public-state' : facade ? 'fold-facade-constant' : 'fold-compatibility-constant', phase:'compatibility-projection',
+      before:typedResult ? `${event.stage}:${event.ordinal}:${event.before?.id ?? 'no-public-result'}` : location ? `${event.stage}:${event.ordinal}:${event.before.key}` : preserved ? `${event.stage}:${event.ordinal}:value:${event.before.id}` : stateOperation ? `${event.kind}:${event.ordinal}:${event.path || 'identity'}:${event.identity ? identityText(event.before) : event.before.id}`
         : `${event.stage}:${event.round}:${event.ordinal}:${event.op}:${event.sub ?? ''}:${String(event.beforeConstant)}`,
-      after:location ? `location:${event.after.key}` : preserved ? `value:${event.after.id}:${event.evidence}` : stateOperation ? `${event.identity ? identityText(event.after) : event.after.id}` : `constant:${event.bits}:${String(event.afterConstant)}`,
-      evidence:Object.freeze({ kind:location ? 'observed-public-location-restoration-not-new-memory-proof' : preserved ? 'observed-abi-state-restoration-not-equivalence' : stateOperation ? 'observed-state-compaction-not-equivalence'
+      after:typedResult ? `call-result-view:${event.output.id}:${event.registerId}:${event.bits}` : location ? `location:${event.after.key}` : preserved ? `value:${event.after.id}:${event.evidence}` : stateOperation ? `${event.identity ? identityText(event.after) : event.after.id}` : `constant:${event.bits}:${String(event.afterConstant)}`,
+      evidence:Object.freeze({ kind:typedResult ? 'observed-typed-call-result-not-new-abi-proof' : location ? 'observed-public-location-restoration-not-new-memory-proof' : preserved ? 'observed-abi-state-restoration-not-equivalence' : stateOperation ? 'observed-state-compaction-not-equivalence'
         : facade ? 'observed-facade-constant-write-not-equivalence' : 'observed-compat-constant-write-not-equivalence',
-        detail:location ? 'actual public location reuse/replacement and map write with original address inputs and existing evidence; not a new alias, memory forwarding or field-layout theorem'
+        detail:typedResult ? 'actual typed result attachment from the selected canonical ABI adapter, anchored to the original CALL; compatibility value identity is not a new canonical SSA definition'
+          : location ? 'actual public location reuse/replacement and map write with original address inputs and existing evidence; not a new alias, memory forwarding or field-layout theorem'
           : preserved ? 'actual facade operand restoration through the selected canonical ABI adapter, with original call-clobbered and reaching state sources; not a new ABI or scalar theorem'
           : stateOperation ? 'actual public-state shadow or reference replacement with original values and alias-producing operations; not an independent state, scalar, memory or CFG proof'
           : 'actual compatibility constant write and its original input facts, retained through the consuming expression; not a new scalar or memory theorem' }),

@@ -36,6 +36,19 @@ const facadePreservedStateHistories = new WeakMap();
 const expectedFacadePreservedState = new WeakMap();
 const facadeLocationHistories = new WeakMap();
 const expectedFacadeLocations = new WeakMap();
+const facadeTypedResultHistories = new WeakMap();
+const expectedFacadeTypedResults = new WeakMap();
+
+export function facadeTypedResultTransitionExpected(projected, instruction = null) {
+  const expected = expectedFacadeTypedResults.get(projected);
+  return instruction == null ? (expected?.count || 0) > 0 : expected?.sources.has(instruction) === true;
+}
+
+export function readFacadeTypedResultHistory(projected, instruction = null) {
+  const entry = facadeTypedResultHistories.get(projected);
+  if (!entry?.history.isCurrent()) return null;
+  return instruction == null ? entry.history : entry.bySource.get(instruction) ?? null;
+}
 
 export function facadeLocationTransitionExpected(projected, instruction = null) {
   const expected = expectedFacadeLocations.get(projected);
@@ -91,10 +104,11 @@ function observeFacadeArguments(inst, history) {
 function retainFacadeArgumentWrites(fields, history) {
   if (!fields || !history || history.unavailable) return;
   for (const field of fields) {
-    const after = Object.getOwnPropertyDescriptor(field.object, field.key)?.value;
-    if (Object.is(field.before, after)) continue;
+    const descriptor = Object.getOwnPropertyDescriptor(field.object, field.key), after = descriptor?.value;
+    const afterPresent = descriptor != null;
+    if (Object.is(field.before, after) && (field.beforePresent === undefined || field.beforePresent === afterPresent)) continue;
     if (history.writes.length >= 4096) { history.unavailable = true; return; }
-    history.writes.push(Object.freeze({ ...field, after }));
+    history.writes.push(Object.freeze({ ...field, after, afterPresent }));
   }
 }
 
@@ -375,11 +389,37 @@ function observePreservedStateSelection(projected) {
     if (edges > 4096) throw Error('selection-dominator-edge-budget');
     return { key, value, members:[...Set.prototype.values.call(value)] };
   });
-  return () => {
+  return (typedResults = null) => {
     try {
-      return own(projected, 'values') === values && own(values, 'length') === length
+      const events = typedResults?.records || [];
+      if (typedResults && events.length !== typedResults.count) return false;
+      let finalLength = length;
+      const changes = new Map();
+      for (const event of events) {
+        if (event.valueList !== values || event.valueLengthBefore !== finalLength) return false;
+        if (event.operation === 'attach-new-typed-call-result') {
+          if (own(values, String(finalLength)) !== event.output) return false;
+          finalLength++;
+        }
+        if (event.valueLengthAfter !== finalLength) return false;
+        for (const write of event.valueWrites) {
+          if (!changes.has(write.object)) changes.set(write.object, new Map());
+          const keys = changes.get(write.object);
+          if (!keys.has(write.key)) keys.set(write.key, []);
+          keys.get(write.key).push(write);
+        }
+      }
+      const unchangedOrWritten = (value, key, before) => {
+        let expected = before;
+        for (const write of changes.get(value)?.get(key) || []) {
+          if (!Object.is(write.before, expected)) return false;
+          expected = write.after;
+        }
+        return own(value, key) === expected;
+      };
+      return own(projected, 'values') === values && own(values, 'length') === finalLength
         && facts.every((fact, index) => own(values, String(index)) === fact.value
-          && fields.every((key, i) => own(fact.value, key) === fact.fields[i])
+          && fields.every((key, i) => unchangedOrWritten(fact.value, key, fact.fields[i]))
           && own(fact.definition, 'row') === fact.row && own(fact.definition, 'block') === fact.block)
         && own(projected, 'dominators') === dominators
         && (dominators == null || Object.getPrototypeOf(dominators) === prototype && Reflect.ownKeys(dominators).length === keys.length)
@@ -444,11 +484,11 @@ function restoreCanonicalPreservedStateReads(projected, adapter, history = null)
 // Only the actual private restoration writer supplies these before-images.
 // The final seal observes later facade output, never reconstructs a restoration
 // from public ABI flags, and does not certify scalar/ABI semantic equivalence.
-function sealFacadePreservedStateHistory(projected, observer, constants) {
+function sealFacadePreservedStateHistory(projected, observer, constants, typedResults = null) {
   expectedFacadePreservedState.set(projected, observer);
   if (!observer.count) return;
   try {
-    if (!observer.selection?.()) return;
+    if (!observer.selection?.(typedResults)) return;
     const written = new Map(constants.records.map(event => [event.output, event.afterConstant]));
     const valid = observer.records.filter(event => event.source.op === event.op && event.source.sub === event.sub
       && event.source.dst === event.output && event.source.args?.length === 1 && event.source.args[0] === event.argument
@@ -461,7 +501,7 @@ function sealFacadePreservedStateHistory(projected, observer, constants) {
         && input.value.kind === input.kind && input.value.bits === input.bits
         && (input.value.const === input.constant || written.has(input.value) && written.get(input.value) === input.value.const)));
     const output = observeProjectedOperationData(projected, valid);
-    const isCurrent = () => observer.selection() && output();
+    const isCurrent = () => observer.selection(typedResults) && output();
     const events = Object.freeze(valid), history = Object.freeze({ events, isCurrent,
       completeness:valid.length === observer.count ? 'complete' : 'incomplete' });
     facadePreservedStateHistories.set(projected, { history, bySource:new Map(valid.map(event => [event.source,
@@ -747,7 +787,56 @@ function attachCanonicalCallArguments(projected, history = null) {
   }
 }
 
-function attachCanonicalTypedCallResults(projected, instructionByRow, adapter, options = {}) {
+function typedResultIdentity(value) {
+  if (!value) return null;
+  return Object.freeze({ id:value.id, kind:value.kind, reg:value.reg ?? null, bits:value.bits ?? null,
+    sourceEntityId:value.sourceEntityId ?? null, compatDerived:value.compatDerived ?? null,
+    unknown:value.unknown === true, compatibilityShapeOnly:value.compatibilityShapeOnly === true });
+}
+
+function observeTypedResultSelection(projected) {
+  const own = (object, key) => {
+    const descriptor = object == null ? null : Object.getOwnPropertyDescriptor(object, key);
+    if (descriptor && !Object.hasOwn(descriptor, 'value')) throw Error('typed-result-selection-accessor');
+    return descriptor?.value;
+  };
+  const values = own(projected, 'values'), length = own(values, 'length');
+  if (!Array.isArray(values) || !Number.isSafeInteger(length) || length > 512) throw Error('typed-result-selection-budget');
+  const fields = ['id', 'reg', 'sourceEntityId', 'def', 'version'];
+  const facts = Array.from({ length }, (_, index) => {
+    const value = own(values, String(index));
+    return { value, fields:fields.map(key => own(value, key)) };
+  });
+  return () => {
+    try { return own(projected, 'values') === values && own(values, 'length') === length
+      && facts.every((fact, index) => own(values, String(index)) === fact.value
+        && fields.every((key, i) => own(fact.value, key) === fact.fields[i])); }
+    catch { return false; }
+  };
+}
+
+function sealFacadeTypedResultHistory(projected, observer) {
+  expectedFacadeTypedResults.set(projected, observer);
+  if (!observer.count) return;
+  try {
+    const selection = observeTypedResultSelection(projected);
+    const valid = observer.records.filter(event => event.source.op === LEGACY_OP.CALL && event.source.dst === event.output
+      && event.output.def === event.source && event.output.reg === event.registerId && event.output.bits === event.bits
+      && event.output.unknown === true && event.output.compatDerived === 'typed-abi-call-result'
+      && event.source.returnReg === event.registerId && event.source.returnBits === event.bits
+      && event.source.returnEvidence === event.evidence);
+    const output = observeProjectedOperationData(projected, valid);
+    const isCurrent = () => selection() && output();
+    if (!isCurrent()) return;
+    const history = Object.freeze({ events:Object.freeze(valid), isCurrent,
+      completeness:valid.length === observer.count ? 'complete' : 'incomplete' });
+    facadeTypedResultHistories.set(projected, { history, bySource:new Map(valid.map(event => [event.source,
+      Object.freeze({ events:Object.freeze([event]), isCurrent })])) });
+  } catch { /* Actual ABI view writes are unchanged; unavailable history stays explicit. */ }
+}
+
+function attachCanonicalTypedCallResults(projected, instructionByRow, adapter, options = {}, history = null) {
+  const observer = { records:[], sources:new WeakSet(), count:0 };
   for (const inst of projected.instructions ?? []) {
     if (inst.op !== LEGACY_OP.CALL || inst.dst) continue;
     const decoded = instructionByRow.get(inst.row) ?? null;
@@ -778,6 +867,9 @@ function attachCanonicalTypedCallResults(projected, instructionByRow, adapter, o
     const priorVersion = Math.max(-1, ...(projected.values ?? [])
       .filter((value) => value?.reg === reg)
       .map((value) => Number(value.version ?? -1)));
+    const available = observer.records.length < 1024 && (projected.values?.length || 0) <= 512 && (inst.args?.length || 0) <= 512;
+    const before = available ? typedResultIdentity(candidates[0]) : null;
+    const candidateHistory = available ? Object.freeze(candidates.map(value => Object.freeze({ value, before:typedResultIdentity(value) }))) : null;
     const value = candidates[0] ?? {
       id: (projected.values ?? []).length,
       vid: (projected.values ?? []).length + 1,
@@ -801,6 +893,16 @@ function attachCanonicalTypedCallResults(projected, instructionByRow, adapter, o
       origin: inst.origin ?? null,
       compatibilityShapeOnly: true,
     };
+    const valueList = projected.values, valueLengthBefore = valueList.length;
+    const fields = available || history && !history.unavailable ? [
+      ...['dst', 'returnReg', 'returnBits', 'returnEvidence', 'extra'].map(key => [inst, key]),
+      ...['kind', 'reg', 'bits', 'def', 'unknown', 'undefined', 'clobbered', 'compatDerived'].map(key => [value, key]),
+      ...(!candidates[0] ? [[valueList, String(valueLengthBefore)], [valueList, 'length']] : []),
+    ].map(([object, key]) => {
+      const descriptor = Object.getOwnPropertyDescriptor(object, key);
+      return { object, key, before:descriptor?.value, beforePresent:descriptor != null };
+    }) : null;
+    const removedFields = available ? Object.freeze(['undefined', 'clobbered'].filter(key => Object.hasOwn(value, key))) : null;
     if (!candidates[0]) projected.values.push(value);
     value.kind = LEGACY_VK.DEF;
     value.reg = reg;
@@ -821,7 +923,25 @@ function attachCanonicalTypedCallResults(projected, instructionByRow, adapter, o
       returnLocations,
       returnPieces:result.returnPieces ?? null,
     };
+    retainFacadeArgumentWrites(fields, history);
+    observer.sources.add(inst); observer.count++;
+    if (available) {
+      const inputs = Object.freeze([...new Set(inst.args.map(arg => arg.value).filter(Boolean))]);
+      observer.records.push(Object.freeze({ stage:'facade-typed-call-result', ordinal:observer.count - 1,
+        source:inst, output:value, op:inst.op, sub:inst.sub,
+        operation:candidates[0] ? 'attach-existing-typed-call-result' : 'attach-new-typed-call-result',
+        before, after:typedResultIdentity(value), registerId:reg, bits, abiId:String(adapter?.id || 'abi'),
+        evidence:inst.returnEvidence, candidates:candidateHistory, priorVersion, removedFields,
+        valueList, valueLengthBefore, valueLengthAfter:valueList.length,
+        valueWrites:Object.freeze(fields.filter(field => field.object === value).map(field => {
+          const descriptor = Object.getOwnPropertyDescriptor(value, field.key);
+          return Object.freeze({ ...field, after:descriptor?.value, afterPresent:descriptor != null });
+        })),
+        inputs:Object.freeze(inputs.map(value => Object.freeze({ value, definition:value.def }))), beforeInputs:inputs,
+        object:Object.freeze({ candidates:candidateHistory, returnLocations, returnPieces:result.returnPieces ?? null }) }));
+    }
   }
+  return observer;
 }
 
 function valueMayCarryStackAddress(value) {
@@ -1048,13 +1168,14 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
   const locationObserver = restoreAapcs64PublicLocations(result.legacyV1, stateHistory);
   const constantObserver = propagateExactLegacyConstants(result.legacyV1, stateHistory);
   attachCanonicalCallArguments(result.legacyV1, stateHistory);
-  attachCanonicalTypedCallResults(result.legacyV1, instructionByRow, abiAdapter, opts);
+  const typedResultObserver = attachCanonicalTypedCallResults(result.legacyV1, instructionByRow, abiAdapter, opts, stateHistory);
   invalidateEscapedStackForwarding(result.legacyV1);
   attachCanonicalFunctionReturns(result.legacyV1, abiAdapter, opts, stateHistory);
   sealFacadeStateTransitions(result.legacyV1, stateHistory);
   sealFacadeConstantTransitions(result.legacyV1, constantObserver);
-  sealFacadePreservedStateHistory(result.legacyV1, preservedStateObserver, constantObserver);
+  sealFacadePreservedStateHistory(result.legacyV1, preservedStateObserver, constantObserver, typedResultObserver);
   sealFacadeLocationHistory(result.legacyV1, locationObserver);
+  sealFacadeTypedResultHistory(result.legacyV1, typedResultObserver);
   if (typeof process !== 'undefined' && process.env?.HEX_DEBUG_C2_LEGACY === '1' && typeof process.stderr?.write === 'function') {
     process.stderr.write(JSON.stringify(result.legacyV1.instructions.filter((item) => item.op === 'load').map((item) => ({
       row: item.row,

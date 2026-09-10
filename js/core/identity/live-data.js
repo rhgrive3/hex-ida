@@ -95,43 +95,66 @@ export function captureProjectionIrData(roots, shouldAbort = null) {
           if (!changed.has(object)) changed.set(object, new Map());
           const byKey = changed.get(object);
           if (!byKey.has(key)) byKey.set(key, []);
-          byKey.get(key).push({ before:own('before'), after:own('after'), beforePresent:own('beforePresent') });
+          const beforePresent = own('beforePresent'), afterPresent = own('afterPresent');
+          if ((beforePresent !== undefined && typeof beforePresent !== 'boolean')
+              || (afterPresent !== undefined && typeof afterPresent !== 'boolean')
+              || (beforePresent === false && own('before') !== undefined)
+              || (afterPresent === false && own('after') !== undefined)) return false;
+          byKey.get(key).push({ before:own('before'), after:own('after'), beforePresent, afterPresent });
         }
       }
       for (const {value,prototype,entries,arrayLength} of records) {
-        if (Object.getPrototypeOf(value)!==prototype || arrayLength!=null && value.length!==arrayLength) return false;
+        if (Object.getPrototypeOf(value)!==prototype) return false;
+        const currentLength = arrayLength == null ? null : Object.getOwnPropertyDescriptor(value, 'length')?.value;
+        if (arrayLength != null && currentLength !== arrayLength) {
+          // Dense append only, with BOTH the actual length-write chain and each
+          // new index recorded. This comparator still grants no writer authority.
+          if (!Number.isSafeInteger(currentLength) || currentLength < arrayLength || currentLength > PROJECTION_LIMITS.edges) return false;
+          let expected = arrayLength, started = false;
+          for (const write of changed?.get(value)?.get('length') || []) {
+            if (!started && !Object.is(write.before, expected)) continue;
+            started = true;
+            if (write.beforePresent === false || write.afterPresent === false || !Object.is(write.before, expected)
+                || !Number.isSafeInteger(write.after) || write.after < expected) return false;
+            expected = write.after;
+          }
+          if (!started || expected !== currentLength) return false;
+        }
         const keys=Reflect.ownKeys(value);
-        if(keys.length!==entries.length+(arrayLength!=null?1:0)) {
+        if (arrayLength != null && keys.length !== currentLength + 1) return false;
+        if (arrayLength == null ? keys.length !== entries.length || changed?.has(value) : currentLength > arrayLength) {
           // Only an explicitly described absent-to-own-data write can account
           // for a new field. This remains pure matching, never writer admission.
-          if (arrayLength != null || !changed?.has(value) || keys.length < entries.length) return false;
           const originalKeys = new Set(entries.map(([key]) => key));
           for (const key of keys) if (!originalKeys.has(key)) {
-            const writes = changed.get(value).get(key), first = writes?.[0];
+            if (arrayLength != null && key === 'length') continue;
+            if (arrayLength != null && (typeof key !== 'string' || !/^(0|[1-9]\d*)$/.test(key)
+                || Number(key) < arrayLength || Number(key) >= currentLength)) return false;
+            const writes = changed?.get(value)?.get(key), first = writes?.[0];
             if (!first || first.beforePresent !== false || first.before !== undefined) return false;
-            let expected = first.after;
+            let expected = first.after, present = first.afterPresent !== false;
             for (const write of writes.slice(1)) {
-              if (write.beforePresent === false || !Object.is(write.before, expected)) return false;
-              expected = write.after;
+              if ((write.beforePresent !== false) !== present || !Object.is(write.before, expected)) return false;
+              expected = write.after; present = write.afterPresent !== false;
             }
             const descriptor = Object.getOwnPropertyDescriptor(value, key);
-            if (!descriptor || !Object.hasOwn(descriptor, 'value') || !descriptor.enumerable
+            if (!present || !descriptor || !Object.hasOwn(descriptor, 'value') || !descriptor.enumerable
                 || !Object.is(descriptor.value, expected)) return false;
           }
         }
         for(const [key,previous] of entries) {
           const descriptor=Object.getOwnPropertyDescriptor(value,key);
-          if(!descriptor || !Object.hasOwn(descriptor,'value') || !descriptor.enumerable) return false;
-          if (!Object.is(descriptor.value,previous)) {
-            let expected = previous, started = false;
+          if (descriptor && (!Object.hasOwn(descriptor,'value') || !descriptor.enumerable)) return false;
+          if (!descriptor || !Object.is(descriptor.value,previous)) {
+            if (arrayLength != null && !descriptor) return false;
+            let expected = previous, present = true, started = false;
             for (const write of changed?.get(value)?.get(key) || []) {
-              if (write.beforePresent === false) continue;
-              if (!started && !Object.is(write.before, expected)) continue;
+              if (!started && (write.beforePresent === false || !Object.is(write.before, expected))) continue;
               started = true;
-              if (!Object.is(write.before, expected)) return false;
-              expected = write.after;
+              if ((write.beforePresent !== false) !== present || !Object.is(write.before, expected)) return false;
+              expected = write.after; present = write.afterPresent !== false;
             }
-            if (!started || !Object.is(descriptor.value, expected)) return false;
+            if (!started || !!descriptor !== present || descriptor && !Object.is(descriptor.value, expected)) return false;
           }
         }
       }

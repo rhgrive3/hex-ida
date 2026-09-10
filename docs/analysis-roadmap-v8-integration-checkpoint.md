@@ -3704,6 +3704,67 @@ escaped-stack and standalone call/return histories, full removed/merged-class
 coverage, C4-02/04/05 proofs and the original23/frozen135 corpus remain open.
 Goal ACTIVE; integration/release acceptance LOCKED.
 
+## C4-03 actual typed ABI call-result history
+
+The existing `attachCanonicalTypedCallResults` writer now records attachment to
+an existing orphan compatibility value separately from creation of a new result
+view. Records retain the original CALL, selected canonical ABI classification,
+actual descending candidate order, before/after public identity, removed view
+flags, actual value writes and appended value-list position. The ABI classifier,
+prototype callback count, selection predicate/comparator, assignments and pass
+order are unchanged. Unknown/void/aggregate calls still do not gain scalar results.
+
+These results remain compatibility views. Direct typed-call-result ledger records
+anchor produced semantic evidence to the original CALL instruction, not a newly
+invented canonical SSA value. They retain canonical argument inputs and are
+queryable without a rendered line; ordinary core/public expression consumers
+provide real rendered bindings. Copied metadata cannot issue histories, create
+canonical values, fabricate rendered edges or claim canonical deletion.
+
+Typed result issuance observes all bounded selection fields (id, register,
+source-entity, definition and version), including rejected candidates, exact value
+positions and final output/classification graphs. Descriptions are capped at1024
+and value/argument observations at512. Unsupported or oversized observation stays
+expected but unavailable while actual writer output remains unchanged. Final
+mutation, stale snapshots, replay, budgets and cancellation retain existing
+fail-closed behavior and previous ledger class priority.
+
+The first deterministic predecessor failure was an actual12-to13 value-array
+append. Pure live-data comparison now permits dense append only through BOTH an
+explicit recorded length-write chain and every new index write. Truncation,
+sparse arrays, omitted indices, wrong lengths and ordinary unrecorded growth still
+fail. Plain-object deletion/re-addition similarly requires an explicit own-field
+presence chain; absent and present-undefined are distinct. This remains only data
+matching, not writer issuance, and the private handoff also observes the new final
+graphs. The existing ABI selection observation follows only actual private typed
+writes/appends, retaining earlier preserved-state decisions without reselecting
+them. Both public-state normalization and ABI histories survive real typed calls.
+
+The new canonically discovered test file has17tests: integer/FP32/64, unknown,
+void/aggregate controls, synthetic orphan reuse/deleted flags, actual predecessor
+continuity, multiple calls, direct and rendered consumers, stale/copy rejection,
+selection/position mutations, bounds and strict write matching. Orphan reuse and
+oversized input tests use a worker-local synthetic seam, with no production fixture
+API; they are not compiler coverage. Actual decoded new-result fixtures exercise
+the normal facade. Four intentional-negative overlays (old matcher, missing
+issuer, missing selection and missing ABI handoff) fail the intended regressions.
+Original owned and first-divergence diagnostic failures remain retained; a test's
+incorrect validator `.valid` assumption was corrected to inspect actual reasons.
+
+Canonical provenance and decompiler regression pass. Full-public-IR comparison
+against parent210df79e6 passes17cases (15parsed synthetic fixtures and2compatibility
+seam cases), including both operations, controls, repeated calls and bounded
+observation; original prototype callback counts also match. This is not the
+frozen compiler oracle. Exact-head reruns and generated identity are recorded in
+the subsequent durable checkpoint, not implicit integration/release acceptance.
+
+Existing #3421 remains the reused C4-03 foundation at4cd5b3eb9; the live exact
+typed-abi-call-result PR search found no additional match. This work stays on
+existing #7036 with no component/main merge or replacement PR. Escaped-stack
+invalidation and standalone call/return histories, the full removed/merged-class
+denominator, C4-02/04/05proofs and original23/frozen135requirements remain open.
+Goal ACTIVE; integration/release acceptance LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
