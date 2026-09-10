@@ -593,13 +593,20 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
       if (!Number.isSafeInteger(terminalSize) || terminalSize < 0 || p + terminalSize > end) { markPartial('terminal payload is truncated'); return; }
       const terminalEnd = p + terminalSize;
       if (term.value) {
-        const flagsX = r.uleb(p, 10, terminalEnd); p = flagsX.next; const flags = Number(flagsX.value);
+        const flagsX = r.uleb(p, 10, terminalEnd); p = flagsX.next;
+        // Flag bits must be tested on the exact ULEB128 BigInt BEFORE any
+        // Number() conversion: a rounded double loses the low REEXPORT/STUB
+        // bits (mod 2^32) and even silences the high-bit guard, mis-decoding
+        // the terminal layout while keeping complete:true (#5030). After the
+        // >=6 guard the value is <= 0x3f, so Number() is exact below.
+        const flagsBig = flagsX.value;
+        const flags = Number(flagsBig);
         // Apple dyld's ExportsTrie.cpp rejects terminals with bits >= 6 set
         // ("unknown exports flag bits"). Laundering them into regular
         // exports would mint export metadata the container cannot mean
         // (#5392).
-        if ((flags >>> 6) !== 0) {
-          markPartial(`unknown exports flag bits 0x${flags.toString(16)}`);
+        if ((flagsBig >> 6n) !== 0n) {
+          markPartial(`unknown exports flag bits 0x${flagsBig.toString(16)}`);
         } else if (flags & 0x08) {
           const ord = r.uleb(p, 10, terminalEnd); p = ord.next; const importedX = rawCString(r, p, terminalEnd);
           const imported = importedX.text || null;
