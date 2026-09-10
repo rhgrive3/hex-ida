@@ -31,6 +31,7 @@ function makeElf(featureBits, { propertyType = GNU_PROPERTY_AARCH64_FEATURE_1_AN
   view.setUint32(PHOFF, PT_GNU_PROPERTY, true);
   view.setBigUint64(PHOFF + 8, BigInt(PROPERTY_OFFSET), true);
   view.setBigUint64(PHOFF + 32, BigInt(filesz), true);
+  view.setBigUint64(PHOFF + 48, 8n, true);
 
   view.setUint32(PROPERTY_OFFSET, 4, true);
   view.setUint32(PROPERTY_OFFSET + 4, 16, true);
