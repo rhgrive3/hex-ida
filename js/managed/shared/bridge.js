@@ -827,18 +827,28 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
     const val = valueMap.get(valId);
     if (!val) return expr.variable(`v_${valId}`);
 
+    // Metadata authority first (#8028): a value carrying an explicit
+    // constant/string/null fact renders from that fact regardless of the
+    // defining node's shape — a zero-input unary must not fabricate `(0)`
+    // from a value whose authority was published by the frontend.
+    if (val.metadata?.constant != null) {
+      const c = expr.constant(BigInt(val.metadata.constant), val.machineType?.widthBits || 32);
+      exprMemo.set(valId, c);
+      return c;
+    }
+    if (val.metadata?.stringRef != null) {
+      const s = expr.variable(JSON.stringify(val.metadata.stringRef), val.machineType?.widthBits || 32);
+      exprMemo.set(valId, s);
+      return s;
+    }
+    if (val.metadata?.isNull === true) {
+      const z = expr.variable('null', val.machineType?.widthBits || 32);
+      exprMemo.set(valId, z);
+      return z;
+    }
+
     const defNode = val.definitionNodeId ? nodeMap.get(val.definitionNodeId) : null;
     if (!defNode) {
-      if (val.metadata?.constant != null) {
-        const c = expr.constant(BigInt(val.metadata.constant), val.machineType?.widthBits || 32);
-        exprMemo.set(valId, c);
-        return c;
-      }
-      if (val.metadata?.stringRef != null) {
-        const s = expr.variable(JSON.stringify(val.metadata.stringRef), val.machineType?.widthBits || 32);
-        exprMemo.set(valId, s);
-        return s;
-      }
       const vExpr = expr.variable(safeIdent(val.id || `v_${valId}`));
       exprMemo.set(valId, vExpr);
       return vExpr;
@@ -851,6 +861,11 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
     if (n.kind === 'const') {
       if (val.metadata?.stringRef != null) {
         res = expr.variable(JSON.stringify(val.metadata.stringRef), bits);
+        exprMemo.set(valId, res);
+        return res;
+      }
+      if (val.metadata?.isNull === true) {
+        res = expr.variable('null', bits);
         exprMemo.set(valId, res);
         return res;
       }
