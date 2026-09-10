@@ -22,7 +22,7 @@ import { buildNZCVConditionExpression } from './flag-semantics.js';
 import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionExpected,
   projectedConstantTransitionCandidate, projectedConstantTransitionExpected,
   projectedStateTransitionCandidates, projectedStateTransitionExpected } from '../semantics/compat/semantic-ir-v2-to-v1.js';
-import { readFacadeConstantTransitions, facadeConstantTransitionExpected } from '../ir-core.js';
+import { readFacadeConstantTransitions, facadeConstantTransitionExpected, facadeStateTransitionCandidates } from '../ir-core.js';
 import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
@@ -741,7 +741,7 @@ function compatOperationSelection(value, state, roots = [value?.def, value], fol
     }
     return selected;
   };
-  const stateCandidates = projectedStateTransitionCandidates(state.ir), checkedState = new Map();
+  const stateCandidates = facadeStateTransitionCandidates(state.ir) || projectedStateTransitionCandidates(state.ir), checkedState = new Map();
   const readCandidate = record => {
     if (!record) return null;
     const checked = state.stateHistoryTransaction?.checks || checkedState;
@@ -780,11 +780,17 @@ function compatOperationSelection(value, state, roots = [value?.def, value], fol
         queued.add(cause); candidates.push(cause);
       }
       const source = event.source;
+      // Source-less public-state operations have canonical product history,
+      // not a fictitious expression consumer. The projection publishes them.
+      if (!source && event.stage === 'public-state-normalization') continue;
       if (!source) { budget.reasons.add('compat-state-consumer-unavailable'); continue; }
       // Traverse actual recorded input definitions, not a guessed upstream pass
       // inferred from a supplied constant. Precomputed rendering need not visit
       // these expressions, but it still consumes their observed folding chain.
-      if (followInputs) pending.push(...event.inputs.flatMap(input => [input.definition, input.value]));
+      // Ordering/version inputs are metadata dependencies, not scalar operands.
+      // Their original references stay in this event, but their computations
+      // must not be recursively attributed to the current expression.
+      if (followInputs && event.stage !== 'public-state-normalization') pending.push(...event.inputs.flatMap(input => [input.definition, input.value]));
       if ((state.buildSelectionHistoryCount || 0) >= maximum || budget.edges <= 0) {
         budget.reasons.add('compat-constant-selection-history-budget'); return observeSelected();
       }
@@ -850,7 +856,7 @@ function recordCompatOperationSelection(value, expression, selected, state) {
 }
 
 function buildCanonicalExpressions(state) {
-  const batch = projectedStateTransitionCandidates(state.ir);
+  const batch = facadeStateTransitionCandidates(state.ir) || projectedStateTransitionCandidates(state.ir);
   if (!batch) {
     for (const value of state.ir.values || []) buildValue(value, state);
     return state;

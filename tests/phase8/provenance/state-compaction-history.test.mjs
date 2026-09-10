@@ -8,6 +8,10 @@ import { annotateValueRanges } from '../../../js/semantics/compat/legacy-value-r
 import { enhanceSemanticDecompilation, readExpressionHistoryConsumer } from '../../../js/decompiler/pipeline-core.js';
 import { enhanceSemanticDecompilation as enhancePublic } from '../../../js/decompiler/pipeline.js';
 import { applyPhase8Projection } from '../../../js/decompiler/phase8/projection.js';
+import { buildRenderProvenance, validateRenderProvenance } from '../../../js/decompiler/phase8/render-provenance.js';
+import { buildSemanticModel } from '../../../js/blocks.js';
+import { decompileSemantic } from '../../../js/decompiler/semantic-core.js';
+import { facadeStateTransitionCandidates, readFacadeStateNormalization } from '../../../js/ir-core.js';
 import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
 import { createDecompilerNavigation } from '../../../js/ui/decompiler-provenance.js';
 import { analysis } from './fixture.js';
@@ -368,4 +372,251 @@ test('an actual store binds its replaced operand edge to the store consumer, not
   const result=applyPhase8Projection(enhanceSemanticDecompilation(seed,{calls:[]},{deterministicTransforms:true}),analysis());
   assert.ok(result.renderProvenance.ledger.some(record=>record.rule===rule && record.before.startsWith('resolve-state-alias:')
     && record.renderedBinding==='producer-bound' && record.producedRefs.includes('L0:stmt')));
+});
+
+function normalizationFixture(count = 2) {
+  const functionId = 'public_state_normalization', type = { kind:'bitvector', widthBits:64 };
+  const ids = Array.from({ length:count }, (_, index) => index === 0 ? 'first' : index === 1 ? 'second' : `value-${index}`);
+  const variable = { key:'physical-state:counter', kind:'physical-state', scope:'function',
+    physicalIdentity:{ kind:'register', registerId:'generic-counter' } };
+  const origin = id => ({ instructionIds:[id], virtualRanges:[{ start:0x7000n, end:0x7004n }] });
+  const values = [...ids].reverse().map(id => ({ id, kind:'definition', machineType:type,
+    definitionNodeId:`n_${id}`, sourceEntityId:`n_${id}`, origin:origin(id) }));
+  const nodes = ids.flatMap((id, index) => [
+    { id:`n_${id}`, kind:'const', blockId:'b0', inputs:[], outputs:[id], attributes:{ value:index + 1 }, origin:origin(id) },
+    { id:`w_${id}`, kind:'state-write', blockId:'b0', inputs:[id], outputs:[], variable, origin:origin(`write-${id}`) },
+  ]);
+  nodes.push({ id:'n_ret', kind:'return', blockId:'b0', inputs:[ids.at(-1)], outputs:[], origin:origin('ret') });
+  const canonical = { schemaVersion:2, contractVersion:'2.0.0', functionId, entryBlockId:'b0', values, nodes,
+    blocks:[{ id:'b0', nodeIds:nodes.map(node => node.id), origin:origin('block') }], completeness:'complete', unknowns:[], origin:origin('function') };
+  const ssa = { contractVersion:'2.0.0', functionId, definitions:[
+    { definitionId:'entry', valueId:'incoming', kind:'entry', blockId:null, variableKey:variable.key,
+      sourceEntityId:functionId, incoming:[], origin:origin('entry'),
+      proof:{ kind:'entry-seed', variableIdentity:variable, sourceSemanticValueId:null, machineType:type } },
+    ...[...ids].reverse().map(id => ({ definitionId:`state-${id}`, valueId:`written-${id}`, kind:'definition', blockId:'b0',
+      variableKey:variable.key, sourceEntityId:`w_${id}`, incoming:[], origin:origin(`write-${id}`),
+      proof:{ kind:'renamed-definition', variableIdentity:variable, sourceSemanticValueId:id, machineType:type } })),
+  ], uses:[] };
+  // The canonical node walk is not the source-row order. Exercise the actual
+  // finalizer's row-based slot ordering and its following version assignment.
+  const ir = projectSemanticIrV2ToLegacyV1(canonical, { ssa,
+    rowOfNode:node => node.id === 'n_ret' ? count + 1 : count - ids.indexOf(node.id.slice(2)) });
+  return { ir, canonical, ssa };
+}
+
+test('actual final normalization retains unused entries, moved value slots and assigned versions', () => {
+  const f = normalizationFixture(), before = clone(f.ir);
+  const history = stateProjector.readProjectedStateNormalization(f.ir);
+  assert.ok(history);
+  assert.equal(history.completeness, 'complete');
+  assert.deepEqual([...new Set(history.events.map(event => event.kind))].sort(),
+    ['suppress-unused-entry-state','reorder-public-state-slot','renumber-public-state-version'].sort());
+  const omitted = history.events.find(event => event.kind === 'suppress-unused-entry-state');
+  assert.equal(omitted.source, null);
+  assert.equal(omitted.before.reg, 'generic-counter');
+  assert.equal(omitted.after.reg, null);
+  assert.ok(f.ir.values.includes(omitted.output), 'identity suppression never deletes a canonical value');
+  assert.equal(omitted.emptyUses.length, 0);
+  for (const event of history.events.filter(event => event.kind === 'reorder-public-state-slot')) {
+    assert.equal(f.ir.values[event.key], event.after);
+    assert.notEqual(event.before, event.after);
+    assert.ok(event.beforeInputs.includes(event.before));
+  }
+  const versions = history.events.filter(event => event.kind === 'renumber-public-state-version');
+  assert.ok(versions.every(event => event.before.version !== event.after.version && event.output.version === event.after.version));
+  assert.deepEqual(clone(f.ir), before);
+});
+
+test('normalization without rendered consumers is navigable in the existing ledger without fake C lines', () => {
+  const f = normalizationFixture(), before = clone(f.ir);
+  const map = buildRenderProvenance({ result:{ ir:f.ir, lines:[] }, snapshotId:'normalization' });
+  const records = map.ledger.filter(record => record.kind === 'public-state-normalization');
+  assert.equal(records.length, stateProjector.readProjectedStateNormalization(f.ir).events.length);
+  assert.ok(records.length > 0);
+  for (const record of records) {
+    assert.deepEqual(record.producedRefs, []);
+    assert.deepEqual(record.removedRefs, []);
+    assert.equal(record.publicStateTransition.canonicalValuesRetained, true);
+    for (const ref of record.publicStateTransition.consumedRefs) assert.ok(map.transformReverse[ref].includes(map.ledger.indexOf(record)));
+  }
+  assert.equal(validateRenderProvenance(map).state, 'complete');
+  assert.deepEqual(clone(f.ir), before);
+});
+
+test('normalization observes empty uses, exact slots, original identities and root ownership without getters', () => {
+  for (const mutate of [
+    (f, history) => { history.events.find(event => event.kind === 'suppress-unused-entry-state').output.uses.push(f.ir.instructions[0]); },
+    f => { f.ir.values.reverse(); },
+    f => { f.ir.values = [...f.ir.values]; },
+    f => { f.ir.instructions[0].row++; },
+    (f, history) => { history.events.find(event => event.kind === 'renumber-public-state-version').output.version++; },
+  ]) {
+    const f = normalizationFixture(), history = stateProjector.readProjectedStateNormalization(f.ir);
+    assert.ok(history); mutate(f, history);
+    assert.equal(stateProjector.readProjectedStateNormalization(f.ir), null);
+    const map = buildRenderProvenance({ result:{ ir:f.ir, lines:[] }, snapshotId:'normalization' });
+    assert.deepEqual(map.ledger.filter(record => record.kind === 'public-state-normalization'), []);
+    assert.ok(map.reasons.includes('unavailable-public-state-history'));
+  }
+  const f = normalizationFixture(), history = stateProjector.readProjectedStateNormalization(f.ir);
+  assert.equal(stateProjector.readProjectedStateNormalization({ ...f.ir }), null);
+  let reads = 0;
+  Object.defineProperty(history.events[0].output, 'reg', { enumerable:true, configurable:true, get:() => { reads++; return null; } });
+  assert.equal(stateProjector.readProjectedStateNormalization(f.ir), null);
+  assert.equal(reads, 0);
+});
+
+test('normalization survives the real range handoff but not a manual replacement', () => {
+  const f = normalizationFixture();
+  annotateValueRanges(f.ir);
+  const history = stateProjector.readProjectedStateNormalization(f.ir);
+  assert.ok(history);
+  history.events[0].output.range = { bits:64, min:0n, max:1n };
+  assert.equal(stateProjector.readProjectedStateNormalization(f.ir), null);
+});
+
+test('core and public rendering retain normalization history and repeated projection does not duplicate it', () => {
+  for (const publicPipeline of [false, true]) {
+    const f = render(normalizationFixture(), {}, publicPipeline);
+    let result = applyPhase8Projection(f.result, analysis());
+    const records = result.renderProvenance.ledger.filter(record => record.kind === 'public-state-normalization');
+    assert.ok(records.some(record => record.rule === 'suppress-unused-entry-state'));
+    for (let count = 0; count < 3; count++) result = applyPhase8Projection(result, analysis());
+    assert.deepEqual(result.renderProvenance.ledger.filter(record => record.kind === 'public-state-normalization'), records);
+    assert.ok(records.every(record => !record.producedRefs.length && !record.removedRefs.length));
+  }
+});
+
+test('public state descriptors cannot manufacture a rendered consumer or issue a copied normalization', () => {
+  const f = normalizationFixture(), result = { ir:f.ir, lines:[] };
+  const original = buildRenderProvenance({ result, snapshotId:'normalization' });
+  const record = original.ledger.find(record => record.kind === 'public-state-normalization');
+  const lines = [{ kind:'stmt', text:'unrelated();', source:record.origin }];
+  const visible = buildRenderProvenance({ result:{ ...result, lines }, snapshotId:'normalization' });
+  assert.ok(visible.ledger.filter(record => record.kind === 'public-state-normalization').every(record => !record.producedRefs.length));
+  assert.deepEqual(visible.entities['L0:stmt'].recordRefs, []);
+  const forged = buildRenderProvenance({ result:{ lines, phase8Projection:{ transforms:[structuredClone(record)] } }, snapshotId:'normalization' });
+  assert.deepEqual(forged.ledger, []);
+  assert.ok(forged.reasons.includes('unissued-public-state-history'));
+});
+
+test('normalization metadata rejects deletion, invented lines and malformed identity or slot transitions', () => {
+  const f = normalizationFixture(), original = buildRenderProvenance({ result:{ ir:f.ir, lines:[] }, snapshotId:'normalization' });
+  for (const mutate of [
+    record => { record.publicStateTransition.canonicalValuesRetained = false; },
+    record => { record.proof = 'equivalent'; },
+    record => { record.producedRefs = ['L0:stmt']; },
+    record => { record.removedRefs = ['before:0:L0:stmt']; },
+    record => { record.publicStateTransition.scope = 'canonical-deletion'; },
+    record => { record.publicStateTransition.before = null; },
+    record => { record.publicStateTransition.slot = -1; },
+    record => { record.publicStateTransition.producedRefs = ['ssa:def:invented']; },
+  ]) {
+    const map = structuredClone(original);
+    mutate(map.ledger.find(record => record.rule === 'suppress-unused-entry-state'));
+    assert.ok(validateRenderProvenance(map).reasons.includes('invalid-public-state-history'));
+  }
+  const malformedSlot = structuredClone(original);
+  malformedSlot.ledger.find(record => record.rule === 'reorder-public-state-slot').publicStateTransition.slot = 'zero';
+  assert.ok(validateRenderProvenance(malformedSlot).reasons.includes('invalid-public-state-history'));
+});
+
+test('normalization budgets and late cancellation keep canonical values and leave coverage explicitly incomplete', () => {
+  const f = normalizationFixture(), before = clone(f.ir), result = { ir:f.ir, lines:[] };
+  for (const budget of [{ maxTransformRecords:1 }, { maxOriginsPerEntity:1 }]) {
+    const map = buildRenderProvenance({ result, snapshotId:'normalization', budget });
+    assert.equal(map.completeness, 'incomplete');
+    assert.ok(map.reasons.includes('truncated'));
+  }
+  assert.equal(buildRenderProvenance({ result, shouldAbort:() => true }).completeness, 'incomplete');
+  assert.deepEqual(clone(f.ir), before);
+  let calls = 0;
+  const changed = buildRenderProvenance({ result:{ ...result, lines:[{ kind:'sig', text:'void f()' }] }, snapshotId:'normalization',
+    shouldAbort:() => { if (++calls === 2) f.ir.instructions[0].row++; return false; } });
+  assert.equal(changed.completeness, 'incomplete');
+  assert.ok(changed.reasons.includes('stale-public-state-history'));
+});
+
+test('query navigation exposes an unused input history even with no rendered entity and refuses stale snapshots', async () => {
+  const f = normalizationFixture(), map = buildRenderProvenance({ result:{ ir:f.ir, lines:[] }, snapshotId:'normalization' });
+  const event = stateProjector.readProjectedStateNormalization(f.ir).events.find(event => event.kind === 'suppress-unused-entry-state');
+  let epoch = 1;
+  const api = new AnalysisQueryAPI({ currentIdentity:async () => ({ binaryId:'normalization', projectRevision:1, analysisEpoch:epoch, artifactVersions:{} }),
+    decompile:async () => ({ value:{ lines:[], pseudocode:'', renderProvenance:map }, status:{ completeness:'complete' } }) });
+  const snapshot = await api.snapshot(), query = await api.decompile(snapshot, 'function');
+  const navigation = createDecompilerNavigation(query, { currentSnapshot:() => api.snapshot() });
+  const selected = await navigation.selectOrigin('ssa', `def:${event.output.id}`);
+  assert.equal(selected.state, 'ready');
+  assert.deepEqual(selected.entities, []);
+  assert.ok(selected.transforms.some(record => record.rule === 'suppress-unused-entry-state'));
+  epoch++;
+  assert.equal((await navigation.selectOrigin('ssa', `def:${event.output.id}`)).reason, 'stale-query-snapshot');
+});
+
+function facadeNormalizationFixture() {
+  const raw = [{ mn:'bl', ops:'0x2000' }, { mn:'ret', ops:'' }].map((inst, row) => ({ ...inst, row, address:0x8000n + BigInt(row * 4) }));
+  const opts = { deterministicTransforms:true, rowOfAddress:address => raw.find(inst => inst.address === BigInt(address))?.row ?? null,
+    addrOfRow:row => raw[row]?.address ?? null, symbolFor:() => 'objc_release' };
+  const model = buildSemanticModel(raw, { ...opts, startRow:0, endRow:raw.length - 1 });
+  return decompileSemantic(model, opts);
+}
+
+test('actual facade argument and return writers carry normalization through their owned replacements and ranges', () => {
+  const result = facadeNormalizationFixture(), ir = result.ir;
+  const original = stateProjector.projectedStateTransitionCandidates(ir);
+  assert.equal(original.isCurrent(), false, 'the original empty argument arrays really were replaced');
+  const successor = facadeStateTransitionCandidates(ir);
+  assert.ok(successor?.isCurrent());
+  const history = readFacadeStateNormalization(ir);
+  assert.ok(history?.events.length);
+  const before = clone(ir);
+  assert.ok(buildRenderProvenance({ result, snapshotId:'facade-normalization' }).ledger.some(record => record.kind === 'public-state-normalization'));
+  assert.deepEqual(clone(ir), before);
+  annotateValueRanges(ir);
+  assert.ok(readFacadeStateNormalization(ir), 'the original and facade observations use the actual range-write chain');
+});
+
+test('copied or later rewritten facade arguments cannot issue a successor or refresh its history', () => {
+  for (const mutate of [
+    ir => { const call = ir.instructions.find(inst => inst.op === 'call'); call.args = [...call.args]; },
+    ir => { const ret = ir.instructions.find(inst => inst.op === 'ret'); ret.extra = { ...ret.extra }; },
+    ir => { ir.instructions = [...ir.instructions]; },
+    ir => { ir.values.reverse(); },
+  ]) {
+    const result = facadeNormalizationFixture(), ir = result.ir;
+    assert.ok(readFacadeStateNormalization(ir));
+    assert.equal(readFacadeStateNormalization({ ...ir }), null);
+    mutate(ir);
+    assert.equal(readFacadeStateNormalization(ir), null);
+    assert.ok(buildRenderProvenance({ result, snapshotId:'facade-normalization' }).reasons.includes('unavailable-public-state-history'));
+  }
+});
+
+test('matching caller-proposed writes remains data matching and cannot register a normalization handoff', () => {
+  const f = normalizationFixture(), source = stateProjector.projectedStateTransitionCandidates(f.ir), inst = f.ir.instructions[0];
+  const data = stateProjector.observeProjectedOperationData(f.ir, [{ source:inst, beforeInputs:[] }]);
+  const before = inst.extra, after = { ...before };
+  inst.extra = after;
+  assert.equal(source.matchesThroughWrites([{ object:inst, key:'extra', before, after }]), true);
+  assert.equal(data([{ object:inst, key:'extra', before, after }]), false, 'ordinary current predicates ignore caller arguments');
+  assert.equal(data.matchesThroughWrites([{ object:inst, key:'extra', before, after }]), true);
+  assert.equal(source.isCurrent(), false);
+  assert.equal(stateProjector.readProjectedStateNormalization(f.ir), null);
+  assert.equal(readFacadeStateNormalization(f.ir), null);
+});
+
+test('public version/order dependencies retain peer identities without recursively collecting their scalar histories', () => {
+  const f = render(normalizationFixture(32));
+  const history = stateProjector.readProjectedStateNormalization(f.ir);
+  assert.ok(history.events.some(event => event.kind === 'renumber-public-state-version' && event.beforeInputs.length >= 30));
+  assert.ok(!f.result.expressionHistoryBinding.reasons.some(reason => reason.includes('history-budget')),
+    JSON.stringify(f.result.expressionHistoryBinding));
+  const map = applyPhase8Projection(f.result, analysis()).renderProvenance;
+  const records = map.ledger.filter(record => record.kind === 'public-state-normalization');
+  assert.equal(records.length, history.events.length);
+  assert.ok(!map.reasons.includes('truncated'), JSON.stringify(map.reasons));
+  const counted = records.find(record => record.rule === 'renumber-public-state-version'
+    && record.publicStateTransition.consumedRefs.length >= 30);
+  assert.ok(counted);
+  for (const ref of counted.publicStateTransition.consumedRefs) assert.ok(map.transformReverse[ref].includes(map.ledger.indexOf(counted)));
 });

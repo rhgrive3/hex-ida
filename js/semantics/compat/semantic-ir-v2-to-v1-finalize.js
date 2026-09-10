@@ -52,6 +52,7 @@ function stateIdentity(value) {
 
 function describeStateOperation(observer, description) {
   if (!observer) return null;
+  if (description.stage === 'public-state-normalization') observer.publicStateExpected = (observer.publicStateExpected || 0) + 1;
   const keys = [description.source, description.identity ? description.output : description.object].filter(Boolean);
   for (const key of keys) observer.expected.add(key);
   if (observer.records.length >= 1024 || description.beforeInputs.length > 512 || description.unavailable) {
@@ -205,22 +206,34 @@ function rebuildDefUse(projected) {
   }
 }
 
-function suppressUnusedIncomingState(projected) {
+function suppressUnusedIncomingState(projected, observer = null) {
   const defined = new Set(projected.values
     .filter((value) => value.kind !== V1_VK.ARG && value.reg && value.def)
     .map((value) => value.reg));
+  const definingValues = new Map();
+  if (observer) for (const value of projected.values) {
+    if (value.kind === V1_VK.ARG || !value.reg || !value.def) continue;
+    if (!definingValues.has(value.reg)) definingValues.set(value.reg, []);
+    const values = definingValues.get(value.reg);
+    if (values.length <= 512) values.push(value);
+  }
   for (const value of projected.values) {
     if (value.kind !== V1_VK.ARG || !value.reg || (value.uses?.length ?? 0) !== 0 || !defined.has(value.reg)) continue;
+    const before = observer ? stateIdentity(value) : null;
+    const definitions = observer ? definingValues.get(value.reg) || [] : [];
     value.compatPublicIdentity = value.reg;
     value.reg = null;
     value.stateKey = null;
     value.version = 0;
     value.compatDerived = 'unused-entry-state-shadow';
+    describeStateOperation(observer, { stage:'public-state-normalization', kind:'suppress-unused-entry-state',
+      source:null, output:value, input:value, identity:true, before, after:stateIdentity(value),
+      emptyUses:value.uses, beforeInputs:[value, ...definitions] });
   }
 }
 
 
-function normalizePublicStateDefinitionOrder(projected) {
+function normalizePublicStateDefinitionOrder(projected, observer = null) {
   const slots = [];
   const definitions = [];
   for (let index = 0; index < projected.values.length; index++) {
@@ -237,21 +250,41 @@ function normalizePublicStateDefinitionOrder(projected) {
     if ((a.id ?? 0) !== (b.id ?? 0)) return (a.id ?? 0) - (b.id ?? 0);
     return (left.id ?? 0) - (right.id ?? 0);
   });
-  for (let index = 0; index < slots.length; index++) projected.values[slots[index]] = definitions[index];
+  for (let index = 0; index < slots.length; index++) {
+    const slot = slots[index], before = projected.values[slot], after = definitions[index];
+    projected.values[slot] = after;
+    if (before !== after) describeStateOperation(observer, { stage:'public-state-normalization', kind:'reorder-public-state-slot',
+      source:after.def, output:after, input:after, object:projected.values, key:slot, path:`values:${slot}`,
+      before, after, beforeInputs:[before, after] });
+  }
 }
 
-function renumberPublicStateVersions(projected) {
+function renumberPublicStateVersions(projected, observer = null) {
   const nextByIdentity = new Map();
+  const countedValues = new Map();
   for (const value of projected.values) {
     if (!value.reg) continue;
     if (value.kind === V1_VK.ARG) {
+      const before = observer ? stateIdentity(value) : null;
       value.version = 0;
+      if (observer && before.version !== value.version) describeStateOperation(observer, {
+        stage:'public-state-normalization', kind:'renumber-public-state-version', source:value.def,
+        output:value, input:value, identity:true, before, after:stateIdentity(value), beforeInputs:[value] });
       continue;
     }
     if (!value.def) continue;
     const next = (nextByIdentity.get(value.reg) ?? 0) + 1;
     nextByIdentity.set(value.reg, next);
+    if (observer) {
+      if (!countedValues.has(value.reg)) countedValues.set(value.reg, []);
+      const values = countedValues.get(value.reg);
+      if (values.length <= 512) values.push(value);
+    }
+    const before = observer ? stateIdentity(value) : null;
     value.version = next;
+    if (observer && before.version !== next) describeStateOperation(observer, {
+      stage:'public-state-normalization', kind:'renumber-public-state-version', source:value.def,
+      output:value, input:value, identity:true, before, after:stateIdentity(value), beforeInputs:[...countedValues.get(value.reg)] });
   }
 }
 
@@ -441,9 +474,9 @@ function recoverStackSlots(projected) {
 export function finalizeLegacyProjection(projected, observer = null, stateObserver = null) {
   compactProjectedState(projected, stateObserver);
   rebuildDefUse(projected);
-  suppressUnusedIncomingState(projected);
-  normalizePublicStateDefinitionOrder(projected);
-  renumberPublicStateVersions(projected);
+  suppressUnusedIncomingState(projected, stateObserver);
+  normalizePublicStateDefinitionOrder(projected, stateObserver);
+  renumberPublicStateVersions(projected, stateObserver);
   recoverLocalStackFlow(projected);
   propagateConstants(projected, observer);
   recoverStackSlots(projected);

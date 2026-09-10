@@ -12,7 +12,7 @@ import {
   assignInstructionIds, memorySafetySummary,
 } from './semantic-ir-v2-to-v1-memory.js';
 import { isCanonicalMemorySsaProducerArtifact } from '../memoryssa/build.js';
-import { captureProjectionIrData } from '../../core/identity/live-data.js';
+import { captureProjectionIrData, PROJECTION_LIMITS } from '../../core/identity/live-data.js';
 import { observedRangeAnnotationsMatch } from './legacy-value-ranges.js';
 
 const memoryOperandTransitions = new WeakMap();
@@ -21,6 +21,7 @@ const constantTransitions = new WeakMap();
 const expectedConstantTransitions = new WeakMap();
 const stateTransitions = new WeakMap();
 const expectedStateTransitions = new WeakMap();
+const expectedStateNormalizations = new WeakMap();
 
 // Shared pure-data observation for projector and facade operation issuers. This
 // function registers nothing: only private owning call sites issue records;
@@ -45,13 +46,19 @@ export function observeProjectedOperationData(projected, transitions) {
       return { value, index };
     });
   const captured = captureProjectionIrData([projected.compat,
-    ...transitions.flatMap(({ source, store, input, beforeInputs, memory, object }) => [source, store, input, ...beforeInputs, memory, object])]);
-  return () => Object.getPrototypeOf(projected) === prototype && rootKeys.every((key, i) => own(projected, key) === roots[i])
+    ...transitions.flatMap(({ source, store, input, beforeInputs, memory, object, emptyUses }) => [source, store, input, ...beforeInputs, memory, object, emptyUses])]);
+  const matches = (writes = null) => (writes == null || Array.isArray(writes) && writes.length <= PROJECTION_LIMITS.nodes)
+    && Object.getPrototypeOf(projected) === prototype && rootKeys.every((key, i) => own(projected, key) === roots[i])
     && values.every(({ value, index }) => own(roots[1], index) === value)
     && locations.every(({ instruction, blockIndex, block, blockId, key, list, index, flatIndex }) =>
       own(roots[2], blockIndex) === block && own(block, 'index') === blockId && own(block, key) === list && own(list, index) === instruction
       && own(roots[0], flatIndex) === instruction)
-    && (captured.matches() || observedRangeAnnotationsMatch(projected, captured));
+    && (writes == null ? captured.matches() || observedRangeAnnotationsMatch(projected, captured)
+      : captured.matchesThroughWrites(writes) || observedRangeAnnotationsMatch(projected,
+        { matchesThroughWrites:ranges => captured.matchesThroughWrites([...writes, ...ranges]) }));
+  // The ordinary predicate remains strict even if a caller passes arguments.
+  // The separate method is only a pure-data comparison, never write authority.
+  return Object.freeze(Object.assign(() => matches(), { matchesThroughWrites:writes => matches(writes) }));
 }
 
 // Private finalization is the issuer. Calling attachMemorySsa separately or
@@ -129,6 +136,7 @@ export function projectedConstantTransitionExpected(projected, instruction) {
 
 function sealStateTransitions(projected, observer) {
   expectedStateTransitions.set(projected, observer.expected);
+  expectedStateNormalizations.set(projected, observer.publicStateExpected || 0);
   if (!observer.records.length) return;
   try {
     const finalIdentity = new Map();
@@ -140,6 +148,7 @@ function sealStateTransitions(projected, observer) {
     const eligible = new Set(observer.records.filter(event => !event.keys.some(key => observer.unavailable.has(key))
       && event.source?.op === event.op && event.source?.sub === event.sub
       && event.inputs.every(input => input.value.def === input.definition)
+      && (event.kind !== 'suppress-unused-entry-state' || event.output.uses === event.emptyUses && !event.emptyUses?.length)
       && (event.identity ? [...finalIdentity.get(event.output)].every(([key, value]) => own(event.output, key) === value)
         : own(event.object, event.key) === event.after)));
     const accepted = new Set();
@@ -152,8 +161,9 @@ function sealStateTransitions(projected, observer) {
       if (!entries.length) throw new Error('state-alias-location-missing');
       return entries;
     });
-    const isCurrent = () => observation() && (!mapped.length || own(projected, 'locations') === locations
-      && mapped.every(([key, value]) => Map.prototype.get.call(locations, key) === value));
+    const mappedCurrent = () => !mapped.length || own(projected, 'locations') === locations
+      && mapped.every(([key, value]) => Map.prototype.get.call(locations, key) === value);
+    const isCurrent = () => observation() && mappedCurrent();
     const records = new Map();
     for (const event of valid) for (const key of event.keys) {
       if (!records.has(key)) records.set(key, []);
@@ -161,7 +171,13 @@ function sealStateTransitions(projected, observer) {
     }
     const byKey = new Map([...records].map(([key, events]) => [key,
       Object.freeze({ events:Object.freeze(events), isCurrent })]));
-    stateTransitions.set(projected, Object.freeze({ get:key => byKey.get(key) ?? null, isCurrent }));
+    const normalized = Object.freeze(valid.filter(event => event.stage === 'public-state-normalization'));
+    const normalization = Object.freeze({ events:normalized, isCurrent,
+      completeness:normalized.length === (observer.publicStateExpected || 0) ? 'complete' : 'incomplete' });
+    stateTransitions.set(projected, Object.freeze({ get:key => byKey.get(key) ?? null, isCurrent, normalization,
+      // Pure data matching is not write authority. Only the private facade
+      // writer can issue a successor after observing its actual argument writes.
+      matchesThroughWrites:writes => observation.matchesThroughWrites(writes) && mappedCurrent() }));
   } catch { /* State projection is unchanged; missing history remains expected. */ }
 }
 
@@ -174,6 +190,16 @@ export function readProjectedStateTransitions(projected, source) {
 // validate each selected record before use and again after their callbacks.
 export function projectedStateTransitionCandidates(projected) {
   return stateTransitions.get(projected) ?? null;
+}
+
+export function readProjectedStateNormalization(projected) {
+  if (!projectedStateNormalizationExpected(projected)) return null;
+  const record = stateTransitions.get(projected)?.normalization;
+  return record?.isCurrent() ? record : null;
+}
+
+export function projectedStateNormalizationExpected(projected) {
+  return (expectedStateNormalizations.get(projected) || 0) > 0;
 }
 
 export function projectedStateTransitionExpected(projected, source) {

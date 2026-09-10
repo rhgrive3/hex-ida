@@ -3522,6 +3522,74 @@ consumers without an existing observed expression remain open. Full C4-03 class
 coverage, original findings, C4-02/04/05, compiler corpus and integration
 acceptance are not closed. Goal ACTIVE; acceptance LOCKED.
 
+## C4-03 actual public-state suppression, ordering and version history
+
+The existing finalizer now describes three further operations only when they
+actually change the public view: unused incoming-state identity suppression,
+changed values-array ordering slots, and changed public-state version numbers.
+The original predicates, sort comparator, assignments and pass order remain.
+An unused entry is still a canonical value; its public register identity is
+hidden, not proved dead or removed. Ordering records retain each displaced and
+selected value at the actual slot. Version records retain the counted preceding
+definitions even when those definitions' own versions did not change.
+Observation records remain capped at 1024; defining/counting inputs are bounded
+and overflow remains explicitly unavailable. Suppressed empty-use arrays are
+observed directly in addition to the normal reverse-index identity check.
+
+The existing projector is still the only issuer. Final identity fields, exact
+value/instruction positions, original sources and actual slot writes must match;
+the existing real range-annotation handoff remains required. These three classes
+also reach the existing render ledger directly, so a canonical SSA value with no
+rendered expression still has reverse transform navigation. Their record kind
+is `public-state-normalization`, with proof
+`observed-public-state-normalization-not-equivalence`. Nested canonical
+consumed/produced references are distinct from rendered references: these direct
+records have no invented current line or pre-transform C-line tombstone. Current
+expression consumers separately retain the actual state operations they use.
+New records are appended after existing ledger classes, preserving the old
+omission/expression budget priority; truncated coverage remains incomplete.
+
+An existing runtime-call suppression regression exposed a necessary owned
+handoff: the public facade legitimately replaces even empty argument arrays.
+The existing private call-argument and function-return writers now retain their
+actual `args`/`extra`/return-field and detached-use-reference writes. A successor
+is issued only if the original projector observation matches through those
+specific writes and a fresh final-output observation also matches. This does not
+authorize arbitrary facade changes, caller-proposed writes or copied roots.
+The pure data match-through-writes method cannot register a successor, and the
+ordinary current predicate remains strict even if a caller passes arguments.
+Other facade normalization/adoption boundaries remain explicit gaps. These
+handoffs preserve the earlier state histories; standalone complete call/return
+transformation histories are not claimed here.
+
+The canonical provenance runner discovers the expanded 33-test state-history
+file. New cases cover all three real operations, source-row/node-order mismatch,
+retained unused values, original counted peers, source-less reverse navigation,
+core/public rendering and replay, empty-use/slot/source/root/getter mutations,
+real range handoff versus manual changes, copied metadata, invalid deletion or
+line claims, budgets/cancellation, actual facade writers, caller-proposed writes,
+and a 32-definition metadata-dependency case. The latter prevents treating
+version-counting peers as scalar operands: peer IDs remain recorded, but their
+unrelated computations are not recursively attributed to the current expression.
+
+Retained diagnostics include an initially already-sorted fixture, the legitimate
+argument-array replacement, an instrumentation-only circular-JSON mistake, an
+initial ledger-priority regression, and metadata recursion that exhausted 1024
+records and displaced switch histories. Existing test expectations and budgets
+were not relaxed. The parent `12f241ff3` finalizer and the new finalizer also
+produce equal complete synthetic IR across normal/exhausted observation and
+standalone-argument version-reset cases, including repeated finalization. These
+checks do not replace a real compiler corpus or independent verifier.
+
+Live C4-03 searches still identify the reused #3421 foundation and the adjacent
+#3422 validator lane. Exact writer-name PR searches returned no separate matching
+implementation; other state/provenance hits remain unrelated repair/performance
+lanes. No component/main merge or replacement PR was created.
+
+Full raw call/location consumers, other facade writes, the complete removed/
+merged-class denominator, C4-02/04/05 proofs and the original compiler corpus
+remain open. No whole finding is closed. Goal ACTIVE; acceptance LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

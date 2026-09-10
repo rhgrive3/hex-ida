@@ -27,10 +27,72 @@ import {
 import { ARM64_ARCHITECTURE } from './targets/architecture/index.js';
 import { resolveABIPlugin } from './targets/abi/index.js';
 import { semanticAbiAdapter } from './analysis/semantic-function-base.js';
-import { observeProjectedOperationData } from './semantics/compat/semantic-ir-v2-to-v1.js';
+import { observeProjectedOperationData, projectedStateTransitionCandidates } from './semantics/compat/semantic-ir-v2-to-v1.js';
 
 const facadeConstantTransitions = new WeakMap();
 const expectedFacadeConstantTransitions = new WeakMap();
+const facadeStateTransitions = new WeakMap();
+
+export function facadeStateTransitionCandidates(projected) {
+  return facadeStateTransitions.get(projected) ?? null;
+}
+
+export function readFacadeStateNormalization(projected) {
+  const entry = facadeStateTransitions.get(projected);
+  if (!entry?.normalization.events.length && entry?.normalization.completeness !== 'incomplete') return null;
+  return entry?.isCurrent() ? entry.normalization : null;
+}
+
+function observeFacadeArguments(inst, history) {
+  if (!history || history.unavailable) return null;
+  const fields = ['args', 'extra', 'returnReg', 'returnEvidence'].map(key => ({ object:inst, key,
+    before:Object.getOwnPropertyDescriptor(inst, key)?.value }));
+  const args = fields[0].before, length = args && Object.getOwnPropertyDescriptor(args, 'length')?.value;
+  if (!Array.isArray(args) || !Number.isSafeInteger(length) || length > 512) { history.unavailable = true; return null; }
+  const values = new Set();
+  for (let index = 0; index < length; index++) {
+    const arg = Object.getOwnPropertyDescriptor(args, index)?.value;
+    const value = arg && Object.getOwnPropertyDescriptor(arg, 'value')?.value;
+    if (value) values.add(value);
+  }
+  for (const value of values) {
+    if (fields.length >= 512) { history.unavailable = true; return null; }
+    fields.push({ object:value, key:'uses', before:Object.getOwnPropertyDescriptor(value, 'uses')?.value });
+  }
+  return fields;
+}
+
+function retainFacadeArgumentWrites(fields, history) {
+  if (!fields || history.unavailable) return;
+  for (const field of fields) {
+    const after = Object.getOwnPropertyDescriptor(field.object, field.key)?.value;
+    if (Object.is(field.before, after)) continue;
+    if (history.writes.length >= 4096) { history.unavailable = true; return; }
+    history.writes.push(Object.freeze({ ...field, after }));
+  }
+}
+
+function sealFacadeStateTransitions(projected, history) {
+  if (!history || history.unavailable || !history.writes.length) return;
+  const source = history.source, writes = Object.freeze(history.writes);
+  try {
+    if (!source.matchesThroughWrites(writes)) return;
+    // Observe the actual final writer output as well as the original source
+    // through its exact write chain. No caller can supply or register writes.
+    const definitions = projected.instructions.map(inst => ({ source:inst, beforeInputs:[] }));
+    const output = observeProjectedOperationData(projected, definitions);
+    const isCurrent = () => source.matchesThroughWrites(writes) && output();
+    if (!isCurrent()) return;
+    const cached = new Map();
+    const normalization = Object.freeze({ ...source.normalization, isCurrent });
+    facadeStateTransitions.set(projected, Object.freeze({ isCurrent, normalization, get(key) {
+      const original = source.get(key);
+      if (!original) return null;
+      if (!cached.has(original)) cached.set(original, Object.freeze({ ...original, isCurrent }));
+      return cached.get(original);
+    } }));
+  } catch { /* Missing bounded handoff never authorizes a stale predecessor. */ }
+}
 
 export function readFacadeConstantTransitions(projected, instruction) {
   const record = facadeConstantTransitions.get(projected)?.get(instruction);
@@ -447,9 +509,10 @@ function restoreAapcs64PublicLocations(projected) {
   }
 }
 
-function attachCanonicalCallArguments(projected) {
+function attachCanonicalCallArguments(projected, history = null) {
   for (const inst of projected.instructions ?? []) {
     if (inst.op !== LEGACY_OP.CALL || !Array.isArray(inst.callArguments)) continue;
+    const before = observeFacadeArguments(inst, history);
     detachLegacyArguments(inst);
     const seen = new Set();
     const uncertainValueIds = [];
@@ -471,6 +534,7 @@ function attachCanonicalCallArguments(projected) {
       abiProjectedArgumentValueIds: inst.args.map((arg) => arg.value?.semanticSsaValueId ?? arg.value?.semanticValueId ?? arg.value?.id),
       abiPossibleArgumentValueIds: uncertainValueIds,
     };
+    retainFacadeArgumentWrites(before, history);
   }
 }
 
@@ -601,7 +665,7 @@ function invalidateEscapedStackForwarding(projected) {
  * Semantic IR return nodes carry the architectural control target (for A64 RET,
  * typically the link register). That is not a source-language return value.
  */
-function attachCanonicalFunctionReturns(projected, adapter, options = {}) {
+function attachCanonicalFunctionReturns(projected, adapter, options = {}, history = null) {
   const returnEvidence = (() => {
     try {
       const classified = adapter?.classifyFunctionReturn?.({
@@ -624,27 +688,30 @@ function attachCanonicalFunctionReturns(projected, adapter, options = {}) {
   }) ?? [];
   for (const inst of projected?.instructions ?? []) {
     if (inst.op !== LEGACY_OP.RET) continue;
-    detachLegacyArguments(inst);
-    inst.returnReg = null;
-    inst.returnEvidence = null;
-    inst.extra = {
-      ...(inst.extra ?? {}),
-      abiReturnLocations:locations,
-    };
-    if (locations.length !== 1 || locations[0]?.kind !== 'register' || locations[0]?.aggregate === true) continue;
-    const result = locations[0];
-    const value = selectReachingRegisterValue(projected, inst, result.reg, result.bits ?? null);
-    if (!value) continue;
-    inst.args = [{ value, bits:value.bits || result.bits || 64 }];
-    if (!Array.isArray(value.uses)) value.uses = [];
-    if (!value.uses.includes(inst)) value.uses.push(inst);
-    inst.returnReg = result.reg;
-    inst.returnEvidence = returnEvidence;
-    inst.extra = {
-      ...(inst.extra ?? {}),
-      abiProjectedReturnValueId: value.semanticSsaValueId ?? value.semanticValueId ?? value.id,
-      abiProjectedReturnEvidence: inst.returnEvidence,
-    };
+    const before = observeFacadeArguments(inst, history);
+    try {
+      detachLegacyArguments(inst);
+      inst.returnReg = null;
+      inst.returnEvidence = null;
+      inst.extra = {
+        ...(inst.extra ?? {}),
+        abiReturnLocations:locations,
+      };
+      if (locations.length !== 1 || locations[0]?.kind !== 'register' || locations[0]?.aggregate === true) continue;
+      const result = locations[0];
+      const value = selectReachingRegisterValue(projected, inst, result.reg, result.bits ?? null);
+      if (!value) continue;
+      inst.args = [{ value, bits:value.bits || result.bits || 64 }];
+      if (!Array.isArray(value.uses)) value.uses = [];
+      if (!value.uses.includes(inst)) value.uses.push(inst);
+      inst.returnReg = result.reg;
+      inst.returnEvidence = returnEvidence;
+      inst.extra = {
+        ...(inst.extra ?? {}),
+        abiProjectedReturnValueId: value.semanticSsaValueId ?? value.semanticValueId ?? value.id,
+        abiProjectedReturnEvidence: inst.returnEvidence,
+      };
+    } finally { retainFacadeArgumentWrites(before, history); }
   }
 }
 
@@ -769,10 +836,13 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
   restoreCanonicalPreservedStateReads(result.legacyV1, abiAdapter);
   restoreAapcs64PublicLocations(result.legacyV1);
   const constantObserver = propagateExactLegacyConstants(result.legacyV1);
-  attachCanonicalCallArguments(result.legacyV1);
+  const stateSource = projectedStateTransitionCandidates(result.legacyV1);
+  const stateHistory = stateSource?.isCurrent() ? { source:stateSource, writes:[], unavailable:false } : null;
+  attachCanonicalCallArguments(result.legacyV1, stateHistory);
   attachCanonicalTypedCallResults(result.legacyV1, instructionByRow, abiAdapter, opts);
   invalidateEscapedStackForwarding(result.legacyV1);
-  attachCanonicalFunctionReturns(result.legacyV1, abiAdapter, opts);
+  attachCanonicalFunctionReturns(result.legacyV1, abiAdapter, opts, stateHistory);
+  sealFacadeStateTransitions(result.legacyV1, stateHistory);
   sealFacadeConstantTransitions(result.legacyV1, constantObserver);
   if (typeof process !== 'undefined' && process.env?.HEX_DEBUG_C2_LEGACY === '1' && typeof process.stderr?.write === 'function') {
     process.stderr.write(JSON.stringify(result.legacyV1.instructions.filter((item) => item.op === 'load').map((item) => ({
