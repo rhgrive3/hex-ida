@@ -194,6 +194,10 @@ function validateRestoredStateFactKeys(state, projectIdentity, binaryIdentity) {
     const targetEntityId = required(record?.targetEntityId, 'changelog-state-target-entity-invalid');
     const factKind = required(record?.factKind, 'changelog-state-fact-kind-invalid');
     if (key !== factKey(targetEntityId, factKind) || record?.key !== key) throw new TypeError('changelog-state-fact-key-invalid');
+    if (record?.resolutionOperationId != null) {
+      const resolutionOperationId = required(record.resolutionOperationId, 'changelog-state-resolution-operation-id-invalid');
+      if (resolutionOperationId !== record.resolutionOperationId) throw new TypeError('changelog-state-resolution-operation-id-invalid');
+    }
   }
   const tombstones = state.tombstones ?? [];
   if (!Array.isArray(tombstones)) throw new TypeError('changelog-state-tombstones-invalid');
@@ -285,8 +289,17 @@ export class ChangeLog {
     }
     if (operation.action === 'resolve') {
       if (!current || !current.values.some((item) => item.operationId === operation.payload?.operationId)) return { status: 'rejected', reason: 'resolution-target-missing' };
-      current.resolvedOperationId = operation.payload.operationId;
-      current.stateFingerprint = factStateFingerprint(current);
+      // Resolution delivery has no cross-actor total order. Persist the winning
+      // resolution operation identity and use the same canonical operation-id
+      // order as applyBatch(), so incremental replicas converge on the same
+      // winner regardless of transport arrival order. Causal parents still
+      // control readiness; they do not reintroduce arrival order as authority.
+      const previousResolutionOperationId = current.resolutionOperationId ?? null;
+      if (previousResolutionOperationId == null || compareOperationId(operation.operationId, previousResolutionOperationId) > 0) {
+        current.resolvedOperationId = operation.payload.operationId;
+        current.resolutionOperationId = operation.operationId;
+        current.stateFingerprint = factStateFingerprint(current);
+      }
       this.operations.set(operation.operationId, operation);
       return { status: 'applied', operationId: operation.operationId, effect: 'resolution' };
     }
