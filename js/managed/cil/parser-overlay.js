@@ -2,8 +2,10 @@ import { deepFreeze } from '../../core/identity/index.js';
 import { metadataRowSize } from './metadata-layout.js';
 import { readCilMetadataStreams } from './metadata-streams.js';
 import { readCilDefinitions } from './metadata-definitions.js';
+import { parseCilMethodSignature, parseCilPropertySignature } from './call-signature-types.js';
+import { CLI_HEADER_SIZE, validateCliHeaderSize } from './cli-header.js';
 
-const CLI_DIRECTORY_INDEX=14, CLI_HEADER_SIZE=72;
+const CLI_DIRECTORY_INDEX=14;
 const METHOD_DEF_TABLE=0x06, FILE_TABLE=0x26, METHOD_ATTRIBUTE_STATIC=0x0010;
 function fail(code){throw new TypeError(code)}
 function range(bytes,off,size,code){if(!Number.isSafeInteger(off)||!Number.isSafeInteger(size)||off<0||size<0||off>bytes.length-size)fail(code)}
@@ -19,7 +21,7 @@ function peLayout(bytes,view){
  const sections=[]; for(let i=0;i<count;i++){const p=end+i*40;range(bytes,p,40,'cil-truncated-pe-section-table');const rawSize=u32(view,p+16),rawOffset=u32(view,p+20);if(rawSize)range(bytes,rawOffset,rawSize,'cil-pe-section-out-of-bounds');sections.push({virtualSize:u32(view,p+8),virtualAddress:u32(view,p+12),rawSize,rawOffset})}
  const mapRva=(rva,size=1,code='cil-rva-unmapped')=>{if(!Number.isSafeInteger(rva)||!Number.isSafeInteger(size)||rva<0||size<0)fail(code);for(const s of sections){const span=Math.max(s.virtualSize,s.rawSize);if(rva<s.virtualAddress||rva>=s.virtualAddress+span)continue;const delta=rva-s.virtualAddress;if(delta>s.rawSize||size>s.rawSize-delta)fail(code);const out=s.rawOffset+delta;range(bytes,out,size,code);return out}fail(code)};
  const dir=dOff+CLI_DIRECTORY_INDEX*8,rva=u32(view,dir,'cil-truncated-cli-directory'),size=u32(view,dir+4,'cil-truncated-cli-directory');if(!rva||size<CLI_HEADER_SIZE)return {cliPresent:false};
- const cli=mapRva(rva,CLI_HEADER_SIZE,'cil-cli-header-unmapped'),metaRva=u32(view,cli+8,'cil-truncated-cli-header'),metaSize=u32(view,cli+12,'cil-truncated-cli-header');if(!metaRva||metaSize<20)fail('cil-cli-metadata-directory-invalid');
+ const cli=mapRva(rva,CLI_HEADER_SIZE,'cil-cli-header-unmapped'),cb=validateCliHeaderSize(u32(view,cli,'cil-truncated-cli-header'),size);mapRva(rva,cb,'cil-cli-header-unmapped');const metaRva=u32(view,cli+8,'cil-truncated-cli-header'),metaSize=u32(view,cli+12,'cil-truncated-cli-header');if(!metaRva||metaSize<20)fail('cil-cli-metadata-directory-invalid');
  // CLI Resources directory (+24/+28) anchors embedded manifest resources (#7753).
  const resRva=u32(view,cli+24,'cil-truncated-cli-header'),resSize=u32(view,cli+28,'cil-truncated-cli-header');
  const resources=resRva===0||resSize===0?null:{offset:mapRva(resRva,resSize,'cil-resources-directory-unmapped'),size:resSize};
@@ -45,6 +47,30 @@ function blobAt(bytes,stream,index,code){
  range(bytes,stream.offset,stream.size,code);const heap=bytes.subarray(stream.offset,stream.offset+stream.size),length=compressed(heap,index,code);
  if(length.next>heap.length-length.value)fail(code);
  return heap.subarray(length.next,length.next+length.value);
+}
+function typeDefOrRefCounts(layout){return [layout.rowCounts[0x02]||0,layout.rowCounts[0x01]||0,layout.rowCounts[0x1b]||0]}
+function validateParamAuthority(bytes,defs,layout,blobStream){
+ const byToken=new Map((defs.params||[]).map(row=>[row.token,row])),typeRows=typeDefOrRefCounts(layout);
+ for(const method of defs.methods){
+  const owned=(method.params||[]).map(token=>{const row=byToken.get(token);if(!row)fail('cil-param-owner-missing');return row});
+  const seen=new Set();let returnRows=0;
+  for(const param of owned){
+   if(param.sequence===0){if(++returnRows>1)fail('cil-param-return-duplicate');continue}
+   if(seen.has(param.sequence))fail('cil-param-sequence-duplicate');seen.add(param.sequence);
+  }
+  if(!owned.some(param=>param.sequence>0))continue;
+  const signature=parseCilMethodSignature(blobAt(bytes,blobStream,method.signatureBlobIndex,'cil-call-signature-invalid'),typeRows);
+  for(const param of owned)if(param.sequence>signature.parameters.length)fail('cil-param-sequence-out-of-range');
+ }
+}
+function decodePropertyAuthority(bytes,defs,layout,blobStream){
+ if(!(defs.properties||[]).length)return [];
+ const typeRows=typeDefOrRefCounts(layout);
+ return defs.properties.map(row=>{
+  const raw=blobAt(bytes,blobStream,row.typeBlobIndex,'cil-property-signature-invalid');
+  const signature=parseCilPropertySignature(raw,typeRows);
+  return {...row,rawSignature:Object.freeze(Array.from(raw)),signature};
+ });
 }
 function skipCustomMods(blob,pos,rowCounts,code){
  while(blob[pos]===0x1f||blob[pos]===0x20){
@@ -86,8 +112,8 @@ function validateManagedEntryAuthority(bytes,parsed,defs,layout,meta){
 }
 export function overlayCilMetadata(bytes,parsed){
  const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes),view=new DataView(u8.buffer,u8.byteOffset,u8.byteLength),pe=peLayout(u8,view);if(!pe?.cliPresent)return parsed;
- const meta=readCilMetadataStreams(u8,pe.metadataOffset,pe.metadataSize),tablesStream=meta.streams.find(s=>s.name==='#~'||s.name==='#-'),stringsStream=meta.streams.find(s=>s.name==='#Strings');if(!tablesStream)fail('cil-metadata-tables-missing');
- const layout=tableLayout(u8,view,tablesStream),defs=readCilDefinitions(u8,view,layout,stringsStream);validateManagedEntryAuthority(u8,parsed,defs,layout,meta);const byOffset=new Map((parsed.methodBodies??[]).map(b=>[b.headerOffset,b])),methodBodies=[],methods=[];
+ const meta=readCilMetadataStreams(u8,pe.metadataOffset,pe.metadataSize),tablesStream=meta.streams.find(s=>s.name==='#~'||s.name==='#-'),stringsStream=meta.streams.find(s=>s.name==='#Strings'),blobStream=meta.streams.find(s=>s.name==='#Blob');if(!tablesStream)fail('cil-metadata-tables-missing');
+ const layout=tableLayout(u8,view,tablesStream),defs=readCilDefinitions(u8,view,layout,stringsStream);validateParamAuthority(u8,defs,layout,blobStream);const properties=decodePropertyAuthority(u8,defs,layout,blobStream);validateManagedEntryAuthority(u8,parsed,defs,layout,meta);const byOffset=new Map((parsed.methodBodies??[]).map(b=>[b.headerOffset,b])),methodBodies=[],methods=[];
  for(const method of defs.methods){const out={...method,bodyIndex:null};if(method.rva!==0){const off=pe.mapRva(method.rva,1,'cil-method-rva-unmapped'),body=byOffset.get(off);if(!body)fail('cil-method-rva-unmapped');out.bodyIndex=methodBodies.length;methodBodies.push({...body,token:method.token,rid:method.rid})}methods.push(out)}
  // ECMA-335 II.22.28: Implementation == null resources live inside the CLI
  // Resources directory at the recorded Offset. Each blob is a 4-byte length
@@ -103,5 +129,5 @@ export function overlayCilMetadata(bytes,parsed){
   const payload=u8.subarray(start+4,start+4+length);
   return {...row,location:'embedded',payload};
  });
- return deepFreeze({...parsed,runtimeVersion:meta.runtimeVersion,vmSpecEdition:meta.runtimeVersion,types:defs.types,fields:defs.fields,methods,methodBodies,manifestResources});
+ return deepFreeze({...parsed,runtimeVersion:meta.runtimeVersion,vmSpecEdition:meta.runtimeVersion,types:defs.types,fields:defs.fields,params:defs.params,properties,events:defs.events,methodSemantics:defs.methodSemantics,methods,methodBodies,manifestResources});
 }
