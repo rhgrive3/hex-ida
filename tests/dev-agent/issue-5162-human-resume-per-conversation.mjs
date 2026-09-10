@@ -5,6 +5,7 @@ import { DevAgentUiSettings } from '../../js/ai/dev/ui/settings.js';
 import { DEV_RUN_STATUS } from '../../js/ai/dev/run/dev-run.js';
 
 await testAnsweringAAfterAnotherConversationRanResumesA();
+await testBothConversationsCanWaitAndResumeOwnRun();
 await testWaitingHumanRunLeavesRegistryWhenResolved();
 await testReconstructedEngineKeepsLastRunFallback();
 console.log('issue #5162 per-conversation human resume: ok');
@@ -35,6 +36,43 @@ async function testAnsweringAAfterAnotherConversationRanResumesA() {
   const after = harness.settings.lastRun;
   assert.equal(after.runId, runA.runId, 'the human response must resume run A, not create a new run');
   assert.equal(after.status, DEV_RUN_STATUS.COMPLETED, 'run A must complete with its answer');
+}
+
+/* The issue explicitly requires simultaneous WAITING_HUMAN runs to remain
+   independently resumable by conversation identity. */
+async function testBothConversationsCanWaitAndResumeOwnRun() {
+  const harness = createHarness([
+    { type: 'human', question: 'A confirm', blocking: true },
+    { type: 'human', question: 'B confirm', blocking: true },
+    { type: 'final', answer: 'A resumed', completedTasks: ['A'], remaining: [] },
+    { type: 'final', answer: 'B resumed', completedTasks: ['B'], remaining: [] },
+  ]);
+
+  await harness.engine.run({ mode: 'agent', question: 'start A', conversationId: 'hex-A' });
+  const runA = harness.settings.lastRun;
+  assert.equal(runA.status, DEV_RUN_STATUS.WAITING_HUMAN);
+
+  await harness.engine.run({ mode: 'agent', question: 'start B', conversationId: 'hex-B' });
+  const runB = harness.settings.lastRun;
+  assert.equal(runB.status, DEV_RUN_STATUS.WAITING_HUMAN);
+  assert.notEqual(runA.runId, runB.runId);
+
+  assert.equal(harness.engine.resumableHumanRun({ conversationId: 'hex-A' })?.runId, runA.runId);
+  assert.equal(harness.engine.resumableHumanRun({ conversationId: 'hex-B' })?.runId, runB.runId);
+  assert.equal(harness.engine.resumableHumanRun({ conversationId: 'hex-unknown' }), null);
+
+  await harness.engine.run({ mode: 'agent', question: 'answer A', conversationId: 'hex-A' });
+  assert.equal(harness.settings.lastRun.runId, runA.runId);
+  assert.equal(harness.settings.lastRun.status, DEV_RUN_STATUS.COMPLETED);
+  assert.equal(
+    harness.engine.resumableHumanRun({ conversationId: 'hex-B' })?.runId,
+    runB.runId,
+    'resuming A must not disturb B\'s waiting run',
+  );
+
+  await harness.engine.run({ mode: 'agent', question: 'answer B', conversationId: 'hex-B' });
+  assert.equal(harness.settings.lastRun.runId, runB.runId);
+  assert.equal(harness.settings.lastRun.status, DEV_RUN_STATUS.COMPLETED);
 }
 
 /* Once a waiting run leaves WAITING_HUMAN it must not be revivable. */
