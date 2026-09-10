@@ -72,7 +72,7 @@ test('#7610 file-backed over zero-fill overlap is order-dependent and fails clos
   // LOAD1 win, first-wins publishes LOAD0's zeros.
   const { image, error } = parse([
     { offset: 0x1000, flags: PF_R | PF_W, filesz: 0, memsz: 0x800, vaddr: 0x400000 },
-    { offset: 0x2000, flags: PF_R | PF_X, filesz: 0x800, memsz: 0x800, vaddr: 0x400400 },
+    { offset: 0x2400, flags: PF_R | PF_X, filesz: 0x800, memsz: 0x800, vaddr: 0x400400 },
   ]);
   assert.equal(image, null);
   assert.equal(error?.code, 'ELF_PT_LOAD_VM_OVERLAP');
