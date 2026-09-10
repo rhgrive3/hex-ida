@@ -254,6 +254,9 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         for (let i = 0; i < type.results.length; i++) producedValues.push({ id: `result_${i}`, bits: typeBits(type.results[i]), type: type.results[i] });
         produce(type.results.length);
         callEffects.push({ typeIndex: tr.value, tableIndex: table.value, dispatchKind: 'indirect', unresolved: true, signature: { params: type.params, results: type.results } });
+        possibleExceptions.push({ kind: 'indirect-call-table-oob', tableIndex: table.value, condition: 'u32(selector)>=tableSize' });
+        possibleExceptions.push({ kind: 'indirect-call-null-target', tableIndex: table.value, condition: 'selectedElement==null' });
+        possibleExceptions.push({ kind: 'indirect-call-type-mismatch', tableIndex: table.value, typeIndex: tr.value, condition: 'selectedFunctionType!=declaredType' });
         break;
       }
       case 0x1a: mnemonic = 'drop'; consumedValues.push({ id: 'top' }); consume(1); break;
