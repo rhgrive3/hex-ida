@@ -468,7 +468,12 @@ async function candidatePools(query, tools, ctx, b) {
       if (target != null) {
         const xr = await invokeTool(tools, 'get_xrefs', b, target, { limit: b.maxSearchResults });
         if (expired(b)) break;
-        const xCoverage = searchCompleteness({ ...xr, results: xr.functions || [] }, b.maxSearchResults).coverage;
+        const xCoverage = noteSearch(
+          b,
+          'get_xrefs',
+          String(target),
+          { ...xr, results: xr.functions || [] },
+        );
         for (const fn of xr.functions || []) {
           addCandidate(
             pools,
