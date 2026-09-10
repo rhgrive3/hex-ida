@@ -4605,6 +4605,48 @@ in the persistent bitfield checkpoint. It does not close C4-04, the broader
 roadmap, integration or release. Main reconciliation, independent/candidate-tree,
 real-binary, runtime and device acceptance remain separate and unclaimed.
 
+### Roadmap denominator and next C2 verification task (2026-09-10)
+
+The final implementation backlog at lines 1266–1292 of the research MD contains
+**21 FR tasks**, not 20. These are distinct from the 23 finding cards and the four
+previously proven prerequisite gates. A test-cell percentage or a historical
+finding-ledger status is not a completed-task percentage. The historical
+`analysis-improvement-finding-ledger.md` names an obsolete integration owner/base
+and incorrectly describes several currently implemented mechanisms as absent;
+it remains historical evidence, not current closure authority.
+
+Current code inspection reconfirmed the following existing implementations, which
+must be reused rather than rebuilt:
+
+- FR-C1-01A: canonical points-to load recovery consumes `forwardMemoryValue` and
+  its owned exact operand proof; it does not independently derive reaching stores.
+- FR-C2-01A: canonical byte coverage is queried by the compatibility projector and
+  consumed by the actual legacy expression producer. The existing byte-forwarding
+  regression passed on `73ac08444`; its endian, overlap, hole, clobber, stale and
+  resource cases do not themselves prove the entire required width/corpus matrix.
+- FR-C2-02A: product-domain known bits, congruence, range propagation, edge facts,
+  widening and production SCCP publication already exist. The independent 8-bit
+  concretization test is soundness evidence; it is not the required held-out
+  precision-gain comparison. Search of the current scalar tests and validation
+  surface found no such held-out measurement. That is the next verification task,
+  without tuning solver timing or changing the separate performance-owner lane.
+
+The canonical scalar audit exposed a regression introduced by this lane's earlier
+`fc0f4c828` provenance increment: generic Phase 8 validation named an ABI-specific
+escape-evidence literal. The architecture boundary scanner correctly rejected
+it. The compatibility facade now exports its existing evidence identity and uses
+it at the actual producer; generic provenance validation compares that exported
+identity without selecting an ABI. The serialized value and private issuance
+checks are unchanged. Additional copied-ledger negatives reject substituted and
+missing evidence. The scanner and its rejection tests are unchanged; this is an
+owned regression repair, not an exception to the boundary or unrelated issue work.
+
+No FR task is newly declared complete by this audit. Original acceptance rows,
+width/operator/branch/loop matrices and the integration lock remain intact.
+Physical-device, environment, unrelated issue and speed work remain assigned
+elsewhere under the user's scope instruction. Scoped verification and normal
+same-PR backup receipts are recorded in the persistent resume checkpoint.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

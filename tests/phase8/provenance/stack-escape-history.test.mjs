@@ -243,6 +243,8 @@ test('copied ledger data cannot issue escape history, a numeric theorem or canon
   for (const mutate of [r => { r.producedRefs = ['L0:stmt']; }, r => { r.removedRefs = [`ir:${f.store.id}`]; },
     r => { r.stackEscapeTransition.canonicalMemoryUnchanged = false; }, r => { r.stackEscapeTransition.stackProof.must = false; },
     r => { r.stackEscapeTransition.after.kind = 'store'; }, r => { r.stackEscapeTransition.callRef = 'ir:other'; },
+    r => { r.stackEscapeTransition.after.evidence = 'unissued-stack-escape'; },
+    r => { r.stackEscapeTransition.after.evidence = null; },
     r => { r.stackEscapeTransition.before.definitionId = 'other'; }, r => { r.stackEscapeTransition.after.regionId = 'other'; },
     r => { r.stackEscapeTransition.argumentIndex = -1; }, r => { r.stackEscapeTransition.storeRef = 'ir:missing'; }]) {
     const changed = structuredClone(map); mutate(changed.ledger.find(item => item.kind === record.kind));

@@ -44,6 +44,10 @@ const facadeProjectedConstants = new WeakMap();
 const facadeAbiBindings = new WeakMap();
 const expectedFacadeAbiBindings = new WeakMap();
 
+// The compatibility producer owns this evidence vocabulary. Generic consumers
+// compare the exported identity; they do not select or interpret an ABI.
+export const FACADE_STACK_ESCAPE_EVIDENCE = 'aapcs64-stack-argument-escape';
+
 export function facadeAbiBindingExpected(projected, instruction = null) {
   const expected = expectedFacadeAbiBindings.get(projected);
   return instruction == null ? (expected?.count || 0) > 0 : expected?.sources.has(instruction) === true;
@@ -1150,7 +1154,7 @@ function invalidateEscapedStackForwarding(projected, history = null) {
         clobberingInstructionId:inst.id,
         previousDefinitionId:priorMemoryUse?.definitionId ?? null,
         compatibilityDerived:true,
-        evidence:'aapcs64-stack-argument-escape',
+        evidence:FACADE_STACK_ESCAPE_EVIDENCE,
       };
       load.extra = {
         ...(load.extra ?? {}),

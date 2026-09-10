@@ -9,7 +9,7 @@ import { readProjectedStateNormalization, projectedStateNormalizationExpected } 
 import { readFacadeStateNormalization, readFacadePreservedStateHistory, facadePreservedStateTransitionExpected,
   readFacadeLocationHistory, facadeLocationTransitionExpected,
   readFacadeTypedResultHistory, facadeTypedResultTransitionExpected,
-  readFacadeStackEscapeHistory, facadeStackEscapeTransitionExpected,
+  readFacadeStackEscapeHistory, facadeStackEscapeTransitionExpected, FACADE_STACK_ESCAPE_EVIDENCE,
   readFacadeAbiBindingHistory, facadeAbiBindingExpected } from '../../ir-core.js';
 
 const PUBLIC_STATE_RULES = Object.freeze(['suppress-unused-entry-state', 'reorder-public-state-slot', 'renumber-public-state-version']);
@@ -836,7 +836,7 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
             || transition.after.kind !== 'clobber' || !transition.after.compatibilityDerived || transition.after.definitionId !== null
             || transition.after.previousDefinitionId !== transition.before.definitionId
             || transition.before.regionId !== null && transition.after.regionId !== transition.before.regionId
-            || transition.after.evidence !== 'aapcs64-stack-argument-escape'
+            || transition.after.evidence !== FACADE_STACK_ESCAPE_EVIDENCE
             || !Number.isSafeInteger(transition.argumentIndex) || transition.argumentIndex < 0
             || typeof transition.storeRef !== 'string' || !/^ir:.+/.test(transition.storeRef)
             || typeof transition.callRef !== 'string' || !/^ir:.+/.test(transition.callRef)
