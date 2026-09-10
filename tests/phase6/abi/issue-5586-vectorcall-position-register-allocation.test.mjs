@@ -17,8 +17,9 @@ test('position-carrying vectors map to their argument position registers', () =>
     callingConvention:'vectorcall',
     args:[int(), vector(128), int(), vector(128), vector(256), flt(), int()],
   } });
+  // Positional shadow slots mean g sits at 32 + 8·(6−4) = 48 (#6003).
   const regs = result.arguments.map((entry) => entry.reg ?? `stack:${entry.offset}`);
-  assert.deepEqual(regs, ['rcx', 'xmm1', 'r8', 'xmm3', 'ymm4', 'xmm5', 'stack:32']);
+  assert.deepEqual(regs, ['rcx', 'xmm1', 'r8', 'xmm3', 'ymm4', 'xmm5', 'stack:48']);
   assert.equal(result.partial, false);
 });
 
@@ -144,10 +145,12 @@ test('indirect scalar FP arguments use non-overlapping eight-byte stack slots', 
     callingConvention:'vectorcall',
     args:[int(), int(), int(), int(), int(), int(), flt(), { type:'double', floating:true, bits:64 }],
   } });
-  assert.equal(result.arguments[6].offset, 32);
-  assert.equal(result.arguments[7].offset, 40);
-  assert.equal(result.arguments[6].calleeEntryOffset, 40);
-  assert.equal(result.arguments[7].calleeEntryOffset, 48);
+  // Positions 4/5 pass on the stack (integer overflow from the standard x64
+  // half), positions 6/7 continue after them — never compacted (#6003).
+  assert.equal(result.arguments[6].offset, 48);
+  assert.equal(result.arguments[7].offset, 56);
+  assert.equal(result.arguments[6].calleeEntryOffset, 56);
+  assert.equal(result.arguments[7].calleeEntryOffset, 64);
   assert.equal(result.stackArgsMayContainPointers, true);
 });
 

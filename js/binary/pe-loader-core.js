@@ -18,9 +18,16 @@ function markPEPartial(image, reason, warning = null) {
   if (warning && !image.warnings.includes(warning)) image.warnings.push(warning);
 }
 
+// Budget limits and costs are typed evidence: only real safe-integer numbers
+// participate. JavaScript coercion would otherwise let structured values
+// ('16', ['1'], true) silently shrink analysis coverage or turn the used
+// counters into strings (#5188) — fail closed to the fallback/typed zero.
 function metadataLimit(value, fallback) {
-  const n = Number(value);
-  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function metadataCost(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function resolveMetadataLimits(overrides = {}) {
@@ -30,6 +37,8 @@ function resolveMetadataLimits(overrides = {}) {
   }
   return out;
 }
+
+const PE_BUDGET_KEYS = ['inputBytes','records','objects','stringBytes','operations','estimatedHeapBytes'];
 
 export function createPEMetadataBudget(image, options = {}) {
   image.metadata ||= {};
@@ -51,16 +60,26 @@ export function createPEMetadataBudget(image, options = {}) {
     take(cost = {}, reason = 'metadata') {
       if (stopped) return false;
       if (signal?.aborted) return fail('aborted');
-      const nextOps = used.operations + (cost.operations || 0);
+      // A malformed cost is a caller contract violation, never silently zero:
+      // reject the take and stop the budget so typed accounting cannot drift.
+      const typedCost = {};
+      for (const key of PE_BUDGET_KEYS) {
+        const value = cost[key];
+        if (value === undefined) continue;
+        const typed = metadataCost(value);
+        if (typed === null) return fail(`${reason}:${key}`);
+        typedCost[key] = typed;
+      }
+      const nextOps = used.operations + (typedCost.operations ?? 0);
       if (nextOps >= nextTimeCheck) {
         nextTimeCheck = nextOps + 1024;
         if (Date.now() - started > limits.wallClockMs) return fail('wall-clock');
       }
-      for (const key of ['inputBytes','records','objects','stringBytes','operations','estimatedHeapBytes']) {
-        const next = used[key] + (cost[key] || 0);
+      for (const key of PE_BUDGET_KEYS) {
+        const next = used[key] + (typedCost[key] ?? 0);
         if (!Number.isFinite(next) || next < 0 || next > limits[key]) return fail(`${reason}:${key}`);
       }
-      for (const key of Object.keys(used)) used[key] += cost[key] || 0;
+      for (const key of PE_BUDGET_KEYS) used[key] += typedCost[key] ?? 0;
       return true;
     },
     partial(reason, warning = null) { markPEPartial(image, reason, warning); return false; },

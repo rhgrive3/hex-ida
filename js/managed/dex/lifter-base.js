@@ -349,11 +349,24 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
           for (const reg of argRegs) {
             locationReads.push({ kind: 'register', index: reg, bits: 32 });
           }
-          callEffects.push({
+          const callEffect = {
             target: `${targetMeth.classType}->${targetMeth.name}`,
             dispatchKind: kinds[opcode],
             argRegisters: argRegs,
-          });
+          };
+          if (opcode === 0x72) {
+            // invoke-interface resolves through the RECEIVER's implemented
+            // interfaces, not the enclosing class's (#7620 R2 review). This
+            // lifter has no receiver register-type authority, so the sound
+            // projection is the module-wide decoded interface edge set as
+            // candidate evidence with dispatch left unresolved — a receiver
+            // may implement interfaces this file never declares. No per-site
+            // assignability fact is published from caller authority.
+            callEffect.interfaceTypes = dexImage.classes
+              .flatMap((cls) => Array.isArray(cls.interfaceTypes) ? cls.interfaceTypes : []);
+            callEffect.unresolved = true;
+          }
+          callEffects.push(callEffect);
         }
         break;
 

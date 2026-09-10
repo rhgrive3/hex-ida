@@ -22,9 +22,14 @@ function abortError(signal) {
 }
 
 function normalizeScalar(value) {
-  if (typeof value === 'bigint') return value.toString();
   if (value == null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value ?? null;
-  return String(value);
+  // #5183: bigint/structured option values are not parser-accepted primitives
+  // (parseMachOSource demands a number or non-empty string sliceIndex; the
+  // range budgets demand safe integers). They must key distinctly — any
+  // String() form ('0', '65536') would alias a cached parse of a differently
+  // typed but colliding request and bypass the parser's typed validation.
+  // Tagged keys guarantee a cache miss, so the raw parser rejects them.
+  return { nonPrimitive: typeof value === 'bigint' ? value.toString() : String(value) };
 }
 
 function cacheableStringsOptions(value) {
@@ -173,6 +178,12 @@ function waitForEntry(entry, signal, onProgress = null) {
       reject(abortError(signal));
     };
     signal?.addEventListener('abort', onAbort, { once:true });
+    /* Issue #5263: the initial aborted check happened before registration, so
+       an abort landing in that window never dispatches (AbortSignals do not
+       replay past events). Re-check after the listener is in place — the
+       done flag keeps a real event delivery and this re-check mutually
+       idempotent. */
+    if (signal?.aborted) { onAbort(); return; }
     entry.promise.then((value) => {
       try { finish(resolve, cloneCachedArtifact(value)); }
       catch (error) { finish(reject, error); }
