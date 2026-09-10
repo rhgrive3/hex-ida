@@ -201,8 +201,8 @@ test('the initial control class denominator covers seventeen current producers a
   const observed=new Set(),current=new Set();
   for(const kind of ['one-sided','if-else','loop','conditional-loop','counted','branch-cycle','revisit','switch','cfg-conditional','faithful','unsupported','changed-break']){
     const f=fixture(kind),history=readSemanticControlRenderHistory(f.seed);
-    for(const record of history.records)observed.add(record.rule.slice('render-initial-'.length));
-    for(const line of f.seed.lines)for(const record of readSemanticControlLineHistory(line,f.ir)?.records||[])current.add(record.rule.slice('render-initial-'.length));
+    for(const record of history.records)if(record.phase==='initial-semantic-render')observed.add(record.rule.slice('render-initial-'.length));
+    for(const line of f.seed.lines)for(const record of readSemanticControlLineHistory(line,f.ir)?.records||[])if(record.phase==='initial-semantic-render')current.add(record.rule.slice('render-initial-'.length));
   }
   assert.equal(INITIAL_CONTROL_RENDER_FORMS.length,18);
   assert.deepEqual([...observed].sort(),[...INITIAL_CONTROL_RENDER_FORMS].sort());

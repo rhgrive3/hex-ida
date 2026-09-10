@@ -3,7 +3,12 @@ import test from 'node:test';
 import fs from 'node:fs';
 import { fixture as irFixture } from '../helpers/ir-fixtures.mjs';
 import { canonicalLoad } from '../helpers/canonical-load-fixture.mjs';
-import { renderValue, decompileSemantic } from '../../../js/decompiler/semantic-core.js';
+import { renderValue, decompileSemantic, readSemanticStatementLineHistory, readSemanticStoreLineHistory } from '../../../js/decompiler/semantic-core.js';
+import { enhanceSemanticDecompilation as enhanceCore } from '../../../js/decompiler/pipeline-core.js';
+import { enhanceSemanticDecompilation as enhancePublic } from '../../../js/decompiler/pipeline.js';
+import { applyPhase8Projection } from '../../../js/decompiler/phase8/projection.js';
+import { buildRenderProvenance, validateRenderProvenance } from '../../../js/decompiler/phase8/render-provenance.js';
+import { analysis } from './fixture.js';
 import { buildSemanticModel } from '../../../js/blocks.js';
 import { buildIR } from '../../../js/ir-core.js';
 import { BRANCH, validateRoadmapInventory } from '../../../tools/validation/analysis-roadmap/ownership.mjs';
@@ -210,4 +215,110 @@ test('initial-expression matrix is an exact owned path, without an unowned wildc
   const files=['tests/phase8/helpers/canonical-load-fixture.mjs','tests/phase8/provenance/initial-expression-render-matrix.test.mjs'];
   assert.deepEqual(validateRoadmapInventory(BRANCH,'phase8',files),files);
   assert.throws(()=>validateRoadmapInventory(BRANCH,'phase8',['tests/phase8/provenance/unowned-initial-expression.test.mjs']));
+});
+
+const initialRecords = map => map.ledger.filter(record=>record.phase==='initial-expression-render');
+
+test('each primary initial expression selection has its own actual return producer and canonical identity',()=>{
+  for(const [kind] of MATRIX){
+    const f=fixture(kind),seed=decompileSemantic(f.model,f.opts);
+    const line=seed.lines.find(line=>/^return\b/.test(line.text)),binding=readSemanticStatementLineHistory(line,f.ir);
+    assert.ok(binding,kind);assert.ok(Object.isFrozen(binding.canonical));
+    const own=binding.records.filter(record=>record.phase==='initial-expression-render'&&record.valueId===f.value.id);
+    assert.ok(own.length,kind);assert.ok(own.every(record=>record.evidence.kind==='observed-initial-expression-not-equivalence'));
+    const map=buildRenderProvenance({result:seed,snapshotId:'initial-expression'});
+    for(const record of own){
+      const retained=initialRecords(map).find(item=>item.rule===record.rule&&item.valueId===record.valueId);
+      assert.ok(retained,kind);assert.equal(retained.renderedBinding,'producer-bound');
+      assert.deepEqual(retained.producedRefs,[`L${seed.lines.indexOf(line)}:stmt`]);
+      assert.ok(retained.originHistory.consumedRefs.includes(`ssa:def:${f.value.id}`));
+    }
+    assert.deepEqual(validateRenderProvenance(map).reasons,[]);
+  }
+});
+
+test('actual call argument selection excludes computed but unused argument render tickets',()=>{
+  for(const count of [0,1]){
+    const f=fixture('call');f.opts.defaultCallArgs=count;
+    const seed=decompileSemantic(f.model,f.opts),call=seed.lines.find(line=>/ = callee\(/.test(line.text));
+    const entry=readSemanticStatementLineHistory(call,f.ir);assert.ok(entry);
+    const values=entry.records.filter(record=>record.phase==='initial-expression-render').map(record=>record.valueId);
+    assert.equal(values.includes(f.a.id),count===1);assert.equal(values.includes(f.b.id),false);
+  }
+});
+
+test('real memo reuse retains its original evaluated value history without issuing a fresh semantic value',()=>{
+  const f=fixture('binary');f.value.def.args[1]={value:f.a};
+  const seed=decompileSemantic(f.model,f.opts),line=seed.lines.find(line=>/^return/.test(line.text));
+  const records=readSemanticStatementLineHistory(line,f.ir).records.filter(record=>record.phase==='initial-expression-render');
+  assert.ok(records.some(record=>record.rule==='render-initial-value-memo-reuse'&&record.valueId===f.a.id));
+  assert.equal(records.filter(record=>record.rule==='render-initial-value-argument'&&record.valueId===f.a.id).length,1);
+  assert.ok(records.every(record=>f.ir.values.some(value=>value.id===record.valueId)));
+});
+
+test('a later actual memo consumer retains an earlier argument evaluation that was not printed by its call',()=>{
+  const f=fixture('call'),ret=f.ir.instructions.at(-1);ret.args=[{value:f.a}];f.a.uses.push(ret);
+  const seed=decompileSemantic(f.model,f.opts),call=seed.lines.find(line=>/callee\(/.test(line.text));
+  const line=seed.lines.find(line=>/^return/.test(line.text));assert.equal(line.text,'return a1;');
+  assert.equal(readSemanticStatementLineHistory(call,f.ir).records.filter(record=>record.phase==='initial-expression-render').length,0);
+  const records=readSemanticStatementLineHistory(line,f.ir).records;
+  for(const form of ['memo-reuse','argument'])assert.ok(records.some(record=>record.rule==='render-initial-value-'+form&&record.valueId===f.a.id),form);
+  const map=buildRenderProvenance({result:seed,snapshotId:'initial-expression'});
+  const original=initialRecords(map).find(record=>record.rule==='render-initial-value-argument'&&record.valueId===f.a.id);
+  assert.deepEqual(original.producedRefs,[`L${seed.lines.indexOf(line)}:stmt`]);
+});
+
+test('core and public C AST return consumers preserve initial expression histories through replay',()=>{
+  for(const enhance of [enhanceCore,enhancePublic])for(const kind of ['binary','mov-operand','select-max','phi-deduplication','address-global']){
+    const f=fixture(kind),seed=decompileSemantic(f.model,f.opts),initial=buildRenderProvenance({result:seed,snapshotId:'initial-expression'});
+    const wanted=initialRecords(initial).map(record=>[record.rule,record.valueId]);
+    let result=applyPhase8Projection(enhance(seed,f.model,f.opts),analysis());
+    for(const [rule,valueId] of wanted){
+      const record=initialRecords(result.renderProvenance).find(record=>record.rule===rule&&record.valueId===valueId);
+      assert.ok(record,kind+'/'+rule);assert.equal(record.renderedBinding,'producer-bound',kind+'/'+rule);
+    }
+    const ledger=result.renderProvenance.ledger;
+    result=applyPhase8Projection(result,analysis());assert.deepEqual(result.renderProvenance.ledger,ledger);
+  }
+});
+
+test('changed initial inputs, copied lines and forged public validators cannot renew expression history',()=>{
+  for(const mutate of [f=>{f.value.def.sub='sub';},f=>{f.ir.values=[...f.ir.values];},f=>{f.a.reg='x6';}]){
+    const f=fixture('binary'),seed=decompileSemantic(f.model,f.opts),line=seed.lines.find(line=>/^return/.test(line.text));
+    const entry=readSemanticStatementLineHistory(line,f.ir);assert.ok(entry);
+    assert.throws(()=>{entry.canonical.isCurrent=()=>true;},TypeError);
+    assert.equal(readSemanticStatementLineHistory({...line},f.ir),null);
+    mutate(f);assert.equal(readSemanticStatementLineHistory(line,f.ir),null);
+    const map=buildRenderProvenance({result:seed,snapshotId:'initial-expression'});
+    assert.ok(initialRecords(map).every(record=>record.producedRefs.length===0));
+  }
+});
+
+test('a real resolver mutation cannot bind an initial expression to a later canonical preimage',()=>{
+  const f=fixture('address-symbol');f.opts.symbolFor=()=>{f.a.reg='x6';return 'symbol_name';};
+  const seed=decompileSemantic(f.model,f.opts),line=seed.lines.find(line=>/^return/.test(line.text));
+  assert.equal(line.text,'return symbol_name;');assert.equal(readSemanticStatementLineHistory(line,f.ir),null);
+  assert.equal(seed.semanticStatementRenderHistory.completeness,'incomplete');
+});
+
+test('initial expression budget failure leaves the selected output and canonical inputs intact',()=>{
+  const f=fixture('binary'),before=decompileSemantic(f.model,f.opts);
+  const after=decompileSemantic(f.model,{...f.opts,renderProvenanceBudget:{maxTransformRecords:1}});
+  assert.equal(after.pseudocode,before.pseudocode);
+  assert.equal(after.semanticStatementRenderHistory.completeness,'incomplete');
+  assert.ok(after.semanticStatementRenderHistory.reasons.includes('initial-expression-history-budget'));
+});
+
+test('ordinary assignment owners retain initial expressions without claiming a compound-store expansion',()=>{
+  const f=fixture('binary'),ret=f.ir.instructions.at(-1);
+  ret.op='store';ret.loc={kind:'global',key:'global:40960',address:40960n};
+  const exit={id:9900,row:ret.row+1,address:ret.address+4n,block:0,op:'ret',args:[]};
+  f.ir.instructions.push(exit);f.ir.blocks[0].insts.push(exit);f.ir.blocks[0].endRow=exit.row;
+  const seed=decompileSemantic(f.model,f.opts),line=seed.lines.find(line=>line.row===ret.row);
+  const entry=readSemanticStoreLineHistory(line,f.ir);assert.ok(entry);assert.equal(entry.spelling.form,'assignment');
+  assert.ok(Object.isFrozen(entry.canonical));
+  assert.ok(entry.records.some(record=>record.rule==='render-initial-value-binary'));
+  const result=applyPhase8Projection(enhancePublic(seed,f.model,f.opts),analysis());
+  assert.ok(initialRecords(result.renderProvenance).some(record=>record.rule==='render-initial-value-binary'&&record.producedRefs.length));
+  assert.equal(result.renderProvenance.ledger.filter(record=>record.rule==='expand-initial-store-spelling').length,0);
 });

@@ -4041,6 +4041,69 @@ classify meaningful selections as formatting to close the denominator. Signature
 and brace structural handling remains the existing narrow contract. C4-03 and
 the full roadmap remain OPEN; integration/release acceptance stays LOCKED.
 
+## C4-03 actual initial expression writer history
+
+The real initial `renderValue` invocation now records its selected display route
+at the writer, using a private context issued only by `decompileSemantic`.
+The exported primitive-string contract, actual opcode/predicate evaluations,
+canonical values/instructions, callbacks and existing expression cache remain
+unchanged. Records retain the original canonical value/definition IDs with
+`observed-initial-expression-not-equivalence`, not a new scalar, memory or ABI
+proof or independent rendered semantic identity.
+
+Actual invocation tickets distinguish a selected child from merely evaluated
+candidates. Call argument records follow the existing selected argument indexes;
+unused argument rendering is not attached to a call. A later genuine cache
+consumer can retain that original evaluation when it actually uses the cached
+string. Min/max keeps its original evaluations/comparisons while excluding the
+unused candidate strings. Memo reuse retains the original producer graph without
+inventing a fresh semantic value. At most 1,024 tickets are allocated; when the
+observation allowance is exhausted the original synchronous renderer continues
+without allocating more tickets or overwriting an enclosing observed selection.
+Missing history is explicit and does not change output or relax a proof gate.
+
+Selected expression records flow through the existing initial call/return,
+control and store owners, their C AST consumers and subsequent owned projections.
+Plain assignments retain actual expression records without a fictional RMW event.
+An actual later plain-assignment replacement has its own
+`replace-initial-store-expression` record; it is not counted as compound-store
+expansion. RMW selection and the original full value preimage are both retained.
+Exposed canonical validators remain frozen. Compatibility normalization and final
+faithful fallback continue through existing owned bindings; memo provenance can
+survive an abandoned attempt only when its cached result is genuinely reused.
+
+The matrix suite now has 20 tests, including all 22 primary initial selections,
+real line bindings and canonical refs, unused call arguments, later memo adoption,
+core/public/replay handoffs, copied/stale/preimage rejection, callback mutation,
+budget failure and ordinary assignments. Combined matrix/call-return/control/store
+regressions have 68 tests. The control form denominator still enforces all 18
+forms in its own phase. The store cancellation test uses the actual map's final
+callback rather than a fixed ordinal that moved as real records were added.
+
+Five worker-only negative controls remove issuer, original preimage, memo origin,
+actual argument selection or observation-budget guards; each causes its targeted
+single assertion failure. Initial diagnostics (class filtering, plain replacement
+classification, late callback ordinal and an unfrozen composed validator) and a
+mistyped nonexistent npm script are retained separately, not passed off as green.
+The canonical decompiler command is `npm run decompiler:test`.
+
+The new comparison covers 37 inputs across two stages (74 cells): 22 initial
+expression recipes, 12 CFG recipes and three decoded synthetic inputs. It pins
+initial public output/IR and original helper/callback counts, plus core displayed
+output/semantic AST/IR. The only additional allowance is a newly introduced plain
+store disposition when the parent had none, and that disposition must be exactly
+the expected complete metadata. Existing comparison verifiers are unchanged.
+These are synthetic stage comparisons, not compiler-corpus equivalence.
+
+Canonical build, eight-file actual inventory, fixed-head scoped regression,
+generated rebuild and normal non-force PR #7036 backup are recorded with exact
+SHA/hash/receipt evidence in the persistent checkpoint. This does not close the
+remaining exhaustive C4-03 removed/merged/other-writer audit, C4-02/04/05 or the
+original23/frozen135 requirements. Integration/release acceptance remains LOCKED;
+no main/component merge, independent/candidate-tree/full repository/device/active
+runtime or release proof is claimed. Other owners retain issue/performance and
+environment/device work.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

@@ -1393,7 +1393,7 @@ function initialStoreExpansion(initialStore, instruction, value, expression, loc
   }
   const source = mergeSource(initialStore.records[0].originHistory.after, origin(instruction, value), expression.source,
     location.expression?.source, location.base?.source, location.index?.source);
-  const record = Object.freeze({ rule:'expand-initial-store-spelling', phase:'c-ast-render', valueId:value?.id ?? null,
+  const record = Object.freeze({ rule:initialStore.spelling.form === 'assignment' ? 'replace-initial-store-expression' : 'expand-initial-store-spelling', phase:'c-ast-render', valueId:value?.id ?? null,
     before:`store:${initialStore.spelling.form}`, after:'store:assignment',
     evidence:Object.freeze({ kind:'observed-store-spelling-not-memory-equivalence',
       detail:'actual owned initial-line to C AST assignment transition; no memory equivalence proof' }),

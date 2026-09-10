@@ -272,9 +272,13 @@ test('faithful CFG fallback retains only the selected final store emission', () 
 });
 
 test('a mutation after line binding during map construction cannot publish complete provenance', () => {
-  const f = fixture({ one:true }); let checks = 0;
+  const f = fixture({ one:true }); let checks = 0, totalChecks = 0;
+  // Additional genuine history records add cancellation checkpoints. Measure
+  // the actual unmodified map's last checkpoint instead of assuming ordinal7
+  // is still after this store's binding when the ledger grows.
+  buildRenderProvenance({ result:f.seed, snapshotId:'initial-store-map-race', shouldAbort:() => { totalChecks++; return false; } });
   const map = buildRenderProvenance({ result:f.seed, snapshotId:'initial-store-map-race', shouldAbort:() => {
-    if (++checks === 7) f.store.row = 99;
+    if (++checks === totalChecks) f.store.row = 99;
     return false;
   } });
   assert.ok(checks >= 7);
