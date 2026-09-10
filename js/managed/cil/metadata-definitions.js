@@ -198,10 +198,17 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobHeap 
   // and Action-only deltas collapsed (#7632).
   const declSecurityParentSize = codedIndexSize(counts, [0x02, 0x06, 0x20], 2);
   const declSecurityParentTables = [0x02, 0x06, 0x20];
-  const DECL_SECURITY_ACTIONS = new Set([0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0009, 0x000a]);
+  // II.23.1.24 / System.Security.SecurityAction: the full defined domain is
+  // the contiguous range 0x0001 Request … 0x000a RequestRefuse — including
+  // 0x0006 LinkDemand, 0x0007 InheritanceDemand, 0x0008 RequestMinimum, which
+  // are legal in DeclSecurity rows. Anything outside the defined range is
+  // reserved and fails closed.
+  const DECL_SECURITY_ACTIONS = new Set([
+    0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008, 0x0009, 0x000a,
+  ]);
   const declSecurity = readRows(0x0e, pos => {
     const action = view.getUint16(pos, true);
-    // II.23.1.24 / CorDeclSecurity: only the seven defined actions are valid.
+    // II.23.1.24 / CorDeclSecurity: only the ten defined actions are valid.
     if (!DECL_SECURITY_ACTIONS.has(action)) fail('cil-declsecurity-action-invalid');
     const parent = index(pos + 2, declSecurityParentSize);
     const parentTable = declSecurityParentTables[parent & 0x3];
