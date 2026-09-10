@@ -137,9 +137,34 @@ function numericOther(op) {
   } catch { return null; }
 }
 
+/* Structured immediate payloads are authority-bearing fingerprint material:
+   only canonical primitives may mint a constant — bigint, finite safe-integer
+   number, or a canonical integer string. BigInt() coercion would launder
+   booleans, arrays and structured values into real immediates, and
+   non-coercible shapes would throw (#5036). */
+function canonicalIntegerValue(raw) {
+  if (typeof raw === 'bigint') return raw;
+  if (typeof raw === 'number' && Number.isSafeInteger(raw)) return BigInt(raw);
+  if (typeof raw === 'string') {
+    const text = raw.trim();
+    // BigInt() rejects signed hex ('-0x10'), so split an optional sign from
+    // the magnitude before parsing and reapply it afterwards (#5036).
+    const match = /^([+-]?)(0[xX][0-9a-fA-F]+|\d+)$/.exec(text);
+    if (match) {
+      try {
+        const magnitude = BigInt(match[2]);
+        return match[1] === '-' ? -magnitude : magnitude;
+      } catch { return null; }
+    }
+  }
+  return null;
+}
+
 function canonicalImmediate(op) {
-  if (op?.float != null) return String(op.float);
-  const value = op?.value != null ? BigInt(op.value) : numericOther(op);
+  if (op?.float != null) {
+    return typeof op.float === 'number' && Number.isFinite(op.float) ? String(op.float) : String(op?.text || '');
+  }
+  const value = op?.value != null ? canonicalIntegerValue(op.value) : numericOther(op);
   return value == null ? String(op?.text || '') : '#' + value.toString(10);
 }
 
@@ -164,7 +189,7 @@ function canonicalMem(op, options) {
 function canonicalOperand(op, mnemonic, index, options) {
   const isBranchTarget = BRANCH_MNEMONICS.test(mnemonic) && index === (mnemonic.startsWith('cb') ? 1 : mnemonic.startsWith('tb') ? 2 : 0);
   const isAddressValue = /^adrp?$/.test(mnemonic) && index === 1;
-  const rawNumeric = op?.k === 'imm' ? op.value : numericOther(op);
+  const rawNumeric = op?.k === 'imm' ? canonicalIntegerValue(op.value) : numericOther(op);
   if ((isBranchTarget || isAddressValue) && rawNumeric != null) return isBranchTarget ? '@branch' : '@address';
   if (ADDRESS_MNEMONICS.test(mnemonic) && op?.k !== 'mem' && rawNumeric != null && BigInt(rawNumeric < 0n ? -rawNumeric : rawNumeric) >= 0x1000n) return '@address';
   if (op?.k === 'reg') return canonicalRegister(op, options) + (op.shift ? ',' + canonicalShift(op.shift) : '');
