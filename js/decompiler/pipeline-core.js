@@ -26,7 +26,8 @@ import { readFacadeConstantTransitions, facadeConstantTransitionExpected, facade
   readFacadePreservedStateHistory, facadePreservedStateTransitionExpected,
   readFacadeLocationHistory, facadeLocationTransitionExpected,
   readFacadeTypedResultHistory, facadeTypedResultTransitionExpected,
-  readFacadeStackEscapeHistory, facadeStackEscapeTransitionExpected } from '../ir-core.js';
+  readFacadeStackEscapeHistory, facadeStackEscapeTransitionExpected,
+  readFacadeAbiBindingHistory, facadeAbiBindingExpected } from '../ir-core.js';
 import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
@@ -766,7 +767,8 @@ function compatOperationSelection(value, state, roots = [value?.def, value], fol
     const expectedLocation = facadeLocationTransitionExpected(state.ir, key);
     const expectedTypedResult = facadeTypedResultTransitionExpected(state.ir, key);
     const expectedStackEscape = facadeStackEscapeTransitionExpected(state.ir, key);
-    if (!expectedProjection && !expectedFacade && !expectedState && !expectedPreserved && !expectedLocation && !expectedTypedResult && !expectedStackEscape) continue;
+    const expectedAbiBinding = facadeAbiBindingExpected(state.ir, key);
+    if (!expectedProjection && !expectedFacade && !expectedState && !expectedPreserved && !expectedLocation && !expectedTypedResult && !expectedStackEscape && !expectedAbiBinding) continue;
     if ((state.buildSelectionHistoryCount || 0) >= maximum || budget.edges <= 0) {
       budget.reasons.add('compat-constant-selection-history-budget'); return observeSelected();
     }
@@ -776,7 +778,8 @@ function compatOperationSelection(value, state, roots = [value?.def, value], fol
       [expectedPreserved, readFacadePreservedStateHistory, 'preserved-state'],
       [expectedLocation, readFacadeLocationHistory, 'public-location'],
       [expectedTypedResult, readFacadeTypedResultHistory, 'typed-call-result'],
-      [expectedStackEscape, readFacadeStackEscapeHistory, 'stack-escape']]) {
+      [expectedStackEscape, readFacadeStackEscapeHistory, 'stack-escape'],
+      [expectedAbiBinding, readFacadeAbiBindingHistory, 'abi-binding']]) {
       if (!expected) continue;
       const transition = read(state.ir, key);
       if (transition) transitions.push(transition);
@@ -833,15 +836,17 @@ function recordCompatOperationSelection(value, expression, selected, state) {
     const location = event.stage === 'facade-public-location';
     const typedResult = event.stage === 'facade-typed-call-result';
     const stackEscape = event.stage === 'facade-stack-escape';
+    const abiBinding = event.stage === 'facade-abi-binding';
     const stateOperation = !!event.kind;
     const identityText = identity => `${String(identity.reg)}:${String(identity.stateKey)}:${String(identity.version)}:${String(identity.compatDerived)}`;
-    const record = Object.freeze({ rule:location || typedResult || stackEscape ? event.operation : preserved ? 'restore-abi-preserved-state' : stateOperation ? 'compact-public-state' : facade ? 'fold-facade-constant' : 'fold-compatibility-constant', phase:'compatibility-projection',
-      before:stackEscape ? `${event.stage}:${event.ordinal}:store:${event.store.id}` : typedResult ? `${event.stage}:${event.ordinal}:${event.before?.id ?? 'no-public-result'}` : location ? `${event.stage}:${event.ordinal}:${event.before.key}` : preserved ? `${event.stage}:${event.ordinal}:value:${event.before.id}` : stateOperation ? `${event.kind}:${event.ordinal}:${event.path || 'identity'}:${event.identity ? identityText(event.before) : event.before.id}`
+    const record = Object.freeze({ rule:location || typedResult || stackEscape || abiBinding ? event.operation : preserved ? 'restore-abi-preserved-state' : stateOperation ? 'compact-public-state' : facade ? 'fold-facade-constant' : 'fold-compatibility-constant', phase:'compatibility-projection',
+      before:abiBinding ? `${event.stage}:${event.direction}:${event.ordinal}:arguments:${event.beforeArguments.map(arg => arg.value?.id).join(',')}` : stackEscape ? `${event.stage}:${event.ordinal}:store:${event.store.id}` : typedResult ? `${event.stage}:${event.ordinal}:${event.before?.id ?? 'no-public-result'}` : location ? `${event.stage}:${event.ordinal}:${event.before.key}` : preserved ? `${event.stage}:${event.ordinal}:value:${event.before.id}` : stateOperation ? `${event.kind}:${event.ordinal}:${event.path || 'identity'}:${event.identity ? identityText(event.before) : event.before.id}`
         : `${event.stage}:${event.round}:${event.ordinal}:${event.op}:${event.sub ?? ''}:${String(event.beforeConstant)}`,
-      after:stackEscape ? `compatibility-clobber:call:${event.call.id}` : typedResult ? `call-result-view:${event.output.id}:${event.registerId}:${event.bits}` : location ? `location:${event.after.key}` : preserved ? `value:${event.after.id}:${event.evidence}` : stateOperation ? `${event.identity ? identityText(event.after) : event.after.id}` : `constant:${event.bits}:${String(event.afterConstant)}`,
-      evidence:Object.freeze({ kind:stackEscape ? 'observed-stack-escape-invalidation-not-new-memory-proof' : typedResult ? 'observed-typed-call-result-not-new-abi-proof' : location ? 'observed-public-location-restoration-not-new-memory-proof' : preserved ? 'observed-abi-state-restoration-not-equivalence' : stateOperation ? 'observed-state-compaction-not-equivalence'
+      after:abiBinding ? `${event.direction}:${event.outcome}:arguments:${event.afterArguments.map(arg => arg.value?.id).join(',')}` : stackEscape ? `compatibility-clobber:call:${event.call.id}` : typedResult ? `call-result-view:${event.output.id}:${event.registerId}:${event.bits}` : location ? `location:${event.after.key}` : preserved ? `value:${event.after.id}:${event.evidence}` : stateOperation ? `${event.identity ? identityText(event.after) : event.after.id}` : `constant:${event.bits}:${String(event.afterConstant)}`,
+      evidence:Object.freeze({ kind:abiBinding ? 'observed-abi-argument-binding-not-new-abi-proof' : stackEscape ? 'observed-stack-escape-invalidation-not-new-memory-proof' : typedResult ? 'observed-typed-call-result-not-new-abi-proof' : location ? 'observed-public-location-restoration-not-new-memory-proof' : preserved ? 'observed-abi-state-restoration-not-equivalence' : stateOperation ? 'observed-state-compaction-not-equivalence'
         : facade ? 'observed-facade-constant-write-not-equivalence' : 'observed-compat-constant-write-not-equivalence',
-        detail:stackEscape ? 'actual compatibility store-link invalidation by the first intervening call with a stack-carrying argument; original store and canonical memory facts are retained, not re-proved'
+        detail:abiBinding ? 'actual canonical ABI descriptors and ordered reaching-value selection replaced compatibility arguments; original control and value sources retained, not a new ABI theorem'
+          : stackEscape ? 'actual compatibility store-link invalidation by the first intervening call with a stack-carrying argument; original store and canonical memory facts are retained, not re-proved'
           : typedResult ? 'actual typed result attachment from the selected canonical ABI adapter, anchored to the original CALL; compatibility value identity is not a new canonical SSA definition'
           : location ? 'actual public location reuse/replacement and map write with original address inputs and existing evidence; not a new alias, memory forwarding or field-layout theorem'
           : preserved ? 'actual facade operand restoration through the selected canonical ABI adapter, with original call-clobbered and reaching state sources; not a new ABI or scalar theorem'

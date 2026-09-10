@@ -3830,6 +3830,66 @@ call-argument/function-return histories and the full rendered/removed/merged cla
 denominator remain open, as do C4-02/04/05 and original23/frozen135requirements.
 Goal ACTIVE; integration/release acceptance LOCKED.
 
+## C4-03 actual standalone ABI call/return argument binding
+
+Both existing facade writers now retain their own actual operation history:
+`attachCanonicalCallArguments` and `attachCanonicalFunctionReturns`. Canonical
+descriptors, ordered reaching candidates, skipped/duplicate selections, original
+and resulting argument lists, uncertainty fields and displaced metadata stay
+anchored to the existing CALL/RET and SSA identities. Empty, unknown, void,
+aggregate and no-reaching-value results remain explicit rather than being omitted
+from the writer denominator. No new ABI classifier, scalar result, canonical SSA
+definition or control/memory theorem is introduced.
+
+Each owning writer captures its real output before later facade callbacks. Its
+private observer follows only the actual subsequent field-write chain, and the
+call selection uses the existing typed-result handoff for later value appends.
+The full scanned register/dominance selection also binds the ID tie-break field.
+Final current graphs and uses-array contents are checked independently. An actual
+later prototype callback that mutates the displaced call metadata cannot refresh
+or reissue the old history. Bounds withhold history without suppressing any
+original argument/return write. No extra reaching selection or prototype callback
+is performed to reconstruct evidence after the fact.
+
+Direct `abi-argument-binding` records expose old/new argument and ordered candidate
+references, outcome and exact nullable uncertainty fields. They grant no rendered
+edge or canonical deletion. Existing real core/public expression consumers now
+carry both the call and return events; repeated projection retains the same
+ledger. Raw standalone call/void-return lines without an existing observed
+expression producer are still not advertised as covered rendered consumers.
+
+Twenty owned regressions cover normal decoded32/64-bit integer/FP bindings,
+unknown/void/aggregate/no-reaching results, repeated typed calls, prior state/ABI
+continuity, ordered rejected/duplicate selections, possible-argument flags,
+direct/core/public/replay/query navigation, stale roots/candidates/metadata/uses,
+late callback mutation, forged records, range handoff, bounds and cancellation.
+Normal decoded RET inputs already have an empty argument list at this boundary;
+the first test's contrary assumption was corrected. A separate clearly synthetic
+nonempty-return view verifies displaced-value retention without claiming decoded
+coverage. Synthetic descriptor replacement intentionally invalidates earlier
+state normalization and remains explicitly incomplete; it is not resealed green.
+
+Parentfc0f4c828 full-public-IR comparison passes22cases:18normal decoded synthetic
+inputs and4selection/bounds seams. Original reaching-selector and prototype
+callback counts match. This does not substitute for the frozen compiler corpus.
+Five targeted negative overlays (issuer, intermediate observation, uses contents,
+typed handoff and unrelated scanned selection) fail their intended assertions on
+the final20test baseline. Earlier mixed-baseline negatives and the3initial owned
+failures are retained separately, not counted as final negative proof. Large
+cyclic nullable assertions were changed to bounded boolean diagnostics.
+
+Canonical provenance and decompiler regression passed before the final extra
+mutation assertions; final exact-head reruns/generated sync must be recorded in
+the subsequent durable checkpoint. Existing #3421 remains the reused foundation.
+Focused ABI/history title search found no additional matching PR; inspected
+#7488/#2422 concern different summary/points-to return provenance, not this facade
+writer. Existing #7036 remains authoritative with no main/component merge.
+
+Remaining: raw standalone call/void-return producer bindings, other representation
+transforms and the full rendered/removed/merged class audit. C4-02/04/05 and
+original23/frozen135requirements are still open. Goal ACTIVE; integration/release
+acceptance LOCKED. No issue/performance/device/environment lane is closed here.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

@@ -41,6 +41,19 @@ const expectedFacadeTypedResults = new WeakMap();
 const facadeStackEscapeHistories = new WeakMap();
 const expectedFacadeStackEscapes = new WeakMap();
 const facadeProjectedConstants = new WeakMap();
+const facadeAbiBindings = new WeakMap();
+const expectedFacadeAbiBindings = new WeakMap();
+
+export function facadeAbiBindingExpected(projected, instruction = null) {
+  const expected = expectedFacadeAbiBindings.get(projected);
+  return instruction == null ? (expected?.count || 0) > 0 : expected?.sources.has(instruction) === true;
+}
+
+export function readFacadeAbiBindingHistory(projected, instruction = null) {
+  const entry = facadeAbiBindings.get(projected);
+  if (!entry?.history.isCurrent()) return null;
+  return instruction == null ? entry.history : entry.bySource.get(instruction) ?? null;
+}
 
 export function facadeProjectedConstantTransitionCandidate(projected, instruction) {
   return facadeProjectedConstants.get(projected)?.get(instruction) ?? null;
@@ -405,7 +418,7 @@ function observePreservedStateSelection(projected) {
   };
   const values = own(projected, 'values'), length = own(values, 'length');
   if (!Array.isArray(values) || length > 512) throw Error('selection-value-budget');
-  const fields = ['reg', 'kind', 'bits', 'def'];
+  const fields = ['id', 'reg', 'kind', 'bits', 'def'];
   const facts = Array.from({ length }, (_, index) => {
     const value = own(values, String(index)), definition = own(value, 'def');
     return { value, fields:fields.map(key => own(value, key)), definition,
@@ -796,18 +809,97 @@ function restoreAapcs64PublicLocations(projected, history = null) {
   return observer;
 }
 
+function abiBindingObserver(projected) {
+  const observer = { records:[], sources:new WeakSet(), count:0, selection:null, observations:new Map() };
+  try { observer.selection = observePreservedStateSelection(projected); } catch { /* Bounded selection is unavailable. */ }
+  return observer;
+}
+
+function beginAbiBinding(inst, descriptors, observer) {
+  return { beforeArguments:inst.args, beforeExtra:inst.extra, descriptors, selections:[], remaining:512,
+    available:!!observer.selection && observer.records.length < 1024
+      && Array.isArray(inst.args) && inst.args.length <= 512 && Array.isArray(descriptors) && descriptors.length <= 512 };
+}
+
+function retainAbiSelection(binding, descriptor, index, reg, bits, selection, value, outcome) {
+  if (!binding.available) return;
+  binding.remaining -= (selection?.candidates.length || 0) + 1;
+  if (binding.remaining < 0 || selection?.unavailable) { binding.available = false; return; }
+  binding.selections.push(Object.freeze({ descriptor, index, reg, bits, value, outcome,
+    candidates:selection?.candidates || Object.freeze([]) }));
+}
+
+function retainAbiBinding(projected, inst, binding, observer, history, direction, outcome) {
+  observer.count++; observer.sources.add(inst);
+  if (!binding.available || !history || history.unavailable) return;
+  try {
+    const values = [...new Set([...binding.beforeArguments.map(arg => arg?.value), ...inst.args.map(arg => arg?.value),
+      ...binding.selections.flatMap(selection => selection.candidates.map(candidate => candidate.value))].filter(Boolean))];
+    if (values.length > 512) return;
+    const event = Object.freeze({ stage:'facade-abi-binding', source:inst, output:inst.dst, op:inst.op, sub:inst.sub,
+      ordinal:observer.count - 1, direction, outcome,
+      operation:direction === 'call' ? 'attach-canonical-call-arguments' : 'attach-canonical-function-return',
+      beforeArguments:binding.beforeArguments, afterArguments:inst.args,
+      beforeExtra:binding.beforeExtra, afterExtra:inst.extra, descriptors:binding.descriptors,
+      selections:Object.freeze(binding.selections), returnReg:inst.returnReg ?? null, evidence:inst.returnEvidence ?? null,
+      inputs:Object.freeze(values.map(value => Object.freeze({ value, definition:value.def }))), beforeInputs:Object.freeze(values),
+      object:Object.freeze({ beforeArguments:binding.beforeArguments, beforeExtra:binding.beforeExtra,
+        afterArguments:inst.args, afterExtra:inst.extra, descriptors:binding.descriptors, selections:Object.freeze(binding.selections) }) });
+    const current = observeProjectedOperationData(projected, [event]);
+    if (!current()) return;
+    observer.records.push(event);
+    observer.observations.set(event, { current, offset:history.writes.length });
+  } catch { /* Actual argument writes remain; no later public object can reissue history. */ }
+}
+
+function sealFacadeAbiBindings(projected, calls, returns, typedResults, writes) {
+  const expected = { count:calls.count + returns.count, sources:new WeakSet() };
+  for (const inst of projected.instructions) if (calls.sources.has(inst) || returns.sources.has(inst)) expected.sources.add(inst);
+  expectedFacadeAbiBindings.set(projected, expected);
+  if (!expected.count || !writes || writes.unavailable) return;
+  try {
+    const valid = [], checks = [];
+    for (const [observer, following] of [[calls, typedResults], [returns, null]]) {
+      if (!observer.selection || !observer.selection(following)) continue;
+      checks.push(() => observer.selection(following));
+      for (const event of observer.records) {
+        const observed = observer.observations.get(event), chain = Object.freeze(writes.writes.slice(observed.offset));
+        const current = () => observed.current.matchesThroughWrites(chain);
+        if (!current()) continue;
+        valid.push(event); checks.push(current);
+      }
+    }
+    if (!valid.length) return;
+    const uses = [...new Set(valid.flatMap(event => event.beforeInputs))].map(value => value.uses);
+    const output = observeProjectedOperationData(projected, [...valid, { beforeInputs:[], object:{ finalUses:uses } }]);
+    const isCurrent = () => output() && checks.every(check => check());
+    if (!isCurrent()) return;
+    const history = Object.freeze({ events:Object.freeze(valid), isCurrent, completeness:valid.length === expected.count ? 'complete' : 'incomplete' });
+    facadeAbiBindings.set(projected, { history, bySource:new Map(valid.map(event => [event.source,
+      Object.freeze({ events:Object.freeze([event]), isCurrent })])) });
+  } catch { /* No partial observation is promoted into complete ABI history. */ }
+}
+
 function attachCanonicalCallArguments(projected, history = null) {
+  const observer = abiBindingObserver(projected);
   for (const inst of projected.instructions ?? []) {
     if (inst.op !== LEGACY_OP.CALL || !Array.isArray(inst.callArguments)) continue;
+    const binding = beginAbiBinding(inst, inst.callArguments, observer);
     const before = observeFacadeArguments(inst, history);
     detachLegacyArguments(inst);
     const seen = new Set();
     const uncertainValueIds = [];
+    let index = -1;
     for (const descriptor of inst.callArguments) {
+      index++;
       const reg = descriptor?.reg == null ? null : String(descriptor.reg);
-      if (!reg) continue;
-      const value = selectReachingRegisterValue(projected, inst, reg, descriptor.bits ?? null);
-      if (!value || seen.has(value.id)) continue;
+      if (!reg) { retainAbiSelection(binding, descriptor, index, reg, null, null, null, 'no-register'); continue; }
+      const selection = binding.available ? { candidates:[], unavailable:false } : null;
+      const bits = descriptor.bits ?? null;
+      const value = selectReachingRegisterValue(projected, inst, reg, bits, null, selection);
+      const duplicate = !!value && seen.has(value.id);
+      retainAbiSelection(binding, descriptor, index, reg, bits, selection, value, !value ? 'no-reaching-value' : duplicate ? 'duplicate-value' : 'selected');
+      if (!value || duplicate) continue;
       seen.add(value.id);
       inst.args.push({ value, bits:value.bits || descriptor.bits || 64 });
       if (!Array.isArray(value.uses)) value.uses = [];
@@ -822,7 +914,9 @@ function attachCanonicalCallArguments(projected, history = null) {
       abiPossibleArgumentValueIds: uncertainValueIds,
     };
     retainFacadeArgumentWrites(before, history);
+    retainAbiBinding(projected, inst, binding, observer, history, 'call', inst.args.length ? 'bound' : 'empty');
   }
+  return observer;
 }
 
 function typedResultIdentity(value) {
@@ -1092,6 +1186,7 @@ function invalidateEscapedStackForwarding(projected, history = null) {
  * typically the link register). That is not a source-language return value.
  */
 function attachCanonicalFunctionReturns(projected, adapter, options = {}, history = null) {
+  const observer = abiBindingObserver(projected);
   const returnEvidence = (() => {
     try {
       const classified = adapter?.classifyFunctionReturn?.({
@@ -1114,6 +1209,8 @@ function attachCanonicalFunctionReturns(projected, adapter, options = {}, histor
   }) ?? [];
   for (const inst of projected?.instructions ?? []) {
     if (inst.op !== LEGACY_OP.RET) continue;
+    const binding = beginAbiBinding(inst, locations, observer);
+    let outcome = 'no-scalar-location';
     const before = observeFacadeArguments(inst, history);
     try {
       detachLegacyArguments(inst);
@@ -1125,7 +1222,11 @@ function attachCanonicalFunctionReturns(projected, adapter, options = {}, histor
       };
       if (locations.length !== 1 || locations[0]?.kind !== 'register' || locations[0]?.aggregate === true) continue;
       const result = locations[0];
-      const value = selectReachingRegisterValue(projected, inst, result.reg, result.bits ?? null);
+      const selection = binding.available ? { candidates:[], unavailable:false } : null;
+      const bits = result.bits ?? null;
+      const value = selectReachingRegisterValue(projected, inst, result.reg, bits, null, selection);
+      outcome = value ? 'bound' : 'no-reaching-value';
+      retainAbiSelection(binding, result, 0, result.reg, bits, selection, value, value ? 'selected' : 'no-reaching-value');
       if (!value) continue;
       inst.args = [{ value, bits:value.bits || result.bits || 64 }];
       if (!Array.isArray(value.uses)) value.uses = [];
@@ -1137,8 +1238,12 @@ function attachCanonicalFunctionReturns(projected, adapter, options = {}, histor
         abiProjectedReturnValueId: value.semanticSsaValueId ?? value.semanticValueId ?? value.id,
         abiProjectedReturnEvidence: inst.returnEvidence,
       };
-    } finally { retainFacadeArgumentWrites(before, history); }
+    } finally {
+      retainFacadeArgumentWrites(before, history);
+      retainAbiBinding(projected, inst, binding, observer, history, 'return', outcome);
+    }
   }
+  return observer;
 }
 
 function buildV2CompatFromLegacyModel(model, opts = {}) {
@@ -1268,15 +1373,14 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
     if (constantChecks.get(candidate.isCurrent)) constantCandidates.set(source, candidate);
   }
   const currentStateSource = stateSource?.isCurrent() ? stateSource : null;
-  const stateHistory = currentStateSource || constantCandidates.size
-    ? { source:currentStateSource, writes:[], unavailable:false } : null;
+  const stateHistory = { source:currentStateSource, writes:[], unavailable:false };
   const preservedStateObserver = restoreCanonicalPreservedStateReads(result.legacyV1, abiAdapter, stateHistory);
   const locationObserver = restoreAapcs64PublicLocations(result.legacyV1, stateHistory);
   const constantObserver = propagateExactLegacyConstants(result.legacyV1, stateHistory);
-  attachCanonicalCallArguments(result.legacyV1, stateHistory);
+  const callBindingObserver = attachCanonicalCallArguments(result.legacyV1, stateHistory);
   const typedResultObserver = attachCanonicalTypedCallResults(result.legacyV1, instructionByRow, abiAdapter, opts, stateHistory);
   const stackEscapeObserver = invalidateEscapedStackForwarding(result.legacyV1, stateHistory);
-  attachCanonicalFunctionReturns(result.legacyV1, abiAdapter, opts, stateHistory);
+  const returnBindingObserver = attachCanonicalFunctionReturns(result.legacyV1, abiAdapter, opts, stateHistory);
   sealFacadeStateTransitions(result.legacyV1, stateHistory);
   sealFacadeProjectedConstants(result.legacyV1, stateHistory, constantCandidates);
   sealFacadeConstantTransitions(result.legacyV1, constantObserver);
@@ -1284,6 +1388,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
   sealFacadeLocationHistory(result.legacyV1, locationObserver, stackEscapeObserver);
   sealFacadeTypedResultHistory(result.legacyV1, typedResultObserver);
   sealFacadeStackEscapeHistory(result.legacyV1, stackEscapeObserver);
+  sealFacadeAbiBindings(result.legacyV1, callBindingObserver, returnBindingObserver, typedResultObserver, stateHistory);
   if (typeof process !== 'undefined' && process.env?.HEX_DEBUG_C2_LEGACY === '1' && typeof process.stderr?.write === 'function') {
     process.stderr.write(JSON.stringify(result.legacyV1.instructions.filter((item) => item.op === 'load').map((item) => ({
       row: item.row,
