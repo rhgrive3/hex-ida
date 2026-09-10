@@ -365,3 +365,86 @@ test('C2: absent phi producers cannot borrow exactness from an initialized arm',
  assert.equal(artifact.completeness,'complete');assert.equal(artifact.constants.has(phi.id),false);
  assert.equal(representedCount(artifact.facts.get(phi.id)),256n);
 });
+
+// A second, pre-evaluation frozen loop corpus. Its starts span the full native
+// width (including both 64-bit limbs at BV128); steps are not powers of two.
+function freshLoopCases() {
+ const cases=[];let seed=0x9e3779b97f4a7c15n;
+ const draw=()=>seed=BigInt.asUintN(64,seed*2862933555777941757n+3037000493n);
+ for(const bits of FLOW_HOLDOUT_WIDTHS)for(const step of [6n,10n,12n,20n]){
+  for(const operator of ['add','sub'])for(const shape of ['self-edge','separate-body']){
+   const start=BigInt.asUintN(bits,((draw()<<64n)|draw())^BigInt(cases.length));
+   cases.push({id:`${bits}/${step}/${operator}/${shape}`,bits,step,start,operator,shape});
+  }
+ }
+ return cases;
+}
+function integerGcd(left,right) {
+ while(right!==0n){const remainder=left%right;left=right;right=remainder;}
+ return left;
+}
+
+test('C2: fresh frozen non-power-of-two stride loops preserve every modular orbit',t=>{
+ const rows=[];
+ for(const spec of freshLoopCases()){
+  const {id,bits,step,start,operator,shape}=spec,total=1n<<BigInt(bits);
+  const f=fixture(`c2-fresh-loop-${id}`);f.block(0);
+  const initial=f.constant(start,bits);f.branch(1);f.block(1);
+  const counter=f.phi([[0,initial]],bits),body=shape==='self-edge'?1:2,exit=body+1;
+  if(body!==1){f.branch(body);f.block(body);}
+  const next=f.binary(operator,counter,f.constant(step,bits),bits);
+  counter.def.incoming.push({from:body,value:next});next.uses.push(counter.def);
+  f.conditionalBranch(f.opaque(1),1,exit);f.block(exit).ret();
+  const ir=f.build(),before=structuredClone(ir),artifact=flowHoldoutAnalysis(ir);
+  assert.equal(artifact.completeness,'complete',id);assert.ok(artifact.workItems<50000,id);
+  const actual=artifact.facts.get(counter.id);assert.ok(actual,id);
+  assert.ok(['exact','conservative'].includes(actual.status));
+  // Repeated modular +/- step visits precisely one coset of gcd(step, 2^bits).
+  // This integer theorem provides an all-iterations oracle, including BV128;
+  // the separate finite executions below are supplemental, not its substitute.
+  const modulus=integerGcd(step,total),residue=start%modulus,low=modulus-1n;
+  const reachable={...intervalFact(fullRange(bits)),knownZero:low^residue,knownOne:residue,congruence:{modulus,remainder:residue}};
+  const reachableCount=total/modulus;
+  assert.equal(representedCount(reachable),reachableCount,id);
+  assert.equal(actual.knownZero&~reachable.knownZero,0n,id);
+  assert.equal(actual.knownOne&~reachable.knownOne,0n,id);
+  assert.ok(actual.congruence.modulus<=modulus,id);
+  assert.equal(actual.congruence.remainder,start%actual.congruence.modulus,id);
+  assert.equal(representedWithin(reachable,actual.range),reachableCount,id);
+  const productCount=representedCount(actual),intervalCount=representedCount(intervalFact(actual.range));
+  assert.ok(productCount>=reachableCount&&productCount<=intervalCount,id);
+  if(bits<=8){
+   const universe=Array.from({length:2**bits},(_,i)=>BigInt(i));
+   const orbit=new Set();let value=start;
+   do{orbit.add(value);value=BigInt.asUintN(bits,operator==='add'?value+step:value-step);}while(value!==start);
+   assert.equal(BigInt(orbit.size),reachableCount,id);
+   for(const value of universe){
+    assert.equal(allows(reachable,value),orbit.has(value),id);
+    if(orbit.has(value))assert.ok(allows(actual,value),id);
+   }
+   assert.equal(BigInt(universe.filter(value=>allows(actual,value)).length),productCount,id);
+  }
+  let value=start;
+  for(let iteration=0;iteration<257;iteration++){
+   assert.ok(allows(actual,value),`${id}/${iteration}`);
+   value=BigInt.asUintN(bits,operator==='add'?value+step:value-step);
+  }
+  assert.equal(flowHoldoutAnalysis(ir).publicationDigest,artifact.publicationDigest,id);
+  const partial=flowHoldoutAnalysis(ir,{sccpLimits:{maxWorkItems:3}});
+  assert.equal(partial.completeness,'partial');assert.equal(partial.constants.size,0);
+  for(const fact of partial.facts.values()){
+   assert.equal(fact.status,'partial');assert.equal(fact.constant,null);assert.equal(fact.range.kind,'full');
+  }
+  assert.deepEqual(structuredClone(ir),before,id);
+  rows.push({id,bits,step:String(step),start:String(start),operator,shape,modulus:String(modulus),
+   reachableCount:String(reachableCount),productCount:String(productCount),intervalCount:String(intervalCount),
+   strictGain:productCount<intervalCount,workItems:artifact.workItems,widened:artifact.widenedValueCount,
+   concreteChecks:257,orbitExhaustive:bits<=8,partialWithheld:true});
+ }
+ assert.equal(rows.length,96);assert.equal(new Set(rows.map(row=>row.id)).size,96);
+ for(const bits of [8,16,32,64,128])for(const shape of ['self-edge','separate-body']){
+  assert.ok(rows.some(row=>row.bits===bits&&row.shape===shape&&row.strictGain),`no fresh held-out gain at ${bits}/${shape}`);
+ }
+ t.diagnostic(JSON.stringify({schema:'c2-fresh-loop-holdout-v1',rows,
+  scope:'actual loop-header product vs its interval-only projection; exact modular-orbit containment; no second analysis engine or real-binary claim'}));
+});

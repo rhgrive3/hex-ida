@@ -4722,9 +4722,54 @@ Exact-head matrix, canonical scalar, downstream range, ownership, module/lint,
 and generated rebuild receipts are recorded in the durable checkpoint. The
 straight-line 54-cell denominator is rerun as regression on this changed runtime;
 its earlier untuned evaluation remains historical evidence only. Fresh loop
-holdout, full width/operator/compiler denominators and original FR acceptance
+holdout, full width/operator denominators and original FR acceptance
 remain open. No performance-owner deadline was relaxed and no device, unrelated
 issue, next-component merge or release completion is claimed.
+
+### C2-02 fresh fixed loop holdout after phi repair (2026-09-10)
+
+The research source is `docs/解析ツール改善.md.txt`: the C2 proof plan at line
+363 and FR-C2-02A at line 1277 require wrap/mask/stride-phi/branch/widening evidence,
+known-bit/congruence laws, a width/operator/branch/loop matrix, monotone
+over-approximation and strict held-out precision gain. They do not impose a
+separate C2-specific compiler-family denominator. Compiler/real-binary and
+release evidence required elsewhere remains separate; it must not be invented
+as an extra completion requirement for this task.
+
+A new corpus was frozen before its first evaluation on `bec69a8ac`: six SCCP
+widths × four non-power-of-two steps (6/10/12/20) × add/subtract × self-edge or
+separate-body loops = 96 cases. Starts use a fixed two-limb 64-bit generator,
+cover both parities and exercise high BV128 bits. The freeze records every case,
+the complete test source, production source hashes and acceptance conditions.
+The SCCP/range/transaction/bitvector/fixture sources remain unchanged throughout
+evaluation. The initial 96-case evaluation passed without any checker amendment
+or runtime tuning. This is distinct from the retained failed original flow
+holdout and its subsequent production repair.
+
+All 80 native-width cases show a strict product-denotation gain over the
+interval-only projection of the same actual published fact. The 16 BV1 cases
+are constant modular orbits and have no additional gain over their singleton
+intervals; they remain in the denominator. No independent interval engine is
+introduced or claimed. Euclidean gcd supplies the exact reachable modular
+coset; mask/residue/range containment checks cover all its iterations, including
+native widths. Exhaustive concrete orbit enumeration through BV8 cross-checks
+the oracle, supplemented by 257 concrete steps per case (24,672 total), replay,
+unchanged IR and forced partial withholding. The observed maximum is 155 work
+items under the unchanged 50,000 bound, not a wall-clock performance claim.
+
+Measurement-only worker controls drop product constraints or insert a false
+sign-bit constraint. Both must fail the corresponding strict-gain or soundness
+assertion; they do not alter production code or substitute for independent
+release verification. Exact-head fresh matrix, canonical scalar, downstream,
+lint and zero-diff generated rebuild receipts accompany the same-PR backup.
+
+The fresh loop precision obligation now has positive fixed-corpus evidence.
+FR-C2-02A as a whole is still open: existing BV8 concretization and focused
+range/adversarial tests must be audited against the required known-bit/congruence
+laws and full width/operator matrix before claiming its implementation contract
+complete. Existing branch, wrapped-range, invalidation and downstream mechanisms
+are reused. No other FR task, prerequisite, integration lock or release gate is
+silently closed by this evaluation.
 
 ## Ownership and regression policy
 
