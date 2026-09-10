@@ -92,7 +92,44 @@ const mintedSmallDataView = createPackageEnvelope({ kind: 'knowledge', payload: 
 const viaSmallDataView = importPhase12Package(mintedSmallDataView);
 assert.equal(viaSmallDataView.contentHash, mintedSmallDataView.contentHash);
 
-// 6. existing string/bytes budget semantics are unchanged.
+// 6. the conservative canonical-byte preflight bound is never weaker than
+//    maxBytes: a stricter byte limit below the independent default entry cap
+//    rejects BEFORE canonicalization. Pre-fix (entry charge only) the scan
+//    passed (~500k entries < 1M) and stableStringify expanded the half-megabyte
+//    blob before the post-stringify byte check ran; pairing the oversized blob
+//    with a cyclic reference makes that ordering observable: pre-fix leaked the
+//    canonicalizer's TypeError, the preflight now rejects with the byte code.
+const byteBoundPayload = { blob: new Uint8Array(500_000) };
+byteBoundPayload.next = byteBoundPayload;
+assert.throws(
+  () => importPhase12Package(makeEnvelope(byteBoundPayload), { maxBytes: 1024 }),
+  (error) => error instanceof PackageValidationError && error.code === 'package-input-too-large',
+  'a byte limit below the entry cap must reject before canonicalization',
+);
+const plainByteBound = { blob: new Uint8Array(500_000) };
+assert.throws(
+  () => importPhase12Package(makeEnvelope(plainByteBound), { maxBytes: 1024 }),
+  (error) => error instanceof PackageValidationError && error.code === 'package-input-too-large',
+  'oversized object against a strict byte limit still fails the byte code',
+);
+const smallWithinBytes = createPackageEnvelope({ kind: 'knowledge', payload: { rules: [1, 2, 3] } });
+assert.equal(importPhase12Package(smallWithinBytes, { maxBytes: 8192 }).contentHash, smallWithinBytes.contentHash);
+
+// 7. Map key/value ancestry is path-local: a shared (non-cyclic) reference
+//    between a Map key and its value, or across siblings, is valid canonical
+//    input and must not be misclassified as cyclic by the bounded preflight.
+const shared = { id: 'shared' };
+const sharedMapEnvelope = createPackageEnvelope({
+  kind: 'knowledge',
+  payload: { mapping: new Map([[shared, shared]]), alias: shared },
+});
+const viaSharedMap = importPhase12Package(sharedMapEnvelope);
+assert.equal(viaSharedMap.contentHash, sharedMapEnvelope.contentHash);
+const selfReferencingValue = new Map([[shared, { back: shared }]]);
+const sharedSubtreeEnvelope = createPackageEnvelope({ kind: 'knowledge', payload: { mapping: selfReferencingValue } });
+assert.equal(importPhase12Package(sharedSubtreeEnvelope).contentHash, sharedSubtreeEnvelope.contentHash);
+
+// 8. existing string/bytes budget semantics are unchanged.
 assert.throws(
   () => importPhase12Package('{"format":"x"}'.repeat(3_000_000)),
   (error) => error instanceof PackageValidationError && error.code === 'package-input-too-large',
@@ -110,7 +147,7 @@ assert.throws(
   'oversized binary input still fails its byte budget',
 );
 
-// 7. valid package import keeps its content identity: object import and the
+// 9. valid package import keeps its content identity: object import and the
 //    equivalent bounded string import agree on the contentHash.
 const minted = createPackageEnvelope({ kind: 'knowledge', payload: { rules: [1, 2, 3] } });
 const viaObject = importPhase12Package(minted);

@@ -63,30 +63,42 @@ function utf8ByteLength(text) {
 // scanJsonBudget before JSON.parse; the object path previously canonicalized
 // through stableStringify first, so a hostile deep or cyclic graph reached the
 // core canonicalizer's recursion (and the JS stack) before any budget applied.
-// Plain objects, arrays, Maps and Sets are descended (mirroring jsonSafe);
-// binary views expand to one canonical array entry per byte through jsonSafe's
-// Array.from materialization, so each view leaf charges its byteLength against
-// the entry budget — the same entries the bounded string path would count —
-// keeping a large nested view from reaching canonicalization for free (#5219).
-// Budget semantics mirror scanJsonBudget for the JSON-representable surface:
-// 1-based container depth, per-string UTF-8 bytes, own keys + array items as
-// entries. Token counts have no object analogue and stay byte-budget covered.
-function scanObjectBudget(value, limits) {
+// Plain objects, arrays, Maps and Sets are descended (mirroring jsonSafe's
+// per-path ancestry: a node counts as an ancestor only while its own subtree
+// is on the walk, so shared-but-acyclic references stay valid); binary views
+// expand to one canonical array entry per byte through jsonSafe's Array.from
+// materialization, so each view leaf charges its byteLength against the entry
+// budget — the same entries the bounded string path would count. The scan also
+// carries a conservative canonical-byte lower bound (≥2 bytes per entry, ≥
+// UTF-8 length + 2 per string, ≥2 per expanded binary byte) checked against
+// maxBytes so a stricter byte limit rejects before any canonicalization work.
+// Token counts have no object analogue and stay byte-budget covered.
+function scanObjectBudget(value, limits, maxBytes) {
   const { maxDepth, maxStrings, maxStringBytes, maxEntries } = limits;
   let strings = 0;
   let stringBytes = 0;
   let entries = 0;
+  let canonicalBytes = 0;
   const ancestors = new Set();
+  const chargeCanonicalBytes = (minimum) => {
+    canonicalBytes += minimum;
+    if (canonicalBytes > maxBytes) {
+      throw new PackageValidationError('package-input-too-large', `package object exceeds maximum size of ${maxBytes} bytes`);
+    }
+  };
   const countString = (text) => {
     strings += 1;
-    stringBytes += utf8ByteLength(text);
+    const bytes = utf8ByteLength(text);
+    stringBytes += bytes;
     if (strings > maxStrings || stringBytes > maxStringBytes) {
       throw new PackageValidationError('package-string-budget-exceeded');
     }
+    chargeCanonicalBytes(bytes + 2);
   };
   const chargeEntry = () => {
     entries += 1;
     if (entries > maxEntries) throw new PackageValidationError('package-entry-budget-exceeded');
+    chargeCanonicalBytes(2);
   };
   const enter = (container, depth) => {
     if (ancestors.has(container)) {
@@ -94,7 +106,7 @@ function scanObjectBudget(value, limits) {
     }
     if (depth > maxDepth) throw new PackageValidationError('package-nesting-budget-exceeded');
     ancestors.add(container);
-    if (container instanceof Map) return { container, depth, kind: 'map', iterator: container.entries() };
+    if (container instanceof Map) return { container, depth, kind: 'map', iterator: container.entries(), stage: 'next', entry: null };
     if (container instanceof Set) return { container, depth, kind: 'set', iterator: container.values() };
     if (Array.isArray(container)) return { container, depth, kind: 'array', index: 0 };
     return { container, depth, kind: 'object', keys: Object.keys(container), index: 0 };
@@ -104,11 +116,24 @@ function scanObjectBudget(value, limits) {
     const frame = stack[stack.length - 1];
     let item;
     if (frame.kind === 'map') {
-      const step = frame.iterator.next();
-      if (step.done) { ancestors.delete(frame.container); stack.pop(); continue; }
-      chargeEntry();
-      descend(step.value[0], frame.depth);
-      descend(step.value[1], frame.depth);
+      // Map key/value are descended sequentially (the key subtree is fully
+      // processed before the value is entered) so ancestry stays path-local:
+      // a shared reference between a Map key and its value is not a cycle.
+      if (frame.stage === 'next') {
+        const step = frame.iterator.next();
+        if (step.done) { ancestors.delete(frame.container); stack.pop(); continue; }
+        chargeEntry();
+        frame.entry = step.value;
+        frame.stage = 'key';
+        descend(frame.entry[0], frame.depth);
+        continue;
+      }
+      if (frame.stage === 'key') {
+        frame.stage = 'value';
+        descend(frame.entry[1], frame.depth);
+        continue;
+      }
+      frame.stage = 'next';
       continue;
     } else if (frame.kind === 'set') {
       const step = frame.iterator.next();
@@ -137,6 +162,7 @@ function scanObjectBudget(value, limits) {
     if (ArrayBuffer.isView(item) || item instanceof ArrayBuffer) {
       entries += item.byteLength;
       if (entries > maxEntries) throw new PackageValidationError('package-entry-budget-exceeded');
+      chargeCanonicalBytes(2 * item.byteLength);
       return;
     }
     stack.push(enter(item, parentDepth + 1));
@@ -305,12 +331,14 @@ export function validatePackageEnvelope(envelope, options = {}) {
 export function importPhase12Package(value, options = {}) {
   let parsed;
   if (typeof value === 'object' && value !== null && !(value instanceof Uint8Array) && !(value instanceof ArrayBuffer) && !ArrayBuffer.isView(value)) {
-    // Bounded shape traversal FIRST (#5219): depth/entry/string budgets and
-    // cycle rejection apply before any canonicalization work, so a hostile
-    // deep or cyclic graph can no longer reach stableStringify's recursion
-    // (or the JS stack) ahead of the resource guards.
-    scanObjectBudget(value, normalizedPackageLimits(options));
+    // Bounded shape traversal FIRST (#5219): depth/entry/string budgets, cycle
+    // rejection and a conservative maxBytes lower bound apply before any
+    // canonicalization work, so a hostile deep, cyclic or oversized graph can
+    // no longer reach stableStringify's recursion (or size-proportional
+    // allocation) ahead of the resource guards. The exact byte check below
+    // stays authoritative; this bound is never weaker than maxBytes.
     const maxBytes = positiveLimit(options.maxBytes, MAX_PACKAGE_INPUT_BYTES, 'maxBytes', 'package-envelope-resource-limit-invalid');
+    scanObjectBudget(value, normalizedPackageLimits(options), maxBytes);
     const encoded = stableStringify(value);
     if (new TextEncoder().encode(encoded).byteLength > maxBytes) {
       throw new PackageValidationError('package-input-too-large', `package object exceeds maximum size of ${maxBytes} bytes`);
