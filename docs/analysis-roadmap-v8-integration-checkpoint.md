@@ -3485,6 +3485,37 @@ projector patch adds undefined-result-attribute admission, not state history.
 Its oversized full diff was unavailable (HTTP 406); the per-file API supplied
 the relevant patch. No component/main merge or parallel repair was performed.
 
+The first committed state-history candidate, `755b02d73`, passed 15 of its 16
+exact scoped gates but failed `decompiler:test`: the unchanged `damage` clamp
+test lost its `max` rewrite because repeated history validation exhausted the
+existing 250 ms pass budget. The isolated test also failed. A read-only runtime
+overlay of the three changed files at parent `0b585a864` passed, and CPU profiling
+identified repeated live-data matching. This is this addition's regression,
+not a waived baseline failure or parallel performance task. All red receipts
+and the failed runtime profile are retained.
+
+The follow-up keeps the original whole-producer mutation checks and dependency
+coverage. Canonical expression construction now holds operation records
+privately, snapshots shared construction inputs before callbacks, and validates
+each selected projector producer and each shared observation after all input
+callbacks before those records can become rewrite proofs. Later consumers still
+perform fresh checks. Source/output observations are separated so records sharing
+one observation do not repeatedly scan it in the same synchronous validation.
+Actual record slots remain individually reserved and cumulative edge budgets
+still apply; no deadline, rewrite rule, oracle, or completeness rule is relaxed.
+Candidate readers expose immutable issuer descriptions, not a current certificate
+or a way to reseal copies. The attempted narrower per-source producer check was
+rejected after an existing mutation regression failed; it is not in this change.
+
+Three permanent regressions cover bounded producer-check counts without a
+wall-clock assertion, mutation at every observed cancellation-callback boundary
+(including earlier completed frames), and stale/copied candidate descriptions.
+The check-count regression fails against the unchanged `755b02d73` runtime with
+18 producer-root checks, and passes against the batched implementation with its
+bound of 8. The unchanged isolated decompiler test and focused provenance tests
+pass in the working tree. Final exact-head gates are required before push; these
+working-tree results are not release or integration acceptance.
+
 Unused-entry suppression, public-state ordering/version changes as explicit
 operation classes, other facade normalization handoffs, and raw call/location
 consumers without an existing observed expression remain open. Full C4-03 class

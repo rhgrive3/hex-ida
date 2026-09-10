@@ -20,8 +20,8 @@ import { readSwitchLineHistory, readSwitchRenderHistory } from './switch.js';
 import { readSemanticStoreLineHistory, readSemanticStoreRenderHistory } from './semantic-core.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
 import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionExpected,
-  readProjectedConstantTransitions, projectedConstantTransitionExpected,
-  readProjectedStateTransitions, projectedStateTransitionExpected } from '../semantics/compat/semantic-ir-v2-to-v1.js';
+  projectedConstantTransitionCandidate, projectedConstantTransitionExpected,
+  projectedStateTransitionCandidates, projectedStateTransitionExpected } from '../semantics/compat/semantic-ir-v2-to-v1.js';
 import { readFacadeConstantTransitions, facadeConstantTransitionExpected } from '../ir-core.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -43,7 +43,17 @@ function valueHistoryRecord(record, valueId) {
   return copy;
 }
 function currentBuildHistory(records) {
-  return records.every(record => buildHistoryObservations.get(record)?.matches() !== false);
+  const checked = new Set();
+  return records.every(record => {
+    const observation = buildHistoryObservations.get(record);
+    for (const current of observation?.producerChecks || []) if (!checked.has(current)) {
+      checked.add(current);
+      if (!current()) return false;
+    }
+    if (!observation || checked.has(observation.matches)) return true;
+    checked.add(observation.matches);
+    return observation.matches() !== false;
+  });
 }
 function consumerObservationBudget(state) {
   const requested = state.opts?.renderProvenanceBindingBudget;
@@ -545,8 +555,10 @@ function finishBuildSelection(expression, selection, state) {
     if (budget.edges <= 0) throw new Error('build-selection-observation-budget');
     const output = captureProjectionIrData([expression]);
     budget.edges -= output.metrics.edges;
-    if (budget.edges < 0 || state.opts?.shouldAbort?.() || !selection.matches() || !output.matches()) throw new Error('build-selection-unavailable');
-    observation = Object.freeze({ matches:() => selection.matches() && output.matches() });
+    const deferred = state.stateHistoryTransaction?.observation === selection;
+    if (budget.edges < 0 || state.opts?.shouldAbort?.() || (!deferred && !selection.matches()) || !output.matches()) throw new Error('build-selection-unavailable');
+    observation = Object.freeze({ matches:() => selection.matches() && output.matches(),
+      sourceMatches:selection.matches, outputMatches:output.matches });
   } catch {
     budget.edges = 0; budget.reasons.add(`${selection.kind}-selection-observation-unavailable`); return null;
   }
@@ -707,6 +719,35 @@ function recordCompatMemorySelection(value, expression, selected, state) {
 
 function compatOperationSelection(value, state, roots = [value?.def, value], followInputs = true) {
   const pending = [...roots], seen = new Set(), events = new Set(), selected = [];
+  const observeSelected = () => {
+    // One construction transaction can consume many events from the same
+    // sealed producer graph. Capture their union before input callbacks, not
+    // the same overlapping graph once per event. Record slots remain per event.
+    const groups = new Map();
+    for (const item of selected) {
+      let group = groups.get(item.transition.isCurrent);
+      if (!group) groups.set(item.transition.isCurrent, group = { items:[], roots:new Set() });
+      group.items.push(item);
+      group.roots.add(item.event.source);
+      for (const definition of item.related) group.roots.add(definition);
+    }
+    for (const group of groups.values()) {
+      const [source, ...related] = group.roots;
+      const transaction = state.stateHistoryTransaction;
+      const observation = transaction?.check === group.items[0].transition.isCurrent
+        ? transaction.values.includes(value) ? transaction.observation : null
+        : observeBuildSelection(value, source, state, 'compat-constant', related, false);
+      for (const item of group.items) item.observation = observation;
+    }
+    return selected;
+  };
+  const stateCandidates = projectedStateTransitionCandidates(state.ir), checkedState = new Map();
+  const readCandidate = record => {
+    if (!record) return null;
+    const checked = state.stateHistoryTransaction?.checks || checkedState;
+    if (!checked.has(record.isCurrent)) checked.set(record.isCurrent, record.isCurrent());
+    return checked.get(record.isCurrent) ? record : null;
+  };
   const budget = consumerObservationBudget(state);
   const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
   const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
@@ -719,11 +760,11 @@ function compatOperationSelection(value, state, roots = [value?.def, value], fol
     const expectedState = projectedStateTransitionExpected(state.ir, key);
     if (!expectedProjection && !expectedFacade && !expectedState) continue;
     if ((state.buildSelectionHistoryCount || 0) >= maximum || budget.edges <= 0) {
-      observeBuildSelection(value, key, state, 'compat-constant'); return selected;
+      budget.reasons.add('compat-constant-selection-history-budget'); return observeSelected();
     }
     const transitions = [];
-    for (const [expected, read, kind] of [[expectedProjection, readProjectedConstantTransitions, 'constant'],
-      [expectedFacade, readFacadeConstantTransitions, 'constant'], [expectedState, readProjectedStateTransitions, 'state']]) {
+    for (const [expected, read, kind] of [[expectedProjection, (ir, key) => readCandidate(projectedConstantTransitionCandidate(ir, key)), 'constant'],
+      [expectedFacade, readFacadeConstantTransitions, 'constant'], [expectedState, (_, key) => readCandidate(stateCandidates?.get(key)), 'state']]) {
       if (!expected) continue;
       const transition = read(state.ir, key);
       if (transition) transitions.push(transition);
@@ -735,7 +776,7 @@ function compatOperationSelection(value, state, roots = [value?.def, value], fol
       if (events.has(event)) continue;
       events.add(event);
       for (const cause of event.causes || []) if (!events.has(cause) && !queued.has(cause)) {
-        if (queued.size >= 1024) { budget.reasons.add('compat-state-cause-budget'); return selected; }
+        if (queued.size >= 1024) { budget.reasons.add('compat-state-cause-budget'); return observeSelected(); }
         queued.add(cause); candidates.push(cause);
       }
       const source = event.source;
@@ -745,29 +786,27 @@ function compatOperationSelection(value, state, roots = [value?.def, value], fol
       // these expressions, but it still consumes their observed folding chain.
       if (followInputs) pending.push(...event.inputs.flatMap(input => [input.definition, input.value]));
       if ((state.buildSelectionHistoryCount || 0) >= maximum || budget.edges <= 0) {
-        observeBuildSelection(value, source, state, 'compat-constant'); return selected;
+        budget.reasons.add('compat-constant-selection-history-budget'); return observeSelected();
       }
       const origins = event.op === 'load' ? selectedValueOrigins(event.output, state) : null;
       const related = [...new Set([...event.beforeInputs.map(input => input.def), ...(origins?.definitions || [])])]
         .filter(definition => definition && definition !== source);
       if (origins?.incomplete) budget.reasons.add('compat-constant-source-history-incomplete');
-      selected.push({ event, transition, origins,
-        observation:observeBuildSelection(value, source, state, 'compat-constant', related) });
+      state.buildSelectionHistoryCount = (state.buildSelectionHistoryCount || 0) + 1;
+      selected.push({ event, transition, origins, related });
     }
     }
   }
   if (pending.length) budget.reasons.add('compat-constant-dependency-budget');
-  return selected;
+  return observeSelected();
 }
 
 function recordCompatOperationSelection(value, expression, selected, state) {
-  const records = [];
+  const records = [], pending = [], finished = new Map();
   for (const { event, transition, origins, observation:selection } of selected) {
-    const observation = finishBuildSelection(expression, selection, state);
+    if (!finished.has(selection)) finished.set(selection, finishBuildSelection(expression, selection, state));
+    const observation = finished.get(selection);
     if (!observation) continue;
-    if (!transition.isCurrent()) {
-      consumerObservationBudget(state).reasons.add('compat-constant-transition-stale'); continue;
-    }
     const source = mergeSource(origin(event.source, event.output), origin(value.def, value), origins?.source,
       ...event.beforeInputs.map(input => origin(input.def, input)));
     const history = expressionOriginHistory({ source }, expression);
@@ -784,12 +823,82 @@ function recordCompatOperationSelection(value, expression, selected, state) {
           : 'actual compatibility constant write and its original input facts, retained through the consuming expression; not a new scalar or memory theorem' }),
       originHistory:origins?.incomplete ? Object.freeze({ ...history, truncated:true }) : history,
     });
-    buildHistoryObservations.set(record, Object.freeze({ matches:() => observation.matches() && transition.isCurrent()
-      && (origins?.memoryChecks || []).every(current => current()) }));
+    const producerChecks = Object.freeze([transition.isCurrent, observation.sourceMatches, ...(origins?.memoryChecks || [])]);
+    buildHistoryObservations.set(record, Object.freeze({ matches:observation.outputMatches, producerChecks }));
+    pending.push({ record, producerChecks });
+  }
+  // All local finish callbacks have run. Outside canonical construction,
+  // revalidate now; its private batch is checked at the construction boundary.
+  // Neither result is cached across later consumer reads.
+  const current = new Map();
+  for (const { producerChecks } of pending) for (const check of producerChecks) if (!current.has(check)) {
+    // Canonical construction holds these records privately until its final
+    // validation, after ALL nested input callbacks. No intermediate result is
+    // treated as a current producer certificate or published as rewrite proof.
+    const transaction = state.stateHistoryTransaction;
+    current.set(check, transaction?.checks.has(check) ? transaction.checks.get(check)
+      : transaction?.observation?.matches === check ? transaction.initiallyCurrent : check());
+  }
+  for (const { record, producerChecks } of pending) {
+    if (!producerChecks.every(check => current.get(check))) {
+      consumerObservationBudget(state).reasons.add('compat-constant-transition-stale'); continue;
+    }
     records.push(record);
     if (state.buildHistoryFrame) (state.buildHistoryFrame.records ??= new Set()).add(record);
   }
   return records;
+}
+
+function buildCanonicalExpressions(state) {
+  const batch = projectedStateTransitionCandidates(state.ir);
+  if (!batch) {
+    for (const value of state.ir.values || []) buildValue(value, state);
+    return state;
+  }
+  const transaction = { check:batch.isCurrent, initiallyCurrent:batch.isCurrent(), values:state.ir.values, observation:null };
+  transaction.checks = new Map([[transaction.check, transaction.initiallyCurrent]]);
+  const budget = consumerObservationBudget(state);
+  if (transaction.initiallyCurrent) try {
+    if (budget.edges <= 0) throw new Error('state-construction-budget');
+    const values = state.ir.values, blocks = state.ir.blocks, instructions = state.ir.instructions;
+    // Capture all initial construction inputs once, before any symbol/type/
+    // cancellation callback. This is data observation, not producer resealing.
+    const captured = captureProjectionIrData([values, blocks, instructions]);
+    budget.edges -= captured.metrics.edges;
+    if (budget.edges < 0) throw new Error('state-construction-budget');
+    const own = (key) => Object.getOwnPropertyDescriptor(state.ir, key)?.value;
+    transaction.observation = Object.freeze({ kind:'compat-state', matches:() => own('values') === values
+      && own('blocks') === blocks && own('instructions') === instructions && captured.matches() });
+  } catch {
+    budget.edges = 0; budget.reasons.add('compat-state-construction-observation-unavailable');
+  }
+  state.stateHistoryTransaction = transaction;
+  try {
+    for (const value of state.ir.values || []) buildValue(value, state);
+  } finally {
+    delete state.stateHistoryTransaction;
+    // The shared producer is checked once after construction, never carried
+    // across this boundary. Consumer reads still perform their fresh checks.
+    const matches = new Map();
+    for (const [check, initiallyCurrent] of transaction.checks) matches.set(check, initiallyCurrent && check());
+    for (const [key, records] of state.buildHistories || []) {
+      const retained = records.filter(record => {
+        const observation = buildHistoryObservations.get(record);
+        if (!observation?.producerChecks?.some(check => transaction.checks.has(check))) return true;
+        for (const check of observation.producerChecks) {
+          if (!matches.has(check)) matches.set(check, check());
+          if (!matches.get(check)) return false;
+        }
+        if (!matches.has(observation.matches)) matches.set(observation.matches, observation.matches());
+        return matches.get(observation.matches);
+      });
+      if (retained.length !== records.length) {
+        consumerObservationBudget(state).reasons.add('compat-state-construction-stale');
+        state.buildHistories.set(key, Object.freeze(retained));
+      }
+    }
+  }
+  return state;
 }
 
 function buildValueRaw(v, state, flags = {}) {
@@ -1446,7 +1555,7 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
     { name: 'high-variable-recovery', run(s) { s.highVariables = recoverHighVariables(s.ir, s.types, opts); return s; } },
     { name: 'prototype-recovery', run(s) { s.prototype = recoverFunctionPrototype(s.ir, s.types, opts); return s; } },
     { name: 'aggregate-layout-recovery', run(s) { s.aggregateLayouts = recoverAggregateLayouts(s.ir, s.types, opts); return s; } },
-    { name: 'canonical-expression-build', run(s) { for (const v of s.ir.values || []) buildValue(v, s); return s; } },
+    { name: 'canonical-expression-build', run:buildCanonicalExpressions },
     { name: 'semantic-rewrite', run: rewriteAll },
     { name: 'semantic-facts', run(s) { s.facts = semanticFacts(s, result); return s; } },
     { name: 'typed-semantic-ast', run(s) { s.semanticAst = semanticAstOf(s, s.facts); return s; } },

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { projectSemanticIrV2ToLegacyV1, readProjectedStateTransitions,
   projectedStateTransitionExpected } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
+import * as stateProjector from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 import { finalizeLegacyProjection } from '../../../js/semantics/compat/semantic-ir-v2-to-v1-finalize.js';
 import { annotateValueRanges } from '../../../js/semantics/compat/legacy-value-ranges.js';
 import { enhanceSemanticDecompilation, readExpressionHistoryConsumer } from '../../../js/decompiler/pipeline-core.js';
@@ -165,6 +166,53 @@ test('state history budgets and cancellation preserve pseudocode while withholdi
     assert.equal(f.result.pseudocode,baseline);
     assert.equal(applyPhase8Projection(f.result,analysis()).renderProvenance.completeness,'incomplete');
   }
+});
+
+test('canonical construction validates its shared state producer a bounded number of times', () => {
+  const f = fixture(), descriptor = Object.getOwnPropertyDescriptor;
+  let producerRootChecks = 0;
+  Object.getOwnPropertyDescriptor = (object, key) => {
+    if (object === f.ir && key === 'compat') producerRootChecks++;
+    return descriptor(object, key);
+  };
+  try { render(f); } finally { Object.getOwnPropertyDescriptor = descriptor; }
+  // One initial/final construction check plus fresh actual consumer checks.
+  // This is an operation-count regression, independent of machine speed.
+  assert.ok(producerRootChecks > 0 && producerRootChecks <= 8, `producer root checks: ${producerRootChecks}`);
+  const result = applyPhase8Projection(f.result, analysis());
+  assert.ok(result.renderProvenance.ledger.some(record => record.rule === rule && record.renderedBinding === 'producer-bound'));
+});
+
+test('each callback boundary withholds stale state bindings, including previously constructed frames', () => {
+  let callbacks = 0;
+  render(fixture(), { shouldAbort:() => { callbacks++; return false; } });
+  assert.ok(callbacks > 2);
+  for (let target = 1; target <= callbacks; target++) {
+    const f = fixture();
+    let calls = 0, changed = false;
+    render(f, { shouldAbort:() => {
+      if (++calls === target) { f.read.extra.callbackMutation = target; changed = true; }
+      return false;
+    } });
+    assert.equal(changed, true, `callback ${target} reached`);
+    assert.equal(readProjectedStateTransitions(f.ir, f.ret), null);
+    const result = applyPhase8Projection(f.result, analysis());
+    assert.deepEqual(result.renderProvenance.ledger.filter(record => record.rule === rule && record.renderedBinding === 'producer-bound'), [],
+      `callback ${target} must invalidate even earlier completed frames`);
+  }
+});
+
+test('candidate batches expose descriptions but never bypass current validation or issue copied authority', () => {
+  const f = fixture(), candidates = stateProjector.projectedStateTransitionCandidates(f.ir);
+  const record = candidates.get(f.ret);
+  assert.ok(Object.isFrozen(candidates) && Object.isFrozen(record));
+  assert.equal(record.isCurrent(), true);
+  assert.equal(candidates.get({ ...f.ret }), null);
+  assert.equal(stateProjector.projectedStateTransitionCandidates({ ...f.ir }), null);
+  f.read.extra.changedAfterCandidateRead = true;
+  assert.equal(candidates.get(f.ret), record, 'description identity is not a current certificate');
+  assert.equal(record.isCurrent(), false);
+  assert.equal(readProjectedStateTransitions(f.ir, f.ret), null);
 });
 
 function unfinalizedEdges() {

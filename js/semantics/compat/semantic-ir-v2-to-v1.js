@@ -30,8 +30,8 @@ export function observeProjectedOperationData(projected, transitions) {
   const rootKeys = ['instructions', 'values', 'blocks', 'compat', 'functionId', 'semanticIrVersion', 'origin'];
   const prototype = Object.getPrototypeOf(projected);
   const roots = rootKeys.map(key => own(projected, key));
-  const locations = transitions.flatMap(({ source, store, input, beforeInputs }) => [source, store, input?.def,
-    ...beforeInputs.map(value => value.def)]).filter(Boolean).map(instruction => {
+  const locations = [...new Set(transitions.flatMap(({ source, store, input, beforeInputs }) => [source, store, input?.def,
+    ...beforeInputs.map(value => value.def)]).filter(Boolean))].map(instruction => {
     const blockIndex = projected.blocks.findIndex(block => block.index === instruction.block);
     const block = projected.blocks[blockIndex], key = block?.phis?.includes(instruction) ? 'phis' : 'insts';
     const list = block?.[key], index = list?.indexOf(instruction), flatIndex = projected.instructions.indexOf(instruction);
@@ -113,8 +113,14 @@ function sealConstantTransitions(projected, observer) {
 }
 
 export function readProjectedConstantTransitions(projected, instruction) {
-  const record = constantTransitions.get(projected)?.get(instruction);
+  const record = projectedConstantTransitionCandidate(projected, instruction);
   return record?.isCurrent() ? record : null;
+}
+
+// Unvalidated owning descriptions for a private construction transaction. The
+// public current reader above and every publishing consumer retain validation.
+export function projectedConstantTransitionCandidate(projected, instruction) {
+  return constantTransitions.get(projected)?.get(instruction) ?? null;
 }
 
 export function projectedConstantTransitionExpected(projected, instruction) {
@@ -141,11 +147,11 @@ function sealStateTransitions(projected, observer) {
     const valid = [...accepted];
     const observation = observeProjectedOperationData(projected, valid);
     const locations = projected.locations;
-    const mapped = valid.filter(event => event.path === 'locations:base').map(event => {
+    const mapped = valid.filter(event => event.path === 'locations:base').flatMap(event => {
       const entries = [...Map.prototype.entries.call(locations)].filter(([, value]) => value === event.object);
       if (!entries.length) throw new Error('state-alias-location-missing');
       return entries;
-    }).flat();
+    });
     const isCurrent = () => observation() && (!mapped.length || own(projected, 'locations') === locations
       && mapped.every(([key, value]) => Map.prototype.get.call(locations, key) === value));
     const records = new Map();
@@ -153,14 +159,21 @@ function sealStateTransitions(projected, observer) {
       if (!records.has(key)) records.set(key, []);
       records.get(key).push(event);
     }
-    stateTransitions.set(projected, new Map([...records].map(([key, events]) => [key,
-      Object.freeze({ events:Object.freeze(events), isCurrent })])));
+    const byKey = new Map([...records].map(([key, events]) => [key,
+      Object.freeze({ events:Object.freeze(events), isCurrent })]));
+    stateTransitions.set(projected, Object.freeze({ get:key => byKey.get(key) ?? null, isCurrent }));
   } catch { /* State projection is unchanged; missing history remains expected. */ }
 }
 
 export function readProjectedStateTransitions(projected, source) {
-  const record = stateTransitions.get(projected)?.get(source);
+  const record = projectedStateTransitionCandidates(projected)?.get(source);
   return record?.isCurrent() ? record : null;
+}
+
+// Private-producer descriptions, NOT a current certificate. Consumers must
+// validate each selected record before use and again after their callbacks.
+export function projectedStateTransitionCandidates(projected) {
+  return stateTransitions.get(projected) ?? null;
 }
 
 export function projectedStateTransitionExpected(projected, source) {
