@@ -99,7 +99,8 @@ async function testRecoverableToolErrorKeepsRunAlive() {
   assert.ok(errorEntry, 'the failed tool must be returned to the Supervisor as tool-error history');
   assert.equal(errorEntry.tool, 'chatgpt.page.script_source');
   assert.equal(errorEntry.code, 'script-not-loaded');
-  assert.match(errorEntry.message, /not a currently loaded external page script/);
+  assert.ok(errorEntry.message.length <= 512, 'the provider-bound message stays bounded');
+  assert.doesNotMatch(errorEntry.message, /not a currently loaded external page script/, 'raw free-form tool text stays out of provider-bound history');
   assert.equal(errorEntry.recoverable, true);
   assert.equal(errorEntry.arguments.index, 0);
   assert.equal(errorEntry.arguments.needle, 'createProject');
@@ -265,41 +266,103 @@ async function testReleaseFailureKeepsClaimOwnership() {
   assert.equal(harness.settings.lastRun.status, DEV_RUN_STATUS.COMPLETED);
 }
 
-/* #5137: a tool that echoes a secret through its error message must not be
-   able to resurrect it in the provider-bound Supervisor history. The argument
-   sanitizer already redacts secret-keyed arguments; the same secret arriving
-   via error.message text must be redacted there too, while the safe error
-   code survives for recovery. */
+/* #5137: tool-controlled free-form error text is untrusted and cannot be
+   certified secret-free by key-name/value patterns — the issue's exact
+   counterexample (`Authorization failed: <secret>`) matches none of them.
+   Provider-bound history therefore carries only the failure class (code/name)
+   plus fixed guidance; free-form diagnostic text stays in local diagnostics. */
 async function testErrorMessageSecretRedaction() {
-  const secret = 'sk-test-MUST-NOT-LEAK';
+  const secret = 'must-not-leak';
+
+  /* Reviewer-exact minimal counterexample: `Authorization failed: <secret>`
+     defeats every key=value / bearer / token pattern. */
   const harness = createHarness({
     client: {
       enabled: true,
       pageScripts: async () => {
-        throw Object.assign(new Error(`Authorization failed for token ${secret}`), { code: 'provider-error' });
+        throw Object.assign(new Error(`Authorization failed: ${secret}`), { code: 'provider-error' });
       },
     },
     decisions: [
       { type: 'tool', tool: 'chatgpt.page.scripts', arguments: { authorization: secret }, purpose: 'inspect scripts' },
-      { type: 'final', answer: 'recovered from the redacted failure', completedTasks: ['inspect'], remaining: [] },
+      { type: 'final', answer: 'recovered from the withheld failure', completedTasks: ['inspect'], remaining: [] },
     ],
   });
 
   const result = await harness.engine.run({ goal: 'echo the secret back', conversationId: 'conversation-secret-message' });
-  assert.equal(result.answer, 'recovered from the redacted failure', 'redaction must not break recovery');
+  assert.equal(result.answer, 'recovered from the withheld failure', 'withholding the message must not break recovery');
 
   const errorEntry = harness.historyAt(1).find((entry) => entry.kind === DEV_TOOL_ERROR_HISTORY_KIND);
   assert.ok(errorEntry, 'the failed tool must be returned to the Supervisor as tool-error history');
   assert.equal(errorEntry.code, 'provider-error', 'the safe error code must still reach the Supervisor');
-  assert.doesNotMatch(errorEntry.message, /MUST-NOT-LEAK/, 'the secret must not survive inside the error message');
-  assert.match(errorEntry.message, /\[redacted\]/, 'the secret-bearing text must be visibly redacted');
-  assert.equal(errorEntry.arguments.authorization, '[redacted]');
-  assert.doesNotMatch(JSON.stringify(harness.historyAt(1)), /MUST-NOT-LEAK/, 'no history field may carry the secret');
-  assert.doesNotMatch(harness.prompts[1], /MUST-NOT-LEAK/, 'the next Supervisor prompt must not contain the secret');
+  assert.equal(errorEntry.arguments.authorization, '[redacted]', 'arguments stay redacted');
+  assert.doesNotMatch(JSON.stringify(harness.historyAt(1)), /must-not-leak/, 'no history field may carry the secret');
+  assert.doesNotMatch(harness.prompts[1], /must-not-leak/, 'the next Supervisor prompt must not contain the secret');
+  assert.ok(errorEntry.message.length <= 512, 'the provider-bound message stays bounded');
+  assert.doesNotMatch(errorEntry.message, /Authorization failed/, 'no raw free-form diagnostic text is provider-bound');
 
-  /* Non-secret diagnostics stay readable for recovery. */
-  const described = describeDevToolError(new Error('connection refused after 3 retries'));
-  assert.equal(described.message, 'connection refused after 3 retries');
+  /* Credential-shaped echoes are equally withheld. */
+  const tokenSecret = 'sk-test-MUST-NOT-LEAK';
+  const tokenHarness = createHarness({
+    client: {
+      enabled: true,
+      pageScripts: async () => {
+        throw Object.assign(new Error(`Authorization failed for token ${tokenSecret}`), { code: 'provider-error' });
+      },
+    },
+    decisions: [
+      { type: 'tool', tool: 'chatgpt.page.scripts', arguments: { authorization: tokenSecret }, purpose: 'inspect scripts' },
+      { type: 'final', answer: 'recovered from the token echo', completedTasks: ['inspect'], remaining: [] },
+    ],
+  });
+  await tokenHarness.engine.run({ goal: 'echo the token back', conversationId: 'conversation-token-message' });
+  assert.doesNotMatch(JSON.stringify(tokenHarness.historyAt(1)), /MUST-NOT-LEAK/, 'credential-shaped echoes stay out of history');
+  assert.doesNotMatch(tokenHarness.prompts[1], /MUST-NOT-LEAK/, 'credential-shaped echoes stay out of the prompt');
+
+  /* Local diagnostics keep the free-form text, bounded (#5137 required
+     assertion 5): the description itself never exceeds its bound. */
+  const described = describeDevToolError(withCode(new Error(`Authorization failed: ${'x'.repeat(5000)}`), 'provider-error'));
+  assert.ok(described.message.length <= 512, 'the local diagnostic description stays bounded');
+  const benign = describeDevToolError(new Error('connection refused after 3 retries'));
+  assert.equal(benign.message, 'connection refused after 3 retries', 'benign non-secret diagnostics stay readable locally');
+
+  /* Terminal error path (#5137 required assertion 6): the raw secret-bearing
+     error stays available to the local caller, but no provider-bound field of
+     any later prompt re-injects it. */
+  let terminalCalls = 0;
+  const terminalHarness = createHarness({
+    client: {
+      enabled: true,
+      pageScripts: async () => {
+        terminalCalls += 1;
+        if (terminalCalls === 1) {
+          throw Object.assign(new Error(`Authorization failed: ${secret}`), { code: 'dev-extension-integrity-mismatch' });
+        }
+        return { scripts: [] };
+      },
+    },
+    decisions: [
+      { type: 'tool', tool: 'chatgpt.page.scripts', arguments: { authorization: secret }, purpose: 'list scripts' },
+      { type: 'tool', tool: 'chatgpt.page.scripts', arguments: {}, purpose: 'observe in a fresh run' },
+      { type: 'final', answer: 'fresh run after terminal failure', completedTasks: [], remaining: [] },
+    ],
+  });
+  let terminalError;
+  await assert.rejects(
+    () => terminalHarness.engine.run({ goal: 'terminal secret', conversationId: 'conversation-terminal-secret' }),
+    (error) => {
+      terminalError = error;
+      return error.code === 'dev-extension-integrity-mismatch';
+    },
+  );
+  assert.match(terminalError.message, /must-not-leak/, 'the raw error stays available to the local caller');
+  assert.equal(terminalHarness.settings.lastRun.status, DEV_RUN_STATUS.FAILED, 'the terminal failure still fails the run');
+  const fresh = await terminalHarness.engine.run({ goal: 'fresh run', conversationId: 'conversation-terminal-secret' });
+  assert.equal(fresh.answer, 'fresh run after terminal failure');
+  for (const [index, prompt] of terminalHarness.prompts.entries()) {
+    if (index === 0) continue; /* the failed run's own prompt predates the tool error */
+    assert.doesNotMatch(prompt, /must-not-leak/, `no provider-bound prompt after the terminal failure may carry the secret (prompt ${index})`);
+  }
 }
 
 function createHarness({ client, decisions, maxToolErrorRecoveries }) {
