@@ -4863,6 +4863,32 @@ it does not claim exhaustive address/CFG/alias domains, independent release proo
 or completion of the prerequisite C1 tasks. Whole-roadmap and integration/release
 acceptance remain unclaimed. Existing proof owners must continue to be reused.
 
+## C1-01 canonical loaded-pointer boundary matrix
+
+The existing `tests/phase7/pointsto/loaded-pointer-recovery.test.mjs` fixture now
+exercises 130 cells: widths 8/16/32/64/128, both endians, and 13 effect/coverage
+scenarios. It reuses canonical Semantic SSA, region classification, alias queries,
+MemorySSA construction, local points-to and the public analysis surface. There
+is no new pointer engine or runtime change. All ten ordinary cells preserve the
+stored pointer's complete target identity/provenance and exact offset; the 120
+volatile, atomic, unknown-effect, unknown-call, MayAlias, endian-conflict and
+width-conflict cells withhold recovery. MayAlias is introduced only as a
+conservative downgrade of the real alias result and produces an actual canonical
+clobber, not an invented exact proof.
+
+Ordinary cells additionally reject copied MemorySSA and stale snapshot identity,
+and withhold publication on cancellation or iteration exhaustion. Every cell
+checks deterministic replay, unchanged IR and agreement with the public consumer.
+The existing partial/identity/convergence regressions remain in the same file;
+the default 64-bit little-endian fixture behavior is preserved. The canonical
+points-to group and ownership regressions passed on the working change. Exact
+commit gate receipts and remote backup are recorded in persistent task evidence.
+
+This fills the named width/endian/effect denominator for FR-C1-01A, not the
+prerequisite FR-C1-03A root-evidence audit or arbitrary address/CFG coverage.
+Open PR #7548 remains a separate alias identity/escape-cache owner handoff; its
+issue fixes are not duplicated here. No full-task or release closure is claimed.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

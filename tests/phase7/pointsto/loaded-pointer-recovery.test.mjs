@@ -21,7 +21,8 @@ import {
 
 const origin = (id) => ({ instructionIds: [`instruction_${id}`] });
 
-function loadedPointerFixture({ unknownCall = false, twoPointerRoots = false } = {}) {
+function loadedPointerFixture({ unknownCall = false, twoPointerRoots = false, bits = 64, endian = 'little',
+  loadEffects = {}, storeEffects = {}, mayAlias = false } = {}) {
   const functionId = 'function_loaded_pointer_recovery';
   const blockId = 'entry';
   const nodes = [
@@ -40,7 +41,7 @@ function loadedPointerFixture({ unknownCall = false, twoPointerRoots = false } =
       blockId,
       inputs: [],
       outputs: ['zero'],
-      attributes: { constant: { value: '0', widthBits: 64 } },
+      attributes: { constant: { value: '0', widthBits: bits } },
       origin: origin('node_zero'),
     },
     {
@@ -49,7 +50,7 @@ function loadedPointerFixture({ unknownCall = false, twoPointerRoots = false } =
       blockId,
       inputs: [],
       outputs: ['target_offset'],
-      attributes: { constant: { value: '32', widthBits: 64 } },
+      attributes: { constant: { value: '32', widthBits: bits } },
       origin: origin('node_target_offset'),
     },
     {
@@ -79,10 +80,11 @@ function loadedPointerFixture({ unknownCall = false, twoPointerRoots = false } =
       memory: {
         addressSpace: 'memory',
         addressValueId: 'slot',
-        widthBits: 64,
-        endian: 'little',
+        widthBits: bits,
+        endian,
         volatility: false,
         atomic: false,
+        ...storeEffects,
       },
       origin: origin('node_store'),
     },
@@ -95,10 +97,11 @@ function loadedPointerFixture({ unknownCall = false, twoPointerRoots = false } =
       memory: {
         addressSpace: 'memory',
         addressValueId: 'slot',
-        widthBits: 64,
-        endian: 'little',
+        widthBits: bits,
+        endian,
         volatility: false,
         atomic: false,
+        ...loadEffects,
       },
       origin: origin('node_load'),
     },
@@ -181,11 +184,11 @@ function loadedPointerFixture({ unknownCall = false, twoPointerRoots = false } =
       },
     );
   }
-  const addressType = { kind: 'address', widthBits: 64, addressSpace: 'memory' };
+  const addressType = { kind: 'address', widthBits: bits, addressSpace: 'memory' };
   const values = [
     { id: 'base', kind: 'definition', machineType: addressType, definitionNodeId: 'node_base', origin: origin('base') },
-    { id: 'zero', kind: 'definition', machineType: { kind: 'bitvector', widthBits: 64 }, definitionNodeId: 'node_zero', origin: origin('zero') },
-    { id: 'target_offset', kind: 'definition', machineType: { kind: 'bitvector', widthBits: 64 }, definitionNodeId: 'node_target_offset', origin: origin('target_offset') },
+    { id: 'zero', kind: 'definition', machineType: { kind: 'bitvector', widthBits: bits }, definitionNodeId: 'node_zero', origin: origin('zero') },
+    { id: 'target_offset', kind: 'definition', machineType: { kind: 'bitvector', widthBits: bits }, definitionNodeId: 'node_target_offset', origin: origin('target_offset') },
     { id: 'slot', kind: 'definition', machineType: addressType, definitionNodeId: 'node_slot', origin: origin('slot') },
     { id: 'pointer', kind: 'definition', machineType: addressType, definitionNodeId: 'node_pointer', origin: origin('pointer') },
     { id: 'loaded', kind: 'definition', machineType: addressType, definitionNodeId: 'node_load', origin: origin('loaded') },
@@ -247,7 +250,11 @@ function loadedPointerFixture({ unknownCall = false, twoPointerRoots = false } =
   };
   const memorySsa = buildMemorySsa(ir, cfg, {
     resolveRegion,
-    queryAlias: baselineSolver.queryAlias,
+    queryAlias: mayAlias ? (...args) => {
+      const result = baselineSolver.queryAlias(...args);
+      // A conservative loss of precision, never an invented exact alias proof.
+      return { ...result, relation: 'may' };
+    } : baselineSolver.queryAlias,
     identity,
     snapshotId,
     canonicalIrIdentity: {
@@ -259,7 +266,7 @@ function loadedPointerFixture({ unknownCall = false, twoPointerRoots = false } =
   });
   const loadUse = memorySsa.uses.find((use) => use.sourceEntityId === 'node_load');
   assert.ok(loadUse, 'fixture must contain one canonical MemorySSA load use');
-  if (!unknownCall) {
+  if (!unknownCall && !mayAlias && Object.keys(loadEffects).length === 0 && Object.keys(storeEffects).length === 0) {
     const reachingStore = reachingConcreteStore(memorySsa, loadUse);
     assert.ok(reachingStore, 'fixture must contain one exact reaching store proof');
     assert.equal(reachingStore.sourceEntityId, 'node_store');
@@ -643,4 +650,69 @@ test('the public analysis surface observes exact and conservative loaded pointer
     snapshotId: 'snapshot-loaded-pointer-fixture',
   });
   assertUnresolved(negative.pointsTo(), 'unresolved-load');
+});
+
+test('C1-01: canonical pointer width/endian/effect matrix preserves provenance or stays unresolved', t => {
+  const rows = [];
+  for (const bits of [8, 16, 32, 64, 128]) for (const endian of ['little', 'big']) {
+    const cases = [
+      ['ordinary', {}],
+      ['volatile-load', { loadEffects: { volatility: true } }],
+      ['volatile-store', { storeEffects: { volatility: true } }],
+      ['atomic-load', { loadEffects: { atomic: true } }],
+      ['atomic-store', { storeEffects: { atomic: true } }],
+      ['unknown-load-atomic', { loadEffects: { atomic: 'unknown' } }],
+      ['unknown-store-atomic', { storeEffects: { atomic: 'unknown' } }],
+      ['unknown-load-volatility', { loadEffects: { volatility: 'unknown' } }],
+      ['unknown-store-volatility', { storeEffects: { volatility: 'unknown' } }],
+      ['unknown-call', { unknownCall: true }],
+      ['may-alias', { mayAlias: true }],
+      ['endian-conflict', { storeEffects: { endian: endian === 'little' ? 'big' : 'little' } }],
+      ['width-conflict', { storeEffects: { widthBits: bits === 8 ? 16 : bits / 2 } }],
+    ];
+    for (const [scenario, effects] of cases) {
+      const key = `${bits}/${endian}/${scenario}`, built = loadedPointerFixture({ bits, endian, ...effects });
+      const before = structuredClone(built.ir), result = runWithMemory(built), loaded = loadedSet(result);
+      assert.ok(loaded, key);
+      if (scenario === 'ordinary') {
+        const stored = result.pointsTo.get('pointer');
+        assert.equal(loaded.top, false, key);
+        assert.deepEqual(loaded.targets, stored.targets, 'complete target identity and provenance must be preserved');
+        assert.equal(loaded.targets.length, 1, key);
+        assert.equal(loaded.targets[0].widthBits, bits, key);
+        assert.deepEqual(loaded.targets[0].offsetRange, { min: 32n, max: 32n, exact: true }, key);
+        assert.equal(result.status.completeness, 'complete', key);
+        assert.equal(result.recovery.publicationAllowed, true, key);
+        assert.equal(result.recovery.proofs.loaded.storeNodeId, 'node_store', key);
+        assertUnresolved(runWithMemory(built, structuredClone(built.memorySsa)), 'unresolved-load');
+        assertUnresolved(runWithMemory(built, built.memorySsa, { snapshotId: 'stale-snapshot' }), 'unresolved-load');
+        const cancelled = new AbortController(); cancelled.abort();
+        const stopped = runWithMemory(built, built.memorySsa, { signal: cancelled.signal });
+        assertUnresolved(stopped); assert.equal(stopped.recovery.publicationAllowed, false);
+        const limited = runWithMemory(built, built.memorySsa, { budget: { maxIterations: 1 } });
+        assertUnresolved(limited); assert.equal(limited.recovery.publicationAllowed, false);
+      } else {
+        assertUnresolved(result);
+        assert.equal(Object.hasOwn(result.recovery.proofs, 'loaded'), false, key);
+        if (scenario === 'may-alias') {
+          assert.ok(built.memorySsa.definitions.some(d => d.sourceEntityId === 'node_store' && d.kind === 'may-alias-clobber'));
+        }
+      }
+      const replay = runWithMemory(built);
+      assert.deepEqual(replay.recovery, result.recovery, 'same-artifact recovery must replay deterministically');
+      assert.equal(pointsToDigest(loadedSet(replay)), pointsToDigest(loaded));
+      const surface = createAnalysisSurface({ ir: built.ir, cfg: built.cfg, ssa: built.ssa,
+        memorySsa: built.memorySsa, snapshotId: 'snapshot-loaded-pointer-fixture' });
+      assert.equal(pointsToDigest(surface.pointsTo().pointsTo.get('loaded')), pointsToDigest(loaded), 'public consumer must see the same result');
+      assert.deepEqual(structuredClone(built.ir), before, key);
+      rows.push({ bits, endian, scenario, recovered: !loaded.top, targetCount: loaded.targets.length,
+        completeness: result.status.completeness, publicationAllowed: result.recovery.publicationAllowed,
+        lossReasons: loaded.lossReasons });
+    }
+  }
+  assert.equal(rows.length, 130);
+  assert.equal(new Set(rows.map(r => `${r.bits}/${r.endian}/${r.scenario}`)).size, 130);
+  assert.equal(rows.filter(r => r.recovered).length, 10);
+  t.diagnostic(JSON.stringify({ schema: 'c1-loaded-pointer-matrix-v1', rows,
+    scope: 'actual canonical SSA/alias/MemorySSA/local/public consumer; one complete stored-operand proof, not numeric address guessing' }));
 });
