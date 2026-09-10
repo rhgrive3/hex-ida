@@ -152,6 +152,12 @@ function parseInteger(candidate) {
  * does, so A2 and the root service never disagree about what "constant" means.
  */
 function constantOf(value, node) {
+  // Canonical address derivation only reads compile-time constants from const
+  // nodes (canonical-address-v2-core derives constants exclusively under
+  // node.kind === 'const'). Adopting integer-looking metadata on state-read/
+  // copy/any non-const operand let A2 mint exact displacements the canonical
+  // authority would reject (#5633).
+  if (node?.kind !== 'const') return null;
   let resolved = null;
   for (const candidate of [value?.metadata?.constant, node?.attributes?.constant, node?.metadata?.constant]) {
     const parsed = parseInteger(candidate);

@@ -27,9 +27,16 @@ export class FunctionMatchIndex {
     if (this.budget.preprocessingIncomplete) this.complete = false;
   }
   candidates(input, options = {}) {
-    const fp = input?.schema === 'hex.function-fingerprint' || input?.schema === 'hex.function-fingerprint-fast'
-      ? input
-      : fingerprintFunctionFast(input);
+    const fingerprinted = input?.schema === 'hex.function-fingerprint' || input?.schema === 'hex.function-fingerprint-fast';
+    // Raw query functions pay the same preprocessing gate as index builds:
+    // the constructor's preprocess budgets must also bound public query
+    // fingerprinting, or the standalone candidates() path bypasses them
+    // entirely (#5021).
+    if (!fingerprinted && !this.budget.preprocess(input, 'before query fingerprint preprocessing')) {
+      this.complete = false;
+      return [];
+    }
+    const fp = fingerprinted ? input : fingerprintFunctionFast(input);
     const rawMaxCandidates = Number(options.maxCandidates ?? 128);
     const maxCandidates = Number.isFinite(rawMaxCandidates) && rawMaxCandidates > 0 ? Math.max(1, Math.floor(rawMaxCandidates)) : 128;
     const rawMaxBucketScan = Number(options.maxBucketScan ?? 1024);
