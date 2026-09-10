@@ -205,6 +205,30 @@ export function parseCilMethodSignature(blob, typeDefOrRefRowCounts = null) {
   return parseMethodSignature(blob, 0, 'cil-call-signature-invalid', 0, true, 0, typeDefOrRefRowCounts).value;
 }
 
+// ECMA-335 II.23.2.5 PropertySig: PROPERTY [HASTHIS] ParamCount Type Param*.
+// Reuse the canonical Type/Param grammar so modifiers and TypeDefOrRef bounds
+// stay identical to method-signature handling.
+export function parseCilPropertySignature(blob, typeDefOrRefRowCounts = null) {
+  const code = 'cil-property-signature-invalid';
+  if (!(blob instanceof Uint8Array) || blob.length < 3) fail(code);
+  let pos = 0;
+  const callConvention = blob[pos++];
+  if ((callConvention & 0x0f) !== 0x08 || (callConvention & ~0x28) !== 0) fail(code);
+  const hasThis = (callConvention & 0x20) !== 0;
+  const count = readCompressed(blob, pos, code);
+  pos = count.next;
+  const property = parseType(blob, pos, code, 0, 0, typeDefOrRefRowCounts);
+  pos = property.next;
+  const parameters = [];
+  for (let i = 0; i < count.value; i++) {
+    const parameter = parseParam(blob, pos, code, 0, 0, typeDefOrRefRowCounts);
+    parameters.push(parameter.value);
+    pos = parameter.next;
+  }
+  if (pos !== blob.length) fail(code);
+  return Object.freeze({ callConvention, hasThis, propertyType:property.value, parameters:Object.freeze(parameters) });
+}
+
 // ECMA-335 II.23.2.6 LocalVarSig: 0x07 Count T* where each T may carry
 // custom modifiers, the PINNED modifier, and a BYREF pair. The lifter needs
 // the typed locals as a stack-type array so ldloc/stloc stop publishing a
