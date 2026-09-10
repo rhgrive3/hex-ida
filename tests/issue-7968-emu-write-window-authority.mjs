@@ -63,6 +63,22 @@ async function expectUnmapped(fn, label) {
   assert.equal(await emu.load(0x200fn, 1), 0x5an, 'boundary byte of the rejected store is unmodified');
 }
 
+// R1: a store spanning 3+ pages must materialize and admit interior pages —
+// an unbacked middle page fails closed without partial writes on the start
+// page and without minting readable mem backing for the interior page.
+{
+  const emu = new Emulator({ read: (p) => {
+    if (p === 0x1000n || p === 0x3000n) return new Uint8Array(PAGE).fill(0x5a);
+    return new Uint8Array(0); // page 0x2000: no backing
+  } });
+  assert.equal(await emu.load(0x1000n, 1), 0x5an, 'start page backed');
+  await expectUnmapped(() => emu.store(0x1fffn, 4098, new Uint8Array(4098)),
+    'store across an unbacked interior page');
+  assert.equal(await emu.load(0x1fffn, 1), 0x5an, 'boundary byte unmodified after the rejected store');
+  assert.equal(await emu.load(0x1ffen, 1), 0x5an, 'start-page byte before the boundary unmodified');
+  await expectUnmapped(() => emu.load(0x2500n, 1), 'interior page gained no readable backing');
+}
+
 // Cross-page mapZero: each page gates its own window slice; the backing
 // prefix of the tail page keeps its own authority.
 {

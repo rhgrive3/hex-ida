@@ -311,9 +311,14 @@ export class Emulator {
       const endExclusive = start + BigInt(n), monitorEnd = this.exclusive.addr + BigInt(this.exclusive.size);
       if (!(endExclusive <= this.exclusive.addr || monitorEnd <= start)) this.exclusive = null;
     }
-    await this.ensure(start);
+    /* #7968: materialize every page the store touches — ensuring only the
+       start/end pages left interior pages unbacked, where the pre-admission
+       below would fail open and writeByte() would mint undeclared mem
+       backing. An interior page without backing fails closed here. */
     const end = start + BigInt(n - 1);
-    if (end / BigInt(PAGE) !== start / BigInt(PAGE)) await this.ensure(end);
+    for (let p = (start / BigInt(PAGE)) * BigInt(PAGE); p <= end; p += BigInt(PAGE)) {
+      await this.ensure(p);
+    }
     /* #7968: admit every byte of the store before committing any of it — a
        range that straddles the write-authority boundary fails closed without
        partially writing the bytes inside the prefix. */
