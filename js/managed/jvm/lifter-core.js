@@ -64,6 +64,93 @@ function requireLocalAccess(maxLocals, index, slots, unknownEffects) {
   return true;
 }
 
+// JVMS §6.5 ldc/ldc_w/ldc2_w: the indexed runtime constant pool entry is the
+// pushed value's authority. The entry tag is the value's type (§4.4):
+// ldc/ldc_w accept Integer/Float/Class/String/MethodHandle/MethodType;
+// ldc2_w accepts only Long/Double. Resolving the entry into the produced
+// value keeps compiler-generated constants lossless in the final Semantic IR
+// instead of input-less complete unary nodes with the value and type dropped
+// (#8004). A reference kind (Class/String/MethodHandle/MethodType) is kept
+// distinct from a primitive constant; a CONSTANT_Dynamic's actual value is
+// bootstrap-computed and therefore not statically resolvable, and any entry
+// that cannot be resolved losslessly fails closed (partial), never exact.
+function resolveJvmLdcConstant(jvmClass, cpIndex, isCategory2) {
+  const pool = jvmClass.constantPool;
+  if (!Array.isArray(pool) || !Number.isInteger(cpIndex) || cpIndex <= 0 || cpIndex >= pool.length) return null;
+  const entry = pool[cpIndex];
+  if (!entry || typeof entry.tag !== 'number') return null;
+  const utf8 = (idx) => {
+    if (!Number.isInteger(idx) || idx <= 0 || idx >= pool.length) return null;
+    const item = pool[idx];
+    return item && item.tag === 1 && typeof item.value === 'string' ? item.value : null;
+  };
+  const className = (idx) => {
+    if (!Number.isInteger(idx) || idx <= 0 || idx >= pool.length) return null;
+    const item = pool[idx];
+    return item && item.tag === 7 ? utf8(item.nameIndex) : null;
+  };
+  const primitive = (extra) => ({ constant: entry.value, ...extra });
+  // jsonSafe drops non-finite numbers; NaN/±Infinity float constants are
+  // exact knowledge, so they keep their canonical string form instead.
+  const floatPrimitive = (extra) => ({
+    constant: Number.isFinite(entry.value) ? entry.value : String(entry.value),
+    ...extra,
+  });
+  switch (entry.tag) {
+    case 3: // Integer
+      return isCategory2 ? null : primitive({});
+    case 4: // Float
+      return isCategory2 ? null : floatPrimitive({
+        type: { kind: 'float', widthBits: 32, format: 'binary32' },
+      });
+    case 5: // Long
+      return isCategory2 ? primitive({}) : null;
+    case 6: // Double
+      return isCategory2 ? floatPrimitive({
+        type: { kind: 'float', widthBits: 64, format: 'binary64' },
+      }) : null;
+    case 7: { // Class
+      if (isCategory2) return null;
+      const name = utf8(entry.nameIndex);
+      if (name == null) return null;
+      return { stackType: 'reference', valueType: 'class', constant: name };
+    }
+    case 8: { // String
+      if (isCategory2) return null;
+      const value = utf8(entry.stringIndex);
+      if (value == null) return null;
+      return { stackType: 'reference', valueType: 'string', constant: value };
+    }
+    case 15: { // MethodHandle
+      if (isCategory2) return null;
+      if (!Number.isInteger(entry.referenceKind) || entry.referenceKind < 1 || entry.referenceKind > 9) return null;
+      if (!Number.isInteger(entry.referenceIndex) || entry.referenceIndex <= 0 || entry.referenceIndex >= pool.length) return null;
+      const ref = pool[entry.referenceIndex];
+      if (!ref || (ref.tag !== 9 && ref.tag !== 10 && ref.tag !== 11)) return null;
+      const owner = className(ref.classIndex);
+      const nameAndType = pool[ref.nameAndTypeIndex];
+      if (owner == null || !nameAndType || nameAndType.tag !== 12) return null;
+      const name = utf8(nameAndType.nameIndex);
+      const descriptor = utf8(nameAndType.descriptorIndex);
+      if (name == null || descriptor == null) return null;
+      return {
+        stackType: 'reference',
+        valueType: 'method-handle',
+        referenceKind: entry.referenceKind,
+        constant: `${owner}.${name}:${descriptor}`,
+      };
+    }
+    case 16: { // MethodType
+      if (isCategory2) return null;
+      const descriptor = utf8(entry.descriptorIndex);
+      if (descriptor == null) return null;
+      return { stackType: 'reference', valueType: 'method-type', constant: descriptor };
+    }
+    default: // CONSTANT_Dynamic and non-loadable tags are not losslessly resolvable here
+      return null;
+  }
+}
+
 export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
   const method = jvmClass.methods[methodIdx];
   if (!method) fail('jvm-invalid-method-index');
@@ -191,8 +278,29 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           if (opcode !== 0x12) pc += 2;
           const isCategory2 = opcode === 0x14;
           mnemonic = opcode === 0x12 ? 'ldc' : opcode === 0x13 ? 'ldc_w' : 'ldc2_w';
-          producedValues.push({ bits: isCategory2 ? 64 : 32, cpIndex: cpIdx, category: isCategory2 ? 2 : 1 });
-          currentStackHeight += isCategory2 ? 2 : 1;
+          const resolved = resolveJvmLdcConstant(jvmClass, cpIdx, isCategory2);
+          if (resolved) {
+            producedValues.push({
+              bits: isCategory2 ? 64 : 32,
+              cpIndex: cpIdx,
+              category: isCategory2 ? 2 : 1,
+              ...resolved,
+            });
+            currentStackHeight += isCategory2 ? 2 : 1;
+          } else {
+            // The runtime constant pool entry is the value's authority; an
+            // entry that cannot be resolved losslessly (out-of-range index,
+            // reserved slot, tag/opcode mismatch, broken nested reference) is
+            // invalid bytecode — the fabricated stack value is withheld and
+            // the bundle fails closed instead of publishing an exact
+            // constant that dropped its value (#8004, branch-target
+            // precedent #3899).
+            completeness = 'partial';
+            unknownEffects.push({
+              category: 'other',
+              reason: `jvm-ldc-constant-unresolved:${cpIdx}`,
+            });
+          }
         }
         break;
 
