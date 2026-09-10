@@ -3,22 +3,14 @@
 // predicate. The lifter kept the mnemonic but emitted a bare
 // `kind:'conditional-branch'` control effect, and the shared bridge lowered
 // every comparison branch to the same canonical node — no predicate, no
-// signedness — while still publishing exact/complete semantics. `bge.s` and
-// `bge.un.s` were canonically indistinguishable.
-//
-// The canonical semantic consumer contract (v2->v1 projection,
-// `conditionCode()`/`comparisonPredicate()`/`comparisonSignedness()`) reads
-// `attributes.conditionCode` / `attributes.predicate` / `attributes.signed`.
+// signedness — while still publishing exact/complete semantics.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { liftCilMethod } from '../js/managed/cil/lifter-core.js';
-import { lowerVMEffectsToSemanticIr } from '../js/managed/shared/bridge-v2.js';
-import { projectSemanticIrV2ToLegacyV1 } from '../js/semantics/compat/semantic-ir-v2-to-v1.js';
+import { liftCilMethod } from '../../../js/managed/cil/lifter-core.js';
+import { lowerVMEffectsToSemanticIr } from '../../../js/managed/shared/bridge-v2.js';
+import { projectSemanticIrV2ToLegacyV1 } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 
-// ECMA-335 Partition III branch opcodes (short forms share the .s suffix):
-// beq 0x2e, bge 0x2f, bgt 0x30, ble 0x31, blt 0x32,
-// bne.un 0x33, bge.un 0x34, bgt.un 0x35, ble.un 0x36, blt.un 0x37.
 const BRANCH_TABLE = [
   [0x2e, 'beq', { conditionCode: 'eq', predicate: 'eq' }],
   [0x2f, 'bge', { conditionCode: 'ge', predicate: 'ge', signed: true }],
@@ -48,7 +40,7 @@ function cilImage(bytecode) {
 }
 
 function branchFor(opcode, shortForm) {
-  const suffix = shortForm ? [0x01] : [0x00, 0x01]; // .s takes int8, otherwise int32
+  const suffix = shortForm ? [0x01] : [0x00, 0x01];
   const bytecode = Uint8Array.from([0x17, 0x16, opcode, ...suffix, 0x2a, 0x2a]);
   const effects = liftCilMethod(0, cilImage(bytecode), {}, {
     complete: true,
@@ -67,7 +59,7 @@ test('#7924 every CIL comparison branch carries its predicate, signedness and co
     assert.equal(node.attributes.conditionCode, expected.conditionCode, `${expectedMnemonic} conditionCode`);
     assert.equal(node.attributes.predicate, expected.predicate, `${expectedMnemonic} predicate`);
     assert.equal(node.attributes.signed, expected.signed ?? null, `${expectedMnemonic} signedness`);
-    assert.equal(node.completeness, 'complete', `${expectedMnemonic} stays complete (predicate is representable)`);
+    assert.equal(node.completeness, 'complete', `${expectedMnemonic} stays complete`);
   }
 });
 
@@ -81,7 +73,7 @@ test('#7924 signed and unsigned variants are canonically distinguishable', () =>
   assert.notDeepEqual(signed.attributes, unsigned.attributes);
 });
 
-test('#7924 the v2->v1 projection projects the branch predicate into distinct condition codes', () => {
+test('#7924 the v2->v1 projection projects distinct branch condition codes', () => {
   const condFor = (opcode) => {
     const lowered = branchFor(opcode, true);
     const node = lowered.semanticIr.nodes.find((n) => n.kind === 'conditional-branch');
@@ -89,15 +81,13 @@ test('#7924 the v2->v1 projection projects the branch predicate into distinct co
     const inst = legacy.instructions.find((i) => i.semanticNodeId === node.id);
     return inst?.cond ?? null;
   };
-  assert.equal(condFor(0x2f), 'ge');   // bge.s
-  assert.equal(condFor(0x34), 'hs');   // bge.un.s
-  assert.equal(condFor(0x37), 'lo');   // blt.un.s
-  assert.equal(condFor(0x2e), 'eq');   // beq.s
+  assert.equal(condFor(0x2f), 'ge');
+  assert.equal(condFor(0x34), 'hs');
+  assert.equal(condFor(0x37), 'lo');
+  assert.equal(condFor(0x2e), 'eq');
 });
 
-test('#7924 non-predicate conditional branches (brtrue/brfalse) receive no fabricated attributes', () => {
-  // brtrue.s (0x2d) / brfalse.s (0x2c) branch on a single value — the zero-test
-  // family, not a two-operand predicate. The table must not fire for them.
+test('#7924 non-predicate conditional branches receive no fabricated attributes', () => {
   for (const [opcode, mnemonic] of [[0x2d, 'brtrue.s'], [0x2c, 'brfalse.s']]) {
     const lowered = branchFor(opcode, true);
     const node = lowered.semanticIr.nodes.find((n) => n.kind === 'conditional-branch');

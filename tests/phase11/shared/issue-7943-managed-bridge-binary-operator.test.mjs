@@ -6,10 +6,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { liftCilMethod } from '../js/managed/cil/lifter-core.js';
-import { WasmFrontend } from '../js/managed/wasm/frontend.js';
-import { lowerVMEffectsToSemanticIr } from '../js/managed/shared/bridge-v2.js';
-import { projectSemanticIrV2ToLegacyV1 } from '../js/semantics/compat/semantic-ir-v2-to-v1.js';
+import { liftCilMethod } from '../../../js/managed/cil/lifter-core.js';
+import { WasmFrontend } from '../../../js/managed/wasm/frontend.js';
+import { lowerVMEffectsToSemanticIr } from '../../../js/managed/shared/bridge-v2.js';
+import { projectSemanticIrV2ToLegacyV1 } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 
 function cilImage(bytecode) {
   return {
@@ -27,7 +27,6 @@ function cilImage(bytecode) {
 }
 
 function cilBinaryNode(mnemonicByte) {
-  // ldc.i4.1, ldc.i4.0, <op>, pop, ret
   const effects = liftCilMethod(0, cilImage(Uint8Array.from([0x17, 0x16, mnemonicByte, 0x26, 0x2a])), {}, {
     complete: true,
     methodToken: 0x06000001,
@@ -69,8 +68,7 @@ test('#7943 wasm add and sub are canonically distinguishable through the v1 proj
   const sub = await wasmBinaryNode(0x6b);
   const projected = (bridged, node) => {
     const legacy = projectSemanticIrV2ToLegacyV1(bridged.semanticIr, { cfg: bridged.cfg, ssa: bridged.ssa });
-    const inst = legacy.instructions.find((i) => i.semanticNodeId === node.id);
-    return inst;
+    return legacy.instructions.find((i) => i.semanticNodeId === node.id);
   };
   const addInst = projected(add.bridged, add.node);
   const subInst = projected(sub.bridged, sub.node);
@@ -80,11 +78,6 @@ test('#7943 wasm add and sub are canonically distinguishable through the v1 proj
 });
 
 test('#7943 cil binary mnemonics carry the operator matching the kind classifier', () => {
-  // CIL opcodes: add 0x58, sub 0x59, mul 0x5a, div 0x5b, rem 0x5d, and 0x5f,
-  // or 0x60, xor 0x61, shl 0x62, shr 0x63 — the bridge's classifier keywords
-  // are add, sub, mul, div, and, or, xor, shl, shr, rem; the operator spelling
-  // must be the keyword that classified the node (with xor checked before or,
-  // since "xor" contains "or").
   const expectations = [
     [0x58, 'add'], [0x59, 'sub'], [0x5a, 'mul'], [0x5f, 'and'],
     [0x60, 'or'], [0x61, 'xor'], [0x62, 'shl'], [0x63, 'shr'], [0x5d, 'rem'],
