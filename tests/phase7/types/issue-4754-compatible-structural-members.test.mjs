@@ -97,3 +97,18 @@ test('#4754 unknown member extents do not weaken fail-closed conflict handling',
 
   assert.equal(claimsConflict(left, right), true);
 });
+
+test('#4754 same-offset compatible partial member metadata merges into one certain fact', () => {
+  const left = aggregate('P', [member(0, 4, int32)]);
+  const right = aggregate('P', [member(0, 4, int32, { fieldName:'value' })]);
+
+  assert.equal(claimsConflict(left, right), false);
+  const structural = solveWith(left, right);
+  assert.equal(structural.contradictions.length, 0);
+  assert.equal(structural.confidence, 'certain');
+  assert.equal(structural.selected.descriptor.members.length, 1);
+  assert.deepEqual(
+    structural.selected.descriptor.members[0],
+    { offset:0, sizeBytes:4, memberType:int32, fieldName:'value' },
+  );
+});
