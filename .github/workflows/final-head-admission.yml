@@ -232,38 +232,55 @@ jobs:
               ],
             });
 
-            // The evidence above is only authoritative for the tuple that was
-            // evaluated. Re-fetch both mutable authorities immediately before
-            // publishing a final result so a delayed run cannot resurrect stale
-            // success/failure after a main or PR-head advance (#6570).
-            const { data: currentPr } = await github.rest.pulls.get({
-              owner, repo, pull_number: pr.number,
-            });
-            if (!currentPr || currentPr.state !== 'open') {
-              core.info(`PR #${pr.number} closed before final status write; discarding evaluated result.`);
-              return;
-            }
-            const { data: currentBaseBranch } = await github.rest.repos.getBranch({
-              owner, repo, branch: currentPr.base.ref,
-            });
-            const currentHeadSha = currentPr.head?.sha ?? null;
-            const currentBaseSha = currentBaseBranch?.commit?.sha ?? null;
-            if (currentHeadSha !== headSha || currentBaseSha !== evaluatedBaseSha) {
-              core.info(
-                `Admission tuple changed before final status write; evaluated (${headSha}, ${evaluatedBaseSha}), current (${currentHeadSha}, ${currentBaseSha}). Discarding stale result.`,
-              );
-              return;
+            async function readCurrentAdmissionTuple() {
+              const { data: currentPr } = await github.rest.pulls.get({
+                owner, repo, pull_number: pr.number,
+              });
+              if (!currentPr || currentPr.state !== 'open') {
+                return { open: false, headSha: null, baseSha: null };
+              }
+              const { data: currentBaseBranch } = await github.rest.repos.getBranch({
+                owner, repo, branch: currentPr.base.ref,
+              });
+              return {
+                open: true,
+                headSha: currentPr.head?.sha ?? null,
+                baseSha: currentBaseBranch?.commit?.sha ?? null,
+              };
             }
 
-            await github.rest.repos.createCommitStatus({
-              owner,
-              repo,
-              sha: headSha,
-              state: result.state,
-              context: evaluator.FINAL_HEAD_ADMISSION_CONTEXT,
-              description: result.description.slice(0, 140),
-              target_url: targetUrl,
+            const publication = await evaluator.publishTupleBoundAdmissionStatus({
+              evaluatedHeadSha: headSha,
+              evaluatedBaseSha,
+              readCurrentTuple: readCurrentAdmissionTuple,
+              publishEvaluatedStatus: () => github.rest.repos.createCommitStatus({
+                owner,
+                repo,
+                sha: headSha,
+                state: result.state,
+                context: evaluator.FINAL_HEAD_ADMISSION_CONTEXT,
+                description: result.description.slice(0, 140),
+                target_url: targetUrl,
+              }),
+              publishPendingStatus: () => github.rest.repos.createCommitStatus({
+                owner,
+                repo,
+                sha: headSha,
+                state: 'pending',
+                context: evaluator.FINAL_HEAD_ADMISSION_CONTEXT,
+                description: 'Admission tuple changed during status publication; fresh evaluation required',
+                target_url: targetUrl,
+              }),
             });
+
+            if (!publication.published) {
+              core.info(`Admission tuple changed before final status write; discarding evaluated ${result.state}.`);
+              return;
+            }
+            if (publication.corrected) {
+              core.notice('Admission tuple changed during final status write; stale result corrected to pending.');
+              return;
+            }
 
             core.summary
               .addHeading(`Final-head admission: ${result.state}`)

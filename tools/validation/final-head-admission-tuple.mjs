@@ -44,6 +44,57 @@ function tupleBoundReviews(reviews, headSha, baseSha) {
   });
 }
 
+
+function currentTupleMatches(tuple, headSha, baseSha) {
+  return tuple?.open === true
+    && text(tuple?.headSha).toLowerCase() === headSha
+    && text(tuple?.baseSha).toLowerCase() === baseSha;
+}
+
+// Publish a status only for the tuple that was evaluated, then verify the
+// mutable authorities again after the write. A base/head advance can occur
+// between the pre-write guard and GitHub's status write; in that case a
+// fail-closed pending correction is published on the evaluated HEAD so the
+// stale result cannot remain the latest authority for this context.
+export async function publishTupleBoundAdmissionStatus({
+  evaluatedHeadSha,
+  evaluatedBaseSha,
+  readCurrentTuple,
+  publishEvaluatedStatus,
+  publishPendingStatus,
+} = {}) {
+  if (!SHA_RE.test(text(evaluatedHeadSha)) || !SHA_RE.test(text(evaluatedBaseSha))) {
+    throw new TypeError('final-head-admission-invalid-publication-tuple');
+  }
+  if (
+    typeof readCurrentTuple !== 'function'
+    || typeof publishEvaluatedStatus !== 'function'
+    || typeof publishPendingStatus !== 'function'
+  ) {
+    throw new TypeError('final-head-admission-invalid-publication-callback');
+  }
+
+  const headSha = evaluatedHeadSha.toLowerCase();
+  const baseSha = evaluatedBaseSha.toLowerCase();
+  const before = await readCurrentTuple();
+  if (!currentTupleMatches(before, headSha, baseSha)) {
+    return Object.freeze({ published: false, corrected: false, reason: 'pre-publish-drift' });
+  }
+
+  await publishEvaluatedStatus();
+
+  const after = await readCurrentTuple();
+  if (after?.open !== true) {
+    return Object.freeze({ published: true, corrected: false, reason: 'post-publish-closed' });
+  }
+  if (!currentTupleMatches(after, headSha, baseSha)) {
+    await publishPendingStatus();
+    return Object.freeze({ published: true, corrected: true, reason: 'post-publish-drift' });
+  }
+
+  return Object.freeze({ published: true, corrected: false, reason: null });
+}
+
 export function evaluateFinalHeadAdmission({
   currentBaseSha,
   reviews = [],

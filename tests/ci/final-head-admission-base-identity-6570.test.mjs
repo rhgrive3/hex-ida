@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-import { evaluateFinalHeadAdmission } from '../../tools/validation/final-head-admission-tuple.mjs';
+import {
+  evaluateFinalHeadAdmission,
+  publishTupleBoundAdmissionStatus,
+} from '../../tools/validation/final-head-admission-tuple.mjs';
 
 const HEAD = '11'.repeat(20);
 const BASE_OLD = '22'.repeat(20);
@@ -90,21 +93,76 @@ assert.match(workflowSource, /currentBaseSha:\s*evaluatedBaseSha/);
 assert.match(workflowSource, /context\.eventName === 'push'/);
 assert.match(workflowSource, /fresh \(HEAD,BASE\) AUTO review required/);
 
-// #6570 delayed-writer regression: the controller must re-fetch both mutable
-// tuple authorities after evaluation and before the final status write. This
-// prevents an old run from resurrecting success after B_old -> B_new (or H -> H2).
-const evaluationIndex = workflowSource.indexOf('const result = evaluator.evaluateFinalHeadAdmission');
-const refetchPrIndex = workflowSource.indexOf('const { data: currentPr } = await github.rest.pulls.get', evaluationIndex);
-const refetchBaseIndex = workflowSource.indexOf('const { data: currentBaseBranch } = await github.rest.repos.getBranch', refetchPrIndex);
-const driftGuardIndex = workflowSource.indexOf('currentHeadSha !== headSha || currentBaseSha !== evaluatedBaseSha', refetchBaseIndex);
-const finalWriteIndex = workflowSource.indexOf('await github.rest.repos.createCommitStatus', driftGuardIndex);
-assert.ok(evaluationIndex >= 0, 'workflow evaluates a concrete (HEAD,BASE) tuple');
-assert.ok(refetchPrIndex > evaluationIndex, 'PR head is re-fetched after evaluation');
-assert.ok(refetchBaseIndex > refetchPrIndex, 'target branch is re-fetched after PR head');
-assert.ok(driftGuardIndex > refetchBaseIndex, 'head/base drift is checked after both re-fetches');
-assert.ok(finalWriteIndex > driftGuardIndex, 'status write happens only after the tuple drift guard');
-assert.match(
-  workflowSource.slice(driftGuardIndex, finalWriteIndex),
-  /if \(currentHeadSha !== headSha \|\| currentBaseSha !== evaluatedBaseSha\)[\s\S]*?return;/,
-  'a drifted tuple exits before the evaluated result can be published',
-);
+// #6570 delayed-writer regression: reproduce the unsafe ordering directly.
+// The old run passes its pre-write tuple check; then B advances and its
+// invalidator writes pending; only after that does the delayed old run publish
+// success. The post-write tuple check must correct that stale success to pending.
+{
+  let currentBase = BASE_OLD;
+  const writes = [];
+  let reads = 0;
+  const publication = await publishTupleBoundAdmissionStatus({
+    evaluatedHeadSha: HEAD,
+    evaluatedBaseSha: BASE_OLD,
+    readCurrentTuple: async () => {
+      reads += 1;
+      return { open: true, headSha: HEAD, baseSha: currentBase };
+    },
+    publishEvaluatedStatus: async () => {
+      currentBase = BASE_NEW;
+      writes.push('pending:new-base-invalidator');
+      writes.push('success:delayed-old-base-run');
+    },
+    publishPendingStatus: async () => {
+      writes.push('pending:post-write-correction');
+    },
+  });
+  assert.equal(reads, 2);
+  assert.deepEqual(writes, [
+    'pending:new-base-invalidator',
+    'success:delayed-old-base-run',
+    'pending:post-write-correction',
+  ]);
+  assert.deepEqual(publication, {
+    published: true,
+    corrected: true,
+    reason: 'post-publish-drift',
+  });
+}
+
+// Stable tuple: one status write, no spurious correction.
+{
+  const writes = [];
+  const publication = await publishTupleBoundAdmissionStatus({
+    evaluatedHeadSha: HEAD,
+    evaluatedBaseSha: BASE_OLD,
+    readCurrentTuple: async () => ({ open: true, headSha: HEAD, baseSha: BASE_OLD }),
+    publishEvaluatedStatus: async () => writes.push('success'),
+    publishPendingStatus: async () => writes.push('pending'),
+  });
+  assert.deepEqual(writes, ['success']);
+  assert.equal(publication.corrected, false);
+  assert.equal(publication.reason, null);
+}
+
+// Drift already visible before publication: never write the evaluated result.
+{
+  const writes = [];
+  const publication = await publishTupleBoundAdmissionStatus({
+    evaluatedHeadSha: HEAD,
+    evaluatedBaseSha: BASE_OLD,
+    readCurrentTuple: async () => ({ open: true, headSha: HEAD, baseSha: BASE_NEW }),
+    publishEvaluatedStatus: async () => writes.push('success'),
+    publishPendingStatus: async () => writes.push('pending'),
+  });
+  assert.deepEqual(writes, []);
+  assert.deepEqual(publication, {
+    published: false,
+    corrected: false,
+    reason: 'pre-publish-drift',
+  });
+}
+
+assert.match(workflowSource, /publishTupleBoundAdmissionStatus/);
+assert.match(workflowSource, /Admission tuple changed during status publication; fresh evaluation required/);
+assert.match(workflowSource, /if \(publication\.corrected\)[\s\S]*?return;/);
