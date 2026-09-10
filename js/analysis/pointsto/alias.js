@@ -56,6 +56,14 @@ function isProvenAddressSpace(value) {
   return typeof value === 'string' && value.length > 0 && value.trim() === value && value !== 'unknown';
 }
 
+// Canonical address spaces are lowercase tokens ('memory', 'tls', 'io').
+// Case differences or padded spellings mean the value never passed the target
+// canonicalization, so the pair may not be separated by a strict inequality
+// — it degrades to the conservative relation instead (#5587).
+function provenAddressSpaceToken(value) {
+  return isProvenAddressSpace(value) ? value.toLowerCase() : null;
+}
+
 // `nonEscapingRoots` is proof authority: a caller handing us a truthy
 // non-Set (array, string, plain object) would otherwise leak a raw
 // TypeError mid-comparison (#5453). Only Set-compatible shapes are
@@ -112,8 +120,9 @@ export function pointsToAlias(left, right, options = {}) {
   for (const a of left.targets) {
     for (const b of right.targets) {
       if (a.rootKey !== b.rootKey) {
-        if (isProvenAddressSpace(a.addressSpace) && isProvenAddressSpace(b.addressSpace)
-          && a.addressSpace !== b.addressSpace) {
+        const spaceA = provenAddressSpaceToken(a.addressSpace);
+        const spaceB = provenAddressSpaceToken(b.addressSpace);
+        if (spaceA != null && spaceB != null && spaceA !== spaceB) {
           relations.push('no');
           reasonCodes.add('distinct-address-space');
           continue;

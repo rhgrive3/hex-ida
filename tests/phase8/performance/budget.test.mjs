@@ -70,10 +70,10 @@ test('the default optimizer budget is invariant under delayed scheduling', () =>
   const outcome = decompileEntry(entry, { phase8Optimize: false, deterministicTransforms: false });
   assert.ok(outcome.result, outcome.failure);
   const context = { ir: outcome.result.ir, opts: {} };
-  const first = runPhase8Stage(context, { stages: ['canonical-facts', 'scalar-optimization', 'memory-optimization', 'loop-facts', 'high-level-recovery', 'structuring', 'refinement'] });
+  const first = runPhase8Stage(context, { stages: ['canonical-facts', 'scalar-optimization', 'memory-optimization', 'loop-facts', 'high-level-recovery', 'structuring', 'providers'] });
   let delayed = false;
   const second = runPhase8Stage(context, {
-    stages: ['canonical-facts', 'scalar-optimization', 'memory-optimization', 'loop-facts', 'high-level-recovery', 'structuring', 'refinement'],
+    stages: ['canonical-facts', 'scalar-optimization', 'memory-optimization', 'loop-facts', 'high-level-recovery', 'structuring', 'providers'],
     shouldAbort: () => {
       if (!delayed) {
         const until = performance.now() + 8;
