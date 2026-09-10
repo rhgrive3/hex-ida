@@ -1,6 +1,19 @@
 import { objcIvarRangeWithinInstance } from './objc-ivar-layout.js';
 
 /*
+ * 検索件数の上限。件数は primitive な正の safe integer だけが authority。
+ * 文字列・配列・boolean を Number() で昇格させたり、0.5件のような
+ * fractional 上限を採用したりしない (#5260)。省略時は既定値。
+ */
+function resultLimit(limit, fallback) {
+  if (limit == null) return fallback;
+  if (typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit < 1) {
+    throw new TypeError('result limit must be a positive safe integer');
+  }
+  return limit;
+}
+
+/*
  * フィールド（ivar）の索引 — 「x0 + 0x20」を「self の hp」に変える層。
  *
  * このツールでいちばん効く一手。逆アセンブルの中でいちばん多いのは
@@ -195,8 +208,8 @@ export class FieldIndex {
   findFields(query, limit = 200) {
     const re = query instanceof RegExp ? query : new RegExp(escapeRe(String(query)), 'i');
     const out = [];
-    const maxResults = Number(limit);
-    if (!Number.isFinite(maxResults) || maxResults <= 0) return out;
+    const maxResults = resultLimit(limit, 200);
+    if (maxResults <= 0) return out;
     for (const c of this.classes.values()) {
       for (const iv of c.ivars) {
         re.lastIndex = 0;
@@ -212,8 +225,8 @@ export class FieldIndex {
   findClasses(query, limit = 200) {
     const re = query instanceof RegExp ? query : new RegExp(escapeRe(String(query)), 'i');
     const out = [];
-    const maxResults = Number(limit);
-    if (!Number.isFinite(maxResults) || maxResults <= 0) return out;
+    const maxResults = resultLimit(limit, 200);
+    if (maxResults <= 0) return out;
     for (const c of this.classes.values()) {
       re.lastIndex = 0;
       if (re.test(c.name)) out.push(c);
