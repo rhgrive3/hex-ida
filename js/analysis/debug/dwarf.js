@@ -557,7 +557,20 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       duplicateCode = cached.duplicateCode;
       invalidChildByte = cached.invalidChildByte ?? false;
     } else {
-      const parsedAbbrev = parseAbbrev(sections.debug_abbrev, abbrevOffset, abbrevState);
+      let parsedAbbrev;
+      try {
+        parsedAbbrev = parseAbbrev(sections.debug_abbrev, abbrevOffset, abbrevState);
+      } catch (error) {
+        const boundedReadFailure = error instanceof RangeError
+          && ['dwarf-read-past-limit', 'dwarf-uleb-too-long', 'dwarf-sleb-too-long'].includes(error.message);
+        if (!boundedReadFailure) throw error;
+        const malformed = error.message !== 'dwarf-read-past-limit';
+        diagnostics.push(`${malformed ? 'malformed' : 'truncated'} abbreviation table for unit at 0x${unitStart.toString(16)}`);
+        complete = false;
+        cursor.offset = unitEnd;
+        cursor.limit = info.length;
+        continue;
+      }
       if (parsedAbbrev.stopReason != null) {
         complete = false;
         if (parsedAbbrev.stopReason === 'cancelled') {
