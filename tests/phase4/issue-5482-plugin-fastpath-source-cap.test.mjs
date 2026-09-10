@@ -93,3 +93,85 @@ test('#5482 the fast path keeps restoring an in-budget digest-bound manifest', a
     },
   });
 });
+
+test('#5482 a source of exactly MAX bytes still restores through the fast path', async () => {
+  const store = new Map();
+  const exact = 'x'.repeat(MAX_PLUGIN_SOURCE_BYTES);
+  const definitions = [{ index: 0, name: 'A', description: '' }];
+  store.set(STORE_KEY, JSON.stringify([{
+    v: 3,
+    installationId: 'exact-max',
+    source: exact,
+    origin: 'test',
+    definitions,
+    sourceDigest: stableDigest(exact),
+    definitionsDigest: stableDigest(definitions),
+    enabledIndexes: [0],
+  }]));
+  await withGlobals({
+    store,
+    fn: async () => {
+      const host = new PluginHost({ store: new Map() });
+      await host.ready;
+      const restored = host.plugins.filter((p) => p.installationId === 'exact-max');
+      assert.equal(restored.length, 1, 'a source of exactly the cap is within the budget and restores');
+      assert.equal(restored[0].source.length, MAX_PLUGIN_SOURCE_BYTES);
+    },
+  });
+});
+
+test('#5482 an oversized entry is skipped without losing later stored plugins', async () => {
+  const store = new Map();
+  const oversized = 'x'.repeat(MAX_PLUGIN_SOURCE_BYTES + 1);
+  const goodSource = 'hex.plugin({ name: "Good", description: "Good", run() {} });';
+  const oversizedDefs = [{ index: 0, name: 'Big', description: '' }];
+  const goodDefs = [{ index: 0, name: 'Good', description: 'Good' }];
+  store.set(STORE_KEY, JSON.stringify([
+    {
+      v: 3,
+      installationId: 'oversized-first',
+      source: oversized,
+      origin: 'test',
+      definitions: oversizedDefs,
+      sourceDigest: stableDigest(oversized),
+      definitionsDigest: stableDigest(oversizedDefs),
+      enabledIndexes: [0],
+    },
+    {
+      v: 3,
+      installationId: 'good-second',
+      source: goodSource,
+      origin: 'test',
+      definitions: goodDefs,
+      sourceDigest: stableDigest(goodSource),
+      definitionsDigest: stableDigest(goodDefs),
+      enabledIndexes: [0],
+    },
+  ]));
+  await withGlobals({
+    store,
+    fn: async () => {
+      const host = new PluginHost({ store: new Map() });
+      await host.ready;
+      assert.equal(host.plugins.filter((p) => p.installationId === 'oversized-first').length, 0,
+        'the oversized stored entry must not restore');
+      assert.equal(host.installations.has('oversized-first'), false);
+      const good = host.plugins.filter((p) => p.installationId === 'good-second');
+      assert.equal(good.length, 1, 'the following good stored entry must still restore');
+      assert.equal(host.installations.has('good-second'), true);
+    },
+  });
+});
+
+test('#5482 install() keeps failing closed on an oversized source', async () => {
+  await withGlobals({
+    store: new Map(),
+    fn: async () => {
+      const host = new PluginHost({ store: new Map() });
+      await host.ready;
+      const result = await host.install('x'.repeat(MAX_PLUGIN_SOURCE_BYTES + 1), 'テスト');
+      assert.match(result?.error ?? '', /大きすぎます/, 'the install-path byte cap must stay enforced');
+      assert.equal(host.plugins.length, 0);
+    },
+  });
+});
