@@ -53,4 +53,41 @@ const spec = { address: 0x1000n, heap: [{ address: 0x600000001000n, size: 8, val
   assert.equal(outcome.coverage.cancelled, true, 'verify reports the caller cancel');
 }
 
+// abort DURING slow setup stops the remaining setup work (in-setup
+// checkpoints), rather than running setup to completion and rejecting after
+{
+  const adapter = new LocalFunctionSandboxAdapter(io);
+  await adapter.connect();
+  const ac = new AbortController();
+  let storeCalls = 0;
+  const rawStore = adapter.emulator?.store?.bind(adapter) || null;
+  // A pre-launch adapter has no emulator yet; the sandbox emulator is created
+  // inside launch, so gate on the sandbox objectMemory stores via a slow
+  // first store through the io-independent emulator wrapper: wrap after the
+  // sandbox exists by intercepting at the FunctionSandbox level instead.
+  const { FunctionSandbox } = await import('../../../js/symbolic/function-sandbox.js');
+  const sandbox = new FunctionSandbox(io);
+  const slow = { resolve: null, promise: null };
+  const rawSandboxStore = sandbox.emulator.store.bind(sandbox.emulator);
+  sandbox.emulator.store = async (addr, size, value) => {
+    storeCalls++;
+    if (storeCalls === 1) {
+      slow.promise = new Promise((resolve) => { slow.resolve = resolve; });
+      await slow.promise;
+    }
+    return rawSandboxStore(addr, size, value);
+  };
+  const setupPending = sandbox.setup(0x1000n, {
+    objectMemory: [1, 2, 3, 4, 5].map((n) => ({ offset: n * 0x10, size: 4, value: n })),
+    signal: ac.signal,
+  }).catch((e) => e);
+  await new Promise((r) => setTimeout(r, 5));
+  ac.abort('user-cancel');
+  slow.resolve();
+  const outcome = await setupPending;
+  assert.equal(outcome?.code, 'sandbox-setup-cancelled', 'setup must reject at the next in-setup checkpoint');
+  assert.ok(storeCalls <= 2, `the remaining setup work must not run after the abort (stores=${storeCalls})`);
+  void rawStore;
+}
+
 console.log('issue #5268 local launch AbortSignal support regression: PASS');
