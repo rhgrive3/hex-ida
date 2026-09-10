@@ -62,6 +62,10 @@ const ldc = (idx) => [0x12, idx, 0xb1];                 // ldc #idx; return
 const ldcW = (idx) => [0x13, idx >> 8, idx & 0xff, 0xb1]; // ldc_w #idx; return
 const ldc2W = (idx) => [0x14, idx >> 8, idx & 0xff, 0xb1]; // ldc2_w #idx; return
 
+// A JVM reference pushes a 32-bit managed-heap address; the machine type
+// must survive into the final Semantic IR instead of degrading to bitvector32.
+const REF_TYPE = { kind: 'address', widthBits: 32, addressSpace: 'managed-heap' };
+
 const lift = ({ constantPool, bytecode }) =>
   liftJvmMethod(0, classWith({ constantPool, bytecode })).bundles[0];
 
@@ -103,22 +107,22 @@ test('#8004 ldc keeps the String reference kind and its resolved content', () =>
   const bundle = lift({ constantPool: pool, bytecode: ldc(12) });
   assert.equal(bundle.completeness, 'exact');
   assert.deepEqual(bundle.producedValues, [{
-    bits: 32, cpIndex: 12, category: 1,
+    bits: 32, cpIndex: 12, category: 1, type: REF_TYPE,
     stackType: 'reference', valueType: 'string', constant: 'hex-ida-audit',
   }]);
 });
 
 test('#8004 ldc resolves Class, MethodType, and MethodHandle reference identities', () => {
   assert.deepEqual(lift({ constantPool: pool, bytecode: ldc(13) }).producedValues, [{
-    bits: 32, cpIndex: 13, category: 1,
+    bits: 32, cpIndex: 13, category: 1, type: REF_TYPE,
     stackType: 'reference', valueType: 'class', constant: 'java/lang/Object',
   }]);
   assert.deepEqual(lift({ constantPool: pool, bytecode: ldc(14) }).producedValues, [{
-    bits: 32, cpIndex: 14, category: 1,
+    bits: 32, cpIndex: 14, category: 1, type: REF_TYPE,
     stackType: 'reference', valueType: 'method-type', constant: '(I)V',
   }]);
   assert.deepEqual(lift({ constantPool: pool, bytecode: ldc(17) }).producedValues, [{
-    bits: 32, cpIndex: 17, category: 1,
+    bits: 32, cpIndex: 17, category: 1, type: REF_TYPE,
     stackType: 'reference', valueType: 'method-handle', referenceKind: 6,
     constant: 'java/lang/Object.f:(I)V',
   }]);
@@ -197,6 +201,47 @@ test('#8004 resolved constants reach the final Semantic IR', () => {
   const floatValue = floatLowered.semanticIr.values.find((v) => floatNode.outputs.includes(v.id));
   assert.equal(floatValue.metadata.constant, '1.25');
   assert.deepEqual(floatValue.machineType, { kind: 'float', widthBits: 32, format: 'binary32' });
+});
+
+// The reference-kind half of #8004: String/Class/MethodType/MethodHandle must
+// reach the final public value as managed-heap addresses with their
+// value-kind identity intact — not complete bitvector32 values with the
+// reference authority erased.
+function loweredReference(cpIndex) {
+  const fn = liftJvmMethod(0, classWith({ constantPool: pool, bytecode: ldc(cpIndex) }));
+  const lowered = lowerVMEffectsToSemanticIr(fn);
+  const node = lowered.semanticIr.nodes.find((n) => n.sourceEffectIds?.includes(fn.bundles[0].operationId));
+  assert.ok(node, 'ldc node required');
+  return lowered.semanticIr.values.find((v) => node.outputs.includes(v.id));
+}
+
+test('#8004 reference-kind constants keep their identity in the final Semantic IR', () => {
+  const string = loweredReference(12);
+  assert.deepEqual(string.machineType, REF_TYPE);
+  assert.deepEqual(string.metadata,
+    { valueType: 'string', constant: 'hex-ida-audit' });
+
+  const clazz = loweredReference(13);
+  assert.deepEqual(clazz.machineType, REF_TYPE);
+  assert.deepEqual(clazz.metadata,
+    { valueType: 'class', constant: 'java/lang/Object' });
+
+  const methodType = loweredReference(14);
+  assert.deepEqual(methodType.machineType, REF_TYPE);
+  assert.deepEqual(methodType.metadata,
+    { valueType: 'method-type', constant: '(I)V' });
+
+  const methodHandle = loweredReference(17);
+  assert.deepEqual(methodHandle.machineType, REF_TYPE);
+  assert.deepEqual(methodHandle.metadata, {
+    valueType: 'method-handle', referenceKind: 6, constant: 'java/lang/Object.f:(I)V',
+  });
+});
+
+test('#8004 string and class references stay distinct through the final IR', () => {
+  const string = loweredReference(12);
+  const clazz = loweredReference(13);
+  assert.notDeepEqual(string.metadata, clazz.metadata);
 });
 
 test('#8004 constants that differ only by CP value produce distinct canonical state', () => {

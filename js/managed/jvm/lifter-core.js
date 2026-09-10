@@ -90,6 +90,14 @@ function resolveJvmLdcConstant(jvmClass, cpIndex, isCategory2) {
     return item && item.tag === 7 ? utf8(item.nameIndex) : null;
   };
   const primitive = (extra) => ({ constant: entry.value, ...extra });
+  // A JVM reference pushes a 32-bit category-1 managed-heap address; the
+  // machine type must say so at the Semantic IR boundary instead of degrading
+  // to a bare bitvector (#8004).
+  const reference = (extra) => ({
+    type: { kind: 'address', widthBits: 32, addressSpace: 'managed-heap' },
+    stackType: 'reference',
+    ...extra,
+  });
   // jsonSafe drops non-finite numbers; NaN/±Infinity float constants are
   // exact knowledge, so they keep their canonical string form instead.
   const floatPrimitive = (extra) => ({
@@ -113,13 +121,13 @@ function resolveJvmLdcConstant(jvmClass, cpIndex, isCategory2) {
       if (isCategory2) return null;
       const name = utf8(entry.nameIndex);
       if (name == null) return null;
-      return { stackType: 'reference', valueType: 'class', constant: name };
+      return reference({ valueType: 'class', constant: name });
     }
     case 8: { // String
       if (isCategory2) return null;
       const value = utf8(entry.stringIndex);
       if (value == null) return null;
-      return { stackType: 'reference', valueType: 'string', constant: value };
+      return reference({ valueType: 'string', constant: value });
     }
     case 15: { // MethodHandle
       if (isCategory2) return null;
@@ -133,18 +141,17 @@ function resolveJvmLdcConstant(jvmClass, cpIndex, isCategory2) {
       const name = utf8(nameAndType.nameIndex);
       const descriptor = utf8(nameAndType.descriptorIndex);
       if (name == null || descriptor == null) return null;
-      return {
-        stackType: 'reference',
+      return reference({
         valueType: 'method-handle',
         referenceKind: entry.referenceKind,
         constant: `${owner}.${name}:${descriptor}`,
-      };
+      });
     }
     case 16: { // MethodType
       if (isCategory2) return null;
       const descriptor = utf8(entry.descriptorIndex);
       if (descriptor == null) return null;
-      return { stackType: 'reference', valueType: 'method-type', constant: descriptor };
+      return reference({ valueType: 'method-type', constant: descriptor });
     }
     default: // CONSTANT_Dynamic and non-loadable tags are not losslessly resolvable here
       return null;
