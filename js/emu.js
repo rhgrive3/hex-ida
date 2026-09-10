@@ -103,6 +103,8 @@ export class Emulator {
     this.loaded = new Map();
     this.loadedValid = new Map();
     this.syntheticPages = new Set();
+    this.syntheticRanges = new Map();
+    this.syntheticRangeGated = new Set();
     this.steps = 0;
     this.stopped = null;
     this.faultCode = null;
@@ -115,6 +117,7 @@ export class Emulator {
     this.heapAllocations = 0;
     this.log = [];
     this.breakpoints = new Set();
+    this._runSignal = null;
   }
 
   _normalizeReg(reg) {
@@ -161,9 +164,26 @@ export class Emulator {
     let page = (base / BigInt(PAGE)) * BigInt(PAGE);
     while (page < end) {
       const key = page.toString();
-      if (!this.loaded.has(key)) this.loaded.set(key, new Uint8Array(PAGE));
-      this.loadedValid.set(key, PAGE);
-      this.syntheticPages.add(key);
+      /* #5685: the synthetic mapping's validity must stay exactly
+         [base, end). A page-level prefix length cannot express an
+         unaligned lower bound, so each mapZero() call records its
+         per-page [lo, hi) window; a page may carry several windows when
+         multiple synthetic mappings share it. */
+      const lo = page < base ? Number(base - page) : 0;
+      const hi = end - page >= BigInt(PAGE) ? PAGE : Number(end - page);
+      let ranges = this.syntheticRanges.get(key);
+      if (!ranges) { ranges = []; this.syntheticRanges.set(key, ranges); }
+      if (!ranges.some((r) => r.lo === lo && r.hi === hi)) ranges.push({ lo, hi });
+      if (!this.loaded.has(key)) {
+        /* A page created by mapZero has no other backing: its validity is
+           exactly the union of declared windows (#5685). Pages that already
+           carry real file/stack/heap backing keep their own prefix and
+           gain the window on top. */
+        this.loaded.set(key, new Uint8Array(PAGE));
+        this.loadedValid.set(key, PAGE);
+        this.syntheticPages.add(key);
+        this.syntheticRangeGated.add(key);
+      }
       page += BigInt(PAGE);
     }
     return { start: base, size: len, kind };
@@ -191,8 +211,16 @@ export class Emulator {
       throw new EmulatorFault('unmapped-memory', `no backing memory for 0x${address.toString(16)}`, { address, page });
     }
     let bytes;
-    try { bytes = await this.io.read(page, PAGE); }
-    catch (error) {
+    const runSignal = this._runSignal;
+    try {
+      // Do not start backing I/O after cancellation has already won. Keep the
+      // read invocation itself inside this boundary so synchronous backend
+      // throws retain the legacy memory-read-failed taxonomy (#5594).
+      throwIfAborted(runSignal);
+      const operation = this.io.read(page, PAGE);
+      bytes = runSignal ? await awaitAbortable(operation, runSignal) : await operation;
+    } catch (error) {
+      if (runSignal?.aborted) throw abortError(runSignal);
       throw new EmulatorFault('memory-read-failed', `backing read failed at 0x${page.toString(16)}`, { address, page, cause:String(error && error.message || error) });
     }
     if (!(bytes instanceof Uint8Array) || bytes.length === 0) {
@@ -211,8 +239,17 @@ export class Emulator {
     const w = this.mem.get(key);
     if (w && w.mask[off]) return w.data[off];
     const l = this.loaded.get(key);
+    if (!l) throw new EmulatorFault('unmapped-memory', `byte is outside backed memory at 0x${address.toString(16)}`, { address });
+    const ranges = this.syntheticRanges.get(key) || [];
+    const inWindow = ranges.some((r) => off >= r.lo && off < r.hi);
+    /* #5685: a mapZero-created page backs only its declared windows;
+       pages with other backing treat a window as additive backing. */
+    if (this.syntheticRangeGated.has(key)) {
+      if (!inWindow) throw new EmulatorFault('unmapped-memory', `byte is outside synthetic mapping at 0x${address.toString(16)}`, { address });
+      return l[off];
+    }
     const valid = this.loadedValid.get(key) || 0;
-    if (!l || off < 0 || off >= valid) throw new EmulatorFault('unmapped-memory', `byte is outside backed memory at 0x${address.toString(16)}`, { address });
+    if (off < 0 || (off >= valid && !inWindow)) throw new EmulatorFault('unmapped-memory', `byte is outside backed memory at 0x${address.toString(16)}`, { address });
     return l[off];
   }
 
@@ -224,6 +261,15 @@ export class Emulator {
     if (!w) { w = { data: new Uint8Array(PAGE), mask: new Uint8Array(PAGE) }; this.mem.set(key, w); }
     const off = Number(address - page);
     if (off < 0 || off >= PAGE) throw new EmulatorFault('unmapped-memory', 'write offset is outside page', { address });
+    /* #5685: writes through a mapZero-created page must stay inside a
+       declared [lo, hi) window; pages with other backing or an existing
+       explicit write keep their own authority. */
+    if (this.syntheticRangeGated.has(key) && !(w && w.mask[off])) {
+      const ranges = this.syntheticRanges.get(key) || [];
+      if (!ranges.some((r) => off >= r.lo && off < r.hi)) {
+        throw new EmulatorFault('unmapped-memory', `write is outside synthetic mapping at 0x${address.toString(16)}`, { address });
+      }
+    }
     w.data[off] = Number(value) & 0xff;
     w.mask[off] = 1;
   }
@@ -305,12 +351,16 @@ export class Emulator {
     this.steps++;
 
     let next = at + 4n;
+    this._runSignal = signal;
     try {
       const jumped = await this.execute(insn.mn.toLowerCase(), insn.ops || '', at);
       if (jumped != null) next = jumped;
     } catch (err) {
+      if (signal?.aborted) throw abortError(signal);
       this.stopped = (err && err.message) || String(err);
       return { ok: false, text, reason: this.stopped, code:err && err.code || null };
+    } finally {
+      this._runSignal = null;
     }
     this.pc = next;
     if (this.pc === 0n) this.stopped = '最初の呼び出し元まで戻ってきました（実行おわり）。';
@@ -624,14 +674,26 @@ export class Emulator {
 
   effectiveAddress(mem, after) {
     const base = mem.base ? this.get(mem.base.text) : 0n;
-    const disp = mem.disp && mem.disp.value != null ? mem.disp.value : 0n;
+    // Post-indexed syntax keeps the writeback offset in `writebackDisp`, so a
+    // plain `[x1], #-8` has no address displacement at all.
+    const disp = mem.mode === 'post'
+      ? 0n
+      : (mem.disp && mem.disp.value != null ? mem.disp.value : 0n);
     let index = 0n;
     if (mem.index) index = this.valueOf(Object.assign({}, mem.index, { shift: mem.shift }));
+    // 64-bit address arithmetic wraps modulo 2^64 like the architectural
+    // register width. A negative or overflowing BigInt here would page the
+    // access from the wrong (zero-side) page and disagree with every 64-bit
+    // register writeback (#5227).
+    const wrap64 = (value) => BigInt.asUintN(64, value);
     if (mem.mode === 'post') {
-      if (after && mem.base) this.set(mem.base.text, base + disp);
-      return base + index;
+      if (after && mem.base) {
+        const step = mem.writebackDisp && mem.writebackDisp.value != null ? mem.writebackDisp.value : disp;
+        this.set(mem.base.text, wrap64(base + step));
+      }
+      return wrap64(base + index);
     }
-    const addr = base + disp + index;
+    const addr = wrap64(base + disp + index);
     if (mem.mode === 'pre' && after && mem.base) this.set(mem.base.text, addr);
     return addr;
   }
@@ -777,7 +839,12 @@ export class Emulator {
     if (mn === 'fcvt' || mn === 'fcvtd' || mn === 'fcvts') { this.fset(ops[0],a); return null; }
     if (/^(scvtf|ucvtf)$/.test(mn)) {
       const bits=ops[1]?.bits === 32 ? 32 : 64, raw=this.get(ops[1].text);
-      this.fset(ops[0],Number(mn === 'scvtf' ? BigInt.asIntN(bits,raw) : BigInt.asUintN(bits,raw))); return null;
+      const value=mn === 'scvtf' ? BigInt.asIntN(bits,raw) : BigInt.asUintN(bits,raw);
+      // The destination format must round once, directly from the integer.
+      // Going through binary64 first would round twice and flip boundary
+      // cases by one ULP (#5235).
+      if (this.fpSize(ops[0]) === 4) { this.setFpBits(ops[0],encodeExactFp(value,0,4)); return null; }
+      this.fset(ops[0],Number(value)); return null;
     }
     if (/^fcvtz[su]$/.test(mn)) {
       const bits=ops[0]?.bits === 32 || /^w/.test(ops[0]?.text || '') ? 32 : 64, unsigned=mn === 'fcvtzu'; let result=0n;

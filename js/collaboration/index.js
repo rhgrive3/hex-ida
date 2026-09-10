@@ -1,4 +1,4 @@
-import { deepFreeze, stableDigest } from '../core/identity/index.js';
+import { deepFreeze, lossyTypeWitness, stableDigest } from '../core/identity/index.js';
 import { createOperationIdentity, assertIdentityMatch } from '../phase12/identity.js';
 
 export const CHANGELOG_SCHEMA_VERSION = 'hex-project-operation-v1';
@@ -43,7 +43,15 @@ function sortTombstones(state) {
   if (Array.isArray(state?.tombstones)) state.tombstones.sort(compareTombstones);
   return state;
 }
-function payloadDigest(value) { return stableDigest(value); }
+// stableDigest intentionally normalizes a few values for general JSON-like
+// identities. Operation payloads are retained by clone(), so bind any such
+// lossy types to their existing type witness before hashing. JSON-safe values
+// keep the historical digest bytes unchanged.
+export function collaborationDigest(value) {
+  const witness = lossyTypeWitness(value);
+  return stableDigest(witness ? { value, valueTypes: witness } : value);
+}
+function payloadDigest(value) { return collaborationDigest(value); }
 function factStateFingerprint(record) {
   const values = record.values.map((item) => ({ operationId: item.operationId, value: item.value }));
   // Preserve the existing unresolved fingerprint contract. Once a winner is
@@ -81,16 +89,28 @@ export function createProjectOperation(input = {}) {
   const beforeFingerprintInput = input.beforeFingerprint;
   const beforeFingerprint = beforeFingerprintInput == null ? null : beforeFingerprintInput;
   if (beforeFingerprint !== null && (typeof beforeFingerprint !== 'string' || !beforeFingerprint.trim())) throw new TypeError('operation-before-fingerprint-invalid');
-  const operationId = required(input.operationId ?? `op:${stableDigest({ projectIdentity, binaryIdentity: input.binaryIdentity || null, targetEntityId, factKind, action, payload, beforeFingerprint, causalParents: list(input.causalParents) })}`, 'operation-id-required');
+  const operationIdInput = input.operationId;
+  let operationId = operationIdInput == null ? null : required(operationIdInput, 'operation-id-required');
+  const binaryIdentityInput = input.binaryIdentity;
+  const binaryIdentity = binaryIdentityInput == null ? null : required(binaryIdentityInput, 'operation-binary-identity-invalid');
+  let causalParents = null;
+  if (operationId === null) {
+    causalParents = list(input.causalParents);
+    operationId = required(`op:${collaborationDigest({ projectIdentity, binaryIdentity, targetEntityId, factKind, action, payload, beforeFingerprint, causalParents })}`, 'operation-id-required');
+  }
+  const authorIdentity = input.authorIdentity == null ? null : required(input.authorIdentity, 'operation-author-identity-invalid');
+  const deviceIdentity = input.deviceIdentity == null ? null : required(input.deviceIdentity, 'operation-device-identity-invalid');
+  const timestampHint = input.timestampHint == null ? null : String(input.timestampHint);
+  if (causalParents === null) causalParents = list(input.causalParents);
   const operation = {
     schemaVersion: CHANGELOG_SCHEMA_VERSION,
     operationId,
     projectIdentity,
-    binaryIdentity: input.binaryIdentity == null ? null : required(input.binaryIdentity, 'operation-binary-identity-invalid'),
-    authorIdentity: input.authorIdentity == null ? null : required(input.authorIdentity, 'operation-author-identity-invalid'),
-    deviceIdentity: input.deviceIdentity == null ? null : required(input.deviceIdentity, 'operation-device-identity-invalid'),
-    timestampHint: input.timestampHint == null ? null : String(input.timestampHint),
-    causalParents: list(input.causalParents),
+    binaryIdentity,
+    authorIdentity,
+    deviceIdentity,
+    timestampHint,
+    causalParents,
     targetEntityId,
     factKind,
     action,
@@ -247,6 +267,12 @@ export class ChangeLog {
         return { status: 'rejected', reason: 'operation-id-content-mismatch', operationId: operation.operationId };
       }
       return { status: 'duplicate', operationId: operation.operationId };
+    }
+    // A tombstone-protected operation is intentionally parked until an
+    // explicit resurrection. Replaying the same pending operation must not
+    // append another unresolved diagnostic or change the state digest.
+    if (permanentlyBlockedOp(this, operation.operationId)) {
+      return { status: 'unresolved', reason: 'tombstone-protects-state' };
     }
     const key = factKey(operation.targetEntityId, operation.factKind);
     const current = this.state.facts[key] || null;

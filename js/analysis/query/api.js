@@ -29,7 +29,7 @@ function safeNonNegativeInteger(value) {
 
 function sameSnapshotIdentity(snapshot, current) {
   const currentRevision = safeNonNegativeInteger(current?.projectRevision === undefined ? 0 : current?.projectRevision);
-  const currentEpoch = safeNonNegativeInteger(current?.analysisEpoch);
+  const currentEpoch = safeNonNegativeInteger(current?.analysisEpoch === undefined ? 0 : current?.analysisEpoch);
   if (currentRevision == null || currentEpoch == null || typeof current?.binaryId !== "string") return false;
   return current.binaryId === snapshot.binaryId
     && currentRevision === snapshot.projectRevision

@@ -5,6 +5,52 @@ import { decodeDexInstructionBoundary } from './instruction-boundary.js';
 
 function fail(code) { throw new TypeError(code); }
 
+// ART's Generic JNI trampoline acquires the synchronization object before the
+// JNI call and releases it on both normal and abrupt completion
+// (ArtMethod::IsSynchronized covers ACC_SYNCHRONIZED | ACC_DECLARED_SYNCHRONIZED).
+// Until the shared VMEffect schema can encode implicit method monitors
+// losslessly, synchronized methods must fail closed instead of collapsing into
+// plain-method-equivalent exact semantics (#7896; #7854 JVM precedent).
+const SYNCHRONIZED_MONITOR_REASON = 'dex-synchronized-method-monitor-unrepresented';
+const DEX_ACC_STATIC = 0x0008;
+const DEX_ACC_SYNCHRONIZED = 0x0020;
+const DEX_ACC_DECLARED_SYNCHRONIZED = 0x0020000;
+
+function applySynchronizedMethodSemantics(lifted, accessFlags, options = {}) {
+  if ((accessFlags & (DEX_ACC_SYNCHRONIZED | DEX_ACC_DECLARED_SYNCHRONIZED)) === 0) return lifted;
+
+  const firstBundle = lifted.bundles[0] ?? null;
+  const alreadyMarked = firstBundle?.unknownEffects?.some((effect) =>
+    effect?.reason === SYNCHRONIZED_MONITOR_REASON) === true;
+  const bundles = firstBundle ? [{
+    ...firstBundle,
+    completeness: firstBundle.completeness === 'unknown' ? 'unknown' : 'partial',
+    unknownEffects: alreadyMarked
+      ? firstBundle.unknownEffects
+      : [...firstBundle.unknownEffects, {
+        category: 'other',
+        reason: SYNCHRONIZED_MONITOR_REASON,
+      }],
+  }, ...lifted.bundles.slice(1)] : lifted.bundles;
+
+  return createVMEffectFunction({
+    ...lifted,
+    bundles,
+    aggregateCompleteness: lifted.aggregateCompleteness === 'unknown' ? 'unknown' : 'partial',
+    metadata: {
+      ...lifted.metadata,
+      synchronization: {
+        kind: 'implicit-dex-monitor',
+        monitor: (accessFlags & DEX_ACC_STATIC) !== 0 ? 'declaring-class' : 'receiver',
+        acquire: 'method-entry',
+        release: 'normal-or-abrupt-exit',
+        reentrant: true,
+        completeness: 'unrepresented',
+      },
+    },
+  }, options);
+}
+
 export function liftDexMethod(methodIdx, dexImage, options = {}) {
   const methodDef = dexImage.methods[methodIdx];
   if (!methodDef) fail('dex-invalid-method-index');
@@ -39,13 +85,13 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
       controlEffects: [{ kind: 'return' }],
       completeness: 'exact',
     });
-    return createVMEffectFunction({
+    return applySynchronizedMethodSemantics(createVMEffectFunction({
       methodId,
       profileId: dexImage.vmSpecEdition,
       frontendId: 'dex',
       bundles: [bundle],
       aggregateCompleteness: 'exact',
-    });
+    }), accessFlags, options);
   }
 
   const u8 = dexImage.rawBytes;
@@ -349,11 +395,24 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
           for (const reg of argRegs) {
             locationReads.push({ kind: 'register', index: reg, bits: 32 });
           }
-          callEffects.push({
+          const callEffect = {
             target: `${targetMeth.classType}->${targetMeth.name}`,
             dispatchKind: kinds[opcode],
             argRegisters: argRegs,
-          });
+          };
+          if (opcode === 0x72) {
+            // invoke-interface resolves through the RECEIVER's implemented
+            // interfaces, not the enclosing class's (#7620 R2 review). This
+            // lifter has no receiver register-type authority, so the sound
+            // projection is the module-wide decoded interface edge set as
+            // candidate evidence with dispatch left unresolved — a receiver
+            // may implement interfaces this file never declares. No per-site
+            // assignability fact is published from caller authority.
+            callEffect.interfaceTypes = dexImage.classes
+              .flatMap((cls) => Array.isArray(cls.interfaceTypes) ? cls.interfaceTypes : []);
+            callEffect.unresolved = true;
+          }
+          callEffects.push(callEffect);
         }
         break;
 
@@ -444,7 +503,7 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
     if (boundary.stop) break;
   }
 
-  return createVMEffectFunction({
+  return applySynchronizedMethodSemantics(createVMEffectFunction({
     methodId,
     profileId: dexImage.vmSpecEdition,
     frontendId: 'dex',
@@ -455,5 +514,5 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
       outsSize,
     },
     exceptionRegions,
-  }, options);
+  }, options), accessFlags, options);
 }

@@ -53,12 +53,14 @@ assert.equal(projectedScale(shl(4, reg('x1'))), 4);
 assert.equal(projectedScale(reg('x1')), 0);
 
 // The complete address must agree for loads and stores, including three
-// nested shifts and the existing extend-then-shift representation.
+// nested shifts and the existing extend-then-shift representation. Extend
+// nodes carry proven 32->64 widths: `uxtw`/`sxtw` are only minted for those
+// (width evidence became mandatory with #5418).
 for (const kind of ['memory-read', 'memory-write']) {
   for (const [expression, expectedScale, expectedExtend] of [
     [shl(1, shl(3, shl(2, reg('x1')))), 6, null],
-    [shl(3, { kind: 'zero-extend', value: reg('x1') }), 3, 'uxtw'],
-    [shl(2, { kind: 'sign-extend', value: reg('x1') }), 2, 'sxtw'],
+    [shl(3, { kind: 'zero-extend', fromBits: 32, toBits: 64, value: { kind: 'register', registerId: 'x1', widthBits: 32 } }), 3, 'uxtw'],
+    [shl(2, { kind: 'sign-extend', fromBits: 32, toBits: 64, value: { kind: 'register', registerId: 'x1', widthBits: 32 } }), 2, 'sxtw'],
   ]) {
     const [{ addr }] = lowerMachineEffectsToLegacyV1(bundleWithAddress(expression, kind));
     assert.equal(addr.base, 'x0');
@@ -68,6 +70,18 @@ for (const kind of ['memory-read', 'memory-write']) {
     assert.equal(addr.disp, 0n);
     assert.equal(4096n + (7n << BigInt(addr.scale)), 4096n + 7n * (2n ** BigInt(expectedScale)));
   }
+}
+
+// #5418: extension width evidence is mandatory. A width-less extend must fail
+// closed (no modifier, no index) instead of being laundered into `uxtw`/`sxtw`.
+for (const extend of [
+  { kind: 'zero-extend', value: reg('x1') },
+  { kind: 'sign-extend', value: reg('x1') },
+  { kind: 'zero-extend', fromBits: 64, toBits: 64, value: reg('x1') },
+]) {
+  const address = lowerMachineEffectsToLegacyV1(bundleWithAddress(shl(3, extend)))[0].addr;
+  assert.equal(address.extend ?? null, null, 'unproven extension width must not mint a modifier');
+  assert.equal(address.index, null, 'unproven extension width must not publish an index term');
 }
 
 // Only non-negative safe integer amounts may become an exact scale. Values

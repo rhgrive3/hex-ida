@@ -269,7 +269,28 @@ function plannerDisassemblyShare(total, ratio = 0.4) {
   if (total <= 64) return total;
   return Math.max(64, Math.min(total - 1, Math.floor(total * ratio)));
 }
+function normalizeExternalSignal(value) {
+  if (value == null) return null;
+  if (typeof value !== 'object' && typeof value !== 'function') {
+    throw new TypeError('query-planner-signal-invalid');
+  }
+  let aborted, addEventListener, removeEventListener;
+  try {
+    aborted = value.aborted;
+    addEventListener = value.addEventListener;
+    removeEventListener = value.removeEventListener;
+  } catch {
+    throw new TypeError('query-planner-signal-invalid');
+  }
+  if (typeof aborted !== 'boolean'
+      || typeof addEventListener !== 'function'
+      || typeof removeEventListener !== 'function') {
+    throw new TypeError('query-planner-signal-invalid');
+  }
+  return Object.freeze({ source: value, aborted, addEventListener, removeEventListener });
+}
 function budgetState(opts) {
+  const externalSignal = normalizeExternalSignal(opts?.signal);
   const controller = new AbortController();
   const timeoutMs = explicitBudget(opts && opts.timeoutMs, 3000, 1);
   const requestedMaxFunctions = explicitBudget(opts && opts.maxFunctions, 48, 0);
@@ -291,19 +312,28 @@ function budgetState(opts) {
     candidateTruncated: false, candidateCount: 0, unaccountedToolCost: false,
     analysisAccountedExternally: !!(opts && opts.tools),
     searchIncomplete: false, searchReports: [], sourceTotals: Object.fromEntries(POOL_ORDER.map((name) => [name, 0])),
-    controller, signal: controller.signal, timeout: null, externalSignal: opts && opts.signal || null, externalAbort: null,
+    controller, signal: controller.signal, timeout: null, externalSignal, externalAbort: null,
   };
-  b.timeout = setTimeout(() => { if (!b.signal.aborted) controller.abort('timeout'); }, timeoutMs);
   if (b.externalSignal) {
-    b.externalAbort = () => { if (!b.signal.aborted) controller.abort(b.externalSignal.reason ?? 'cancelled'); };
-    if (b.externalSignal.aborted) b.externalAbort();
-    else b.externalSignal.addEventListener('abort', b.externalAbort, { once:true });
+    const external = b.externalSignal;
+    b.externalAbort = () => { if (!b.signal.aborted) controller.abort('cancelled'); };
+    if (external.aborted) b.externalAbort();
+    else {
+      try { Reflect.apply(external.addEventListener, external.source, ['abort', b.externalAbort, { once:true }]); }
+      catch {
+        try { Reflect.apply(external.removeEventListener, external.source, ['abort', b.externalAbort]); } catch {}
+        throw new TypeError('query-planner-signal-invalid');
+      }
+    }
   }
+  b.timeout = setTimeout(() => { if (!b.signal.aborted) controller.abort('timeout'); }, timeoutMs);
   return b;
 }
 function disposeBudget(b) {
   if (b.timeout) clearTimeout(b.timeout);
-  if (b.externalSignal && b.externalAbort) b.externalSignal.removeEventListener('abort', b.externalAbort);
+  if (b.externalSignal && b.externalAbort) {
+    try { Reflect.apply(b.externalSignal.removeEventListener, b.externalSignal.source, ['abort', b.externalAbort]); } catch {}
+  }
 }
 function timedOut(b) { return b.signal.aborted && String(b.signal.reason || '') === 'timeout' || Date.now() - b.started >= b.timeoutMs; }
 function cancelled(b) {
@@ -348,17 +378,63 @@ function consumeExternalCost(result, b) {
   return true;
 }
 function searchCompleteness(result, requestedLimit) {
-  const complete = result?.completeness?.complete ?? result?.complete ?? (!result?.truncated && (result?.results?.length || 0) < requestedLimit);
-  let coverage = Number(result?.completeness?.coverage ?? result?.coverage);
-  const returned = Number(result?.completeness?.returned ?? result?.returned ?? result?.results?.length ?? 0);
-  const totalRaw = result?.completeness?.total ?? result?.total;
-  const total = totalRaw == null ? null : Number(totalRaw);
-  if (!Number.isFinite(coverage)) {
-    if (Number.isFinite(total) && total > 0) coverage = Math.min(1, returned / total);
-    else if (Number.isFinite(Number(result?.scanned)) && Number.isFinite(Number(result?.scanTotal)) && Number(result.scanTotal) > 0) coverage = Math.min(1, Number(result.scanned) / Number(result.scanTotal));
+  const nestedRaw = result?.completeness;
+  const nested = nestedRaw == null || (typeof nestedRaw === 'object' && !Array.isArray(nestedRaw)) ? nestedRaw : null;
+  let malformed = nestedRaw != null && nested == null;
+  const values = {
+    complete: [nested?.complete, result?.complete].filter((value) => value != null),
+    returned: [nested?.returned, result?.returned].filter((value) => value != null),
+    total: [nested?.total, result?.total].filter((value) => value != null),
+    coverage: [nested?.coverage, result?.coverage].filter((value) => value != null),
+  };
+  const completeRaw = values.complete[0];
+  const truncatedRaw = result?.truncated;
+  if (values.complete.some((value) => typeof value !== 'boolean')) malformed = true;
+  if (truncatedRaw != null && typeof truncatedRaw !== 'boolean') malformed = true;
+
+  const rows = Array.isArray(result?.results) ? result.results : [];
+  const returnedRaw = values.returned[0];
+  let returned = rows.length;
+  if (values.returned.some((value) => typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)) malformed = true;
+  else if (returnedRaw != null) returned = returnedRaw;
+  const totalRaw = values.total[0];
+  let total = null;
+  if (values.total.some((value) => typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)) malformed = true;
+  else if (totalRaw != null) total = totalRaw;
+
+  const coverageRaw = values.coverage[0];
+  let coverage = null;
+  if (values.coverage.some((value) => typeof value !== 'number' || !Number.isFinite(value))) malformed = true;
+  else if (coverageRaw != null) coverage = Math.max(0, Math.min(1, coverageRaw));
+  const scannedRaw = result?.scanned;
+  const scanTotalRaw = result?.scanTotal;
+  let scanned = null;
+  let scanTotal = null;
+  if (scannedRaw != null) {
+    if (typeof scannedRaw === 'number' && Number.isFinite(scannedRaw) && scannedRaw >= 0) scanned = scannedRaw;
+    else malformed = true;
+  }
+  if (scanTotalRaw != null) {
+    if (typeof scanTotalRaw === 'number' && Number.isFinite(scanTotalRaw) && scanTotalRaw >= 0) scanTotal = scanTotalRaw;
+    else malformed = true;
+  }
+
+  let complete;
+  if (malformed) complete = false;
+  else if (typeof completeRaw === 'boolean') complete = completeRaw;
+  else complete = truncatedRaw !== true && rows.length < requestedLimit;
+
+  if (coverage == null) {
+    if (!malformed && total != null && total > 0) coverage = Math.min(1, returned / total);
+    else if (!malformed && scanned != null && scanTotal != null && scanTotal > 0) coverage = Math.min(1, scanned / scanTotal);
     else coverage = complete ? 1 : 0.65;
   }
-  return { complete: Boolean(complete), coverage: Math.max(0, Math.min(1, coverage)), reason: result?.completeness?.reason ?? result?.reason ?? (complete ? null : 'result-limit'), returned, total: Number.isFinite(total) ? total : null };
+  if (malformed) coverage = Math.min(coverage, 0.65);
+
+  const reason = malformed
+    ? 'malformed-search-metadata'
+    : nested?.reason ?? result?.reason ?? (complete ? null : 'result-limit');
+  return { complete, coverage, reason, returned, total };
 }
 function noteSearch(b, tool, term, result) {
   const report = { tool, term, ...searchCompleteness(result, b.maxSearchResults) };
@@ -422,7 +498,12 @@ async function candidatePools(query, tools, ctx, b) {
       if (target != null) {
         const xr = await invokeTool(tools, 'get_xrefs', b, target, { limit: b.maxSearchResults });
         if (expired(b)) break;
-        const xCoverage = searchCompleteness({ ...xr, results: xr.functions || [] }, b.maxSearchResults).coverage;
+        const xCoverage = noteSearch(
+          b,
+          'get_xrefs',
+          String(target),
+          { ...xr, results: xr.functions || [] },
+        );
         for (const fn of xr.functions || []) {
           addCandidate(
             pools,

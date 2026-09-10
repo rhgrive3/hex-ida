@@ -91,7 +91,51 @@ function installQueryOverrides(registry, context) {
     };
     const paging = queryPaging(registry, 'inspect_function_region', params, args.cursor);
     const count = Math.max(1, Math.min(500, Number(args.count || (args.radius ? args.radius * 2 + 1 : 160))));
-    const offset = args.cursor ? paging.offset : Math.max(0, Number(args.start) || 0);
+    let offset = args.cursor ? paging.offset : Math.max(0, Number(args.start) || 0);
+    // Mirror the base implementation: without a cursor, anchor the window on
+    // the requested instruction instead of silently returning the first page.
+    if (!args.cursor && args.aroundInstructionId != null) {
+      const radius = Math.max(0, Math.min(250, Number(args.radius ?? 20) || 0));
+      const target = Number(args.aroundInstructionId);
+      const basis = [];
+      let scannedComplete = false;
+      // Bounded full-corpus scan so targets beyond the first window are still
+      // anchored. The scan budget is an upper bound on a single window, never
+      // a silent truncation of the searched corpus.
+      for (let pageOffset = 0, pages = 0; pages < 40 && basis.length < 20000; pages++) {
+        const window = await context.getInstructions(args.functionAddress, {
+          offset: pageOffset,
+          limit: 500,
+          signal:registry.executionSignal,
+        });
+        const rows = pageRows(window);
+        if (!rows.length) { scannedComplete = true; break; }
+        basis.push(...rows);
+        pageOffset += rows.length;
+        if (window?.complete === true) { scannedComplete = true; break; }
+        if (rows.some((item) => Number(item?.id ?? item?.instructionId ?? item?.row) === target)) break;
+      }
+      const index = basis.findIndex((item) =>
+        Number(item?.id ?? item?.instructionId ?? item?.row) === target);
+      if (index >= 0) offset = Math.max(0, index - radius);
+      else if (!scannedComplete) {
+        // The instruction corpus was not exhausted, so absence here is NOT a
+        // proof of absence: refuse to masquerade the first page as an anchored
+        // result (#5671; fail-closed parity with the find_paths/#5662 rule).
+        return {
+          functionAddress:addressText(args.functionAddress),
+          view:'assembly',
+          results:[],
+          offset,
+          returned:0,
+          total:null,
+          complete:false,
+          truncated:true,
+          reason:'anchor-unresolved',
+          analysisAuthority:'AnalysisQueryAPI',
+        };
+      }
+    }
     const page = await context.getInstructions(args.functionAddress, {
       offset,
       limit:count,
