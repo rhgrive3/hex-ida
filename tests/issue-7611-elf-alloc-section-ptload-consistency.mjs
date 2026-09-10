@@ -207,4 +207,37 @@ const ALLOC_EXEC = 0x3n;
     'a NOBITS section outside every PT_LOAD must lose authority');
 }
 
+// File-backed PROGBITS straddling the file-backed→zero-fill boundary must
+// lose authority: the head half agrees with PT_LOAD file bytes, but the tail
+// half overlaps the loader's p_filesz..p_memsz zero-fill, where section bytes
+// would shadow runtime zeros (review counterexample: PT_LOAD VA
+// [0x400000,0x400200) with filesz 0x100, section VA [0x400080,0x400180)).
+{
+  const buf = buildELF({
+    loads: [{ offset: 0x1000, vaddr: 0x400000, filesz: 0x100, memsz: 0x200 }],
+    sections: [{ type: 1, flags: ALLOC_EXEC, addr: 0x400080, offset: 0x1080, size: 0x100, align: 16, exit: 22 }],
+  });
+  const image = parseELF(buf);
+  assert.ok(image.sections.some((s) => s.source === 'unmapped-section' && s.address === 0x400080n),
+    'a PROGBITS section straddling the file/zero boundary must lose authority');
+  assert.equal(image.addressToOffset(0x4000c0n), 0x10c0n, 'the file-backed head stays owned by the PT_LOAD');
+  assert.equal(image.addressToOffset(0x400120n), null, 'the zero-fill tail has no file offset');
+  const tail = image.readVirtual(0x400120n, 4);
+  assert.ok(tail.every((b) => b === 0), 'tail reads resolve as loader zero-fill, not section file bytes');
+  assert.ok(image.warnings.some((w) => w.includes('excluded from virtual mapping authority')),
+    'the straddle rejection is warned');
+}
+
+// A section that runs past the last file-backed byte of every PT_LOAD is
+// also de-authorized even though its head half matches.
+{
+  const buf = buildELF({
+    loads: [{ offset: 0x1000, vaddr: 0x400000, filesz: 0x100 }],
+    sections: [{ type: 1, flags: ALLOC_EXEC, addr: 0x4000c0, offset: 0x10c0, size: 0x100, align: 16, exit: 22 }],
+  });
+  const image = parseELF(buf);
+  assert.ok(image.sections.some((s) => s.source === 'unmapped-section' && s.address === 0x4000c0n),
+    'a PROGBITS section extending past the file-backed tail must lose authority');
+}
+
 console.log('issue #7611 ELF alloc-section PT_LOAD consistency regressions: PASS');

@@ -67,22 +67,29 @@ export function elfSectionFileSpanConsistentWithLoads(image, address, size, file
     }
     return owner != null && start >= owner.segStart + owner.segFilesz;
   }
-  let covered = false;
+  // The section's entire VA span must be covered by file-backed PT_LOAD
+  // regions with a consistent sh_offset relation at every boundary. A section
+  // that straddles a file-backed→zero-fill boundary (or runs past the last
+  // file-backed byte) would let section-header file bytes shadow the loader's
+  // zero-fill/unmapped tail — any uncovered gap de-authoritizes (#7611
+  // review): the runtime loader never serves file bytes there.
+  const fileRegions = [];
   for (const segment of loads) {
     const segStart = BigInt(segment.address ?? 0);
-    const segSize = BigInt(segment.size ?? 0);
     const segFilesz = BigInt(segment.fileSize ?? 0);
     if (segFilesz <= 0n) continue;
-    const vaBegin = start > segStart ? start : segStart;
-    const vaEnd = end < segStart + segFilesz ? end : segStart + segFilesz;
-    if (vaBegin >= vaEnd) continue;
-    const segOffset = BigInt(segment.fileOffset ?? 0);
-    const deltaBegin = vaBegin - start;
-    const deltaEnd = vaEnd - start;
-    if (segOffset + (vaBegin - segStart) !== off + deltaBegin) return false;
-    covered = true;
+    fileRegions.push({ begin: segStart, end: segStart + segFilesz, segStart, segOffset: BigInt(segment.fileOffset ?? 0) });
   }
-  return covered;
+  fileRegions.sort((a, b) => (a.begin < b.begin ? -1 : a.begin > b.begin ? 1 : 0));
+  let cursor = start;
+  for (const region of fileRegions) {
+    if (cursor >= end) return true;
+    if (region.end <= cursor) continue;
+    if (region.begin > cursor) return false;
+    if (region.segOffset + (cursor - region.segStart) !== off + (cursor - start)) return false;
+    cursor = region.end;
+  }
+  return cursor >= end;
 }
 
 /** Require the entire VA span to remain in one file-backed PT_LOAD mapping. */
