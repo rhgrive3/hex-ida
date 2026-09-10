@@ -93,6 +93,7 @@
       "tests/phase8/provenance/unknown-input-source.test.mjs",
       "tests/phase8/performance/proof-optimizer.test.mjs",
       "tests/phase8/scalar/c2-product-transfer-v6.test.mjs",
+      "tests/phase8/scalar/c2-domain-contract-matrix.test.mjs",
       "tests/phase8/scalar/sccp.test.mjs",
       "tests/phase8/substrate/proof-admission.test.mjs",
       "tests/phase8/substrate/proof-projection-origin.test.mjs",

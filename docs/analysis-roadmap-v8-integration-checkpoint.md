@@ -4771,6 +4771,42 @@ complete. Existing branch, wrapped-range, invalidation and downstream mechanisms
 are reused. No other FR task, prerequisite, integration lock or release gate is
 silently closed by this evaluation.
 
+### C2-02 value-domain contract matrices (2026-09-11)
+
+The remaining C2 verification surface now has a dedicated canonical-discovered
+test, `tests/phase8/scalar/c2-domain-contract-matrix.test.mjs`, with one exact
+ownership entry. No production algorithm, solver budget or generated runtime
+content changes in this increment. An open-PR search for a C2 lattice matrix
+found no separate implementation to reuse; the existing range/SCCP owners,
+fixtures, branch publication and independent concrete arithmetic are reused.
+
+| Original C2 requirement | Added/reused evidence | Scope retained |
+|---|---|---|
+| Known-bit/congruence laws | Six widths, nine full-interval domain profiles, 486 ordered pairs and 4,374 triples; idempotence, commutativity, associativity, top/bottom, integer-gcd residue union, containment and widening stabilization | Laws apply to known-bit/congruence products on a common full interval; arbitrary circular interval hulls are not replaced with a different lattice |
+| Width/operator and wrap/signedness | 9,936 cells: six widths × 23 binary operators × 12 left facts × six right facts; wrapped, sign-crossing and unsigned-end intervals included | All represented concrete inputs enumerated through BV8; native boundaries and fixed two-limb samples are not exhaustive native-domain proof |
+| Undefined generic operations | Divide-by-zero, signed overflow and oversized-shift input checks remain counted and cannot authorize exact constants | No architecture-specific fallback or skip-green row |
+| Branch-edge facts | 480 actual SCCP edges: six widths × ten comparison operators × four boundaries × two outcomes; edge/entry partitions and global non-leakage | Disequality complements remain explicitly conservative, not falsely claimed exact |
+| Widening termination and partial withholding | Earlier 18 repaired loops, fresh frozen 96-loop corpus and unresolved-phi cutoff regressions | Existing work/visit/cancellation budgets unchanged |
+| Strict held-out precision gain | Frozen 54-cell composition evaluation plus the unchanged-runtime fresh 96-loop evaluation | Original failed loop holdout retained; fresh evaluation remains separately source-bound |
+
+The first expanded branch checker compared signed full-domain endpoint spelling
+against canonical unsigned storage endpoints and failed (`0n !== 1n` at BV1).
+The reference now normalizes a full set to `[0, 2^bits-1]`, with permanent checks
+of all four signed full-domain boundary forms at every width. The failed receipt
+is retained; neither production behavior nor branch membership assertions were
+weakened. This contract-matrix checker correction is separate from the earlier
+fresh frozen holdout, whose source remains unchanged.
+
+Measurement-only worker controls replace a transfer result with false zero or
+replace an edge-local fact with the global full fact; both must fail. Exact-head
+contract/fresh matrices, canonical scalar discovery, ownership, downstream,
+lint and generated rebuild receipts are retained with the normal same-PR backup.
+These complete the newly identified bounded C2 test-matrix gaps, not universal
+native proofs or release acceptance. FR-C2-01A remains the prerequisite whose
+actual byte-coverage/width/clobber matrix must be audited next; existing byte
+proof and forwarding mechanisms must not be reimplemented from obsolete ledger
+descriptions. No unrelated issue, device, performance or merge work is added.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
