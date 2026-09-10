@@ -104,18 +104,19 @@ export class FieldIndex {
          but the runtime metadata still states what `foo` / `setFoo:` means. */
       const accessorField = (sel) => {
         const text = String(sel || '');
-        let plain = null;
-        const sm = /^set(.+):$/.exec(text);
-        if (sm && sm[1]) plain = sm[1];
-        else if (text && !text.includes(':')) plain = text;
-        if (!plain) return null;
-        const want = plain.replace(/^_+/, '').toLowerCase();
+        const setter = /^set(.+):$/.test(text);
+        if (!text || (!setter && text.includes(':'))) return null;
+
+        const matches = [];
         for (const iv of ivars) {
           const names = [iv.name, iv.property && iv.property.name]
-            .filter(Boolean).map((x) => plainFieldName(x).toLowerCase());
-          if (names.includes(want)) return iv;
+            .filter(Boolean).map((x) => plainFieldName(x)).filter(Boolean);
+          const matched = setter
+            ? names.some((name) => `set${name[0].toUpperCase()}${name.slice(1)}:` === text)
+            : names.includes(plainFieldName(text));
+          if (matched) matches.push(iv);
         }
-        return null;
+        return matches.length === 1 ? matches[0] : null;
       };
       const addMethodOwner = (m, defaultKind, allowInstanceAccessor) => {
         if (m.addr == null) return;
