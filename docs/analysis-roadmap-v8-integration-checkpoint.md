@@ -4807,6 +4807,62 @@ actual byte-coverage/width/clobber matrix must be audited next; existing byte
 proof and forwarding mechanisms must not be reimplemented from obsolete ledger
 descriptions. No unrelated issue, device, performance or merge work is added.
 
+### C2-01 canonical byte-forwarding width/endian matrix (2026-09-11)
+
+FR-C2-01A's production byte coverage and consumer already exist. The previous
+large regression primarily exercised a two-16-bit-store/32-bit-load fixture plus
+many strong identity/forgery/resource negatives; its re-signed big-endian clone
+was a refusal test, not a canonical-built positive width matrix. The new owned
+`tests/phase8/memory/c2-byte-forwarding-matrix.test.mjs` uses the actual Semantic
+IR/CFG/MemorySSA factories, query, compatibility projector and expression
+consumer. It does not clone/re-sign a proof into authority or add a memory engine.
+
+The fixed denominator is 120 cases: widths 8/16/32/64/128 × little/big endian ×
+12 scenarios. Full store, byte-split coverage and ordered byte overwrite yield
+30 exact numeric reconstructions. Hole, unknown byte, volatile/atomic load,
+volatile/atomic store, unknown writer, unresolved call and may-alias store yield
+90 explicit non-exact outcomes. Both the actual bytes and independent integer
+reconstruction must agree through the final constant expression. Contributing
+definition IDs and source entities must identify the ordered winning stores,
+including removal of a fully overwritten contributor at BV8. The may-store
+fixture retains an ordinary exact initial store and makes only its overlapping
+override may-alias; canonical clobber definitions are asserted too.
+
+Every positive rejects copied facts, copied producer artifacts and stale snapshot
+contexts. Removing the canonical forwarding proof while retaining structural
+links must leave a load expression. Every row checks deterministic query replay,
+cancellation and unchanged canonical IR. Unknown call/writer cases also retain
+partial canonical source evidence; their non-exact result is not represented as
+isolated proof of a later clobber-specific query branch.
+
+Fixture corrections are retained explicitly: same-width loads may legitimately
+keep a structural `reachingStore` link, so the test checks its lack of authority
+instead of requiring the field absent; unknown numeric bytes cannot use the
+separate address-operand forwarding path; canonical definition kind names differ
+from compatibility labels. No production behavior or numeric soundness assertion
+was weakened. Worker-only false-value and copied-producer controls both fail.
+
+Related open PR #7502 was inspected at
+`fd2012b985b98340b5e3481b52f9af299b2ad88f`: it owns access-provider trust binding in
+MemorySSA build/proof and explicitly preserves provider-free ordinary descriptors.
+These fixtures use that ordinary path and do not duplicate its separate issue
+fix. Its integration and stacked compatibility routing remain a reconciliation
+handoff, not an ignored PR or an unverified component merge.
+
+The working canonical memory suite passed (196.8s), as did the pre-existing
+byte-forwarding regression and new matrix. Two old quiet-wrapper invocations
+failed during successful-log cleanup with ENOTEMPTY and emitted no success
+receipt; they are not counted as green gates. Task-local retained-log orchestration
+now fsyncs and preserves full logs and atomically writes source-bound receipts,
+without changing repository test commands or the separately owned environment
+issue. Exact-head matrix/memory/existing-regression/ownership/module/lint/rebuild
+evidence and normal same-PR backup are recorded in the durable checkpoint.
+
+This closes the identified canonical positive width/endian/coverage test gap;
+it does not claim exhaustive address/CFG/alias domains, independent release proof,
+or completion of the prerequisite C1 tasks. Whole-roadmap and integration/release
+acceptance remain unclaimed. Existing proof owners must continue to be reused.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

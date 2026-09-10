@@ -89,6 +89,7 @@
       "tests/phase8/helpers/proof-fixtures.mjs",
       "tests/phase8/integration/proof-optimizer.test.mjs",
       "tests/phase8/memory/gvn.test.mjs",
+      "tests/phase8/memory/c2-byte-forwarding-matrix.test.mjs",
       "tests/phase8/ownership/roadmap-v8-integration.test.mjs",
       "tests/phase8/provenance/unknown-input-source.test.mjs",
       "tests/phase8/performance/proof-optimizer.test.mjs",
