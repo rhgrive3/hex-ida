@@ -94,6 +94,7 @@ class IndexedMinHeap {
   push(item) { if (this.indices.has(item.artifactId)) throw new Error('scheduler-queue-duplicate'); const index=this.items.length; this.items.push(item); this.indices.set(item.artifactId,index); this.#up(index); }
   pop() { if (!this.items.length) return null; const root=this.items[0]; this.remove(root.artifactId); return root; }
   remove(artifactId) { const index=this.indices.get(requireArtifactId(artifactId)); if (index==null) return null; const removed=this.items[index]; const last=this.items.pop(); this.indices.delete(removed.artifactId); if (index<this.items.length) { this.items[index]=last; this.indices.set(last.artifactId,index); this.#up(index); this.#down(this.indices.get(last.artifactId)); } return removed; }
+  refresh(artifactId) { const id=requireArtifactId(artifactId); const index=this.indices.get(id); if (index==null) return false; this.#up(index); this.#down(this.indices.get(id)); return true; }
 }
 
 function priorityName(value) {
@@ -198,7 +199,9 @@ export class AnalysisScheduler {
     if (existing) {
       if (inflightRequirementsCompatible(existing.request,request)) {
         this.metrics.coalescedRequests++;
+        const previousConsumerCount=existing.consumerCount;
         const p = this.#attachConsumer(existing,consumerSignals);
+        if (existing.consumerCount > previousConsumerCount) this.#upgradePriority(existing,priority);
         this.#emit('request.coalesced', existing, { consumerCount: existing.consumerCount });
         return p;
       }
@@ -219,6 +222,16 @@ export class AnalysisScheduler {
       .finally(()=>{ task.settled=true; if (this.inflight.get(artifactId)===task) this.inflight.delete(artifactId); });
     this.inflight.set(artifactId,task);
     return this.#attachConsumer(task,consumerSignals);
+  }
+
+  #upgradePriority(task, incomingPriority) {
+    if (incomingPriority >= task.priority || task.state === 'running') return false;
+    task.priority=incomingPriority;
+    if (task.state === 'ready') {
+      task.orderKey=BigInt(task.enqueuedEpoch)+(BigInt(task.priority)*BigInt(this.starvationInterval));
+      if (!this.queue.refresh(task.artifactId)) throw new Error('scheduler-queue-missing');
+    }
+    return true;
   }
 
   #attachConsumer(task, signals) {
