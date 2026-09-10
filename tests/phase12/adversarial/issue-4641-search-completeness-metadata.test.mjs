@@ -130,4 +130,63 @@ test('issue-4641: built-in createAgentTools path remains fail-closed for malform
   assert.equal(result.completeness.searchComplete, false);
 });
 
+function hostileCoercionProbe(touched) {
+  return {
+    valueOf() { touched.valueOf += 1; return 1; },
+    toString() { touched.toString += 1; return '1'; },
+  };
+}
+
+function statefulResult(getterSequences) {
+  const result = { results:[functionRow] };
+  for (const [key, sequence] of Object.entries(getterSequences)) {
+    let reads = 0;
+    Object.defineProperty(result, key, {
+      enumerable:true,
+      configurable:true,
+      get() { const value = sequence[Math.min(reads, sequence.length - 1)]; reads += 1; return value; },
+    });
+  }
+  return result;
+}
+
+test('issue-4641: stateful coverage getter cannot split validation from use (structured→primitive drift)', async () => {
+  const touched = { valueOf:0, toString:0 };
+  const result = await planAnalysisGoal(QUERY, {}, options(directTools(() => statefulResult({
+    coverage:[hostileCoercionProbe(touched), 1],
+  }))));
+
+  const report = functionReport(result);
+  assert.equal(report.complete, false);
+  assert.ok(report.coverage < 1, 'drifted coverage must not receive full discovery weight');
+  assert.equal(result.completeness.searchComplete, false);
+  assert.equal(touched.valueOf, 0, 'hostile valueOf coercion must never be invoked');
+  assert.equal(touched.toString, 0, 'hostile toString coercion must never be invoked');
+});
+
+test('issue-4641: primitive coverage survives a later structured getter state (primitive→structured drift)', async () => {
+  const touched = { valueOf:0, toString:0 };
+  const result = await planAnalysisGoal(QUERY, {}, options(directTools(() => statefulResult({
+    coverage:[1, hostileCoercionProbe(touched)],
+  }))));
+
+  const report = functionReport(result);
+  assert.equal(report.complete, true);
+  assert.equal(report.coverage, 1);
+  assert.equal(result.completeness.searchComplete, true);
+  assert.equal(touched.valueOf, 0, 'later getter states must never re-enter validation or computation');
+  assert.equal(touched.toString, 0);
+});
+
+test('issue-4641: stateful complete getter cannot hide explicit malformed authority (string→undefined drift)', async () => {
+  const result = await planAnalysisGoal(QUERY, {}, options(directTools(() => statefulResult({
+    complete:['true', undefined],
+  }))));
+
+  const report = functionReport(result);
+  assert.equal(report.complete, false);
+  assert.ok(report.coverage < 1, 'hidden malformed complete must not regain inferred full coverage');
+  assert.equal(result.completeness.searchComplete, false);
+});
+
 console.log('issue-4641-search-completeness-metadata: PASS');

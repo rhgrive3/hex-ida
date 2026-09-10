@@ -351,25 +351,30 @@ function searchCompleteness(result, requestedLimit) {
   const nestedRaw = result?.completeness;
   const nested = nestedRaw == null || (typeof nestedRaw === 'object' && !Array.isArray(nestedRaw)) ? nestedRaw : null;
   let malformed = nestedRaw != null && nested == null;
-  const valuesFor = (key) => [nested?.[key], result?.[key]].filter((value) => value != null);
-  const completeRaw = nested?.complete ?? result?.complete;
+  const values = {
+    complete: [nested?.complete, result?.complete].filter((value) => value != null),
+    returned: [nested?.returned, result?.returned].filter((value) => value != null),
+    total: [nested?.total, result?.total].filter((value) => value != null),
+    coverage: [nested?.coverage, result?.coverage].filter((value) => value != null),
+  };
+  const completeRaw = values.complete[0];
   const truncatedRaw = result?.truncated;
-  if (valuesFor('complete').some((value) => typeof value !== 'boolean')) malformed = true;
+  if (values.complete.some((value) => typeof value !== 'boolean')) malformed = true;
   if (truncatedRaw != null && typeof truncatedRaw !== 'boolean') malformed = true;
 
   const rows = Array.isArray(result?.results) ? result.results : [];
-  const returnedRaw = nested?.returned ?? result?.returned;
+  const returnedRaw = values.returned[0];
   let returned = rows.length;
-  if (valuesFor('returned').some((value) => typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)) malformed = true;
+  if (values.returned.some((value) => typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)) malformed = true;
   else if (returnedRaw != null) returned = returnedRaw;
-  const totalRaw = nested?.total ?? result?.total;
+  const totalRaw = values.total[0];
   let total = null;
-  if (valuesFor('total').some((value) => typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)) malformed = true;
+  if (values.total.some((value) => typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)) malformed = true;
   else if (totalRaw != null) total = totalRaw;
 
-  const coverageRaw = nested?.coverage ?? result?.coverage;
+  const coverageRaw = values.coverage[0];
   let coverage = null;
-  if (valuesFor('coverage').some((value) => typeof value !== 'number' || !Number.isFinite(value))) malformed = true;
+  if (values.coverage.some((value) => typeof value !== 'number' || !Number.isFinite(value))) malformed = true;
   else if (coverageRaw != null) coverage = Math.max(0, Math.min(1, coverageRaw));
   const scannedRaw = result?.scanned;
   const scanTotalRaw = result?.scanTotal;
