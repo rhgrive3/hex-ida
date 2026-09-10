@@ -67,11 +67,6 @@ function physicalAddressSpace(region) {
   return addressSpaceString(region?.addressSpace);
 }
 
-function provenStackExternalSeparation(a, b) {
-  const classes = new Set([storageClass(a), storageClass(b)]);
-  return classes.has('function-local-stack') && classes.has('external-entry-memory');
-}
-
 function provenStackGlobalSeparation(a, b) {
   const stack = a.kind === 'stack-fixed' ? a : b.kind === 'stack-fixed' ? b : null;
   const global = a.kind === 'global-absolute' ? a : b.kind === 'global-absolute' ? b : null;
@@ -123,11 +118,11 @@ export function aliasMemoryRegions(a, b) {
 
   const pair = new Set([a.kind, b.kind]);
   if (pair.has('stack-fixed') && pair.has('global-absolute')) return provenStackGlobalSeparation(a, b) ? 'no' : 'may';
-  // Do not infer NoAlias from root identity alone. This applies only when an
-  // architecture/ABI boundary supplied explicit, architecture-neutral storage
-  // classes proving that one region is this function's local stack and the
-  // other is externally supplied entry memory.
-  if (pair.has('stack-fixed') && pair.has('rooted-offset') && provenStackExternalSeparation(a, b)) return 'no';
+  // A stack-fixed frame region and a rooted entry-argument pointer are both
+  // `may`: the AAPCS64 fact that x0–x7 carry argument values says nothing
+  // about their numeric addresses, so an entry argument can hold the address
+  // of a stack slot (for example `x0 = sp - 16` before a call) and storage
+  // classes alone are not a separation proof (#5130).
 
   const physicalKinds = new Set(['tls', 'io', 'physical-space']);
   const spaceA = physicalAddressSpace(a);

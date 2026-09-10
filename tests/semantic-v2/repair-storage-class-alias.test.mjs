@@ -35,6 +35,9 @@ const unclassified = createMemoryRegionRef({
   origin,
 });
 
-assert.equal(aliasMemoryRegions(stack, external), 'no', 'only explicit storage-class proof separates local stack from external entry memory');
-assert.notEqual(aliasMemoryRegions(stack, unclassified), 'no', 'an arbitrary rooted pointer remains conservative against stack');
+// #5130: a storage-class label on an entry argument is a classification hint,
+// not a separation proof — the argument value can hold a stack address — so
+// the pair stays conservative (`may`) with or without the label.
+assert.equal(aliasMemoryRegions(stack, external), 'may', 'storage-class labels do not prove stack/entry-argument separation');
+assert.equal(aliasMemoryRegions(stack, unclassified), 'may', 'an arbitrary rooted pointer remains conservative against stack');
 console.log('semantic-v2 proven storage-class alias separation: PASS');
