@@ -63,7 +63,36 @@ assert.throws(
   'object entry budget must be enforced before canonicalization',
 );
 
-// 5. existing string/bytes budget semantics are unchanged.
+// 5. nested binary leaves expand to one canonical entry per byte (jsonSafe
+//    Array.from materialization), so an oversized nested view is rejected by
+//    the entry budget BEFORE canonicalization work. Main imported an oversized
+//    nested DataView whole: countEntries() cannot see DataView contents
+//    (no integer-indexed own properties), so the expansion happened during
+//    stableStringify ahead of every budget.
+const oversizedView = new DataView(new ArrayBuffer(1_100_000));
+const mintedOversizedView = createPackageEnvelope({ kind: 'knowledge', payload: { blob: oversizedView } });
+assert.throws(
+  () => importPhase12Package(mintedOversizedView),
+  (error) => error instanceof PackageValidationError && error.code === 'package-entry-budget-exceeded',
+  'oversized nested binary view must be rejected before canonicalization',
+);
+const oversizedTypedArray = new Uint8Array(1_100_000);
+const mintedOversizedTypedArray = createPackageEnvelope({ kind: 'knowledge', payload: { blob: oversizedTypedArray } });
+assert.throws(
+  () => importPhase12Package(mintedOversizedTypedArray),
+  (error) => error instanceof PackageValidationError && error.code === 'package-entry-budget-exceeded',
+  'oversized nested typed array must hit the entry budget',
+);
+const smallView = new Uint8Array([1, 2, 3, 4]);
+const mintedSmallView = createPackageEnvelope({ kind: 'knowledge', payload: { blob: smallView } });
+const viaSmallView = importPhase12Package(mintedSmallView);
+assert.equal(viaSmallView.contentHash, mintedSmallView.contentHash);
+const smallDataView = new DataView(new ArrayBuffer(8));
+const mintedSmallDataView = createPackageEnvelope({ kind: 'knowledge', payload: { blob: smallDataView } });
+const viaSmallDataView = importPhase12Package(mintedSmallDataView);
+assert.equal(viaSmallDataView.contentHash, mintedSmallDataView.contentHash);
+
+// 6. existing string/bytes budget semantics are unchanged.
 assert.throws(
   () => importPhase12Package('{"format":"x"}'.repeat(3_000_000)),
   (error) => error instanceof PackageValidationError && error.code === 'package-input-too-large',
@@ -81,7 +110,7 @@ assert.throws(
   'oversized binary input still fails its byte budget',
 );
 
-// 6. valid package import keeps its content identity: object import and the
+// 7. valid package import keeps its content identity: object import and the
 //    equivalent bounded string import agree on the contentHash.
 const minted = createPackageEnvelope({ kind: 'knowledge', payload: { rules: [1, 2, 3] } });
 const viaObject = importPhase12Package(minted);

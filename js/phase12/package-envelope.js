@@ -64,7 +64,10 @@ function utf8ByteLength(text) {
 // through stableStringify first, so a hostile deep or cyclic graph reached the
 // core canonicalizer's recursion (and the JS stack) before any budget applied.
 // Plain objects, arrays, Maps and Sets are descended (mirroring jsonSafe);
-// binary views are opaque leaves (jsonSafe canonicalizes them to byte arrays).
+// binary views expand to one canonical array entry per byte through jsonSafe's
+// Array.from materialization, so each view leaf charges its byteLength against
+// the entry budget — the same entries the bounded string path would count —
+// keeping a large nested view from reaching canonicalization for free (#5219).
 // Budget semantics mirror scanJsonBudget for the JSON-representable surface:
 // 1-based container depth, per-string UTF-8 bytes, own keys + array items as
 // entries. Token counts have no object analogue and stay byte-budget covered.
@@ -131,7 +134,11 @@ function scanObjectBudget(value, limits) {
       else if (typeof item === 'bigint') countString(item.toString());
       return;
     }
-    if (ArrayBuffer.isView(item) || item instanceof ArrayBuffer) return;
+    if (ArrayBuffer.isView(item) || item instanceof ArrayBuffer) {
+      entries += item.byteLength;
+      if (entries > maxEntries) throw new PackageValidationError('package-entry-budget-exceeded');
+      return;
+    }
     stack.push(enter(item, parentDepth + 1));
   }
 }
