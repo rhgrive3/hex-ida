@@ -1,11 +1,12 @@
 import { DebugAdapterError, boundedInteger } from '../debug/adapter.js';
-import { deepFreeze } from '../core/identity/index.js';
+import { deepFreeze, lossyTypeWitness, stableStringify } from '../core/identity/index.js';
 import { RuntimeProviderSession, createRuntimeProviderDescriptor } from './provider.js';
 import { createRuntimeEvent, createRuntimeEventBatch } from './events.js';
 import { RuntimeEvidenceBridge, conservativeCompleteness } from './evidence-bridge.js';
 
 const TERMINATIONS = Object.freeze(['return', 'halted', 'paused', 'fault', 'unsupported', 'timeout', 'cancelled', 'exception']);
 const ABORTED_EXECUTION = Symbol('aborted-execution');
+const REPLAY_SOURCE_SCHEMA = 'hex-emulator-replay-source/v1';
 
 function terminationAlias(raw) {
   switch (raw) {
@@ -41,6 +42,77 @@ function recordableClone(value) {
     return ownedClone(value);
   } catch (error) {
     throw new DebugAdapterError('emulator-replay-options-invalid', `replay options are not recordable: ${String(error?.message || error)}`);
+  }
+}
+
+function replayRecordingClone(value) {
+  let clone;
+  try {
+    clone = ownedClone(value);
+  } catch (error) {
+    throw new DebugAdapterError('emulator-replay-recording-invalid', `emulator replay recording is not recordable: ${String(error?.message || error)}`);
+  }
+  if (!clone || typeof clone !== 'object' || Array.isArray(clone)) {
+    throw new DebugAdapterError('emulator-replay-recording-invalid', 'emulator replay recording must be an object');
+  }
+  return clone;
+}
+
+function replaySourceIdentity(session, engineDescriptor) {
+  return deepFreeze({
+    schemaVersion: REPLAY_SOURCE_SCHEMA,
+    binaryId: session.target.primaryBinaryId,
+    sliceId: session.target.primarySliceId,
+    targetArchitecture: session.target.architecture,
+    runtimeSessionId: session.runtimeSessionId,
+    providerId: session.providerId,
+    providerVersion: session.providerVersion,
+    engine: engineDescriptor,
+  });
+}
+
+function replayIdentityMissing(message) {
+  return new DebugAdapterError('emulator-replay-identity-missing', message);
+}
+
+function replayIdentityMismatch(field, source, current) {
+  return new DebugAdapterError(
+    'emulator-replay-identity-mismatch',
+    `emulator replay ${field} identity does not match the current runtime session`,
+    { field, source, current },
+  );
+}
+
+function assertReplaySourceIdentity(source, current) {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    throw replayIdentityMissing('emulator replay recording is missing source identity');
+  }
+  if (source.schemaVersion !== REPLAY_SOURCE_SCHEMA) {
+    throw replayIdentityMissing('emulator replay recording has no supported source identity schema');
+  }
+  for (const field of ['binaryId', 'providerId', 'providerVersion', 'runtimeSessionId']) {
+    if (typeof source[field] !== 'string' || !source[field].trim()) {
+      throw replayIdentityMissing(`emulator replay recording is missing ${field}`);
+    }
+  }
+  for (const field of ['binaryId', 'sliceId', 'targetArchitecture', 'providerId', 'providerVersion']) {
+    if (source[field] !== current[field]) {
+      throw replayIdentityMismatch(field, source[field] ?? null, current[field] ?? null);
+    }
+  }
+  if (!source.engine || typeof source.engine !== 'object' || Array.isArray(source.engine)) {
+    throw replayIdentityMissing('emulator replay recording is missing engine identity');
+  }
+  let sourceEngine;
+  let currentEngine;
+  try {
+    sourceEngine = stableStringify({ value: source.engine, typeWitness: lossyTypeWitness(source.engine) });
+    currentEngine = stableStringify({ value: current.engine, typeWitness: lossyTypeWitness(current.engine) });
+  } catch {
+    throw new DebugAdapterError('emulator-replay-identity-invalid', 'emulator replay engine identity is not canonicalizable');
+  }
+  if (sourceEngine !== currentEngine) {
+    throw replayIdentityMismatch('engine', sourceEngine, currentEngine);
   }
 }
 
@@ -270,6 +342,7 @@ export class EmulatorProvider {
       throw error;
     }
     const evidence = new RuntimeEvidenceBridge();
+    const sourceIdentity = replaySourceIdentity(session, this.engineDescriptor);
     let lastRun = null;
     let activeRun = null;
     let nextRunOccurrence = 0;
@@ -462,7 +535,7 @@ export class EmulatorProvider {
       const resolution = runOptions.resolution ?? null;
       const evidenceNodes = events.map((event) => evidence.eventToEvidence(event, resolution, { binaryId: request.binaryId ?? request.binaryHash ?? null, semanticKind: 'emulator-observation' }));
       const ownedRaw = ownedClone(raw ?? null);
-      lastRun = deepFreeze({ input: ownedClone(input), options: recordedOptions, termination, completeness, raw: ownedRaw, eventIds: events.map((event) => event.eventId) });
+      lastRun = deepFreeze({ sourceIdentity, input: ownedClone(input), options: recordedOptions, termination, completeness, raw: ownedRaw, eventIds: events.map((event) => event.eventId) });
       return deepFreeze({ termination, completeness, raw: ownedClone(ownedRaw), batch, evidence: evidenceNodes, recording: lastRun });
       } finally {
         if (activeRun === runToken) activeRun = null;
@@ -474,8 +547,9 @@ export class EmulatorProvider {
       run,
       replay: async (recording = null, replayOptions = {}) => {
         if (this.engineDescriptor.deterministic !== true) throw new DebugAdapterError('unsupported', 'emulator engine does not advertise deterministic replay');
-        const source = recording ?? lastRun;
+        const source = recording == null ? lastRun : replayRecordingClone(recording);
         if (!source) throw new DebugAdapterError('emulator-replay-missing', 'no emulator recording is available to replay');
+        assertReplaySourceIdentity(source.sourceIdentity, sourceIdentity);
         return run(source.input, { ...source.options, ...replayOptions });
       },
       evidence,
