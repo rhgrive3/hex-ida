@@ -47,10 +47,10 @@ test('#5698 buildStringMap uses byteLength, not text length, for the xref span',
 });
 
 test('#5698 without byteLength the fallback is the provable minimum, never over-inclusive', () => {
-  // Legacy shapes carry no byteLength. The escaped display cannot prove the
-  // exact raw extent, so the fallback span is the provable minimum (one raw
-  // byte per display code point): base xrefs stay covered, but the span is
-  // never inflated beyond what the display can prove (fail-closed, R1).
+  // Legacy shapes carry no byteLength. The fallback span is the provable
+  // minimum: non-escape code points have determined UTF-8 widths (R2), so
+  // ログイン provably spans exactly 12 raw bytes — interior refs stay
+  // covered — while refs past the proven extent are never included.
   const program = indexWithRefs([0x1000n]);
   const result = buildStringMap({
     program,
@@ -59,8 +59,11 @@ test('#5698 without byteLength the fallback is the provable minimum, never over-
   assert.ok(result.subsystems.length > 0,
     'a base xref stays covered by the provable-minimum fallback');
   const interior = indexWithRefs([0x1006n]);
-  assert.equal(buildStringMap({ program: interior, strings: [{ addr: 0x1000n, text: LOGIN }] }).subsystems.length, 0,
-    'an interior ref beyond the provable minimum is NOT covered (no over-valuation)');
+  assert.equal(buildStringMap({ program: interior, strings: [{ addr: 0x1000n, text: LOGIN }] }).subsystems.length, 1,
+    'an interior ref inside the exact proven 12-byte extent is covered (widths are determined, R2)');
+  const past = indexWithRefs([0x1000n + 13n]);
+  assert.equal(buildStringMap({ program: past, strings: [{ addr: 0x1000n, text: LOGIN }] }).subsystems.length, 0,
+    'a ref past the proven extent is NOT covered (no over-inclusion)');
 });
 
 test('#5698 a forged byteLength larger than the string gets no xref authority', () => {
@@ -74,6 +77,43 @@ test('#5698 a forged byteLength larger than the string gets no xref authority', 
   assert.equal(out.length, 1, 'the endpoint signal still fires');
   assert.equal(out[0].actionable, false,
     'findings must not mark a forged-extent string referenced');
+});
+
+test('#5698 a forged byteLength below the proven UTF-8 extent gets no authority (R2)', () => {
+  // R2 counterexample: ログイン is exactly 12 raw UTF-8 bytes (4 × 3-byte
+  // code points). Counting each non-escape display code point as 1 raw byte
+  // admitted a truncated slice's byteLength 4 (window [4,12]) as xref
+  // authority and dropped interior refs. Non-escape code points have
+  // DETERMINED widths, so the window is [12,12]: 4 and 11 fail closed, 12
+  // is the only accepted extent and detects the interior xref.
+  const interior = indexWithRefs([0x1006n]);
+  for (const forged of [4, 11]) {
+    assert.equal(
+      buildStringMap({ program: interior, strings: [{ addr: 0x1000n, text: LOGIN, byteLength: forged }] }).subsystems.length,
+      0,
+      `byteLength ${forged} is below the proven 12-byte extent: no xref authority`,
+    );
+  }
+  const accepted = buildStringMap({ program: interior, strings: [{ addr: 0x1000n, text: LOGIN, byteLength: 12 }] });
+  assert.ok(accepted.subsystems.length > 0,
+    'the true extent 12 is accepted and the interior xref detected');
+
+  // findings side: a forged shorter extent must not mark the string
+  // referenced. 'https://example.com/ログイン' is 20 ASCII + 12 = 32 raw
+  // bytes; the first multibyte byte sits at offset 20.
+  const interiorTail = indexWithRefs([0x1000n + 20n]);
+  const outForged = findings(
+    [{ addr: 0x1000n, text: 'https://example.com/ログイン', byteLength: 24 }],
+    interiorTail, null, 40,
+  );
+  assert.equal(outForged[0].actionable, false,
+    'a forged byteLength 24 for a 32-byte endpoint is fail-closed');
+  const outTrue = findings(
+    [{ addr: 0x1000n, text: 'https://example.com/ログイン', byteLength: 32 }],
+    interiorTail, null, 40,
+  );
+  assert.equal(outTrue[0].actionable, true,
+    'the true 32-byte extent covers the interior ref');
 });
 
 test('#5698 malformed byteLength spellings get no xref authority', () => {
@@ -112,7 +152,8 @@ test('#5698 findings marks an interior-referenced multibyte string actionable', 
   const program = indexWithRefs([0x1006n]);
   // 'ログイン' alone matches no SIGNALS regex; use an https endpoint with a
   // multibyte suffix so the signal fires and the span logic is exercised.
-  const endpoint = { addr: 0x1000n, text: 'https://example.com/ログイン', byteLength: 30 };
+  // The true raw extent is 20 ASCII + 4 × 3-byte code points = 32 bytes.
+  const endpoint = { addr: 0x1000n, text: 'https://example.com/ログイン', byteLength: 32 };
   const out = findings([endpoint], program, null, 40);
   assert.equal(out.length, 1);
   assert.equal(out[0].actionable, true, 'an interior-referenced string is not unreferenced');

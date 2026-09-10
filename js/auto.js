@@ -117,13 +117,13 @@ export function notableFunctions(program, symbols, region, limit = 12) {
  */
 // The xref span must be the string's original UTF-8 byte extent (#5698).
 // Producer contract (worker scanStrings): display text is control-escaped
-// (`\t`/`\r`/`\n`), every non-escape display code point came from 1..4 raw
-// UTF-8 bytes, and the emitted byteLength is the raw run's extent. An escape
-// is ambiguous from the display alone — a real escaped control is 1 raw byte
-// but a literal backslash+letter is 2 — so it counts 1..2. From the display
-// text that gives a provable [minRaw, maxRaw] window; a carried byteLength
-// outside it (or of the wrong type) is a forged/malformed authority and
-// fails closed.
+// (`\t`/`\r`/`\n`), and the emitted byteLength is the raw run's extent. A
+// non-escape display code point has a determined UTF-8 width (1..4 bytes by
+// code-point range). An escape is ambiguous from the display alone — a real
+// escaped control is 1 raw byte but a literal backslash+letter is 2 — so it
+// counts 1..2. From the display text that gives a provable [minRaw, maxRaw]
+// window; a carried byteLength outside it (or of the wrong type) is a
+// forged/malformed authority and fails closed.
 function producerByteExtentWindow(text) {
   let minRaw = 0;
   let maxRaw = 0;
@@ -139,8 +139,14 @@ function producerByteExtentWindow(text) {
     }
     const unit = text.codePointAt(i);
     if (unit > 0xffff) i++;
-    minRaw += 1;
-    maxRaw += unit <= 0x7f ? 1 : unit <= 0x7ff ? 2 : unit <= 0xffff ? 3 : 4;
+    // A non-escape decoded code point has a determined UTF-8 width: the
+    // producer scanned raw UTF-8, so U+0020..U+007E came from 1 byte,
+    // U+0080..U+07FF from 2, U+0800..U+FFFF from 3, astral from 4. Both
+    // window edges take that exact width — a smaller claimed byteLength
+    // (e.g. a truncated slice) must not become xref authority (#5698).
+    const width = unit <= 0x7f ? 1 : unit <= 0x7ff ? 2 : unit <= 0xffff ? 3 : 4;
+    minRaw += width;
+    maxRaw += width;
   }
   return { minRaw, maxRaw };
 }
