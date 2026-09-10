@@ -1,5 +1,6 @@
 import { codedIndexSize, metadataRowSize } from './metadata-layout.js';
 import { readCilMetadataStreams } from './metadata-streams.js';
+import { CLI_HEADER_SIZE, validateCliHeaderSize } from './cli-header.js';
 const TYPE_REF_TABLE = 0x01;
 const TYPE_DEF_TABLE = 0x02;
 const TYPE_SPEC_TABLE = 0x1b;
@@ -9,7 +10,6 @@ export const STANDALONE_SIG_TABLE = 0x11;
 export const METHOD_SPEC_TABLE = 0x2b;
 
 const CLI_DIRECTORY_INDEX = 14;
-const CLI_HEADER_SIZE = 72;
 
 function fail(code) { throw new TypeError(code); }
 
@@ -85,6 +85,11 @@ function readPeMetadataDirectory(bytes, view) {
   const cliSize = readU32(view, cliDirectory + 4, 'cil-call-signature-cli-directory-truncated');
   if (!cliRva || cliSize < CLI_HEADER_SIZE) fail('cil-call-signature-cli-directory-invalid');
   const cli = mapRva(cliRva, CLI_HEADER_SIZE, 'cil-call-signature-cli-header-unmapped');
+  const cliHeaderSize = validateCliHeaderSize(
+    readU32(view, cli, 'cil-call-signature-cli-header-truncated'),
+    cliSize,
+  );
+  mapRva(cliRva, cliHeaderSize, 'cil-call-signature-cli-header-unmapped');
   const metadataRva = readU32(view, cli + 8, 'cil-call-signature-cli-header-truncated');
   const metadataSize = readU32(view, cli + 12, 'cil-call-signature-cli-header-truncated');
   if (!metadataRva || metadataSize < 20) fail('cil-call-signature-metadata-directory-invalid');
