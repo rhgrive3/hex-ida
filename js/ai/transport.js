@@ -10,20 +10,35 @@ export async function requestJSON(url, body, {
   fetchImpl = globalThis.fetch,
 } = {}) {
   if (typeof fetchImpl !== 'function') throw new AIError('provider_error', 'Fetch is unavailable.');
-  if (signal?.aborted) throw externalAbortError(signal);
+  const externalSignal = normalizeExternalSignal(signal);
+  if (externalSignal?.aborted) throw externalAbortError(externalSignal);
   const responseLimit = normalizeLimit(maxResponseBytes);
   const timeoutDelay = normalizeTimeout(timeoutMs);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort('timeout'), timeoutDelay);
-  const abort = () => controller.abort(signal?.reason ?? 'cancelled');
-  if (signal) {
-    signal.addEventListener('abort', abort, { once: true });
-    // Close the race between the synchronous check above and listener setup.
-    if (signal.aborted) abort();
-  }
+  let timeout = null;
+  let listenerAttached = false;
+  let externalAborted = false;
+  const abort = () => {
+    externalAborted = true;
+    controller.abort(externalSignal?.reason ?? 'cancelled');
+  };
   try {
+    if (externalSignal) {
+      try {
+        externalSignal.addEventListener('abort', abort, { once: true });
+        listenerAttached = true;
+      } catch {
+        // EventTarget-like shims can throw after partially registering. Roll
+        // back best-effort before any timeout or transport I/O is allocated.
+        try { externalSignal.removeEventListener('abort', abort); } catch { /* best effort */ }
+        throw new AIError('provider_error', 'AI transport signal must be AbortSignal-compatible.');
+      }
+      // Close the race between the synchronous check above and listener setup.
+      if (externalSignal.aborted) abort();
+    }
+    timeout = setTimeout(() => controller.abort('timeout'), timeoutDelay);
     if (controller.signal.aborted) {
-      throw signal?.aborted ? externalAbortError(signal) : new AIError('cancelled', 'AI investigation was cancelled.');
+      throw externalAborted ? externalAbortError(externalSignal) : new AIError('cancelled', 'AI investigation was cancelled.');
     }
     const response = await fetchImpl(url, {
       method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' },
@@ -39,7 +54,7 @@ export async function requestJSON(url, body, {
     try { payload = JSON.parse(text); }
     catch { throw new AIError('provider_error', 'The AI service returned invalid JSON.', { status: response.status }); }
     if (!response.ok) {
-      const type = normalizeRemoteError(payload?.error?.code, response.status, controller.signal, signal);
+      const type = normalizeRemoteError(payload?.error?.code, response.status, controller.signal, externalSignal);
       throw new AIError(type, payload?.error?.message || `AI service failed (${response.status}).`, { status: response.status, code: payload?.error?.code });
     }
     return payload;
@@ -48,19 +63,37 @@ export async function requestJSON(url, body, {
       // An inner controller can report a generic cancellation after the
       // caller's timeout reason has crossed the transport boundary. Restore
       // the caller's semantic deadline before rethrowing (#4451).
-      if (error.type === 'cancelled' && signal?.aborted) throw externalAbortError(signal);
+      if (error.type === 'cancelled' && externalAborted) throw externalAbortError(externalSignal);
       throw error;
     }
-    if (signal?.aborted) throw externalAbortError(signal);
+    if (externalAborted) throw externalAbortError(externalSignal);
     if (controller.signal.aborted) {
       if (controller.signal.reason === 'response-too-large') throw new AIError('context_too_large', `The AI service response exceeded ${responseLimit} bytes.`);
       throw new AIError('model_timeout', 'The AI model request timed out.');
     }
     throw new AIError('provider_error', error?.message || String(error));
   } finally {
-    clearTimeout(timeout);
-    if (signal) signal.removeEventListener('abort', abort);
+    if (timeout != null) clearTimeout(timeout);
+    if (listenerAttached) {
+      try { externalSignal.removeEventListener('abort', abort); } catch { /* cleanup must not replace the request outcome */ }
+    }
   }
+}
+
+function normalizeExternalSignal(value) {
+  if (value == null) return null;
+  try {
+    if ((typeof value !== 'object' && typeof value !== 'function')
+        || typeof value.aborted !== 'boolean'
+        || typeof value.addEventListener !== 'function'
+        || typeof value.removeEventListener !== 'function') {
+      throw new AIError('provider_error', 'AI transport signal must be AbortSignal-compatible.');
+    }
+  } catch (error) {
+    if (error instanceof AIError) throw error;
+    throw new AIError('provider_error', 'AI transport signal must be AbortSignal-compatible.');
+  }
+  return value;
 }
 
 async function readBoundedText(response, maxBytes, controller) {
