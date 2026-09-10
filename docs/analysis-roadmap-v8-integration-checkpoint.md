@@ -4889,6 +4889,28 @@ prerequisite FR-C1-03A root-evidence audit or arbitrary address/CFG coverage.
 Open PR #7548 remains a separate alias identity/escape-cache owner handoff; its
 issue fixes are not duplicated here. No full-task or release closure is claimed.
 
+## C1-03 frozen-corpus renaming evidence
+
+`tests/phase7/alias/c1-root-rename-metamorphism.test.mjs` reuses all 30 frozen v2
+alias queries under eight bijective renamings (neutral/heap/alloc/global/g_root/
+tls/stack/register). State keys, node/value IDs and corresponding descriptor
+lookups change together; canonical IR and SSA are reconstructed. Invertibility,
+unchanged operators/constants, original corpus immutability, symmetric queries,
+cache replay, relation, proof reasons and completeness are checked. All 240
+cells retain the baseline answer: 120 exact, with zero false NoAlias/MustAlias.
+The 224 state-root cells are distinguished from 16 absolute-address identifier-only
+controls. The initial test incorrectly assumed every fixture had a state root;
+that retained failure led to this explicit distinction, not removal of queries.
+No production behavior or frozen expected truth was changed.
+
+Existing name-only negatives, canonical proof-brand negatives and exact-precision
+tests remain the owners of those boundaries. Related PR #7550 was inspected at
+`6ebaa3477c5e720d7bdf756c60a4a590bd254764`; its A2 constant-node and product string
+state-slice fixes are separate issue work, not duplicated by these tests.
+This establishes the missing rename metamorphism in the declared corpus, not
+allocator-lifetime, logical-thread, linker/IFUNC, arbitrary descriptor-provider
+or prerequisite C0/ME completion. Those broader acceptance claims remain open.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

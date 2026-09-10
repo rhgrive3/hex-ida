@@ -21,6 +21,7 @@
       "tests/phase7/foundation/issue-6243-pointsto-callee-summaries-dependency.test.mjs",
       "tests/phase7/ownership/roadmap-v8-integration.test.mjs",
       "tests/phase7/pointsto/loaded-pointer-recovery.test.mjs",
+      "tests/phase7/alias/c1-root-rename-metamorphism.test.mjs",
       "tests/phase7/summary/issue-4064-region-proof-merge.test.mjs",
       "tests/phase7/summary/issue-4314-4320-summary-consumer-validation.test.mjs",
       "tests/phase7/summary/issue-5752-intrinsic-scope-completeness.test.mjs",
