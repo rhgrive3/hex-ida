@@ -18,7 +18,7 @@ import { isAdoptableCandidate } from '../taint/proof-consumer.js';
 
 const issued = new WeakMap();
 const LIMITS = Object.freeze({ targets: 32, candidates: 64, workItems: 250000, allocationUnits: 100000 });
-const PURE = new Set([OP.CONST, OP.ADDR, OP.MOV, OP.BIN, OP.UN, OP.CMP]);
+const PURE = new Set([OP.CONST, OP.ADDR, OP.MOV, OP.BIN, OP.UN, OP.CMP, OP.SEL]);
 
 // Eligibility only. Meaning is lowered by the same typed scalar bridge used by
 // execution, not by reinterpreting legacy sub/width fields in the raw translator.
@@ -39,6 +39,14 @@ function validatePureTarget(root, guard) {
     if (value.kind === 'arg' || !def && value.const != null) continue;
     if (!def || !PURE.has(def.op) || def.extra?.memoryAccess) throw new QueryFailure('non-pure-target-handoff');
     if (def.dst !== value) throw new QueryFailure('instruction-definition-mismatch');
+    if (def.op === OP.SEL) {
+      if (!def.conditionValue || def.conditionValue.bits !== 1 || def.args?.length !== 2) throw new QueryFailure('non-canonical-select-condition');
+      // The condition is an SSA dependency even when neither data arm uses its
+      // inputs. Visit it in this universal query's own scope before lowering;
+      // the existing execution bridge remains the only select semantics.
+      guard.take('workItems'); guard.take('allocationUnits');
+      pending.push([def.conditionValue, depth + 1, false]);
+    }
     guard.take('workItems', (def.args ?? []).length);
     guard.take('allocationUnits', (def.args ?? []).length);
     for (const argument of def.args ?? []) pending.push([argument.value, depth + 1, false]);

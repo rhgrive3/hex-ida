@@ -643,3 +643,153 @@ test('C4-04 operand view mutations invalidate an already issued producer',async(
     assert.equal(result.semanticAst,f.result.semanticAst);assert.equal(result.pseudocode,f.result.pseudocode);
   }
 });
+
+function selectProjectionFixture(bits=4,{constantCondition=false,sameArms=false,configure=()=>{}}={}) {
+  const f=fixture('proof-explicit-select');f.block(0);
+  const control=f.opaque(bits),yes=f.opaque(bits),no=f.opaque(bits);
+  for(const [index,input] of [control,yes,no].entries()){input.index=index;input.reg=`x${index}`;}
+  const zero=f.binary('xor',yes,yes,bits),left=f.binary('add',yes,zero,bits);
+  const predicate=f.binary('eq',constantCondition?f.binary('xor',control,control,bits):control,f.constant(0,bits),1);
+  predicate.def.op='cmp';predicate.def.cond='eq';
+  const target=f.select(predicate,left,sameArms?left:no,bits);
+  // Use the existing canonical two-data-operands + explicit Bool contract,
+  // not the fixture helper's legacy predicate-first three-operand encoding.
+  target.def.args=target.def.args.slice(1);target.def.conditionValue=predicate;
+  f.ret();const ir=f.build();ir.instructions=ir.blocks.flatMap(block=>block.insts);
+  ir.instructions.forEach((inst,index)=>{inst.id=`select_${index}`;inst.address=0x4000n+BigInt(index*4);});
+  const ret=ir.instructions.at(-1);ret.args=[{value:target}];target.uses.push(ret);
+  configure({ir,control,yes,no,predicate,target});
+  const canonical=structuredClone(ir);
+  const result=enhanceSemanticDecompilation({semantic:true,ir,types:null,
+    lines:[{kind:'stmt',indent:0,text:'return pending;',row:ret.row,addr:ret.address}],metrics:{},ctx:{}},null,
+  {phase8PrepareProof:true,phase8ProofOnlyRewrites:true,deterministicTransforms:true,decompilerTimeBudgetMs:1000});
+  return {ir,control,yes,no,predicate,target,canonical,result,options:{identity,abiId:'generic-v1',memory:{addressBits:8},targets:[target],
+    timeoutMs:1000,backendTier:'tiered',requireProofOnlyRewrites:true}};
+}
+
+test('C4-04 explicit canonical selects preserve predicate-only inputs through actual proof adoption',async()=>{
+  const f=selectProjectionFixture();
+  const models=createTaintModels({id:'select-proof-test',version:'1',provenance:'test',sources:[],sinks:[]});
+  const translated=await querySymbolicAnalysis(f.ir,{...f.options,models,candidateStrategy:'translate-only'});
+  assert.equal(translated.status,'complete',translated.reason);
+  const binding=readSymbolicTargetInputs(translated,f.target,identity);
+  assert.equal(binding.inputs.length,3);assert.deepEqual(new Set(binding.inputs.map(item=>item.value)),new Set([f.control,f.yes,f.no]));
+  for(const candidateStrategy of ['local-rewrites','representation-rules','equality-saturation']) {
+    const result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy});
+    assert.equal(result.proofOptimization.status,'complete',result.proofOptimization.reason);
+    assert.equal(result.proofOptimization.adopted,1,candidateStrategy);
+    assert.equal(result.proofOptimization.targetDecisions[0].disposition,'adopted');
+    assert.deepEqual(structuredClone(f.ir),f.canonical);
+  }
+});
+
+test('C4-04 explicit select families preserve canonical branch truth across the frozen width axis',async t=>{
+  const models=createTaintModels({id:'select-width-test',version:'1',provenance:'test',sources:[],sinks:[]}),rows=[];
+  for(const bits of [1,2,3,4,8,16,32,64])for(const mode of ['variable','constant','same-arms']) {
+    const f=selectProjectionFixture(bits,{constantCondition:mode==='constant',sameArms:mode==='same-arms'});
+    const translated=await querySymbolicAnalysis(f.ir,{...f.options,models,candidateStrategy:'translate-only'});
+    assert.equal(translated.status,'complete',translated.reason);
+    const binding=readSymbolicTargetInputs(translated,f.target,identity);
+    assert.ok(binding.inputs.some(item=>item.value===f.control),'predicate-only inputs belong to the actual universal relation');
+    const originalAst=structuredClone(f.result.cAst),originalSemantic=structuredClone(f.result.semanticAst);
+    const inputViews=[f.control,f.yes,f.no].map(value=>f.result.semanticAst.values.find(item=>item.valueId===value.id).expression);
+    const mask=(1n<<BigInt(bits))-1n,sign=1n<<BigInt(bits-1);
+    const values=bits<=4?Array.from({length:2**bits},(_,i)=>BigInt(i)):[0n,1n,mask,mask-1n,sign,sign-1n];
+    for(const candidateStrategy of ['local-rewrites','representation-rules','equality-saturation']) {
+      const label=`${bits}/${mode}/${candidateStrategy}`;
+      const result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy}),report=result.proofOptimization;
+      // The existing local-candidate query has a 120ms deadline. The BV8
+      // equal-arm case can exhaust it; keep that measured unknown in the
+      // denominator, never widen the runtime budget or call it an adoption.
+      const deadline=bits===8&&mode==='same-arms'&&candidateStrategy==='local-rewrites'&&report.reason==='deadline';
+      assert.equal(report.status,deadline?'partial':'complete',`${label}: ${report.reason}`);
+      assert.equal(report.adopted,deadline?0:1,label);
+      assert.deepEqual(report.decisionCoverage,{requested:1,complete:!deadline});
+      assert.equal(report.targetDecisions[0].disposition,deadline?'unknown':'adopted');
+      const row=report.targetDecisions[0],transform=result.phase8Projection?.transforms?.find(item=>item.queryHash===row.queryHash);
+      if(deadline) {
+        assert.equal(result.phase8Projection,f.result.phase8Projection);assert.equal(result.cAst,f.result.cAst);
+        assert.equal(result.semanticAst,f.result.semanticAst);assert.equal(result.pseudocode,f.result.pseudocode);
+      } else {
+        assert.ok(transform?.planId&&transform.beforeHash&&transform.afterHash,label);
+        assert.ok(result.renderProvenance.ledger.some(item=>item.queryHash===row.queryHash),label);
+      }
+      const after=result.semanticAst.values.find(item=>item.valueId===f.target.id).expression;
+      assert.equal(after.bits,bits);assert.equal(after.effect,'pure');
+      for(const control of values)for(const yes of values)for(const no of values) {
+        const expected=mode==='constant'||mode==='same-arms'||control===0n?yes:no;
+        const inputs=new Map([[f.control,control],[f.yes,yes],[f.no,no]]);
+        const canonical=evaluateExpr(binding.expression,new Map(binding.inputs.map(item=>[item.symbol.symbolId,inputs.get(item.value)])));
+        assert.equal(canonical.status,EVAL_STATUS.VALUE);assert.equal(canonical.value,expected,`${label}: canonical`);
+        const environment=Object.fromEntries(inputViews.map((view,index)=>[view.name,[control,yes,no][index]]));
+        if(!deadline)assert.equal(evaluateExpression(after,environment),expected,`${label}: adopted`);
+      }
+      assert.deepEqual(structuredClone(f.ir),f.canonical);assert.deepEqual(f.result.cAst,originalAst);assert.deepEqual(f.result.semanticAst,originalSemantic);
+      rows.push({bits,mode,candidateStrategy,disposition:row.disposition,reason:report.reason,
+        canonicalComparisons:values.length**3,adoptedComparisons:deadline?0:values.length**3});
+    }
+  }
+  assert.equal(rows.length,72);assert.equal(new Set(rows.map(row=>`${row.bits}/${row.mode}/${row.candidateStrategy}`)).size,72);
+  assert.ok(rows.filter(row=>row.disposition==='adopted').length>=71);
+  t.diagnostic(JSON.stringify({schema:'c4-04-select-production-widths-v1',rows}));
+});
+
+test('C4-04 select proofs remain universal under concrete execution arguments and replay',async()=>{
+  for(const candidateStrategy of ['local-rewrites','representation-rules','equality-saturation']) {
+    const f=selectProjectionFixture(),options={...f.options,candidateStrategy,execution:{symbolicArgs:{0:0n,1:3n,2:7n}}};
+    const models=createTaintModels({id:'select-concrete-test',version:'1',provenance:'test',sources:[],sinks:[]});
+    const translated=await querySymbolicAnalysis(f.ir,{...options,models,candidateStrategy:'translate-only'});
+    assert.equal(translated.status,'complete',translated.reason);
+    assert.equal(translated.taint.execution.paths[0].returnValue.value,3n,'the execution really used concrete arguments');
+    assert.ok(readSymbolicTargetInputs(translated,f.target,identity).inputs.some(item=>item.value===f.control&&item.symbol.kind==='fresh_symbol'));
+    const result=await optimizeSemanticDecompilation(f.result,options),replay=await optimizeSemanticDecompilation(result,options);
+    assert.equal(result.proofOptimization.status,'complete',result.proofOptimization.reason);assert.equal(result.proofOptimization.adopted,1);
+    const after=result.semanticAst.values.find(item=>item.valueId===f.target.id).expression;
+    const inputs=[f.control,f.yes,f.no].map(value=>f.result.semanticAst.values.find(item=>item.valueId===value.id).expression);
+    for(const [control,expected] of [[0n,3n],[1n,7n],[15n,7n]]) {
+      assert.equal(evaluateExpression(after,Object.fromEntries(inputs.map((view,index)=>[view.name,[control,3n,7n][index]]))),expected);
+    }
+    assert.equal(replay.proofOptimization.status,'complete');assert.equal(replay.proofOptimization.adopted,0);
+    assert.equal(replay.pseudocode,result.pseudocode);assert.ok(replay.phase8Projection.history.transforms.includes(result.phase8Projection.transforms[0]));
+    assert.deepEqual(structuredClone(f.ir),f.canonical);
+  }
+});
+
+test('C4-04 selects do not admit legacy modifiers or untranslated predicate dependencies',async()=>{
+  for(const candidateStrategy of ['local-rewrites','representation-rules','equality-saturation']) {
+    for(const [configure,reason] of [
+      [({target})=>{target.def.sub='inc';},'non-canonical-select-target'],
+      [({target})=>{target.def.cond='eq';},'non-canonical-select-target'],
+      [({predicate})=>{predicate.def.args[0].shift={op:'lsl',amount:1};},'untranslated-operand-view'],
+    ]) {
+      const f=selectProjectionFixture(4,{configure}),result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy});
+      assert.equal(result.proofOptimization.status,'complete',result.proofOptimization.reason);assert.equal(result.proofOptimization.adopted,0);
+      assert.equal(result.proofOptimization.targetDecisions[0].disposition,'unsupported');assert.equal(result.proofOptimization.targetDecisions[0].reason,reason);
+      assert.equal(result.pseudocode,f.result.pseudocode);assert.deepEqual(result.phase8Projection.transforms,[]);assert.deepEqual(structuredClone(f.ir),f.canonical);
+    }
+  }
+});
+
+test('C4-04 select refusal preserves the producer on invalid conditions, budgets and stale predicate identity',async()=>{
+  for(const candidateStrategy of ['local-rewrites','representation-rules','equality-saturation']) {
+    for(const [bits,configure] of [[4,({target})=>{delete target.def.conditionValue;}],
+      [4,({target,control})=>{target.def.conditionValue=control;}],
+      [1,({target,control})=>{target.def.conditionValue=control;}],
+      [4,({target,predicate})=>{target.def.args.unshift({value:predicate});}]]) {
+      const f=selectProjectionFixture(bits,{configure}),result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy});
+      assert.equal(result.proofOptimization.status,'partial');assert.equal(result.proofOptimization.adopted,0);
+      assert.equal(result.cAst,f.result.cAst);assert.equal(result.semanticAst,f.result.semanticAst);assert.equal(result.pseudocode,f.result.pseudocode);
+      assert.deepEqual(structuredClone(f.ir),f.canonical);
+    }
+    for(const refused of [{timeoutMs:0},{isCancelled:()=>true},{phase8WorkBudget:0}]) {
+      const f=selectProjectionFixture(),result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy,...refused});
+      assert.equal(result.proofOptimization.status,'partial');assert.equal(result.proofOptimization.adopted,0);
+      assert.equal(result.cAst,f.result.cAst);assert.equal(result.semanticAst,f.result.semanticAst);assert.equal(result.pseudocode,f.result.pseudocode);
+      assert.deepEqual(structuredClone(f.ir),f.canonical);
+    }
+    const f=selectProjectionFixture();f.target.def.conditionValue={...f.predicate};
+    const result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy});
+    assert.equal(result.proofOptimization.reason,'unissued-or-stale-projection');assert.equal(result.proofOptimization.adopted,0);
+    assert.equal(result.cAst,f.result.cAst);assert.equal(result.semanticAst,f.result.semanticAst);assert.equal(result.pseudocode,f.result.pseudocode);
+  }
+});

@@ -27,7 +27,7 @@ const TOTAL_UNARY = new Set(['not','neg','trunc','zext','sext']);
 const DEFAULT_MODELS = createTaintModels({id:'phase8-empty', version:'1', provenance:'hex.phase8.explicit-empty-model/v1',sources:[],sinks:[]});
 
 export const PROOF_REWRITE_PASS = createPassDescriptor({
-  id:'phase8.solver-constants', version:'2.7.0', stage:'rendering',
+  id:'phase8.solver-constants', version:'2.8.0', stage:'rendering',
   consumes:['ssa','origins'], produces:['provedRewrites'],
   preserves:ANALYSIS_KEYS.filter(key => key !== 'provedRewrites'),
   description:'Project unconditional solver-proved Bool/BV scalars without changing canonical IR or effects (legacy pass ID).',
@@ -114,8 +114,16 @@ function targetExclusionReason(target, guard) {
     }
     if (def.op === OP.BIN && !TOTAL_BINARY.has(def.sub ?? def.subOp)) return unsupported;
     if (def.op === OP.UN && !TOTAL_UNARY.has(def.sub ?? def.subOp)) return unsupported;
-    if (![OP.CONST,OP.MOV,OP.BIN,OP.UN,OP.CMP].includes(def.op)) return unsupported;
+    if (![OP.CONST,OP.MOV,OP.BIN,OP.UN,OP.CMP,OP.SEL].includes(def.op)) return unsupported;
     const args = queryArray(def.args ?? EMPTY, guard);
+    if (def.op === OP.SEL) {
+      // Admit only the existing explicit Bool + two-data-operand contract.
+      // Legacy flags/CS* arm modifiers are not canonical select semantics.
+      if (def.conditionValue == null || args.length !== 2 || def.cond != null
+        || [def.sub,def.subOp,def.name].some(op => op != null && op !== 'sel')
+        || queryRecord(def.conditionValue,guard).bits !== 1) return 'non-canonical-select-target';
+      guard.take('allocationUnits'); pending.push(def.conditionValue);
+    }
     guard.take('allocationUnits',args.length);
     for (const arg of args) {
       const argument = queryRecord(arg,guard);

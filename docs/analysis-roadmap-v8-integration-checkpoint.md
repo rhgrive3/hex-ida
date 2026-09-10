@@ -4434,6 +4434,58 @@ remains LOCKED. Exact receipts and remote backup are recorded outside the commit
 after verification; no independent, candidate-merge-tree, main/device/runtime or
 release completion is claimed here.
 
+### C4-04 explicit canonical select proof handoff (2026-09-10)
+
+Starting head: `98b502e88dc77b047ed670ba7ffd3d8d939a0d1e`. The canonical raw
+translator, execution bridge and bounded proof-expression printer already
+support select/ITE; they are reused unchanged. The missing connection was the
+pure-target query whitelist/dependency walk and the Phase 8 admission filter.
+The pre-fix actual-producer regression stopped at `non-pure-target-handoff`.
+
+The pure query now visits an explicit one-bit `conditionValue` as well as both
+data operands, placing predicate-only inputs in the same fresh universal input
+relation before the existing execution bridge lowers the select. The proof pass
+is version `2.8.0`: only the canonical two-data-operand contract is admitted.
+Legacy condition codes and CS* arm modifiers are explicitly unsupported; all
+predicate dependencies undergo the existing total/effect/operand-view admission
+walk. A one-bit BV is not silently treated as Bool: canonical sort validation
+still refuses it. No ISA decoder, candidate generator, solver, query authority,
+new semantic identity, display builder or alternate execution semantics is added.
+
+Five permanent tests cover actual adoption through all three existing strategies,
+predicate-only input identity, canonical branch truth and the adopted expression,
+concrete execution versus universal proof scope, replay, legacy/decorated
+predicate refusals, invalid conditions/arity, budgets/cancellation and stale
+predicate identity. The execution-scope test verifies that actual execution
+returned the concrete true-arm value while the adopted expression still chooses
+the false arm for other inputs. It uses the real `execution.symbolicArgs` option.
+
+The finite matrix retains all 72 cells: eight frozen widths, variable/constant/
+equal-arm selects and three strategies. Canonical before has 49,896 BigInt-oracle
+comparisons (exhaustive input triples through four bits; boundary triples above).
+The existing 120ms local-candidate deadline can make the BV8 equal-arm/local
+cell unknown; that exact case remains in the denominator with zero adoption and
+identical producer/AST/output. No runtime budget is enlarged and no unknown is
+reported as proved. Every other cell must adopt; exact-head matrix evidence
+records whether the bounded cell adopted or was unknown and the corresponding
+adopted-comparison count. Two prechecks exposed that real deadline; a third
+diagnostic corrected the test's assumption that a refused initial producer has
+an empty projection object (it can have no projection object). Their receipts
+are retained, not counted as passing verification.
+
+The changed target/input-binding/query/typed-flow suites and generated build
+passed precommit. Exact-head verification must repeat the prior matrices and
+ordinary comparison plus canonical Phase 9 taint/egraph/memory groups. Negative
+controls remove the query predicate traversal, the pass's predicate admission
+walk, legacy-modifier rejection, universal-input construction or publication
+budget. Initial legacy select/CMP rendering, general flag reconstruction, CFG
+edge changes, memory/exception proofs, full C4-03 navigation classes and the
+original23/frozen135 requirements remain open. This proves canonical-expression
+adoption, not equivalence of the initial legacy text. Goal ACTIVE;
+integration/release acceptance LOCKED. Exact verification/backup receipts are
+recorded after commit; no independent, candidate-merge-tree, main/device/runtime
+or release completion is claimed.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -4469,7 +4521,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
 | HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi, actual compatibility stack LOAD-to-MOV and MOV/address-load/precomputed-value/canonical-numeric-load selection, actual flag/conditional-CMP reconstruction and branch/select consumers, initial RMW/C AST compound-store histories, owned handoffs and explicit assignment-expansion records, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
-| HEX-C4-04 | Proof-gated Bool/BV scalar projection, owned inputs, transaction coverage, all 64 display rules as candidates and proof-only preparation with explicit MOV cast endpoints implemented; finite binary denominator covers 432 cells (430 adopted, two refuted), 432 publication-unknown rows and 96 non-total refusals; Boolean comparison adoption adds 480 cells and unary/cast adoption adds 552. Untranslated operand views are explicitly refused (384 cells), while identity widths and mixed independent targets retain adoption. Ordinary legacy-view normalization/adoption, full width/rule denominator and memory/CFG/exception observables remain open |
+| HEX-C4-04 | Proof-gated Bool/BV scalar projection, owned inputs, transaction coverage, all 64 display rules as candidates and proof-only preparation with explicit MOV cast endpoints implemented; finite binary denominator covers 432 cells (430 adopted, two refuted), 432 publication-unknown rows and 96 non-total refusals; Boolean comparison adoption adds 480 cells and unary/cast adoption adds 552. Untranslated operand views are explicitly refused (384 cells), while identity widths and mixed independent targets retain adoption. Explicit canonical select adds a 72-cell adopted/explicit-deadline denominator with predicate-only input binding. Ordinary legacy-view normalization/adoption, full width/rule denominator and memory/CFG/exception observables remain open |
 | HEX-C4-05 | Frozen 272-cell scalar/14-Bool/8-width producer coverage and 3 actual schedules (816 scalar cells); adopted-transform history now preserves actual rule/cost/budget/proof audits. Native proof gaps, arbitrary permutations and full acceptance remain open |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |
 | HEX-SYM-02 | Byte-memory escalation, alias/partial-write independent oracle |
