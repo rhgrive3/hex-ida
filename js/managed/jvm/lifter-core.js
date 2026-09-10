@@ -191,7 +191,51 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           if (opcode !== 0x12) pc += 2;
           const isCategory2 = opcode === 0x14;
           mnemonic = opcode === 0x12 ? 'ldc' : opcode === 0x13 ? 'ldc_w' : 'ldc2_w';
-          producedValues.push({ bits: isCategory2 ? 64 : 32, cpIndex: cpIdx, category: isCategory2 ? 2 : 1 });
+          // JVMS §4.4: the constant pool is already decoded by the parser.
+          // Carrying only {cpIndex} discarded the literal (and the JVM type
+          // of float/long/double/String constants) while the bundle stayed
+          // `exact` and the IR `complete` (#8004). Resolve what the pool
+          // proves; anything loader-linked or malformed fails closed to a
+          // partial load instead of a literal-free complete one.
+          const entry = Array.isArray(jvmClass.constantPool) ? jvmClass.constantPool[cpIdx] ?? null : null;
+          const produced = { bits: isCategory2 ? 64 : 32, cpIndex: cpIdx, category: isCategory2 ? 2 : 1 };
+          if (isCategory2 && (entry?.tag === 5 || entry?.tag === 6)) {
+            produced.constant = entry.value;
+            produced.type = entry.tag === 5
+              ? { kind: 'bitvector', widthBits: 64 }
+              : { kind: 'float', widthBits: 64, format: 'binary64' };
+          } else if (!isCategory2 && entry?.tag === 3) {
+            produced.constant = entry.value;
+            produced.type = { kind: 'bitvector', widthBits: 32 };
+          } else if (!isCategory2 && entry?.tag === 4) {
+            produced.constant = entry.value;
+            produced.type = { kind: 'float', widthBits: 32, format: 'binary32' };
+          } else if (!isCategory2 && entry?.tag === 8) {
+            const literal = jvmClass.constantPool[entry.stringIndex] ?? null;
+            if (literal?.tag === 1) {
+              produced.stringRef = literal.value;
+              produced.type = { kind: 'address', widthBits: 32, addressSpace: 'managed-heap' };
+            } else {
+              completeness = 'partial';
+              unknownEffects.push({ reason: `jvm-ldc-constant-unresolved:${cpIdx}`, categories: ['constants'] });
+            }
+          } else if (!isCategory2 && entry?.tag === 7) {
+            const name = jvmClass.constantPool[entry.nameIndex] ?? null;
+            if (name?.tag === 1) {
+              produced.classRef = name.value;
+              produced.type = { kind: 'address', widthBits: 32, addressSpace: 'managed-heap' };
+            } else {
+              completeness = 'partial';
+              unknownEffects.push({ reason: `jvm-ldc-constant-unresolved:${cpIdx}`, categories: ['constants'] });
+            }
+          } else {
+            // MethodType (16)/MethodHandle (15)/Dynamic (17,18) are
+            // loader-linked; a missing or wrong-category entry is invalid.
+            // None of them may publish a complete literal-free load.
+            completeness = 'partial';
+            unknownEffects.push({ reason: `jvm-ldc-constant-unresolved:${cpIdx}`, categories: ['constants'] });
+          }
+          producedValues.push(produced);
           currentStackHeight += isCategory2 ? 2 : 1;
         }
         break;

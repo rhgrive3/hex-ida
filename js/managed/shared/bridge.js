@@ -832,7 +832,9 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
     // defining node's shape — a zero-input unary must not fabricate `(0)`
     // from a value whose authority was published by the frontend.
     if (val.metadata?.constant != null) {
-      const c = expr.constant(BigInt(val.metadata.constant), val.machineType?.widthBits || 32);
+      const c = val.machineType?.kind === 'float'
+        ? expr.floatConstant(Number(val.metadata.constant), val.machineType?.widthBits || 32)
+        : expr.constant(BigInt(val.metadata.constant), val.machineType?.widthBits || 32);
       exprMemo.set(valId, c);
       return c;
     }
