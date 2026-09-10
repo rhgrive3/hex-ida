@@ -97,6 +97,31 @@ export class SparseByteBuffer {
     }
     return out;
   }
+
+  /**
+   * The subranges of [start, end) that are not cached yet, in order. The
+   * missing-error length reported by subarray() spans to the end of the whole
+   * requested range even when its tail is already cached; readers must use
+   * this view so cached bytes are never re-fetched against the budget (#5554).
+   */
+  missingSpans(start, end) {
+    const begin = nonNegativeBigInt(start, 'missing span start');
+    const finish = nonNegativeBigInt(end, 'missing span end');
+    if (finish < begin || finish > this.size) throw new BinaryReadError('read outside file', begin);
+    const spans = [];
+    let cursor = begin;
+    for (const chunk of this.chunks) {
+      if (chunk.end <= cursor) continue;
+      // A chunk beyond the requested range still proves [cursor, finish) is
+      // a single gap: stop here and let the post-loop push it exactly once.
+      if (chunk.start >= finish) break;
+      if (chunk.start > cursor) spans.push({ start: cursor, end: chunk.start });
+      cursor = finish < chunk.end ? finish : chunk.end;
+      if (cursor === finish) break;
+    }
+    if (cursor < finish) spans.push({ start: cursor, end: finish });
+    return spans;
+  }
 }
 
 export async function parseSourceRanges(source, parser, parserOptions = {}, options = {}) {
@@ -142,33 +167,40 @@ export async function parseSourceRanges(source, parser, parserOptions = {}, opti
     } catch (error) {
       if (error?.code !== 'BINARY_SOURCE_RANGE_MISSING') throw error;
       throwIfSourceAborted(options.signal);
+      // The missing error spans to the end of the parser's requested range,
+      // but that range's tail may already be cached. Only genuinely missing
+      // spans may consume reads/budget; if none remain the cache already
+      // satisfies the parser and it must simply re-run (#5554).
       const missingEnd = error.offset + error.length > source.size ? source.size : error.offset + error.length;
-      let cursor = error.offset;
-      let first = true;
-      while (cursor < source.size && (first || cursor < missingEnd)) {
-        first = false;
-        throwIfSourceAborted(options.signal);
-        if (++reads > maxReads) throw new ByteSourceLimitError(`binary metadata required more than ${maxReads} range reads`);
-        const remaining = source.size - cursor;
-        const budgetRemaining = maxCachedBytes - cachedBytes;
-        if (budgetRemaining <= 0) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
-        const growthShift = Math.min(5, Math.floor((reads - 1) / 4));
-        const adaptive = Math.min(maxPageSize, pageSize * (2 ** growthShift));
-        const missing = missingEnd > cursor ? missingEnd - cursor : 0n;
-        const wantedByParser = missing > BigInt(maxPageSize) ? maxPageSize : safeNumber(missing, 'missing source range length');
-        const requested = Math.max(pageSize, adaptive, wantedByParser);
-        const requestLimit = Math.min(requested, maxPageSize, source.maxReadLength, budgetRemaining);
-        const length = Number(remaining < BigInt(requestLimit) ? remaining : BigInt(requestLimit));
-        if (length <= 0) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
-        const bytes = await source.readExactly(cursor, length, { signal: options.signal });
-        throwIfSourceAborted(options.signal);
-        const added = sparse.additionalBytes(cursor, bytes.byteLength);
-        if (added > budgetRemaining) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
-        sparse.add(cursor, bytes);
-        cachedBytes += added;
-        totalRequestedBytes += bytes.byteLength;
-        largestRead = Math.max(largestRead, bytes.byteLength);
-        cursor += BigInt(bytes.byteLength);
+      const spans = sparse.missingSpans(error.offset, missingEnd);
+      if (!spans.length) continue;
+      for (const span of spans) {
+        let cursor = span.start;
+        while (cursor < span.end) {
+          throwIfSourceAborted(options.signal);
+          if (++reads > maxReads) throw new ByteSourceLimitError(`binary metadata required more than ${maxReads} range reads`);
+          const remaining = source.size - cursor;
+          const budgetRemaining = maxCachedBytes - cachedBytes;
+          if (budgetRemaining <= 0) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
+          const growthShift = Math.min(5, Math.floor((reads - 1) / 4));
+          const adaptive = Math.min(maxPageSize, pageSize * (2 ** growthShift));
+          const missing = span.end > cursor ? span.end - cursor : 0n;
+          const wantedByParser = missing > BigInt(maxPageSize) ? maxPageSize : safeNumber(missing, 'missing source range length');
+          const requested = Math.max(pageSize, adaptive, wantedByParser);
+          const requestLimit = Math.min(requested, maxPageSize, source.maxReadLength, budgetRemaining);
+          const spanRemaining = span.end - cursor;
+          const length = Number(spanRemaining < BigInt(requestLimit) ? spanRemaining : BigInt(requestLimit));
+          if (length <= 0) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
+          const bytes = await source.readExactly(cursor, length, { signal: options.signal });
+          throwIfSourceAborted(options.signal);
+          const added = sparse.additionalBytes(cursor, bytes.byteLength);
+          if (added > budgetRemaining) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
+          sparse.add(cursor, bytes);
+          cachedBytes += added;
+          totalRequestedBytes += bytes.byteLength;
+          largestRead = Math.max(largestRead, bytes.byteLength);
+          cursor += BigInt(bytes.byteLength);
+        }
       }
     }
   }

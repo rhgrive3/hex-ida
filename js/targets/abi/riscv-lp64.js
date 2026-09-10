@@ -124,13 +124,40 @@ function vectorDescriptor(parameter) {
     || /vector/.test(abiClass);
   if (!vector) return null;
   const mask = parameter?.mask === true || parameter?.vectorMask === true || /\bvbool|mask/.test(`${type} ${abiClass}`);
-  const explicitLmul = Number(parameter?.lmul ?? parameter?.LMUL);
+  const explicitLmulRaw = parameter?.lmul ?? parameter?.LMUL;
+  const explicitLmul = Number(explicitLmulRaw);
   const parsed = /m(1|2|4|8)(?:_t|\b)/.exec(type);
-  const lmul = Number.isInteger(explicitLmul) && [1,2,4,8].includes(explicitLmul)
-    ? explicitLmul : parsed ? Number(parsed[1]) : 1;
-  const tupleCount = Math.max(1, Math.min(8, Number(parameter?.tupleCount ?? parameter?.nf ?? 1) || 1));
+  // Standard RVV tuple typedefs spell the group multiplier and field count as
+  // `m<LMUL>x<NFIELDS>` (e.g. vint32m2x3_t). The bare `m<LMUL>(?:_t|\b)` scan
+  // cannot match them — 'm2' is followed by 'x' — and without an NFIELDS path
+  // the tuple silently degraded to LMUL=1/NFIELDS=1, i.e. one register for a
+  // 6-register tuple (#5628). The descriptor must never reconcile conflicting
+  // evidence or out-of-range NFIELDS silently: both fail closed as `conflict`
+  // so placement stays partial instead of minting an exact group (#5628).
+  const tupleMatch = /m(1|2|4|8)x(\d+)(?:_t|\b)/.exec(type);
+  const parsedLmul = tupleMatch ? Number(tupleMatch[1]) : parsed ? Number(parsed[1]) : null;
+  const parsedNf = tupleMatch ? Number(tupleMatch[2]) : null;
+  const explicitLmulValid = Number.isInteger(explicitLmul) && [1,2,4,8].includes(explicitLmul);
+  let conflict = false;
+  if (explicitLmulRaw != null && !explicitLmulValid) conflict = true;
+  else if (explicitLmulValid && parsedLmul != null && parsedLmul !== explicitLmul) conflict = true;
+  const lmul = explicitLmulValid ? explicitLmul : parsedLmul ?? 1;
+  const explicitNfRaw = parameter?.tupleCount ?? parameter?.nf;
+  const explicitNf = Number(explicitNfRaw);
+  let tupleCount;
+  if (explicitNfRaw == null) {
+    tupleCount = parsedNf ?? 1;
+  } else if (Number.isSafeInteger(explicitNf) && explicitNf >= 1 && explicitNf <= 8) {
+    tupleCount = explicitNf;
+    if (parsedNf != null && parsedNf !== explicitNf) conflict = true;
+  } else {
+    conflict = true;
+  }
+  if (parsedNf != null && (parsedNf < 1 || parsedNf > 8)) conflict = true;
   const fixedLength = parameter?.fixedLengthVector === true || /fixed[-_ ]?length/.test(abiClass);
-  return { mask, lmul, tupleCount, fixedLength };
+  return conflict
+    ? { mask, lmul, tupleCount, fixedLength, conflict:true }
+    : { mask, lmul, tupleCount, fixedLength };
 }
 
 function aggregateMembers(parameter) {
@@ -470,6 +497,12 @@ function createClassifier(profile) {
       if (classified.vector) {
         if (!vectorVariant) {
           unknownArgument(index, classified, 'vector-calling-convention-unknown', { candidates:['riscv-vector-variant','non-vector-fallback'] });
+          return;
+        }
+        // Conflicting or malformed descriptor evidence (spelling vs explicit
+        // metadata, out-of-range NFIELDS) must not mint an exact group (#5628).
+        if (classified.vector.conflict) {
+          unknownArgument(index, classified, 'vector-descriptor-conflict', { vector:classified.vector });
           return;
         }
         const regs = allocateVectorGroup(classified.vector);
@@ -884,6 +917,7 @@ function createClassifier(profile) {
     ) === 'riscv-vector-variant';
     if (returnVector) {
       if (!vectorVariant) return { reg:null, partial:true, location:'unknown', reason:'vector-return-calling-convention-unknown' };
+      if (returnVector.conflict) return { reg:null, partial:true, location:'unknown', reason:'vector-return-descriptor-conflict', vector:returnVector };
       if (returnVector.fixedLength && !(Number(options?.abiVlen) > 0)) return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-abi-vlen-required' };
       const count = returnVector.mask ? 1 : returnVector.lmul * returnVector.tupleCount;
       if (!returnVector.mask && count > VECTOR_ARGUMENT_REGISTERS.length) return { reg:null, partial:true, location:'unknown', reason:'vector-return-group-too-large' };
