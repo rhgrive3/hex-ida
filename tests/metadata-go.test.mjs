@@ -396,3 +396,4 @@ console.log('Go Metadata Provider tests passed.');
 // Keep the focused Go section-evidence regression in the required metadata:test
 // denominator.
 await import('./issue-5877-go-pclntab-section-without-buffer.test.mjs');
+await import('./issue-5347-go-rtype-nameoff.test.mjs');
