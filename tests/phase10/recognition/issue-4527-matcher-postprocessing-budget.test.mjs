@@ -81,6 +81,54 @@ assert.equal(aborted.matching.postprocessingIncomplete, true);
 assert.equal(aborted.matches.length, 0);
 assert.match(aborted.matching.budget.reason, /match post-processing aborted/);
 
+// Solver truncation must not short-circuit the independent post-processing
+// deadline check. The original solver reason remains the first truncation
+// authority while post-processing fails closed rather than publishing a
+// seemingly completed partial result.
+let solverTruncatedWallCalls = 0;
+const solverTruncatedThenTimedOut = matchFunctionsFast(before.slice(0, 1), after.slice(0, 1), {
+  matchBudget: {
+    maxSolverRelaxations: 1,
+    maxWallMs: 1,
+    now: () => {
+      solverTruncatedWallCalls++;
+      return solverTruncatedWallCalls >= 9 ? 2 : 0;
+    },
+  },
+});
+assert.equal(solverTruncatedThenTimedOut.truncated, true);
+assert.equal(solverTruncatedThenTimedOut.matching.postprocessingIncomplete, true);
+assert.equal(solverTruncatedThenTimedOut.matches.length, 0);
+assert.equal(solverTruncatedThenTimedOut.unresolvedBefore.length, 1);
+assert.equal(solverTruncatedThenTimedOut.unresolvedAfter.length, 1);
+assert.match(solverTruncatedThenTimedOut.matching.budget.reason, /solver relaxations exceeded 1/);
+assert.ok(solverTruncatedWallCalls >= 9, 'post-processing must sample the wall clock after solver truncation');
+
+// The same independence is required for cancellation. Before this regression,
+// solverBudgetTruncated short-circuited the signal read at every later stage.
+let solverTruncatedAbortReads = 0;
+const lateAbortSignal = {
+  get aborted() {
+    solverTruncatedAbortReads++;
+    return solverTruncatedAbortReads >= 8;
+  },
+};
+const solverTruncatedThenAborted = matchFunctionsFast(before.slice(0, 1), after.slice(0, 1), {
+  signal: lateAbortSignal,
+  matchBudget: {
+    maxSolverRelaxations: 1,
+    maxWallMs: 30_000,
+    now: () => 0,
+  },
+});
+assert.equal(solverTruncatedThenAborted.truncated, true);
+assert.equal(solverTruncatedThenAborted.matching.postprocessingIncomplete, true);
+assert.equal(solverTruncatedThenAborted.matches.length, 0);
+assert.equal(solverTruncatedThenAborted.unresolvedBefore.length, 1);
+assert.equal(solverTruncatedThenAborted.unresolvedAfter.length, 1);
+assert.match(solverTruncatedThenAborted.matching.budget.reason, /solver relaxations exceeded 1/);
+assert.ok(solverTruncatedAbortReads >= 8, 'post-processing must sample AbortSignal after solver truncation');
+
 // Keep the regression tied to the expensive boundary: the old comparator
 // re-scanned the complete before array for every comparison.
 const matcherSource = fs.readFileSync(new URL('../../../js/recognition/matcher.js', import.meta.url), 'utf8');

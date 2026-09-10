@@ -86,8 +86,8 @@ export function createMatchBudget(overrides = {}) {
     if (reason == null) reason = message;
     return false;
   };
-  const wallOkay = (stage, incomplete = false, preprocessing = false) => {
-    if (truncated) return false;
+  const wallOkay = (stage, incomplete = false, preprocessing = false, observeAfterTruncation = false) => {
+    if (truncated && !observeAfterTruncation) return false;
     if (signal?.aborted) return stop(`${stage} aborted`, incomplete, preprocessing);
     if (now() - started > limits.maxWallMs) return stop(`${stage} exceeded ${limits.maxWallMs} ms wall-clock budget`, incomplete, preprocessing);
     return true;
@@ -139,6 +139,7 @@ export function createMatchBudget(overrides = {}) {
     },
     checkCandidateWall() { return wallOkay('candidate generation', true); },
     checkSolverWall(stage = 'matching') { return wallOkay(stage, false); },
+    checkPostprocessingWall(stage = 'match post-processing') { return wallOkay(stage, false, false, true); },
     allowComponent(nodeCount, edgeCount) {
       if (nodeCount > limits.maxComponentNodes || edgeCount > limits.maxComponentEdges) {
         oversizedComponents++;

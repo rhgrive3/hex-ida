@@ -202,7 +202,6 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
 
   const solved = solveCandidateMatching(eligible, budget);
   const selected = solved.selected;
-  const solverBudgetTruncated = budget.truncated;
   const truncatedComponents = solved.truncatedComponents.slice(0, 32);
   const incompletePostprocessing = () => {
     const matchingBudget = budget.snapshot();
@@ -224,7 +223,7 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
     };
   };
   const postprocessingBudgetOkay = (stage = 'match post-processing') => (
-    solverBudgetTruncated || budget.checkSolverWall(stage)
+    budget.checkPostprocessingWall(stage)
   );
   if (!postprocessingBudgetOkay()) return incompletePostprocessing();
 
