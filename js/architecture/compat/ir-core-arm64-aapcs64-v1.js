@@ -1193,7 +1193,7 @@ export function pointerProvenance(value, active = null, memo = defaultPointerPro
   }
 
   if (!out) out = { kind:'unknown', root:'value:' + value.id, rootValue:value, offset:0n, must:true, valueId:value.id };
-  visiting.delete(value.id);
+  visiting.delete(value);
   memo.set(value, out);
   return out;
 }
