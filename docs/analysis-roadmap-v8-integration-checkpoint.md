@@ -4238,6 +4238,54 @@ synchronization and normal PR #7036 backup are retained in persistent storage.
 Goal ACTIVE; integration/release acceptance LOCKED. No component/main merge,
 independent/full-product/device/activation or release acceptance is claimed.
 
+## C4-04 binary-family production width denominator
+
+`substrate/proof-target-decisions.test.mjs` now exercises all nine currently
+admissible binary root operators (`add/sub/mul/and/or/xor/shl/lshr/ashr`) on the
+existing frozen width axis `1/2/3/4/8/16/32/64`, through each of the three existing
+candidate strategies. Two actual unsimplified producer shapes per cell are
+`a op (a xor a)` and `a op ((a xor a) + 1)`. The nonzero operand distinguishes
+operators whose zero-operand identities would otherwise conceal wrong lowering.
+No new candidate generator, semantic evaluator or proof authority is introduced.
+
+The resulting 432-cell production denominator contains **430 adopted and two
+refuted** cells. Both refutations are representation-rule proposals for BV1
+`shl/lshr` with count one: machine-style masking is not saturated BV semantics.
+The test requires genuine refutation, exactly zero adoptions, no transform and
+unchanged original AST/output, rather than dropping these cells or converting
+their expected outcome into a proof. Every adoption requires a real committed
+and rendered transform, matching query/plan hashes and a provenance ledger row.
+All 432 cells are also rerun with zero publication work budget; each must retain
+one explicit unknown target decision, zero adoption and the original AST pointers.
+
+Canonical before expressions come from the existing translation-only production
+query and its privately observed original input binding. A separate BigInt oracle
+checks every input at widths up to eight and boundary values at 16/32/64, against
+both canonical before and every actually adopted expression. Tests preserve the
+complete canonical IR and source producer AST. The initial raw machine AST
+evaluator has different shift-count semantics; its observed discrepancies are
+retained in diagnostic rows, **not** certified as initial renderer equivalence.
+An early test that used that evaluator as the canonical-before oracle failed;
+the retained diagnostic documents why the production canonical query is required.
+
+An additional **96 cells** cover unsigned/signed division and remainder on the
+same width/strategy axes. Every row must be explicitly unsupported by the current
+non-total-target boundary, with no generated candidate, adoption or transform.
+The original ten-cell plan-only test remains; the new matrix covers the actual
+producer, proof-only preparation, canonical query, transaction and projection.
+The canonical substrate runner discovers both new tests in the existing owned
+file. Full rows, scoped exact-head receipts and worker-only negative-control
+evidence are retained in the persistent task evidence directory.
+
+This closes this finite **binary-root integration denominator**, not the full
+C4-04 denominator: arbitrary operands/counts, other widths, unary/cast/Bool
+families, all individual risky rewrite rules and memory/CFG/exception observables
+remain separate obligations. It is not exhaustive native-width solver truth or
+real compiler/device evidence. Initial lifting/rendering and typed construction
+remain outside this proof claim. C4-02/03/05 and original23/frozen135 acceptance
+remain OPEN; integration/release acceptance remains LOCKED. No performance,
+issue, moving-main, device or environment lane is claimed complete.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -4273,7 +4321,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
 | HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi, actual compatibility stack LOAD-to-MOV and MOV/address-load/precomputed-value/canonical-numeric-load selection, actual flag/conditional-CMP reconstruction and branch/select consumers, initial RMW/C AST compound-store histories, owned handoffs and explicit assignment-expansion records, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
-| HEX-C4-04 | Proof-gated scalar projection, owned inputs, transaction coverage and optional reuse of all 64 display rules as independently verified candidates implemented; ordinary legacy-view adoption, full family/width denominator and memory/CFG/exception observables remain open |
+| HEX-C4-04 | Proof-gated scalar projection, owned inputs, transaction coverage, optional reuse of all 64 display rules and proof-only preparation implemented; finite binary-root production denominator covers 432 cells (430 adopted, two refuted), 432 publication-unknown rows and 96 non-total refusals. Ordinary legacy-view adoption, full family/width/rule denominator and memory/CFG/exception observables remain open |
 | HEX-C4-05 | Frozen 272-cell scalar/14-Bool/8-width producer coverage and 3 actual schedules (816 scalar cells); adopted-transform history now preserves actual rule/cost/budget/proof audits. Native proof gaps, arbitrary permutations and full acceptance remain open |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |
 | HEX-SYM-02 | Byte-memory escalation, alias/partial-write independent oracle |
