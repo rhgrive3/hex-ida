@@ -55,7 +55,7 @@ function defineOwn(target, key, value) {
 
 export function sanitizeToolSchema(value, depth = 0) {
   if (depth > 8 || !isObject(value)) return { type: 'object', properties: {} };
-  const allowed = new Set(['type','description','enum','const','properties','required','items','oneOf','anyOf','minimum','maximum','minLength','maxLength','pattern','additionalProperties']);
+  const allowed = new Set(['type','description','enum','const','properties','required','items','oneOf','anyOf','minimum','maximum','minLength','maxLength','maxItems','pattern','additionalProperties']);
   const out = {};
   for (const [key, item] of Object.entries(value).slice(0, 100)) {
     if (!allowed.has(key)) continue;
@@ -137,9 +137,20 @@ export function promptWorkbench(context) {
   const fn = context?.current?.function || null, selection = context?.current?.selection || null;
   return { binary: context?.current?.binaryIdentity ? { name: context.current.binaryId, architecture: context?.turn?.architecture } : null, function: fn ? { address: fn.address, name: fn.name } : null, selection: selection ? { kind: 'snapshot', address: selection.start, text: selection.instructions?.[0]?.mnemonic } : null };
 }
-export function rejectBinaryPayload(value, depth = 0) { if (depth > 10 || !value || typeof value !== 'object') return; const forbidden = new Set(['binary','binaryBytes','fileBytes','rawBinary','byteSource','arrayBuffer']); for (const [key, item] of Object.entries(value)) { if (forbidden.has(key)) throw new HttpError(422, 'binary_upload_forbidden', 'Binary content cannot be sent to the AI worker.'); rejectBinaryPayload(item, depth + 1); } }
+// Binary content is rejected by value type, not by property name (#5316): a
+// key-name blacklist let a TypedArray/DataView/ArrayBuffer pass under any
+// other key and sanitizeValue would enumerate its raw bytes into the model
+// context. ArrayBuffer views (TypedArrays, DataView, Node Buffer) and buffer
+// sources fail closed; the legacy name blacklist stays as auxiliary defense.
+export function isBinaryContainer(value) {
+  if (!value || typeof value !== 'object') return false;
+  if (ArrayBuffer.isView(value)) return true;
+  return value instanceof ArrayBuffer
+    || (typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer);
+}
+export function rejectBinaryPayload(value, depth = 0) { if (depth > 10 || !value || typeof value !== 'object') return; if (isBinaryContainer(value)) throw new HttpError(422, 'binary_upload_forbidden', 'Binary content cannot be sent to the AI worker.'); const forbidden = new Set(['binary','binaryBytes','fileBytes','rawBinary','byteSource','arrayBuffer']); for (const [key, item] of Object.entries(value)) { if (forbidden.has(key)) throw new HttpError(422, 'binary_upload_forbidden', 'Binary content cannot be sent to the AI worker.'); rejectBinaryPayload(item, depth + 1); } }
 export function normalizeList(value, maxItems) { return Array.isArray(value) ? value.slice(0, maxItems).map((item) => sanitizeValue(item, 0)).filter((item) => item != null) : []; }
-export function sanitizeValue(value, depth) { if (depth > 6) return null; if (typeof value === 'string') return boundedText(value, 6000); if (typeof value === 'number' || typeof value === 'boolean') return value; if (value == null) return null; if (Array.isArray(value)) return value.slice(0, 32).map((item) => sanitizeValue(item, depth + 1)).filter((item) => item != null); if (!isObject(value)) return null; const out = {}; for (const [key, item] of Object.entries(value).slice(0, 40)) { const clean = sanitizeValue(item, depth + 1); if (clean != null) defineOwn(out, boundedText(key, 80), clean); } return out; }
+export function sanitizeValue(value, depth) { if (depth > 6) return null; if (typeof value === 'string') return boundedText(value, 6000); if (typeof value === 'number' || typeof value === 'boolean') return value; if (value == null) return null; if (isBinaryContainer(value)) return null; if (Array.isArray(value)) return value.slice(0, 32).map((item) => sanitizeValue(item, depth + 1)).filter((item) => item != null); if (!isObject(value)) return null; const out = {}; for (const [key, item] of Object.entries(value).slice(0, 40)) { const clean = sanitizeValue(item, depth + 1); if (clean != null) defineOwn(out, boundedText(key, 80), clean); } return out; }
 export function stringList(value, max) { return Array.isArray(value) ? value.slice(0, max).map((item) => boundedText(item, 2000)).filter(Boolean) : []; }
 // The `submit_hex_result` tool schema declares `confidence` as a number.
 // `Number()` coercion let `['0.9']`, `'0.8'` or `true` pass as a canonical

@@ -390,7 +390,18 @@ export function callGraph(program, symbols, addr, opts) {
   const nodes = [];
   const edges = [];
   const seen = new Map();
+  const seenEdges = new Set();
   const idOf = (a) => a.toString();
+
+  /* #5481: a self-recursive function observes the same A->A relation from both
+     the caller and callee traversals; the edge set is deduped so one logical
+     call edge is published once. */
+  const addEdge = (from, to, kind) => {
+    const key = `${from}\u0000${to}\u0000${kind}`;
+    if (seenEdges.has(key)) return;
+    seenEdges.add(key);
+    edges.push({ from, to, kind });
+  };
 
   const add = (a, kind) => {
     const id = idOf(a);
@@ -415,7 +426,7 @@ export function callGraph(program, symbols, addr, opts) {
         const start = c.addr;
         if (start == null) continue;
         add(start, 'caller');
-        edges.push({ from: idOf(start), to: idOf(a), kind: 'call' });
+        addEdge(idOf(start), idOf(a), 'call');
         next.push(start);
       }
     }
@@ -433,7 +444,7 @@ export function callGraph(program, symbols, addr, opts) {
         const target = c.addr;
         if (target == null) continue;
         add(target, 'callee');
-        edges.push({ from: idOf(a), to: idOf(target), kind: 'call' });
+        addEdge(idOf(a), idOf(target), 'call');
         next.push(target);
       }
     }

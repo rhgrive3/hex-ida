@@ -1,9 +1,11 @@
 import { parseMachOSource as parseMachOSourceRaw } from './source-loaders.js';
 
 /*
- * Selected FAT Mach-O slices are immutable loader artifacts.  Keep the cache at
+ * Selected FAT Mach-O slices are shared producer artifacts. Keep the cache at
  * the public source-loader boundary so analysis and pointer-resolution share the
- * same parse instead of each reparsing identical bytes.
+ * same parse instead of each reparsing identical bytes. The producer image
+ * is never returned directly: each waiter receives a detached mutable view so
+ * consumer annotations cannot mutate the cache or another consumer's result.
  *
  * The producer owns its AbortController.  Consumer cancellation only detaches
  * that waiter; the producer is aborted when the last waiter leaves.  This avoids
@@ -20,9 +22,14 @@ function abortError(signal) {
 }
 
 function normalizeScalar(value) {
-  if (typeof value === 'bigint') return value.toString();
   if (value == null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value ?? null;
-  return String(value);
+  // #5183: bigint/structured option values are not parser-accepted primitives
+  // (parseMachOSource demands a number or non-empty string sliceIndex; the
+  // range budgets demand safe integers). They must key distinctly — any
+  // String() form ('0', '65536') would alias a cached parse of a differently
+  // typed but colliding request and bypass the parser's typed validation.
+  // Tagged keys guarantee a cache miss, so the raw parser rejects them.
+  return { nonPrimitive: typeof value === 'bigint' ? value.toString() : String(value) };
 }
 
 function cacheableStringsOptions(value) {
@@ -50,6 +57,65 @@ function producerRangeOptions(value) {
   // abort would cancel the parse other consumers still need.
   const { signal: _consumerSignal, ...rest } = value;
   return rest;
+}
+
+function cloneCachedArtifact(value) {
+  const shared = new Set();
+  if (value?.source && typeof value.source === 'object') shared.add(value.source);
+  return cloneValue(value, new Map(), shared);
+}
+
+function cloneValue(value, seen, shared) {
+  if (value == null || typeof value !== 'object' || shared.has(value)) return value;
+  if (seen.has(value)) return seen.get(value);
+
+  if (value instanceof ArrayBuffer) {
+    const copy = value.slice(0);
+    seen.set(value, copy);
+    return copy;
+  }
+  if (ArrayBuffer.isView(value)) {
+    const copy = value instanceof DataView
+      ? new DataView(cloneValue(value.buffer, seen, shared), value.byteOffset, value.byteLength)
+      : value.slice();
+    seen.set(value, copy);
+    return copy;
+  }
+  if (value instanceof Date) {
+    const copy = new Date(value.getTime());
+    seen.set(value, copy);
+    return copy;
+  }
+  if (value instanceof RegExp) {
+    const copy = new RegExp(value.source, value.flags);
+    copy.lastIndex = value.lastIndex;
+    seen.set(value, copy);
+    return copy;
+  }
+  if (value instanceof Map) {
+    const copy = new Map();
+    seen.set(value, copy);
+    for (const [key, item] of value) {
+      copy.set(cloneValue(key, seen, shared), cloneValue(item, seen, shared));
+    }
+    return copy;
+  }
+  if (value instanceof Set) {
+    const copy = new Set();
+    seen.set(value, copy);
+    for (const item of value) copy.add(cloneValue(item, seen, shared));
+    return copy;
+  }
+
+  const copy = Array.isArray(value) ? [] : Object.create(Object.getPrototypeOf(value));
+  seen.set(value, copy);
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor) continue;
+    if ('value' in descriptor) descriptor.value = cloneValue(descriptor.value, seen, shared);
+    try { Object.defineProperty(copy, key, descriptor); } catch { /* preserve best-effort data copies */ }
+  }
+  return copy;
 }
 
 function cacheKey(options = {}) {
@@ -112,7 +178,16 @@ function waitForEntry(entry, signal, onProgress = null) {
       reject(abortError(signal));
     };
     signal?.addEventListener('abort', onAbort, { once:true });
-    entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
+    /* Issue #5263: the initial aborted check happened before registration, so
+       an abort landing in that window never dispatches (AbortSignals do not
+       replay past events). Re-check after the listener is in place — the
+       done flag keeps a real event delivery and this re-check mutually
+       idempotent. */
+    if (signal?.aborted) { onAbort(); return; }
+    entry.promise.then((value) => {
+      try { finish(resolve, cloneCachedArtifact(value)); }
+      catch (error) { finish(reject, error); }
+    }, (error) => finish(reject, error));
   });
 }
 

@@ -6,11 +6,10 @@ export const DEFAULT_RELOCATION_BUDGET_LIMITS = Object.freeze({
 });
 
 function positiveLimit(value, fallback) {
-  const n = Number(value);
-  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
-export function createRelocationBudget({ limits = {}, onLimit = null } = {}) {
+export function createRelocationBudget({ limits = {}, onLimit = null, signal = null } = {}) {
   const resolved = {
     maxOutput: positiveLimit(limits.maxOutput, DEFAULT_RELOCATION_BUDGET_LIMITS.maxOutput),
     maxInputBytes: positiveLimit(limits.maxInputBytes, DEFAULT_RELOCATION_BUDGET_LIMITS.maxInputBytes),
@@ -40,6 +39,7 @@ export function createRelocationBudget({ limits = {}, onLimit = null } = {}) {
     get reason() { return reason; },
     claimInput(bytes, source = 'relocation table') {
       if (stopped) return false;
+      if (signal?.aborted) return stop('aborted');
       if (!Number.isSafeInteger(bytes) || bytes < 0) return stop(`${source} input size is not safely representable`);
       if (bytes > resolved.maxInputBytes - inputBytes) return stop(`${source} input bytes exceed ${resolved.maxInputBytes}`);
       inputBytes += bytes;
@@ -47,6 +47,7 @@ export function createRelocationBudget({ limits = {}, onLimit = null } = {}) {
     },
     step(cost = 1) {
       if (stopped) return false;
+      if (signal?.aborted) return stop('aborted');
       // A negative cost gave back work that had already been consumed, so
       // alternating step(1)/step(-1) never reached maxOperations; fractional,
       // NaN and Infinity costs put the counter in a state the limit check
@@ -63,6 +64,7 @@ export function createRelocationBudget({ limits = {}, onLimit = null } = {}) {
     },
     push(out, item, source = 'relocation table') {
       if (stopped) return false;
+      if (signal?.aborted) return stop('aborted');
       if (out.length >= resolved.maxOutput) return stop(`${source} expanded relocations exceed ${resolved.maxOutput}`);
       out.push(item);
       return true;

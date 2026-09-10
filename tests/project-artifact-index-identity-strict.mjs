@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { createArtifactRef, ProjectArtifactIndex } from '../js/project/artifact-index.js';
 
-const valid = Object.freeze({ scope: 'binary:fixture', kind: 'analysis-summary', artifactId: 'artifact_0123456789abcdef' });
+const valid = Object.freeze({ scope: 'binary:fixture', kind: 'analysis-summary', artifactId: 'artifact_0123456789abcdef0123456789abcdef' });
 
 test('valid artifact reference strings preserve existing behavior', () => {
   const ref = createArtifactRef(valid);

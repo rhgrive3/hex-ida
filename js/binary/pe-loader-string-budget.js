@@ -10,7 +10,7 @@ function exactCStringAccounting(reader, budget) {
   const rawCStringBytes = [];
   const descriptorState = {
     import: { seen: 0, terminated: false, budgetStopped: false },
-    delayImport: { seen: 0, terminated: false, budgetStopped: false },
+    delayImport: { seen: 0, terminated: false, budgetStopped: false, attrs: null, expectThunkRead: false },
   };
   let descriptorCapture = null;
 
@@ -31,6 +31,7 @@ function exactCStringAccounting(reader, budget) {
             if (!capture.snapshot) {
               capture.baseOffset = offset;
               capture.snapshot = Array.from({ length: 8 }, (_, index) => target.u32(offset + index * 4));
+              capture.state.attrs = capture.snapshot[0];
               if (capture.snapshot.every((field) => field === 0)) capture.state.terminated = true;
               capture.moduleHandleOnly = capture.snapshot[2] !== 0
                 && capture.snapshot.every((field, index) => index === 2 || field === 0);
@@ -47,11 +48,32 @@ function exactCStringAccounting(reader, budget) {
             }
           }
           const value = target.u32(offset);
+          if (descriptorState.delayImport.expectThunkRead) {
+            descriptorState.delayImport.expectThunkRead = false;
+          }
           if (descriptorCapture) {
             descriptorCapture.values.push(value);
             if (descriptorCapture.values.length === descriptorCapture.expected) {
               if (descriptorCapture.values.every((field) => field === 0)) descriptorCapture.state.terminated = true;
               descriptorCapture = null;
+            }
+          }
+          return value;
+        };
+      }
+      if (property === 'u64') {
+        return (offset) => {
+          const value = target.u64(offset);
+          const state = descriptorState.delayImport;
+          if (state.expectThunkRead) {
+            state.expectThunkRead = false;
+            const ordinalMask = 0x8000000000000000n;
+            const masked = value & 0x7fffffffffffffffn;
+            if ((state.attrs & 1) && value !== 0n && !(value & ordinalMask) && masked > 0xffffffffn) {
+              budget.partial(
+                'delay-imports:malformed-thunk',
+                'Ignored malformed PE delay-import thunk with out-of-range name RVA',
+              );
             }
           }
           return value;
@@ -85,6 +107,9 @@ function exactCStringAccounting(reader, budget) {
               descriptor.state.budgetStopped = true;
               descriptorCapture = null;
             }
+          }
+          if (reason === 'delay-import-thunk') {
+            descriptorState.delayImport.expectThunkRead = accepted;
           }
           return accepted;
         };
@@ -248,7 +273,11 @@ export function parseDelayImports(reader, directory, image, sharedBudget = null)
     return parseDelayImportsCore(reader, directory, image, sharedBudget);
   }
   const context = delegatedContext(reader, image, sharedBudget);
+  const warningStart = image.warnings.length;
   const result = parseDelayImportsCore(context.reader, directory, image, context.budget);
+  if (image.warnings.slice(warningStart).some((warning) => warning.startsWith('Ignored malformed PE delay-import thunk'))) {
+    context.budget.partial('delay-imports:malformed-thunk');
+  }
   markDelayImportDescriptorTermination(context, directory, image);
   return result;
 }

@@ -90,6 +90,19 @@ function strictNonEmptyString(value, code) {
   return text;
 }
 
+function metadataAddress(value) {
+  if (typeof value !== 'string') fail('metadata-record-invalid-address');
+  const text = value.trim();
+  if (!/^(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) fail('metadata-record-invalid-address');
+  let address;
+  try {
+    address = BigInt(text);
+  } catch {
+    fail('metadata-record-invalid-address');
+  }
+  return `0x${address.toString(16)}`;
+}
+
 function arrayField(value, code) {
   if (value == null) return [];
   if (!Array.isArray(value)) fail(code);
@@ -304,14 +317,14 @@ export function createLanguageMetadataRecord(input = {}) {
     kind,
     entityId: strictNonEmptyString(input.entityId, 'metadata-record-entity-required'),
     name: input.name == null ? null : String(input.name),
-    address: input.address == null ? null : strictNonEmptyString(input.address, 'metadata-record-invalid-address'),
+    address: input.address == null ? null : metadataAddress(input.address),
     sizeBytes: optionalSizeBytes(input.sizeBytes),
     descriptor: input.descriptor ?? null,
     providerId: nonEmpty(input.providerId, 'metadata-record-provider-required'),
     providerVersion: nonEmpty(input.providerVersion, 'metadata-record-provider-version-required'),
     ecosystem: nonEmpty(input.ecosystem ?? 'generic', 'metadata-record-ecosystem-required'),
     buildIdentity: input.buildIdentity == null ? null : strictNonEmptyString(input.buildIdentity, 'metadata-record-invalid-build-identity'),
-    evidenceIds: [...new Set((input.evidenceIds ?? []).map((value) => strictNonEmptyString(value, 'metadata-record-invalid-evidence-id')))].sort(),
+    evidenceIds: [...new Set(arrayField(input.evidenceIds, 'metadata-record-evidence-ids-must-be-array').map((value) => strictNonEmptyString(value, 'metadata-record-invalid-evidence-id')))].sort(),
   });
   CANONICAL_RECORDS.add(record);
   return record;

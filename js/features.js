@@ -251,7 +251,7 @@ export async function classifyFeaturesAndEngineAsync(strings, options = {}) {
   for (let i = 0; i < total; i++) {
     if (signal?.aborted) break;
     if (i > 0 && i % chunkSize === 0) {
-      options.onProgress?.(i, total);
+      if (typeof options.onProgress === 'function') options.onProgress(i, total);
       await new Promise((r) => setTimeout(r, 0));
       if (signal?.aborted) break;
     }
