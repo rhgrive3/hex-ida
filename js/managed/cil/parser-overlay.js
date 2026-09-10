@@ -113,6 +113,21 @@ function validateManagedEntryAuthority(bytes,parsed,defs,layout,meta){
 export function overlayCilMetadata(bytes,parsed){
  const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes),view=new DataView(u8.buffer,u8.byteOffset,u8.byteLength),pe=peLayout(u8,view);if(!pe?.cliPresent)return parsed;
  const meta=readCilMetadataStreams(u8,pe.metadataOffset,pe.metadataSize),tablesStream=meta.streams.find(s=>s.name==='#~'||s.name==='#-'),stringsStream=meta.streams.find(s=>s.name==='#Strings'),blobStream=meta.streams.find(s=>s.name==='#Blob');if(!tablesStream)fail('cil-metadata-tables-missing');
+ const usStream=meta.streams.find(s=>s.name==='#US');
+ const userStrings=new Map();
+ if(usStream){
+  const usHeap=u8.subarray(usStream.offset,usStream.offset+usStream.size),utf16=new TextDecoder('utf-16le');
+  const usLength=(offset)=>{try{return compressed(usHeap,offset,'cil-user-string-invalid');}catch{return null;}};
+  for(let offset=1;offset<usHeap.length;){
+   const length=usLength(offset);
+   if(length==null)break;
+   const entryBytes=length.next-offset+length.value;
+   if(entryBytes<=0)break;
+   const payload=usHeap.subarray(length.next,length.next+Math.max(length.value-1,0));
+   try{userStrings.set(offset,Object.freeze(utf16.decode(payload)));}catch{}
+   offset=length.next+length.value;
+  }
+ }
  const layout=tableLayout(u8,view,tablesStream),defs=readCilDefinitions(u8,view,layout,stringsStream,blobStream);validateParamAuthority(u8,defs,layout,blobStream);const properties=decodePropertyAuthority(u8,defs,layout,blobStream);validateManagedEntryAuthority(u8,parsed,defs,layout,meta);const byOffset=new Map((parsed.methodBodies??[]).map(b=>[b.headerOffset,b])),methodBodies=[],methods=[];
  for(const method of defs.methods){const out={...method,bodyIndex:null};if(method.rva!==0){const off=pe.mapRva(method.rva,1,'cil-method-rva-unmapped'),body=byOffset.get(off);if(!body)fail('cil-method-rva-unmapped');out.bodyIndex=methodBodies.length;methodBodies.push({...body,token:method.token,rid:method.rid})}methods.push(out)}
  // ECMA-335 II.22.28: Implementation == null resources live inside the CLI
@@ -129,5 +144,5 @@ export function overlayCilMetadata(bytes,parsed){
   const payload=u8.subarray(start+4,start+4+length);
   return {...row,location:'embedded',payload};
  });
- return deepFreeze({...parsed,runtimeVersion:meta.runtimeVersion,vmSpecEdition:meta.runtimeVersion,types:defs.types,fields:defs.fields,params:defs.params,properties,events:defs.events,methodSemantics:defs.methodSemantics,methods,methodBodies,manifestResources,typeSpecs:defs.typeSpecs,assembly:defs.assembly});
+ return deepFreeze({...parsed,runtimeVersion:meta.runtimeVersion,vmSpecEdition:meta.runtimeVersion,types:defs.types,fields:defs.fields,params:defs.params,properties,events:defs.events,methodSemantics:defs.methodSemantics,methods,methodBodies,manifestResources,typeSpecs:defs.typeSpecs,assembly:defs.assembly,userStrings});
 }
