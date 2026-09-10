@@ -21,6 +21,7 @@ import { readSemanticStoreLineHistory, readSemanticStoreRenderHistory } from './
 import { buildNZCVConditionExpression } from './flag-semantics.js';
 import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionExpected,
   readProjectedConstantTransitions, projectedConstantTransitionExpected } from '../semantics/compat/semantic-ir-v2-to-v1.js';
+import { readFacadeConstantTransitions, facadeConstantTransitionExpected } from '../ir-core.js';
 import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
@@ -707,13 +708,20 @@ function compatConstantSelection(value, state) {
     const source = pending.pop();
     if (!source || seen.has(source)) continue;
     seen.add(source);
-    if (!projectedConstantTransitionExpected(state.ir, source)) continue;
+    const expectedProjection = projectedConstantTransitionExpected(state.ir, source);
+    const expectedFacade = facadeConstantTransitionExpected(state.ir, source);
+    if (!expectedProjection && !expectedFacade) continue;
     if ((state.buildSelectionHistoryCount || 0) >= maximum || budget.edges <= 0) {
       observeBuildSelection(value, source, state, 'compat-constant'); return selected;
     }
-    const transition = readProjectedConstantTransitions(state.ir, source);
-    if (!transition) { budget.reasons.add('compat-constant-transition-unavailable'); continue; }
-    for (const event of transition.events) {
+    const transitions = [];
+    for (const [expected, read] of [[expectedProjection, readProjectedConstantTransitions], [expectedFacade, readFacadeConstantTransitions]]) {
+      if (!expected) continue;
+      const transition = read(state.ir, source);
+      if (transition) transitions.push(transition);
+      else budget.reasons.add('compat-constant-transition-unavailable');
+    }
+    for (const transition of transitions) for (const event of transition.events) {
       // Traverse actual recorded input definitions, not a guessed upstream pass
       // inferred from a supplied constant. Precomputed rendering need not visit
       // these expressions, but it still consumes their observed folding chain.
@@ -743,10 +751,11 @@ function recordCompatConstantSelection(value, expression, selected, state) {
     const source = mergeSource(origin(event.source, event.output), origin(value.def, value), origins?.source,
       ...event.beforeInputs.map(input => origin(input.def, input)));
     const history = expressionOriginHistory({ source }, expression);
-    const record = Object.freeze({ rule:'fold-compatibility-constant', phase:'compatibility-projection',
+    const facade = event.stage === 'facade-exact-constants';
+    const record = Object.freeze({ rule:facade ? 'fold-facade-constant' : 'fold-compatibility-constant', phase:'compatibility-projection',
       before:`${event.stage}:${event.round}:${event.ordinal}:${event.op}:${event.sub ?? ''}:${String(event.beforeConstant)}`,
       after:`constant:${event.bits}:${String(event.afterConstant)}`,
-      evidence:Object.freeze({ kind:'observed-compat-constant-write-not-equivalence',
+      evidence:Object.freeze({ kind:facade ? 'observed-facade-constant-write-not-equivalence' : 'observed-compat-constant-write-not-equivalence',
         detail:'actual compatibility constant write and its original input facts, retained through the consuming expression; not a new scalar or memory theorem' }),
       originHistory:origins?.incomplete ? Object.freeze({ ...history, truncated:true }) : history,
     });

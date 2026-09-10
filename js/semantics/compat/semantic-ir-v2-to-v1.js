@@ -20,10 +20,10 @@ const expectedMemoryOperandTransitions = new WeakMap();
 const constantTransitions = new WeakMap();
 const expectedConstantTransitions = new WeakMap();
 
-// One finalized-root/position observer is shared by actual compatibility
-// operations. It observes data only; the private projector call sites issue
-// records, never an exported attachment/finalization helper or public metadata.
-function observeFinalizedTransitions(projected, transitions) {
+// Shared pure-data observation for projector and facade operation issuers. This
+// function registers nothing: only private owning call sites issue records;
+// obtaining a data matcher cannot attach/reseal a public or copied history.
+export function observeProjectedOperationData(projected, transitions) {
   const own = (object, key) => Object.getOwnPropertyDescriptor(object, key)?.value;
   const rootKeys = ['instructions', 'values', 'blocks', 'compat', 'functionId', 'semanticIrVersion', 'origin'];
   const prototype = Object.getPrototypeOf(projected);
@@ -66,7 +66,7 @@ function sealMemoryOperandTransitions(projected, transitions) {
       && source.args?.length === 1 && source.args[0]?.value === input
       && store?.op === V1_OP.STORE && store.semanticNodeId === proof.storedSourceEntityId
       && store.args?.[0]?.value === input);
-    const isCurrent = observeFinalizedTransitions(projected, valid);
+    const isCurrent = observeProjectedOperationData(projected, valid);
     const records = new Map();
     for (const transition of valid) records.set(transition.source, Object.freeze({ ...transition, isCurrent }));
     memoryOperandTransitions.set(projected, records);
@@ -101,7 +101,7 @@ function sealConstantTransitions(projected, observer) {
         && event.inputs.every((input, i) => source.args[i] === input.argument && input.argument?.value === input.value
           && input.value?.def === input.definition)
         && (event.op !== V1_OP.LOAD || source.memoryForwarding === event.memoryForwarding)));
-    const isCurrent = observeFinalizedTransitions(projected, valid.flatMap(([, events]) => events));
+    const isCurrent = observeProjectedOperationData(projected, valid.flatMap(([, events]) => events));
     constantTransitions.set(projected, new Map(valid.map(([source, events]) => [source,
       Object.freeze({ source, events:Object.freeze(events), isCurrent })])));
   } catch {

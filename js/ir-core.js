@@ -27,6 +27,19 @@ import {
 import { ARM64_ARCHITECTURE } from './targets/architecture/index.js';
 import { resolveABIPlugin } from './targets/abi/index.js';
 import { semanticAbiAdapter } from './analysis/semantic-function-base.js';
+import { observeProjectedOperationData } from './semantics/compat/semantic-ir-v2-to-v1.js';
+
+const facadeConstantTransitions = new WeakMap();
+const expectedFacadeConstantTransitions = new WeakMap();
+
+export function readFacadeConstantTransitions(projected, instruction) {
+  const record = facadeConstantTransitions.get(projected)?.get(instruction);
+  return record?.isCurrent() ? record : null;
+}
+
+export function facadeConstantTransitionExpected(projected, instruction) {
+  return expectedFacadeConstantTransitions.get(projected)?.has(instruction) === true;
+}
 
 // Historical callers receive the canonical registry classifier through this
 // compatibility name.  The v2 compatibility pipeline itself always uses the
@@ -268,7 +281,8 @@ function restoreCanonicalPreservedStateReads(projected, adapter) {
   }
 }
 
-function exactLegacyConstant(value, active = new Set()) {
+function exactLegacyConstant(value, active = new Set(), observation = null) {
+  observeExactConstantRead(value, observation);
   if (!value || active.has(value.id)) return null;
   if (value.const != null) {
     try { return BigInt(value.const); } catch { return null; }
@@ -280,14 +294,14 @@ function exactLegacyConstant(value, active = new Set()) {
   if (def.op === LEGACY_OP.CONST || def.op === LEGACY_OP.ADDR) {
     try { result = BigInt(def.extra?.value ?? def.extra?.target); } catch { result = null; }
   } else if (def.op === LEGACY_OP.MOV && def.args?.length === 1) {
-    const inner = exactLegacyConstant(def.args[0]?.value, active);
+    const inner = exactLegacyConstant(def.args[0]?.value, active, observation);
     if (inner != null) {
       if (def.sub === 'trunc' || def.sub === 'zext') result = BigInt.asUintN(Number(value.bits || 64), inner);
       else if (def.sub == null || def.sub === 'copy' || def.sub === 'bitcast') result = inner;
     }
   } else if (def.op === LEGACY_OP.BIN && def.args?.length >= 2) {
-    const left = exactLegacyConstant(def.args[0]?.value, active);
-    const right = exactLegacyConstant(def.args[1]?.value, active);
+    const left = exactLegacyConstant(def.args[0]?.value, active, observation);
+    const right = exactLegacyConstant(def.args[1]?.value, active, observation);
     if (left != null && right != null) {
       const bits = Number(value.bits || 64);
       if (def.sub === 'add') result = left + right;
@@ -305,12 +319,64 @@ function exactLegacyConstant(value, active = new Set()) {
   return result;
 }
 
+// The existing evaluator describes only reads it actually makes. Recursive
+// evaluations are dependencies, not invented writes to their intermediate values.
+function observeExactConstantRead(value, observation) {
+  if (!value || !observation || observation.unavailable || observation.seen.has(value)) return;
+  if (observation.inputs.length >= 512) { observation.unavailable = true; return; }
+  try {
+    observation.seen.add(value);
+    const definition = value.def;
+    if ((definition?.args?.length || 0) > 512) { observation.unavailable = true; return; }
+    observation.inputs.push(Object.freeze({ value, definition, constant:value.const, bits:value.bits,
+      op:definition?.op, sub:definition?.sub, extra:definition?.extra,
+      literal:definition?.extra?.value, target:definition?.extra?.target,
+      args:Object.freeze((definition?.args || []).map(argument => Object.freeze({ argument, value:argument?.value }))) }));
+  } catch { observation.unavailable = true; }
+}
+
 function propagateExactLegacyConstants(projected) {
+  const observer = { records:[], expected:new WeakSet(), unavailable:new WeakSet() };
   for (const value of projected.values ?? []) {
     if (value.const != null) continue;
-    const constant = exactLegacyConstant(value);
-    if (constant != null) value.const = BigInt.asUintN(Number(value.bits || 64), constant);
+    const observation = { inputs:[], seen:new WeakSet(), unavailable:observer.records.length >= 1024 };
+    const constant = exactLegacyConstant(value, new Set(), observation);
+    if (constant != null) {
+      const beforeConstant = value.const;
+      value.const = BigInt.asUintN(Number(value.bits || 64), constant);
+      const source = value.def;
+      if (!source) continue;
+      observer.expected.add(source);
+      if (observation.unavailable) { observer.unavailable.add(source); continue; }
+      observer.records.push(Object.freeze({ source, output:value, op:source.op, sub:source.sub, bits:value.bits,
+        stage:'facade-exact-constants', round:0, ordinal:observer.records.length,
+        beforeConstant, afterConstant:value.const, inputs:Object.freeze(observation.inputs),
+        beforeInputs:Object.freeze(observation.inputs.map(input => input.value)) }));
+    }
   }
+  return observer;
+}
+
+// Only buildV2CompatFromLegacyModel can issue this facade's finalized records.
+// A pure-data observer, a public constant, or copied event is not an issuer.
+function sealFacadeConstantTransitions(projected, observer) {
+  expectedFacadeConstantTransitions.set(projected, observer.expected);
+  if (!observer.records.length) return;
+  try {
+    const written = new Map(observer.records.map(event => [event.output, event]));
+    const valid = observer.records.filter(event => !observer.unavailable.has(event.source)
+      && event.source.dst === event.output && event.output.const === event.afterConstant
+      && event.inputs.every(input => input.value.def === input.definition && input.value.bits === input.bits
+        && (input.value.const === input.constant || written.get(input.value)?.afterConstant === input.value.const)
+        && input.definition?.op === input.op && input.definition?.sub === input.sub
+        && input.definition?.extra === input.extra && input.definition?.extra?.value === input.literal
+        && input.definition?.extra?.target === input.target
+        && (input.definition?.args?.length || 0) === input.args.length
+        && input.args.every((arg, index) => input.definition.args[index] === arg.argument && arg.argument?.value === arg.value)));
+    const isCurrent = observeProjectedOperationData(projected, valid);
+    facadeConstantTransitions.set(projected, new Map(valid.map(event => [event.source,
+      Object.freeze({ source:event.source, events:Object.freeze([event]), isCurrent })])));
+  } catch { /* Preserve the result; missing observation remains explicitly expected. */ }
 }
 
 function canonicalAddressBase(value, active = new Set()) {
@@ -702,11 +768,12 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
   }
   restoreCanonicalPreservedStateReads(result.legacyV1, abiAdapter);
   restoreAapcs64PublicLocations(result.legacyV1);
-  propagateExactLegacyConstants(result.legacyV1);
+  const constantObserver = propagateExactLegacyConstants(result.legacyV1);
   attachCanonicalCallArguments(result.legacyV1);
   attachCanonicalTypedCallResults(result.legacyV1, instructionByRow, abiAdapter, opts);
   invalidateEscapedStackForwarding(result.legacyV1);
   attachCanonicalFunctionReturns(result.legacyV1, abiAdapter, opts);
+  sealFacadeConstantTransitions(result.legacyV1, constantObserver);
   if (typeof process !== 'undefined' && process.env?.HEX_DEBUG_C2_LEGACY === '1' && typeof process.stderr?.write === 'function') {
     process.stderr.write(JSON.stringify(result.legacyV1.instructions.filter((item) => item.op === 'load').map((item) => ({
       row: item.row,

@@ -3379,6 +3379,59 @@ environment repair was made. Other public-facade constant writes, state-alias an
 normalization operations, full rendered/removed-class coverage, original findings
 and C4-02/04/05 proof obligations remain open. Goal ACTIVE; acceptance LOCKED.
 
+## C4-03 actual public-facade constant propagation
+
+The existing `ir-core.js` `propagateExactLegacyConstants` pass now records its
+actual constant writes, including constants newly available after canonical ABI
+preserved-state restoration. The evaluator describes only values it actually
+reads, retaining recursive input definitions, original constants/widths,
+operation/literal facts and argument identities. Evaluating an intermediate is
+not recorded as a write to that intermediate: its separate later write keeps
+its own original operation ordinal. The arithmetic, pass order, width handling
+and existing ABI recovery decisions are unchanged; this is not another evaluator
+or an ABI/scalar equivalence proof.
+
+Only the owning public-v2 facade seals these events after its existing
+normalization sequence. Original inputs must remain compatible with the recorded
+actual writes; source/output/dependency objects and instruction/value positions
+are then observed by the same pure-data matcher used by the projector. That
+matcher is now shared with the facade, but registers nothing and cannot attach
+or reseal either issuer's histories. Both issuers keep private WeakMaps and
+read-only access. The actual range annotator's existing private handoff applies;
+arbitrary edits, getters, copied roots and later range mutations cannot preserve
+authority. At most 1024 operation descriptions and 512 read values per operation
+are retained. Exhaustion leaves actual sources expected-but-unavailable and does
+not change their computed constants.
+
+The existing expression consumer now follows both projector and facade records,
+including recursively evaluated dependencies skipped by precomputed rendering.
+Facade operations enter the same ledger as `fold-facade-constant` with proof kind
+`observed-facade-constant-write-not-equivalence`. Consumers, budgets, cancellation,
+replay and reverse mappings reuse the existing machinery; no semantic IDs or
+parallel ledger are introduced. A valid facade record does not replace missing
+projector history or prove the upstream ABI state-restoration operation.
+
+The new canonical-discovered provenance file exercises the actual public build
+path, fourteen arithmetic/native-width fixtures, original read/write ordering,
+unknown/call-clobbered inputs, explicit legacy mode, copied/getter/stale inputs,
+range handoff, public rendering/replay and budget/cancellation behavior. A
+350-instruction arithmetic fixture exceeds 1024 actual facade writes and retains
+all numeric outputs despite unavailable bounded observation. These fixtures are
+not the frozen compiler-corpus denominator. Initial test failures came from an
+incorrect block index and missing explicit return type in the test's public
+facade call; tests now use the actual existing typed-return path, without
+weakening provenance checks. A mistyped module-test command and the diagnostic
+failures are retained in evidence; the actual module-boundary gate passes.
+
+Live scoped constant/history PR search still resolves to this integration PR;
+the previously reused #3421 remains OPEN at
+`4cd5b3eb9200b1180985b9df3a74f8245a5cc928`. No component/main merge, duplicate
+constant engine, issue/performance/device/environment repair or acceptance
+promotion is made. State compaction, ABI/state/location/call/return normalization
+histories and their owned handoffs remain open, as do complete removed/merged
+coverage, original findings, C4-02/04/05 and required integration acceptance.
+Goal ACTIVE; acceptance LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
