@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseJvm } from '../../../js/managed/jvm/parser.js';
 import { liftJvmMethod } from '../../../js/managed/jvm/lifter.js';
+import { lowerVMEffectsToSemanticIr } from '../../../js/managed/shared/bridge-v2.js';
 
 const u1 = (out, x) => out.push(x & 255);
 const u2 = (out, x) => out.push((x >>> 8) & 255, x & 255);
@@ -90,4 +91,28 @@ test('#7861 an external owner must not be published as a plain exact access', ()
   assert.equal(bundle.completeness, 'partial');
   assert.ok(bundle.unknownEffects.some((effect) => effect.reason === 'jvm-field-volatility-unresolvable'));
   assert.equal(bundle.memoryEffects[0].isVolatile, undefined);
+});
+
+test('#7861 the shared bridge carries volatile authority into the Semantic IR', () => {
+  const lower = (options) => lowerVMEffectsToSemanticIr(
+    liftJvmMethod(0, parseJvm(buildClass(options))),
+  );
+  const plainRead = lower({ opcode: 0xb2 });
+  const volatileRead = lower({ opcode: 0xb2, volatileField: true });
+  const plainAccess = plainRead.semanticIr.nodes.find((n) => n.kind === 'load').memory;
+  const volatileAccess = volatileRead.semanticIr.nodes.find((n) => n.kind === 'load').memory;
+  assert.equal(plainAccess.volatility, 'unknown');
+  assert.equal(plainAccess.ordering, 'unknown');
+  assert.equal(volatileAccess.volatility, true);
+  // JVM volatile is an atomic access with SC-for-DRF ordering (JLS 17.4).
+  assert.equal(volatileAccess.atomic, true);
+  assert.equal(volatileAccess.ordering, 'seq-cst');
+  const volatileWrite = lower({ opcode: 0xb3, volatileField: true });
+  const storeAccess = volatileWrite.semanticIr.nodes.find((n) => n.kind === 'store').memory;
+  assert.equal(storeAccess.volatility, true);
+  assert.equal(storeAccess.atomic, true);
+  assert.equal(storeAccess.ordering, 'seq-cst');
+  const plainWrite = lower({ opcode: 0xb3 });
+  const plainStoreAccess = plainWrite.semanticIr.nodes.find((n) => n.kind === 'store').memory;
+  assert.equal(plainStoreAccess.volatility, 'unknown');
 });
