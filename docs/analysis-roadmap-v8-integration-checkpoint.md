@@ -4486,6 +4486,55 @@ integration/release acceptance LOCKED. Exact verification/backup receipts are
 recorded after commit; no independent, candidate-merge-tree, main/device/runtime
 or release completion is claimed.
 
+### C4-03 canonical proof-slice lineage and actual rendered consumers (2026-09-10)
+
+Starting head: `2755ef2e55cd52fc6d18279fbef63f4f5625e3d2`. Public navigation
+reproduced an empty predicate-to-return mapping after actual select proof
+adoption. The old source union came from the initial display AST, which can omit
+the canonical comparison definition. A separate regression found that automatic
+proof-target discovery still omitted select although explicit targets worked.
+
+The existing issued pure-target binding now retains its immutable ordered list
+of actual translator dependencies. Projection consumes this list only through
+the currently valid committed private proof binding and merges the existing
+canonical address/row/IR/SSA origin fields into the before lineage. It does not
+traverse unrelated uses, infer identities from names, or adopt copied metadata.
+Input-only and constant-folded predicate definitions therefore remain navigable
+even when the replacement no longer contains that computation. The proof pass
+is version `2.9.0`; automatic target discovery now includes select and retains
+the same strict canonical-select admission checks.
+
+A lineage union is not a rendered output edge. Solver records are now connected
+to the actual owned producer expression containing the replaced token and carried
+through the existing private line/history handoff. If an outer replacement wins,
+the inner replacement does not claim that line. An independent store sharing an
+input does not acquire the solver record through source overlap. A first proof
+can bind a producer that deferred ordinary rewrites and therefore has no earlier
+rewrite-history record; it uses the existing prepared-producer observer, not a
+new provenance or proof authority. Replay retains that owned consumer relation.
+
+Five permanent regressions cover 12 native-width/select-mode public-navigation
+cases (forward/reverse, independent store, replay and stale snapshot), automatic
+discovery and outer-versus-inner consumers, issued/copy/stale dependency bindings,
+copied lines that cannot manufacture solver consumer edges, and five Boolean
+widths whose constant result retains the elided operand definitions. The source
+IR and independent stores remain unchanged. These are expression-view rewrites,
+not canonical instruction deletion, semantic DCE or general CSE adoption.
+
+Changed target/navigation/ledger/input-binding/query suites and generated build
+passed before commit. Initial diagnostic receipts retain a half-byte store
+fixture error, a test syntax error and incomplete first-consumer wiring; the
+corrected pre-fix baseline separately demonstrates both real missing handoffs.
+Exact-head verification must rerun the canonical provenance/substrate/decompiler
+and Phase 9 query groups, previous scalar/view/select matrices, unchanged ordinary
+comparison, generated synchronization/rebuild and five worker-only negative
+controls for lineage, source union, source-overlap consumers, outer replacement
+precedence and automatic discovery. Scoped receipts and remote backup are recorded
+after commit. General CSE/DCE class coverage, initial legacy rendering, CFG/memory/
+exception proof obligations and original23/frozen135 acceptance remain open.
+Goal ACTIVE; integration/release acceptance LOCKED. No independent, candidate
+merge, main/device/runtime or release completion is claimed.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

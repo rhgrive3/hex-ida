@@ -404,7 +404,7 @@ export async function optimizeSemanticDecompilation(result, options = {}) {
     const auto=[];
     for(const value of rawValues) {
       const fields=queryRecord(value), definition=fields.def==null?null:queryRecord(fields.def);
-      if(fields.const==null && ['bin','un','cmp','mov'].includes(definition?.op)) auto.push(value);
+      if(fields.const==null && ['bin','un','cmp','mov','sel'].includes(definition?.op)) auto.push(value);
     }
     const targets = queryArray(submitted.targets ?? auto);
     const plan = await preparePhase8RewritePlan(result.ir,{...submitted,identity,targets,backendTier:submitted.backendTier ?? 'tiered'});

@@ -5,7 +5,7 @@ import { readStackPhiHistoryConsumer } from '../passes/stack-phi-recovery.js';
 import { readStackReturnHistoryConsumer } from '../passes/stack-return-recovery.js';
 import { readLegacyStackHistoryConsumer } from '../passes/legacy-stack-recovery.js';
 import { captureProjectionIrData, PROJECTION_LIMITS } from './projection-origin.js';
-import { expr, mapChildren, mergeSource, sourceOf } from '../ast/nodes.js';
+import { children, expr, mapChildren, mergeSource, sourceOf } from '../ast/nodes.js';
 import { expressionReadability, printExpression, printProgram } from '../pretty/c.js';
 import { readProvedRewrites, readProvedInputBindings } from './pass-validation.js';
 import { renderProofExpression, sameProofExpression } from './proof-expression.js';
@@ -75,6 +75,24 @@ function integer(value) {
 function evidenceSource(source, reason) {
   const current = sourceOf(source);
   return { ...current, evidence:[...(current.evidence || []), { reason }] };
+}
+
+// The translator's actual before slice crosses only the committed private
+// binding. Never infer this lineage from names or unrelated uses/consumers.
+function provedSliceSource(root, binding, shouldAbort) {
+  if (!Array.isArray(binding.dependencies) || binding.dependencies.length > PROJECTION_LIMITS.nodes) return null;
+  const source = sourceOf(root), keys = ['addresses','rows','ir','ssaDefs','ssaUses'];
+  const seen = Object.fromEntries(keys.map(key => [key,new Set(source[key])]));
+  for (const value of binding.dependencies) {
+    if (shouldAbort?.()) return null;
+    const def = value.def;
+    const origin = sourceOf({address:def?.address,row:def?.row,ir:def?.id,ssaDef:value.id,
+      ssaUses:[...(def?.args ?? []).map(arg => arg.value?.id),def?.conditionValue?.id]});
+    for (const key of keys) for (const item of origin[key]) if (!seen[key].has(item)) {
+      seen[key].add(item); source[key].push(item);
+    }
+  }
+  return source;
 }
 
 function recordViewCollapse(records, { proof, outerBits, innerBits, sourceBits, source, kind = 'exact-view-collapse' }) {
@@ -380,7 +398,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     for (const key of ['values','stores','outputs','conditions']) result.semanticAst[key] =
       (original.semanticAst[key] ?? []).map(item=>({...item}));
   }
-  const records = [], replacements = new Map(), memo = new Map(), proofExpressions = new Map();
+  const records = [], replacements = new Map(), memo = new Map(), proofExpressions = new Map(), proofRecords = new Map();
   if (proved) {
     const selectedReplacements = new Map();
     const inputValues = [...new Set(provedInputs.bindings.flatMap(input => input.binding.inputs.map(input => input.value)))];
@@ -397,7 +415,9 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
       const item = byId.get(entry.rawValueId), root = item?.expression;
       if (!root || root.bits !== entry.bits || root.effect !== 'pure') continue;
       if (entry.kind === 'solver-constant' && root.kind === 'const' && root.value === entry.value) continue;
-      const source = evidenceSource(root.source,`Phase 8 solver proof ${entry.queryHash}`);
+      const canonicalSource = provedSliceSource(root.source,inputBinding,opts.shouldAbort);
+      if (!canonicalSource) return original;
+      const source = evidenceSource(canonicalSource,`Phase 8 solver proof ${entry.queryHash}`);
       const inputs = inputBinding.inputs.map(input => inputExpressions.get(input.value));
       const token = producerExpressionToken(original,root);
       if (token == null) continue;
@@ -421,13 +441,59 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
       if (entry.kind === 'solver-constant') replacement.signed = root.signed;
       replacements.set(token,replacement);
       proofExpressions.set(replacement,{recipe:entry.projection,inputs:Object.freeze(inputs)});
-      records.push(Object.freeze({kind:entry.kind,valueId:entry.valueId,
+      const record = Object.freeze({kind:entry.kind,valueId:entry.valueId,
         proof:'canonical eligible solver equivalence proof',targets:Object.freeze(collectTargets(source,entry.kind)),
         queryHash:entry.queryHash,planId:proved.planId,beforeHash:entry.beforeHash,afterHash:entry.afterHash,
         ...(entry.generatorAudit ? {generatorAudit:entry.generatorAudit} : {}),
         origin:Object.freeze({addresses:Object.freeze([...source.addresses]),rows:Object.freeze([...source.rows]),
-          ir:Object.freeze([...source.ir]),ssaDefs:Object.freeze([...source.ssaDefs]),ssaUses:Object.freeze([...source.ssaUses])})}));
+          ir:Object.freeze([...source.ir]),ssaDefs:Object.freeze([...source.ssaDefs]),ssaUses:Object.freeze([...source.ssaUses])})});
+      records.push(record);
+      proofRecords.set(token,[...(proofRecords.get(token) ?? []),record]);
     }
+  }
+  // A before-source union is not a rendered consumer edge. Bind solver records
+  // to owned expressions containing the actual replaced token, not to another
+  // statement that merely shares an input. Retain this relation through replay.
+  let proofConsumerEdges = PROJECTION_LIMITS.edges;
+  const boundConsumers = new Map();
+  const bindProofConsumer = (consumer, expression = null) => {
+    if (!proofRecords.size) return consumer;
+    const priorConsumer = consumer;
+    // A deferred ordinary rewrite has no history consumer yet. Its actual C
+    // node is still owned by the existing prepared producer. Use that same
+    // private observer, not a source-shaped substitute, for the first proof.
+    if (!consumer && expression && producerExpressionToken(original,expression) != null) {
+      consumer = Object.freeze({ir:original.ir,expression,records:Object.freeze([]),
+        isCurrent:() => isProducerProjection(original)});
+    }
+    if (!consumer) return null;
+    if (boundConsumers.has(consumer)) return boundConsumers.get(consumer);
+    const found = new Set(), seen = new Set(), pending = [consumer.expression];
+    while (pending.length) {
+      if (--proofConsumerEdges < 0 || opts.shouldAbort?.()) { historyReasons.add('proof-consumer-binding-budget'); return consumer; }
+      const node = pending.pop(); if (!node || seen.has(node)) continue; seen.add(node);
+      const token = producerExpressionToken(original,node);
+      for (const record of proofRecords.get(token) ?? []) found.add(record);
+      // Match transformExpression: an outer replacement wins before visiting
+      // its children. Inner proofs may change their own semantic value view,
+      // but must not claim this line when that output was never consumed here.
+      if (!replacements.has(token)) pending.push(...children(node));
+    }
+    const bound = found.size ? Object.freeze({...consumer,records:Object.freeze([...new Set([...consumer.records,...found])])}) : priorConsumer;
+    const control = controlConsumerSources.get(consumer) || readInitialControlConsumer(consumer);
+    if (control) controlConsumerSources.set(bound,control);
+    boundConsumers.set(consumer,bound);
+    return bound;
+  };
+  for (let index = 0; index < expressionConsumers.length; index++) expressionConsumers[index] = bindProofConsumer(
+    expressionConsumers[index],original.cAst.body[index]?.semantic?.expression);
+  for (let index = 0; index < conditionBindings.length; index++) conditionBindings[index] = bindProofConsumer(
+    conditionBindings[index],original.semanticAst.conditions[index]?.expression);
+  conditionConsumers.clear();
+  for (const [index,condition] of (original.semanticAst.conditions ?? []).entries()) {
+    if (condition.row == null) continue;
+    const row = Number(condition.row);
+    conditionConsumers.set(row,conditionConsumers.has(row) ? null : conditionBindings[index]);
   }
   const names = inductionNames(analysis);
   const transform = (expression) => transformExpression(expression, names, records, memo, replacements, node=>producerExpressionToken(original,node), proofOnly);

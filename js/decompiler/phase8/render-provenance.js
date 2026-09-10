@@ -148,7 +148,7 @@ function recordFeedsEntity(record, entityOriginKeys, bound) {
   // A rewrite's consumed/remaining sources do not establish which C line
   // uses its result. In particular, a shared input is not a replacement edge.
   // Keep these records queryable without inventing a rendered consumer.
-  if (record.originHistory) return bound;
+  if (record.originHistory || ['solver-constant','solver-scalar'].includes(record.kind)) return bound;
   const recordOrigins = canonicalOrigins(record?.origin ?? {});
   return entityOriginEntries(recordOrigins)
     .some(([kind, value]) => entityOriginKeys.has(originKey(kind, value)));
@@ -465,7 +465,9 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     if (record?.kind === 'display-suppression' || record?.suppressedRender) {
       reasons.add('unissued-semantic-suppression-history'); continue;
     }
-    ledgerRecords.push(renderProvenanceRecord(record));
+    const normalized = renderProvenanceRecord(record);
+    ledgerRecords.push(normalized);
+    if (['solver-constant','solver-scalar'].includes(record.kind)) historyProducers.set(normalized,record);
   }
   // Preserve the existing ledger's budget priority; append this newly observed
   // class without displacing previously retained omission/expression records.

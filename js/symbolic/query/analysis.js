@@ -86,7 +86,7 @@ function translatePureTarget(root, guard) {
     guard.take('allocationUnits'); state.values.set(value.id, expression);
   }
   return Object.freeze({ scope:'query-local-universal-inputs', expression:state.values.get(root.id),
-    inputs:Object.freeze(inputs) });
+    inputs:Object.freeze(inputs), dependencies:Object.freeze(ordered) });
 }
 
 /** Read only the actual translator-produced input relation for this issued

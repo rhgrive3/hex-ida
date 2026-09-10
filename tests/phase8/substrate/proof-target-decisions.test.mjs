@@ -7,6 +7,9 @@ import { evaluateExpression } from '../../../js/decompiler/verify/equivalence.js
 import { evaluateExpr, EVAL_STATUS } from '../../../js/symbolic/expr/index.js';
 import { querySymbolicAnalysis, readSymbolicTargetInputs } from '../../../js/symbolic/query/analysis.js';
 import { createTaintModels } from '../../../js/symbolic/taint/models.js';
+import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
+import { createDecompilerNavigation } from '../../../js/ui/decompiler-provenance.js';
+import { buildRenderProvenance } from '../../../js/decompiler/phase8/render-provenance.js';
 import { fixture } from '../helpers/ir-fixtures.mjs';
 import { proofFixture, projectionFixture, identity } from '../helpers/proof-fixtures.mjs';
 
@@ -644,7 +647,7 @@ test('C4-04 operand view mutations invalidate an already issued producer',async(
   }
 });
 
-function selectProjectionFixture(bits=4,{constantCondition=false,sameArms=false,configure=()=>{}}={}) {
+function selectProjectionFixture(bits=4,{constantCondition=false,sameArms=false,keepInput=false,configure=()=>{}}={}) {
   const f=fixture('proof-explicit-select');f.block(0);
   const control=f.opaque(bits),yes=f.opaque(bits),no=f.opaque(bits);
   for(const [index,input] of [control,yes,no].entries()){input.index=index;input.reg=`x${index}`;}
@@ -655,15 +658,21 @@ function selectProjectionFixture(bits=4,{constantCondition=false,sameArms=false,
   // Use the existing canonical two-data-operands + explicit Bool contract,
   // not the fixture helper's legacy predicate-first three-operand encoding.
   target.def.args=target.def.args.slice(1);target.def.conditionValue=predicate;
+  let store=null;
+  if(keepInput) {
+    f.store(yes,{locKind:'global',locKey:'global:64'});store=f.current.insts.at(-1);store.loc.address=0x40n;
+    Object.assign(store.extra.memoryAccess,{addressSpace:identity.addressSpace,volatility:false,atomic:false,ordering:'none',endian:'little'});
+  }
   f.ret();const ir=f.build();ir.instructions=ir.blocks.flatMap(block=>block.insts);
   ir.instructions.forEach((inst,index)=>{inst.id=`select_${index}`;inst.address=0x4000n+BigInt(index*4);});
   const ret=ir.instructions.at(-1);ret.args=[{value:target}];target.uses.push(ret);
   configure({ir,control,yes,no,predicate,target});
   const canonical=structuredClone(ir);
   const result=enhanceSemanticDecompilation({semantic:true,ir,types:null,
-    lines:[{kind:'stmt',indent:0,text:'return pending;',row:ret.row,addr:ret.address}],metrics:{},ctx:{}},null,
+    lines:ir.instructions.filter(inst=>['ret','store'].includes(inst.op)).map(inst=>({kind:'stmt',indent:0,
+      text:inst.op==='ret'?'return pending;':'global_value = pending;',row:inst.row,addr:inst.address})),metrics:{},ctx:{}},null,
   {phase8PrepareProof:true,phase8ProofOnlyRewrites:true,deterministicTransforms:true,decompilerTimeBudgetMs:1000});
-  return {ir,control,yes,no,predicate,target,canonical,result,options:{identity,abiId:'generic-v1',memory:{addressBits:8},targets:[target],
+  return {ir,control,yes,no,predicate,target,store,canonical,result,options:{identity,abiId:'generic-v1',memory:{addressBits:8},targets:[target],
     timeoutMs:1000,backendTier:'tiered',requireProofOnlyRewrites:true}};
 }
 
@@ -791,5 +800,100 @@ test('C4-04 select refusal preserves the producer on invalid conditions, budgets
     const result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy});
     assert.equal(result.proofOptimization.reason,'unissued-or-stale-projection');assert.equal(result.proofOptimization.adopted,0);
     assert.equal(result.cAst,f.result.cAst);assert.equal(result.semanticAst,f.result.semanticAst);assert.equal(result.pseudocode,f.result.pseudocode);
+  }
+});
+
+test('C4-03 select proof navigation includes the actual canonical predicate without claiming an independent store',async()=>{
+  let cells=0;
+  for(const bits of [8,16,32,64])for(const mode of ['variable','constant','same-arms']) {
+  const f=selectProjectionFixture(bits,{keepInput:true,constantCondition:mode==='constant',sameArms:mode==='same-arms'});
+  const options={...f.options,candidateStrategy:'representation-rules'};
+  const result=await optimizeSemanticDecompilation(f.result,options);
+  assert.equal(result.proofOptimization.status,'complete',result.proofOptimization.reason);assert.equal(result.proofOptimization.adopted,1);
+  let epoch=1;
+  const api=new AnalysisQueryAPI({
+    currentIdentity:async()=>({binaryId:'select-proof-navigation',projectRevision:1,analysisEpoch:epoch,artifactVersions:{}}),
+    decompile:async()=>({value:{lines:result.lines,pseudocode:result.pseudocode,renderProvenance:result.renderProvenance},status:{completeness:'complete'}}),
+  });
+  const snapshot=await api.snapshot(),query=await api.decompile(snapshot,'function');
+  const navigation=createDecompilerNavigation(query,{currentSnapshot:()=>api.snapshot()});
+  const line=result.lines.findIndex(row=>/\breturn\b/.test(row.text));assert.ok(line>=0);
+  const predicate=await navigation.selectOrigin('addr',f.predicate.def.address);
+  assert.equal(predicate.state,'ready',predicate.reason);
+  assert.deepEqual(predicate.entities.map(entity=>entity.lineIndex),[line]);
+  assert.ok(predicate.transforms.some(record=>record.queryHash===result.proofOptimization.targetDecisions[0].queryHash));
+  const selected=await navigation.selectLine(line);assert.equal(selected.state,'ready');
+  assert.ok(selected.entities.some(entity=>entity.origins.addresses.includes(String(f.predicate.def.address))));
+  const store=await navigation.selectOrigin('addr',f.store.address);assert.equal(store.state,'ready');
+  assert.ok(store.entities.length);assert.ok(store.entities.every(entity=>entity.lineIndex!==line));
+  const proof=result.renderProvenance.ledger.find(row=>row.queryHash===result.proofOptimization.targetDecisions[0].queryHash);
+  assert.deepEqual(proof.producedRefs,[`L${line}:stmt`]);
+  assert.ok(store.transforms.every(row=>row.queryHash!==proof.queryHash),'shared input is not an applied-rewrite consumer');
+  const replay=await optimizeSemanticDecompilation(result,options);
+  assert.equal(replay.proofOptimization.status,'complete');assert.equal(replay.proofOptimization.adopted,0);
+  assert.deepEqual(replay.renderProvenance.ledger.find(row=>row.queryHash===proof.queryHash).producedRefs,proof.producedRefs);
+  assert.deepEqual(replay.semanticAst.stores,result.semanticAst.stores);assert.equal(replay.pseudocode,result.pseudocode);
+  epoch++;assert.equal((await navigation.selectOrigin('addr',f.predicate.def.address)).reason,'stale-query-snapshot');
+  assert.deepEqual(structuredClone(f.ir),f.canonical);
+  cells++;
+  }
+  assert.equal(cells,12);
+});
+
+test('C4-04 default proof target discovery includes explicit canonical selects',async()=>{
+  const f=selectProjectionFixture(),{targets,...options}=f.options;
+  const result=await optimizeSemanticDecompilation(f.result,{...options,candidateStrategy:'representation-rules'});
+  assert.equal(result.proofOptimization.status,'complete',result.proofOptimization.reason);
+  const decision=result.proofOptimization.targetDecisions.find(row=>row.valueId===`legacy-number:${f.target.id}`);
+  assert.equal(decision?.disposition,'adopted');assert.deepEqual(structuredClone(f.ir),f.canonical);
+  const line=result.lines.findIndex(row=>/\breturn\b/.test(row.text));assert.ok(line>=0);
+  const proof=result.renderProvenance.ledger.find(row=>row.queryHash===decision.queryHash);
+  assert.deepEqual(proof.producedRefs,[`L${line}:stmt`]);
+  const inner=result.renderProvenance.ledger.filter(row=>row.queryHash&&row.queryHash!==decision.queryHash);
+  assert.ok(inner.length);assert.ok(inner.every(row=>!row.producedRefs.includes(`L${line}:stmt`)),
+    'an outer replacement hides inner replacements from this rendered consumer');
+});
+
+test('C4-03 proof slice lineage comes from the issued translator and rejects copied or stale dependencies',async()=>{
+  const f=selectProjectionFixture(8,{keepInput:true});
+  const models=createTaintModels({id:'proof-slice-lineage',version:'1',provenance:'test',sources:[],sinks:[]});
+  const result=await querySymbolicAnalysis(f.ir,{...f.options,models,candidateStrategy:'translate-only'});
+  assert.equal(result.status,'complete',result.reason);
+  const binding=readSymbolicTargetInputs(result,f.target,identity);
+  assert.ok(Object.isFrozen(binding.dependencies));
+  assert.equal(new Set(binding.dependencies).size,binding.dependencies.length);
+  for(const value of [f.control,f.yes,f.no,f.predicate,f.target])assert.ok(binding.dependencies.includes(value));
+  assert.ok(binding.dependencies.every(value=>f.ir.values.includes(value)));
+  assert.ok(binding.dependencies.every(value=>value.def!==f.store&&value.def?.op!=='ret'));
+  assert.throws(()=>binding.dependencies.push(f.no),TypeError);
+  assert.equal(readSymbolicTargetInputs({...result},f.target,identity),null);
+  f.predicate.def.address+=4n;
+  assert.equal(readSymbolicTargetInputs(result,f.target,identity),null);
+});
+
+test('C4-03 copied rendered lines cannot acquire solver consumer edges from overlapping source metadata',async()=>{
+  const f=selectProjectionFixture(8,{keepInput:true});
+  const result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy:'representation-rules'});
+  assert.equal(result.proofOptimization.status,'complete',result.proofOptimization.reason);assert.equal(result.proofOptimization.adopted,1);
+  const proof=result.renderProvenance.ledger.find(row=>row.queryHash===result.proofOptimization.targetDecisions[0].queryHash);
+  assert.ok(proof.producedRefs.length);
+  const copied={...result,lines:result.lines.map(line=>({...line}))};
+  const map=buildRenderProvenance({result:copied});
+  assert.deepEqual(map.ledger.find(row=>row.queryHash===proof.queryHash).producedRefs,[]);
+  assert.deepEqual(structuredClone(f.ir),f.canonical);
+});
+
+test('C4-03 constant Boolean proof output retains the elided canonical operand definitions',async()=>{
+  for(const bits of [1,4,8,32,64]) {
+    const f=booleanProjectionFixture(bits),result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy:'representation-rules'});
+    assert.equal(result.proofOptimization.status,'complete',result.proofOptimization.reason);assert.equal(result.proofOptimization.adopted,1);
+    const line=result.lines.findIndex(row=>/\breturn\b/.test(row.text));assert.ok(line>=0);
+    const proof=result.renderProvenance.ledger.find(row=>row.queryHash===result.proofOptimization.targetDecisions[0].queryHash);
+    assert.deepEqual(proof.producedRefs,[`L${line}:stmt`]);
+    for(const argument of f.target.def.args) {
+      assert.ok(result.renderProvenance.reverse[`addr:${argument.value.def.address}`].includes(`L${line}:stmt`));
+      assert.ok(proof.origin.addresses.includes(String(argument.value.def.address)));
+    }
+    assert.deepEqual(structuredClone(f.ir),f.canonical);
   }
 });
