@@ -48,8 +48,35 @@ export function isTerminalDevToolError(error) {
 export function describeDevToolError(error) {
   const name = String(error?.name || '').trim();
   const code = String(error?.code || '').trim() || name || 'dev-tool-error';
-  const message = String(error?.message || error || 'Dev tool failed.').slice(0, MAX_MESSAGE_CHARS);
+  /* Error text is tool/transport-controlled untrusted diagnostic input: a tool
+     that throws `Authorization failed for token <secret>` must not be able to
+     resurrect, through its message, the same secret the argument sanitizer
+     redacted out of the history entry (#5137). Values the sanitizer would
+     redact as arguments are removed from the message too; leftovers stay
+     bounded by MAX_MESSAGE_CHARS. */
+  const rawMessage = String(error?.message || error || 'Dev tool failed.');
+  const message = redactSensitiveText(rawMessage).slice(0, MAX_MESSAGE_CHARS);
   return Object.freeze({ code, name: name || null, message });
+}
+
+/* Redact secret-bearing values from free-form error text. Key-name patterns
+   alone cannot identify a secret inside a sentence, so redaction pairs the
+   key pattern with its value assignment (`key=value`, `key: value`) and
+   credential-shaped `bearer/basic/token <value>` forms. Everything else is
+   preserved so normal diagnostics stay readable. */
+const SECRET_VALUE_PATTERNS = Object.freeze([
+  // Credential scheme forms first, so `authorization=Bearer <token>` loses the
+  // token before the key=value pass redacts the remaining assignment.
+  /\b(?:bearer|basic|token)\s+([A-Za-z0-9._~+/=-]{8,})/gi,
+  new RegExp(`(?:${SENSITIVE_KEY.source})\\s*[=:]\\s*("[^"]*"|'[^']*'|\\S+)`, 'gi'),
+]);
+
+function redactSensitiveText(text) {
+  let redacted = text;
+  for (const pattern of SECRET_VALUE_PATTERNS) {
+    redacted = redacted.replace(pattern, () => REDACTED);
+  }
+  return redacted;
 }
 
 export function sanitizeDevToolArguments(value) {

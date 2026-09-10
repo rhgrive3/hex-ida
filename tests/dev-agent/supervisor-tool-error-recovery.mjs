@@ -19,6 +19,7 @@ await testRecoveryBudgetIsBounded();
 await testWorkerClaimFailureKeepsCleanupObligation();
 await testAbandonedAmbiguousClaimStillReleases();
 await testReleaseFailureKeepsClaimOwnership();
+await testErrorMessageSecretRedaction();
 console.log('Dev Supervisor tool error recovery: ok');
 
 function testClassification() {
@@ -262,6 +263,43 @@ async function testReleaseFailureKeepsClaimOwnership() {
   assert.equal(result.answer, 'release recovered');
   assert.deepEqual(calls, ['claim', 'release', 'release'], 'a failed release must leave the claim owned so the run releases it again');
   assert.equal(harness.settings.lastRun.status, DEV_RUN_STATUS.COMPLETED);
+}
+
+/* #5137: a tool that echoes a secret through its error message must not be
+   able to resurrect it in the provider-bound Supervisor history. The argument
+   sanitizer already redacts secret-keyed arguments; the same secret arriving
+   via error.message text must be redacted there too, while the safe error
+   code survives for recovery. */
+async function testErrorMessageSecretRedaction() {
+  const secret = 'sk-test-MUST-NOT-LEAK';
+  const harness = createHarness({
+    client: {
+      enabled: true,
+      pageScripts: async () => {
+        throw Object.assign(new Error(`Authorization failed for token ${secret}`), { code: 'provider-error' });
+      },
+    },
+    decisions: [
+      { type: 'tool', tool: 'chatgpt.page.scripts', arguments: { authorization: secret }, purpose: 'inspect scripts' },
+      { type: 'final', answer: 'recovered from the redacted failure', completedTasks: ['inspect'], remaining: [] },
+    ],
+  });
+
+  const result = await harness.engine.run({ goal: 'echo the secret back', conversationId: 'conversation-secret-message' });
+  assert.equal(result.answer, 'recovered from the redacted failure', 'redaction must not break recovery');
+
+  const errorEntry = harness.historyAt(1).find((entry) => entry.kind === DEV_TOOL_ERROR_HISTORY_KIND);
+  assert.ok(errorEntry, 'the failed tool must be returned to the Supervisor as tool-error history');
+  assert.equal(errorEntry.code, 'provider-error', 'the safe error code must still reach the Supervisor');
+  assert.doesNotMatch(errorEntry.message, /MUST-NOT-LEAK/, 'the secret must not survive inside the error message');
+  assert.match(errorEntry.message, /\[redacted\]/, 'the secret-bearing text must be visibly redacted');
+  assert.equal(errorEntry.arguments.authorization, '[redacted]');
+  assert.doesNotMatch(JSON.stringify(harness.historyAt(1)), /MUST-NOT-LEAK/, 'no history field may carry the secret');
+  assert.doesNotMatch(harness.prompts[1], /MUST-NOT-LEAK/, 'the next Supervisor prompt must not contain the secret');
+
+  /* Non-secret diagnostics stay readable for recovery. */
+  const described = describeDevToolError(new Error('connection refused after 3 retries'));
+  assert.equal(described.message, 'connection refused after 3 retries');
 }
 
 function createHarness({ client, decisions, maxToolErrorRecoveries }) {
