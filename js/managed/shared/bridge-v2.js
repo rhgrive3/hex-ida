@@ -20,7 +20,19 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
   const semanticIr = lowered.semanticIr;
   const cfg = lowered.cfg;
   const directCalls = [], dynamicCalls = [], externalCalls = [], memoryReads = [], memoryWrites = [], unknownCallEffects = [], thrownExceptions = [], semanticFacts = [];
+  const nodesById = new Map((semanticIr.nodes ?? []).map((node) => [node.id, node]));
+  const valuesById = new Map((semanticIr.values ?? []).map((value) => [value.id, value]));
+  const fieldIdentityForMemoryNode = (node) => {
+    const direct = node.attributes?.fieldIdentity;
+    if (typeof direct === 'string' && direct.length > 0 && direct === direct.trim()) return direct;
+    const addressValueId = node.memory?.addressExpr?.valueId;
+    const addressValue = valuesById.get(addressValueId);
+    const addressNode = nodesById.get(addressValue?.definitionNodeId);
+    const derived = addressNode?.attributes?.fieldIdentity;
+    return typeof derived === 'string' && derived.length > 0 && derived === derived.trim() ? derived : null;
+  };
   let hasLanguageThrow = false;
+  let hasUnboundFieldOrdering = false;
   for (const node of semanticIr.nodes) {
     if (node.kind === 'call' && node.call) {
       const call = node.call, candidates = call.targetEntityIds || [];
@@ -32,7 +44,12 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
     } else if(node.kind==='load'||node.kind==='store'){
       const memory=node.memory??{};
       (node.kind==='load'?memoryReads:memoryWrites).push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:[memory.addressSpace||'memory'],source:'proven-summary',evidenceIds:[node.id]}));
-      if(memory.volatility===true||memory.atomic===true||(memory.ordering!=null&&memory.ordering!=='unknown')) semanticFacts.push({kind:'managed-memory-ordering',nodeId:node.id,addressSpace:memory.addressSpace||'memory',isWrite:node.kind==='store',volatility:memory.volatility??'unknown',atomic:memory.atomic??'unknown',ordering:memory.ordering??'unknown'});
+      if(memory.volatility===true||memory.atomic===true||(memory.ordering!=null&&memory.ordering!=='unknown')) {
+        const fieldIdentity=fieldIdentityForMemoryNode(node);
+        const fieldScoped=memory.addressSpace==='field'||memory.addressSpace==='static-field';
+        if(fieldScoped&&!fieldIdentity)hasUnboundFieldOrdering=true;
+        semanticFacts.push({kind:'managed-memory-ordering',nodeId:node.id,addressSpace:memory.addressSpace||'memory',isWrite:node.kind==='store',volatility:memory.volatility??'unknown',atomic:memory.atomic??'unknown',ordering:memory.ordering??'unknown',...(fieldIdentity?{fieldIdentity}:{})});
+      }
     }
     else if(node.kind==='trap'){
       // A language-level throw keeps its identity through the bridge (#7311):
@@ -44,7 +61,7 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
       if(languageThrow)hasLanguageThrow=true;
     }
   }
-  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(semanticIr.completeness!=null&&semanticIr.completeness!=='complete'||unknownCallEffects.length>0||hasLanguageThrow)?'partial':'complete';
+  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(semanticIr.completeness!=null&&semanticIr.completeness!=='complete'||unknownCallEffects.length>0||hasLanguageThrow||hasUnboundFieldOrdering)?'partial':'complete';
   if(unknownCallEffects.length>0)memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
   const status=createAnalysisStatus({snapshotId:options.snapshotId||'managed-summary-v1',analyzerId:'managed.method.summary',analyzerVersion:'1.0.0',completeness,stopReason:completeness==='complete'?null:'evidence-missing'});
   // Confirmed direct calls are canonical summary effects, not bridge-side
