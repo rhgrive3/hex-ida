@@ -396,9 +396,20 @@ export function createAppAnalysisQueryAdapter(app) {
       if (!app?.backend || !range.region || !storeValue(app, 'canDisassemble') || !symbols?.functionCount) return unsupported(id, 'arm64-function-producer-unavailable');
       const alignment = Number(storeValue(app, 'instructionAlignment') ?? storeValue(app, 'capability')?.instructionAlignment ?? 4);
       if (alignment !== 4) return unsupported(id, 'arm64-legacy-producer-requires-4-byte-instructions');
-      const startRow = Number((range.start - BigInt(range.region.vmAddr)) / 4n);
-      const maxRow = Math.max(0, Number(BigInt(range.region.size) / 4n) - 1);
-      const endRow = Math.min(Number((range.end - BigInt(range.region.vmAddr) + 3n) / 4n) - 1, maxRow);
+      // Legacy row indices are JavaScript numbers end to end. A row index
+      // beyond MAX_SAFE_INTEGER silently rounds to a neighboring instruction
+      // row, so the producer would analyze and publish a different function
+      // than the one requested (#5062); such ranges must fail closed.
+      const rowOffset = (range.start - BigInt(range.region.vmAddr)) / 4n;
+      const endRowExact = (range.end - BigInt(range.region.vmAddr) + 3n) / 4n - 1n;
+      const maxRowExact = BigInt(range.region.size) / 4n - 1n;
+      const MAX_ROW = BigInt(Number.MAX_SAFE_INTEGER);
+      if (rowOffset > MAX_ROW || endRowExact > MAX_ROW || maxRowExact > MAX_ROW) {
+        return unsupported(id, 'function-row-index-unrepresentable');
+      }
+      const startRow = Number(rowOffset);
+      const maxRow = Math.max(0, Number(maxRowExact));
+      const endRow = Math.min(Number(endRowExact), maxRow);
       if (startRow < 0 || endRow < startRow) return unsupported(id, 'function-range-empty');
       const value = await analyzeFunctionCached(app.backend, range.region, startRow, endRow, symbols, options.onProgress, options);
       const completeness = value?.truncated ? 'truncated' : range.complete === false ? 'partial' : 'complete';
