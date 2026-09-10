@@ -34,9 +34,18 @@ assert.equal(resolved.resolved?.target,IMPL);
 assert.equal(resolved.complete,true);
 
 write32(PROTO+24n,7);
+/* AssociatedTypeAccessFunction (kind 7) is a function requirement per the Swift
+   ABI ProtocolRequirementFlags::Kind enum, so a proof-safe conformance projects
+   its witness table and completes (#5374). */
 const associated=await buildSwiftMetadataModel(read,sections,opts);
-assert.equal(associated.witnessTables.length,0);
-assert.equal(associated.complete,false);
+assert.equal(associated.protocols[0].requirements[0].witnessCallable,true);
+assert.equal(associated.witnessTables.length,1);
+assert.equal(associated.witnessTables[0].source,'conformance');
+assert.equal(associated.witnessTables[0].entries[0].target,IMPL);
+assert.equal(associated.complete,true);
+const associatedResolved=resolveSwiftDispatch(buildSwiftRuntimeIndex(associated),{kind:'witness',typeAddress:TYPE,protocolAddress:PROTO,slot:0});
+assert.equal(associatedResolved.resolved?.target,IMPL);
+assert.equal(associatedResolved.complete,true);
 
 write32(PROTO+24n,1);write32(CONF+12n,1<<8);
 const conditional=await buildSwiftMetadataModel(read,sections,opts);
