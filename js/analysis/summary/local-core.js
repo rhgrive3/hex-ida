@@ -339,7 +339,11 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       }
       if (provenance.kind === 'root' || provenance.kind === 'allocation') {
         const rootEntityId = provenance.rootEntityId ?? provenance.allocationSiteId ?? null;
-        if (rootEntityId == null || !String(rootEntityId).trim()) {
+        if (rootEntityId == null || !String(rootEntityId).trim()
+          // Storage space is required canonical identity on root/allocation
+          // facts (#5242): composing without it would silently degrade a
+          // non-memory return to flat memory at the caller.
+          || typeof provenance.addressSpace !== 'string' || !provenance.addressSpace.trim()) {
           composed.push({ kind: 'unknown', returnIndex: outerReturnIndex });
           continue;
         }
@@ -348,6 +352,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
           returnIndex: outerReturnIndex,
           rootEntityId: String(rootEntityId),
           offset: offset.toString(10),
+          addressSpace: provenance.addressSpace.trim(),
         };
         if (provenance.allocationSiteId != null) fact.allocationSiteId = String(provenance.allocationSiteId);
         composed.push(fact);
@@ -562,6 +567,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   // never covered part of its scope — missing work laundered into "no effect".
   const functionLevelUnknown = (ir.completeness != null && ir.completeness !== 'complete')
     || (Array.isArray(ir.unknowns) && ir.unknowns.length > 0);
+
   const localStatus = createAnalysisStatus({
     snapshotId: options.snapshotId ?? 'snapshot-unbound',
     analyzerId: LOCAL_SUMMARY_ANALYZER_ID,

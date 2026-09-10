@@ -10,10 +10,17 @@ import * as core from './contract-core.js';
 
 export * from './contract-core.js';
 
-export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.2.0';
+// Single contract-version source of truth: the core canonical constructor owns
+// the version identity (the #5242 root/allocation `addressSpace` requirement
+// bumped it to 1.3.0). Redeclaring a stale constant here re-stamped core-built
+// summaries with an older wire version while identity validation compared
+// against the same stale value — version-keyed cache/consumer layers could not
+// distinguish the incompatible envelope from a legacy 1.2 summary.
+export const FUNCTION_SUMMARY_CONTRACT_VERSION = core.FUNCTION_SUMMARY_CONTRACT_VERSION;
 const CANONICAL_SUMMARIES = new WeakSet();
 const RETURN_PROVENANCE_FIELDS = new Set([
   'kind', 'argIndex', 'returnIndex', 'offset', 'rootEntityId', 'allocationSiteId',
+  'addressSpace',
 ]);
 const RETURN_PROVENANCE_KINDS = new Set(['arg', 'root', 'allocation', 'unknown']);
 
@@ -94,6 +101,17 @@ function validateReturnProvenance(value) {
   if (Object.keys(value).some((key) => !RETURN_PROVENANCE_FIELDS.has(key))) throw new TypeError('function-summary-invalid-return-provenance');
   const kind = nonEmptyString(value.kind, 'function-summary-invalid-return-provenance-kind');
   if (!RETURN_PROVENANCE_KINDS.has(kind)) throw new TypeError('function-summary-invalid-return-provenance-kind');
+  // #4314 pin: digit strings are laundering for argIndex/returnIndex. The
+  // canonical offset is the only field whose wire spelling is a string.
+  if (value.argIndex != null && typeof value.argIndex !== 'number') {
+    throw new TypeError('function-summary-invalid-return-provenance-arg-index');
+  }
+  if (value.returnIndex != null && typeof value.returnIndex !== 'number') {
+    throw new TypeError('function-summary-invalid-return-provenance-return-index');
+  }
+  if (value.addressSpace != null) {
+    nonEmptyString(value.addressSpace, 'function-summary-invalid-return-provenance-address-space');
+  }
   const argIndex = value.argIndex == null ? null : strictProvenanceIndex(value.argIndex);
   const returnIndex = value.returnIndex == null ? null : strictProvenanceIndex(value.returnIndex);
   const offset = value.offset == null ? null : strictProvenanceOffset(value.offset);
@@ -110,6 +128,12 @@ function validateReturnProvenance(value) {
   }
   if (kind === 'arg' && argIndex == null) throw new TypeError('function-summary-invalid-return-provenance-arg-index');
   if ((kind === 'root' || kind === 'allocation') && root == null && allocation == null) throw new TypeError('function-summary-invalid-return-provenance-identity');
+  // Storage space is required canonical identity on root/allocation facts
+  // (#5242); checked after the identity code so malformed identities keep
+  // their original error precedence.
+  if ((kind === 'root' || kind === 'allocation') && value.addressSpace == null) {
+    throw new TypeError('function-summary-invalid-return-provenance-address-space');
+  }
   return true;
 }
 function validateMemoryEffectInput(input) {
