@@ -29,7 +29,10 @@ export function buildCil(options = {}) {
   }
   // Additive heap extension: per-method/per-table signature blobs appended after
   // the legacy 8-byte heap so existing fixtures stay byte-identical.
-  const blobBytes = [0, 3, 0, 0, 1, 2, 6, 8];
+  // options.blobBytes (when given) replaces the legacy heap wholesale — used by
+  // fixtures that need exact #Blob control (e.g. assembly PublicKey authority);
+  // without it the default heap keeps every pre-existing fixture byte-identical.
+  const blobBytes = options.blobBytes ? [...options.blobBytes] : [0, 3, 0, 0, 1, 2, 6, 8];
   const addBlob = bytes => {
     const index = blobBytes.length;
     blobBytes.push(bytes.length, ...bytes);

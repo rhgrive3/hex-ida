@@ -19,7 +19,7 @@ import { deriveMemoryRegion, isPreciseMemoryRegion } from '../alias/regions-v2.j
 import { createAnalysisStatus, isCompleteStatus } from '../status.js';
 
 export const FUNCTION_SUMMARY_SCHEMA_VERSION = 3;
-export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.2.0';
+export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.3.0';
 
 /**
  * Where an effect's authority comes from, in the priority order P7-INV-004
@@ -244,12 +244,21 @@ function createReturnProvenance(input = {}) {
   if (input.returnIndex != null && (!Number.isSafeInteger(returnIndex) || returnIndex < 0)) {
     fail('function-summary-invalid-return-provenance-return-index');
   }
+  // Storage identity of a returned pointer is part of the canonical fact:
+  // root/allocation provenance must name its address space explicitly. An
+  // omitted space is not 'memory' by assumption — the caller's points-to root
+  // would silently fork from the callee's storage semantics (#5242).
+  const addressSpace = input.addressSpace == null ? null : nonEmpty(input.addressSpace, 'function-summary-invalid-return-provenance-address-space');
+  if ((kind === 'root' || kind === 'allocation') && addressSpace == null) {
+    fail('function-summary-invalid-return-provenance-address-space');
+  }
   const out = {
     kind,
     argIndex: Number.isSafeInteger(argIndex) && argIndex >= 0 ? argIndex : null,
     offset: offset == null ? null : offset.toString(10),
     rootEntityId,
   };
+  if (addressSpace != null) out.addressSpace = addressSpace;
   if (input.allocationSiteId != null) out.allocationSiteId = allocationSiteId;
   // Keep old summaries wire-compatible: an omitted returnIndex still means the
   // primary return position. New producers set it explicitly for multi-return
@@ -273,12 +282,15 @@ function canonicalReturnProvenance(values) {
       value.offset ?? '',
       value.rootEntityId ?? '',
       value.allocationSiteId ?? '',
+      // Storage space participates in dedupe identity: a memory-rooted and an
+      // io-rooted return with the same root id are different facts (#5242).
+      value.addressSpace ?? '',
     ].join('\u0000');
     if (!byKey.has(key)) byKey.set(key, value);
   }
   return [...byKey.values()].sort((left, right) => {
-    const leftKey = [left.returnIndex ?? 0, left.kind, left.argIndex ?? -1, left.offset ?? '', left.rootEntityId ?? '', left.allocationSiteId ?? ''].join('\u0000');
-    const rightKey = [right.returnIndex ?? 0, right.kind, right.argIndex ?? -1, right.offset ?? '', right.rootEntityId ?? '', right.allocationSiteId ?? ''].join('\u0000');
+    const leftKey = [left.returnIndex ?? 0, left.kind, left.argIndex ?? -1, left.offset ?? '', left.rootEntityId ?? '', left.allocationSiteId ?? '', left.addressSpace ?? ''].join('\u0000');
+    const rightKey = [right.returnIndex ?? 0, right.kind, right.argIndex ?? -1, right.offset ?? '', right.rootEntityId ?? '', right.allocationSiteId ?? '', right.addressSpace ?? ''].join('\u0000');
     return codeUnitCompare(leftKey, rightKey);
   });
 }
@@ -290,13 +302,20 @@ function canonicalReturnProvenance(values) {
  * `createReturnProvenance()` stores exactly these fields with exactly these
  * types; anything else on the wire is not part of the FunctionSummary
  * contract. A serialized lookalike must not smuggle extra fields (in
- * particular `addressSpace`/`separationClass`/`separationAuthority`) past the
- * consumer boundary, where a points-to consumer would otherwise read them as
- * proof authority the canonical producer never emits.
+ * particular `separationClass`/`separationAuthority`) past the consumer
+ * boundary, where a points-to consumer would otherwise read them as proof
+ * authority the canonical producer never emits.
+ *
+ * `addressSpace` IS canonical storage identity for `root`/`allocation` facts
+ * and is required there (#5242): without it a non-memory pointer return
+ * degrades to an ordinary memory root at the caller. It is deliberately NOT
+ * proof authority — separation classes/authorities stay at the mint boundary
+ * (#6066) and are never transported through a serializable summary.
  */
 const RETURN_PROVENANCE_KINDS = Object.freeze(['unknown', 'arg', 'root', 'allocation']);
 const RETURN_PROVENANCE_FIELDS = Object.freeze([
   'kind', 'argIndex', 'returnIndex', 'offset', 'rootEntityId', 'allocationSiteId',
+  'addressSpace',
 ]);
 
 export function isCanonicalReturnProvenance(value) {
@@ -314,9 +333,13 @@ export function isCanonicalReturnProvenance(value) {
     const identity = value[field];
     if (identity != null && (typeof identity !== 'string' || !identity.trim())) return false;
   }
+  if (value.addressSpace != null && (typeof value.addressSpace !== 'string' || !value.addressSpace.trim())) return false;
   if (value.kind === 'root' || value.kind === 'allocation') {
     const identity = value.rootEntityId ?? value.allocationSiteId ?? null;
     if (typeof identity !== 'string' || !identity.trim()) return false;
+    // Storage space is required canonical identity on root/allocation facts
+    // (#5242): a space-less root cannot be distinguished from flat memory.
+    if (typeof value.addressSpace !== 'string' || !value.addressSpace.trim()) return false;
   }
   return true;
 }

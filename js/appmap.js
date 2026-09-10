@@ -134,8 +134,14 @@ function classifyClass(cls, ctx) {
     if (m.addr == null) continue;
     const range = ctx.program ? ctx.program.functionRange(m.addr) : null;
     if (!range) continue;
+    // #5208: a method whose function end is unproven owns no bounded extent.
+    // refsFrom/calleesOf treat a null upper bound as "scan to the query
+    // limit", so the next function's strings/API calls would be adopted as
+    // this method's classification evidence. Skip the extent-derived sources;
+    // name/vendor evidence above is unaffected.
+    const bounded = range.end != null;
 
-    if (ctx.program && ctx.textOf && stringHits < 24) {
+    if (ctx.program && ctx.textOf && bounded && stringHits < 24) {
       for (const ref of ctx.program.refsFrom(range.start, range.end, 24)) {
         const text = ctx.textOf(ref.target);
         if (!text) continue;
@@ -146,7 +152,7 @@ function classifyClass(cls, ctx) {
         if (stringHits >= 24) break;
       }
     }
-    if (ctx.program && ctx.symbols && apiHits < 16) {
+    if (ctx.program && ctx.symbols && bounded && apiHits < 16) {
       for (const callee of ctx.program.calleesOf(range.start, range.end, 12)) {
         const name = ctx.symbols.nameAt(callee.addr);
         if (!name) continue;
@@ -279,6 +285,59 @@ export function buildAppMap(opts) {
   };
 }
 
+// The xref span must be the string's original UTF-8 byte extent (#5698).
+// Producer contract (worker scanStrings): display text is control-escaped
+// (`\t`/`\r`/`\n`), and the emitted byteLength is the raw run's extent. A
+// non-escape display code point has a determined UTF-8 width (1..4 bytes by
+// code-point range). An escape is ambiguous from the display alone — a real
+// escaped control is 1 raw byte but a literal backslash+letter is 2 — so it
+// counts 1..2. From the display text that gives a provable [minRaw, maxRaw]
+// window; a carried byteLength outside it (or of the wrong type) is a
+// forged/malformed authority and fails closed.
+function producerByteExtentWindow(text) {
+  let minRaw = 0;
+  let maxRaw = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 0x5c && (text[i + 1] === 't' || text[i + 1] === 'r' || text[i + 1] === 'n')) {
+      // Ambiguous from the display alone: a real escaped control is 1 raw
+      // byte, a literal backslash+letter is 2. The window admits both so a
+      // genuine producer extent is never rejected (#5698 completeness).
+      minRaw += 1;
+      maxRaw += 2;
+      i++;
+      continue;
+    }
+    const unit = text.codePointAt(i);
+    if (unit > 0xffff) i++;
+    // A non-escape decoded code point has a determined UTF-8 width: the
+    // producer scanned raw UTF-8, so U+0020..U+007E came from 1 byte,
+    // U+0080..U+07FF from 2, U+0800..U+FFFF from 3, astral from 4. Both
+    // window edges take that exact width — a smaller claimed byteLength
+    // (e.g. a truncated slice) must not become xref authority (#5698).
+    const width = unit <= 0x7f ? 1 : unit <= 0x7ff ? 2 : unit <= 0xffff ? 3 : 4;
+    minRaw += width;
+    maxRaw += width;
+  }
+  return { minRaw, maxRaw };
+}
+
+// Returns the authoritative raw byte span, or null when the entry carries no
+// provable extent (missing byteLength falls back to the provable minimum; a
+// malformed/forged carried value gets no xref authority at all).
+function stringByteSpan(s) {
+  const carried = s.byteLength;
+  if (carried === undefined || carried === null) {
+    const { minRaw } = producerByteExtentWindow(s.text);
+    return minRaw > 0 ? minRaw : null;
+  }
+  if (typeof carried !== 'number' || !Number.isSafeInteger(carried) || carried <= 0) {
+    return null;
+  }
+  const { minRaw, maxRaw } = producerByteExtentWindow(s.text);
+  if (carried < minRaw || carried > maxRaw) return null;
+  return carried;
+}
+
 export function buildStringMap(opts) {
   const o = opts || {};
   const program = o.program;
@@ -291,7 +350,12 @@ export function buildStringMap(opts) {
     if (scanned >= 4000) break;
     const hits = classifyString(s.text);
     if (!hits.length) continue;
-    const users = program.functionsReferencing(s.addr, BigInt(Math.min(s.text.length, 128)), 8);
+    // The xref span is a virtual-address byte range (#5698): use the string's
+    // authoritative raw byte extent; entries without one get no xref
+    // authority rather than an over-inclusive display-derived span.
+    const span = stringByteSpan(s);
+    if (span == null) continue;
+    const users = program.functionsReferencing(s.addr, BigInt(Math.min(span, 128)), 8);
     if (!users.length) continue;
     scanned++;
     for (const hit of hits) {

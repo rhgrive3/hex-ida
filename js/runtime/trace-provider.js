@@ -326,12 +326,14 @@ export class TraceProvider {
       if (module.runtimeSize == null && module.size == null) continue;
       // Presence of unverified identity evidence is not identity proof. An
       // imported trace is external input: only canonical non-empty string
-      // evidence IDs count toward proven static identity, and `unresolved`
-      // must not be promoted to `resolved` by array length alone.
+      // evidence IDs count toward proven static identity, while explicit
+      // `unresolved`/`mismatch` states remain authoritative negative states.
       const rawEvidenceIds = Array.isArray(module.identityEvidenceIds) ? module.identityEvidenceIds : [];
       const identityEvidenceIds = rawEvidenceIds.filter((id) => typeof id === 'string' && id.trim().length > 0);
       const hasCanonicalIdentityEvidence = identityEvidenceIds.length > 0 && identityEvidenceIds.length === rawEvidenceIds.length;
-      const hasProvenStaticIdentity = module.binaryId != null
+      const hasExplicitNegativeIdentityState = module.identityState === 'unresolved' || module.identityState === 'mismatch';
+      const hasProvenStaticIdentity = !hasExplicitNegativeIdentityState
+        && module.binaryId != null
         && (module.identityState === 'exact' || (module.identityState === 'resolved' && hasCanonicalIdentityEvidence) || hasCanonicalIdentityEvidence);
       session.modules.load({
         bindingKey: module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name ?? `trace-module:${i}`,

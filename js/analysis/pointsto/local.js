@@ -152,11 +152,17 @@ function parseInteger(candidate) {
  * does, so A2 and the root service never disagree about what "constant" means.
  */
 function constantOf(value, node) {
+  let resolved = null;
   for (const candidate of [value?.metadata?.constant, node?.attributes?.constant, node?.metadata?.constant]) {
     const parsed = parseInteger(candidate);
-    if (parsed != null) return parsed;
+    if (parsed == null) continue;
+    if (resolved == null) {
+      resolved = parsed;
+      continue;
+    }
+    if (parsed !== resolved) return null;
   }
-  return null;
+  return resolved;
 }
 
 function widthOf(value, node) {
@@ -200,7 +206,7 @@ function storedPointerSetIsValid(set, value, widthBits) {
   if (!originIds.size) return false;
   for (const target of set.targets) {
     if (!target || typeof target !== 'object' || !target.rootKey) return false;
-    if (!['rooted', 'stack-like', 'absolute'].includes(String(target.rootKind))) return false;
+    if (!['rooted', 'stack-like', 'absolute', 'allocation'].includes(String(target.rootKind))) return false;
     if (target.widthBits !== widthBits) return false;
     if (!target.offsetRange || typeof target.offsetRange !== 'object') return false;
     const { min, max } = target.offsetRange;
@@ -556,17 +562,27 @@ function targetFromReturnProvenance(provenance, widthBits, evidenceIds) {
   if (provenance?.kind !== 'root' && provenance?.kind !== 'allocation') return null;
   const rootEntityId = provenance.rootEntityId ?? provenance.allocationSiteId ?? null;
   if (rootEntityId == null || !String(rootEntityId).trim()) return null;
+  // Storage space is required canonical identity on root/allocation facts
+  // (#5242), so the caller's target keeps the callee's storage semantics.
+  // A fact without one is a legacy/under-specified shape: fail closed to
+  // unresolved rather than fabricating a memory root (#5956 refused the
+  // self-asserted addressSpace; #5242 makes the canonical one real).
+  const addressSpace = typeof provenance.addressSpace === 'string' && provenance.addressSpace.trim()
+    ? provenance.addressSpace.trim()
+    : null;
+  if (addressSpace == null) return null;
   let offset;
   try { offset = BigInt(provenance.offset ?? 0n); }
   catch { return null; }
   // Only canonical wire-contract fields are read here. Extra fields a forged
-  // serialized summary might carry (addressSpace/separationClass/
-  // separationAuthority) are not producer-emittable and must never become
-  // target authority (#5956).
+  // serialized summary might carry (separationClass/separationAuthority/
+  // rootIdentity) are not producer-emittable and must never become target
+  // authority (#5956): separation authority stays at the mint boundary
+  // (#6066), and rootIdentity is not part of the FunctionSummary contract.
   return createPointsToTarget({
-    addressSpace: 'memory',
+    addressSpace,
     rootKind: provenance.kind === 'allocation' ? 'allocation' : 'rooted',
-    rootIdentity: provenance.rootIdentity ?? null,
+    rootIdentity: null,
     rootEntityId: String(rootEntityId),
     offsetRange: exactRange(offset),
     widthBits,
