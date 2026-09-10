@@ -112,6 +112,7 @@ function decodeAndroidTable(r, va, size64, image, bits, rela, source, budget, ou
       const groupSize=readSleb(r,st,end), flags=readSleb(r,st,end);
       if(groupSize<=0n||groupSize>relocationCount-decoded) throw new Error('invalid relocation group size');
       const groupedDelta=!!(flags&GROUPED_BY_OFFSET_DELTA), groupedInfo=!!(flags&GROUPED_BY_INFO), hasAddend=!!(flags&GROUP_HAS_ADDEND), groupedAddend=!!(flags&GROUPED_BY_ADDEND);
+      if (!rela && hasAddend) throw new Error('unexpected r_addend in Android REL packed relocation group');
       const groupDelta=groupedDelta?readSleb(r,st,end):0n, groupInfo=groupedInfo?readSleb(r,st,end):0n, groupAddend=hasAddend&&groupedAddend?readSleb(r,st,end):0n;
       for(let i=0n;i<groupSize && !budget.stopped;i++,decoded++){
         if (!budget.step()) break;

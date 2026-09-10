@@ -38,13 +38,23 @@ function chainedPointerCoverageAt(image, address) {
   return null;
 }
 
+// Pointer-authority inputs must be parser-grade primitives (#5189): BigInt()
+// launders arrays and toString()-coercible objects into canonical VAs, which
+// then alias real sections, segments and chained-fixup sites.
+function canonicalPointerScalar(value) {
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === 'string' && value === value.trim() && /^(?:0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(value)) {
+    try { return BigInt(value); } catch { return null; }
+  }
+  return null;
+}
+
 export function resolveMachOPointer(image, rawValue, options = {}) {
   if (!image) return null;
-  let raw, address = null;
-  try {
-    raw = BigInt(rawValue);
-    if (options.address != null) address = BigInt(options.address);
-  } catch { return null; }
+  const raw = canonicalPointerScalar(rawValue);
+  const address = options.address == null ? null : canonicalPointerScalar(options.address);
+  if (raw == null || (options.address != null && address == null)) return null;
   if (raw <= 0n || raw > 0xffffffffffffffffn) return null;
 
   const site = address == null ? null : CHAINED_POINTER_SITES.get(image)?.get(address);

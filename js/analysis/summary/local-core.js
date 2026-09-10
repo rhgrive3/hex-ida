@@ -339,7 +339,11 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       }
       if (provenance.kind === 'root' || provenance.kind === 'allocation') {
         const rootEntityId = provenance.rootEntityId ?? provenance.allocationSiteId ?? null;
-        if (rootEntityId == null || !String(rootEntityId).trim()) {
+        if (rootEntityId == null || !String(rootEntityId).trim()
+          // Storage space is required canonical identity on root/allocation
+          // facts (#5242): composing without it would silently degrade a
+          // non-memory return to flat memory at the caller.
+          || typeof provenance.addressSpace !== 'string' || !provenance.addressSpace.trim()) {
           composed.push({ kind: 'unknown', returnIndex: outerReturnIndex });
           continue;
         }
@@ -348,6 +352,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
           returnIndex: outerReturnIndex,
           rootEntityId: String(rootEntityId),
           offset: offset.toString(10),
+          addressSpace: provenance.addressSpace.trim(),
         };
         if (provenance.allocationSiteId != null) fact.allocationSiteId = String(provenance.allocationSiteId);
         composed.push(fact);
@@ -532,6 +537,19 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       }));
       controlUnknown = true;
       ensureBroadWrite(node);
+    } else if (node.call.noreturn == null || node.call.mayThrow == null) {
+      // Omitted control knowledge is a missing fact, not a negative proof
+      // (#5854): promoting null here would publish "returns / does not throw"
+      // from raw IR that never carried the fact. Degrade to an unknown call
+      // effect instead of folding in absent knowledge.
+      unknownCallEffects.push(createUnknownCallEffect({
+        callSiteId: node.id,
+        reason: 'summary-incomplete',
+        targetEntityIds: targets,
+        evidenceIds: evidenceOf(node),
+      }));
+      controlUnknown = true;
+      ensureBroadWrite(node);
     } else {
       if (node.call.mayThrow === true) mayThrow = true;
       if (node.call.mayThrow === 'unknown') controlUnknown = true;
@@ -555,13 +573,21 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   }
 
   const hasUnknown = unknownCallEffects.length > 0 || intrinsicScopeUnknown;
+  // A canonical Semantic IR may record what is missing at the function level:
+  // `completeness: 'partial'|'unknown'` with the reasons in `ir.unknowns`,
+  // while every individual node stays complete (#5226). Ignoring those fields
+  // publishes a complete (even pure) summary for a function whose lowering
+  // never covered part of its scope — missing work laundered into "no effect".
+  const functionLevelUnknown = (ir.completeness != null && ir.completeness !== 'complete')
+    || (Array.isArray(ir.unknowns) && ir.unknowns.length > 0);
+
   const localStatus = createAnalysisStatus({
     snapshotId: options.snapshotId ?? 'snapshot-unbound',
     analyzerId: LOCAL_SUMMARY_ANALYZER_ID,
     analyzerVersion: LOCAL_SUMMARY_ANALYZER_VERSION,
-    completeness: hasUnknown ? 'partial' : 'complete',
+    completeness: hasUnknown || functionLevelUnknown ? 'partial' : 'complete',
     budgetClass: options.budgetClass ?? null,
-    stopReason: hasUnknown ? 'evidence-missing' : null,
+    stopReason: hasUnknown || functionLevelUnknown ? 'evidence-missing' : null,
   });
   const status = statuses.length ? mergeAnalysisStatus(localStatus, statuses) : localStatus;
 

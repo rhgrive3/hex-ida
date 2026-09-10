@@ -1,5 +1,6 @@
 import { createAppAnalysisQueryAdapter as createBaseAdapter } from './app-adapter.js';
 import { stableDigest, jsonSafe } from '../../core/identity/index.js';
+import { runtimeEvidenceForApp } from '../../runtime/app-runtime.js';
 
 const SAFE_ROUTE = Symbol('analysis-query-safe-ui-route');
 const SAFE_FUNCTION_DISCOVERY = Symbol('analysis-query-function-discovery-single-flight');
@@ -107,6 +108,23 @@ function canonicalIdentityDimension(value, fallback) {
   }
 }
 
+// Runtime evidence is projected into evidence() rows, but it is not owned by
+// any of the static identity dimensions above. Without a dimension of its own,
+// a runtime trace/experiment recorded between two queries mutates the visible
+// rows while the snapshotId stays constant and every stale check passes
+// (#5630). The dimension is a canonical digest over the FULL corpus the
+// adapter can surface — every field of every record, not a field subset — so
+// even a 4096-cap shift()+push replacement whose evicted/added rows share the
+// same id/kind/verdict/timestamp tuple still changes snapshot identity
+// (R1 review of PR #7675). A missing runtime state digests identically to an
+// empty corpus.
+function runtimeEvidenceIdentity(app) {
+  let rows = null;
+  try { rows = runtimeEvidenceForApp(app); } catch { rows = null; }
+  if (!Array.isArray(rows)) return 'unavailable';
+  return canonicalIdentityDimension(rows, []);
+}
+
 function artifactVersionsFor(app) {
   const direct = app?.analysisArtifactVersions ?? app?.artifactVersions ?? null;
   if (direct && isPlainObject(direct)) return { ...direct };
@@ -122,6 +140,7 @@ function artifactVersionsFor(app) {
     instructionAlignment: canonicalIdentityDimension(storeValue(app, 'instructionAlignment') ?? capability.instructionAlignment ?? 'unknown', 'unknown'),
     symbolsGeneration: canonicalIdentityDimension(app?.symbols?.gen ?? 0, '0'),
     sliceIndex: canonicalIdentityDimension(storeValue(app, 'sliceIndex') ?? -1, '-1'),
+    runtimeEvidence: runtimeEvidenceIdentity(app),
   };
 }
 
@@ -190,8 +209,19 @@ function discoveryKey(app, region) {
   const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);
   let regions = [];
   try { regions = typeof app?.programRegions === 'function' ? app.programRegions() || [] : []; } catch { regions = []; }
-  const ids = regions.filter((item) => item?.exec !== false).map((item) => String(item?.id ?? ''));
-  if (region?.exec !== false && region?.id != null && !ids.includes(String(region.id))) ids.push(String(region.id));
+  // Region identity in the shared key must be the same typed value the
+  // producer receives. String()-ing structured ids (`['text']` → 'text')
+  // collided the single-flight keys of different region values and let one
+  // region's producer be shared by another (#5580). Non-string ids are not
+  // scannable, so they key uniquely by their own spelling instead of being
+  // coerced behind the caller's back.
+  const ids = regions
+    .filter((item) => item?.exec !== false)
+    .map((item) => (typeof item?.id === 'string' ? item.id : JSON.stringify(item?.id ?? null)));
+  if (region?.exec !== false && region?.id != null) {
+    const id = typeof region.id === 'string' ? region.id : JSON.stringify(region.id);
+    if (!ids.includes(id)) ids.push(id);
+  }
   return `${epoch}:${ids.join('|')}`;
 }
 

@@ -1,5 +1,5 @@
 import { DebugAdapterError } from '../debug/adapter.js';
-import { RuntimeProviderSession, createRuntimeProviderDescriptor } from './provider.js';
+import { RuntimeProviderSession, createRuntimeOperationController, createRuntimeProviderDescriptor } from './provider.js';
 import { RuntimeEventNormalizer } from './events.js';
 import { createInterventionRecord, InterventionLedger } from './evidence-bridge.js';
 import { normalizeRuntimeModuleBinding } from './module-binding.js';
@@ -248,7 +248,17 @@ export class InstrumentationProvider {
           requestedChange: { install: true },
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
-        const result = await install(spec, callOptions);
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
+        const startedEpoch = session.epoch;
+        let result;
+        try {
+          result = await install(spec, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
+            throw new DebugAdapterError('runtime-session-stale', 'probe installation completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
+          }
+        } finally {
+          operation.release();
+        }
         const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         const handle = probeHandle(result);
         if (handle != null) probes.set(handle, intervention.interventionId);
@@ -267,7 +277,17 @@ export class InstrumentationProvider {
           requestedChange: { remove: true },
           parentInterventionIds: [...new Set([...(callOptions.parentInterventionIds ?? []), ...(parent ? [parent] : [])])],
         });
-        const result = await remove(handle, callOptions);
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
+        const startedEpoch = session.epoch;
+        let result;
+        try {
+          result = await remove(handle, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
+            throw new DebugAdapterError('runtime-session-stale', 'probe removal completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
+          }
+        } finally {
+          operation.release();
+        }
         const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         probes.delete(normalizedHandle);
         return { result, intervention };
@@ -284,7 +304,17 @@ export class InstrumentationProvider {
           requestedChange: { install: true },
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
-        const result = await install(spec, callOptions);
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
+        const startedEpoch = session.epoch;
+        let result;
+        try {
+          result = await install(spec, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
+            throw new DebugAdapterError('runtime-session-stale', 'interception completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
+          }
+        } finally {
+          operation.release();
+        }
         const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         const handle = probeHandle(result);
         if (handle != null) probes.set(handle, intervention.interventionId);
@@ -302,11 +332,37 @@ export class InstrumentationProvider {
           requestedChange: replacement,
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
-        const result = await replace(target, replacement, callOptions);
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
+        const startedEpoch = session.epoch;
+        let result;
+        try {
+          result = await replace(target, replacement, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
+            throw new DebugAdapterError('runtime-session-stale', 'function replacement completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
+          }
+        } finally {
+          operation.release();
+        }
         const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         return { result, intervention };
       },
-      readMemory: async (...args) => requiredMethod(this.backend, 'readMemory', 'memory read')(...args),
+      // #5694: reads also participate in the session lifecycle so stale
+      // target bytes cannot cross an epoch boundary. The optional third
+      // argument is the canonical backend call-options object.
+      readMemory: async (address, size, callOptions = {}) => {
+        const read = requiredMethod(this.backend, 'readMemory', 'memory read');
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
+        const startedEpoch = session.epoch;
+        try {
+          const result = await read(address, size, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
+            throw new DebugAdapterError('runtime-session-stale', 'memory read completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
+          }
+          return result;
+        } finally {
+          operation.release();
+        }
+      },
       writeMemory: async (address, bytes, callOptions = {}) => {
         const authorized = await this.#authorizeMutation('memory-write', { address, byteLength: bytes?.byteLength ?? bytes?.length ?? null }, callOptions);
         if (!authorized) throw new DebugAdapterError('permission-denied', 'instrumentation memory write requires provider-authorized mutation capability');
@@ -319,7 +375,17 @@ export class InstrumentationProvider {
           requestedChange: { bytes },
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
-        const result = await write(address, bytes, callOptions);
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
+        const startedEpoch = session.epoch;
+        let result;
+        try {
+          result = await write(address, bytes, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
+            throw new DebugAdapterError('runtime-session-stale', 'memory write completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
+          }
+        } finally {
+          operation.release();
+        }
         const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         return { result, intervention };
       },

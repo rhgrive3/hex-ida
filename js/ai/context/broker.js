@@ -108,10 +108,18 @@ function compactSelection(value) {
   return { start: addressText(value.start ?? instructions[0]?.address), end: addressText(value.end ?? instructions[instructions.length - 1]?.address), instructions: instructions.slice(0, 80).map(compactInstruction), truncated: instructions.length > 80 || !!value.truncated };
 }
 function compactFunction(value, maxLines) {
-  const instructions = Array.isArray(value.instructions) ? value.instructions.slice(0, maxLines).map(compactInstruction) : undefined;
-  const assembly = typeof value.assembly === 'string' ? value.assembly.split('\n').slice(0, maxLines).join('\n').slice(0, 30000) : undefined;
-  const pseudocode = typeof value.pseudocode === 'string' ? value.pseudocode.split('\n').slice(0, 80).join('\n').slice(0, 16000) : undefined;
-  return removeUndefined({ address: addressText(value.address ?? value.start ?? value.startAddr ?? value.identity?.startAddr), name: value.name || value.identity?.name || null, summary: typeof value.summary === 'string' ? value.summary.slice(0, 4000) : undefined, instructions, assembly, pseudocode, truncated: (Array.isArray(value.instructions) && value.instructions.length > maxLines) || (typeof value.assembly === 'string' && value.assembly.split('\n').length > maxLines), trust: 'untrusted-data' });
+  const instructionValues = Array.isArray(value.instructions) ? value.instructions : null;
+  const instructions = instructionValues ? instructionValues.slice(0, maxLines).map(compactInstruction) : undefined;
+  const assemblyLines = typeof value.assembly === 'string' ? value.assembly.split('\n') : null;
+  const assemblyByLines = assemblyLines ? assemblyLines.slice(0, maxLines).join('\n') : undefined;
+  const assembly = assemblyByLines?.slice(0, 30000);
+  const pseudocodeLines = typeof value.pseudocode === 'string' ? value.pseudocode.split('\n') : null;
+  const pseudocodeByLines = pseudocodeLines ? pseudocodeLines.slice(0, 80).join('\n') : undefined;
+  const pseudocode = pseudocodeByLines?.slice(0, 16000);
+  const truncated = (instructionValues != null && instructionValues.length > maxLines)
+    || (assemblyLines != null && (assemblyLines.length > maxLines || assemblyByLines.length > 30000))
+    || (pseudocodeLines != null && (pseudocodeLines.length > 80 || pseudocodeByLines.length > 16000));
+  return removeUndefined({ address: addressText(value.address ?? value.start ?? value.startAddr ?? value.identity?.startAddr), name: value.name || value.identity?.name || null, summary: typeof value.summary === 'string' ? value.summary.slice(0, 4000) : undefined, instructions, assembly, pseudocode, truncated, trust: 'untrusted-data' });
 }
 function compactInstruction(value) { return removeUndefined({ address: addressText(value?.address), mnemonic: String(value?.mnemonic || '').slice(0, 40), operands: String(value?.operands || '').slice(0, 500) }); }
 function compactEvidence(value) { return removeUndefined({ id: value.id, kind: value.kind, status: value.status, address: value.address, functionAddress: value.functionAddress, functionName: value.functionName, title: value.title, summary: value.summary, sourceTool: value.sourceTool }); }

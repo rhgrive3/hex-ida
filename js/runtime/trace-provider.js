@@ -1,9 +1,27 @@
 import { deepFreeze, stableStringify } from '../core/identity/index.js';
+import { EVIDENCE_COMPLETENESS } from '../core/evidence/index.js';
 import { DebugAdapterError, boundedInteger } from '../debug/adapter.js';
 import { RuntimeProviderSession, createRuntimeProviderDescriptor } from './provider.js';
 import { createRuntimeEvent, createRuntimeEventBatch } from './events.js';
 
 const UTF8_ENCODER = new TextEncoder();
+const COMPLETENESS_RANK = Object.freeze({ unsupported: 0, truncated: 1, partial: 2, bounded: 3, complete: 4 });
+
+function canonicalCompleteness(value) {
+  if (typeof value !== 'string' || !EVIDENCE_COMPLETENESS.includes(value)) {
+    throw new DebugAdapterError('trace-invalid-completeness', 'trace completeness must be a canonical completeness value');
+  }
+  return value;
+}
+
+function weakestCompleteness(declared, events, { loss = false, dropped = 0 } = {}) {
+  let result = declared;
+  for (const event of events) {
+    if (COMPLETENESS_RANK[event.completeness] < COMPLETENESS_RANK[result]) result = event.completeness;
+  }
+  if (loss || dropped > 0) result = COMPLETENESS_RANK.truncated < COMPLETENESS_RANK[result] ? 'truncated' : result;
+  return result;
+}
 
 function encodedByteLength(value) { return UTF8_ENCODER.encode(value).byteLength; }
 
@@ -204,6 +222,7 @@ function normalizeRecording(recording = {}, options = {}) {
   if (encodedByteLength(stableStringify(recording)) > maxBytes) throw new DebugAdapterError('resource-limit', `trace recording exceeds byte limit (${maxBytes})`);
   const dropped = droppedCount(recording.dropped ?? recording.trace?.dropped ?? 0);
   const truncated = recording.truncated === true || recording.trace?.truncated === true || dropped > 0;
+  const declaredCompleteness = canonicalCompleteness(recording.completeness ?? 'bounded');
   return deepFreeze({
     recordingId: required(recording.recordingId ?? recording.id ?? `trace:${recording.sourceProvider ?? 'unknown'}`, 'trace-recording-id-required', 'trace recording id is required'),
     schemaVersion: String(recording.schemaVersion ?? recording.version ?? '1'),
@@ -218,7 +237,7 @@ function normalizeRecording(recording = {}, options = {}) {
     events: ownedClone(events),
     interventions: ownedClone(collectionField(recording.interventions, 'interventions')),
     dropped,
-    completeness: truncated ? 'truncated' : required(recording.completeness ?? 'bounded', 'trace-invalid-completeness', 'trace completeness must be a non-empty string'),
+    completeness: truncated ? 'truncated' : declaredCompleteness,
     sourceProvenance: ownedClone(recording.sourceProvenance ?? recording.provenance ?? null),
   });
 }
@@ -307,12 +326,14 @@ export class TraceProvider {
       if (module.runtimeSize == null && module.size == null) continue;
       // Presence of unverified identity evidence is not identity proof. An
       // imported trace is external input: only canonical non-empty string
-      // evidence IDs count toward proven static identity, and `unresolved`
-      // must not be promoted to `resolved` by array length alone.
+      // evidence IDs count toward proven static identity, while explicit
+      // `unresolved`/`mismatch` states remain authoritative negative states.
       const rawEvidenceIds = Array.isArray(module.identityEvidenceIds) ? module.identityEvidenceIds : [];
       const identityEvidenceIds = rawEvidenceIds.filter((id) => typeof id === 'string' && id.trim().length > 0);
       const hasCanonicalIdentityEvidence = identityEvidenceIds.length > 0 && identityEvidenceIds.length === rawEvidenceIds.length;
-      const hasProvenStaticIdentity = module.binaryId != null
+      const hasExplicitNegativeIdentityState = module.identityState === 'unresolved' || module.identityState === 'mismatch';
+      const hasProvenStaticIdentity = !hasExplicitNegativeIdentityState
+        && module.binaryId != null
         && (module.identityState === 'exact' || (module.identityState === 'resolved' && hasCanonicalIdentityEvidence) || hasCanonicalIdentityEvidence);
       session.modules.load({
         bindingKey: module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name ?? `trace-module:${i}`,
@@ -357,7 +378,10 @@ export class TraceProvider {
     const hasDroppedEventCount = normalized.some((event) => event.kind === 'dropped-events');
     const hasExplicitLoss = normalized.some(isLossEvent);
     session.normalizedEvents = Object.freeze(normalized);
-    session.sourceCompleteness = hasExplicitLoss ? 'truncated' : this.recording.completeness;
+    session.sourceCompleteness = weakestCompleteness(this.recording.completeness, normalized, {
+      loss: hasExplicitLoss,
+      dropped: canonicalDropped,
+    });
     session.facets = Object.freeze({ trace: this.#createTraceFacet(session, Object.freeze({
       dropped: canonicalDropped,
       hasDroppedEventCount,
@@ -389,24 +413,32 @@ export class TraceProvider {
             dropped = lossAuthority.dropped;
             implicitDroppedPending = false;
           }
+          const completeness = weakestCompleteness(session.sourceCompleteness, events, { loss, dropped });
           yield createRuntimeEventBatch({
             runtimeSessionId: session.runtimeSessionId,
             providerId: session.providerId,
             sessionEpoch: session.epoch,
             events,
-            completeness: loss ? 'truncated' : session.sourceCompleteness,
+            completeness,
             dropped,
           });
         }
       },
-      replay: async () => createRuntimeEventBatch({
-        runtimeSessionId: session.runtimeSessionId,
-        providerId: session.providerId,
-        sessionEpoch: session.epoch,
-        events: session.normalizedEvents,
-        completeness: session.sourceCompleteness,
-        dropped: lossAuthority.dropped,
-      }),
+      replay: async () => {
+        const events = session.normalizedEvents;
+        const completeness = weakestCompleteness(session.sourceCompleteness, events, {
+          loss: events.some(isLossEvent),
+          dropped: lossAuthority.dropped,
+        });
+        return createRuntimeEventBatch({
+          runtimeSessionId: session.runtimeSessionId,
+          providerId: session.providerId,
+          sessionEpoch: session.epoch,
+          events,
+          completeness,
+          dropped: lossAuthority.dropped,
+        });
+      },
       resolveAddress: (runtimeAddress, resolutionOptions = {}) => session.modules.resolve(runtimeAddress, resolutionOptions),
     });
   }
