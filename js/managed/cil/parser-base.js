@@ -1,10 +1,10 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import { createManagedImageId, createManagedModuleId } from '../shared/identity.js';
+import { CLI_HEADER_SIZE, validateCliHeaderSize } from './cli-header.js';
 
 function fail(code) { throw new TypeError(code); }
 
 const CLI_DIRECTORY_INDEX = 14;
-const CLI_HEADER_SIZE = 72;
 const METHOD_DEF_TABLE = 0x06;
 const STANDALONE_SIG_TABLE = 0x11;
 const STRICT_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
@@ -117,6 +117,11 @@ function readPeCliLayout(bytes, view) {
   const cliSize = readU32(view, cliDirectoryOffset + 4, 'cil-truncated-cli-directory');
   if (cliRva === 0 || cliSize < CLI_HEADER_SIZE) return Object.freeze({ cliPresent: false });
   const cliOffset = mapRva(cliRva, CLI_HEADER_SIZE, 'cil-cli-header-unmapped');
+  const cliHeaderSize = validateCliHeaderSize(
+    readU32(view, cliOffset, 'cil-truncated-cli-header'),
+    cliSize,
+  );
+  mapRva(cliRva, cliHeaderSize, 'cil-cli-header-unmapped');
   const metadataRva = readU32(view, cliOffset + 8, 'cil-truncated-cli-header');
   const metadataSize = readU32(view, cliOffset + 12, 'cil-truncated-cli-header');
   if (metadataRva === 0 || metadataSize < 20) fail('cil-cli-metadata-directory-invalid');
@@ -179,7 +184,7 @@ function metadataRowSize(table, rowCounts, heapSizes) {
     case 0x05: // MethodPtr
       return tableIndexSize(rowCounts, METHOD_DEF_TABLE);
     case METHOD_DEF_TABLE: // MethodDef
-      return 4 + 2 + 2 + stringIndexSize + blobIndexSize + tableIndexSize(rowCounts, 0x08);
+      return 4 + 2 + 2 + stringIndexSize + blobIndexSize + tableIndexSize(rowCounts, rowCounts[0x07] ? 0x07 : 0x08);
     case 0x07: // ParamPtr
       return tableIndexSize(rowCounts, 0x08);
     case 0x08: // Param
