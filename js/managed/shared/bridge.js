@@ -940,6 +940,21 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
         } else if (n.inputs.length === 2) {
           const val = printExpression(buildValueExpr(n.inputs[1]));
           body.push({ kind: 'field_store', indent: isLoop ? 2 : 1, text: `${base}->${n.metadata?.fieldName || 'field'} = ${val};` });
+        } else if (n.inputs.length === 1) {
+          // A store whose address/identity is carried by the canonical memory
+          // access (e.g. JVM putstatic: one value input, field identity in
+          // attributes.fieldIdentity + memory.addressExpr) must still render —
+          // dropping the statement silently erases the static mutation (#8036).
+          const val = printExpression(buildValueExpr(n.inputs[0]));
+          const fid = n.attributes?.fieldIdentity;
+          if (fid && typeof fid.owner === 'string' && typeof fid.name === 'string') {
+            const target = fid.static ? `${fid.owner}.${fid.name}` : `${fid.owner}->${fid.name}`;
+            body.push({ kind: 'field_store', indent: isLoop ? 2 : 1, text: `${target} = ${val};` });
+          } else {
+            const addr = n.memory?.addressExpr?.valueId;
+            const base = addr ? `mem_${safeIdent(addr)}` : (n.memory?.addressSpace || 'memory');
+            body.push({ kind: 'field_store', indent: isLoop ? 2 : 1, text: `${base}[${n.memory?.addressSpace || 'memory'}] = ${val};` });
+          }
         }
       } else if (n.kind === 'return') {
         if (n.inputs && n.inputs.length > 0) {
