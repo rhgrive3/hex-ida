@@ -63,16 +63,27 @@ function utf8ByteLength(text) {
 // scanJsonBudget before JSON.parse; the object path previously canonicalized
 // through stableStringify first, so a hostile deep or cyclic graph reached the
 // core canonicalizer's recursion (and the JS stack) before any budget applied.
-// Plain objects, arrays, Maps and Sets are descended (mirroring jsonSafe's
-// per-path ancestry: a node counts as an ancestor only while its own subtree
-// is on the walk, so shared-but-acyclic references stay valid); binary views
-// expand to one canonical array entry per byte through jsonSafe's Array.from
-// materialization, so each view leaf charges its byteLength against the entry
-// budget — the same entries the bounded string path would count. The scan also
-// carries a conservative canonical-byte lower bound (≥2 bytes per entry, ≥
-// UTF-8 length + 2 per string, ≥2 per expanded binary byte) checked against
-// maxBytes so a stricter byte limit rejects before any canonicalization work.
-// Token counts have no object analogue and stay byte-budget covered.
+//
+// The traversal is also a SINGLE-ADMISSION snapshot: every authority-bearing
+// property/element is read exactly once from the caller graph and its admitted
+// value is copied into a fresh plain snapshot (plain objects/arrays/Maps/Sets;
+// Dates are admitted as their ISO string; binary views stay leaves — their
+// byteLength is fixed, so the per-byte charge cannot be mutated past).
+// Canonicalization consumes the snapshot, so a stateful getter/exotic iterable
+// cannot present a bounded value to the preflight and an unbounded value to
+// stableStringify. jsonSafe parity is preserved: per-path ancestry (a node is
+// an ancestor only while its own subtree is on the walk, so shared-but-acyclic
+// references stay valid); object keys whose jsonSafe value would be null
+// (undefined/function/symbol/non-finite) are omitted from the snapshot exactly
+// as jsonSafe omits them from canonical output, while array/Set/Map slots keep
+// them (jsonSafe re-normalizes to null in place). Binary views expand to one
+// canonical array entry per byte through jsonSafe's Array.from, so each view
+// leaf charges its byteLength against the entry budget. The scan also carries
+// a conservative canonical-byte lower bound (≥2 bytes per entry, ≥ UTF-8
+// length + 2 per string, ≥2 per expanded binary byte) checked against maxBytes
+// so a stricter byte limit rejects before any canonicalization work. Token
+// counts have no object analogue and stay byte-budget covered. Returns the
+// admitted snapshot.
 function scanObjectBudget(value, limits, maxBytes) {
   const { maxDepth, maxStrings, maxStringBytes, maxEntries } = limits;
   let strings = 0;
@@ -100,73 +111,138 @@ function scanObjectBudget(value, limits, maxBytes) {
     if (entries > maxEntries) throw new PackageValidationError('package-entry-budget-exceeded');
     chargeCanonicalBytes(2);
   };
+  // Mirrors jsonSafe's own-property assignment discipline: inherited names
+  // (including __proto__, setters and non-writable prototype properties) are
+  // written with defineProperty so no inherited setter can run on the snapshot.
+  const defineKey = (target, key, val) => {
+    if (key in target) Object.defineProperty(target, key, { value: val, enumerable: true, configurable: true, writable: true });
+    else target[key] = val;
+  };
+  // Values jsonSafe canonicalizes to null: omitted from plain objects (unless
+  // the raw value itself is null), kept in place inside arrays/Sets/Maps.
+  const jsonSafeNull = (item) => item === undefined || typeof item === 'function' || typeof item === 'symbol' || (typeof item === 'number' && !Number.isFinite(item));
   const enter = (container, depth) => {
     if (ancestors.has(container)) {
       throw new PackageValidationError('package-input-structure-invalid', 'package input contains a cyclic reference');
     }
     if (depth > maxDepth) throw new PackageValidationError('package-nesting-budget-exceeded');
     ancestors.add(container);
-    if (container instanceof Map) return { container, depth, kind: 'map', iterator: container.entries(), stage: 'next', entry: null };
-    if (container instanceof Set) return { container, depth, kind: 'set', iterator: container.values() };
-    if (Array.isArray(container)) return { container, depth, kind: 'array', index: 0 };
-    return { container, depth, kind: 'object', keys: Object.keys(container), index: 0 };
+    if (container instanceof Map) return { container, depth, kind: 'map', iterator: container.entries(), stage: 'next', entry: null, admittedKey: undefined, snap: new Map() };
+    if (container instanceof Set) return { container, depth, kind: 'set', iterator: container.values(), snap: new Set() };
+    if (Array.isArray(container)) return { container, depth, kind: 'array', index: 0, snap: [] };
+    return { container, depth, kind: 'object', keys: Object.keys(container), index: 0, snap: {} };
   };
-  const stack = [enter(value, 1)];
+  const rootFrame = enter(value, 1);
+  rootFrame.parentSlot = null;
+  const stack = [rootFrame];
   while (stack.length > 0) {
     const frame = stack[stack.length - 1];
     let item;
+    let slot;
     if (frame.kind === 'map') {
       // Map key/value are descended sequentially (the key subtree is fully
       // processed before the value is entered) so ancestry stays path-local:
       // a shared reference between a Map key and its value is not a cycle.
       if (frame.stage === 'next') {
         const step = frame.iterator.next();
-        if (step.done) { ancestors.delete(frame.container); stack.pop(); continue; }
+        if (step.done) {
+          ancestors.delete(frame.container);
+          stack.pop();
+          if (frame.parentSlot) assignSlot(frame.parentSlot, frame.snap);
+          continue;
+        }
         chargeEntry();
         frame.entry = step.value;
         frame.stage = 'key';
-        descend(frame.entry[0], frame.depth);
+        descend(frame.entry[0], frame.depth, { mapFrame: frame, part: 'key' });
         continue;
       }
       if (frame.stage === 'key') {
         frame.stage = 'value';
-        descend(frame.entry[1], frame.depth);
+        descend(frame.entry[1], frame.depth, { mapFrame: frame, part: 'value' });
         continue;
       }
       frame.stage = 'next';
       continue;
     } else if (frame.kind === 'set') {
       const step = frame.iterator.next();
-      if (step.done) { ancestors.delete(frame.container); stack.pop(); continue; }
+      if (step.done) {
+        ancestors.delete(frame.container);
+        stack.pop();
+        if (frame.parentSlot) assignSlot(frame.parentSlot, frame.snap);
+        continue;
+      }
       chargeEntry();
       item = step.value;
+      slot = { setFrame: frame };
     } else if (frame.kind === 'array') {
-      if (frame.index >= frame.container.length) { ancestors.delete(frame.container); stack.pop(); continue; }
+      if (frame.index >= frame.container.length) {
+        ancestors.delete(frame.container);
+        stack.pop();
+        if (frame.parentSlot) assignSlot(frame.parentSlot, frame.snap);
+        continue;
+      }
       chargeEntry();
-      item = frame.container[frame.index++];
+      const index = frame.index++;
+      item = frame.container[index];
+      slot = { arrayFrame: frame, arrayIndex: index };
     } else {
-      if (frame.index >= frame.keys.length) { ancestors.delete(frame.container); stack.pop(); continue; }
+      if (frame.index >= frame.keys.length) {
+        ancestors.delete(frame.container);
+        stack.pop();
+        if (frame.parentSlot) assignSlot(frame.parentSlot, frame.snap);
+        continue;
+      }
       const key = frame.keys[frame.index++];
+      item = frame.container[key];
+      // jsonSafe omits plain-object entries whose canonical value is null
+      // (unless the raw value itself is null): they contribute no canonical
+      // bytes and no entry.
+      if (jsonSafeNull(item) && item !== null) continue;
       chargeEntry();
       countString(key);
-      item = frame.container[key];
+      slot = { objectFrame: frame, objectKey: key };
     }
-    descend(item, frame.depth);
+    descend(item, frame.depth, slot);
   }
-  function descend(item, parentDepth) {
+  function assignSlot(target, admitted) {
+    if (target.mapFrame) {
+      if (target.part === 'key') target.mapFrame.admittedKey = admitted;
+      else target.mapFrame.snap.set(target.mapFrame.admittedKey, admitted);
+    } else if (target.setFrame) target.setFrame.snap.add(admitted);
+    else if (target.arrayFrame) target.arrayFrame.snap[target.arrayIndex] = admitted;
+    else defineKey(target.objectFrame.snap, target.objectKey, admitted);
+  }
+  function descend(item, parentDepth, slot) {
     if (item === null || typeof item !== 'object') {
       if (typeof item === 'string') countString(item);
       else if (typeof item === 'bigint') countString(item.toString());
+      if (slot) assignSlot(slot, item);
+      return;
+    }
+    if (item instanceof Date) {
+      // jsonSafe canonicalizes a Date to its ISO string; admit that string
+      // once so no downstream pass can observe a different value (#5219).
+      if (!Number.isFinite(item.getTime())) {
+        throw new PackageValidationError('package-input-structure-invalid', 'package input contains an invalid date');
+      }
+      const iso = item.toISOString();
+      countString(iso);
+      if (slot) assignSlot(slot, iso);
       return;
     }
     if (ArrayBuffer.isView(item) || item instanceof ArrayBuffer) {
       entries += item.byteLength;
       if (entries > maxEntries) throw new PackageValidationError('package-entry-budget-exceeded');
       chargeCanonicalBytes(2 * item.byteLength);
+      if (slot) assignSlot(slot, item);
       return;
     }
-    stack.push(enter(item, parentDepth + 1));
+    const frame = enter(item, parentDepth + 1);
+    frame.parentSlot = slot;
+    stack.push(frame);
   }
+  return rootFrame.snap;
 }
 
 function scanJsonBudget(bytes, limits = {}) {
@@ -333,13 +409,19 @@ export function importPhase12Package(value, options = {}) {
   if (typeof value === 'object' && value !== null && !(value instanceof Uint8Array) && !(value instanceof ArrayBuffer) && !ArrayBuffer.isView(value)) {
     // Bounded shape traversal FIRST (#5219): depth/entry/string budgets, cycle
     // rejection and a conservative maxBytes lower bound apply before any
-    // canonicalization work, so a hostile deep, cyclic or oversized graph can
-    // no longer reach stableStringify's recursion (or size-proportional
-    // allocation) ahead of the resource guards. The exact byte check below
-    // stays authoritative; this bound is never weaker than maxBytes.
+    // canonicalization work. The traversal admits each caller property exactly
+    // once into a plain snapshot, and everything downstream (stringify, byte
+    // check, envelope validation) consumes that snapshot — a stateful getter
+    // or exotic iterable cannot present a bounded value to the preflight and
+    // an unbounded value to canonicalization. The exact byte check below stays
+    // authoritative; the preflight bound is never weaker than maxBytes.
     const maxBytes = positiveLimit(options.maxBytes, MAX_PACKAGE_INPUT_BYTES, 'maxBytes', 'package-envelope-resource-limit-invalid');
-    scanObjectBudget(value, normalizedPackageLimits(options), maxBytes);
-    const encoded = stableStringify(value);
+    const admitted = scanObjectBudget(value, normalizedPackageLimits(options), maxBytes);
+    const encoded = stableStringify(admitted);
+    if (new TextEncoder().encode(encoded).byteLength > maxBytes) {
+      throw new PackageValidationError('package-input-too-large', `package object exceeds maximum size of ${maxBytes} bytes`);
+    }
+    parsed = { value: admitted };
     if (new TextEncoder().encode(encoded).byteLength > maxBytes) {
       throw new PackageValidationError('package-input-too-large', `package object exceeds maximum size of ${maxBytes} bytes`);
     }

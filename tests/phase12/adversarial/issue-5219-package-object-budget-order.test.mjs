@@ -129,7 +129,47 @@ const selfReferencingValue = new Map([[shared, { back: shared }]]);
 const sharedSubtreeEnvelope = createPackageEnvelope({ kind: 'knowledge', payload: { mapping: selfReferencingValue } });
 assert.equal(importPhase12Package(sharedSubtreeEnvelope).contentHash, sharedSubtreeEnvelope.contentHash);
 
-// 8. existing string/bytes budget semantics are unchanged.
+// 8. single-admission: the preflight and canonicalization consume one admitted
+//    snapshot, so a stateful getter cannot present a bounded value to the scan
+//    and an unbounded value to stableStringify. Main re-read every property
+//    during canonicalization and regressed to RangeError / post-hoc rejection.
+let deepReads = 0;
+const deepGetterPayload = {};
+Object.defineProperty(deepGetterPayload, 'trap', {
+  enumerable: true,
+  get() {
+    deepReads += 1;
+    if (deepReads === 1) return 0;
+    let chain = { leaf: 1 };
+    for (let i = 0; i < 50_000; i++) chain = { next: chain };
+    return chain;
+  },
+});
+assert.throws(
+  () => importPhase12Package(makeEnvelope(deepGetterPayload), { maxDepth: 64 }),
+  (error) => error instanceof PackageValidationError,
+  'a getter hiding a deep graph must not reach unbounded canonicalization',
+);
+assert.equal(deepReads, 1, 'each authority-bearing property must be admitted exactly once');
+
+let binaryReads = 0;
+const binaryGetterPayload = {};
+Object.defineProperty(binaryGetterPayload, 'blob', {
+  enumerable: true,
+  get() {
+    binaryReads += 1;
+    if (binaryReads === 1) return 0;
+    return new Uint8Array(500_000);
+  },
+});
+assert.throws(
+  () => importPhase12Package(makeEnvelope(binaryGetterPayload), { maxBytes: 1024 }),
+  (error) => error instanceof PackageValidationError && error.code === 'package-provenance-binding-required',
+  'canonicalization must consume the admitted snapshot, not a re-read caller graph',
+);
+assert.equal(binaryReads, 1, 'the binary-bearing property must be admitted exactly once');
+
+// 9. existing string/bytes budget semantics are unchanged.
 assert.throws(
   () => importPhase12Package('{"format":"x"}'.repeat(3_000_000)),
   (error) => error instanceof PackageValidationError && error.code === 'package-input-too-large',
@@ -147,7 +187,7 @@ assert.throws(
   'oversized binary input still fails its byte budget',
 );
 
-// 9. valid package import keeps its content identity: object import and the
+// 10. valid package import keeps its content identity: object import and the
 //    equivalent bounded string import agree on the contentHash.
 const minted = createPackageEnvelope({ kind: 'knowledge', payload: { rules: [1, 2, 3] } });
 const viaObject = importPhase12Package(minted);
