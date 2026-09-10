@@ -66,8 +66,9 @@ export function jsonSafe(value, seen = new WeakSet()) {
   else {
     out = {};
     for (const key of Object.keys(value).sort()) {
-      const normalized = jsonSafe(value[key], seen);
-      if (normalized !== null || value[key] === null) {
+      const raw = value[key];
+      const normalized = jsonSafe(raw, seen);
+      if (normalized !== null || raw === null) {
         // Assignment creates the same own data descriptor for a fresh key,
         // without allocating a descriptor on every property. Inherited names
         // (including __proto__, setters and non-writable prototype properties)
