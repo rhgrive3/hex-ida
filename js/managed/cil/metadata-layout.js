@@ -23,7 +23,10 @@ export function metadataRowSize(table, rowCounts, heapSizes) {
     case 0x03: return t(0x04);
     case 0x04: return 2 + s + b;
     case 0x05: return t(0x06);
-    case 0x06: return 8 + s + b + t(0x08);
+    // In uncompressed (#-) metadata a non-empty ParamPtr table is the physical
+    // target of MethodDef.ParamList. Its own width can cross the 16-bit table
+    // index threshold independently of the Param table (#7623).
+    case 0x06: return 8 + s + b + t((rowCounts[0x07] || 0) > 0 ? 0x07 : 0x08);
     case 0x07: return t(0x08);
     case 0x08: return 4 + s;
     case 0x09: return t(0x02) + c([0x02, 0x01, 0x1b], 2);
