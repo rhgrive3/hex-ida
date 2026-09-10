@@ -164,7 +164,7 @@ function vectorDescriptor(parameter) {
   } else {
     conflict = true;
   }
-  if (parsedNf != null && (parsedNf < 1 || parsedNf > 8)) conflict = true;
+  if (parsedNf != null && (parsedNf < 1 || parsedNf > 8 || parsedLmul * parsedNf > 8)) conflict = true;
   const fixedLength = parameter?.fixedLengthVector === true || /fixed[-_ ]?length/.test(abiClass);
   return conflict
     ? { mask, lmul, tupleCount, fixedLength, conflict:true }

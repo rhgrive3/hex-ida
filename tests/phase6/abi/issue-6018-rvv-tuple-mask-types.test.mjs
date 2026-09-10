@@ -94,10 +94,12 @@ function argumentsOf(abi, parameters) {
 
 // 8. Malformed tuple suffixes must not mint ANY exact proof — neither an
 //    exact vector group nor an integer-convention exact argument (#6018
-//    requirement 7). Out-of-range NFIELDS (x9, x0) and nonstandard LMUL
-//    tuple shapes (m3x2) all fail closed as vector-descriptor-conflict.
+//    requirement 7). Out-of-range NFIELDS (x9, x0), nonstandard LMUL
+//    tuple shapes (m3x2), and tuples whose EMUL x NFIELDS product exceeds
+//    the RVV 8-register bound (m8x2 = 16) all fail closed as
+//    vector-descriptor-conflict.
 {
-  for (const type of ['vint32m1x9_t', 'vint32m1x0_t', 'vint32m3x2_t', 'vint32m9x2_t']) {
+  for (const type of ['vint32m1x9_t', 'vint32m1x0_t', 'vint32m3x2_t', 'vint32m9x2_t', 'vint32m8x2_t']) {
     const arg = argumentOf(RISCV_LP64D_ABI, { type });
     assert.equal(arg.location, 'unknown', `${type}: malformed tuple must not become exact`);
     assert.equal(arg.abiClass, 'vector-descriptor-conflict', `${type}: fail closed`);
