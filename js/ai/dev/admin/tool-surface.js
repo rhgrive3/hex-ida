@@ -7,7 +7,7 @@ import {
   devToolContract,
   devToolContractsForSurface,
 } from '../protocol/dev-tool-contracts.js';
-import { describeDevToolError, isTerminalDevToolError } from '../supervisor/tool-error-recovery.js';
+import { describeDevToolError, DEV_TOOL_ERROR_SAFE_MESSAGE, isTerminalDevToolError } from '../supervisor/tool-error-recovery.js';
 
 const ADMIN_CONTRACTS = devToolContractsForSurface(DEV_TOOL_SURFACE.ADMIN);
 const DEV_BATCH_MAX_INPUT_CHARS = 32 * 1024;
@@ -143,16 +143,17 @@ function isBatchEligible(contract) {
 }
 
 function normalizeBatchError(error) {
+  /* Batch errors are provider-bound tool results (#5137): the message carries
+     the fixed safe representation only; free-form tool text stays local. */
   let described;
   try {
     described = describeDevToolError(error);
   } catch {
-    described = { code: 'dev-tool-error', name: null, message: 'Dev tool failed.' };
+    described = { code: 'dev-tool-error', name: null };
   }
   const code = boundedErrorCode(described?.code);
   const name = described?.name == null ? null : boundedText(described.name, 128, 'Error');
-  const message = boundedText(described?.message, 512, 'Dev tool failed.');
-  return Object.freeze({ code, name, message });
+  return Object.freeze({ code, name, message: DEV_TOOL_ERROR_SAFE_MESSAGE });
 }
 
 function boundedErrorCode(value) {

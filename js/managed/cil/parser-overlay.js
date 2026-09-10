@@ -3,8 +3,9 @@ import { metadataRowSize } from './metadata-layout.js';
 import { readCilMetadataStreams } from './metadata-streams.js';
 import { readCilDefinitions } from './metadata-definitions.js';
 import { parseCilMethodSignature, parseCilPropertySignature } from './call-signature-types.js';
+import { CLI_HEADER_SIZE, validateCliHeaderSize } from './cli-header.js';
 
-const CLI_DIRECTORY_INDEX=14, CLI_HEADER_SIZE=72;
+const CLI_DIRECTORY_INDEX=14;
 const METHOD_DEF_TABLE=0x06, FILE_TABLE=0x26, METHOD_ATTRIBUTE_STATIC=0x0010;
 function fail(code){throw new TypeError(code)}
 function range(bytes,off,size,code){if(!Number.isSafeInteger(off)||!Number.isSafeInteger(size)||off<0||size<0||off>bytes.length-size)fail(code)}
@@ -20,7 +21,7 @@ function peLayout(bytes,view){
  const sections=[]; for(let i=0;i<count;i++){const p=end+i*40;range(bytes,p,40,'cil-truncated-pe-section-table');const rawSize=u32(view,p+16),rawOffset=u32(view,p+20);if(rawSize)range(bytes,rawOffset,rawSize,'cil-pe-section-out-of-bounds');sections.push({virtualSize:u32(view,p+8),virtualAddress:u32(view,p+12),rawSize,rawOffset})}
  const mapRva=(rva,size=1,code='cil-rva-unmapped')=>{if(!Number.isSafeInteger(rva)||!Number.isSafeInteger(size)||rva<0||size<0)fail(code);for(const s of sections){const span=Math.max(s.virtualSize,s.rawSize);if(rva<s.virtualAddress||rva>=s.virtualAddress+span)continue;const delta=rva-s.virtualAddress;if(delta>s.rawSize||size>s.rawSize-delta)fail(code);const out=s.rawOffset+delta;range(bytes,out,size,code);return out}fail(code)};
  const dir=dOff+CLI_DIRECTORY_INDEX*8,rva=u32(view,dir,'cil-truncated-cli-directory'),size=u32(view,dir+4,'cil-truncated-cli-directory');if(!rva||size<CLI_HEADER_SIZE)return {cliPresent:false};
- const cli=mapRva(rva,CLI_HEADER_SIZE,'cil-cli-header-unmapped'),metaRva=u32(view,cli+8,'cil-truncated-cli-header'),metaSize=u32(view,cli+12,'cil-truncated-cli-header');if(!metaRva||metaSize<20)fail('cil-cli-metadata-directory-invalid');
+ const cli=mapRva(rva,CLI_HEADER_SIZE,'cil-cli-header-unmapped'),cb=validateCliHeaderSize(u32(view,cli,'cil-truncated-cli-header'),size);mapRva(rva,cb,'cil-cli-header-unmapped');const metaRva=u32(view,cli+8,'cil-truncated-cli-header'),metaSize=u32(view,cli+12,'cil-truncated-cli-header');if(!metaRva||metaSize<20)fail('cil-cli-metadata-directory-invalid');
  // CLI Resources directory (+24/+28) anchors embedded manifest resources (#7753).
  const resRva=u32(view,cli+24,'cil-truncated-cli-header'),resSize=u32(view,cli+28,'cil-truncated-cli-header');
  const resources=resRva===0||resSize===0?null:{offset:mapRva(resRva,resSize,'cil-resources-directory-unmapped'),size:resSize};
