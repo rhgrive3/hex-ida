@@ -277,7 +277,10 @@ export function createVMEffectFunction(input, options = {}) {
     outBundles.some((b) => b.completeness === 'exact-with-intrinsic') ? 'exact-with-intrinsic' : 'exact';
   /* #5404: an explicitly supplied aggregate must not out-claim the bundles it
      summarizes — 'exact' over a partial bundle is exactly the laundering this
-     field exists to prevent. Completeness authority fields are primitive
+     field exists to prevent. A stronger declaration is a caller contradiction:
+     it fails closed (vm-effect-aggregate-completeness-overclaim) instead of
+     being silently demoted. A more conservative declaration (weaker than the
+     derivation) is honored. Completeness authority fields are primitive
      strings only: a structured value is rejected, never String()-coerced into
      an enum token. */
   const AGGREGATE_STRENGTH = Object.freeze({ unknown: 0, partial: 1, 'exact-with-intrinsic': 2, exact: 3 });
@@ -286,10 +289,10 @@ export function createVMEffectFunction(input, options = {}) {
     if (typeof input.aggregateCompleteness !== 'string') fail('vm-effect-aggregate-completeness-invalid');
     const declared = input.aggregateCompleteness;
     if (!VM_EFFECT_COMPLETENESS.includes(declared)) fail('vm-effect-aggregate-completeness-invalid');
-    aggregateCompleteness =
-      AGGREGATE_STRENGTH[declared] > AGGREGATE_STRENGTH[derivedAggregateCompleteness]
-        ? derivedAggregateCompleteness
-        : declared;
+    if (AGGREGATE_STRENGTH[declared] > AGGREGATE_STRENGTH[derivedAggregateCompleteness]) {
+      fail('vm-effect-aggregate-completeness-overclaim');
+    }
+    aggregateCompleteness = declared;
   } else {
     aggregateCompleteness = derivedAggregateCompleteness;
   }

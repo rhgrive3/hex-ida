@@ -4,10 +4,11 @@
 // bundles published `aggregateCompleteness:'exact'` — and garbage strings
 // passed through verbatim. validateVMEffectFunction() did not check the field
 // either.
-// Contract now: the explicit value must be inside the completeness taxonomy
-// and may never out-claim the conservative derivation from the bundles;
-// stronger declarations are demoted to the derived value, weaker (more
-// conservative) declarations are honored, and garbage fails closed.
+// Contract now: the explicit value must be inside the completeness taxonomy;
+// a declaration that out-claims the conservative derivation from the bundles
+// is a caller contradiction and fails closed
+// (vm-effect-aggregate-completeness-overclaim), a more conservative
+// declaration is honored, and garbage fails closed.
 import assert from 'node:assert/strict';
 import {
   createVMEffectBundle,
@@ -22,14 +23,45 @@ const partialBundle = createVMEffectBundle({
 });
 const exactBundle = createVMEffectBundle({ frontendId: 'wasm', methodId: 'method:1', operationId: 'op:1' });
 
-// 1. The issue's decisive scenario: 'exact' over a partial bundle is demoted.
+// 1. The issue's decisive scenario: 'exact' over a partial bundle is rejected,
+//    not demoted and not adopted.
 {
-  const fn = createVMEffectFunction({
-    frontendId: 'wasm', methodId: 'method:1', bundles: [partialBundle],
-    aggregateCompleteness: 'exact',
+  assert.throws(
+    () => createVMEffectFunction({
+      frontendId: 'wasm', methodId: 'method:1', bundles: [partialBundle],
+      aggregateCompleteness: 'exact',
+    }),
+    (error) => error.message === 'vm-effect-aggregate-completeness-overclaim',
+    'an aggregate must never out-claim its bundles — the contradiction fails closed',
+  );
+}
+
+// 1b. The overclaim matrix is rejected at every strength step up: the derived
+//     aggregate pins the ceiling and any stronger declaration throws.
+{
+  const unknownBundle = createVMEffectBundle({
+    frontendId: 'wasm', methodId: 'method:1', operationId: 'op:2',
+    completeness: 'unknown',
+    unknownEffects: [{ category: 'other', reason: 'unsupported-op' }],
   });
-  assert.equal(fn.aggregateCompleteness, 'partial', 'the aggregate must not out-claim its bundles');
-  assert.equal(validateVMEffectFunction(fn), true);
+  const intrinsicBundle = createVMEffectBundle({
+    frontendId: 'wasm', methodId: 'method:1', operationId: 'op:3',
+    completeness: 'exact-with-intrinsic',
+  });
+  assert.throws(
+    () => createVMEffectFunction({ frontendId: 'wasm', methodId: 'm', bundles: [unknownBundle], aggregateCompleteness: 'partial' }),
+    (error) => error.message === 'vm-effect-aggregate-completeness-overclaim',
+  );
+  assert.throws(
+    () => createVMEffectFunction({ frontendId: 'wasm', methodId: 'm', bundles: [unknownBundle], aggregateCompleteness: 'exact' }),
+    (error) => error.message === 'vm-effect-aggregate-completeness-overclaim',
+  );
+  assert.throws(
+    () => createVMEffectFunction({ frontendId: 'wasm', methodId: 'm', bundles: [intrinsicBundle], aggregateCompleteness: 'exact' }),
+    (error) => error.message === 'vm-effect-aggregate-completeness-overclaim',
+  );
+  const downgraded = createVMEffectFunction({ frontendId: 'wasm', methodId: 'm', bundles: [exactBundle], aggregateCompleteness: 'exact-with-intrinsic' });
+  assert.equal(downgraded.aggregateCompleteness, 'exact-with-intrinsic', 'a more conservative declaration stays honored');
 }
 
 // 2. Garbage aggregate values fail closed instead of passing through.
