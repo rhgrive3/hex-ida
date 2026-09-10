@@ -48,11 +48,18 @@ export function detectBinary(input, options = {}) {
       // caller declares what it handed us and the total source size; the
       // truncation is derived from those sizes, so a forged caller-controlled
       // boolean cannot promote a complete short input to a confirmed FAT.
-      const probeLength = options.probeLength;
-      const totalSize = options.totalSize;
-      const isTruncatedPrefix = typeof probeLength === 'number' && Number.isSafeInteger(probeLength)
-        && typeof totalSize === 'number' && Number.isSafeInteger(totalSize)
-        && probeLength >= 0 && totalSize > probeLength;
+      // Sizes are compared as BigInt: a ByteSource's BigInt size authority
+      // must survive beyond the safe-integer domain (a Number narrowing would
+      // fail closed for valid fat sources larger than 2^53).
+      const asSize = (value) => {
+        if (typeof value === 'bigint') return value;
+        if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+        return null;
+      };
+      const probeLength = asSize(options.probeLength);
+      const totalSize = asSize(options.totalSize);
+      const isTruncatedPrefix = probeLength != null && totalSize != null
+        && probeLength >= 0n && totalSize > probeLength;
       const truncated = isTruncatedPrefix;
       if (!truncated && r.length < tableEnd) return { format: 'unknown' };
       return { format: 'macho', fat: true };

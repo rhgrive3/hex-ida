@@ -45,7 +45,7 @@ export async function openBinarySource(input, opts = {}) {
   // prefix through bounded chunk reads instead of one fixed readExactly.
   const prefixLength = Number(source.size < 16n ? source.size : 16n);
   const prefix = await readBoundedRange(source, 0n, prefixLength, opts.signal);
-  const detected = detectBinary(prefix, { probeLength: prefixLength, totalSize: Number(source.size) });
+  const detected = detectBinary(prefix, { probeLength: BigInt(prefixLength), totalSize: source.size });
   const rangeOptions = withSignal(opts.ranges || {}, opts.signal);
 
   if (detected.format === 'elf') return parseELFSourceWithPrefix(source, opts, prefix, rangeOptions);

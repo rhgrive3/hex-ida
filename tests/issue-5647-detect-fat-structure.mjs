@@ -124,6 +124,25 @@ assert.equal(
   'a genuinely truncated 28-byte prefix of a larger source confirms',
 );
 
+// Size provenance is BigInt-safe: a ByteSource whose size exceeds the
+// safe-integer domain must keep candidate routing (Number narrowing would
+// fail closed for valid fat sources larger than 2^53).
+assert.equal(
+  detectBinary(Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01, ...new Array(8).fill(0)]), { probeLength: 16n, totalSize: 9007199254740993n }).fat,
+  true,
+  'a 16-byte probe of a >2^53-byte source keeps candidate routing',
+);
+assert.equal(
+  detectBinary(Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01]), { probeLength: 8n, totalSize: 9007199254740993n }).fat,
+  true,
+  'an 8-byte prefix declared as part of a huge source keeps candidate routing (parser owns bounds)',
+);
+assert.deepEqual(
+  detectBinary(Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01]), { probeLength: 8n, totalSize: 8n }),
+  { format: 'unknown' },
+  'an 8-byte input declared as the complete source stays fail-closed',
+);
+
 // #5647 review: a COMPLETE 8-byte input declaring nfat_arch=1 but carrying no
 // fat_arch entry must not confirm a FAT32 image — the declared arch table
 // must fit within the input when the caller sees the whole file.
