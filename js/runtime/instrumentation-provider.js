@@ -346,7 +346,23 @@ export class InstrumentationProvider {
         const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         return { result, intervention };
       },
-      readMemory: async (...args) => requiredMethod(this.backend, 'readMemory', 'memory read')(...args),
+      // #5694: a read-only path still participates in the session lifecycle —
+      // a read that started on an old epoch must not succeed into the current
+      // one after a backend rebind, or stale target bytes leak into evidence.
+      readMemory: async (...args) => {
+        const read = requiredMethod(this.backend, 'readMemory', 'memory read');
+        const controller = session.controller();
+        const startedEpoch = session.epoch;
+        try {
+          const bytes = await read(...args);
+          if (controller.signal.aborted || session.closed || session.epoch !== startedEpoch) {
+            throw new DebugAdapterError('runtime-session-stale', 'memory read completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
+          }
+          return bytes;
+        } finally {
+          session.releaseController(controller);
+        }
+      },
       writeMemory: async (address, bytes, callOptions = {}) => {
         const authorized = await this.#authorizeMutation('memory-write', { address, byteLength: bytes?.byteLength ?? bytes?.length ?? null }, callOptions);
         if (!authorized) throw new DebugAdapterError('permission-denied', 'instrumentation memory write requires provider-authorized mutation capability');

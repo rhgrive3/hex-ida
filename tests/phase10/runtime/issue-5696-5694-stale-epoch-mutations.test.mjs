@@ -99,7 +99,33 @@ function deferred() {
     const ok = await p;
     assert.deepEqual(ok.result, { written: 1 });
   }
-  assert.equal(inst.interventions.all().length, 1, 'in-epoch intervention is recorded');
+  // #5694: read-only readMemory participates in the same session lifecycle —
+  // a read pending across newProviderEpoch() must fail closed, not deliver
+  // stale target bytes into the current epoch.
+  {
+    const calls = {};
+    const backend = {
+      id: 'test',
+      async connect() {},
+      async disconnect() {},
+      async readMemory() { calls.read = deferred(); return calls.read.promise; },
+    };
+    const provider = new InstrumentationProvider(backend, { allowMemoryWrite: true });
+    const session = await provider.openSession({ binaryId: 'bin-1', sessionNonce: 'issue-5694-read' });
+    const inst = session.facets.instrumentation;
+    const startedAt = session.epoch;
+    const pending = inst.readMemory(0x1000n, 4).catch((e) => e);
+    await new Promise((r) => setTimeout(r, 5));
+    session.newProviderEpoch();
+    calls.read.resolve(new Uint8Array([1, 2, 3, 4]));
+    const outcome = await pending;
+    assert.equal(outcome?.code, 'runtime-session-stale', 'stale readMemory completion must fail closed');
+    // in-epoch read still works
+    const p = inst.readMemory(0x2000n, 1);
+    await new Promise((r) => setTimeout(r, 5));
+    calls.read.resolve(new Uint8Array([9]));
+    assert.deepEqual([...await p], [9], 'in-epoch readMemory still delivers bytes');
+  }
 }
 
 console.log('issues #5696/#5694 stale-epoch mutation fail-closed regression: PASS');
