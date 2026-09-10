@@ -115,6 +115,9 @@ function pruneSettledCache(cache) {
     cache.delete(cacheKey);
   }
 }
+// Discovery producers are registered per app so tests can observe the bounded
+// retention contract (#5267) without reaching into the closure.
+const discoveryProducersByApp = new WeakMap();
 function waitForShared(entry, signal, onDetach = null) {
   abortIfNeeded(signal); entry.waiters++;
   return new Promise((resolve, reject) => {
@@ -204,6 +207,9 @@ function installWorkerBackedIdentity(app) {
     if (this.binaryId) return Promise.resolve(this.binaryId);
     if (!this.file) return Promise.reject(new Error('binary-id-file-unavailable'));
     let entry = this._binaryIdEntry;
+    // #4611: a single-flight entry whose last waiter aborted is cancelled but
+    // may not have settled yet; the owner must not hand it to a new caller.
+    if (entry?.cancelled) entry = null;
     if (!entry) {
       const file = this.file; const epoch = this.gen;
       const controller = new AbortController();
@@ -343,6 +349,7 @@ function installMultiRegionShapes(app) {
 function installCancellableFunctionDiscovery(app) {
   if (!app?.backend || typeof app.backend.guessFunctions !== 'function') return;
   const producers = new Map();
+  discoveryProducersByApp.set(app, producers);
   app.ensureFunctions = function demandFunctionDiscovery(region, rawOptions = {}) {
     const options = typeof rawOptions === 'function' ? { onProgress:rawOptions, signal:null } : (rawOptions || {});
     abortIfNeeded(options.signal);
@@ -361,6 +368,7 @@ function installCancellableFunctionDiscovery(app) {
       const key = `${epoch}:${unique.map((item) => item.id).join('|')}`;
       if (symbols.functionDiscovery?.attempted === true && symbols.functionDiscovery?.regionSetKey === unique.map((item) => item.id).join('|')) return symbols;
       let entry = producers.get(key);
+      if (entry?.cancelled) entry = null;
       if (!entry) {
         const producerController = new AbortController();
         entry = {
@@ -427,11 +435,21 @@ function installCancellableFunctionDiscovery(app) {
           symbols.functionStartsCapped = symbols.functionDiscovery.capped || reasons.some((reason) => reason.includes('budget'));
           app.viewer?.setSymbols?.(symbols);
           return symbols;
-        })().then((value) => { entry.settled = true; return value; }).catch((error) => {
+        })().then((value) => {
+          entry.settled = true;
+          // A settled success keeps its entry only while the bounded cache has
+          // room. Same-key re-entry short-circuits on symbols.functionDiscovery
+          // before consulting this map, so eviction cannot re-run discovery;
+          // leaving entries in forever would retain every past epoch's symbols
+          // closure for the lifetime of the app (#5267).
+          pruneSettledCache(producers);
+          return value;
+        }).catch((error) => {
           producers.delete(key);
           throw error;
         });
         producers.set(key, entry);
+        pruneSettledCache(producers);
       }
       // Register every consumer's observer on the shared entry, whether it
       // created the producer or attached to an existing one (#5860).
@@ -459,6 +477,7 @@ function installDemandQueryAPI(app, recognitionVersion) {
     const profile = `${limits.callLimit}:${limits.refLimit}:${limits.kindLimit}`;
     const key = `${epoch}:${region.id}:${profile}`;
     let entry = regionScans.get(key);
+    if (entry?.cancelled) entry = null;
     if (!entry) {
       const request = app.backend.scanProgram(region.id, options.onProgress, { ...limits, analysisPriority:options.priority || 'interactive' });
       entry = { request, promise:null, settled:false, waiters:0 };
@@ -577,4 +596,4 @@ export function installDemandDrivenAnalysis(app) {
   Object.defineProperty(app, '__demandDrivenAnalysisVersion', { value:RUNTIME_VERSION, configurable:true });
   return app.analysisQueries;
 }
-export const __demandDrivenInternalsForTests = Object.freeze({ addressOf, mergeShapeMaps, recognitionInputKey, localRegionPlan, regionScanLimits, installWorkerBackedIdentity });
+export const __demandDrivenInternalsForTests = Object.freeze({ addressOf, mergeShapeMaps, recognitionInputKey, localRegionPlan, regionScanLimits, installWorkerBackedIdentity, discoveryProducersByApp });

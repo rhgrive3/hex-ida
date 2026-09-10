@@ -193,10 +193,27 @@ function parseThin(bytes, opts) {
     for (const sym of image.symbols) if (sym.defined && sym.address != null) namesByAddr.set(sym.address.toString(), sym.name);
     for (const ex of image.exports) if (ex.address != null) namesByAddr.set(ex.address.toString(), ex.name);
   }
+  /* Issue #5275: an LC_FUNCTION_STARTS stream is closed-world exclusion
+     evidence only when it was parsed to completion.  A partial/failed stream
+     (truncated LEB, missing terminator, budget stop) — or a load command
+     whose data never got parsed at all — cannot prove that its missing
+     suffix contains no functions, so export-derived seeds must be kept. */
+  const functionStartsAuthoritative = hadFunctionStarts && image.metadata.functionStarts?.complete === true;
   if (hadFunctionStarts) {
     for (const f of image.functions) if (!f.name) f.name = namesByAddr.get(f.address.toString()) || null;
+  }
+  if (functionStartsAuthoritative) {
     const provenStarts = new Set(image.functions.filter((f) => f.source !== 'export').map((f) => f.address.toString()));
     image.functions = image.functions.filter((f) => f.source !== 'export' || provenStarts.has(f.address.toString()));
+  } else if (hadFunctionStarts) {
+    /* Partial stream: independent symbol evidence still seeds functions, but
+       never duplicates a start the stream already recovered. */
+    const seeded = new Set(image.functions.map((f) => f.address.toString()));
+    for (const sym of image.symbols) {
+      if (!sym.defined || sym.address == null || seeded.has(sym.address.toString())) continue;
+      const sec = image.sectionAt(sym.address);
+      if (sec && sec.perms.execute && sym.name !== '__mh_execute_header' && metadataBudget.take({ objects:1, operations:1, estimatedHeapBytes:128 }, 'symbol-function-fallback')) image.functions.push(functionSeed(sym.address, { name: sym.name, source: 'symbol', confidence: 0.9 }));
+    }
   } else {
     for (const sym of image.symbols) {
       if (!sym.defined || sym.address == null) continue;
@@ -812,6 +829,13 @@ export function parseCompactUnwind(r, image, metadataBudget = null) {
     }
     if (end > seg.address + seg.size || image.segmentAt(end - 1n) !== seg) {
       fail('entry-extent-mapping-invalid', `function range 0x${candidate.startOffset.toString(16)}..0x${candidate.endOffset.toString(16)} escapes its executable mapping`, true);
+      return;
+    }
+    // #5571: vmsize > filesize segments zero-fill the tail. A unwind entry
+    // whose bytes live past the segment's file-backed extent describes no
+    // real code and must not become a 0.95-confidence function seed.
+    if (end > seg.address + BigInt(seg.fileSize ?? seg.size ?? 0n)) {
+      fail('entry-zero-fill-invalid', `function range 0x${candidate.startOffset.toString(16)}..0x${candidate.endOffset.toString(16)} extends into the executable zero-fill tail`, true);
       return;
     }
     const continuation = (candidate.encoding & notFunctionStartMask) !== 0;

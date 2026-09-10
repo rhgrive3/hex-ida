@@ -115,7 +115,7 @@ export function expectedCalibrationError(samples, binCount = 10) {
   const count = normalizeBinCount(binCount);
   const bins = Array.from({ length: count }, () => ({ n: 0, conf: 0, hits: 0 }));
   for (const s of rows) {
-    const p = Math.max(0, Math.min(0.999999, s.probability));
+    const p = Math.max(0, Math.min(1, s.probability));
     const b = bins[Math.min(count - 1, Math.floor(p * count))];
     b.n++; b.conf += p; b.hits += s.correct ? 1 : 0;
   }
@@ -134,7 +134,7 @@ export function reliabilityBins(samples, binCount = 10) {
     from: i / count, to: (i + 1) / count, n: 0, confidence: 0, accuracy: 0,
   }));
   for (const s of rows) {
-    const p = Math.max(0, Math.min(0.999999, s.probability));
+    const p = Math.max(0, Math.min(1, s.probability));
     const b = bins[Math.min(count - 1, Math.floor(p * count))];
     b.n++; b.confidence += p; b.accuracy += s.correct ? 1 : 0;
   }
