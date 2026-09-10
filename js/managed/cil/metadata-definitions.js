@@ -25,11 +25,12 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
     return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
   });
+  const paramListTable = counts[0x07] ? 0x07 : 0x08;
   const methods = readRows(6, pos => ({
     rva: view.getUint32(pos, true), implFlags: view.getUint16(pos + 4, true),
     accessFlags: view.getUint16(pos + 6, true), name: text(index(pos + 8, s)),
     signatureBlobIndex: index(pos + 8 + s, b),
-    paramList: index(pos + 8 + s + b, tableIndexSize(counts, 8)),
+    paramList: index(pos + 8 + s + b, tableIndexSize(counts, paramListTable)),
   }));
   for (const method of methods) {
     // Declared parameter arity from the MethodDef signature (II.23.2.1):
@@ -161,10 +162,9 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     const ownerSlot = paramPointerRids ? paramPointerRids.indexOf(param.rid) + 1 : param.rid;
     if (!paramOwners.has(ownerSlot)) fail('cil-param-owner-missing');
     param.ownerSlot = ownerSlot;
-    // II.23.1.13 ParamAttributes: defined bits are In 0x0001, Out 0x0002,
-    // Lcid 0x0004, Retval 0x0008, Optional 0x0010, HasDefault 0x1000,
-    // HasFieldMarshal 0x2000. Reserved bits must not pass.
-    if (param.flags & ~0x3013) fail('cil-param-flags-invalid');
+    // ECMA-335 II.23.1.13 ParamAttributes reserves exactly 0xcfe0; every
+    // remaining bit (0x301f) is part of the accepted physical contract.
+    if (param.flags & ~0x301f) fail('cil-param-flags-invalid');
     // The return parameter (Sequence 0) carries no direction authority.
     if (param.sequence === 0 && (param.flags & 0x0003) !== 0) fail('cil-param-return-direction-invalid');
   }
@@ -192,7 +192,8 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     if (Number.isSafeInteger(arity) && sorted.length - (start === 0 ? 1 : 0) > arity) {
       fail('cil-param-arity-exceeded');
     }
-  }  // Bind param tokens onto their owning MethodDef row (position-ordered).
+  }
+  // Bind param tokens onto their owning MethodDef row (position-ordered).
   for (let i = 0; i < methods.length; i++) {
     const first = methods[i].paramList || effectiveParamCount + 1;
     const last = methods[i + 1]?.paramList || effectiveParamCount + 1;
