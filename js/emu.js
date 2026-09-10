@@ -264,10 +264,21 @@ export class Emulator {
     /* #5685: writes through a mapZero-created page must stay inside a
        declared [lo, hi) window; pages with other backing or an existing
        explicit write keep their own authority. */
-    if (this.syntheticRangeGated.has(key) && !(w && w.mask[off])) {
+    /* #7968: the same window authority bounds pre-backed pages that carry
+       mapZero() windows — a store outside the backing prefix AND outside
+       every declared window must fail closed, or the byteAt() mem-mask
+       precedence would let the out-of-authority write become readable. */
+    if (this.syntheticRanges.has(key) && !(w && w.mask[off])) {
       const ranges = this.syntheticRanges.get(key) || [];
-      if (!ranges.some((r) => off >= r.lo && off < r.hi)) {
-        throw new EmulatorFault('unmapped-memory', `write is outside synthetic mapping at 0x${address.toString(16)}`, { address });
+      const inWindow = ranges.some((r) => off >= r.lo && off < r.hi);
+      if (!inWindow) {
+        if (this.syntheticRangeGated.has(key)) {
+          throw new EmulatorFault('unmapped-memory', `write is outside synthetic mapping at 0x${address.toString(16)}`, { address });
+        }
+        const valid = this.loadedValid.get(key) || 0;
+        if (off >= valid) {
+          throw new EmulatorFault('unmapped-memory', `write is outside backed memory at 0x${address.toString(16)}`, { address });
+        }
       }
     }
     w.data[off] = Number(value) & 0xff;
