@@ -14,14 +14,22 @@ import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { RewriteEngine } from '../rewrite/engine.js';
 import { compileProofExpression } from './proof-expression.js';
 
-export const REPRESENTATION_CANDIDATE_VERSION = 'hex.representation-candidates/1';
+export const REPRESENTATION_CANDIDATE_VERSION = 'hex.representation-candidates/2';
 const RULES = Object.freeze(DEFAULT_RULES.map(rule => Object.freeze({...rule})));
 if (new Set(RULES.map(rule => rule.name)).size !== RULES.length) throw new TypeError('duplicate-representation-rule');
 export const REPRESENTATION_RULES = Object.freeze(RULES.map(rule => Object.freeze({name:rule.name,phase:rule.phase})));
 const RULESET_DIGEST = stableDigest({version:REPRESENTATION_CANDIDATE_VERSION,rules:REPRESENTATION_RULES});
 const LIMITS = Object.freeze({workItems:100000,allocationUnits:100000,candidates:1});
+export const REPRESENTATION_REWRITE_LIMITS = Object.freeze({nodeBudget:512,maxIterations:12,maxApplications:128,maxHistoryOrigins:0});
+const candidateAudits = new WeakMap();
 const BINARY = new Set(['add','sub','mul','and','or','xor','shl','lshr','ashr']);
 const EMPTY = Object.freeze([]);
+
+/** Read only an actual generator observation. This data is not a proof or an
+ * adoption capability; copied candidates cannot issue an observed run. */
+export function readRepresentationGeneratorAudit(candidate) {
+  return candidateAudits.get(candidate) ?? null;
+}
 
 function resize(value, bits, signed = false) {
   const from = value.sort.width;
@@ -178,7 +186,7 @@ export async function queryRepresentationCandidates(options = {}) {
     const variables = sourceInputs.map((input,index) => expr.variable(`proof_input_${index}`,input.bits,false));
     const inputMap = new Map(variables.map((variable,index) => [variable,sourceInputs[index].symbol]));
     const root = proposalView(recipe,variables,inputMap,guard);
-    const engine = new RewriteEngine(RULES,{nodeBudget:512,maxIterations:12,maxApplications:128,maxHistoryOrigins:0});
+    const engine = new RewriteEngine(RULES,REPRESENTATION_REWRITE_LIMITS);
     const rewritten = engine.rewrite(root,{deterministicTransforms:true,shouldAbort() {
       guard.take('workItems'); return false;
     }});
@@ -207,9 +215,24 @@ export async function queryRepresentationCandidates(options = {}) {
     const rules = Object.freeze([...new Set(rewritten.proof.map(record => record.rule))]);
     const candidate = Object.freeze({rule:'representation-rules',rules,rulesetVersion:REPRESENTATION_CANDIDATE_VERSION,
       candidateId,before:expression,after,eligible:verification.eligible,verification});
+    // Preserve the real engine's selected schedule, not the registry union or
+    // caller-supplied audit fields. A proof covers the final canonical proposal;
+    // it does not turn each intermediate display rule into a theorem.
+    guard.take('allocationUnits',rewritten.proof.length + rules.length * 2 + 20);
+    const measured = guard.metrics();
+    const audit = Object.freeze({schemaVersion:'hex-phase8-generator-audit/v1',strategy:'representation-rules',
+      scope:'whole-target-rewrite-run-not-per-rule-equivalence-or-render-adoption',
+      candidateId,rulesetVersion:REPRESENTATION_CANDIDATE_VERSION,rulesetDigest:RULESET_DIGEST,
+      appliedRules:rules,ruleTrace:Object.freeze(rewritten.proof.map(record => record.rule)),
+      ruleApplications:Object.freeze(Object.fromEntries(rules.map(rule => [rule,rewritten.stats.byRule[rule]]))),
+      rewriteLimits:REPRESENTATION_REWRITE_LIMITS,
+      rewriteResources:Object.freeze({iterations:rewritten.stats.iterations,applications:rewritten.stats.applications,
+        phases:new Set(RULES.map(rule => rule.phase)).size,budgetExceeded:rewritten.stats.budgetExceeded}),
+      limits:guard.limits,resources:Object.freeze(Object.fromEntries(Object.keys(guard.limits).map(key => [key,measured[key]]))),
+      proofQueryHash:verification.evidence?.queryHash ?? null});
     const complete = result('complete',null,Object.freeze([candidate]),verification.eligible ? 'proved-candidate'
       : verification.verdict === 'refuted' ? 'refuted' : 'unknown');
-    guard.check(); return complete;
+    guard.check(); candidateAudits.set(candidate,audit); return complete;
   } catch (error) {
     if (error instanceof QueryFailure) return result('partial',error.reason);
     if (error instanceof TypeError || error instanceof RangeError) return result('partial','invalid-representation-request');

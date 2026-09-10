@@ -27,7 +27,7 @@ const TOTAL_UNARY = new Set(['not','neg','trunc','zext','sext']);
 const DEFAULT_MODELS = createTaintModels({id:'phase8-empty', version:'1', provenance:'hex.phase8.explicit-empty-model/v1',sources:[],sinks:[]});
 
 export const PROOF_REWRITE_PASS = createPassDescriptor({
-  id:'phase8.solver-constants', version:'2.3.0', stage:'rendering',
+  id:'phase8.solver-constants', version:'2.4.0', stage:'rendering',
   consumes:['ssa','origins'], produces:['provedRewrites'],
   preserves:ANALYSIS_KEYS.filter(key => key !== 'provedRewrites'),
   description:'Project unconditional solver-proved BV scalars without changing canonical IR or effects (legacy pass ID).',
@@ -162,7 +162,8 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
     // The canonical query captures the exact IR, models, execution values and
     // lifecycle before solver work. It also enforces universal input scope.
     const representationRules = submitted.candidateStrategy === 'representation-rules';
-    const representationQuery = representationRules ? (await import('./representation-candidates.js')).queryRepresentationCandidates : null;
+    const representationModule = representationRules ? await import('./representation-candidates.js') : null;
+    const representationQuery = representationModule?.queryRepresentationCandidates;
     guard.check();
     const analysis = await querySymbolicAnalysis(ir, {...submitted, targets:selected,
       candidateStrategy:representationRules ? 'translate-only' : submitted.candidateStrategy,
@@ -211,7 +212,13 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
       guard.take('rewrites'); guard.take('allocationUnits',3 + inputBinding.inputs.length);
       const binding = candidate.verification.binding;
       const kind = candidate.after.kind === 'const' ? 'solver-constant' : 'solver-scalar';
-      const generatorAudit = candidate.rule === 'equality-saturation' ? equalityGeneratorAudit(item,candidate,guard) : null;
+      const generatorAudit = candidate.rule === 'equality-saturation' ? equalityGeneratorAudit(item,candidate,guard)
+        : candidate.rule === 'representation-rules' ? representationModule?.readRepresentationGeneratorAudit(candidate) : null;
+      if (candidate.rule === 'representation-rules' && (!generatorAudit
+        || generatorAudit.strategy !== 'representation-rules' || generatorAudit.candidateId !== candidate.candidateId
+        || generatorAudit.proofQueryHash !== candidate.verification.evidence.queryHash)) {
+        throw new QueryFailure('unavailable-representation-generator-audit');
+      }
       const entry = Object.freeze({valueId:item.valueId,rawValueId:target.id,bits:candidate.after.sort.width,kind,projection,
         ...(generatorAudit ? {generatorAudit} : {}),
         value:kind === 'solver-constant' ? candidate.after.value : null,beforeHash:binding.beforeHash,afterHash:binding.afterHash,

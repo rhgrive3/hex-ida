@@ -4,21 +4,55 @@ import * as E from '../../../js/symbolic/expr/index.js';
 import { querySymbolicAnalysis, isSymbolicAnalysisResult, readSymbolicTargetInputs } from '../../../js/symbolic/query/analysis.js';
 import { createTaintModels } from '../../../js/symbolic/taint/models.js';
 import { isAdoptableCandidate } from '../../../js/symbolic/taint/proof-consumer.js';
-import { compileRepresentationProposal, queryRepresentationCandidates, REPRESENTATION_RULES } from '../../../js/decompiler/phase8/representation-candidates.js';
+import { compileRepresentationProposal, queryRepresentationCandidates, REPRESENTATION_RULES,
+  REPRESENTATION_CANDIDATE_VERSION, REPRESENTATION_REWRITE_LIMITS, readRepresentationGeneratorAudit } from '../../../js/decompiler/phase8/representation-candidates.js';
 import { DEFAULT_RULES } from '../../../js/decompiler/rewrite/rules.js';
 import { expr } from '../../../js/decompiler/ast/nodes.js';
 import { evaluateExpression } from '../../../js/decompiler/verify/equivalence.js';
-import { preparePhase8RewritePlan, isPhase8RewritePlan } from '../../../js/decompiler/phase8/pass-validation.js';
+import { preparePhase8RewritePlan, isPhase8RewritePlan, readProvedRewrites } from '../../../js/decompiler/phase8/pass-validation.js';
 import { enhanceSemanticDecompilation, optimizeSemanticDecompilation } from '../../../js/decompiler/pipeline.js';
 import { proofFixture, identity } from '../helpers/proof-fixtures.mjs';
 import { fixture } from '../helpers/ir-fixtures.mjs';
 import { buildSemanticModel } from '../../../js/blocks.js';
 import { decompileWithProof } from '../../../js/decompile.js';
+import { runPhase8Stage } from '../../../js/decompiler/phase8/index.js';
+import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
+import { createDecompilerNavigation } from '../../../js/ui/decompiler-provenance.js';
 
 const models = createTaintModels({id:'representation-test',version:'1',provenance:'test-fixture',sources:[],sinks:[]});
 function query(expression, symbols, overrides = {}) {
   return queryRepresentationCandidates({expression,valueId:'value',identity,timeoutMs:1000,backendTier:'tiered',
     inputBinding:{expression,inputs:symbols.map(symbol => ({symbol,bits:symbol.sort.width}))},...overrides});
+}
+
+function assertGeneratorAudit(audit, queryHash) {
+  assert.ok(audit,'the actual generator must issue an audit');
+  assert.equal(audit.strategy,'representation-rules');
+  assert.equal(audit.schemaVersion,'hex-phase8-generator-audit/v1');
+  assert.equal(audit.scope,'whole-target-rewrite-run-not-per-rule-equivalence-or-render-adoption');
+  assert.equal(audit.rulesetVersion,REPRESENTATION_CANDIDATE_VERSION);
+  assert.equal(audit.proofQueryHash,queryHash);
+  assert.deepEqual(audit.rewriteLimits,REPRESENTATION_REWRITE_LIMITS);
+  assert.deepEqual(audit.appliedRules,[...new Set(audit.ruleTrace)]);
+  assert.equal(audit.ruleTrace.length,audit.rewriteResources.applications);
+  assert.ok(audit.ruleTrace.length > 0 && audit.ruleTrace.length <= audit.rewriteLimits.maxApplications);
+  assert.ok(audit.rewriteResources.iterations > 0
+    && audit.rewriteResources.iterations <= audit.rewriteLimits.maxIterations * audit.rewriteResources.phases);
+  assert.equal(audit.rewriteResources.budgetExceeded,false);
+  for (const rule of audit.appliedRules) {
+    assert.ok(REPRESENTATION_RULES.some(row => row.name === rule));
+    assert.equal(audit.ruleApplications[rule],audit.ruleTrace.filter(name => name === rule).length);
+  }
+  for (const [key,limit] of Object.entries(audit.limits)) {
+    assert.ok(Number.isSafeInteger(audit.resources[key]) && audit.resources[key] >= 0 && audit.resources[key] <= limit);
+  }
+  assert.equal(audit.resources.candidates,1);
+  assert.equal(Object.hasOwn(audit.resources,'wallClock'),false);
+  for (const item of [audit,audit.appliedRules,audit.ruleTrace,audit.ruleApplications,audit.rewriteLimits,
+    audit.rewriteResources,audit.limits,audit.resources]) assert.ok(Object.isFrozen(item));
+  assert.deepEqual(JSON.parse(JSON.stringify(audit)),audit);
+  assert.equal(isAdoptableCandidate(audit,{identity}),false);
+  assert.equal(isPhase8RewritePlan(audit),false);
 }
 
 test('C4-04 representation denominator reuses all 64 actual rules, without claiming universal rule proofs', async () => {
@@ -49,6 +83,14 @@ test('C4-04 real display-rule proposals are independently checked across narrow 
     assert.equal(r.status,'complete',`${bits}/${op}:${r.reason}`);
     assert.equal(r.candidates.length,1,`${bits}/${op}`);
     const candidate = r.candidates[0];
+    const audit = readRepresentationGeneratorAudit(candidate);
+    assertGeneratorAudit(audit,candidate.verification.evidence.queryHash);
+    assert.equal(audit.candidateId,candidate.candidateId);
+    assert.deepEqual(audit.appliedRules,candidate.rules);
+    if (op === 'add') assert.deepEqual(audit.ruleTrace,['double-term','strength-mul-power-two']);
+    assert.deepEqual(audit.resources,Object.fromEntries(Object.keys(audit.limits).map(key => [key,r.metrics[key]])));
+    for (const row of r.ruleCoverage.rows) assert.equal(row.candidateApplications,audit.ruleApplications[row.name] ?? 0);
+    assert.equal(readRepresentationGeneratorAudit({...candidate}),null);
     // The actual legacy double-term -> multiply/shift chain is wrong at BV1:
     // its display shift masks 1 to 0, whereas x+x is zero. Keep the refuted cell
     // in the same 18-cell denominator instead of dropping it or relaxing proof.
@@ -186,6 +228,14 @@ function productionFixture() {
 
 test('C4-04 actual producer, private plan, transaction and projection adopt the independently proved legacy-rule candidate', async () => {
   const f = productionFixture(), originalText = f.result.pseudocode;
+  const canonical = structuredClone(f.ir), plan = await preparePhase8RewritePlan(f.ir,f.options);
+  assert.equal(plan.status,'complete',plan.reason);
+  const [entry] = plan.entries;
+  assertGeneratorAudit(entry.generatorAudit,entry.queryHash);
+  const context = {ir:f.ir,proofIdentity:identity,abiId:f.options.abiId,proofRewritePlan:plan};
+  const stage = runPhase8Stage(context,{stages:['canonical-facts','rendering'],timeBudgetMs:1000});
+  assert.equal(stage.ledger.published,true,stage.ledger.stopReason);
+  assert.equal(readProvedRewrites(stage.analysis,context).entries[0].generatorAudit,entry.generatorAudit);
   const r = await optimizeSemanticDecompilation(f.result,f.options);
   assert.equal(r.proofOptimization.status,'complete',r.proofOptimization.reason);
   assert.equal(r.proofOptimization.adopted,1);
@@ -194,10 +244,82 @@ test('C4-04 actual producer, private plan, transaction and projection adopt the 
   assert.match(originalText,/\+/);
   assert.doesNotMatch(r.pseudocode,/\+/);
   assert.equal(r.ir,f.ir); assert.equal(f.target.def.sub,'add'); assert.equal(f.result.pseudocode,originalText);
+  const transform = r.phase8Projection.transforms.find(row => row.queryHash === entry.queryHash);
+  assert.deepEqual(transform.generatorAudit,entry.generatorAudit);
+  assert.ok(r.renderProvenance.ledger.some(row => row.generatorAudit === transform.generatorAudit && row.producedRefs.length));
   const replay = await optimizeSemanticDecompilation(r,f.options);
   assert.equal(replay.proofOptimization.status,'complete',replay.proofOptimization.reason);
   assert.equal(replay.proofOptimization.adopted,0);
   assert.equal(replay.pseudocode,r.pseudocode);
+  assert.ok(replay.renderProvenance.ledger.some(row => row.generatorAudit === transform.generatorAudit));
+  assert.deepEqual(structuredClone(f.ir),canonical);
+});
+
+test('C4-04 representation audit publication is bounded and cannot be supplied by a caller', async () => {
+  const x = E.createFreshSymbol(E.bvSort(4),'audit_x'), before = E.createBinary('xor',x,x);
+  const fake = {strategy:'representation-rules',ruleTrace:['forged'],proofQueryHash:'forged'};
+  const normal = await query(before,[x],{generatorAudit:fake});
+  const audit = readRepresentationGeneratorAudit(normal.candidates[0]);
+  assertGeneratorAudit(audit,normal.candidates[0].verification.evidence.queryHash);
+  assert.ok(!audit.ruleTrace.includes('forged'));
+  assert.throws(() => { audit.ruleTrace.push('forged'); },TypeError);
+  assert.throws(() => { audit.ruleApplications['xor-self'] = 99; },TypeError);
+  for (const options of [{limits:{allocationUnits:audit.resources.allocationUnits - 1}},
+    {timeoutMs:0},{isCancelled:() => true}]) {
+    const stopped = await query(before,[x],options);
+    assert.equal(stopped.status,'partial');
+    assert.deepEqual(stopped.candidates,[]);
+    assert.equal(readRepresentationGeneratorAudit(stopped),null);
+  }
+});
+
+test('C4-04 copied representation audits cannot manufacture plans or replace retained adopted history', async () => {
+  const f = productionFixture(), plan = await preparePhase8RewritePlan(f.ir,f.options);
+  assert.equal(plan.status,'complete',plan.reason);
+  const forged = {...plan,entries:plan.entries.map(entry => ({...entry,generatorAudit:{...entry.generatorAudit,proofQueryHash:'forged'}}))};
+  const context = {ir:f.ir,proofIdentity:identity,abiId:f.options.abiId,proofRewritePlan:forged};
+  assert.equal(isPhase8RewritePlan(forged,context),false);
+  assert.equal(runPhase8Stage(context,{stages:['canonical-facts','rendering'],timeBudgetMs:1000}).ledger.published,false);
+  const result = await optimizeSemanticDecompilation(f.result,f.options);
+  assert.equal(result.proofOptimization.adopted,1);
+  const edited = {...result,phase8Projection:{...result.phase8Projection,
+    transforms:result.phase8Projection.transforms.map(row => ({...row,generatorAudit:forged.entries[0].generatorAudit}))}};
+  const replay = await optimizeSemanticDecompilation(edited,f.options);
+  // The copied history loses the private idempotence binding. A new, genuine
+  // scalar proof may be applied again; the edited receipt authorizes nothing.
+  assert.equal(replay.proofOptimization.status,'complete',replay.proofOptimization.reason);
+  assert.equal(replay.proofOptimization.adopted,1);
+  assertGeneratorAudit(replay.phase8Projection.transforms[0].generatorAudit,plan.entries[0].queryHash);
+  assert.equal(replay.pseudocode,result.pseudocode);
+  assert.equal(replay.phase8Projection.history.completeness,'incomplete');
+  assert.ok(replay.renderProvenance.ledger.every(row => row.generatorAudit?.proofQueryHash !== 'forged'));
+  for (const options of [{phase8WorkBudget:0},{timeoutMs:0},{isCancelled:() => true}]) {
+    const stopped = await optimizeSemanticDecompilation(f.result,{...f.options,...options});
+    assert.equal(stopped.proofOptimization.adopted,0);
+    assert.ok(!(stopped.phase8Projection?.transforms ?? []).some(row => row.generatorAudit));
+  }
+});
+
+test('C4-04 adopted representation audit survives public navigation without becoming proof authority', async () => {
+  const f = productionFixture(), result = await optimizeSemanticDecompilation(f.result,f.options);
+  assert.equal(result.proofOptimization.adopted,1);
+  const original = result.phase8Projection.transforms[0].generatorAudit;
+  let epoch = 1;
+  const value = {pseudocode:result.pseudocode,lines:result.lines,renderProvenance:result.renderProvenance};
+  const api = new AnalysisQueryAPI({
+    currentIdentity:async () => ({binaryId:'representation-audit',projectRevision:1,analysisEpoch:epoch,artifactVersions:{}}),
+    decompile:async () => ({value,status:{completeness:'complete'}}),
+  });
+  const snapshot = await api.snapshot(), response = await api.decompile(snapshot,'function');
+  const navigation = createDecompilerNavigation(response,{currentSnapshot:() => api.snapshot()});
+  const selected = await navigation.selectOrigin('addr',f.target.def.address);
+  assert.equal(selected.state,'ready');
+  const record = selected.transforms.find(row => row.queryHash === original.proofQueryHash);
+  assert.deepEqual(record.generatorAudit,original);
+  assert.equal(readRepresentationGeneratorAudit(record),null);
+  assert.equal(isAdoptableCandidate(record.generatorAudit,{identity}),false);
+  epoch++;
+  assert.equal((await navigation.selectOrigin('addr',f.target.def.address)).reason,'stale-query-snapshot');
 });
 
 test('C4-04 representation coverage cannot copy plan authority or publish after an exhausted transaction', async () => {

@@ -4142,6 +4142,50 @@ acceptance LOCKED. Exact scoped test receipts and remote backup are recorded in
 the persistent checkpoint; no full-product, independent, main, device or release
 acceptance is claimed.
 
+## C4-04 representation-rule generator audit reaches adopted history
+
+Starting product: `c5e440d822ac2664177096afdc7a5458c0106c25`. The existing
+`representation-rules` strategy independently verified candidates but dropped
+their actual generator schedule/resources when publishing the adopted transform.
+The equality-saturation strategy already retained its separate search audit.
+
+`representation-candidates.js` now privately issues an immutable observation
+for each actual completed candidate run: selected rule sequence, per-rule counts,
+effective engine/query limits, measured non-time counters, ruleset identity and
+the independent verification query hash. The record describes the whole target's
+candidate-generation run; it does **not** prove every intermediate display rule
+or claim that the tentative display AST was directly adopted. Refuted candidates
+may have diagnostic observations but do not become adopted plan entries.
+
+The existing private proof-plan path requires this observation for a selected
+representation candidate and binds its candidate/query identities. The unchanged
+transaction, scalar projection, render-provenance and query/navigation paths then
+carry the audit with the actual adopted transform. Public/copied metadata never
+issues candidate, proof or projection authority. Metadata allocation is charged
+to the existing query budget, publication stays cancellation-guarded, and no
+wall-clock measurement enters the deterministic audit. Candidate/report version
+is `hex.representation-candidates/2`; proof pass version is `2.4.0`. No additional
+rule matcher, optimizer, evaluator or proof engine is introduced.
+
+The existing 18 width/operator cells now check actual schedule/count/coverage
+agreement, including the retained BV1/add refutation. Production tests exercise
+the private plan, committed overlay, actual scalar adoption, replay and unchanged
+canonical IR. Added cases cover bounded publication, caller metadata, copied
+plans/edited history, exhausted transactions and snapshot-bound public navigation.
+An edited scalar history may lose idempotence and require a new genuine proof;
+that is distinguished from granting authority to the edited audit. Existing
+equality-saturation tests still reject caller relabeling without suppressing the
+new representation strategy's own audit.
+
+This is a missing piece of the existing proof-gated candidate path, **not**
+ordinary legacy-view proof gating or universal per-rule correctness. C4-03 full
+applied/removed coverage, C4-04 ordinary adoption and full family/observable scope,
+C4-02/05 and original23/frozen135 acceptance remain open. Generated output is
+rebuilt by this integration lane; exact scoped receipts, intended negative
+controls and normal PR #7036 backup are recorded in persistent storage. No main,
+component merge, independent/full-product/device/runtime or release acceptance
+is claimed. Goal ACTIVE; integration/release acceptance LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

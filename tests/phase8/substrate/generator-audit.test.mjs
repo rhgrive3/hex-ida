@@ -187,6 +187,10 @@ test('C4-05 caller metadata cannot replace owned audit fields or label another s
     const audit = plan.entries[0].generatorAudit;
     if (candidateStrategy === 'equality-saturation') {
       assertAudit(audit,plan.entries[0]);assert.ok(!audit.appliedRules.includes('forged'));assert.ok(audit.limits.enodes > 0);
+    } else if (candidateStrategy === 'representation-rules') {
+      assert.equal(audit.strategy,'representation-rules');
+      assert.ok(!audit.appliedRules.includes('forged'));
+      assert.equal(audit.proofQueryHash,plan.entries[0].queryHash);
     } else assert.equal(audit,undefined);
   }
 });
