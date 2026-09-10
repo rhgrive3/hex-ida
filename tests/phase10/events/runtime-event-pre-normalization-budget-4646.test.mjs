@@ -180,3 +180,71 @@ test('#4646 dedupes interventionIds from the admitted owned snapshot without rer
   assert.equal(reads, 1);
   assert.equal(n.flush().dropped, 0);
 });
+
+test('#4646 rejects oversized byte views before allocating an input-sized snapshot', () => {
+  const OriginalUint8Array = globalThis.Uint8Array;
+  const inputs = [new ArrayBuffer(64 * 1024), new OriginalUint8Array(64 * 1024)];
+  let proportionalAllocations = 0;
+  globalThis.Uint8Array = new Proxy(OriginalUint8Array, {
+    construct(target, args) {
+      if (typeof args[0] === 'number' && args[0] > 1024) {
+        proportionalAllocations += 1;
+        throw new Error('input-sized-byte-snapshot');
+      }
+      return Reflect.construct(target, args, target);
+    },
+  });
+  try {
+    for (const value of inputs) {
+      const n = normalizer();
+      assert.equal(n.push({ ...context, kind:'trace-marker', payload:{ value } }), null);
+      assert.equal(n.flush().dropped, 1);
+    }
+  } finally {
+    globalThis.Uint8Array = OriginalUint8Array;
+  }
+  assert.equal(proportionalAllocations, 0);
+});
+
+test('#4646 rejects oversized arrays before allocating an input-sized snapshot', () => {
+  const values = [];
+  values.length = 1_000_000;
+  const OriginalArray = globalThis.Array;
+  let proportionalAllocations = 0;
+  globalThis.Array = new Proxy(OriginalArray, {
+    construct(target, args) {
+      if (args.length === 1 && typeof args[0] === 'number' && args[0] > 1024) {
+        proportionalAllocations += 1;
+        throw new Error('input-sized-array-snapshot');
+      }
+      return Reflect.construct(target, args, target);
+    },
+  });
+  try {
+    const n = normalizer();
+    assert.equal(n.push({ ...context, kind:'trace-marker', payload:{ values } }), null);
+    assert.equal(n.flush().dropped, 1);
+  } finally {
+    globalThis.Array = OriginalArray;
+  }
+  assert.equal(proportionalAllocations, 0);
+});
+
+test('#4646 rejects coercive optional text without invoking hostile toString hooks', () => {
+  for (const field of ['timestamp', 'processKey', 'threadKey', 'moduleBindingKey']) {
+    let calls = 0;
+    const value = {
+      toString() {
+        calls += 1;
+        return 'x'.repeat(10_000_000);
+      },
+    };
+    const n = normalizer();
+    assert.throws(
+      () => n.push({ ...context, kind:'trace-marker', payload:{}, [field]:value }),
+      (error) => error?.code === 'runtime-invalid-event-text',
+      field,
+    );
+    assert.equal(calls, 0, field);
+  }
+});
