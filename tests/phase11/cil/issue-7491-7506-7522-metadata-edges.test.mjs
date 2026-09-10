@@ -136,6 +136,26 @@ test('#7506 two MethodImpl rows for one declaration with different bodies fail c
   );
 });
 
+test('#7506 a decodable but unequal MethodImpl signature pair fails closed', () => {
+  const base = {
+    types: [
+      { name:'Base', namespace:'T', methodList:1, fieldList:1, flags:0x81 },
+      { name:'Child', namespace:'T', methodList:2, fieldList:1, extends:4, flags:1 },
+    ],
+    // Both signatures decode cleanly, but they disagree on the return shape —
+    // the mismatch must be enforced, not swallowed by the undecodable-sig
+    // degradation.
+    methods: [
+      { name:'M', body:null, flags:0x5c6, signature:[0x00, 0x00, 0x1c] },
+      { name:'Impl', body:[0x2a], flags:0x0c6, signature:[0x00, 0x00, 0x08] },
+    ],
+  };
+  assert.throws(
+    () => parseCil(buildCil({ ...base, extraRows: new Map([[0x19, { count:1, bytes: Uint8Array.of(2,0, 4,0, 2,0) }]]) }).bytes),
+    /cil-unsupported-binary/,
+  );
+});
+
 test('#7522 an ImplMap row binds the P/Invoke target to the method', () => {
   const image = parseCil(buildCil({
     types: [{ name:'KERNEL32', namespace:'Interop', methodList:1, fieldList:1 }],

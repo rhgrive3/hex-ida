@@ -402,18 +402,24 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     if (declaration != null) {
       failIf((declaration.accessFlags & CIL_METHOD_VIRTUAL) === 0, 'cil-methodimpl-declaration-not-virtual');
     }
-    if (body != null && declaration != null && blobStream != null
+    let decodedBodySig = null;
+    let decodedDeclarationSig = null;
+    if (body != null && declaration != null && blobHeap != null
         && Number.isSafeInteger(body.signatureBlobIndex) && Number.isSafeInteger(declaration.signatureBlobIndex)) {
       try {
-        const bodySig = parseCilMethodSignature(readCilMetadataBlob(blobStream, body.signatureBlobIndex, 'cil-methodimpl-signature-invalid'), typeDefOrRefRows);
-        const declarationSig = parseCilMethodSignature(readCilMetadataBlob(blobStream, declaration.signatureBlobIndex, 'cil-methodimpl-signature-invalid'), typeDefOrRefRows);
-        failIf(stableStringify({ parameters: bodySig.parameters, returnValue: bodySig.returnValue })
-          !== stableStringify({ parameters: declarationSig.parameters, returnValue: declarationSig.returnValue }),
-          'cil-methodimpl-signature-mismatch');
+        // Only blob/parse failures degrade (#7603/#7604); a decoded but
+        // unequal pair is enforced below, outside this catch.
+        decodedBodySig = parseCilMethodSignature(readCilMetadataBlob(blobHeap, body.signatureBlobIndex, 'cil-methodimpl-signature-invalid'), typeDefOrRefRows);
+        decodedDeclarationSig = parseCilMethodSignature(readCilMetadataBlob(blobHeap, declaration.signatureBlobIndex, 'cil-methodimpl-signature-invalid'), typeDefOrRefRows);
       } catch {
         // Undecodable signatures keep the pinned degradation behavior
         // (#7603/#7604): the token-level binding stays, no extra authority.
       }
+    }
+    if (decodedBodySig != null && decodedDeclarationSig != null) {
+      failIf(stableStringify({ parameters: decodedBodySig.parameters, returnValue: decodedBodySig.returnValue })
+        !== stableStringify({ parameters: decodedDeclarationSig.parameters, returnValue: decodedDeclarationSig.returnValue }),
+        'cil-methodimpl-signature-mismatch');
     }
     failIf(seenImplDeclarations.has(`${row.classToken}\u0000${row.methodDeclarationToken}`), 'cil-methodimpl-declaration-duplicate');
     seenImplDeclarations.add(`${row.classToken}\u0000${row.methodDeclarationToken}`);
