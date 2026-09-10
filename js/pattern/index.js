@@ -49,6 +49,14 @@ function validateSnapshotId(value) {
   return value;
 }
 
+function validateByteSourceSnapshotId(byteSource, options) {
+  if (!byteSource || typeof byteSource.read !== 'function') return;
+  const snapshotId = byteSource.snapshotId ?? options.snapshotId ?? null;
+  if (snapshotId !== null && (typeof snapshotId !== 'string' || !snapshotId)) {
+    fail('pattern-source-snapshot-id-invalid');
+  }
+}
+
 function validateCompiledPattern(value) {
   if (value && typeof value === 'object' && COMPILED_PATTERNS.has(value)) return value;
 
@@ -116,6 +124,7 @@ export function evaluatePattern(compiled, byteSource, options = {}) {
   if (options.addressSpace != null && options.addressSpace !== rootSpace) {
     fail('pattern-address-space-override-mismatch');
   }
+  validateByteSourceSnapshotId(byteSource, options);
   return core.evaluatePattern(pattern, byteSource, { ...options, addressSpace: rootSpace });
 }
 
