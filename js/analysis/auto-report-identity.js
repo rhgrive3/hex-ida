@@ -1,7 +1,8 @@
 import { createBinaryIdFromDigest } from '../core/identity/index.js';
 
-const INSTALL_VERSION = 'auto-report-identity/v2';
+const INSTALL_VERSION = 'auto-report-identity/v3';
 const STATE = new WeakMap();
+const SNAPSHOT_TRACKERS = new WeakMap();
 
 function storeValue(app, key) { try { return app?.store?.get?.(key) ?? null; } catch { return null; } }
 function nonNegativeIdentity(value, fallback) {
@@ -100,26 +101,56 @@ function bindValue(app, value, currentSnapshotId = null) {
   return { value:{ ...value, snapshotId, sourceIdentity }, identity:sourceIdentity };
 }
 
+function updateSnapshotSubscriber(app, state, snapshotId) {
+  state.currentSnapshotId = snapshotId;
+  if (state.bound && !sameIdentity(state.bound.identity, liveIdentity(app, snapshotId))) {
+    state.stale = state.bound;
+    state.bound = null;
+  }
+}
+
+function subscribeToSnapshotOwner(app, state) {
+  const snapshotOwner = app?.analysisQueries;
+  if (!snapshotOwner || typeof snapshotOwner.snapshot !== 'function') return;
+
+  let tracker = SNAPSHOT_TRACKERS.get(snapshotOwner);
+  if (!tracker) {
+    const originalSnapshot = snapshotOwner.snapshot.bind(snapshotOwner);
+    tracker = {
+      subscribers:new Map(),
+      hasSnapshot:false,
+      currentSnapshotId:null,
+    };
+    snapshotOwner.snapshot = async function trackedAnalysisSnapshot(options = {}) {
+      const snapshot = await originalSnapshot(options);
+      const snapshotId = snapshot?.snapshotId ?? null;
+      tracker.hasSnapshot = true;
+      tracker.currentSnapshotId = snapshotId;
+      for (const [subscriberApp, subscriberState] of tracker.subscribers) {
+        updateSnapshotSubscriber(subscriberApp, subscriberState, snapshotId);
+      }
+      return snapshot;
+    };
+    SNAPSHOT_TRACKERS.set(snapshotOwner, tracker);
+    try {
+      Object.defineProperty(snapshotOwner, '__autoReportSnapshotTracker', { value:INSTALL_VERSION, configurable:true });
+    } catch { /* marker is diagnostic only; the WeakMap owns tracker identity */ }
+  }
+
+  tracker.subscribers.set(app, state);
+  // The snapshot identity belongs to the shared query owner, not to whichever
+  // app happened to install the wrapper first. A later subscriber therefore
+  // inherits the most recent successfully published snapshot immediately.
+  if (tracker.hasSnapshot) updateSnapshotSubscriber(app, state, tracker.currentSnapshotId);
+}
+
 export function installAutoReportIdentityBoundary(app) {
   if (!app || app.__autoReportIdentityVersion === INSTALL_VERSION) return app;
   const initial = app.autoReport ?? null;
   const state = { bound:null, stale:null, currentSnapshotId:null };
   STATE.set(app, state);
 
-  const snapshotOwner = app.analysisQueries;
-  const originalSnapshot = snapshotOwner?.snapshot?.bind(snapshotOwner) ?? null;
-  if (snapshotOwner && originalSnapshot && !snapshotOwner.__autoReportSnapshotTracker) {
-    snapshotOwner.snapshot = async function trackedAnalysisSnapshot(options = {}) {
-      const snapshot = await originalSnapshot(options);
-      state.currentSnapshotId = snapshot?.snapshotId ?? null;
-      if (state.bound && !sameIdentity(state.bound.identity, liveIdentity(app, state.currentSnapshotId))) {
-        state.stale = state.bound;
-        state.bound = null;
-      }
-      return snapshot;
-    };
-    Object.defineProperty(snapshotOwner, '__autoReportSnapshotTracker', { value:INSTALL_VERSION, configurable:true });
-  }
+  subscribeToSnapshotOwner(app, state);
 
   Object.defineProperty(app, 'autoReport', {
     configurable:true,

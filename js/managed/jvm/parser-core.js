@@ -88,6 +88,10 @@ export function parseJvm(bytes,options={}){
     const nameAndType=parseNameAndTypeDescriptor(entry.nameAndTypeIndex,method?'method':'field','jvm-invalid-cp-memberref-name-and-type-index');
     const name=requireMemberName(nameAndType.nameIndex,'jvm-invalid-cp-memberref-name',{method});
     if(entry.tag===10&&name==='<clinit>')fail('jvm-invalid-cp-memberref-name');
+    // JVMS §4.4.2: a CONSTANT_Methodref_info named <init> must have a
+    // return-void descriptor; OpenJDK rejects violators with
+    // ClassFormatError even when the reference is never resolved (#7405).
+    if(entry.tag===10&&name==='<init>'){const parsed=parseJvmMethodDescriptor(requireUtf8(nameAndType.descriptorIndex,'jvm-invalid-cp-memberref-name-and-type-index'));if(parsed.returnType!==null)fail('jvm-invalid-cp-methodref-init-return-type');}
   }
   function validateConstantPool(){for(let i=1;i<constantPool.length;i++){const entry=constantPool[i];if(!entry)continue;switch(entry.tag){
     case 7:requireClassName(i,'jvm-invalid-cp-class-name-index');break;
