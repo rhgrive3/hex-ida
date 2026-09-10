@@ -45,6 +45,14 @@ function throwIfAborted(signal) {
   if (signal?.aborted) throw abortError(signal);
 }
 
+// #5685: does any declared mapZero() span cover [start, endExclusive)?
+function syntheticRangeCovers(ranges, start, endExclusive) {
+  for (const [lo, hi] of ranges) {
+    if (start >= lo && endExclusive <= hi) return true;
+  }
+  return false;
+}
+
 
 async function awaitAbortable(operation, signal) {
   if (!signal) return operation;
@@ -103,6 +111,10 @@ export class Emulator {
     this.loaded = new Map();
     this.loadedValid = new Map();
     this.syntheticPages = new Set();
+    // #5685: page buffers are page-granular, but access authority comes from
+    // the declared mapping. mapZero() records the exact [start, end) spans it
+    // created per page; reads/writes outside them fail closed.
+    this.syntheticRanges = new Map();
     this.steps = 0;
     this.stopped = null;
     this.faultCode = null;
@@ -163,9 +175,16 @@ export class Emulator {
     while (page < end) {
       const key = page.toString();
       if (!this.loaded.has(key)) this.loaded.set(key, new Uint8Array(PAGE));
-      this.loadedValid.set(key, PAGE);
+      // #5685: keep the page-granular backing buffer, but gate access to the
+      // declared mapping span instead of validating the whole touched page.
+      const pageEnd = page + BigInt(PAGE);
+      const lo = base > page ? base : page;
+      const hi = end < pageEnd ? end : pageEnd;
+      let ranges = this.syntheticRanges.get(key);
+      if (!ranges) { ranges = []; this.syntheticRanges.set(key, ranges); }
+      if (!syntheticRangeCovers(ranges, lo, hi)) ranges.push([lo, hi]);
       this.syntheticPages.add(key);
-      page += BigInt(PAGE);
+      page = pageEnd;
     }
     return { start: base, size: len, kind };
   }
@@ -217,6 +236,19 @@ export class Emulator {
     const page = (address / BigInt(PAGE)) * BigInt(PAGE);
     const key = page.toString();
     const off = Number(address - page);
+    const ranges = this.syntheticRanges.get(key);
+    if (ranges) {
+      // #5685: mapping-scoped page — only bytes inside a declared mapZero()
+      // span are backed, regardless of the page-granular buffer.
+      if (!syntheticRangeCovers(ranges, address, address + 1n)) {
+        throw new EmulatorFault('unmapped-memory', `byte is outside the mapped region at 0x${address.toString(16)}`, { address });
+      }
+      const w = this.mem.get(key);
+      if (w && w.mask[off]) return w.data[off];
+      const l = this.loaded.get(key);
+      if (!l) throw new EmulatorFault('unmapped-memory', `byte is outside backed memory at 0x${address.toString(16)}`, { address });
+      return l[off];
+    }
     const w = this.mem.get(key);
     if (w && w.mask[off]) return w.data[off];
     const l = this.loaded.get(key);
@@ -229,6 +261,10 @@ export class Emulator {
     const address = BigInt(addr);
     const page = (address / BigInt(PAGE)) * BigInt(PAGE);
     const key = page.toString();
+    const ranges = this.syntheticRanges.get(key);
+    if (ranges && !syntheticRangeCovers(ranges, address, address + 1n)) {
+      throw new EmulatorFault('unmapped-memory', `write is outside the mapped region at 0x${address.toString(16)}`, { address });
+    }
     let w = this.mem.get(key);
     if (!w) { w = { data: new Uint8Array(PAGE), mask: new Uint8Array(PAGE) }; this.mem.set(key, w); }
     const off = Number(address - page);
