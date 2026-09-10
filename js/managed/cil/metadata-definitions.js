@@ -178,12 +178,16 @@ export function readCilDefinitions(bytes, view, layout, stringsStream) {
   const hasSemanticsTables = [0x14, 0x17];
   const methodSemantics = readRows(0x18, pos => {
     const semantics = view.getUint16(pos, true);
-    const methodCoded = index(pos + 2, codedIndexSize(counts, [6, 0x0a], 1));
-    const association = index(pos + 2 + codedIndexSize(counts, [6, 0x0a], 1), hasSemanticsSize);
+    // II.22.28: the Method column is a plain MethodDef table index — NOT a
+    // MethodDefOrRef coded index. Reading it as coded shifted every rid by the
+    // tag bit and widened the row when MemberRef grew past the 1-byte coded
+    // threshold, corrupting both the Method binding and the Association
+    // offset (#7637 review).
+    const methodIndexSize = tableIndexSize(counts, 6);
+    const methodRid = index(pos + 2, methodIndexSize);
+    const association = index(pos + 2 + methodIndexSize, hasSemanticsSize);
     if (!semanticKinds.has(semantics)) fail('cil-method-semantics-kind-invalid');
-    const methodTable = (methodCoded & 1) === 0 ? 6 : 0x0a;
-    const methodRid = Math.floor(methodCoded / 2);
-    if (methodTable !== 6 || methodRid < 1 || methodRid > counts[6]) fail('cil-method-semantics-method-invalid');
+    if (methodRid < 1 || methodRid > counts[6]) fail('cil-method-semantics-method-invalid');
     const assocTable = hasSemanticsTables[association & 1];
     const assocRid = Math.floor(association / 2);
     if (assocTable == null || assocRid < 1 || assocRid > counts[assocTable]) fail('cil-method-semantics-association-invalid');
