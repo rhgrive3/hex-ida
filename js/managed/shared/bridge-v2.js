@@ -1,4 +1,5 @@
 import { deepFreeze } from '../../core/identity/index.js';
+import { printProgram } from '../../decompiler/pretty/c.js';
 import { createAnalysisStatus } from '../../analysis/status.js';
 import { createFunctionSummary, createMemoryEffect, createUnknownCallEffect, createDirectCall } from '../../analysis/summary/contract.js';
 import { condenseCallGraph } from '../../analysis/summary/interprocedural.js';
@@ -75,4 +76,40 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
   return deepFreeze({methodId,summary,directCalls,dynamicCalls,externalCalls,thrownExceptions,hasExceptionEdges,completeness});
 }
 export function analyzeManagedInterprocedural(methods, options={}){const methodMap=new Map();for(const method of methods){const summary=buildManagedMethodSummary(method,options);methodMap.set(summary.methodId,summary)}const roots=[...methodMap.keys()],successorsOf=id=>{const entry=methodMap.get(id);return entry?entry.directCalls.map(c=>c.target).filter(t=>methodMap.has(t)):[]};const{components,truncated}=condenseCallGraph(roots,successorsOf,options);return deepFreeze({components,truncated,summaries:methodMap})}
-export function decompileManagedMethod(loweredOrFunction,options={}){return legacy.decompileManagedMethod(ensureLowered(loweredOrFunction,options),options)}
+function safeManagedIdent(s, fallback = 'value') {
+  const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_$]/g, '_').replace(/^([0-9])/, '_$1');
+  return x || fallback;
+}
+
+function renderDexStringLiterals(lowered, decompiled) {
+  if (lowered?.frontendId !== 'dex') return decompiled;
+  const valueById = new Map((lowered.semanticIr?.values ?? []).map((value) => [value.id, value]));
+  const literals = new Map();
+  for (const node of lowered.semanticIr?.nodes ?? []) {
+    if (node.kind !== 'const') continue;
+    for (const outputId of node.outputs ?? []) {
+      const value = valueById.get(outputId);
+      if (!Object.hasOwn(value?.metadata ?? {}, 'stringRef')) continue;
+      if (typeof value.metadata.stringRef !== 'string') throw new TypeError('managed-decompiler-invalid-string-ref');
+      const name = safeManagedIdent(outputId);
+      const literal = JSON.stringify(value.metadata.stringRef);
+      if (literals.has(name) && literals.get(name) !== literal) throw new TypeError('managed-decompiler-string-literal-output-conflict');
+      literals.set(name, literal);
+    }
+  }
+  if (literals.size === 0) return decompiled;
+  const body = (decompiled.decompiledAst?.body ?? []).map((statement) => {
+    if (statement.kind !== 'assign' || typeof statement.text !== 'string') return statement;
+    const match = /^([A-Za-z_$][A-Za-z0-9_$]*) = /.exec(statement.text);
+    const literal = match ? literals.get(match[1]) : null;
+    return literal == null ? statement : { ...statement, text: `${match[1]} = ${literal};` };
+  });
+  const decompiledAst = { ...decompiled.decompiledAst, body };
+  const printed = printProgram(decompiledAst);
+  return deepFreeze({ ...decompiled, decompiledAst, pseudocode: printed.text, lines: printed.lines });
+}
+
+export function decompileManagedMethod(loweredOrFunction,options={}){
+  const lowered=ensureLowered(loweredOrFunction,options);
+  return renderDexStringLiterals(lowered,legacy.decompileManagedMethod(lowered,options));
+}

@@ -82,9 +82,56 @@ function repairDexFieldMemory(fn, lowered) {
   return {...lowered,semanticIr,ssa:buildSemanticSsa(semanticIr,lowered.cfg)};
 }
 
+function repairDexStringConstants(fn, lowered) {
+  const records = new Map();
+  for (const bundle of fn.bundles ?? []) {
+    const produced = bundle.producedValues ?? [];
+    for (let index = 0; index < produced.length; index++) {
+      const value = produced[index];
+      if (!Object.hasOwn(value ?? {}, 'stringRef')) continue;
+      if (typeof value.stringRef !== 'string') throw new TypeError('managed-bridge-invalid-string-ref');
+      if (Object.hasOwn(value, 'stringIndex') && (!Number.isSafeInteger(value.stringIndex) || value.stringIndex < 0)) {
+        throw new TypeError('managed-bridge-invalid-string-index');
+      }
+      const list = records.get(bundle.operationId) ?? [];
+      list.push({
+        producedIndex: index,
+        stringRef: value.stringRef,
+        ...(Object.hasOwn(value, 'stringIndex') ? { stringIndex: value.stringIndex } : {}),
+      });
+      records.set(bundle.operationId, list);
+    }
+  }
+  if (records.size === 0) return lowered;
+
+  const old = lowered.semanticIr;
+  const replacements = new Map();
+  for (const [effectId, effectRecords] of records) {
+    const nodes = old.nodes.filter((node) => node.kind === 'const' && node.sourceEffectIds?.includes(effectId));
+    if (nodes.length !== 1) throw new TypeError('managed-dex-string-literal-lowering-shape-invalid');
+    const node = nodes[0];
+    for (const record of effectRecords) {
+      const valueId = node.outputs?.[record.producedIndex];
+      const value = old.values.find((candidate) => candidate.id === valueId);
+      if (!value) throw new TypeError('managed-dex-string-literal-lowering-shape-invalid');
+      replacements.set(valueId, {
+        ...value,
+        metadata: {
+          ...(value.metadata ?? {}),
+          stringRef: record.stringRef,
+          ...(Object.hasOwn(record, 'stringIndex') ? { stringIndex: record.stringIndex } : {}),
+        },
+      });
+    }
+  }
+  const semanticIr = { ...old, values: old.values.map((value) => replacements.get(value.id) ?? value) };
+  return { ...lowered, semanticIr, ssa: buildSemanticSsa(semanticIr, lowered.cfg) };
+}
+
 export function overlayDexLowering(fn, lowered) {
   if(fn?.frontendId!=='dex')return lowered;
   let out=splitDexExceptionBlocks(fn,lowered);
   out=repairDexFieldMemory(fn,out);
+  out=repairDexStringConstants(fn,out);
   return deepFreeze(out);
 }
