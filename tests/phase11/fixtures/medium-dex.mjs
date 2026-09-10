@@ -24,12 +24,29 @@ export function dexMethod(words = [0x000e], options = {}) {
   const triesStart = start + words.length * 2 + pad;
   tries.forEach((t, i) => { const p = triesStart + i * 8; v.setUint32(p, t.start, true); v.setUint16(p + 4, t.count, true); v.setUint16(p + 6, t.handlerOff, true); });
   bytes.set(handlers, triesStart + tries.length * 8);
+  const fields = options.fields ?? [{ classType:'LTest;', type:'I', name:'x' }];
+  const classes = options.classes ?? (() => {
+    const staticFields = [], instanceFields = [];
+    for (let fieldIdx = 0; fieldIdx < fields.length; fieldIdx++) {
+      const field = fields[fieldIdx];
+      let staticUse = false, instanceUse = false;
+      for (let i = 0; i + 1 < words.length; i++) {
+        const opcode = words[i] & 0xff;
+        if (words[i + 1] !== fieldIdx) continue;
+        if (opcode >= 0x60 && opcode <= 0x6d) staticUse = true;
+        else if (opcode >= 0x52 && opcode <= 0x5f) instanceUse = true;
+      }
+      const isStatic = field.static ?? (staticUse && !instanceUse ? true : instanceUse && !staticUse ? false : true);
+      (isStatic ? staticFields : instanceFields).push({ fieldIdx, accessFlags:field.flags ?? (isStatic ? 9 : 1) });
+    }
+    return [{ classType:'LTest;', staticFields, instanceFields, directMethods:[{ methodIdx:0, codeOff, accessFlags:9 }], virtualMethods:[] }];
+  })();
   return {
     moduleId: 'managed-mod:medium-dex', vmSpecEdition: 'dalvik-dex-039', rawBytes: bytes,
     strings: options.strings ?? [''], types: options.types ?? ['LTest;'],
-    fields: options.fields ?? [{ classType:'LTest;', type:'I', name:'x' }],
+    fields,
     methods: options.methods ?? [{ name:'m', classType:'LTest;', proto:{ params:[], returnType:'V' } }],
-    classes: options.classes ?? [{ classType:'LTest;', directMethods:[{ methodIdx:0, codeOff, accessFlags:9 }], virtualMethods:[] }],
+    classes,
   };
 }
 
