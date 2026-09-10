@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { bitvector } from '../../../js/decompiler/phase8/bitvector.js';
+import { bitvector, isSupportedWidth } from '../../../js/decompiler/phase8/bitvector.js';
 import { factFromRange, fullRange, rangeOf, fullFact, singletonFact, evaluateBinaryFact, evaluateBinaryRange, contains, joinFacts, widenFacts } from '../../../js/decompiler/phase8/range.js';
 import { SCCP_PASS, runSccpPass } from '../../../js/decompiler/phase8/sccp.js';
 import { seedAnalysisState, runPassTransaction } from '../../../js/decompiler/phase8/transaction.js';
@@ -66,4 +66,125 @@ test('C2: independent 8-bit concretization oracle, joins and widening never lose
   const joined=joinFacts(a,b),wide=widenFacts(a,joined);for(const n of [...left,...right]){assert.ok(allows(joined,n));assert.ok(allows(wide,n));}
  }
  console.log(JSON.stringify({oracle:'independent-8bit-product',observations}));
+});
+
+// Evaluation-only compositions, frozen before their first run against 4f81793f3.
+// No production transfer is fitted to this matrix. This is a component holdout,
+// not a real-compiler corpus or a proof of all machine semantics.
+const HOLDOUT_WIDTHS=Object.freeze([1,2,3,4,8,16,32,64,128]);
+function holdoutPrograms(bits) {
+ const mask=(1n<<BigInt(bits))-1n,sign=1n<<BigInt(bits-1);
+ const low=(1n<<BigInt(Math.max(1,Math.floor(bits/3))))-1n;
+ const shift=BigInt(Math.min(bits-1,Math.max(1,Math.floor(bits/3))));
+ return [
+  ['forced-high-clear',[['or',sign],['xor',sign]]],
+  ['masked-residue',[['and',mask^low],['add',1n]]],
+  ['forced-low-toggle',[['or',1n],['xor',3n&mask]]],
+  ['signed-high-fill',[['or',sign],['ashr',shift]]],
+  ['masked-scale',[['and',mask^1n],['mul',3n&mask]]],
+  ['two-sided-mask',[['and',mask^sign],['or',1n],['xor',sign>>1n]]],
+ ];
+}
+function holdoutInputs(bits) {
+ if(bits<=8)return Array.from({length:2**bits},(_,i)=>BigInt(i));
+ const mask=(1n<<BigInt(bits))-1n,sign=1n<<BigInt(bits-1),values=[0n,1n,mask,mask-1n,sign,sign-1n];
+ let seed=0x7c2d9531n;
+ for(let i=0;i<128;i++) {seed=BigInt.asUintN(64,6364136223846793005n*seed+1442695040888963407n);values.push(seed&mask);}
+ return [...new Set(values)];
+}
+function holdoutValue(bits,steps,input) {
+ let value=input;
+ for(const [op,right] of steps){
+  const answer=op==='and'?value&right:op==='or'?value|right:op==='xor'?value^right:
+    op==='add'?value+right:op==='mul'?value*right:BigInt.asIntN(bits,value)>>right;
+  value=BigInt.asUintN(bits,answer);
+ }
+ return value;
+}
+// Independent counting oracle for these power-of-two residue facts. It counts
+// represented outputs, not tested inputs; 64-bit counts are exact, not samples.
+function representedCount(fact) {
+ const {bits,range,congruence:{modulus,remainder}}=fact;
+ assert.ok(modulus>0n&&(modulus&(modulus-1n))===0n,'frozen counting domain is power-of-two residues');
+ const low=modulus-1n,zero=fact.knownZero|(low^remainder),one=fact.knownOne|remainder;
+ if(zero&one||range.kind==='empty')return 0n;
+ const upto=bound=>{
+  if(bound<0n)return 0n;
+  let less=0n,equal=1n;
+  for(let i=bits-1;i>=0;i--){
+   const bit=1n<<BigInt(i),allowZero=(one&bit)?0n:1n,allowOne=(zero&bit)?0n:1n;
+   less*=allowZero+allowOne;
+   if(bound&bit){less+=equal*allowZero;equal*=allowOne;}else equal*=allowZero;
+  }
+  return less+equal;
+ };
+ const last=(1n<<BigInt(bits))-1n;
+ if(range.kind==='full')return upto(last);
+ if(range.kind==='interval')return upto(range.upper)-upto(range.lower-1n);
+ assert.equal(range.kind,'wrapped');
+ return upto(last)-upto(range.lower-1n)+upto(range.upper);
+}
+function intervalFact(range) {
+ return {bits:range.bits,range,knownZero:0n,knownOne:0n,congruence:{modulus:1n,remainder:0n}};
+}
+function representedWithin(fact,baseline) {
+ const segments=range=>range.kind==='empty'?[]:range.kind==='full'?[[0n,(1n<<BigInt(range.bits))-1n]]:
+  range.kind==='interval'?[[range.lower,range.upper]]:[[0n,range.upper],[range.lower,(1n<<BigInt(range.bits))-1n]];
+ let count=0n;
+ for(const [a,b] of segments(fact.range))for(const [c,d] of segments(baseline)){
+  const lower=a>c?a:c,upper=b<d?b:d;
+  if(lower<=upper)count+=representedCount({...fact,range:{kind:'interval',bits:fact.bits,lower,upper}});
+ }
+ return count;
+}
+
+test('C2: held-out compositions measure actual SCCP precision without losing concrete values',t=>{
+ const rows=[];
+ for(const bits of HOLDOUT_WIDTHS)for(const [name,steps] of holdoutPrograms(bits)){
+  const f=fixture(`c2-holdout-${bits}-${name}`);f.block(0);
+  const supported=isSupportedWidth(bits);
+  let target=f.opaque(bits),baseline=supported?fullRange(bits):null;
+  for(const [operator,constant] of steps){
+   target=f.binary(operator,target,f.constant(constant,bits),bits);
+   if(supported)baseline=evaluateBinaryRange(operator,baseline,rangeOf(constant,constant,bits)).range;
+  }
+  f.ret();const ir=f.build(),before=structuredClone(ir),state=seedAnalysisState(ir);
+  const outcome=runPassTransaction(state,{descriptor:SCCP_PASS,run:runSccpPass},{analysis:state,ir},{});
+  assert.equal(outcome.committed,true,`${bits}/${name}`);
+  const artifact=state.get('ranges');assert.equal(artifact.completeness,'complete');
+  if(!supported){
+   assert.throws(()=>fullRange(bits),/unsupported-width/);
+   assert.equal(artifact.facts.has(target.id),false);
+   assert.equal(artifact.constants.has(target.id),false);
+   assert.match(artifact.overdefinedReasons.get(target.id),/unsupported width/);
+   assert.deepEqual(structuredClone(ir),before);
+   rows.push({bits,name,disposition:'unsupported-width',strictGain:false,concreteChecks:0});
+   continue;
+  }
+  const actual=artifact.facts.get(target.id);assert.ok(actual,'only actual published product facts count');
+  assert.ok(['exact','conservative'].includes(actual.status),actual.status);
+  const inputs=holdoutInputs(bits);
+  for(const input of inputs){
+   const value=holdoutValue(bits,steps,input);
+   assert.ok(allows(actual,value),`${bits}/${name}/${input}: actual output ${value} was excluded`);
+   assert.ok(contains(baseline,value),'interval baseline must also contain every concrete output');
+  }
+  const productCount=representedCount(actual),baselineCount=representedCount(intervalFact(baseline));
+  assert.ok(productCount>0n&&productCount<=baselineCount,`${bits}/${name}: precision must not regress`);
+  assert.equal(representedWithin(actual,baseline),productCount,'product denotation must be a subset, not merely a smaller unrelated set');
+  if(bits<=8){
+   const universe=holdoutInputs(bits);
+   assert.equal(productCount,BigInt(universe.filter(value=>allows(actual,value)).length),'counting oracle cross-check');
+   assert.equal(baselineCount,BigInt(universe.filter(value=>contains(baseline,value)).length));
+  }
+  assert.deepEqual(structuredClone(ir),before,'analysis must not rewrite the canonical IR');
+  rows.push({bits,name,disposition:'measured',concreteChecks:inputs.length,concreteExhaustive:bits<=8,
+   productCount:String(productCount),baselineCount:String(baselineCount),strictGain:productCount<baselineCount});
+ }
+ assert.equal(rows.length,54);assert.equal(new Set(rows.map(row=>`${row.bits}/${row.name}`)).size,54);
+ assert.deepEqual(HOLDOUT_WIDTHS.filter(isSupportedWidth),[1,8,16,32,64,128]);
+ assert.equal(rows.filter(row=>row.disposition==='measured').length,36);
+ assert.equal(rows.filter(row=>row.disposition==='unsupported-width').length,18);
+ for(const bits of HOLDOUT_WIDTHS.filter(isSupportedWidth))assert.ok(rows.some(row=>row.bits===bits&&row.strictGain),`no held-out gain at width ${bits}`);
+ t.diagnostic(JSON.stringify({schema:'c2-heldout-precision-v1',rows,scope:'fixed straight-line component compositions; branch/loop and compiler holdouts separate'}));
 });

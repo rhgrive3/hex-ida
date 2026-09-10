@@ -4647,6 +4647,46 @@ Physical-device, environment, unrelated issue and speed work remain assigned
 elsewhere under the user's scope instruction. Scoped verification and normal
 same-PR backup receipts are recorded in the persistent resume checkpoint.
 
+### C2-02 fixed composition holdout precision evaluation (2026-09-10)
+
+The existing owned scalar regression now includes six new, fixed operation
+compositions, evaluated through the actual SCCP transaction and published fact
+map. The comparison baseline runs the existing interval-only transfer on the
+same operations; no new analysis engine or production tuning is introduced.
+An independent bit-counting oracle measures each represented output set,
+including known bits and power-of-two congruence. It also checks exact set
+inclusion in the interval baseline, so a smaller unrelated set cannot count as
+precision improvement. Exhaustive enumeration through BV8 cross-checks the
+counting oracle. Independent integer arithmetic checks concrete outputs.
+
+The final denominator is 54 cells: 36 measured compositions across all existing
+SCCP widths (1/8/16/32/64/128) and 18 explicit refusals at 2/3/4 bits. Every
+supported width must show a strict gain, and every measured cell must be no less
+precise than its interval-only baseline without excluding a tested concrete
+output. Native input checks are fixed boundary values plus 128 draws from a
+64-bit LCG, not exhaustive native-domain or compiler evidence. Counts of the
+represented output sets are exact; that does not turn sampled native-input
+soundness into an exhaustive semantic proof. Canonical IR remains unchanged.
+
+The programs and seed were frozen before evaluation against `4f81793f3` and
+retained in persistent evidence. The first diagnostic exposed a test-harness
+prototype comparison (`DominanceView` versus a structured clone); the checker
+now compares equivalent data snapshots. The next exposed a mistaken assumption
+that symbolic Expr and SCCP support the same widths. No original program was
+removed: unsupported widths remain refusal cells, and existing supported BV128
+was added. Both failed diagnostics and explicit freeze amendments are retained.
+The six formulas, seed and all production sources remain unchanged. A passing
+matrix must match those source hashes; failed producers publish no success
+matrix. This is an evaluation-only component holdout, not an independently
+sampled real-binary dataset or release acceptance.
+
+The focused holdout passes. Exact-head canonical scalar, downstream range,
+generated rebuild and measurement-negative receipts are recorded separately.
+Branch/loop held-out comparison and the full required width/operator/branch/loop
+and compiler denominators remain open; FR-C2-02A is not newly declared complete.
+Other roadmap obligations, including the retained bitfield proof deadlines,
+remain open. Goal ACTIVE and integration/release LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
