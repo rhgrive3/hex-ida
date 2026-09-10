@@ -37,7 +37,11 @@ export function detectBinary(input, options = {}) {
       // 20-byte fat_arch entry is missing. Source-backed probes hand only a
       // short 16-byte prefix, so they declare truncated:true and leave the
       // full-table bounds to the Mach-O parser, which owns the whole input.
-      const entrySize = be === 0xcafebabf || le === 0xbfbafeca ? 32 : 20;
+      // FAT64 magics are byte-order independent of the nfat_arch field endianness:
+      // FAT_MAGIC_64 on disk is CA FE BA BF and FAT_CIGAM_64 is BF BA FE CA, so the
+      // big-endian read identifies both (0xcafebabf / 0xbfbafeca) while the
+      // little-endian read swaps the two families.
+      const entrySize = be === 0xcafebabf || be === 0xbfbafeca ? 32 : 20;
       const tableEnd = 8 + nfatArch * entrySize;
       const truncated = options.truncated === true;
       if (!truncated && r.length < tableEnd) return { format: 'unknown' };

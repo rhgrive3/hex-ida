@@ -119,6 +119,22 @@ assert.deepEqual(
   'a 19-byte arch entry is one byte short of the declared FAT32 table',
 );
 
+// FAT64 CIGAM (BF BA FE CA on disk) uses little-endian nfat_arch but still
+// declares 32-byte fat_arch_64 entries — the 64-bit table geometry must be
+// decided from the magic itself, independent of field byte order.
+{
+  const cigam64Short = Uint8Array.from([0xbf, 0xba, 0xfe, 0xca, 0x01, 0x00, 0x00, 0x00, ...new Array(20).fill(0)]);
+  assert.deepEqual(detectBinary(cigam64Short), { format: 'unknown' }, 'FAT_CIGAM_64 with a 20-byte payload is fail-closed');
+  const cigam64Complete = Uint8Array.from([0xbf, 0xba, 0xfe, 0xca, 0x01, 0x00, 0x00, 0x00, ...new Array(32).fill(0)]);
+  const result = detectBinary(cigam64Complete);
+  assert.equal(result.format, 'macho');
+  assert.equal(result.fat, true, 'FAT_CIGAM_64 with a complete 32-byte fat_arch_64 entry confirms');
+  const magic64Short = Uint8Array.from([0xca, 0xfe, 0xba, 0xbf, 0x00, 0x00, 0x00, 0x01, ...new Array(31).fill(0)]);
+  assert.deepEqual(detectBinary(magic64Short), { format: 'unknown' }, 'FAT_MAGIC_64 with a 31-byte entry is fail-closed');
+  const magic64Complete = Uint8Array.from([0xca, 0xfe, 0xba, 0xbf, 0x00, 0x00, 0x00, 0x01, ...new Array(32).fill(0)]);
+  assert.equal(detectBinary(magic64Complete).fat, true, 'FAT_MAGIC_64 with a complete entry confirms');
+}
+
 // Thin Mach-O detection and unrelated magics are unchanged.
 assert.deepEqual(detectBinary(Uint8Array.from([0xcf, 0xfa, 0xed, 0xfe])), { format: 'macho', fat: false });
 assert.deepEqual(detectBinary(Uint8Array.from([0x7f, 0x45, 0x4c, 0x46])), { format: 'elf' });
