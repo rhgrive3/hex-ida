@@ -86,6 +86,25 @@ const workflowSource = fs.readFileSync(
 );
 assert.match(workflowSource, /push:\s*\n\s*branches:\s*\[main\]/);
 assert.match(workflowSource, /github\.rest\.repos\.getBranch/);
-assert.match(workflowSource, /currentBaseSha:\s*baseBranch\?\.commit\?\.sha/);
+assert.match(workflowSource, /currentBaseSha:\s*evaluatedBaseSha/);
 assert.match(workflowSource, /context\.eventName === 'push'/);
 assert.match(workflowSource, /fresh \(HEAD,BASE\) AUTO review required/);
+
+// #6570 delayed-writer regression: the controller must re-fetch both mutable
+// tuple authorities after evaluation and before the final status write. This
+// prevents an old run from resurrecting success after B_old -> B_new (or H -> H2).
+const evaluationIndex = workflowSource.indexOf('const result = evaluator.evaluateFinalHeadAdmission');
+const refetchPrIndex = workflowSource.indexOf('const { data: currentPr } = await github.rest.pulls.get', evaluationIndex);
+const refetchBaseIndex = workflowSource.indexOf('const { data: currentBaseBranch } = await github.rest.repos.getBranch', refetchPrIndex);
+const driftGuardIndex = workflowSource.indexOf('currentHeadSha !== headSha || currentBaseSha !== evaluatedBaseSha', refetchBaseIndex);
+const finalWriteIndex = workflowSource.indexOf('await github.rest.repos.createCommitStatus', driftGuardIndex);
+assert.ok(evaluationIndex >= 0, 'workflow evaluates a concrete (HEAD,BASE) tuple');
+assert.ok(refetchPrIndex > evaluationIndex, 'PR head is re-fetched after evaluation');
+assert.ok(refetchBaseIndex > refetchPrIndex, 'target branch is re-fetched after PR head');
+assert.ok(driftGuardIndex > refetchBaseIndex, 'head/base drift is checked after both re-fetches');
+assert.ok(finalWriteIndex > driftGuardIndex, 'status write happens only after the tuple drift guard');
+assert.match(
+  workflowSource.slice(driftGuardIndex, finalWriteIndex),
+  /if \(currentHeadSha !== headSha \|\| currentBaseSha !== evaluatedBaseSha\)[\s\S]*?return;/,
+  'a drifted tuple exits before the evaluated result can be published',
+);

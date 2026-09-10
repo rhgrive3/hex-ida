@@ -174,6 +174,7 @@ jobs:
             const { data: baseBranch } = await github.rest.repos.getBranch({
               owner, repo, branch: pr.base.ref,
             });
+            const evaluatedBaseSha = baseBranch?.commit?.sha ?? null;
             const statuses = await github.paginate(github.rest.repos.listCommitStatusesForRef, {
               owner, repo, ref: headSha, per_page: 100,
             });
@@ -217,7 +218,7 @@ jobs:
               trustedAutoReviewers: [owner],
               // Approvals must be bound to the live target-branch head so a
               // stale (HEAD, BASE_old) approval cannot survive a base advance.
-              currentBaseSha: baseBranch?.commit?.sha ?? null,
+              currentBaseSha: evaluatedBaseSha,
               // These contexts are emitted for every PR in the current CircleCI
               // admission surface. Requiring the full set prevents transient
               // success before a slower status context has even been created.
@@ -230,6 +231,29 @@ jobs:
                 'ci/circleci: phase8-ownership',
               ],
             });
+
+            // The evidence above is only authoritative for the tuple that was
+            // evaluated. Re-fetch both mutable authorities immediately before
+            // publishing a final result so a delayed run cannot resurrect stale
+            // success/failure after a main or PR-head advance (#6570).
+            const { data: currentPr } = await github.rest.pulls.get({
+              owner, repo, pull_number: pr.number,
+            });
+            if (!currentPr || currentPr.state !== 'open') {
+              core.info(`PR #${pr.number} closed before final status write; discarding evaluated result.`);
+              return;
+            }
+            const { data: currentBaseBranch } = await github.rest.repos.getBranch({
+              owner, repo, branch: currentPr.base.ref,
+            });
+            const currentHeadSha = currentPr.head?.sha ?? null;
+            const currentBaseSha = currentBaseBranch?.commit?.sha ?? null;
+            if (currentHeadSha !== headSha || currentBaseSha !== evaluatedBaseSha) {
+              core.info(
+                `Admission tuple changed before final status write; evaluated (${headSha}, ${evaluatedBaseSha}), current (${currentHeadSha}, ${currentBaseSha}). Discarding stale result.`,
+              );
+              return;
+            }
 
             await github.rest.repos.createCommitStatus({
               owner,
@@ -245,7 +269,7 @@ jobs:
               .addHeading(`Final-head admission: ${result.state}`)
               .addRaw(`PR: #${pr.number}\n`)
               .addRaw(`Head: ${headSha}\n`)
-              .addRaw(`Base: ${baseBranch?.commit?.sha ?? '(unavailable)'}\n`)
+              .addRaw(`Base: ${evaluatedBaseSha ?? '(unavailable)'}\n`)
               .addRaw(`Trusted AUTO reviewers: ${result.evidence.trustedAutoReviewerCount}\n`)
               .addRaw(`AUTO approvals on head/base: ${result.evidence.exactAutoApprovalCount}\n`)
               .addRaw(`Required CI contexts: ${result.evidence.requiredStatusContextCount}\n`)
