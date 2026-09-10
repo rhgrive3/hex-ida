@@ -20,8 +20,8 @@ const summaryWithProvenance = (returnProvenance) => createFunctionSummary({
 
 test('#5710 canonical return provenance order follows UTF-16 code units, not the host collation', () => {
   const summary = summaryWithProvenance([
-    { kind: 'root', rootEntityId: 'ä' },
-    { kind: 'root', rootEntityId: 'z' },
+    { kind: 'root', rootEntityId: 'ä', addressSpace: 'memory' },
+    { kind: 'root', rootEntityId: 'z', addressSpace: 'memory' },
   ]);
   // Code-unit order is 'z' (U+007A) < 'ä' (U+00E4). ICU collations can rank
   // this pair differently, so the adversarial localeCompare test below is the
@@ -45,10 +45,10 @@ test('#5710 canonicalization and digest ignore an adversarial localeCompare impl
 
   try {
     const provenance = [
-      { kind: 'root', rootEntityId: 'Ä' },
-      { kind: 'root', rootEntityId: 'a' },
-      { kind: 'root', rootEntityId: 'Z' },
-      { kind: 'root', rootEntityId: 'z' },
+      { kind: 'root', rootEntityId: 'Ä', addressSpace: 'memory' },
+      { kind: 'root', rootEntityId: 'a', addressSpace: 'memory' },
+      { kind: 'root', rootEntityId: 'Z', addressSpace: 'memory' },
+      { kind: 'root', rootEntityId: 'z', addressSpace: 'memory' },
     ];
     const first = summaryWithProvenance(provenance);
     const second = summaryWithProvenance([...provenance].reverse());
@@ -65,10 +65,10 @@ test('#5710 canonicalization and digest ignore an adversarial localeCompare impl
 
 test('#5710 the canonical order is stable and the digest is locale-independent', () => {
   const provenance = [
-    { kind: 'root', rootEntityId: 'Ä' },
-    { kind: 'root', rootEntityId: 'a' },
-    { kind: 'root', rootEntityId: 'Z' },
-    { kind: 'root', rootEntityId: 'z' },
+    { kind: 'root', rootEntityId: 'Ä', addressSpace: 'memory' },
+    { kind: 'root', rootEntityId: 'a', addressSpace: 'memory' },
+    { kind: 'root', rootEntityId: 'Z', addressSpace: 'memory' },
+    { kind: 'root', rootEntityId: 'z', addressSpace: 'memory' },
   ];
   const first = summaryWithProvenance([...provenance].reverse());
   const second = summaryWithProvenance(provenance);
@@ -80,8 +80,8 @@ test('#5710 the canonical order is stable and the digest is locale-independent',
 
 test('#5710 equal provenance entries still deduplicate and tie-breaking is unchanged', () => {
   const summary = summaryWithProvenance([
-    { kind: 'root', rootEntityId: 'r1', returnIndex: 1 },
-    { kind: 'root', rootEntityId: 'r1', returnIndex: 1 },
+    { kind: 'root', rootEntityId: 'r1', returnIndex: 1, addressSpace: 'memory' },
+    { kind: 'root', rootEntityId: 'r1', returnIndex: 1, addressSpace: 'memory' },
     { kind: 'arg', argIndex: 2, rootEntityId: 'r2' },
     { kind: 'arg', argIndex: 1, rootEntityId: 'r2' },
   ]);

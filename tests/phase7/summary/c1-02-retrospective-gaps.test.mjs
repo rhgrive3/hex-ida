@@ -202,6 +202,8 @@ for (const kind of ['root', 'allocation']) {
       returnIndex: 0,
       rootEntityId: `${kind}-site-1`,
       offset: '16',
+      // #5242: root/allocation provenance carries its storage space.
+      addressSpace: 'memory',
     }]);
     const result = analyzeLocalPointsTo(fixture.ir, fixture.cfg, fixture.ssa, {
       snapshotId: 'snapshot-c1-02',

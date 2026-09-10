@@ -110,6 +110,28 @@ function compareNumeric(leftValue, rightValue) {
   return left.value < right.value ? -1 : left.value > right.value ? 1 : 0;
 }
 
+const EQUALITY_PRIMITIVE_TYPES = new Set(['string', 'number', 'boolean', 'bigint', 'symbol']);
+const EQUALITY_UNDECIDED = Symbol('capability-rule-equality-undecided');
+
+// Exact typed equality for the rule language (#5220): values compare only
+// within the same primitive type (BigInt 8n and string '8' are distinct), and
+// a comparison between two non-primitive values (objects/Maps/Sets — types
+// the language defines no canonical representation for) stays undecided
+// instead of reusing the lossy identity digest. Callers treat undecided as
+// incomplete, so no complete supported fact can be minted from a digest
+// collision.
+function typedEquality(left, right) {
+  const leftDecidable = left === null || EQUALITY_PRIMITIVE_TYPES.has(typeof left);
+  const rightDecidable = right === null || EQUALITY_PRIMITIVE_TYPES.has(typeof right);
+  if (!leftDecidable && !rightDecidable) return EQUALITY_UNDECIDED;
+  return left === right && typeof left === typeof right;
+}
+
+function equalityResult(equal, undecidedReason = 'capability-rule-equality-type-undecidable') {
+  if (equal === EQUALITY_UNDECIDED) return { value: false, complete: false, reason: undecidedReason };
+  return { value: equal === true, complete: true, reason: null };
+}
+
 function evaluateExpression(expression, features, budget) {
   if (!budget.consumeWork()) return { value: false, complete: false, reason: budget.stopped?.reason || 'budget' };
   if (!budget.consumeNodes()) return { value: false, complete: false, reason: budget.stopped?.reason || 'budget' };
@@ -134,9 +156,29 @@ function evaluateExpression(expression, features, budget) {
   if (op === 'exists') return { value: actual !== undefined && actual !== null, complete: true, reason: null };
   if (actual === undefined) return { value: false, complete: true, reason: null };
   const expected = expression.value;
-  if (op === 'equals') return { value: stable(actual) === stable(expected), complete: true, reason: null };
-  if (op === 'in') return { value: expected.some((item) => stable(item) === stable(actual)), complete: true, reason: null };
-  if (op === 'contains') return { value: Array.isArray(actual) ? actual.some((item) => stable(item) === stable(expected)) : typeof actual === 'string' && actual.includes(String(expected)), complete: true, reason: null };
+  if (op === 'equals') return equalityResult(typedEquality(actual, expected));
+  if (op === 'in') {
+    // The rule language requires `in` values to be arrays of primitives; an
+    // expected value that cannot participate in typed equality makes the
+    // comparison undecided rather than silently unequal.
+    if (expected.some((item) => item !== null && !EQUALITY_PRIMITIVE_TYPES.has(typeof item))) {
+      return equalityResult(EQUALITY_UNDECIDED);
+    }
+    return equalityResult(expected.some((item) => typedEquality(actual, item) === true));
+  }
+  if (op === 'contains') {
+    if (Array.isArray(actual)) {
+      if (expected !== null && !EQUALITY_PRIMITIVE_TYPES.has(typeof expected)) {
+        return equalityResult(EQUALITY_UNDECIDED);
+      }
+      return equalityResult(actual.some((item) => typedEquality(item, expected) === true));
+    }
+    if (typeof actual === 'string') {
+      if (typeof expected !== 'string') return { value: false, complete: true, reason: null };
+      return { value: actual.includes(expected), complete: true, reason: null };
+    }
+    return equalityResult(EQUALITY_UNDECIDED);
+  }
   const compared = compareNumeric(actual, expected);
   if (compared == null) return { value: false, complete: true, reason: null };
   if (op === 'gte') return { value: compared >= 0, complete: true, reason: null };

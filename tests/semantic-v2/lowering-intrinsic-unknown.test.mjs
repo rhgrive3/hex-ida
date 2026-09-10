@@ -91,12 +91,16 @@ const tmp = (id, type) => createTemporaryValue(id, type);
   assert.ok(intrinsic.origin.transforms.some((transform) => transform.consumedEntityIds.includes('effect.vector.intrinsic')));
 }
 
-{
+for (const hasInputDefinition of [false, true]) {
   const vectorType = createVectorValue(16, createBitVectorValue(8));
+  const vectorInput = tmp('vector-input', vectorType);
   const source = bundle({
-    operations: [createMachineOperation({
+    operations: [...(hasInputDefinition ? [createMachineOperation({
+      kind: 'register-read', id: 'effect.pure.vector.input',
+      register: createRegisterValue('vector-input-state', 128), value: vectorInput,
+    })] : []), createMachineOperation({
       kind: 'value', id: 'effect.pure.vector', opcode: 'opaque-vector-permute',
-      inputs: [tmp('vector-input', vectorType)], outputs: [tmp('vector-output', vectorType)],
+      inputs: [vectorInput], outputs: [tmp('vector-output', vectorType)],
     })],
     completeness: 'exact',
   });
@@ -106,7 +110,14 @@ const tmp = (id, type) => createTemporaryValue(id, type);
   assert.equal(intrinsic.intrinsic.memoryRead.scope, 'none');
   assert.equal(intrinsic.intrinsic.memoryWrite.scope, 'none');
   assert.deepEqual(intrinsic.intrinsic.stateWrites, []);
-  assert.equal(intrinsic.completeness, 'complete');
+  assert.equal(intrinsic.completeness, hasInputDefinition ? 'complete' : 'partial');
+  assert.equal(ir.completeness, hasInputDefinition ? 'complete' : 'partial');
+  assert.equal(intrinsic.inputs.length, 1);
+  if (!hasInputDefinition) {
+    assert.equal(intrinsic.unknown.knownParts.unresolvedInputs[0].reason,
+      'temporary-value-has-no-defining-machine-effect');
+    assert.equal(intrinsic.unknown.knownParts.unresolvedInputs[0].ordinal, 0);
+  }
 }
 
 {

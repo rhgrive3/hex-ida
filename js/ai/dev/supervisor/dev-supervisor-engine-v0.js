@@ -489,6 +489,7 @@ export class DevSupervisorEngineV0 {
     if (!run || run.status !== DEV_RUN_STATUS.WAITING_HUMAN) return null;
     const currentHexConversationId = normalizeConversationId(input.conversationId);
     const waitingHexConversationId = normalizeConversationId(run.hexConversationId);
+    if (!currentHexConversationId || !waitingHexConversationId) return null;
     return currentHexConversationId === waitingHexConversationId ? run : null;
   }
 
