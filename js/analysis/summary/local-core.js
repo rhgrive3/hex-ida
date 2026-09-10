@@ -537,6 +537,19 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       }));
       controlUnknown = true;
       ensureBroadWrite(node);
+    } else if (node.call.noreturn == null || node.call.mayThrow == null) {
+      // Omitted control knowledge is a missing fact, not a negative proof
+      // (#5854): promoting null here would publish "returns / does not throw"
+      // from raw IR that never carried the fact. Degrade to an unknown call
+      // effect instead of folding in absent knowledge.
+      unknownCallEffects.push(createUnknownCallEffect({
+        callSiteId: node.id,
+        reason: 'summary-incomplete',
+        targetEntityIds: targets,
+        evidenceIds: evidenceOf(node),
+      }));
+      controlUnknown = true;
+      ensureBroadWrite(node);
     } else {
       if (node.call.mayThrow === true) mayThrow = true;
       if (node.call.mayThrow === 'unknown') controlUnknown = true;
