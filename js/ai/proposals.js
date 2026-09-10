@@ -180,6 +180,15 @@ export class ProposalStore {
       return proposalSnapshot(proposal);
     } catch (error) {
       proposal.status = 'failed';
+      /* An indeterminate verification (the mutation applied but its
+         postcondition could not be checked) must not masquerade as
+         "failed = state unchanged". Record the partial outcome on the
+         proposal and in the audit trail so consumers can tell a failed
+         mutation from an applied-but-unverifiable one (#5133). */
+      if (error?.details?.verification === 'indeterminate') {
+        proposal.partial = true;
+        this.audit.push({ type: 'proposal-partial', proposalId: authority.id, timestamp: new Date().toISOString(), reason: String(error?.details?.cause || error?.message || 'postcondition unverifiable').slice(0, 2000) });
+      }
       this.audit.push({ type: 'proposal-failed', proposalId: authority.id, timestamp: new Date().toISOString() });
       throw error;
     } finally {
