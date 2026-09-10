@@ -43,7 +43,17 @@ export function detectBinary(input, options = {}) {
       // little-endian read swaps the two families.
       const entrySize = be === 0xcafebabf || be === 0xbfbafeca ? 32 : 20;
       const tableEnd = 8 + nfatArch * entrySize;
-      const truncated = options.truncated === true;
+      // #5647 review: probe routing may only bypass the table-bound gate when
+      // the caller genuinely sees a truncated prefix of a larger input. The
+      // caller declares what it handed us and the total source size; the
+      // truncation is derived from those sizes, so a forged caller-controlled
+      // boolean cannot promote a complete short input to a confirmed FAT.
+      const probeLength = options.probeLength;
+      const totalSize = options.totalSize;
+      const isTruncatedPrefix = typeof probeLength === 'number' && Number.isSafeInteger(probeLength)
+        && typeof totalSize === 'number' && Number.isSafeInteger(totalSize)
+        && probeLength >= 0 && totalSize > probeLength;
+      const truncated = isTruncatedPrefix;
       if (!truncated && r.length < tableEnd) return { format: 'unknown' };
       return { format: 'macho', fat: true };
     }

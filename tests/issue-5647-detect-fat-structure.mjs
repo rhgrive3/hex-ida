@@ -91,14 +91,38 @@ assert.deepEqual(
 
 // A short probe prefix of a real fat image still detects: source-backed
 // openBinarySource()/worker routes hand detectBinary() only 16 bytes, so they
-// declare the input truncated and the arch-table bounds belong to the Mach-O
-// parser, which owns the full input.
+// declare the probe context (probeLength/totalSize) and the arch-table bounds
+// belong to the Mach-O parser, which owns the full input.
 {
   const prefix = Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01, ...new Array(8).fill(0)]);
-  const result = detectBinary(prefix, { truncated: true });
+  const result = detectBinary(prefix, { probeLength: 16, totalSize: 0x4000 });
   assert.equal(result.format, 'macho');
   assert.equal(result.fat, true, '16-byte prefix probe of a real fat image remains confirmed');
 }
+
+// The probe bypass is derived from sizes, not a caller-controlled boolean:
+// a forged {truncated:true} (or any caller-controlled flag) on a COMPLETE
+// short input cannot promote it to a confirmed FAT.
+assert.deepEqual(
+  detectBinary(Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01]), { truncated: true }),
+  { format: 'unknown' },
+  'a forged truncated flag on a complete 8-byte input is ignored',
+);
+assert.deepEqual(
+  detectBinary(Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01, ...new Array(19).fill(0)]), { truncated: true }),
+  { format: 'unknown' },
+  'a forged truncated flag cannot bypass the table-bound gate',
+);
+assert.deepEqual(
+  detectBinary(Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01, ...new Array(19).fill(0)]), { probeLength: 27, totalSize: 27 }),
+  { format: 'unknown' },
+  'probeLength == totalSize is a complete input: the short table stays fail-closed',
+);
+assert.equal(
+  detectBinary(Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01, ...new Array(20).fill(0)]), { probeLength: 28, totalSize: 0x4000 }).fat,
+  true,
+  'a genuinely truncated 28-byte prefix of a larger source confirms',
+);
 
 // #5647 review: a COMPLETE 8-byte input declaring nfat_arch=1 but carrying no
 // fat_arch entry must not confirm a FAT32 image — the declared arch table
