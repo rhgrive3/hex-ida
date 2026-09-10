@@ -43,11 +43,11 @@ function addressOf(value) {
   return null;
 }
 function pageOf(page = {}) {
-  const rawOffset = Number(page.offset ?? page.start ?? 0);
-  const rawLimit = Number(page.limit ?? page.size ?? 200);
+  const rawOffset = page.offset ?? page.start ?? 0;
+  const rawLimit = page.limit ?? page.size ?? 200;
   return {
-    offset: Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0,
-    limit: Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(MAX_PAGE, rawLimit) : 200,
+    offset: typeof rawOffset === 'number' && Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0,
+    limit: typeof rawLimit === 'number' && Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(MAX_PAGE, rawLimit) : 200,
   };
 }
 function paged(values, page, completeness = 'complete', status = {}) {
