@@ -1,4 +1,4 @@
-import { codedIndexSize, metadataRowSize } from './metadata-layout.js';
+import { codedIndexSize, metadataRowSize, validateMetadataTableValidMask } from './metadata-layout.js';
 import { readCilMetadataStreams } from './metadata-streams.js';
 import { CLI_HEADER_SIZE, validateCliHeaderSize } from './cli-header.js';
 const TYPE_REF_TABLE = 0x01;
@@ -123,6 +123,7 @@ export function buildCilCallMetadataIndex(bytes) {
   const heapSizes = bytes[start + 6];
   const valid = BigInt(readU32(view, start + 8, 'cil-call-signature-tables-truncated'))
     | (BigInt(readU32(view, start + 12, 'cil-call-signature-tables-truncated')) << 32n);
+  validateMetadataTableValidMask(valid, 'cil-call-signature-valid-mask-invalid');
   const rowCounts = new Array(64).fill(0);
   let pos = start + 24;
   for (let table = 0; table < 64; table++) {
