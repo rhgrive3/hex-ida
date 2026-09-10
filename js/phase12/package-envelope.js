@@ -47,6 +47,95 @@ function bytesOf(value) {
   throw new PackageValidationError('package-input-type-invalid');
 }
 
+function utf8ByteLength(text) {
+  let bytes = 0;
+  for (let i = 0; i < text.length; ) {
+    const codePoint = text.codePointAt(i);
+    bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+    i += codePoint > 0xffff ? 2 : 1;
+  }
+  return bytes;
+}
+
+// Iterative (no recursion) shape traversal so the depth/entry/string budgets
+// and cycle rejection are the FIRST resource guards on the object path (#5219).
+// The bounded string/bytes path enforces depth/string/token budgets through
+// scanJsonBudget before JSON.parse; the object path previously canonicalized
+// through stableStringify first, so a hostile deep or cyclic graph reached the
+// core canonicalizer's recursion (and the JS stack) before any budget applied.
+// Plain objects, arrays, Maps and Sets are descended (mirroring jsonSafe);
+// binary views are opaque leaves (jsonSafe canonicalizes them to byte arrays).
+// Budget semantics mirror scanJsonBudget for the JSON-representable surface:
+// 1-based container depth, per-string UTF-8 bytes, own keys + array items as
+// entries. Token counts have no object analogue and stay byte-budget covered.
+function scanObjectBudget(value, limits) {
+  const { maxDepth, maxStrings, maxStringBytes, maxEntries } = limits;
+  let strings = 0;
+  let stringBytes = 0;
+  let entries = 0;
+  const ancestors = new Set();
+  const countString = (text) => {
+    strings += 1;
+    stringBytes += utf8ByteLength(text);
+    if (strings > maxStrings || stringBytes > maxStringBytes) {
+      throw new PackageValidationError('package-string-budget-exceeded');
+    }
+  };
+  const chargeEntry = () => {
+    entries += 1;
+    if (entries > maxEntries) throw new PackageValidationError('package-entry-budget-exceeded');
+  };
+  const enter = (container, depth) => {
+    if (ancestors.has(container)) {
+      throw new PackageValidationError('package-input-structure-invalid', 'package input contains a cyclic reference');
+    }
+    if (depth > maxDepth) throw new PackageValidationError('package-nesting-budget-exceeded');
+    ancestors.add(container);
+    if (container instanceof Map) return { container, depth, kind: 'map', iterator: container.entries() };
+    if (container instanceof Set) return { container, depth, kind: 'set', iterator: container.values() };
+    if (Array.isArray(container)) return { container, depth, kind: 'array', index: 0 };
+    return { container, depth, kind: 'object', keys: Object.keys(container), index: 0 };
+  };
+  const stack = [enter(value, 1)];
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    let item;
+    if (frame.kind === 'map') {
+      const step = frame.iterator.next();
+      if (step.done) { ancestors.delete(frame.container); stack.pop(); continue; }
+      chargeEntry();
+      descend(step.value[0], frame.depth);
+      descend(step.value[1], frame.depth);
+      continue;
+    } else if (frame.kind === 'set') {
+      const step = frame.iterator.next();
+      if (step.done) { ancestors.delete(frame.container); stack.pop(); continue; }
+      chargeEntry();
+      item = step.value;
+    } else if (frame.kind === 'array') {
+      if (frame.index >= frame.container.length) { ancestors.delete(frame.container); stack.pop(); continue; }
+      chargeEntry();
+      item = frame.container[frame.index++];
+    } else {
+      if (frame.index >= frame.keys.length) { ancestors.delete(frame.container); stack.pop(); continue; }
+      const key = frame.keys[frame.index++];
+      chargeEntry();
+      countString(key);
+      item = frame.container[key];
+    }
+    descend(item, frame.depth);
+  }
+  function descend(item, parentDepth) {
+    if (item === null || typeof item !== 'object') {
+      if (typeof item === 'string') countString(item);
+      else if (typeof item === 'bigint') countString(item.toString());
+      return;
+    }
+    if (ArrayBuffer.isView(item) || item instanceof ArrayBuffer) return;
+    stack.push(enter(item, parentDepth + 1));
+  }
+}
+
 function scanJsonBudget(bytes, limits = {}) {
   const normalized = normalizedPackageLimits(limits);
   const { maxDepth, maxStrings, maxStringBytes, maxTokens } = normalized;
@@ -209,6 +298,11 @@ export function validatePackageEnvelope(envelope, options = {}) {
 export function importPhase12Package(value, options = {}) {
   let parsed;
   if (typeof value === 'object' && value !== null && !(value instanceof Uint8Array) && !(value instanceof ArrayBuffer) && !ArrayBuffer.isView(value)) {
+    // Bounded shape traversal FIRST (#5219): depth/entry/string budgets and
+    // cycle rejection apply before any canonicalization work, so a hostile
+    // deep or cyclic graph can no longer reach stableStringify's recursion
+    // (or the JS stack) ahead of the resource guards.
+    scanObjectBudget(value, normalizedPackageLimits(options));
     const maxBytes = positiveLimit(options.maxBytes, MAX_PACKAGE_INPUT_BYTES, 'maxBytes', 'package-envelope-resource-limit-invalid');
     const encoded = stableStringify(value);
     if (new TextEncoder().encode(encoded).byteLength > maxBytes) {
