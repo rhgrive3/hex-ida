@@ -900,6 +900,12 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
   }
 
   const body = [];
+  const renderedControlTargets = new Set();
+  for (const n of semanticIr.nodes) {
+    if (n.kind !== 'branch') continue;
+    for (const target of n.targets || []) renderedControlTargets.add(target);
+  }
+
   const loopHeaders = new Set();
   for (const blk of cfg.blocks) {
     for (const succ of (blk.successors || [])) {
@@ -917,6 +923,10 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
 
     const irBlock = semanticIr.blocks.find((b) => b.id === blk.id);
     const nodeIds = irBlock ? irBlock.nodeIds : [];
+
+    if (renderedControlTargets.has(blk.id)) {
+      body.push({ kind: 'label', indent: 0, text: `${blk.id}:`, source: irBlock?.origin || blk.origin });
+    }
 
     for (const nid of nodeIds) {
       const n = nodeMap.get(nid);
@@ -947,6 +957,10 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
           body.push({ kind: 'return', indent: isLoop ? 2 : 1, text: `return ${retVal};` });
         } else {
           body.push({ kind: 'return', indent: isLoop ? 2 : 1, text: 'return;' });
+        }
+      } else if (n.kind === 'branch') {
+        if (n.targets && n.targets[0]) {
+          body.push({ kind: 'goto', indent: isLoop ? 2 : 1, text: `goto ${n.targets[0]};`, source: n.origin });
         }
       } else if (n.kind === 'conditional-branch') {
         const cond = n.inputs[0] ? printExpression(buildValueExpr(n.inputs[0])) : 'cond';
