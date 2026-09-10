@@ -150,6 +150,11 @@ export function compareOperationId(a, b) {
 }
 
 function compareOperations(a, b) { return compareOperationId(a.operationId, b.operationId); }
+function checkpointPayloadDigest(state, operationIds, resolutionOperations = []) {
+  return payloadDigest(resolutionOperations.length
+    ? { state, operationIds, resolutionOperations }
+    : { state, operationIds });
+}
 
 export function orderOperations(operations = [], existingIds = new Set()) {
   const unique = new Map();
@@ -445,7 +450,17 @@ export class ChangeLog {
         return clone(operation);
       })
       .sort(compareOperations);
-    return deepFreeze({ schemaVersion: CHECKPOINT_SCHEMA_VERSION, projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: cloneState(this.state), operationIds: [...this.operations.keys()].sort(), resolutionOperations, digest: this.digest() });
+    const state = cloneState(this.state);
+    const operationIds = [...this.operations.keys()].sort();
+    return deepFreeze({
+      schemaVersion: CHECKPOINT_SCHEMA_VERSION,
+      projectIdentity: this.projectIdentity,
+      binaryIdentity: this.binaryIdentity,
+      state,
+      operationIds,
+      resolutionOperations,
+      digest: checkpointPayloadDigest(state, operationIds, resolutionOperations),
+    });
   }
 
   digest() { return payloadDigest({ state: this.state, operationIds: [...this.operations.keys()].sort() }); }
@@ -465,8 +480,6 @@ function validateCheckpointDigest(checkpoint) {
   }).sort(compareOperationId);
   if (new Set(operationIds).size !== operationIds.length) throw new TypeError('checkpoint-operation-id-duplicate');
   if (typeof digest !== 'string' || !digest) throw new TypeError('checkpoint-digest-invalid');
-  const expectedDigest = payloadDigest({ state, operationIds });
-  if (digest !== expectedDigest) throw new TypeError('checkpoint-digest-mismatch');
   const rawResolutionOperations = checkpoint?.resolutionOperations ?? [];
   if (!Array.isArray(rawResolutionOperations)) throw new TypeError('checkpoint-resolution-operations-invalid');
   const resolutionOperationMap = new Map();
@@ -475,7 +488,10 @@ function validateCheckpointDigest(checkpoint) {
     if (operation.action !== 'resolve' || !operationIds.includes(operation.operationId)) throw new TypeError('checkpoint-resolution-operation-invalid');
     rememberRestoredOperation(resolutionOperationMap, operation);
   }
-  return { state, operationIds, resolutionOperations: [...resolutionOperationMap.values()].sort(compareOperations) };
+  const resolutionOperations = [...resolutionOperationMap.values()].sort(compareOperations);
+  const expectedDigest = checkpointPayloadDigest(state, operationIds, resolutionOperations);
+  if (digest !== expectedDigest) throw new TypeError('checkpoint-digest-mismatch');
+  return { state, operationIds, resolutionOperations };
 }
 
 function restoredCheckpointOperations(checkpointMaterial, projectIdentity, binaryIdentity) {
