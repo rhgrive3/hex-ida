@@ -4911,6 +4911,41 @@ This establishes the missing rename metamorphism in the declared corpus, not
 allocator-lifetime, logical-thread, linker/IFUNC, arbitrary descriptor-provider
 or prerequisite C0/ME completion. Those broader acceptance claims remain open.
 
+## C4-03 initial proof-gated scalar CSE adoption
+
+Projection version 2 now emits an actual shared unsigned scalar binding for
+matching independently admitted proof recipes consumed by consecutive statements
+in one canonical block. Both computations must have the same private input
+endpoints, with only immutable entry inputs; arbitrary GVN candidate objects,
+equal text, root names and proof-shaped data do not authorize sharing. The
+canonical IR, SSA, stores and control flow remain unchanged. General GVN/DCE
+passes still publish analysis-only candidates; this is a consumer of the existing
+solver-committed projection, not a new candidate or equivalence engine.
+
+The emitted declaration and its actual store/return consumers share a
+`proved-scalar-cse` provenance event through their owned consumer bindings. Source
+overlap alone cannot attach it to unrelated lines. Missing/truncated history
+withholds the new adoption. Naming checks existing rendered identifiers, and
+replay retains the private proof recipe for the emitted binding. The regression
+initially exposed extra cast rewrites on replay; preserving that recipe fixes the
+first divergence without weakening replay or source-identity checks.
+
+The new owned `provenance/cse-adoption.test.mjs` exercises 8/16/32/64-bit actual
+bindings, both stores, complete bidirectional provenance, unchanged IR and replay.
+It checks all 65,536 BV8 input pairs plus 75 native-width boundary pairs, both in
+the AST evaluator and by compiling/executing the actual emitted C with UBSan.
+Different input endpoints and different blocks must reach scalar proof adoption
+but not CSE; a real renamed argument tests identifier collision, and cancellation
+withholds changes. Fixture corrections for memory identity/qualifiers, branch
+target placement and candidate generation are retained in task evidence. No test
+denominator was silently removed and no solver deadline was increased.
+
+This is initial actual CSE, not closure of general CSE, DCE, mixed-width/signed/
+non-entry-input or cross-block sharing, memory/CFG/exception rewrites, or C4-03's
+full rendered-entity denominator. Existing PR #3421 provenance foundations remain
+reused. No matching open CSE/DCE PR was found in the current search. Same-PR
+backup and exact-head/generated-output verification are separate required facts.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

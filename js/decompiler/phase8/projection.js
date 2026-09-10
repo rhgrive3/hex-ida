@@ -16,6 +16,8 @@ import {
 } from './analysis-identity.js';
 import { buildRenderProvenance } from './render-provenance.js';
 
+export const PHASE8_PROJECTION_VERSION = 2;
+
 const lineExpressionHistories = new WeakMap();
 const controlConsumerSources = new WeakMap();
 // One current snapshot per owned AST, never a chain of previous projections.
@@ -340,6 +342,83 @@ function refreshMetrics(result, semanticAst, printed, records) {
   };
 }
 
+// Render one shared computation only after both source values have crossed the
+// existing solver admission boundary. GVN names/hashes and expression text are
+// not equivalence authority. This initial adoption is local to one straight-line
+// block and immutable entry inputs; it never removes canonical instructions.
+function shareProvedScalars(result, bindings, consumers, records, shouldAbort) {
+  const body = result.cAst.body;
+  const ordered = result.ir.instructions ?? [];
+  if (body.length > 4096 || bindings.size > 32 || ordered.length > PROJECTION_LIMITS.nodes) return;
+  const instructions = new Map(ordered.map(inst => [inst.id, inst]));
+  if (instructions.size !== ordered.length) return;
+  const groups = [];
+  let remaining = PROJECTION_LIMITS.edges;
+  for (const [index, node] of body.entries()) {
+    if (--remaining < 0 || shouldAbort?.()) return;
+    const expression = node.semantic?.expression, binding = bindings.get(expression);
+    const instruction = instructions.get(node.semantic?.ir), consumer = consumers[index];
+    if (!binding?.entryInputs || !consumer?.isCurrent() || node.kind !== 'stmt'
+      || !['store', 'return'].includes(node.semantic?.op) || instruction?.block == null
+      || instruction.op !== (node.semantic.op === 'return' ? 'ret' : 'store') || expression?.signed !== false
+      || node.semantic.op === 'store' && !node.semantic.location?.text
+      || ![8, 16, 32, 64].includes(expression.bits) || ['var', 'const'].includes(expression.kind)) continue;
+    const found = groups.find(group => group.block === instruction.block && group.indent === node.indent
+      && sameProofExpression(group.binding.recipe, group.binding.inputs, binding.recipe, binding.inputs));
+    const item = { index, node, expression, consumer, instruction };
+    if (found) found.items.push(item);
+    else groups.push({ block:instruction.block, indent:node.indent, binding, items:[item] });
+  }
+  const plans = [];
+  let serial = 0;
+  for (const group of groups) {
+    if (--remaining < 0 || shouldAbort?.()) return;
+    if (group.items.length < 2) continue;
+    const first = group.items[0], last = group.items.at(-1);
+    // No branch, label, scope change or unrelated statement is crossed. The
+    // canonical instruction order must agree with the actual rendered order.
+    if (last.index - first.index + 1 !== group.items.length
+      || group.items.some((item, i) => i && result.ir.instructions.indexOf(item.instruction)
+        <= result.ir.instructions.indexOf(group.items[i - 1].instruction))) continue;
+    let name;
+    do {
+      if (--remaining < 0 || shouldAbort?.()) return;
+      name = `hex_cse_${serial++}`;
+    } while (body.some(node => new RegExp(`\\b${name}\\b`).test(node.text ?? '')));
+    const source = mergeSource(...group.items.map(item => item.expression.source));
+    const record = Object.freeze({ kind:'proved-scalar-cse',
+      proof:'identical admitted solver recipes and immutable entry inputs in one straight-line rendered block',
+      targets:Object.freeze(collectTargets(source, 'proved-scalar-cse')),
+      origin:Object.freeze({ addresses:Object.freeze([...source.addresses]), rows:Object.freeze([...source.rows]),
+        ir:Object.freeze([...source.ir]), ssaDefs:Object.freeze([...source.ssaDefs]), ssaUses:Object.freeze([...source.ssaUses]) }),
+      name, useCount:group.items.length, canonicalInstructionsRetained:true });
+    const expression = { ...first.expression, source };
+    const node = { kind:'stmt', indent:group.indent,
+      text:`uint${expression.bits}_t ${name} = ${printExpression(expression)};`, source,
+      semantic:{ op:'cse-binding', name, expression } };
+    const retained = [...new Set(group.items.flatMap(item => item.consumer.records))];
+    const consumer = Object.freeze({ ir:result.ir, expression,
+      records:Object.freeze([...retained, record]),
+      isCurrent:() => group.items.every(item => item.consumer.isCurrent()) });
+    plans.push({ group, name, source, record, node, consumer });
+  }
+  // All checks precede writes. The surrounding proof projection rechecks the
+  // source/plan and cancellation before publication, including after printing.
+  for (const plan of plans.sort((a, b) => b.group.items[0].index - a.group.items[0].index)) {
+    const { group, name, source, record, node, consumer } = plan;
+    for (const item of group.items) {
+      item.node.semantic.expression = expr.variable(name, item.expression.bits, false, source);
+      item.node.text = item.node.semantic.op === 'return' ? `return ${name};` : `${item.node.semantic.location.text} = ${name};`;
+      consumers[item.index] = Object.freeze({ ...item.consumer,
+        records:Object.freeze([...item.consumer.records, record]) });
+    }
+    body.splice(group.items[0].index, 0, node);
+    consumers.splice(group.items[0].index, 0, consumer);
+    bindings.set(node.semantic.expression, group.binding);
+    records.push(record);
+  }
+}
+
 function boundAnalysisIdentity(result, analysis, supplied) {
   const canonical = canonicalAnalysisIdentity({ ir:result.ir, analysis });
   if (supplied == null) return canonical;
@@ -440,7 +519,9 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
       if (previous) replacement = {...replacement,source:mergeSource(previous.source,replacement.source)};
       if (entry.kind === 'solver-constant') replacement.signed = root.signed;
       replacements.set(token,replacement);
-      proofExpressions.set(replacement,{recipe:entry.projection,inputs:Object.freeze(inputs)});
+      proofExpressions.set(replacement,{recipe:entry.projection,inputs:Object.freeze(inputs),
+        entryInputs:inputBinding.inputs.every(input => input.value.kind === 'arg' && input.value.def == null)
+          && inputs.every(input => input.kind === 'var')});
       const record = Object.freeze({kind:entry.kind,valueId:entry.valueId,
         proof:'canonical eligible solver equivalence proof',targets:Object.freeze(collectTargets(source,entry.kind)),
         queryHash:entry.queryHash,planId:proved.planId,beforeHash:entry.beforeHash,afterHash:entry.afterHash,
@@ -520,8 +601,13 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     ? Math.max(0, Math.min(PROJECTION_LIMITS.edges, opts.renderProvenanceBindingBudget.maxEdges)) : PROJECTION_LIMITS.edges;
   for (const [index, node] of (result.cAst.body || []).entries()) {
     if (node?.semantic?.expression) {
-      node.semantic.expression = transform(node.semantic.expression);
+      const retainedBinding = node.semantic.op === 'cse-binding' && inherited?.proofExpressions.get(node.semantic.expression);
+      if (retainedBinding) {
+        memo.set(node.semantic.expression, node.semantic.expression);
+        proofExpressions.set(node.semantic.expression, retainedBinding);
+      } else node.semantic.expression = transform(node.semantic.expression);
       if (node.semantic.op === 'return') node.text = `return ${printExpression(node.semantic.expression)};`;
+      else if (node.semantic.op === 'cse-binding') node.text = `uint${node.semantic.expression.bits}_t ${node.semantic.name} = ${printExpression(node.semantic.expression)};`;
       else if (node.semantic.op === 'store' && node.semantic.location?.text) {
         const text = `${node.semantic.location.text} = ${printExpression(node.semantic.expression)};`;
         const spelling = storeSpellings[index], consumer = expressionConsumers[index];
@@ -603,6 +689,8 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
 
   if (spellingRecords.length || controlRecords.length) result = { ...result, rewriteProof:[...(result.rewriteProof || []), ...spellingRecords, ...controlRecords] };
 
+  if (proved && (!hasPriorHistory || inherited)) shareProvedScalars(result, proofExpressions, expressionConsumers, records, opts.shouldAbort);
+
   if (proofRequested && (opts.shouldAbort?.() || !isProducerProjection(original) || proved && !readProvedRewrites(analysis,proofContext))) return original;
   const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
   const lines = (result.cAst.body || []).map((node, index) => {
@@ -646,6 +734,8 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   }
   const pendingHistory = prepareProjectionHistory(result, expressionConsumers, conditionBindings,
     retainedRecords, opts, historyReasons, proofExpressions);
+  const adoptedCse = records.some(record => record.kind === 'proved-scalar-cse');
+  if (adoptedCse && (!pendingHistory || historyReasons.size)) return original;
   const withLines = {
     ...result,
     lines,
@@ -653,7 +743,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     sourceMap:printed.mapping,
     metrics:refreshMetrics(result, result.semanticAst, printed, records),
     phase8Projection:Object.freeze({
-      version:1,
+      version:PHASE8_PROJECTION_VERSION,
       transformCount:records.length,
       transforms:Object.freeze(records),
       inductionNames:Object.freeze(Object.fromEntries(names)),
@@ -673,6 +763,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     budget:opts.renderProvenanceBudget,
     shouldAbort:opts.shouldAbort,
   });
+  if (adoptedCse && renderProvenance.completeness !== 'complete') return original;
   if (proofRequested && (opts.shouldAbort?.() || !isProducerProjection(original) || proved && !readProvedRewrites(analysis,proofContext))) return original;
   const cancelled = opts.shouldAbort?.() === true;
   const stillCurrent = pendingHistory && pendingHistory.observation.matches()
