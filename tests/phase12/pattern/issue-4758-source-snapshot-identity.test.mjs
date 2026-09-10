@@ -79,4 +79,68 @@ assert.equal(typeof rawA.snapshotId, 'string');
 assert.ok(rawA.snapshotId.length > 0);
 assert.equal(rawA.value.fields.value.provenance.snapshotId, rawA.snapshotId);
 
+function accessorSource(snapshotValues) {
+  let snapshotReads = 0;
+  let readReads = 0;
+  let sizeReads = 0;
+  const value = {
+    get snapshotId() {
+      const index = Math.min(snapshotReads, snapshotValues.length - 1);
+      snapshotReads += 1;
+      return snapshotValues[index];
+    },
+    get size() {
+      sizeReads += 1;
+      return bytes.length;
+    },
+    get read() {
+      readReads += 1;
+      return function read(offset, length) {
+        return bytes.slice(Number(offset), Number(offset) + Number(length));
+      };
+    },
+  };
+  return {
+    value,
+    counts: () => ({ snapshotReads, readReads, sizeReads }),
+  };
+}
+
+const validThenStructured = accessorSource(['snap-A', ['snap-A']]);
+const snapshotted = evaluatePattern(compiled, validThenStructured.value);
+assert.equal(snapshotted.status, 'complete');
+assert.equal(snapshotted.snapshotId, 'snap-A');
+assert.equal(snapshotted.value.provenance.snapshotId, 'snap-A');
+assert.equal(snapshotted.value.fields.value.provenance.snapshotId, 'snap-A');
+assert.deepEqual(
+  validThenStructured.counts(),
+  { snapshotReads: 1, readReads: 1, sizeReads: 1 },
+  'custom ByteSource identity/read/size accessors must be snapshotted exactly once at the public boundary',
+);
+
+const structuredThenValid = accessorSource([['snap-A'], 'snap-A']);
+assert.throws(
+  () => evaluatePattern(compiled, structuredThenValid.value),
+  /pattern-source-snapshot-id-invalid/,
+  'an invalid first snapshot identity must fail closed instead of being replaced by a later valid getter value',
+);
+assert.equal(structuredThenValid.counts().snapshotReads, 1, 'invalid snapshot identity is read once');
+
+let throwingSnapshotReads = 0;
+const throwsOnSecondIdentityRead = {
+  get snapshotId() {
+    throwingSnapshotReads += 1;
+    if (throwingSnapshotReads > 1) throw new Error('snapshotId reread');
+    return 'snap-A';
+  },
+  size: bytes.length,
+  read(offset, length) {
+    return bytes.slice(Number(offset), Number(offset) + Number(length));
+  },
+};
+const noReread = evaluatePattern(compiled, throwsOnSecondIdentityRead);
+assert.equal(noReread.status, 'complete');
+assert.equal(noReread.snapshotId, 'snap-A');
+assert.equal(throwingSnapshotReads, 1, 'validated snapshot identity must not be reread by core');
+
 console.log('[phase12][pattern] issue-4758 source snapshot identity regression passed');
