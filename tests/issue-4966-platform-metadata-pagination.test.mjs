@@ -29,8 +29,9 @@ function fixtureImage() {
   };
 }
 
-function createWorkerHarness() {
+function createWorkerHarness({ openImage = fixtureImage(), sliceImage = openImage } = {}) {
   const posts = [];
+  let sliceParses = 0;
   const self = { postMessage(message) { posts.push(message); } };
   class FakeCachedByteSource {
     constructor(base) { this.size = base.size; this.maxReadLength = base.maxReadLength; }
@@ -44,11 +45,14 @@ function createWorkerHarness() {
     BigInt, Promise, Map, Set, URL, setTimeout, clearTimeout, console,
     asByteSource(input) { return { size: input.size, maxReadLength: 1024 }; },
     CachedByteSource: FakeCachedByteSource,
-    detectBinary() { return { format: 'raw', fat: false }; },
-    async openBinarySource() { return fixtureImage(); },
-    async parseMachOSource() { return fixtureImage(); },
-    describeBinaryImage() {
-      return { platform: {}, slices: [], capability: null, raw: { id: 'raw', vmAddr: 0n, fileOffset: 0n, size: BigInt(SYMBOL_COUNT) } };
+    detectBinary() { return { format: openImage.format, fat: !!openImage.metadata?.fat }; },
+    async openBinarySource() { return openImage; },
+    async parseMachOSource() { sliceParses += 1; return sliceImage; },
+    describeBinaryImage(binaryImage) {
+      return {
+        platform: {}, slices: [], capability: { arch: binaryImage.arch },
+        raw: { id: 'raw', vmAddr: 0n, fileOffset: 0n, size: BigInt(SYMBOL_COUNT) },
+      };
     },
     fingerprintVendors() { return []; },
     async hashByteSource() { return 'hash'; },
@@ -70,7 +74,7 @@ function createWorkerHarness() {
     if (reply.t === 'err') throw new Error(reply.error);
     return reply.result;
   }
-  return { request };
+  return { request, sliceParseCount: () => sliceParses };
 }
 
 const worker = createWorkerHarness();
@@ -140,5 +144,25 @@ const defaults = await worker.request('metadata', { kind: 'symbols' });
 assert.equal(defaults.start, 0);
 assert.equal(defaults.items.length, 500);
 assert.equal(defaults.next, 500);
+
+const fatPrimary = {
+  ...fixtureImage(),
+  format: 'macho',
+  metadata: { fat: { slices: [{}, {}] } },
+  symbols: [{ name: 'PRIMARY' }],
+};
+const fatSlice = fixtureImage();
+const fatWorker = createWorkerHarness({ openImage: fatPrimary, sliceImage: fatSlice });
+await fatWorker.request('open', { file: { name: 'fat-metadata.bin', size: SYMBOL_COUNT } });
+const slicePage = await fatWorker.request('metadata', { kind: 'symbols', sliceIndex: 1, start: 1, limit: 2 });
+assert.deepEqual(Array.from(slicePage.items, (entry) => entry.name), ['S1', 'S2'], 'pagination must use the selected Mach-O slice');
+assert.equal(slicePage.start, 1);
+assert.equal(slicePage.next, 3);
+assert.equal(fatWorker.sliceParseCount(), 1, 'non-default slice must be resolved through the slice-aware production path');
+await assert.rejects(
+  fatWorker.request('metadata', { kind: 'symbols', sliceIndex: 1, start: '1', limit: 1 }),
+  /metadata start must be a non-negative safe integer/,
+  'pagination validation must remain active after selected-slice authority is established',
+);
 
 console.log('platform metadata pagination #4966: PASS');
