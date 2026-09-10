@@ -169,9 +169,10 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     if (param.sequence === 0 && (param.flags & 0x0003) !== 0) fail('cil-param-return-direction-invalid');
   }
   // Sequences inside one owner must be contiguous without gaps or duplicates
-  // (II.22.33 rules 3-4, starting at 0 for the return row or 1 when the
-  // method has no return Param row) and must not exceed the method's declared
-  // parameter arity when the signature is available (#7623 R0 review).
+  // (II.22.33 rules 3-4): exactly 0..N when a return row (Sequence 0) is
+  // present, exactly 1..N when the method has no return row. The mode is
+  // fixed once by the first sequence — switching modes mid-range would pass
+  // gap sequences like [0,2] (#7623 R0 review).
   const ownerMethodOf = (token) => methods[(parseInt(token, 16) & 0xffffff) - 1];
   const sequencesByOwner = new Map();
   for (const param of params) {
@@ -181,14 +182,14 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
   }
   for (const [ownerToken, sequences] of sequencesByOwner) {
     const sorted = [...sequences].sort((a, b2) => a - b2);
+    if (new Set(sequences).size !== sequences.length) fail('cil-param-sequence-invalid');
+    const start = sorted[0];
+    if (start > 1) fail('cil-param-sequence-invalid');
     for (let j = 0; j < sorted.length; j++) {
-      if (sorted[j] !== j && sorted[j] !== j + 1) fail('cil-param-sequence-invalid');
+      if (sorted[j] !== start + j) fail('cil-param-sequence-invalid');
     }
-    if (sorted.length > 0 && sorted[0] > 1) fail('cil-param-sequence-invalid');
-    const seen = new Set(sequences);
-    if (seen.size !== sequences.length) fail('cil-param-sequence-invalid');
     const arity = ownerMethodOf(ownerToken)?.parameterArity;
-    if (Number.isSafeInteger(arity) && sorted.length - (sorted.includes(0) ? 1 : 0) > arity) {
+    if (Number.isSafeInteger(arity) && sorted.length - (start === 0 ? 1 : 0) > arity) {
       fail('cil-param-arity-exceeded');
     }
   }  // Bind param tokens onto their owning MethodDef row (position-ordered).

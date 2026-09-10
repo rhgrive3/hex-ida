@@ -412,3 +412,23 @@ test('#7637 the property signature participates in the canonical projection', ()
   }));
   assert.deepEqual(image.properties[0].signature, { parameters: 0, returnValue: { stackType: 'int32', bits: 32 } });
 });
+
+test('#7623 sequence gaps cannot hide behind a mid-range mode switch', () => {
+  const paramRow = (sequence) => {
+    const bytes = new Uint8Array(6);
+    const v = new DataView(bytes.buffer);
+    // flags 0: a Sequence-0 return row may not carry direction bits.
+    v.setUint16(0, sequence === 0 ? 0 : 0x0001, true); v.setUint16(2, sequence, true); v.setUint16(4, 20, true);
+    return bytes;
+  };
+  // [0,2]: the old dual-mode check let the 2 pass as "1-start" at j=1.
+  assert.throws(() => rawParse(parseWithStrings({
+    methods: [{ name: 'Run', body: [0x2a], signature: [0, 2, 1, 0x08, 0x08] }],
+    extraRows: [[0x08, { count: 2, bytes: new Uint8Array([...paramRow(0), ...paramRow(2)]) }]],
+  })), /cil-param-sequence-invalid/);
+  // [0,1,3]: same mode-switch hole one slot later.
+  assert.throws(() => rawParse(parseWithStrings({
+    methods: [{ name: 'Run', body: [0x2a], signature: [0, 3, 1, 0x08, 0x08, 0x08] }],
+    extraRows: [[0x08, { count: 3, bytes: new Uint8Array([...paramRow(0), ...paramRow(1), ...paramRow(3)]) }]],
+  })), /cil-param-sequence-invalid/);
+});
