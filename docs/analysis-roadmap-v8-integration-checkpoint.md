@@ -3649,6 +3649,61 @@ Other facade location/typed-result/escape histories, standalone call/return
 transforms, full removed/merged-class coverage, C4-02/04/05 proofs and the original
 23 findings/135-binary corpus remain open. Goal ACTIVE; acceptance LOCKED.
 
+## C4-03 actual public-location restoration history
+
+The existing `restoreAapcs64PublicLocations` writer now retains its three actual
+operations: reuse-stack-location, replace-stack-location and replace-field-location.
+Each private event observes the original/new public location, exact source
+instruction, address inputs and definitions, displaced Map binding, actual Map
+write and existing stack or canonical numeric-load evidence. The original
+selection predicates, location assignments, alias flags and pass order are
+unchanged. In particular, field restoration still requires the existing canonical
+exact-memory producer and retains aliasUncertain/compatibilityShapeOnly; this is
+not a new alias, forwarding or field-layout theorem.
+
+The final bounded observation binds the real Map identity, key membership and
+values, every source position and the related canonical memory-proof sources.
+Deleting a present-undefined entry and adding another undefined-valued entry
+cannot pass merely because size and get results agree. Descriptions/Map entries
+are bounded at 1024, argument and memory-source lists at 512; unsupported or
+oversized observation remains explicitly unavailable without changing the writer.
+The existing private state handoff carries actual loc/extra reference writes;
+an absent predecessor history is valid and no longer causes a recording error.
+
+Real expression consumers carry the observed location operation and original
+canonical references. Direct public-location-restoration records remain available
+for LOAD and STORE with no rendered line, with no invented rendered edge or
+canonical removal. Copied public metadata cannot issue a history. Old location,
+Map, input, source-position or proof changes revoke it; actual range handoff,
+successive projection, budget/cancellation and stale query navigation retain the
+existing fail-closed contracts and existing ledger priority.
+
+The new canonical-discovered provenance test file has 17 tests. Parsed AArch64
+fixtures cover stack replacement/reuse, LOAD/STORE, both widths and repeated
+Map-key writes. Field positives use real canonical IR/CFG/MemorySSA builders fed
+through a test-worker-only upstream facade seam; production gains no fixture API.
+They prove the actual conditional field writer and core/public consumers, not
+real decoded/compiler field coverage. Copied exact-looking proof does not execute
+the writer. Decoded field probes whose canonical facts remain unknown are retained
+as uncovered cases, not relabeled as precise evidence or repaired in this lane.
+
+Before the final membership hardening, the canonical provenance group, decompiler
+regression and 14 full-public-IR parent comparisons passed. The latter includes
+12 parsed stack/control cases and two canonical synthetic field seam cases against
+parent aad2d205c; it is not the frozen compiler oracle. Final exact-head reruns and
+generated identity are recorded separately in persistent checkpoint evidence.
+Issuer, Map binding, related-source-position and membership-bypass overlays fail
+the relevant regressions. Two initial negative diagnostic processes ended with
+143 and no completed receipt; their logs remain retained and are not test proof.
+Bounded assertion diagnostics subsequently produced the intended failures.
+
+Existing PR #3421 is still the reused foundation at 4cd5b3eb9; the current open
+location search found no separate matching PR. This is another commit on existing
+PR #7036, not a component/main merge or replacement PR. Typed-call-result,
+escaped-stack and standalone call/return histories, full removed/merged-class
+coverage, C4-02/04/05 proofs and the original23/frozen135 corpus remain open.
+Goal ACTIVE; integration/release acceptance LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

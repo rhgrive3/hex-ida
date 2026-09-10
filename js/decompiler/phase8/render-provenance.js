@@ -4,7 +4,8 @@ import { readLineExpressionHistory } from './projection.js';
 import { readSwitchLineHistory, readSwitchRenderHistory } from '../switch.js';
 import { readSemanticSuppressionHistory, readSemanticStoreLineHistory, readSemanticStoreRenderHistory } from '../semantic-core.js';
 import { readProjectedStateNormalization, projectedStateNormalizationExpected } from '../../semantics/compat/semantic-ir-v2-to-v1.js';
-import { readFacadeStateNormalization, readFacadePreservedStateHistory, facadePreservedStateTransitionExpected } from '../../ir-core.js';
+import { readFacadeStateNormalization, readFacadePreservedStateHistory, facadePreservedStateTransitionExpected,
+  readFacadeLocationHistory, facadeLocationTransitionExpected } from '../../ir-core.js';
 
 const PUBLIC_STATE_RULES = Object.freeze(['suppress-unused-entry-state', 'reorder-public-state-slot', 'renumber-public-state-version']);
 const readPublicStateNormalization = ir => readFacadeStateNormalization(ir) || readProjectedStateNormalization(ir);
@@ -137,7 +138,7 @@ function originKeySet(origins) {
 function recordFeedsEntity(record, entityOriginKeys, bound) {
   // An initial omission has no pre-existing C line and no known replacement.
   // Sharing an origin with a visible expression is not a producer edge.
-  if (record.kind === 'display-suppression' || record.kind === 'public-state-normalization' || record.kind === 'abi-state-restoration') return false;
+  if (['display-suppression', 'public-state-normalization', 'abi-state-restoration', 'public-location-restoration'].includes(record.kind)) return false;
   // A rewrite's consumed/remaining sources do not establish which C line
   // uses its result. In particular, a shared input is not a replacement edge.
   // Keep these records queryable without inventing a rendered consumer.
@@ -263,6 +264,28 @@ function preservedStateRecord(event, cap) {
   }) };
 }
 
+function publicLocationRecord(event, cap) {
+  const values = [...new Set([event.output, ...event.beforeInputs].filter(Boolean))];
+  const definitions = [...new Set([event.source, ...event.related, ...values.map(value => value.def)].filter(Boolean))];
+  const full = canonicalOrigins({ addresses:definitions.map(inst => inst.address), rows:definitions.map(inst => inst.row),
+    ir:definitions.map(inst => inst.id), ssaDefs:values.map(value => value.id), ssaUses:[] });
+  const refs = [...definitions.map(inst => `ir:${inst.id}`), ...values.map(value => `ssa:def:${value.id}`)];
+  const bounded = truncateOrigins(full, cap), truncated = originsTotalSize(full) > cap || refs.length > cap;
+  const consumedRefs = Object.freeze(refs.slice(0, cap));
+  const identity = location => Object.freeze(Object.fromEntries(Object.entries(location)
+    .map(([key, value]) => [key, typeof value === 'bigint' ? value.toString() : value])));
+  return { truncated, record:renderProvenanceRecord({ kind:'public-location-restoration', rule:event.operation,
+    proof:'observed-public-location-restoration-not-new-memory-proof', targets:consumedRefs,
+    origin:{ addresses:bounded.addresses, rows:bounded.rows, ir:bounded.ir,
+      ssaDefs:bounded.ssaRefs.map(ref => ref.slice(4)), ssaUses:[] },
+    publicLocationTransition:Object.freeze({ scope:'compatibility-public-location', ordinal:event.ordinal,
+      before:identity(event.before), after:identity(event.after), mapKey:event.mapKey,
+      mapWrite:event.mapWrite, mapBeforePresent:event.mapBeforePresent, displacedMapKey:event.mapBefore?.key ?? null,
+      consumedRefs, producedRefs:Object.freeze([`ir:${event.source.id}`]), canonicalValuesRetained:true,
+      completeness:truncated ? 'incomplete' : 'complete' }),
+  }) };
+}
+
 export function buildRenderProvenance({ result, snapshotId = null, budget = null, shouldAbort = null } = {}) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) fail('phase8-render-provenance-result-required');
   if (!Array.isArray(result.lines)) fail('phase8-render-provenance-result-required');
@@ -273,6 +296,9 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   const reasons = new Set();
   const publicState = readPublicStateNormalization(result.ir);
   const preservedState = readFacadePreservedStateHistory(result.ir);
+  const publicLocation = readFacadeLocationHistory(result.ir);
+  if (facadeLocationTransitionExpected(result.ir) && !publicLocation) reasons.add('unavailable-public-location-history');
+  if (publicLocation?.completeness === 'incomplete') reasons.add('incomplete-public-location-history');
   if (facadePreservedStateTransitionExpected(result.ir) && !preservedState) reasons.add('unavailable-abi-state-history');
   if (preservedState?.completeness === 'incomplete') reasons.add('incomplete-abi-state-history');
   if (projectedStateNormalizationExpected(result.ir) && !publicState) reasons.add('unavailable-public-state-history');
@@ -303,7 +329,8 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   const suppressionRecords = suppressions?.records ?? [];
   const publicStateEvents = publicState?.events || [];
   const preservedStateEvents = preservedState?.events || [];
-  const rawRecordCount = expressionRecords.length + rawRecords.length + suppressionRecords.length + publicStateEvents.length + preservedStateEvents.length;
+  const publicLocationEvents = publicLocation?.events || [];
+  const rawRecordCount = expressionRecords.length + rawRecords.length + suppressionRecords.length + publicStateEvents.length + preservedStateEvents.length + publicLocationEvents.length;
   const ledgerRecords = [];
   for (const record of suppressionRecords.slice(0, Math.max(0, resolvedBudget.maxTransformRecords - ledgerRecords.length))) {
     ledgerRecords.push(renderProvenanceRecord(record));
@@ -327,6 +354,9 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   }
   if (unavailableExpressionHistory) reasons.add('missing-expression-history');
   for (const record of rawRecords.slice(0, Math.max(0, resolvedBudget.maxTransformRecords - ledgerRecords.length))) {
+    if (record?.kind === 'public-location-restoration' || record?.publicLocationTransition) {
+      reasons.add('unissued-public-location-history'); continue;
+    }
     if (record?.kind === 'abi-state-restoration' || record?.abiStateTransition) {
       reasons.add('unissued-abi-state-history'); continue;
     }
@@ -351,6 +381,12 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     const normalized = preservedStateRecord(event, resolvedBudget.maxOriginsPerEntity);
     ledgerRecords.push(normalized.record);
     if (normalized.truncated) { reasons.add('truncated'); truncatedScopes.push('abi-state-origins'); }
+  }
+  for (const event of publicLocationEvents.slice(0, Math.max(0, resolvedBudget.maxTransformRecords - ledgerRecords.length))) {
+    if (typeof shouldAbort === 'function' && shouldAbort() === true) return cancelledMap(resolvedBudget);
+    const normalized = publicLocationRecord(event, resolvedBudget.maxOriginsPerEntity);
+    ledgerRecords.push(normalized.record);
+    if (normalized.truncated) { reasons.add('truncated'); truncatedScopes.push('public-location-origins'); }
   }
   if (rawRecordCount > ledgerRecords.length + unavailableExpressionHistory) {
     ledgerTruncated = rawRecordCount - ledgerRecords.length - unavailableExpressionHistory;
@@ -465,6 +501,7 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   let completeness = 'complete';
   if (publicState && readPublicStateNormalization(result.ir) !== publicState) reasons.add('stale-public-state-history');
   if (preservedState && readFacadePreservedStateHistory(result.ir) !== preservedState) reasons.add('stale-abi-state-history');
+  if (publicLocation && readFacadeLocationHistory(result.ir) !== publicLocation) reasons.add('stale-public-location-history');
   if (suppressions && readSemanticSuppressionHistory(result) !== suppressions) reasons.add('stale-semantic-suppression-history');
   if (boundLines.some(([line, binding]) => readRenderedHistory(line, result.ir) !== binding)) {
     reasons.add('stale-expression-binding');
@@ -600,6 +637,35 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
             || record.originHistory || record.renderedRemoval || record.suppressedRender || record.publicStateTransition
             || !Array.isArray(record.producedRefs) || record.producedRefs.length
             || !Array.isArray(record.removedRefs) || record.removedRefs.length) reasons.add('invalid-abi-state-history');
+      }
+      if (record?.kind === 'public-location-restoration' || record?.publicLocationTransition) {
+        const transition = record.publicLocationTransition;
+        const rules = ['reuse-stack-location', 'replace-stack-location', 'replace-field-location'];
+        const validIdentity = value => value && typeof value === 'object' && !Array.isArray(value)
+          && Object.keys(value).length === 8
+          && ['key', 'kind', 'disp', 'size', 'baseId', 'regionId', 'aliasUncertain', 'compatibilityShapeOnly'].every(key => Object.hasOwn(value, key))
+          && ['key', 'kind', 'regionId'].every(key => value[key] === null || typeof value[key] === 'string')
+          && ['disp', 'size', 'baseId'].every(key => value[key] === null || typeof value[key] === 'string' || Number.isSafeInteger(value[key]))
+          && typeof value.aliasUncertain === 'boolean' && typeof value.compatibilityShapeOnly === 'boolean';
+        if (record.kind !== 'public-location-restoration' || !rules.includes(record.rule)
+            || record.proof !== 'observed-public-location-restoration-not-new-memory-proof'
+            || transition?.scope !== 'compatibility-public-location' || !Number.isSafeInteger(transition.ordinal) || transition.ordinal < 0
+            || !validIdentity(transition.before) || !validIdentity(transition.after)
+            || !['unknown', 'stack'].includes(transition.before.kind)
+            || transition.after.kind !== (record.rule === 'replace-field-location' ? 'field' : 'stack')
+            || typeof transition.mapKey !== 'string' || transition.after.key !== transition.mapKey
+            || transition.mapWrite !== (record.rule !== 'reuse-stack-location') || typeof transition.mapBeforePresent !== 'boolean'
+            || (transition.displacedMapKey !== null && typeof transition.displacedMapKey !== 'string')
+            || (record.rule === 'replace-field-location' && (!transition.after.aliasUncertain || !transition.after.compatibilityShapeOnly))
+            || transition.canonicalValuesRetained !== true || !['complete', 'incomplete'].includes(transition.completeness)
+            || ['consumedRefs', 'producedRefs'].some(key => !Array.isArray(transition[key]) || !transition[key].length
+              || transition[key].some(ref => typeof ref !== 'string' || !/^(ir|ssa:def):.+/.test(ref))
+              || new Set(transition[key]).size !== transition[key].length)
+            || transition.producedRefs.length !== 1 || !transition.producedRefs[0].startsWith('ir:')
+            || !transition.consumedRefs.includes(transition.producedRefs[0])
+            || record.originHistory || record.renderedRemoval || record.suppressedRender || record.publicStateTransition || record.abiStateTransition
+            || !Array.isArray(record.producedRefs) || record.producedRefs.length
+            || !Array.isArray(record.removedRefs) || record.removedRefs.length) reasons.add('invalid-public-location-history');
       }
       const history = record?.originHistory;
       if (!history) continue;

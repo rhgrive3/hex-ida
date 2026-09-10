@@ -34,6 +34,19 @@ const expectedFacadeConstantTransitions = new WeakMap();
 const facadeStateTransitions = new WeakMap();
 const facadePreservedStateHistories = new WeakMap();
 const expectedFacadePreservedState = new WeakMap();
+const facadeLocationHistories = new WeakMap();
+const expectedFacadeLocations = new WeakMap();
+
+export function facadeLocationTransitionExpected(projected, instruction = null) {
+  const expected = expectedFacadeLocations.get(projected);
+  return instruction == null ? (expected?.count || 0) > 0 : expected?.sources.has(instruction) === true;
+}
+
+export function readFacadeLocationHistory(projected, instruction = null) {
+  const entry = facadeLocationHistories.get(projected);
+  if (!entry?.history.isCurrent()) return null;
+  return instruction == null ? entry.history : entry.bySource.get(instruction) ?? null;
+}
 
 export function facadePreservedStateTransitionExpected(projected, instruction = null) {
   const expected = expectedFacadePreservedState.get(projected);
@@ -76,7 +89,7 @@ function observeFacadeArguments(inst, history) {
 }
 
 function retainFacadeArgumentWrites(fields, history) {
-  if (!fields || history.unavailable) return;
+  if (!fields || !history || history.unavailable) return;
   for (const field of fields) {
     const after = Object.getOwnPropertyDescriptor(field.object, field.key)?.value;
     if (Object.is(field.before, after)) continue;
@@ -576,7 +589,79 @@ function canonicalAddressBase(value, active = new Set()) {
  * MemorySSA alias conclusions remain authoritative. This restores only the
  * legacy public location shape from already-proven precise address metadata.
  */
-function restoreAapcs64PublicLocations(projected) {
+function publicLocationIdentity(location) {
+  return Object.freeze({ key:location?.key ?? null, kind:location?.kind ?? null,
+    disp:location?.disp ?? null, size:location?.size ?? null, baseId:location?.base?.id ?? null,
+    regionId:location?.regionId ?? null, aliasUncertain:location?.aliasUncertain === true,
+    compatibilityShapeOnly:location?.compatibilityShapeOnly === true });
+}
+
+function beforePublicLocation(projected, source, key) {
+  try {
+    const locations = projected.locations;
+    if (Object.getPrototypeOf(locations) !== Map.prototype) return null;
+    return { location:source.loc, identity:publicLocationIdentity(source.loc), extra:source.extra, locations, key,
+      mapBeforePresent:Map.prototype.has.call(locations, key), mapBefore:Map.prototype.get.call(locations, key) };
+  } catch { return null; }
+}
+
+function retainPublicLocation(observer, projected, source, before, details, history) {
+  observer.sources.add(source); observer.count++;
+  if (before) retainFacadeArgumentWrites([{ object:source, key:'loc', before:before.location },
+    { object:source, key:'extra', before:before.extra }], history);
+  else if (history) history.unavailable = true;
+  if (!before || observer.records.length >= 1024 || (source.args?.length || 0) > 512) return;
+  const values = [...new Set([source.addr?.base, details.base, ...source.args.map(arg => arg.value)].filter(Boolean))];
+  const memorySources = details.memory?.provenance?.sourceEntityIds || [];
+  if (memorySources.length > 512) return;
+  const related = memorySources.length ? projected.instructions.filter(inst => memorySources.includes(inst.semanticNodeId)) : [];
+  if (memorySources.some(id => !related.some(inst => inst.semanticNodeId === id))) return;
+  observer.records.push(Object.freeze({ source, output:source.dst, input:source.addr?.base,
+    stage:'facade-public-location', ordinal:observer.count - 1, op:source.op, sub:source.sub,
+    operation:details.operation, before:before.identity, after:publicLocationIdentity(source.loc),
+    previousLocation:before.location, location:source.loc, extra:source.extra, address:source.addr,
+    locations:before.locations, mapKey:before.key, mapBeforePresent:before.mapBeforePresent, mapBefore:before.mapBefore,
+    mapAfter:Map.prototype.get.call(before.locations, before.key), mapWrite:details.mapWrite,
+    base:details.base, stack:details.stack ? Object.freeze({ ...details.stack }) : null,
+    memory:details.memory ?? null, proofContext:details.proofContext ?? null, related:Object.freeze(related),
+    inputs:Object.freeze(values.map(value => Object.freeze({ value, definition:value.def }))),
+    beforeInputs:Object.freeze(values),
+    object:Object.freeze({ before:before.location, after:source.loc, displaced:before.mapBefore ?? null,
+      related:Object.freeze(related) }),
+  }));
+}
+
+function sealFacadeLocationHistory(projected, observer) {
+  expectedFacadeLocations.set(projected, observer);
+  if (!observer.count) return;
+  try {
+    const locations = projected.locations, size = Object.getOwnPropertyDescriptor(Map.prototype, 'size').get;
+    if (Object.getPrototypeOf(locations) !== Map.prototype || Reflect.ownKeys(locations).length || size.call(locations) > 1024) return;
+    const bindings = [...Map.prototype.entries.call(locations)];
+    const valid = observer.records.filter(event => event.locations === locations && event.source.op === event.op
+      && event.source.sub === event.sub && event.source.loc === event.location && event.source.extra === event.extra
+      && event.source.addr === event.address && event.source.dst === event.output
+      && event.inputs.every(input => input.value.def === input.definition));
+    const output = observeProjectedOperationData(projected, valid.flatMap(event => [event,
+      ...event.related.map(source => ({ source, beforeInputs:[] }))]));
+    const proofsCurrent = () => valid.every(event => !event.memory || event.base?.def?.op === LEGACY_OP.LOAD
+      && event.base.def.memoryForwarding === event.memory && isCanonicalExactMemoryForwarding(event.memory,
+        canonicalMemoryForwardingContextForLoad(event.memory, event.base.def, event.proofContext)));
+    const isCurrent = () => Object.getOwnPropertyDescriptor(projected, 'locations')?.value === locations
+      && Object.getPrototypeOf(locations) === Map.prototype && !Reflect.ownKeys(locations).length
+      && size.call(locations) === bindings.length && bindings.every(([key, value]) => Map.prototype.has.call(locations, key)
+        && Map.prototype.get.call(locations, key) === value)
+      && output() && proofsCurrent();
+    if (!isCurrent()) return;
+    const history = Object.freeze({ events:Object.freeze(valid), isCurrent,
+      completeness:valid.length === observer.count ? 'complete' : 'incomplete' });
+    facadeLocationHistories.set(projected, { history, bySource:new Map(valid.map(event => [event.source,
+      Object.freeze({ events:Object.freeze([event]), isCurrent })])) });
+  } catch { /* Public locations are unchanged; missing bounded history remains explicit. */ }
+}
+
+function restoreAapcs64PublicLocations(projected, history = null) {
+  const observer = { records:[], sources:new WeakSet(), count:0 };
   for (const inst of projected.instructions ?? []) {
     if (inst.op !== LEGACY_OP.LOAD && inst.op !== LEGACY_OP.STORE) continue;
     if ((inst.loc?.kind !== LEGACY_MK.UNKNOWN && inst.loc?.kind !== LEGACY_MK.STACK) || inst.addr?.precise !== true || inst.addr.index != null) continue;
@@ -587,6 +672,7 @@ function restoreAapcs64PublicLocations(projected) {
       const existing = inst.loc?.kind === LEGACY_MK.STACK && inst.loc.disp != null && BigInt(inst.loc.disp) === offset
         && (inst.loc.size == null || size == null || Number(inst.loc.size) === Number(size)) ? inst.loc : null;
       const key = existing?.key ?? `stack:${offset.toString()}`;
+      const before = beforePublicLocation(projected, inst, key);
       const loc = existing ?? {
         key,
         kind: LEGACY_MK.STACK,
@@ -599,6 +685,8 @@ function restoreAapcs64PublicLocations(projected) {
       if (!existing) projected.locations?.set?.(key, loc);
       inst.loc = loc;
       inst.extra = { ...(inst.extra ?? {}), compatAbiPreservedAddress: true };
+      retainPublicLocation(observer, projected, inst, before, { operation:existing ? 'reuse-stack-location' : 'replace-stack-location',
+        base:inst.addr.base, stack, mapWrite:!existing }, history);
       continue;
     }
     const base = canonicalAddressBase(inst.addr.base);
@@ -609,6 +697,7 @@ function restoreAapcs64PublicLocations(projected) {
     const disp = BigInt(inst.addr.disp ?? 0n);
     const size = inst.addr.size ?? inst.extra?.size ?? null;
     const key = `field:loaded:${base.id}+${disp.toString()}:s${size ?? '?'}`;
+    const before = beforePublicLocation(projected, inst, key);
     const loc = {
       key,
       kind: LEGACY_MK.FIELD,
@@ -623,7 +712,10 @@ function restoreAapcs64PublicLocations(projected) {
     projected.locations?.set?.(key, loc);
     inst.loc = loc;
     inst.extra = { ...(inst.extra ?? {}), compatibilityShapeOnly: true };
+    retainPublicLocation(observer, projected, inst, before, { operation:'replace-field-location', base, mapWrite:true,
+      memory:base.def.memoryForwarding, proofContext:base.def.memoryForwardingContext ?? base.def.extra?.memoryForwardingContext }, history);
   }
+  return observer;
 }
 
 function attachCanonicalCallArguments(projected, history = null) {
@@ -953,7 +1045,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
   const stateSource = projectedStateTransitionCandidates(result.legacyV1);
   const stateHistory = stateSource?.isCurrent() ? { source:stateSource, writes:[], unavailable:false } : null;
   const preservedStateObserver = restoreCanonicalPreservedStateReads(result.legacyV1, abiAdapter, stateHistory);
-  restoreAapcs64PublicLocations(result.legacyV1);
+  const locationObserver = restoreAapcs64PublicLocations(result.legacyV1, stateHistory);
   const constantObserver = propagateExactLegacyConstants(result.legacyV1, stateHistory);
   attachCanonicalCallArguments(result.legacyV1, stateHistory);
   attachCanonicalTypedCallResults(result.legacyV1, instructionByRow, abiAdapter, opts);
@@ -962,6 +1054,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
   sealFacadeStateTransitions(result.legacyV1, stateHistory);
   sealFacadeConstantTransitions(result.legacyV1, constantObserver);
   sealFacadePreservedStateHistory(result.legacyV1, preservedStateObserver, constantObserver);
+  sealFacadeLocationHistory(result.legacyV1, locationObserver);
   if (typeof process !== 'undefined' && process.env?.HEX_DEBUG_C2_LEGACY === '1' && typeof process.stderr?.write === 'function') {
     process.stderr.write(JSON.stringify(result.legacyV1.instructions.filter((item) => item.op === 'load').map((item) => ({
       row: item.row,
