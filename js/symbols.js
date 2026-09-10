@@ -27,6 +27,32 @@ function canonicalAddressKey(value) {
 }
 
 export class SymbolIndex {
+  static canonicalizeFunctionStarts(raw) {
+    if (raw == null) return new BigUint64Array(0);
+    if (raw instanceof BigUint64Array) return raw;
+    const canonicalElement = (value) => {
+      if (typeof value === 'bigint') return value;
+      if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+      if (typeof value === 'string') {
+        const text = value.trim();
+        if (/^(?:0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(text)) {
+          try { return BigInt(text); } catch { return null; }
+        }
+      }
+      return null;
+    };
+    if (Array.isArray(raw)) {
+      const out = new BigUint64Array(raw.length);
+      for (let index = 0; index < raw.length; index++) {
+        const canonical = canonicalElement(raw[index]);
+        if (canonical == null) throw new TypeError('symbol-function-start-transport-invalid');
+        out[index] = canonical;
+      }
+      return out;
+    }
+    throw new TypeError('symbol-function-start-transport-invalid');
+  }
+
   constructor(result) {
     const r = result || {};
     const rawAddrs = r.addrs || new BigUint64Array(0);
@@ -50,7 +76,12 @@ export class SymbolIndex {
     this.names = symbolCardinalityValid ? rawNames : [];
     /* 1 = 外へ公開されている名前（エクスポート）。0 = このファイルの中だけ。 */
     this.flags = symbolCardinalityValid ? rawFlags : new Uint8Array(0);
-    this.funcs = r.funcs || new BigUint64Array(0);
+    /* Function starts must be a canonical typed transport. A raw Number[]
+       array survives with Number/BigInt coerced comparisons but fails the
+       strict-equality exact-start lookups, so every start becomes invisible
+       (#5094): canonicalize the elements and fail closed on non-canonical
+       ones instead of keeping a lookup-dead transport. */
+    this.funcs = SymbolIndex.canonicalizeFunctionStarts(r.funcs);
     /* Optional exact function ends. A zero/missing entry means unknown. */
     this.funcEnds = r.funcEnds || null;
     /* Executable regions are the trust boundary for containment. */
