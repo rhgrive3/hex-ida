@@ -63,8 +63,11 @@ async function lower(bytes) {
   assert.equal(lowered.semanticIr.completeness, 'complete');
 }
 
-// An unrepresentable numeric type byte must fail closed (partial + unknown)
-// instead of silently publishing a fabricated 32-bit complete value.
+// An unrepresentable numeric type byte must fail closed: the function
+// aggregate goes partial with a `machine-type-unrepresentable` unknown, the
+// affected value is flagged in its own metadata, and NO fabricated 32-bit
+// authority is materialized — the value keeps only the proven width (v128 =
+// 128 from the lifter's type authority).
 {
   // (func (param v128) (result v128) local.get 0) — v128 (0x7b) has no
   // canonical machine-type mapping in the shared bridge.
@@ -77,6 +80,13 @@ async function lower(bytes) {
   const lowered = await lower(V128_MODULE);
   assert.equal(lowered.semanticIr.completeness, 'partial');
   assert.ok(lowered.semanticIr.unknowns.some((u) => u.reason === 'machine-type-unrepresentable'));
+  const flagged = lowered.semanticIr.values.filter((v) => v.metadata?.reason === 'machine-type-unrepresentable');
+  assert.ok(flagged.length > 0, 'affected values must carry the unrepresentable flag');
+  for (const value of flagged) {
+    assert.notDeepEqual(value.machineType, { kind: 'bitvector', widthBits: 32 },
+      'unrepresentable type must not expose fabricated bitvector/32 authority');
+    assert.equal(value.machineType.widthBits, 128, 'only the proven width is preserved');
+  }
 }
 
 console.log('[phase11] wasm bridge machine-type regression #7890 passed');
