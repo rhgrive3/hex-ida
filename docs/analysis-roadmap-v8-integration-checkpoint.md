@@ -4535,6 +4535,36 @@ exception proof obligations and original23/frozen135 acceptance remain open.
 Goal ACTIVE; integration/release acceptance LOCKED. No independent, candidate
 merge, main/device/runtime or release completion is claimed.
 
+### C4-03 proved store consumer preserves its original spelling owner (2026-09-10)
+
+Exact verification of `b529dab38` found a real regression in the existing
+`initial-store-history` test: adding solver records created a new private
+consumer wrapper, while the already validated compound-store spelling still
+referenced the original wrapper. The downstream exact-identity check rejected
+that mismatch and withheld `expand-projected-store-spelling`. The isolated
+test reproduced the missing record before repair; this was not a deadline or
+an unrelated baseline failure. The failed 22-gate run (19 passing, two select
+deadline failures and this provenance failure) and the negative-marker reader
+diagnostic are retained in persistent evidence, not reported as a passing head.
+
+Projection now carries an already validated store-spelling/consumer pair only
+through that actual private proof-record enrichment. It still requires the
+identical prior consumer, the same observed store text, and the existing current
+producer checks. Equal source/text or copied public metadata grants no handoff.
+The proof pass version advances to 2.9.1. The existing regression additionally
+requires the spelling transition to produce only the actual compound-store
+line, the scalar proof to reach all three actual consumers (both stores and
+return), and replay to retain the exact ledger with no further adoption. The
+canonical IR and original producer remain unchanged.
+
+Both previously failing select tests passed in a separate same-budget diagnostic
+run without changing source, solver timeouts, backend, test inputs or assertions.
+That does not erase their initial deadline failures or prove deterministic
+timing. The corrected head requires fresh scoped verification and canonical
+generated rebuild. General CSE/DCE, full C4-02/03/04/05 and original23/frozen135
+acceptance remain open. No independent/candidate-merge/main/runtime/device or
+release proof is claimed; goal ACTIVE and integration/release LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

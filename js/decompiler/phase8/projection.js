@@ -485,8 +485,18 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     boundConsumers.set(consumer,bound);
     return bound;
   };
-  for (let index = 0; index < expressionConsumers.length; index++) expressionConsumers[index] = bindProofConsumer(
-    expressionConsumers[index],original.cAst.body[index]?.semantic?.expression);
+  for (let index = 0; index < expressionConsumers.length; index++) {
+    const prior = expressionConsumers[index];
+    const next = bindProofConsumer(prior,original.cAst.body[index]?.semantic?.expression);
+    expressionConsumers[index] = next;
+    // Adding an owned proof record changes the consumer wrapper, not the
+    // observed store emitter. Carry only the already validated exact pair
+    // through this private transition; source/text similarity is insufficient.
+    const spelling = storeSpellings[index];
+    if (prior && next && next !== prior && spelling?.consumer === prior) {
+      storeSpellings[index] = Object.freeze({...spelling,consumer:next});
+    }
+  }
   for (let index = 0; index < conditionBindings.length; index++) conditionBindings[index] = bindProofConsumer(
     conditionBindings[index],original.semanticAst.conditions[index]?.expression);
   conditionConsumers.clear();

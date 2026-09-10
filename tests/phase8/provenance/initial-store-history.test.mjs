@@ -139,6 +139,24 @@ test('a genuine proved scalar replacement inside a store retains its owned spell
   assert.ok(expanded); assert.equal(expanded.renderedBinding, 'producer-bound');
   assert.equal(expanded.proof, 'observed-store-spelling-not-memory-equivalence');
   assert.ok(expanded.originHistory.consumedRefs.includes(`ir:${f.operand.def.id}`));
+  const lineRef = instruction => {
+    const index = result.lines.findIndex(line => line.kind === 'stmt' && line.source.ir.includes(instruction.id));
+    assert.ok(index >= 0); return `L${index}:stmt`;
+  };
+  assert.deepEqual(expanded.producedRefs, [lineRef(f.store)], 'only the actual compound-store emitter owns the spelling change');
+  const queryHash = result.phase8Projection.transforms.find(record => record.queryHash)?.queryHash;
+  const proved = result.renderProvenance.ledger.find(record => record.queryHash === queryHash);
+  assert.ok(proved);
+  assert.deepEqual(new Set(proved.producedRefs), new Set([f.store,f.unrelated,f.ret].map(lineRef)),
+    'all actual scalar consumers retain proof edges, independently of store spelling');
+  assert.ok(!result.phase8Projection.history.reasons.includes('stale-store-spelling-producer'));
+  const replay = await optimizeSemanticDecompilation(result, { identity:{ ...identity, addressSpace:'memory' },
+    abiId:'generic-v1', targets:[f.operand], candidateStrategy:'equality-saturation', backendTier:'tiered',
+    memory:{ addressBits:32, endian:'little', initialBytes:[[32768n, 7]] }, timeoutMs:1000 });
+  assert.equal(replay.proofOptimization.status, 'complete', replay.proofOptimization.reason);
+  assert.equal(replay.proofOptimization.adopted, 0);
+  assert.equal(replay.pseudocode, result.pseudocode);
+  assert.deepEqual(replay.renderProvenance.ledger, result.renderProvenance.ledger);
   assertCanonical(f);
 });
 
