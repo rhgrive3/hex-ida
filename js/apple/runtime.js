@@ -117,33 +117,38 @@ export function resolveAppleCall(index, call = {}) {
   let origin = typeof call.runtime === 'string' && call.runtime
     ? call.runtime
     : runtimeOriginForSymbol(name);
+  const explicitSelector = typeof call.selector === 'string' && call.selector.length > 0 ? call.selector : null;
   const indirectTarget = call.impTarget ?? call.functionPointer ?? ((call.kind === 'imp' || call.kind === 'function-pointer') ? call.target : null);
-  const imp = indirectTarget != null ? resolveObjcIMP(index?.objc, indirectTarget, { receiverType: call.receiverType, selector: call.selector }) : null;
+  const imp = indirectTarget != null ? resolveObjcIMP(index?.objc, indirectTarget, { receiverType: call.receiverType, selector: explicitSelector }) : null;
   if (origin === 'unknown' && imp?.candidates?.length) origin = 'objc';
 
   // ObjC IMP evidence is origin inference for unknown origins only (the guard
   // above): an explicit call.runtime (swift/rust/c, …) stays authoritative
-  // even when the numeric target happens to match a known IMP address, and
-  // the objc message path is entered for objc origins or real msgSend entry
-  // points (#5608).
-  // #5631: the message path is selector dispatch. A plain Objective-C runtime
-  // C call (`_objc_retain`, `_objc_release`, …) has no selector and must keep
-  // its direct-call target instead of becoming a selector-less `message`.
-  const hasSelectorEvidence = call.selector != null || call.selectorFor != null || call.stubAddress != null;
-  if ((origin === 'objc' || isObjcMsgSendSymbol(name)) && (isObjcMsgSendSymbol(name) || hasSelectorEvidence || imp?.candidates?.length)) {
-    if (imp?.candidates?.length && !isObjcMsgSendSymbol(name)) {
+  // even when the numeric target happens to match a known IMP address.
+  //
+  // #5631: Objective-C origin is not itself selector-dispatch authority.
+  // Resolve selector-stub evidence first and enter the message path only for a
+  // real msgSend entry point, a canonical primitive selector, a selector stub
+  // that actually resolved, IMP candidates, or an explicit message-call kind.
+  // Structured/coercible selector/stub inputs must not steal a known direct
+  // target merely because they are non-null.
+  let selectorResolution = null;
+  if (!explicitSelector && call.stubAddress != null && index?.selectors) {
+    selectorResolution = resolveSelectorStub({ address: call.stubAddress, symbol: name, selectorIndex: index.selectors, selectorFor: call.selectorFor });
+  }
+  const selector = explicitSelector || selectorResolution?.selector || null;
+  const msgSendEntry = isObjcMsgSendSymbol(name);
+  const explicitMessage = call.kind === 'message';
+  const hasDispatchEvidence = msgSendEntry || explicitMessage || selector != null
+    || (selectorResolution?.candidates?.length ?? 0) > 0 || (imp?.candidates?.length ?? 0) > 0;
+  if ((origin === 'objc' || msgSendEntry || explicitMessage) && hasDispatchEvidence) {
+    if (imp?.candidates?.length && !msgSendEntry) {
       return {
         runtime: 'objc', kind: 'imp', imp,
         resolved: imp.resolved,
         candidates: imp.candidates,
         text: imp.resolved ? `${imp.resolved.classMethod ? '+' : '-'}[${imp.resolved.className} ${imp.resolved.selector}]` : null,
       };
-    }
-    let selector = call.selector || null;
-    let selectorResolution = null;
-    if (!selector && call.stubAddress != null && index?.selectors) {
-      selectorResolution = resolveSelectorStub({ address: call.stubAddress, symbol: name, selectorIndex: index.selectors, selectorFor: call.selectorFor });
-      selector = selectorResolution.selector;
     }
     const message = selector ? objcMessage(index?.objc, {
       receiver: call.receiver || 'receiver', receiverType: call.receiverType || null,
