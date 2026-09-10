@@ -900,12 +900,17 @@ function describeType(die, dies, depth = 0, seen = new Set()) {
 
   switch (die.tag) {
     case DW_TAG.base_type: {
-      const encoding = Number(attributeValue(die, DW_AT.encoding) ?? 0);
+      const rawEncoding = attributeValue(die, DW_AT.encoding);
+      const encoding = rawEncoding == null ? null : Number(rawEncoding);
+      const encodingClass = encoding != null
+        && Object.prototype.hasOwnProperty.call(ENCODING_CLASS, encoding)
+        ? ENCODING_CLASS[encoding]
+        : 'unknown';
       return {
         name: name ?? 'base',
         widthBits: byteSize == null ? null : Number(byteSize) * 8,
-        class: ENCODING_CLASS[encoding] ?? 'integer',
-        complete: byteSize != null && die.complete,
+        class: encodingClass,
+        complete: byteSize != null && encodingClass !== 'unknown' && die.complete,
       };
     }
     case DW_TAG.pointer_type: {
