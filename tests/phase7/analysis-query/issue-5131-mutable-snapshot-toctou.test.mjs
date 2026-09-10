@@ -204,3 +204,48 @@ test('#5131 caller mutation does not change the pinned snapshot seen by the prod
   assert.equal(result.snapshotId, originalSnapshotId);
   assert.equal(result.analysisEpoch, identityA.analysisEpoch);
 });
+
+test('#5131 A-to-B Proxy reads cannot retarget the one-shot validated identity', async () => {
+  const snapshotA = mutableSnapshot({
+    binaryId: 'bin-5131-proxy-A',
+    projectRevision: 3,
+    analysisEpoch: 12,
+    artifactVersions: { semantic: { revision: 7 } },
+  });
+  const snapshotB = mutableSnapshot({
+    binaryId: 'bin-5131-proxy-B',
+    projectRevision: 3,
+    analysisEpoch: 13,
+    artifactVersions: { semantic: { revision: 8 } },
+  });
+  let active = snapshotA;
+  let schemaReads = 0;
+  const proxy = new Proxy(snapshotA, {
+    get(_target, property) {
+      if (property === 'schemaVersion') {
+        schemaReads++;
+        if (schemaReads === 2) active = snapshotB;
+      }
+      return Reflect.get(active, property);
+    },
+  });
+  let producerCalls = 0;
+  const api = new AnalysisQueryAPI({
+    async currentIdentity() {
+      return {
+        binaryId: snapshotB.binaryId,
+        projectRevision: snapshotB.projectRevision,
+        analysisEpoch: snapshotB.analysisEpoch,
+        artifactVersions: snapshotB.artifactVersions,
+      };
+    },
+    async binaryInfo() {
+      producerCalls++;
+      return { value: { ok: true }, status: { completeness: 'complete' } };
+    },
+  });
+
+  await assert.rejects(api.binaryInfo(proxy), stale);
+  assert.equal(schemaReads, 0, 'pinning must not property-read the caller-owned Proxy');
+  assert.equal(producerCalls, 0, 'identity B must not bypass stale admission');
+});

@@ -261,20 +261,41 @@ function preserveKnownQueryLimitContinuation(result) {
   });
 }
 
+function snapshotDescriptorValue(descriptors, key) {
+  const descriptor = descriptors[key];
+  if (descriptor == null) return undefined;
+  if (!Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+    throw new TypeError("analysis-snapshot-accessor-not-allowed");
+  }
+  return descriptor.value;
+}
+
 function pinValidatedSnapshot(snapshot) {
-  // Snapshot-like caller input is allowed at this boundary. Detach the
-  // validated identity before the first await so later caller mutation cannot
-  // retarget stale checks, producer execution, or result attribution (#5131).
-  assertAnalysisSnapshot(snapshot);
+  // Acquire caller-owned identity fields once, before validation. This closes
+  // the same-turn validation/read seam for getters and Proxies while retaining
+  // the existing snapshot schema and artifact-version normalization (#5131).
+  if (!snapshot || typeof snapshot !== "object") {
+    throw new TypeError("analysis-snapshot-required");
+  }
+  let descriptors;
+  try {
+    descriptors = Object.getOwnPropertyDescriptors(snapshot);
+  } catch {
+    throw new TypeError("analysis-snapshot-descriptor-read-failed");
+  }
+
   const pinned = {
-    schemaVersion: snapshot.schemaVersion,
-    snapshotId: snapshot.snapshotId,
-    binaryId: snapshot.binaryId,
-    projectRevision: snapshot.projectRevision,
-    analysisEpoch: snapshot.analysisEpoch,
-    artifactVersions: normalizeAnalysisArtifactVersions(snapshot.artifactVersions),
+    schemaVersion: snapshotDescriptorValue(descriptors, "schemaVersion"),
+    snapshotId: snapshotDescriptorValue(descriptors, "snapshotId"),
+    binaryId: snapshotDescriptorValue(descriptors, "binaryId"),
+    projectRevision: snapshotDescriptorValue(descriptors, "projectRevision"),
+    analysisEpoch: snapshotDescriptorValue(descriptors, "analysisEpoch"),
+    artifactVersions: normalizeAnalysisArtifactVersions(
+      snapshotDescriptorValue(descriptors, "artifactVersions"),
+    ),
   };
-  if (snapshot.createdAt != null) pinned.createdAt = snapshot.createdAt;
+  const createdAt = snapshotDescriptorValue(descriptors, "createdAt");
+  if (createdAt != null) pinned.createdAt = createdAt;
   assertAnalysisSnapshot(pinned);
   return deepFreezeTree(pinned);
 }
