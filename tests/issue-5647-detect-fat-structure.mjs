@@ -90,14 +90,34 @@ assert.deepEqual(
 }
 
 // A short probe prefix of a real fat image still detects: source-backed
-// openBinarySource()/worker routes hand detectBinary() only 16 bytes, so the
-// arch-table bounds belong to the Mach-O parser, not the detector.
+// openBinarySource()/worker routes hand detectBinary() only 16 bytes, so they
+// declare the input truncated and the arch-table bounds belong to the Mach-O
+// parser, which owns the full input.
 {
   const prefix = Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01, ...new Array(8).fill(0)]);
-  const result = detectBinary(prefix);
+  const result = detectBinary(prefix, { truncated: true });
   assert.equal(result.format, 'macho');
   assert.equal(result.fat, true, '16-byte prefix probe of a real fat image remains confirmed');
 }
+
+// #5647 review: a COMPLETE 8-byte input declaring nfat_arch=1 but carrying no
+// fat_arch entry must not confirm a FAT32 image — the declared arch table
+// must fit within the input when the caller sees the whole file.
+assert.deepEqual(
+  detectBinary(Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01])),
+  { format: 'unknown' },
+  'complete input without the declared 20-byte fat_arch entry is fail-closed',
+);
+assert.deepEqual(
+  detectBinary(Uint8Array.from([0xca, 0xfe, 0xba, 0xbf, 0x00, 0x00, 0x00, 0x01])),
+  { format: 'unknown' },
+  'complete input without the declared 32-byte fat_arch_64 entry is fail-closed',
+);
+assert.deepEqual(
+  detectBinary(Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01, ...new Array(19).fill(0)])),
+  { format: 'unknown' },
+  'a 19-byte arch entry is one byte short of the declared FAT32 table',
+);
 
 // Thin Mach-O detection and unrelated magics are unchanged.
 assert.deepEqual(detectBinary(Uint8Array.from([0xcf, 0xfa, 0xed, 0xfe])), { format: 'macho', fat: false });

@@ -1,6 +1,6 @@
 import { ByteView } from './reader.js';
 
-export function detectBinary(input) {
+export function detectBinary(input, options = {}) {
   const r = new ByteView(input, { littleEndian: true });
   if (r.length >= 4) {
     const b0 = r.u8(0), b1 = r.u8(1), b2 = r.u8(2), b3 = r.u8(3);
@@ -26,13 +26,21 @@ export function detectBinary(input) {
       // both MAGIC and CIGAM byte orders. JVM class files surface their
       // minor:major version words in bytes 4-7 with major_version >= 45 for
       // every real class file, so the 1..16 window rejects all of them while
-      // keeping every real fat image. Arch-entry bounds are verified by the
-      // Mach-O parser, which owns the full input; source-backed probes only
-      // see a short prefix.
+      // keeping every real fat image.
       if (r.length < 8) return { format: 'unknown' };
       const fatLittleEndian = be === 0xbebafeca || be === 0xbfbafeca;
       const nfatArch = r.u32(4, fatLittleEndian);
       if (nfatArch < 1 || nfatArch > 16) return { format: 'unknown' };
+      // #5647 review: when the caller sees the complete file (no prefix
+      // truncation), the declared arch table must fit inside the input —
+      // `CA FE BA BE 00 00 00 01` alone must not confirm a FAT32 image whose
+      // 20-byte fat_arch entry is missing. Source-backed probes hand only a
+      // short 16-byte prefix, so they declare truncated:true and leave the
+      // full-table bounds to the Mach-O parser, which owns the whole input.
+      const entrySize = be === 0xcafebabf || le === 0xbfbafeca ? 32 : 20;
+      const tableEnd = 8 + nfatArch * entrySize;
+      const truncated = options.truncated === true;
+      if (!truncated && r.length < tableEnd) return { format: 'unknown' };
       return { format: 'macho', fat: true };
     }
   }

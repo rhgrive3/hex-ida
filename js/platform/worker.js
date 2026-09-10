@@ -148,7 +148,7 @@ async function detectFile(msg, signal) {
     const length = Math.min(16, candidate.size);
     const prefix = await temporary.readExactly(0n, length, { signal });
     if (signal.aborted) throw new Error('Open cancelled');
-    const detected = detectBinary(prefix);
+    const detected = detectBinary(prefix, { truncated: candidate.size > length ? true : undefined });
     return { formatId: detected.format, fat: !!detected.fat, size: BigInt(candidate.size), sourceBacked: true };
   } finally { temporary.clear?.(); }
 }
