@@ -1,5 +1,5 @@
 import { DebugAdapterError } from '../debug/adapter.js';
-import { RuntimeProviderSession, createRuntimeProviderDescriptor } from './provider.js';
+import { RuntimeProviderSession, createRuntimeOperationController, createRuntimeProviderDescriptor } from './provider.js';
 import { RuntimeEventNormalizer } from './events.js';
 import { createInterventionRecord, InterventionLedger } from './evidence-bridge.js';
 import { normalizeRuntimeModuleBinding } from './module-binding.js';
@@ -248,16 +248,16 @@ export class InstrumentationProvider {
           requestedChange: { install: true },
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
-        const controller = session.controller();
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
         const startedEpoch = session.epoch;
         let result;
         try {
-          result = await install(spec, callOptions);
-          if (controller.signal.aborted || session.epoch !== startedEpoch) {
+          result = await install(spec, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
             throw new DebugAdapterError('runtime-session-stale', 'probe installation completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
           }
         } finally {
-          session.releaseController(controller);
+          operation.release();
         }
         const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         const handle = probeHandle(result);
@@ -277,16 +277,16 @@ export class InstrumentationProvider {
           requestedChange: { remove: true },
           parentInterventionIds: [...new Set([...(callOptions.parentInterventionIds ?? []), ...(parent ? [parent] : [])])],
         });
-        const controller = session.controller();
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
         const startedEpoch = session.epoch;
         let result;
         try {
-          result = await remove(handle, callOptions);
-          if (controller.signal.aborted || session.epoch !== startedEpoch) {
+          result = await remove(handle, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
             throw new DebugAdapterError('runtime-session-stale', 'probe removal completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
           }
         } finally {
-          session.releaseController(controller);
+          operation.release();
         }
         const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         probes.delete(normalizedHandle);
@@ -304,16 +304,16 @@ export class InstrumentationProvider {
           requestedChange: { install: true },
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
-        const controller = session.controller();
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
         const startedEpoch = session.epoch;
         let result;
         try {
-          result = await install(spec, callOptions);
-          if (controller.signal.aborted || session.epoch !== startedEpoch) {
+          result = await install(spec, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
             throw new DebugAdapterError('runtime-session-stale', 'interception completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
           }
         } finally {
-          session.releaseController(controller);
+          operation.release();
         }
         const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         const handle = probeHandle(result);
@@ -332,35 +332,35 @@ export class InstrumentationProvider {
           requestedChange: replacement,
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
-        const controller = session.controller();
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
         const startedEpoch = session.epoch;
         let result;
         try {
-          result = await replace(target, replacement, callOptions);
-          if (controller.signal.aborted || session.epoch !== startedEpoch) {
+          result = await replace(target, replacement, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
             throw new DebugAdapterError('runtime-session-stale', 'function replacement completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
           }
         } finally {
-          session.releaseController(controller);
+          operation.release();
         }
         const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         return { result, intervention };
       },
-      // #5694: a read-only path still participates in the session lifecycle —
-      // a read that started on an old epoch must not succeed into the current
-      // one after a backend rebind, or stale target bytes leak into evidence.
-      readMemory: async (...args) => {
+      // #5694: reads also participate in the session lifecycle so stale
+      // target bytes cannot cross an epoch boundary. The optional third
+      // argument is the canonical backend call-options object.
+      readMemory: async (address, size, callOptions = {}) => {
         const read = requiredMethod(this.backend, 'readMemory', 'memory read');
-        const controller = session.controller();
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
         const startedEpoch = session.epoch;
         try {
-          const bytes = await read(...args);
-          if (controller.signal.aborted || session.closed || session.epoch !== startedEpoch) {
+          const result = await read(address, size, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
             throw new DebugAdapterError('runtime-session-stale', 'memory read completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
           }
-          return bytes;
+          return result;
         } finally {
-          session.releaseController(controller);
+          operation.release();
         }
       },
       writeMemory: async (address, bytes, callOptions = {}) => {
@@ -375,16 +375,16 @@ export class InstrumentationProvider {
           requestedChange: { bytes },
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
-        const controller = session.controller();
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
         const startedEpoch = session.epoch;
         let result;
         try {
-          result = await write(address, bytes, callOptions);
-          if (controller.signal.aborted || session.epoch !== startedEpoch) {
+          result = await write(address, bytes, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
             throw new DebugAdapterError('runtime-session-stale', 'memory write completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
           }
         } finally {
-          session.releaseController(controller);
+          operation.release();
         }
         const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         return { result, intervention };

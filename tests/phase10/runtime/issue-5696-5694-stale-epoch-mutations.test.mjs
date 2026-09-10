@@ -1,22 +1,19 @@
-// Regression for #5696 + #5694: DebuggerProvider writeRegister/writeMemory and
-// InstrumentationProvider installProbe/removeProbe/intercept/replace/
-// writeMemory never created a session controller and never checked the epoch,
-// so a mutation started before newProviderEpoch() committed its stale result
-// into the InterventionLedger (and returned success) after the epoch changed.
-// Mutations now register a session controller (cancelled by newEpoch) and
-// fail closed with runtime-session-stale when the epoch moved mid-flight,
-// matching the #5878 emulator-run contract.
+// Regression for #5696 + #5694: provider-owned mutation operations must
+// propagate a session-owned AbortSignal and still fail closed at completion
+// when a backend ignores cancellation.
 import assert from 'node:assert/strict';
 import { DebuggerProvider } from '../../../js/runtime/debugger-provider.js';
 import { InstrumentationProvider } from '../../../js/runtime/instrumentation-provider.js';
 
 function deferred() {
   let resolve;
-  const promise = new Promise((r) => { resolve = r; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((r, j) => { resolve = r; reject = j; });
+  return { promise, resolve, reject, signal: null };
 }
 
-// #5696: DebuggerProvider writeRegister/writeMemory
+// #5696: DebuggerProvider writeRegister/writeMemory propagate the session
+// signal to adapters, abort it on epoch transition, and reject a late resolve.
 {
   const calls = {};
   const adapter = {
@@ -25,107 +22,145 @@ function deferred() {
     async connect() { this.connected = true; },
     async disconnect() { this.connected = false; },
     async getModules() { return []; },
-    async writeRegister() { calls.reg = deferred(); return calls.reg.promise; },
-    async writeMemory() { calls.mem = deferred(); return calls.mem.promise; },
+    async writeRegister(_name, _value, _threadId, options = {}) {
+      calls.reg = deferred();
+      calls.reg.signal = options.signal;
+      return calls.reg.promise;
+    },
+    async writeMemory(_address, _bytes, options = {}) {
+      calls.mem = deferred();
+      calls.mem.signal = options.signal;
+      return calls.mem.promise;
+    },
   };
   const session = await new DebuggerProvider(adapter).openSession({ binaryId: 'bin-1', sessionNonce: 'issue-5696' });
   const dbg = session.facets.debugger;
 
-  for (const [label, pending, resolvers] of [
-    ['writeRegister', dbg.writeRegister('x0', 1n), () => calls.reg],
-    ['writeMemory', dbg.writeMemory(0x1000n, new Uint8Array([1])), () => calls.mem],
-  ]) {
+  const cases = [
+    ['writeRegister', () => dbg.writeRegister('x0', 1n), () => calls.reg],
+    ['writeMemory', () => dbg.writeMemory(0x1000n, new Uint8Array([1])), () => calls.mem],
+  ];
+  for (const [label, start, current] of cases) {
     const startedAt = session.epoch;
-    const epochPromise = (async () => { session.newProviderEpoch(); })();
-    const settle = pending.catch((e) => e);
-    await epochPromise;
+    const pending = start();
+    assert.ok(current().signal, `${label}: adapter receives a session-owned signal`);
+    assert.equal(current().signal.aborted, false, `${label}: signal begins live`);
+    session.newProviderEpoch();
     assert.equal(session.epoch, startedAt + 1, `${label}: epoch advanced`);
-    resolvers().resolve({ ok: true });
-    const outcome = await settle;
-    assert.equal(outcome?.code, 'runtime-session-stale', `${label}: stale completion must fail closed`);
+    assert.equal(current().signal.aborted, true, `${label}: epoch transition aborts backend signal`);
+    current().resolve({ ok: true }); // backend intentionally ignores cancellation
+    const outcome = await pending.catch((e) => e);
+    assert.equal(outcome?.code, 'runtime-session-stale', `${label}: late completion must fail closed`);
     assert.equal(dbg.interventions.all().length, 0, `${label}: stale result must not reach the ledger`);
   }
 
-  // a normal in-epoch mutation still succeeds and records
+  // Caller cancellation is composed into, rather than replacing, the
+  // session-owned signal. Even an abort-ignoring adapter cannot commit later.
   {
-    const p = dbg.writeRegister('x1', 2n);
-    await new Promise((r) => setTimeout(r, 5));
-    calls.reg.resolve({ ok: true });
-    const ok = await p;
-    assert.deepEqual(ok.result, { ok: true });
+    const caller = new AbortController();
+    const pending = dbg.writeMemory(0x2000n, new Uint8Array([2]), { signal: caller.signal });
+    const backendCall = calls.mem;
+    assert.ok(backendCall.signal && backendCall.signal !== caller.signal, 'provider owns the backend-facing signal');
+    caller.abort('caller-cancel');
+    assert.equal(backendCall.signal.aborted, true, 'caller abort forwards into session-owned signal');
+    backendCall.resolve({ ok: true });
+    const outcome = await pending.catch((e) => e);
+    assert.equal(outcome?.code, 'runtime-session-stale', 'late completion after caller abort fails closed');
+    assert.equal(dbg.interventions.all().length, 0);
   }
-  assert.equal(dbg.interventions.all().length, 1, 'in-epoch intervention is recorded');
+
+  // Normal in-epoch mutation still succeeds and records.
+  {
+    const pending = dbg.writeRegister('x1', 2n);
+    calls.reg.resolve({ ok: true });
+    const ok = await pending;
+    assert.deepEqual(ok.result, { ok: true });
+    assert.equal(dbg.interventions.all().length, 1);
+  }
 }
 
-// #5694: InstrumentationProvider mutation ops
+// #5694: all instrumentation mutation backends receive the composed signal;
+// epoch changes abort it, while completion-time checks protect against an
+// abort-ignoring backend.
 {
   const calls = {};
+  const capture = (name, options) => {
+    const d = deferred();
+    d.signal = options?.signal;
+    calls[name] = d;
+    return d.promise;
+  };
   const backend = {
     id: 'test',
     async connect() {},
     async disconnect() {},
-    async writeMemory() { calls.mem = deferred(); return calls.mem.promise; },
-    async installProbe() { calls.probe = deferred(); return calls.probe.promise; },
-    async removeProbe() { calls.remove = deferred(); return calls.remove.promise; },
-    async intercept() { calls.intercept = deferred(); return calls.intercept.promise; },
-    async replace() { calls.replace = deferred(); return calls.replace.promise; },
+    writeMemory(_address, _bytes, options) { return capture('mem', options); },
+    installProbe(_spec, options) { return capture('probe', options); },
+    removeProbe(_handle, options) { return capture('remove', options); },
+    intercept(_spec, options) { return capture('intercept', options); },
+    replace(_target, _replacement, options) { return capture('replace', options); },
+    readMemory(_address, _size, options) { return capture('read', options); },
   };
   const provider = new InstrumentationProvider(backend, { allowMemoryWrite: true, allowReplacement: true });
   const session = await provider.openSession({ binaryId: 'bin-1', sessionNonce: 'issue-5694' });
   const inst = session.facets.instrumentation;
   const cases = [
-    ['writeMemory', () => inst.writeMemory(0x1000n, new Uint8Array([0x41])), () => calls.mem],
-    ['installProbe', () => inst.installProbe({ address: 0x1000n }), () => calls.probe],
-    ['intercept', () => inst.intercept({ address: 0x1000n }), () => calls.intercept],
-    ['replace', () => inst.replace(0x1000n, {}), () => calls.replace],
+    ['writeMemory', 'mem', () => inst.writeMemory(0x1000n, new Uint8Array([0x41]))],
+    ['installProbe', 'probe', () => inst.installProbe({ address: 0x1000n })],
+    ['removeProbe', 'remove', () => inst.removeProbe('probe-handle')],
+    ['intercept', 'intercept', () => inst.intercept({ address: 0x1000n })],
+    ['replace', 'replace', () => inst.replace(0x1000n, {})],
   ];
-  for (const [label, start, resolvers] of cases) {
+  for (const [label, key, start] of cases) {
     const startedAt = session.epoch;
     const pending = start();
-    const settle = pending.catch((e) => e);
-    await new Promise((r) => setTimeout(r, 5));
+    await Promise.resolve();
+    assert.ok(calls[key].signal, `${label}: backend receives session-owned signal`);
+    assert.equal(calls[key].signal.aborted, false);
     session.newProviderEpoch();
     assert.equal(session.epoch, startedAt + 1, `${label}: epoch advanced`);
-    resolvers().resolve({ written: 1 });
-    const outcome = await settle;
+    assert.equal(calls[key].signal.aborted, true, `${label}: epoch switch aborts backend signal`);
+    calls[key].resolve(label === 'installProbe' || label === 'intercept' ? { handle: `${label}-handle` } : { written: 1 });
+    const outcome = await pending.catch((e) => e);
     assert.equal(outcome?.code, 'runtime-session-stale', `${label}: stale completion must fail closed`);
-    assert.equal(inst.interventions.all().length, 0, `${label}: stale result must not reach the ledger`);
+    assert.equal(inst.interventions.all().length, 0, `${label}: stale result must not reach intervention state`);
   }
-  // normal in-epoch write still works
+
+  // Read-side lifecycle uses the same session-owned cancellation contract.
   {
-    const p = inst.writeMemory(0x2000n, new Uint8Array([7]));
-    await new Promise((r) => setTimeout(r, 5));
-    calls.mem.resolve({ written: 1 });
-    const ok = await p;
-    assert.deepEqual(ok.result, { written: 1 });
-  }
-  // #5694: read-only readMemory participates in the same session lifecycle —
-  // a read pending across newProviderEpoch() must fail closed, not deliver
-  // stale target bytes into the current epoch.
-  {
-    const calls = {};
-    const backend = {
-      id: 'test',
-      async connect() {},
-      async disconnect() {},
-      async readMemory() { calls.read = deferred(); return calls.read.promise; },
-    };
-    const provider = new InstrumentationProvider(backend, { allowMemoryWrite: true });
-    const session = await provider.openSession({ binaryId: 'bin-1', sessionNonce: 'issue-5694-read' });
-    const inst = session.facets.instrumentation;
-    const startedAt = session.epoch;
-    const pending = inst.readMemory(0x1000n, 4).catch((e) => e);
-    await new Promise((r) => setTimeout(r, 5));
+    const pending = inst.readMemory(0x1000n, 4);
+    const backendCall = calls.read;
     session.newProviderEpoch();
-    calls.read.resolve(new Uint8Array([1, 2, 3, 4]));
-    const outcome = await pending;
-    assert.equal(outcome?.code, 'runtime-session-stale', 'stale readMemory completion must fail closed');
-    // in-epoch read still works
-    const p = inst.readMemory(0x2000n, 1);
-    await new Promise((r) => setTimeout(r, 5));
-    calls.read.resolve(new Uint8Array([9]));
-    assert.deepEqual([...await p], [9], 'in-epoch readMemory still delivers bytes');
+    assert.equal(backendCall.signal.aborted, true, 'stale read signal is aborted');
+    backendCall.resolve(new Uint8Array([1, 2, 3, 4]));
+    const outcome = await pending.catch((e) => e);
+    assert.equal(outcome?.code, 'runtime-session-stale');
+  }
+
+  // Caller signal also composes for instrumentation operations.
+  {
+    const caller = new AbortController();
+    const pending = inst.writeMemory(0x2000n, new Uint8Array([7]), { signal: caller.signal });
+    await Promise.resolve();
+    const backendCall = calls.mem;
+    assert.ok(backendCall.signal && backendCall.signal !== caller.signal);
+    caller.abort('caller-cancel');
+    assert.equal(backendCall.signal.aborted, true);
+    backendCall.resolve({ written: 1 });
+    const outcome = await pending.catch((e) => e);
+    assert.equal(outcome?.code, 'runtime-session-stale');
+    assert.equal(inst.interventions.all().length, 0);
+  }
+
+  // Normal in-epoch write still succeeds and records.
+  {
+    const pending = inst.writeMemory(0x3000n, new Uint8Array([9]));
+    await Promise.resolve();
+    calls.mem.resolve({ written: 1 });
+    const ok = await pending;
+    assert.deepEqual(ok.result, { written: 1 });
+    assert.equal(inst.interventions.all().length, 1);
   }
 }
 
-console.log('issues #5696/#5694 stale-epoch mutation fail-closed regression: PASS');
+console.log('issues #5696/#5694 session-owned mutation cancellation regression: PASS');
