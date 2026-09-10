@@ -160,6 +160,70 @@ function canonicalMemoryAccessRow(memorySsa, entityId, nodeId, sourceKind, role)
  * consulted.  If any link is absent or ambiguous, classification stays
  * unknown and the ordinary conservative path remains in force.
  */
+// The scalar SSA rows consumed below are proof authority for the reload
+// chain, but the scalar contract carries no content binding (unlike the
+// branded, digest-bound MemorySSA artifact), so a hand-made object can weld an
+// unrelated state-read onto an arbitrary load→store chain (#4777). The builder
+// scheme is deterministic, so genuineness of exactly the rows this chain
+// consumes is verifiable against the IR: a renamed link must carry the state
+// variable's identity, sit in the IR block that contains the access node, use
+// the builder's transform metadata, and the paired definition must be a
+// content-addressed definition of the same variable variant. Anything else is
+// rejected and the conservative unknown-region path stays in force.
+function ssaVariableIdentity(variable) {
+  if (!variable) return null;
+  return {
+    key: String(variable.key),
+    kind: String(variable.kind),
+    scope: String(variable.scope),
+    ...(variable.physicalIdentity == null ? {} : { physicalIdentity: variable.physicalIdentity }),
+  };
+}
+
+function sameVariableIdentity(left, right) {
+  return stableDigest(left) === stableDigest(right);
+}
+
+function genuineRenamedUseRow(ir, use, addressRead, addressReadValueId, blockIdByNode) {
+  const proof = use?.proof;
+  if (!proof || proof.kind !== 'renamed-use') return false;
+  if (String(use.sourceEntityId ?? '') !== String(addressRead.id)) return false;
+  // A first read of a variable carries a null source value and defaults to the
+  // read's own semantic value; a spelled source must agree with it.
+  if (proof.sourceSemanticValueId != null
+      && String(proof.sourceSemanticValueId) !== String(addressReadValueId)) return false;
+  if (String(proof.sourceSemanticEntityId ?? '') !== String(use.sourceEntityId ?? '')) return false;
+  if (proof.transform?.ruleId !== 'rename-use' || proof.transform?.proofKind !== 'dominance-renaming') return false;
+  if (!sameVariableIdentity(proof.variableIdentity, ssaVariableIdentity(addressRead.variable))) return false;
+  // A rename source must be a value the linked node actually produces.
+  if (proof.sourceSemanticValueId != null
+      && !(Array.isArray(addressRead.outputs) && addressRead.outputs.map(String).includes(String(proof.sourceSemanticValueId)))) return false;
+  return blockIdByNode.get(String(addressRead.id)) != null
+    && String(use.blockId ?? '') === String(blockIdByNode.get(String(addressRead.id)));
+}
+
+function genuineRenamedDefinitionRow(ir, definition, stateUse, addressRead, loadedSemanticValueId, nodesById) {
+  const proof = definition?.proof;
+  if (!proof || proof.kind !== 'renamed-definition') return false;
+  if (String(definition.valueId ?? '') !== String(stateUse.valueId ?? '')) return false;
+  if (String(proof.sourceSemanticValueId ?? '') !== String(loadedSemanticValueId)) return false;
+  if (String(proof.sourceSemanticEntityId ?? '') !== String(definition.sourceEntityId ?? '')) return false;
+  if (proof.transform?.ruleId !== 'rename-definition' || proof.transform?.proofKind !== 'dominance-renaming') return false;
+  if (!sameVariableIdentity(proof.variableIdentity, ssaVariableIdentity(addressRead.variable))) return false;
+  // The reaching definition of a renamed use belongs to the same variable
+  // variant. Variant keys are the source key, or the source key with a
+  // machine-type collision suffix.
+  const variantKey = proof.variableIdentity?.key == null ? null : String(proof.variableIdentity.key);
+  const definitionKey = definition.variableKey == null ? null : String(definition.variableKey);
+  if (variantKey == null || definitionKey == null) return false;
+  if (definitionKey !== variantKey && !definitionKey.startsWith(`${variantKey}::`)) return false;
+  // A state-variable rename consumes the value flowing through the variable,
+  // which is not an output of the writing node — only the builder metadata
+  // above binds it.
+  return String(definition.definitionId ?? '')
+    === `ssa_def_${stableDigest({ functionId: ir.functionId, valueId: definition.valueId })}`;
+}
+
 function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
   const debug = process.env.HEX_DEBUG_C2_POINTER === '1';
   const memorySsa = options.canonicalMemorySsa;
@@ -179,6 +243,10 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
   if (addressValueId == null) return null;
   const valuesById = new Map((ir.values ?? []).map((value) => [String(value.id), value]));
   const nodesById = new Map((ir.nodes ?? []).map((value) => [String(value.id), value]));
+  const blockIdByNode = new Map();
+  for (const block of ir.blocks ?? []) {
+    for (const nodeId of block?.nodeIds ?? []) blockIdByNode.set(String(nodeId), String(block.id));
+  }
   const addressValue = valuesById.get(String(addressValueId));
   const addressDefinition = addressValue?.definitionNodeId == null
     ? null : nodesById.get(String(addressValue.definitionNodeId));
@@ -208,13 +276,15 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
 
   const stateUses = ssa.uses.filter((use) => String(use.sourceEntityId ?? '') === String(addressRead.id)
     && use.proof?.kind === 'renamed-use'
-    && String(use.proof?.sourceSemanticValueId ?? addressReadValueId) === String(addressReadValueId));
+    && String(use.proof?.sourceSemanticValueId ?? addressReadValueId) === String(addressReadValueId)
+    && genuineRenamedUseRow(ir, use, addressRead, addressReadValueId, blockIdByNode));
   const candidates = [];
   if (debug) process.stderr.write(`pointer-hint state uses ${String(node?.id)} ${stateUses.length}\n`);
   for (const stateUse of stateUses) {
     const scalarDefinition = ssa.definitions.find((definition) =>
       String(definition.valueId ?? '') === String(stateUse.valueId ?? '')
-      && definition.proof?.kind === 'renamed-definition');
+      && definition.proof?.kind === 'renamed-definition'
+      && genuineRenamedDefinitionRow(ir, definition, stateUse, addressRead, definition?.proof?.sourceSemanticValueId, nodesById));
     const loadedSemanticValueId = scalarDefinition?.proof?.sourceSemanticValueId;
     const loadedValue = loadedSemanticValueId == null ? null : valuesById.get(String(loadedSemanticValueId));
     const loadNode = loadedValue?.definitionNodeId == null
