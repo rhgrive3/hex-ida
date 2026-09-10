@@ -4,6 +4,7 @@ import { createSemanticIrFunction } from '../ir/function.js';
 import { createSemanticSsaContract } from './contract.js';
 
 const DEFAULT_MAX_WORK_ITEMS = 4194304;
+const ORDINARY_DEFINITION_KIND = 'definition';
 
 function fail(code) { throw new TypeError(code); }
 function positiveInteger(value, code) {
@@ -179,6 +180,14 @@ export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
     if (!originHasContent(definition.origin)) fail('semantic-ssa-empty-definition-origin');
     if (!definition.proof || definition.proof.passId !== 'semantic-ssa' || !Object.hasOwn(definition.proof, 'machineType')) fail('semantic-ssa-definition-proof-required');
     if (!hasProducedTransform(definition, definition.valueId)) fail('semantic-ssa-definition-transform-required');
+    if (definition.kind === ORDINARY_DEFINITION_KIND) {
+      if (definition.blockId == null) fail('semantic-ssa-definition-block-required');
+      const sourceDefinitionNodeId = definition.proof.sourceDefinitionNodeId ?? definition.sourceEntityId;
+      if (sourceDefinitionNodeId == null) fail('semantic-ssa-definition-source-node-required');
+      const sourceDefinitionPosition = nodePosition.get(sourceDefinitionNodeId);
+      if (!sourceDefinitionPosition) fail('semantic-ssa-definition-source-node-not-in-ir');
+      if (sourceDefinitionPosition.blockId !== definition.blockId) fail('semantic-ssa-definition-source-block-mismatch');
+    }
     if (definition.kind === 'phi') {
       if (!definition.origin.parentEntityIds.includes(definition.blockId)) fail('semantic-ssa-phi-merge-origin-required');
       for (const incoming of definition.incoming) {
@@ -200,6 +209,9 @@ export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
     if (!originHasContent(use.origin)) fail('semantic-ssa-empty-use-origin');
     if (!use.proof || use.proof.passId !== 'semantic-ssa' || !Object.hasOwn(use.proof, 'machineType')) fail('semantic-ssa-use-proof-required');
     if (!hasProducedTransform(use, use.useId)) fail('semantic-ssa-use-transform-required');
+    const usePosition = nodePosition.get(use.sourceEntityId);
+    if (!usePosition) fail('semantic-ssa-use-source-node-not-in-ir');
+    if (use.blockId != null && usePosition.blockId !== use.blockId) fail('semantic-ssa-use-source-block-mismatch');
     const definition = definitionByValue.get(use.valueId);
     if (!definition) fail('semantic-ssa-dangling-value-id');
     if (stableStringify(definition.proof?.machineType ?? null) !== stableStringify(use.proof.machineType ?? null)) fail('semantic-ssa-use-type-mismatch');
@@ -208,8 +220,7 @@ export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
     }
     if (definition.blockId === use.blockId && definition.kind !== 'phi' && !['entry', 'undef'].includes(definition.kind)) {
       const defPos = nodePosition.get(definition.proof?.sourceDefinitionNodeId ?? definition.sourceEntityId);
-      const usePos = nodePosition.get(use.sourceEntityId);
-      if (defPos && usePos && defPos.blockId === usePos.blockId && defPos.index >= usePos.index) fail('semantic-ssa-definition-after-use');
+      if (defPos && defPos.blockId === usePosition.blockId && defPos.index >= usePosition.index) fail('semantic-ssa-definition-after-use');
     }
   }
 
