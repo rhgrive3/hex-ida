@@ -177,7 +177,7 @@ export class InstrumentationProvider {
     const interventions = new InterventionLedger();
     const probes = new Map();
 
-    const ingest = (raw) => {
+    const ingest = (raw, normalizerOptions = {}) => {
       const ownedRaw = materializeRuntimeEvent(raw);
       if (typeof this.options.eventFilter === 'function' && this.options.eventFilter(ownedRaw) === false) return null;
       const handle = eventProbeHandle(ownedRaw);
@@ -189,7 +189,7 @@ export class InstrumentationProvider {
             interventionIds: [...new Set([...(existingInterventionIds ?? []), interventionId])],
           }
         : ownedRaw;
-      const event = normalizer.push(enrichedRaw);
+      const event = normalizer.push(enrichedRaw, normalizerOptions);
       if (!event) return null;
       const module = moduleFields(event);
       if (event.kind === 'module-load' && (module.runtimeBase ?? module.base) != null && (module.runtimeSize ?? module.size) != null) {
@@ -325,7 +325,13 @@ export class InstrumentationProvider {
       },
       getObjCRuntimeInfo: async (...args) => requiredMethod(this.backend, 'getObjCRuntimeInfo', 'Objective-C runtime metadata')(...args),
       getSwiftRuntimeInfo: async (...args) => requiredMethod(this.backend, 'getSwiftRuntimeInfo', 'Swift runtime metadata')(...args),
-      events: Object.freeze({ ingest, flush: () => normalizer.flush() }),
+      events: Object.freeze({
+        // Direct facet ingress occurs synchronously at the current provider
+        // boundary, so it may attest the current epoch for legacy callers.
+        // Backend callbacks do not get this authority after an epoch barrier.
+        ingest: (raw) => ingest(raw, { legacySessionEpoch: session.epoch }),
+        flush: () => normalizer.flush(),
+      }),
       interventions,
       resolveAddress: (runtimeAddress, resolutionOptions = {}) => session.modules.resolve(runtimeAddress, resolutionOptions),
     });
