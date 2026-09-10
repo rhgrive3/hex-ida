@@ -64,16 +64,29 @@ export class PassManager {
           validTimeBudgetMs(passBudget.timeBudgetMs, DEFAULT_PASS_BUDGET.timeBudgetMs),
           passRemaining,
         );
-        passBudget.remainingTimeMs = passRemaining;
-        passBudget.deadline = deadline;
+        // #5024: a pass that declares its own timeBudgetMs must actually be bounded
+        // by it. The effective pass deadline is min(global deadline, passStart +
+        // local budget) and deadline/remainingTimeMs/shouldAbort are all derived
+        // from that single value. Passes without a pass-local budget keep the
+        // global deadline contract; deterministic mode keeps ignoring only the
+        // wall-clock valve.
+        const passLocalBudget = pass.budget && pass.budget.timeBudgetMs != null
+          ? validTimeBudgetMs(pass.budget.timeBudgetMs, DEFAULT_PASS_BUDGET.timeBudgetMs)
+          : null;
+        const passStart = clock();
+        const passDeadline = deterministic || passLocalBudget == null
+          ? deadline
+          : Math.min(deadline, passStart + passLocalBudget);
+        passBudget.remainingTimeMs = Math.max(0, passDeadline - clock());
+        passBudget.deadline = passDeadline;
         passBudget.degraded = !!state.degraded;
         passBudget.deterministic = deterministic;
-        passBudget.shouldAbort = () => !deterministic && clock() >= deadline;
+        passBudget.shouldAbort = () => !deterministic && clock() >= passDeadline;
 
         const result = pass.run(state, passBudget);
         if (result && result !== state) Object.assign(state, result);
         const elapsedMs = clock() - start;
-        if (clock() >= deadline) state.degraded = true;
+        if (clock() >= passDeadline) state.degraded = true;
         state.passMetrics.push({ name: pass.name, elapsedMs, ok: true, degraded: !!state.degraded });
       } catch (error) {
         state.warnings.push(`${pass.name}: ${error?.message || String(error)}`);
