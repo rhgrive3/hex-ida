@@ -2,7 +2,7 @@
 
 const PROTOCOLS_KNOWN = Symbol('objc.protocolsKnown');
 
-function cleanClassName(name) {
+export function cleanClassName(name) {
   if (name == null || typeof name !== 'string') return null;
   return name.replace(/^class\s+/, '').replace(/\s*\*+\s*$/, '').replace(/^@?"|"$/g, '').trim() || null;
 }

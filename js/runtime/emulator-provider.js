@@ -2,7 +2,7 @@ import { DebugAdapterError, boundedInteger } from '../debug/adapter.js';
 import { deepFreeze } from '../core/identity/index.js';
 import { RuntimeProviderSession, createRuntimeProviderDescriptor } from './provider.js';
 import { createRuntimeEvent, createRuntimeEventBatch } from './events.js';
-import { RuntimeEvidenceBridge } from './evidence-bridge.js';
+import { RuntimeEvidenceBridge, conservativeCompleteness } from './evidence-bridge.js';
 
 const TERMINATIONS = Object.freeze(['return', 'halted', 'paused', 'fault', 'unsupported', 'timeout', 'cancelled', 'exception']);
 const ABORTED_EXECUTION = Symbol('aborted-execution');
@@ -56,6 +56,48 @@ function completenessFor(termination) {
   if (termination === 'unsupported') return 'unsupported';
   if (termination === 'timeout' || termination === 'cancelled' || termination === 'exception') return 'truncated';
   return 'bounded';
+}
+
+function invalidExternalSignal() {
+  return new DebugAdapterError('invalid-signal', 'signal must be AbortSignal-compatible');
+}
+
+function externalSignalAuthority(value) {
+  if (value == null) return null;
+  if (typeof value !== 'object' && typeof value !== 'function') throw invalidExternalSignal();
+  let addEventListener;
+  let removeEventListener;
+  let aborted;
+  try {
+    addEventListener = value.addEventListener;
+    removeEventListener = value.removeEventListener;
+    aborted = value.aborted;
+  } catch {
+    throw invalidExternalSignal();
+  }
+  if (
+    typeof aborted !== 'boolean'
+    || typeof addEventListener !== 'function'
+    || typeof removeEventListener !== 'function'
+  ) throw invalidExternalSignal();
+  return { signal: value, addEventListener, removeEventListener, aborted };
+}
+
+function currentSignalAborted(authority) {
+  let aborted;
+  try { aborted = authority.signal.aborted; }
+  catch { throw invalidExternalSignal(); }
+  if (typeof aborted !== 'boolean') throw invalidExternalSignal();
+  return aborted;
+}
+
+function detachExternalSignal(authority, listener) {
+  try {
+    Reflect.apply(authority.removeEventListener, authority.signal, ['abort', listener]);
+  } catch {
+    // Caller-owned listener cleanup is best-effort and must not mask the run
+    // result or prevent release of the provider-owned session controller.
+  }
 }
 
 function engineText(value, fallback, code) {
@@ -235,6 +277,7 @@ export class EmulatorProvider {
     const run = async (input = {}, runOptions = {}) => {
       if (activeRun) throw new DebugAdapterError('already-running', 'emulator session already has an active run');
       this._assertEngineAvailable();
+      const externalSignal = externalSignalAuthority(runOptions.signal);
       const runToken = {};
       activeRun = runToken;
       try {
@@ -254,15 +297,27 @@ export class EmulatorProvider {
       const startedEpoch = session.epoch;
       let externalAbort = null;
       let externalCancelled = false;
-      if (runOptions.signal) {
+      let externalListenerTouched = false;
+      if (externalSignal) {
         externalAbort = () => {
           externalCancelled = true;
           if (!controller.signal.aborted) controller.abort('cancelled');
         };
-        if (runOptions.signal.aborted) externalAbort();
-        else {
-          runOptions.signal.addEventListener('abort', externalAbort, { once: true });
-          if (runOptions.signal.aborted) externalAbort();
+        try {
+          if (externalSignal.aborted) externalAbort();
+          else {
+            // Mark before invoking caller-owned code: addEventListener may throw
+            // after partially installing the listener, so cleanup must still
+            // attempt a detach before the controller is released (#4331).
+            externalListenerTouched = true;
+            Reflect.apply(externalSignal.addEventListener, externalSignal.signal, ['abort', externalAbort, { once: true }]);
+            if (currentSignalAborted(externalSignal)) externalAbort();
+          }
+        } catch (error) {
+          if (externalListenerTouched) detachExternalSignal(externalSignal, externalAbort);
+          session.releaseController(controller);
+          if (error instanceof DebugAdapterError && error.code === 'invalid-signal') throw error;
+          throw invalidExternalSignal();
         }
       }
       let timeoutTriggered = false;
@@ -315,12 +370,15 @@ export class EmulatorProvider {
         if (timeoutTriggered) abortTermination = 'timeout';
         else if (externalCancelled || controller.signal.aborted) abortTermination = 'cancelled';
         if (timer) clearTimeout(timer);
-        if (runOptions.signal && externalAbort) runOptions.signal.removeEventListener('abort', externalAbort);
-        session.releaseController(controller);
+        try {
+          if (externalSignal && externalAbort && externalListenerTouched) detachExternalSignal(externalSignal, externalAbort);
+        } finally {
+          session.releaseController(controller);
+        }
       }
 
       const termination = abortTermination ?? terminationOf(raw || {});
-      const completeness = completenessFor(termination);
+      let completeness = completenessFor(termination);
       if (session.closed || session.state === 'closing') {
         throw new DebugAdapterError('runtime-session-stale', 'emulator run completed after its runtime session began closing', {
           termination,
@@ -351,6 +409,13 @@ export class EmulatorProvider {
       }
       const events = sourceEvents.map((source, index) => {
         const identity = eventIdentity(source, index, runOccurrence);
+        const kind = source.kind ?? source.type ?? 'emulator-checkpoint';
+        const sourceCompleteness = source.completeness;
+        const eventCompleteness = conservativeCompleteness(
+          completeness,
+          sourceCompleteness,
+          kind === 'gap' || kind === 'dropped-events' ? 'truncated' : null,
+        );
         return createRuntimeEvent({
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
@@ -363,10 +428,10 @@ export class EmulatorProvider {
           processKey: session.target.processKey,
           moduleBindingKey: source.moduleBindingKey,
           moduleGeneration: source.moduleGeneration,
-          kind: source.kind ?? source.type ?? 'emulator-checkpoint',
+          kind,
           payload: source.payload ?? source,
           observationMode: 'synthetic',
-          completeness,
+          completeness: eventCompleteness,
           interventionIds: source.interventionIds,
         });
       });
@@ -385,6 +450,7 @@ export class EmulatorProvider {
           completeness,
         }));
       }
+      for (const event of events) completeness = conservativeCompleteness(completeness, event.completeness);
       const batch = createRuntimeEventBatch({
         runtimeSessionId: session.runtimeSessionId,
         providerId: session.providerId,

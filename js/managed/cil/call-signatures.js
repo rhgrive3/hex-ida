@@ -3,11 +3,13 @@ import {
   MEMBER_REF_TABLE,
   METHOD_DEF_TABLE,
   METHOD_SPEC_TABLE,
+  STANDALONE_SIG_TABLE,
   readCilMetadataBlob,
   readCilMetadataString,
 } from './call-signature-metadata.js';
 import {
   parseCilMethodSignature,
+  parseCilLocalVarSignature,
   parseCilMethodSpecInstantiation,
   substituteCilMethodGeneric,
 } from './call-signature-types.js';
@@ -152,8 +154,55 @@ export function createCilMethodSignatureResolver(cilImage) {
   };
 }
 
-export function createCilCallStackEffect(kind, resolution) {
-  if (!['call', 'callvirt', 'newobj'].includes(kind)) fail('cil-call-stack-kind-invalid');
+// Local slot typing for the lifter (#5353): ldloc*/stloc* resolve their width
+// and stack type from the fat header's LocalVarSigTok authority instead of
+// fabricating a 32-bit exact fact. Arguments ride on the MethodDef signature
+// authority already resolved for the enclosing method.
+export function createCilLocalTypeResolver(cilImage) {
+  const { index, reason } = buildResolverIndex(cilImage);
+  if (!index) {
+    return () => Object.freeze({ complete:false, reason, locals:null });
+  }
+
+  const cache = new Map();
+  return (methodBody) => {
+    if (cache.has(methodBody)) return cache.get(methodBody);
+    let declared;
+    const token = methodBody?.localVarSigTok;
+    if (!Number.isSafeInteger(token) || token <= 0) {
+      // No LocalVarSigTok: the method declares zero typed locals, so any
+      // access is out of frame rather than an unknown 32-bit slot.
+      declared = Object.freeze({ complete:true, reason:null, locals:[] });
+    } else if ((token >>> 24) !== STANDALONE_SIG_TABLE) {
+      declared = Object.freeze({ complete:false, reason:'cil-local-var-sig-token-invalid', locals:null });
+    } else {
+      const rid = token & 0x00ffffff;
+      const blobIndex = index.standAloneSigs[rid - 1];
+      if (!Number.isSafeInteger(blobIndex) || blobIndex < 1) {
+        declared = Object.freeze({ complete:false, reason:'cil-local-var-sig-row-missing', locals:null });
+      } else {
+        try {
+          const blob = readCilMetadataBlob(index.blobHeap, blobIndex, 'cil-local-var-sig-blob-invalid');
+          declared = Object.freeze({
+            complete:true,
+            reason:null,
+            locals:parseCilLocalVarSignature(blob, index.typeDefOrRefRowCounts),
+          });
+        } catch (error) {
+          declared = Object.freeze({
+            complete:false,
+            reason:error instanceof Error ? error.message : 'cil-local-var-signature-invalid',
+            locals:null,
+          });
+        }
+      }
+    }
+    cache.set(methodBody, declared);
+    return declared;
+  };
+}
+
+export function createCilCallStackEffect(kind, resolution) {  if (!['call', 'callvirt', 'newobj'].includes(kind)) fail('cil-call-stack-kind-invalid');
   if (!resolution?.complete || !resolution.signature) {
     return Object.freeze({
       complete:false,

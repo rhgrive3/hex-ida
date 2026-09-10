@@ -11,6 +11,10 @@ import { createAnalysisSnapshot, createDeterminismMetadata } from '../js/core/id
 import './phase10/identity/issue-4315-snapshot-derived-identity.test.mjs';
 import './phase10/identity/issue-4321-origin-range-identities.test.mjs';
 
+// Performance changes must preserve the exact pre-optimization identity contract.
+import './core-origin-canonical-reuse.test.mjs';
+import './core-identity-performance.test.mjs';
+
 // Stable identity exactness regressions live in this contract suite.
 const bytes = new TextEncoder().encode('same binary content');
 const binaryA = await createBinaryId(bytes);

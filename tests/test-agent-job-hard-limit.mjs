@@ -11,8 +11,6 @@ console.log("Testing Issue #2652 AgentJobManager hard-limit preflight regression
       return { limits: { exhausted: false } };
     },
   };
-  const manager = new AgentJobManager({ runtime });
-
   const job = {
     version: 1,
     id: "budget-exhausted",
@@ -32,7 +30,12 @@ console.log("Testing Issue #2652 AgentJobManager hard-limit preflight regression
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
   };
 
-  const result = await manager.runSlice(job);
+  const manager = new AgentJobManager({
+    runtime,
+    persistence: { async load(id) { return id === job.id ? job : null; }, async save() {} },
+  });
+
+  const result = await manager.runSlice(job.id);
   assert.equal(result.status, "hard-limit", "Job reaching slice limit must return status hard-limit");
   assert.equal(turnCalled, 0, "runtime.turn must NOT be invoked when hardLimit is reached");
 }
@@ -45,8 +48,6 @@ console.log("Testing Issue #2652 AgentJobManager hard-limit preflight regression
       return { limits: { exhausted: false } };
     },
   };
-  const manager = new AgentJobManager({ runtime });
-
   const elapsedExhaustedJob = {
     version: 1,
     id: "elapsed-exhausted",
@@ -66,7 +67,12 @@ console.log("Testing Issue #2652 AgentJobManager hard-limit preflight regression
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
   };
 
-  const result = await manager.runSlice(elapsedExhaustedJob);
+  const manager = new AgentJobManager({
+    runtime,
+    persistence: { async load(id) { return id === elapsedExhaustedJob.id ? elapsedExhaustedJob : null; }, async save() {} },
+  });
+
+  const result = await manager.runSlice(elapsedExhaustedJob.id);
   assert.equal(result.status, "hard-limit", "Job reaching elapsed limit must return status hard-limit");
   assert.equal(turnCalled, 0, "runtime.turn must NOT be invoked when maxElapsedMs is reached");
 }

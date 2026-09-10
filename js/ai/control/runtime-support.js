@@ -46,10 +46,13 @@ export function sessionMatchesSnapshot(session, snapshot) {
     else if (!sessionStrong && !snapshotStrong) binaryMatches = sameLegacy(sessionLegacy, snapshotLegacy);
     else binaryMatches = false;
   }
+  const sessionProjectId = canonicalBindingId(session.projectId);
+  const snapshotProjectId = canonicalBindingId(snapshot.projectIdentity);
+  if (session.projectId != null && sessionProjectId == null) return false;
+  if (snapshot.projectIdentity != null && snapshotProjectId == null) return false;
   const projectMatches = session.projectId == null
-    || (canonicalBindingId(session.projectId) != null
-      && canonicalBindingId(snapshot.projectIdentity) != null
-      && canonicalBindingId(session.projectId) === canonicalBindingId(snapshot.projectIdentity));
+    ? snapshot.projectIdentity == null
+    : sessionProjectId === snapshotProjectId;
   const priorAnchor = session.investigationMemory?.anchor || null;
   const priorRuntimeRaw = priorAnchor?.runtimeSessionId ?? null;
   const priorRuntime = canonicalBindingId(priorRuntimeRaw);
