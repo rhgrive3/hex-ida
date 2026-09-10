@@ -172,3 +172,12 @@ test('#5382 aborting a real signal mid-put still aborts the transaction', async 
   assert.equal(rejected.name, 'AbortError');
   assert.equal(fake.events.length, 1, 'a valid signal path keeps its transaction');
 });
+
+test('#5382 unproven IndexedDB AbortError remains a storage failure', async () => {
+  const { outcome } = putWithSignal(undefined, { getError: new DOMException('db-internal-abort', 'AbortError') });
+  const { rejected } = await outcome;
+  assert.ok(rejected instanceof ArtifactStorageError, `expected ArtifactStorageError, got ${rejected?.name}`);
+  assert.equal(rejected.code, 'artifact-storage-failure');
+  assert.equal(rejected.detail.operation, 'put');
+  assert.match(rejected.message, /db-internal-abort/);
+});
