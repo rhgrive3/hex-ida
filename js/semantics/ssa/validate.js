@@ -104,7 +104,7 @@ function validateControlProjection(ir, cfg) {
     }
     if (node.kind === 'conditional-branch' && node.targets.length === 1) {
       const target = node.targets[0];
-      if (successors.some((edge) => edge.to !== target
+      if (successors.length === 0 || successors.some((edge) => edge.to !== target
         || !['conditional-true', 'conditional-false', 'fallthrough'].includes(edge.kind))) {
         fail('semantic-ssa-control-flow-mismatch');
       }
