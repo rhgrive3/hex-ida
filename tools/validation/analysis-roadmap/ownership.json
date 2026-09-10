@@ -70,6 +70,8 @@
       "tests/phase8/provenance/abi-binding-history.test.mjs",
       "tests/phase8/provenance/call-return-render-history.test.mjs",
       "tests/phase8/provenance/control-render-history.test.mjs",
+      "tests/phase8/provenance/initial-expression-render-matrix.test.mjs",
+      "tests/phase8/helpers/canonical-load-fixture.mjs",
       "tests/phase8/provenance/state-compaction-history.test.mjs",
       "tests/phase8/provenance/compound-store-history.test.mjs",
       "tests/phase8/provenance/initial-store-history.test.mjs",

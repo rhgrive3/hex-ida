@@ -4005,6 +4005,42 @@ Integration/release remains LOCKED. C4-03 exhaustive rendered/removed/merged
 transform coverage, C4-02/04/05 and the original 23/frozen 135 requirements remain
 open. Issue, performance, environment and device work remains with other owners.
 
+## C4-03 initial expression writer denominator (test-first)
+
+The initial string renderer and the later expression builder are distinct actual
+writers. Initial `renderValue` now has a test-first matrix covering all 12 of its
+existing definition-opcode routes, 22 primary selections, 30 binary/unary spelling
+variants, nine multiply/bitfield variants, eight min/max condition/order cells and
+five floating edge cells. All 22 primary selections also pass through the actual
+initial function renderer with unchanged canonical values/instructions. Three
+normal decoded inputs exercise the public initial path; decoded NEG's current
+spelling is `0 - a1`, not the later unary spelling.
+
+Additional checks pin materialization, separate value/base cache keys, callback
+counts, cycle and node-budget early returns, and exact row/address literal
+selection. Four widths times two noMemoryFold choices use the genuine existing
+IR -> CFG -> MemorySSA -> compatibility producer; a copied exact fact is rejected.
+That canonical-load fixture is extracted unchanged from the existing precomputed
+history tests and reused, not replaced with a fabricated fact or second producer.
+All 20 existing tests continue to use the same helper logic. The new suite has
+11 tests; it is a display-selection baseline, NOT completed provenance coverage.
+
+Three worker-only negative controls deliberately change memo reuse, min/max
+selection and canonical forwarding admission. Each produces its intended single
+assertion failure. Initial fixture failures (missing return use-edge and incorrect
+expected legacy spellings) are retained as diagnostics; production was unchanged.
+No renderer, optimizer, canonical semantic source or generated runtime is changed
+by this test-first increment. Five exact owned paths and scoped fixed-head gates
+are recorded with final SHA/receipts in persistent checkpoint evidence.
+
+Remaining implementation: record these actual initial expression selections at
+the writer, retain their canonical preimage and selected consumer/removed mapping,
+carry memoized origins through real output owners, and reject stale/copied data.
+Do not relabel a later expression-builder event as the missing initial event or
+classify meaningful selections as formatting to close the denominator. Signature
+and brace structural handling remains the existing narrow contract. C4-03 and
+the full roadmap remain OPEN; integration/release acceptance stays LOCKED.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
