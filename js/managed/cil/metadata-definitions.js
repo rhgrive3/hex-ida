@@ -1,10 +1,13 @@
 import { codedIndexSize, tableIndexSize, cilMetadataToken } from './metadata-layout.js';
+import { parseCilMethodSignature } from './call-signature-types.js';
+import { readCilMetadataBlob } from './call-signature-metadata.js';
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 function fail(code) { throw new TypeError(code); }
 
 // Read only definitions, but use the complete, already-bounds-checked table layout.
-export function readCilDefinitions(bytes, view, layout, stringsStream) {
+export function readCilDefinitions(bytes, view, layout, stringsStream, blobStream) {
   const { rowCounts: counts, tableOffsets: offsets, rowSizes, heapSizes } = layout;
+  const blobHeap = blobStream ? bytes.subarray(blobStream.offset, blobStream.offset + blobStream.size) : null;
   const s = heapSizes & 1 ? 4 : 2, b = heapSizes & 4 ? 4 : 2;
   const index = (pos, width) => width === 2 ? view.getUint16(pos, true) : view.getUint32(pos, true);
   const text = value => {
@@ -28,6 +31,24 @@ export function readCilDefinitions(bytes, view, layout, stringsStream) {
     signatureBlobIndex: index(pos + 8 + s, b),
     paramList: index(pos + 8 + s + b, tableIndexSize(counts, 8)),
   }));
+  for (const method of methods) {
+    // Declared parameter arity from the MethodDef signature (II.23.2.1):
+    // ParamTable row count must not exceed it (#7623 R0 review). A signature
+    // that fails to decode here does not invalidate the image — the pinned
+    // #7603/#7604 call-authority contract degrades those projections at the
+    // call layer — so the arity cross-check simply does not apply.
+    if (method.signatureBlobIndex > 0) {
+      try {
+        const signature = parseCilMethodSignature(
+          readCilMetadataBlob(blobHeap, method.signatureBlobIndex, 'cil-method-signature-blob-invalid'),
+          [counts[0x02] || 0, counts[0x01] || 0, counts[0x1b] || 0],
+        );
+        method.parameterArity = signature.parameters.length;
+      } catch {
+        method.parameterArity = null;
+      }
+    }
+  }
   const fields = readRows(4, pos => ({
     accessFlags: view.getUint16(pos, true), name: text(index(pos + 2, s)),
     signatureBlobIndex: index(pos + 2 + s, b),
@@ -105,13 +126,25 @@ export function readCilDefinitions(bytes, view, layout, stringsStream) {
   // ECMA-335 II.22.33 Param (0x08): Flags / Sequence / Name. MethodDef rows
   // keep only the ParamList start RID; without decoding the rows the
   // In/Out marshalling-direction authority vanished from the image (#7623).
+  // In #-compressed metadata the ParamList ranges point at ParamPtr (0x07)
+  // indirection rows, not physical Param rids — the same indirection the
+  // Field/Method owner binding already honors; ignoring it mis-binds every
+  // owner and sequence (#7623 R0 review).
   const paramRowCount = counts[8];
+  const paramPointerRids = counts[0x07] ? readRows(0x07, pos => ({
+    target: index(pos, tableIndexSize(counts, 8)),
+  })).map(row => row.target) : null;
+  const effectiveParamCount = paramPointerRids ? paramPointerRids.length : paramRowCount;
+  if (paramPointerRids) {
+    if (new Set(paramPointerRids).size !== paramPointerRids.length
+      || paramPointerRids.some(rid => rid < 1 || rid > paramRowCount)) fail('cil-param-pointer-table-invalid');
+  }
   const paramOwners = new Map();
   for (let i = 0; i < methods.length; i++) {
     // A 0 ParamList (legacy sparse rows) carries no parameters.
-    const first = methods[i].paramList || paramRowCount + 1;
-    const last = methods[i + 1]?.paramList || paramRowCount + 1;
-    if (first < 1 || last < first || last > paramRowCount + 1 || (i === 0 && first !== 1)) {
+    const first = methods[i].paramList || effectiveParamCount + 1;
+    const last = methods[i + 1]?.paramList || effectiveParamCount + 1;
+    if (first < 1 || last < first || last > effectiveParamCount + 1 || (i === 0 && first !== 1)) {
       fail('cil-param-list-invalid');
     }
     for (let slot = first; slot < last; slot++) {
@@ -125,7 +158,9 @@ export function readCilDefinitions(bytes, view, layout, stringsStream) {
     name: text(index(pos + 4, s)),
   }));
   for (const param of params) {
-    if (!paramOwners.has(param.rid)) fail('cil-param-owner-missing');
+    const ownerSlot = paramPointerRids ? paramPointerRids.indexOf(param.rid) + 1 : param.rid;
+    if (!paramOwners.has(ownerSlot)) fail('cil-param-owner-missing');
+    param.ownerSlot = ownerSlot;
     // II.23.1.13 ParamAttributes: defined bits are In 0x0001, Out 0x0002,
     // Lcid 0x0004, Retval 0x0008, Optional 0x0010, HasDefault 0x1000,
     // HasFieldMarshal 0x2000. Reserved bits must not pass.
@@ -133,13 +168,39 @@ export function readCilDefinitions(bytes, view, layout, stringsStream) {
     // The return parameter (Sequence 0) carries no direction authority.
     if (param.sequence === 0 && (param.flags & 0x0003) !== 0) fail('cil-param-return-direction-invalid');
   }
-  // Bind param tokens onto their owning MethodDef row (position-ordered).
-  for (let i = 0; i < methods.length; i++) {
-    const first = methods[i].paramList || paramRowCount + 1;
-    const last = methods[i + 1]?.paramList || paramRowCount + 1;
-    methods[i].params = Array.from({ length: last - first }, (_, offset) => cilMetadataToken(8, first + offset));
+  // Sequences inside one owner must be contiguous without gaps or duplicates
+  // (II.22.33 rules 3-4, starting at 0 for the return row or 1 when the
+  // method has no return Param row) and must not exceed the method's declared
+  // parameter arity when the signature is available (#7623 R0 review).
+  const ownerMethodOf = (token) => methods[(parseInt(token, 16) & 0xffffff) - 1];
+  const sequencesByOwner = new Map();
+  for (const param of params) {
+    const ownerToken = paramOwners.get(param.ownerSlot);
+    if (!sequencesByOwner.has(ownerToken)) sequencesByOwner.set(ownerToken, []);
+    sequencesByOwner.get(ownerToken).push(param.sequence);
   }
-  for (const param of params) param.ownerToken = paramOwners.get(param.rid) ?? null;
+  for (const [ownerToken, sequences] of sequencesByOwner) {
+    const sorted = [...sequences].sort((a, b2) => a - b2);
+    for (let j = 0; j < sorted.length; j++) {
+      if (sorted[j] !== j && sorted[j] !== j + 1) fail('cil-param-sequence-invalid');
+    }
+    if (sorted.length > 0 && sorted[0] > 1) fail('cil-param-sequence-invalid');
+    const seen = new Set(sequences);
+    if (seen.size !== sequences.length) fail('cil-param-sequence-invalid');
+    const arity = ownerMethodOf(ownerToken)?.parameterArity;
+    if (Number.isSafeInteger(arity) && sorted.length - (sorted.includes(0) ? 1 : 0) > arity) {
+      fail('cil-param-arity-exceeded');
+    }
+  }  // Bind param tokens onto their owning MethodDef row (position-ordered).
+  for (let i = 0; i < methods.length; i++) {
+    const first = methods[i].paramList || effectiveParamCount + 1;
+    const last = methods[i + 1]?.paramList || effectiveParamCount + 1;
+    methods[i].params = Array.from({ length: last - first }, (_, offset) => {
+      const slot = first + offset;
+      return cilMetadataToken(8, paramPointerRids ? paramPointerRids[slot - 1] : slot);
+    });
+  }
+  for (const param of params) param.ownerToken = paramOwners.get(param.ownerSlot) ?? null;
   // ECMA-335 II.22.35 PropertyMap (0x15): Parent TypeDef / PropertyList.
   // Dropping these rows discarded property identity and its accessor binding
   // from the canonical image (#7637).
@@ -229,7 +290,11 @@ export function readCilDefinitions(bytes, view, layout, stringsStream) {
     if (!eventOwners.has(event.rid)) fail('cil-event-owner-missing');
     event.ownerToken = eventOwners.get(event.rid);
   }
-  // Bind accessors + member lists onto TypeDef rows, then publish.
+  // Bind accessors + member lists onto TypeDef rows, then publish. MethodSemantics
+  // kinds must match the association table (II.22.28: Property accessors are
+  // set/get/other; Event accessors are add/remove/fire/other) and each
+  // accessor role may appear at most once per association — duplicate or
+  // conflicting accessors are invalid metadata (#7623/#7659 R0 review).
   for (const type of types) { type.propertyTokens = []; type.eventTokens = []; }
   for (const [rid, ownerToken] of propertyOwners) {
     const type = types[(parseInt(ownerToken, 16) & 0xffffff) - 1];
@@ -239,14 +304,46 @@ export function readCilDefinitions(bytes, view, layout, stringsStream) {
     const type = types[(parseInt(ownerToken, 16) & 0xffffff) - 1];
     type.eventTokens.push(cilMetadataToken(0x14, rid));
   }
+  const kindAssociationTables = new Map([
+    ['setter', new Set([0x17])], ['getter', new Set([0x17])],
+    ['addOn', new Set([0x14])], ['removeOn', new Set([0x14])], ['fire', new Set([0x14])],
+    ['other', new Set([0x17, 0x14])],
+  ]);
+  const accessorRoles = new Map();
   for (const row of methodSemantics) {
     const { table, rid } = row.association;
+    const kind = semanticKinds.get(row.semantics);
+    if (!kindAssociationTables.get(kind).has(table)) fail('cil-method-semantics-kind-association-invalid');
+    const roleKey = `${table}:${rid}:${kind}`;
+    if (accessorRoles.has(roleKey)) fail('cil-method-semantics-accessor-duplicate');
+    accessorRoles.set(roleKey, row.methodToken);
     if (table === 0x17) {
       const property = properties[rid - 1];
-      (property.accessors ??= []).push({ kind: semanticKinds.get(row.semantics), methodToken: row.methodToken });
+      (property.accessors ??= []).push({ kind, methodToken: row.methodToken });
     } else {
       const event = events[rid - 1];
-      (event.accessors ??= []).push({ kind: semanticKinds.get(row.semantics), methodToken: row.methodToken });
+      (event.accessors ??= []).push({ kind, methodToken: row.methodToken });
+    }
+  }
+  // Property signature: the Property row's Type blob is the property
+  // signature (II.23.2.5) — decode it so two properties differing only in
+  // their signature are distinguishable on the canonical surface (#7623 R0).
+  // Property signatures share the method-signature layout with the dedicated
+  // PROPERTY calling convention (0x08, optionally |HASTHIS 0x20); translate
+  // it onto the method decoder's HASTHIS-DEFAULT form (0x20) before parsing.
+  if (blobHeap) {
+    for (const property of properties) {
+      if (property.typeBlobIndex > 0) {
+        const blob = readCilMetadataBlob(blobHeap, property.typeBlobIndex, 'cil-property-signature-blob-invalid');
+        if (blob.length < 1 || (blob[0] & ~0x20) !== 0x08) fail('cil-property-signature-invalid');
+        const translated = Uint8Array.from(blob);
+        translated[0] = 0x20;
+        const signature = parseCilMethodSignature(
+          translated,
+          [counts[0x02] || 0, counts[0x01] || 0, counts[0x1b] || 0],
+        );
+        property.signature = Object.freeze({ parameters: signature.parameters.length, returnValue: signature.returnValue });
+      }
     }
   }
   // Publish param/property/event surfaces on the image.
