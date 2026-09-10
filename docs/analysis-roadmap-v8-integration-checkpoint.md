@@ -4386,6 +4386,54 @@ build/rebuild evidence are retained in persistent storage. Goal ACTIVE;
 integration/release acceptance remains LOCKED. No independent, full-product,
 candidate-merge-tree, main/device/runtime or release completion is claimed.
 
+### C4-04 untranslated operand-view admission boundary (2026-09-10)
+
+The canonical scalar query/execution bridge follows `def.args[].value`; it does
+not implement the legacy display builder's operand `bits`, operand `shift`, or
+BIN `extra.negate` decorations. Proving that undecorated expression must not
+authorize replacement of a different displayed expression. A pre-fix production
+regression demonstrated one actual adoption for an 8-bit input viewed at 4 bits:
+input 16 displays as zero before replacement, but the undecorated proposal is 16.
+
+The existing proof pass is now version `2.7.0`. Its bounded total-target admission
+walk gives each affected target `unsupported` with an explicit
+`untranslated-operand-view` or `untranslated-instruction-view` reason, including
+decorations in transitive dependencies. Candidate count is zero for that target.
+Absent/null/zero operand widths and exact numeric SSA-width identity remain
+eligible; every non-null shift is withheld, including an empty descriptor.
+This is an admission boundary, not a second ISA decoder or evaluator. Supporting
+these views requires explicit canonical operations upstream before proof.
+The general scalar translator, memory execution and ordinary renderer are not
+changed. Unrelated targets in the same request retain independent proof adoption.
+
+The existing observed MOV cast history now records the actual built operand
+width, not the undecorated SSA width. A canonical 16-to-32 zero extension whose
+operand has an 8-bit display view therefore records `mov:zext:8->32` without
+claiming that observation is an equivalence proof. Its decorated target remains
+ineligible for proof adoption. Invalid raw cast contracts still fail at canonical
+validation; the fixture does not weaken that boundary.
+
+Five new permanent tests in the existing owned target-decision suite cover the
+three concrete differing expressions, 384 transitive refusals across the frozen
+eight-width/three-strategy axis, 96 identity-width adoptions, 72 mixed requests,
+the observed cast history and stale producer mutations. These and the changed
+scalar/printer/MOV-history suites passed precommit. The first two prechecks
+also exposed fixture errors (a shift used `kind` instead of the actual `op`
+field, and an invalid raw 64-to-32 zero extension); their failed receipts are
+retained separately, not counted as passing evidence.
+
+Persistent exact-head verification must rerun the existing binary, Boolean and
+cast matrices, unchanged 74-cell ordinary-output comparison, canonical substrate,
+decompiler/provenance/translation suites, ownership, lint/modules and generated
+build/rebuild. Worker-only negative controls remove width/shift/negate/transitive
+guards and corrupt the observed cast width; each must fail a permanent assertion.
+This scoped implementation checkpoint does not close ordinary-view normalization,
+all risky rewrite families, memory/CFG/exception proofs, C4-02/03/05 or the
+original23/frozen135 requirements. Goal ACTIVE; integration/release acceptance
+remains LOCKED. Exact receipts and remote backup are recorded outside the commit
+after verification; no independent, candidate-merge-tree, main/device/runtime or
+release completion is claimed here.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
@@ -4421,7 +4469,7 @@ classifications are leads to inspect, not proof against this candidate.
 | HEX-C4-01 | Canonical transaction lifecycle and invalidation non-regression |
 | HEX-C4-02 | Irreducible/exception-aware transforms and edge proofs |
 | HEX-C4-03 | Navigation, expression/recovery/legacy-idiom, equal-incoming-phi, actual compatibility stack LOAD-to-MOV and MOV/address-load/precomputed-value/canonical-numeric-load selection, actual flag/conditional-CMP reconstruction and branch/select consumers, initial RMW/C AST compound-store histories, owned handoffs and explicit assignment-expansion records, successive projections, actual spill statement removal and initial runtime/stack display-omission history implemented; other view transforms and full removed/merged class coverage still open |
-| HEX-C4-04 | Proof-gated Bool/BV scalar projection, owned inputs, transaction coverage, all 64 display rules as candidates and proof-only preparation with explicit MOV cast endpoints implemented; finite binary denominator covers 432 cells (430 adopted, two refuted), 432 publication-unknown rows and 96 non-total refusals; Boolean comparison adoption adds 480 cells and unary/cast adoption adds 552. Ordinary legacy-view adoption, full width/rule denominator and memory/CFG/exception observables remain open |
+| HEX-C4-04 | Proof-gated Bool/BV scalar projection, owned inputs, transaction coverage, all 64 display rules as candidates and proof-only preparation with explicit MOV cast endpoints implemented; finite binary denominator covers 432 cells (430 adopted, two refuted), 432 publication-unknown rows and 96 non-total refusals; Boolean comparison adoption adds 480 cells and unary/cast adoption adds 552. Untranslated operand views are explicitly refused (384 cells), while identity widths and mixed independent targets retain adoption. Ordinary legacy-view normalization/adoption, full width/rule denominator and memory/CFG/exception observables remain open |
 | HEX-C4-05 | Frozen 272-cell scalar/14-Bool/8-width producer coverage and 3 actual schedules (816 scalar cells); adopted-transform history now preserves actual rule/cost/budget/proof audits. Native proof gaps, arbitrary permutations and full acceptance remain open |
 | HEX-SYM-01 | Real 32/64-bit solver tiers and physical iPad/WebKit evidence |
 | HEX-SYM-02 | Byte-memory escalation, alias/partial-write independent oracle |

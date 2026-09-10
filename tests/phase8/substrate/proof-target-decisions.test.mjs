@@ -121,12 +121,16 @@ test('C4-04 supported and unsupported operator families keep the same exact widt
 // nonconstant producer expression: op(a, xor(a,a) + offset), not a pre-folded constant
 // or an identity query offered directly to the solver. This is a finite family
 // integration denominator, not universal correctness of every rewrite rule.
-function operatorProjectionFixture(bits, operator, offset = 0) {
+function operatorProjectionFixture(bits, operator, offset = 0, decorations = {}) {
   const f = fixture('proof-operator-width'); f.block(0);
   const input = f.opaque(bits); input.index = 0; input.reg = 'x0';
   const zero = f.binary('xor', input, input, bits);
   const right = offset ? f.binary('add', zero, f.constant(offset, bits), bits) : zero;
   const target = f.binary(operator, input, right, bits); f.ret();
+  const decorated = decorations.nested ? zero.def : target.def;
+  if (Object.hasOwn(decorations,'argBits')) decorated.args[0].bits = decorations.argBits;
+  if (Object.hasOwn(decorations,'shift')) decorated.args[0].shift = decorations.shift;
+  if (Object.hasOwn(decorations,'negate')) decorated.extra.negate = decorations.negate;
   const ir = f.build(); ir.instructions = ir.blocks.flatMap(block => block.insts);
   ir.instructions.forEach((inst, index) => { inst.id = `operator_${index}`; inst.address = 0x1000n + BigInt(index * 4); });
   const ret = ir.instructions.at(-1); ret.args = [{ value:target }]; target.uses.push(ret);
@@ -134,7 +138,7 @@ function operatorProjectionFixture(bits, operator, offset = 0) {
   const result = enhanceSemanticDecompilation({ semantic:true, ir, types:null,
     lines:[{ kind:'stmt', indent:0, text:'return pending;', row:ret.row, addr:ret.address }], metrics:{}, ctx:{} }, null,
   { phase8PrepareProof:true, phase8ProofOnlyRewrites:true, deterministicTransforms:true, decompilerTimeBudgetMs:1000 });
-  return { ir, input, target, canonical, result, options:{ identity, abiId:'generic-v1', memory:{addressBits:8},
+  return { ir, input, zero, target, canonical, result, options:{ identity, abiId:'generic-v1', memory:{addressBits:8},
     targets:[target], timeoutMs:1000, backendTier:'tiered', requireProofOnlyRewrites:true } };
 }
 
@@ -419,11 +423,12 @@ test('C4-04 Boolean proof uncertainty and stale predicates retain the original p
   }
 });
 
-function castProjectionFixture(from=8,to=32,operator='zext',{kind='mov',defer=true,keepInput=false,storeOverrides={}}={}) {
+function castProjectionFixture(from=8,to=32,operator='zext',{kind='mov',defer=true,keepInput=false,storeOverrides={},argBits}={}) {
   const f=fixture('proof-cast');f.block(0);
   const input=f.opaque(from);input.index=0;input.reg='x0';
   const zero=f.binary('xor',input,input,from),operand=f.binary('add',input,zero,from);
   const target=kind==='mov'?f.cast(operator,operand,to):f.unary(operator,operand,to);
+  if(argBits!==undefined)target.def.args[0].bits=argBits;
   if(keepInput) {
     // The generic fixture defaults to unknown memory qualifiers. Opt into an
     // explicit ordinary absolute store in this query's real address space;
@@ -549,5 +554,92 @@ test('C4-04 cast input stores retain the existing unknown-qualifier and address-
     assert.equal(result.proofOptimization.status,'partial');assert.equal(result.proofOptimization.reason,reason);
     assert.equal(result.proofOptimization.adopted,0);assert.equal(result.semanticAst,f.result.semanticAst);assert.equal(result.cAst,f.result.cAst);
     assert.equal(result.pseudocode,f.result.pseudocode);assert.deepEqual(structuredClone(f.ir),f.canonical);
+  }
+});
+
+test('C4-04 untranslated operand views cannot acquire proof authority for a different displayed expression',async()=>{
+  for(const [decorations,value,displayed] of [[{argBits:4},16n,0n],[{shift:{op:'lsl',amount:1}},1n,2n],[{negate:true},1n,255n]]) {
+    const f=operatorProjectionFixture(8,'xor',0,decorations);
+    const before=f.result.semanticAst.values.find(item=>item.valueId===f.target.id).expression;
+    const input=f.result.semanticAst.values.find(item=>item.valueId===f.input.id).expression;
+    assert.equal(evaluateExpression(before,{[input.name]:value}),displayed);
+    assert.notEqual(displayed,value,'the raw undecorated proposal would be observably different');
+    const result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy:'representation-rules'});
+    assert.equal(result.proofOptimization.status,'complete',result.proofOptimization.reason);
+    assert.equal(result.proofOptimization.adopted,0);
+    assert.equal(result.proofOptimization.targetDecisions[0].disposition,'unsupported');
+    assert.equal(result.proofOptimization.targetDecisions[0].reason,
+      decorations.negate?'untranslated-instruction-view':'untranslated-operand-view');
+    assert.equal(result.pseudocode,f.result.pseudocode);
+    assert.deepEqual(result.phase8Projection.transforms,[]);assert.deepEqual(structuredClone(f.ir),f.canonical);
+  }
+});
+
+test('C4-04 untranslated views are refused transitively across the frozen width and strategy axes',async()=>{
+  let cells=0;
+  for(const bits of [1,2,3,4,8,16,32,64])for(const nested of [false,true]) {
+    const views=[{argBits:bits===1?2:bits-1},...['lsl','lsr','asr','uxtb','sxtb'].map(op=>({shift:{op,amount:1}})),
+      {shift:{}},{negate:true}];
+    for(const view of views)for(const candidateStrategy of ['local-rewrites','representation-rules','equality-saturation']) {
+      const f=operatorProjectionFixture(bits,'xor',0,{...view,nested});
+      const result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy});
+      const report=result.proofOptimization,row=report.targetDecisions[0];
+      assert.equal(report.status,'complete',report.reason);assert.equal(report.adopted,0);
+      assert.deepEqual(report.decisionCoverage,{requested:1,complete:true});
+      assert.equal(row.disposition,'unsupported');assert.equal(row.candidateCount,0);
+      assert.equal(row.reason,view.negate?'untranslated-instruction-view':'untranslated-operand-view');
+      assert.equal(result.pseudocode,f.result.pseudocode);assert.deepEqual(result.cAst,f.result.cAst);
+      assert.deepEqual(result.semanticAst,f.result.semanticAst);assert.deepEqual(result.phase8Projection.transforms,[]);
+      assert.deepEqual(structuredClone(f.ir),f.canonical);cells++;
+    }
+  }
+  assert.equal(cells,384);
+});
+
+test('C4-04 identity operand widths remain eligible and mixed requests retain independent proofs',async()=>{
+  let identities=0,mixed=0;
+  for(const bits of [1,2,3,4,8,16,32,64])for(const candidateStrategy of ['local-rewrites','representation-rules','equality-saturation']) {
+    for(const argBits of [undefined,null,0,bits]) {
+      const f=operatorProjectionFixture(bits,'xor',0,{argBits,shift:null,negate:false});
+      const result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy});
+      assert.equal(result.proofOptimization.status,'complete',result.proofOptimization.reason);
+      assert.equal(result.proofOptimization.adopted,1);assert.equal(result.proofOptimization.targetDecisions[0].disposition,'adopted');
+      assert.deepEqual(structuredClone(f.ir),f.canonical);identities++;
+    }
+    for(const view of [{argBits:bits===1?2:bits-1},{shift:{op:'lsl',amount:1}},{negate:true}]) {
+      const f=operatorProjectionFixture(bits,'xor',0,view);
+      const result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy,targets:[f.zero,f.target]});
+      const report=result.proofOptimization;
+      assert.equal(report.status,'complete',report.reason);assert.equal(report.adopted,1);
+      assert.deepEqual(report.decisionCoverage,{requested:2,complete:true});
+      assert.deepEqual(report.targetDecisions.map(row=>row.disposition),['adopted','unsupported']);
+      assert.equal(result.phase8Projection.transforms.length,1);
+      assert.deepEqual(structuredClone(f.ir),f.canonical);mixed++;
+    }
+  }
+  assert.equal(identities,96);assert.equal(mixed,72);
+});
+
+test('C4-04 explicit cast history records the observed operand view without certifying its raw SSA input',async()=>{
+  const f=castProjectionFixture(16,32,'zext',{argBits:8});
+  const rows=f.result.rewriteProof.filter(row=>row.rule==='render-proof-mov-cast');
+  assert.ok(rows.length);assert.ok(rows.every(row=>row.before==='mov:zext:8->32'));
+  assert.equal(f.operand.bits,16);
+  const root=f.result.semanticAst.values.find(item=>item.valueId===f.target.id).expression;
+  assert.equal(root.bits,32);assert.equal(root.arg.bits,8);
+  const result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy:'representation-rules'});
+  assert.equal(result.proofOptimization.status,'complete',result.proofOptimization.reason);
+  assert.equal(result.proofOptimization.adopted,0);
+  assert.equal(result.proofOptimization.targetDecisions[0].reason,'untranslated-operand-view');
+  assert.equal(result.pseudocode,f.result.pseudocode);assert.deepEqual(structuredClone(f.ir),f.canonical);
+});
+
+test('C4-04 operand view mutations invalidate an already issued producer',async()=>{
+  for(const view of [{bits:4},{shift:{op:'lsl',amount:1}}]) {
+    const f=operatorProjectionFixture(8,'xor');Object.assign(f.target.def.args[0],view);
+    const result=await optimizeSemanticDecompilation(f.result,{...f.options,candidateStrategy:'representation-rules'});
+    assert.equal(result.proofOptimization.reason,'unissued-or-stale-projection');
+    assert.equal(result.proofOptimization.adopted,0);assert.equal(result.cAst,f.result.cAst);
+    assert.equal(result.semanticAst,f.result.semanticAst);assert.equal(result.pseudocode,f.result.pseudocode);
   }
 });

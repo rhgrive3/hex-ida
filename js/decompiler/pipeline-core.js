@@ -578,13 +578,13 @@ function finishBuildSelection(expression, selection, state) {
   return observation;
 }
 
-function recordMovSelection(value, instruction, expression, selection, state, flags, cast = null) {
+function recordMovSelection(value, instruction, expression, selection, state, flags, cast = null, operandBits = null) {
   const observation = finishBuildSelection(expression, selection, state);
   if (!observation) return;
   const input = valueOf(instruction.args?.[0]);
   const before = { source:mergeSource(origin(instruction, value), origin(input?.def, input), expression.source) };
   const record = Object.freeze({ rule:cast ? 'render-proof-mov-cast' : 'select-mov-operand', phase:'expression-build',
-    before:cast ? `mov:${cast}:${input?.bits}->${value.bits}` : `mov:${flags.forAddress ? 'address' : 'value'}`, after:`expression:${expression.kind}`,
+    before:cast ? `mov:${cast}:${operandBits}->${value.bits}` : `mov:${flags.forAddress ? 'address' : 'value'}`, after:`expression:${expression.kind}`,
     evidence:Object.freeze({ kind:cast ? 'observed-explicit-mov-cast-not-equivalence' : 'observed-mov-view-selection-not-equivalence',
       detail:cast ? 'actual proof-preparation rendering of an explicit MOV cast through shared bounded scalar lowering; not a proof or copy/forwarding elimination'
         : 'actual legacy builder operand selection including existing operand-width/shift views; canonical MOV and memory facts remain, not independently proved copy elimination or forwarding' }),
@@ -969,12 +969,13 @@ function buildValueRaw(v, state, flags = {}) {
     else if (d.op === 'mov') {
       const selection = observeBuildSelection(v, d, state);
       out = buildArg(d.args?.[0], state, flags);
+      const operandBits = out.bits;
       // A width-changing MOV must retain its own observed endpoint in proof
       // preparation. Reusing the operand root loses the target width and can
       // alias unrelated consumers. Ordinary legacy rendering stays unchanged.
       const cast = state.proofOnlyRewrites ? renderBitvectorCast(out,d.sub,v.bits) : null;
       if (cast) out = {...cast,source:mergeSource(cast.source,origin(d,v))};
-      recordMovSelection(v, d, out, selection, state, flags, cast ? d.sub : null);
+      recordMovSelection(v, d, out, selection, state, flags, cast ? d.sub : null, cast ? operandBits : null);
     }
     else if (d.op === 'bin') {
       const a = buildArg(d.args?.[0], state), b = d.args?.[1] ? buildArg(d.args[1], state) : expr.constant(0, v.bits || 64);

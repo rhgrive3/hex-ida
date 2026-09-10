@@ -27,7 +27,7 @@ const TOTAL_UNARY = new Set(['not','neg','trunc','zext','sext']);
 const DEFAULT_MODELS = createTaintModels({id:'phase8-empty', version:'1', provenance:'hex.phase8.explicit-empty-model/v1',sources:[],sinks:[]});
 
 export const PROOF_REWRITE_PASS = createPassDescriptor({
-  id:'phase8.solver-constants', version:'2.6.0', stage:'rendering',
+  id:'phase8.solver-constants', version:'2.7.0', stage:'rendering',
   consumes:['ssa','origins'], produces:['provedRewrites'],
   preserves:ANALYSIS_KEYS.filter(key => key !== 'provedRewrites'),
   description:'Project unconditional solver-proved Bool/BV scalars without changing canonical IR or effects (legacy pass ID).',
@@ -94,30 +94,42 @@ function equalityGeneratorAudit(item,candidate,guard) {
 // This is an admission filter, not another evaluator. Meaning stays in the
 // canonical scalar translator. In particular, syntactically pure division can
 // still have architectural fault behavior and is not admitted here.
-function totalTarget(target, guard) {
+function targetExclusionReason(target, guard) {
+  const unsupported = 'non-total-or-effectful-target';
   const pending = [target], seen = new Set();
   while (pending.length) {
     guard.take('workItems');
     const value = queryRecord(pending.pop(), guard);
     if (seen.has(value.def ?? value)) continue;
     guard.take('allocationUnits'); seen.add(value.def ?? value);
-    if (value.float === true || value.floatConst != null || value.bits < 1 || value.bits > 64) return false;
+    if (value.float === true || value.floatConst != null || value.bits < 1 || value.bits > 64) return unsupported;
     if (value.kind === 'arg' || value.def == null && typeof value.const === 'bigint') continue;
     const def = queryRecord(value.def, guard);
-    if (value.const != null && ![OP.CONST,OP.ADDR].includes(def.op)) return false;
-    if (def.volatile || def.atomic) return false;
+    if (value.const != null && ![OP.CONST,OP.ADDR].includes(def.op)) return unsupported;
+    if (def.volatile || def.atomic) return unsupported;
     if (def.extra != null) {
       const extra = queryRecord(def.extra, guard);
-      if (extra.memoryAccess || extra.volatile || extra.atomic || extra.stateWrite && def.op !== OP.MOV) return false;
+      if (extra.memoryAccess || extra.volatile || extra.atomic || extra.stateWrite && def.op !== OP.MOV) return unsupported;
+      if (def.op === OP.BIN && extra.negate) return 'untranslated-instruction-view';
     }
-    if (def.op === OP.BIN && !TOTAL_BINARY.has(def.sub ?? def.subOp)) return false;
-    if (def.op === OP.UN && !TOTAL_UNARY.has(def.sub ?? def.subOp)) return false;
-    if (![OP.CONST,OP.MOV,OP.BIN,OP.UN,OP.CMP].includes(def.op)) return false;
+    if (def.op === OP.BIN && !TOTAL_BINARY.has(def.sub ?? def.subOp)) return unsupported;
+    if (def.op === OP.UN && !TOTAL_UNARY.has(def.sub ?? def.subOp)) return unsupported;
+    if (![OP.CONST,OP.MOV,OP.BIN,OP.UN,OP.CMP].includes(def.op)) return unsupported;
     const args = queryArray(def.args ?? EMPTY, guard);
     guard.take('allocationUnits',args.length);
-    for (const arg of args) pending.push(queryRecord(arg,guard).value);
+    for (const arg of args) {
+      const argument = queryRecord(arg,guard);
+      // The canonical scalar bridge consumes SSA values, not legacy display
+      // operand views. These operations must already be explicit canonical IR
+      // before they can participate in a proof. Do not reinterpret ISA shifts
+      // here or prove the undecorated value in place of the declared operand.
+      if (argument.shift != null) return 'untranslated-operand-view';
+      if (argument.bits != null && argument.bits !== 0
+        && argument.bits !== queryRecord(argument.value,guard).bits) return 'untranslated-operand-view';
+      pending.push(argument.value);
+    }
   }
-  return true;
+  return null;
 }
 
 /** Prepare asynchronously; commit/projection remain in the existing Phase 8 runner. */
@@ -152,11 +164,12 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
     });
     const selected = [], selectedIndices = [], rejected = [], decisions = [];
     for (const [index, target] of targets.entries()) {
-      if (totalTarget(target,guard)) { selected.push(target); selectedIndices.push(index); }
+      const reason = targetExclusionReason(target,guard);
+      if (reason == null) { selected.push(target); selectedIndices.push(index); }
       else {
-        rejected.push(Object.freeze({valueId:semanticValueIdentity(target),reason:'non-total-or-effectful-target'}));
+        rejected.push(Object.freeze({valueId:semanticValueIdentity(target),reason}));
         decisions[index] = Object.freeze({ ...requested[index], disposition:'unsupported',
-          reason:'non-total-or-effectful-target', candidateCount:0 });
+          reason, candidateCount:0 });
       }
     }
     // The canonical query captures the exact IR, models, execution values and
