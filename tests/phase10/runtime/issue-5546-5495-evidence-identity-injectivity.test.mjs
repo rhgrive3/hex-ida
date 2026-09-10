@@ -40,9 +40,28 @@ assert.notEqual(first.id, second.id, 're-run observations must own distinct evid
 legacyEvidenceToCanonicalGraph({ runtimeEvidence: [first, second] });
 assert.ok(true, 'canonical graph accepts both runs without evidence-id-conflict');
 
-// identical observation content keeps one identity (content-addressed)
-const third = createRuntimeEvidenceRecord({ ...base, observedState: { returnValue: 1 }, verdict: 'supported' });
+// identical observation content at the same explicit observation time keeps
+// one identity (content-addressed)
+const third = createRuntimeEvidenceRecord({ ...base, timestamp: '2026-09-03T00:00:00.000Z', observedState: { returnValue: 1 }, verdict: 'supported' });
 assert.equal(first.id, third.id);
+
+// separate runs of the same payload at different observation times stay
+// individual occurrences (R0 review: run occurrence identity)
+const fourth = createRuntimeEvidenceRecord({
+  ...base, timestamp: '2026-09-03T00:00:02.000Z', observedState: { returnValue: 1 }, verdict: 'supported',
+});
+assert.notEqual(first.id, fourth.id, 'a re-run of the same payload is its own occurrence');
+
+// verdict-only re-runs without payload own distinct identities (R0 review)
+const bareSupported = createRuntimeEvidenceRecord({ sessionId: 's', experimentId: 'e', caseId: 'c', kind: 'experiment', provenanceGroup: 'runtime:s:e:c', verdict: 'supported' });
+const bareContradicted = createRuntimeEvidenceRecord({ sessionId: 's', experimentId: 'e', caseId: 'c', kind: 'experiment', provenanceGroup: 'runtime:s:e:c', verdict: 'contradicted' });
+assert.notEqual(bareSupported.id, bareContradicted.id, 'verdict-only re-runs must not collide');
+
+// the exact bare content-free shape keeps the canonical 4327 format
+assert.equal(
+  createRuntimeEvidenceRecord({ sessionId: 's', experimentId: 'e', caseId: 'c', kind: 'experiment', provenanceGroup: 'runtime:s:e:c' }).id,
+  'runtime:s:e:c:experiment',
+);
 
 // #4737: validated provenance components fail closed instead of being
 // sanitized — 'a/b' and 'a?b' must not mint ids at all

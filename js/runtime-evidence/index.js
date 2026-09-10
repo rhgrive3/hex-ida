@@ -76,26 +76,34 @@ export function createRuntimeEvidenceRecord(input = {}) {
   // #5546: re-running the same experiment case with different observations
   // must produce distinct evidence ids, or the canonical EvidenceGraph
   // rejects the second run as an evidence-id-conflict. The group stays the
-  // correlation key; content-bearing records get a deterministic digest of
-  // their observation content (identical observations keep identical ids,
-  // content-free records keep the canonical 4327 format).
+  // correlation key; generated records carry a deterministic digest of their
+  // observation content including the resolved run timestamp, so separate
+  // runs of the same payload stay individual occurrences and verdict-only
+  // re-runs own distinct identities. Only the exact bare content-free shape
+  // (no payload, default verdict, no explicit timestamp) keeps the canonical
+  // 4327 format verbatim.
+  const resolvedTimestamp = input.timestamp || nowIso();
+  const hasObservationPayload = input.input != null || input.initialState != null
+    || input.observedState != null || (Array.isArray(input.branchPath) && input.branchPath.length > 0);
+  const isBare4327Shape = !hasObservationPayload
+    && (input.verdict ?? 'inconclusive') === 'inconclusive'
+    && input.timestamp == null;
   const observationContent = {
     input: input.input ?? null,
     initialState: input.initialState ?? null,
     observedState: input.observedState ?? null,
     branchPath: Array.isArray(input.branchPath) ? input.branchPath : [],
     verdict: input.verdict ?? 'inconclusive',
+    runTimestamp: isBare4327Shape ? null : resolvedTimestamp,
   };
-  const hasObservationContent = input.input != null || input.initialState != null
-    || input.observedState != null || observationContent.branchPath.length > 0;
-  const occurrence = hasObservationContent ? `:${stableDigest(observationContent)}` : '';
+  const occurrence = isBare4327Shape ? '' : `:${stableDigest(observationContent)}`;
   const generatedId = `${traceGroup}:${idPart(input.kind || 'observation')}${occurrence}`;
   return {
     id:runtimeEvidenceId(input.id, generatedId),
     source:'runtime', backend:String(input.backend || 'unknown').slice(0,128), binaryHash:input.binaryHash || null, sliceIdentity:input.sliceIdentity || null,
     function:input.function == null ? null : input.function, address:input.address == null ? null : input.address,
     input:input.input || null, initialState:input.initialState || null, observedState:input.observedState || null,
-    branchPath:Array.isArray(input.branchPath) ? input.branchPath.slice(0,4096) : [], timestamp:input.timestamp || nowIso(), sessionId,
+    branchPath:Array.isArray(input.branchPath) ? input.branchPath.slice(0,4096) : [], timestamp:resolvedTimestamp, sessionId,
     reproducibility:input.reproducibility || { replayable:false, runs:1, consistent:null },
     confidence:safeConfidence(input.confidence), verdict:input.verdict || 'inconclusive', kind:input.kind || 'observation',
     provenance:{ group:GROUP.RUNTIME, observationGroup:traceGroup, independent:false, parent:input.parentEvidenceId || null },
