@@ -179,12 +179,12 @@ test('#7810 MethodDef pointer return keeps its pointee identity', () => {
   assert.deepEqual(i4.producedValues, [{
     id: 'call-result',
     stackType: 'native-int',
-    pointee: { stackType: 'int32', bits: 32 },
+    pointee: { stackType: 'int32', bits: 32, primitive: 'i4' },
   }]);
   assert.deepEqual(i8.producedValues, [{
     id: 'call-result',
     stackType: 'native-int',
-    pointee: { stackType: 'int64', bits: 64 },
+    pointee: { stackType: 'int64', bits: 64, primitive: 'i8' },
   }]);
   assert.notDeepEqual(i4.producedValues, i8.producedValues);
   assert.equal(i4.completeness, 'exact');
@@ -195,8 +195,8 @@ test('#7810 MethodDef pointer return keeps its pointee identity', () => {
 test('#7810 MethodDef pointer argument keeps its pointee identity', () => {
   const i4 = projectCall(Uint8Array.from([0x00, 0x01, 0x01, 0x0f, 0x08])); // static void f(int32*)
   const i8 = projectCall(Uint8Array.from([0x00, 0x01, 0x01, 0x0f, 0x0a])); // static void f(int64*)
-  assert.deepEqual(i4.consumedValues, [{ id: 'arg0', stackType: 'native-int', pointee: { stackType: 'int32', bits: 32 } }]);
-  assert.deepEqual(i8.consumedValues, [{ id: 'arg0', stackType: 'native-int', pointee: { stackType: 'int64', bits: 64 } }]);
+  assert.deepEqual(i4.consumedValues, [{ id: 'arg0', stackType: 'native-int', pointee: { stackType: 'int32', bits: 32, primitive: 'i4' } }]);
+  assert.deepEqual(i8.consumedValues, [{ id: 'arg0', stackType: 'native-int', pointee: { stackType: 'int64', bits: 64, primitive: 'i8' } }]);
   assert.notDeepEqual(i4.consumedValues, i8.consumedValues);
   assert.equal(i4.completeness, 'exact');
   assert.equal(i8.completeness, 'exact');
@@ -216,12 +216,12 @@ test('#7810 MemberRef pointer identity survives resolution', () => {
   assert.deepEqual(i4.producedValues, [{
     id: 'call-result',
     stackType: 'native-int',
-    pointee: { stackType: 'int32', bits: 32 },
+    pointee: { stackType: 'int32', bits: 32, primitive: 'i4' },
   }]);
   assert.deepEqual(i8.producedValues, [{
     id: 'call-result',
     stackType: 'native-int',
-    pointee: { stackType: 'int64', bits: 64 },
+    pointee: { stackType: 'int64', bits: 64, primitive: 'i8' },
   }]);
   assert.notDeepEqual(i4, i8);
 });
@@ -245,12 +245,12 @@ test('#7810 MethodSpec instantiation resolves substituted pointee identity', () 
   assert.deepEqual(i4.producedValues, [{
     id: 'call-result',
     stackType: 'native-int',
-    pointee: { stackType: 'int32', bits: 32 },
+    pointee: { stackType: 'int32', bits: 32, primitive: 'i4' },
   }]);
   assert.deepEqual(i8.producedValues, [{
     id: 'call-result',
     stackType: 'native-int',
-    pointee: { stackType: 'int64', bits: 64 },
+    pointee: { stackType: 'int64', bits: 64, primitive: 'i8' },
   }]);
   assert.notDeepEqual(i4, i8);
 });

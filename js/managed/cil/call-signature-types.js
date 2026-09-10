@@ -102,13 +102,23 @@ function parseType(bytes, offset, code, depth = 0, methodGenericArity = null, ty
   if (pos >= bytes.length) fail(code);
   const type = bytes[pos++];
 
-  if ([0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09].includes(type)) {
-    return { next:pos, value:attachMods(stackType('int32', 32), lead.mods) };
-  }
-  if (type === 0x0a || type === 0x0b) return { next:pos, value:attachMods(stackType('int64', 64), lead.mods) };
-  if (type === 0x0c || type === 0x0d) return { next:pos, value:attachMods(stackType('float'), lead.mods) };
+  // ECMA-335 II.23.1.16 ELEMENT_TYPE names for the primitive family. The
+  // evaluation-stack category (int32/int64/float/native-int) is shared across
+  // kinds, but the metadata type identity is not: I4[] and U4[] are different
+  // constructed types, so the decoded value keeps the exact primitive kind
+  // (signedness/char/bool/width) as a lossless identity field.
+  const PRIMITIVE_ELEMENT_TYPES = {
+    0x02:'boolean', 0x03:'char', 0x04:'i1', 0x05:'u1',
+    0x06:'i2', 0x07:'u2', 0x08:'i4', 0x09:'u4',
+    0x0a:'i8', 0x0b:'u8', 0x0c:'r4', 0x0d:'r8',
+    0x18:'i', 0x19:'u',
+  };
+  const primitiveValue = (stack, bits) => stackType(stack, bits, { primitive:PRIMITIVE_ELEMENT_TYPES[type] });
+  if (type >= 0x02 && type <= 0x09) return { next:pos, value:attachMods(primitiveValue('int32', 32), lead.mods) };
+  if (type === 0x0a || type === 0x0b) return { next:pos, value:attachMods(primitiveValue('int64', 64), lead.mods) };
+  if (type === 0x0c || type === 0x0d) return { next:pos, value:attachMods(primitiveValue('float', null), lead.mods) };
   if (type === 0x0e || type === 0x1c) return { next:pos, value:attachMods(stackType('object-ref'), lead.mods) };
-  if (type === 0x18 || type === 0x19) return { next:pos, value:attachMods(stackType('native-int'), lead.mods) };
+  if (type === 0x18 || type === 0x19) return { next:pos, value:attachMods(primitiveValue('native-int', null), lead.mods) };
 
   if (type === 0x11 || type === 0x12) { // VALUETYPE / CLASS
     const ref = parseTypeDefOrRef(bytes, pos, code, typeDefOrRefRowCounts);
@@ -163,10 +173,22 @@ function parseType(bytes, offset, code, depth = 0, methodGenericArity = null, ty
   }
   if (type === 0x1b) { // FNPTR
     const nested = parseMethodSignature(bytes, pos, code, depth + 1, false, methodGenericArity, typeDefOrRefRowCounts);
-    // The nested method signature is identity-bearing (#7673 R2): fnptr
-    // types differ by their exact signature, not just "native-int".
+    // The nested method signature is identity-bearing (#7673 R2, #7828): the
+    // function-pointer's exact calling convention (incl. HASTHIS/EXPLICITTHIS,
+    // generic arity, VARARG sentinel position) and its parameters/return type
+    // are the type's semantic identity; only the evaluation-stack storage
+    // category is native-int. Public schema is the unified `fnPtr` authority.
     return { next:nested.next, value:attachMods(stackType('native-int', null,
-      { signature:nested.value }), lead.mods) };
+      { fnPtr:Object.freeze({
+        callConvention:nested.value.callConvention,
+        kind:nested.value.kind,
+        hasThis:nested.value.hasThis,
+        explicitThis:nested.value.explicitThis,
+        genericParameterCount:nested.value.genericParameterCount,
+        parameters:nested.value.parameters,
+        returnValue:nested.value.returnValue,
+        ...(nested.value.sentinelIndex == null ? {} : { sentinelIndex:nested.value.sentinelIndex }),
+      }) }), lead.mods) };
   }
   fail(code);
 }
@@ -226,10 +248,15 @@ function parseMethodSignature(bytes, offset, code, depth = 0, requireEnd = true,
   offset = ret.next;
   const parameters = [];
   let sentinelSeen = false;
+  let sentinelIndex = null;
   for (let i = 0; i < count.value; i++) {
     if (bytes[offset] === 0x41) {
       if (kind !== 0x05 || sentinelSeen) fail(code);
       sentinelSeen = true;
+      // The SENTINEL (0x41) separates fixed from vararg parameters; its
+      // position is semantic identity — dropping it made
+      // (int32, …, int32) vararg shapes collide regardless of the split (#7828).
+      sentinelIndex = i;
       offset += 1;
     }
     const param = parseParam(bytes, offset, code, depth + 1, methodGenericArity, typeDefOrRefRowCounts);
@@ -247,6 +274,7 @@ function parseMethodSignature(bytes, offset, code, depth = 0, requireEnd = true,
       genericParameterCount,
       parameters:Object.freeze(parameters),
       returnValue:ret.value,
+      ...(sentinelIndex == null ? {} : { sentinelIndex }),
     }),
   };
 }

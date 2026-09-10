@@ -154,13 +154,13 @@ test('#7706 SZARRAY element type identity is retained in call results', () => {
     id: 'call-result',
     stackType: 'object-ref',
     arrayShape: { rank: 1, sizes: [], lowerBounds: [] },
-    elementType: { stackType: 'int32', bits: 32 },
+    elementType: { stackType: 'int32', bits: 32, primitive: 'i4' },
   }]);
   assert.deepEqual(i8.producedValues, [{
     id: 'call-result',
     stackType: 'object-ref',
     arrayShape: { rank: 1, sizes: [], lowerBounds: [] },
-    elementType: { stackType: 'int64', bits: 64 },
+    elementType: { stackType: 'int64', bits: 64, primitive: 'i8' },
   }]);
   assert.notDeepEqual(i4.producedValues, i8.producedValues);
   // The call stays exact: identity retention must not degrade resolution.
@@ -179,7 +179,7 @@ test('#7706 ARRAY shape identity is retained in call results', () => {
     id: 'call-result',
     stackType: 'object-ref',
     arrayShape: { rank: 2, sizes: [], lowerBounds: [1, 1] },
-    elementType: { stackType: 'int32', bits: 32 },
+    elementType: { stackType: 'int32', bits: 32, primitive: 'i4' },
   }]);
   // A rank-1 SZARRAY of the same element is a different exact type.
   const szarray = project(Uint8Array.from([0x00, 0x00, 0x1d, 0x08]));
@@ -197,7 +197,7 @@ test('#7706 nested and generic element identities stay lossless', () => {
     elementType: {
       stackType: 'object-ref',
       arrayShape: { rank: 1, sizes: [], lowerBounds: [] },
-      elementType: { stackType: 'int32', bits: 32 },
+      elementType: { stackType: 'int32', bits: 32, primitive: 'i4' },
     },
   }]);
   // Generic element: static G<int32>[] f() — SZARRAY GENERICINST CLASS #1 <I4>
@@ -212,7 +212,7 @@ test('#7706 nested and generic element identities stay lossless', () => {
     elementType: {
       stackType: 'object-ref',
       typeToken: 4,
-      genericArgs: [{ stackType: 'int32', bits: 32 }],
+      genericArgs: [{ stackType: 'int32', bits: 32, primitive: 'i4' }],
     },
   }]);
   assert.equal(genericElement.completeness, 'exact');
@@ -225,12 +225,12 @@ test('#7706 signature layer: parameter positions carry the same identity', () =>
   assert.deepEqual(i4.parameters[0], {
     stackType: 'object-ref',
     arrayShape: { rank: 1, sizes: [], lowerBounds: [] },
-    elementType: { stackType: 'int32', bits: 32 },
+    elementType: { stackType: 'int32', bits: 32, primitive: 'i4' },
   });
   assert.deepEqual(i8.parameters[0], {
     stackType: 'object-ref',
     arrayShape: { rank: 1, sizes: [], lowerBounds: [] },
-    elementType: { stackType: 'int64', bits: 64 },
+    elementType: { stackType: 'int64', bits: 64, primitive: 'i8' },
   });
   assert.notDeepEqual(i4.parameters, i8.parameters);
 });

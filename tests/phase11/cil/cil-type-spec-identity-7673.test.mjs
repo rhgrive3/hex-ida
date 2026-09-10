@@ -49,11 +49,11 @@ assert.deepEqual([...a.typeSpecs[0].rawSignature], [0x15, 0x12, 0x08, 0x01, 0x08
 // Exact decoded identity: GENERICINST CLASS base with distinct arguments.
 assert.deepEqual(a.typeSpecs[0].signature, {
   stackType: 'object-ref', typeToken: 8,
-  genericArgs: [{ stackType: 'int32', bits: 32 }],
+  genericArgs: [{ stackType: 'int32', bits: 32, primitive: 'i4' }],
 });
 assert.deepEqual(b.typeSpecs[0].signature, {
   stackType: 'object-ref', typeToken: 8,
-  genericArgs: [{ stackType: 'int64', bits: 64 }],
+  genericArgs: [{ stackType: 'int64', bits: 64, primitive: 'i8' }],
 });
 // The decoded specifications are distinct as well.
 assert.notDeepEqual(a.typeSpecs[0].signature, b.typeSpecs[0].signature);
@@ -77,7 +77,7 @@ assert.ok(derived, 'Derived enumerated');
 assert.equal(derived.extendsTypeSpec.token, '0x1b000001');
 assert.deepEqual(derived.extendsTypeSpec.signature, {
   stackType: 'object-ref', typeToken: 8,
-  genericArgs: [{ stackType: 'int32', bits: 32 }],
+  genericArgs: [{ stackType: 'int32', bits: 32, primitive: 'i4' }],
 });
 
 // Fail-closed structural cases. The overlay raises the precise fail-closed
@@ -148,10 +148,10 @@ function decodeTypeSpec(payload) {
 }
 // PTR pointee identity.
 assert.deepEqual(decodeTypeSpec([0x0f, 0x08]), {
-  stackType: 'native-int', pointee: { stackType: 'int32', bits: 32 },
+  stackType: 'native-int', pointee: { stackType: 'int32', bits: 32, primitive: 'i4' },
 });
 assert.deepEqual(decodeTypeSpec([0x0f, 0x0a]), {
-  stackType: 'native-int', pointee: { stackType: 'int64', bits: 64 },
+  stackType: 'native-int', pointee: { stackType: 'int64', bits: 64, primitive: 'i8' },
 });
 // PTR VOID is a distinct pointee state.
 assert.deepEqual(decodeTypeSpec([0x0f, 0x01]), {
@@ -161,24 +161,25 @@ assert.deepEqual(decodeTypeSpec([0x0f, 0x01]), {
 assert.deepEqual(decodeTypeSpec([0x14, 0x08, 0x02, 0x00, 0x02, 0x01, 0x01]), {
   stackType: 'object-ref',
   arrayShape: { rank: 2, sizes: [], lowerBounds: [1, 1] },
-  elementType: { stackType: 'int32', bits: 32 },
+  elementType: { stackType: 'int32', bits: 32, primitive: 'i4' },
 });
 assert.deepEqual(decodeTypeSpec([0x14, 0x08, 0x03, 0x00, 0x00]), {
   stackType: 'object-ref',
   arrayShape: { rank: 3, sizes: [], lowerBounds: [] },
-  elementType: { stackType: 'int32', bits: 32 },
+  elementType: { stackType: 'int32', bits: 32, primitive: 'i4' },
 });
-// FNPTR nested signature identity.
+// FNPTR nested signature identity (unified `fnPtr` schema, #7828 lineage).
 assert.deepEqual(decodeTypeSpec([0x1b, 0x00, 0x00, 0x08]), {
   stackType: 'native-int',
-  signature: {
+  fnPtr: {
     callConvention: 0x00, kind: 0x00, hasThis: false, explicitThis: false,
-    genericParameterCount: 0, parameters: [], returnValue: { stackType: 'int32', bits: 32 },
+    genericParameterCount: 0, parameters: [],
+    returnValue: { stackType: 'int32', bits: 32, primitive: 'i4' },
   },
 });
 assert.deepEqual(decodeTypeSpec([0x1b, 0x00, 0x00, 0x01]), {
   stackType: 'native-int',
-  signature: {
+  fnPtr: {
     callConvention: 0x00, kind: 0x00, hasThis: false, explicitThis: false,
     genericParameterCount: 0, parameters: [], returnValue: null,
   },
@@ -189,13 +190,13 @@ assert.deepEqual(decodeTypeSpec([0x1b, 0x00, 0x00, 0x01]), {
 assert.deepEqual(decodeTypeSpec([0x1d, 0x1f, 0x04, 0x08]), {
   stackType: 'object-ref',
   arrayShape: { rank: 1, sizes: [], lowerBounds: [] },
-  elementType: { stackType: 'int32', bits: 32 },
+  elementType: { stackType: 'int32', bits: 32, primitive: 'i4' },
   productionCustomModifiers: [{ kind: 'required', typeToken: 4 }],
 });
 assert.deepEqual(decodeTypeSpec([0x1d, 0x20, 0x04, 0x08]), {
   stackType: 'object-ref',
   arrayShape: { rank: 1, sizes: [], lowerBounds: [] },
-  elementType: { stackType: 'int32', bits: 32 },
+  elementType: { stackType: 'int32', bits: 32, primitive: 'i4' },
   productionCustomModifiers: [{ kind: 'optional', typeToken: 4 }],
 });
 // R1 collision: `CMOD_OPT T, SZARRAY I4` (leading) vs `SZARRAY CMOD_OPT T,
@@ -205,7 +206,7 @@ const leading = decodeTypeSpec([0x20, 0x04, 0x1d, 0x08]);
 assert.deepEqual(leading, {
   stackType: 'object-ref',
   arrayShape: { rank: 1, sizes: [], lowerBounds: [] },
-  elementType: { stackType: 'int32', bits: 32 },
+  elementType: { stackType: 'int32', bits: 32, primitive: 'i4' },
   customModifiers: [{ kind: 'optional', typeToken: 4 }],
 });
 assert.notDeepEqual(leading, decodeTypeSpec([0x1d, 0x20, 0x04, 0x08]));
@@ -213,14 +214,14 @@ assert.notDeepEqual(leading, decodeTypeSpec([0x1d, 0x20, 0x04, 0x08]));
 assert.deepEqual(decodeTypeSpec([0x1f, 0x04, 0x1d, 0x20, 0x04, 0x08]), {
   stackType: 'object-ref',
   arrayShape: { rank: 1, sizes: [], lowerBounds: [] },
-  elementType: { stackType: 'int32', bits: 32 },
+  elementType: { stackType: 'int32', bits: 32, primitive: 'i4' },
   customModifiers: [{ kind: 'required', typeToken: 4 }],
   productionCustomModifiers: [{ kind: 'optional', typeToken: 4 }],
 });
 // PTR keeps the same lead/local distinction.
 assert.deepEqual(decodeTypeSpec([0x0f, 0x1f, 0x04, 0x08]), {
   stackType: 'native-int',
-  pointee: { stackType: 'int32', bits: 32 },
+  pointee: { stackType: 'int32', bits: 32, primitive: 'i4' },
   productionCustomModifiers: [{ kind: 'required', typeToken: 4 }],
 });
 // Differential proof across every component family.
