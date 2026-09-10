@@ -146,3 +146,13 @@ console.log('userscript-host secure distribution: ok');
 async function walk(url, prefix = '') { const out = []; for (const name of await readdir(url)) { const child = new URL(name + '/', url); const info = await stat(new URL(name, url)); if (info.isDirectory()) out.push(...await walk(child, `${prefix}${name}/`)); else out.push(`${prefix}${name}`); } return out; }
 async function sha256(value) { const digest = await webcrypto.subtle.digest('SHA-256', value); return Buffer.from(digest).toString('hex'); }
 function fromB64(value) { return Buffer.from(value, 'base64url'); }
+
+// #5206: a malformed Base64URL signature part must be an authentication
+// failure (null -> 403 path), never an escaping InvalidCharacterError (500).
+{
+  const malformedToken = `${payloadPart}.%%%`;
+  assert.equal(await verifyRuntimeSession(malformedToken, signingKey, { now }), null,
+    'malformed signature base64url must verify as null');
+  assert.equal(await verifyRuntimeSession('a.%%%', signingKey, { now }), null,
+    'malformed payload part must also verify as null');
+}

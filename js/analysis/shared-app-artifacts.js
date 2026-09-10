@@ -172,18 +172,53 @@ function splitLimit(remaining, size, remainingBytes) {
   if (!(remaining > 0) || remainingBytes <= 0n) return 0;
   return Math.max(1, Math.min(remaining, Number((BigInt(remaining) * size + remainingBytes - 1n) / remainingBytes)));
 }
+function standardDataSection(section) {
+  if (typeof section !== 'string') return false;
+  // Mach-O names retained from the original classifier, plus the common
+  // pointer/TLS data families. ELF/PE use dot-prefixed section names; anchor
+  // those families so e.g. `.metadata` cannot match merely because it contains
+  // the word `data` (#4311).
+  if (/^(?:__data(?:$|_)|__bss(?:$|_)|__common(?:$|_)|__const(?:$|_)|__cfstring(?:$|_)|__objc_(?:ivar|const|data)(?:$|_)|__got(?:$|_)|__la_symbol_ptr(?:$|_)|__nl_symbol_ptr(?:$|_)|__mod_(?:init|term)_func(?:$|_)|__thread_(?:data|bss|vars)(?:$|_))/.test(section)) return true;
+  return /^\.(?:data(?:[.$]|$)|bss(?:\.|$)|rodata(?:\.|$)|rdata(?:[.$]|$)|sdata(?:\.|$)|sbss(?:\.|$)|tdata(?:\.|$)|tbss(?:\.|$)|got(?:\.|$)|init_array(?:\.|$)|fini_array(?:\.|$)|ctors(?:\.|$)|dtors(?:\.|$))/.test(section);
+}
+function classifyDataRegion(region) {
+  if (region?.exec === true) return { include:false, complete:true };
+  if (region?.exec !== false) return { include:false, complete:false };
+  let size;
+  try { size = BigInt(region?.declaredSize ?? region?.size ?? 0); }
+  catch { return { include:false, complete:false }; }
+  if (size < 0n) return { include:false, complete:false };
+  if (size === 0n) return { include:false, complete:true };
+
+  // Prefer format-independent region metadata emitted by regionsForImage().
+  // Writable and zero-fill storage is data regardless of object-file naming.
+  if (region?.write === true || region?.zerofill === true) return { include:true, complete:true };
+  if (standardDataSection(region?.section)) return { include:true, complete:true };
+
+  // Read/write permissions alone cannot prove that an unfamiliar read-only
+  // section is not global data (custom constant sections are common). If the
+  // canonical metadata or the name classifier cannot establish membership,
+  // keep the observed counts but fail closed on aggregate completeness.
+  return { include:false, complete:false };
+}
 function dataRanges(app) {
-  return (storeValue(app, 'regions') || []).filter((region) => {
-    if (region?.exec) return false;
+  const source = storeValue(app, 'regions');
+  if (!Array.isArray(source)) return { ranges:[], complete:false };
+  const ranges = [];
+  let complete = true;
+  for (const region of source) {
+    const classification = classifyDataRegion(region);
+    if (!classification.complete) complete = false;
+    if (!classification.include) continue;
     try {
-      const size = BigInt(region?.declaredSize ?? region?.size ?? 0);
-      return size > 0n && /__data|__bss|__common|__const|__cfstring|__objc_(ivar|const|data)/.test(region?.section || '');
-    } catch { return false; }
-  }).map((region) => ({
-    region,
-    lo:BigInt(region.vmAddr),
-    hi:BigInt(region.vmAddr) + BigInt(region.declaredSize ?? region.size ?? 0),
-  })).filter((range) => range.hi > range.lo).sort((a, b) => a.lo < b.lo ? -1 : a.lo > b.lo ? 1 : 0);
+      const lo = BigInt(region.vmAddr);
+      const hi = lo + BigInt(region.declaredSize ?? region.size ?? 0);
+      if (lo >= 0n && hi > lo) ranges.push({ region, lo, hi });
+      else complete = false;
+    } catch { complete = false; }
+  }
+  ranges.sort((a, b) => a.lo < b.lo ? -1 : a.lo > b.lo ? 1 : 0);
+  return { ranges, complete };
 }
 function dataRegionFor(ranges, address) {
   let lo = 0, hi = ranges.length - 1;
@@ -217,14 +252,17 @@ async function accumulateGlobalRefs(counts, scan, ranges, { signal = null, yield
   }
   return count;
 }
-function statsFor(program, counts, scannedRefs, metadata = {}) {
+function statsFor(program, counts, scannedRefs, metadata = {}, rangeClassificationComplete = true) {
   const graph = program?.graphCompleteness;
-  const complete = !!program && program.unsupported !== true && program.refsCapped !== true && program.completeness?.complete !== false && graph?.refsComplete !== false;
+  const programComplete = !!program && program.unsupported !== true && program.refsCapped !== true && program.completeness?.complete !== false && graph?.refsComplete !== false;
+  const complete = programComplete && rangeClassificationComplete;
   return Object.freeze({
     counts,
     scannedRefs,
     complete,
-    reason:complete ? null : (program?.queryIncompleteReason || graph?.reasons?.[0] || (program?.refsCapped ? 'refs-source-capped' : 'program-analysis-incomplete')),
+    reason:complete ? null : (!programComplete
+      ? (program?.queryIncompleteReason || graph?.reasons?.[0] || (program?.refsCapped ? 'refs-source-capped' : 'program-analysis-incomplete'))
+      : 'global-data-range-classification-incomplete'),
     producer:'program-region-ref-aggregate/v1',
     producerPriority:metadata.priority ?? 'user-visible',
     producerBudgetSupplied:metadata.budget != null,
@@ -385,7 +423,8 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
       if (!live.has(cacheKey)) live.set(cacheKey, entry);
     }
     const scans = [], failures = [];
-    const ranges = dataRanges(app);
+    const dataRangeUniverse = dataRanges(app);
+    const ranges = dataRangeUniverse.ranges;
     const counts = new Map();
     let scannedRefs = 0;
     let calls = PROGRAM_MERGE_LIMITS.calls, refs = PROGRAM_MERGE_LIMITS.refs, kinds = PROGRAM_MERGE_LIMITS.kindWords;
@@ -424,7 +463,7 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     if (symbolsGeneration !== symbolsGenerationOf(app)) throw Object.assign(new Error('stale shared program symbols'), { stale:true });
     const merged = mergeProgramScans(scans, { regions, reasons:failures, limits:PROGRAM_MERGE_LIMITS });
     const program = new ProgramIndex(merged, app.symbols, primary);
-    const stats = statsFor(program, counts, scannedRefs, entry.producerOptions);
+    const stats = statsFor(program, counts, scannedRefs, entry.producerOptions, dataRangeUniverse.complete);
     Object.defineProperty(program, 'globalReferenceStats', { value:stats, enumerable:false, configurable:true });
     Object.defineProperty(merged, 'globalReferenceStats', { value:stats, enumerable:false, configurable:true });
     // Permanent caps stay cached, but transient producer failures must not
