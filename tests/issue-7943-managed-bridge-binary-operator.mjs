@@ -86,7 +86,7 @@ test('#7943 cil binary mnemonics carry the operator matching the kind classifier
   // must be the keyword that classified the node (with xor checked before or,
   // since "xor" contains "or").
   const expectations = [
-    [0x58, 'add'], [0x59, 'sub'], [0x5a, 'mul'], [0x5b, 'div'], [0x5f, 'and'],
+    [0x58, 'add'], [0x59, 'sub'], [0x5a, 'mul'], [0x5f, 'and'],
     [0x60, 'or'], [0x61, 'xor'], [0x62, 'shl'], [0x63, 'shr'], [0x5d, 'rem'],
   ];
   for (const [opcode, expected] of expectations) {
@@ -95,4 +95,18 @@ test('#7943 cil binary mnemonics carry the operator matching the kind classifier
     assert.equal(node.operator, expected, `opcode 0x${opcode.toString(16)} operator`);
     assert.equal(node.completeness, 'complete');
   }
+});
+
+test('#7943 cil div keeps its operator while main #7937 fails closed on exception authority', () => {
+  // #7937 (merged on main after this branch was cut) makes the CIL lifter
+  // fail closed on integral `div`: without typed operand-stack authority the
+  // integral-vs-floating exception contract cannot be resolved losslessly.
+  // The node stays `partial` with the unresolved-exception-authority unknown,
+  // and — the #7943 contract — the canonical `operator` is still written.
+  const node = cilBinaryNode(0x5b);
+  assert.ok(node, 'binary node exists for opcode 0x5b (div)');
+  assert.equal(node.operator, 'div');
+  assert.equal(node.completeness, 'partial');
+  assert.ok(node.unknown, 'div node carries the fail-closed unknown');
+  assert.equal(node.unknown.reason, 'cil-div-exception-authority-unresolved');
 });
