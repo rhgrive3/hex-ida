@@ -21,7 +21,144 @@ export const RUNTIME_EVENT_KINDS = Object.freeze([
 const COMPLETENESS_RANK = Object.freeze({ unsupported: 0, truncated: 1, partial: 2, bounded: 3, complete: 4 });
 const UTF8_ENCODER = new TextEncoder();
 
+
 function encodedByteLength(value) { return UTF8_ENCODER.encode(value).byteLength; }
+
+const MAX_EVENT_ADMISSION_DEPTH = 64;
+
+function jsonStringByteLength(value, limit) {
+  let total = 2;
+  const add = (amount) => {
+    if (total > limit - amount) return false;
+    total += amount;
+    return true;
+  };
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 0x22 || code === 0x5c) {
+      if (!add(2)) return limit + 1;
+      continue;
+    }
+    if (code <= 0x1f) {
+      const escapedLength = code === 0x08 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d ? 2 : 6;
+      if (!add(escapedLength)) return limit + 1;
+      continue;
+    }
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        if (!add(4)) return limit + 1;
+        index += 1;
+        continue;
+      }
+      if (!add(6)) return limit + 1;
+      continue;
+    }
+    if (code >= 0xdc00 && code <= 0xdfff) {
+      if (!add(6)) return limit + 1;
+      continue;
+    }
+    if (!add(code <= 0x7f ? 1 : code <= 0x7ff ? 2 : 3)) return limit + 1;
+  }
+  return total;
+}
+
+function runtimeEventMaterialFits(values, maxBytes) {
+  let chargedBytes = 0;
+  const active = new WeakSet();
+  const charge = (amount) => {
+    if (!Number.isSafeInteger(amount) || amount < 0 || chargedBytes > maxBytes - amount) return false;
+    chargedBytes += amount;
+    return true;
+  };
+  const chargeString = (value) => {
+    const remaining = maxBytes - chargedBytes;
+    const length = jsonStringByteLength(value, remaining);
+    return length <= remaining && charge(length);
+  };
+  const visitBytes = (view) => {
+    if (!charge(2)) return false;
+    for (let index = 0; index < view.length; index += 1) {
+      if (index > 0 && !charge(1)) return false;
+      const text = String(view[index]);
+      if (!charge(text.length)) return false;
+    }
+    return true;
+  };
+  const visit = (value, depth, arrayElement = false) => {
+    if (depth > MAX_EVENT_ADMISSION_DEPTH) return false;
+    if (value === null) return charge(4);
+    const type = typeof value;
+    if (type === 'undefined' || type === 'function' || type === 'symbol') return arrayElement ? charge(4) : true;
+    if (type === 'string') return chargeString(value);
+    if (type === 'boolean') return charge(value ? 4 : 5);
+    if (type === 'number') {
+      if (!Number.isFinite(value)) return arrayElement ? charge(4) : true;
+      return charge(String(value).length);
+    }
+    if (type === 'bigint') return chargeString(value.toString());
+    if (type !== 'object') return true;
+    if (active.has(value)) return false;
+    active.add(value);
+    try {
+      if (value instanceof Date) {
+        if (!Number.isFinite(value.getTime())) return true;
+        return chargeString(value.toISOString());
+      }
+      if (value instanceof ArrayBuffer) return visitBytes(new Uint8Array(value));
+      if (ArrayBuffer.isView(value)) return visitBytes(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+      if (Array.isArray(value)) {
+        if (!charge(2)) return false;
+        for (let index = 0; index < value.length; index += 1) {
+          if (index > 0 && !charge(1)) return false;
+          if (!visit(value[index], depth + 1, true)) return false;
+        }
+        return true;
+      }
+      if (value instanceof Map) {
+        if (!charge(10)) return false;
+        let index = 0;
+        for (const [key, entryValue] of value) {
+          if (index++ > 0 && !charge(1)) return false;
+          if (!visit(key, depth + 1, true) || !visit(entryValue, depth + 1, true)) return false;
+        }
+        return true;
+      }
+      if (value instanceof Set) {
+        if (!charge(10)) return false;
+        let index = 0;
+        for (const entryValue of value) {
+          if (index++ > 0 && !charge(1)) return false;
+          if (!visit(entryValue, depth + 1, true)) return false;
+        }
+        return true;
+      }
+      if (!charge(2)) return false;
+      let index = 0;
+      for (const key in value) {
+        if (!Object.hasOwn(value, key)) continue;
+        // Even values jsonSafe() later omits still cost raw traversal work.
+        // Charge one byte-equivalent per property so malformed/irrelevant
+        // metadata cannot defeat the bounded preflight with omitted values.
+        if (!charge(1)) return false;
+        const entryValue = value[key];
+        const entryType = typeof entryValue;
+        if (entryType === 'undefined' || entryType === 'function' || entryType === 'symbol'
+          || (entryType === 'number' && !Number.isFinite(entryValue))) continue;
+        if (index++ > 0 && !charge(1)) return false;
+        if (!chargeString(key) || !charge(1) || !visit(entryValue, depth + 1)) return false;
+      }
+      return true;
+    } finally {
+      active.delete(value);
+    }
+  };
+
+  for (const value of values) {
+    if (!visit(value, 0)) return false;
+  }
+  return true;
+}
 
 function required(value, code, message) {
   if (typeof value !== 'string') throw new DebugAdapterError(code, message || code);
@@ -83,7 +220,13 @@ function dedupeIdentity(input) {
   return null;
 }
 
-export function createRuntimeEvent(input = {}) {
+export function createRuntimeEvent(input = {}, options = {}) {
+  const rawPayload = input.payload ?? {};
+  const rawPredecessorIds = input.predecessorIds;
+  const rawInterventionIds = input.interventionIds;
+  if (options.maxBytes != null && !runtimeEventMaterialFits([rawPayload, rawPredecessorIds, rawInterventionIds], options.maxBytes)) {
+    throw new DebugAdapterError('runtime-event-resource-limit', `runtime event exceeds pre-normalization byte budget (${options.maxBytes})`);
+  }
   const runtimeSessionId = required(input.runtimeSessionId, 'runtime-session-id-required', 'runtime event requires runtimeSessionId');
   const providerId = required(input.providerId, 'runtime-provider-required', 'runtime event requires providerId');
   const providerVersion = input.providerVersion ?? '1';
@@ -94,7 +237,7 @@ export function createRuntimeEvent(input = {}) {
   const kind = normalizeKind(input.kind);
   const observationMode = normalizeMode(input.observationMode);
   const completeness = normalizeCompleteness(input.completeness, kind === 'gap' || kind === 'dropped-events' ? 'truncated' : 'partial');
-  const payload = jsonSafe(input.payload ?? {});
+  const payload = jsonSafe(rawPayload);
   const identity = {
     runtimeSessionId,
     providerId,
@@ -121,7 +264,7 @@ export function createRuntimeEvent(input = {}) {
     sessionEpoch,
     streamId: optionalIdentity(input.streamId, 'streamId'),
     sequence,
-    predecessorIds: arrayOfStrings(input.predecessorIds, 'predecessorIds'),
+    predecessorIds: arrayOfStrings(rawPredecessorIds, 'predecessorIds'),
     providerEventId: optionalIdentity(input.providerEventId, 'providerEventId'),
     timestamp: input.timestamp == null ? null : String(input.timestamp),
     processKey: optionalText(input.processKey),
@@ -132,11 +275,11 @@ export function createRuntimeEvent(input = {}) {
     payload,
     observationMode,
     completeness,
-    interventionIds: arrayOfStrings(input.interventionIds, 'interventionIds'),
+    interventionIds: arrayOfStrings(rawInterventionIds, 'interventionIds'),
   });
 }
 
-export function normalizeLegacyRuntimeEvent(input, context = {}) {
+export function normalizeLegacyRuntimeEvent(input, context = {}, options = {}) {
   const protocolEnvelope = input && input.type === 'event' && typeof input.event === 'string';
   const source = protocolEnvelope
     ? (input.data && typeof input.data === 'object' && !Array.isArray(input.data) ? input.data : {})
@@ -173,7 +316,7 @@ export function normalizeLegacyRuntimeEvent(input, context = {}) {
     completeness: envelopeValue('completeness') ?? (truncated ? 'truncated' : context.completeness ?? 'partial'),
     predecessorIds: envelopeValue('predecessorIds'),
     interventionIds: envelopeValue('interventionIds'),
-  });
+  }, options);
 }
 
 export function createRuntimeEventBatch(input = {}) {
@@ -226,7 +369,17 @@ export class RuntimeEventNormalizer {
   push(input) {
     const hasDirectIdentity = input && typeof input === 'object'
       && ['runtimeSessionId', 'providerId', 'sessionEpoch'].some((key) => Object.hasOwn(input, key));
-    const event = hasDirectIdentity ? createRuntimeEvent(input) : normalizeLegacyRuntimeEvent(input, this.context);
+    const remainingBytes = Math.max(0, this.maxBytes - this.queuedBytes);
+    let event;
+    try {
+      event = hasDirectIdentity
+        ? createRuntimeEvent(input, { maxBytes:remainingBytes })
+        : normalizeLegacyRuntimeEvent(input, this.context, { maxBytes:remainingBytes });
+    } catch (error) {
+      if (error?.code !== 'runtime-event-resource-limit') throw error;
+      this.#dropped++;
+      return null;
+    }
     const contextRuntimeSessionId = required(this.context.runtimeSessionId, 'runtime-session-id-required', 'runtime event batch requires runtimeSessionId');
     const contextProviderId = required(this.context.providerId, 'runtime-provider-required', 'runtime event batch requires providerId');
     const contextEpoch = safeInteger(this.context.sessionEpoch, event.sessionEpoch, 'sessionEpoch', { min: 1 });
