@@ -520,10 +520,25 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   }
   async trace(options = {}) {
     if (options.run) await this.resume(options);
-    const snap = this.traceBuffer.snapshot({ limit:options.limit ?? 4096 });
     const filter = TRACE_CAPABILITY_EVENT_TYPES[options?.capability];
-    if (!filter) return snap;
-    return { ...snap, events: snap.events.filter((e) => e?.type === filter) };
+    if (!filter) return this.traceBuffer.snapshot({ limit:options.limit ?? 4096 });
+    // #5842: subtype calls multiplex through trace({capability, args}) — the
+    // subtype's own options (e.g. traceCall({limit:1})) ride inside args, while
+    // the direct discriminator form passes limit at the top level. Both forms
+    // are canonical; an explicit top-level limit is never silently overridden.
+    if (options.args != null && !Array.isArray(options.args)) {
+      throw new DebugAdapterError('invalid-request', 'trace capability args must be an array', { capability: options.capability });
+    }
+    const subtypeOptions = options.args?.find((a) => a && typeof a === 'object' && !Array.isArray(a)) ?? null;
+    const requestedLimit = options.limit ?? subtypeOptions?.limit;
+    // Filter before any limit cut: a subtype limit selects the newest N events
+    // of its own event class; newer heterogeneous events must never displace
+    // them. Ring statistics are reported from the unfiltered snapshot either way.
+    const snap = this.traceBuffer.snapshot();
+    const matched = snap.events.filter((e) => e?.type === filter);
+    if (requestedLimit == null) return { ...snap, events: matched };
+    const limit = boundedInteger(requestedLimit, 0, 0, 100000, 'trace limit');
+    return { ...snap, events: limit === 0 ? [] : matched.slice(-limit) };
   }
   async watchMemory(spec) { const bp = normalizeBreakpoint({ ...spec, kind:'memory' }); throw new DebugAdapterError('unsupported','hardware-style watchpoints are unavailable in local sandbox; use memory trace/watch fields', { breakpoint:bp }); }
   _normalizeResult(result, memoryEvents = []) {
