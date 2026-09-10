@@ -104,11 +104,14 @@ test('cancellation yields no non-escaping roots', () => {
   assert.equal(escape.nonEscapingRoots.size, 0);
 });
 
-test('only a call with a proven summary preserves a non-escape proof', () => {
-  // Passing a pointer to a callee whose effects are known does not publish it;
-  // every other boundary does.
-  assert.equal(invalidatesNonEscapeProof(createEscapeRecord({ rootKey: 'r', reason: 'passed-to-known-call', boundary: 'known-call' })), false);
-  for (const reason of ['returned', 'stored-to-global', 'stored-through-argument', 'passed-to-unknown-call', 'captured-by-closure', 'published-to-thread', 'unknown']) {
+test('every observed escape fact invalidates a non-escape proof (#5362)', () => {
+  // Full recompute revokes the non-escape proof of a root passed to a
+  // complete known call — the record's root joins `escapedRoots` exactly like
+  // any other reason. The incremental invalidation policy must be the same
+  // contract, so `passed-to-known-call` is no longer spared: an invalidation
+  // that kept the proof would disagree with a fresh analysis of the same
+  // revision.
+  for (const reason of ['returned', 'stored-to-global', 'stored-through-argument', 'passed-to-known-call', 'passed-to-unknown-call', 'captured-by-closure', 'published-to-thread', 'unknown']) {
     assert.equal(invalidatesNonEscapeProof(createEscapeRecord({ rootKey: 'r', reason, boundary: 'unknown' })), true, reason);
   }
 });

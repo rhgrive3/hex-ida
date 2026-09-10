@@ -40,8 +40,8 @@ function caller(functionId, targets, { indirect = false, partial = false } = {})
 function finiteFact(kind, index) {
   const common = { kind, returnIndex:0, offset:String(8 * (index + 1)) };
   return kind === 'arg' ? { ...common, argIndex:index }
-    : kind === 'root' ? { ...common, rootEntityId:`object_${index}` }
-      : { ...common, allocationSiteId:`allocation_${index}` };
+    : kind === 'root' ? { ...common, rootEntityId:`object_${index}`, addressSpace:'memory' }
+      : { ...common, allocationSiteId:`allocation_${index}`, addressSpace:'memory' };
 }
 
 function summaryGraph(kind, topology) {
@@ -133,6 +133,26 @@ function mixedSummaries() {
   return new Map(KINDS.map((kind, index) => [kind, createFunctionSummary({ functionId:kind,
     returnProvenance:[finiteFact(kind, kind === 'arg' ? 0 : index)], noreturn:false, mayThrow:false, status })]));
 }
+
+test('main reconciliation preserves distinct return address spaces through exhaustive calls and wrappers', () => {
+  const summaries = new Map(['memory', 'io'].map(addressSpace => [addressSpace, createFunctionSummary({
+    functionId:addressSpace, returnProvenance:[{ kind:'root', rootEntityId:'shared-root-name', addressSpace, returnIndex:0, offset:'8' }],
+    noreturn:false, mayThrow:false, status,
+  })]));
+  const f = caller('space_wrapper', [...summaries.keys()], { indirect:true });
+  const result = analyzeLocalPointsTo(f.ir, f.cfg, f.ssa, { snapshotId, summaries });
+  const spaces = set => set.targets.map(target => target.addressSpace).sort();
+  assert.equal(result.pointsTo.get('ret').top, false);
+  assert.deepEqual(spaces(result.pointsTo.get('ret')), ['io', 'memory']);
+  const wrapper = buildLocalFunctionSummary(f.ir, f.cfg, f.ssa, null, { snapshotId, calleeSummaries:summaries }).summary;
+  assert.deepEqual(wrapper.returnProvenance.map(fact => fact.addressSpace).sort(), ['io', 'memory']);
+  const outer = caller('space_outermost', [wrapper.functionId]);
+  const consumed = analyzeLocalPointsTo(outer.ir, outer.cfg, outer.ssa, { snapshotId, summaries:new Map([[wrapper.functionId, wrapper]]) });
+  assert.equal(consumed.pointsTo.get('ret').top, false);
+  assert.deepEqual(spaces(consumed.pointsTo.get('ret')), ['io', 'memory']);
+  summaries.delete('io');
+  assert.equal(analyzeLocalPointsTo(f.ir, f.cfg, f.ssa, { snapshotId, summaries }).pointsTo.get('ret').top, true);
+});
 
 test('exhaustive mixed roots are order invariant and every candidate digest tracks semantic changes', () => {
   const summaries = mixedSummaries();

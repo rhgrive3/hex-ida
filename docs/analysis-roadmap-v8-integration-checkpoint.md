@@ -5034,6 +5034,43 @@ main must preserve those changes and update these fixtures to the new contract;
 old branch green evidence is not proof of current-main compatibility. No main
 or component merge is performed as part of this increment.
 
+## Current-main reconciliation: 2026-09-11
+
+The living integration lane is reconciling C1 exhaustive-return head
+`d039fde2d96f22fbf380a4a2d294b379e9404c1f` with exact main
+`5e2f87c20d42df76c24dee2799696d398e03b785`. This supersedes the earlier
+audit-only main observation, not the original FR backlog or its denominators.
+No finding is closed by this reconciliation.
+
+Both sides' contracts are retained: main's root/allocation address spaces,
+public large-layout BigInts, synchronous discovery-generation snapshot,
+strict decoder integer boundaries and pass-local deadlines; integration's
+exhaustive return joins, numeric-only admission, proof-gated scalar lowering
+and identity-bound provenance. A new C1 wrapper/outer-caller regression retains
+equal-named roots in distinct address spaces; missing targets still join TOP.
+
+The first new provenance divergence was the optional pass manager's full-state
+fork, which replaced canonical IR and expression identities even after success.
+Private producer observations could no longer bind rendered consumers. The
+manager now retains descriptors and collection entries for synchronous rollback
+in place, preserving successful object identities and main's failed-pass
+rollback requirement. An irreversible rollback stops finalization explicitly.
+This transaction covers pass-owned plain data, not external adapter side effects.
+Permanent identity/rollback tests reproduce the old identity failure; the
+canonical provenance and performance groups pass after repair. These working
+receipts are not yet clean exact-head release evidence.
+
+Canonical Phase 7 points-to and types each retain one failure also reproduced
+on clean exact main (#4165 and #3470 respectively). Retained mechanical evidence
+compares the full failure diagnostics and unchanged failing test sources; it
+does not relabel those gates green. Other-owner issue fixes and physical
+device/browser checks remain outside this TODO work.
+
+The requested shared `hex-ida-mobile-final-20260911.zip` is still awaiting direct
+attachment. No older archive has been substituted and no ZIP import is claimed.
+Generated rebuild, final actual-inventory validation, exact-head verification
+and normal backup to the existing PR remain reconciliation exit obligations.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

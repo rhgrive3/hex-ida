@@ -390,7 +390,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           pc += 2;
           const isWrite = opcode === 0xb3 || opcode === 0xb5;
           const isStatic = opcode === 0xb2 || opcode === 0xb3;
-          const field = resolveJvmFieldRef(jvmClass, fieldIdx);
+          const field = resolveJvmFieldRef(jvmClass, fieldIdx, { resolveDeclaredFlags: true });
           mnemonic = opcode === 0xb2 ? 'getstatic' : opcode === 0xb3 ? 'putstatic' : opcode === 0xb4 ? 'getfield' : 'putfield';
 
           const receiver = { id: 'obj', bits: 64, category: 1, valueKind: 'reference' };
@@ -432,7 +432,24 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
             valueBits: field.bits,
             valueCategory: field.category,
             isWrite,
+            // Canonical field location identity: downstream semantic memory
+            // reasoning needs same-field write→read and distinct-field
+            // non-alias facts, which the receiver-derived address alone
+            // cannot express (#7861 review).
+            kind: isStatic ? 'static' : 'instance',
+            fieldIdentity: { owner: field.owner, name: field.name, descriptor: field.descriptor },
+            // JLS §17.4.5: a resolved volatile access carries synchronizes-with
+            // authority; an unresolved owner must not be silently treated as
+            // plain (fail-closed partial, #7861).
+            ...(field.isVolatile ? { isVolatile: true, ordering: 'synchronizes-with' } : {}),
           });
+          if (field.declaredAccessFlags == null) {
+            // The owner is not the current class (or the declared field is
+            // ambiguous): the volatility authority is unresolvable here, so
+            // the access cannot be published as an exact plain access.
+            completeness = 'partial';
+            unknownEffects.push({ category: 'memory', reason: 'jvm-field-volatility-unresolvable' });
+          }
         }
         break;
 
@@ -474,7 +491,20 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const classIdx = view.getUint16(pc, false);
           pc += 2;
           mnemonic = opcode === 0xc0 ? 'checkcast' : 'instanceof';
-          if (opcode === 0xc1) producedValues.push({ bits: 32 });
+          // JVM stack semantics (#5243): both opcodes pop the objectref.
+          // instanceof pushes the int result; checkcast pushes the same
+          // reference back (refined in place), so the def-use edge to the
+          // objectref is preserved instead of vanishing. ClassCastException
+          // is real control-affecting behaviour the bundle does not model as
+          // control flow, so checkcast fails closed to partial.
+          consumedValues.push({ id: 'obj' });
+          if (opcode === 0xc1) {
+            producedValues.push({ bits: 32, cpClassIndex: classIdx });
+          } else {
+            producedValues.push({ id: 'obj-refined', bits: 64, cpClassIndex: classIdx });
+            completeness = 'partial';
+            unknownEffects.push({ category: 'other', reason: 'jvm-checkcast-exception-unrepresented' });
+          }
         }
         break;
 

@@ -35,6 +35,8 @@ const base = (overrides = {}) => ({
   memorySsaVersion: '2.0.0',
   architectureSemanticVersion: '1',
   abiSemanticVersion: '1',
+  // #5751: every completeness-affecting artifact binds its budget generation.
+  budgetClass: 'exhaustive',
   ...overrides,
 });
 
@@ -157,8 +159,8 @@ const runCaller = (fixture, summary = fixture.summary) => {
 test('issue-6243: a changed returnProvenance root changes the caller points-to result', () => {
   // The semantic producer really does depend on the summary: v1 and v2 differ
   // only in the callee's return provenance root.
-  const v1 = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0' }]);
-  const v2 = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-B', offset: '0' }]);
+  const v1 = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0', addressSpace: 'memory' }]);
+  const v2 = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-B', offset: '0', addressSpace: 'memory' }]);
   const p1 = runCaller(v1);
   const p2 = runCaller(v2);
   assert.equal(p1.top, false);
@@ -177,8 +179,8 @@ test('issue-6243: a changed returnProvenance root changes the caller points-to r
 });
 
 test('issue-6243: a changed returnProvenance offset invalidates the artifact', () => {
-  const v1 = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0' }]);
-  const v2 = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '8' }]);
+  const v1 = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0', addressSpace: 'memory' }]);
+  const v2 = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '8', addressSpace: 'memory' }]);
   const p1 = runCaller(v1);
   const p2 = runCaller(v2);
   assert.equal(p1.top, false);
@@ -208,13 +210,13 @@ test('issue-6243: arg-return provenance changes invalidate the artifact', () => 
 });
 
 test('issue-6243: an accepted but unhashable callee summary fail-closes to unresolved-call', () => {
-  const fixture = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0' }]);
+  const fixture = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0', addressSpace: 'memory' }]);
   const cyclicFact = {};
   cyclicFact.self = cyclicFact;
   const accepted = createFunctionSummary({
     functionId: 'fn_callee',
     returnValues: ['ret'],
-    returnProvenance: [{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0' }],
+    returnProvenance: [{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0', addressSpace: 'memory' }],
     noreturn: false,
     mayThrow: false,
     semanticFacts: [cyclicFact],
@@ -239,11 +241,11 @@ test('issue-6243: an accepted but unhashable callee summary fail-closes to unres
 });
 
 test('issue-6243: an incomplete callee summary still fail-closes to unresolved-call', () => {
-  const fixture = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0' }]);
+  const fixture = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0', addressSpace: 'memory' }]);
   const stale = createFunctionSummary({
     functionId: 'fn_callee',
     returnValues: ['ret'],
-    returnProvenance: [{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0' }],
+    returnProvenance: [{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0', addressSpace: 'memory' }],
     noreturn: false,
     mayThrow: false,
     status: { ...completeStatus(), completeness: 'partial', stopReason: 'budget-exhausted' },
@@ -255,11 +257,11 @@ test('issue-6243: an incomplete callee summary still fail-closes to unresolved-c
 });
 
 test('issue-6243: a summary for another callee cannot leave the caller complete', () => {
-  const fixture = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0' }]);
+  const fixture = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0', addressSpace: 'memory' }]);
   const mismatched = createFunctionSummary({
     functionId: 'fn_other',
     returnValues: ['ret'],
-    returnProvenance: [{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0' }],
+    returnProvenance: [{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0', addressSpace: 'memory' }],
     noreturn: false,
     mayThrow: false,
     status: completeStatus(),
@@ -293,14 +295,14 @@ const runDetailed = (
 );
 
 test('issue-6243: A2 exposes the summary identities it actually consumed', () => {
-  const fixture = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-provider', offset: '4' }]);
+  const fixture = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-provider', offset: '4', addressSpace: 'memory' }]);
   const result = runDetailed(fixture, fixture.summary, true);
   assert.deepEqual(result.calleeSummaryIds, ['summary:' + functionSummaryDigest(fixture.summary)]);
   assert.equal(result.pointsTo.get('call_ret').top, false);
 });
 
 test('issue-6243: external summary labels remain additional to the canonical digest', () => {
-  const fixture = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-provider', offset: '4' }]);
+  const fixture = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-provider', offset: '4', addressSpace: 'memory' }]);
   const result = runDetailed(fixture, fixture.summary, false, false, new Map([['fn_callee', 'callee-artifact-v1']]));
   assert.deepEqual(result.calleeSummaryIds, [
     'callee-artifact-v1',
@@ -309,7 +311,7 @@ test('issue-6243: external summary labels remain additional to the canonical dig
 });
 
 test('issue-6243: the production A2 path builds its descriptor from consumed identities', () => {
-  const fixture = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-provider', offset: '4' }]);
+  const fixture = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-provider', offset: '4', addressSpace: 'memory' }]);
   const result = runDetailed(fixture, fixture.summary, true, true);
   const expected = createPhase7ArtifactDescriptor(base({
     calleeSummaryIds: result.calleeSummaryIds,
@@ -319,8 +321,8 @@ test('issue-6243: the production A2 path builds its descriptor from consumed ide
 });
 
 test('issue-6243: a reused explicit summary id cannot hide semantic changes', () => {
-  const first = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0' }]);
-  const second = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-B', offset: '0' }]);
+  const first = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0', addressSpace: 'memory' }]);
+  const second = callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-B', offset: '0', addressSpace: 'memory' }]);
   const reused = new Map([['fn_callee', 'reused-summary-id']]);
   const firstRun = runDetailed(first, first.summary, false, true, reused);
   const secondRun = runDetailed(second, second.summary, false, true, reused);
@@ -329,8 +331,8 @@ test('issue-6243: a reused explicit summary id cannot hide semantic changes', ()
 });
 
 test('issue-6243: descriptors can be built from observed identities across root changes', () => {
-  const first = runDetailed(callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0' }]));
-  const second = runDetailed(callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-B', offset: '0' }]));
+  const first = runDetailed(callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-A', offset: '0', addressSpace: 'memory' }]));
+  const second = runDetailed(callerFixture([{ kind: 'root', returnIndex: 0, rootEntityId: 'global-B', offset: '0', addressSpace: 'memory' }]));
   const firstId = createPhase7ArtifactDescriptor(base({ calleeSummaryIds: first.calleeSummaryIds })).artifactId;
   const secondId = createPhase7ArtifactDescriptor(base({ calleeSummaryIds: second.calleeSummaryIds })).artifactId;
   assert.notEqual(firstId, secondId);

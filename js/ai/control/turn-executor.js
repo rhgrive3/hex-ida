@@ -25,6 +25,14 @@ function normalizeExternalSignal(value) {
   return value;
 }
 
+function externalAbortError(signal) {
+  const timedOut = signal?.reason === 'timeout';
+  return new AIError(
+    timedOut ? 'budget_exhausted' : 'cancelled',
+    timedOut ? 'The AI investigation timed out.' : 'AI investigation was cancelled.',
+  );
+}
+
 export async function executeTurn(input = {}, options = {}) {
     const request = normalizeTurnRequest(input);
     const budgetOverrides = { ...request.budget, ...options.budget };
@@ -46,9 +54,9 @@ export async function executeTurn(input = {}, options = {}) {
     let modelCalls = 0, toolCalls = 0, contextBytes = 0, plan = null, decision = null, limitReason = null;
     let wireUsage = { semanticContextBytes: 0, toolSchemaBytes: 0, historyBytes: 0, wireBytes: 0, estimatedInputTokens: 0 };
     const externalSignal = normalizeExternalSignal(options.signal ?? request.signal);
-    if (externalSignal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
+    if (externalSignal?.aborted) throw externalAbortError(externalSignal);
     const turnController = new AbortController();
-    const externalAbort = () => turnController.abort(externalSignal?.reason || 'cancelled');
+    const externalAbort = () => turnController.abort(externalSignal?.reason ?? 'cancelled');
     if (externalSignal) { externalSignal.addEventListener('abort', externalAbort, { once: true }); if (externalSignal.aborted) externalAbort(); }
     const deadline = Number.isFinite(turnTimeoutMs) ? setTimeout(() => turnController.abort('timeout'), turnTimeoutMs) : null;
     this.activeControllers.add(turnController);
@@ -166,6 +174,9 @@ export async function executeTurn(input = {}, options = {}) {
                 signal,
                 ...(Number.isFinite(turnTimeoutMs) ? { timeoutMs: remainingTime(started, turnTimeoutMs, monotonicNow) } : {}),
               });
+              // Provider cooperation is not deadline authority: discard a late
+              // result before it can be validated or adopted (#5815).
+              ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
               const visibleToolNames = tools.map((tool) => tool.name);
               const previousTool = observations.length ? observations[observations.length - 1]?.tool : null;
               if (

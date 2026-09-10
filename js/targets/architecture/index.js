@@ -6,6 +6,7 @@ import { decorateArm64BtypeEffects } from './arm64/effects/btype.js';
 import { decorateArm64BtiGuardedPageEffects } from './arm64/effects/bti-guard-state.js';
 import { X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftX86MachineEffects, liftX86DecodedMachineEffects } from './x86_64/effects/index.js';
 import { x86RegisterFile } from './x86_64/registers.js';
+import { riscv64IsStandardReturn } from './riscv64/control-flow.js';
 import { RISCV64_INSTRUCTION_ALIGNMENT, RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftRiscv64MachineEffects } from './riscv64/effects/index.js';
 import { riscv64RegisterFile } from './riscv64/registers.js';
 import { ArchitecturePluginV2, registerArchitecturePlugin, architecturePluginV2, architecturePluginsV2, canonicalArchitectureId, normalizeArchitecturePositiveInteger } from './registry.js';
@@ -47,9 +48,9 @@ function x86ControlFlow(instruction) {
  * same display form, so mnemonics cannot distinguish a call from a jump.
  *
  * rd == x0 means no link value is produced, which is the architectural
- * difference between a call and a plain jump. For `jalr` with rd == x0, the
- * ISA's return-address-stack prediction table treats rs1 in {x1, x5} as a
- * return; that hint lives in the unprivileged ISA, not in the psABI.
+ * difference between a call and a plain jump. RAS prediction hints are kept
+ * separate from semantic procedure returns: the frozen LP64 profile promotes
+ * only the standard `jalr x0, x1, 0` return sequence.
  */
 function riscv64ControlFlow(instruction) {
   const fields = instruction?.fields;
@@ -59,7 +60,7 @@ function riscv64ControlFlow(instruction) {
   if (op === 'jalr') {
     if (['x1', 'x5'].includes(fields.rd)) return 'call';
     if (fields.rd !== 'x0') return 'branch';
-    if (['x1', 'x5'].includes(fields.rs1)) return 'return';
+    if (riscv64IsStandardReturn(fields)) return 'return';
     // An indirect jump. It is reported as a branch, matching how x86 classifies
     // an indirect `jmp`: the block ends and no fallthrough edge is invented,
     // because the transfer does not fall through. The honest "the target is a

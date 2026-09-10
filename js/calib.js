@@ -89,8 +89,12 @@ export function groupedFusion(items, opts) {
   };
 }
 
+function booleanLabelRows(samples) {
+  return (samples || []).filter((s) => s && typeof s.correct === 'boolean');
+}
+
 function finiteProbabilityRows(samples) {
-  return (samples || []).filter((s) => s && Number.isFinite(s.probability));
+  return booleanLabelRows(samples).filter((s) => Number.isFinite(s.probability));
 }
 
 export function brierScore(samples) {
@@ -111,7 +115,7 @@ export function expectedCalibrationError(samples, binCount = 10) {
   const count = normalizeBinCount(binCount);
   const bins = Array.from({ length: count }, () => ({ n: 0, conf: 0, hits: 0 }));
   for (const s of rows) {
-    const p = Math.max(0, Math.min(0.999999, s.probability));
+    const p = Math.max(0, Math.min(1, s.probability));
     const b = bins[Math.min(count - 1, Math.floor(p * count))];
     b.n++; b.conf += p; b.hits += s.correct ? 1 : 0;
   }
@@ -130,7 +134,7 @@ export function reliabilityBins(samples, binCount = 10) {
     from: i / count, to: (i + 1) / count, n: 0, confidence: 0, accuracy: 0,
   }));
   for (const s of rows) {
-    const p = Math.max(0, Math.min(0.999999, s.probability));
+    const p = Math.max(0, Math.min(1, s.probability));
     const b = bins[Math.min(count - 1, Math.floor(p * count))];
     b.n++; b.confidence += p; b.accuracy += s.correct ? 1 : 0;
   }
@@ -148,7 +152,7 @@ function normalizeBinCount(value) {
 }
 
 export function accuracyReport(rows) {
-  const all = (rows || []).filter(Boolean);
+  const all = booleanLabelRows(rows);
   const total = all.length;
   if (!total) {
     return { total: 0, top1: null, top3: null, precision: null, recall: null,

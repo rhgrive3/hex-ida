@@ -16,7 +16,12 @@ function normalizeArchitectureAddress(value) {
   if (typeof value !== 'string') return null;
   const text = value.trim();
   if (!/^(?:[+-]?\d+|[+-]?0[xX][0-9a-fA-F]+)$/.test(text)) return null;
-  try { return BigInt(text); } catch { return null; }
+  const negative = text.startsWith('-');
+  const unsigned = /^[+-]/.test(text) ? text.slice(1) : text;
+  try {
+    const parsed = BigInt(unsigned);
+    return negative ? -parsed : parsed;
+  } catch { return null; }
 }
 
 function ownTruthy(object, key) {
@@ -74,7 +79,7 @@ export class ArchitectureAdapter {
       const size = BigInt(this.fixedInstructionSize);
       if (rel < 0n || rel + size > BigInt(region.size)) return { ok:false, code:'patch-range', error:'アドレスがコードのセクション範囲外です。' };
       const alignment = BigInt(this.instructionAlignment);
-      if (normalizedAddress % alignment !== 0n || rel % alignment !== 0n || !Number.isInteger(length) || length !== this.fixedInstructionSize) {
+      if (normalizedAddress % alignment !== 0n || rel % size !== 0n || !Number.isInteger(length) || length !== this.fixedInstructionSize) {
         return { ok:false, code:'instruction-placement', architecture:this.id, error:`${this.id} 命令の位置または長さが不正です。` };
       }
       return { ok:true };

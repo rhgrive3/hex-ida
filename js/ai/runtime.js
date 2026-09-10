@@ -4,7 +4,7 @@ import { EvidenceStore } from './evidence.js';
 import { HypothesisStore } from './hypothesis.js';
 import { ProposalStore } from './proposals.js';
 import { createAgentJobManager } from './jobs/index.js';
-import { InvestigationSessionStore } from './session-core/index.js';
+import { InvestigationSessionStore, isValidSessionId } from './session-core/index.js';
 import { sanitizeActions, addressText } from './validation.js';
 import { executeTurn } from './control/turn-executor.js';
 import { addressExistsAsync, assertLiveBindingsUnchanged, defaultMonotonicNow, deterministicConfidence, fallbackEvidence, presentAnswer } from './control/runtime-support.js';
@@ -82,8 +82,11 @@ export class AIRuntime {
     if (missingIds.length) activity.push({ type: 'consistency-check', label: `${missingIds.length} 件の存在しない evidence 参照を除外`, timestamp: new Date().toISOString() });
     const finalEvidence = evidence.length ? evidence : fallbackEvidence(evidenceStore, plan);
     for (const modelHypothesis of decision.hypotheses || []) hypothesisStore.upsert(modelHypothesis);
+    const hasExplicitHypothesisSelection = Array.isArray(decision.hypothesisIds);
     const hypothesisIds = new Set((decision.hypothesisIds || []).map(String));
-    const hypotheses = hypothesisIds.size ? hypothesisStore.all().filter((item) => hypothesisIds.has(item.id)) : hypothesisStore.all();
+    const hypotheses = hasExplicitHypothesisSelection
+      ? hypothesisStore.all().filter((item) => hypothesisIds.has(item.id))
+      : hypothesisStore.all();
     // Suggested actions must respect an async-only `addressExists`: resolve the
     // authority for every candidate target before sanitizing, so a `false`
     // cannot be dropped by the synchronous wrapper (#5790).
@@ -113,8 +116,8 @@ export class AIRuntime {
   }
 
   async releaseSession(sessionId, { deletePersisted = false } = {}) {
-    if (sessionId == null) return false;
-    const id = String(sessionId);
+    if (!isValidSessionId(sessionId)) return false;
+    const id = sessionId;
     for (const [key, ownerId] of Array.from(this.storeNamespaceOwners.entries())) {
       if (ownerId !== id) continue;
       this.storeNamespaces.delete(key);

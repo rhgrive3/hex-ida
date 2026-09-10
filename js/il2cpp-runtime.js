@@ -18,7 +18,12 @@ export function parseMetadataFileInWorker(file, options = {}) {
   const workerFactory = options.workerFactory || (() => new Worker(new URL('./il2cpp-worker.js', import.meta.url), { type:'module' }));
   if (signal?.aborted) return Promise.reject(abortError(signal));
   const id = sequence++;
-  const worker = workerFactory();
+  let worker;
+  try {
+    worker = workerFactory();
+  } catch (error) {
+    return Promise.reject(error);
+  }
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => {

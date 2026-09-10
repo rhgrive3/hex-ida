@@ -18,15 +18,21 @@ function strictToken(value, code) {
   if (!out) throw new TypeError(code);
   return out;
 }
-function bigint(value, code) {
-  // Structured inputs must be typed values: BigInt() would launder booleans,
-  // arrays and numeric strings into a canonical address (#5813).
+function addressValue(value, code) {
   if (typeof value === 'bigint') return value;
-  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
-  if (typeof value === 'string' && /^-?(?:0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(value.trim())) {
-    try { return BigInt(value.trim()); } catch { throw new TypeError(code); }
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    if (/^(?:[+-]?\d+|0[xX][0-9a-fA-F]+|0[oO][0-7]+|0[bB][01]+)$/.test(normalized)) {
+      try { return BigInt(normalized); } catch { /* fall through to the contract error */ }
+    }
   }
   throw new TypeError(code);
+}
+
+function exactInteger(value, code) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw new TypeError(code);
+  return value;
 }
 
 // `rawBytes` are the architectural authority for every decoded field, so each
@@ -102,12 +108,8 @@ function rawBytesOf(input, expectedLength) {
  */
 export function createRiscv64DecodedInstruction(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('riscv64-decoded-instruction-invalid');
-  const address = bigint(input.address, 'riscv64-decoded-instruction-invalid-address');
-  // size/alignment are typed fields: Number() coercion would promote arrays
-  // and booleans into a valid encoding geometry (#5813).
-  const rawSize = input.size ?? input.length;
-  if (typeof rawSize !== 'number' || !Number.isInteger(rawSize)) throw new TypeError('riscv64-decoded-instruction-invalid-length');
-  const size = rawSize;
+  const address = addressValue(input.address, 'riscv64-decoded-instruction-invalid-address');
+  const size = exactInteger(input.size ?? input.length, 'riscv64-decoded-instruction-invalid-length');
   if (size !== 2 && size !== 4) throw new TypeError('riscv64-decoded-instruction-invalid-length');
   const rawBytes = rawBytesOf(input.rawBytes ?? [], size);
   if (rawBytes.length !== size) throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
@@ -118,10 +120,11 @@ export function createRiscv64DecodedInstruction(input = {}) {
   const mode = strictToken(input.mode === undefined ? 'rv64imc' : input.mode, 'riscv64-decoded-instruction-mode-required');
   if (!RISCV64_DECODE_MODES.includes(mode)) throw new TypeError('riscv64-decoded-instruction-unsupported-mode');
   if (mode === 'rv64im' && size === 2) throw new TypeError('riscv64-decoded-instruction-compressed-disabled');
-  const rawAlignment = input.instructionAlignment ?? (mode === 'rv64im' ? 4 : 2);
-  if (typeof rawAlignment !== 'number' || !Number.isInteger(rawAlignment)) throw new TypeError('riscv64-decoded-instruction-invalid-instruction-alignment');
-  const instructionAlignment = rawAlignment;
-  if (!Number.isSafeInteger(instructionAlignment) || ![2,4].includes(instructionAlignment)) {
+  const instructionAlignment = exactInteger(
+    input.instructionAlignment ?? (mode === 'rv64im' ? 4 : 2),
+    'riscv64-decoded-instruction-invalid-instruction-alignment',
+  );
+  if (![2,4].includes(instructionAlignment)) {
     throw new TypeError('riscv64-decoded-instruction-invalid-instruction-alignment');
   }
   if (mode === 'rv64im' && instructionAlignment !== 4) throw new TypeError('riscv64-decoded-instruction-mode-alignment-mismatch');

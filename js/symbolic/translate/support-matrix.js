@@ -77,10 +77,20 @@ export function classifyOpSupport(op, inst = null) {
 
     case OP.BIN:
     case OP.UN:
-      return scalarOperationSupported(inst) ? TRANSLATION_STATUS.EXACT : TRANSLATION_STATUS.UNSUPPORTED;
+      // This public classifier receives the opcode separately; callers need
+      // not repeat it inside the optional instruction descriptor (#5202).
+      return scalarOperationSupported(inst, op) ? TRANSLATION_STATUS.EXACT : TRANSLATION_STATUS.UNSUPPORTED;
 
     case OP.CMP:
+      /* #5202: a comparison without cond/subOp has no ordering or equality
+         semantic; '==' must not be invented. */
+      if (!(inst?.cond || inst?.subOp)) return TRANSLATION_STATUS.UNSUPPORTED;
+      return TRANSLATION_STATUS.EXACT;
+
     case OP.SEL:
+      /* #5202: a select without a condition must not become an
+         always-true ITE. */
+      if (!inst?.cond) return TRANSLATION_STATUS.UNSUPPORTED;
       return TRANSLATION_STATUS.EXACT;
 
     case OP.BFX:

@@ -49,23 +49,24 @@ export function condenseTypeGraph(entityIds, dependenciesOf, {
   const onStack = new Set();
   const stack = [];
   const components = [];
+  const selfEdges = new Set();
   let counter = 0;
   let truncated = false;
-  let traversedEdges = 0;
+  let enumeratedEdges = 0;
+
+  const cancelledResult = () => ({
+    components,
+    recursiveComponents: [],
+    isRecursiveMap: new Map(),
+    sccMembersMap: new Map(),
+    truncated: true,
+    cancelled: true,
+  });
 
   const roots = [...new Set(entityIds)].sort();
 
   for (const root of roots) {
-    if (signal?.aborted) {
-      return {
-        components,
-        recursiveComponents: [],
-        isRecursiveMap: new Map(),
-        sccMembersMap: new Map(),
-        truncated: true,
-        cancelled: true,
-      };
-    }
+    if (signal?.aborted) return cancelledResult();
     if (index.has(root)) continue;
     if (index.size >= maxNodes) {
       truncated = true;
@@ -74,16 +75,7 @@ export function condenseTypeGraph(entityIds, dependenciesOf, {
 
     const work = [{ node: root, successors: null, state: 0 }];
     while (work.length > 0) {
-      if (signal?.aborted) {
-        return {
-          components,
-          recursiveComponents: [],
-          isRecursiveMap: new Map(),
-          sccMembersMap: new Map(),
-          truncated: true,
-          cancelled: true,
-        };
-      }
+      if (signal?.aborted) return cancelledResult();
 
       const frame = work[work.length - 1];
       if (frame.successors == null) {
@@ -93,23 +85,33 @@ export function condenseTypeGraph(entityIds, dependenciesOf, {
         stack.push(frame.node);
         onStack.add(frame.node);
 
+        // Bounded materialization (#5271): raw dependency discovery consumes
+        // one global edge-work budget across the whole graph. Duplicate items
+        // still cost work, and cancellation is observed between yielded items.
+        let overBudget = false;
         let succs = [];
         try {
-          succs = [...new Set(dependenciesOf(frame.node) ?? [])].sort();
+          const seen = new Set();
+          for (const item of dependenciesOf(frame.node) ?? []) {
+            if (signal?.aborted) return cancelledResult();
+            enumeratedEdges += 1;
+            if (enumeratedEdges > maxEdges) { overBudget = true; break; }
+            seen.add(item);
+          }
+          if (seen.has(frame.node)) selfEdges.add(frame.node);
+          succs = [...seen].sort();
         } catch {
           truncated = true;
           succs = [];
         }
         frame.successors = succs;
-      }
-
-      if (frame.state < frame.successors.length) {
-        traversedEdges += 1;
-        if (traversedEdges > maxEdges) {
+        if (overBudget) {
           truncated = true;
           break;
         }
+      }
 
+      if (frame.state < frame.successors.length) {
         const next = frame.successors[frame.state];
         frame.state += 1;
 
@@ -157,18 +159,7 @@ export function condenseTypeGraph(entityIds, dependenciesOf, {
 
   for (const component of components) {
     const isMulti = component.length > 1;
-    let hasSelfEdge = false;
-    if (!isMulti && component.length === 1) {
-      const node = component[0];
-      let succs = [];
-      try {
-        succs = [...dependenciesOf(node) ?? []];
-      } catch {
-        truncated = true;
-        succs = [];
-      }
-      hasSelfEdge = succs.includes(node);
-    }
+    const hasSelfEdge = !isMulti && component.length === 1 && selfEdges.has(component[0]);
 
     const isRecursive = isMulti || hasSelfEdge;
     if (isRecursive) recursiveComponents.push(component);

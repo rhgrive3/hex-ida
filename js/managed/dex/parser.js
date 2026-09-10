@@ -17,6 +17,46 @@ function requireIndex(table, idx, code) {
   return table[idx];
 }
 
+function requireFieldOwnerType(descriptor) {
+  if (!descriptor.startsWith('L')) fail('dex-invalid-field-owner-type');
+  return descriptor;
+}
+
+function requireMethodOwnerType(descriptor) {
+  if (!descriptor.startsWith('L') && !descriptor.startsWith('[')) fail('dex-invalid-method-owner-type');
+  return descriptor;
+}
+
+function isDexSimpleNameChar(codePoint, extendedSpaces) {
+  if ((codePoint >= 0x41 && codePoint <= 0x5a) ||
+      (codePoint >= 0x61 && codePoint <= 0x7a) ||
+      (codePoint >= 0x30 && codePoint <= 0x39) ||
+      codePoint === 0x24 || codePoint === 0x2d || codePoint === 0x5f) return true;
+  if (codePoint === 0x20 || codePoint === 0x00a0 || codePoint === 0x202f) return extendedSpaces;
+  if (codePoint >= 0x00a1 && codePoint <= 0x1fff) return true;
+  if (codePoint >= 0x2000 && codePoint <= 0x200a) return extendedSpaces;
+  if (codePoint >= 0x2010 && codePoint <= 0x2027) return true;
+  if (codePoint >= 0x2030 && codePoint <= 0xd7ff) return true;
+  if (codePoint >= 0xe000 && codePoint <= 0xffef) return true;
+  return codePoint >= 0x10000 && codePoint <= 0x10ffff;
+}
+
+function isDexSimpleName(name, dexVersion) {
+  if (typeof name !== 'string' || name.length === 0) return false;
+  const extendedSpaces = dexVersion >= 40;
+  for (const char of name) {
+    if (!isDexSimpleNameChar(char.codePointAt(0), extendedSpaces)) return false;
+  }
+  return true;
+}
+
+function requireDexMemberName(name, dexVersion, code) {
+  const wrapped = name.length >= 2 && name.startsWith('<') && name.endsWith('>');
+  const simpleName = wrapped ? name.slice(1, -1) : name;
+  if (!isDexSimpleName(simpleName, dexVersion)) fail(code);
+  return name;
+}
+
 const SUPPORTED_DEX_VERSIONS = new Set(['035', '037', '038', '039', '040']);
 
 export function probeDex(bytes) {
@@ -87,6 +127,7 @@ function decodeMutf8(bytes, offset) {
 export function parseDex(bytes, options = {}) {
   const probe = probeDex(bytes);
   if (!probe.supported) fail('dex-unsupported-binary');
+  const dexVersion = Number(probe.formatVersion.slice(4));
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
 
@@ -177,7 +218,9 @@ export function parseDex(bytes, options = {}) {
     const off=fieldIdsOff+i*8;
     if(off+8>u8.length) fail('dex-truncated-field-ids');
     const classIdx=view.getUint16(off,true),typeIdx=view.getUint16(off+2,true),nameIdx=view.getUint32(off+4,true);
-    fields.push({classType:requireIndex(types,classIdx,'dex-invalid-field-class-index'),type:requireIndex(types,typeIdx,'dex-invalid-field-type-index'),name:requireIndex(strings,nameIdx,'dex-invalid-field-name-index')});
+    const classType = requireFieldOwnerType(requireIndex(types,classIdx,'dex-invalid-field-class-index'));
+    const name = requireDexMemberName(requireIndex(strings,nameIdx,'dex-invalid-field-name-index'),dexVersion,'dex-invalid-field-name');
+    fields.push({classType,type:requireIndex(types,typeIdx,'dex-invalid-field-type-index'),name});
   }
 
   const methods=[];
@@ -185,7 +228,9 @@ export function parseDex(bytes, options = {}) {
     const off=methodIdsOff+i*8;
     if(off+8>u8.length) fail('dex-truncated-method-ids');
     const classIdx=view.getUint16(off,true),protoIdx=view.getUint16(off+2,true),nameIdx=view.getUint32(off+4,true);
-    methods.push({classType:requireIndex(types,classIdx,'dex-invalid-method-class-index'),proto:requireIndex(protos,protoIdx,'dex-invalid-method-proto-index'),name:requireIndex(strings,nameIdx,'dex-invalid-method-name-index')});
+    const classType = requireMethodOwnerType(requireIndex(types,classIdx,'dex-invalid-method-class-index'));
+    const name = requireDexMemberName(requireIndex(strings,nameIdx,'dex-invalid-method-name-index'),dexVersion,'dex-invalid-method-name');
+    methods.push({classType,proto:requireIndex(protos,protoIdx,'dex-invalid-method-proto-index'),name});
   }
 
   const classes=[];
@@ -197,7 +242,6 @@ export function parseDex(bytes, options = {}) {
     requireOptionalDataItemOffset(fileSize,interfacesOff,4,4,'dex-invalid-interfaces-offset');
     requireOptionalDataItemOffset(fileSize,annotationsOff,4,16,'dex-invalid-annotations-offset');
     requireOptionalDataItemOffset(fileSize,staticValuesOff,1,1,'dex-invalid-static-values-offset');
-    dataRange(interfacesOff,4,'dex-invalid-interfaces-offset',4,true);
     dataRange(annotationsOff,16,'dex-invalid-annotations-offset',4,true);
     dataRange(staticValuesOff,1,'dex-invalid-static-values-offset',1,true);
     const classType = requireIndex(types,classIdx,'dex-invalid-class-index');
@@ -243,7 +287,26 @@ export function parseDex(bytes, options = {}) {
         lastMethodIdx+=delta; requireIndex(methods,lastMethodIdx,'dex-invalid-class-data-method-index'); validateCode(codeOff,mFlags); virtualMethods.push({methodIdx:lastMethodIdx,accessFlags:mFlags,codeOff});
       }
     }
-    classes.push({classType:requireIndex(types,classIdx,'dex-invalid-class-index'),accessFlags,superType:superclassIdx!==0xffffffff?requireIndex(types,superclassIdx,'dex-invalid-superclass-index'):null,sourceFile:sourceFileIdx!==0xffffffff?requireIndex(strings,sourceFileIdx,'dex-invalid-source-file-index'):null,staticFields,instanceFields,directMethods,virtualMethods});
+    // class_def_item.interfaces_off is the authority for implemented
+    // interfaces: decode the referenced type_list losslessly and fail closed
+    // on AOSP contract violations — bounds, alignment, type_idx validity,
+    // class (non-array/primitive) entries, and duplicates (#7620).
+    const interfaceTypes=[];
+    if(interfacesOff!==0){
+      dataRange(interfacesOff,4,'dex-invalid-interfaces-offset',4);
+      const interfaceCount=view.getUint32(interfacesOff,true);
+      dataRange(interfacesOff+4,interfaceCount*2,'dex-invalid-interfaces-range',2);
+      const seenInterfaces=new Set();
+      for(let entry=0;entry<interfaceCount;entry++){
+        const typeIdx=view.getUint16(interfacesOff+4+entry*2,true);
+        const descriptor=requireIndex(types,typeIdx,'dex-invalid-interface-type-index');
+        if(!descriptor.startsWith('L')) fail('dex-invalid-interface-type');
+        if(seenInterfaces.has(descriptor)) fail('dex-duplicate-interface-type');
+        seenInterfaces.add(descriptor);
+        interfaceTypes.push(descriptor);
+      }
+    }
+    classes.push({classType:requireIndex(types,classIdx,'dex-invalid-class-index'),accessFlags,superType:superclassIdx!==0xffffffff?requireIndex(types,superclassIdx,'dex-invalid-superclass-index'):null,sourceFile:sourceFileIdx!==0xffffffff?requireIndex(strings,sourceFileIdx,'dex-invalid-source-file-index'):null,interfaceTypes,staticFields,instanceFields,directMethods,virtualMethods});
   }
 
   dexMethodDefinitions({ methods, classes });

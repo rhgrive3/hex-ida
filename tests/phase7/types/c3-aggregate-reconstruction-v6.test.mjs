@@ -24,7 +24,7 @@ test('C3: contradictory array lengths/types withhold selection',()=>{
 test('C3: reconstruction preserves integers above 2^53 through public output',()=>{
  const g=new TypeConstraintGraph({snapshotId:'huge-v6'});
  hard(g,'Huge',{offset:9007199254740993n,sizeBytes:2,alignBytes:2,memberType:{kind:'integer',widthBits:16}});
- const r=reconstructStructuralType(g,'Huge');assert.equal(r.members[0].offset,'9007199254740993');assert.equal(r.sizeBytes,'9007199254740996');assert.equal(r.alignBytes,2);
+ const r=reconstructStructuralType(g,'Huge');assert.equal(r.members[0].offset,9007199254740993n);assert.equal(r.sizeBytes,9007199254740996n);assert.equal(r.alignBytes,2);
 });
 test('C3: hard aggregate extent may not silently expand to accommodate an incompatible field',()=>{
  const g=new TypeConstraintGraph({snapshotId:'inconsistent-v6'});

@@ -160,6 +160,12 @@ function structuralIntegerWire(value) {
   return value <= MAX_SAFE_LAYOUT_INTEGER ? Number(value) : value.toString();
 }
 
+// Canonical claim records use decimal wire strings; the public structural
+// projection preserves main's exact BigInt API above the safe Number range.
+function structuralIntegerProjection(value) {
+  return value <= MAX_SAFE_LAYOUT_INTEGER ? Number(value) : value;
+}
+
 function defaultStructuralAlign(sizeBytes) {
   const size = exactStructuralInteger(sizeBytes, 0n);
   if (size == null || size <= 0n) return 1n;
@@ -459,14 +465,17 @@ export class TypeConstraintGraph {
     const bucket = this.#bucket(constraint.claim.entityId, constraint.claim.layer);
     const identity = hardIdentity(constraint);
     const duplicateIndex = bucket.hardIndex.get(identity);
+    let retained = false;
     if (duplicateIndex == null) {
       if (bucket.hard.length + bucket.soft.length >= this.limits.maxConstraintsPerLayer) {
         bucket.truncated = true;
       } else {
         bucket.hardIndex.set(identity, bucket.hard.length);
         bucket.hard.push(constraint);
+        retained = true;
       }
     } else {
+      retained = true;
       const existing = bucket.hard[duplicateIndex];
       const evidenceIds = mergedEvidenceIds(existing.evidenceIds, constraint.evidenceIds);
       if (evidenceIds.length !== existing.evidenceIds.length) {
@@ -481,8 +490,11 @@ export class TypeConstraintGraph {
         });
       }
     }
-    this.#recordDependencies(constraint.claim);
-    if (constraint.origin === 'user-approved') {
+    // Only retained hard evidence may influence graph semantics. A truncated
+    // constraint is returned to the caller for accounting, but must not leave
+    // a dependency/SCC edge or user-constraint marker behind.
+    if (retained) this.#recordDependencies(constraint.claim);
+    if (retained && constraint.origin === 'user-approved') {
       this.userConstraintDigests.add(stableDigest(constraint.claim));
     }
     return constraint;
@@ -923,7 +935,7 @@ export function reconstructStructuralType(graphOrResult, entityId, options = {})
     if (explicitAlign != null && align > explicitAlign) return null;
     if (align > maxAlign) maxAlign = align;
     if (offset + size > span) span = offset + size;
-    members.push({offset:structuralIntegerWire(offset),sizeBytes:structuralIntegerWire(size),alignBytes:structuralIntegerWire(align),name:m.fieldName??m.name??null,type:m.memberType??{kind:'unknown'}});
+    members.push({offset:structuralIntegerProjection(offset),sizeBytes:structuralIntegerProjection(size),alignBytes:structuralIntegerProjection(align),name:m.fieldName??m.name??null,type:m.memberType??{kind:'unknown'}});
   }
   let size = exactStructuralInteger(descriptor.totalSizeBytes ?? descriptor.sizeBytes);
   if (descriptor.kind === 'array') {
@@ -938,11 +950,11 @@ export function reconstructStructuralType(graphOrResult, entityId, options = {})
   if (size == null && members.length) size = ((span + maxAlign - 1n) / maxAlign) * maxAlign;
   const extra = {};
   for (const key of ['elementType','elementEntityId','targetEntityId','pointeeType']) if (descriptor[key] != null) extra[key] = descriptor[key];
-  for (const key of ['length','strideBytes']) if (descriptor[key] != null) extra[key] = structuralIntegerWire(exactStructuralInteger(descriptor[key]));
+  for (const key of ['length','strideBytes']) if (descriptor[key] != null) extra[key] = structuralIntegerProjection(exactStructuralInteger(descriptor[key]));
   if (options.signal?.aborted) return null;
   return deepFreeze({
     kind:descriptor.kind??'struct',entityId:result.entityId,name:nominalName,
-    sizeBytes:size==null?null:structuralIntegerWire(size),alignBytes:size==null&&members.length===0&&explicitAlign==null?null:structuralIntegerWire(maxAlign),
+    sizeBytes:size==null?null:structuralIntegerProjection(size),alignBytes:size==null&&members.length===0&&explicitAlign==null?null:structuralIntegerProjection(maxAlign),
     isRecursive:descriptor.isRecursive===true || extractDependencies({entityId:result.entityId,descriptor}).has(result.entityId),recursiveIdentity:descriptor.recursiveIdentity??(extractDependencies({entityId:result.entityId,descriptor}).has(result.entityId)?result.entityId:null),
     sccMembers:descriptor.sccMembers??null,members, ...extra,confidence:structuralLayer.confidence,status:result.status,
   });

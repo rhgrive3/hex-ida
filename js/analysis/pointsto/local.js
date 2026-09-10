@@ -153,11 +153,17 @@ function parseInteger(candidate) {
  * does, so A2 and the root service never disagree about what "constant" means.
  */
 function constantOf(value, node) {
+  let resolved = null;
   for (const candidate of [value?.metadata?.constant, node?.attributes?.constant, node?.metadata?.constant]) {
     const parsed = parseInteger(candidate);
-    if (parsed != null) return parsed;
+    if (parsed == null) continue;
+    if (resolved == null) {
+      resolved = parsed;
+      continue;
+    }
+    if (parsed !== resolved) return null;
   }
-  return null;
+  return resolved;
 }
 
 function widthOf(value, node) {
@@ -201,7 +207,7 @@ function storedPointerSetIsValid(set, value, widthBits) {
   if (!originIds.size) return false;
   for (const target of set.targets) {
     if (!target || typeof target !== 'object' || !target.rootKey) return false;
-    if (!['rooted', 'stack-like', 'absolute'].includes(String(target.rootKind))) return false;
+    if (!['rooted', 'stack-like', 'absolute', 'allocation'].includes(String(target.rootKind))) return false;
     if (target.widthBits !== widthBits) return false;
     if (!target.offsetRange || typeof target.offsetRange !== 'object') return false;
     const { min, max } = target.offsetRange;
@@ -557,17 +563,27 @@ function targetFromReturnProvenance(provenance, widthBits, evidenceIds) {
   if (provenance?.kind !== 'root' && provenance?.kind !== 'allocation') return null;
   const rootEntityId = provenance.rootEntityId ?? provenance.allocationSiteId ?? null;
   if (rootEntityId == null || !String(rootEntityId).trim()) return null;
+  // Storage space is required canonical identity on root/allocation facts
+  // (#5242), so the caller's target keeps the callee's storage semantics.
+  // A fact without one is a legacy/under-specified shape: fail closed to
+  // unresolved rather than fabricating a memory root (#5956 refused the
+  // self-asserted addressSpace; #5242 makes the canonical one real).
+  const addressSpace = typeof provenance.addressSpace === 'string' && provenance.addressSpace.trim()
+    ? provenance.addressSpace.trim()
+    : null;
+  if (addressSpace == null) return null;
   let offset;
   try { offset = BigInt(provenance.offset ?? 0n); }
   catch { return null; }
   // Only canonical wire-contract fields are read here. Extra fields a forged
-  // serialized summary might carry (addressSpace/separationClass/
-  // separationAuthority) are not producer-emittable and must never become
-  // target authority (#5956).
+  // serialized summary might carry (separationClass/separationAuthority/
+  // rootIdentity) are not producer-emittable and must never become target
+  // authority (#5956): separation authority stays at the mint boundary
+  // (#6066), and rootIdentity is not part of the FunctionSummary contract.
   return createPointsToTarget({
-    addressSpace: 'memory',
+    addressSpace,
     rootKind: provenance.kind === 'allocation' ? 'allocation' : 'rooted',
-    rootIdentity: provenance.rootIdentity ?? null,
+    rootIdentity: null,
     rootEntityId: String(rootEntityId),
     offsetRange: exactRange(offset),
     widthBits,
@@ -622,6 +638,20 @@ function entryRootTarget(definition, functionId, values) {
  */
 export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
   const budget = { ...POINTS_TO_DEFAULT_BUDGET, ...(options.budget ?? {}) };
+  // The termination gates compare against these numbers, so a non-finite or
+  // non-integer cap (e.g. NaN) would silently disable both the iteration cap
+  // and the widening switch and hang the synchronous solve (#5322). Fail
+  // closed at the option boundary, matching the lattice's budget contract.
+  for (const key of ['maxIterations', 'widenAfterIterations']) {
+    const value = budget[key];
+    const minimum = key === 'maxIterations' ? 1 : 0;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) {
+      throw new TypeError('points-to-invalid-budget-value');
+    }
+  }
+  if (typeof budget.maxValues !== 'number' || !Number.isSafeInteger(budget.maxValues) || budget.maxValues <= 0) {
+    throw new TypeError('points-to-invalid-budget-value');
+  }
   const values = new Map((ir.values ?? []).map((value) => [String(value.id), value]));
   const nodes = new Map((ir.nodes ?? []).map((node) => [String(node.id), node]));
   const functionId = String(ir.functionId);
@@ -674,10 +704,30 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
 
   // Canonical proofs are computed once per value. They are the exact answers;
   // the fixed point only has to improve on the merged and cyclic ones.
+  // Each address-typed value carries its own physical address space; without
+  // it the derivation assumes 'memory' and identical numeric pointers from
+  // different spaces collapse into false MustAlias targets (#5234).
   const canonical = new Map();
+  const canonicalOptions = options.canonicalOptions ?? {};
+  const configuredAddressSpace = canonicalOptions?.addressSpace ?? null;
   for (const id of values.keys()) {
     let proof;
-    try { proof = deriveCanonicalAddressProof(ir, id, { ssa, ...(options.canonicalOptions ?? {}) }); }
+    try {
+      const value = values.get(id);
+      const valueSpace = value?.machineType?.kind === 'address' && value.machineType.addressSpace != null
+        ? value.machineType.addressSpace
+        : null;
+      // A global caller authority and the per-value machine type are both
+      // provenance claims. If they disagree, choosing either side would mint
+      // an exact proof from contradictory metadata, so fail closed (#5234).
+      proof = valueSpace != null && configuredAddressSpace != null && valueSpace !== configuredAddressSpace
+        ? null
+        : deriveCanonicalAddressProof(ir, id, {
+          ssa,
+          ...canonicalOptions,
+          ...(valueSpace != null ? { addressSpace: valueSpace } : {}),
+        });
+    }
     catch { proof = null; }
     canonical.set(id, proof);
   }

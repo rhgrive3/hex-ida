@@ -4,6 +4,7 @@ import { createHexProject, exportHexProject, importHexProject, serializeHexProje
 import { runDiffInWorker } from './diff/runtime.js';
 import { createCompactFunctionSet, demoteLowInformationAbsenceClaims } from './diff/compact-function-set.js';
 import { stripSecrets } from './ai/session-core/index.js';
+import { PatchSet } from './patch.js';
 
 const LOCAL_PREFIX='hex.project.v1.';
 const MAX_PROJECT_AI_TURNS=200;
@@ -156,6 +157,19 @@ export function applyWorkspaceProject(app, project){
   // also used directly by local restore and integration code (#5953).
   const navigation=normalizeNavigation(project.navigation??{});
   const replaceVars = project.user?.varsPresent !== false;
+  // Validate-then-commit (#5646): every imported patch is staged into a
+  // throwaway PatchSet BEFORE any live state is touched. PatchSet.add is the
+  // authority on byte shape and overlap, and a mid-import throw used to leave
+  // notes replaced+persisted and the old patch set cleared. If staging fails,
+  // the import fails with the workspace untouched.
+  const stagedPatches=[];
+  const staging=new PatchSet();
+  for(const p of project.user.patches||[]){
+    if(p?.offset==null)continue;
+    const meta={addr:p.addr??null,label:p.label??null,reason:p.reason??null};
+    staging.add(BigInt(p.offset),p.before||[],p.after||[],meta);
+    stagedPatches.push([BigInt(p.offset),p.before||[],p.after||[],meta]);
+  }
   notes.names.clear();notes.comments.clear();notes.types.clear();if(replaceVars)notes.vars.clear();
   for(const entry of project.user.names||[])if(entry?.address!=null&&entry.value)notes.names.set(BigInt(entry.address).toString(),String(entry.value));
   for(const entry of project.user.comments||[])if(entry?.address!=null&&entry.value)notes.comments.set(BigInt(entry.address).toString(),String(entry.value));
@@ -165,16 +179,19 @@ export function applyWorkspaceProject(app, project){
   notes.dirty=true;
   if(!notes.save())throw new Error(notes.lastSaveError?.code||'notes-save-failed');
   app.patches.clear();
-  for(const p of project.user.patches||[]){
-    if(p?.offset==null)continue;
-    app.patches.add(BigInt(p.offset),p.before||[],p.after||[],{addr:p.addr??null,label:p.label??null,reason:p.reason??null});
-  }
+  for(const [offset,before,after,meta] of stagedPatches)app.patches.add(offset,before,after,meta);
   if(app.symbols){for(const entry of notes.nameEntries())app.symbols.rename(entry.addr,entry.name);app.viewer?.setSymbols?.(app.symbols);}
-  if(project.findings?.confirmed?.length||project.findings?.evidence?.length){
-    app.autoReport={
-      report:{confirmed:project.findings.confirmed||[],settled:project.findings.confirmed||[],deep:project.findings.evidence||[],pinned:project.findings.confirmed||[],notes:['restored-project']},
+  const findings=project.findings;
+  if(findings&&typeof findings==='object'&&!Array.isArray(findings)
+    &&(Array.isArray(findings.confirmed)||Array.isArray(findings.evidence))){
+    const confirmed=Array.isArray(findings.confirmed)?findings.confirmed:[];
+    const evidence=Array.isArray(findings.evidence)?findings.evidence:[];
+    // Normalized empty arrays are an explicit replacement state (#3658), so
+    // an import must clear a report from the previously bound project.
+    app.autoReport=confirmed.length||evidence.length?{
+      report:{confirmed,settled:confirmed,deep:evidence,pinned:confirmed,notes:['restored-project']},
       key:app.codeRegion?.()?.id||null,gen:app.symbols?.gen||0,restored:true,
-    };
+    }:null;
   }
   if(Array.isArray(project.findings?.investigationSessions)){
     const currentHash = app?.backend?.contentHash || app?.store?.get?.('fileInfo')?.hash || null;

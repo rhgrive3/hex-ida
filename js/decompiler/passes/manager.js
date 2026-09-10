@@ -10,6 +10,43 @@ function validTimeBudgetMs(value, fallback) {
     : fallback;
 }
 
+function capturePassState(state) {
+  const pending = [state], seen = new Set(), records = [];
+  while (pending.length) {
+    const value = pending.pop();
+    if (value === null || typeof value !== 'object' || seen.has(value)) continue;
+    seen.add(value);
+    const proto = Object.getPrototypeOf(value);
+    const map = value instanceof Map, set = value instanceof Set, date = value instanceof Date;
+    // Live adapters/class instances are not pass-owned plain data. Do not
+    // traverse them or invoke accessors while capturing the rollback state.
+    if (!map && !set && !date && !(value instanceof RegExp) && !Array.isArray(value)
+        && proto !== Object.prototype && proto !== null) continue;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const entries = map ? [...value.entries()] : set ? [...value.values()] : null;
+    records.push({ value, proto, descriptors, entries, map, set, time:date ? value.getTime() : null });
+    for (const key of Reflect.ownKeys(descriptors)) {
+      if ('value' in descriptors[key]) pending.push(descriptors[key].value);
+    }
+    if (map) for (const [key, entry] of entries) pending.push(key, entry);
+    if (set) for (const entry of entries) pending.push(entry);
+  }
+  return () => {
+    for (const { value, proto, descriptors, entries, map, set, time } of records) {
+      if (Object.getPrototypeOf(value) !== proto) Object.setPrototypeOf(value, proto);
+      for (const key of Reflect.ownKeys(value)) {
+        if (!Object.hasOwn(descriptors, key) && !Reflect.deleteProperty(value, key)) {
+          throw new Error('pass-rollback-nonconfigurable-property');
+        }
+      }
+      Object.defineProperties(value, descriptors);
+      if (map) { Map.prototype.clear.call(value); for (const [key, entry] of entries) Map.prototype.set.call(value, key, entry); }
+      if (set) { Set.prototype.clear.call(value); for (const entry of entries) Set.prototype.add.call(value, entry); }
+      if (time !== null) Date.prototype.setTime.call(value, time);
+    }
+  };
+}
+
 export class PassManager {
   constructor(passes = [], budget = {}) {
     this.passes = passes.slice();
@@ -36,6 +73,7 @@ export class PassManager {
     let budgetWarned = false;
 
     for (const pass of this.passes) {
+      let rollbackFailed = false;
       const start = clock();
       const remainingMs = Math.max(0, deadline - start);
       if (remainingMs <= 0 && !pass.required) {
@@ -64,21 +102,61 @@ export class PassManager {
           validTimeBudgetMs(passBudget.timeBudgetMs, DEFAULT_PASS_BUDGET.timeBudgetMs),
           passRemaining,
         );
-        passBudget.remainingTimeMs = passRemaining;
-        passBudget.deadline = deadline;
+        // #5024: a pass that declares its own timeBudgetMs must actually be bounded
+        // by it. The effective pass deadline is min(global deadline, passStart +
+        // local budget) and deadline/remainingTimeMs/shouldAbort are all derived
+        // from that single value. Passes without a pass-local budget keep the
+        // global deadline contract; deterministic mode keeps ignoring only the
+        // wall-clock valve.
+        const passLocalBudget = pass.budget && pass.budget.timeBudgetMs != null
+          ? validTimeBudgetMs(pass.budget.timeBudgetMs, DEFAULT_PASS_BUDGET.timeBudgetMs)
+          : null;
+        const passStart = clock();
+        const passDeadline = deterministic || passLocalBudget == null
+          ? deadline
+          : Math.min(deadline, passStart + passLocalBudget);
+        passBudget.remainingTimeMs = Math.max(0, passDeadline - clock());
+        passBudget.deadline = passDeadline;
         passBudget.degraded = !!state.degraded;
         passBudget.deterministic = deterministic;
-        passBudget.shouldAbort = () => !deterministic && clock() >= deadline;
+        passBudget.shouldAbort = () => !deterministic && clock() >= passDeadline;
 
-        const result = pass.run(state, passBudget);
-        if (result && result !== state) Object.assign(state, result);
-        const elapsedMs = clock() - start;
-        if (clock() >= deadline) state.degraded = true;
-        state.passMetrics.push({ name: pass.name, elapsedMs, ok: true, degraded: !!state.degraded });
+        if (pass.required) {
+          const result = pass.run(state, passBudget);
+          if (result && result !== state) Object.assign(state, result);
+          const elapsedMs = clock() - start;
+          if (clock() >= passDeadline) state.degraded = true;
+          state.passMetrics.push({ name: pass.name, elapsedMs, ok: true, degraded: !!state.degraded });
+          continue;
+        }
+
+        // #5113 rollback must not replace canonical IR/expression identities on
+        // success: provenance producers use private identity-bound observations.
+        // Run synchronously on the real graph; retain descriptors and collection
+        // entries so a failure restores pass-owned data in place (including
+        // aliases/cycles). This does not roll back external adapter side effects.
+        const restore = capturePassState(state);
+        try {
+          const result = pass.run(state, passBudget);
+          if (result && result !== state) Object.assign(state, result);
+          const elapsedMs = clock() - start;
+          if (clock() >= passDeadline) state.degraded = true;
+          state.passMetrics.push({ name: pass.name, elapsedMs, ok: true, degraded: !!state.degraded });
+        } catch (error) {
+          try { restore(); } catch (rollbackError) {
+            // Irreversible descriptor changes cannot be called a recovered
+            // optional failure. Stop before any finalizer consumes corrupt data.
+            rollbackFailed = true;
+            throw new Error('optional-pass-rollback-failed', { cause:rollbackError });
+          }
+          state.warnings.push(`${pass.name}: ${error?.message || String(error)}`);
+          state.passMetrics.push({ name: pass.name, elapsedMs: clock() - start, ok: false, degraded: true });
+          state.degraded = true;
+        }
       } catch (error) {
         state.warnings.push(`${pass.name}: ${error?.message || String(error)}`);
         state.passMetrics.push({ name: pass.name, elapsedMs: clock() - start, ok: false, degraded: true });
-        if (pass.required) throw error;
+        if (pass.required || rollbackFailed) throw error;
         state.degraded = true;
       }
     }

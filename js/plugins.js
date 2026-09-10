@@ -156,7 +156,11 @@ export class PluginHost {
           // manifest without (or failing) the source/definitions binding falls
           // back to real discovery so the executed defs[index] always matches
           // the displayed metadata.
-          if (!manifestIsBound(p)) {
+          // #5482: the fast path is likewise bound by install()'s source byte
+          // cap — an oversized persisted source must never restore directly
+          // into the canonical registry just because its digest is
+          // self-consistent.
+          if (!manifestIsBound(p) || sourceBytes(p.source) > MAX_PLUGIN_SOURCE_BYTES) {
             await this.install(p.source, p.origin || '保存されたもの', {
               silent: true,
               installationId: p.installationId,

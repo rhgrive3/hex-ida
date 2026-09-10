@@ -320,9 +320,9 @@ function conditionMap(semanticAst, transform) {
   for (const condition of semanticAst?.conditions || []) {
     if (condition?.row == null || !condition.expression) continue;
     const expression = transform(condition.expression);
-    const prior = byRow.get(Number(condition.row));
-    if (prior) byRow.set(Number(condition.row), null);
-    else byRow.set(Number(condition.row), expression);
+    const row = Number(condition.row);
+    if (byRow.has(row)) byRow.set(row, null);
+    else byRow.set(row, expression);
     condition.expression = expression;
     condition.text = printExpression(expression);
   }

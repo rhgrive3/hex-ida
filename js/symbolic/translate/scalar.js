@@ -51,10 +51,10 @@ export function scalarOperation(inst) {
   }
   return operation;
 }
-export function scalarOperationSupported(inst) {
+export function scalarOperationSupported(inst, op = inst?.op) {
   const operation = scalarOperation(inst);
-  if (inst?.op === OP.BIN) return BINARY.has(operation);
-  if (inst?.op === OP.UN) return UNARY.has(operation) || CASTS.has(operation);
+  if (op === OP.BIN) return BINARY.has(operation);
+  if (op === OP.UN) return UNARY.has(operation) || CASTS.has(operation);
   return true;
 }
 

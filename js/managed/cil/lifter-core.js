@@ -1,8 +1,36 @@
 import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
 import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
+import { createCilLocalTypeResolver } from './call-signatures.js';
 
 function fail(code) { throw new TypeError(code); }
+
+// ECMA-335 §I.12.3.2.1 evaluation-stack normalization: only int32/int64 carry
+// a stack width this contract can pin. Wider/narrower types must not borrow a
+// fabricated 32-bit identity (#5353).
+function slotBitsForType(slotType) {
+  if (!slotType || typeof slotType !== 'object') return null;
+  if (slotType.stackType === 'int32') return 32;
+  if (slotType.stackType === 'int64') return 64;
+  return null;
+}
+
+function typedLocationAccess(kind, index, slotType, unknownEffects) {
+  const access = { kind, index };
+  if (!slotType?.complete) {
+    // Without a resolved slot type, no width can be claimed: the access keeps
+    // its kind/index identity but never borrows a fabricated 32-bit width,
+    // and the bundle is downgraded to partial (#5353).
+    unknownEffects.push({
+      category:'locals',
+      reason:slotType?.reason || 'cil-slot-type-unresolved',
+      ...(index != null ? { slotIndex:index } : {}),
+    });
+    return access;
+  }
+  const bits = slotBitsForType(slotType.slotType);
+  return bits != null ? { ...access, bits } : access;
+}
 
 function methodTokenText(bodyIndex, methodAuthority) {
   const token = methodAuthority?.methodToken;
@@ -15,6 +43,16 @@ function methodTokenText(bodyIndex, methodAuthority) {
 export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority = null) {
   const methodBody = cilImage.methodBodies[bodyIndex];
   if (!methodBody) fail('cil-invalid-method-body-index');
+
+  // Native-size width authority (#7775): `O`, `&`, `native int`, and
+  // `native unsigned int` map to the target processor's native pointer size
+  // (ECMA-335 I.12.1.1). A `32BITREQUIRED` image may only be loaded into a
+  // 32-bit process (II.25.3.3.1), so its object references are 32-bit; a
+  // known 64-bit target keeps 64; any other case keeps the width unstated
+  // instead of minting an unsupported 64-bit exact claim.
+  const nativePointerBits = cilImage.requires32Bit === true ? 32
+    : cilImage.requires64Bit === true ? 64
+      : null;
 
   const methodId = createManagedMethodId(cilImage.moduleId, methodTokenText(bodyIndex, methodAuthority));
   const returnSignature = methodAuthority?.complete ? methodAuthority?.signature : null;
@@ -37,6 +75,37 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
   let opSeq = 0;
   let currentStackHeight = 0;
   const bundles = [];
+
+  // Slot-typing authorities (#5353): arguments come from the enclosing
+  // MethodDef signature (resolved by the caller into methodAuthority), locals
+  // from the fat header's LocalVarSigTok → StandAloneSig chain.
+  const resolveLocal = createCilLocalTypeResolver(cilImage);
+  const localSlots = resolveLocal(methodBody);
+  const localSlotType = (index) => {
+    if (!localSlots.complete) {
+      return { complete:false, reason:localSlots.reason };
+    }
+    if (!Number.isSafeInteger(index) || index < 0 || index >= localSlots.locals.length) {
+      return { complete:false, reason:'cil-local-index-out-of-frame' };
+    }
+    return { complete:true, slotType:localSlots.locals[index] };
+  };
+  const argumentSlotType = (index) => {
+    if (!methodAuthority?.complete) {
+      return { complete:false, reason:'cil-argument-signature-unresolved' };
+    }
+    const signature = methodAuthority.signature;
+    // ECMA-335 §III.3.19: ldarg.0 addresses `this` on instance methods.
+    if (signature.hasThis && index === 0) {
+      return { complete:true, slotType:{ stackType:'object-ref' } };
+    }
+    const parameterIndex = signature.hasThis ? index - 1 : index;
+    if (!Number.isSafeInteger(parameterIndex) || parameterIndex < 0
+      || parameterIndex >= signature.parameters.length) {
+      return { complete:false, reason:'cil-argument-index-out-of-frame' };
+    }
+    return { complete:true, slotType:signature.parameters[parameterIndex] };
+  };
 
   const exceptionRegions = (methodBody.exceptionClauses || []).map((cl, idx) => ({
     id: createManagedExceptionRegionId(methodId, idx),
@@ -97,8 +166,14 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
           {
             const argIdx = opcode - 0x02;
             mnemonic = `ldarg.${argIdx}`;
-            locationReads.push({ kind: 'argument', index: argIdx, bits: 32 });
-            producedValues.push({ bits: 32 });
+            const slot = argumentSlotType(argIdx);
+            locationReads = [typedLocationAccess('argument', argIdx, slot, unknownEffects)];
+            if (slot.complete) {
+              producedValues = [{ ...slot.slotType }];
+            } else {
+              producedValues = [{}];
+              completeness = 'partial';
+            }
             currentStackHeight++;
           }
           break;
@@ -108,8 +183,14 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
           {
             const locIdx = opcode - 0x06;
             mnemonic = `ldloc.${locIdx}`;
-            locationReads.push({ kind: 'local', index: locIdx, bits: 32 });
-            producedValues.push({ bits: 32 });
+            const slot = localSlotType(locIdx);
+            locationReads = [typedLocationAccess('local', locIdx, slot, unknownEffects)];
+            if (slot.complete) {
+              producedValues = [{ ...slot.slotType }];
+            } else {
+              producedValues = [{}];
+              completeness = 'partial';
+            }
             currentStackHeight++;
           }
           break;
@@ -119,8 +200,10 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
           {
             const locIdx = opcode - 0x0a;
             mnemonic = `stloc.${locIdx}`;
-            locationWrites.push({ kind: 'local', index: locIdx, bits: 32 });
+            const slot = localSlotType(locIdx);
+            locationWrites = [typedLocationAccess('local', locIdx, slot, unknownEffects)];
             consumedValues.push({ id: `stack_top` });
+            if (!slot.complete) completeness = 'partial';
             currentStackHeight--;
           }
           break;
@@ -130,8 +213,14 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             need(1);
             const argIdx = bytecode[pc++];
             mnemonic = 'ldarg.s';
-            locationReads.push({ kind: 'argument', index: argIdx, bits: 32 });
-            producedValues.push({ bits: 32 });
+            const slot = argumentSlotType(argIdx);
+            locationReads = [typedLocationAccess('argument', argIdx, slot, unknownEffects)];
+            if (slot.complete) {
+              producedValues = [{ ...slot.slotType }];
+            } else {
+              producedValues = [{}];
+              completeness = 'partial';
+            }
             currentStackHeight++;
           }
           break;
@@ -141,8 +230,14 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             need(1);
             const locIdx = bytecode[pc++];
             mnemonic = 'ldloc.s';
-            locationReads.push({ kind: 'local', index: locIdx, bits: 32 });
-            producedValues.push({ bits: 32 });
+            const slot = localSlotType(locIdx);
+            locationReads = [typedLocationAccess('local', locIdx, slot, unknownEffects)];
+            if (slot.complete) {
+              producedValues = [{ ...slot.slotType }];
+            } else {
+              producedValues = [{}];
+              completeness = 'partial';
+            }
             currentStackHeight++;
           }
           break;
@@ -152,15 +247,20 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             need(1);
             const locIdx = bytecode[pc++];
             mnemonic = 'stloc.s';
-            locationWrites.push({ kind: 'local', index: locIdx, bits: 32 });
+            const slot = localSlotType(locIdx);
+            locationWrites = [typedLocationAccess('local', locIdx, slot, unknownEffects)];
             consumedValues.push({ id: 'top' });
+            if (!slot.complete) completeness = 'partial';
             currentStackHeight--;
           }
           break;
 
         case 0x14: // ldnull
           mnemonic = 'ldnull';
-          producedValues.push({ bits: 64, isNull: true });
+          // `O` is a native-size type (ECMA-335 I.12.1.1): the width follows
+          // the image's pointer-size authority, or stays unstated when the
+          // target width is unresolved (#7775).
+          producedValues.push({ ...(nativePointerBits == null ? {} : { bits: nativePointerBits }), isNull: true });
           currentStackHeight++;
           break;
 
@@ -234,7 +334,8 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
               dispatchKind: kind === 'callvirt' ? 'virtual' : kind === 'newobj' ? 'constructor' : 'direct',
             });
             if (kind === 'newobj') {
-              producedValues.push({ bits: 64 });
+              // Constructed-object references are native-size too (#7775).
+              producedValues.push({ ...(nativePointerBits == null ? {} : { bits: nativePointerBits }) });
               currentStackHeight++;
             }
           }
@@ -351,6 +452,19 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             consumedValues.push({ id: 'rhs', bits: 32 }, { id: 'lhs', bits: 32 });
             producedValues.push({ bits: 32 });
             currentStackHeight--;
+            // ECMA-335 Partition III: integral `div` throws
+            // System.DivideByZeroException (divisor == 0) and
+            // System.ArithmeticException (MIN_VALUE / -1); floating-point `div`
+            // throws neither. This lifter has no typed operand-stack authority,
+            // so the integral-vs-floating distinction that selects the
+            // exception contract cannot be resolved losslessly. Publishing the
+            // integral predicates would let FP division inherit them; staying
+            // exception-free is the #7937 defect. Fail closed instead of
+            // minting exception-free exact semantics.
+            if (opcode === 0x5b) {
+              completeness = 'partial';
+              unknownEffects.push({ category: 'control', reason: 'cil-div-exception-authority-unresolved' });
+            }
           }
           break;
 
@@ -367,7 +481,8 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             const token = view.getUint32(pc, true);
             pc += 4;
             mnemonic = 'ldstr';
-            producedValues.push({ bits: 64, stringToken: token });
+            // A string reference is an `O` native-size value (#7775).
+            producedValues.push({ ...(nativePointerBits == null ? {} : { bits: nativePointerBits }), stringToken: token });
             currentStackHeight++;
           }
           break;
@@ -477,8 +592,14 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             const argIdx = view.getUint16(pc, true);
             pc += 2;
             mnemonic = 'ldarg';
-            locationReads.push({ kind: 'argument', index: argIdx, bits: 32 });
-            producedValues.push({ bits: 32 });
+            const slot = argumentSlotType(argIdx);
+            locationReads = [typedLocationAccess('argument', argIdx, slot, unknownEffects)];
+            if (slot.complete) {
+              producedValues = [{ ...slot.slotType }];
+            } else {
+              producedValues = [{}];
+              completeness = 'partial';
+            }
             currentStackHeight++;
           }
           break;
@@ -489,8 +610,14 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             const locIdx = view.getUint16(pc, true);
             pc += 2;
             mnemonic = 'ldloc';
-            locationReads.push({ kind: 'local', index: locIdx, bits: 32 });
-            producedValues.push({ bits: 32 });
+            const slot = localSlotType(locIdx);
+            locationReads = [typedLocationAccess('local', locIdx, slot, unknownEffects)];
+            if (slot.complete) {
+              producedValues = [{ ...slot.slotType }];
+            } else {
+              producedValues = [{}];
+              completeness = 'partial';
+            }
             currentStackHeight++;
           }
           break;
@@ -501,8 +628,10 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             const locIdx = view.getUint16(pc, true);
             pc += 2;
             mnemonic = 'stloc';
-            locationWrites.push({ kind: 'local', index: locIdx, bits: 32 });
+            const slot = localSlotType(locIdx);
+            locationWrites = [typedLocationAccess('local', locIdx, slot, unknownEffects)];
             consumedValues.push({ id: 'top' });
+            if (!slot.complete) completeness = 'partial';
             currentStackHeight--;
           }
           break;

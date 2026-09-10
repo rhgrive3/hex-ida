@@ -128,7 +128,7 @@ test('an unrepresented operation is never congruent', () => {
  * here would silently never match anything.
  */
 const PROVED_LOAD = Object.freeze({
-  locKey: 'field:root+0', addressSpace: 'memory', volatility: 'unknown', atomic: false, ordering: 'unknown',
+  locKey: 'field:root+0', addressSpace: 'memory', volatility: 'unknown', atomic: false, ordering: null,
   memDefs: ['store_1'], addressPrecise: true,
 });
 
@@ -171,6 +171,7 @@ test('unknown atomicity, real ordering, device memory or known volatility each b
   for (const [field, value, pattern] of [
     ['atomic', 'unknown', /atomicity is unknown/],
     ['atomic', true, /atomicity is yes/],
+    ['ordering', 'unknown', /ordering is unproved/],
     ['ordering', 'acquire', /imposes ordering: acquire/],
     ['ordering', 'seq-cst', /imposes ordering: seq-cst/],
     ['addressSpace', 'device', /not ordinary memory/],

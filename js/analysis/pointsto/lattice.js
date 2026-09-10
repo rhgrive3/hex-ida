@@ -20,7 +20,7 @@
  * instead (see `addRange`).
  */
 
-import { deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
+import { canonicalAddress, deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
 import { isCanonicalRootDescriptorProof } from '../alias/canonical-address-v2.js';
 
 export const POINTS_TO_LATTICE_VERSION = '1.0.0';
@@ -66,6 +66,22 @@ function big(value) {
   if (!text) return null;
   try { return BigInt(text); }
   catch { return null; }
+}
+
+/**
+ * Canonical proof-bearing concrete address.
+ *
+ * Reuse the repository's canonical address grammar as the authority boundary,
+ * while preserving valid decimal/hex spelling so existing target identities
+ * do not change merely because this proof check was tightened.
+ */
+export function canonicalPointsToAddress(value) {
+  try {
+    canonicalAddress(value);
+  } catch {
+    return null;
+  }
+  return typeof value === 'string' ? value.trim() : String(value);
 }
 
 /**
@@ -215,13 +231,19 @@ export const PROVEN_SEPARATION_CLASSES = Object.freeze(['global-like', 'heap-lik
 const ROOT_DESCRIPTOR_PROOF = Symbol('phase7.pointsto.root-descriptor-proof');
 
 function rootKeyOf(target) {
+  // Root identity is storage identity only (space/kind/identity/entity/address).
+  // separationClass/separationAuthority are *proofs about* the root, not what
+  // storage it designates: the same allocation observed through a producing
+  // path that attached a proof and one that did not must share one rootKey, or
+  // pointsToAlias() treats identical storage as distinct roots and can mint a
+  // false strong NoAlias off escape evidence keyed on the forked key (#5261).
+  // Consumers that need the proof read it from the target boundary
+  // (provenSeparationAuthority()/target.separationClass), never from this key.
   return stableStringify({
     addressSpace: target.addressSpace,
     rootKind: target.rootKind,
     rootIdentity: target.rootIdentity ?? null,
     rootEntityId: target.rootEntityId ?? null,
-    separationClass: target.separationClass ?? null,
-    separationAuthority: target.separationAuthority ?? null,
     address: target.address ?? null,
   });
 }
@@ -309,9 +331,7 @@ export function createPointsToTarget(input = {}) {
     rootEntityId: typeof input.rootEntityId === 'string' && input.rootEntityId.trim() ? input.rootEntityId.trim() : null,
     separationClass: typeof input.separationClass === 'string' ? input.separationClass : null,
     separationAuthority: proven ? 'root-descriptor' : null,
-    address: typeof input.address === 'string' || typeof input.address === 'bigint'
-      ? String(input.address)
-      : (typeof input.address === 'number' && Number.isSafeInteger(input.address) ? String(input.address) : null),
+    address: canonicalPointsToAddress(input.address),
     offsetRange: canonicalOffsetRange(input.offsetRange),
     widthBits: input.widthBits == null ? null : Number(input.widthBits),
     evidenceIds: [...new Set((input.evidenceIds ?? []).map(String))].sort(),
@@ -399,6 +419,35 @@ export function pointsToIsBottom(set) {
   return !set.top && set.targets.length === 0;
 }
 
+function canonicalProofForTarget(target) {
+  const proof = target?.[ROOT_DESCRIPTOR_PROOF];
+  return targetMatchesCanonicalProof(target, proof) ? proof : null;
+}
+
+function mergeSameRootTargets(prior, target) {
+  const priorProof = canonicalProofForTarget(prior);
+  const targetProof = canonicalProofForTarget(target);
+  // A genuine root-descriptor proof is evidence about the shared storage, so a
+  // plain observation of that same root must not erase it. Two genuine proofs
+  // are compatible only when they prove the same separation class; conflicting
+  // proof classes conservatively drop authority instead of picking an operand.
+  const proof = priorProof && targetProof
+    ? (priorProof.separationClass === targetProof.separationClass ? priorProof : null)
+    : (priorProof ?? targetProof);
+  const merged = {
+    ...prior,
+    separationClass: proof?.separationClass
+      ?? (prior.separationClass === target.separationClass ? prior.separationClass : null),
+    separationAuthority: proof ? 'root-descriptor' : null,
+    offsetRange: joinRange(prior.offsetRange, target.offsetRange),
+    widthBits: prior.widthBits === target.widthBits ? prior.widthBits : null,
+    evidenceIds: [...prior.evidenceIds, ...target.evidenceIds],
+  };
+  if (proof) merged[ROOT_DESCRIPTOR_PROOF] = proof;
+  else delete merged[ROOT_DESCRIPTOR_PROOF];
+  return createPointsToTarget(merged);
+}
+
 /**
  * Set join. Same-root targets merge their ranges; distinct roots accumulate
  * until the target cap, at which point the set collapses to TOP rather than
@@ -413,12 +462,7 @@ export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
   for (const target of [...a.targets, ...b.targets]) {
     const prior = byRoot.get(target.rootKey);
     if (!prior) { byRoot.set(target.rootKey, target); continue; }
-    byRoot.set(target.rootKey, createPointsToTarget({
-      ...prior,
-      offsetRange: joinRange(prior.offsetRange, target.offsetRange),
-      widthBits: prior.widthBits === target.widthBits ? prior.widthBits : null,
-      evidenceIds: [...prior.evidenceIds, ...target.evidenceIds],
-    }));
+    byRoot.set(target.rootKey, mergeSameRootTargets(prior, target));
   }
   if (byRoot.size > targetLimit) {
     return createPointsToSet({ top: true, lossReasons: [...a.lossReasons, ...b.lossReasons, 'target-cap'] });
@@ -436,6 +480,11 @@ export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET)
   if (previous == null) return next;
   if (previous.top) return previous;
   const priorByRoot = new Map(previous.targets.map((target) => [target.rootKey, target]));
+  // A root that only `previous` holds must survive widening: widening may lose
+  // precision but never drops a known reachable root — dropping it broke the
+  // upper-bound law (previous ⊑ widened) and let the fixed point "converge"
+  // below its own past state (#5358).
+  const rootsOnlyInPrevious = previous.targets.filter((target) => !next.targets.some((candidate) => candidate.rootKey === target.rootKey));
   let anyWidened = false;
   const targets = next.targets.map((target) => {
     const prior = priorByRoot.get(target.rootKey);
@@ -449,12 +498,14 @@ export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET)
     }
     return createPointsToTarget({ ...target, offsetRange: widenedRange });
   });
-  if (targets.length > targetLimit) {
+  if (rootsOnlyInPrevious.length) anyWidened = true;
+  const merged = [...targets, ...rootsOnlyInPrevious];
+  if (merged.length > targetLimit) {
     return topPointsTo('target-cap');
   }
   return createPointsToSet({
-    targets,
-    lossReasons: [...next.lossReasons, ...(anyWidened ? ['widened'] : [])],
+    targets: merged,
+    lossReasons: [...previous.lossReasons, ...next.lossReasons, ...(anyWidened ? ['widened'] : [])],
   });
 }
 

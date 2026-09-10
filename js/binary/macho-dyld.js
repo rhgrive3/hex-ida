@@ -38,13 +38,23 @@ function chainedPointerCoverageAt(image, address) {
   return null;
 }
 
+// Pointer-authority inputs must be parser-grade primitives (#5189): BigInt()
+// launders arrays and toString()-coercible objects into canonical VAs, which
+// then alias real sections, segments and chained-fixup sites.
+function canonicalPointerScalar(value) {
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === 'string' && value === value.trim() && /^(?:0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(value)) {
+    try { return BigInt(value); } catch { return null; }
+  }
+  return null;
+}
+
 export function resolveMachOPointer(image, rawValue, options = {}) {
   if (!image) return null;
-  let raw, address = null;
-  try {
-    raw = BigInt(rawValue);
-    if (options.address != null) address = BigInt(options.address);
-  } catch { return null; }
+  const raw = canonicalPointerScalar(rawValue);
+  const address = options.address == null ? null : canonicalPointerScalar(options.address);
+  if (raw == null || (options.address != null && address == null)) return null;
   if (raw <= 0n || raw > 0xffffffffffffffffn) return null;
 
   const site = address == null ? null : CHAINED_POINTER_SITES.get(image)?.get(address);
@@ -630,7 +640,10 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
               }
             } else {
             const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next;
-            const address = exportKind === 0 ? image.imageBase + addrX.value : addrX.value;
+            // REGULAR and THREAD_LOCAL terminal values are implementation
+            // offsets relative to the image; only ABSOLUTE is already a raw
+            // address (dyld ExportsTrie semantics, #4366).
+            const address = exportKind === 2 ? addrX.value : image.imageBase + addrX.value;
             const kind = exportKind === 1 ? 'thread-local' : exportKind === 2 ? 'absolute' : 'export';
             const ex = { name: prefix, address, kind, flags, source: 'exports-trie' };
             if (flags & 0x10) { const resolverX = r.uleb(p, 10, terminalEnd); p = resolverX.next; ex.resolver = image.imageBase + resolverX.value; }

@@ -2,7 +2,7 @@
   "version": 1,
   "branch": "feat/analysis-roadmap-v8-current-main-20260907",
   "inputHead": "8254ebe98bf6060bd902837d3751428a4fc15860",
-  "reconciliationBase": "4e869019d2d26592932bcf6f80d25132ebb982a5",
+  "reconciliationBase": "5e2f87c20d42df76c24dee2799696d398e03b785",
   "owners": {
     "phase7": [
       "js/analysis/alias/regions-v2.js",
@@ -53,6 +53,8 @@
       "js/decompiler/phase8/transaction.js",
       "js/decompiler/pipeline.js",
       "js/decompiler/pipeline-core.js",
+      "js/decompiler/passes/manager.js",
+      "tests/phase8/performance/pass-identity-transaction.test.mjs",
       "js/decompiler/rewrite/engine.js",
       "js/decompiler/passes/stack-phi-recovery.js",
       "js/decompiler/passes/stack-return-recovery.js",
@@ -213,6 +215,7 @@
       "tests/phase9/memory/terminal-oracle.test.mjs",
       "tests/phase9/memory/typed-flow.test.mjs",
       "tests/phase9/solver/bitblast-full-differential.test.mjs",
+      "tests/phase9/solver/issue-4432-negative-timeout.test.mjs",
       "tests/phase9/solver/real-backend.test.mjs",
       "tests/phase9/solver/recovery-candidate-contract.test.mjs",
       "tests/phase9/solver/tiered-deployment.test.mjs",

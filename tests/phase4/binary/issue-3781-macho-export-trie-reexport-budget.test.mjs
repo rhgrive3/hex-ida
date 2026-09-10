@@ -47,6 +47,9 @@ function makeImage() {
   const imageBase = 0x100000000n;
   return {
     imageBase,
+    // Re-export ordinals are 1-based dependency indices.  Keep both
+    // ordinal-1 and ordinal-2 cases in-range under the later #5532 bound.
+    libraries: ['libA.dylib', 'libB.dylib'],
     exports: [],
     functions: [],
     metadata: {},

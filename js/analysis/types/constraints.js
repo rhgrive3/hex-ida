@@ -472,6 +472,18 @@ export function claimsConflict(left, right) {
 
     // Overlapping byte intervals with incompatible member types conflict;
     // disjoint intervals coexist happily in one aggregate.
+    // A same-offset field is the same storage slot even when its member type
+    // is compatible. Its extent and alignment are still hard layout facts;
+    // compare those before the member-type early return so a width mismatch
+    // cannot be laundered as a compatible type claim (#4423).
+    const sameOffset = a.offset != null && b.offset != null
+      && !numericValuesDiffer(a.offset, b.offset);
+    if (sameOffset) {
+      if (a.sizeBytes != null && b.sizeBytes != null
+        && numericValuesDiffer(a.sizeBytes, b.sizeBytes)) return true;
+      if (a.alignBytes != null && b.alignBytes != null
+        && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
+    }
     const overlap = intervalsOverlap(a, b);
     if (!overlap) return false;
 

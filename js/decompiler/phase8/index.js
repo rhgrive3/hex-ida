@@ -279,6 +279,16 @@ function withheldLedgerBase(status, reason, diagnostics, registryDigest, analysi
  */
 export function runPhase8Vertical(context = {}, budget = {}) {
   const enabledStages = context.enabledStages ?? null;
+  // A stage selector is an explicit caller contract: any unknown stage name
+  // (typo, renamed stage) must fail closed instead of silently selecting no
+  // passes and publishing a "complete" ledger for work that never ran (#5464).
+  if (enabledStages != null) {
+    if (!Array.isArray(enabledStages)) throw new TypeError('phase8-enabled-stages-invalid');
+    const known = new Set(PASS_STAGES);
+    for (const stage of enabledStages) {
+      if (!known.has(stage)) throw new TypeError(`phase8-enabled-stage-unknown:${stage}`);
+    }
+  }
   const proofRewritePlan = context.proofRewritePlan ?? context.opts?.phase8RewritePlan;
   const passes = phase8Passes({ stages: enabledStages, proofRewritePlan });
   const withheldLedger = (status, reason, diagnostics, digest, versions = null) =>
