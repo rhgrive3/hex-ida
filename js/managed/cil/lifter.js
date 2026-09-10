@@ -1,5 +1,10 @@
 import { createVMEffectFunction } from '../shared/vm-effects.js';
-import { createCilCallSignatureResolver, createCilCallStackEffect } from './call-signatures.js';
+import {
+  createCilCallSignatureResolver,
+  createCilCallStackEffect,
+  createCilLocalTypeResolver,
+  createCilMethodSignatureResolver,
+} from './call-signatures.js';
 import { liftCilMethod as liftCilMethodCore } from './lifter-core.js';
 
 const CALL_MNEMONICS = new Set(['call', 'callvirt', 'newobj']);
@@ -45,7 +50,10 @@ function enrichCallBundle(bundle, resolveSignature) {
 }
 
 export function liftCilMethod(bodyIndex, cilImage, options = {}) {
-  const lifted = liftCilMethodCore(bodyIndex, cilImage, options);
+  const methodBody = cilImage?.methodBodies?.[bodyIndex];
+  const resolveMethodSignature = createCilMethodSignatureResolver(cilImage);
+  const methodAuthority = resolveMethodSignature(methodBody);
+  const lifted = liftCilMethodCore(bodyIndex, cilImage, options, methodAuthority);
   if (!lifted.bundles.some((bundle) => CALL_MNEMONICS.has(bundle.mnemonic))) return lifted;
 
   const resolveSignature = createCilCallSignatureResolver(cilImage);

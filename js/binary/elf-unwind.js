@@ -243,7 +243,7 @@ function existingNonUnwindFunction(image, address) {
 }
 
 function recordUnverifiedKnownUnwind(image, address, reason, seen) {
-  if (address == null || address === 0n || !existingNonUnwindFunction(image, address)) return;
+  if (address == null || !existingNonUnwindFunction(image, address)) return;
   const key = BigInt(address).toString();
   if (seen.has(key)) return;
   image.functions.push(functionSeed(address, {
@@ -310,7 +310,7 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
       const initial = decodeEhValue(r, p, tableEnc, ctx, end); p = initial.next;
       const fde = decodeEhValue(r, p, tableEnc, ctx, end); p = fde.next;
       rows.push({ index:i, initial:initial.value, fde:fde.value });
-      if (initial.value != null && initial.value !== 0n) {
+      if (initial.value != null) {
         if (previousInitial != null && initial.value <= previousInitial) tableSorted = false;
         previousInitial = initial.value;
       }
@@ -345,7 +345,7 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
     }
 
     for (const row of rows) {
-      if (row.initial == null || row.initial === 0n || row.fde == null || row.fde === 0n) {
+      if (row.initial == null || row.fde == null) {
         invalidEntries++;
         recordUnverifiedKnownUnwind(image, row.initial, 'missing-fde-evidence', unverifiedSeen);
         continue;
@@ -367,11 +367,18 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
     }
 
     let added = 0;
+    let outputComplete = true;
     const addedSeen = new Set();
     for (const candidate of candidates) {
       const key = candidate.address.toString();
       if (addedSeen.has(key)) continue;
-      if (budget && !budget.take({ objects:1, operations:1, estimatedHeapBytes:128 }, 'eh-frame-function')) break;
+      if (budget && !budget.take({ objects:1, operations:1, estimatedHeapBytes:128 }, 'eh-frame-function')) {
+        // Verified FDEs whose function seeds could not be materialized are not
+        // recovered coverage: reporting 'verified' here would let downstream
+        // treat unrecovered functions as nonexistent (#5581).
+        outputComplete = false;
+        break;
+      }
       image.functions.push(functionSeed(candidate.address, {
         source:'unwind',
         confidence:candidate.domainKind === 'section' ? 0.985 : 0.97,
@@ -385,7 +392,8 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
     image.metadata.ehFrameHeader = {
       version, ehFrameEnc, countEnc, tableEnc, declaredFunctions:count, recoveredFunctions:added,
       validatedEntries:candidates.length, invalidEntries, tableSorted:true, tableComplete:true,
-      validation:invalidEntries === 0 && candidates.length === count ? 'verified' : 'partial',
+      validation:outputComplete && invalidEntries === 0 && candidates.length === count ? 'verified' : 'partial',
+      ...(outputComplete ? {} : { reason:'output-budget-exhausted' }),
       ehFrameAddress:frame.value, ehFrameDomain:domain.kind,
     };
   } catch (e) {

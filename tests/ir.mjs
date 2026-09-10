@@ -13,7 +13,7 @@ import {
 } from '../js/ir.js';
 import { backwardSlice, forwardSlice, valueChain, causalChain } from '../js/slice.js';
 import { compileGoal, describeQuery } from '../js/goalc.js';
-import { groupedFusion, brierScore, expectedCalibrationError, accuracyReport } from '../js/calib.js';
+import { groupedFusion, brierScore, expectedCalibrationError, reliabilityBins, accuracyReport, fitCalibration } from '../js/calib.js';
 
 let passed = 0;
 const failures = [];
@@ -44,7 +44,7 @@ function asm(lines, base = BASE) {
   });
 }
 
-function build(lines, base = BASE) {
+function build(lines, base = BASE, options = {}) {
   const rowOfAddress = (addr) => {
     const rel = addr - base;
     if (rel < 0n || rel >= BigInt(lines.length) * 4n) return null;
@@ -53,7 +53,7 @@ function build(lines, base = BASE) {
   const model = buildSemanticModel(asm(lines, base), {
     startRow: 0, endRow: lines.length - 1, rowOfAddress,
   });
-  return { model, ir: buildIR(model, { rowOfAddress }) };
+  return { model, ir: buildIR(model, { rowOfAddress, ...options }) };
 }
 
 const insts = (ir, op) => ir.instructions.filter((i) => i.op === op);
@@ -152,7 +152,44 @@ test('MemSSA: 呼び出しをまたぐとフィールドは壊れる（古い値
   ok(!load.reachingStore, '呼び出し後は store が届かない');
 });
 
-test('MemSSA: スタック変数は呼び出しをまたいでも生き残る（番地を渡していないとき）', () => {
+test('MemSSA: a proven frame-backed slot forwards its constant in default v2', () => {
+  const { ir } = build([
+    'stp x29, x30, [sp, #-32]!',
+    'mov x29, sp',
+    'mov w8, #5',
+    'str w8, [sp, #0x18]',
+    'ldr w9, [sp, #0x18]',
+    'ldp x29, x30, [sp], #32',
+    'ret',
+  ]);
+  const load = insts(ir, OP.LOAD)[0];
+  eq(load.reachingStore?.row, 3, 'the proven slot reaches its own store');
+  eq(load.memoryForwarding?.status, 'exact', 'canonical same-slot proof remains exact');
+  eq(load.dst.const, 5n, 'a proven store/load pair still propagates its constant');
+});
+
+test('MemSSA: frame-backed private stack slot survives an opaque call (legacy compatibility proof)', () => {
+  const { ir } = build([
+    'stp x29, x30, [sp, #-32]!',
+    'mov x29, sp',
+    'mov w8, #5',
+    'str w8, [sp, #0x18]',
+    'bl #0x100001000',
+    'ldr w9, [sp, #0x18]',
+    'ldp x29, x30, [sp], #32',
+    'ret',
+  ], BASE, { semanticMigrationMode: 'legacy-v1' });
+  const load = insts(ir, OP.LOAD)[0];
+  const call = insts(ir, OP.CALL)[0];
+  ok(load.reachingStore, 'frame-backed private stack store survives: \n' + irText(ir));
+  eq(load.reachingStore.row, 3, 'the framed slot is the reaching store');
+  eq(load.reachingStore.args?.[0]?.value?.const ?? null, 5n,
+    'the store keeps the exact constant source');
+  ok(!(call?.memKills ?? []).some((loc) => loc?.kind === 'stack'),
+    'the proven private slot is not clobbered by compatibility repair');
+});
+
+test('MemSSA: an unframed sp slot remains unknown across an opaque call', () => {
   const { ir } = build([
     'mov w8, #5',
     'str w8, [sp, #0x8]',
@@ -161,8 +198,10 @@ test('MemSSA: スタック変数は呼び出しをまたいでも生き残る（
     'ret',
   ]);
   const load = insts(ir, OP.LOAD)[0];
-  ok(load.reachingStore, 'スタックの値は残る: \n' + irText(ir));
-  eq(load.dst.const, 5n, 'スタック経由で定数が届く');
+  ok(!load.reachingStore, 'an unframed caller stack slot has no private proof: \n' + irText(ir));
+  eq(load.memoryForwarding?.status, 'unknown', 'an unframed slot remains unknown');
+  eq(load.memUse?.kind, 'clobber', 'the opaque call remains a memory barrier');
+  eq(load.dst?.const ?? null, null, 'an unproven stack value is not propagated');
 });
 
 test('MemSSA: スタック番地を呼び出しへ渡すと exact forwarding を拒否する', () => {
@@ -390,6 +429,48 @@ test('calib: Brier / ECE が計算できる', () => {
   ok(b < 0.02, 'よく当たっている: ' + b);
   const ece = expectedCalibrationError(samples, 5);
   ok(ece < 0.15, '校正できている: ' + ece);
+});
+
+test('calib: correct label は primitive boolean だけを評価する (#4345)', () => {
+  const malformed = [
+    { probability: 0.9, correct: 'false', verdict: 'confirmed', rank: 1 },
+    { probability: 0.8, correct: 1, verdict: 'confirmed', rank: 1 },
+    { probability: 0.7, correct: [], verdict: 'likely', rank: 1 },
+    { probability: 0.6, correct: {}, verdict: 'none', rank: 9 },
+  ];
+  eq(brierScore(malformed), null, 'malformed labels must not become Brier targets');
+  eq(expectedCalibrationError(malformed, 5), null, 'malformed labels must not enter ECE');
+  eq(reliabilityBins(malformed, 5).reduce((n, bin) => n + bin.n, 0), 0,
+    'malformed labels must not enter reliability bins');
+  eq(accuracyReport(malformed).total, 0, 'accuracy report must use the same label policy');
+
+  const noProbability = accuracyReport([
+    { correct: false, verdict: 'confirmed', rank: 1 },
+  ]);
+  eq(noProbability.total, 1, 'valid accuracy rows must not require a probability');
+  eq(noProbability.confirmed, 1, 'confirmed accuracy rows without probability stay in the denominator');
+  eq(noProbability.falseConfirmRate, 1, 'missing probability must not hide a false confirmation');
+  eq(noProbability.brier, null, 'Brier still requires finite probability evidence');
+  eq(noProbability.ece, null, 'ECE still requires finite probability evidence');
+
+  const valid = [
+    { probability: 0.9, correct: true, verdict: 'confirmed', rank: 1 },
+    { probability: 0.1, correct: false, verdict: 'none', rank: 9 },
+  ];
+  const mixed = [...malformed, ...valid];
+  eq(brierScore(mixed), brierScore(valid), 'malformed labels cannot improve Brier score');
+  eq(expectedCalibrationError(mixed, 5), expectedCalibrationError(valid, 5),
+    'malformed labels cannot improve ECE');
+  eq(JSON.stringify(accuracyReport(mixed)), JSON.stringify(accuracyReport(valid)),
+    'accuracy report must ignore malformed labels consistently');
+
+  const calibration = Array.from({ length: 39 }, (_, i) => ({
+    probability: i < 20 ? 0.1 : 0.9,
+    correct: i >= 20,
+  }));
+  calibration.push({ probability: 0.99, correct: 'false' });
+  eq(fitCalibration(calibration, 5), null,
+    'malformed labels must not satisfy the minimum calibration sample count');
 });
 
 test('calib: 「確定」と言って外した率を出せる', () => {

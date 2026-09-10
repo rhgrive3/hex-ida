@@ -27,9 +27,11 @@ function instructionAddress(value, code = 'variable-viewer-invalid-instruction-a
   throw new TypeError(code);
 }
 function int(value, code, min = 0, max = Number.MAX_SAFE_INTEGER) {
-  const n = Number(value);
-  if (!Number.isSafeInteger(n) || n < min || n > max) throw new TypeError(code);
-  return n;
+  // Configuration limits are already Number-valued contracts. Do not let
+  // arrays, boxed numbers, booleans, or valueOf/toString objects cross the
+  // boundary by laundering themselves through Number(value) (#4416).
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) throw new TypeError(code);
+  return value;
 }
 function instructionLength(value, code = 'variable-viewer-invalid-instruction-length', min = 1, max = X86_MAX_INSTRUCTION_BYTES) {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {
@@ -198,7 +200,13 @@ export class VariableInstructionIndex {
     const key=pageKey(this.generation,start),cached=this.pages.get(key);
     if(cached){this._metrics.cacheHits++;cached.lastUsed=++this._clock;if(protect)this.currentPageKey=key;return cached;}
     const shared=this.inflight.get(key);
-    if(shared){this._metrics.cacheHits++;return this._join(shared.promise,signal);}
+    if(shared){
+      this._metrics.cacheHits++;
+      // Navigation can join a prefetch producer. Protection belongs to all
+      // consumers, not just the caller that started decoding (#6094).
+      shared.protect ||= protect;
+      return this._join(shared.promise,signal);
+    }
 
     this._metrics.cacheMisses++;
     const controller=new AbortController(),generation=this.generation,region=this.region,remaining=region.end-start;
@@ -212,24 +220,29 @@ export class VariableInstructionIndex {
     };
     signal?.addEventListener?.('abort',relayAbort,{once:true});
     if(signal?.aborted)relayAbort();
-    const promise=(async()=>{
+    let resolvePage, rejectPage;
+    const promise = new Promise((resolve, reject) => { resolvePage = resolve; rejectPage = reject; });
+    const entry = {controller, promise, generation, start, protect};
+    this.inflight.set(key, entry);
+    promise.catch(()=>{});
+    // Reserve the entry before invoking a potentially re-entrant decoder.
+    // Its finalizer compares the lease, not an uninitialized promise binding.
+    (async()=>{
       try{
         const response=await this.disassembleAt(start,{architecture:this.architecture,length:requested,signal:controller.signal,priority});
         if(generation!==this.generation||this.region!==region){this._metrics.staleResultsDiscarded++;return Object.freeze({stale:true,start,entries:Object.freeze([]),status:'stale',nextAddress:start});}
         if(controller.signal.aborted)throw abortError(controller.signal.reason);
         const page=this._buildPage({start,requested,response,generation,region});
-        this._publish(key,page,{protect}); return page;
+        this._publish(key,page,{protect:entry.protect}); return page;
       }catch(error){
         if(generation!==this.generation||this.region!==region){this._metrics.staleResultsDiscarded++;return Object.freeze({stale:true,start,entries:Object.freeze([]),status:'stale',nextAddress:start});}
         if(isAbort(error))throw error;
         throw error;
       }finally{
         signal?.removeEventListener?.('abort',relayAbort);
-        const pending=this.inflight.get(key); if(pending?.promise===promise)this.inflight.delete(key);
+        if(this.inflight.get(key)===entry)this.inflight.delete(key);
       }
-    })();
-    this.inflight.set(key,{controller,promise,generation,start});
-    promise.catch(()=>{});
+    })().then(resolvePage, rejectPage);
     return this._join(promise,signal);
   }
 

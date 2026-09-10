@@ -1,4 +1,5 @@
 import { CursorCodec, shortHash, stableSerialize } from '../paging/cursor.js';
+import { completenessOf } from '../projections/index.js';
 
 const FORBIDDEN_PATH = new Set(['__proto__', 'prototype', 'constructor']);
 
@@ -61,6 +62,28 @@ function boundedLimit(value, fallback = 100, max = 500) {
 const DEFAULT_MAX_ENTRIES = 256;
 const DEFAULT_MAX_AGE_MS = 30 * 60 * 1000;
 
+const SCOPE_WIDTH = Object.freeze({ selection: 0, function: 1, neighborhood: 2, auto: 3, binary: 3, project: 3, runtime: 3 });
+
+export function assertScopeAccess(record, requestedScope = null, requestedBoundary = null) {
+  if (!record || typeof record !== 'object') return;
+  const requested = typeof requestedScope === 'string' ? requestedScope : null;
+  const requestedWidth = requested ? SCOPE_WIDTH[requested] : null;
+  if (!requested || requested === 'auto' || requestedWidth == null || requestedWidth >= 3) return;
+  const acquired = typeof record.effectiveScope === 'string' ? record.effectiveScope : null;
+  const acquiredWidth = acquired == null ? null : SCOPE_WIDTH[acquired];
+  if (acquiredWidth == null || acquiredWidth > requestedWidth ||
+      !requestedBoundary || !record.scopeBoundary || record.scopeBoundary !== requestedBoundary) {
+    throw new Error('scope_violation');
+  }
+}
+
+// Detail refs are Map identity keys, not coercible text: only a canonical
+// primitive string may reach a record, so a structured value can never alias
+// another observation's payload/provenance (#5425).
+function observationRefKey(detailRef) {
+  return typeof detailRef === 'string' && detailRef ? detailRef : '';
+}
+
 function finiteConfiguredNumber(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number !== 0 ? number : fallback;
@@ -92,6 +115,28 @@ function pageValue(value, offset, limit) {
   return { value, total: value == null ? 0 : 1, returned: value == null ? 0 : 1, offset: 0, nextOffset: null, kind: 'scalar' };
 }
 
+function sourceCompleteness(fullResult, selected) {
+  const root = completenessOf(fullResult);
+  if (root.complete === false || selected === fullResult) return root;
+  const selectedCompleteness = completenessOf(selected);
+  return selectedCompleteness.complete === false ? selectedCompleteness : root;
+}
+
+function detailCompleteness(page, source) {
+  const pageComplete = page.nextOffset == null;
+  const sourceComplete = source.complete !== false;
+  const pageCoverage = page.total ? Math.min(1, (page.offset + page.returned) / page.total) : 1;
+  return {
+    // Exhausting a page cannot upgrade a source that was already bounded or
+    // otherwise incomplete. Keep the source reason ahead of page navigation.
+    complete: sourceComplete && pageComplete,
+    returned: page.returned,
+    total: page.total,
+    coverage: sourceComplete ? pageCoverage : source.coverage,
+    reason: sourceComplete ? (pageComplete ? null : 'result-limit') : source.reason,
+  };
+}
+
 export class ObservationStore {
   constructor({ context = {}, maxEntries = DEFAULT_MAX_ENTRIES, maxAgeMs = DEFAULT_MAX_AGE_MS, cursorCodec = null } = {}) {
     this.context = context;
@@ -108,14 +153,14 @@ export class ObservationStore {
   setContext(context) { this.context = context || {}; return this; }
 
   pin(detailRef) {
-    const record = this.records.get(String(detailRef || ''));
+    const record = this.records.get(observationRefKey(detailRef));
     if (!record) return false;
     record.pinned = true;
     return true;
   }
 
   unpin(detailRef) {
-    const record = this.records.get(String(detailRef || ''));
+    const record = this.records.get(observationRefKey(detailRef));
     if (!record) return false;
     record.pinned = false;
     this.evict();
@@ -127,20 +172,20 @@ export class ObservationStore {
     return `${binding.key}:${tool}:${shortHash(stableSerialize(args || {}))}`;
   }
 
-  getCached(tool, args, extra = {}) {
+  getCached(tool, args, extra = {}, requestedScope = null, requestedBoundary = null) {
     const key = this.cacheKey(tool, args, extra);
     const id = this.cache.get(key);
     if (!id) return null;
-    try { return this.get(id); } catch { this.cache.delete(key); return null; }
+    try { return this.get(id, requestedScope, requestedBoundary); } catch { this.cache.delete(key); return null; }
   }
 
-  put({ tool, arguments: args = {}, fullResult, functionIdentity = null, deterministic = true, extraBinding = {} } = {}) {
+  put({ tool, arguments: args = {}, fullResult, functionIdentity = null, deterministic = true, extraBinding = {}, effectiveScope = null, scopeBoundary = null } = {}) {
     const binding = this.binding(extraBinding);
     const cacheKey = deterministic ? this.cacheKey(tool, args, extraBinding) : null;
     if (cacheKey) {
       const existing = this.cache.get(cacheKey);
       if (existing) {
-        try { return this.get(existing); } catch { this.cache.delete(cacheKey); }
+        try { return this.get(existing, effectiveScope, scopeBoundary); } catch { this.cache.delete(cacheKey); }
       }
     }
     this.sequence += 1;
@@ -149,6 +194,8 @@ export class ObservationStore {
       id, tool: String(tool || 'unknown'), arguments: args, fullResult, binding,
       binaryIdentity: binding.binaryIdentity,
       functionIdentity: functionIdentity == null ? null : textIdentity(functionIdentity),
+      effectiveScope: typeof effectiveScope === 'string' && effectiveScope ? effectiveScope : null,
+      scopeBoundary: typeof scopeBoundary === 'string' && scopeBoundary ? scopeBoundary : null,
       createdAt: Date.now(), cacheKey, pinned: false,
     };
     this.records.set(id, record);
@@ -178,18 +225,19 @@ export class ObservationStore {
     }
   }
 
-  get(detailRef) {
+  get(detailRef, requestedScope = null, requestedBoundary = null) {
     this.evict();
-    const record = this.records.get(String(detailRef || ''));
+    const record = this.records.get(observationRefKey(detailRef));
     if (!record) throw new Error('unknown-detail-ref');
+    assertScopeAccess(record, requestedScope, requestedBoundary);
     const current = this.binding();
     if (record.binding.key !== current.key || record.binaryIdentity !== current.binaryIdentity) throw new Error('stale-detail-ref');
     if (!record.pinned && Date.now() - record.createdAt > this.maxAgeMs) throw new Error('stale-detail-ref');
     return record;
   }
 
-  detail({ detailRef, path = '$', cursor = null, limit = 100 } = {}) {
-    const record = this.get(detailRef);
+  detail({ detailRef, path = '$', cursor = null, limit = 100, effectiveScope = null, scopeBoundary = null } = {}) {
+    const record = this.get(detailRef, effectiveScope, scopeBoundary);
     const currentBinding = this.binding();
     let offset = 0;
     let effectivePath = path || '$';
@@ -202,6 +250,7 @@ export class ObservationStore {
     const safeLimit = boundedLimit(limit);
     const selected = atPath(record.fullResult, effectivePath);
     const page = pageValue(selected, offset, safeLimit);
+    const completeness = detailCompleteness(page, sourceCompleteness(record.fullResult, selected));
     const nextCursor = page.nextOffset == null ? null : this.cursorCodec.encode({
       kind: 'observation-detail', bindingKey: currentBinding.key, detailRef: record.id,
       path: effectivePath, offset: page.nextOffset,
@@ -211,19 +260,15 @@ export class ObservationStore {
       tool: record.tool,
       path: effectivePath,
       data: page.value,
-      completeness: {
-        complete: page.nextOffset == null,
-        returned: page.returned,
-        total: page.total,
-        coverage: page.total ? Math.min(1, (page.offset + page.returned) / page.total) : 1,
-        reason: page.nextOffset == null ? null : 'result-limit',
-      },
+      completeness,
       continuation: nextCursor ? { cursor: nextCursor } : null,
       origin: {
         tool: record.tool,
         arguments: record.arguments,
         binaryIdentity: record.binaryIdentity,
         functionIdentity: record.functionIdentity,
+        effectiveScope: record.effectiveScope,
+        scopeBoundary: record.scopeBoundary,
         createdAt: record.createdAt,
       },
     };

@@ -4,8 +4,15 @@ import { validateModelDecision } from '../validation.js';
 import { SAFE_PROVIDER_CAPABILITIES } from '../budget/wire.js';
 
 export class AIProvider {
-  constructor({ capabilities } = {}) { this.capabilities = { ...SAFE_PROVIDER_CAPABILITIES, ...(capabilities || {}) }; }
-  getCapabilities() { return { ...this.capabilities }; }
+  constructor({ capabilities } = {}) {
+    // Capability STATE must not live on an own property named `capabilities`:
+    // that shadowed the UI discovery method `capabilities()` on subclasses
+    // and made `typeof provider.capabilities === 'function'` false, breaking
+    // provider/model discovery (#5708). The constructor option keeps its
+    // public name; the owned state field is namespaced.
+    this.providerCapabilities = { ...SAFE_PROVIDER_CAPABILITIES, ...(capabilities || {}) };
+  }
+  getCapabilities() { return { ...this.providerCapabilities }; }
   turnTimeoutMs(mode) { return mode === 'agent' ? 120000 : 30000; }
   async prepareCapabilities() { return this.getCapabilities(); }
   async nextTurn() { throw new AIError('provider_error', 'AIProvider.nextTurn is not implemented.'); }
@@ -32,7 +39,7 @@ export class WorkerAIProvider extends AIProvider {
 
   async prepareCapabilities(options = {}) {
     if (this.capabilitiesPrepared) return this.getCapabilities();
-    if (options.signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
+    if (options.signal?.aborted) throw interruptionError(options.signal);
     if (!this.capabilitiesPromise) {
       const controller = new AbortController();
       this.capabilitiesController = controller;
@@ -62,7 +69,7 @@ export class WorkerAIProvider extends AIProvider {
       const onAbort = () => {
         signal.removeEventListener('abort', onAbort);
         release(true);
-        reject(new AIError('cancelled', 'AI investigation was cancelled.'));
+        reject(interruptionError(signal));
       };
       signal.addEventListener('abort', onAbort, { once: true });
       if (signal.aborted) {
@@ -85,7 +92,7 @@ export class WorkerAIProvider extends AIProvider {
   }
 
   async #loadCapabilities(options = {}) {
-    if (options.signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
+    if (options.signal?.aborted) throw interruptionError(options.signal);
     if (typeof this.fetchImpl !== 'function') { this.capabilitiesPrepared = true; return this.getCapabilities(); }
     const controller = new AbortController();
     const onAbort = () => controller.abort(options.signal?.reason ?? 'cancelled');
@@ -99,11 +106,11 @@ export class WorkerAIProvider extends AIProvider {
       if (new TextEncoder().encode(text).byteLength > 64 * 1024) { this.capabilitiesPrepared = true; return this.getCapabilities(); }
       let payload = null;
       try { payload = JSON.parse(text); } catch { /* conservative fallback below */ }
-      if (payload?.capabilities && typeof payload.capabilities === 'object') this.capabilities = { ...this.capabilities, ...payload.capabilities };
+      if (payload?.capabilities && typeof payload.capabilities === 'object') this.providerCapabilities = { ...this.providerCapabilities, ...payload.capabilities };
       this.capabilitiesPrepared = true;
       return this.getCapabilities();
     } catch (error) {
-      if (options.signal?.aborted || (controller.signal.aborted && controller.signal.reason !== 'timeout')) throw new AIError('cancelled', 'AI investigation was cancelled.');
+      if (options.signal?.aborted || (controller.signal.aborted && controller.signal.reason !== 'timeout')) throw interruptionError(options.signal);
       // Capability discovery must not make the provider unavailable. A failed or
       // timed-out preflight falls back to the conservative built-in budget.
       this.capabilitiesPrepared = true;
@@ -116,13 +123,13 @@ export class WorkerAIProvider extends AIProvider {
   }
 
   async nextTurn(request, options = {}) {
-    if (options.signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
+    if (options.signal?.aborted) throw interruptionError(options.signal);
     const controller = new AbortController();
     const onAbort = () => controller.abort(options.signal?.reason ?? 'cancelled');
     if (options.signal) { options.signal.addEventListener('abort', onAbort, { once: true }); if (options.signal.aborted) onAbort(); }
     this.controllers.add(controller);
     try {
-      if (controller.signal.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
+      if (controller.signal.aborted) throw interruptionError(options.signal || controller.signal);
       const response = await requestJSON(this.endpoint, {
         sessionId: request.sessionId || null,
         mode: request.mode,
@@ -137,7 +144,7 @@ export class WorkerAIProvider extends AIProvider {
         tools: request.tools || [],
         responseSchema: request.responseSchema || null,
       }, { signal: controller.signal, timeoutMs: options.timeoutMs || this.timeoutMs, fetchImpl: this.fetchImpl });
-      if (response.capabilities && typeof response.capabilities === 'object') this.capabilities = { ...this.capabilities, ...response.capabilities };
+      if (response.capabilities && typeof response.capabilities === 'object') this.providerCapabilities = { ...this.providerCapabilities, ...response.capabilities };
       return validateModelDecision(response.decision, (request.tools || []).map((tool) => tool.name));
     } finally {
       this.controllers.delete(controller);
@@ -151,4 +158,12 @@ export class WorkerAIProvider extends AIProvider {
 function deriveCapabilitiesEndpoint(endpoint) {
   const value = String(endpoint || '/api/ai/turn');
   return value.endsWith('/turn') ? `${value.slice(0, -5)}/capabilities` : '/api/ai/capabilities';
+}
+
+function interruptionError(signal) {
+  const timedOut = signal?.reason === 'timeout';
+  return new AIError(
+    timedOut ? 'budget_exhausted' : 'cancelled',
+    timedOut ? 'The AI investigation timed out.' : 'AI investigation was cancelled.',
+  );
 }

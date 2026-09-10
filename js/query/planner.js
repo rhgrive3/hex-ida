@@ -13,7 +13,13 @@ const POOL_ORDER = Object.freeze(['lexical', 'string', 'graph', 'recognition', '
 const POOL_SHARE = Object.freeze({ lexical: 0.29, string: 0.17, graph: 0.21, recognition: 0.17, runtime: 0.06, semantic: 0.06, exploration: 0.04 });
 
 function asAddr(v) {
-  try { return v == null ? null : (typeof v === 'bigint' ? v : BigInt(v)); } catch { return null; }
+  if (typeof v === 'bigint') return v >= 0n ? v : null;
+  if (typeof v === 'number') return Number.isSafeInteger(v) && v >= 0 ? BigInt(v) : null;
+  if (typeof v === 'string') {
+    const text = v.trim();
+    if (/^(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) return BigInt(text);
+  }
+  return null;
 }
 function lower(v) { return String(v == null ? '' : v).toLowerCase(); }
 function resultAddress(row) {
@@ -47,39 +53,119 @@ function sourceComponent(pool) {
   if (pool === 'semantic') return 'semanticScore';
   return 'lexicalScore';
 }
+const STAGED_PENDING = Symbol('planner-staged-pending');
+const PROBATION_PENDING = Symbol('planner-probation-pending');
+
+function stagedPool(map) {
+  if (!map[STAGED_PENDING]) map[STAGED_PENDING] = new Map();
+  return map[STAGED_PENDING];
+}
+
+function probationPool(map) {
+  if (!map[PROBATION_PENDING]) map[PROBATION_PENDING] = new Map();
+  return map[PROBATION_PENDING];
+}
+
+function worstEntry(map) {
+  let worstKey = null;
+  let worstScore = Infinity;
+  for (const [candidateKey, candidate] of map) {
+    if (candidate.score < worstScore) { worstScore = candidate.score; worstKey = candidateKey; }
+  }
+  return { worstKey, worstScore };
+}
+
 function addCandidate(pools, pool, address, source, term, weight, coverage = 1, cap = Infinity) {
   const addr = asAddr(address);
   if (addr == null) return;
   const map = poolMap(pools, pool);
+  const staged = stagedPool(map);
+  const probation = probationPool(map);
   const key = addr.toString();
-  let c = map.get(key);
   const quality = Number.isFinite(Number(coverage)) ? Math.max(0.2, Math.min(1, Number(coverage))) : 0.7;
   const amount = (weight || 0) * quality;
+  let c = map.get(key);
+  let pending = null;
+  let pendingBucket = null;
+  let pendingMarker = null;
+
   if (!c) {
-    if (map.size >= cap) {
-      // Keep the strongest bounded subset instead of whichever candidates happened
-      // to arrive first. Recognition inputs are often large and not guaranteed to
-      // be pre-sorted.
-      let worstKey = null;
-      let worstScore = Infinity;
-      for (const [candidateKey, candidate] of map) {
-        if (candidate.score < worstScore) { worstScore = candidate.score; worstKey = candidateKey; }
-      }
-      if (worstKey == null || amount <= worstScore) return;
-      map.delete(worstKey);
+    c = staged.get(key);
+    if (c) {
+      pending = c;
+      pendingBucket = staged;
+      pendingMarker = STAGED_PENDING;
     }
-    c = newCandidate(addr);
-    map.set(key, c);
   }
+  if (!c) {
+    c = probation.get(key);
+    if (c) {
+      pending = c;
+      pendingBucket = probation;
+      pendingMarker = PROBATION_PENDING;
+    }
+  }
+  if (!c) {
+    if (map.size < cap) {
+      c = newCandidate(addr);
+      map.set(key, c);
+    } else if (staged.size < cap) {
+      // Retain a bounded overflow candidate so later evidence for the same
+      // address can be aggregated even when each increment is below the
+      // weakest stored score (#5910).
+      c = newCandidate(addr);
+      c[STAGED_PENDING] = true;
+      staged.set(key, c);
+      pending = c;
+      pendingBucket = staged;
+      pendingMarker = STAGED_PENDING;
+    } else if (probation.size < cap) {
+      // A second bounded overflow tier prevents a newly observed candidate
+      // from displacing a stronger staged candidate merely because the
+      // staged tier is full. Both tiers are bounded by the same pool cap.
+      c = newCandidate(addr);
+      c[PROBATION_PENDING] = true;
+      probation.set(key, c);
+      pending = c;
+      pendingBucket = probation;
+      pendingMarker = PROBATION_PENDING;
+    } else {
+      // This is a bounded heavy-hitter fallback: once both overflow tiers are
+      // full, do not evict a stronger pending aggregate for a weaker single
+      // arrival. A candidate can still accumulate while retained.
+      const weakestProbation = worstEntry(probation);
+      if (weakestProbation.worstKey == null || amount <= weakestProbation.worstScore) return;
+      probation.delete(weakestProbation.worstKey);
+      c = newCandidate(addr);
+      c[PROBATION_PENDING] = true;
+      probation.set(key, c);
+      pending = c;
+      pendingBucket = probation;
+      pendingMarker = PROBATION_PENDING;
+    }
+  }
+
   c.score += amount;
   c.scoreComponents[sourceComponent(pool)] += amount;
   c.sourcePoolScores[pool] = (c.sourcePoolScores[pool] || 0) + amount;
-  c.sources.push(source);
+  if (source != null) c.sources.push(source);
   if (term) c.terms.add(term);
   c.coverageSum += quality * Math.max(1, Math.abs(weight || 1));
   c.coverageWeight += Math.max(1, Math.abs(weight || 1));
+
+  if (pending && pendingBucket) {
+    const weakestStored = worstEntry(map);
+    if (weakestStored.worstKey != null && c.score > weakestStored.worstScore) {
+      map.delete(weakestStored.worstKey);
+      pendingBucket.delete(key);
+      delete c[pendingMarker];
+      map.set(key, c);
+    }
+  }
 }
+
 function mergeCandidateInto(target, source) {
+
   target.score += source.score;
   for (const key of Object.keys(target.scoreComponents)) target.scoreComponents[key] += source.scoreComponents[key] || 0;
   for (const [pool, value] of Object.entries(source.sourcePoolScores || {})) target.sourcePoolScores[pool] = (target.sourcePoolScores[pool] || 0) + value;
@@ -158,6 +244,21 @@ function explicitBudget(value, fallback, minimum = 0) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   return Math.max(minimum, Math.floor(value));
 }
+
+export function createToolCallBudget(maxToolCalls = Infinity) {
+  const limit = explicitBudget(maxToolCalls, Infinity, 0);
+  let used = 0;
+  return Object.freeze({
+    limit,
+    get used() { return used; },
+    remaining() { return Math.max(0, limit - used); },
+    consume() {
+      if (used >= limit) return false;
+      used += 1;
+      return true;
+    },
+  });
+}
 function plannerShare(total, ratio = 0.4) {
   if (total <= 0) return 0;
   if (total <= 2) return total;
@@ -173,12 +274,14 @@ function budgetState(opts) {
   const timeoutMs = explicitBudget(opts && opts.timeoutMs, 3000, 1);
   const requestedMaxFunctions = explicitBudget(opts && opts.maxFunctions, 48, 0);
   const requestedMaxDisassembly = explicitBudget(opts && opts.maxDisassembly, 50000, 0);
+  const toolCallBudget = opts?.toolCallBudget || createToolCallBudget(opts?.maxToolCalls);
   const ratioRaw = opts?.plannerBudgetFraction;
   const ratio = typeof ratioRaw === 'number' && Number.isFinite(ratioRaw) ? Math.max(0.1, Math.min(0.8, ratioRaw)) : 0.4;
   const maxFunctions = plannerShare(requestedMaxFunctions, ratio);
   const maxDisassembly = plannerDisassemblyShare(requestedMaxDisassembly, ratio);
   const b = {
     requestedMaxFunctions, requestedMaxDisassembly, maxFunctions, maxDisassembly,
+    toolCallBudget,
     reservedFunctions: Math.max(0, requestedMaxFunctions - maxFunctions),
     reservedDisassembly: Math.max(0, requestedMaxDisassembly - maxDisassembly),
     maxSearchResults: explicitBudget(opts && opts.maxSearchResults, 40, 1),
@@ -207,7 +310,8 @@ function cancelled(b) {
   if (!b.signal.aborted && b.isCancelled()) b.controller.abort('cancelled');
   return b.signal.aborted && !timedOut(b);
 }
-function expired(b) { return cancelled(b) || timedOut(b) || b.disassemblyExhausted || b.functionExhausted; }
+function toolCallBudgetExhausted(b) { return b.toolCallBudget.remaining() <= 0; }
+function expired(b) { return cancelled(b) || timedOut(b) || b.disassemblyExhausted || b.functionExhausted || toolCallBudgetExhausted(b); }
 function abortError(b) {
   const code = timedOut(b) ? 'timeout' : 'cancelled';
   const error = new Error(code); error.code = code; return error;
@@ -224,6 +328,11 @@ async function awaitBudget(promise, b) {
 async function invokeTool(tools, name, b, ...args) {
   const fn = tools && tools[name];
   if (typeof fn !== 'function') { const error = new Error(`missing-tool:${name}`); error.code = 'missing-tool'; throw error; }
+  if (!b.toolCallBudget.consume()) {
+    const error = new Error('tool-call-budget');
+    error.code = 'tool-call-budget';
+    throw error;
+  }
   if (args.length && args[args.length - 1] && typeof args[args.length - 1] === 'object' && !Array.isArray(args[args.length - 1]) && typeof args[args.length - 1] !== 'bigint') {
     args[args.length - 1] = { ...args[args.length - 1], signal:b.signal };
   } else args.push({ signal:b.signal });
@@ -239,17 +348,63 @@ function consumeExternalCost(result, b) {
   return true;
 }
 function searchCompleteness(result, requestedLimit) {
-  const complete = result?.completeness?.complete ?? result?.complete ?? (!result?.truncated && (result?.results?.length || 0) < requestedLimit);
-  let coverage = Number(result?.completeness?.coverage ?? result?.coverage);
-  const returned = Number(result?.completeness?.returned ?? result?.returned ?? result?.results?.length ?? 0);
-  const totalRaw = result?.completeness?.total ?? result?.total;
-  const total = totalRaw == null ? null : Number(totalRaw);
-  if (!Number.isFinite(coverage)) {
-    if (Number.isFinite(total) && total > 0) coverage = Math.min(1, returned / total);
-    else if (Number.isFinite(Number(result?.scanned)) && Number.isFinite(Number(result?.scanTotal)) && Number(result.scanTotal) > 0) coverage = Math.min(1, Number(result.scanned) / Number(result.scanTotal));
+  const nestedRaw = result?.completeness;
+  const nested = nestedRaw == null || (typeof nestedRaw === 'object' && !Array.isArray(nestedRaw)) ? nestedRaw : null;
+  let malformed = nestedRaw != null && nested == null;
+  const values = {
+    complete: [nested?.complete, result?.complete].filter((value) => value != null),
+    returned: [nested?.returned, result?.returned].filter((value) => value != null),
+    total: [nested?.total, result?.total].filter((value) => value != null),
+    coverage: [nested?.coverage, result?.coverage].filter((value) => value != null),
+  };
+  const completeRaw = values.complete[0];
+  const truncatedRaw = result?.truncated;
+  if (values.complete.some((value) => typeof value !== 'boolean')) malformed = true;
+  if (truncatedRaw != null && typeof truncatedRaw !== 'boolean') malformed = true;
+
+  const rows = Array.isArray(result?.results) ? result.results : [];
+  const returnedRaw = values.returned[0];
+  let returned = rows.length;
+  if (values.returned.some((value) => typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)) malformed = true;
+  else if (returnedRaw != null) returned = returnedRaw;
+  const totalRaw = values.total[0];
+  let total = null;
+  if (values.total.some((value) => typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)) malformed = true;
+  else if (totalRaw != null) total = totalRaw;
+
+  const coverageRaw = values.coverage[0];
+  let coverage = null;
+  if (values.coverage.some((value) => typeof value !== 'number' || !Number.isFinite(value))) malformed = true;
+  else if (coverageRaw != null) coverage = Math.max(0, Math.min(1, coverageRaw));
+  const scannedRaw = result?.scanned;
+  const scanTotalRaw = result?.scanTotal;
+  let scanned = null;
+  let scanTotal = null;
+  if (scannedRaw != null) {
+    if (typeof scannedRaw === 'number' && Number.isFinite(scannedRaw) && scannedRaw >= 0) scanned = scannedRaw;
+    else malformed = true;
+  }
+  if (scanTotalRaw != null) {
+    if (typeof scanTotalRaw === 'number' && Number.isFinite(scanTotalRaw) && scanTotalRaw >= 0) scanTotal = scanTotalRaw;
+    else malformed = true;
+  }
+
+  let complete;
+  if (malformed) complete = false;
+  else if (typeof completeRaw === 'boolean') complete = completeRaw;
+  else complete = truncatedRaw !== true && rows.length < requestedLimit;
+
+  if (coverage == null) {
+    if (!malformed && total != null && total > 0) coverage = Math.min(1, returned / total);
+    else if (!malformed && scanned != null && scanTotal != null && scanTotal > 0) coverage = Math.min(1, scanned / scanTotal);
     else coverage = complete ? 1 : 0.65;
   }
-  return { complete: Boolean(complete), coverage: Math.max(0, Math.min(1, coverage)), reason: result?.completeness?.reason ?? result?.reason ?? (complete ? null : 'result-limit'), returned, total: Number.isFinite(total) ? total : null };
+  if (malformed) coverage = Math.min(coverage, 0.65);
+
+  const reason = malformed
+    ? 'malformed-search-metadata'
+    : nested?.reason ?? result?.reason ?? (complete ? null : 'result-limit');
+  return { complete, coverage, reason, returned, total };
 }
 function noteSearch(b, tool, term, result) {
   const report = { tool, term, ...searchCompleteness(result, b.maxSearchResults) };
@@ -270,34 +425,80 @@ function classifyPrior(c) {
 }
 async function candidatePools(query, tools, ctx, b) {
   const pools = Object.fromEntries(POOL_ORDER.map((name) => [name, new Map()]));
+  // Consume discovery results directly. The retained state is limited to the
+  // stored pool plus two bounded overflow tiers; no rows-sized staging array
+  // or address-sized aggregate Map is created.
   const terms = uniqueTerms(query);
   for (const term of terms) {
     if (expired(b)) break;
     const fs = await invokeTool(tools, 'search_functions', b, term, { limit: b.maxSearchResults });
     if (expired(b)) break;
     const fCoverage = noteSearch(b, 'search_functions', term, fs);
-    for (const row of fs.results || []) addCandidate(pools, 'lexical', resultAddress(row), 'function-name', term, 12, fCoverage, sourcePoolCap(b, 'lexical'));
+    for (const row of fs.results || []) {
+      addCandidate(
+        pools,
+        'lexical',
+        resultAddress(row),
+        'function-name',
+        term,
+        12,
+        fCoverage,
+        sourcePoolCap(b, 'lexical'),
+      );
+    }
 
     const ss = await invokeTool(tools, 'search_strings', b, term, { limit: b.maxSearchResults });
     if (expired(b)) break;
     const sCoverage = noteSearch(b, 'search_strings', term, ss);
     for (const row of ss.results || []) {
       const direct = explicitFunctionAddress(row);
-      if (direct != null) addCandidate(pools, 'string', direct, 'string-reference', term, 8, sCoverage, sourcePoolCap(b, 'string'));
+      if (direct != null) {
+        addCandidate(
+          pools,
+          'string',
+          direct,
+          'string-reference',
+          term,
+          8,
+          sCoverage,
+          sourcePoolCap(b, 'string'),
+        );
+      }
       const target = asAddr(row && (row.stringAddress != null ? row.stringAddress : row.target));
       if (target != null) {
         const xr = await invokeTool(tools, 'get_xrefs', b, target, { limit: b.maxSearchResults });
         if (expired(b)) break;
         const xCoverage = searchCompleteness({ ...xr, results: xr.functions || [] }, b.maxSearchResults).coverage;
-        for (const fn of xr.functions || []) addCandidate(pools, 'string', fn.addr != null ? fn.addr : fn.function, 'string-xref', term, 10, xCoverage, sourcePoolCap(b, 'string'));
+        for (const fn of xr.functions || []) {
+          addCandidate(
+            pools,
+            'string',
+            fn.addr != null ? fn.addr : fn.function,
+            'string-xref',
+            term,
+            10,
+            xCoverage,
+            sourcePoolCap(b, 'string'),
+          );
+        }
       }
     }
   }
+
   const priors = Array.isArray(ctx.candidateFunctions) ? ctx.candidateFunctions : [];
   for (const c of priors) {
     const pool = classifyPrior(c);
     b.sourceTotals[pool]++;
-    addCandidate(pools, pool, c?.addr != null ? c.addr : c?.address != null ? c.address : c, c?.source || `${pool}-prior`, null, Number(c?.score || 1), Number(c?.coverage ?? 1), sourcePoolCap(b, pool));
+    addCandidate(
+      pools,
+      pool,
+      c?.addr != null ? c.addr : c?.address != null ? c.address : c,
+      c?.source || `${pool}-prior`,
+      null,
+      Number(c?.score || 1),
+      Number(c?.coverage ?? 1),
+      sourcePoolCap(b, pool),
+    );
   }
   for (const pool of POOL_ORDER) b.sourceTotals[pool] = Math.max(b.sourceTotals[pool], pools[pool].size);
   return pools;
@@ -310,14 +511,37 @@ async function expandCallNeighborhood(pools, tools, b) {
   if (b.maxFunctions === 0 || b.maxExpansions === 0) return;
   const initial = seedCandidates(pools, b.maxExpansions);
   const graphCap = Math.max(24, b.maxFunctions * 4, b.maxExpansions * 8);
+  // Consume caller/callee rows directly through the same bounded accumulator.
   for (const c of initial) {
-    if (expired(b) || pools.graph.size >= graphCap) break;
+    if (expired(b)) break;
     const callers = await invokeTool(tools, 'get_callers', b, c.address, { limit: 12 });
     if (expired(b)) break;
-    for (const row of callers.results || []) addCandidate(pools, 'graph', row.addr ?? row.function ?? row.functionAddress, 'caller', null, 2, 1, graphCap);
+    for (const row of callers.results || []) {
+      addCandidate(
+        pools,
+        'graph',
+        row.addr ?? row.function ?? row.functionAddress,
+        'caller',
+        null,
+        2,
+        1,
+        graphCap,
+      );
+    }
     const callees = await invokeTool(tools, 'get_callees', b, c.address, { limit: 12 });
     if (expired(b)) break;
-    for (const row of callees.results || []) addCandidate(pools, 'graph', row.addr ?? row.function ?? row.functionAddress, 'callee', null, 1, 1, graphCap);
+    for (const row of callees.results || []) {
+      addCandidate(
+        pools,
+        'graph',
+        row.addr ?? row.function ?? row.functionAddress,
+        'callee',
+        null,
+        1,
+        1,
+        graphCap,
+      );
+    }
   }
   b.sourceTotals.graph = Math.max(b.sourceTotals.graph, pools.graph.size);
 }
@@ -506,7 +730,7 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
       best = await verifyBest(query, ranked, tools, b);
     } catch (error) {
       const code = String(error && (error.code || error.message) || '');
-      if (code !== 'timeout' && code !== 'cancelled') throw error;
+      if (code !== 'timeout' && code !== 'cancelled' && code !== 'tool-call-budget') throw error;
     }
     ranked = ranked.sort((a, b2) => b2.score - a.score);
     if (best) best = ranked.find((x) => x.address === best.address) || best;
@@ -522,19 +746,21 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
     if (b.sourcePoolTruncated) missingEvidence.push('candidate-source-limit');
     if (b.searchIncomplete) missingEvidence.push('search-incomplete');
     if (b.unaccountedToolCost) missingEvidence.push('unaccounted-tool-cost');
+    if (toolCallBudgetExhausted(b)) missingEvidence.push('tool-call-budget');
     if (timedOut(b)) missingEvidence.push('timeout');
     if (cancelled(b)) missingEvidence.push('cancelled');
     if (query.confident === false) missingEvidence.push(...(query.missing || []));
     const search = aggregateSearchCoverage(b.searchReports);
     const sourceCompletenessInfo = b.sourceCompleteness || sourceCompleteness(pools, b);
     const incomplete = expired(b) || b.shortlistLimited || b.sourcePoolTruncated || b.searchIncomplete;
-    const budgetLimited = b.disassemblyExhausted || b.functionExhausted;
+    const budgetLimited = b.disassemblyExhausted || b.functionExhausted || toolCallBudgetExhausted(b);
     const all = mergedCandidates(pools);
     const candidateCount = all.size;
     const analyzedCount = ranked.length;
     const storedCandidateCoverage = candidateCount === 0 ? 1 : Math.min(1, analyzedCount / candidateCount);
     const candidateCoverage = storedCandidateCoverage * search.coverage * sourceCompletenessInfo.coverage;
-    const reason = b.functionExhausted ? 'function-budget'
+    const reason = toolCallBudgetExhausted(b) ? 'tool-call-budget'
+      : b.functionExhausted ? 'function-budget'
       : b.disassemblyExhausted ? 'disassembly-budget'
         : timedOut(b) ? 'timeout'
           : cancelled(b) ? 'cancelled'
@@ -555,6 +781,8 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
       refinementAvailable: !budgetLimited && (b.reservedFunctions > 0 || b.reservedDisassembly > 0),
       candidateSources: {
         quotas: b.quotas || quotaCounts(pools, b.maxFunctions), stored: Object.fromEntries(POOL_ORDER.map((pool) => [pool, pools[pool].size])), supplied: { ...b.sourceTotals },
+        // stored + staged + probation; source rows are consumed incrementally.
+        retainedBound: Object.fromEntries(POOL_ORDER.map((pool) => [pool, sourcePoolCap(b, pool) * 3])),
         completeness: sourceCompletenessInfo,
       },
       budget: {
@@ -565,7 +793,7 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
       searchCompleteness: search,
       stats: {
         analyzedFunctions: analyzedCount, candidateFunctions: candidateCount, unanalyzedFunctions: Math.max(0, candidateCount - analyzedCount),
-        disassembly: b.analyzedInstructions, elapsedMs: Date.now() - b.started,
+        disassembly: b.analyzedInstructions, toolCalls: b.toolCallBudget.used, elapsedMs: Date.now() - b.started,
         plannerFunctionBudget: b.maxFunctions, requestedFunctionBudget: b.requestedMaxFunctions,
         plannerDisassemblyBudget: b.maxDisassembly, requestedDisassemblyBudget: b.requestedMaxDisassembly,
       },

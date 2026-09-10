@@ -48,8 +48,14 @@ function toBigInt(value) {
 }
 
 function widthBytes(region) {
-  const bits = Number(region?.widthBits);
-  if (!Number.isSafeInteger(bits) || bits <= 0) return null;
+  // Width authority must match the canonical MemoryRegionRef contract: only a
+  // primitive positive safe-integer bit width may prove interval separation or
+  // identity. Number() is a conversion API (Number(['8']) === 8, Number(true)
+  // === 1), so a structured/malformed width would launder a strong alias
+  // relation out of a lookalike region (#5223). Malformed widths fail closed
+  // to the weak relation instead.
+  const bits = region?.widthBits;
+  if (typeof bits !== 'number' || !Number.isSafeInteger(bits) || bits <= 0) return null;
   return BigInt(Math.ceil(bits / 8));
 }
 
@@ -62,6 +68,13 @@ function widthBytes(region) {
  */
 export function provenAddressSpace(region) {
   if (!region) return null;
+  // A rooted-offset region may carry an explicit proven space from its
+  // canonical proof (tls/io-rooted descriptors, #5901). Only space-less
+  // rooted-offsets are flat memory by construction.
+  if (region.kind === 'rooted-offset') {
+    if (typeof region.addressSpace === 'string' && region.addressSpace.trim()) return region.addressSpace.trim();
+    return FLAT_MEMORY_SPACE;
+  }
   if (FLAT_MEMORY_KINDS.has(region.kind)) return FLAT_MEMORY_SPACE;
   if (EXPLICIT_SPACE_KINDS.has(region.kind)) {
     const space = typeof region.addressSpace === 'string' ? region.addressSpace.trim() : null;

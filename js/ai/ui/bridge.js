@@ -6,6 +6,7 @@ import { createCapabilityCatalog } from '../capabilities/catalog.js';
 import { createCapabilityExecutor } from '../capabilities/executor.js';
 import { createProposalExecutor } from '../interaction/proposal-executor.js';
 import { createProjectSessionPersistence } from '../session-core/index.js';
+import { sessionMatchesSnapshot } from '../control/runtime-support.js';
 
 async function loadCoreRuntime(localContext, persistence = null) {
   const runtimeModule = await import('../runtime.js');
@@ -149,38 +150,87 @@ export function createAiEngine(app, options = {}) {
   };
 }
 
-function createLiveProjectSessionPersistence(app) {
+// The live persistence defers its durable write to a debounced
+// workspace.autosave(), but `InvestigationSessionStore.persist()/delete()`
+// callers treat a resolved save as durable. save()/delete() therefore await
+// the shared flush and surface the autosave's boolean failure contract
+// (#5648).
+export function createLiveProjectSessionPersistence(app) {
   let saveTimer = null;
+  let flush = null;
   const projectFor = () => app?.workspace?.project || app?.activeProject || app?.project || null;
   const ensureProject = () => projectFor() || app?.workspace?.snapshot?.() || null;
+  const completeFlush = (error) => {
+    const pending = flush;
+    flush = null;
+    if (pending) error ? pending.reject(error) : pending.resolve();
+  };
+  const runAutosave = () => {
+    try {
+      const saved = app?.workspace?.autosave?.();
+      if (saved === false) throw new Error('workspace-autosave-failed');
+      completeFlush(null);
+    } catch (error) {
+      completeFlush(error instanceof Error ? error : new Error(String(error)));
+    }
+  };
   const changed = (project) => {
     if (app?.workspace) app.workspace.project = project;
     app.activeProject = project;
-    if (saveTimer != null || typeof setTimeout !== 'function') return;
-    saveTimer = setTimeout(() => { saveTimer = null; try { app?.workspace?.autosave?.(); } catch { /* optional autosave */ } }, 250);
+    if (typeof setTimeout !== 'function') { runAutosave(); return; }
+    if (flush == null) {
+      let resolve, reject;
+      flush = { promise: new Promise((res, rej) => { resolve = res; reject = rej; }), resolve, reject };
+    }
+    if (saveTimer != null) return;
+    saveTimer = setTimeout(() => { saveTimer = null; runAutosave(); }, 250);
   };
+  const awaitFlush = () => (flush ? flush.promise : Promise.resolve());
   const adapterFor = (project) => project ? createProjectSessionPersistence(project, { onChange: changed }) : null;
   return {
     list() { return adapterFor(projectFor())?.list?.() || []; },
     async load(id) { return (await adapterFor(projectFor())?.load?.(id)) || null; },
-    async save(session) { const adapter = adapterFor(ensureProject()); if (adapter) await adapter.save(session); },
-    async delete(id) { const adapter = adapterFor(projectFor()); if (adapter) await adapter.delete(id); },
+    async save(session) {
+      const adapter = adapterFor(ensureProject());
+      if (!adapter) return;
+      await adapter.save(session);
+      await awaitFlush();
+    },
+    async delete(id) {
+      const adapter = adapterFor(projectFor());
+      if (!adapter) return;
+      await adapter.delete(id);
+      await awaitFlush();
+    },
   };
 }
 
 function persistedSessionForConversation(persistence, conversationId, context) {
   const sessions = persistence?.list?.() || [];
-  const binaryId = context?.binaryIdentity?.id || context?.binaryId || null;
+  const binaryIdentity = context?.binaryIdentity || null;
+  const binaryId = binaryIdentity?.id || context?.binaryId || null;
   const projectId = context?.projectId || null;
+  const runtimeSessionId = context?.runtimeSessionId ?? null;
+  const runtimeSessionKnown = context?.runtimeSessionKnown === true || runtimeSessionId != null;
+  const snapshot = {
+    binaryId,
+    binaryIdentity,
+    legacyBinaryId: binaryIdentity?.legacyId || (binaryIdentity ? null : context?.binaryId || null),
+    projectIdentity: projectId,
+    runtimeSessionIdentity: runtimeSessionId,
+    runtimeSessionState: runtimeSessionKnown ? (runtimeSessionId == null ? 'none' : 'bound') : 'unknown',
+  };
   const compatible = sessions.filter((session) => {
     if (!session?.id) return false;
-    if (binaryId && session.binaryId && String(session.binaryId) !== String(binaryId)) return false;
-    if (projectId && session.projectId && String(session.projectId) !== String(projectId)) return false;
-    return true;
+    return sessionMatchesSnapshot(session, snapshot);
   });
   if (conversationId != null) {
+    // An explicit conversation identity is authoritative: reuse only the exact
+    // persisted session of THIS conversation. Falling back to "the single
+    // compatible session" would let a new chat adopt another conversation's
+    // investigation memory and rewrite its ownership (#6011).
     const exact = compatible.find((session) => String(session.conversationId || '') === String(conversationId));
-    if (exact) return String(exact.id);
+    return exact ? String(exact.id) : null;
   }
   return compatible.length === 1 ? String(compatible[0].id) : null;
 }

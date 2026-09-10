@@ -153,7 +153,11 @@ export class DebugAdapter {
     }
     this.id = id == null ? `${kind}-adapter` : id;
     this.kind = kind;
-    this.capabilities = normalizeCapabilities({ connect: true, disconnect: true, ...capabilities });
+    this.capabilities = normalizeCapabilities(
+      capabilities instanceof Set
+        ? new Set(['connect', 'disconnect', ...capabilities])
+        : { connect: true, disconnect: true, ...capabilities },
+    );
     this.connected = false;
   }
   negotiate(requested = null) {
@@ -180,7 +184,7 @@ export class DebugAdapter {
     return Object.freeze(out);
   }
   require(capability) {
-    if (!this.capabilities[capability]) throw new DebugAdapterError('unsupported', `${this.kind} adapter does not support ${capability}`, { capability });
+    if (!DEBUG_CAPABILITIES.includes(capability) || this.capabilities[capability] !== true) throw new DebugAdapterError('unsupported', `${this.kind} adapter does not support ${capability}`, { capability });
   }
   requireMethod(method) {
     if (!Object.prototype.hasOwnProperty.call(METHOD_CAPABILITY, method)) {

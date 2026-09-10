@@ -1,4 +1,5 @@
 import { normalizeSchemaRecoveryLimit, recoverSchemas } from '../schema.js';
+import { annotateSchemaResult, dependencyCompleteness, schemaResultSatisfies } from './schema-recovery-contract.js';
 
 const TASKS = new WeakMap();
 
@@ -40,49 +41,13 @@ function taskMap(app) {
   return map;
 }
 
-function dependencyCompleteness(strings, program) {
-  const reasons = [];
-  if (strings?.complete !== true) reasons.push(strings?.truncationReason || 'strings-partial');
-  const graph = program?.graphCompleteness;
-  const programComplete = !!program && program.unsupported !== true && program.completeness?.complete !== false
-    && graph?.callsComplete !== false && graph?.refsComplete !== false;
-  if (!programComplete) reasons.push(program?.queryIncompleteReason || graph?.reasons?.[0] || 'program-partial');
-  return { complete:reasons.length === 0, reasons:[...new Set(reasons.filter(Boolean))] };
-}
-
-function annotateSchemas(value, completeness, { epoch, maxSchemas }) {
-  const schemas = Array.isArray(value) ? value : [];
-  const ownIncomplete = schemas.complete === false || schemas.truncated === true || schemas.unsupported === true;
-  const complete = completeness.complete && !ownIncomplete;
-  const reason = !complete
-    ? schemas.incompleteReason || schemas.truncationReason || completeness.reasons[0] || 'schema-recovery-partial'
-    : null;
-  Object.defineProperties(schemas, {
-    complete:{ value:complete, enumerable:false, configurable:true },
-    incompleteReason:{ value:reason, enumerable:false, configurable:true },
-    dependencyReasons:{ value:Object.freeze(completeness.reasons.slice()), enumerable:false, configurable:true },
-    schemaRecoveryEpoch:{ value:epoch, enumerable:false, configurable:true },
-    schemaRecoveryMaxSchemas:{ value:maxSchemas, enumerable:false, configurable:true },
-  });
-  return schemas;
-}
-
 function taskKey(epoch, maxSchemas) {
   return `${epoch}:${maxSchemas}`;
 }
 
-function resultSatisfies(result, epoch, maxSchemas) {
-  if (!Array.isArray(result)) return false;
-  if (result.schemaRecoveryEpoch != null && result.schemaRecoveryEpoch !== epoch) return false;
-  if (result.complete === true) return true;
-  return result.schemaRecoveryEpoch === epoch
-    && Number.isSafeInteger(result.schemaRecoveryMaxSchemas)
-    && result.schemaRecoveryMaxSchemas >= maxSchemas;
-}
-
 function entrySatisfies(entry, epoch, maxSchemas) {
   if (!entry || entry.epoch !== epoch) return false;
-  if (entry.result) return resultSatisfies(entry.result, epoch, maxSchemas);
+  if (entry.result) return schemaResultSatisfies(entry.result, epoch, maxSchemas);
   return !entry.controller.signal.aborted && entry.maxSchemas >= maxSchemas;
 }
 
@@ -135,7 +100,7 @@ function createTask(app, epoch, maxSchemas, { onProgress, priority, budget } = {
     throwIfAborted(signal);
     if (epoch !== app.backend?.gen) throw Object.assign(new Error('Schema recovery became stale.'), { name:'StaleRequestError', stale:true });
     if (!program) {
-      entry.result = annotateSchemas([], dependencyCompleteness(strings, program), { epoch, maxSchemas });
+      entry.result = annotateSchemaResult([], dependencyCompleteness(strings, program), { epoch, maxSchemas });
       publishBestSchemaResult(app, entry);
       return entry.result;
     }
@@ -159,7 +124,7 @@ function createTask(app, epoch, maxSchemas, { onProgress, priority, budget } = {
     });
     throwIfAborted(signal);
     if (epoch !== app.backend?.gen) throw Object.assign(new Error('Schema recovery became stale.'), { name:'StaleRequestError', stale:true });
-    entry.result = annotateSchemas(schemas, dependencyCompleteness(strings, program), { epoch, maxSchemas });
+    entry.result = annotateSchemaResult(schemas, dependencyCompleteness(strings, program), { epoch, maxSchemas });
     publishBestSchemaResult(app, entry);
     return entry.result;
   })().catch((error) => {
@@ -174,7 +139,7 @@ function createTask(app, epoch, maxSchemas, { onProgress, priority, budget } = {
 export function recoverSchemasForUi(app, { signal = null, onProgress = null, priority = 'interactive', budget = null } = {}) {
   const epoch = app?.backend?.gen ?? -1;
   const maxSchemas = normalizeSchemaRecoveryLimit(budget?.maxSchemas);
-  if (resultSatisfies(app?.schemas, epoch, maxSchemas)) return Promise.resolve(app.schemas);
+  if (schemaResultSatisfies(app?.schemas, epoch, maxSchemas)) return Promise.resolve(app.schemas);
   const map = taskMap(app);
   let entry = satisfyingEntry(map, epoch, maxSchemas);
   if (!entry) entry = createTask(app, epoch, maxSchemas, { onProgress, priority, budget });

@@ -6,13 +6,17 @@ import {
   createRegisterValue,
   createTemporaryValue,
 } from '../../../../semantics/effects/index.js';
+import {
+  arm64BarrierOptionFromImmediate,
+  arm64BarrierOptionFromText,
+  arm64BarrierScope,
+} from './barrier-options.js';
+import { canonicalIdentityString } from './common.js';
 
 const ARCHITECTURE_ID = 'arm64';
 const MODE = 'a64';
 
 const BARRIERS = new Set(['dmb','dsb','isb']);
-const DATA_BARRIER_OPTIONS = new Set(['sy','st','ld','ish','ishst','ishld','nsh','nshst','nshld','osh','oshst','oshld']);
-const DSB_NXS_OPTIONS = new Set(['oshnxs','nshnxs','ishnxs','synxs']);
 const WAITS_AND_EVENTS = new Set(['yield','wfe','wfi','sev','sevl']);
 const TRAPS = new Set(['svc','hvc','smc','brk','hlt']);
 const MAINTENANCE = new Set(['dc','ic','tlbi']);
@@ -87,7 +91,7 @@ function operandsOf(instruction) {
 function instructionIdOf(instruction, context) {
   const id = instruction?.instructionId ?? context?.instructionId;
   if (!id) throw new TypeError('arm64-system-machine-effects-instruction-id-required');
-  return String(id);
+  return canonicalIdentityString(id, 'arm64-system-machine-effects-instruction-id-invalid');
 }
 function originOf(instruction, context, instructionId) {
   return instruction?.origin ?? context?.origin ?? { instructionIds:[instructionId] };
@@ -261,12 +265,24 @@ function nop(instruction, context) {
 
 function barrier(instruction, context, mnemonic, ops) {
   const operand = ops[0];
+  const immediate = isPlainImmediate(operand) ? BigInt(operand.value) : null;
+  const fallbackOption = textOperand(operand)
+    ?? (typeof instruction?.operands === 'string' ? instruction.operands.trim().toLowerCase() : null);
+  const selected = immediate != null
+    ? arm64BarrierOptionFromImmediate(mnemonic, immediate)
+    : arm64BarrierOptionFromText(mnemonic, fallbackOption || 'sy');
+  const option = selected?.option || fallbackOption || 'sy';
+  const canonicalScope = mnemonic === 'isb'
+    ? { domain:'instruction-stream', access:'instruction-fetch', option:'sy' }
+    : arm64BarrierScope(option);
   const scope = {
     architecture:'arm64',
     barrier:mnemonic,
-    domain:textOperand(operand)
-      ?? (typeof instruction?.operands === 'string' ? instruction.operands.trim().toLowerCase() || 'sy' : 'sy'),
-    semantics:mnemonic === 'isb' ? 'instruction-synchronization' : mnemonic === 'dsb' ? 'data-synchronization' : 'data-memory-ordering',
+    ...(canonicalScope || { domain:option }),
+    ...(selected?.crm == null ? {} : { crm:selected.crm }),
+    ...(selected?.reservedEncoding ? { reservedEncoding:true } : {}),
+    semantics:option === 'ssbb' || option === 'pssbb' ? 'speculation-store-bypass'
+      : mnemonic === 'isb' ? 'instruction-synchronization' : mnemonic === 'dsb' ? 'data-synchronization' : 'data-memory-ordering',
   };
   return bundle(instruction, context, {
     operations:[createMachineOperation({ kind:'barrier', scope })],
@@ -613,13 +629,12 @@ function operandShapeFailure(instruction, mnemonic, ops) {
     const op = ops[0];
     if (op?.k === 'imm') {
       if (!isPlainImmediate(op)) return { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
-      const value = BigInt(op.value);
-      return value >= 0n && value <= 15n ? null : { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
+      return arm64BarrierOptionFromImmediate(mnemonic, BigInt(op.value))
+        ? null
+        : { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
     }
     const option = textOperand(op);
-    const valid = mnemonic === 'isb'
-      ? option === 'sy'
-      : DATA_BARRIER_OPTIONS.has(option) || (mnemonic === 'dsb' && DSB_NXS_OPTIONS.has(option));
+    const valid = arm64BarrierOptionFromText(mnemonic, option) != null;
     return valid ? null : { reason:`${mnemonic}-operand-shape-invalid`, categories:['other'] };
   }
   if (mnemonic === 'nop' || WAITS_AND_EVENTS.has(mnemonic)) {

@@ -71,6 +71,9 @@ try{
       assert.ok(['exact','exact-with-intrinsic'].includes(effects.completeness),`${item.id}:${raw.opStr}:${effects.unknownEffects?.reason}`);
       assert.equal(effects.metadata.family,'arm64-fp',item.id);
       assert.equal(effects.operations.some((operation)=>operation.kind==='unknown'),false,item.id);
+      const readsFpcr=effects.operations.some((operation)=>operation.kind==='register-read'&&operation.register.registerId==='fpcr');
+      const fpExceptionFaults=effects.possibleFaults.filter((fault)=>fault?.kind==='arm64-floating-point-exception');
+      assert.equal(fpExceptionFaults.length,readsFpcr?1:0,`${item.id}:fpcr-trap-fault-contract`);
       assert.doesNotThrow(()=>validateMachineEffectBundle(effects),item.id);
 
       // Dataflow proof precedes cardinality assertions: every temporary input

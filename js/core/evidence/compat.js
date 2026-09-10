@@ -1,8 +1,16 @@
 import { createEvidenceNode, EvidenceGraph } from './index.js';
 import { createOriginSet } from '../identity/origin.js';
 
+/* #5277: family authority reads only primitive-string provenance. Template
+   interpolation laundered structured (Array/Object/boolean/number) source
+   fields into canonical family tokens; malformed provenance must fall back to
+   the default family instead. */
+function familyToken(value) {
+  return typeof value === 'string' ? value.toLowerCase() : '';
+}
+
 function familyFor(record = {}) {
-  const text = `${record.sourceTool || record.source || ''} ${record.kind || ''}`.toLowerCase();
+  const text = `${familyToken(record.sourceTool || record.source)} ${familyToken(record.kind)}`;
   if (text.includes('runtime') || record.source === 'runtime') return 'RuntimeEvidence';
   if (text.includes('symbolic') || text.includes('solver')) return 'SymbolicEvidence';
   if (text.includes('signature') || text.includes('fingerprint')) return 'SignatureEvidence';
@@ -131,7 +139,12 @@ export function canonicalEvidenceToLegacyAi(node) {
   if (payload.entityId != null) out.entityId = payload.entityId;
   if (payload.functionId != null) out.functionId = payload.functionId;
   if (payload.instructionId != null) out.instructionId = payload.instructionId;
-  if (payload.binaryId != null) out.binaryId = payload.binaryId;
+  // Canonical binary binding is authoritative at the node level. A legacy
+  // record may duplicate binaryId/binaryHash in its payload, but a canonical
+  // node created through the core API carries only the top-level field —
+  // dropping it would lose the binary scope on conversion (#5782).
+  if (canonical.binaryId != null) out.binaryId = canonical.binaryId;
+  else if (payload.binaryId != null) out.binaryId = payload.binaryId;
   if (payload.binaryHash != null) out.binaryHash = payload.binaryHash;
   if (canonical.completeness != null) out.completeness = canonical.completeness;
   if (canonical.confidence != null) out.confidence = canonical.confidence;

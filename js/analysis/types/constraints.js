@@ -111,12 +111,11 @@ function idList(values, code) {
 
 function toBigInt(val, fallback = 0n) {
   if (val == null) return fallback;
-  if (typeof val === 'bigint') return val;
-  if (typeof val === 'number') {
-    if (!Number.isSafeInteger(val)) return null;
-    return BigInt(val);
-  }
-  try { return BigInt(val); } catch { return null; }
+  /* Structural integer authority accepts only the same primitive forms used
+     by canonicalDescriptorMaterial(). Never invoke BigInt() on a structured
+     value: its ToPrimitive step would launder arrays/objects/booleans into
+     hard layout evidence. */
+  return canonicalInteger(val);
 }
 
 function canonicalInteger(val) {
@@ -403,12 +402,61 @@ export function claimsConflict(left, right) {
     if (aKind != null && bKind != null && aKind !== bKind && aKind !== 'field' && bKind !== 'field') {
       return true;
     }
+
+    // Top-level array claims are complete structural candidates, not field
+    // fragments. Keep their identity intact and compare the array contract
+    // directly before the aggregate interval rules below.
+    if (aKind === 'array' || bKind === 'array') {
+      if (aKind !== bKind) return true;
+      if (a.strideBytes != null && b.strideBytes != null && numericValuesDiffer(a.strideBytes, b.strideBytes)) return true;
+      if (a.length != null && b.length != null && numericValuesDiffer(a.length, b.length)) return true;
+      if (a.sizeBytes != null && b.sizeBytes != null && numericValuesDiffer(a.sizeBytes, b.sizeBytes)) return true;
+      if (a.alignBytes != null && b.alignBytes != null && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
+      if (a.elementEntityId != null && b.elementEntityId != null && a.elementEntityId !== b.elementEntityId) return true;
+      if (a.elementType != null && b.elementType != null && memberTypesConflict(a.elementType, b.elementType)) return true;
+      return false;
+    }
+
     // Check total size or alignment mismatch
     if (a.sizeBytes != null && b.sizeBytes != null && a.offset == null && b.offset == null && numericValuesDiffer(a.sizeBytes, b.sizeBytes)) return true;
     if (a.alignBytes != null && b.alignBytes != null && a.offset == null && b.offset == null && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
 
+    // A member extent must fit inside a co-claimed whole-aggregate size (#5819):
+    // hard aggregate size N + hard field [offset, offset+size) with
+    // offset+size > N are hard facts that cannot both hold.
+    // Only an explicitly typed aggregate can supply a whole-object bound.
+    // Offset-less structural-field metadata is member evidence, not a bound.
+    const isExplicitAggregateDescriptor = (descriptor) => (
+      descriptor.kind === 'struct'
+      && descriptor.offset == null
+      && descriptor.fieldName == null
+      && descriptor.memberType == null
+    );
+    const extentBeyondAggregate = (aggregate, field) => {
+      if (!isExplicitAggregateDescriptor(aggregate)) return false;
+      if (field.offset == null || field.sizeBytes == null) return false;
+      const start = toBigInt(field.offset, null);
+      const size = toBigInt(field.sizeBytes, null);
+      const total = toBigInt(aggregate.sizeBytes, null);
+      if (start == null || size == null || total == null) return false;
+      return start + size > total;
+    };
+    if (extentBeyondAggregate(a, b) || extentBeyondAggregate(b, a)) return true;
+
     // Overlapping byte intervals with incompatible member types conflict;
     // disjoint intervals coexist happily in one aggregate.
+    // A same-offset field is the same storage slot even when its member type
+    // is compatible. Its extent and alignment are still hard layout facts;
+    // compare those before the member-type early return so a width mismatch
+    // cannot be laundered as a compatible type claim (#4423).
+    const sameOffset = a.offset != null && b.offset != null
+      && !numericValuesDiffer(a.offset, b.offset);
+    if (sameOffset) {
+      if (a.sizeBytes != null && b.sizeBytes != null
+        && numericValuesDiffer(a.sizeBytes, b.sizeBytes)) return true;
+      if (a.alignBytes != null && b.alignBytes != null
+        && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
+    }
     const overlap = intervalsOverlap(a, b);
     if (!overlap) return false;
 

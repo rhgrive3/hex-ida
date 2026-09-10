@@ -1,4 +1,5 @@
 import { x86RegisterDescriptor } from './registers.js';
+import { canonicalX86ConditionCode } from './effects/flags.js';
 
 export const X86_DECODED_INSTRUCTION_CONTRACT_VERSION = 'x86-64-decoded-instruction/v1';
 export const X86_DECODER_SEMANTIC_VERSION = 'capstone-5-x86-structured-v2';
@@ -6,20 +7,59 @@ export const X86_DECODE_MODES = Object.freeze(['long-64']);
 
 const OPERAND_TYPES = new Set(['register','immediate','memory','invalid']);
 const ACCESS = new Set(['read','write','read-write','unknown']);
-const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed']);
+// Capstone's SKIPDATA contract emits the sentinel instruction ID 0 for bytes
+// it could not decode; the structured bridge publishes those records with
+// `detailStatus:'skipdata'` (#6058). The sentinel is only ever valid together
+// with that status — a normal instruction keeps its positive ID requirement.
+const SKIPDATA_DETAIL_STATUS = 'skipdata';
+const DETAIL_STATUSES = new Set(['complete','unavailable','partial','malformed',SKIPDATA_DETAIL_STATUS]);
 const SEGMENT_REGISTERS = new Set(['cs','ds','es','fs','gs','ss']);
+const X86_64_ARCHITECTURE_ID = 'x86_64';
+
+function x86ArchitectureIdentityOf(input) {
+  for (const value of [input.architecture, input.architectureId]) {
+    if (value == null) continue;
+    if (typeof value !== 'string' || value.trim().toLowerCase() !== X86_64_ARCHITECTURE_ID) {
+      throw new TypeError('x86-decoded-instruction-architecture-mismatch');
+    }
+  }
+  return X86_64_ARCHITECTURE_ID;
+}
 // Per-decode-mode legal effective address sizes. 64-bit mode supports 64-bit
 // and 0x67-prefixed 32-bit addressing only; 16-bit addresses are unsupported.
 const ADDRESS_SIZE_BITS_BY_MODE = Object.freeze({ 'long-64': Object.freeze([32, 64]) });
 
+// Numeric fields at the decoder trust boundary accept only exact primitive
+// numeric evidence. `Number()`/`BigInt()` coercion would let booleans, arrays
+// and arbitrary objects mint canonical length/address/width authority
+// (`Number(true)===1`, `BigInt(['16'])===16n`) and promote malformed provider
+// records into valid structured instructions (#5040).
 function integer(value, code, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < min || number > max) throw new TypeError(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {
+    throw new TypeError(code);
+  }
+  return value;
 }
 
+function skipdataInstructionCode(value) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || !Object.is(value, 0)) {
+    throw new TypeError('x86-decoded-instruction-id-required');
+  }
+  return value;
+}
+
+const NUMERIC_TEXT = /^-?(?:0x[0-9a-f]+|\d+)$/i;
+
 function bigint(value, code) {
-  try { return BigInt(value); } catch { throw new TypeError(code); }
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string') {
+    const textValue = value.trim();
+    if (NUMERIC_TEXT.test(textValue)) {
+      try { return BigInt(textValue); } catch { /* fall through to reject */ }
+    }
+  }
+  throw new TypeError(code);
 }
 
 function text(value, code, { empty = false } = {}) {
@@ -50,13 +90,48 @@ function detailStatusOf(value, detailAvailable) {
   if (typeof status !== 'string' || !DETAIL_STATUSES.has(status)) {
     throw new TypeError('x86-decoded-instruction-invalid-detail-status');
   }
+  // Both availability fields may be supplied; when they are, they must agree.
+  // A contradiction (`complete`+false / `unavailable`+true) is an input
+  // schema violation, not a preference to resolve: an explicit
+  // `detailStatus:'unavailable'` that survives as `detailAvailable:true`
+  // would carry unavailable detail into the structured exact path (#6046).
+  if (value != null && detailAvailable != null && detailAvailable !== (status === 'complete')) {
+    throw new TypeError('x86-decoded-instruction-detail-availability-conflict');
+  }
   return status;
 }
 
-function conditionCodeOf(value) {
+function conditionCodeOf(value, instructionFamily) {
   if (value == null) return null;
   if (typeof value !== 'string') throw new TypeError('x86-decoded-instruction-invalid-condition-code');
-  return value.toLowerCase();
+  const code = value.toLowerCase();
+  // The producer derives `detail.conditionCode` from the opcode family
+  // (je -> e, jne -> ne, ...). When both are present they are redundant
+  // evidence for the same fact: a contradiction would let
+  // `liftX86ControlEffects` invert the branch predicate (JE acting on
+  // !ZF), so it fails closed at the canonical boundary (#5981).
+  const family = typeof instructionFamily === 'string' ? instructionFamily.toLowerCase() : null;
+  let conditionBearing = false;
+  if (family) {
+    for (const prefix of ['cmov', 'set', 'j']) {
+      if (!family.startsWith(prefix) || family === 'jmp') continue;
+      conditionBearing = true;
+      const suffix = family.slice(prefix.length);
+      if (!suffix) break;
+      const expected = canonicalX86ConditionCode(suffix);
+      const stated = canonicalX86ConditionCode(code);
+      if (expected == null) {
+        // Non-canonical suffix (jcxz/jrcxz): the producer keeps the raw
+        // suffix, so only an exact match is acceptable.
+        if (code !== suffix) throw new TypeError('x86-decoded-instruction-condition-code-family-mismatch');
+      } else if (stated !== expected) {
+        throw new TypeError('x86-decoded-instruction-condition-code-family-mismatch');
+      }
+      break;
+    }
+    if (!conditionBearing) throw new TypeError('x86-decoded-instruction-unexpected-condition-code');
+  }
+  return code;
 }
 
 function addressSizeBitsOf(value, mode) {
@@ -122,7 +197,7 @@ function registerOf(value, code, { decoderRegisterCode = null, widthBits = null 
   });
 }
 
-function normalizeOperand(input, index, mode) {
+function normalizeOperand(input, index, mode, instructionAddressSizeBits = null) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('x86-decoded-instruction-invalid-operand');
   const type = token(input.type ?? input.kind ?? 'invalid', 'x86-decoded-instruction-invalid-operand-type').toLowerCase();
   if (!OPERAND_TYPES.has(type)) throw new TypeError('x86-decoded-instruction-invalid-operand-type');
@@ -159,7 +234,8 @@ function normalizeOperand(input, index, mode) {
         scale,
         displacement:bigint(raw.displacement ?? raw.disp ?? 0, 'x86-decoded-instruction-invalid-displacement'),
         segment,
-        addressSizeBits:addressSizeBitsOf(raw.addressSizeBits ?? 64, mode),
+        // Unstated operand sizes inherit the instruction-level address size.
+        addressSizeBits:addressSizeBitsOf(raw.addressSizeBits ?? instructionAddressSizeBits ?? 64, mode),
       }),
     });
   }
@@ -195,7 +271,10 @@ function prefixBytesOf(input, code) {
 function normalizePrefixState(input = {}) {
   const legacy = prefixBytesOf(input.legacy, 'x86-decoded-instruction-invalid-legacy-prefix-byte');
   if (legacy.length > 4) throw new TypeError('x86-decoded-instruction-too-many-legacy-prefixes');
-  const rex = input.rex == null ? null : integer(input.rex, 'x86-decoded-instruction-invalid-rex', { max:255 });
+  // REX prefixes occupy exactly 0x40-0x4F (Intel SDM Vol. 2A, opcode map
+  // 40H-4FH): any other byte is not a REX prefix and must never be retained
+  // as canonical prefix authority (#6037).
+  const rex = input.rex == null ? null : integer(input.rex, 'x86-decoded-instruction-invalid-rex', { min:0x40, max:0x4f });
   const vector = input.vector == null ? null : Object.freeze({
     kind:text(input.vector.kind, 'x86-decoded-instruction-vector-prefix-kind'),
     bytes:prefixBytesOf(input.vector.bytes, 'x86-decoded-instruction-invalid-vector-prefix-byte'),
@@ -210,9 +289,18 @@ export function createX86DecodedInstruction(input = {}) {
   const length = integer(input.length ?? input.size, 'x86-decoded-instruction-invalid-length', { min:1, max:15 });
   const mode = text(input.mode ?? 'long-64', 'x86-decoded-instruction-mode-required');
   if (!X86_DECODE_MODES.includes(mode)) throw new TypeError('x86-decoded-instruction-mode-unsupported');
+  const instructionFamily = text(input.instructionFamily ?? input.family, 'x86-decoded-instruction-family-required');
   const rawDetail = input.detail && typeof input.detail === 'object' ? input.detail : {};
   const rawOperands = rawDetail.operands ?? input.structuredOperands ?? (Array.isArray(input.operands) ? input.operands : []);
-  const operands = rawOperands.map((operand, index) => normalizeOperand(operand, index, mode));
+  const operands = rawOperands.map((operand, index) => normalizeOperand(
+    operand,
+    index,
+    mode,
+    (() => {
+      const stated = rawDetail.addressSizeBits ?? input.detail?.addressSizeBits;
+      return stated == null || stated === 0 ? null : stated;
+    })(),
+  ));
   const operandCount = integer(rawDetail.operandCount ?? input.operandCount ?? operands.length, 'x86-decoded-instruction-invalid-operand-count', { max:64 });
   if (operandCount !== operands.length) throw new TypeError('x86-decoded-instruction-operand-count-mismatch');
   // Strip provider-zero/nullish address-size metadata from the copied detail.
@@ -225,8 +313,11 @@ export function createX86DecodedInstruction(input = {}) {
   // Legacy detailAvailable-only callers still map to complete/unavailable.
   const detailStatus = detailStatusOf(input.detailStatus, input.detailAvailable);
   const rawBytes = bytesOf(input.rawBytes ?? input.bytes, length);
+  const architecture = x86ArchitectureIdentityOf(input);
   const result = {
     ...input,
+    architecture,
+    architectureId:architecture,
     contractVersion,
     decoderSemanticVersion:text(input.decoderSemanticVersion ?? X86_DECODER_SEMANTIC_VERSION, 'x86-decoder-semantic-version-required'),
     address:bigint(input.address, 'x86-decoded-instruction-address-required'),
@@ -238,8 +329,15 @@ export function createX86DecodedInstruction(input = {}) {
     get rawBytes() { return rawBytes.slice(); },
     mode,
     instructionId:instructionIdOf(input.instructionId),
-    instructionCode:integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:1 }),
-    instructionFamily:text(input.instructionFamily ?? input.family, 'x86-decoded-instruction-family-required'),
+    // SKIPDATA is the one Capstone contract where instruction ID 0 is the
+    // architectural sentinel: admit it only when the record's detail status
+    // is exactly `skipdata` (which also forces `detailAvailable:false`), and
+    // only as exactly 0 — a non-zero ID with skipdata status is a schema
+    // contradiction. Every normal instruction keeps the positive-ID rule.
+    instructionCode:detailStatus === SKIPDATA_DETAIL_STATUS
+      ? skipdataInstructionCode(input.instructionCode ?? input.id)
+      : integer(input.instructionCode ?? input.id, 'x86-decoded-instruction-id-required', { min:1 }),
+    instructionFamily,
     decoderContractVersion:contractVersion,
     detailStatus,
     detail:Object.freeze({
@@ -254,7 +352,7 @@ export function createX86DecodedInstruction(input = {}) {
       operands:Object.freeze(operands),
       implicitReads:Object.freeze((rawDetail.implicitReads ?? input.implicitReads ?? []).map((value, index) => registerOf(value, 'x86-decoded-instruction-unknown-implicit-read', { decoderRegisterCode:rawDetail.implicitReadCodes?.[index] }))),
       implicitWrites:Object.freeze((rawDetail.implicitWrites ?? input.implicitWrites ?? []).map((value, index) => registerOf(value, 'x86-decoded-instruction-unknown-implicit-write', { decoderRegisterCode:rawDetail.implicitWriteCodes?.[index] }))),
-      conditionCode:conditionCodeOf(rawDetail.conditionCode ?? input.conditionCode),
+      conditionCode:conditionCodeOf(rawDetail.conditionCode ?? input.conditionCode, instructionFamily),
     }),
     detailAvailable:detailStatus === 'complete',
     mnemonic:String(input.mnemonic ?? ''),

@@ -1,4 +1,4 @@
-import { deepFreeze, jsonSafe } from '../../core/identity/index.js';
+import { deepFreeze, jsonSafe, stableDigest } from '../../core/identity/index.js';
 import { createOriginSet } from '../../core/identity/origin.js';
 
 export const MANAGED_VALIDATION_STATUS = Object.freeze(['valid', 'invalid', 'partial', 'unsupported']);
@@ -14,7 +14,8 @@ function array(value, code) {
   return value;
 }
 function nonEmpty(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') fail(code);
+  const text = value.trim();
   if (!text) fail(code);
   return text;
 }
@@ -22,8 +23,8 @@ function nonEmpty(value, code) {
 export function createManagedValidationReport(input) {
   input = object(input, 'managed-validation-report-invalid');
   const targetId = nonEmpty(input.targetId ?? input.methodId ?? input.moduleId, 'managed-validation-target-id-required');
-  const profileId = input.profileId ? String(input.profileId) : null;
-  const status = nonEmpty(input.status ?? 'valid', 'managed-validation-status-required');
+  const profileId = input.profileId == null ? null : nonEmpty(input.profileId, 'managed-validation-profile-id-invalid');
+  const status = input.status === undefined ? 'valid' : nonEmpty(input.status, 'managed-validation-status-required');
   if (!STATUS_SET.has(status)) fail('managed-validation-invalid-status');
 
   const errors = array(input.errors ?? [], 'managed-validation-invalid-errors');
@@ -38,7 +39,10 @@ export function createManagedValidationReport(input) {
   };
 
   return deepFreeze({
-    id: `val-rep:${targetId}`,
+    // Report identity is a canonical typed tuple, not delimiter-joined fields:
+    // null and every string profile id stay distinct, and ':' inside target or
+    // profile ids cannot move a field boundary (#5294).
+    id: `val-rep:${stableDigest({ targetId, profileId, status })}`,
     targetId,
     profileId,
     status,
@@ -52,6 +56,10 @@ export function createManagedValidationReport(input) {
 
 export function validateManagedValidationReport(report) {
   if (!report || typeof report !== 'object') fail('managed-validation-report-invalid');
-  if (!report.targetId || !STATUS_SET.has(report.status)) fail('managed-validation-report-incomplete');
+  const validTargetId = typeof report.targetId === 'string' && Boolean(report.targetId.trim());
+  const validStatus = typeof report.status === 'string' && STATUS_SET.has(report.status);
+  const validProfileId = report.profileId == null
+    || (typeof report.profileId === 'string' && Boolean(report.profileId.trim()));
+  if (!validTargetId || !validStatus || !validProfileId) fail('managed-validation-report-incomplete');
   return true;
 }

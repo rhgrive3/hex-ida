@@ -1,6 +1,6 @@
-import { deepFreeze, jsonSafe, stableDigest } from '../core/identity/index.js';
+import { deepFreeze, jsonSafe } from '../core/identity/index.js';
 import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';
-import { CHANGELOG_SCHEMA_VERSION, ChangeLog, createProjectOperation, canonicalizeProjectOperation, isCanonicalProjectOperation } from './index.js';
+import { CHANGELOG_SCHEMA_VERSION, ChangeLog, collaborationDigest, createProjectOperation, canonicalizeProjectOperation, isCanonicalProjectOperation } from './index.js';
 import { applyRemoteEnvelopeQueued } from './remote-delivery.js';
 
 export const REMOTE_COLLAB_SCHEMA = 'hex-remote-collaboration-envelope/v1';
@@ -166,7 +166,7 @@ function isCanonicalRemoteOperation(operation) {
   const canonical = canonicalizeProjectOperation(operation);
   return canonical != null
     && isCanonicalProjectOperation(canonical)
-    && stableDigest(operation) === stableDigest(canonical);
+    && collaborationDigest(operation) === collaborationDigest(canonical);
 }
 
 function authorized(permissions, operation) {
@@ -179,7 +179,7 @@ function authorized(permissions, operation) {
 
 export function envelopeIdentity(envelope) {
   const { envelopeId, ...payload } = envelope;
-  return `remote-envelope:${stableDigest(payload)}`;
+  return `remote-envelope:${collaborationDigest(payload)}`;
 }
 
 export function createRemoteCollaborationEnvelope(input = {}) {
@@ -354,8 +354,25 @@ export class RemoteCollaborationChannel {
     if (!checked.ok) return { status: 'rejected', reason: checked.reason };
     const snap = this.gate.validatedSnapshot(envelope);
     if (!snap) return { status: 'rejected', reason: 'remote-ingress-snapshot-required' };
-    await this.transport.send(snap);
-    return { status: 'sent', envelopeId: snap.envelopeId };
+    let result;
+    try { result = await this.transport.send(snap); }
+    catch {
+      return Object.freeze({
+        status:'rejected',
+        reason:'remote-transport-delivery-unconfirmed',
+        envelopeId:snap.envelopeId,
+      });
+    }
+    // A verification-only transport result is not delivery acknowledgement.
+    // Never promote it to sent; require an explicit matching delivery status.
+    if (result?.status === 'sent' && result?.envelopeId === snap.envelopeId) {
+      return Object.freeze({ status: 'sent', envelopeId: snap.envelopeId });
+    }
+    return Object.freeze({
+      status: 'rejected',
+      reason: 'remote-transport-delivery-unconfirmed',
+      envelopeId: snap.envelopeId,
+    });
   }
 
   receive(envelope) {

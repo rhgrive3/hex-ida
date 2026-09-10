@@ -204,8 +204,9 @@ function comparisonForBranch(branch) {
   };
 }
 
-function rmwFacts(ir, out) {
-  for (const r of readModifyWrite(ir)) {
+function rmwFacts(ir, out, precomputedRmw = null) {
+  const proofs = Array.isArray(precomputedRmw) ? precomputedRmw : readModifyWrite(ir);
+  for (const r of proofs) {
     const chain = r.chain || [];
     const evidence = uniqueEvidence([
       instructionEvidence(r.load, 'read'),
@@ -406,18 +407,21 @@ function sourceSinkFacts(ir, out) {
     out.push({
       id: 'fact:arg:' + value.id, kind: FACT.ARGUMENT,
       row: ir.blocks && ir.blocks[0] ? ir.blocks[0].startRow : 0,
-      address: ir.startAddress || null, function: ir.startAddress || null,
+      address: ir.startAddress ?? null, function: ir.startAddress ?? null,
       value: valueShape(value), relation: 'argument→value', confidence: 1,
       confidenceSource: 'semantic-ir', evidence: [],
     });
   }
 }
 
-export function semanticFacts(ir) {
+export function semanticFacts(ir, options = null) {
   if (!ir || !ir.instructions) return [];
   if (factCache.has(ir)) return factCache.get(ir);
+  const precomputedRmw = Array.isArray(options?.readModifyWriteProofs)
+    ? options.readModifyWriteProofs
+    : null;
   const out = [];
-  memoryFacts(ir, out); rmwFacts(ir, out); controlFacts(ir, out); sourceSinkFacts(ir, out);
+  memoryFacts(ir, out); rmwFacts(ir, out, precomputedRmw); controlFacts(ir, out); sourceSinkFacts(ir, out);
   out.sort((a, b) => (a.row == null ? -1 : a.row) - (b.row == null ? -1 : b.row) || String(a.kind).localeCompare(String(b.kind)));
   factCache.set(ir, out);
   return out;

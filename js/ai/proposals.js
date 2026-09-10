@@ -10,6 +10,18 @@ const PROPOSAL_CAPABILITIES = Object.freeze({
 const EXECUTION_PAYLOADS = new WeakMap();
 const PROPOSAL_AUTHORITIES = new WeakMap();
 const EXECUTION_AUTHORIZATIONS = new WeakMap();
+// Fingerprint authority must read binary-container internal slots through
+// captured intrinsic getters. Ordinary property lookup and @@toStringTag are
+// userland-controlled and can otherwise disguise one typed view as another.
+const TYPED_ARRAY_PROTOTYPE = Object.getPrototypeOf(Uint8Array.prototype);
+const TYPED_ARRAY_TAG_GETTER = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, Symbol.toStringTag)?.get;
+const TYPED_ARRAY_BUFFER_GETTER = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, 'buffer')?.get;
+const TYPED_ARRAY_BYTE_OFFSET_GETTER = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, 'byteOffset')?.get;
+const TYPED_ARRAY_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, 'byteLength')?.get;
+const DATA_VIEW_BUFFER_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer')?.get;
+const DATA_VIEW_BYTE_OFFSET_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteOffset')?.get;
+const DATA_VIEW_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteLength')?.get;
+const ARRAY_BUFFER_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')?.get;
 let proposalSequence = 1;
 
 export class ProposalStore {
@@ -30,6 +42,7 @@ export class ProposalStore {
     if (input.evidenceIds != null && !Array.isArray(input.evidenceIds)) {
       throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
     }
+    if (kind === 'struct-field') rejectStructFieldTargetOverride(input.after);
     const evidenceIds = Array.from(new Set((input.evidenceIds || []).filter((id) => typeof id === 'string' && this.evidenceStore?.has(id))));
     if (!evidenceIds.length) throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
     let id;
@@ -43,7 +56,26 @@ export class ProposalStore {
       while (this.records.has(id));
     }
     const binding = this.binding?.() || null;
-    const executionPayload = snapshotProposalPayload(input);
+    // Capture the caller-controlled property once. Besides closing the
+    // revision/payload TOCTOU, this preserves the explicit symbol-key fail
+    // closed check below because structuredClone intentionally omits symbols.
+    const before = input.before;
+    rejectUnstableProposalState(before);
+    const executionPayload = snapshotProposalPayload(input, before);
+    // Uint8Array is an accepted wire representation of patch bytes, but the
+    // stale-state authority and the backend read both use plain arrays. Keep
+    // one canonical payload for either accepted container so equal bytes do
+    // not produce different revisions (#6171).
+    if (kind === 'patch' && (executionPayload.before instanceof Uint8Array || executionPayload.after instanceof Uint8Array)) {
+      executionPayload.before = proposalBytes(executionPayload.before);
+      executionPayload.after = proposalBytes(executionPayload.after);
+    }
+    // The stale-state authority must fingerprint the same stable value that
+    // execution will receive. Reading caller-controlled `input.before` again
+    // after snapshotting would make an accessor-backed value a TOCTOU boundary:
+    // the payload could contain A while the revision records B (#5945).
+    // Structured cloning also rejects symbol-keyed state before this point, so
+    // the owned payload is the complete fail-closed identity view.
     const revision = fingerprint(executionPayload.before);
     const bindingRevision = fingerprint(binding);
     const authority = Object.freeze({
@@ -107,13 +139,29 @@ export class ProposalStore {
     this.approvals.delete(authority.id);
     this.audit.push({ type: 'proposal-applying', proposalId: authority.id, timestamp: new Date().toISOString() });
 
-    if (authority.bindingRevision !== fingerprint(this.binding?.() || null)) {
+    let bindingRevision;
+    try {
+      bindingRevision = fingerprint(this.binding?.() || null);
+    } catch (error) {
+      proposal.status = 'failed';
+      this.audit.push({ type: 'proposal-failed', proposalId: authority.id, timestamp: new Date().toISOString() });
+      throw error;
+    }
+    if (authority.bindingRevision !== bindingRevision) {
       proposal.status = 'failed';
       this.audit.push({ type: 'proposal-binding-mismatch', proposalId: authority.id, timestamp: new Date().toISOString() });
       throw new AIError('scope_violation', 'The proposal belongs to a different binary, project, or runtime session.');
     }
 
-    if (fingerprint(currentState) !== authority.revision) {
+    let currentRevision;
+    try {
+      currentRevision = fingerprint(currentState);
+    } catch (error) {
+      proposal.status = 'failed';
+      this.audit.push({ type: 'proposal-failed', proposalId: authority.id, timestamp: new Date().toISOString() });
+      throw error;
+    }
+    if (currentRevision !== authority.revision) {
       proposal.status = 'failed';
       this.audit.push({ type: 'proposal-stale', proposalId: authority.id, timestamp: new Date().toISOString() });
       throw new AIError('tool_failed', 'The proposal target changed after it was created.');
@@ -157,9 +205,36 @@ export function proposalCapability(proposal) {
 export function proposalArguments(proposal) {
   const target = proposalTarget(proposal?.target);
   if (proposal?.kind === 'rename' || proposal?.kind === 'comment' || proposal?.kind === 'type') return { ...target, value: proposal.after };
-  if (proposal?.kind === 'struct-field') return { ...target, ...(proposal.after && typeof proposal.after === 'object' ? proposal.after : { type: proposal.after }) };
+  if (proposal?.kind === 'struct-field') return { ...target, ...structFieldValue(proposal.after) };
   if (proposal?.kind === 'patch') return { ...target, before: proposalBytes(proposal.before), after: proposalBytes(proposal.after) };
   return { ...target, value: proposal?.after };
+}
+
+/* The user approved (and the stale-state check verified) `proposal.target`; it
+   is the only mutation authority for a struct-field. Spreading `after` over it
+   let `after:{struct,offset}` redirect the mutation to a different field that
+   no approval or stale check had covered — and the postcondition then failed
+   against the original target while the side effect persisted (#5412). `after`
+   therefore supplies only the field's new value; target identity keys coming
+   from it are ignored, never executed. A created proposal that still declares
+   them is rejected up front: identity is target-only, never after-shaped. */
+function rejectStructFieldTargetOverride(after) {
+  if (!after || typeof after !== 'object' || Array.isArray(after)) return;
+  for (const key of ['struct', 'name', 'offset']) {
+    if (Object.prototype.hasOwnProperty.call(after, key)) {
+      throw new AIError('invalid_tool_call', 'A struct-field proposal must not override the approved target through after.');
+    }
+  }
+}
+
+function structFieldValue(after) {
+  if (!after || typeof after !== 'object' || Array.isArray(after)) return { type: after };
+  const value = {};
+  if (after.field != null) value.field = after.field;
+  if (after.fieldName != null) value.fieldName = after.fieldName;
+  if (after.type != null) value.type = after.type;
+  if (after.binaryId != null) value.binaryId = after.binaryId;
+  return value;
 }
 
 export function consumeProposalAuthorization(authorization, capability, args) {
@@ -231,7 +306,23 @@ function proposalSnapshot(proposal) {
 }
 
 function proposalTarget(target) { return target && typeof target === 'object' ? { ...target } : { address: target }; }
-function proposalBytes(value) { return Array.from(value instanceof Uint8Array ? value : (value || []), Number); }
+function proposalBytes(value) {
+  // Patch bytes are mutation-authority input. Coercing each element (the old
+  // `Number` mapping) let string/boolean/null bytes reach the strict
+  // capability validator as canonical numbers, so the original type violation
+  // could never be detected and the approved identity was compared against a
+  // laundered view. Validate byte identity instead of laundering it (#6171).
+  if (!Array.isArray(value) && !(value instanceof Uint8Array)) {
+    throw new AIError('invalid_tool_call', 'Mutation bytes must be an Array or Uint8Array.');
+  }
+  const raw = Array.from(value);
+  for (const byte of raw) {
+    if (!Number.isInteger(byte) || byte < 0 || byte > 255) {
+      throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.');
+    }
+  }
+  return Array.from(raw);
+}
 
 function proposalExecutionView(proposal) {
   const payload = EXECUTION_PAYLOADS.get(proposal);
@@ -277,7 +368,7 @@ function restoreRegExpLastIndex(source, target, seen = new WeakSet()) {
   }
 }
 
-function snapshotProposalPayload(value) {
+function snapshotProposalPayload(value, stableBefore = value.before) {
   const clone = globalThis.structuredClone;
   if (typeof clone !== 'function') {
     throw new AIError('tool_failed', 'Structured cloning is unavailable for proposal execution payloads.');
@@ -286,11 +377,11 @@ function snapshotProposalPayload(value) {
   try {
     payload = {
       target: clone(value.target),
-      before: clone(value.before),
+      before: clone(stableBefore),
       after: clone(value.after),
     };
     restoreRegExpLastIndex(value.target, payload.target);
-    restoreRegExpLastIndex(value.before, payload.before);
+    restoreRegExpLastIndex(stableBefore, payload.before);
     restoreRegExpLastIndex(value.after, payload.after);
   } catch {
     throw new AIError('invalid_tool_call', 'Proposal execution payload must be structured-cloneable.');
@@ -299,6 +390,33 @@ function snapshotProposalPayload(value) {
     throw new AIError('invalid_tool_call', 'Proposal execution payload must not contain shared memory.');
   }
   return payload;
+}
+
+// `structuredClone` omits symbol-keyed properties and invokes accessors. The
+// proposal boundary must not silently lose identity-bearing state or read a
+// mutable accessor twice while preparing an approval. Capture the top-level
+// before value once in create(), then reject unsupported nested accessors and
+// symbol keys without invoking them.
+function rejectUnstableProposalState(value, seen = new Set()) {
+  if (value === null || typeof value !== 'object') return;
+  if (seen.has(value)) return;
+  seen.add(value);
+  try {
+    const keys = Reflect.ownKeys(value);
+    if (keys.some((key) => typeof key === 'symbol')) {
+      throw new AIError('tool_failed', 'Proposal state contains symbol-keyed own properties and cannot be fingerprinted safely.');
+    }
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+        throw new AIError('tool_failed', 'Proposal state contains accessor-backed state and cannot be snapshotted safely.');
+      }
+      rejectUnstableProposalState(descriptor.value, seen);
+    }
+  } catch (error) {
+    if (error instanceof AIError) throw error;
+    throw new AIError('tool_failed', 'Proposal state cannot be snapshotted safely.');
+  }
 }
 
 function containsSharedMemory(value, seen = new WeakSet()) {
@@ -368,6 +486,47 @@ function fingerprint(value) {
  * Strings are JSON-quoted after their tag, numbers and bigints are terminated,
  * so concatenating elements with `,` stays unambiguous.
  */
+function intrinsicBinaryContainer(value) {
+  if (typeof ARRAY_BUFFER_BYTE_LENGTH_GETTER === 'function') {
+    try {
+      const byteLength = ARRAY_BUFFER_BYTE_LENGTH_GETTER.call(value);
+      return { kind: 'ArrayBuffer', buffer: value, byteOffset: 0, byteLength };
+    } catch {
+      // Not an ArrayBuffer internal-slot receiver; continue with view brands.
+    }
+  }
+  if (!ArrayBuffer.isView(value)) return null;
+  if (typeof TYPED_ARRAY_TAG_GETTER === 'function'
+      && typeof TYPED_ARRAY_BUFFER_GETTER === 'function'
+      && typeof TYPED_ARRAY_BYTE_OFFSET_GETTER === 'function'
+      && typeof TYPED_ARRAY_BYTE_LENGTH_GETTER === 'function') {
+    const kind = TYPED_ARRAY_TAG_GETTER.call(value);
+    if (typeof kind === 'string' && kind) {
+      return {
+        kind,
+        buffer: TYPED_ARRAY_BUFFER_GETTER.call(value),
+        byteOffset: TYPED_ARRAY_BYTE_OFFSET_GETTER.call(value),
+        byteLength: TYPED_ARRAY_BYTE_LENGTH_GETTER.call(value),
+      };
+    }
+  }
+  if (typeof DATA_VIEW_BUFFER_GETTER === 'function'
+      && typeof DATA_VIEW_BYTE_OFFSET_GETTER === 'function'
+      && typeof DATA_VIEW_BYTE_LENGTH_GETTER === 'function') {
+    try {
+      return {
+        kind: 'DataView',
+        buffer: DATA_VIEW_BUFFER_GETTER.call(value),
+        byteOffset: DATA_VIEW_BYTE_OFFSET_GETTER.call(value),
+        byteLength: DATA_VIEW_BYTE_LENGTH_GETTER.call(value),
+      };
+    } catch {
+      // ArrayBuffer.isView() was true but no supported intrinsic brand matched.
+    }
+  }
+  throw new AIError('tool_failed', 'Proposal binary-container identity cannot be determined safely.');
+}
+
 function canonicalIdentity(value, stack = new Set()) {
   if (value === null) return 'z';
   if (value === undefined) return 'v';
@@ -382,19 +541,39 @@ function canonicalIdentity(value, stack = new Set()) {
     return `d${JSON.stringify(value)};`;
   }
   if (type === 'string') return `s${JSON.stringify(value)}`;
+  if (type === 'symbol' || type === 'function') {
+    // Function and symbol identity cannot survive a String() encoding: distinct
+    // closures share source text (captures never appear in toString()) and
+    // distinct symbols share their description. Mapping them into the `x`
+    // domain aliased different approved states into one revision (#5754), so
+    // proposal state and binding snapshots refuse them fail-closed instead.
+    throw new AIError('tool_failed', 'Proposal state cannot contain function or symbol values.');
+  }
   if (type !== 'object') return `x${JSON.stringify(String(value))}`;
 
   if (stack.has(value)) throw new AIError('tool_failed', 'Proposal state contains a cyclic value and cannot be fingerprinted safely.');
   stack.add(value);
   try {
+    // Symbol-keyed own properties are own state too, but a canonical text
+    // cannot distinguish two distinct symbols sharing a description. The
+    // stale-state contract therefore refuses symbol-keyed state explicitly
+    // instead of silently omitting part of the value (#5945).
+    if (Object.getOwnPropertySymbols(value).length) {
+      throw new AIError('tool_failed', 'Proposal state contains symbol-keyed own properties and cannot be fingerprinted safely.');
+    }
     if (value instanceof Date) return `t${JSON.stringify(Number.isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString())}`;
-    if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
-      const bytes = value instanceof ArrayBuffer
-        ? new Uint8Array(value)
-        : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    const binary = intrinsicBinaryContainer(value);
+    if (binary) {
+      const bytes = new Uint8Array(binary.buffer, binary.byteOffset, binary.byteLength);
       let hexText = '';
       for (const byte of bytes) hexText += byte.toString(16).padStart(2, '0');
-      return `y${JSON.stringify(hexText)}`;
+      // Raw bytes are not the whole state for binary containers: the same
+      // bytes can represent a different typed-array/DataView kind or a view
+      // with different bounds. Read kind/offset/length from intrinsic slots,
+      // never caller-controlled properties or @@toStringTag (#6215). The patch
+      // path canonicalizes its accepted byte containers before this point
+      // (#6171), so its deliberate Uint8Array/Array parity is preserved.
+      return `y${JSON.stringify(binary.kind)}:${binary.byteOffset}:${binary.byteLength}:${JSON.stringify(hexText)}`;
     }
     // Map/Set entry order is part of the value, so it is preserved rather than
     // sorted: two maps built in a different order are different states.

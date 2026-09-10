@@ -1,8 +1,5 @@
 import { asByteSource } from '../binary/source.js';
-
-const FNV_OFFSET = 0xcbf29ce484222325n;
-const FNV_PRIME = 0x100000001b3n;
-const MASK64 = 0xffffffffffffffffn;
+import { fnv64Bytes, fnv64ByteView, fnv64Hex } from '../core/identity/fnv64.js';
 
 // A valid class expression may put a comment between `class` and its name or
 // body. The slash alternative is intentionally syntax-only: Function#toString
@@ -34,39 +31,36 @@ function throwIfAborted(signal) {
   throw error;
 }
 
+function positiveChunkSize(value, fallback) {
+  const requested = value ?? fallback;
+  if (!Number.isSafeInteger(requested) || requested <= 0) {
+    throw new TypeError('chunkSize must be a positive safe integer');
+  }
+  return requested;
+}
+
 export async function hashByteSource(input, options = {}) {
   const source = asByteSource(input);
   const onProgress = optionalProgressCallback(options.onProgress);
   throwIfAborted(options.signal);
-  const chunkSize = Math.min(options.chunkSize ?? 1024 * 1024, source.maxReadLength);
-  if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) throw new TypeError('chunkSize must be a positive safe integer');
-  let hash = FNV_OFFSET;
+  const chunkSize = Math.min(positiveChunkSize(options.chunkSize, 1024 * 1024), source.maxReadLength);
+  let low = 0x84222325, high = 0xcbf29ce4;
   let offset = 0n;
   while (offset < source.size) {
     throwIfAborted(options.signal);
     const remaining = source.size - offset;
     const length = Number(remaining < BigInt(chunkSize) ? remaining : BigInt(chunkSize));
     const bytes = await source.readExactly(offset, length, { signal: options.signal });
-    for (let i = 0; i < bytes.length; i++) {
-      hash ^= BigInt(bytes[i]);
-      hash = (hash * FNV_PRIME) & MASK64;
-    }
+    ({ low, high } = fnv64ByteView(bytes, low, high));
     offset += BigInt(bytes.length);
     if (onProgress) Reflect.apply(onProgress, options, [{ done: offset, total: source.size }]);
   }
-  return `fnv1a64:${source.size.toString(16)}:${hash.toString(16).padStart(16, '0')}`;
+  return `fnv1a64:${source.size.toString(16)}:${fnv64Hex(low, high)}`;
 }
 
 export function hashBytes(bytes) {
-  let hash = FNV_OFFSET;
-  for (const b of bytes || []) {
-    if (typeof b !== 'number' || !Number.isInteger(b) || b < 0 || b > 255) {
-      throw new TypeError('hashBytes byte must be an integer 0..255');
-    }
-    hash ^= BigInt(b);
-    hash = (hash * FNV_PRIME) & MASK64;
-  }
-  return hash.toString(16).padStart(16, '0');
+  const { low, high } = fnv64Bytes(bytes || []);
+  return fnv64Hex(low, high);
 }
 
 
@@ -90,27 +84,53 @@ export async function sha256TreeByteSource(input, options = {}) {
     error.code = 'SHA256_UNAVAILABLE';
     throw error;
   }
-  const chunkSize = Math.min(options.chunkSize ?? 4 * 1024 * 1024, source.maxReadLength);
-  if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) throw new TypeError('chunkSize must be a positive safe integer');
+  // Identity contract: the tree leaf size is a fixed default (or the explicit
+  // option) and must not drift with the source's I/O read ceiling (#5942) —
+  // identical byte sequences hash to one identity no matter how the source
+  // chunks its reads. Reads larger than maxReadLength are assembled from
+  // multiple bounded reads before digesting.
+  const leafSize = positiveChunkSize(options.chunkSize, 4 * 1024 * 1024);
+  const readSize = Math.max(1, Math.min(leafSize, source.maxReadLength));
+  const reportProgress = (done) => {
+    if (onProgress) Reflect.apply(onProgress, options, [{ done, total: source.size }]);
+  };
 
   const digests = [];
   let offset = 0n;
   while (offset < source.size) {
     throwIfAborted(options.signal);
     const remaining = source.size - offset;
-    const length = Number(remaining < BigInt(chunkSize) ? remaining : BigInt(chunkSize));
-    const bytes = await source.readExactly(offset, length, { signal: options.signal });
+    const leafLength = Number(remaining < BigInt(leafSize) ? remaining : BigInt(leafSize));
+    let bytes;
+    if (leafLength <= readSize) {
+      bytes = await source.readExactly(offset, leafLength, { signal: options.signal });
+      reportProgress(offset + BigInt(bytes.byteLength));
+    } else {
+      bytes = new Uint8Array(leafLength);
+      for (let at = 0; at < leafLength; at += readSize) {
+        const take = Math.min(readSize, leafLength - at);
+        const chunk = await source.readExactly(offset + BigInt(at), take, { signal: options.signal });
+        bytes.set(chunk, at);
+        // Preserve the historical progress contract: callbacks observe each
+        // bounded source read, even when several reads form one logical leaf.
+        reportProgress(offset + BigInt(at + chunk.byteLength));
+      }
+    }
     digests.push(new Uint8Array(await subtle.digest('SHA-256', bytes)));
     offset += BigInt(bytes.byteLength);
-    if (onProgress) Reflect.apply(onProgress, options, [{ done: offset, total: source.size }]);
   }
 
+  // The leaf boundary is part of the digest algorithm.  The previous v1
+  // implementation silently used maxReadLength as that boundary, so changing
+  // it while retaining the v1 marker would make old persisted v1 identities
+  // indistinguishable from this algorithm.  Keep the fixed-leaf contract
+  // explicitly versioned; note migration handles existing v1 namespaces.
   const header = new TextEncoder().encode(
-    `hex-sha256-tree-v1\0${source.size.toString()}\0${chunkSize}\0${digests.length}\0`);
+    `hex-sha256-tree-v2\0${source.size.toString()}\0${leafSize}\0${digests.length}\0`);
   const manifest = new Uint8Array(header.byteLength + digests.length * 32);
   manifest.set(header, 0);
   let at = header.byteLength;
   for (const digest of digests) { manifest.set(digest, at); at += digest.byteLength; }
   const root = new Uint8Array(await subtle.digest('SHA-256', manifest));
-  return `sha256tree:v1:${source.size.toString(16)}:${bytesHex(root)}`;
+  return `sha256tree:v2:${source.size.toString(16)}:${bytesHex(root)}`;
 }

@@ -3,6 +3,7 @@ import { CachedByteSource } from '../bytesource/cached.js';
 import { describeBinaryImage } from './describe.js';
 import { fingerprintVendors } from '../knowledge/index.js';
 import { hashByteSource } from './hash.js';
+import { compileBytePattern } from './byte-search.js';
 import { boundedOffset, checkedChunkIndex, chunkLength, exactExternalInteger, regionSize, utf8Len, isExactFunctionSeed } from './worker-validation.js';
 import { analysisFromBinaryImage, emptyAnalysis } from './analysis-result.js';
 import { analyzeDecodedSemanticFunction } from '../targets/architecture/x86_64/semantic-function.js';
@@ -299,14 +300,15 @@ async function scanStrings(msg, signal) {
   const regionBytes = regionSize(region.size);
   const total = msg.maxBytes == null ? regionBytes : boundedOffset(msg.maxBytes, regionBytes, 'maxBytes');
   const out = [];
-  let pos = 0n, runStart = null, runBytes = [];
+  let pos = 0n, runStart = null, runBytes = [], runChars = 0;
   const flush = () => {
     if (runStart != null && runBytes.length) {
       const text = decoder.decode(new Uint8Array(runBytes)).replace(/\t/g, '\\t').replace(/\n/g, '\\n');
-      if (text.length >= minLength) out.push({ addr: BigInt(region.vmAddr) + runStart, offset: exactExternalInteger(runStart), text });
+      if (runChars >= minLength) out.push({ addr: BigInt(region.vmAddr) + runStart, offset: exactExternalInteger(runStart), text });
     }
     runStart = null;
     runBytes = [];
+    runChars = 0;
   };
   let carry = new Uint8Array(0), carryAt = 0n;
   while (pos < total && out.length < cap) {
@@ -328,6 +330,7 @@ async function scanStrings(msg, signal) {
       if (n === -1 && !last) break;
       if (n <= 0) { flush(); if (out.length >= cap) break; continue; }
       if (runStart == null) { runStart = base + BigInt(i); runBytes = []; }
+      runChars++;
       if (runBytes.length < MAX_STRING_CHARS * 4) for (let k = 0; k < n; k++) runBytes.push(buffer[i + k]);
       i += n - 1;
     }
@@ -359,7 +362,13 @@ async function runSearch(msg, signal) {
   } else {
     const q = String(msg.query || '');
     if (!q) throw new Error('Enter text to search for.');
-    pattern = new TextEncoder().encode(q.toLowerCase());
+    // This is a byte-oriented search, so preserve the query's exact UTF-8
+    // encoding. Unicode toLowerCase() can change code points (including
+    // supplementary-plane characters) and cannot be mirrored safely on raw
+    // haystack bytes without decoding and retaining a byte/address map (#5940).
+    // Keep the established ASCII-insensitive contract by folding both byte
+    // operands with lower() during comparison; non-ASCII bytes remain exact.
+    pattern = new TextEncoder().encode(q);
   }
   const results = [];
   let pos = start, carry = new Uint8Array(0), capped = false;
@@ -368,14 +377,22 @@ async function runSearch(msg, signal) {
     const block = await readFileRange(BigInt(region.fileOffset) + pos, chunkLength(total - pos, SCAN_BLOCK), signal);
     const joined = carry.length ? concat(carry, block) : block;
     const base = pos - BigInt(carry.length);
+    // Capture after each awaited read, so mutable caller data is not cached
+    // across chunks. Small/oversized or exotic patterns keep the old path.
+    const matcher = compileBytePattern(pattern, mask, msg.kind === 'text');
     for (let i = 0; i <= joined.length - pattern.length; i++) {
-      let ok = true;
-      for (let j = 0; j < pattern.length; j++) {
-        const actual = msg.kind === 'text' ? lower(joined[i + j]) : joined[i + j];
-        const expected = pattern[j];
-        if (msg.kind === 'hex' ? ((actual & mask[j]) !== expected) : actual !== expected) { ok = false; break; }
+      if (matcher) {
+        i = matcher.find(joined, i);
+        if (i < 0) break;
+      } else {
+        let ok = true;
+        for (let j = 0; j < pattern.length; j++) {
+          const actual = msg.kind === 'text' ? lower(joined[i + j]) : joined[i + j];
+          const expected = msg.kind === 'text' ? lower(pattern[j]) : pattern[j];
+          if (msg.kind === 'hex' ? ((actual & mask[j]) !== expected) : actual !== expected) { ok = false; break; }
+        }
+        if (!ok) continue;
       }
-      if (!ok) continue;
       const byteOff = base + BigInt(i);
       results.push({ row: exactExternalInteger(byteOff / BigInt(ROW_BYTES)), addr: BigInt(region.vmAddr) + byteOff, byteOff: exactExternalInteger(byteOff) });
       if (results.length >= SEARCH_LIMIT) { capped = true; break; }

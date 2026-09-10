@@ -216,7 +216,19 @@ function parameterAbiClass(param) {
     typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
   const members = Math.max(1, Math.min(4, abiCount(param?.members ?? param?.elements ?? param?.count, 1)));
   const bits = Math.max(8, Math.min(128, abiCount(param?.bits ?? param?.sizeBits, fp ? 64 : 64)));
-  return { pointer, hfa, vector, fp, members, bits };
+  // Stage C C.10/C.11: a 16-byte Integral Type needs a consecutive GP
+  // register pair. Only records with an explicit integral authority (int128
+  // type spelling, or an integer class at a proven 128-bit width) may take
+  // the pair path: width alone cannot reclassify composites — a 128-bit
+  // aggregate must keep its own conservative single-register record rather
+  // than consuming an even-aligned pair reserved for Integral Types (#4939).
+  const composite = param?.aggregate === true || members > 1
+    || /aggregate|composite|homogeneous|struct|union|class/.test(cls)
+    || /^(struct|union|class)[\s_]/.test(type);
+  const integral128 = /(?:unsigned\s+)?__int128|int128_t|uint128_t/.test(type + ' ' + cls)
+    || (cls.includes('integer') && bits === 128);
+  const wideIntegral = !pointer && !hfa && !vector && !fp && !composite && integral128;
+  return { pointer, hfa, vector, fp, members, bits, wideIntegral };
 }
 
 function abiReturnBits(value) {
@@ -254,10 +266,25 @@ export function classifyCallArguments(insn, opts = {}) {
       // so every later FP argument is also assigned to the stack.
       fp = 8;
     }
-    if (!c.fp && gp < 8) {
-      const reg=`x${gp++}`; srcs.push({t:'reg',reg,bits:64});
-      arguments_.push({index,location:'register',reg,abiClass:c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits});
-      return;
+    if (!c.fp) {
+      if (c.wideIntegral) {
+        // AAPCS64 Stage C rules C.10/C.11 (#4939): a 16-byte Integral Type
+        // rounds NGRN up to an even register and consumes the consecutive
+        // pair; without a fitting pair the argument (and NGRN) moves to the
+        // stack so later GP arguments cannot reuse a phantom x7 half.
+        if ((gp & 1) !== 0) gp += 1;
+        if (gp <= 6) {
+          const regs=[`x${gp}`,`x${gp+1}`]; gp += 2;
+          for (const reg of regs) srcs.push({t:'reg',reg,bits:64});
+          arguments_.push({index,location:'registers',regs,reg:regs[0],abiClass:'wide-integer',pointer:false,bits:128});
+          return;
+        }
+        gp = 8;
+      } else if (gp < 8) {
+        const reg=`x${gp++}`; srcs.push({t:'reg',reg,bits:64});
+        arguments_.push({index,location:'register',reg,abiClass:c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits});
+        return;
+      }
     }
     const slots=Math.max(1,Math.ceil((c.hfa?c.members*c.bits:c.bits)/64));
     const entry={index,location:'stack',offset:stackOffset,bytes:slots*8,abiClass:c.hfa?'hfa':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits};
@@ -274,10 +301,31 @@ function callResultLocation(insn, opts) {
   const cls = String(proto.returnClass || proto.abiClass || proto.resultClass || '').toLowerCase();
   if (proto.void === true || type === 'void' || cls === 'void') return null;
   if (proto.indirectResult === true || cls === 'indirect') return null;
-  if (cls.includes('fp') || cls.includes('float') || cls.includes('vector') || /^(float|double|__fp16)/.test(type)) {
-    return { reg:'v0', bits:abiReturnBits(proto.returnBits ?? proto.bits ?? 64) };
+  const bits = abiReturnBits(proto.returnBits ?? proto.bits ?? 64);
+  if (proto.aggregate === true || cls.includes('hfa') || cls.includes('hva')
+    || cls.includes('homogeneous') || cls.includes('aggregate')) {
+    // HFA/HVA/composite results return in a multi-register layout that is
+    // not modelled here; a single-register record would fabricate exact
+    // ABI authority the prototype did not prove (#4946). Fail closed: the
+    // record keeps the prototype evidence but claims no result location.
+    return { reg:null, regs:[], bits, partial:true, reason:'aapcs64-composite-return-multi-register-layout-unmodelled' };
   }
-  if (type || cls || proto.returnsValue === true) return { reg:'x0', bits:abiReturnBits(proto.returnBits ?? proto.bits ?? 64) };
+  if (cls.includes('fp') || cls.includes('float') || cls.includes('vector') || /^(float|double|__fp16)/.test(type)) {
+    return { reg:'v0', regs:['v0'], bits };
+  }
+  if (type || cls || proto.returnsValue === true) {
+    // AAPCS64 Result Return (#4946): a 16-byte Integral result returns in the
+    // consecutive pair x0/x1. A single {reg,bits:128} record claims a 128-bit
+    // value inside one 64-bit register and strands the x1 dataflow. Only an
+    // explicit integral authority (int128 spelling, or an integer class at
+    // proven 128-bit width) opens the pair path; composites already failed
+    // closed above.
+    const integral128 = /(?:unsigned\s+)?__int128|int128_t|uint128_t/.test(type + ' ' + cls)
+      || (cls.includes('integer') && bits === 128);
+    return integral128
+      ? { reg:'x0', regs:['x0','x1'], bits }
+      : { reg:'x0', regs:['x0'], bits };
+  }
   return null;
 }
 
@@ -287,11 +335,24 @@ function functionReturnLocation(opts) {
   const cls = String(opts?.returnClass || proto?.returnClass || proto?.abiClass || proto?.resultClass || '').toLowerCase();
   if (opts?.returnsValue === false || proto?.returnsValue === false || proto?.void === true || type === 'void' || cls === 'void') return null;
   if (proto?.indirectResult === true || cls === 'indirect') return null;
+  const bits = abiReturnBits(proto?.returnBits ?? proto?.bits ?? opts?.returnBits ?? 64);
+  if (proto?.aggregate === true || cls.includes('hfa') || cls.includes('hva')
+    || cls.includes('homogeneous') || cls.includes('aggregate')) {
+    // Same composite fail-closed contract as callResultLocation (#4946).
+    return { reg:null, regs:[], bits, partial:true, reason:'aapcs64-composite-return-multi-register-layout-unmodelled' };
+  }
   if (cls.includes('fp') || cls.includes('float') || cls.includes('vector') || /^(float|double|__fp16)/.test(type)) {
-    return { reg:'v0', bits:abiReturnBits(proto?.returnBits ?? proto?.bits ?? opts?.returnBits ?? 64) };
+    return { reg:'v0', regs:['v0'], bits };
   }
   if (type || cls || opts?.returnsValue === true || proto?.returnsValue === true) {
-    return { reg:'x0', bits:abiReturnBits(proto?.returnBits ?? proto?.bits ?? opts?.returnBits ?? 64) };
+    // Same AAPCS64 Result Return pair rule as callResultLocation (#4946):
+    // only an explicit integral authority takes the x0/x1 pair; composites
+    // already failed closed above.
+    const integral128 = /(?:unsigned\s+)?__int128|int128_t|uint128_t/.test(type + ' ' + cls)
+      || (cls.includes('integer') && bits === 128);
+    return integral128
+      ? { reg:'x0', regs:['x0','x1'], bits }
+      : { reg:'x0', regs:['x0'], bits };
   }
   return null;
 }
@@ -313,7 +374,23 @@ function lift(insn, opts = {}) {
   // return value from typed reaching definitions separately.
   if (insn.isReturn) {
     const result = functionReturnLocation(opts);
-    push({ op:OP.RET, srcs:result ? [{ t:'reg', reg:result.reg, bits:result.bits }] : [], returnReg:result?.reg || null, returnEvidence:result ? 'prototype' : null });
+    const resultRegs = result?.regs || (result?.reg ? [result.reg] : []);
+    push({
+      op: OP.RET,
+      // Each result register is a 64-bit machine location: multi-register
+      // results publish one narrow src per register rather than a widened
+      // first register. Single-register records keep the prototype's
+      // authoritative width (#4974 authority pins, #4946 pair shape).
+      srcs: resultRegs.map((reg) => ({ t:'reg', reg, bits: resultRegs.length > 1 ? 64 : (result.bits || 64) })),
+      returnReg: result?.reg || null,
+      returnRegs: resultRegs,
+      returnBits: resultRegs.length ? (result?.bits ?? null) : null,
+      // Composite returns keep the prototype evidence but claim no result
+      // location until their multi-register layout is modelled (#4946).
+      returnPartial: result?.partial === true,
+      returnReason: result?.reason || null,
+      returnEvidence: result ? 'prototype' : null,
+    });
     return out;
   }
   if (insn.isCall) {
@@ -324,6 +401,7 @@ function lift(insn, opts = {}) {
       const targetReg = regKeyOf(ops[0]);
       if (targetReg && !callSrcs.some((src) => src.reg === targetReg)) callSrcs.push({ t: 'reg', reg: targetReg, bits: 64 });
     }
+    const resultRegs = result?.regs || (result?.reg ? [result.reg] : []);
     push({
       op: OP.CALL,
       target: insn.callTarget != null ? insn.callTarget : null,
@@ -334,7 +412,18 @@ function lift(insn, opts = {}) {
       stackArgsUnknown: callArgs.stackArgsUnknown,
       stackArgsMayContainPointers: callArgs.stackArgsMayContainPointers,
       argumentEvidence: callArgs.evidence,
-      dstReg: result?.reg || null, dstBits: result?.bits || 64,
+      dstReg: result?.reg || null,
+      dstBits: resultRegs.length > 1 ? 64 : (result?.bits || 64),
+      // Multi-register results keep the primary def narrow and publish the
+      // remaining result registers as extra writes so x1 dataflow survives
+      // use-def instead of folding into a fake 128-bit x0 (#4946).
+      extraWrites: resultRegs.slice(1),
+      returnRegs: resultRegs,
+      returnBits: resultRegs.length ? (result?.bits ?? null) : null,
+      // Composite returns keep the prototype evidence but claim no result
+      // location until their multi-register layout is modelled (#4946).
+      returnPartial: result?.partial === true,
+      returnReason: result?.reason || null,
       returnEvidence: result ? 'prototype' : null,
       clobbers: CALL_CLOBBERS,
     });
@@ -523,7 +612,10 @@ function lift(insn, opts = {}) {
   if (UN_OF[base]) {
     push({ op: OP.UN, sub: UN_OF[base], dstReg: dstReg(), dstBits: dstBits(),
       srcs: [opnd(ops[1])].filter(Boolean) });
-    if (/s$/.test(base) && base !== 'fabs') push(Object.assign(flags(), { op: OP.CMP, sub: 'sub', bits: dstBits(), srcs: [{ t: 'imm', value: 0n }, opnd(ops[1])].filter(Boolean) }));
+    /* Flag-setting unary forms are an explicit ISA set (`negs`), never a
+     * mnemonic-suffix guess: `abs`/`fabs` end in "s" as words but never
+     * write NZCV (#5687). */
+    if (base === 'negs') push(Object.assign(flags(), { op: OP.CMP, sub: 'sub', bits: dstBits(), srcs: [{ t: 'imm', value: 0n }, opnd(ops[1])].filter(Boolean) }));
     return out;
   }
 
@@ -854,7 +946,9 @@ export function buildIR(model, opts) {
       pushDef(w, v);
     }
     for (const c of p.clobbers || []) {
-      if (c === p.dstReg) continue;
+      // Result registers carry real return-value definitions from this
+      // instruction; a clobber def would shadow them with "unknown" (#4946).
+      if (c === p.dstReg || (p.extraWrites || []).includes(c)) continue;
       const v = newValue(VK.DEF, { def: inst, bits: 64, clobbered: true });
       pushDef(c, v);
     }
@@ -922,7 +1016,10 @@ function renameIterative(ir, children, phiSites, lifted, stacks, emit, topOf, pu
       emit(p);
       if (p.dstReg) marks.push(p.dstReg);
       for (const w of p.extraWrites || []) marks.push(w);
-      for (const c of p.clobbers || []) if (c !== p.dstReg) marks.push(c);
+      for (const c of p.clobbers || []) {
+        if (c === p.dstReg || (p.extraWrites || []).includes(c)) continue;
+        marks.push(c);
+      }
     }
 
     for (const s of block.succ) {
@@ -1712,11 +1809,15 @@ export function irFor(model, opts) {
   if (!model || !model.instructions || !model.instructions.length) return null;
   let entries = irCache.get(model);
   if (!entries) { entries = new Map(); irCache.set(model, entries); }
-  const key = irConfigurationKey(opts);
-  if (entries.has(key)) return entries.get(key);
+  // Cache identity generation must not break the never-throw contract:
+  // unserializable prototype metadata (BigInt, cycles) simply bypasses the
+  // cache instead of leaking a TypeError.
+  let key = null;
+  try { key = irConfigurationKey(opts); } catch { key = null; }
+  if (key != null && entries.has(key)) return entries.get(key);
   let ir = null;
   try { ir = buildIR(model, opts); } catch { ir = null; }
-  if (ir != null) entries.set(key, ir);
+  if (ir != null && key != null) entries.set(key, ir);
   return ir;
 }
 

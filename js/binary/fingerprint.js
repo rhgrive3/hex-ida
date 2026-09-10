@@ -1,9 +1,8 @@
 import { sectionHasMappedAddress } from './audit.js';
+import { fnv64ByteView } from '../core/identity/fnv64.js';
 
 const FNV_OFFSET_HI = 0xcbf29ce4;
 const FNV_OFFSET_LO = 0x84222325;
-const FNV_PRIME_LO = 0x1b3;
-const FNV_PRIME_HI = 0x100;
 
 /*
  * FNV-1a 64-bit without a BigInt operation per byte.
@@ -19,23 +18,35 @@ function fnv1a64State(bytes, seed = null) {
     hi = Number((seed >> 32n) & 0xffffffffn) >>> 0;
     lo = Number(seed & 0xffffffffn) >>> 0;
   } else if (typeof seed === 'object' && seed) {
-    hi = Number(seed.hi) >>> 0;
-    lo = Number(seed.lo) >>> 0;
+    // Only a record with own data properties may supply resumable limbs.
+    // Do not invoke accessors or coerce structured values while validating
+    // this hash identity boundary (#5922).
+    let proto, hiDescriptor, loDescriptor;
+    try {
+      proto = Object.getPrototypeOf(seed);
+      hiDescriptor = Object.getOwnPropertyDescriptor(seed, 'hi');
+      loDescriptor = Object.getOwnPropertyDescriptor(seed, 'lo');
+    } catch {
+      throw new TypeError('FNV seed must be BigInt or {hi, lo}');
+    }
+    if (Array.isArray(seed) || (proto !== Object.prototype && proto !== null)
+      || !hiDescriptor || !loDescriptor
+      || !Object.hasOwn(hiDescriptor, 'value') || !Object.hasOwn(loDescriptor, 'value')) {
+      throw new TypeError('FNV seed must be BigInt or {hi, lo}');
+    }
+    const hiLimb = hiDescriptor.value, loLimb = loDescriptor.value;
+    if (!Number.isSafeInteger(hiLimb) || hiLimb < 0 || hiLimb > 0xffffffff
+      || !Number.isSafeInteger(loLimb) || loLimb < 0 || loLimb > 0xffffffff) {
+      throw new TypeError('FNV seed must be BigInt or {hi, lo}');
+    }
+    hi = hiLimb >>> 0;
+    lo = loLimb >>> 0;
   } else throw new TypeError('FNV seed must be BigInt or {hi, lo}');
 
-  for (let i = 0; i < bytes.length; i++) {
-    lo = (lo ^ bytes[i]) >>> 0;
-    const a0 = lo & 0xffff;
-    const a1 = lo >>> 16;
-    const p0 = a0 * FNV_PRIME_LO;
-    const p1 = a1 * FNV_PRIME_LO;
-    const lowWide = p0 + ((p1 & 0xffff) * 0x10000);
-    const carry = Math.floor(lowWide / 0x100000000) + Math.floor(p1 / 0x10000);
-    const nextLo = lowWide >>> 0;
-    hi = (Math.imul(hi, FNV_PRIME_LO) + carry + Math.imul(lo, FNV_PRIME_HI)) >>> 0;
-    lo = nextLo;
-  }
-  return { hi, lo };
+  // Keep the seed boundary and indexed byte coercion unchanged; the
+  // shared integer-carry multiply computes the same limbs without divisions.
+  const state = fnv64ByteView(bytes, lo, hi);
+  return { hi: state.high, lo: state.low };
 }
 
 export function fnv1a64(bytes, seed = null) {
@@ -60,8 +71,8 @@ function functionFingerprintResult(bytes, fn) {
 }
 
 function byteCountOption(value, fallback, minimum = 1) {
-  const n = Number(value);
-  return Number.isSafeInteger(n) && n > 0 ? Math.max(minimum, n) : fallback;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) return fallback;
+  return Math.max(minimum, value);
 }
 
 /**

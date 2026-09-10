@@ -67,25 +67,53 @@ export class RuntimeProviderSession {
     const descriptor = provider.descriptor();
     this.providerId = descriptor.id;
     this.providerVersion = descriptor.version;
+
+    // Snapshot identity-bearing inputs once. RuntimeSessionId and target binding
+    // must be derived from the same request values even when a provider boundary
+    // exposes stateful accessors.
+    const requestBinaryValue = request.binaryId ?? request.binaryHash;
     this.runtimeSessionId = createRuntimeProviderSessionId({
-      binaryId: request.binaryId ?? request.binaryHash,
+      binaryId: requestBinaryValue,
       providerId: this.providerId,
       targetIdentity: request.targetIdentity ?? request.target ?? { processKey: request.processKey ?? 'default' },
       sessionNonce: request.sessionNonce ?? request.startedAt ?? `${Date.now()}:${Math.random()}`,
     });
-    this.target = createRuntimeTargetBinding({
+    const requestBinaryId = requestBinaryValue.trim(); // validated and canonicalized by createRuntimeProviderSessionId()
+    const requestSliceValue = request.sliceId;
+    const targetInput = target == null ? {} : { ...target };
+    const requestSliceId = requestSliceValue == null
+      ? null
+      : required(requestSliceValue, 'invalid-runtime-identity', 'sliceId must be a non-empty string');
+    const targetBinaryValue = targetInput.primaryBinaryId ?? targetInput.binaryId ?? requestBinaryId;
+    const targetSliceValue = targetInput.primarySliceId ?? targetInput.sliceId ?? requestSliceId;
+    const targetBinding = createRuntimeTargetBinding({
       processKey: request.processKey,
       platform: request.platform,
       architecture: request.architecture,
-      primaryBinaryId: request.binaryId ?? request.binaryHash,
-      primarySliceId: request.sliceId,
       startedAt: request.startedAt,
       bindingEvidenceIds: request.bindingEvidenceIds,
-      ...target,
+      ...targetInput,
+      primaryBinaryId: targetBinaryValue,
+      primarySliceId: targetSliceValue,
       runtimeSessionId: this.runtimeSessionId,
       providerId: this.providerId,
       providerVersion: this.providerVersion,
     });
+    if (targetBinding.primaryBinaryId !== requestBinaryId) {
+      throw new DebugAdapterError(
+        'runtime-target-identity-mismatch',
+        'runtime target binary identity does not match the session request',
+        { field: 'primaryBinaryId', requested: requestBinaryId, target: targetBinding.primaryBinaryId },
+      );
+    }
+    if (requestSliceId != null && targetBinding.primarySliceId !== requestSliceId) {
+      throw new DebugAdapterError(
+        'runtime-target-identity-mismatch',
+        'runtime target slice identity does not match the session request',
+        { field: 'primarySliceId', requested: requestSliceId, target: targetBinding.primarySliceId },
+      );
+    }
+    this.target = targetBinding;
     this.facets = Object.freeze({ ...facets });
     this.modules = new RuntimeModuleBindingTable(this.runtimeSessionId);
     this.state = 'opening';
@@ -93,6 +121,7 @@ export class RuntimeProviderSession {
     this.closed = false;
     this.controllers = new Set();
     this._close = typeof close === 'function' ? close : null;
+    this._closing = null;
   }
 
   setState(next) {
@@ -128,13 +157,17 @@ export class RuntimeProviderSession {
 
   async close() {
     if (this.closed) return;
+    if (this._closing) return this._closing;
     this.setState('closing');
     this.cancelAll('runtime-session-closing');
-    try { if (this._close) await this._close(this); }
-    finally {
+    const attempt = (async () => {
+      if (this._close) await this._close(this);
       this.closed = true;
       this.state = 'closed';
-    }
+    })();
+    this._closing = attempt;
+    try { return await attempt; }
+    finally { if (this._closing === attempt) this._closing = null; }
   }
 }
 
@@ -187,7 +220,7 @@ function adapterFacetNames(adapter) {
   const facets = new Set(['debugger']);
   if (adapter?.kind === 'frida' || adapter?.capabilities?.objcRuntime === true || adapter?.capabilities?.swiftRuntime === true) facets.add('instrumentation');
   if (adapter?.kind === 'replay' || adapter?.capabilities?.replay === true || adapter?.capabilities?.traceFunction === true) facets.add('trace');
-  if (adapter?.kind === 'emulator' || adapter?.kind === 'local' || adapter?.kind === 'sandbox') facets.add('emulator');
+  if (adapter?.kind === 'emulator' || adapter?.kind === 'local' || adapter?.kind === 'sandbox' || adapter?.kind === 'local-sandbox') facets.add('emulator');
   return [...facets];
 }
 
@@ -271,28 +304,57 @@ export class DebugAdapterRuntimeProvider {
       Number.isSafeInteger(adapterEpoch) && adapterEpoch >= 0 ? adapterEpoch + 1 : 1,
     );
     let session;
+    let disconnectPending = false;
+    const connectedBySession = options.connect !== false && !this.adapter.connected;
     session = new RuntimeProviderSession({
       provider: this,
       request,
       close: async () => {
-        try { if (this.adapter.connected) await this.adapter.disconnect(); }
-        finally { if (this.activeSession === session) this.activeSession = null; }
+        if (disconnectPending || connectedBySession) {
+          disconnectPending = true;
+          await this.adapter.disconnect();
+          disconnectPending = false;
+        }
+        if (this.activeSession === session) this.activeSession = null;
       },
     });
     session.epoch = nextSessionEpoch;
     if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(session.epoch);
     this.sessionEpoch = session.epoch;
+    // Connect BEFORE the session facet surface is built: RemoteDebugAdapter
+    // replaces its capabilities object with the negotiated intersection during
+    // connect(), so facets built beforehand advertise pre-negotiation local
+    // allow-list values the real peer may have refused (#5811). The provider
+    // descriptor keeps its pre-connect "potential" surface; the session
+    // advertises what is actually executable.
+    const deferredConnect = options.connect === false && !this.adapter.connected;
+    try {
+      if (!deferredConnect && !this.adapter.connected) await this.adapter.connect(options.connectOptions || {});
+    } catch (error) {
+      session.setState('failed');
+      try { await session.close(); } catch {}
+      throw error;
+    }
+    // connect:false is an explicit deferred-connect mode. Until a handshake
+    // occurs, expose no adapter-derived facets or capabilities and mark the
+    // session as unnegotiated instead of publishing the local allow-list as a
+    // ready capability surface (#5811).
     const facets = {};
-    if (this._descriptor.facets.includes('debugger')) facets.debugger = debuggerFacet(this.adapter, session);
-    if (this._descriptor.facets.includes('instrumentation')) facets.instrumentation = instrumentationFacet(this.adapter, session);
-    if (this._descriptor.facets.includes('trace')) facets.trace = traceFacet(this.adapter);
-    if (this._descriptor.facets.includes('emulator')) facets.emulator = emulatorFacet(this.adapter);
+    if (!deferredConnect) {
+      for (const facetName of adapterFacetNames(this.adapter)) {
+        if (facetName === 'debugger') facets.debugger = debuggerFacet(this.adapter, session);
+        else if (facetName === 'instrumentation') facets.instrumentation = instrumentationFacet(this.adapter, session);
+        else if (facetName === 'trace') facets.trace = traceFacet(this.adapter);
+        else if (facetName === 'emulator') facets.emulator = emulatorFacet(this.adapter);
+      }
+    }
+    session.capabilityState = deferredConnect ? 'unnegotiated' : 'negotiated';
+    session.negotiated = !deferredConnect;
     session.facets = Object.freeze(facets);
     this.activeSession = session;
 
     try {
-      if (options.connect !== false && !this.adapter.connected) await this.adapter.connect(options.connectOptions || {});
-      if (this.adapter.capabilities?.modules && typeof this.adapter.getModules === 'function') {
+      if (!deferredConnect && this.adapter.capabilities?.modules && typeof this.adapter.getModules === 'function') {
         const modules = await this.adapter.getModules();
         if (!Array.isArray(modules)) throw new DebugAdapterError('runtime-invalid-modules', 'debug adapter getModules must return an array');
         for (let i = 0; i < modules.length; i++) {

@@ -16,9 +16,15 @@ export function integerText(v, bits = 64, signed = null) {
 
   // C has no portable integer-literal suffix for __int128.  Build the value
   // from 64-bit chunks so the printed program preserves every source bit.
-  const uv = BigInt.asUintN(width, n);
-  const lo = uv & ((1n << 64n) - 1n);
-  const hi = uv >> 64n;
+  // A signed width below 128 must first be sign-extended into the 128-bit
+  // pattern: zero-extending a negative width-bit value would print a positive
+  // __int128 and silently lose the sign (#5249). Unsigned keeps zero
+  // extension.
+  const pattern = signed === true
+    ? BigInt.asUintN(128, sv)
+    : BigInt.asUintN(width, n);
+  const lo = pattern & ((1n << 64n) - 1n);
+  const hi = pattern >> 64n;
   const wide = `(((unsigned __int128)0x${hi.toString(16).toUpperCase()}ULL << 64) | 0x${lo.toString(16).toUpperCase()}ULL)`;
   return signed === true ? `((__int128)${wide})` : wide;
 }
@@ -79,6 +85,25 @@ function moduloArithmeticExpression(n, opts) {
   return n.signed === true ? `(${exactSignedType(bits)})${truncated}` : truncated;
 }
 
+// Machine integer division (AArch64 SDIV/UDIV and every other architecture
+// that defines it) writes 0 when the divisor is 0. Plain C division by zero is
+// undefined, so printing `/` changes the meaning; guard the divisor with a
+// select that restores the architectural result (#4689). The constant-zero
+// divisor is already folded by the truth evaluator and never reaches a
+// printed division, so this guard only fires where the divisor is unknown.
+function guardedDivision(n, opts) {
+  if (!['sdiv', 'udiv'].includes(n.op)) return null;
+  const bits = normalizedIntegerWidth(n.bits || n.left?.bits || n.right?.bits || 64);
+  const signed = n.op === 'sdiv' && n.compareSigned !== false ? true : false;
+  const left = printExpression(n.left, PREC.unary, opts);
+  const right = printExpression(n.right, PREC.unary, opts);
+  // A divisor statically known to be 0 makes the whole quotient the
+  // architectural 0; printing any division there would be UB-in-C.
+  const divisor = n.right;
+  if (divisor?.kind === 'const' && divisor.value === 0n) return '0';
+  return `(${signed ? exactSignedType(bits) : exactUnsignedType(bits)})(${right} == 0 ? 0 : ${left} / ${right})`;
+}
+
 function integerWidth(...nodes) {
   for (const n of nodes) {
     const bits = Number(n?.bits || 0);
@@ -108,6 +133,12 @@ function printIntegerView(n, bits, signed, parentPrec, opts) {
 }
 
 function compareOperands(n, p, opts) {
+  // A floating-domain comparison compares the operands' values as-is; the
+  // integer signed/unsigned views would assert a different domain and change
+  // the meaning of the comparison (#5247).
+  if (n.comparisonDomain === 'floating') {
+    return [printExpression(n.left, p, opts), printExpression(n.right, p + 1, opts)];
+  }
   if (n.compareSigned !== true && n.compareSigned !== false) {
     return [printExpression(n.left, p, opts), printExpression(n.right, p + 1, opts)];
   }
@@ -170,6 +201,8 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
       return wrap(`${left} ${OP_TEXT[n.op] || n.op} ${right}`, p, parentPrec);
     }
     case 'binary': {
+      const guarded = guardedDivision(n, opts);
+      if (guarded) return guarded;
       const exact = moduloArithmeticExpression(n, opts);
       if (exact) return exact;
       const p = PREC[n.op] || 11;
@@ -186,14 +219,63 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
   }
 }
 
+function safeSeparatorIndexes(text, separator) {
+  const indexes = [];
+  let quote = null;
+  let escaped = false;
+  let blockComment = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+    if (blockComment) {
+      if (char === '*' && next === '/') {
+        blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (quote != null) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      blockComment = true;
+      index += 1;
+      continue;
+    }
+    if (char === '/' && next === '/') break;
+    if (text.startsWith(separator, index)) {
+      indexes.push(index);
+      index += separator.length - 1;
+    }
+  }
+  return indexes;
+}
+
 function splitLong(text, width, indent) {
   if (text.length + indent.length <= width) return [text];
   const candidates = [' && ', ' || ', ', ', ' + ', ' - '];
   for (const sep of candidates) {
-    const parts = text.split(sep);
-    if (parts.length <= 1) continue;
-    const out = [parts[0] + sep.trimEnd()];
-    for (let i = 1; i < parts.length; i++) out.push('    ' + parts[i] + (i < parts.length - 1 ? sep.trimEnd() : ''));
+    const indexes = safeSeparatorIndexes(text, sep);
+    if (indexes.length === 0) continue;
+    const out = [];
+    let start = 0;
+    for (const index of indexes) {
+      out.push(`${start === 0 ? '' : '    '}${text.slice(start, index)}${sep.trimEnd()}`);
+      start = index + sep.length;
+    }
+    out.push(`${start === 0 ? '' : '    '}${text.slice(start)}`);
     return out;
   }
   return [text];

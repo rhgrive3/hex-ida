@@ -160,11 +160,22 @@ function parseV0Identifier(str, pos) {
     p++;
   }
 
-  // Length integer
-  const lenMatch = str.slice(p).match(/^(\d+)/);
-  if (!lenMatch) return null;
-  const len = Number(lenMatch[1]);
-  p += lenMatch[1].length;
+  /*
+   * v0 decimal-number: the value zero is encoded as the single byte `0` and
+   * must never be concatenated with a following digit (rustc v0 spec warns
+   * about exactly this). `_RC03foo` is `C` + length 0 + trailing `3foo`, not
+   * `C` + length 3 (#5875).
+   */
+  let len;
+  if (p < str.length && str[p] === '0') {
+    len = 0;
+    p += 1;
+  } else {
+    const lenMatch = str.slice(p).match(/^[1-9][0-9]*/);
+    if (!lenMatch) return null;
+    len = Number(lenMatch[0]);
+    p += lenMatch[0].length;
+  }
   if (p < str.length && str[p] === '_') {
     p++;
   }
@@ -314,8 +325,9 @@ function parseV0Path(str, state, depth = 0) {
     const ns = str[state.pos++]; // namespace character
     const parent = parseV0Path(str, state, depth + 1);
     if (!parent) return null;
+    // A nested path always includes an identifier, even when its length is 0.
     const ident = parseV0Identifier(str, state.pos);
-    if (!ident) return parent;
+    if (!ident) return null;
     state.pos = ident.nextPos;
     let name = ident.identifier;
     if (!name) {
@@ -334,11 +346,15 @@ function parseV0Path(str, state, depth = 0) {
   }
 
   if (tag === 'X') {
+    // All three components of `X` impl-path type trait-path are mandatory;
+    // `<type as trait>` placeholders would admit truncated symbols (#5866).
     const implPath = parseV0ImplPath(str, state, depth + 1);
     if (!implPath) return null;
     const typeName = parseV0Type(str, state, depth + 1);
+    if (!typeName) return null;
     const traitPath = parseV0Path(str, state, depth + 1);
-    return `<${typeName || 'type'} as ${traitPath || 'trait'}>`;
+    if (!traitPath) return null;
+    return `<${typeName} as ${traitPath}>`;
   }
 
   if (tag === 'I') {

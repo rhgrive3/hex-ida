@@ -1,11 +1,21 @@
 /* Conservative switch/jump-table structuring. Verified descriptors only. */
 
+// Block identity in a verified switch descriptor is a primitive safe integer.
+// ToNumber coercion (Number([0]) === 0, Number(true) === 1) must never mint a
+// verified jump target from a schema-invalid structured value (#5926).
+function blockIndexOf(block) {
+  if (typeof block !== 'number' || !Number.isSafeInteger(block) || block < 0) return -1;
+  return block;
+}
+
 function hex(v) { return BigInt(v).toString(16).toUpperCase(); }
 function labelForAddress(addr) { return `loc_${hex(addr)}`; }
 function textOf(lines) { return (lines || []).map((l) => `${'    '.repeat(Math.max(0, l.indent || 0))}${l.text || ''}`).join('\n'); }
 
 function addressForBlock(result, opts, block, index) {
-  const b = result?.ir?.blocks?.[Number(block)];
+  const blockIndex = blockIndexOf(block);
+  if (blockIndex < 0) return null;
+  const b = result?.ir?.blocks?.[blockIndex];
   if (!b) return null;
   return index.addressByRow.get(b.startRow) ?? opts.addrOfRow?.(b.startRow) ?? null;
 }
@@ -13,7 +23,7 @@ function addressForBlock(result, opts, block, index) {
 function normalizedCase(c, result, opts, index) {
   if (!c || c.value == null) return null;
   let address = c.address ?? c.target ?? null;
-  if (address == null && c.block != null) address = addressForBlock(result, opts, c.block, index);
+  if (address == null && c.block != null && blockIndexOf(c.block) >= 0) address = addressForBlock(result, opts, c.block, index);
   if (address == null) return null;
   try { address = BigInt(address); } catch { return null; }
   return { value: c.value, address, label: labelForAddress(address) };
@@ -139,7 +149,7 @@ export function structureKnownSwitches(result, model, opts = {}) {
     }
     const hasExplicitDefault = sw.defaultAddress != null || sw.defaultTarget != null || sw.defaultBlock != null;
     let defaultAddress = sw.defaultAddress ?? sw.defaultTarget ?? null;
-    if (defaultAddress == null && sw.defaultBlock != null) defaultAddress = addressForBlock(result, opts, sw.defaultBlock, index);
+    if (defaultAddress == null && sw.defaultBlock != null && blockIndexOf(sw.defaultBlock) >= 0) defaultAddress = addressForBlock(result, opts, sw.defaultBlock, index);
     let invalidDefault = hasExplicitDefault && defaultAddress == null;
     try { if (defaultAddress != null) defaultAddress = BigInt(defaultAddress); } catch { invalidDefault = true; }
     if (invalidDefault) {
@@ -154,12 +164,20 @@ export function structureKnownSwitches(result, model, opts = {}) {
     }
     const allTargets = cases.map((c) => c.address);
     if (defaultAddress != null) allTargets.push(defaultAddress);
+    const linesBeforeMaterialization = result.lines.slice();
+    const labelsBeforeMaterialization = new Set(index.labels);
     if (!materializeVerifiedLabels(result, index, allTargets)) {
       result.warnings = [...(result.warnings || []), `Switch at row ${sw.row} was not structured because one or more case targets are not exact instruction addresses.`];
       continue;
     }
     const at = insertionIndex(result.lines, sw.row);
-    if (!at) continue;
+    if (!at) {
+      // Restore the exact pre-materialization state. Filtering by target text
+      // can erase a legitimate label that existed before this switch (#5535).
+      result.lines = linesBeforeMaterialization;
+      index.labels = labelsBeforeMaterialization;
+      continue;
+    }
     const expr = String(sw.expr || sw.reg || 'switch_value');
     const repl = [{ kind: 'ctrl', indent: at.indent, text: `switch (${expr}) {`, row: sw.row, addr: null, note: null }];
     for (let i = 0; i < cases.length; i++) repl.push({ kind: 'ctrl', indent: at.indent + 1, text: `case ${values[i]}: goto ${cases[i].label};`, row: sw.row, addr: cases[i].address, note: null });

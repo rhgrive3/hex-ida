@@ -19,6 +19,8 @@ export const GENERIC_ROOT_DESCRIPTOR_KINDS = Object.freeze([
 const ROOT_KINDS = new Set(GENERIC_ROOT_DESCRIPTOR_KINDS);
 const MAX_DERIVATION_DEPTH = 128;
 const INVALID_ROOT_DESCRIPTOR = Symbol('invalid-root-descriptor');
+const CONFLICTING_ROOT_DESCRIPTORS = Symbol('conflicting-root-descriptors');
+const PROVEN_SEPARATION_DESCRIPTOR_KINDS = new Set(['global-like', 'heap-like', 'tls-like']);
 
 function identityString(value, { trim = false } = {}) {
   if (typeof value !== 'string' || !value.trim()) return null;
@@ -193,12 +195,14 @@ function normalizeGenericDescriptor(input) {
     const rootEntityId = input.rootEntityId == null ? null : identityString(input.rootEntityId, { trim: true });
     if (input.rootEntityId != null && rootEntityId == null) return null;
     const resolvedSpace = addressSpace ?? (kind === 'tls-like' ? 'tls' : null);
+    const separationClass = PROVEN_SEPARATION_DESCRIPTOR_KINDS.has(kind) ? kind : null;
     return deepFreeze({
       kind: 'rooted-object',
       baseOffset,
       addressSpace: resolvedSpace,
       linearOffsets,
       ...(rootEntityId ? { rootEntityId } : {}),
+      ...(separationClass == null ? {} : { separationClass }),
       ...(input.rootIdentity == null ? {} : { rootIdentity: jsonSafe(input.rootIdentity) }),
     });
   }
@@ -225,13 +229,33 @@ function semanticDescriptorCandidates(value, node, variable) {
     node?.metadata?.canonicalRoot,
     node?.attributes?.canonicalRoot,
     variable?.metadata?.canonicalRoot,
-  ].filter(Boolean);
+  ].filter((candidate) => candidate != null);
 }
 
 function suppliedRootDescriptor(ctx, value, node, variable, expectedAddressSpace) {
-  for (const candidate of semanticDescriptorCandidates(value, node, variable)) {
-    const normalized = normalizeGenericDescriptor(candidate);
-    return normalized ?? INVALID_ROOT_DESCRIPTOR;
+  const semantic = semanticDescriptorCandidates(value, node, variable);
+  if (semantic.length) {
+    /*
+     * All proof-grade candidates participate. The old first-match-wins
+     * priority made the same contradictory evidence set yield different
+     * exact roots depending on which slot (value/node/attributes/variable
+     * metadata) each descriptor was stored in (#5802). Malformed candidates
+     * invalidate the result; a single valid candidate
+     * (or several that normalize identically) is used, and genuinely
+     * conflicting candidates fail closed.
+     */
+    let chosen = null;
+    let malformed = false;
+    let conflicting = false;
+    for (const candidate of semantic) {
+      const normalized = normalizeGenericDescriptor(candidate);
+      if (normalized == null) { malformed = true; continue; }
+      if (chosen == null) { chosen = normalized; continue; }
+      if (stableDigest(chosen) !== stableDigest(normalized)) conflicting = true;
+    }
+    if (malformed) return INVALID_ROOT_DESCRIPTOR;
+    if (conflicting) return CONFLICTING_ROOT_DESCRIPTORS;
+    return chosen ?? INVALID_ROOT_DESCRIPTOR;
   }
 
   const keys = [
@@ -262,8 +286,34 @@ function suppliedRootDescriptor(ctx, value, node, variable, expectedAddressSpace
   return normalizeGenericDescriptor(raw) ?? INVALID_ROOT_DESCRIPTOR;
 }
 
+function descriptorSeparationMetadata(descriptor) {
+  const separationClass = descriptor?.separationClass;
+  if (!PROVEN_SEPARATION_DESCRIPTOR_KINDS.has(separationClass)) return {};
+  return { separationClass, separationAuthority: 'root-descriptor' };
+}
+
+function proofSeparationMetadata(proofs) {
+  const first = proofs[0];
+  const separationClass = first?.separationClass;
+  if (!PROVEN_SEPARATION_DESCRIPTOR_KINDS.has(separationClass)
+      || first?.separationAuthority !== 'root-descriptor'
+      || !proofs.every((proof) => (
+        proof?.separationAuthority === 'root-descriptor'
+        && proof.separationClass === separationClass
+      ))) return {};
+  return { separationClass, separationAuthority: 'root-descriptor' };
+}
+
+function stripSeparationMetadata(proof) {
+  const result = { ...proof };
+  delete result.separationClass;
+  delete result.separationAuthority;
+  return result;
+}
+
 function rootFromDescriptor(descriptor, fallbackIdentity, expectedAddressSpace, widthBits) {
   if (descriptor === INVALID_ROOT_DESCRIPTOR) return unknown('canonical-root-descriptor-invalid');
+  if (descriptor === CONFLICTING_ROOT_DESCRIPTORS) return unknown('canonical-root-descriptor-conflict');
   if (!descriptor) return null;
   const addressSpace = descriptor.addressSpace ?? expectedAddressSpace ?? 'memory';
   if (expectedAddressSpace != null && descriptor.addressSpace != null && String(expectedAddressSpace) !== descriptor.addressSpace) {
@@ -298,6 +348,7 @@ function rootFromDescriptor(descriptor, fallbackIdentity, expectedAddressSpace, 
     rootEntityId,
     offset: descriptor.baseOffset,
     widthBits,
+    ...descriptorSeparationMetadata(descriptor),
     separationSafe: descriptor.linearOffsets,
   });
 }
@@ -377,14 +428,24 @@ function constantFromNode(value, node) {
     node?.attributes?.constant,
     node?.metadata?.constant,
   ];
+  // Proof-grade constants must agree across sources (#5727): adopting the
+  // first parsed value let source priority alone decide the exact address for
+  // contradictory metadata.
+  let parsed = null;
   for (const candidate of candidates) {
     if (candidate == null) continue;
-    const parsed = parseInteger(candidate);
-    if (parsed == null) continue;
-    const widthBits = positiveWidth(candidate?.widthBits) ?? addressWidth(value, node);
-    return scalarConstant(parsed, widthBits, node?.id ?? value?.id ?? null);
+    const value0 = parseInteger(candidate);
+    if (value0 == null) continue;
+    if (parsed != null && parsed !== value0) {
+      return unknown('canonical-address-constant-conflict');
+    }
+    parsed = value0;
   }
-  return null;
+  if (parsed == null) return null;
+  const widthSource = [value?.metadata?.constant, node?.attributes?.constant, node?.metadata?.constant]
+    .find((candidate) => candidate != null && parseInteger(candidate) != null);
+  const widthBits = positiveWidth(widthSource?.widthBits) ?? addressWidth(value, node);
+  return scalarConstant(parsed, widthBits, node?.id ?? value?.id ?? null);
 }
 
 function sameRoot(left, right) {
@@ -410,7 +471,8 @@ function mergeAlternatives(proofs, reason) {
   const exactOffsets = proofs.every((proof) => proof.kind !== 'root-only' && proof.offset === first.offset);
   if (exactOffsets) {
     return deepFreeze({
-      ...first,
+      ...stripSeparationMetadata(first),
+      ...proofSeparationMetadata(proofs),
       separationSafe: proofs.every((proof) => proof.separationSafe === true),
     });
   }
@@ -421,6 +483,7 @@ function mergeAlternatives(proofs, reason) {
     rootIdentity: first.rootIdentity,
     ...(first.rootEntityId == null ? {} : { rootEntityId: first.rootEntityId }),
     widthBits: first.widthBits,
+    ...proofSeparationMetadata(proofs),
     reason: String(reason),
   });
 }
@@ -668,8 +731,22 @@ function deriveValue(ctx, valueId, expectedAddressSpace, state) {
   const node = value.definitionNodeId == null ? null : ctx.nodes.get(String(value.definitionNodeId));
   const nextState = { visiting: new Set(state.visiting).add(visitKey), depth: state.depth + 1 };
 
+  // Entry roots are resolved through entryRoot exactly once. Keeping this
+  // before the generic semantic-descriptor path both preserves the variable
+  // identity in provider requests and prevents a null provider response from
+  // being queried a second time.
+  if (value.kind === 'entry') {
+    if (value.variableKey == null) return unknown('canonical-address-entry-root-identity-missing');
+    const variable = { key: value.variableKey, kind: 'logical-state', scope: 'function' };
+    return entryRoot(ctx, value, null, variable, expectedAddressSpace);
+  }
+  if (!node) return unknown('canonical-address-definition-node-missing');
+  if (node.kind === 'state-read') {
+    return deriveStateRead(ctx, value, node, expectedAddressSpace, nextState);
+  }
+
   const semanticDescriptor = suppliedRootDescriptor(ctx, value, node, node?.variable ?? null, expectedAddressSpace);
-  if (semanticDescriptor && node?.kind !== 'state-read') {
+  if (semanticDescriptor) {
     const identity = deepFreeze({
       kind: 'semantic-value-root',
       functionId: String(ctx.ir.functionId),
@@ -679,17 +756,9 @@ function deriveValue(ctx, valueId, expectedAddressSpace, state) {
     if (supplied) return supplied;
   }
 
-  if (value.kind === 'entry') {
-    if (value.variableKey == null) return unknown('canonical-address-entry-root-identity-missing');
-    const variable = { key: value.variableKey, kind: 'logical-state', scope: 'function' };
-    return entryRoot(ctx, value, null, variable, expectedAddressSpace);
-  }
-  if (!node) return unknown('canonical-address-definition-node-missing');
-
   if (node.kind === 'const') {
     return constantFromNode(value, node) ?? unknown('canonical-address-constant-not-exact');
   }
-  if (node.kind === 'state-read') return deriveStateRead(ctx, value, node, expectedAddressSpace, nextState);
   if (node.kind === 'copy') {
     if (!Array.isArray(node.inputs) || node.inputs.length !== 1) return unknown('canonical-address-copy-arity');
     return deriveValue(ctx, node.inputs[0], expectedAddressSpace, nextState);
@@ -724,17 +793,24 @@ export function canonicalAddressProofToRegionEvidence(proof) {
     return deepFreeze({ kind: 'stack-fixed', offset: proof.offset.toString() });
   }
   if (proof.kind !== 'rooted') return null;
+  // Preserve the proof's proven storage domain into the region layer (#5901).
+  // Flat `memory` rooted-offsets keep their historical shape; a rooted proof
+  // in `tls`/`io`/etc. must not silently become a flat memory region.
+  const proofSpace = typeof proof.addressSpace === 'string' && proof.addressSpace && proof.addressSpace !== 'memory'
+    ? proof.addressSpace : null;
   if (proof.separationSafe) {
     return deepFreeze({
       kind: 'rooted-offset',
       rootEntityId: proof.rootEntityId,
       offset: proof.offset.toString(),
+      ...(proofSpace ? { addressSpace: proofSpace } : {}),
     });
   }
   return deepFreeze({
     kind: 'rooted-offset',
     rootEntityId: exactAddressRootId(proof),
     offset: '0',
+    ...(proofSpace ? { addressSpace: proofSpace } : {}),
   });
 }
 

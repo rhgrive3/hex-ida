@@ -38,13 +38,23 @@ function chainedPointerCoverageAt(image, address) {
   return null;
 }
 
+// Pointer-authority inputs must be parser-grade primitives (#5189): BigInt()
+// launders arrays and toString()-coercible objects into canonical VAs, which
+// then alias real sections, segments and chained-fixup sites.
+function canonicalPointerScalar(value) {
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === 'string' && value === value.trim() && /^(?:0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(value)) {
+    try { return BigInt(value); } catch { return null; }
+  }
+  return null;
+}
+
 export function resolveMachOPointer(image, rawValue, options = {}) {
   if (!image) return null;
-  let raw, address = null;
-  try {
-    raw = BigInt(rawValue);
-    if (options.address != null) address = BigInt(options.address);
-  } catch { return null; }
+  const raw = canonicalPointerScalar(rawValue);
+  const address = options.address == null ? null : canonicalPointerScalar(options.address);
+  if (raw == null || (options.address != null && address == null)) return null;
   if (raw <= 0n || raw > 0xffffffffffffffffn) return null;
 
   const site = address == null ? null : CHAINED_POINTER_SITES.get(image)?.get(address);
@@ -128,6 +138,16 @@ export function parseChainedImports(r,dc,image,sharedBudget=null){
     const name = r.cstring(strp, base + dc.size - strp);
     if (!name) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'invalid-import-name';continue; }
     if(!budget.take({stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'chained-import-name')){status.complete=false;status.importsComplete=false;status.importsPartialReason='metadata-budget';break;}
+    // A positive library ordinal is a 1-based index into the dependent dylib
+    // list; an ordinal beyond it references no library, so publishing it as
+    // canonical import metadata would launder a malformed reference (#5532).
+    const libraryCount = Array.isArray(image.libraries) ? image.libraries.length : 0;
+    if (ordinal > 0 && ordinal > libraryCount) {
+      status.complete = false; status.importsComplete = false;
+      status.importsPartialReason ||= 'dylib-ordinal-out-of-range';
+      image.warnings.push(`chained-fixups import ordinal ${ordinal} exceeds dependency count ${libraryCount}`);
+      continue;
+    }
     const imp = { name, library: dylibForOrdinal(image, ordinal), ordinal, weak, addend, source: 'chained-fixups', sites: [], chainedIndex: i };
     image.imports.push(imp);
     parsed[i] = imp;
@@ -399,7 +419,13 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
   const ptrSize = image.bits === 64 ? 8n : 4n;
   let p = dc.offset;
   const end = dc.offset + dc.size;
-  let libOrdinal = 0, symbol = '', symbolFlags = 0, type = 1, addend = 0n, segIndex = 0, segOffset = 0n;
+  // Classic bind state mirrors dyld's BindOpcodes state machine: only
+  // lazy-bind streams carry an implicit pointer type and weak-bind streams an
+  // implicit library ordinal (-3); a bind location exists only after
+  // SET_SEGMENT_AND_OFFSET_ULEB has run, and normal/lazy binds must have set a
+  // library ordinal explicitly (issues #5834/#5835/#5832).
+  let libOrdinal = source === 'weak-bind' ? -3 : 0, symbol = '', symbolFlags = 0, type = source === 'lazy-bind' ? 1 : 0, addend = 0n, segIndex = 0, segOffset = 0n, locationSet = false;
+  let libraryOrdinalSet = source === 'weak-bind';
   let threadedTable = null, threadedTableLimit = 0;
   const status = { source, complete: true, decodedBinds: 0, threadedApplies: 0, unsupportedOpcodes: [] };
   image.metadata.dyldBindings ||= { complete: true, streams: {} };
@@ -417,6 +443,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
   };
   const snapshotImport = () => ({ name: symbol, library: dylibForOrdinal(image, libOrdinal), ordinal: libOrdinal, weak: !!(symbolFlags & 1), symbolFlags, nonWeakDefinition: !!(symbolFlags & 8), addend, type, source, sites: [] });
   const validLocation = () => {
+    if (!locationSet) return false;
     const seg = segments[segIndex];
     return !!seg && segOffset >= 0n && segOffset <= seg.size && ptrSize <= seg.size - segOffset;
   };
@@ -424,10 +451,13 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     if (!symbol) { fail('bind encountered before a symbol was set'); return; }
     if (!validDylibOrdinal()) return;
     if (threadedTable) {
+      if (type !== 1) { fail(`unknown threaded bind type ${type}`); return; }
       if (threadedTable.length < threadedTableLimit) { threadedTable.push(snapshotImport()); return; }
       fail(`threaded ordinal table exceeds declared ${threadedTableLimit} entries`);
       return;
     }
+    if (type !== 1 && type !== 2 && type !== 3) { fail(`unknown bind type ${type} at bind site`); return; }
+    if (!libraryOrdinalSet) { fail('missing preceding BIND_OPCODE_SET_DYLIB_ORDINAL'); return; }
     if (!validLocation()) { fail(`bind location is outside segment ${segIndex} at +0x${segOffset.toString(16)}`); return; }
     const seg = segments[segIndex];
     const address = seg.address + segOffset;
@@ -471,20 +501,27 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     const byte = r.u8(p++);
     const op = byte & BIND_OPCODE_MASK;
     const imm = byte & BIND_IMMEDIATE_MASK;
+    // dyld's lazy-bind decoder accepts only DONE, the dylib-ordinal setters,
+    // SET_SYMBOL_TRAILING_FLAGS_IMM, SET_ADDEND_SLEB, SET_SEGMENT_AND_OFFSET_ULEB
+    // and DO_BIND; everything else is "bad lazy bind opcode" (issue #5889).
+    if (source === 'lazy-bind' && ![0x00, 0x10, 0x20, 0x30, 0x40, 0x60, 0x70, 0x90].includes(op)) {
+      fail(`bad lazy bind opcode 0x${byte.toString(16)}`, byte);
+      break;
+    }
     if (op === 0x00) {
-      if (source === 'lazy-bind') { symbol = ''; symbolFlags = 0; libOrdinal = 0; addend = 0n; continue; }
+      if (source === 'lazy-bind') { symbol = ''; symbolFlags = 0; libOrdinal = 0; libraryOrdinalSet = false; addend = 0n; continue; }
       break;
     } else if (op === 0x10) {
       if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
-      libOrdinal = imm;
+      libOrdinal = imm; libraryOrdinalSet = true;
     }
     else if (op === 0x20) {
       if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
-      const x = r.uleb(p, 10, end); p = x.next; libOrdinal = Number(x.value);
+      const x = r.uleb(p, 10, end); p = x.next; libOrdinal = Number(x.value); libraryOrdinalSet = true;
     }
     else if (op === 0x30) {
       if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
-      libOrdinal = imm === 0 ? 0 : signExtend(imm | 0xf0, 8);
+      libOrdinal = imm === 0 ? 0 : signExtend(imm | 0xf0, 8); libraryOrdinalSet = true;
     }
     else if (op === 0x40) {
       const x = rawCString(r, p, end);
@@ -497,7 +534,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     }
     else if (op === 0x50) type = imm;
     else if (op === 0x60) { const x = r.sleb(p, 10, end); p = x.next; addend = x.value; }
-    else if (op === 0x70) { segIndex = imm; const x = r.uleb(p, 10, end); p = x.next; segOffset = x.value; }
+    else if (op === 0x70) { segIndex = imm; const x = r.uleb(p, 10, end); p = x.next; segOffset = x.value; locationSet = true; }
     else if (op === 0x80) { const x = r.uleb(p, 10, end); p = x.next; segOffset += x.value; }
     else if (op === 0x90) { bind(); segOffset += ptrSize; }
     else if (op === 0xa0) { bind(); const x = r.uleb(p, 10, end); p = x.next; segOffset += ptrSize + x.value; }
@@ -516,6 +553,9 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
         const x = r.uleb(p, 10, end); p = x.next;
         if (x.value > 65536n) { fail('threaded ordinal table exceeds 65536 entries'); break; }
         threadedTableLimit = Number(x.value); threadedTable = [];
+        // Threaded bind entries are pointer-form chained fixups: the stream has
+        // no SET_TYPE_IMM opcode, so the implicit pointer type applies here.
+        type = 1;
       } else if (imm === 1) applyThreaded();
       else { fail(`unknown threaded bind subopcode 0x${imm.toString(16)}`, byte); break; }
     } else { fail(`unknown dyld bind opcode 0x${op.toString(16)}`, byte); break; }
@@ -554,19 +594,56 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
       const terminalEnd = p + terminalSize;
       if (term.value) {
         const flagsX = r.uleb(p, 10, terminalEnd); p = flagsX.next; const flags = Number(flagsX.value);
-        if (flags & 0x08) {
+        // Apple dyld's ExportsTrie.cpp rejects terminals with bits >= 6 set
+        // ("unknown exports flag bits"). Laundering them into regular
+        // exports would mint export metadata the container cannot mean
+        // (#5392).
+        if ((flags >>> 6) !== 0) {
+          markPartial(`unknown exports flag bits 0x${flags.toString(16)}`);
+        } else if (flags & 0x08) {
           const ord = r.uleb(p, 10, terminalEnd); p = ord.next; const importedX = rawCString(r, p, terminalEnd);
           const imported = importedX.text || null;
-          const retainedStringBytes = (prefix.length + (imported?.length || 0)) * 2;
-          if(!budget.take({objects:1,operations:1,stringBytes:retainedStringBytes,estimatedHeapBytes:retainedStringBytes+160},'export-trie-reexport-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;}
-          image.exports.push({ name: prefix, address: 0n, kind: 'reexport', flags, ordinal: Number(ord.value), imported, source: 'exports-trie' });
-        } else {
-          const exportKind = flags & 0x03;
-          if (exportKind === 3) {
-            markPartial(`unsupported export kind ${exportKind}`);
+          const ordinal = Number(ord.value);
+          // A positive library ordinal is a 1-based index into the dependent
+          // dylib list; an ordinal beyond it references no library and must
+          // not become canonical export metadata (dyld binding semantics,
+          // #5532).
+          const libraryCount = Array.isArray(image.libraries) ? image.libraries.length : 0;
+          if (ordinal > 0 && ordinal > libraryCount) {
+            markPartial(`reexport ordinal ${ordinal} exceeds dependency count ${libraryCount}`);
           } else {
+            const retainedStringBytes = (prefix.length + (imported?.length || 0)) * 2;
+            if(!budget.take({objects:1,operations:1,stringBytes:retainedStringBytes,estimatedHeapBytes:retainedStringBytes+160},'export-trie-reexport-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;}
+            image.exports.push({ name: prefix, address: 0n, kind: 'reexport', flags, ordinal, imported, source: 'exports-trie' });
+          }
+        } else {
+            const exportKind = flags & 0x03;
+            if (exportKind === 3) {
+              markPartial(`unsupported export kind ${exportKind}`);
+            } else if (flags & 0x20) {
+              // EXPORT_SYMBOL_FLAGS_FUNCTION_VARIANT: the terminal carries a
+              // default-implementation offset plus a function-variant table
+              // index. Decoding it as a regular export would drop the table
+              // index and downgrade a variant-aware symbol to plain export
+              // provenance (#5387). The variant table itself is not modeled
+              // here yet, so publish typed provenance without an exact
+              // address and keep the trie explicitly partial.
+              const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next;
+              const tableIndexX = r.uleb(p, 10, terminalEnd); p = tableIndexX.next;
+              if (tableIndexX.value == null) {
+                markPartial('function-variant terminal is missing its variant table index');
+              } else if (!budget.take({objects:1,operations:1,stringBytes:prefix.length*2,estimatedHeapBytes:prefix.length*2+160},'export-trie-output')) {
+                markPartial('shared metadata output budget exceeded','budgetExceeded');
+              } else {
+                image.exports.push({ name: prefix, address: null, kind: 'function-variant', flags, defaultImplementationOffset: addrX.value, variantTableIndex: Number(tableIndexX.value), source: 'exports-trie' });
+                markPartial(`function-variant export ${prefix} recorded without variant-table resolution`);
+              }
+            } else {
             const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next;
-            const address = exportKind === 0 ? image.imageBase + addrX.value : addrX.value;
+            // REGULAR and THREAD_LOCAL terminal values are implementation
+            // offsets relative to the image; only ABSOLUTE is already a raw
+            // address (dyld ExportsTrie semantics, #4366).
+            const address = exportKind === 2 ? addrX.value : image.imageBase + addrX.value;
             const kind = exportKind === 1 ? 'thread-local' : exportKind === 2 ? 'absolute' : 'export';
             const ex = { name: prefix, address, kind, flags, source: 'exports-trie' };
             if (flags & 0x10) { const resolverX = r.uleb(p, 10, terminalEnd); p = resolverX.next; ex.resolver = image.imageBase + resolverX.value; }

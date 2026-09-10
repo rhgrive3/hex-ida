@@ -38,6 +38,53 @@ function loaderStartArray(value, code) {
   return value;
 }
 
+const VALIDATED_LOADER_SEED_SOURCES = new Set([
+  'function_starts',
+  'exception',
+  'tls-callback',
+  'guard-cf',
+  'unwind',
+]);
+const EXPLICIT_EXACT_SEED_SOURCES = new Set(['symbol', 'ifunc-resolver']);
+
+function seedSources(start) {
+  return new Set([
+    start?.source,
+    ...(Array.isArray(start?.sources) ? start.sources : []),
+  ].filter((source) => typeof source === 'string' && source.length > 0));
+}
+
+function hasHighExactConfidence(start) {
+  const confidence = start?.exactFunctionStartConfidence != null
+    ? start.exactFunctionStartConfidence
+    : start?.confidence;
+  return typeof confidence === 'number'
+    && Number.isFinite(confidence)
+    && confidence >= 0.9;
+}
+
+function isCanonicalLoaderSeed(start) {
+  const sources = seedSources(start);
+  if ([...sources].some((source) => VALIDATED_LOADER_SEED_SOURCES.has(source))) return true;
+  if (start?.exactFunctionStart !== true) return false;
+  return [...sources].some((source) => EXPLICIT_EXACT_SEED_SOURCES.has(source)) && hasHighExactConfidence(start);
+}
+
+function extentRegion(record, address) {
+  const rawSize = record?.sizeBytes ?? record?.size;
+  if (rawSize != null) {
+    const size = toAddress(rawSize);
+    return size == null ? null : regionFromSize(address, size);
+  }
+  const end = toAddress(record?.end);
+  if (end == null) return null;
+  try {
+    return regionFromSize(address, BigInt(end) - BigInt(address));
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Loader-supplied function starts and unwind entries.
  *
@@ -59,8 +106,7 @@ function loaderFunctionStarts(image) {
   // compatibility-only and may omit provenance/extent fields carried by the
   // canonical BinaryImage.functions seed.
   for (const start of loaderStartArray(image?.functions, 'discovery-loader-invalid-functions')) {
-    const sources = new Set([start?.source, ...(start?.sources ?? [])].filter(Boolean));
-    if (sources.has('function_starts')) add(start);
+    if (isCanonicalLoaderSeed(start)) add(start);
   }
   for (const start of loaderStartArray(image?.functionStarts, 'discovery-loader-invalid-function-starts')) add(start);
   return out;
@@ -74,12 +120,15 @@ export const loaderProducer = Object.freeze({
     for (const start of loaderFunctionStarts(input?.image)) {
       const address = toAddress(start.address ?? start);
       if (address == null) continue;
-      const region = start.sizeBytes ? regionFromSize(address, start.sizeBytes) : null;
+      const sources = seedSources(start);
+      const sourceEvidenceIds = [...sources].sort().map((source) => `loader:source:${source}:${address}`);
+      const region = extentRegion(start, address);
       out.push(evidence('loader-function-start', {
         start: address,
         name: start.name ?? null,
         regions: region ? [region] : [],
-        evidenceIds: [`loader:start:${address}`],
+        confidence: start.confidence ?? null,
+        evidenceIds: [`loader:start:${address}`, ...sourceEvidenceIds],
       }));
     }
     // A function body can be split across several unwind entries; the loader
@@ -173,8 +222,11 @@ export const symbolTableProducer = Object.freeze({
     const out = [];
     for (const symbol of input?.image?.symbols ?? []) {
       const address = toAddress(symbol.address);
-      if (address == null || symbol.isFunction === false) continue;
-      const region = symbol.sizeBytes ? regionFromSize(address, symbol.sizeBytes) : null;
+      const explicitlyNonFunction = symbol.kind != null
+        && symbol.kind !== 'function'
+        && symbol.kind !== 'indirect-function';
+      if (address == null || symbol.isFunction === false || explicitlyNonFunction) continue;
+      const region = extentRegion(symbol, address);
       out.push(evidence('symbol-table', {
         start: address,
         name: symbol.name ?? null,
@@ -242,13 +294,28 @@ export function createDebugEvidenceProducer(debugEvidence) {
     id: 'discovery.debug',
     architectureId: null,
     produce() {
-      return (debugEvidence ?? []).map((item) => evidence('debug-symbol', {
-        start: toAddress(item.address),
-        name: item.name ?? null,
-        regions: item.sizeBytes ? [regionFromSize(item.address, item.sizeBytes)].filter(Boolean) : [],
-        confidence: item.confidence,
-        evidenceIds: item.evidenceIds ?? [],
-      })).filter((item) => item.start != null);
+      // A debug record only validates its address as a non-empty string, so a
+      // single malformed symbol must degrade to "no start / no region" and be
+      // filtered like any other unusable row — it must never abort the whole
+      // producer ahead of the start filter (#4930).
+      return (debugEvidence ?? []).map((item) => {
+        const start = toAddress(item.address);
+        const regions = [];
+        if (start != null && item.sizeBytes != null) {
+          const size = toAddress(item.sizeBytes);
+          if (size != null) {
+            const region = regionFromSize(start, size);
+            if (region != null) regions.push(region);
+          }
+        }
+        return evidence('debug-symbol', {
+          start,
+          name: item.name ?? null,
+          regions,
+          confidence: item.confidence,
+          evidenceIds: item.evidenceIds ?? [],
+        });
+      }).filter((item) => item.start != null);
     },
   });
 }

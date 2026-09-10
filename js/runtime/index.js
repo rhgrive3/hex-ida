@@ -4,6 +4,13 @@ import { compileExperiment, HypothesisVerifier } from '../dynamic/experiments.js
 import { createRuntimeEvidenceRecord, evidenceFromExperiment, fuseStaticDynamic, traceToSemanticFacts } from '../runtime-evidence/index.js';
 import { DebugAdapterError, asAddress, boundedInteger } from '../debug/adapter.js';
 
+function runtimeAdapterName(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new DebugAdapterError('invalid-adapter-name', 'adapter name must be a non-empty string');
+  }
+  return value;
+}
+
 function invalidExternalSignal() {
   return new DebugAdapterError('invalid-signal', 'signal must be AbortSignal-compatible');
 }
@@ -62,6 +69,9 @@ function operationController(session, externalSignal) {
   }
   return {
     signal:controller.signal,
+    abort(reason = 'cancelled') {
+      if (!controller.signal.aborted) controller.abort(reason);
+    },
     release() {
       // Detachment is best-effort cleanup of a caller-owned signal; a throwing
       // removeEventListener must not mask the operation outcome, because
@@ -96,6 +106,131 @@ function runtimeTimeout(value) {
   return value == null ? undefined : runtimePositiveInteger(value, 'timeoutMs', 60000);
 }
 
+function runtimeAbortError(signal) {
+  let reason = 'cancelled';
+  try { reason = signal?.reason ?? reason; } catch {}
+  if (reason === 'disconnected') return new DebugAdapterError('disconnected', 'runtime field read session disconnected');
+  if (reason === 'session-epoch-changed') return new DebugAdapterError('session-epoch-changed', 'runtime field read was invalidated by a newer session epoch');
+  return new DebugAdapterError('cancelled', 'runtime field read cancelled');
+}
+
+// A provider may accept the signal without actually interrupting its pending
+// read. Settle the caller at the boundary while retaining handlers on the
+// provider promise so a late result or rejection cannot publish evidence or
+// become an unhandled rejection.
+function boundedRuntimeRead(read, { signal, timeoutMs, onTimeout }) {
+  let timer = null;
+  let abortHandler = null;
+  let settled = false;
+  let resolveResult;
+  let rejectResult;
+  const cleanup = () => {
+    if (timer != null) clearTimeout(timer);
+    timer = null;
+    if (signal && abortHandler) {
+      try { signal.removeEventListener('abort', abortHandler); } catch {}
+    }
+    abortHandler = null;
+  };
+  const finish = (error, value) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    if (error) rejectResult(error);
+    else resolveResult(value);
+  };
+  return new Promise((resolve, reject) => {
+    resolveResult = resolve;
+    rejectResult = reject;
+    abortHandler = () => finish(runtimeAbortError(signal));
+    if (signal) {
+      signal.addEventListener('abort', abortHandler, { once:true });
+      if (signal.aborted) {
+        abortHandler();
+        return;
+      }
+    }
+    if (timeoutMs != null) {
+      timer = setTimeout(() => {
+        finish(new DebugAdapterError('timeout', `runtime field read timed out after ${timeoutMs} ms`, { timeoutMs }));
+        try { if (typeof onTimeout === 'function') onTimeout(); } catch {}
+      }, timeoutMs);
+    }
+    Promise.resolve().then(() => {
+      if (signal?.aborted) throw runtimeAbortError(signal);
+      return read();
+    }).then((value) => finish(null, value), (error) => finish(error));
+  });
+}
+
+function runtimeTraceAbortError(signal, phase, timeoutMs) {
+  let reason = 'cancelled';
+  try { reason = signal?.reason ?? reason; } catch {}
+  if (reason === 'timeout') {
+    return new DebugAdapterError('timeout', `runtime trace timed out during ${phase}`, { phase, timeoutMs });
+  }
+  if (reason === 'disconnected') return new DebugAdapterError('disconnected', `runtime trace ${phase} was interrupted by session disconnect`);
+  if (reason === 'session-epoch-changed') return new DebugAdapterError('session-epoch-changed', `runtime trace ${phase} was invalidated by a newer session epoch`);
+  return new DebugAdapterError('cancelled', `runtime trace ${phase} cancelled`);
+}
+
+// Bound each asynchronous phase at the platform boundary. Passing a signal to
+// an adapter is only cooperative: a remote or custom adapter may ignore it.
+// This wrapper settles traceFunction at cancellation/deadline while retaining
+// rejection handlers on the late adapter promise so it cannot publish evidence
+// or become an unhandled rejection after the caller has already returned.
+function boundedRuntimeTracePhase(operation, phase, deadline, timeoutMs, invoke) {
+  const signal = operation.signal;
+  let abortHandler = null;
+  let settled = false;
+  let resolveResult;
+  let rejectResult;
+  const cleanup = () => {
+    if (abortHandler) {
+      try { signal.removeEventListener('abort', abortHandler); } catch {}
+      abortHandler = null;
+    }
+  };
+  const finish = (error, value) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    if (error) rejectResult(error);
+    else resolveResult(value);
+  };
+  return new Promise((resolve, reject) => {
+    resolveResult = resolve;
+    rejectResult = reject;
+    abortHandler = () => finish(runtimeTraceAbortError(signal, phase, timeoutMs));
+    signal.addEventListener('abort', abortHandler, { once:true });
+    if (signal.aborted) {
+      abortHandler();
+      return;
+    }
+    Promise.resolve().then(() => {
+      if (signal.aborted) throw runtimeTraceAbortError(signal, phase, timeoutMs);
+      return invoke();
+    }).then(
+      (value) => {
+        if (!signal.aborted && deadline != null && Date.now() >= deadline) operation.abort('timeout');
+        finish(signal.aborted ? runtimeTraceAbortError(signal, phase, timeoutMs) : null, value);
+      },
+      (error) => {
+        if (!signal.aborted && deadline != null && Date.now() >= deadline) operation.abort('timeout');
+        finish(signal.aborted ? runtimeTraceAbortError(signal, phase, timeoutMs) : error);
+      },
+    );
+  });
+}
+
+function remainingTraceTimeout(deadline, timeoutBudget, operation, phase) {
+  if (deadline == null) return undefined;
+  const remaining = deadline - Date.now();
+  if (remaining > 0) return remaining;
+  operation.abort('timeout');
+  throw new DebugAdapterError('timeout', `runtime trace timed out before ${phase}`, { phase, timeoutMs:timeoutBudget });
+}
+
 function isReplayable(adapter, observation = null, trace = null) {
   if (adapter?.capabilities?.replay) return true;
   if (observation?.recordingId || observation?.recording || trace?.recordingId || trace?.recording) return true;
@@ -113,21 +248,25 @@ export class RuntimeAnalysisPlatform {
   }
   registerAdapter(name, adapter) {
     if (!adapter) throw new DebugAdapterError('adapter','adapter is required');
-    this.adapters.set(String(name), adapter);
+    this.adapters.set(runtimeAdapterName(name), adapter);
     return adapter;
   }
   adapter(name = null) {
-    if (name) return this.adapters.get(String(name)) || null;
+    if (name != null) return this.adapters.get(runtimeAdapterName(name)) || null;
     const session = this.sessions.current;
     if (session) return session.adapter;
     return this.adapters.get('local') || this.adapters.values().next().value || null;
   }
   createRemote(name, transport, options = {}) {
+    const adapterName = runtimeAdapterName(name);
     const kind = options.kind || 'remote';
     const adapter = kind === 'lldb' ? new LLDBCompatibleAdapter(transport, options) : kind === 'frida' ? new FridaCompatibleAdapter(transport, options) : new RemoteDebugAdapter(transport, options);
-    return this.registerAdapter(name, adapter);
+    return this.registerAdapter(adapterName, adapter);
   }
-  createReplay(name, recording, options = {}) { return this.registerAdapter(name, new ReplayAdapter(recording, options)); }
+  createReplay(name, recording, options = {}) {
+    const adapterName = runtimeAdapterName(name);
+    return this.registerAdapter(adapterName, new ReplayAdapter(recording, options));
+  }
   async startSession({ adapter = null, binaryHash = null, trace = {}, connect = true } = {}) {
     const instance = adapter == null ? this.adapter() : (typeof adapter === 'string' ? this.adapter(adapter) : adapter);
     if (!instance) throw new DebugAdapterError('adapter-not-found',`debug adapter not found: ${adapter ?? '<default>'}`);
@@ -170,7 +309,13 @@ export class RuntimeAnalysisPlatform {
   }
   async verifyHypothesis(hypothesis, options = {}) {
     const session = this.currentSession();
-    const experiment = compileExperiment(hypothesis,{ ...options,binaryHash:session.binaryHash });
+    // A hypothesis explicitly bound to another binary must never be re-labeled
+    // onto the active session: the compiled experiment would silently pass the
+    // runExperiment mismatch guard and produce evidence for the wrong binary.
+    if (hypothesis?.binaryHash && session.binaryHash && hypothesis.binaryHash !== session.binaryHash) {
+      throw new DebugAdapterError('binary-version-mismatch','hypothesis binary hash does not match the active runtime session',{hypothesisHash:hypothesis.binaryHash,sessionHash:session.binaryHash});
+    }
+    const experiment = compileExperiment(hypothesis,{ ...options,binaryHash:session.binaryHash || options.binaryHash || hypothesis?.binaryHash || null });
     return this.runExperiment(experiment, options);
   }
   async verifyFunction(functionAddress, options = {}) {
@@ -189,24 +334,36 @@ export class RuntimeAnalysisPlatform {
     const timeoutBudget = runtimeTimeout(options.timeoutMs);
     let observation = { stop:null, returnValue:null, branches:[] }, trace;
     const started = Date.now();
+    const deadline = timeoutBudget == null ? null : started + timeoutBudget;
+    let deadlineTimer = null;
+    if (timeoutBudget != null && !operation.signal.aborted) {
+      deadlineTimer = setTimeout(() => operation.abort('timeout'), timeoutBudget);
+    }
     try {
       if (adapter.capabilities.launch) {
-        await adapter.launch(launchSpec,{signal:operation.signal});
+        const timeoutMs = remainingTraceTimeout(deadline, timeoutBudget, operation, 'launch');
+        await boundedRuntimeTracePhase(operation, 'launch', deadline, timeoutBudget, () => adapter.launch(launchSpec,{ signal:operation.signal, timeoutMs }));
       } else if (adapter.capabilities.attach && options.attach) {
-        await adapter.attach(options.attach,{signal:operation.signal});
-      } else if (!adapter.capabilities.attach && !adapter.capabilities.traceFunction) {
+        const timeoutMs = remainingTraceTimeout(deadline, timeoutBudget, operation, 'attach');
+        await boundedRuntimeTracePhase(operation, 'attach', deadline, timeoutBudget, () => adapter.attach(options.attach,{ signal:operation.signal, timeoutMs }));
+      } else if (!adapter.capabilities.traceFunction) {
+        if (adapter.capabilities.attach) throw new DebugAdapterError('attach-target-required','adapter requires an attach target before tracing');
         throw new DebugAdapterError('unsupported','adapter cannot launch, attach, or trace an existing target');
       }
       if (adapter.capabilities.resume) {
-        observation = await adapter.resume({ maxSteps:options.maxSteps ?? 20000, timeoutMs:timeoutBudget, signal:operation.signal }) || observation;
+        const timeoutMs = remainingTraceTimeout(deadline, timeoutBudget, operation, 'resume');
+        observation = await boundedRuntimeTracePhase(operation, 'resume', deadline, timeoutBudget, () => adapter.resume({ maxSteps:options.maxSteps ?? 20000, timeoutMs, signal:operation.signal })) || observation;
       }
       if (observation.trace) trace = observation.trace;
       else {
         if (!adapter.capabilities.traceFunction) throw new DebugAdapterError('unsupported','adapter does not provide function tracing');
-        const timeoutMs = timeoutBudget == null ? undefined : Math.max(1, timeoutBudget - (Date.now() - started));
-        trace = await adapter.trace({ limit:boundedInteger(options.limit,4096,1,50000,'limit'), timeoutMs, signal:operation.signal });
+        const timeoutMs = remainingTraceTimeout(deadline, timeoutBudget, operation, 'trace');
+        trace = await boundedRuntimeTracePhase(operation, 'trace', deadline, timeoutBudget, () => adapter.trace({ limit:boundedInteger(options.limit,4096,1,50000,'limit'), timeoutMs, signal:operation.signal }));
       }
-    } finally { operation.release(); }
+    } finally {
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+      operation.release();
+    }
     if (session.epoch !== traceEpoch) {
       throw new DebugAdapterError('session-epoch-changed','runtime trace completed after the active session epoch changed',{traceEpoch,sessionEpoch:session.epoch});
     }
@@ -232,10 +389,23 @@ export class RuntimeAnalysisPlatform {
     this._recordEvidence(evidence);
     return { functionAddress:requestedAddress, observation, trace, facts, factExtraction, evidence:[evidence] };
   }
-  async readRuntimeField(address, size = 8) {
+  async readRuntimeField(address, size = 8, options = {}) {
     const session = this.currentSession();
     const n = runtimePositiveInteger(size == null ? 8 : size, 'size', 4096);
-    const bytes = await session.adapter.readMemory(address, n);
+    const timeoutMs = runtimeTimeout(options?.timeoutMs);
+    const operation = operationController(session, options?.signal);
+    const readEpoch = session.epoch;
+    let bytes;
+    try {
+      bytes = await boundedRuntimeRead(
+        () => session.adapter.readMemory(address, n, { signal:operation.signal, timeoutMs }),
+        { signal:operation.signal, timeoutMs, onTimeout:() => operation.abort('timeout') },
+      );
+    } finally { operation.release(); }
+    if (session.closed) throw new DebugAdapterError('session-closed', 'runtime field read completed after the session closed');
+    if (session.epoch !== readEpoch) {
+      throw new DebugAdapterError('session-epoch-changed', 'runtime field read completed after the active session epoch changed', { readEpoch, sessionEpoch:session.epoch });
+    }
     if (!(bytes instanceof Uint8Array) || bytes.length !== n) throw new DebugAdapterError('short-read',`runtime field read returned ${bytes && bytes.length || 0} of ${n} bytes`);
     const replayable=isReplayable(session.adapter);
     const evidence = createRuntimeEvidenceRecord({ backend:session.backend,binaryHash:session.binaryHash,sliceIdentity:this.options.sliceIdentity || null,sessionId:session.id,

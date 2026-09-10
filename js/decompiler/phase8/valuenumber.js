@@ -24,7 +24,7 @@ import { analysisIdentityMatches, canonicalAnalysisIdentity } from './analysis-i
 
 export const GVN_PASS = createPassDescriptor({
   id: 'phase8.gvn',
-  version: '1.0.0',
+  version: '1.0.1',
   stage: 'memory-optimization',
   budgetClass: 'standard',
   // `ranges` is SCCP's output: two values that are the same constant are the
@@ -48,6 +48,92 @@ const COMMUTATIVE = new Set(['add', 'mul', 'and', 'or', 'xor', 'eq', 'ne']);
  * consumer replace the second with the first.
  */
 const NEVER_CONGRUENT = new Set(['call', 'clobber', 'unknown']);
+
+// Scalar identity includes the attributes owned by each public IR family.
+// Unowned operations and incomplete descriptors remain singleton classes.
+const SCALAR_ATTRIBUTES = Object.freeze({
+  bin: ['negate', 'signed', 'float', 'roundingMode'],
+  un: ['sourceBits', 'targetBits', 'float', 'roundingMode'],
+  mov: ['castKind', 'sourceBits', 'targetBits'],
+  mac: ['widen', 'negate', 'float', 'roundingMode'],
+  cmp: ['comparison', 'signed', 'float', 'semanticComparisonCarrier'],
+  sel: ['conditionValueId', 'conditionCarrierValueId'],
+  bfx: ['lsb', 'width', 'signed'],
+  bfi: ['lsb', 'width', 'bitfieldKind'],
+});
+const SCALAR_OPERATORS = Object.freeze({
+  bin: new Set(['add', 'sub', 'mul', 'and', 'or', 'xor', 'bic', 'orn', 'eon', 'shl', 'lshr', 'ashr', 'ror', 'smull', 'umull', 'sdiv', 'udiv', 'eq', 'ne', 'lt', 'le', 'gt', 'ge']),
+  un: new Set(['neg', 'not', 'bool', 'lnot', 'abs', 'sext', 'zext', 'trunc', 'clz', 'ctz', 'rbit', 'rev']),
+  mov: new Set([null, 'copy', 'mov', 'sext', 'zext', 'trunc']),
+  mac: new Set(['madd', 'msub']),
+  cmp: new Set([null, 'sub', 'cmp', 'add']),
+  sel: new Set([null, 'sel', 'inc', 'inv', 'neg']),
+  bfx: new Set([null, 'bfx', 'sbfx', 'ubfx', 'extract']),
+  bfi: new Set([null, 'bfi', 'bfxil', 'insert']),
+});
+function scalarAttribute(value) {
+  if (value == null) return null;
+  if (typeof value === 'boolean' || typeof value === 'string') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  throw new TypeError('phase8.gvn.unproven-semantic-attribute');
+}
+function argumentKey(argument, valueKey) {
+  const value = argument?.value;
+  if (value?.id == null || !Number.isSafeInteger(value.bits) || value.bits <= 0) return null;
+  const key = valueKey(value);
+  if (key == null) return null;
+  const bits = argument.bits ?? value.bits;
+  if (!Number.isSafeInteger(bits) || bits <= 0) return null;
+  let shift = null;
+  if (argument.shift != null) {
+    const raw = argument.shift;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)
+      || typeof raw.op !== 'string' || !raw.op.trim()
+      || !Number.isSafeInteger(raw.amount) || raw.amount < 0) return null;
+    shift = [raw.op, raw.amount];
+  }
+  try {
+    return JSON.stringify([key, bits, shift, scalarAttribute(argument.extend), scalarAttribute(argument.signed)]);
+  } catch { return null; }
+}
+function scalarSemantics(instruction, produced, valueKey) {
+  if (!Object.hasOwn(SCALAR_ATTRIBUTES, instruction.op)
+    || !SCALAR_OPERATORS[instruction.op].has(instruction.sub ?? null)
+    || !Number.isSafeInteger(produced.bits) || produced.bits <= 0) return null;
+  if (instruction.extra?.float != null && instruction.extra.float !== false) return null;
+  try {
+    const attributes = SCALAR_ATTRIBUTES[instruction.op].map((field) => [field, scalarAttribute(instruction.extra?.[field])]);
+    let condition = null;
+    if (instruction.op === 'sel') {
+      const predicate = instruction.conditionValue;
+      const predicateKey = predicate == null ? null : valueKey(predicate);
+      if (predicate != null && (predicate.bits !== 1 || predicateKey == null)) return null;
+      const code = instruction.cond;
+      if (code != null) {
+        if (typeof code !== 'string' || !code.trim() || ['unknown', '?'].includes(code.trim().toLowerCase())) return null;
+        if (predicate == null && (instruction.args?.length ?? 0) < 3) return null;
+        condition = ['condition-code', code, predicateKey];
+      } else if (predicate != null) {
+        condition = ['predicate-value', predicateKey];
+      } else {
+        // The generic select carries a one-bit predicate first. A legacy
+        // flags-select with no condition code is not that representation.
+        const first = instruction.args?.[0]?.value;
+        if (instruction.args?.length !== 3 || first?.bits !== 1 || valueKey(first) == null) return null;
+        condition = ['predicate-first', valueKey(first)];
+      }
+    }
+    if (instruction.op === 'bfx' || instruction.op === 'bfi') {
+      const { lsb } = instruction.extra ?? {};
+      const width = instruction.extra?.width ?? (instruction.sub === 'extract'
+        ? produced.bits : instruction.sub === 'insert' ? instruction.args?.[1]?.value?.bits : null);
+      const source = instruction.args?.[0]?.value;
+      if (!Number.isSafeInteger(lsb) || lsb < 0 || !Number.isSafeInteger(width) || width <= 0
+        || !Number.isSafeInteger(source?.bits) || lsb + width > source.bits) return null;
+    }
+    return JSON.stringify([scalarAttribute(instruction.bits), attributes, condition]);
+  } catch { return null; }
+}
 
 function fail(code) { throw new TypeError(code); }
 
@@ -88,8 +174,17 @@ function loadIsReusable(definition) {
   if (access.atomic !== false) {
     return { ok: false, reason: `atomicity is ${access.atomic === true ? 'yes' : 'unknown'}` };
   }
-  if (access.ordering != null && access.ordering !== 'unknown' && access.ordering !== 'relaxed') {
-    return { ok: false, reason: `access imposes ordering: ${access.ordering}` };
+  // Ordering follows the same rule: an unproved `unknown` is not evidence of
+  // "no ordering", and reuse across an unknown ordering is a wrong program.
+  // Only an absent or explicit null, or an explicit `relaxed`, proves the
+  // access imposes none (#5541).
+  if (access.ordering != null && access.ordering !== 'relaxed') {
+    return {
+      ok: false,
+      reason: access.ordering === 'unknown'
+        ? 'access ordering is unproved'
+        : `access imposes ordering: ${access.ordering}`,
+    };
   }
   if (definition.unknownAliasBarrier != null) {
     return { ok: false, reason: 'an unknown store lies between this load and its source' };
@@ -266,6 +361,20 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
       const produced = instruction?.dst;
       if (produced == null) continue;
 
+      if (NEVER_CONGRUENT.has(instruction.op)) {
+        singleton(produced, `${instruction.op} may produce a different value each time it runs`);
+        continue;
+      }
+      const semantics = scalarSemantics(instruction, produced, operandKey);
+      const operands = (instruction.args ?? []).map((argument) => argumentKey(argument, operandKey));
+      if (instruction.op !== 'load' && instruction.op !== 'const'
+          && (semantics == null || operands.some((key) => key == null))) {
+        // A cached constant is not a substitute for a well-defined operation.
+        // Validate its semantic attributes before taking that shortcut.
+        singleton(produced, 'an operand or family-specific semantic attribute is not proven');
+        continue;
+      }
+
       const constant = constantKey(produced.id);
       if (constant != null) {
         // Every proved constant of the same width and value is one class.
@@ -279,11 +388,6 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
           numbers.set(produced.id, number);
           classes.set(number, [produced.id]);
         }
-        continue;
-      }
-
-      if (NEVER_CONGRUENT.has(instruction.op)) {
-        singleton(produced, `${instruction.op} may produce a different value each time it runs`);
         continue;
       }
 
@@ -313,13 +417,12 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
         continue;
       }
 
-      const operands = (instruction.args ?? []).map((argument) => operandKey(argument?.value));
-      if (operands.some((key) => key == null)) {
-        singleton(produced, 'an operand has no value number yet');
+      if (semantics == null || operands.some((key) => key == null)) {
+        singleton(produced, 'an operand or family-specific semantic attribute is not proven');
         continue;
       }
-      const ordering = COMMUTATIVE.has(instruction.sub) ? [...operands].sort() : operands;
-      const key = `${instruction.op}/${instruction.sub ?? '-'}:${produced.bits}:${ordering.join(',')}`;
+      const ordering = instruction.op === 'bin' && COMMUTATIVE.has(instruction.sub) ? [...operands].sort() : operands;
+      const key = JSON.stringify([instruction.op, instruction.sub ?? null, produced.bits, ordering, semantics]);
       const existing = keyToNumber.get(key);
       if (existing == null) {
         const number = nextNumber++;
@@ -334,7 +437,7 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
       if (earlier != null && dominates(dominatorsOf, earlier.def?.block, instruction.block)) {
         reuseCandidates.push({
           kind: 'scalar', valueId: produced.id, reuseOf: earlier.id,
-          proof: `identical ${instruction.op}/${instruction.sub ?? '-'} at ${produced.bits} bits over congruent operands, and the earlier definition dominates`,
+          proof: `identical ${instruction.op}/${instruction.sub ?? '-'} at ${produced.bits} bits over congruent operand views and identical semantic attributes, and the earlier definition dominates`,
         });
       }
     }

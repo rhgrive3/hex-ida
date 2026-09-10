@@ -28,7 +28,7 @@ import {
   MEMORY_SSA_PROOF_VERSION,
 } from './proof.js';
 
-export const MEMORY_SSA_BUILD_VERSION = '1.0.0';
+export const MEMORY_SSA_BUILD_VERSION = '1.0.1';
 export const MEMORY_SSA_BUILD_DEFAULT_BUDGET = Object.freeze({
   ...MEMORY_SSA_DEFAULT_BUDGET,
   maxAliasQueries: 1048576,
@@ -430,13 +430,39 @@ function makeDescriptor(node, role, sourceKind, index, memory, extra = {}) {
  * exactly that). The walk follows only canonical value definitions and the
  * machine address expression metadata emitted by the Semantic IR builder.
  */
+/*
+ * Canonical stack/frame pointer identities across the owned architectures.
+ * The pre-existing heuristic spelled one target family's names; the x86-64 canonical
+ * names are now recognized too (base pointer + stack pointer spellings with
+ * their `r`-prefixed long forms). A stack-derived proof that misses an
+ * architecture's canonical names silently drops unknown-call stack clobbers
+ * for that target. Canonical register identity comes from the target
+ * registers-core tables; this set only re-states the frame/stack root names
+ * those tables already normalize.
+ */
+const STACK_POINTER_REGISTER_IDS = new Set(['sp', 'fp', 'x29', 'rsp', 'rbp']);
+const STACK_POINTER_REGISTER_SUFFIXES = ['_sp', '_fp'];
+
+/*
+ * x86-64 ABI argument register slots (SysV order; Win64 is a subset). Slot
+ * numbering is a dedup identity only; every recognized register independently
+ * blocks the no-escape claim when its latest definition is unknown or
+ * stack-derived. Names are matched by position index + register class so the
+ * MemorySSA core stays free of architecture token tables: the accepted
+ * spellings are exactly the six integer argument registers of the two owned
+ * 64-bit ABIs, each mapping to its parameter slot.
+ */
+const X86_64_ARGUMENT_REGISTER_SLOTS = new Map([
+  ['rdi', 'arg0'], ['rsi', 'arg1'], ['rdx', 'arg2'], ['rcx', 'arg3'], ['r8', 'arg4'], ['r9', 'arg5'],
+]);
+
 function expressionContainsStackRegister(expression, active = new Set()) {
   if (!expression || typeof expression !== 'object' || active.has(expression)) return false;
   active.add(expression);
   const kind = String(expression.kind ?? '').toLowerCase();
   const role = String(expression.role ?? expression.storageRole ?? '').toLowerCase();
   const registerId = String(expression.physicalId ?? expression.registerId ?? expression.name ?? '').toLowerCase();
-  if (kind === 'register' && (role === 'stack-pointer' || role === 'frame-pointer' || registerId === 'sp' || registerId === 'fp' || registerId.endsWith('_sp') || registerId.endsWith('_fp'))) {
+  if (kind === 'register' && (role === 'stack-pointer' || role === 'frame-pointer' || STACK_POINTER_REGISTER_IDS.has(registerId) || STACK_POINTER_REGISTER_SUFFIXES.some((suffix) => registerId.endsWith(suffix)))) {
     active.delete(expression);
     return true;
   }
@@ -469,7 +495,7 @@ function stackDerivedValueIds(irFunction) {
       ? null : nodesById.get(String(value.definitionNodeId));
     if (!result && definition?.variable?.physicalIdentity) {
       const registerId = definition.variable.physicalIdentity.registerId;
-      result = ['sp', 'x29', 'fp'].includes(String(registerId ?? '').toLowerCase());
+      result = STACK_POINTER_REGISTER_IDS.has(String(registerId ?? '').toLowerCase());
     }
     if (!result && Array.isArray(definition?.inputs)) {
       result = definition.inputs.some((input) => derives(input));
@@ -514,10 +540,15 @@ function callMayExposeStackAddress(node, orderedNodes, irFunction, stackValues) 
   for (let index = callIndex - 1; index >= 0 && seenRegisters.size < 8; index--) {
     const candidate = orderedNodes[index];
     if (candidate?.kind !== 'state-write') continue;
-    const registerId = candidate.variable?.physicalIdentity?.registerId;
-    const match = String(registerId ?? '').toLowerCase().match(/^(?:arg|param|[a-z])([0-7])$/);
-    if (!match) continue;
-    const register = `arg${match[1]}`;
+    const rawRegisterId = String(candidate.variable?.physicalIdentity?.registerId ?? '').toLowerCase();
+    // legacy `argN`/`paramN`/`xN` spellings map to `argN`; x86-64 SysV
+    // argument registers map to their positional slot. Unrecognized register
+    // names never authorize a no-escape claim — they are skipped as
+    // non-argument state so the conservative outcome survives.
+    const slot = X86_64_ARGUMENT_REGISTER_SLOTS.get(rawRegisterId)
+      ?? rawRegisterId.match(/^(?:arg|param|[a-z])([0-7])$/)?.[1];
+    if (slot == null) continue;
+    const register = typeof slot === 'string' && slot.startsWith('arg') ? slot : `arg${slot}`;
     if (seenRegisters.has(register)) continue;
     seenRegisters.add(register);
     const valueId = candidate.inputs?.[0];
@@ -841,58 +872,17 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   const fallbackRegion = defaultUnknownRegion(irFunction.functionId);
   const orderedNodes = nodeOrder(irFunction, cfg, options);
   const { descriptors, readsByNode, writesByNode } = discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNodes);
-  const stackValues = stackDerivedValueIds(irFunction);
   const nodeOrderById = new Map(orderedNodes.map((node, index) => [node.id, index]));
   const semanticValueById = new Map((irFunction.values ?? []).map((value) => [String(value.id), value]));
 
   const regionById = new Map();
   for (const region of options.regions ?? []) addRegion(regionById, region);
   for (const descriptor of descriptors) for (const region of descriptor.regions) addRegion(regionById, region);
-  // The address root can remain the ABI stack pointer across a call while its
-  // post-call SSA value has a distinct identity. If canonical address proof
-  // still establishes that root, reuse the already discovered fixed-stack
-  // region for the access so the producer's MemorySSA chain remains precise.
-  // This is an IR/value proof, not a compatibility-layer instruction walk.
-  const stackRegionBySlot = new Map();
-  for (const descriptor of descriptors) {
-    if (descriptor.sourceKind !== 'load' && descriptor.sourceKind !== 'store') continue;
-    const displacement = memoryDescriptorDisplacement(descriptor.node);
-    const widthBits = Number(descriptor.memory?.widthBits);
-    if (displacement == null || !Number.isSafeInteger(widthBits) || widthBits <= 0) continue;
-    for (const region of descriptor.regions ?? []) {
-      if (!String(region.kind).startsWith('stack')) continue;
-      stackRegionBySlot.set(`${displacement.toString()}\u0000${widthBits}`, region);
-    }
-  }
-  for (const descriptor of descriptors) {
-    if (descriptor.sourceKind !== 'load' && descriptor.sourceKind !== 'store') continue;
-    const addressValueId = descriptor.memory?.addressExpr?.valueId;
-    if (addressValueId == null || !stackValues.derives(addressValueId)) continue;
-    const displacement = memoryDescriptorDisplacement(descriptor.node);
-    if (displacement == null) continue;
-    const widthBits = Number(descriptor.memory?.widthBits);
-    const stackRegion = stackRegionBySlot.get(`${displacement.toString()}\u0000${widthBits}`)
-      ?? [...regionById.values()].find((region) => {
-        if (!String(region.kind).startsWith('stack')) return false;
-        try { return BigInt(region.offset) === displacement; }
-        catch { return false; }
-      });
-    if (stackRegion) {
-      descriptor.regions = [stackRegion];
-      // The memory-effect decoder intentionally leaves qualifiers
-      // unknown until a higher-level region proves ordinary function-local
-      // storage. A fixed stack root is that canonical proof: this access is
-      // neither volatile nor atomic, while ordering remains the decoder's
-      // explicit (and still conservative) value.
-      if (descriptor.memory?.volatility === 'unknown' && descriptor.memory?.atomic === 'unknown') {
-        descriptor.memory = {
-          ...descriptor.memory,
-          volatility: false,
-          atomic: false,
-        };
-      }
-    }
-  }
+  // Region identity belongs to the canonical resolver. A stack-derived
+  // value may have a different root, a dynamic offset, or lost provenance.
+  // Borrowing a region from another access based on displacement/width alone
+  // would issue a false must-alias/forwarding proof (#4388). Access qualifiers
+  // are established independently by the canonical access provider below.
   if (!regionById.size) addRegion(regionById, fallbackRegion);
   if (regionById.size > budgetLimit(options, 'maxRegions')) fail('memory-ssa-build-budget-exceeded-maxRegions');
   const regions = [...regionById.values()].sort((a, b) => a.id.localeCompare(b.id));

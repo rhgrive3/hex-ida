@@ -2,6 +2,17 @@
  * decompilers still preserve as raw __asm. This is deliberately mnemonic-
  * scoped: unknown instructions stay raw assembly rather than being hidden. */
 
+const A64_CONDITIONS = new Set([
+  'eq', 'ne', 'cs', 'hs', 'cc', 'lo', 'mi', 'pl', 'vs', 'vc',
+  'hi', 'ls', 'ge', 'lt', 'gt', 'le', 'al', 'nv',
+]);
+
+function canonicalConditionToken(text) {
+  if (typeof text !== 'string') return null;
+  const normalized = text.trim().toLowerCase();
+  return A64_CONDITIONS.has(normalized) ? normalized : null;
+}
+
 function renderedText(lines) {
   return (lines || []).map((line) => `${'    '.repeat(Math.max(0, line.indent || 0))}${line.text || ''}`).join('\n');
 }
@@ -17,13 +28,25 @@ function parseImm(text) {
   return Number.isSafeInteger(value) ? value : null;
 }
 
-function expandMovi2dImmediate(imm) {
-  if (!Number.isInteger(imm) || imm < 0 || imm > 0xff) return null;
-  let value = 0n;
-  for (let bit = 0; bit < 8; bit++) {
-    if ((imm & (1 << bit)) !== 0) value |= 0xffn << BigInt(bit * 8);
+function parseImm64(text) {
+  const raw = String(text || '').trim().replace(/^#/, '');
+  if (!/^-?(?:0x[0-9a-f]+|\d+)$/i.test(raw)) return null;
+  try { return BigInt(raw); } catch { return null; }
+}
+
+// In A64 assembly syntax the MOVI <V>.2D immediate is the already-expanded
+// 64-bit value whose every byte is 0x00 or 0xff — the encoding's 8-bit
+// `abcdefgh` field has been unfolded by the disassembler (#5454). Treating the
+// printed immediate as the encoding field turned `movi v0.2d, #0xff` into
+// all-ones. Validate the byte-mask shape instead of re-expanding; anything
+// else is not a canonical 2D immediate and stays raw.
+function canonicalMovi2dImmediate(imm) {
+  if (imm == null || imm < 0n || imm > 0xffffffffffffffffn) return null;
+  for (let byte = 0; byte < 8; byte++) {
+    const value = (imm >> BigInt(byte * 8)) & 0xffn;
+    if (value !== 0n && value !== 0xffn) return null;
   }
-  return value;
+  return imm;
 }
 
 function asmPayload(text) {
@@ -53,24 +76,40 @@ function lowerOne(payload) {
 
   // FCSEL <Sd|Dd>, <Sn|Dn>, <Sm|Dm>, <cond> chooses one FP source from the
   // current NZCV condition. The helper names the architectural predicate; it
-  // is not an opaque assembly escape hatch.
-  if (mnemonic === 'fcsel' && operands.length === 4 && /^[sd]\d+$/i.test(operands[0]) && /^[sd]\d+$/i.test(operands[1]) && /^[sd]\d+$/i.test(operands[2]) && /^[a-z]{2}$/i.test(operands[3])) {
-    return `${operands[0]} = __a64_cond_${operands[3].toLowerCase()}() ? ${operands[1]} : ${operands[2]};`;
+  // is not an opaque assembly escape hatch. Unknown condition codes never
+  // lower: the raw __asm fallback is the fail-closed boundary.
+  if (mnemonic === 'fcsel' && operands.length === 4 && /^[sd]\d+$/i.test(operands[0]) && /^[sd]\d+$/i.test(operands[1]) && /^[sd]\d+$/i.test(operands[2])) {
+    const cond = canonicalConditionToken(operands[3]);
+    if (cond !== null && cond !== 'al' && cond !== 'nv') {
+      return `${operands[0]} = __a64_cond_${cond}() ? ${operands[1]} : ${operands[2]};`;
+    }
   }
 
   // FCCMP conditionally performs an FP compare; when the predicate is false,
   // NZCV is replaced by the encoded immediate. Represent the flag effect
   // explicitly because dropping it would change subsequent FCSEL/branches.
-  if (mnemonic === 'fccmp' && operands.length === 4 && /^[sd]\d+$/i.test(operands[0]) && /^[sd]\d+$/i.test(operands[1]) && /^[a-z]{2}$/i.test(operands[3])) {
-    const nzcv = parseImm(operands[2]);
-    if (nzcv != null && nzcv >= 0 && nzcv <= 15) {
-      return `__a64_fccmp(${operands[0]}, ${operands[1]}, ${nzcv}, "${operands[3].toLowerCase()}");`;
+  if (mnemonic === 'fccmp' && operands.length === 4 && /^[sd]\d+$/i.test(operands[0]) && /^[sd]\d+$/i.test(operands[1])) {
+    const cond = canonicalConditionToken(operands[3]);
+    if (cond !== null && cond !== 'al' && cond !== 'nv') {
+      const nzcv = parseImm(operands[2]);
+      if (nzcv != null && nzcv >= 0 && nzcv <= 15) {
+        return `__a64_fccmp(${operands[0]}, ${operands[1]}, ${nzcv}, "${cond}");`;
+      }
     }
   }
 
   // MOVI vector immediate. The observed gap is the shifted halfword form, but
   // keep the lowering generic for valid vN.<lanes><b|h|s|d> arrangements.
   if (mnemonic === 'movi' && operands.length >= 2 && /^v\d+\.\d+[bhsd]$/i.test(operands[0])) {
+    const arrangement = operands[0].split('.')[1].toLowerCase();
+    if (arrangement === '2d') {
+      // The printed immediate is the full 64-bit byte mask; parse it exactly
+      // so masks wider than a safe integer still lower exactly (#5454).
+      if (operands.length !== 2) return null;
+      const value = canonicalMovi2dImmediate(parseImm64(operands[1]));
+      if (value == null) return null;
+      return `${operands[0].split('.')[0]} = __a64_movi_2d(0x${value.toString(16)});`;
+    }
     const imm = parseImm(operands[1]);
     if (imm != null) {
       let shift = 0;
@@ -80,11 +119,7 @@ function lowerOne(payload) {
         shift = Number(match[1]);
       }
       if (shift >= 0 && shift <= 63) {
-        const arrangement = operands[0].split('.')[1].toLowerCase();
-        const value = arrangement === '2d'
-          ? (operands.length === 2 ? expandMovi2dImmediate(imm) : null)
-          : BigInt.asUintN(64, BigInt(imm) << BigInt(shift));
-        if (value == null) return null;
+        const value = BigInt.asUintN(64, BigInt(imm) << BigInt(shift));
         return `${operands[0].split('.')[0]} = __a64_movi_${arrangement}(0x${value.toString(16)});`;
       }
     }

@@ -24,6 +24,7 @@ const SHN_LORESERVE = 0xff00;
 const SHN_ABS = 0xfff1;
 const SHN_COMMON = 0xfff2;
 const SHN_XINDEX = 0xffff;
+const STB_GNU_UNIQUE = 10;
 const STT_GNU_IFUNC = 10;
 const DT_REL = 17n;
 const DT_RELSZ = 18n;
@@ -43,12 +44,25 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   }
 
   const entSize = bits === 64 ? 16 : 8;
+  // parseELF's public cancellation contract must reach the PT_DYNAMIC path:
+  // an aborted caller must not start (or keep funding) large dynamic decode
+  // work (#5584).
+  const signal = opts.signal || null;
+  const cancelled = () => signal?.aborted === true;
+  if (cancelled()) {
+    markDynamicPartial(image, 'PT_DYNAMIC parse was cancelled before it started');
+    return { parsed: false };
+  }
   const tags = new Map();
   const ordered = [];
   const entrySpanRemainder = size % entSize;
   let guard = 0;
   let terminated = false;
   for (let p = start; p + entSize <= start + size && guard < 1_000_000; p += entSize, guard++) {
+    if (cancelled()) {
+      markDynamicPartial(image, 'PT_DYNAMIC entry scan was cancelled');
+      return { parsed: false };
+    }
     const tag = bits === 64 ? r.i64(p) : BigInt(r.i32(p));
     const value = bits === 64 ? r.u64(p + 8) : BigInt(r.u32(p + 4));
     if (tag === DT_NULL) {
@@ -79,7 +93,11 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   const symentValid = syment >= defaultSyment;
   if (!symentValid) markDynamicPartial(image, `DT_SYMENT ${syment} is smaller than ${defaultSyment}`);
   if (needsStringTable && (strtab == null || strsz == null)) markDynamicPartial(image, 'dynamic string table address/size is missing');
-  const strSize = strsz == null ? 0 : toSafeNumber(strsz);
+  const strSizeRaw = strsz == null ? null : toSafeNumber(strsz);
+  if (strsz != null && strSizeRaw == null) {
+    markDynamicPartial(image, `DT_STRSZ ${strsz} is not a safely representable file span; dynamic string table skipped`);
+  }
+  const strSize = strSizeRaw ?? 0;
   const strSpan = strtab == null || strSize == null ? null : mappedELFFileSpanForVa(image, strtab, strSize);
   if (strtab != null && strSize > 0 && !strSpan) markDynamicPartial(image, 'DT_STRTAB/DT_STRSZ crosses a file-backed PT_LOAD boundary');
   const strOff = strSpan?.start ?? null;
@@ -108,6 +126,7 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   }
 
   const relocationBudget = createRelocationBudget({
+    signal,
     onLimit(message) { markDynamicPartial(image, `relocation decode budget exceeded: ${message}`); },
   });
   const relocs = collectDynamicRelocations(r, tags, image, bits, relocationBudget);
@@ -115,6 +134,7 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   if (!relocationBudget.stopped) collectAndroidPackedRelocations(r, tags, image, bits, { budget: relocationBudget, out: relocs });
   image.metadata.programDynamicRelocationBudget = relocationBudget.snapshot(relocs.length);
   const symbolBudget = createDynamicSymbolBudget({
+    signal,
     limits: opts.dynamicSymbolLimits || {},
     onLimit(message) { markDynamicPartial(image, `dynamic symbol decode budget exceeded: ${message}`); },
   });
@@ -124,9 +144,12 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   const symbolFileCapacity = symtab != null && symentValid
     ? dynamicSymbolFileCapacity(r, image, tags, symtab, syment)
     : 0;
+  let sysvCount = 0;
+  let gnuCount = 0;
+  let gnuHashMalformed = false;
+  if (one(DT_HASH) != null) sysvCount = symbolCountFromHash(r, one(DT_HASH), image);
+  if (one(DT_GNU_HASH) != null) gnuCount = symbolCountFromGnuHash(r, one(DT_GNU_HASH), image, bits, { signal, onMalformed: () => { gnuHashMalformed = true; } });
   if (symtab != null && symentValid) {
-    const sysvCount = symbolCountFromHash(r, one(DT_HASH), image);
-    const gnuCount = symbolCountFromGnuHash(r, one(DT_GNU_HASH), image, bits);
     const sizeCount = symbolCountFromSymtabSize(one(DT_SYMTABSZ), symtab, syment, image);
     minimumSymbolCount = symbolCountFromRelocations(relocs);
     const exact = [
@@ -140,7 +163,9 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
       declaredSymbolCount = Math.min(...exact.map(([, count]) => count));
       symbolCountSource = exact.length === 1 ? exact[0][0] : 'multiple-exact-evidence';
     } else {
-      declaredSymbolCount = symbolCountFromLayout(symtab, strtab, syment, image, r);
+      // #5520: a structurally malformed DT_GNU_HASH table cannot ground
+      // symbol-count evidence; the layout heuristic must not paper over it.
+      declaredSymbolCount = gnuHashMalformed ? 0 : symbolCountFromLayout(symtab, strtab, syment, image, r);
       if (declaredSymbolCount) {
         symbolCountSource = 'layout-heuristic';
         markExtendedPartial(image, 'dynamic symbol count was inferred from bounded SYMTAB/STRTAB layout');
@@ -173,6 +198,7 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   applyVersionMetadata(image, versions, symbolBudget);
   image.metadata.programDynamicSymbolBudget = symbolBudget.snapshot();
   if (opts.relocations !== false) attachDynamicRelocations(image, relocs, symbols);
+  checkRiscvVariantCcTag(image, tags, relocs, symbols);
 
   image.metadata.programDynamic = {
     entries: ordered.length,
@@ -222,24 +248,41 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     const type = info & 0xf;
     const sectionIdentity = resolveDynamicSectionIndex(r, image, tags, i, shndx);
     const defined = sectionIdentity.known ? sectionIdentity.index !== SHN_UNDEF : null;
+    const common = sectionIdentity.known
+      && sectionIdentity.source === 'st_shndx'
+      && sectionIdentity.index === SHN_COMMON;
+    const unallocatedOrUndefined = common || defined === false;
     if (!sectionIdentity.known) markDynamicPartial(image, `dynamic symbol ${i} has unresolved section identity (${sectionIdentity.reason})`);
-    const binding = bind === 0 ? 'local' : bind === 1 ? 'global' : bind === 2 ? 'weak' : `bind-${bind}`;
+    // STB_GNU_UNIQUE (10) is a process-wide unique global binding (GNU ELF
+    // ABI): it must stay in the export/linkage truth, not be lumped into an
+    // anonymous `bind-N` bucket (#5844).
+    const binding = bind === 0 ? 'local' : bind === 1 ? 'global' : bind === 2 ? 'weak' : bind === STB_GNU_UNIQUE ? 'gnu-unique' : `bind-${bind}`;
     const kind = dynamicSymbolKind(type);
     const ver = versions.get(i) || null;
-    const ifunc = type === STT_GNU_IFUNC && defined === true;
-    const sym = { name, address: value, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(ifunc ? { resolverAddress:value, resolution:'runtime-resolver' } : {}) };
+    const ifunc = type === STT_GNU_IFUNC && defined === true && !common;
+    const riscvVariantCcFlag = Number(image?.metadata?.machine) === 243 && (other & 0x80) !== 0;
+    const riscvVariantCc = riscvVariantCcFlag && type === 2;
+    // STT_TLS: a defined TLS symbol's st_value is its TLS offset, not a
+    // virtual address (ELF gABI). Keep it out of the VA domain and
+    // image.exports as a canonical address (#5843).
+    const tls = type === 6;
+    const sym = { name, address: tls ? null : unallocatedOrUndefined ? 0n : value, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, stOther: other, processorSpecificOther: other & ~3, riscvVariantCcFlag, riscvVariantCc, callingConvention: riscvVariantCc ? 'riscv-vector-variant' : null, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(tls ? { tlsOffset: value } : {}), ...(common ? { commonAlignment: value, commonSize: size, allocation: 'common-unallocated' } : {}), addressDomain: tls ? 'tls-offset' : common ? 'common-unallocated' : 'virtual', ...(ifunc ? { resolverAddress:value, resolution:'runtime-resolver' } : {}) };
     out.push(sym);
     if (!name) continue;
     image.symbols.push(sym);
-    if (defined === false && (bind === 1 || bind === 2)) {
+    const externallyVisible = bind === 1 || bind === 2 || bind === STB_GNU_UNIQUE;
+    if (defined === false && externallyVisible) {
       if (budget && !budget.claimOutput(1, 160, 'PT_DYNAMIC imports')) break;
       image.imports.push({ name, library: null, ordinal: null, weak: bind === 2, version: ver?.name ?? null, versionLibrary: ver?.library ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC', sites: [] });
     }
-    if (defined === true && (bind === 1 || bind === 2) && (sym.visibility === 0 || sym.visibility === 3)) {
+    if (defined === true && !common && externallyVisible && (sym.visibility === 0 || sym.visibility === 3)) {
       if (budget && !budget.claimOutput(1, 144, 'PT_DYNAMIC exports')) break;
-      image.exports.push({ name, address: value, kind, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' });
+      // TLS exports keep their name/visibility fact but never mint a VA (#5843).
+      image.exports.push(tls
+        ? { name, address: null, kind, tlsOffset: value, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' }
+        : { name, address: value, kind, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' });
     }
-    if (defined === true && (type === 2 || type === STT_GNU_IFUNC) && value !== 0n) {
+    if (defined === true && !common && (type === 2 || type === STT_GNU_IFUNC) && value !== 0n) {
       if (budget && !budget.claimOutput(1, 128, 'PT_DYNAMIC function seeds')) break;
       const owner = (() => {
         const start=value, extent=size||0n;
@@ -340,8 +383,24 @@ function collectDynamicRelocations(r, tags, image, bits, budget) {
   return out;
 }
 
-function attachDynamicRelocations(image, relocs, symbols) {
+const EM_RISCV = 243;
+const R_RISCV_JUMP_SLOT = 5;
+const DT_RISCV_VARIANT_CC = 0x70000001n;
+
+function checkRiscvVariantCcTag(image, tags, relocs, symbols) {
+  if (Number(image?.metadata?.machine) !== EM_RISCV) return;
+  const hasVariantCcTag = (tags?.get(DT_RISCV_VARIANT_CC) || []).length > 0;
+  if (hasVariantCcTag) {
+    image.metadata.riscvVariantCcTagPresent = true;
+    return;
+  }
   const byIndex = new Map((symbols || []).map((s) => [s.index, s]));
+  const missing = (relocs || []).some((rel) =>
+    Number(rel?.type) === R_RISCV_JUMP_SLOT && byIndex.get(rel.symIndex)?.riscvVariantCcFlag === true);
+  if (missing) markDynamicPartial(image, 'RISC-V variant-cc JUMP_SLOT requires DT_RISCV_VARIANT_CC');
+}
+
+function attachDynamicRelocations(image, relocs, symbols) {  const byIndex = new Map((symbols || []).map((s) => [s.index, s]));
   const importKey = (name, version, library) => [name || '', version || '', library || ''].join('\0');
   const importByName = new Map(image.imports.filter((x) => x.name).map((x) => [importKey(x.name, x.version, x.versionLibrary), x]));
   for (const rel of relocs) {
@@ -390,17 +449,26 @@ export function dynamicSymbolFileCapacity(r, image, tags, symtabVa, syment) {
 }
 
 function symbolCountFromHash(r, hashVa, image) {
-  if(hashVa==null)return 0;const range=mappedELFFileRangeForVa(image,hashVa);if(!range||range.start+8>range.end)return 0;
+  if(hashVa==null)return 0;
+  const range=mappedELFFileRangeForVa(image,hashVa);
+  const end=range ? Math.min(range.end,r.length) : 0;
+  if(!range||range.start+8>end){markDynamicPartial(image,'DT_HASH header is not fully file-backed');return 0;}
   const nbucket=r.u32(range.start),nchain=r.u32(range.start+4);if(!nchain||nchain>10_000_000)return 0;
-  const bytes=8n+BigInt(nbucket+nchain)*4n;if(bytes>BigInt(range.end-range.start)){markDynamicPartial(image,'DT_HASH table crosses a file-backed PT_LOAD boundary');return 0;}return nchain;
+  const bytes=8n+BigInt(nbucket+nchain)*4n;if(bytes>BigInt(end-range.start)){markDynamicPartial(image,'DT_HASH table crosses a file-backed PT_LOAD boundary');return 0;}return nchain;
 }
 
-function symbolCountFromGnuHash(r, hashVa, image, bits) {
-  if(hashVa==null)return 0;const range=mappedELFFileRangeForVa(image,hashVa);if(!range||range.start+16>range.end)return 0;const off=range.start;
+function symbolCountFromGnuHash(r, hashVa, image, bits, { signal = null, onMalformed = null } = {}) {
+  if(hashVa==null)return 0;
+  const cancelled=()=>signal?.aborted===true;
+  const range=mappedELFFileRangeForVa(image,hashVa);
+  const end=range ? Math.min(range.end,r.length) : 0;
+  if(!range||range.start+16>end){markDynamicPartial(image,'DT_GNU_HASH header is not fully file-backed');return 0;}
+  const off=range.start;
   const nbuckets=r.u32(off),symOffset=r.u32(off+4),bloomSize=r.u32(off+8);if(!nbuckets||nbuckets>10_000_000||bloomSize>10_000_000)return 0;const word=bits===64?8:4;
-  const bucketsOff=off+16+bloomSize*word,chainsOff=bucketsOff+nbuckets*4;if(!Number.isSafeInteger(bucketsOff)||!Number.isSafeInteger(chainsOff)||chainsOff>range.end){markDynamicPartial(image,'DT_GNU_HASH header/buckets cross a file-backed PT_LOAD boundary');return 0;}
-  let max=null,remainingSteps=Math.min(10_000_000,Math.max(4096,nbuckets*64));
-  for(let i=0;i<nbuckets;i++){const bucket=r.u32(bucketsOff+i*4);if(!bucket||bucket<symOffset)continue;let idx=bucket,p=chainsOff+(idx-symOffset)*4;for(;p+4<=range.end;idx++,p+=4){if(--remainingSteps<0){markDynamicPartial(image,'GNU hash chain traversal exceeded the global budget');return 0;}const chain=r.u32(p);if(max==null||idx>max)max=idx;if(chain&1)break;}if(p+4>range.end){markDynamicPartial(image,'DT_GNU_HASH chain crosses a file-backed PT_LOAD boundary');return 0;}}
+  const bucketsOff=off+16+bloomSize*word,chainsOff=bucketsOff+nbuckets*4;if(!Number.isSafeInteger(bucketsOff)||!Number.isSafeInteger(chainsOff)||chainsOff>end){markDynamicPartial(image,'DT_GNU_HASH header/buckets cross a file-backed PT_LOAD boundary');return 0;}
+  let max=null,malformedBucket=false,remainingSteps=Math.min(10_000_000,Math.max(4096,nbuckets*64));
+  for(let i=0;i<nbuckets;i++){if(cancelled()){markDynamicPartial(image,'DT_GNU_HASH traversal was cancelled');return 0;}const bucket=r.u32(bucketsOff+i*4);if(!bucket)continue;if(bucket<symOffset){malformedBucket=true;continue;}let idx=bucket,p=chainsOff+(idx-symOffset)*4;for(;p+4<=end;idx++,p+=4){if(cancelled()){markDynamicPartial(image,'DT_GNU_HASH traversal was cancelled');return 0;}if(--remainingSteps<0){markDynamicPartial(image,'GNU hash chain traversal exceeded the global budget');return 0;}const chain=r.u32(p);if(max==null||idx>max)max=idx;if(chain&1)break;}if(p+4>end){markDynamicPartial(image,'DT_GNU_HASH chain crosses a file-backed PT_LOAD boundary');return 0;}}
+  if(malformedBucket){markDynamicPartial(image,'DT_GNU_HASH bucket points below symoffset; malformed table cannot ground exact symbol-count evidence');onMalformed?.();return 0;}
   return max==null?symOffset:max+1;
 }
 
@@ -437,7 +505,7 @@ export function symbolCountFromSymtabSize(sizeValue, symtabVa, syment, image) {
 }
 
 function isIRelativeRelocation(machine, type) {
-  return (machine === 3 && type === 42) || (machine === 62 && type === 37) || (machine === 183 && type === 1032);
+  return (machine === 3 && type === 42) || (machine === 62 && type === 37) || (machine === 183 && type === 1032) || (machine === 243 && type === 58);
 }
 
 export function dynamicRelocationResolutionMetadata(image, rel, sym) {

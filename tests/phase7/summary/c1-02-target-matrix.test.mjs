@@ -231,8 +231,8 @@ test('HEX-C1-02 positive: complete callee yields precise joined target set (arg 
 test('HEX-C1-02 positive: complete callee yields precise target for root and allocation provenance', () => {
   const fixture = callerFixture({
     returnProvenance: [
-      { kind: 'root', returnIndex: 0, rootEntityId: 'global_table', offset: '8' },
-      { kind: 'allocation', returnIndex: 0, allocationSiteId: 'alloc_site_42', offset: '0' },
+      { kind: 'root', returnIndex: 0, rootEntityId: 'global_table', offset: '8', addressSpace: 'memory' },
+      { kind: 'allocation', returnIndex: 0, allocationSiteId: 'alloc_site_42', offset: '0', addressSpace: 'memory' },
     ],
   });
   const result = analyzeLocalPointsTo(fixture.ir, fixture.cfg, fixture.ssa, {
@@ -427,18 +427,22 @@ test('HEX-C1-02 matrix axis 10: malformed offset stays unresolved', () => {
 
 // Axis 11: Unknown provenance kind
 test('HEX-C1-02 matrix axis 11: unknown provenance kind stays unresolved', () => {
-  const fixture = callerFixture({
-    returnProvenance: [{ kind: 'unknown-custom-kind', returnIndex: 0, argIndex: 0, offset: '0' }],
-  });
-  assertUnresolvedCall(fixture);
+  const fixture = callerFixture({ returnProvenance: [{ kind: 'unknown', returnIndex: 0 }] });
+  const canonical = fixture.summaries.get('fn_callee');
+  const forged = { ...canonical, returnProvenance: [
+    { kind: 'unknown-custom-kind', returnIndex: 0, argIndex: 0, offset: '0' },
+  ] };
+  assert.throws(() => createFunctionSummary(forged), /invalid-return-provenance-kind/);
+  assert.equal(summaryIdentityMatches(forged), false);
+  assertUnresolvedCall({ ...fixture, summaries: new Map([['fn_callee', forged]]) });
 });
 
 // Axis 12: Candidate construction / join overflow / budget failure
 test('HEX-C1-02 matrix axis 12: points-to budget overflow falls back to conservative top', () => {
   const fixture = callerFixture({
     returnProvenance: [
-      { kind: 'root', returnIndex: 0, rootEntityId: 'root_A', offset: '0' },
-      { kind: 'root', returnIndex: 0, rootEntityId: 'root_B', offset: '0' },
+      { kind: 'root', returnIndex: 0, rootEntityId: 'root_A', offset: '0', addressSpace: 'memory' },
+      { kind: 'root', returnIndex: 0, rootEntityId: 'root_B', offset: '0', addressSpace: 'memory' },
     ],
   });
   const result = analyzeLocalPointsTo(fixture.ir, fixture.cfg, fixture.ssa, {

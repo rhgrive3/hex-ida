@@ -5,6 +5,7 @@ import { FunctionMatchIndex, matchFunctions, matchFunctionsFast, recognitionMetr
 import { classifyFunction, discoverSubsystems, applicationCodeScore, rankApplicationFunctions, clusterFunctions, classificationMetrics } from '../js/recognition/classifier.js';
 import { recognizeLibraries, createKnowledgePack, importKnowledgePack } from '../js/signature/index.js';
 import { KnowledgeDB } from '../js/knowledge/index.js';
+import { ensureRecognitionState } from '../js/app.js';
 import { diffFunctions } from '../js/diff/index.js';
 import { PlatformPluginRegistry } from '../js/platform/plugin-api.js';
 
@@ -113,6 +114,42 @@ const appFn={...base,bytes:null,objcClass:'PlayerData',strings:['reward','coins'
 assert.equal(classifyFunction(appFn,{notKnownVendor:true,calledFromApplication:true}).classification,'APPLICATION');
 assert.ok(applicationCodeScore(appFn,{notKnownVendor:true,calledFromApplication:true})>0.6);
 assert.ok(discoverSubsystems(appFn).some((x)=>x.subsystem==='economy/reward'));
+
+// Classifier authority accepts only primitive finite confidence values.
+const malformedConfidenceValues=['0.95',['0.95'],true,Object(0.95)];
+for (const confidence of malformedConfidenceValues) {
+  const signatureResult=classifyFunction(base,{signature:{classification:'SYSTEM',identity:'exact',confidence}});
+  assert.equal(signatureResult.classification,'SYSTEM');
+  assert.equal(signatureResult.hardSuppress,false,'malformed signature confidence must not grant suppression authority');
+  assert.ok(signatureResult.confidence<0.9);
+  const vendorResult=classifyFunction(base,{vendor:{classification:'SYSTEM',confidence}});
+  assert.notEqual(vendorResult.hardSuppress,true,'malformed vendor confidence must not grant suppression authority');
+  assert.ok(vendorResult.confidence<0.8);
+}
+const numericSignature=classifyFunction(base,{signature:{classification:'SYSTEM',identity:'exact',confidence:0.9}});
+assert.equal(numericSignature.confidence,0.9);
+assert.equal(numericSignature.hardSuppress,true,'finite exact signature confidence keeps existing authority threshold');
+const clampedSignature=classifyFunction(base,{signature:{classification:'SYSTEM',identity:'exact',confidence:1.5}});
+assert.equal(clampedSignature.confidence,1,'finite signature confidence keeps existing clamp');
+const belowSignature=classifyFunction(base,{signature:{classification:'SYSTEM',identity:'exact',confidence:0.89}});
+assert.equal(belowSignature.hardSuppress,false,'signature suppression threshold remains strict');
+const nonExactSignature=classifyFunction(base,{signature:{classification:'SYSTEM',identity:'similar',confidence:0.95}});
+assert.equal(nonExactSignature.hardSuppress,false,'confidence cannot replace the exact signature identity guard');
+const numericVendor=classifyFunction(base,{vendor:{classification:'SDK',confidence:0.8}});
+assert.equal(numericVendor.classification,'SDK');
+assert.equal(numericVendor.confidence,0.8);
+assert.equal(numericVendor.hardSuppress,true,'finite vendor confidence keeps existing authority');
+const belowVendor=classifyFunction(base,{vendor:{classification:'SDK',confidence:0.79}});
+assert.equal(belowVendor.hardSuppress,false,'vendor suppression threshold remains strict');
+const malformedVendorContext={vendor:{classification:'SYSTEM',confidence:'0.95'},notKnownVendor:true,calledFromApplication:true};
+const malformedVendorResult=classifyFunction(appFn,malformedVendorContext);
+assert.equal(malformedVendorResult.classification,'APPLICATION','malformed vendor evidence must not suppress an application candidate');
+assert.equal(malformedVendorResult.hardSuppress,false);
+const malformedVendorScore=applicationCodeScore(appFn,malformedVendorContext);
+const validVendorScore=applicationCodeScore(appFn,{vendor:{classification:'SYSTEM',confidence:0.95},notKnownVendor:true,calledFromApplication:true});
+assert.ok(malformedVendorScore>validVendorScore,'malformed vendor confidence must not lower application ranking as trusted authority');
+const malformedRank=rankApplicationFunctions([appFn],()=>malformedVendorContext);
+assert.equal(malformedRank[0].classification.classification,'APPLICATION');
 assert.equal(classifyFunction(base,{owningLibrary:'/usr/lib/libSystem.B.dylib'}).classification,'SYSTEM');
 const cAppRuntimeCalls={address:55n,architecture:'arm64',imports:['malloc','free'],instructions:['bl malloc','bl free','ret']};
 assert.notEqual(classifyFunction(cAppRuntimeCalls,{libraries:['Foundation.framework','/usr/lib/libSystem.B.dylib']}).classification,'RUNTIME','linked frameworks plus malloc/free do not imply runtime ownership');
@@ -183,3 +220,109 @@ const probe=scale[54321]; const cands=scaleIndex.candidates(probe,{maxCandidates
 assert.ok(cands.length>0 && cands.length<=128); assert.ok(cands.includes(54321));
 console.log(JSON.stringify({precision:metrics.precision,recall:metrics.recall,falseMatchRate:metrics.falseMatchRate,ambiguousRate:metrics.ambiguousRate,scaleFunctions:scale.length,indexBuckets:scaleIndex.buckets.size,indexBuildMs:Number(buildMs.toFixed(1)),probeCandidates:cands.length}));
 console.log('recognition-intelligence: PASS');
+
+// #5723: knowledge mutation invalidates the app-level recognition cache and in-flight build.
+function issue5723Deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+function issue5723RecognitionApp(knowledge) {
+  const address = 0x1000n;
+  return {
+    backend:{ gen:3, contentHash:'fixture-binary' },
+    symbols:{
+      gen:7, functionCount:1, funcs:[address],
+      functionStartsComplete:true, nameAt:() => 'sub_1000',
+      functionWindowBound:() => address + 4n,
+    },
+    fields:null, knowledge, recognition:null,
+    recognitionBusy:null, recognitionBusyKnowledgeRev:null,
+    recognitionKnowledgeRev:null, ensureSwift:async () => null,
+  };
+}
+function issue5723ControlledPropagation(knowledge) {
+  const started = issue5723Deferred();
+  const release = issue5723Deferred();
+  let calls = 0;
+  Object.defineProperty(knowledge, 'propagate', {
+    configurable:true,
+    value:async () => {
+      calls += 1;
+      const revision = knowledge.revision;
+      if (calls === 1) {
+        started.resolve();
+        await release.promise;
+      }
+      return {
+        propagated:true,
+        candidate:{ names:['knowledge-r' + revision] },
+        confidence:1,
+        sourceId:'knowledge-r' + revision,
+      };
+    },
+  });
+  return { started, release, calls:() => calls };
+}
+const issue5723RecognitionOptions = { maxFunctions:1000, knowledgeLimit:1 };
+const issue5723Mutations = [
+  ['remember', (db) => db.remember({
+    fingerprint:{ hash:'h-race', schema:'v1' }, sourceBinaryHash:'fixture',
+    names:['KnownFunction'], userConfirmed:true,
+  })],
+  ['reject', (db) => db.reject({ sourceBinaryHash:'fixture', candidateName:'nope' })],
+  ['clear', (db) => db.clear()],
+];
+{
+  const db = new KnowledgeDB({});
+  const before = db.revision;
+  await db.remember({
+    fingerprint:{ hash:'h-1', schema:'v1' }, sourceBinaryHash:'fixture',
+    names:['KnownFunction'], userConfirmed:true,
+  });
+  const afterRemember = db.revision;
+  assert.ok(afterRemember > before);
+  await db.reject({ sourceBinaryHash:'fixture', candidateName:'nope' });
+  assert.ok(db.revision > afterRemember);
+  const beforeClear = db.revision;
+  await db.clear();
+  assert.ok(db.revision > beforeClear);
+}
+{
+  const db = new KnowledgeDB({});
+  const app = issue5723RecognitionApp(db);
+  const control = issue5723ControlledPropagation(db);
+  const first = ensureRecognitionState(app, issue5723RecognitionOptions);
+  await control.started.promise;
+  const second = ensureRecognitionState(app, issue5723RecognitionOptions);
+  control.release.resolve();
+  const results = await Promise.all([first, second]);
+  assert.equal(control.calls(), 1);
+  assert.strictEqual(results[1], results[0]);
+  assert.strictEqual(app.recognition, results[0]);
+  assert.equal(results[0].records[0].name, 'knowledge-r0');
+  assert.equal(app.recognitionKnowledgeRev, 0);
+}
+for (const item of issue5723Mutations) {
+  const name = item[0];
+  const mutate = item[1];
+  const db = new KnowledgeDB({});
+  const app = issue5723RecognitionApp(db);
+  const control = issue5723ControlledPropagation(db);
+  const staleRequest = ensureRecognitionState(app, issue5723RecognitionOptions);
+  await control.started.promise;
+  const before = db.revision;
+  await mutate(db);
+  assert.ok(db.revision > before, name + ' must advance the knowledge revision');
+  const freshRevision = db.revision;
+  const freshRequest = ensureRecognitionState(app, issue5723RecognitionOptions);
+  control.release.resolve();
+  const results = await Promise.all([staleRequest, freshRequest]);
+  assert.equal(control.calls(), 2);
+  assert.equal(results[0], null);
+  assert.ok(results[1]);
+  assert.equal(results[1].records[0].name, 'knowledge-r' + freshRevision);
+  assert.strictEqual(app.recognition, results[1]);
+  assert.equal(app.recognitionKnowledgeRev, freshRevision);
+}
+console.log('issue-5723 knowledge revision race: PASS');

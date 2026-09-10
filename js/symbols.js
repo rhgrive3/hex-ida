@@ -15,19 +15,26 @@ function finiteListMax(value, fallback = 50000) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function canonicalAddressKey(value) {
+  return typeof value === 'bigint' && value >= 0n ? value.toString() : null;
+}
+
 export class SymbolIndex {
   constructor(result) {
     const r = result || {};
     const rawAddrs = r.addrs || new BigUint64Array(0);
     const rawKinds = r.kinds || new Uint8Array(rawAddrs.length);
     const rawFlags = r.flags || new Uint8Array(rawAddrs.length);
-    const rawNames = Array.isArray(r.names)
-      ? r.names.map((name) => String(name ?? ''))
+    const namesArrayTransport = Array.isArray(r.names);
+    const rawNames = namesArrayTransport
+      ? r.names.map((name) => name)
       : (typeof r.names === 'string' && r.names.length ? r.names.split('\n') : []);
-    const symbolCardinalityValid = rawNames.length === rawAddrs.length &&
+    const symbolNameTypesValid = !namesArrayTransport || rawNames.every((name) => typeof name === 'string');
+    const symbolCardinalityValid = symbolNameTypesValid && rawNames.length === rawAddrs.length &&
       rawKinds.length === rawAddrs.length && rawFlags.length === rawAddrs.length;
     this.symbolTransportValid = symbolCardinalityValid;
-    this.symbolTransportError = symbolCardinalityValid ? null : 'symbol-cardinality-mismatch';
+    this.symbolTransportError = symbolCardinalityValid ? null :
+      (symbolNameTypesValid ? 'symbol-cardinality-mismatch' : 'symbol-name-type-invalid');
     /* A mismatched transport can shift every subsequent name to the wrong
        address. Fail closed for symbols while preserving independent function
        starts, so corrupted naming evidence never enters the analysis truth. */
@@ -48,9 +55,12 @@ export class SymbolIndex {
        retained as the legacy name for an authoritative complete start set;
        `allSeedsExact` only describes the starts currently present. */
     const discoveryComplete = r.discoveryComplete === true || r.functionStartsComplete === true || r.functionStartsExact === true;
-    this.allSeedsExact = r.allSeedsExact != null ? !!r.allSeedsExact : !!r.functionStartsExact;
+    const seedExactness = r.allSeedsExact != null
+      ? r.allSeedsExact === true
+      : (r.functionStartsExact != null ? r.functionStartsExact === true : null);
+    this.allSeedsExact = seedExactness === true;
     this.functionStartsComplete = discoveryComplete;
-    this.functionStartsExact = discoveryComplete && (r.allSeedsExact == null || this.allSeedsExact);
+    this.functionStartsExact = discoveryComplete && (seedExactness == null || seedExactness);
     this.functionDiscovery = r.functionDiscovery || {
       complete: discoveryComplete,
       capped: !!r.functionStartsCapped,
@@ -92,8 +102,8 @@ export class SymbolIndex {
    * ここを通すと、命令一覧・関数一覧・呼び出し元まで一斉に新しい名前になる。
    */
   rename(addr, name) {
-    if (addr == null) return;
-    const k = addr.toString();
+    const k = canonicalAddressKey(addr);
+    if (k == null) return;
     if (name) this.renames.set(k, name);
     else this.renames.delete(k);
     this._refreshRenameAddrs();
@@ -102,18 +112,20 @@ export class SymbolIndex {
 
   /** 自分で付けた名前だけを引く。 */
   renamedAt(addr) {
-    return addr == null ? null : (this.renames.get(addr.toString()) || null);
+    const k = canonicalAddressKey(addr);
+    return k == null ? null : (this.renames.get(k) || null);
   }
 
   nameEvidence(addr) {
-    if (addr == null) return null;
-    if (this.renames.has(addr.toString())) return { source: 'user', status: 'manual', manual: true, confirmed: false, confidence: null };
-    return this.nameProvenance.get(addr.toString()) || null;
+    const k = canonicalAddressKey(addr);
+    if (k == null) return null;
+    if (this.renames.has(k)) return { source: 'user', status: 'manual', manual: true, confirmed: false, confidence: null };
+    return this.nameProvenance.get(k) || null;
   }
 
   functionEvidence(addr) {
-    if (addr == null) return null;
-    return this.functionProvenance.get(addr.toString()) || null;
+    const k = canonicalAddressKey(addr);
+    return k == null ? null : (this.functionProvenance.get(k) || null);
   }
 
   get symbolCount() { return this.addrs.length; }
@@ -133,7 +145,9 @@ export class SymbolIndex {
 
   /** ちょうどそのアドレスに付いた名前。なければ null。 */
   exact(addr) {
-    const mine = this.renames.size ? this.renames.get(addr.toString()) : null;
+    const k = canonicalAddressKey(addr);
+    if (k == null) return null;
+    const mine = this.renames.size ? this.renames.get(k) : null;
     if (mine) return { name: mine, addr, kind: SYM_DEFINED, mine: true };
     const i = this._floor(this.addrs, addr);
     if (i < 0 || this.addrs[i] !== addr) return null;
@@ -150,6 +164,7 @@ export class SymbolIndex {
    * Rename は元 symbol table に無い関数にも付くため、rename index も同時に検索する。
    */
   nearest(addr, within = 0x40000n) {
+    if (canonicalAddressKey(addr) == null) return null;
     const symbolIndex = this._floor(this.addrs, addr);
     const renameIndex = this._floor(this._renameAddrs, addr);
 
@@ -286,7 +301,17 @@ export class SymbolIndex {
 
   /** addr を含む関数の解析窓の右端（先頭でなくても、floor した関数の窓）。締める境界が無ければ null。 */
   functionWindowBound(addr) {
-    return this._containmentBound(this._floor(this.funcs, addr));
+    const i = this._floor(this.funcs, addr);
+    if (i < 0) return null;
+    const start = this.funcs[i];
+    const bound = this._containmentBound(i);
+    if (bound == null || addr >= bound) return null;
+    if (this.functionRegions.length) {
+      const startRegion = this._functionRegion(start);
+      const addrRegion = this._functionRegion(addr);
+      if (!startRegion || !addrRegion || startRegion !== addrRegion) return null;
+    }
+    return bound;
   }
 
   /**

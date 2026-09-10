@@ -1,6 +1,8 @@
 name: Final head admission
 
 on:
+  push:
+    branches: [main]
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   pull_request_review:
@@ -65,7 +67,9 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 1
           persist-credentials: false
-          sparse-checkout: tools/validation/final-head-admission.mjs
+          sparse-checkout: |
+            tools/validation/final-head-admission.mjs
+            tools/validation/final-head-admission-tuple.mjs
           sparse-checkout-cone-mode: false
 
       - name: Evaluate exact-head admission evidence
@@ -77,11 +81,46 @@ jobs:
             const { pathToFileURL } = require('node:url');
             const path = require('node:path');
             const evaluator = await import(pathToFileURL(
-              path.join(process.env.GITHUB_WORKSPACE, 'tools/validation/final-head-admission.mjs'),
+              path.join(process.env.GITHUB_WORKSPACE, 'tools/validation/final-head-admission-tuple.mjs'),
             ).href);
 
             const owner = context.repo.owner;
             const repo = context.repo.repo;
+            const targetUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+
+            // Advancing the default branch changes the review authority tuple
+            // even when every PR HEAD remains byte-for-byte unchanged. Invalidate
+            // every open PR immediately; the next fresh review/status event will
+            // recompute against the new live BASE.
+            if (context.eventName === 'push') {
+              const defaultBranch = context.payload.repository?.default_branch;
+              if (!defaultBranch || context.ref !== `refs/heads/${defaultBranch}`) {
+                core.info('Ignoring non-default-branch push.');
+                return;
+              }
+              const pulls = await github.paginate(github.rest.pulls.list, {
+                owner, repo, state: 'open', per_page: 100,
+              });
+              for (const candidate of pulls) {
+                const headSha = candidate.head?.sha;
+                if (!headSha) continue;
+                await github.rest.repos.createCommitStatus({
+                  owner,
+                  repo,
+                  sha: headSha,
+                  state: 'pending',
+                  context: evaluator.FINAL_HEAD_ADMISSION_CONTEXT,
+                  description: 'Base advanced; fresh (HEAD,BASE) AUTO review required',
+                  target_url: targetUrl,
+                });
+              }
+              core.summary
+                .addHeading('Final-head admission invalidated after base advance')
+                .addRaw(`Open PR heads invalidated: ${pulls.length}\n`)
+                .write();
+              return;
+            }
+
             let prNumber = null;
             let triggeringHead = null;
 
@@ -130,6 +169,11 @@ jobs:
             const reviews = await github.paginate(github.rest.pulls.listReviews, {
               owner, repo, pull_number: pr.number, per_page: 100,
             });
+            // Current-base review identity: the authoritative base is the live
+            // head of the PR's target branch, not the PR's creation-time base.
+            const { data: baseBranch } = await github.rest.repos.getBranch({
+              owner, repo, branch: pr.base.ref,
+            });
             const statuses = await github.paginate(github.rest.repos.listCommitStatusesForRef, {
               owner, repo, ref: headSha, per_page: 100,
             });
@@ -171,6 +215,9 @@ jobs:
               // AUTO markers are review evidence, not authentication. Only the
               // repository owner is trusted to mint them in this repository.
               trustedAutoReviewers: [owner],
+              // Approvals must be bound to the live target-branch head so a
+              // stale (HEAD, BASE_old) approval cannot survive a base advance.
+              currentBaseSha: baseBranch?.commit?.sha ?? null,
               // These contexts are emitted for every PR in the current CircleCI
               // admission surface. Requiring the full set prevents transient
               // success before a slower status context has even been created.
@@ -184,7 +231,6 @@ jobs:
               ],
             });
 
-            const targetUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
             await github.rest.repos.createCommitStatus({
               owner,
               repo,
@@ -199,8 +245,9 @@ jobs:
               .addHeading(`Final-head admission: ${result.state}`)
               .addRaw(`PR: #${pr.number}\n`)
               .addRaw(`Head: ${headSha}\n`)
+              .addRaw(`Base: ${baseBranch?.commit?.sha ?? '(unavailable)'}\n`)
               .addRaw(`Trusted AUTO reviewers: ${result.evidence.trustedAutoReviewerCount}\n`)
-              .addRaw(`AUTO approvals on head: ${result.evidence.exactAutoApprovalCount}\n`)
+              .addRaw(`AUTO approvals on head/base: ${result.evidence.exactAutoApprovalCount}\n`)
               .addRaw(`Required CI contexts: ${result.evidence.requiredStatusContextCount}\n`)
               .addRaw(`Missing required CI contexts: ${result.evidence.missingRequiredStatusCount}\n`)
               .addRaw(`Unresolved review threads: ${result.evidence.unresolvedReviewThreads}\n`)

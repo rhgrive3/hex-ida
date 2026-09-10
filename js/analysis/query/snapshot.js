@@ -183,6 +183,12 @@ export function assertAnalysisSnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== "object") throw new TypeError("analysis-snapshot-required");
   if (snapshot.schemaVersion !== ANALYSIS_SNAPSHOT_SCHEMA_VERSION) throw new TypeError("analysis-snapshot-version-mismatch");
   const id = nonEmptyString(snapshot.binaryId, "analysis-snapshot-binary-id-required");
+  // The identity tuple is computed from the trimmed value, but the returned
+  // snapshot keeps its own binaryId. Accepting a non-canonical spelling here
+  // would let the same snapshot pass validation and then fail the strict
+  // staleness comparison as a different identity (#4963), so require the
+  // canonical serialized form that createAnalysisSnapshot() stores.
+  if (snapshot.binaryId !== id) throw new TypeError("analysis-snapshot-binary-id-noncanonical");
   // createdAt is not part of semantic identity. Older schema-v1 callers may
   // omit it; validate it only when supplied while keeping identity fields
   // strictly self-verifying.

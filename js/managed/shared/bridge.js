@@ -26,6 +26,23 @@ export const MANAGED_BRIDGE_VERSION = '1.0.0';
 
 function fail(code) { throw new TypeError(code); }
 
+const MANAGED_UNARY_OPERATORS = new Set(['neg', 'not', 'clz', 'ctz', 'popcnt', 'trunc', 'zext', 'sext']);
+
+function managedUnaryOperator(mnemonic) {
+  const text = typeof mnemonic === 'string' ? mnemonic.trim().toLowerCase() : '';
+  if (text === 'neg' || text === 'not') return text;
+  const wasm = /^(?:i32|i64)\.(clz|ctz|popcnt)$/.exec(text);
+  return wasm?.[1] || null;
+}
+
+function managedUnaryOperatorForNode(node, mnemonic) {
+  const mnemonicOperator = managedUnaryOperator(mnemonic);
+  if (node?.operator == null) return mnemonicOperator;
+  if (!MANAGED_UNARY_OPERATORS.has(node.operator)) return null;
+  if (mnemonicOperator && mnemonicOperator !== node.operator) return null;
+  return node.operator;
+}
+
 function safeIdent(s, fallback = 'value') {
   const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_$]/g, '_').replace(/^([0-9])/, '_$1');
   return x || fallback;
@@ -637,6 +654,7 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
   const memoryWrites = [];
   const unknownCallEffects = [];
   const thrownExceptions = [];
+  let hasLanguageThrow = false;
 
   for (const node of semanticIr.nodes) {
     if (node.kind === 'call' && node.call) {
@@ -700,15 +718,22 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
         evidenceIds: [node.id],
       }));
     } else if (node.kind === 'trap') {
+      // A language-level throw keeps its identity through the bridge (#7311):
+      // the lowering stamps metadata.exceptionThrow and keeps the thrown
+      // operand as the node's input, so the summary can name it instead of
+      // collapsing it into a generic runtime trap.
+      const languageThrow = node.metadata?.exceptionThrow === true;
       thrownExceptions.push({
-        kind: 'trap',
+        kind: languageThrow ? 'throw' : 'trap',
         nodeId: node.id,
+        thrownValueId: languageThrow ? (node.inputs?.[0] ?? null) : null,
       });
+      if (languageThrow) hasLanguageThrow = true;
     }
   }
 
   const hasExceptionEdges = cfg.blocks.some((b) => (b.successors || []).some((s) => s.kind === 'exception'));
-  const completeness = (unknownCallEffects.length > 0) ? 'partial' : 'complete';
+  const completeness = (unknownCallEffects.length > 0 || hasLanguageThrow) ? 'partial' : 'complete';
 
   if (unknownCallEffects.length > 0) {
     memoryWrites.push(createMemoryEffect({
@@ -844,9 +869,11 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
       res = expr.compare(op, left, right);
     } else if (n.kind === 'unary') {
       const arg = n.inputs[0] ? buildValueExpr(n.inputs[0]) : expr.constant(0n, bits);
-      const mn = (n.metadata?.mnemonic || '').toLowerCase();
-      const op = mn.includes('neg') ? 'neg' : mn.includes('not') ? 'not' : 'trunc';
-      res = expr.unary(op, arg, bits);
+      const mnemonic = typeof n.metadata?.mnemonic === 'string' ? n.metadata.mnemonic : '';
+      const operator = managedUnaryOperatorForNode(n, mnemonic);
+      res = operator
+        ? expr.unary(operator, arg, bits)
+        : expr.intrinsic(mnemonic || 'unsupported_unary', [arg], bits);
     } else if (n.kind === 'call') {
       const callee = n.call?.targetEntityIds?.[0] || 'callee';
       const args = (n.inputs || []).map(buildValueExpr);
@@ -929,7 +956,14 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
         }
         body.push({ kind: 'if_close', indent: isLoop ? 2 : 1, text: '}' });
       } else if (n.kind === 'trap') {
-        body.push({ kind: 'trap', indent: isLoop ? 2 : 1, text: 'throw Exception();' });
+        // A language-level throw renders the actual thrown operand (#7311);
+        // only a genuine runtime trap keeps the fabricated exception form.
+        if (n.metadata?.exceptionThrow === true && n.inputs?.[0]) {
+          const thrown = printExpression(buildValueExpr(n.inputs[0]));
+          body.push({ kind: 'trap', indent: isLoop ? 2 : 1, text: `throw ${thrown};` });
+        } else {
+          body.push({ kind: 'trap', indent: isLoop ? 2 : 1, text: 'throw Exception();' });
+        }
       } else if (n.kind === 'intrinsic' || n.kind === 'barrier') {
         const args = (n.inputs || []).map((i) => printExpression(buildValueExpr(i))).join(', ');
         body.push({ kind: 'intrinsic', indent: isLoop ? 2 : 1, text: `${n.metadata?.mnemonic || 'unsupported_intrinsic'}(${args});` });

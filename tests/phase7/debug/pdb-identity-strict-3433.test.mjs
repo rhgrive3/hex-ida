@@ -13,6 +13,7 @@ function buildMinimalPdb(guid = GUID, age = 1) {
   const magic = new TextEncoder().encode('Microsoft C/C++ MSF 7.00\r\n\u001aDS\0\0\0');
   bytes.set(magic, 0);
   view.setUint32(32, blockSize, true);
+  view.setUint32(36, 1, true);  // FreeBlockMapBlock: spec-legal value (#5672)
   view.setUint32(40, blockCount, true);
   view.setUint32(44, 32, true); // stream-directory bytes
   view.setUint32(52, 1, true);  // block-map block
@@ -48,7 +49,11 @@ function buildMinimalPdb(guid = GUID, age = 1) {
   cursor = blockSize * 4;
   view.setUint32(cursor + 4, 56, true);
   view.setUint32(cursor + 8, 0x1000, true);
-  // Stream 3 / block 5 is a zeroed 64-byte DBI header.
+  // Stream 3 / block 5 uses the native DBI V70 signature/version. Its Age
+  // must repeat the info stream age for the container to be internally consistent (#6042).
+  view.setInt32(blockSize * 5, -1, true);
+  view.setUint32(blockSize * 5 + 4, 19990903, true);
+  view.setUint32(blockSize * 5 + 8, age, true);
   return bytes;
 }
 

@@ -36,6 +36,11 @@ function providerIdentity(value, name) {
   return value;
 }
 
+function providerErrorIdentity(value, name) {
+  if (typeof value !== 'string' || !value.trim()) throw new DebugAdapterError('malformed-provider-data', `${name} must be a non-empty string`);
+  return value;
+}
+
 function facet(value) {
   if (value == null) return null;
   if (typeof value !== 'string') throw new DebugAdapterError('malformed-provider-data', 'runtime facet must be a string');
@@ -112,9 +117,27 @@ export function validateProviderPacket(input) {
     packet.facet = facet(packet.facet);
     packet.method = validateMethod(packet.method, packet.facet);
   }
+  if (packet.type === 'error') {
+    // Error identity fields are optional, but when present they are schema
+    // strings. Reject malformed remote packets before receive() can consume
+    // a pending request (#5757).
+    if (Object.hasOwn(packet, 'code')) packet.code = providerErrorIdentity(packet.code, 'provider error code');
+    if (Object.hasOwn(packet, 'message')) packet.message = providerErrorIdentity(packet.message, 'provider error message');
+  }
+
+  if (packet.type === 'response' && !Object.prototype.hasOwnProperty.call(packet, 'result')) {
+    // The wire codec cannot carry `undefined`, so a response packet without a
+    // `result` property is structurally malformed — admitting it resolved the
+    // pending request to a success `undefined` (#5755). An intentional null
+    // result is sent as `{ result: null }`.
+    throw new DebugAdapterError('malformed-provider-data', 'provider response requires a result property');
+  }
   if (packet.type === 'event-batch') {
     packet.facet = facet(packet.facet);
     packet.batch = createRuntimeEventBatch(packet.batch);
+    if (packet.batch.sessionEpoch !== packet.epoch) {
+      throw new DebugAdapterError('protocol-mismatch', 'provider event batch session epoch must match packet epoch');
+    }
   }
   return packet;
 }
@@ -175,16 +198,14 @@ export class RuntimeProviderProtocolClient {
     if (value === this.epoch) return value;
     this.epoch = value;
     for (const [id, pending] of [...this.pending]) {
-      this.#finish(id, pending, new DebugAdapterError('cancelled', 'provider request invalidated by epoch change'));
-      try {
-        this.transport.send(validateProviderPacket({
-          protocol: RUNTIME_PROVIDER_PROTOCOL,
-          version: RUNTIME_PROVIDER_PROTOCOL_VERSION,
-          type: 'cancel',
-          id,
-          epoch: pending.epoch,
-        }));
-      } catch {}
+      this.#finish(id, pending, new DebugAdapterError('cancelled', 'provider request invalidated by epoch change'), undefined, true);
+      this.#send(validateProviderPacket({
+        protocol: RUNTIME_PROVIDER_PROTOCOL,
+        version: RUNTIME_PROVIDER_PROTOCOL_VERSION,
+        type: 'cancel',
+        id,
+        epoch: pending.epoch,
+      }));
     }
     return value;
   }
@@ -215,14 +236,14 @@ export class RuntimeProviderProtocolClient {
       const pending = { resolve, reject, signal, abort: null, timer: null, epoch: this.epoch };
       this.pending.set(id, pending);
       pending.timer = setTimeout(() => {
-        this.#finish(id, pending, new DebugAdapterError('timeout', `provider request timed out: ${method}`));
-        try { this.transport.send(validateProviderPacket({ protocol: RUNTIME_PROVIDER_PROTOCOL, version: 1, type: 'cancel', id, epoch: pending.epoch })); } catch {}
+        this.#finish(id, pending, new DebugAdapterError('timeout', `provider request timed out: ${method}`), undefined, true);
+        this.#send(validateProviderPacket({ protocol: RUNTIME_PROVIDER_PROTOCOL, version: 1, type: 'cancel', id, epoch: pending.epoch }));
       }, timeoutMs);
       if (signal) {
         pending.abort = () => {
           if (this.pending.get(id) !== pending) return;
-          this.#finish(id, pending, new DebugAdapterError('cancelled', `provider request cancelled: ${method}`));
-          try { this.transport.send(validateProviderPacket({ protocol: RUNTIME_PROVIDER_PROTOCOL, version: 1, type: 'cancel', id, epoch: pending.epoch })); } catch {}
+          this.#finish(id, pending, new DebugAdapterError('cancelled', `provider request cancelled: ${method}`), undefined, true);
+          this.#send(validateProviderPacket({ protocol: RUNTIME_PROVIDER_PROTOCOL, version: 1, type: 'cancel', id, epoch: pending.epoch }));
         };
         try {
           signal.addEventListener('abort', pending.abort, { once: true });
@@ -231,13 +252,15 @@ export class RuntimeProviderProtocolClient {
             return;
           }
         } catch {
-          this.#finish(id, pending, invalidRequestSignal());
+          this.#finish(id, pending, invalidRequestSignal(), undefined, true);
           return;
         }
       }
       if (!this.pending.has(id)) return;
-      try { this.transport.send(packet); }
-      catch (error) { this.#finish(id, pending, error); }
+      this.#send(packet, (error) => {
+        if (this.pending.get(id) !== pending) return;
+        this.#finish(id, pending, error, undefined, true);
+      });
     });
   }
 
@@ -250,18 +273,32 @@ export class RuntimeProviderProtocolClient {
       for (const listener of [...this.listeners]) { try { listener(packet.batch, packet); } catch {} }
       return true;
     }
+    // A peer-end close must not write a cancellation packet back through the
+    // transport: the peer has already closed its receive side. Local shutdown
+    // still uses the default notifyPeer=true path to cancel in-flight work.
+    if (packet.type === 'close') { this.close({ notifyPeer: false }); return true; }
     if (!['response', 'error'].includes(packet.type)) return false;
     const pending = this.pending.get(packet.id);
     if (!pending || packet.epoch !== pending.epoch || packet.epoch !== this.epoch) return false;
-    if (packet.type === 'error') this.#finish(packet.id, pending, new DebugAdapterError(packet.code || 'provider-failure', packet.message || 'provider request failed', packet.details || null));
+    if (packet.type === 'error') this.#finish(packet.id, pending, new DebugAdapterError(packet.code || 'provider-failure', packet.message || 'provider request failed', packet.details || null), undefined, true);
     else this.#finish(packet.id, pending, null, packet.result);
     return true;
   }
 
-  close() {
+  close({ notifyPeer = true } = {}) {
     if (this.closed) return;
     this.closed = true;
-    for (const [id, pending] of this.pending) this.#finish(id, pending, new DebugAdapterError('disconnected', 'provider protocol client closed'));
+    for (const [id, pending] of [...this.pending]) {
+      this.#finish(id, pending, new DebugAdapterError('disconnected', 'provider protocol client closed'), undefined, true);
+      if (!notifyPeer) continue;
+      this.#send(validateProviderPacket({
+        protocol: RUNTIME_PROVIDER_PROTOCOL,
+        version: RUNTIME_PROVIDER_PROTOCOL_VERSION,
+        type: 'cancel',
+        id,
+        epoch: pending.epoch,
+      }));
+    }
     if (typeof this.unsubscribe === 'function') { try { this.unsubscribe(); } catch {} }
     this.unsubscribe = null;
     this.listeners.clear();
@@ -273,7 +310,19 @@ export class RuntimeProviderProtocolClient {
     return this.nextId++;
   }
 
-  #finish(id, pending, error = null, value = undefined) {
+  #send(packet, onError = null) {
+    let result;
+    try { result = this.transport.send(packet); }
+    catch (error) {
+      if (onError) onError(error);
+      return;
+    }
+    Promise.resolve(result).catch((error) => {
+      if (onError) onError(error);
+    });
+  }
+
+  #finish(id, pending, error, value = undefined, rejected = false) {
     if (!this.pending.has(id) && pending.timer == null) return;
     clearTimeout(pending.timer);
     pending.timer = null;
@@ -281,6 +330,6 @@ export class RuntimeProviderProtocolClient {
       try { pending.signal.removeEventListener('abort', pending.abort); } catch {}
     }
     this.pending.delete(id);
-    if (error) pending.reject(error); else pending.resolve(value);
+    if (rejected) pending.reject(error); else pending.resolve(value);
   }
 }

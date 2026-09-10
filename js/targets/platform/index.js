@@ -38,11 +38,11 @@ export function platformProfile(id) { return PROFILES.get(canonicalId(id)) || PR
 
 export const DARWIN_PLATFORM = registerPlatformProfile({
   id:'darwin', semanticVersion:'1', runtimeLibraries:['libSystem','objc','swift'], debugInfoFamilies:['dwarf','dsym'],
-  defaultABI:({ architecture }) => architecture === 'arm64' || architecture === 'arm64e' ? 'aapcs64' : null,
+  defaultABI:({ architecture }) => architecture === 'arm64' || architecture === 'arm64e' ? 'darwin-arm64' : null,
 });
 export const LINUX_PLATFORM = registerPlatformProfile({
   id:'linux', semanticVersion:'1', runtimeLibraries:['glibc'], syscallFamily:'linux', debugInfoFamilies:['dwarf'],
-  defaultABI:({ architecture }) => architecture === 'arm64' || architecture === 'arm64e' ? 'aapcs64' : null,
+  defaultABI:({ architecture }) => architecture === 'arm64' ? 'aapcs64' : null,
 });
 export const WINDOWS_PLATFORM = registerPlatformProfile({
   id:'windows', semanticVersion:'1', runtimeLibraries:['ntdll','kernel32'], syscallFamily:'windows-nt', debugInfoFamilies:['codeview','pdb'],

@@ -1,5 +1,5 @@
 import { deepFreeze, stableStringify } from '../../core/identity/index.js';
-import { createOriginSet } from '../../core/identity/origin.js';
+import { createOriginSet, isReusableOriginSet } from '../../core/identity/origin.js';
 import {
   SEMANTIC_IR_CONTRACT_VERSION,
   SEMANTIC_IR_SCHEMA_VERSION,
@@ -42,21 +42,195 @@ function normalizeFunctionUnknown(input) {
 }
 
 function assertVersion(input) {
-  if (input.schemaVersion != null && Number(input.schemaVersion) !== SEMANTIC_IR_SCHEMA_VERSION) fail('semantic-ir-schema-version-mismatch');
-  if (input.contractVersion != null && String(input.contractVersion) !== SEMANTIC_IR_CONTRACT_VERSION) fail('semantic-ir-contract-version-mismatch');
+  const schemaVersion = input.schemaVersion;
+  if (schemaVersion != null
+      && (typeof schemaVersion !== 'number' || schemaVersion !== SEMANTIC_IR_SCHEMA_VERSION)) {
+    fail('semantic-ir-schema-version-mismatch');
+  }
+  const contractVersion = input.contractVersion;
+  if (contractVersion != null
+      && (typeof contractVersion !== 'string' || contractVersion !== SEMANTIC_IR_CONTRACT_VERSION)) {
+    fail('semantic-ir-contract-version-mismatch');
+  }
+}
+
+const REFERENCE_COUNT_OVERFLOW = Number.MAX_SAFE_INTEGER + 1;
+
+function addReferenceCount(total, amount) {
+  if (total === REFERENCE_COUNT_OVERFLOW
+    || !Number.isSafeInteger(total)
+    || total < 0
+    || !Number.isSafeInteger(amount)
+    || amount < 0
+    || total > Number.MAX_SAFE_INTEGER - amount) {
+    return REFERENCE_COUNT_OVERFLOW;
+  }
+  return total + amount;
+}
+
+function arrayLength(value) {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+// Cache every raw object/collection read used by the reference preflight. This
+// keeps accessor-backed nested summaries and scopes identical when the same
+// inputs are normalized after the preflight. The cache is lazy, so the
+// preflight still reads collection lengths without enumerating their elements.
+function needsReferenceClone(value) {
+  if (Array.isArray(value)) return false;
+  return Reflect.ownKeys(value).some((property) => {
+    const descriptor = Reflect.getOwnPropertyDescriptor(value, property);
+    return descriptor && 'value' in descriptor
+      && descriptor.configurable === false
+      && descriptor.writable === false
+      && descriptor.value !== null
+      && typeof descriptor.value === 'object';
+  });
+}
+
+function cloneReferenceTarget(value) {
+  const target = Object.create(Object.getPrototypeOf(value));
+  for (const property of Reflect.ownKeys(value)) {
+    const descriptor = Reflect.getOwnPropertyDescriptor(value, property);
+    if (!descriptor) continue;
+    if ('value' in descriptor) {
+      Object.defineProperty(target, property, {
+        configurable: true,
+        enumerable: descriptor.enumerable,
+        writable: true,
+        value: descriptor.value,
+      });
+    } else {
+      Object.defineProperty(target, property, {
+        configurable: true,
+        enumerable: descriptor.enumerable,
+        get: descriptor.get,
+        set: descriptor.set,
+      });
+    }
+  }
+  return target;
+}
+
+function cacheReferenceReads(value, seen = new WeakMap()) {
+  if (!value || typeof value !== 'object'
+    || ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date) return value;
+  // Only this producer-owned, recursively checked immutable payload is safe
+  // to retain. Proxying it would discard the normalizer's ownership brand and
+  // copy/normalize the whole provenance tree again for each semantic entity.
+  // Caller-owned frozen objects, accessors and mutable children still capture.
+  if (isReusableOriginSet(value)) return value;
+  const cached = seen.get(value);
+  if (cached) return cached;
+  const target = needsReferenceClone(value) ? cloneReferenceTarget(value) : value;
+  const reads = new Map();
+  const proxy = new Proxy(target, {
+    get(proxyTarget, property, receiver) {
+      if (reads.has(property)) return reads.get(property);
+      const result = Reflect.get(proxyTarget, property, receiver);
+      const descriptor = Reflect.getOwnPropertyDescriptor(proxyTarget, property);
+      if (descriptor && 'value' in descriptor && descriptor.configurable === false && descriptor.writable === false) {
+        // Frozen arrays cannot return a nested proxy through the invariant-protected slot.
+        // Cache the nested view by raw identity and return the required raw value.
+        cacheReferenceReads(result, seen);
+        reads.set(property, result);
+        return result;
+      }
+      const captured = cacheReferenceReads(result, seen);
+      reads.set(property, captured);
+      return captured;
+    },
+  });
+  seen.set(value, proxy);
+  seen.set(proxy, proxy);
+  return proxy;
+}
+
+// Every collection that can carry a reference or bounded work item is part of
+// the maxReferences denominator. Raw lengths are a conservative upper bound
+// because normalization only deduplicates/sorts or maps one item to one item.
+function summaryReferenceCount(summary, seen) {
+  if (!summary || typeof summary !== 'object') return 0;
+  summary = seen ? cacheReferenceReads(summary, seen) : summary;
+  let count = 0;
+  for (const key of [
+    'targetValueIds', 'targetEntityIds', 'arguments', 'returns',
+    'inputs', 'outputs', 'stateReads', 'stateWrites', 'controlEffects',
+  ]) {
+    count = addReferenceCount(count, arrayLength(summary[key]));
+  }
+  for (const scope of [summary.memoryRead, summary.memoryWrite]) {
+    if (!scope || typeof scope !== 'object') continue;
+    count = addReferenceCount(count, arrayLength(scope.accesses));
+    count = addReferenceCount(count, arrayLength(scope.addressSpaces));
+  }
+  if (summary.unknownEffects && typeof summary.unknownEffects === 'object') {
+    count = addReferenceCount(count, arrayLength(summary.unknownEffects.categories));
+  }
+  return count;
 }
 
 function countReferences(nodes, values, blocks) {
   let count = 0;
   for (const node of nodes) {
-    count += node.inputs.length + node.outputs.length + node.targets.length + node.sourceEffectIds.length;
-    if (node.memory) count++;
-    if (node.call) count += node.call.targetValueIds.length + node.call.arguments.length + node.call.returns.length;
-    if (node.intrinsic) count += node.intrinsic.inputs.length + node.intrinsic.outputs.length;
+    for (const key of ['inputs', 'outputs', 'targets', 'sourceEffectIds']) {
+      count = addReferenceCount(count, arrayLength(node[key]));
+    }
+    if (node.memory) count = addReferenceCount(count, 1);
+    count = addReferenceCount(count, summaryReferenceCount(node.call));
+    count = addReferenceCount(count, summaryReferenceCount(node.intrinsic));
   }
-  for (const block of blocks) count += block.nodeIds.length;
-  for (const value of values) if (value.definitionNodeId) count++;
+  for (const block of blocks) count = addReferenceCount(count, arrayLength(block.nodeIds));
+  for (const value of values) {
+    if (value.definitionNodeId != null) count = addReferenceCount(count, 1);
+  }
   return count;
+}
+
+// Fail-closed raw-input preflight (#5858): reject the full raw denominator
+// before nested collections are normalized, sorted, deduplicated, frozen, or
+// serialized. Invalid objects still fail through the normal validators; an
+// overflow sentinel rejects even when arithmetic cannot remain safe.
+function countRawReferences(blocks, values, nodes, seen) {
+  let count = 0;
+  for (const block of blocks) {
+    const blockView = cacheReferenceReads(object(block, 'semantic-ir-invalid-block'), seen);
+    count = addReferenceCount(count, arrayLength(blockView.nodeIds));
+  }
+  for (const value of values) {
+    const valueView = cacheReferenceReads(object(value, 'semantic-ir-invalid-value'), seen);
+    if (valueView.definitionNodeId != null) count = addReferenceCount(count, 1);
+  }
+  for (const node of nodes) {
+    const nodeView = cacheReferenceReads(object(node, 'semantic-ir-invalid-node'), seen);
+    for (const key of ['inputs', 'outputs', 'targets', 'sourceEffectIds']) {
+      count = addReferenceCount(count, arrayLength(nodeView[key]));
+    }
+    if (nodeView.memory != null) count = addReferenceCount(count, 1);
+    count = addReferenceCount(count, summaryReferenceCount(nodeView.call, seen));
+    count = addReferenceCount(count, summaryReferenceCount(nodeView.intrinsic, seen));
+  }
+  return count;
+}
+
+function sameStringSequence(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function callInputsMatchNode(node) {
+  const argumentInputs = node.call.arguments;
+  // An unresolved call with no target or argument summary may still carry
+  // opaque generic inputs for conservative accounting. There is no embedded
+  // I/O claim to contradict in that shape, so preserve the legacy boundary.
+  if (node.call.targetEntityIds.length === 0
+    && node.call.targetValueIds.length === 0
+    && argumentInputs.length === 0) return true;
+  // Direct calls and enriched indirect calls keep the target separate from
+  // the ABI argument list; ABI-neutral lowering may also expose the target as
+  // the leading generic input. Both are canonical, but no third value may
+  // appear in either representation.
+  if (sameStringSequence(node.inputs, argumentInputs)) return true;
+  return sameStringSequence(node.inputs, [...node.call.targetValueIds, ...argumentInputs]);
 }
 
 function validateNormalizedFunction(out, options) {
@@ -104,6 +278,8 @@ function validateNormalizedFunction(out, options) {
     }
     if (node.memory && !valueById.has(node.memory.addressExpr.valueId)) fail('semantic-ir-dangling-address-value-id');
     if (node.call) {
+      if (!callInputsMatchNode(node)) fail('semantic-ir-call-input-mismatch');
+      if (!sameStringSequence(node.outputs, node.call.returns)) fail('semantic-ir-call-output-mismatch');
       for (const id of [...node.call.targetValueIds, ...node.call.arguments, ...node.call.returns]) {
         if (!valueById.has(id)) fail('semantic-ir-dangling-call-value-id');
       }
@@ -114,6 +290,8 @@ function validateNormalizedFunction(out, options) {
       }
     }
     if (node.intrinsic) {
+      if (!sameStringSequence(node.inputs, node.intrinsic.inputs)) fail('semantic-ir-intrinsic-input-mismatch');
+      if (!sameStringSequence(node.outputs, node.intrinsic.outputs)) fail('semantic-ir-intrinsic-output-mismatch');
       for (const id of [...node.intrinsic.inputs, ...node.intrinsic.outputs]) {
         if (!valueById.has(id)) fail('semantic-ir-dangling-intrinsic-value-id');
       }
@@ -132,7 +310,10 @@ function validateNormalizedFunction(out, options) {
     if (!node || !node.outputs.includes(value.id)) fail('semantic-ir-value-definition-mismatch');
   }
 
-  const hasUnknownNode = out.nodes.some((node) => SEMANTIC_SETS.unknownOperations.has(node.kind) || node.completeness !== 'complete');
+  // A node-local unknown payload is explicit unknown evidence even on an
+  // ordinary node, so it must keep the function from claiming completeness
+  // (defense in depth alongside the constructor's own conflict check; #5390).
+  const hasUnknownNode = out.nodes.some((node) => SEMANTIC_SETS.unknownOperations.has(node.kind) || node.completeness !== 'complete' || node.unknown != null);
   if (out.completeness === 'complete' && (hasUnknownNode || out.unknowns.length)) fail('semantic-ir-completeness-conflict');
   if (out.completeness !== 'complete' && out.unknowns.length === 0) fail('semantic-ir-function-unknowns-required');
 }
@@ -145,25 +326,30 @@ export function createSemanticIrFunction(input, options = {}) {
     'completeness', 'unknowns', 'origin',
   ]), 'semantic-ir-unexpected-function-field');
   assertVersion(input);
-  const rawBlocks = array(input.blocks, 'semantic-ir-blocks-required');
-  const rawValues = array(input.values, 'semantic-ir-values-required');
-  const rawNodes = array(input.nodes, 'semantic-ir-nodes-required');
+  const referenceReads = new WeakMap();
+  const rawBlocks = cacheReferenceReads(array(input.blocks, 'semantic-ir-blocks-required'), referenceReads);
+  const rawValues = cacheReferenceReads(array(input.values, 'semantic-ir-values-required'), referenceReads);
+  const rawNodes = cacheReferenceReads(array(input.nodes, 'semantic-ir-nodes-required'), referenceReads);
   assertWithinBudget(rawBlocks.length, options, 'maxBlocks');
   assertWithinBudget(rawValues.length, options, 'maxValues');
   assertWithinBudget(rawNodes.length, options, 'maxNodes');
+  // Preflight the complete reference denominator before nested normalization.
+  assertWithinBudget(countRawReferences(rawBlocks, rawValues, rawNodes, referenceReads), options, 'maxReferences');
 
+  // Fixed UTF-16 code-unit order keeps canonical serialization locale independent (#5765).
+  const compareCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
   const out = {
     schemaVersion: SEMANTIC_IR_SCHEMA_VERSION,
     contractVersion: SEMANTIC_IR_CONTRACT_VERSION,
     functionId: nonEmpty(input.functionId, 'semantic-ir-function-id-required'),
     entryBlockId: nonEmpty(input.entryBlockId, 'semantic-ir-entry-block-required'),
-    blocks: rawBlocks.map(normalizeBlock).sort((a, b) => a.id.localeCompare(b.id)),
-    values: rawValues.map(createSemanticValue).sort((a, b) => a.id.localeCompare(b.id)),
-    nodes: rawNodes.map(createSemanticNode).sort((a, b) => a.id.localeCompare(b.id)),
+    blocks: rawBlocks.map((block) => normalizeBlock(cacheReferenceReads(block, referenceReads))).sort((a, b) => compareCodeUnit(a.id, b.id)),
+    values: rawValues.map((value) => createSemanticValue(cacheReferenceReads(value, referenceReads))).sort((a, b) => compareCodeUnit(a.id, b.id)),
+    nodes: rawNodes.map((node) => createSemanticNode(cacheReferenceReads(node, referenceReads))).sort((a, b) => compareCodeUnit(a.id, b.id)),
     completeness: enumValue(input.completeness ?? 'complete', SEMANTIC_SETS.completeness, 'semantic-ir-invalid-function-completeness'),
     unknowns: array(input.unknowns ?? [], 'semantic-ir-invalid-function-unknowns')
       .map(normalizeFunctionUnknown)
-      .sort((a, b) => stableStringify(a).localeCompare(stableStringify(b))),
+      .sort((a, b) => compareCodeUnit(stableStringify(a), stableStringify(b))),
     origin: requiredOrigin(input, 'semantic-ir-function-origin-required'),
   };
   assertWithinBudget(countReferences(out.nodes, out.values, out.blocks), options, 'maxReferences');

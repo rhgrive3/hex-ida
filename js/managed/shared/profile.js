@@ -10,12 +10,26 @@ function object(value, code) {
   return value;
 }
 function nonEmpty(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') fail(code);
+  const text = value.trim();
   if (!text) fail(code);
   return text;
 }
+function canonicalNonEmpty(value, code) {
+  if (typeof value !== 'string' || !value || value !== value.trim()) fail(code);
+  return value;
+}
+function textOrIndex(value, code) {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) fail(code);
+    return String(value);
+  }
+  return nonEmpty(value, code);
+}
 function sortedUniqueStrings(values) {
-  return [...new Set((values || []).map((v) => String(v).trim()).filter(Boolean))].sort();
+  if (values == null) return [];
+  if (!Array.isArray(values)) fail('managed-profile-invalid-feature-set');
+  return [...new Set(values.map((value) => nonEmpty(value, 'managed-profile-invalid-feature')))].sort();
 }
 
 export function createManagedTargetProfile(input) {
@@ -24,15 +38,28 @@ export function createManagedTargetProfile(input) {
   if (!FRONTEND_SET.has(frontendId)) fail('managed-profile-unsupported-frontend');
 
   const frontendSemanticVersion = nonEmpty(input.frontendSemanticVersion ?? '1.0.0', 'managed-profile-version-required');
-  const formatVersion = nonEmpty(String(input.formatVersion ?? '1'), 'managed-profile-format-version-required');
-  const vmSpecEdition = nonEmpty(String(input.vmSpecEdition ?? 'default'), 'managed-profile-spec-edition-required');
+  const formatVersion = textOrIndex(input.formatVersion ?? '1', 'managed-profile-format-version-required');
+  const vmSpecEdition = textOrIndex(input.vmSpecEdition ?? 'default', 'managed-profile-spec-edition-required');
   const featureSet = sortedUniqueStrings(input.featureSet);
-  const runtimeVersionHint = input.runtimeVersionHint ? String(input.runtimeVersionHint).trim() : null;
+  const runtimeVersionHint = input.runtimeVersionHint == null
+    ? null
+    : nonEmpty(input.runtimeVersionHint, 'managed-profile-runtime-version-hint-invalid');
   const validationPolicy = nonEmpty(input.validationPolicy ?? 'strict', 'managed-profile-validation-policy-required');
   
   const options = input.options ? input.options : {};
   const decodingOptionsHash = stableDigest(options);
-  const id = createManagedTargetProfileId(frontendId, formatVersion, vmSpecEdition);
+  // All identity-defining semantic configuration participates in the
+  // canonical id (#5401): feature set, validation policy, decoding options,
+  // runtime hint and frontend semantic version are part of the identity
+  // denominator, so semantically different profiles cannot collide.
+  const semanticTail = {
+    frontendSemanticVersion,
+    featureSet,
+    runtimeVersionHint,
+    validationPolicy,
+    decodingOptionsHash,
+  };
+  const id = createManagedTargetProfileId(frontendId, formatVersion, vmSpecEdition, semanticTail);
 
   return deepFreeze({
     id,
@@ -48,8 +75,50 @@ export function createManagedTargetProfile(input) {
 }
 
 export function validateManagedTargetProfile(profile) {
-  if (!profile || typeof profile !== 'object') fail('managed-profile-invalid');
-  if (!FRONTEND_SET.has(profile.frontendId)) fail('managed-profile-unsupported-frontend');
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) fail('managed-profile-invalid');
+  if (typeof profile.frontendId !== 'string' || !FRONTEND_SET.has(profile.frontendId)) {
+    fail('managed-profile-unsupported-frontend');
+  }
   if (!profile.id || typeof profile.id !== 'string') fail('managed-profile-missing-id');
+
+  // A validating profile must have the same required canonical shape emitted
+  // by createManagedTargetProfile(). Do not substitute constructor defaults
+  // while validating published identity (#5296): an under-specified object
+  // must fail before identity re-derivation.
+  canonicalNonEmpty(profile.frontendSemanticVersion, 'managed-profile-invalid-version');
+  canonicalNonEmpty(profile.formatVersion, 'managed-profile-invalid-format-version');
+  canonicalNonEmpty(profile.vmSpecEdition, 'managed-profile-invalid-spec-edition');
+  if (!Array.isArray(profile.featureSet)) fail('managed-profile-invalid-feature-set');
+  const canonicalFeatureSet = sortedUniqueStrings(profile.featureSet);
+  if (canonicalFeatureSet.length !== profile.featureSet.length
+      || canonicalFeatureSet.some((value, index) => value !== profile.featureSet[index])) {
+    fail('managed-profile-invalid-feature-set');
+  }
+  if (profile.runtimeVersionHint != null) {
+    canonicalNonEmpty(profile.runtimeVersionHint, 'managed-profile-runtime-version-hint-invalid');
+  }
+  canonicalNonEmpty(profile.validationPolicy, 'managed-profile-invalid-validation-policy');
+  if (typeof profile.decodingOptionsHash !== 'string'
+      || !/^[0-9a-f]{32}$/.test(profile.decodingOptionsHash)) {
+    fail('managed-profile-invalid-options-hash');
+  }
+
+  // The published id must be the canonical identity of the validated
+  // published content, so a tampered or stale id cannot alias a different
+  // configuration (#5401/#5296).
+  const semanticTail = {
+    frontendSemanticVersion: profile.frontendSemanticVersion,
+    featureSet: canonicalFeatureSet,
+    runtimeVersionHint: profile.runtimeVersionHint ?? null,
+    validationPolicy: profile.validationPolicy,
+    decodingOptionsHash: profile.decodingOptionsHash,
+  };
+  const canonicalId = createManagedTargetProfileId(
+    profile.frontendId,
+    profile.formatVersion,
+    profile.vmSpecEdition,
+    semanticTail,
+  );
+  if (profile.id !== canonicalId) fail('managed-profile-identity-mismatch');
   return true;
 }

@@ -80,7 +80,7 @@ const ATOMIC_SOURCE_RESULT_RE = /^(?:swp|ldadd|ldset|ldclr|ldeor)(?:al|a|l)?(?:b
 // that e.g. `bic` is not swallowed by `b` (#2188).
 const NO_DEST_MNEMONICS = new Set([
   'cmp', 'cmn', 'tst', 'ccmp', 'ccmn', 'fcmp', 'fcmpe',
-  'b', 'bl', 'br', 'braa', 'brab', 'blraa', 'blrab',
+  'b', 'bl', 'br', 'blr', 'braa', 'brab', 'braaz', 'brabz', 'blraa', 'blrab', 'blraaz', 'blrabz',
   'ret', 'retaa', 'retab', 'cbz', 'cbnz', 'tbz', 'tbnz',
   'nop', 'svc', 'brk', 'hlt', 'hint', 'bti', 'dmb', 'dsb', 'isb',
   'prfm', 'msr', 'drps', 'eret', 'eretaa', 'eretab',
@@ -90,7 +90,7 @@ const ATOMIC_READ_WRITE_DEST_RE = /^cas(?:al|a|l)?(?:b|h)?$/;
 function destIndex(mn) {
   const b = mn.toLowerCase();
   if (ATOMIC_SOURCE_RESULT_RE.test(b)) return 1;
-  if (/^(str|stp|stur|strb|strh|sturb|sturh|stnp|st1|st2|st3|st4|stlr)/.test(b)) return -1;
+  if (/^(str|stp|stur|strb|strh|sturb|sturh|stnp|sttr|st1|st2|st3|st4|stlr)/.test(b)) return -1;
   // Full-mnemonic matching only: a bare `b` alternative here also prefix-matched
   // every `b*` mnemonic with a destination register (bic/bfi/bfm/...), so their
   // destination write was dropped (#2188). Branch mnemonics take optional
@@ -219,7 +219,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         if (pairDestReg === 0) lastX0Write = row;
       }
 
-      if (b === 'sub' && ops[0] && ops[0].cls === 'sp' && ops[2] && ops[2].k === 'imm' && ops[2].value != null) {
+      if (b === 'sub' && ops[0] && ops[0].cls === 'sp' && ops[1] && ops[1].cls === 'sp' && ops[2] && ops[2].k === 'imm' && ops[2].value != null) {
         const amount = arm64AddSubImmediateValue(ops[2]);
         if (amount != null) res.frameBytes += Number(amount);
       }
@@ -592,11 +592,27 @@ export function describeFunction(res, name) {
   const ja = pick(true, false);
   const who = name ? '「' + name + '」' : 'この関数';
   if (!ja) {
+    const directCalls = Array.isArray(res.calls) ? res.calls : [];
+    const indirectCalls = Number.isSafeInteger(res.indirectCalls) && res.indirectCalls > 0
+      ? res.indirectCalls
+      : 0;
+    const hasCalls = directCalls.length > 0 || indirectCalls > 0;
     lines.push(`${name || 'This function'} spans ${res.instructions} instructions.`);
-    if (res.savesLr) lines.push('It saves the return address, so it calls other functions.');
+    if (res.savesLr) lines.push('It saves the return address.');
+    else if (hasCalls) lines.push('It never saves the return address.');
     else lines.push('It never saves the return address — a leaf function that calls nothing.');
     if (res.loops.length) lines.push(`There are ${res.loops.length} backward branches, so it loops.`);
-    if (res.calls.length) lines.push('It calls: ' + res.calls.slice(0, 8).map((c) => c.name || '0x' + c.target?.toString(16)).join(', '));
+    if (directCalls.length) {
+      lines.push('It calls: ' + directCalls.slice(0, 8).map((c) => {
+        if (typeof c?.name === 'string' && c.name) return c.name;
+        if (typeof c?.target === 'bigint') return '0x' + c.target.toString(16);
+        if (typeof c?.target === 'number' && Number.isSafeInteger(c.target)) return '0x' + c.target.toString(16);
+        return 'an unknown target';
+      }).join(', '));
+    }
+    if (indirectCalls) {
+      lines.push(`It makes ${indirectCalls} indirect call${indirectCalls === 1 ? '' : 's'}; the target is not known statically.`);
+    }
     return lines;
   }
   if (res.instructions <= 6) lines.push(who + 'はとても短く、命令は ' + res.instructions + ' 個だけです。値をそのまま返すだけ、といった小さな処理でしょう。');

@@ -1,4 +1,4 @@
-import { buildObjcRuntimeIndex, classifyObjcRuntimeCall, objcMessage } from './objc-runtime.js';
+import { buildObjcRuntimeIndex, cleanClassName, classifyObjcRuntimeCall, isObjcMsgSendSymbol, objcMessage } from './objc-runtime.js';
 import { buildSelectorIndex, resolveSelectorStub } from './selector-stubs.js';
 import { buildSwiftRuntimeIndex, classifySwiftRuntimeCall, resolveSwiftDispatch, swiftCallingConvention, formatSwiftCall } from '../swift.js';
 import { classifyLanguageRuntimeCall } from '../metadata/index.js';
@@ -7,9 +7,21 @@ import { canonicalAddress } from '../core/identity/index.js';
 export function runtimeOriginForSymbol(name) {
   const n = typeof name === 'string' ? name : '';
   if (/^_?\$[sS]/.test(n) || /^_?swift_/.test(n)) return 'swift';
-  if (/^[+-]\[/.test(n) || /^_?objc_/.test(n) || /objc_msgSend/.test(n)) return 'objc';
+  // Keep the broad objc_ family for the other runtime helpers, but do not let
+  // malformed objc_msgSend-prefixed user symbols bypass the anchored entry
+  // point grammar in isObjcMsgSendSymbol().
+  if (/^[+-]\[/.test(n)
+    || (/^_?objc_/.test(n) && !/^_?objc_msgSend/.test(n))
+    || isObjcMsgSendSymbol(n)) return 'objc';
   if (/^runtime\./.test(n) || /^go:/.test(n)) return 'go';
-  if (/^core::/.test(n) || /^alloc::/.test(n) || /^std::/.test(n) || /^_?rust_/.test(n) || /^_R/.test(n) || /^_ZN.*17h[0-9a-f]{16}E/.test(n)) return 'rust';
+  // `std::` is the C++ standard library namespace too, so it is ambiguous with
+  // Rust's demangled `std::...`. Rust legacy symbols are distinguishable by
+  // their symbol-name hash (`17h<16 hex>E`, `h<16 hex>E`, or the toolchain
+  // style `::h<16 hex>`), so a `std::` form without any hash falls through to
+  // the C++/C verdicts below instead of being pinned as Rust.
+  if (/^core::/.test(n) || /^alloc::/.test(n) || /^_?rust_/.test(n) || /^_R/.test(n)
+    || /^_ZN.*17h[0-9a-f]{16}E/.test(n)
+    || (/^std::/.test(n) && /(?:17h|h)[0-9a-f]{16}E?(@)?$|::h[0-9a-f]{16}$/.test(n))) return 'rust';
   if (/^__?Z|^_Z/.test(n)) return 'cpp';
   return n ? 'c' : 'unknown';
 }
@@ -52,12 +64,32 @@ export function resolveObjcIMP(objcIndex, address, { receiverType = null, select
   if (selector) candidates = candidates.filter((m) => m.selector === selector);
   if (receiverType != null) {
     if (typeof receiverType !== 'string') return { resolved: null, candidates: [], confidence: 0 };
-    const type = receiverType.replace(/\s*\*+\s*$/, '');
+    // Canonical class identity: the dispatch path normalizes spellings like
+    // 'class Foo', '@"Foo"', whitespace and pointer suffixes via
+    // cleanClassName(); the direct IMP path must accept the same equivalences
+    // or equal-type receivers resolve to zero candidates (#5649).
+    const type = cleanClassName(receiverType);
+    if (!type) return { resolved: null, candidates: [], confidence: 0 };
     const chain = new Set();
     let cur = type, guard = 0;
+    let hierarchyComplete = true;
     while (cur && guard++ < 64 && !chain.has(cur)) {
       chain.add(cur);
-      cur = objcIndex.classes?.get(cur)?.superName || null;
+      const cls = objcIndex.classes?.get(cur);
+      if (!cls) { hierarchyComplete = false; break; }
+      cur = cls.superName || null;
+    }
+    if (cur) hierarchyComplete = false;
+    if (!hierarchyComplete) {
+      return {
+        resolved: null,
+        candidates,
+        confidence: candidates.length ? 0.55 : 0,
+        reason: candidates.length
+          ? 'receiver class hierarchy is unavailable or incomplete; IMP candidates are inconclusive'
+          : 'IMP not found in parsed metadata',
+        partial: true,
+      };
     }
     candidates = candidates.filter((m) => chain.has(m.className));
   }
@@ -85,24 +117,38 @@ export function resolveAppleCall(index, call = {}) {
   let origin = typeof call.runtime === 'string' && call.runtime
     ? call.runtime
     : runtimeOriginForSymbol(name);
+  const explicitSelector = typeof call.selector === 'string' && call.selector.length > 0 ? call.selector : null;
   const indirectTarget = call.impTarget ?? call.functionPointer ?? ((call.kind === 'imp' || call.kind === 'function-pointer') ? call.target : null);
-  const imp = indirectTarget != null ? resolveObjcIMP(index?.objc, indirectTarget, { receiverType: call.receiverType, selector: call.selector }) : null;
+  const imp = indirectTarget != null ? resolveObjcIMP(index?.objc, indirectTarget, { receiverType: call.receiverType, selector: explicitSelector }) : null;
   if (origin === 'unknown' && imp?.candidates?.length) origin = 'objc';
 
-  if (origin === 'objc' || /objc_msgSend/.test(name) || imp?.candidates?.length) {
-    if (imp?.candidates?.length && !/objc_msgSend/.test(name)) {
+  // ObjC IMP evidence is origin inference for unknown origins only (the guard
+  // above): an explicit call.runtime (swift/rust/c, …) stays authoritative
+  // even when the numeric target happens to match a known IMP address.
+  //
+  // #5631: Objective-C origin is not itself selector-dispatch authority.
+  // Resolve selector-stub evidence first and enter the message path only for a
+  // real msgSend entry point, a canonical primitive selector, a selector stub
+  // that actually resolved, IMP candidates, or an explicit message-call kind.
+  // Structured/coercible selector/stub inputs must not steal a known direct
+  // target merely because they are non-null.
+  let selectorResolution = null;
+  if (!explicitSelector && call.stubAddress != null && index?.selectors) {
+    selectorResolution = resolveSelectorStub({ address: call.stubAddress, symbol: name, selectorIndex: index.selectors, selectorFor: call.selectorFor });
+  }
+  const selector = explicitSelector || selectorResolution?.selector || null;
+  const msgSendEntry = isObjcMsgSendSymbol(name);
+  const explicitMessage = call.kind === 'message';
+  const hasDispatchEvidence = msgSendEntry || explicitMessage || selector != null
+    || (selectorResolution?.candidates?.length ?? 0) > 0 || (imp?.candidates?.length ?? 0) > 0;
+  if ((origin === 'objc' || msgSendEntry || explicitMessage) && hasDispatchEvidence) {
+    if (imp?.candidates?.length && !msgSendEntry) {
       return {
         runtime: 'objc', kind: 'imp', imp,
         resolved: imp.resolved,
         candidates: imp.candidates,
         text: imp.resolved ? `${imp.resolved.classMethod ? '+' : '-'}[${imp.resolved.className} ${imp.resolved.selector}]` : null,
       };
-    }
-    let selector = call.selector || null;
-    let selectorResolution = null;
-    if (!selector && call.stubAddress != null && index?.selectors) {
-      selectorResolution = resolveSelectorStub({ address: call.stubAddress, symbol: name, selectorIndex: index.selectors, selectorFor: call.selectorFor });
-      selector = selectorResolution.selector;
     }
     const message = selector ? objcMessage(index?.objc, {
       receiver: call.receiver || 'receiver', receiverType: call.receiverType || null,

@@ -36,13 +36,28 @@ function unique(values) {
 
 function safeBigInt(value) {
   if (value == null) return null;
+  if (typeof value === 'string') {
+    // Only explicit integer syntax may become an address (#5825): BigInt('')
+    // is 0n, which fabricated exact direct targets out of blank strings.
+    const text = value.trim();
+    if (!/^[+-]?(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) return null;
+    try { return BigInt(text); } catch { return null; }
+  }
   try { return typeof value === 'bigint' ? value : BigInt(value); }
   catch { return null; }
 }
 
 function valueWidth(value) {
   if (!value || typeof value !== 'object') return 64;
-  if (value.kind === 'temporary') return valueWidth(value.valueType);
+  if (value.kind === 'temporary') {
+    // ARM64 address expressions use lightweight temporary nodes with a direct
+    // `widthBits` field, while canonical MachineEffect values carry the width
+    // under `valueType`. Preserve both shapes so the 32-bit proof in the
+    // legacy address gate reflects the actual producer rather than defaulting
+    // raw temporaries to 64 bits.
+    if (Number.isInteger(value.widthBits) && value.widthBits > 0) return value.widthBits;
+    return valueWidth(value.valueType);
+  }
   if (value.kind === 'vector') return value.laneCount * valueWidth(value.elementType);
   return Number(value.widthBits || 64) || 64;
 }
@@ -89,16 +104,25 @@ function sourceOf(value) {
   }
 }
 
+function directTargetInteger(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value === 'string') return safeBigInt(value);
+  return null;
+}
+
 function directTargetOf(value) {
   if (value == null) return null;
-  if (typeof value === 'bigint' || typeof value === 'number' || typeof value === 'string') {
-    const n = safeBigInt(value);
-    return n == null ? value : n;
+  if (typeof value !== 'object') return directTargetInteger(value);
+  try {
+    if (value.kind === 'bitvector' || value.kind === 'absolute-address') {
+      return directTargetInteger(value.value);
+    }
+    if (value.address != null) return directTargetInteger(value.address);
+    if (value.value != null && value.kind == null) return directTargetInteger(value.value);
+  } catch {
+    return null;
   }
-  if (typeof value !== 'object') return null;
-  if (value.kind === 'bitvector' || value.kind === 'absolute-address') return safeBigInt(value.value);
-  if (value.address != null) return safeBigInt(value.address) ?? value.address;
-  if (value.value != null && value.kind == null) return safeBigInt(value.value) ?? value.value;
   return null;
 }
 
@@ -327,6 +351,13 @@ function addressIndexTerm(value) {
     return src ? { reg:src.reg, scale:0, extend:null } : null;
   }
   if (value.kind === 'zero-extend' || value.kind === 'sign-extend') {
+    // Legacy `uxtw`/`sxtw` address modifiers mean "extend the low 32-bit word
+    // to 64 bits". Re-labelling any other extension width changes the effective
+    // address, so mirror the Semantic IR v2->v1 `extensionToken()` gate: mint
+    // the modifier only when 32->64 is proven on the expression AND the inner
+    // value width agrees; otherwise fail closed and drop the index term (#5418).
+    const innerWidthBits = value.value ? valueWidth(value.value) : null;
+    if (value.fromBits !== 32 || value.toBits !== 64 || innerWidthBits !== 32) return null;
     const nested = addressIndexTerm(value.value);
     if (!nested) return null;
     return { ...nested, extend:value.kind === 'zero-extend' ? 'uxtw' : 'sxtw' };
@@ -334,7 +365,14 @@ function addressIndexTerm(value) {
   if (value.kind === 'shift-left') {
     const nested = addressIndexTerm(value.value);
     if (!nested) return null;
-    return { ...nested, scale:Number(value.amount || 0) || 0 };
+    // (x << a) << b == x << (a + b): nested shifts compose their exponents.
+    // Overwriting the recursive scale dropped the inner shift and projected a
+    // different effective address (#5827, sibling of #5398).
+    const amount = value.amount;
+    if (!Number.isSafeInteger(amount) || amount < 0) return null;
+    const scale = nested.scale + amount;
+    if (!Number.isSafeInteger(scale) || scale < 0) return null;
+    return { ...nested, scale };
   }
   return null;
 }

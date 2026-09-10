@@ -13,7 +13,7 @@
  */
 
 import { createAliasResult, mayAlias, unknownAlias } from '../alias/result.js';
-import { rangeRelation } from './lattice.js';
+import { canonicalPointsToAddress, provenSeparationAuthority, rangeRelation } from './lattice.js';
 
 export const A2_ALIAS_ANALYZER_ID = 'phase7.alias.a2-points-to';
 
@@ -24,8 +24,56 @@ function widthBytes(widthBits) {
   return BigInt(Math.ceil(bits / 8));
 }
 
+function absoluteInterval(target, accessWidth) {
+  const range = target?.offsetRange;
+  if (target?.address == null || range?.min == null || range?.max == null) {
+    return { interval: null, reason: null };
+  }
+  const pointerWidth = target.widthBits;
+  if (typeof pointerWidth !== 'number'
+      || !Number.isSafeInteger(pointerWidth) || pointerWidth <= 0 || pointerWidth > 512) {
+    return { interval: null, reason: 'provenance-lost' };
+  }
+  let base;
+  try {
+    base = BigInt(target.address);
+  } catch {
+    return { interval: null, reason: 'provenance-lost' };
+  }
+  const addressSpaceSize = 1n << BigInt(pointerWidth);
+  const min = base + range.min;
+  const max = base + range.max;
+  if (min < 0n || max < min || max + accessWidth > addressSpaceSize) {
+    return { interval: null, reason: 'provenance-lost' };
+  }
+  return { interval: { min, max }, reason: null };
+}
+
 function isProvenAddressSpace(value) {
-  return typeof value === 'string' && value.length > 0 && value !== 'unknown';
+  // Canonical spelling only: a value that is not already trimmed was never
+  // canonicalized at the target boundary (e.g. a raw passthrough object), and
+  // must not mint a separation proof off a whitespace difference (#5717).
+  return typeof value === 'string' && value.length > 0 && value.trim() === value && value !== 'unknown';
+}
+
+// Canonical address spaces are lowercase tokens ('memory', 'tls', 'io').
+// Case differences or padded spellings mean the value never passed the target
+// canonicalization, so the pair may not be separated by a strict inequality
+// — it degrades to the conservative relation instead (#5587).
+function provenAddressSpaceToken(value) {
+  return isProvenAddressSpace(value) ? value.toLowerCase() : null;
+}
+
+// `nonEscapingRoots` is proof authority: a caller handing us a truthy
+// non-Set (array, string, plain object) would otherwise leak a raw
+// TypeError mid-comparison (#5453). Only Set-compatible shapes are
+// accepted; anything else fails closed with a contract error.
+function setNonEscaping(value) {
+  if (value == null) return new Set();
+  if (typeof value !== 'object' || typeof value.has !== 'function') {
+    throw new TypeError('phase7-alias-nonescaping-roots-set-required');
+  }
+  return value;
 }
 
 /**
@@ -39,7 +87,7 @@ export function pointsToAlias(left, right, options = {}) {
   const status = options.status;
   const widthA = widthBytes(options.widthBitsLeft);
   const widthB = widthBytes(options.widthBitsRight);
-  const nonEscaping = options.nonEscapingRoots ?? new Set();
+  const nonEscaping = setNonEscaping(options.nonEscapingRoots);
 
   if (!left || !right) return unknownAlias(status, ['unresolved-root']);
 
@@ -72,22 +120,30 @@ export function pointsToAlias(left, right, options = {}) {
   for (const a of left.targets) {
     for (const b of right.targets) {
       if (a.rootKey !== b.rootKey) {
-        if (isProvenAddressSpace(a.addressSpace) && isProvenAddressSpace(b.addressSpace)
-          && a.addressSpace !== b.addressSpace) {
+        const spaceA = provenAddressSpaceToken(a.addressSpace);
+        const spaceB = provenAddressSpaceToken(b.addressSpace);
+        if (spaceA != null && spaceB != null && spaceA !== spaceB) {
           relations.push('no');
           reasonCodes.add('distinct-address-space');
           continue;
         }
 
-        if (a.address != null && b.address != null) {
+        const addressA = canonicalPointsToAddress(a.address);
+        const addressB = canonicalPointsToAddress(b.address);
+        const hasCanonicalAddressA = addressA != null && addressA === a.address;
+        const hasCanonicalAddressB = addressB != null && addressB === b.address;
+
+        if (hasCanonicalAddressA && hasCanonicalAddressB) {
           try {
-            const baseA = BigInt(a.address);
-            const baseB = BigInt(b.address);
-            if (a.offsetRange?.min != null && a.offsetRange?.max != null && b.offsetRange?.min != null && b.offsetRange?.max != null) {
-              const spanA_min = baseA + a.offsetRange.min;
-              const spanA_max = baseA + a.offsetRange.max;
-              const spanB_min = baseB + b.offsetRange.min;
-              const spanB_max = baseB + b.offsetRange.max;
+            const absoluteA = absoluteInterval(a, widthA);
+            const absoluteB = absoluteInterval(b, widthB);
+            if (absoluteA.reason) reasonCodes.add(absoluteA.reason);
+            if (absoluteB.reason) reasonCodes.add(absoluteB.reason);
+            if (absoluteA.interval && absoluteB.interval) {
+              const spanA_min = absoluteA.interval.min;
+              const spanA_max = absoluteA.interval.max;
+              const spanB_min = absoluteB.interval.min;
+              const spanB_max = absoluteB.interval.max;
               if (spanA_max + widthA <= spanB_min || spanB_max + widthB <= spanA_min) {
                 relations.push('no');
                 reasonCodes.add('disjoint-global-interval');
@@ -103,7 +159,7 @@ export function pointsToAlias(left, right, options = {}) {
         }
 
         const pair = new Set([a.rootKind, b.rootKind]);
-        if ((pair.has('stack-fixed') || pair.has('stack-like')) && (pair.has('global-absolute') || pair.has('absolute') || a.address != null || b.address != null)) {
+        if ((pair.has('stack-fixed') || pair.has('stack-like')) && (pair.has('global-absolute') || pair.has('absolute') || hasCanonicalAddressA || hasCanonicalAddressB)) {
           relations.push('no');
           reasonCodes.add('distinct-proven-root');
           continue;
@@ -122,8 +178,11 @@ export function pointsToAlias(left, right, options = {}) {
         // A manually-constructed/root-name-only target therefore cannot mint
         // separation authority (#1806), while the Phase 7 frozen corpus keeps its
         // two exact distinct-storage cases through explicit provenance (#1848).
-        const descriptorSeparated = a.separationAuthority === 'root-descriptor'
-          && b.separationAuthority === 'root-descriptor'
+        // The authority is verified against the target's proof brand, not the
+        // stored string — a plain caller-supplied `separationAuthority` is not
+        // evidence (#6066).
+        const descriptorSeparated = provenSeparationAuthority(a) === 'root-descriptor'
+          && provenSeparationAuthority(b) === 'root-descriptor'
           && a.separationClass === b.separationClass
           && ['global-like', 'heap-like', 'tls-like'].includes(a.separationClass)
           && a.rootEntityId != null && b.rootEntityId != null
