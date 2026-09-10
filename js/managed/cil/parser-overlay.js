@@ -2,6 +2,7 @@ import { deepFreeze } from '../../core/identity/index.js';
 import { metadataRowSize } from './metadata-layout.js';
 import { readCilMetadataStreams } from './metadata-streams.js';
 import { readCilDefinitions } from './metadata-definitions.js';
+import { parseCilMethodSignature, parseCilPropertySignature } from './call-signature-types.js';
 
 const CLI_DIRECTORY_INDEX=14, CLI_HEADER_SIZE=72;
 const METHOD_DEF_TABLE=0x06, FILE_TABLE=0x26, METHOD_ATTRIBUTE_STATIC=0x0010;
@@ -46,6 +47,30 @@ function blobAt(bytes,stream,index,code){
  if(length.next>heap.length-length.value)fail(code);
  return heap.subarray(length.next,length.next+length.value);
 }
+function typeDefOrRefCounts(layout){return [layout.rowCounts[0x02]||0,layout.rowCounts[0x01]||0,layout.rowCounts[0x1b]||0]}
+function validateParamAuthority(bytes,defs,layout,blobStream){
+ const byToken=new Map((defs.params||[]).map(row=>[row.token,row])),typeRows=typeDefOrRefCounts(layout);
+ for(const method of defs.methods){
+  const owned=(method.params||[]).map(token=>{const row=byToken.get(token);if(!row)fail('cil-param-owner-missing');return row});
+  const seen=new Set();let returnRows=0;
+  for(const param of owned){
+   if(param.sequence===0){if(++returnRows>1)fail('cil-param-return-duplicate');continue}
+   if(seen.has(param.sequence))fail('cil-param-sequence-duplicate');seen.add(param.sequence);
+  }
+  if(!owned.some(param=>param.sequence>0))continue;
+  const signature=parseCilMethodSignature(blobAt(bytes,blobStream,method.signatureBlobIndex,'cil-call-signature-invalid'),typeRows);
+  for(const param of owned)if(param.sequence>signature.parameters.length)fail('cil-param-sequence-out-of-range');
+ }
+}
+function decodePropertyAuthority(bytes,defs,layout,blobStream){
+ if(!(defs.properties||[]).length)return [];
+ const typeRows=typeDefOrRefCounts(layout);
+ return defs.properties.map(row=>{
+  const raw=blobAt(bytes,blobStream,row.typeBlobIndex,'cil-property-signature-invalid');
+  const signature=parseCilPropertySignature(raw,typeRows);
+  return {...row,rawSignature:Object.freeze(Array.from(raw)),signature};
+ });
+}
 function skipCustomMods(blob,pos,rowCounts,code){
  while(blob[pos]===0x1f||blob[pos]===0x20){
   const encoded=compressed(blob,pos+1,code),tag=encoded.value&0x03,rid=encoded.value>>>2,table=[0x02,0x01,0x1b][tag];
@@ -86,8 +111,8 @@ function validateManagedEntryAuthority(bytes,parsed,defs,layout,meta){
 }
 export function overlayCilMetadata(bytes,parsed){
  const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes),view=new DataView(u8.buffer,u8.byteOffset,u8.byteLength),pe=peLayout(u8,view);if(!pe?.cliPresent)return parsed;
- const meta=readCilMetadataStreams(u8,pe.metadataOffset,pe.metadataSize),tablesStream=meta.streams.find(s=>s.name==='#~'||s.name==='#-'),stringsStream=meta.streams.find(s=>s.name==='#Strings');if(!tablesStream)fail('cil-metadata-tables-missing');
- const layout=tableLayout(u8,view,tablesStream),defs=readCilDefinitions(u8,view,layout,stringsStream);validateManagedEntryAuthority(u8,parsed,defs,layout,meta);const byOffset=new Map((parsed.methodBodies??[]).map(b=>[b.headerOffset,b])),methodBodies=[],methods=[];
+ const meta=readCilMetadataStreams(u8,pe.metadataOffset,pe.metadataSize),tablesStream=meta.streams.find(s=>s.name==='#~'||s.name==='#-'),stringsStream=meta.streams.find(s=>s.name==='#Strings'),blobStream=meta.streams.find(s=>s.name==='#Blob');if(!tablesStream)fail('cil-metadata-tables-missing');
+ const layout=tableLayout(u8,view,tablesStream),defs=readCilDefinitions(u8,view,layout,stringsStream);validateParamAuthority(u8,defs,layout,blobStream);const properties=decodePropertyAuthority(u8,defs,layout,blobStream);validateManagedEntryAuthority(u8,parsed,defs,layout,meta);const byOffset=new Map((parsed.methodBodies??[]).map(b=>[b.headerOffset,b])),methodBodies=[],methods=[];
  for(const method of defs.methods){const out={...method,bodyIndex:null};if(method.rva!==0){const off=pe.mapRva(method.rva,1,'cil-method-rva-unmapped'),body=byOffset.get(off);if(!body)fail('cil-method-rva-unmapped');out.bodyIndex=methodBodies.length;methodBodies.push({...body,token:method.token,rid:method.rid})}methods.push(out)}
  // ECMA-335 II.22.28: Implementation == null resources live inside the CLI
  // Resources directory at the recorded Offset. Each blob is a 4-byte length
@@ -103,5 +128,5 @@ export function overlayCilMetadata(bytes,parsed){
   const payload=u8.subarray(start+4,start+4+length);
   return {...row,location:'embedded',payload};
  });
- return deepFreeze({...parsed,runtimeVersion:meta.runtimeVersion,vmSpecEdition:meta.runtimeVersion,types:defs.types,fields:defs.fields,methods,methodBodies,manifestResources});
+ return deepFreeze({...parsed,runtimeVersion:meta.runtimeVersion,vmSpecEdition:meta.runtimeVersion,types:defs.types,fields:defs.fields,params:defs.params,properties,events:defs.events,methodSemantics:defs.methodSemantics,methods,methodBodies,manifestResources});
 }
