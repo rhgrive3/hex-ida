@@ -115,6 +115,15 @@ historical HEX-C1-02 matrix above as the final task's completion proof.
   recursive summaries improve the real outer points-to consumer. JSON replay,
   root/allocation address spaces, incomplete/missing/stale summaries, malformed
   equations and iteration exhaustion are included in the 14 new regressions.
+- A separate 96-cell actual-discovery denominator now covers 3 root kinds ×
+  self/mutual recursion × 8 candidate states × zero/two wrapper levels. All 96
+  cells terminate: the 24 complete cases improve caller precision, and the 72
+  incomplete/missing/stale/partial/schema/unknown cases retain unknown. Every
+  recursive and wrapper summary begins at its real local producer's unresolved
+  return, then the existing SCC solves it. Only nonrecursive root/allocation
+  leaves supply existing finite facts. JSON replay, reversed map insertion,
+  immutable source IR and summary digests are checked in every cell. This is
+  distinct from the older 72-cell preservation/consumption matrix.
 - Working-tree evidence: canonical summary group 366/366 passed; points-to
   132/133 passed with the existing #4165 `may` versus `must` failure retained.
   These are development results, not exact committed-head acceptance evidence.

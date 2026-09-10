@@ -187,3 +187,93 @@ for (const incomplete of [false, true]) {
     if (!incomplete) assert.deepEqual(solved.summaries.get('indirect_a').returnProvenance.map(fact => fact.argIndex), [0, 1]);
   });
 }
+
+const DISCOVERY_KINDS = ['arg', 'root', 'allocation'];
+const DISCOVERY_TOPOLOGIES = ['self', 'mutual'];
+const DISCOVERY_MODES = ['direct', 'exhaustive', 'nonexhaustive', 'missing', 'stale', 'partial', 'schema', 'unknown'];
+const DISCOVERY_WRAPPER_DEPTHS = [0, 2];
+const view = set => set.targets.map(target => ({ root:target.rootEntityId, space:target.addressSpace,
+  min:String(target.offsetRange.min), max:String(target.offsetRange.max) }))
+  .sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : JSON.stringify(a) > JSON.stringify(b) ? 1 : 0);
+
+function discoveryCell(kind, topology, mode, wrapperDepth) {
+  const functions = new Map(), locals = new Map(), ids = ['cycle_a', 'cycle_b'];
+  const produce = (id, f) => {
+    functions.set(id, f);
+    locals.set(id, buildLocalFunctionSummary(f.ir, f.cfg, f.ssa, f.memorySsa, { snapshotId }).summary);
+  };
+  for (const [index, id] of ids.entries()) {
+    const unknownSeed = mode === 'unknown' && index === 1;
+    const leaf = `leaf_${index}`, peer = `peer_${index}`;
+    produce(id, recursiveFunction(id, topology === 'self' ? id : peer,
+      kind === 'arg' && !unknownSeed ? { baseArg:index } : { baseTarget:leaf }));
+    if (topology === 'mutual') produce(peer, recursiveFunction(peer, id));
+    if (kind !== 'arg' || unknownSeed) {
+      const finite = { kind, rootEntityId:`storage_${index}`, addressSpace:index === 0 ? 'memory' : 'io',
+        offset:String(8 * (index + 1)), returnIndex:0,
+        ...(kind === 'allocation' ? { allocationSiteId:`allocation_${index}` } : {}) };
+      locals.set(leaf, createFunctionSummary({ functionId:leaf,
+        returnProvenance:[unknownSeed ? { kind:'unknown', returnIndex:0 } : finite],
+        noreturn:false, mayThrow:false, status:locals.get(id).status }));
+    }
+    assert.ok(locals.get(id).returnProvenance.some(fact => fact.kind === 'unknown'),
+      'the real recursive producer must begin unresolved in every matrix cell');
+  }
+  const modified = locals.get(ids[1]);
+  if (mode === 'missing') locals.delete(ids[1]);
+  if (mode === 'stale') locals.set(ids[1], createFunctionSummary({ ...modified, status:{ ...modified.status, snapshotId:'stale' } }));
+  if (mode === 'partial') locals.set(ids[1], createFunctionSummary({ ...modified, status:{ ...modified.status,
+    completeness:'partial', stopReason:'evidence-missing' } }));
+  if (mode === 'schema') locals.set(ids[1], { ...modified, schemaVersion:999 });
+  produce('boundary', recursiveFunction('boundary', ids[0], mode === 'direct' ? {}
+    : { indirectTargets:ids, incomplete:mode === 'nonexhaustive' }));
+  let root = 'boundary';
+  for (let depth = 0; depth < wrapperDepth; depth++) {
+    const id = `wrapper_${depth}`;
+    produce(id, recursiveFunction(id, root)); root = id;
+  }
+  return { functions, locals, root, ids };
+}
+
+test('FR-C1-02 actual recursive discovery covers the full root/topology/target/wrapper cross product', t => {
+  const rows = [], failures = [];
+  for (const kind of DISCOVERY_KINDS) for (const topology of DISCOVERY_TOPOLOGIES)
+    for (const mode of DISCOVERY_MODES) for (const wrapperDepth of DISCOVERY_WRAPPER_DEPTHS) {
+      const cell = `${kind}/${topology}/${mode}/wrappers:${wrapperDepth}`;
+      try {
+        const { functions, locals, root, ids } = discoveryCell(kind, topology, mode, wrapperDepth);
+        const original = [...functions].map(([id, f]) => [id, structuredClone(f.ir)]);
+        const digests = [...locals].map(([id, summary]) => [id, functionSummaryDigest(summary)]);
+        const caller = recursiveFunction('matrix_consumer', root);
+        assert.equal(analyzeLocalPointsTo(caller.ir, caller.cfg, caller.ssa, { snapshotId, summaries:locals })
+          .pointsTo.get('call_return').top, true);
+        const wire = new Map([...locals].map(([id, summary]) => [id, JSON.parse(JSON.stringify(summary))]));
+        const solved = solveInterproceduralSummaries({ roots:[root], localSummaries:wire, snapshotId });
+        assert.ok(solved.components.some(component => component.includes(ids[0]) && component.length === (topology === 'self' ? 1 : 2)));
+        const result = analyzeLocalPointsTo(caller.ir, caller.cfg, caller.ssa, { snapshotId, summaries:solved.summaries });
+        const positive = mode === 'direct' || mode === 'exhaustive', set = result.pointsTo.get('call_return');
+        assert.equal(set.top, !positive, 'every uncertain candidate must keep the actual caller unknown');
+        if (positive) {
+          assert.equal(solved.status.completeness, 'complete');
+          const expected = (mode === 'direct' ? [0] : [0, 1]).map(index => ({
+            root:kind === 'arg' ? result.pointsTo.get(`arg${index}`).targets[0].rootEntityId : `storage_${index}`,
+            space:kind === 'arg' ? 'memory' : index === 0 ? 'memory' : 'io',
+            min:kind === 'arg' ? '0' : String(8 * (index + 1)), max:kind === 'arg' ? '0' : String(8 * (index + 1)),
+          })).sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : 1);
+          assert.deepEqual(view(set), expected);
+          assert.ok(result.calleeSummaryIds.includes(`summary:${functionSummaryDigest(solved.summaries.get(root))}`));
+        }
+        const replay = solveInterproceduralSummaries({ roots:[root], localSummaries:new Map([...wire].reverse()), snapshotId });
+        assert.deepEqual(replay.summaries.get(root).returnProvenance, solved.summaries.get(root).returnProvenance);
+        assert.deepEqual(analyzeLocalPointsTo(caller.ir, caller.cfg, caller.ssa, { snapshotId, summaries:replay.summaries })
+          .pointsTo.get('call_return'), set);
+        for (const [id, ir] of original) assert.deepEqual(structuredClone(functions.get(id).ir), ir);
+        assert.deepEqual([...locals].map(([id, summary]) => [id, functionSummaryDigest(summary)]), digests);
+        rows.push({ cell, positive, top:set.top, targetCount:set.targets.length });
+      } catch (error) { failures.push({ cell, message:error.message }); }
+    }
+  assert.equal(rows.length + failures.length, 96, 'every declared cell must have a terminal result');
+  t.diagnostic(JSON.stringify({ schema:'c1-recursive-discovery-matrix-v1', denominator:96, rows, failures }));
+  assert.deepEqual(failures, []);
+  assert.equal(rows.filter(row => row.positive).length, 24);
+});
