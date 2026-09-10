@@ -191,6 +191,11 @@ function validateResponse(packet) {
   if (!error || typeof error !== 'object' || Array.isArray(error) || Object.prototype.hasOwnProperty.call(error, WIRE_TAG)) {
     throw new DebugAdapterError('malformed-packet', 'response error must be a plain error object');
   }
+  for (const field of ['code', 'message']) {
+    if (Object.prototype.hasOwnProperty.call(error, field) && typeof error[field] !== 'string') {
+      throw new DebugAdapterError('malformed-packet', `response error ${field} must be a string`);
+    }
+  }
 }
 
 export function validateRemotePacket(packet) {
@@ -360,7 +365,13 @@ export class RemoteProtocolClient {
       if (!pendingForWire || pendingForWire.epoch !== wire.epoch) return false;
     }
     let packet;
-    try { packet = decodeWireValue(wire); } catch { return false; }
+    try {
+      packet = decodeWireValue(wire);
+      // Re-check response semantics after decoding. A plain-data accessor on
+      // the transport object can otherwise change code/message between the
+      // raw wire validation and decode boundary (#4921).
+      validateResponse(packet);
+    } catch { return false; }
     if (packet.type === 'response') {
       const pending = this.pending.get(packet.id);
       // The request's own epoch is the settle authority: a pending opened at
@@ -368,8 +379,13 @@ export class RemoteProtocolClient {
       // that epoch is not the client's current one (#5726).
       if (!pending || pending.epoch !== packet.epoch) return false;
       this._cleanupPending(packet.id, pending);
-      if (packet.error) pending.reject(new DebugAdapterError(String(packet.error.code || 'remote-error'), String(packet.error.message || 'remote error').slice(0,2048), packet.error.details || null));
-      else pending.resolve(packet.result);
+      if (packet.error) {
+        const hasOwn = (field) => Object.prototype.hasOwnProperty.call(packet.error, field);
+        const code = hasOwn('code') && packet.error.code ? packet.error.code : 'remote-error';
+        const message = hasOwn('message') && packet.error.message ? packet.error.message : 'remote error';
+        const details = hasOwn('details') ? packet.error.details || null : null;
+        pending.reject(new DebugAdapterError(code, message.slice(0,2048), details));
+      } else pending.resolve(packet.result);
       return true;
     }
     if (packet.type === 'event') {
