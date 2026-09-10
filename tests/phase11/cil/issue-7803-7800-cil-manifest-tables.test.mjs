@@ -268,17 +268,15 @@ test('#7632 DeclSecurity fails closed on unknown action, missing parent row, or 
     /cil-declsecurity-permission-set-required|cil-unsupported-binary/);
 });
 
-test('#7632 DeclSecurity accepts the full defined SecurityAction domain (R2)', () => {
-  // II.23.1.24 / System.Security.SecurityAction: the defined domain is the
-  // contiguous range 0x0001..0x000a — 0x0006 LinkDemand, 0x0007
-  // InheritanceDemand, and 0x0008 RequestMinimum are legal DeclSecurity rows,
-  // not reserved values. Rejecting them dropped valid metadata.
-  for (const action of [0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008, 0x0009, 0x000a]) {
+test('#7632 DeclSecurity accepts the full defined CorDeclSecurity domain (R2)', () => {
+  // CorDeclSecurity defines every action value from Request (0x0001) through
+  // DemandChoice (0x0012), including Prejit, NonCAS, and Choice actions.
+  for (let action = 0x0001; action <= 0x0012; action++) {
     const image = parseCil(manifestFixture({ declSecurity: { action } }), { binaryId: 'domain' });
     assert.equal(image.declSecurity[0].action, action, `action 0x${action.toString(16)} must decode`);
   }
-  // Truly reserved values (0x0000 and beyond the defined range) still fail closed.
-  for (const action of [0x0000, 0x000b, 0x000c, 0x0100]) {
+  // Nil and values beyond CorDeclSecurity.dclMaximumValue still fail closed.
+  for (const action of [0x0000, 0x0013, 0x0100]) {
     assert.throws(() => parseCil(manifestFixture({ declSecurity: { action } }), { binaryId: 'reserved' }),
       /cil-declsecurity-action-invalid|cil-unsupported-binary/,
       `action 0x${action.toString(16)} must fail closed`);
