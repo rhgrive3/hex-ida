@@ -9,8 +9,9 @@ import { findings } from '../js/auto.js';
 // the display text's UTF-16 code-unit count as the span, so multibyte UTF-8
 // strings under-covered their own bytes and interior/suffix code xrefs to
 // them were silently dropped. The scanner now carries the raw run's
-// byteLength, and the consumers use it (or the byte-length proxy) for the
-// span.
+// byteLength, and the consumers use it — validated against the provable
+// producer window derived from the control-escaped display text; malformed,
+// forged, or missing extents fail closed (no over-inclusive authority).
 
 function indexWithRefs(refTo) {
   // Distinct ref sites: functionsReferencing() dedupes by function start, so
@@ -45,14 +46,66 @@ test('#5698 buildStringMap uses byteLength, not text length, for the xref span',
     'the interior-referenced string must classify into the map');
 });
 
-test('#5698 buildStringMap falls back to a byte-length proxy without byteLength', () => {
-  const program = indexWithRefs([0x1006n]);
+test('#5698 without byteLength the fallback is the provable minimum, never over-inclusive', () => {
+  // Legacy shapes carry no byteLength. The escaped display cannot prove the
+  // exact raw extent, so the fallback span is the provable minimum (one raw
+  // byte per display code point): base xrefs stay covered, but the span is
+  // never inflated beyond what the display can prove (fail-closed, R1).
+  const program = indexWithRefs([0x1000n]);
   const result = buildStringMap({
     program,
     strings: [{ addr: 0x1000n, text: LOGIN }], // legacy shape: no byteLength
   });
   assert.ok(result.subsystems.length > 0,
-    'the byte-length proxy must still cover interior refs for legacy shapes');
+    'a base xref stays covered by the provable-minimum fallback');
+  const interior = indexWithRefs([0x1006n]);
+  assert.equal(buildStringMap({ program: interior, strings: [{ addr: 0x1000n, text: LOGIN }] }).subsystems.length, 0,
+    'an interior ref beyond the provable minimum is NOT covered (no over-valuation)');
+});
+
+test('#5698 a forged byteLength larger than the string gets no xref authority', () => {
+  // R1 counterexample: the real string is 25 bytes, but the entry lies with
+  // byteLength 128 — xrefs beyond the real extent must not become referenced.
+  const program = indexWithRefs([0x1070n]); // inside the forged [0x1000,0x1080), outside the real 25 bytes
+  const strings = [{ addr: 0x1000n, text: 'https://example.com/login', byteLength: 128 }];
+  assert.equal(buildStringMap({ program, strings }).subsystems.length, 0,
+    'buildStringMap must not classify through a forged byteLength');
+  const out = findings(strings, program, null, 40);
+  assert.equal(out.length, 1, 'the endpoint signal still fires');
+  assert.equal(out[0].actionable, false,
+    'findings must not mark a forged-extent string referenced');
+});
+
+test('#5698 malformed byteLength spellings get no xref authority', () => {
+  const program = indexWithRefs([0x1000n]);
+  const out = findings([
+    { addr: 0x1000n, text: 'https://example.com/login', byteLength: '25' },
+    { addr: 0x1000n, text: 'https://example.com/login', byteLength: [25] },
+    { addr: 0x1000n, text: 'https://example.com/login', byteLength: true },
+    { addr: 0x1000n, text: 'https://example.com/login', byteLength: 0 },
+    { addr: 0x1000n, text: 'https://example.com/login', byteLength: -25 },
+    { addr: 0x1000n, text: 'https://example.com/login', byteLength: 25.5 },
+  ], program, null, 40);
+  assert.equal(out.length, 6, 'the strings stay visible as data');
+  for (const entry of out) {
+    assert.equal(entry.actionable, false, 'malformed byteLength must fail closed');
+    assert.equal(entry.status, 'unreferenced');
+  }
+});
+
+test('#5698 the legacy escaped-display fallback never over-counts the raw extent', () => {
+  // R1 counterexample: raw `debug:\tvalue` is 12 raw bytes; the scanner's
+  // escaped display is 13 units. A display-derived fallback must NOT count
+  // the escape as its two display characters, or a ref at addr+12 (past the
+  // real string) would be treated as inside the string.
+  const program = indexWithRefs([0x3000n + 12n]); // first byte past the real run
+  const out = findings([{ addr: 0x3000n, text: 'debug:\\tvalue' }], program, null, 40);
+  assert.equal(out[0].actionable, false,
+    'the escaped display fallback must not cover bytes past the real run');
+  const lastByte = indexWithRefs([0x3000n + 11n]);
+  const outLast = findings([{ addr: 0x3000n, text: 'debug:\\tvalue' }], lastByte, null, 40);
+  assert.equal(outLast[0].actionable, true,
+    'the last real raw byte stays covered');
 });
 
 test('#5698 findings marks an interior-referenced multibyte string actionable', () => {
@@ -66,8 +119,8 @@ test('#5698 findings marks an interior-referenced multibyte string actionable', 
 });
 
 test('#5698 byte caps stay byte-denominated', () => {
-  // A 300-byte endpoint string with byteLength present: span capped at 256.
-  const long = { addr: 0x2000n, text: `https://example.com/${'a'.repeat(260)}`, byteLength: 300 };
+  // A 280-byte ASCII endpoint string with byteLength present: span capped at 256.
+  const long = { addr: 0x2000n, text: `https://example.com/${'a'.repeat(260)}`, byteLength: 280 };
   const program = indexWithRefs([0x2000n, 0x2001n, 0x2002n]);
   void 0x20ff; void 0x2100;
   const out = findings([long], program, null, 40);
@@ -150,9 +203,9 @@ test('#5698 the real worker producer carries raw extents for 2/3/4-byte code poi
 
 test('#5698 the findings 256-byte cap is byte-denominated at its boundary', () => {
   // Required regression #7: refs at the last byte inside the 256-byte cap
-  // stay actionable; refs inside the real 300-byte string but beyond the cap
-  // must NOT be. Enlarging the cap to 300 would flip the second assertion.
-  const long = { addr: 0x2000n, text: `https://example.com/${'a'.repeat(260)}`, byteLength: 300 };
+  // stay actionable; refs inside the real 280-byte string but beyond the cap
+  // must NOT be. Enlarging the cap to 280 would flip the second assertion.
+  const long = { addr: 0x2000n, text: `https://example.com/${'a'.repeat(260)}`, byteLength: 280 };
   const inside = indexWithRefs([0x2000n + 255n]);
   const out = findings([long], inside, null, 40);
   assert.equal(out[0].actionable, true, 'a ref at cap-1 (byte 255) is covered');
@@ -168,8 +221,8 @@ test('#5698 the findings 256-byte cap is byte-denominated at its boundary', () =
 
 test('#5698 the buildStringMap 128-byte cap is byte-denominated at its boundary', () => {
   // The map's span cap is 128 bytes: a ref at byte 127 classifies the string,
-  // a ref at byte 130 (inside the real 200-byte string) does not.
-  const long = { addr: 0x4000n, text: `https://example.com/${'a'.repeat(160)}`, byteLength: 200 };
+  // a ref at byte 130 (inside the real 180-byte string) does not.
+  const long = { addr: 0x4000n, text: `https://example.com/${'a'.repeat(160)}`, byteLength: 180 };
   const inside = indexWithRefs([0x4000n + 127n]);
   assert.ok(buildStringMap({ program: inside, strings: [long] }).subsystems.length > 0,
     'a ref at cap-1 (byte 127) classifies');

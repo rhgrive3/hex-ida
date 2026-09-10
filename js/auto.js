@@ -116,18 +116,45 @@ export function notableFunctions(program, symbols, region, limit = 12) {
  * explicitly non-actionable. Only proven code xrefs may drive next-step advice.
  */
 // The xref span must be the string's original UTF-8 byte extent (#5698).
-// Escaped control characters make a TextEncoder re-encode unreliable, but an
-// escaped ASCII spelling never shrinks below the raw run, so counting code
-// units is the conservative byte-length proxy when the scanner's byteLength
-// is absent.
-function utf8ByteLength(text) {
-  let bytes = 0;
+// Producer contract (worker scanStrings): display text is control-escaped
+// (`\t`/`\r`/`\n`), each escape stands for exactly one raw byte, every other
+// display code point came from 1..4 raw UTF-8 bytes, and the emitted
+// byteLength is the raw run's extent. From the display text alone that gives
+// a provable [minRaw, maxRaw] window; a carried byteLength outside it (or of
+// the wrong type) is a forged/malformed authority and fails closed.
+function producerByteExtentWindow(text) {
+  let minRaw = 0;
+  let maxRaw = 0;
   for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 0x5c && (text[i + 1] === 't' || text[i + 1] === 'r' || text[i + 1] === 'n')) {
+      minRaw += 1;
+      maxRaw += 1;
+      i++;
+      continue;
+    }
     const unit = text.codePointAt(i);
     if (unit > 0xffff) i++;
-    bytes += unit <= 0x7f ? 1 : unit <= 0x7ff ? 2 : unit <= 0xffff ? 3 : 4;
+    minRaw += 1;
+    maxRaw += unit <= 0x7f ? 1 : unit <= 0x7ff ? 2 : unit <= 0xffff ? 3 : 4;
   }
-  return bytes;
+  return { minRaw, maxRaw };
+}
+
+// Returns the authoritative raw byte span, or null when the entry carries no
+// provable extent (missing byteLength falls back to the provable minimum; a
+// malformed/forged carried value gets no xref authority at all).
+function stringByteSpan(s) {
+  const carried = s.byteLength;
+  if (carried === undefined || carried === null) {
+    const { minRaw } = producerByteExtentWindow(s.text);
+    return minRaw > 0 ? minRaw : null;
+  }
+  if (typeof carried !== 'number' || !Number.isSafeInteger(carried) || carried <= 0) {
+    return null;
+  }
+  const { minRaw, maxRaw } = producerByteExtentWindow(s.text);
+  if (carried < minRaw || carried > maxRaw) return null;
+  return carried;
 }
 
 export function findings(strings, program, symbols, limit = 40) {
@@ -139,11 +166,13 @@ export function findings(strings, program, symbols, limit = 40) {
       if (taken >= sig.max || out.length >= limit) break;
       if (!sig.re.test(s.text)) continue;
       // The xref span is a virtual-address byte range (#5698): use the
-      // string's original UTF-8 byte extent, not the display text's UTF-16
-      // code-unit count, which under-covers multibyte strings and hides
-      // interior xrefs behind a false 'unreferenced'.
-      const span = s.byteLength ?? utf8ByteLength(s.text);
-      const users = program.functionsReferencing(s.addr, BigInt(Math.max(1, Math.min(span, 256))), 8);
+      // string's authoritative raw byte extent; entries without one stay
+      // visible as data but get no xref authority (no over-inclusive
+      // display-derived span), so they cannot be marked referenced.
+      const span = stringByteSpan(s);
+      const users = span == null
+        ? { length: 0, complete: false, map: () => [] }
+        : program.functionsReferencing(s.addr, BigInt(Math.max(1, Math.min(span, 256))), 8);
       const actionable = users.length > 0;
       out.push({
         id: sig.id, level: sig.level, text: s.text, addr: s.addr,
