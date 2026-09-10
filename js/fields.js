@@ -270,7 +270,7 @@ export class FieldIndex {
           size: via.field.size,
           type: via.field.type,
           exact: true,
-          certain: access.self === true || className === via.className,
+          certain: access.self === true,
           viaRegister: access.base,
           viaOffsetVar: true,
         };
