@@ -120,7 +120,7 @@ function vectorDescriptor(parameter) {
   const type = String(parameter?.type || '').toLowerCase();
   const abiClass = String(parameter?.abiClass || parameter?.class || parameter?.kind || '').toLowerCase();
   const vector = parameter?.vector === true || parameter?.isVector === true
-    || /\b(?:vbool|v(?:u?int|float)\d+mf?\d+_t|vector)\b/.test(type)
+    || /\b(?:vbool(?:1|2|4|8|16|32|64)_t|v(?:u?int|float)\d+mf?\d+(?:x\d+)?_t|vector)\b/.test(type)
     || /vector/.test(abiClass);
   if (!vector) return null;
   const mask = parameter?.mask === true || parameter?.vectorMask === true || /\bvbool|mask/.test(`${type} ${abiClass}`);
@@ -134,12 +134,23 @@ function vectorDescriptor(parameter) {
   // 6-register tuple (#5628). The descriptor must never reconcile conflicting
   // evidence or out-of-range NFIELDS silently: both fail closed as `conflict`
   // so placement stays partial instead of minting an exact group (#5628).
-  const tupleMatch = /m(1|2|4|8)x(\d+)(?:_t|\b)/.exec(type);
-  const parsedLmul = tupleMatch ? Number(tupleMatch[1]) : parsed ? Number(parsed[1]) : null;
-  const parsedNf = tupleMatch ? Number(tupleMatch[2]) : null;
+  const tupleMatch = /m(f?)(1|2|4|8)x(\d+)(?:_t|\b)/.exec(type);
+  // A spelling that carries the tuple shape (m<LMUL>x<NFIELDS>_t) but parses to
+  // no valid descriptor (nonstandard m3x2/m9x2) is conflicting evidence — never
+  // a default 1/1 group, and never an integer-convention exact fallback (#6018).
+  // Fractional tuple LMULs (e.g. vint8mf8x2_t) occupy one register per field with
+  // 1-register alignment, so their occupancy multiplier normalizes to 1; the
+  // explicit-metadata conflict comparison still sees that normalized value.
+  const tupleShaped = /mf?\d+x\d+_t/.test(type);
+  const tupleFractional = tupleMatch?.[1] === 'f';
+  const parsedLmul = tupleMatch
+    ? (tupleFractional ? 1 : Number(tupleMatch[2]))
+    : parsed ? Number(parsed[1]) : null;
+  const parsedNf = tupleMatch ? Number(tupleMatch[3]) : null;
   const explicitLmulValid = Number.isInteger(explicitLmul) && [1,2,4,8].includes(explicitLmul);
   let conflict = false;
-  if (explicitLmulRaw != null && !explicitLmulValid) conflict = true;
+  if (tupleShaped && !tupleMatch) conflict = true;
+  else if (explicitLmulRaw != null && !explicitLmulValid) conflict = true;
   else if (explicitLmulValid && parsedLmul != null && parsedLmul !== explicitLmul) conflict = true;
   const lmul = explicitLmulValid ? explicitLmul : parsedLmul ?? 1;
   const explicitNfRaw = parameter?.tupleCount ?? parameter?.nf;
@@ -153,7 +164,7 @@ function vectorDescriptor(parameter) {
   } else {
     conflict = true;
   }
-  if (parsedNf != null && (parsedNf < 1 || parsedNf > 8)) conflict = true;
+  if (parsedNf != null && (parsedNf < 1 || parsedNf > 8 || parsedLmul * parsedNf > 8)) conflict = true;
   const fixedLength = parameter?.fixedLengthVector === true || /fixed[-_ ]?length/.test(abiClass);
   return conflict
     ? { mask, lmul, tupleCount, fixedLength, conflict:true }

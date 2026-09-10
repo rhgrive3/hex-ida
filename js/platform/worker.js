@@ -439,6 +439,14 @@ async function readAtAddress(msg, signal) {
   return result;
 }
 
+function metadataPageInteger(value, fallback, minimum, label) {
+  const resolved = value ?? fallback;
+  if (typeof resolved !== 'number' || !Number.isSafeInteger(resolved) || resolved < minimum) {
+    throw new RangeError(`metadata ${label} must be a ${minimum === 0 ? 'non-negative' : 'positive'} safe integer`);
+  }
+  return resolved === 0 ? 0 : resolved;
+}
+
 async function metadataPage(msg, signal) {
   if (!image) throw new Error('No parsed universal binary is open.');
   const selected = await pointerImageForSlice(msg.sliceIndex, signal);
@@ -458,8 +466,8 @@ async function metadataPage(msg, signal) {
   }
   const list = collections[msg.kind];
   if (!list) throw new Error(`Unknown metadata kind: ${msg.kind}`);
-  const start = Math.max(0, Number(msg.start) || 0);
-  const limit = Math.min(5000, Math.max(1, Number(msg.limit) || 500));
+  const start = metadataPageInteger(msg.start, 0, 0, 'start');
+  const limit = Math.min(5000, metadataPageInteger(msg.limit, 500, 1, 'limit'));
   return { kind: msg.kind, start, total: list.length, items: list.slice(start, start + limit), next: start + limit < list.length ? start + limit : null };
 }
 
