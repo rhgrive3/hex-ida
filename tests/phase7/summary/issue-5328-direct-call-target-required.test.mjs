@@ -41,7 +41,7 @@ test('#5328 a single resolved target keeps the direct-call record valid', () => 
     callSiteId: 'call-1',
     targetEntityIds: ['callee-1'],
     summaryId: null,
-    effectSource: 'unknown-call-fallback',
+    effectSource: 'abi-rule',
   });
   assert.deepEqual(call.targetEntityIds, ['callee-1']);
 
