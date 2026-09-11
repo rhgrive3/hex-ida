@@ -1,6 +1,7 @@
 import { boundedText, byteLength, HttpError, MAX_CONTEXT_CHARS } from './worker-transport.js';
 
 const MAX_QUESTION_CHARS = 6000;
+export const MAX_SESSION_ID_CHARS = 128;
 const THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high']);
 const AI_MODES = new Set(['chat', 'agent']);
 const AI_STYLES = new Set(['beginner', 'analyst']);
@@ -33,7 +34,17 @@ export function normalizeAITurnRequest(value) {
   const intent = boundedText(value.intent || value.context?.request?.intent, 100), task = boundedText(value.task || value.context?.request?.task, 100);
   const serialized = JSON.stringify({ messages, context, tools, requestedScope, effectiveScope, intent, task });
   if (byteLength(serialized) > MAX_CONTEXT_CHARS) throw new HttpError(413, 'request_too_large', 'The bounded AI context is too large.');
-  return { sessionId: boundedText(value.sessionId, 200) || null, mode, style, scope: effectiveScope, requestedScope, effectiveScope, intent: intent || null, task: task || null, goal, messages, context, tools };
+  let sessionId = null;
+  if (value.sessionId != null && value.sessionId !== '') {
+    if (typeof value.sessionId !== 'string') {
+      throw new HttpError(422, 'invalid_session_id', 'sessionId must be a string.');
+    }
+    if (value.sessionId.length > MAX_SESSION_ID_CHARS) {
+      throw new HttpError(422, 'invalid_session_id', `sessionId must not exceed ${MAX_SESSION_ID_CHARS} characters.`);
+    }
+    sessionId = value.sessionId;
+  }
+  return { sessionId, mode, style, scope: effectiveScope, requestedScope, effectiveScope, intent: intent || null, task: task || null, goal, messages, context, tools };
 }
 
 export function normalizeAITools(value) {

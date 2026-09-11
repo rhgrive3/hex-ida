@@ -132,6 +132,46 @@ function nonNegativeInteger(value, code) {
 function assertAllowedKeys(input, allowed, code) {
   for (const key of Object.keys(input)) if (!allowed.has(key)) fail(`${code}:${key}`);
 }
+function validateUnknownEffect(value) {
+  const effect = object(value, 'vm-effect-invalid-unknown-effect');
+  const categoryDescriptor = Object.getOwnPropertyDescriptor(effect, 'category');
+  if (!categoryDescriptor || !Object.prototype.hasOwnProperty.call(categoryDescriptor, 'value')) {
+    fail('vm-effect-invalid-unknown-category');
+  }
+  const category = categoryDescriptor.value;
+  if (typeof category !== 'string' || !SETS.unknownCategories.has(category)) {
+    fail('vm-effect-invalid-unknown-category');
+  }
+  return effect;
+}
+function normalizeUnknownEffect(value) {
+  object(value, 'vm-effect-invalid-unknown-effect');
+  const normalized = jsonSafe(value);
+  validateUnknownEffect(normalized);
+  return normalized;
+}
+function unknownEffectsForValidation(bundle) {
+  const descriptor = Object.getOwnPropertyDescriptor(bundle, 'unknownEffects');
+  if (!descriptor) {
+    if ('unknownEffects' in bundle) fail('vm-effect-invalid-unknown-effects');
+    return [];
+  }
+  if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+    fail('vm-effect-invalid-unknown-effects');
+  }
+  const effects = descriptor.value;
+  if (effects == null) return [];
+  array(effects, 'vm-effect-invalid-unknown-effects');
+  const stable = new Array(effects.length);
+  for (let index = 0; index < effects.length; index += 1) {
+    const elementDescriptor = Object.getOwnPropertyDescriptor(effects, String(index));
+    if (!elementDescriptor || !Object.prototype.hasOwnProperty.call(elementDescriptor, 'value')) {
+      fail('vm-effect-invalid-unknown-effect');
+    }
+    stable[index] = elementDescriptor.value;
+  }
+  return stable;
+}
 function assertNotAborted(options) {
   if (options?.signal?.aborted) {
     const error = new Error('vm-effects-cancelled');
@@ -201,11 +241,11 @@ export function createVMEffectBundle(input, options = {}) {
   const callEffects = array(input.callEffects ?? [], 'vm-effect-invalid-call-effects');
   const controlEffects = array(input.controlEffects ?? [], 'vm-effect-invalid-control-effects');
   const possibleExceptions = array(input.possibleExceptions ?? [], 'vm-effect-invalid-exceptions');
+  const unknownEffects = array(input.unknownEffects ?? [], 'vm-effect-invalid-unknown-effects')
+    .map((effect) => normalizeUnknownEffect(effect));
 
-  if (completeness === 'partial' || completeness === 'unknown') {
-    if (!input.unknownEffects || !Array.isArray(input.unknownEffects) || input.unknownEffects.length === 0) {
-      fail('vm-effect-partial-must-specify-unknown-effects');
-    }
+  if ((completeness === 'partial' || completeness === 'unknown') && unknownEffects.length === 0) {
+    fail('vm-effect-partial-must-specify-unknown-effects');
   }
 
   const schemaVersion = Number(input.schemaVersion ?? VM_EFFECTS_SCHEMA_VERSION);
@@ -235,7 +275,7 @@ export function createVMEffectBundle(input, options = {}) {
     possibleExceptions: deepFreeze(possibleExceptions.map((e) => jsonSafe(e))),
     origin: createOriginSet(input.origin ?? { operationIds: [operationId] }),
     completeness,
-    unknownEffects: input.unknownEffects ? deepFreeze(input.unknownEffects.map((u) => jsonSafe(u))) : Object.freeze([]),
+    unknownEffects: deepFreeze(unknownEffects),
     metadata: input.metadata ? deepFreeze(jsonSafe(input.metadata)) : Object.freeze({}),
   };
 
@@ -246,6 +286,11 @@ export function validateVMEffectBundle(bundle) {
   if (!bundle || typeof bundle !== 'object') fail('vm-effect-bundle-invalid');
   if (!bundle.operationId || !bundle.methodId || !bundle.frontendId) fail('vm-effect-bundle-missing-identity');
   if (!SETS.completeness.has(bundle.completeness)) fail('vm-effect-bundle-invalid-completeness');
+  const unknownEffects = unknownEffectsForValidation(bundle);
+  for (const effect of unknownEffects) validateUnknownEffect(effect);
+  if ((bundle.completeness === 'partial' || bundle.completeness === 'unknown') && unknownEffects.length === 0) {
+    fail('vm-effect-partial-must-specify-unknown-effects');
+  }
   return true;
 }
 
