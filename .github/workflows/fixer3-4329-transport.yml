@@ -13,6 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: 8bc257e64e26d7cc7d47e5890e8fe5f8799e53e2
           fetch-depth: 0
       - name: Apply validated Drive-mirror patch
         shell: bash
@@ -89,4 +90,4 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add js/analysis/alias/canonical-address-v2.js js/analysis/alias/canonical-address-v2-core.js tests/phase7/alias/issue-4329-nonmemory-absolute-address-space.test.mjs .github/workflows/fixer3-4329-transport.yml
           git commit -m 'fix(alias): patch core absolute-space projection (#4329) [transport-applied]'
-          git push origin HEAD:fixer3/issue-4329-nonmemory-absolute-space
+          git push origin HEAD:refs/heads/fixer3/issue-4329-nonmemory-absolute-space
