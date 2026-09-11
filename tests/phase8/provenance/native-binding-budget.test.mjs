@@ -16,6 +16,50 @@ import { resolveABIPlugin } from '../../../js/targets/abi/index.js';
 import { partitionDecodedFunction, semanticAbiAdapter } from '../../../js/analysis/semantic-function.js';
 import { buildSemanticV2CompatibilityPipeline } from '../../../js/semantics/compat/index.js';
 
+test('C4-03 native x86 counted loop retains certified descriptions and its complete dense origin set', () => {
+  const corpus = loadCorpus(), id = 'x86_64.quality.loop_counted_sum.O2';
+  const index = corpus.functions.findIndex(entry => entry.id === id);
+  assert.ok(index >= 0);
+  const { result, failure } = decompileEntry(corpus.functions[index], {
+    index, decompilerTimeBudgetMs:20000, toolchain:corpus.toolchain ?? null,
+  });
+  assert.equal(failure ?? null, null);
+  assert.equal(PROJECTION_LIMITS.nodes, 10000);
+  assert.equal(PROJECTION_LIMITS.edges, 100000);
+  assert.equal(result.expressionHistoryBinding.completeness, 'complete');
+  assert.equal(result.phase8Projection.history.completeness, 'complete');
+  const map = result.renderProvenance;
+  assert.equal(map.completeness, 'complete');
+  assert.deepEqual(map.reasons, []);
+  assert.equal(renderHistory.validateRenderProvenance(map).state, 'complete');
+  assert.equal(map.budget.maxTransformRecords, 1024);
+  assert.equal(map.budget.maxOriginsPerEntity, 1024);
+  assert.equal(map.counts.ledgerTruncated, 0);
+  assert.equal(map.counts.provenanceLoss, 0);
+  const dense = Object.values(map.entities).find(entity => Object.values(entity.origins).reduce((n, values) => n + values.length, 0) === 525);
+  assert.ok(dense, 'retain every actually observed origin, not a truncated 512-entry subset');
+  for (const [kind, values] of Object.entries({ row:dense.origins.rows, addr:dense.origins.addresses,
+    ir:dense.origins.ir, ssa:dense.origins.ssaRefs })) {
+    for (const value of values) assert.ok(map.reverse[`${kind}:${value}`].includes(dense.entityKey));
+  }
+  const bounded = renderHistory.buildRenderProvenance({ result, snapshotId:map.snapshotId,
+    budget:{ maxOriginsPerEntity:512 } });
+  assert.equal(bounded.completeness, 'incomplete');
+  assert.ok(bounded.reasons.includes('truncated'));
+  assert.equal(Object.values(bounded.entities[dense.entityKey].origins).reduce((n, values) => n + values.length, 0), 512);
+  const reference = loadFrozenProvenance().observations.find(entry => entry.id === id);
+  const actual = provenanceFromSourceMap(result.sourceMap);
+  assert.deepEqual(reference.sourceAddresses.filter(address => !actual.sourceAddresses.includes(address)), []);
+  const line = result.lines[dense.lineIndex];
+  assert.ok(readLineExpressionHistory(line, result.ir)?.length);
+  assert.equal(readLineExpressionHistory({ ...line }, result.ir), null);
+  const input = result.ir.values.find(value => dense.origins.ssaRefs.includes(`def:${value.id}`)
+    && value.machineType && Object.isFrozen(value.machineType));
+  assert.ok(input);
+  input.machineType = Object.freeze({ ...input.machineType });
+  assert.equal(readLineExpressionHistory(line, result.ir), null, 'equal immutable descriptions cannot refresh the original input binding');
+});
+
 test('C4-03 native counted loop preserves all normalization witnesses within the unchanged ledger cap', () => {
   const corpus = loadCorpus(), id = 'quality.loop_counted_sum.O2';
   const index = corpus.functions.findIndex(entry => entry.id === id);

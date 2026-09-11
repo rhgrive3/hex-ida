@@ -4,7 +4,8 @@ import { expressionOriginHistory } from '../rewrite/engine.js';
 import { readStackPhiHistoryConsumer } from '../passes/stack-phi-recovery.js';
 import { readStackReturnHistoryConsumer } from '../passes/stack-return-recovery.js';
 import { readLegacyStackHistoryConsumer } from '../passes/legacy-stack-recovery.js';
-import { captureProjectionIrData, PROJECTION_LIMITS } from './projection-origin.js';
+import { PROJECTION_LIMITS } from './projection-origin.js';
+import { createProjectionIrObserver } from '../../core/identity/live-data.js';
 import { children, expr, mapChildren, mergeSource, sourceOf } from '../ast/nodes.js';
 import { expressionReadability, printExpression, printProgram } from '../pretty/c.js';
 import { readProvedRewrites, readProvedInputBindings } from './pass-validation.js';
@@ -25,6 +26,9 @@ const controlConsumerSources = new WeakMap();
 // Ordinary result wrappers may retain this AST; copied/replaced AST data cannot
 // manufacture the private transition that carries the original consumers.
 const projectionHistories = new WeakMap();
+// Output snapshots retain every mutable field and exact immutable descriptor
+// reference. Data certification is not a producer token or a render binding.
+const observeProjectionData = (roots, shouldAbort = null) => createProjectionIrObserver().captureCertifiedData(roots, shouldAbort);
 function readProjectionHistory(result) {
   const entry = projectionHistories.get(result.cAst);
   if (!entry || entry.ir !== result.ir || entry.semanticAst !== result.semanticAst
@@ -44,7 +48,7 @@ function prepareProjectionHistory(result, expressions, conditions, records, opts
     return null;
   }
   try {
-    const observation = captureProjectionIrData(
+    const observation = observeProjectionData(
       [result.cAst.body, result.semanticAst.conditions, result.rewriteProof, records], opts.shouldAbort);
     if (observation.metrics.edges > cap(budget?.maxEdges, PROJECTION_LIMITS.edges)) {
       reasons.add('projection-history-budget');
@@ -712,7 +716,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
         if (control && expressionConsumers[index]?.isCurrent()) {
           try {
             if (controlHandoffEdges <= 0) throw new Error('initial-control-handoff-budget');
-            const captured = captureProjectionIrData([node]);
+            const captured = observeProjectionData([node]);
             controlHandoffEdges -= captured.metrics.edges;
             if (controlHandoffEdges < 0) throw new Error('initial-control-handoff-budget');
             priorControl = captured;
@@ -731,7 +735,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
           // and never accumulate a chain of old output snapshots on replay.
           const writes = Object.freeze([Object.freeze({ object:node, key:'text', before:beforeText, after:replacement.text })]);
           try {
-            const output = captureProjectionIrData([node], opts.shouldAbort);
+            const output = observeProjectionData([node], opts.shouldAbort);
             controlHandoffEdges -= output.metrics.edges;
             if (controlHandoffEdges < 0 || !priorControl.matchesThroughWrites(writes)
                 || !control.isCurrent() || !output.matches()) throw new Error('initial-control-handoff-unavailable');
@@ -790,7 +794,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     const consumers = [expressionConsumers[index], renderedConditions.get(node)].filter(Boolean);
     if (consumers.length && consumers.every(consumer => consumer.isCurrent())) {
       try {
-        const observation = captureProjectionIrData([line], opts.shouldAbort);
+        const observation = observeProjectionData([line], opts.shouldAbort);
         const records = Object.freeze([...new Set(consumers.flatMap(consumer => consumer.records))]);
         lineExpressionHistories.set(line, { ir:result.ir, consumers, records, observation });
       } catch { /* No inferred edge when the bounded observation is unavailable. */ }

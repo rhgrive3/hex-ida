@@ -6,7 +6,7 @@ import { buildRenderProvenance, validateRenderProvenance } from '../../../js/dec
 import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
 import { createDecompilerNavigation } from '../../../js/ui/decompiler-provenance.js';
 import { structuralKey } from '../../../js/decompiler/ast/nodes.js';
-import { captureProjectionIrData, createProjectionIrObserver, PROJECTION_LIMITS } from '../../../js/core/identity/live-data.js';
+import { captureProjectionIrData, createProjectionIrObserver, PROJECTION_LIMITS, DATA_CERTIFICATION_LIMITS } from '../../../js/core/identity/live-data.js';
 import { createOriginSet, createTransformRecord } from '../../../js/core/identity/origin.js';
 import { captureRecoveryIrData } from '../../../js/decompiler/phase8/projection-origin.js';
 import { observeProjectedOperationData } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
@@ -232,6 +232,91 @@ test('C4-03 graph and nested captures charge the same fully observed data', () =
   const shared = { id:42, attributes:[1, 2, 'name'] }, roots = [{ shared }, { shared }];
   assert.deepEqual(createProjectionIrObserver().captureGraph(roots).metrics, captureProjectionIrData(roots).metrics);
 });
+
+for (const method of ['captureCertifiedData', 'captureCertifiedDataGraph']) {
+  test(`C4-03 ${method} retains immutable data identities with separately bounded certification`, () => {
+    const descriptions = Array.from({ length:100 }, (_, id) => Object.freeze({
+      id, children:Object.freeze(Array.from({ length:105 }, (_, slot) => Object.freeze({ slot }))),
+    }));
+    const root = { descriptions, mutable:{ revision:1 } };
+    assert.throws(() => createProjectionIrObserver().captureGraph([root]), /node-budget/);
+    const observation = createProjectionIrObserver()[method]([root]);
+    assert.ok(observation.dataCertification.nodes > PROJECTION_LIMITS.nodes);
+    assert.ok(observation.dataCertification.nodes <= DATA_CERTIFICATION_LIMITS.nodes);
+    assert.equal(observation.dataCertification.envelopes, 100);
+    assert.ok(observation.metrics.nodes < 200);
+    assert.equal(observation.matches(), true);
+    root.mutable.revision++;
+    assert.equal(observation.matches(), false);
+    root.mutable.revision--;
+    descriptions[0] = Object.freeze({ ...descriptions[0] });
+    assert.equal(observation.matches(), false, 'equal immutable descriptions cannot replace exact inputs');
+  });
+
+  test(`C4-03 ${method} retains mutable descendants and does not certify shallow freezes or cycles`, () => {
+    const mutable = { revision:1 }, shallow = Object.freeze({ mutable });
+    const cyclic = {}; cyclic.self = cyclic; Object.freeze(cyclic);
+    const root = { shallow, cyclic };
+    const observation = createProjectionIrObserver()[method]([root]);
+    assert.equal(observation.dataCertification.envelopes, 0);
+    assert.equal(observation.metrics.nodes, 4);
+    assert.equal(observation.matches(), true);
+    mutable.revision++;
+    assert.equal(observation.matches(), false);
+  });
+
+  test(`C4-03 ${method} reuses only data certificates and preserves nested origin revocation`, () => {
+    const origin = createOriginSet({ instructionIds:['original'] });
+    const envelope = Object.freeze({ nested:Object.freeze({ origin }) }), root = { envelope };
+    const observer = createProjectionIrObserver();
+    const first = observer[method]([root]), second = observer[method]([root]);
+    assert.ok(first.dataCertification.nodes > 0);
+    assert.equal(second.dataCertification.nodes, 0);
+    assert.equal(first.matches(), true);
+    assert.equal(second.matches(), true);
+    const descriptor = Object.getOwnPropertyDescriptor(Object.prototype, 'toJSON');
+    let calls = 0;
+    Object.defineProperty(Object.prototype, 'toJSON', { configurable:true, get() { calls++; return () => null; } });
+    try {
+      assert.equal(first.matches(), false);
+      assert.equal(second.matches(), false);
+      assert.equal(calls, 0);
+    } finally {
+      if (descriptor) Object.defineProperty(Object.prototype, 'toJSON', descriptor);
+      else delete Object.prototype.toJSON;
+    }
+    root.envelope = Object.freeze({ ...envelope });
+    assert.equal(second.matches(), false);
+  });
+
+  test(`C4-03 ${method} keeps original node, scalar, prototype, depth and cancellation bounds`, () => {
+    const capture = value => createProjectionIrObserver()[method]([value]);
+    assert.throws(() => capture(Array.from({ length:PROJECTION_LIMITS.nodes }, () => Object.freeze({}))), /node-budget/);
+    assert.throws(() => capture(Object.freeze({ nested:Object.freeze({ text:'x'.repeat(PROJECTION_LIMITS.string + 1) }) })), /string-budget/);
+    assert.throws(() => capture(Object.freeze({ nested:Object.freeze(new Map()) })), /prototype/);
+    let called = false;
+    assert.throws(() => capture(Object.freeze({ get nested() { called = true; return 1; } })), /accessor/);
+    assert.equal(called, false);
+    let deep = Object.freeze({ leaf:1 });
+    for (let i = 0; i < PROJECTION_LIMITS.depth; i++) deep = Object.freeze({ child:deep });
+    assert.throws(() => capture(deep), /depth/);
+    assert.throws(() => createProjectionIrObserver()[method]([{}], () => true), /cancelled/);
+    assert.throws(() => capture(Array.from({ length:40 }, () => Object.freeze({ nested:Object.freeze({ text:'x'.repeat(60000) }) }))), /data-certification-budget/);
+  });
+
+  test(`C4-03 ${method} certifies shared immutable payloads once without merging their owners`, () => {
+    const source = Object.freeze(Array.from({ length:1000 }, (_, id) => Object.freeze({ id })));
+    const records = Array.from({ length:200 }, (_, ordinal) => Object.freeze({ ordinal, source }));
+    const root = { records };
+    const observation = createProjectionIrObserver()[method]([root]);
+    assert.equal(observation.dataCertification.envelopes, records.length);
+    assert.ok(observation.dataCertification.nodes < 5000, 'shared data work is not charged once per owner');
+    assert.equal(new Set(records).size, records.length);
+    assert.equal(observation.matches(), true);
+    records[0] = Object.freeze({ ...records[0] });
+    assert.equal(observation.matches(), false);
+  });
+}
 
 test('C4-03 origin graph certifies issued immutable data without retaining every payload object', () => {
   const origins = Array.from({ length:100 }, (_, id) => createOriginSet({

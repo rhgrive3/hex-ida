@@ -59,7 +59,7 @@ export function captureRecoveryIrData(ir, extraRoots, shouldAbort = null) {
   // the traversal order of a def/use cycle as nested metadata depth.
   // Canonical origin payloads are independently certified immutable data;
   // their exact envelopes remain bound alongside every mutable input.
-  const observation = createProjectionIrObserver().captureOriginGraph([...descriptors.slice(0, -1).map(descriptor => descriptor?.value), ...extraRoots], shouldAbort);
+  const observation = createProjectionIrObserver().captureCertifiedDataGraph([...descriptors.slice(0, -1).map(descriptor => descriptor?.value), ...extraRoots], shouldAbort);
   const edges = observation.metrics.edges + dominance.edges;
   if (edges > PROJECTION_LIMITS.edges) throw new TypeError('recovery-binding-budget');
   return Object.freeze({ metrics:Object.freeze({ ...observation.metrics, edges }), matches() {

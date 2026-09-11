@@ -52,10 +52,11 @@ export function observeProjectedOperationData(projected, transitions) {
     });
   // Transition roots are vertices of one cyclic SSA graph. Observe every
   // mutable field by distance from these exact roots, with a fresh observer.
-  // Issued origin envelopes have a separate bounded immutable-data certificate;
-  // exact envelope references are retained, never substituted by equal IDs.
+  // Immutable descriptions have separately bounded data certificates; origins
+  // also retain their normalization guards. Exact references, not equal IDs,
+  // bind these descriptions; shallow freezes remain live observations.
   // Unrelated projection members are not additional observation roots.
-  const captured = createProjectionIrObserver().captureOriginGraph([projected.compat,
+  const captured = createProjectionIrObserver().captureCertifiedDataGraph([projected.compat,
     ...transitions.flatMap(({ source, store, input, beforeInputs, memory, object, emptyUses }) => [source, store, input, ...beforeInputs, memory, object, emptyUses])]);
   const matches = (writes = null) => (writes == null || Array.isArray(writes) && writes.length <= PROJECTION_LIMITS.nodes)
     && Object.getPrototypeOf(projected) === prototype && rootKeys.every((key, i) => own(projected, key) === roots[i])

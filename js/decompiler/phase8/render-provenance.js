@@ -47,10 +47,10 @@ export const RENDER_PROVENANCE_VERSION = 1;
 
 const DEFAULT_BUDGET = Object.freeze({
   maxEntities:4096,
-  // Measured over the locked Phase 8 corpus: the densest legitimately merged
-  // origin set reaches ~340 entries (induction + repeated view collapses on a
-  // long chain). 512 keeps headroom while still bounding pathological merges.
-  maxOriginsPerEntity:512,
+  // Full native state histories expose 525 distinct origins on the counted
+  // loop return (the older, partial history fit below 512). Retain headroom for
+  // these real mappings; explicit smaller caller budgets still truncate.
+  maxOriginsPerEntity:1024,
   maxTransformRecords:1024,
 });
 
