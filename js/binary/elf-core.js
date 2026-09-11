@@ -623,6 +623,12 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
   }
 
   const str = sections[sec.link];
+  if (!str || str.type !== SHT_STRTAB) {
+    budget.partial(
+      `dynamic-section:${sec.index}:string-table-link`,
+      `ELF SHT_DYNAMIC ${sec.index} has invalid sh_link ${sec.link}`,
+    );
+  }
   const strStart = str?.type === SHT_STRTAB ? safeOffset(str.offset) : null;
   const strSize = str?.type === SHT_STRTAB ? safeOffset(str.size) : null;
   const stringTableValid = str?.type === SHT_STRTAB

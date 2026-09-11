@@ -540,13 +540,27 @@ async function candidatePools(query, tools, ctx, b) {
   }
 
   const priors = Array.isArray(ctx.candidateFunctions) ? ctx.candidateFunctions : [];
+  const priorIdentities = Object.fromEntries(POOL_ORDER.map((name) => [name, new Set()]));
   for (const c of priors) {
     const pool = classifyPrior(c);
-    b.sourceTotals[pool]++;
+    const rawAddress = c?.addr != null ? c.addr : c?.address != null ? c.address : c;
+    const address = asAddr(rawAddress);
+    if (address == null) {
+      // Malformed source rows remain unaccounted evidence and therefore keep
+      // source completeness fail-closed. They have no trustworthy identity
+      // by which they could be deduplicated.
+      b.sourceTotals[pool]++;
+    } else {
+      const key = address.toString();
+      if (!priorIdentities[pool].has(key)) {
+        priorIdentities[pool].add(key);
+        b.sourceTotals[pool]++;
+      }
+    }
     addCandidate(
       pools,
       pool,
-      c?.addr != null ? c.addr : c?.address != null ? c.address : c,
+      address,
       c?.source || `${pool}-prior`,
       null,
       Number(c?.score || 1),

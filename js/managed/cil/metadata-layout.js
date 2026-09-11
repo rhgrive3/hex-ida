@@ -1,6 +1,14 @@
 // ECMA-335 II.22 / II.24.2.6: one row-layout authority for both metadata readers.
 function fail(code) { throw new TypeError(code); }
 
+export const MAX_METADATA_TABLE = 0x2c;
+const VALID_METADATA_TABLE_MASK = (1n << BigInt(MAX_METADATA_TABLE + 1)) - 1n;
+
+export function validateMetadataTableValidMask(valid, code = 'cil-metadata-valid-mask-invalid') {
+  if (typeof valid !== 'bigint' || valid < 0n || (valid & ~VALID_METADATA_TABLE_MASK) !== 0n) fail(code);
+  return valid;
+}
+
 export function codedIndexSize(rowCounts, tables, tagBits) {
   const maxRows = Math.max(...tables.map((table) => rowCounts[table] || 0));
   return maxRows < (1 << (16 - tagBits)) ? 2 : 4;
