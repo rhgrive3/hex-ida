@@ -1745,6 +1745,7 @@ test('C3-02 a null callback resolution cannot authorize an exact call ABI', () =
 
 function decodedCallObservationPipeline(prototypes, targets = prototypes.map(() => 0x2000n), {
   functionPrototype = null, adapterOptions = {}, context = false, baseAddress = 0x1000n,
+  terminalWord = 0x00008067,
 } = {}) {
   const architecture = architecturePluginV2('riscv64');
   const instructions = prototypes.map((_prototype, index) => {
@@ -1774,7 +1775,8 @@ function decodedCallObservationPipeline(prototypes, targets = prototypes.map(() 
   });
   instructions.push(createRiscv64DecodedInstruction({
     address:baseAddress + BigInt(prototypes.length * 4), size:4,
-    rawBytes:Uint8Array.from([0x67, 0x80, 0, 0]), mode:'rv64imc', instructionId:'c3-observation-ret',
+    rawBytes:Uint8Array.from([terminalWord & 0xff, (terminalWord >>> 8) & 0xff,
+      (terminalWord >>> 16) & 0xff, terminalWord >>> 24]), mode:'rv64imc', instructionId:'c3-observation-ret',
     origin:{ instructionIds:['c3-observation-ret'] },
   }));
   const blocks = partitionDecodedFunction(instructions, architecture, { callPrototypeAuthority:authority });
@@ -1877,7 +1879,7 @@ test('C3-02 external callee declarations reject stale malformed missing and asyn
   const prototype = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
   const callee = externalDeclarationFixture(prototype);
   const record = callee.declaration();
-  for (const mutation of [null, { version:'1' }, { version:2 }, { basis:'guessed-symbol' },
+  for (const mutation of [null, { version:'2' }, { version:1 }, { version:3 }, { basis:'guessed-symbol' },
     { status:'stale' }, { partial:true }, { binaryId:'other' }, { sliceId:'other' },
     { snapshotId:'other' }, { abiSemanticIdentity:'other' }, { functionId:'other' },
     { abiId:'other' }, { registryDigest:'other' }, { profileIdentity:'other' }, { schemaVersion:'other' },
@@ -2165,4 +2167,114 @@ test('C3-02 bound recursive callee declaration separates argument and return con
   const voidPrototype = { parameters:[], returnType:'void' };
   const calls = decodedCallObservationPipeline([voidPrototype], [0x1000n], { functionPrototype:voidPrototype });
   assert.equal(calls[0].extra.callerCallee.status, 'unknown', 'null return result is not agreement proof');
+});
+
+function decodedTransferDeclaration(words, addresses = null) {
+  const architecture = architecturePluginV2('riscv64');
+  const prototype = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
+  const instructions = words.map((word, index) => createRiscv64DecodedInstruction({
+    address:addresses?.[index] ?? 0x2000n + BigInt(index * 4), size:4, mode:'rv64imc',
+    rawBytes:Uint8Array.from([word & 0xff, (word >>> 8) & 0xff, (word >>> 16) & 0xff, word >>> 24]),
+    instructionId:`transfer-${index}`, origin:{ instructionIds:[`transfer-${index}`] },
+  }));
+  const blocks = partitionDecodedFunction(instructions, architecture);
+  const adapter = semanticAbiAdapter(RISCV_LP64_ABI, {
+    architecture:'riscv64', platform:'linux', binaryId:'c3-observation-binary', sliceId:'0',
+    snapshotId:'c3-declaration-snapshot', functionPrototype:prototype,
+  });
+  const pipeline = buildSemanticV2CompatibilityPipeline({
+    architecturePlugin:architecture, decoderSemanticVersion:'c3-transfer-decoder',
+    binaryId:'c3-observation-binary', sliceId:'0', addressWidthBits:64, mode:'rv64imc',
+    entryBlockKey:blocks[0].key, blocks, abiAdapter:adapter,
+  }, { abiAdapter:adapter });
+  const declaration = adapter.functionDeclaration({ semanticIr:pipeline.semanticIr });
+  const caller = decodedCallObservationPipeline([prototype], [0x2000n], {
+    adapterOptions:{ snapshotId:'c3-declaration-snapshot', calleeDeclarationFor:() => declaration },
+  });
+  return { declaration, caller, pipeline };
+}
+
+test('C3-02 transfer frontier discovers direct and indirect unresolved exits from decoded bytes', () => {
+  for (const [words, reason, target] of [
+    [[0x0000106f], 'unresolved-transfer-destination', '0x3000'], // jal x0,+4096
+    [[0x00050067], 'unresolved-control-transfer', null], // jalr x0,0(a0)
+  ]) {
+    const { declaration, caller, pipeline } = decodedTransferDeclaration(words);
+    assert.equal(declaration.version, 2);
+    assert.equal(declaration.status, 'ambiguous');
+    assert.equal(declaration.controlTransfers.status, 'ambiguous');
+    assert.equal(declaration.controlTransfers.candidates.length, 1);
+    assert.equal(declaration.controlTransfers.candidates[0].reason, reason);
+    assert.equal(declaration.controlTransfers.candidates[0].targetAddress, target);
+    assert.ok(pipeline.semanticIr.nodes.some(node => node.id === declaration.controlTransfers.candidates[0].nodeId));
+    assert.equal(caller[0].extra.callerCallee.status, 'ambiguous');
+    assert.equal(caller[0].extra.abiCompleteness, 'ambiguous');
+    assert.equal(caller[0].callArguments, null);
+    assert.deepEqual(caller[0].extra.returnLocations, []);
+    assert.equal(caller[0].extra.callerCallee.diagnostic, 'unresolved-callee-control-transfer');
+    assert.match(caller[0].argumentEvidence, /caller-callee-ambiguous/);
+  }
+});
+
+test('C3-02 transfer frontier preserves local branches loops and returns', () => {
+  for (const words of [
+    [0x00008067], // ret
+    [0x0040006f, 0x00008067], // local jump to ret
+    [0x0040006f, 0x0000006f], // entry then local loop, not an external thunk proof
+  ]) {
+    const { declaration, caller } = decodedTransferDeclaration(words);
+    assert.equal(declaration.status, 'complete');
+    assert.deepEqual(declaration.controlTransfers, { version:1, status:'resolved', truncated:false, candidates:[] });
+    assert.equal(caller[0].extra.callerCallee.status, 'agreement');
+    assert.equal(caller[0].extra.abiCompleteness, 'complete');
+  }
+});
+
+test('C3-02 transfer frontier never treats truncated discovery as resolved', () => {
+  const { declaration, caller } = decodedTransferDeclaration(Array.from({ length:65 }, () => 0x00050067));
+  assert.equal(declaration.status, 'budget-limited');
+  assert.equal(declaration.controlTransfers.truncated, true);
+  assert.equal(declaration.controlTransfers.candidates.length, 64);
+  assert.equal(caller[0].extra.callerCallee.status, 'budget-limited');
+  assert.equal(caller[0].extra.abiCompleteness, 'budget-limited');
+  assert.equal(caller[0].callArguments, null);
+});
+
+test('C3-02 transfer frontier rejects stale wire versions and inconsistent replay', () => {
+  const { declaration } = decodedTransferDeclaration([0x00008067]);
+  for (const mutation of [
+    { version:1 }, { controlTransfers:null }, { status:'ambiguous' },
+    { controlTransfers:{ version:1, status:'resolved', truncated:true, candidates:[] } },
+    { status:'ambiguous', controlTransfers:{ version:1, status:'ambiguous', truncated:false, candidates:[null] } },
+    { status:'budget-limited', controlTransfers:{ version:1, status:'budget-limited', truncated:true, candidates:[] } },
+  ]) {
+    const caller = decodedCallObservationPipeline([declaration.prototype], [0x2000n], {
+      adapterOptions:{ snapshotId:'c3-declaration-snapshot', calleeDeclarationFor:() => ({ ...declaration, ...mutation }) },
+    });
+    assert.equal(caller[0].extra.callerCallee.status, 'unknown');
+  }
+});
+
+test('C3-02 transfer frontier also withholds recursive declaration agreement', () => {
+  const prototype = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
+  const calls = decodedCallObservationPipeline([prototype], [0x1000n], {
+    functionPrototype:prototype, terminalWord:0x00050067,
+  });
+  assert.equal(calls[0].extra.callerCallee.status, 'ambiguous');
+  assert.equal(calls[0].extra.abiCompleteness, 'ambiguous');
+  assert.equal(calls[0].callArguments, null);
+  assert.deepEqual(calls[0].extra.returnLocations, []);
+});
+
+test('C3-02 transfer frontier retains missing fallthrough after conditional target filtering', () => {
+  // bne zero,zero,+8 has a decoded local destination but no instruction at
+  // its fallthrough address. The canonical pipeline removes that unresolved
+  // edge and retains the missing-fallthrough issue; do not lose it here.
+  const { declaration, caller, pipeline } = decodedTransferDeclaration(
+    [0x00001463, 0x00008067], [0x2000n, 0x2008n],
+  );
+  assert.ok(pipeline.semanticIr.unknowns.some(unknown => unknown.reason === 'semantic-cfg-missing-fallthrough'));
+  assert.equal(declaration.status, 'ambiguous');
+  assert.equal(caller[0].extra.callerCallee.status, 'ambiguous');
+  assert.equal(caller[0].callArguments, null);
 });

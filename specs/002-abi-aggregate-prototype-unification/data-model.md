@@ -116,7 +116,7 @@ For ordinary direct calls, `calleeDeclarationFor(targetAddress, context)` can
 provide a separately analyzed function's declaration. The canonical adapter's
 `functionDeclaration({ semanticIr })` producer binds its current source declaration
 to a validated immutable function, its entry address and a nonempty snapshot ID.
-The version-1 record carries binary/slice/function/start identity, snapshot, ABI
+The version-2 record carries binary/slice/function/start identity, snapshot, ABI
 semantic identity, registry digest, profile and schema identities. The producer
 returns no record after cancellation, invalidation or context drift. The resolver
 is synchronous, invoked afresh for each comparison, and is not the callsite
@@ -129,8 +129,20 @@ Replayed declaration records can be used only within the exact matching snapshot
 the provider owns snapshot invalidation and must not reuse an old record after
 source changes. Live providers can request a fresh producer record on every call.
 
+Version 2 adds required `controlTransfers` version-1 evidence. Unknown control
+effects and transfers to placeholder-only destination blocks yield `ambiguous`;
+more than 64 candidates yield `budget-limited`. Candidate records carry their
+semantic node ID, canonical direct address where available and a specific
+unresolved-control/destination reason. The scan does not infer thunks from names,
+register conventions or the presence of an ordinary branch. Local resolved
+branches, loops and returns stay resolved. All supplied nodes are scanned because
+this interface does not carry an independently bound reachability proof.
+Ambiguity/budget status applies both to recursive and external declaration
+comparison, withholds ABI placements and survives the compatibility boundary.
+Old version-1 records and inconsistent status/candidate lists are rejected.
+
 This is declaration consistency, not machine-body equivalence, return-root
-summary proof or automatic thunk/tail-call discovery. Those broader requirements
+summary proof or proven thunk/tail-call forwarding. Those broader requirements
 remain open; same-target caller consensus alone still cannot establish agreement.
 
 ## Invalidation dependencies

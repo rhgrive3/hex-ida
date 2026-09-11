@@ -234,7 +234,7 @@ function normalizeCallerCallee(raw, node, ir) {
   const unknown = { version:1, status:'unknown', basis:'canonical-source-declarations' };
   const value = raw.callerCallee;
   if (!value || value.version !== 1 || value.basis !== unknown.basis
-    || !['agreement', 'conflict'].includes(value.status)) return unknown;
+    || !['agreement', 'conflict', 'ambiguous', 'budget-limited'].includes(value.status)) return unknown;
   try {
     const targetValue = ir.values.find(target => target.id === node.call.targetValueIds[0]);
     const targetNode = ir.nodes.find(target => target.id === targetValue?.definitionNodeId);
@@ -253,9 +253,10 @@ function normalizeCallerCallee(raw, node, ir) {
         && (typeof value.snapshotId !== 'string' || !value.snapshotId.length
           || value.snapshotId !== raw.abiIdentity?.snapshotId))
       || (value.status === 'agreement' && abiNonExact(raw))
-      || (value.status === 'conflict' && raw.completeness !== 'conflict')) return unknown;
+      || (value.status !== 'agreement' && raw.completeness !== value.status)) return unknown;
     return { version:1, status:value.status, basis:value.basis, functionId:value.functionId,
       calleeFunctionId:value.calleeFunctionId ?? value.functionId, snapshotId:value.snapshotId ?? null,
+      ...(value.diagnostic === 'unresolved-callee-control-transfer' ? { diagnostic:value.diagnostic } : {}),
       nodeId:value.nodeId, binaryId:value.binaryId, sliceId:value.sliceId,
       callsiteAddress:value.callsiteAddress, targetAddress:value.targetAddress,
       abiSemanticIdentity:value.abiSemanticIdentity };

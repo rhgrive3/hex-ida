@@ -745,6 +745,33 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
       canonicalStartIdentity:{ address:startAddress } });
     if (expected !== ir.functionId || (identity.functionId != null && identity.functionId !== expected)) return null;
     index.startAddress = startAddress;
+    const blocks = new Map(ir.blocks.map(block => [block.id, block]));
+    const missingFallthrough = new Set(ir.unknowns
+      .filter(unknown => unknown.reason === 'semantic-cfg-missing-fallthrough')
+      .map(unknown => unknown.detail?.instructionAddress == null ? null : canonicalAddress(unknown.detail.instructionAddress)));
+    const candidates = [];
+    let truncated = false;
+    for (const node of ir.nodes) {
+      let reason = null;
+      if (node.kind === 'unknown-control-effect') reason = 'unresolved-control-transfer';
+      else if (missingFallthrough.has(null) || node.origin?.virtualRanges?.some(range => missingFallthrough.has(canonicalAddress(range.start)))) {
+        reason = 'unresolved-transfer-destination';
+      } else if (['branch', 'conditional-branch', 'switch'].includes(node.kind)
+        && (!node.targets.length || node.targets.some(target => !blocks.get(target)?.nodeIds.length))) {
+        reason = 'unresolved-transfer-destination';
+      }
+      if (!reason) continue;
+      if (candidates.length === 64) { truncated = true; break; }
+      const target = node.attributes?.machineControlEffect?.target;
+      candidates.push(Object.freeze({ nodeId:node.id, reason,
+        targetAddress:target?.kind === 'absolute-address' ? canonicalAddress(target.value) : null }));
+    }
+    // These are unresolved transfer candidates, not assertions that an
+    // arbitrary branch is a thunk. Scan the whole supplied function: without
+    // a bound CFG reachability proof, unreachable-looking nodes are not waived.
+    index.controlTransfers = Object.freeze({ version:1,
+      status:truncated ? 'budget-limited' : candidates.length ? 'ambiguous' : 'resolved',
+      truncated, candidates:Object.freeze(candidates) });
     validatedFunctions.set(ir, index);
     return index;
   }
@@ -756,7 +783,9 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
         || !fixedDeclaration(options.functionPrototype)) return null;
       const index = declarationFunctionIndex(semanticIr);
       if (!index) return null;
-      return frozenAbiRecord({ version:1, basis:'canonical-source-declarations', status:'complete',
+      return frozenAbiRecord({ version:2, basis:'canonical-source-declarations',
+        status:index.controlTransfers.status === 'resolved' ? 'complete' : index.controlTransfers.status,
+        controlTransfers:index.controlTransfers,
         binaryId:identity.binaryId, sliceId:identity.sliceId, snapshotId:identity.snapshotId,
         functionId:semanticIr.functionId, startAddress:index.startAddress,
         abiSemanticIdentity:semanticIdentity, abiId:pluginId, registryDigest, profileIdentity,
@@ -784,6 +813,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
       const calleeFunctionId = createFunctionId({ binaryId:identity.binaryId, sliceId:identity.sliceId,
         canonicalStartIdentity:{ address:targetAddress } });
       let declaration = options.functionPrototype;
+      let controlTransfers = index.controlTransfers;
       if (calleeFunctionId !== ir.functionId) {
         if (!identity.snapshotId || typeof options.calleeDeclarationFor !== 'function') return declarationUnknown;
         const source = options.calleeDeclarationFor(targetAddress, Object.freeze({
@@ -796,16 +826,39 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
           source.catch(() => {});
           return declarationUnknown;
         }
-        if (!source || source.version !== 1 || source.basis !== 'canonical-source-declarations'
-          || source.status !== 'complete' || abiResultInvalidState(source)
+        if (!source || source.version !== 2 || source.basis !== 'canonical-source-declarations'
+          || !['complete', 'ambiguous', 'budget-limited'].includes(source.status)
+          || (abiResultInvalidState(source) ?? 'complete') !== source.status
           || source.binaryId !== identity.binaryId || source.sliceId !== identity.sliceId
           || source.snapshotId !== identity.snapshotId || source.abiSemanticIdentity !== semanticIdentity
           || source.abiId !== pluginId || source.registryDigest !== registryDigest
           || source.profileIdentity !== profileIdentity || source.schemaVersion !== identity.schemaVersion
+          || source.status !== (source.controlTransfers?.status === 'resolved' ? 'complete' : source.controlTransfers?.status)
           || source.functionId !== calleeFunctionId || source.startAddress !== targetAddress) return declarationUnknown;
         declaration = source.prototype;
+        controlTransfers = source.controlTransfers;
       }
       if (!fixedDeclaration(declaration)) return declarationUnknown;
+      if (!controlTransfers || controlTransfers.version !== 1
+        || !['resolved', 'ambiguous', 'budget-limited'].includes(controlTransfers.status)
+        || !Array.isArray(controlTransfers.candidates) || controlTransfers.candidates.length > 64
+        || typeof controlTransfers.truncated !== 'boolean'
+        || (controlTransfers.status === 'resolved' && (controlTransfers.candidates.length || controlTransfers.truncated))
+        || (controlTransfers.status === 'ambiguous' && (!controlTransfers.candidates.length || controlTransfers.truncated))
+        || (controlTransfers.status === 'budget-limited' && (!controlTransfers.truncated || controlTransfers.candidates.length !== 64))
+        || !Array.from(controlTransfers.candidates).every(candidate => candidate
+          && typeof candidate.nodeId === 'string' && candidate.nodeId.length > 0
+          && ['unresolved-control-transfer', 'unresolved-transfer-destination'].includes(candidate.reason)
+          && (candidate.targetAddress === null || canonicalAddress(candidate.targetAddress) === candidate.targetAddress))) return declarationUnknown;
+      const comparisonIdentity = { version:1, basis:'canonical-source-declarations', functionId:ir.functionId,
+        calleeFunctionId, nodeId:node.id, binaryId:identity.binaryId, sliceId:identity.sliceId,
+        snapshotId:identity.snapshotId, callsiteAddress:canonicalAddress(bound.address), targetAddress,
+        abiSemanticIdentity:semanticIdentity };
+      if (controlTransfers.status !== 'resolved') {
+        if (!declarationContextCurrent() || abiEvidenceState(options, call, plugin)) return declarationUnknown;
+        return Object.freeze({ ...comparisonIdentity, status:controlTransfers.status,
+          diagnostic:'unresolved-callee-control-transfer' });
+      }
       const declaredArguments = classifyCanonicalArguments({ functionPrototype:declaration, resolvePrototype:false });
       const declaredReturn = classifyCanonicalFunctionReturn({ functionPrototype:declaration });
       const argumentSignature = value => value && !abiResultInvalidState(value)
@@ -822,12 +875,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
       const conflict = left.some((value, index) => value != null && right[index] != null && value !== right[index]);
       if (!conflict && !left.every((value, index) => value != null && value === right[index])) return declarationUnknown;
       if (!declarationContextCurrent() || abiEvidenceState(options, call, plugin)) return declarationUnknown;
-      return Object.freeze({ version:1, status:conflict ? 'conflict' : 'agreement',
-        basis:'canonical-source-declarations', functionId:ir.functionId, calleeFunctionId, nodeId:node.id,
-        binaryId:identity.binaryId, sliceId:identity.sliceId,
-        snapshotId:identity.snapshotId,
-        callsiteAddress:canonicalAddress(bound.address), targetAddress,
-        abiSemanticIdentity:semanticIdentity });
+      return Object.freeze({ ...comparisonIdentity, status:conflict ? 'conflict' : 'agreement' });
     } catch { return declarationUnknown; }
   }
 
@@ -1167,7 +1215,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
       const callerCallee = observationState ? declarationUnknown
         : compareCalleeDeclaration(node, call, semanticIr, callPrototype, classified, returned);
       const evidenceState = abiEvidenceState(options, call, plugin) || observationState
-        || (callerCallee.status === 'conflict' ? 'conflict' : null);
+        || (['conflict', 'ambiguous', 'budget-limited'].includes(callerCallee.status) ? callerCallee.status : null);
       const classifierState = abiResultInvalidState(classified);
       const returnState = abiResultInvalidState(returned);
       // A classifier's partial result may still carry a conservative set of
@@ -1227,7 +1275,8 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
         stackArgsUnknown:hardInvalid || partial ? true : classified?.stackArgsUnknown ?? true,
         stackArgsMayContainPointers:hardInvalid || partial ? true : classified?.stackArgsMayContainPointers ?? true,
         callerCallee,
-        argumentEvidence:callerCallee.status === 'conflict' ? 'abi-caller-callee-conflict'
+        argumentEvidence:['conflict', 'ambiguous', 'budget-limited'].includes(callerCallee.status)
+          ? `abi-caller-callee-${callerCallee.status}`
           : observationState ? `abi-callsite-observations-${observationState}`
           : classified?.evidence ?? `abi-${pluginId}`,
         clobbers:(() => { try { return plugin?.callerSaved?.(options) ?? []; } catch { return []; } })(),

@@ -59,7 +59,7 @@ stale rather than exact.
 
 ### Inter-function source declaration handoff
 
-`adapter.functionDeclaration({ semanticIr })` exports a version-1 declaration
+`adapter.functionDeclaration({ semanticIr })` exports a version-2 declaration
 with basis `canonical-source-declarations` only for a registered supported ABI,
 validated immutable function and current nonempty snapshot identity. It binds the
 entry address and function ID to the same binary/slice, and preserves ABI semantic,
@@ -74,6 +74,23 @@ invalidation; fresh calls are not served from an adapter-private declaration cac
 Agreement metadata binds caller and callee function IDs separately. Contradictions
 withhold placements even when only one callsite exists; agreement does not upgrade
 partial ABI classification or claim machine-body/return-summary equivalence.
+
+Version 2 additionally requires `controlTransfers` version 1: a bounded list of
+unresolved transfer candidates derived from the supplied Semantic IR, with
+`resolved`, `ambiguous` or `budget-limited` status. Unknown control effects and
+branch/switch destinations represented only by empty target blocks are unresolved.
+Canonical missing-fallthrough issues remain unresolved even after CFG projection
+has removed the corresponding edge; a remaining known target does not erase them.
+Ordinary local branches, loops and returns are not thunk classifications. The
+entire supplied function is scanned; without bound CFG reachability evidence no
+apparently dead node is discarded. At most 64 candidate records are published;
+overflow explicitly reports budget-limited, never a sampled resolved result.
+
+Declaration status must match this control evidence. An ambiguous or budget-limited
+callee withholds caller placements and carries that terminal status through the
+compatibility projection. Version-1 source records cannot satisfy this new check.
+This detects unresolved transfer candidates, not proven thunk forwarding or an
+exact tail-call target summary. Those require additional independent evidence.
 
 ### Projection
 
