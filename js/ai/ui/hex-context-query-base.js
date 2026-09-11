@@ -355,7 +355,7 @@ export function createHexAIContext(app) {
         page.completeness = { ...page.completeness, total:null };
       }
       const nextOffset = exactPageTotal(result?.page?.next);
-      if (nextOffset != null && nextOffset > offset) {
+      if (nextOffset != null && nextOffset > offset && nextOffset <= 1_000_000) {
         Object.defineProperty(page, 'nextOffset', { value:nextOffset, enumerable:false });
       }
       return page;
