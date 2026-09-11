@@ -101,6 +101,27 @@ test('changed canonical inputs, scanned candidates, roots and getter replacement
   }
 });
 
+test('shared initial return inputs retain exact live roots and all scanned candidates', () => {
+  for (const mutate of [
+    f => { f.ir.values = [...f.ir.values]; },
+    f => { f.ir.values[0].reg = 'x28'; },
+    f => { f.call.dst.uses.push(f.ret); },
+    f => { f.retLine.text += ' changed'; },
+  ]) {
+    const f = fixture();
+    assert.ok(readSemanticStatementLineHistory(f.retLine, f.ir));
+    assert.equal(readSemanticStatementLineHistory({ ...f.retLine }, f.ir), null);
+    mutate(f);
+    assert.equal(readSemanticStatementLineHistory(f.retLine, f.ir), null);
+  }
+  const f = fixture(), original = f.ir.values;
+  assert.ok(readSemanticStatementLineHistory(f.retLine, f.ir));
+  let reads = 0;
+  Object.defineProperty(f.ir, 'values', { enumerable:true, get() { reads++; return original; } });
+  assert.equal(readSemanticStatementLineHistory(f.retLine, f.ir), null);
+  assert.equal(reads, 0, 'canonical preimage rejection precedes any selected-value membership read');
+});
+
 test('ownership manifest owns the exact new regression path', () => {
   const files = ['tests/phase8/provenance/call-return-render-history.test.mjs'];
   assert.deepEqual(validateRoadmapInventory(BRANCH, 'phase8', files), files);

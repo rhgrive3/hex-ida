@@ -41,10 +41,16 @@ export function captureProjectionIrData(roots, shouldAbort = null) {
 // mutable objects from live checks. This shares observations, not authority.
 export function createProjectionIrObserver() {
   const immutable = new WeakMap();
-  return Object.freeze({ capture:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable) });
+  return Object.freeze({
+    capture:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable),
+    // Complete graph inputs already enumerate their vertices. Visit by distance
+    // from those real roots, not by an arbitrary walk around SSA cycles. This
+    // observes every field; it is not a caller-provided list of exempt objects.
+    captureGraph:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, true),
+  });
 }
 
-function captureIrData(roots, shouldAbort, immutable) {
+function captureIrData(roots, shouldAbort, immutable, graph = false) {
   if (!Array.isArray(roots)) throw new TypeError('projection-ir-roots-array-required');
   const records = [], seen = new WeakMap();
   let edges = 0, nodes = 0, expandedUnits = 0;
@@ -103,9 +109,67 @@ function captureIrData(roots, shouldAbort, immutable) {
     if (stable) immutable.set(value, height);
     return cost;
   }
-  for (const root of roots) {
-    expandedUnits += visit(root,1);
-    if (expandedUnits > PROJECTION_LIMITS.expandedUnits) throw new TypeError('projection-expansion-budget');
+  if (graph) {
+    // No immutable subtree is skipped here: graph depth is rooted distance,
+    // whereas cached heights belong to the ordinary nested-data observer.
+    const enqueue = (value, depth) => {
+      check();
+      const primitive = scalarCost(value);
+      if (primitive != null) return primitive;
+      if (depth > PROJECTION_LIMITS.depth) throw new TypeError('projection-depth-budget');
+      if (seen.has(value)) return 1;
+      if (nodes >= PROJECTION_LIMITS.nodes) throw new TypeError('projection-node-budget');
+      nodes++; seen.set(value, 1);
+      const entries = ownDataEntries(value, PROJECTION_LIMITS.edges - edges);
+      edges += entries.length;
+      records.push({ value, depth, prototype:Object.getPrototypeOf(value), entries,
+        arrayLength:Array.isArray(value) ? value.length : null });
+      return 1;
+    };
+    const charge = cost => {
+      expandedUnits += cost;
+      if (expandedUnits > PROJECTION_LIMITS.expandedUnits) throw new TypeError('projection-expansion-budget');
+    };
+    for (const root of roots) charge(enqueue(root, 1));
+    for (let index = 0; index < records.length; index++) {
+      const { entries, depth } = records[index];
+      for (const [key, child] of entries) {
+        if (key.length > PROJECTION_LIMITS.string) throw new TypeError('projection-key-budget');
+        charge(key.length + 1 + (key === 'uses' ? 1 : enqueue(child, depth + 1)));
+      }
+    }
+    // Bottom-up immutable certification is linear in the observed graph.
+    // Mutable descendants and frozen cycles never enter the ready queue.
+    const parents = new WeakMap(), ready = [];
+    for (const record of records) {
+      check();
+      if (!Object.isFrozen(record.value)) continue;
+      record.pending = 0; record.height = 1;
+      for (const [key, child] of record.entries) if (key !== 'uses' && child !== null && typeof child === 'object') {
+        const height = immutable.get(child);
+        if (height != null) record.height = Math.max(record.height, height + 1);
+        else {
+          record.pending++;
+          if (!parents.has(child)) parents.set(child, []);
+          parents.get(child).push(record);
+        }
+      }
+      if (!record.pending) ready.push(record);
+    }
+    for (let index = 0; index < ready.length; index++) {
+      check();
+      const record = ready[index];
+      immutable.set(record.value, record.height);
+      for (const parent of parents.get(record.value) || []) {
+        parent.height = Math.max(parent.height, record.height + 1);
+        if (!--parent.pending) ready.push(parent);
+      }
+    }
+  } else {
+    for (const root of roots) {
+      expandedUnits += visit(root,1);
+      if (expandedUnits > PROJECTION_LIMITS.expandedUnits) throw new TypeError('projection-expansion-budget');
+    }
   }
   check();
   function matches(writes = null) {

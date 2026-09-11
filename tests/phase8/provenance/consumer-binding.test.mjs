@@ -10,6 +10,103 @@ import { captureProjectionIrData, createProjectionIrObserver, PROJECTION_LIMITS 
 import { analysis, consumerFixture as fixture, expr, resultWith, source } from './fixture.js';
 
 
+
+function graphFixture() {
+  const values = Array.from({ length:200 }, (_, id) => ({ id }));
+  const instructions = values.map((dst, index) => ({ dst, args:[{ value:values[(index + 1) % values.length] }] }));
+  for (let index = 0; index < values.length; index++) values[index].def = instructions[index];
+  return { values, instructions };
+}
+
+test('C4-03 complete SSA graphs are observed by root distance, including every cyclic edge', () => {
+  for (const reverse of [false, true]) {
+    const { values, instructions } = graphFixture();
+    if (reverse) { values.reverse(); instructions.reverse(); }
+    const observer = createProjectionIrObserver();
+    assert.throws(() => observer.capture([values, instructions]), /depth/);
+    const observation = observer.captureGraph([values, instructions]);
+    assert.equal(observation.matches(), true);
+    assert.equal(observation.metrics.nodes, 802);
+    assert.equal(observation.metrics.edges, 1600);
+    const target = instructions[175].args[0], before = target.value;
+    target.value = values[2];
+    assert.equal(observation.matches(), false);
+    assert.equal(observation.matchesThroughWrites([{ object:target, key:'value', before, after:values[2] }]), true);
+    target.extra = 'unobserved writer';
+    assert.equal(observation.matchesThroughWrites([{ object:target, key:'value', before, after:values[2] }]), false);
+  }
+});
+
+test('C4-03 graph traversal retains root slots, descriptors, prototypes and array lengths', () => {
+  for (const mutate of [
+    ({ values }) => { values[170] = { ...values[170] }; },
+    ({ instructions }) => { instructions.pop(); },
+    ({ instructions }) => { instructions[190].args[0].value.id++; },
+    ({ values }) => { Object.setPrototypeOf(values[150], null); },
+    ({ values }) => { Object.defineProperty(values[150], 'id', { get:() => 150 }); },
+  ]) {
+    const fixture = graphFixture();
+    const observation = createProjectionIrObserver().captureGraph([fixture.values, fixture.instructions]);
+    mutate(fixture);
+    assert.equal(observation.matches(), false);
+  }
+});
+
+test('C4-03 graph traversal preserves nested depth, total volume and plain-data limits', () => {
+  const capture = value => createProjectionIrObserver().captureGraph([value]);
+  let deep = { value:1 };
+  for (let index = 1; index < PROJECTION_LIMITS.depth; index++) deep = { child:deep };
+  assert.equal(capture(deep).matches(), true);
+  assert.throws(() => capture({ child:deep }), /depth/);
+  assert.throws(() => capture(Array.from({ length:PROJECTION_LIMITS.nodes }, () => ({}))), /node-budget/);
+  assert.throws(() => capture(Array(PROJECTION_LIMITS.edges + 1).fill(0)), /entry-budget/);
+  assert.throws(() => capture('a'.repeat(PROJECTION_LIMITS.string + 1)), /string-budget/);
+  assert.throws(() => capture({ ['a'.repeat(PROJECTION_LIMITS.string + 1)]:1 }), /key-budget/);
+  assert.throws(() => capture(Array(50).fill('a'.repeat(50000))), /expansion-budget/);
+  assert.throws(() => capture(1n << 1024n), /bigint-budget/);
+  assert.throws(() => capture(new Map()), /prototype/);
+  assert.throws(() => capture(Array(1)), /sparse/);
+  assert.throws(() => capture({ [Symbol('key')]:1 }), /symbol/);
+  assert.throws(() => capture({ method() {} }), /non-data/);
+  let called = false;
+  assert.throws(() => capture({ get field() { called = true; return 1; } }), /accessor/);
+  assert.equal(called, false);
+  assert.throws(() => createProjectionIrObserver().captureGraph([{}], () => true), /cancelled/);
+});
+
+test('C4-03 graph and nested captures charge the same fully observed data', () => {
+  const shared = { id:42, attributes:[1, 2, 'name'] }, roots = [{ shared }, { shared }];
+  assert.deepEqual(createProjectionIrObserver().captureGraph(roots).metrics, captureProjectionIrData(roots).metrics);
+});
+
+test('C4-03 graph warming retains the ordinary immutable height and mutable-cycle checks', () => {
+  const observer = createProjectionIrObserver(), roots = [];
+  let deep = Object.freeze({ value:1 });
+  for (let index = 0; index < 150; index++) { roots.push(deep); deep = Object.freeze({ child:deep }); }
+  roots.push(deep);
+  const first = observer.captureGraph(roots), second = observer.captureGraph(roots);
+  assert.deepEqual(first.metrics, second.metrics, 'graph captures do not skip cached subtrees');
+  assert.throws(() => observer.capture([deep]), /depth/);
+  assert.throws(() => observer.captureGraph([deep]), /depth/);
+  const frozen = Object.freeze({ payload:Object.freeze([1, 2, 3]) });
+  observer.captureGraph([frozen]);
+  assert.equal(observer.capture([frozen]).metrics.edges, 0);
+  for (const wrap of [child => Object.freeze({ child }), child => {
+    const parent = { child }; child.parent = parent; return Object.freeze(parent);
+  }]) {
+    const child = { value:1 }, parent = wrap(child);
+    const original = observer.captureGraph([parent]), current = observer.capture([parent]);
+    assert.ok(current.metrics.edges > 0);
+    child.value = 2;
+    assert.equal(original.matches(), false);
+    assert.equal(current.matches(), false);
+  }
+  const left = {}, right = { left }; left.right = right;
+  Object.freeze(left); Object.freeze(right);
+  observer.captureGraph([left]);
+  assert.ok(observer.capture([left]).metrics.edges > 0, 'even a frozen cycle is not a cached tree');
+});
+
 function identityRecord(map) { return map.ledger.find(record => record.rule === 'add-zero-right' && record.valueId === 3); }
 
 test('C4-03 one producer reuses only recursively immutable observations', () => {

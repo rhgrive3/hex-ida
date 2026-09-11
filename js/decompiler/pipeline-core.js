@@ -59,10 +59,10 @@ export function readCallResultSpellingProducer(node, ir) {
 const buildHistoryObservations = new WeakMap();
 const reusableBuildHistoryRecords = new WeakSet();
 function valueHistoryRecord(record, valueId) {
-  // State normalization or memory selection is one producer operation, not a new
-  // transformation each time a downstream value inherits it. Keep its owning
-  // valueId and exact record identity; consumer.records already carries each
-  // actual dependency. Public copies cannot acquire this private membership.
+  // One observed builder operation is not a new transformation each time a
+  // downstream value inherits it. Keep its producer-assigned valueId and exact
+  // identity; consumer.records carries each actual dependency.
+  // Public copies and unobserved rewrite descriptions cannot acquire membership.
   if (reusableBuildHistoryRecords.has(record)) return record;
   const copy = { ...record, valueId };
   const observation = buildHistoryObservations.get(record);
@@ -91,9 +91,9 @@ function consumerObservationBudget(state) {
   };
 }
 
-function captureConsumerIrData(roots, state) {
+function captureConsumerIrData(roots, state, graph = false) {
   state.projectionIrObserver ??= createProjectionIrObserver();
-  return state.projectionIrObserver.capture(roots, state.opts?.shouldAbort);
+  return state.projectionIrObserver[graph ? 'captureGraph' : 'capture'](roots, state.opts?.shouldAbort);
 }
 
 function fieldProjectionRecords(semantic, state) {
@@ -174,12 +174,17 @@ function bindObservedExpressionConsumer(semantic, value, instruction, state, rec
   }
   budget.consumers--;
   try {
-    const observation = captureConsumerIrData([semantic, records, value, instruction], state);
+    const inputs = state.constructionInputObservation;
+    const shared = inputs?.contains(value, instruction) ? inputs : null;
+    const observation = captureConsumerIrData([semantic, records, ...(shared ? [] : [value, instruction])], state);
     const remaining = budget.edges - observation.metrics.edges;
     budget.edges = Math.max(0, remaining);
     if (remaining < 0) {
       budget.reasons.add('binding-budget');
       return semantic;
+    }
+    if (shared && !shared.matches()) {
+      budget.reasons.add('stale-expression-build-history'); return semantic;
     }
     if (!currentBuildHistory(records)) {
       budget.reasons.add('stale-expression-build-history'); return semantic;
@@ -187,7 +192,7 @@ function bindObservedExpressionConsumer(semantic, value, instruction, state, rec
     if (rendered && !rendered.isCurrent()) {
       budget.reasons.add(rendered.reason ?? 'stale-store-render-history'); return semantic;
     }
-    const inputsCurrent = () => observation.matches() && currentBuildHistory(records);
+    const inputsCurrent = () => (!shared || shared.matches()) && observation.matches() && currentBuildHistory(records);
     const consumer = Object.freeze({
       ir:state.ir, expression:semantic.expression, op:semantic.op, instructionId:semantic.ir,
       location:semantic.location, records,
@@ -366,13 +371,14 @@ function compareFromFlags(flagValue, cond, state) {
     const before = { source:mergeSource(origin(d, flagValue), ...(d.args || []).map(arg => {
       const value = valueOf(arg); return origin(value?.def, value);
     })) };
-    const record = Object.freeze({ rule:'reconstruct-flag-condition', phase:'expression-build',
+    const record = Object.freeze({ rule:'reconstruct-flag-condition', phase:'expression-build', valueId:null,
       before:`cmp:${d.sub || 'sub'}:${cond || 'flags'}`, after:`expression:${expression.kind}`,
       evidence:Object.freeze({ kind:'observed-flag-reconstruction-not-equivalence',
         detail:'actual existing NZCV/conditional-compare display construction and visited inputs; not an independent flag, scalar, path or CFG equivalence proof' }),
       originHistory:expressionOriginHistory(before, expression),
     });
     buildHistoryObservations.set(record, observation);
+    reusableBuildHistoryRecords.add(record);
     (state.buildHistoryFrame.records ??= new Set()).add(record);
   }
   return expression;
@@ -529,13 +535,14 @@ function recordPhiCollapse(v, instruction, incoming, expression, state) {
   }
   const before = { source:mergeSource(origin(instruction, v), ...incoming.map(node => node?.source),
     ...(instruction.incoming || []).map(item => origin(item.value?.def, item.value))) };
-  const record = Object.freeze({ rule:'collapse-equal-incoming-phi', phase:'expression-build',
+  const record = Object.freeze({ rule:'collapse-equal-incoming-phi', phase:'expression-build', valueId:v?.id ?? null,
     before:'phi:equal-incoming-expressions', after:`expression:${expression.kind}`,
     evidence:Object.freeze({ kind:'observed-phi-view-collapse-not-equivalence',
       detail:'actual legacy expression-builder selection; canonical phi/edges are retained, not independently proved eliminated' }),
     originHistory:expressionOriginHistory(before, expression),
   });
   buildHistoryObservations.set(record, observation);
+  reusableBuildHistoryRecords.add(record);
   (state.buildHistoryFrame.records ??= new Set()).add(record);
   state.phiHistoryCount = (state.phiHistoryCount || 0) + 1;
 }
@@ -571,7 +578,7 @@ function observeBuildSelection(value, instruction, state, kind = 'mov', related 
     // observed graph; retain its live matcher instead of recapturing overlapping
     // inputs for each MOV/precomputed/address selection. Output expressions and
     // consumer descriptors still get their own observations below.
-    const shared = state.stateHistoryTransaction?.observation;
+    const shared = state.stateHistoryTransaction?.observation || state.constructionInputObservation;
     const captured = shared || captureConsumerIrData([value, instruction, ...related], state);
     budget.edges -= shared ? 0 : captured.metrics.edges;
     if (budget.edges < 0) throw new Error('build-selection-observation-budget');
@@ -610,7 +617,7 @@ function recordMovSelection(value, instruction, expression, selection, state, fl
   if (!observation) return;
   const input = valueOf(instruction.args?.[0]);
   const before = { source:mergeSource(origin(instruction, value), origin(input?.def, input), expression.source) };
-  const record = Object.freeze({ rule:cast ? 'render-proof-mov-cast' : 'select-mov-operand', phase:'expression-build',
+  const record = Object.freeze({ rule:cast ? 'render-proof-mov-cast' : 'select-mov-operand', phase:'expression-build', valueId:value?.id ?? null,
     before:cast ? `mov:${cast}:${operandBits}->${value.bits}` : `mov:${flags.forAddress ? 'address' : 'value'}`, after:`expression:${expression.kind}`,
     evidence:Object.freeze({ kind:cast ? 'observed-explicit-mov-cast-not-equivalence' : 'observed-mov-view-selection-not-equivalence',
       detail:cast ? 'actual proof-preparation rendering of an explicit MOV cast through shared bounded scalar lowering; not a proof or copy/forwarding elimination'
@@ -618,6 +625,7 @@ function recordMovSelection(value, instruction, expression, selection, state, fl
     originHistory:expressionOriginHistory(before, expression),
   });
   buildHistoryObservations.set(record, observation);
+  reusableBuildHistoryRecords.add(record);
   (state.buildHistoryFrame.records ??= new Set()).add(record);
 }
 
@@ -626,13 +634,14 @@ function recordAddressLoadSelection(value, instruction, store, expression, selec
   if (!observation) return;
   const input = valueOf(store.args?.[0]);
   const before = { source:mergeSource(origin(instruction, value), origin(store), origin(input?.def, input), expression.source) };
-  const record = Object.freeze({ rule:'select-address-load-store-operand', phase:'expression-build',
+  const record = Object.freeze({ rule:'select-address-load-store-operand', phase:'expression-build', valueId:value?.id ?? null,
     before:'load:address-reaching-store', after:`expression:${expression.kind}`,
     evidence:Object.freeze({ kind:'observed-address-load-selection-not-memory-equivalence',
       detail:'actual legacy address-mode reachingStore operand selection; canonical load/store and unknown access qualifiers remain, not independent memory forwarding or alias proof' }),
     originHistory:expressionOriginHistory(before, expression),
   });
   buildHistoryObservations.set(record, observation);
+  reusableBuildHistoryRecords.add(record);
   (state.buildHistoryFrame.records ??= new Set()).add(record);
 }
 
@@ -703,7 +712,7 @@ function recordConstantValueSelection(value, expression, selected, state) {
   if (!observation) return;
   const history = expressionOriginHistory({ source:selected.origins.source }, expression);
   const canonicalLoad = selected.kind === 'canonical-load';
-  const record = Object.freeze({ rule:canonicalLoad ? 'select-canonical-load-constant' : 'select-precomputed-value', phase:'expression-build',
+  const record = Object.freeze({ rule:canonicalLoad ? 'select-canonical-load-constant' : 'select-precomputed-value', phase:'expression-build', valueId:value?.id ?? null,
     before:canonicalLoad ? 'load:canonical-numeric-forwarding' : `precomputed:${value.def.op}`, after:`expression:${expression.kind}`,
     evidence:Object.freeze({ kind:canonicalLoad ? 'observed-canonical-load-selection-not-new-memory-proof' : 'observed-precomputed-value-selection-not-equivalence',
       detail:canonicalLoad
@@ -712,6 +721,7 @@ function recordConstantValueSelection(value, expression, selected, state) {
     originHistory:selected.origins.incomplete ? Object.freeze({ ...history, truncated:true }) : history,
   });
   buildHistoryObservations.set(record, Object.freeze({ matches:() => observation.matches() && selected.origins.memoryChecks.every(current => current()) }));
+  reusableBuildHistoryRecords.add(record);
   (state.buildHistoryFrame.records ??= new Set()).add(record);
 }
 
@@ -878,7 +888,7 @@ function recordCompatOperationSelection(value, expression, selected, state) {
     const stateOperation = !!event.kind;
     const identityText = identity => `${String(identity.reg)}:${String(identity.stateKey)}:${String(identity.version)}:${String(identity.compatDerived)}`;
     const record = Object.freeze({ rule:location || typedResult || stackEscape || abiBinding ? event.operation : preserved ? 'restore-abi-preserved-state' : stateOperation ? 'compact-public-state' : facade ? 'fold-facade-constant' : 'fold-compatibility-constant', phase:'compatibility-projection',
-      ...(stateOperation ? { valueId:value?.id ?? null } : {}),
+      valueId:value?.id ?? null,
       before:abiBinding ? `${event.stage}:${event.direction}:${event.ordinal}:arguments:${event.beforeArguments.map(arg => arg.value?.id).join(',')}` : stackEscape ? `${event.stage}:${event.ordinal}:store:${event.store.id}` : typedResult ? `${event.stage}:${event.ordinal}:${event.before?.id ?? 'no-public-result'}` : location ? `${event.stage}:${event.ordinal}:${event.before.key}` : preserved ? `${event.stage}:${event.ordinal}:value:${event.before.id}` : stateOperation ? `${event.kind}:${event.ordinal}:${event.path || 'identity'}:${event.identity ? identityText(event.before) : event.before.id}`
         : `${event.stage}:${event.round}:${event.ordinal}:${event.op}:${event.sub ?? ''}:${String(event.beforeConstant)}`,
       after:abiBinding ? `${event.direction}:${event.outcome}:arguments:${event.afterArguments.map(arg => arg.value?.id).join(',')}` : stackEscape ? `compatibility-clobber:call:${event.call.id}` : typedResult ? `call-result-view:${event.output.id}:${event.registerId}:${event.bits}` : location ? `location:${event.after.key}` : preserved ? `value:${event.after.id}:${event.evidence}` : stateOperation ? `${event.identity ? identityText(event.after) : event.after.id}` : `constant:${event.bits}:${String(event.afterConstant)}`,
@@ -895,7 +905,7 @@ function recordCompatOperationSelection(value, expression, selected, state) {
     });
     const producerChecks = Object.freeze([transition.isCurrent, observation.sourceMatches, ...(origins?.memoryChecks || [])]);
     buildHistoryObservations.set(record, Object.freeze({ matches:observation.outputMatches, producerChecks }));
-    if (record.rule === 'compact-public-state') reusableBuildHistoryRecords.add(record);
+    reusableBuildHistoryRecords.add(record);
     pending.push({ record, producerChecks });
   }
   // All local finish callbacks have run. Outside canonical construction,
@@ -934,12 +944,18 @@ function buildCanonicalExpressions(state) {
     const values = state.ir.values, blocks = state.ir.blocks, instructions = state.ir.instructions;
     // Capture all initial construction inputs once, before any symbol/type/
     // cancellation callback. This is data observation, not producer resealing.
-    const captured = captureConsumerIrData([values, blocks, instructions], state);
+    const captured = captureConsumerIrData([values, blocks, instructions], state, true);
     budget.edges -= captured.metrics.edges;
     if (budget.edges < 0) throw new Error('state-construction-budget');
     const own = (key) => Object.getOwnPropertyDescriptor(state.ir, key)?.value;
+    const valueMembers = new WeakSet(values), instructionMembers = new WeakSet(instructions);
     transaction.observation = Object.freeze({ kind:'compat-state', matches:() => own('values') === values
-      && own('blocks') === blocks && own('instructions') === instructions && captured.matches() });
+      && own('blocks') === blocks && own('instructions') === instructions && captured.matches(),
+    contains:(value, instruction) => (value == null || valueMembers.has(value)) && (instruction == null || instructionMembers.has(instruction)) });
+    // Keep the original data observation for later C-AST consumers too. It
+    // never caches currentness: every selection and read rechecks this matcher,
+    // and output descriptors/records are still separately observed.
+    state.constructionInputObservation = transaction.observation;
   } catch {
     budget.edges = 0; budget.reasons.add('compat-state-construction-observation-unavailable');
   }

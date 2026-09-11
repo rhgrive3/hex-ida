@@ -53,8 +53,10 @@ test('MOV selection retains copy/input origins across eight widths and both dire
   let cells = 0;
   for (const bits of [1, 2, 3, 4, 8, 16, 32, 64]) for (const chain of [false, true]) {
     const f = fixture({ bits, chain }), result = applyPhase8Projection(f.result, analysis());
-    const history = records(result).filter(record => record.valueId === f.moved.id);
+    const history = records(result);
     assert.equal(history.length, chain ? 2 : 1, `${bits}/${chain}`);
+    assert.deepEqual(new Set(history.map(record => record.valueId)), new Set([f.first.id, f.moved.id]),
+      'each operation retains its original output value, not a copy per downstream consumer');
     for (const record of history) {
       assert.equal(record.proof, 'observed-mov-view-selection-not-equivalence');
       assert.equal(record.renderedBinding, 'producer-bound');
@@ -75,10 +77,17 @@ test('MOV selection retains copy/input origins across eight widths and both dire
 test('nested and repeated real consumers retain MOV histories without granting them to an equal input AST', () => {
   const f = fixture({ chain:true, nested:true, repeat:true });
   let result = applyPhase8Projection(f.result, analysis());
-  for (const record of records(result).filter(record => record.valueId === f.root.id)) {
+  for (const record of records(result)) {
     assert.deepEqual(record.producedRefs, ['L0:stmt', 'L1:stmt']);
   }
-  assert.equal(records(result).filter(record => record.valueId === f.root.id).length, 2);
+  assert.equal(records(result).length, 2);
+  assert.deepEqual(new Set(records(result).map(record => record.valueId)), new Set([f.first.id, f.moved.id]));
+  const consumers = f.result.cAst.body.slice(0, 2).map(node => readExpressionHistoryConsumer(node.semantic, f.ir));
+  assert.ok(consumers.every(Boolean));
+  const shared = consumers[0].records.filter(record => record.rule === 'select-mov-operand');
+  assert.equal(shared.length, 2);
+  assert.ok(shared.every(record => consumers[1].records.includes(record)), 'real consumers share exact producer objects');
+  assert.equal(f.result.rewriteProof.filter(record => record.rule === 'select-mov-operand').length, 2);
   const ledger = result.renderProvenance.ledger;
   for (let i = 0; i < 3; i++) result = applyPhase8Projection(result, analysis());
   assert.deepEqual(result.renderProvenance.ledger, ledger);
@@ -109,8 +118,9 @@ test('a copied unresolved memory load retains the load and does not claim memory
 
 test('address-mode MOV selection follows the actual load consumer separately from value-mode memoization', () => {
   const f = fixture({ address:true }), result = applyPhase8Projection(f.result, analysis());
-  const history = records(result).filter(record => record.valueId === f.root.id);
+  const history = records(result).filter(record => record.before === 'mov:address');
   assert.equal(history.length, 1);
+  assert.equal(history[0].valueId, f.moved.id);
   assert.equal(history[0].before, 'mov:address');
   assert.equal(history[0].renderedBinding, 'producer-bound');
   assert.deepEqual(history[0].producedRefs, ['L0:stmt']);

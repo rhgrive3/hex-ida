@@ -68,8 +68,9 @@ test('equal phi view collapse retains both incoming definitions and the phi acro
 test('actual nested uses and multiple consumers inherit the builder event, not unrelated equal AST pointers', () => {
   const f = fixture({ shared:true, nested:true, repeat:true });
   let result = applyPhase8Projection(f.result, analysis());
-  const record = records(result).find(record => record.valueId === f.root.id);
+  const record = records(result).find(record => record.valueId === f.phi.id);
   assert.ok(record);
+  assert.equal(records(result).length, 1, 'one phi view selection serves both actual consumers');
   assert.deepEqual(record.producedRefs, ['L0:stmt', 'L1:stmt']);
   assert.ok(!record.producedRefs.includes('L2:stmt'));
   const ledger = result.renderProvenance.ledger;

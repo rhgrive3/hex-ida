@@ -197,7 +197,14 @@ function retainStatementRenderLine(node, inst, detail, ctx, control = null, resu
   try {
     if (history.edges <= 0 || history.consumers <= 0 || !history.canonical?.isCurrent()) throw new Error(`${prefix}-binding-unavailable`);
     history.consumers--;
-    const inputs = captureProjectionIrData([detail, resultBinding]), output = captureProjectionIrData([node]);
+    // A selected canonical return value is already inside the pre-render
+    // whole-IR observation, including every candidate and reverse-use index.
+    // Do not recursively observe the same SSA cycle from a single value again.
+    // Nonmember details and call/control bindings still need their own capture.
+    const sharedReturn = !control && inst.op === OP.RET && resultBinding == null && detail != null && ctx.ir.values.includes(detail);
+    const inputs = sharedReturn ? { metrics:{ edges:0 }, matches:() => ctx.ir.values.includes(detail) }
+      : captureProjectionIrData([detail, resultBinding]);
+    const output = captureProjectionIrData([node]);
     history.edges -= inputs.metrics.edges + output.metrics.edges;
     const canonical = Object.freeze({ isCurrent:() => history.canonical.isCurrent() && inputs.matches() });
     if (history.edges < 0 || ctx.opts.shouldAbort?.() || !canonical.isCurrent() || !output.matches()) throw new Error(`${prefix}-binding-unavailable`);

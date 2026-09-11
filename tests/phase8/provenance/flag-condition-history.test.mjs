@@ -102,7 +102,7 @@ test('select-value construction carries the actual flag event through its existi
   const f = fixture({ select:true, conditional:true }), result = projected(f);
   const history = records(result);
   assert.equal(history.length, 2);
-  assert.ok(history.every(record => record.valueId === f.target.id && record.renderedBinding === 'producer-bound'
+  assert.ok(history.every(record => record.valueId === null && record.renderedBinding === 'producer-bound'
     && record.producedRefs.includes('L0:stmt')));
   assert.ok(result.renderProvenance.reverse[`addr:${f.previousCmp.address}`].includes('L0:stmt'));
   unchanged(f);

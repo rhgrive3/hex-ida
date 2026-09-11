@@ -68,6 +68,33 @@ test('C4-03 native x86 construction reuses observed inputs without losing live c
     'shared construction inputs retain exact mutable root identity after publication');
 });
 
+test('C4-03 native cyclic construction observes full inputs and retains one record per builder operation', () => {
+  const corpus = loadCorpus(), id = 'quality.loop_decrement_step.O1';
+  const index = corpus.functions.findIndex(entry => entry.id === id);
+  assert.ok(index >= 0);
+  const { result, failure } = decompileEntry(corpus.functions[index], {
+    index, decompilerTimeBudgetMs:20000, toolchain:corpus.toolchain ?? null,
+  });
+  assert.equal(failure ?? null, null);
+  assert.equal(PROJECTION_LIMITS.depth, 96);
+  assert.equal(PROJECTION_LIMITS.nodes, 10000);
+  assert.equal(PROJECTION_LIMITS.edges, 100000);
+  assert.ok(!result.expressionHistoryBinding.reasons.includes('compat-state-construction-observation-unavailable'));
+  assert.ok(!result.expressionHistoryBinding.reasons.includes('compat-constant-selection-observation-unavailable'));
+  assert.equal(result.semanticStatementRenderHistory.completeness, 'complete');
+  const selections = result.rewriteProof.filter(record => record.rule === 'select-mov-operand');
+  assert.ok(selections.length > 50, 'actual native selections, not an empty-history success');
+  assert.equal(new Set(selections.map(record => record.originHistory)).size, selections.length,
+    'inherited selections are the same issued operation, not a cloned downstream transform');
+  assert.equal(result.renderProvenance.budget.maxTransformRecords, 1024);
+  assert.equal(result.renderProvenance.counts.ledgerTruncated, 0);
+  const reference = loadFrozenProvenance().observations.find(entry => entry.id === id);
+  const actual = provenanceFromSourceMap(result.sourceMap);
+  assert.deepEqual(reference.sourceAddresses.filter(address => !actual.sourceAddresses.includes(address)), []);
+  // This regression covers construction and record identity, not the separate
+  // final projection observations that can still report incomplete.
+});
+
 for (const optimization of ['O1','O2']) for (const phase8Optimize of [false,true]) {
   test(`C4-03 native x86 call barrier retains consumed state origins (${optimization}, optimize=${phase8Optimize})`, () => {
     const corpus = loadCorpus(), id = `x86_64.quality.gvn_call_barrier.${optimization}`;

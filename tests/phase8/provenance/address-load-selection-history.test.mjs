@@ -54,7 +54,7 @@ test('actual address-load selection retains the load, chosen store and input acr
     const f = fixture({ bits }), result = applyPhase8Projection(f.result, analysis());
     const [record] = records(result);
     assert.equal(records(result).length, 1);
-    assert.equal(record.valueId, f.root.id);
+    assert.equal(record.valueId, f.pointer.id, 'retain the selected address producer rather than its downstream load');
     assert.equal(record.proof, 'observed-address-load-selection-not-memory-equivalence');
     assert.equal(record.renderedBinding, 'producer-bound');
     assert.deepEqual(record.producedRefs, ['L0:stmt']);
@@ -75,8 +75,9 @@ test('actual address-load selection retains the load, chosen store and input acr
 test('nested MOV history follows the actual selected operand and repeated final consumers through replay', () => {
   const f = fixture({ moved:true, repeat:true });
   let result = applyPhase8Projection(f.result, analysis());
-  const selected = result.renderProvenance.ledger.filter(record => record.valueId === f.root.id && [rule, 'select-mov-operand'].includes(record.rule));
+  const selected = result.renderProvenance.ledger.filter(record => record.producedRefs.includes('L0:stmt') && [rule, 'select-mov-operand'].includes(record.rule));
   assert.equal(selected.length, 2);
+  assert.deepEqual(new Set(selected.map(record => record.valueId)), new Set([f.pointer.id, f.stored.id]));
   for (const record of selected) assert.deepEqual(record.producedRefs, ['L0:stmt', 'L1:stmt']);
   const ledger = result.renderProvenance.ledger;
   for (let i = 0; i < 3; i++) result = applyPhase8Projection(result, analysis());
