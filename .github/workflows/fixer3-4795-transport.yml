@@ -17,14 +17,14 @@ jobs:
         with:
           ref: fixer3/issue-4795-discovery-budget
           fetch-depth: 20
-      - name: Apply verified Fixer 3 change
+      - name: Normalize verified Fixer 3 change
         shell: bash
         env:
           EXPECTED_BASE: a41489725a3e3954c01c5992c8c8ca7901a26c13
           BRANCH: fixer3/issue-4795-discovery-budget
         run: |
           set -euo pipefail
-          if git log -1 --pretty=%B | grep -Fq '[transport-done]'; then
+          if git log -1 --pretty=%B | grep -Fq '[transport-final]'; then
             exit 0
           fi
           git merge-base --is-ancestor "$EXPECTED_BASE" HEAD
@@ -33,27 +33,44 @@ jobs:
 
           path = Path('js/analysis/discovery/fusion.js')
           text = path.read_text()
-          old = "  const canonical = evidence.map((item) => canonicalEvidence(item));"
-          new = """  //
-          // `maxCandidates` is also a work budget, not only a result-size check. Once
-          // one more distinct start than the budget permits has been observed, the
-          // final result is irreversibly `truncated` with no published candidates.
-          // Stop at that boundary instead of materializing and sorting the remaining
-          // evidence only to discard it afterwards (#4795).
-          const canonical = [];
-          const candidateStarts = new Set();
-          for (let index = 0; index < evidence.length; index += 1) {
-            const item = canonicalEvidence(evidence[index]);
-            canonical.push(item);
-            if (item.start == null) continue;
-            candidateStarts.add(item.start);
-            if (candidateStarts.size > budget.maxCandidates) {
-              return { candidates: [], status: status('truncated', 'budget-exhausted') };
-            }
-          }
-          """.rstrip()
+          old = "\n".join([
+            "// `maxCandidates` is also a work budget, not only a result-size check. Once",
+            "// one more distinct start than the budget permits has been observed, the",
+            "// final result is irreversibly `truncated` with no published candidates.",
+            "// Stop at that boundary instead of materializing and sorting the remaining",
+            "// evidence only to discard it afterwards (#4795).",
+            "const canonical = [];",
+            "const candidateStarts = new Set();",
+            "for (let index = 0; index < evidence.length; index += 1) {",
+            "  const item = canonicalEvidence(evidence[index]);",
+            "  canonical.push(item);",
+            "  if (item.start == null) continue;",
+            "  candidateStarts.add(item.start);",
+            "  if (candidateStarts.size > budget.maxCandidates) {",
+            "    return { candidates: [], status: status('truncated', 'budget-exhausted') };",
+            "  }",
+            "}",
+          ])
+          new = "\n".join([
+            "  // `maxCandidates` is also a work budget, not only a result-size check. Once",
+            "  // one more distinct start than the budget permits has been observed, the",
+            "  // final result is irreversibly `truncated` with no published candidates.",
+            "  // Stop at that boundary instead of materializing and sorting the remaining",
+            "  // evidence only to discard it afterwards (#4795).",
+            "  const canonical = [];",
+            "  const candidateStarts = new Set();",
+            "  for (let index = 0; index < evidence.length; index += 1) {",
+            "    const item = canonicalEvidence(evidence[index]);",
+            "    canonical.push(item);",
+            "    if (item.start == null) continue;",
+            "    candidateStarts.add(item.start);",
+            "    if (candidateStarts.size > budget.maxCandidates) {",
+            "      return { candidates: [], status: status('truncated', 'budget-exhausted') };",
+            "    }",
+            "  }",
+          ])
           if text.count(old) != 1:
-              raise SystemExit('fusion patch authority mismatch')
+              raise SystemExit('fusion normalization authority mismatch')
           path.write_text(text.replace(old, new, 1))
           PY
           node --check js/analysis/discovery/fusion.js
@@ -61,5 +78,5 @@ jobs:
           git config user.name 'Fixer 3 Analysis'
           git config user.email 'actions@users.noreply.github.com'
           git add js/analysis/discovery/fusion.js
-          git commit -m '[transport-done] fix(discovery): bound candidate budget ingestion (#4795)'
+          git commit -m '[transport-final] fix(discovery): normalize #4795 patch'
           git push origin HEAD:"$BRANCH"
