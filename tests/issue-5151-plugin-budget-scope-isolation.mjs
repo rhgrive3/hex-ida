@@ -7,7 +7,7 @@ function registerProbe(registry, id, onAnalyze) {
   registry.registerAnalyzer(id, {
     async analyze(context) {
       context.resourceBudget.consume('workUnits', 1);
-      return onAnalyze(context.resourceBudget.scopePath);
+      return onAnalyze(context.resourceBudget.snapshot().scopePath);
     },
   });
 }

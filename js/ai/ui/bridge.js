@@ -6,6 +6,7 @@ import { createCapabilityCatalog } from '../capabilities/catalog.js';
 import { createCapabilityExecutor } from '../capabilities/executor.js';
 import { createProposalExecutor } from '../interaction/proposal-executor.js';
 import { createProjectSessionPersistence } from '../session-core/index.js';
+import { sessionMatchesSnapshot } from '../control/runtime-support.js';
 
 async function loadCoreRuntime(localContext, persistence = null) {
   const runtimeModule = await import('../runtime.js');
@@ -206,13 +207,22 @@ export function createLiveProjectSessionPersistence(app) {
 
 function persistedSessionForConversation(persistence, conversationId, context) {
   const sessions = persistence?.list?.() || [];
-  const binaryId = context?.binaryIdentity?.id || context?.binaryId || null;
+  const binaryIdentity = context?.binaryIdentity || null;
+  const binaryId = binaryIdentity?.id || context?.binaryId || null;
   const projectId = context?.projectId || null;
+  const runtimeSessionId = context?.runtimeSessionId ?? null;
+  const runtimeSessionKnown = context?.runtimeSessionKnown === true || runtimeSessionId != null;
+  const snapshot = {
+    binaryId,
+    binaryIdentity,
+    legacyBinaryId: binaryIdentity?.legacyId || (binaryIdentity ? null : context?.binaryId || null),
+    projectIdentity: projectId,
+    runtimeSessionIdentity: runtimeSessionId,
+    runtimeSessionState: runtimeSessionKnown ? (runtimeSessionId == null ? 'none' : 'bound') : 'unknown',
+  };
   const compatible = sessions.filter((session) => {
     if (!session?.id) return false;
-    if (binaryId && session.binaryId && String(session.binaryId) !== String(binaryId)) return false;
-    if (projectId && session.projectId && String(session.projectId) !== String(projectId)) return false;
-    return true;
+    return sessionMatchesSnapshot(session, snapshot);
   });
   if (conversationId != null) {
     // An explicit conversation identity is authoritative: reuse only the exact

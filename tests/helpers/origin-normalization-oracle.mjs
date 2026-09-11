@@ -43,9 +43,14 @@ function bigintValue(value, code) {
   try { return BigInt(value.trim()); }
   catch { fail(code); }
 }
+// The oracle follows the canonical OriginSet contract; ordering is UTF-16
+// code-unit based so the expected digest remains independent of host locale.
+function compareCanonicalText(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
 function uniqueSorted(values) {
   const byKey = new Map(values.map((value) => [stableStringify(value), value]));
-  return [...byKey.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => value);
+  return [...byKey.entries()].sort(([a], [b]) => compareCanonicalText(a, b)).map(([, value]) => value);
 }
 // Provenance payloads must be validated before jsonSafe can erase or round numeric evidence.
 function exactJson(value) {

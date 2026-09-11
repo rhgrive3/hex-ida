@@ -1,6 +1,7 @@
 import {
   ARTIFACT_STORE_VERSION,
   ArtifactCorruptionError,
+  ArtifactStorageError,
   assertCanonicalArtifactDescriptor,
   createArtifactRecord,
   decodeArtifactPayload,
@@ -402,8 +403,18 @@ export class ArtifactStore {
     }
 
     if (typeof options.validate === 'function') {
-      try { await options.validate(stagedPayload, record, { signal:options.signal }); }
+      // Positive-acknowledgement contract: production callers pass boolean
+      // predicates, so anything but an explicit `true` is a validation
+      // failure. Relying on the validator to throw would let a `false`
+      // return publish a payload that violates its own postconditions
+      // (route/instrumentation/ABI) as a canonical CAS artifact (#5298).
+      let verdict = null;
+      try { verdict = await options.validate(stagedPayload, record, { signal: options.signal }); }
       catch (error) { this.metrics.validationFailures++; throw error; }
+      if (verdict !== true) {
+        this.metrics.validationFailures++;
+        throw new ArtifactStorageError('artifact-validation-not-passed', 'artifact-validation-not-passed', { verdict: String(verdict) });
+      }
     }
     aborted(options.signal);
 

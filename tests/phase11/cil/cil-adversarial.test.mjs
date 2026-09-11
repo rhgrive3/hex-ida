@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { parseCil, probeCil, readCompressedInt } from '../../../js/managed/cil/parser.js';
+import { parseCil, probeCil } from '../../../js/managed/cil/parser.js';
+import { readCompressedInt } from '../../../js/managed/cil/parser-base.js';
 
 console.log('[phase11] running cil adversarial tests...');
 

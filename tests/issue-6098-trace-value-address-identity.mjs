@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './issue-4519-evidence-row-identity.mjs';
 import { createActionRunner } from '../js/ai/interaction/actions.js';
 import { closeAllSheets } from '../js/ui.js';
 

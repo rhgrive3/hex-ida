@@ -123,7 +123,7 @@ export function createArtifactDescriptor(input = {}) {
   const config = canonicalArtifactKeyValue(input.config ?? {});
   const keyExtras = canonicalArtifactKeyValue(input.keyExtras ?? {});
   const upstreamArtifactIds = sortedStrings(input.upstreamArtifactIds ?? input.inputArtifactIds ?? [], 'artifact-upstream-ids-invalid');
-  const canonicalConfig = canonicalConfigHash(config);
+  const canonicalConfig = stableDigest(config);
   const keyMaterialHash = stableDigest({ config, keyExtras });
   // Snapshot identity fields once so descriptor and artifactId material cannot diverge.
   const artifactKind = required(input.artifactKind ?? input.kind, 'artifact-kind-required');
@@ -198,7 +198,7 @@ export function artifactPayloadChecksum(bytes) {
   return stableDigest(Array.from(view));
 }
 
-function normalizeArtifactPayloadBytes(value, { allowMissing = false } = {}) {
+export function normalizeArtifactPayloadBytes(value, { allowMissing = false } = {}) {
   if (value == null) {
     if (allowMissing) return new Uint8Array(0);
     throw new ArtifactError('artifact-payload-bytes-invalid', 'Artifact payload bytes must be a byte container');

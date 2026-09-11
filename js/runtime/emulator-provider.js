@@ -1,11 +1,12 @@
 import { DebugAdapterError, boundedInteger } from '../debug/adapter.js';
-import { deepFreeze } from '../core/identity/index.js';
+import { deepFreeze, lossyTypeWitness, stableStringify } from '../core/identity/index.js';
 import { RuntimeProviderSession, createRuntimeProviderDescriptor } from './provider.js';
 import { createRuntimeEvent, createRuntimeEventBatch } from './events.js';
-import { RuntimeEvidenceBridge } from './evidence-bridge.js';
+import { RuntimeEvidenceBridge, conservativeCompleteness } from './evidence-bridge.js';
 
 const TERMINATIONS = Object.freeze(['return', 'halted', 'paused', 'fault', 'unsupported', 'timeout', 'cancelled', 'exception']);
 const ABORTED_EXECUTION = Symbol('aborted-execution');
+const REPLAY_SOURCE_SCHEMA = 'hex-emulator-replay-source/v1';
 
 function terminationAlias(raw) {
   switch (raw) {
@@ -44,6 +45,77 @@ function recordableClone(value) {
   }
 }
 
+function replayRecordingClone(value) {
+  let clone;
+  try {
+    clone = ownedClone(value);
+  } catch (error) {
+    throw new DebugAdapterError('emulator-replay-recording-invalid', `emulator replay recording is not recordable: ${String(error?.message || error)}`);
+  }
+  if (!clone || typeof clone !== 'object' || Array.isArray(clone)) {
+    throw new DebugAdapterError('emulator-replay-recording-invalid', 'emulator replay recording must be an object');
+  }
+  return clone;
+}
+
+function replaySourceIdentity(session, engineDescriptor) {
+  return deepFreeze({
+    schemaVersion: REPLAY_SOURCE_SCHEMA,
+    binaryId: session.target.primaryBinaryId,
+    sliceId: session.target.primarySliceId,
+    targetArchitecture: session.target.architecture,
+    runtimeSessionId: session.runtimeSessionId,
+    providerId: session.providerId,
+    providerVersion: session.providerVersion,
+    engine: engineDescriptor,
+  });
+}
+
+function replayIdentityMissing(message) {
+  return new DebugAdapterError('emulator-replay-identity-missing', message);
+}
+
+function replayIdentityMismatch(field, source, current) {
+  return new DebugAdapterError(
+    'emulator-replay-identity-mismatch',
+    `emulator replay ${field} identity does not match the current runtime session`,
+    { field, source, current },
+  );
+}
+
+function assertReplaySourceIdentity(source, current) {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    throw replayIdentityMissing('emulator replay recording is missing source identity');
+  }
+  if (source.schemaVersion !== REPLAY_SOURCE_SCHEMA) {
+    throw replayIdentityMissing('emulator replay recording has no supported source identity schema');
+  }
+  for (const field of ['binaryId', 'providerId', 'providerVersion', 'runtimeSessionId']) {
+    if (typeof source[field] !== 'string' || !source[field].trim()) {
+      throw replayIdentityMissing(`emulator replay recording is missing ${field}`);
+    }
+  }
+  for (const field of ['binaryId', 'sliceId', 'targetArchitecture', 'providerId', 'providerVersion']) {
+    if (source[field] !== current[field]) {
+      throw replayIdentityMismatch(field, source[field] ?? null, current[field] ?? null);
+    }
+  }
+  if (!source.engine || typeof source.engine !== 'object' || Array.isArray(source.engine)) {
+    throw replayIdentityMissing('emulator replay recording is missing engine identity');
+  }
+  let sourceEngine;
+  let currentEngine;
+  try {
+    sourceEngine = stableStringify({ value: source.engine, typeWitness: lossyTypeWitness(source.engine) });
+    currentEngine = stableStringify({ value: current.engine, typeWitness: lossyTypeWitness(current.engine) });
+  } catch {
+    throw new DebugAdapterError('emulator-replay-identity-invalid', 'emulator replay engine identity is not canonicalizable');
+  }
+  if (sourceEngine !== currentEngine) {
+    throw replayIdentityMismatch('engine', sourceEngine, currentEngine);
+  }
+}
+
 function terminationOf(result = {}) {
   const value = result.termination ?? result.stop?.kind ?? result.status ?? 'paused';
   if (typeof value !== 'string') return 'exception';
@@ -56,6 +128,48 @@ function completenessFor(termination) {
   if (termination === 'unsupported') return 'unsupported';
   if (termination === 'timeout' || termination === 'cancelled' || termination === 'exception') return 'truncated';
   return 'bounded';
+}
+
+function invalidExternalSignal() {
+  return new DebugAdapterError('invalid-signal', 'signal must be AbortSignal-compatible');
+}
+
+function externalSignalAuthority(value) {
+  if (value == null) return null;
+  if (typeof value !== 'object' && typeof value !== 'function') throw invalidExternalSignal();
+  let addEventListener;
+  let removeEventListener;
+  let aborted;
+  try {
+    addEventListener = value.addEventListener;
+    removeEventListener = value.removeEventListener;
+    aborted = value.aborted;
+  } catch {
+    throw invalidExternalSignal();
+  }
+  if (
+    typeof aborted !== 'boolean'
+    || typeof addEventListener !== 'function'
+    || typeof removeEventListener !== 'function'
+  ) throw invalidExternalSignal();
+  return { signal: value, addEventListener, removeEventListener, aborted };
+}
+
+function currentSignalAborted(authority) {
+  let aborted;
+  try { aborted = authority.signal.aborted; }
+  catch { throw invalidExternalSignal(); }
+  if (typeof aborted !== 'boolean') throw invalidExternalSignal();
+  return aborted;
+}
+
+function detachExternalSignal(authority, listener) {
+  try {
+    Reflect.apply(authority.removeEventListener, authority.signal, ['abort', listener]);
+  } catch {
+    // Caller-owned listener cleanup is best-effort and must not mask the run
+    // result or prevent release of the provider-owned session controller.
+  }
 }
 
 function engineText(value, fallback, code) {
@@ -228,6 +342,7 @@ export class EmulatorProvider {
       throw error;
     }
     const evidence = new RuntimeEvidenceBridge();
+    const sourceIdentity = replaySourceIdentity(session, this.engineDescriptor);
     let lastRun = null;
     let activeRun = null;
     let nextRunOccurrence = 0;
@@ -235,6 +350,7 @@ export class EmulatorProvider {
     const run = async (input = {}, runOptions = {}) => {
       if (activeRun) throw new DebugAdapterError('already-running', 'emulator session already has an active run');
       this._assertEngineAvailable();
+      const externalSignal = externalSignalAuthority(runOptions.signal);
       const runToken = {};
       activeRun = runToken;
       try {
@@ -254,15 +370,27 @@ export class EmulatorProvider {
       const startedEpoch = session.epoch;
       let externalAbort = null;
       let externalCancelled = false;
-      if (runOptions.signal) {
+      let externalListenerTouched = false;
+      if (externalSignal) {
         externalAbort = () => {
           externalCancelled = true;
           if (!controller.signal.aborted) controller.abort('cancelled');
         };
-        if (runOptions.signal.aborted) externalAbort();
-        else {
-          runOptions.signal.addEventListener('abort', externalAbort, { once: true });
-          if (runOptions.signal.aborted) externalAbort();
+        try {
+          if (externalSignal.aborted) externalAbort();
+          else {
+            // Mark before invoking caller-owned code: addEventListener may throw
+            // after partially installing the listener, so cleanup must still
+            // attempt a detach before the controller is released (#4331).
+            externalListenerTouched = true;
+            Reflect.apply(externalSignal.addEventListener, externalSignal.signal, ['abort', externalAbort, { once: true }]);
+            if (currentSignalAborted(externalSignal)) externalAbort();
+          }
+        } catch (error) {
+          if (externalListenerTouched) detachExternalSignal(externalSignal, externalAbort);
+          session.releaseController(controller);
+          if (error instanceof DebugAdapterError && error.code === 'invalid-signal') throw error;
+          throw invalidExternalSignal();
         }
       }
       let timeoutTriggered = false;
@@ -315,12 +443,15 @@ export class EmulatorProvider {
         if (timeoutTriggered) abortTermination = 'timeout';
         else if (externalCancelled || controller.signal.aborted) abortTermination = 'cancelled';
         if (timer) clearTimeout(timer);
-        if (runOptions.signal && externalAbort) runOptions.signal.removeEventListener('abort', externalAbort);
-        session.releaseController(controller);
+        try {
+          if (externalSignal && externalAbort && externalListenerTouched) detachExternalSignal(externalSignal, externalAbort);
+        } finally {
+          session.releaseController(controller);
+        }
       }
 
       const termination = abortTermination ?? terminationOf(raw || {});
-      const completeness = completenessFor(termination);
+      let completeness = completenessFor(termination);
       if (session.closed || session.state === 'closing') {
         throw new DebugAdapterError('runtime-session-stale', 'emulator run completed after its runtime session began closing', {
           termination,
@@ -351,6 +482,13 @@ export class EmulatorProvider {
       }
       const events = sourceEvents.map((source, index) => {
         const identity = eventIdentity(source, index, runOccurrence);
+        const kind = source.kind ?? source.type ?? 'emulator-checkpoint';
+        const sourceCompleteness = source.completeness;
+        const eventCompleteness = conservativeCompleteness(
+          completeness,
+          sourceCompleteness,
+          kind === 'gap' || kind === 'dropped-events' ? 'truncated' : null,
+        );
         return createRuntimeEvent({
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
@@ -363,10 +501,10 @@ export class EmulatorProvider {
           processKey: session.target.processKey,
           moduleBindingKey: source.moduleBindingKey,
           moduleGeneration: source.moduleGeneration,
-          kind: source.kind ?? source.type ?? 'emulator-checkpoint',
+          kind,
           payload: source.payload ?? source,
           observationMode: 'synthetic',
-          completeness,
+          completeness: eventCompleteness,
           interventionIds: source.interventionIds,
         });
       });
@@ -385,6 +523,7 @@ export class EmulatorProvider {
           completeness,
         }));
       }
+      for (const event of events) completeness = conservativeCompleteness(completeness, event.completeness);
       const batch = createRuntimeEventBatch({
         runtimeSessionId: session.runtimeSessionId,
         providerId: session.providerId,
@@ -396,7 +535,7 @@ export class EmulatorProvider {
       const resolution = runOptions.resolution ?? null;
       const evidenceNodes = events.map((event) => evidence.eventToEvidence(event, resolution, { binaryId: request.binaryId ?? request.binaryHash ?? null, semanticKind: 'emulator-observation' }));
       const ownedRaw = ownedClone(raw ?? null);
-      lastRun = deepFreeze({ input: ownedClone(input), options: recordedOptions, termination, completeness, raw: ownedRaw, eventIds: events.map((event) => event.eventId) });
+      lastRun = deepFreeze({ sourceIdentity, input: ownedClone(input), options: recordedOptions, termination, completeness, raw: ownedRaw, eventIds: events.map((event) => event.eventId) });
       return deepFreeze({ termination, completeness, raw: ownedClone(ownedRaw), batch, evidence: evidenceNodes, recording: lastRun });
       } finally {
         if (activeRun === runToken) activeRun = null;
@@ -408,8 +547,9 @@ export class EmulatorProvider {
       run,
       replay: async (recording = null, replayOptions = {}) => {
         if (this.engineDescriptor.deterministic !== true) throw new DebugAdapterError('unsupported', 'emulator engine does not advertise deterministic replay');
-        const source = recording ?? lastRun;
+        const source = recording == null ? lastRun : replayRecordingClone(recording);
         if (!source) throw new DebugAdapterError('emulator-replay-missing', 'no emulator recording is available to replay');
+        assertReplaySourceIdentity(source.sourceIdentity, sourceIdentity);
         return run(source.input, { ...source.options, ...replayOptions });
       },
       evidence,

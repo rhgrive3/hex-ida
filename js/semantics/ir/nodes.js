@@ -110,6 +110,10 @@ export function createSemanticNode(input) {
   if (CONTROL_NODE_KINDS.has(kind) && !out.targets.length) fail('semantic-ir-control-target-required');
   if (SEMANTIC_SETS.unknownOperations.has(kind) && out.unknown == null) fail('semantic-ir-unknown-detail-required');
   if (SEMANTIC_SETS.unknownOperations.has(kind) && out.completeness === 'complete') fail('semantic-ir-unknown-cannot-be-complete');
+  // A node-local unknown payload is explicit evidence of an unresolved
+  // semantic dimension, so it can never coexist with completeness — whichever
+  // direction the pair contradicts (#5390).
+  if (out.unknown != null && out.completeness === 'complete') fail('semantic-ir-unknown-detail-on-complete-node');
   if (!SEMANTIC_SETS.unknownOperations.has(kind) && out.completeness !== 'complete' && out.unknown == null) {
     fail('semantic-ir-partial-node-requires-unknown-detail');
   }
