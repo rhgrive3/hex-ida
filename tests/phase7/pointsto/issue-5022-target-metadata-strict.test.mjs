@@ -104,3 +104,56 @@ test('#5022 points-to set reconstruction cannot launder malformed spill/reload m
     (error) => error instanceof TypeError && error.message === 'phase7-pointsto-target-invalid-width-bits',
   );
 });
+
+test('#5022 target-level metadata accessors are rejected without execution', () => {
+  for (const [key, value, code] of [
+    ['widthBits', 64, 'phase7-pointsto-target-invalid-width-bits'],
+    ['evidenceIds', ['ev1'], 'phase7-pointsto-target-invalid-evidence-ids'],
+  ]) {
+    let getterRuns = 0;
+    const input = base();
+    Object.defineProperty(input, key, {
+      configurable: true,
+      enumerable: true,
+      get() { getterRuns += 1; return value; },
+    });
+    assert.throws(
+      () => createPointsToTarget(input),
+      (error) => error instanceof TypeError && error.message === code,
+    );
+    assert.equal(getterRuns, 0, `${key} getter must not execute`);
+  }
+});
+
+test('#5022 inherited proof metadata is rejected without reading inherited accessors', () => {
+  for (const [key, descriptor, code] of [
+    ['widthBits', { value: 64 }, 'phase7-pointsto-target-invalid-width-bits'],
+    ['evidenceIds', { value: ['ev1'] }, 'phase7-pointsto-target-invalid-evidence-ids'],
+  ]) {
+    const input = base();
+    delete input[key];
+    const prototype = {};
+    Object.defineProperty(prototype, key, { configurable: true, ...descriptor });
+    Object.setPrototypeOf(input, prototype);
+    assert.throws(
+      () => createPointsToTarget(input),
+      (error) => error instanceof TypeError && error.message === code,
+    );
+  }
+
+  let inheritedGetterRuns = 0;
+  const input = base();
+  delete input.evidenceIds;
+  const prototype = {};
+  Object.defineProperty(prototype, 'evidenceIds', {
+    configurable: true,
+    get() { inheritedGetterRuns += 1; return ['ev1']; },
+  });
+  Object.setPrototypeOf(input, prototype);
+  assert.throws(
+    () => createPointsToTarget(input),
+    (error) => error instanceof TypeError
+      && error.message === 'phase7-pointsto-target-invalid-evidence-ids',
+  );
+  assert.equal(inheritedGetterRuns, 0);
+});

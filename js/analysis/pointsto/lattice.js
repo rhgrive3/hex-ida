@@ -320,6 +320,21 @@ function inputMatchesCanonicalProof(input, proof) {
   return true;
 }
 
+function targetOwnDataValue(input, key, errorCode) {
+  const descriptor = Object.getOwnPropertyDescriptor(input, key);
+  if (descriptor) {
+    if (!Object.hasOwn(descriptor, 'value')) fail(errorCode);
+    return descriptor.value;
+  }
+
+  // An inherited field is still caller-controlled authority. Inspect descriptors
+  // without reading the property so accessors are never executed.
+  for (let prototype = Object.getPrototypeOf(input); prototype; prototype = Object.getPrototypeOf(prototype)) {
+    if (Object.getOwnPropertyDescriptor(prototype, key)) fail(errorCode);
+  }
+  return undefined;
+}
+
 function canonicalTargetWidthBits(widthBits) {
   if (widthBits == null) return null;
   if (typeof widthBits !== 'number' || !Number.isSafeInteger(widthBits) || widthBits <= 0) {
@@ -345,6 +360,8 @@ function canonicalTargetEvidenceIds(evidenceIds) {
 
 /** One (root, offset-range) member of a points-to set. */
 export function createPointsToTarget(input = {}) {
+  const widthBits = targetOwnDataValue(input, 'widthBits', 'phase7-pointsto-target-invalid-width-bits');
+  const evidenceIds = targetOwnDataValue(input, 'evidenceIds', 'phase7-pointsto-target-invalid-evidence-ids');
   const rootIdentity = canonicalRootIdentity(input.rootIdentity ?? null);
   // A plain object can never mint authority. Internal copies are accepted only
   // when the exact canonical proof object and its root identity are preserved.
@@ -372,8 +389,8 @@ export function createPointsToTarget(input = {}) {
     ...(canonicalStorageClass ? { canonicalRootStorageClass: canonicalStorageClass } : {}),
     address: canonicalPointsToAddress(input.address),
     offsetRange: canonicalOffsetRange(input.offsetRange),
-    widthBits: canonicalTargetWidthBits(input.widthBits),
-    evidenceIds: canonicalTargetEvidenceIds(input.evidenceIds),
+    widthBits: canonicalTargetWidthBits(widthBits),
+    evidenceIds: canonicalTargetEvidenceIds(evidenceIds),
   };
   if (proven) target[ROOT_DESCRIPTOR_PROOF] = proof;
   target.rootKey = rootKeyOf(target);
