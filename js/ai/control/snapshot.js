@@ -1,3 +1,4 @@
+import { AIError } from '../schema.js';
 import { addressText } from '../validation.js';
 
 let turnSequence = 1;
@@ -49,7 +50,9 @@ export function createTurnSnapshot(local = {}, request = {}) {
     cursor,
   );
   const selection = snapshotSelection(local.selection);
-  const identity = resolveBinaryIdentity(local, request);
+  const binding = resolveBinaryBinding(local, request);
+  if (binding.conflict) throw new AIError('scope_violation', 'The requested binary identity does not match the live workbench binary.');
+  const identity = binding.identity;
   const projectId = firstBinding(request.projectId, local.projectId, local.project?.id, local.project?.binaryHash);
   const runtimeId = firstBinding(local.runtimeSession?.id, local.runtime?.sessionId, local.runtimeSessionId);
   const runtimeKnown = local.runtimeSessionKnown === true || runtimeId != null;
@@ -60,6 +63,8 @@ export function createTurnSnapshot(local = {}, request = {}) {
     binaryIdentity: identity,
     binaryId: identity.id,
     legacyBinaryId: identity.legacyId,
+    binaryIdentitySource: binding.source,
+    liveBinaryIdentity: binding.live,
     projectIdentity: projectId,
     architecture: copyScalar(first(local.architecture, local.binary?.architecture, local.capability?.architecture)),
     slice: copyScalar(first(local.slice, local.sliceIndex, local.binary?.sliceIndex)),
@@ -109,17 +114,47 @@ export function createSnapshotContext(local = {}, snapshot, scopeController = nu
 }
 
 export function resolveBinaryIdentity(local = {}, request = {}) {
-  const explicit = normalizeIdentity(request.binaryIdentity ?? local.binaryIdentity);
-  if (explicit) return explicit;
+  return resolveBinaryBinding(local, request).identity;
+}
+
+export function resolveBinaryBinding(local = {}, request = {}) {
+  const live = resolveLiveBinaryIdentity(local);
+  const requested = resolveRequestedBinaryIdentity(local, request);
+  const conflict = !!requested && strongIdentity(live) && strongIdentity(requested)
+    && canonicalBindingId(live.id) !== canonicalBindingId(requested.id);
+  if (strongIdentity(live)) return { identity:live, source:'live', live, requested, conflict };
+  if (requested) return { identity:requested, source:'request-fallback', live, requested, conflict:false };
+  return { identity:live, source:'live', live, requested:null, conflict:false };
+}
+
+function resolveLiveBinaryIdentity(local = {}) {
+  const explicit = normalizeIdentity(local.binaryIdentity);
   const contentHash = firstBinding(
-    request.binaryHash,
     local.binaryHash,
     local.binaryFingerprint?.hash,
     local.fingerprint?.hash,
     local.binary?.fingerprint?.hash,
     local.project?.binaryHash,
   );
-  const legacyId = firstBinding(request.binaryId, local.binaryId);
+  const legacyId = firstBinding(local.binaryId);
+  const derived = derivedIdentity(local, { contentHash, legacyId, allowNameFallback:true });
+  if (strongIdentity(explicit)) return explicit;
+  if (strongIdentity(derived)) return derived;
+  return explicit || derived;
+}
+
+function resolveRequestedBinaryIdentity(local = {}, request = {}) {
+  const explicit = normalizeIdentity(request.binaryIdentity);
+  const contentHash = firstBinding(request.binaryHash);
+  const legacyId = firstBinding(request.binaryId);
+  if (!explicit && contentHash == null && legacyId == null) return null;
+  const derived = derivedIdentity(local, { contentHash, legacyId, allowNameFallback:false });
+  if (strongIdentity(explicit)) return explicit;
+  if (strongIdentity(derived)) return derived;
+  return explicit || derived;
+}
+
+function derivedIdentity(local, { contentHash = null, legacyId = null, allowNameFallback = false } = {}) {
   const slice = selectedSlice(local);
   if (contentHash != null && !slice.invalid) {
     const suffix = slice.value == null ? '' : `:${slice.value}`;
@@ -133,13 +168,22 @@ export function resolveBinaryIdentity(local = {}, request = {}) {
       legacyId,
     };
   }
-  const name = typeof local.fileInfo?.name === 'string' ? local.fileInfo.name : typeof local.binary?.name === 'string' ? local.binary.name : null;
+  const name = allowNameFallback
+    ? (typeof local.fileInfo?.name === 'string' ? local.fileInfo.name : typeof local.binary?.name === 'string' ? local.binary.name : null)
+    : null;
   const fallback = legacyId != null ? legacyId : (!slice.invalid && name ? `${name}:${slice.value ?? '0'}` : null);
   return {
     id: fallback ? `fallback:${fallback}` : 'fallback:unbound',
     kind: 'fallback', confidence: fallback ? 'weak' : 'none', state: 'hash-unavailable',
     algorithm: null, hash: null, legacyId: fallback,
   };
+}
+
+function strongIdentity(identity) {
+  const id = canonicalBindingId(identity?.id);
+  if (canonicalBindingId(identity?.hash) != null) return true;
+  if (typeof id === 'string' && id.startsWith('content:')) return true;
+  return identity?.confidence === 'strong' && identity?.state === 'ready' && typeof id === 'string' && !id.startsWith('fallback:');
 }
 
 function normalizeIdentity(value) {
