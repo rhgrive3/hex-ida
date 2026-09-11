@@ -96,3 +96,19 @@ test('#5386: deterministic intrinsic with declared control effects takes the con
   assert.equal(inst.op, OP.CLOBBER);
   assert.ok(inst.extra?.intrinsic);
 });
+
+test('#5386: nondeterministic intrinsic must retain determinism authority', () => {
+  const ir = buildIntrinsicIr({ determinism: 'nondeterministic' });
+  const out = projectSemanticIrV2ToLegacyV1(ir);
+  const inst = intrinsicInst(out);
+  assert.equal(inst.op, OP.CLOBBER);
+  assert.equal(inst.extra?.intrinsic?.determinism, 'nondeterministic');
+});
+
+test('#5386: input-dependent intrinsic must not project as deterministic value op', () => {
+  const ir = buildIntrinsicIr({ determinism: 'input-dependent' });
+  const out = projectSemanticIrV2ToLegacyV1(ir);
+  const inst = intrinsicInst(out);
+  assert.equal(inst.op, OP.CLOBBER);
+  assert.equal(inst.extra?.intrinsic?.determinism, 'input-dependent');
+});

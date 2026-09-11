@@ -258,6 +258,7 @@ function hasRegisterStateWriteForValue(valueId, context) {
 // state invalidation are preserved instead of silently discarded (#5386).
 function intrinsicDeclaresSideEffects(intrinsic) {
   if (!intrinsic || typeof intrinsic !== 'object') return true;
+  if (intrinsic.determinism !== 'deterministic') return true;
   if ((intrinsic.stateReads?.length ?? 0) > 0) return true;
   if ((intrinsic.stateWrites?.length ?? 0) > 0) return true;
   if (intrinsic.memoryRead?.scope != null && intrinsic.memoryRead.scope !== 'none') return true;
