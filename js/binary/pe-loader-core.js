@@ -114,6 +114,27 @@ export function mappedFileSpanForRva(image, rva, size) {
   return { ...range, spanEnd: range.start + size };
 }
 
+function mappedMemorySpanForRva(image, rva, size, { writable = false } = {}) {
+  if (!Number.isInteger(rva) || rva <= 0 || !Number.isSafeInteger(size) || size <= 0) return null;
+  const address = image.imageBase + BigInt(rva), spanEnd = address + BigInt(size);
+  const owners = [...(image.sections || []), ...(image.segments || [])];
+  let cursor = address;
+  while (cursor < spanEnd) {
+    let coveredTo = cursor;
+    for (const owner of owners) {
+      if (!owner || owner.address == null || owner.size == null) continue;
+      if (writable && !owner.perms?.write) continue;
+      const ownerAddress = BigInt(owner.address), ownerSize = BigInt(owner.size);
+      if (ownerSize <= 0n) continue;
+      const ownerEnd = ownerAddress + ownerSize;
+      if (ownerAddress <= cursor && cursor < ownerEnd && ownerEnd > coveredTo) coveredTo = ownerEnd;
+    }
+    if (coveredTo === cursor) return null;
+    cursor = coveredTo;
+  }
+  return { address, spanEnd };
+}
+
 function mappedFileRangeForAddress(image, address) {
   const a = BigInt(address);
   if (a < image.imageBase || a - image.imageBase > 0xffffffffn) return null;
@@ -513,8 +534,11 @@ export function parseDelayImports(r, dir, image, sharedBudget = null) {
   let off=dirRange.start;const end=dirRange.spanEnd,ptrSize=image.bits===64?8:4;
   for(let guard=0;guard<65536&&off+32<=end;guard++,off+=32){
     if(!budget.take({inputBytes:32,records:1,operations:1,estimatedHeapBytes:32},'delay-import-descriptor'))break;
-    const attrs=r.u32(off),nameField=r.u32(off+4),iatField=r.u32(off+12),intField=r.u32(off+16),bound=r.u32(off+20),unload=r.u32(off+24),stamp=r.u32(off+28);if(!(attrs||nameField||iatField||intField||bound||unload||stamp))break;
+    const attrs=r.u32(off),nameField=r.u32(off+4),hmodField=r.u32(off+8),iatField=r.u32(off+12),intField=r.u32(off+16),bound=r.u32(off+20),unload=r.u32(off+24),stamp=r.u32(off+28);if(!(attrs||nameField||hmodField||iatField||intField||bound||unload||stamp))break;
     if((attrs>>>1)!==0){budget.partial('delay-imports:reserved-attributes','Ignored PE delay-import descriptor with reserved Attributes bits');continue;}
+    const hmodRva=rvaFromDelayField(hmodField,attrs,image);
+    if(!hmodRva||!mappedMemorySpanForRva(image,hmodRva,ptrSize)){budget.partial('delay-imports:module-handle-span','Ignored PE delay-import descriptor with unmapped/truncated module-handle storage');continue;}
+    if(!mappedMemorySpanForRva(image,hmodRva,ptrSize,{writable:true})){budget.partial('delay-imports:module-handle-non-writable','Ignored PE delay-import descriptor with non-writable module-handle storage');continue;}
     const nameRva=rvaFromDelayField(nameField,attrs,image),iatRva=rvaFromDelayField(iatField,attrs,image),intRva=rvaFromDelayField(intField,attrs,image);const library=mappedCStringAtRva(r,image,nameRva,budget,'PE delay import library');
     const iatRange=mappedFileRangeForRva(image,iatRva),thunkRange=mappedFileRangeForRva(image,intRva||iatRva);if(!library||!iatRva||!iatRange||!thunkRange){budget.partial('delay-imports:malformed-descriptor','Ignored malformed PE delay-import descriptor');continue;}image.libraries.push(library);
     let terminated=false;
