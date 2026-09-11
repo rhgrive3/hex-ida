@@ -44,6 +44,7 @@ const VALIDATED_LOADER_SEED_SOURCES = new Set([
   'tls-callback',
   'guard-cf',
   'unwind',
+  'dt-init',
 ]);
 const EXPLICIT_EXACT_SEED_SOURCES = new Set(['symbol', 'ifunc-resolver']);
 

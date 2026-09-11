@@ -3,7 +3,7 @@ import { BinaryImage, functionSeed } from './model.js';
 import { parseEhFrameHeader } from './elf-unwind.js';
 import { parseProgramDynamic } from './elf-dynamic.js';
 import { createELFMetadataBudget, markELFMetadataPartial } from './elf-budget.js';
-import { executableELFRange, mappedELFFileSpanForVa } from './elf-mapping.js';
+import { executableELFRange, elfInstructionTargetRejection } from './elf-mapping.js';
 import { parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
 
 const ET_REL = 1;
@@ -92,6 +92,7 @@ const X86_64_WORDCLASS_RELOCATIONS = new Set([
 const SHT_RISCV_ATTRIBUTES = 0x70000003;
 const R_RISCV_JUMP_SLOT = 5;
 const DT_RISCV_VARIANT_CC = 0x70000001n;
+const DT_INIT = 12n;
 const ELF_RUNTIME_PAGE_SIZE = 0x1000n;
 
 export function parseELF(input, options = {}) {
@@ -163,7 +164,7 @@ export function parseELF(input, options = {}) {
   if (h.type !== ET_REL && image.entrypoint != null) {
     const zeroResetVector = image.entrypoint === 0n && image.arch === 'arm64';
     if (image.entrypoint !== 0n || zeroResetVector) {
-      const rejection = elfEntrypointRejection(image, image.entrypoint);
+      const rejection = elfInstructionTargetRejection(image, image.entrypoint);
       if (rejection == null) {
         image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
         if (zeroResetVector) image.metadata.entrypointZeroEvidence = 'aarch64-executable-pt-load-at-zero';
@@ -225,15 +226,6 @@ export function parseELF(input, options = {}) {
   image.metadata.elfMetadata = metadataBudget.snapshot();
 
   return image.finalize();
-}
-
-function elfEntrypointRejection(image, address) {
-  const instructionBytes = image.arch === 'arm64' ? 4n : 1n;
-  if (!executableELFRange(image, address, 0n)) return 'outside a canonical executable mapping';
-  if (image.arch === 'arm64' && address % 4n !== 0n) return 'does not satisfy arm64 4-byte alignment';
-  if (!executableELFRange(image, address, instructionBytes)) return 'instruction bytes cross the canonical executable extent';
-  if (!mappedELFFileSpanForVa(image, address, instructionBytes)) return 'instruction bytes are not fully file-backed';
-  return null;
 }
 
 function alignUp(value, alignment) {
@@ -712,6 +704,7 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
     budget.partial(`dynamic-section:${sec.index}:span`, `ELF SHT_DYNAMIC/string table exceeds the file`);
   }
 
+  let dtInitHandled = false;
   for (let i = 0; i < count; i++) {
     if (!budget.take({ inputBytes: ent, records: 1, operations: 1, estimatedHeapBytes: 32 }, 'SHT_DYNAMIC')) break;
     const p = start + i * ent;
@@ -722,6 +715,25 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
       image.metadata.riscvVariantCcTagPresent = true;
     }
     if (tag === 0n) break;
+
+    if (tag === DT_INIT && val !== 0n && !dtInitHandled && Number(image.metadata.type) !== ET_REL) {
+      dtInitHandled = true;
+      const rejection = elfInstructionTargetRejection(image, val);
+      if (rejection == null) {
+        image.functions.push(functionSeed(val, {
+          source: 'dt-init',
+          confidence: 0.9,
+          exactFunctionStart: true,
+          functionStartEvidence: 'ELF SHT_DYNAMIC DT_INIT loader-invoked initializer in validated executable mapping with file-backed instruction bytes',
+        }));
+        image.metadata.dtInit = { address: val, source: 'SHT_DYNAMIC' };
+      } else {
+        budget.partial(
+          `dynamic-section:${sec.index}:dt-init`,
+          `ELF SHT_DYNAMIC ${sec.index} DT_INIT 0x${val.toString(16)} ${rejection}`,
+        );
+      }
+    }
 
     if (stringTableValid && (tag === 1n || tag === 14n) && val < BigInt(strSize)) {
       const off = Number(val);

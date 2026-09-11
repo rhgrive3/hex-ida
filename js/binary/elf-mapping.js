@@ -77,3 +77,12 @@ export function executableELFRange(image, address, size = 0n, sectionIndex = nul
   if (section) return section;
   return (image.segments || []).find(executableSegment) || null;
 }
+
+export function elfInstructionTargetRejection(image, address) {
+  const instructionBytes = image?.arch === 'arm64' ? 4n : 1n;
+  if (!executableELFRange(image, address, 0n)) return 'outside a canonical executable mapping';
+  if (image?.arch === 'arm64' && address % 4n !== 0n) return 'does not satisfy arm64 4-byte alignment';
+  if (!executableELFRange(image, address, instructionBytes)) return 'instruction bytes cross the canonical executable extent';
+  if (!mappedELFFileSpanForVa(image, address, instructionBytes)) return 'instruction bytes are not fully file-backed';
+  return null;
+}

@@ -2,8 +2,9 @@ import { functionSeed } from './model.js';
 import { createDynamicSymbolBudget } from './dynamic-symbol-budget.js';
 import { createRelocationBudget } from './relocation-budget.js';
 import { collectAndroidPackedRelocations, collectRelrRelocations, parseDynamicSymbolVersions } from './elf-extended.js';
-import { mappedELFFileRangeForVa, mappedELFFileSpanForVa } from './elf-mapping.js';
+import { mappedELFFileRangeForVa, mappedELFFileSpanForVa, elfInstructionTargetRejection } from './elf-mapping.js';
 
+const ET_REL = 1;
 const PT_DYNAMIC = 2;
 const DT_NULL = 0n;
 const DT_NEEDED = 1n;
@@ -16,6 +17,7 @@ const DT_RELASZ = 8n;
 const DT_RELAENT = 9n;
 const DT_STRSZ = 10n;
 const DT_SYMENT = 11n;
+const DT_INIT = 12n;
 const DT_SONAME = 14n;
 const DT_SYMTAB_SHNDX = 34n;
 const DT_SYMTABSZ = 39n;
@@ -123,6 +125,22 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   if (soname != null) {
     const name = stringAt(soname);
     if (name) image.metadata.soname = name;
+  }
+
+  const dtInitVa = one(DT_INIT);
+  if (dtInitVa != null && dtInitVa !== 0n && Number(image?.metadata?.type) !== ET_REL) {
+    const rejection = elfInstructionTargetRejection(image, dtInitVa);
+    if (rejection == null) {
+      image.functions.push(functionSeed(dtInitVa, {
+        source: 'dt-init',
+        confidence: 0.9,
+        exactFunctionStart: true,
+        functionStartEvidence: 'ELF PT_DYNAMIC DT_INIT loader-invoked initializer in validated executable mapping with file-backed instruction bytes',
+      }));
+      image.metadata.dtInit = { address: dtInitVa, source: 'PT_DYNAMIC' };
+    } else {
+      markDynamicPartial(image, `DT_INIT 0x${dtInitVa.toString(16)} ${rejection}`);
+    }
   }
 
   const relocationBudget = createRelocationBudget({
