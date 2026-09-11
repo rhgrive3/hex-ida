@@ -883,13 +883,35 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
     const val = valueMap.get(valId);
     if (!val) return expr.variable(`v_${valId}`);
 
+    // Metadata authority first (#8028): a value carrying an explicit
+    // constant/string/null fact renders from that fact regardless of the
+    // defining node's shape — a zero-input unary must not fabricate `(0)`
+    // from a value whose authority was published by the frontend.
+    if (val.metadata?.stringRef != null) {
+      const s = expr.variable(JSON.stringify(val.metadata.stringRef), val.machineType?.widthBits || 32);
+      exprMemo.set(valId, s);
+      return s;
+    }
+    if (val.metadata?.valueType === 'string' && val.metadata?.constant != null) {
+      const s = expr.variable(JSON.stringify(val.metadata.constant), val.machineType?.widthBits || 32);
+      exprMemo.set(valId, s);
+      return s;
+    }
+    if (val.metadata?.isNull === true) {
+      const z = expr.variable('null', val.machineType?.widthBits || 32);
+      exprMemo.set(valId, z);
+      return z;
+    }
+    if (val.metadata?.constant != null) {
+      const c = val.machineType?.kind === 'float'
+        ? expr.floatConstant(Number(val.metadata.constant), val.machineType?.widthBits || 32)
+        : expr.constant(BigInt(val.metadata.constant), val.machineType?.widthBits || 32);
+      exprMemo.set(valId, c);
+      return c;
+    }
+
     const defNode = val.definitionNodeId ? nodeMap.get(val.definitionNodeId) : null;
     if (!defNode) {
-      if (val.metadata?.constant != null) {
-        const c = expr.constant(BigInt(val.metadata.constant), val.machineType?.widthBits || 32);
-        exprMemo.set(valId, c);
-        return c;
-      }
       const vExpr = expr.variable(safeIdent(val.id || `v_${valId}`));
       exprMemo.set(valId, vExpr);
       return vExpr;
@@ -900,6 +922,21 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
     let res = null;
 
     if (n.kind === 'const') {
+      if (val.metadata?.stringRef != null) {
+        res = expr.variable(JSON.stringify(val.metadata.stringRef), bits);
+        exprMemo.set(valId, res);
+        return res;
+      }
+      if (val.metadata?.valueType === 'string' && val.metadata?.constant != null) {
+        res = expr.variable(JSON.stringify(val.metadata.constant), bits);
+        exprMemo.set(valId, res);
+        return res;
+      }
+      if (val.metadata?.isNull === true) {
+        res = expr.variable('null', bits);
+        exprMemo.set(valId, res);
+        return res;
+      }
       const cVal = val.metadata?.constant != null ? BigInt(val.metadata.constant) : 0n;
       res = expr.constant(cVal, bits);
     } else if (n.kind === 'binary') {
@@ -1010,6 +1047,21 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
         } else if (n.inputs.length === 2) {
           const val = printExpression(buildValueExpr(n.inputs[1]));
           body.push({ kind: 'field_store', indent: isLoop ? 2 : 1, text: `${base}->${n.metadata?.fieldName || 'field'} = ${val};` });
+        } else if (n.inputs.length === 1) {
+          // A store whose address/identity is carried by the canonical memory
+          // access (e.g. JVM putstatic: one value input, field identity in
+          // attributes.fieldIdentity + memory.addressExpr) must still render —
+          // dropping the statement silently erases the static mutation (#8036).
+          const val = printExpression(buildValueExpr(n.inputs[0]));
+          const fid = n.attributes?.fieldIdentity;
+          if (fid && typeof fid.owner === 'string' && typeof fid.name === 'string') {
+            const target = fid.static ? `${fid.owner}.${fid.name}` : `${fid.owner}->${fid.name}`;
+            body.push({ kind: 'field_store', indent: isLoop ? 2 : 1, text: `${target} = ${val};` });
+          } else {
+            const addr = n.memory?.addressExpr?.valueId;
+            const base = addr ? `mem_${safeIdent(addr)}` : (n.memory?.addressSpace || 'memory');
+            body.push({ kind: 'field_store', indent: isLoop ? 2 : 1, text: `${base}[${n.memory?.addressSpace || 'memory'}] = ${val};` });
+          }
         }
       } else if (n.kind === 'return') {
         if (n.inputs && n.inputs.length > 0) {
