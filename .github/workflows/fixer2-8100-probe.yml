@@ -1,7 +1,0 @@
-name: fixer2 issue 8100 probe
-on: [push]
-jobs:
-  probe:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo ok

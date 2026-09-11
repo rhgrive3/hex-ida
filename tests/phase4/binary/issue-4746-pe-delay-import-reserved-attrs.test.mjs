@@ -6,6 +6,7 @@ import { parseDelayImports } from '../../../js/binary/pe-loader.js';
 const IMAGE_BASE = 0x400000n;
 const DIRECTORY_RVA = 0x1000;
 const DESCRIPTOR_SIZE = 32;
+const HMOD_OFFSET = 0x60;
 const LIBRARY_OFFSET = 0x100;
 const THUNK_OFFSET = 0x140;
 const IAT_OFFSET = 0x180;
@@ -44,6 +45,7 @@ function writeDescriptor(bytes, index, attrs, { libraryOffset = LIBRARY_OFFSET, 
   const field = (offset) => (attrs & 1) ? rva(offset) : Number(IMAGE_BASE) + rva(offset);
   writeU32(bytes, off, attrs);
   writeU32(bytes, off + 4, field(libraryOffset));
+  writeU32(bytes, off + 8, field(HMOD_OFFSET));
   writeU32(bytes, off + 12, field(iatOffset));
   writeU32(bytes, off + 16, field(thunkOffset));
 }
