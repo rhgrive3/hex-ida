@@ -97,7 +97,12 @@ export function createMachOMetadataBudget(image, options = {}) {
 }
 
 export function ensureMachOMetadataBudget(image, budget = null) {
-  if (budget) return budget;
+  if (budget) {
+    if (!image.__machoMetadataBudget) {
+      Object.defineProperty(image, '__machoMetadataBudget', { value:budget, configurable:true, enumerable:false, writable:false });
+    }
+    return budget;
+  }
   if (image.__machoMetadataBudget) return image.__machoMetadataBudget;
   const created = createMachOMetadataBudget(image);
   Object.defineProperty(image, '__machoMetadataBudget', { value:created, configurable:true, enumerable:false, writable:false });
