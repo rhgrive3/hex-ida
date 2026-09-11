@@ -100,7 +100,7 @@ Direct recursive calls can compare their instruction-bound source prototype
 against the current function's independent `functionPrototype` declaration.
 The adapter validates immutable Semantic IR, node membership, decoded origin,
 constant direct target, binary/slice identity and canonical function-start ID.
-External callees and custom/unmatched function identities remain `unknown`.
+Custom/unmatched function identities remain `unknown`.
 
 The optional `callerCallee` record has version 1 and the explicit basis
 `canonical-source-declarations`. Complete canonical physical argument and return
@@ -112,7 +112,24 @@ each request, and cancellation invalidates agreement. Compatibility validates th
 record's version, node, origin, target, function and ABI identities before carrying
 it into call metadata. Agreement never upgrades original partial ABI evidence.
 
-This is declaration consistency, not machine-body equivalence, cross-function
+For ordinary direct calls, `calleeDeclarationFor(targetAddress, context)` can
+provide a separately analyzed function's declaration. The canonical adapter's
+`functionDeclaration({ semanticIr })` producer binds its current source declaration
+to a validated immutable function, its entry address and a nonempty snapshot ID.
+The version-1 record carries binary/slice/function/start identity, snapshot, ABI
+semantic identity, registry digest, profile and schema identities. The producer
+returns no record after cancellation, invalidation or context drift. The resolver
+is synchronous, invoked afresh for each comparison, and is not the callsite
+prototype resolver; caller observations cannot silently stand in for callee data.
+
+The caller rejects mismatched, missing, malformed, partial or asynchronous records.
+Comparison output preserves both caller `functionId` and `calleeFunctionId` plus
+the snapshot ID; compatibility rechecks the direct target and snapshot binding.
+Replayed declaration records can be used only within the exact matching snapshot;
+the provider owns snapshot invalidation and must not reuse an old record after
+source changes. Live providers can request a fresh producer record on every call.
+
+This is declaration consistency, not machine-body equivalence, return-root
 summary proof or automatic thunk/tail-call discovery. Those broader requirements
 remain open; same-target caller consensus alone still cannot establish agreement.
 

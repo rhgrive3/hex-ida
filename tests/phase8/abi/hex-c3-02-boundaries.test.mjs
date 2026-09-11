@@ -1744,11 +1744,11 @@ test('C3-02 a null callback resolution cannot authorize an exact call ABI', () =
 });
 
 function decodedCallObservationPipeline(prototypes, targets = prototypes.map(() => 0x2000n), {
-  functionPrototype = null, adapterOptions = {}, context = false,
+  functionPrototype = null, adapterOptions = {}, context = false, baseAddress = 0x1000n,
 } = {}) {
   const architecture = architecturePluginV2('riscv64');
   const instructions = prototypes.map((_prototype, index) => {
-    const address = 0x1000n + BigInt(index * 4);
+    const address = baseAddress + BigInt(index * 4);
     const displacement = Number(targets[index] - address);
     // JAL ra, displacement: bytes, not an injected control classification,
     // remain the RISC-V lifter's authority in this production-path fixture.
@@ -1769,11 +1769,11 @@ function decodedCallObservationPipeline(prototypes, targets = prototypes.map(() 
   const authority = createSemanticCallPrototypeAuthority(callsites, {
     callPrototypeFor(_target, call) {
       resolutions++;
-      return prototypes[Number((call.address - 0x1000n) / 4n)];
+      return prototypes[Number((call.address - baseAddress) / 4n)];
     },
   });
   instructions.push(createRiscv64DecodedInstruction({
-    address:0x1000n + BigInt(prototypes.length * 4), size:4,
+    address:baseAddress + BigInt(prototypes.length * 4), size:4,
     rawBytes:Uint8Array.from([0x67, 0x80, 0, 0]), mode:'rv64imc', instructionId:'c3-observation-ret',
     origin:{ instructionIds:['c3-observation-ret'] },
   }));
@@ -1811,6 +1811,128 @@ test('C3-02 contradictory direct-call observations survive the decoded SSA compa
     assert.equal(calls[2].callArguments.length, 1);
     assert.equal(calls[2].extra.returnLocations.length, 1);
   }
+});
+
+function externalDeclarationFixture(declaration, providerOptions = {}) {
+  const callee = decodedCallObservationPipeline([declaration], [0x3000n], {
+    functionPrototype:declaration, context:true, baseAddress:0x2000n,
+    adapterOptions:{ snapshotId:'c3-declaration-snapshot', ...providerOptions },
+  });
+  return { ...callee, declaration:() => callee.adapter.functionDeclaration({ semanticIr:callee.pipeline.semanticIr }) };
+}
+
+test('C3-02 external callee declarations flow between independently decoded functions', () => {
+  const prototype = { parameters:[{ name:'callee-name', type:'int64', bits:64 }], returnType:'int64' };
+  const callee = externalDeclarationFixture(prototype);
+  const record = callee.declaration();
+  assert.equal(record.functionId, callee.pipeline.functionId);
+  assert.equal(record.startAddress, '0x2000');
+  assert.ok(Object.isFrozen(record.prototype.parameters));
+  let requests = 0;
+  const caller = decodedCallObservationPipeline([{ ...prototype, parameters:[{ name:'caller-name', type:'int64', bits:64 }] }], [0x2000n], {
+    context:true, adapterOptions:{ snapshotId:'c3-declaration-snapshot', calleeDeclarationFor(target, context) {
+      requests++;
+      assert.equal(target, record.startAddress);
+      assert.equal(context.functionId, record.functionId);
+      assert.equal(context.snapshotId, record.snapshotId);
+      return callee.declaration();
+    } },
+  });
+  assert.equal(requests, 1);
+  const agreement = caller.calls[0].extra.callerCallee;
+  assert.equal(agreement.status, 'agreement');
+  assert.equal(agreement.functionId, caller.pipeline.functionId);
+  assert.equal(agreement.calleeFunctionId, callee.pipeline.functionId);
+  assert.notEqual(agreement.functionId, agreement.calleeFunctionId);
+  assert.equal(caller.calls[0].extra.abiCompleteness, 'complete');
+});
+
+test('C3-02 external callee declarations detect single-call conflict and revalidate live producers', () => {
+  const prototype = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
+  const declaration = { ...prototype, parameters:prototype.parameters.slice() };
+  const controller = new AbortController();
+  const callee = externalDeclarationFixture(declaration, { signal:controller.signal });
+  const caller = decodedCallObservationPipeline([prototype], [0x2000n], {
+    context:true, adapterOptions:{ snapshotId:'c3-declaration-snapshot', calleeDeclarationFor:callee.declaration },
+  });
+  const semanticIr = caller.pipeline.semanticIr;
+  const node = semanticIr.nodes.find(node => node.kind === 'call');
+  const classify = () => caller.adapter.classifyCall({ node, call:node.call, semanticIr });
+  assert.equal(classify().callerCallee.status, 'agreement');
+  declaration.parameters.push({ type:'int64', bits:64 });
+  assert.equal(classify().callerCallee.status, 'conflict');
+  assert.equal(classify().arguments, null);
+  assert.deepEqual(classify().returnLocations, []);
+  declaration.parameters.pop();
+  assert.equal(classify().callerCallee.status, 'agreement');
+  callee.input.snapshotId = 'changed-snapshot';
+  assert.equal(callee.declaration(), null);
+  assert.equal(classify().callerCallee.status, 'unknown');
+  callee.input.snapshotId = 'c3-declaration-snapshot';
+  controller.abort();
+  assert.equal(classify().callerCallee.status, 'unknown');
+});
+
+test('C3-02 external callee declarations reject stale malformed missing and asynchronous records', () => {
+  const prototype = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
+  const callee = externalDeclarationFixture(prototype);
+  const record = callee.declaration();
+  for (const mutation of [null, { version:'1' }, { version:2 }, { basis:'guessed-symbol' },
+    { status:'stale' }, { partial:true }, { binaryId:'other' }, { sliceId:'other' },
+    { snapshotId:'other' }, { abiSemanticIdentity:'other' }, { functionId:'other' },
+    { abiId:'other' }, { registryDigest:'other' }, { profileIdentity:'other' }, { schemaVersion:'other' },
+    { startAddress:'0x3000' }, { prototype:{ ...prototype, variadic:true } }]) {
+    const calls = decodedCallObservationPipeline([prototype], [0x2000n], {
+      adapterOptions:{ snapshotId:'c3-declaration-snapshot',
+        calleeDeclarationFor:() => mutation == null ? null : { ...record, ...mutation } },
+    });
+    assert.equal(calls[0].extra.callerCallee.status, 'unknown');
+  }
+  for (const provider of [() => { throw new Error('provider unavailable'); }, () => Promise.resolve(record),
+    () => Promise.reject(new Error('asynchronous provider unavailable'))]) {
+    const calls = decodedCallObservationPipeline([prototype], [0x2000n], {
+      adapterOptions:{ snapshotId:'c3-declaration-snapshot', calleeDeclarationFor:provider },
+    });
+    assert.equal(calls[0].extra.callerCallee.status, 'unknown');
+  }
+  const calls = decodedCallObservationPipeline([prototype], [0x2000n], {
+    adapterOptions:{ calleeDeclarationFor:callee.declaration },
+  });
+  assert.equal(calls[0].extra.callerCallee.status, 'unknown', 'no implicit snapshot identity');
+  assert.equal(externalDeclarationFixture(prototype, { snapshotId:null }).declaration(), null);
+});
+
+test('C3-02 external callee declarations survive replay without losing publication identity checks', () => {
+  const prototype = { parameters:[], returnType:'int64' };
+  const callee = externalDeclarationFixture(prototype);
+  const replay = JSON.parse(JSON.stringify(callee.declaration()));
+  const caller = decodedCallObservationPipeline([prototype], [0x2000n], {
+    context:true, adapterOptions:{ snapshotId:'c3-declaration-snapshot', calleeDeclarationFor:() => replay },
+  });
+  const semanticIr = caller.pipeline.semanticIr;
+  const node = semanticIr.nodes.find(node => node.kind === 'call');
+  const raw = caller.adapter.classifyCall({ node, call:node.call, semanticIr });
+  assert.equal(raw.callerCallee.status, 'agreement');
+  for (const mutation of [{ calleeFunctionId:raw.callerCallee.functionId }, { snapshotId:'stale' },
+    { snapshotId:null }, { calleeFunctionId:null }]) {
+    const normalized = classifyCallWithAbi(node, semanticIr, new Map(), {
+      abiAdapter:() => ({ ...raw, callerCallee:{ ...raw.callerCallee, ...mutation } }),
+    });
+    assert.equal(normalized.callerCallee.status, 'unknown');
+  }
+});
+
+test('C3-02 external callee declarations cannot outlive cancellation during resolution', () => {
+  const prototype = { parameters:[], returnType:'int64' };
+  const callee = externalDeclarationFixture(prototype);
+  const controller = new AbortController();
+  const caller = decodedCallObservationPipeline([prototype], [0x2000n], {
+    adapterOptions:{ snapshotId:'c3-declaration-snapshot', signal:controller.signal,
+      calleeDeclarationFor() { controller.abort(); return callee.declaration(); } },
+  });
+  assert.equal(caller[0].extra.callerCallee.status, 'unknown');
+  assert.equal(caller[0].extra.abiCompleteness, 'cancelled');
+  assert.deepEqual(caller[0].extra.returnLocations, []);
 });
 
 test('C3-02 matching direct-call observations preserve canonical placements without consensus promotion', () => {

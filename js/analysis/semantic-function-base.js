@@ -714,30 +714,63 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
 
   const declarationUnknown = Object.freeze({ version:1, status:'unknown', basis:'canonical-source-declarations' });
   const validatedFunctions = new WeakMap();
+  const fixedDeclaration = value => value && !abiResultInvalidState(value)
+    && value.variadic !== true && value.varargs !== true
+    && ['parameters', 'params', 'args', 'arguments'].some(field => Array.isArray(value[field]));
+  function declarationContextCurrent() {
+    return options.binaryId === identity.binaryId && options.sliceId === identity.sliceId
+      && (options.functionId ?? null) === identity.functionId
+      && (options.snapshotId ?? options.analysisSnapshotId ?? null) === identity.snapshotId;
+  }
+  function declarationFunctionIndex(ir) {
+    let index = validatedFunctions.get(ir);
+    if (index) return index;
+    validateSemanticIrFunction(ir);
+    const pending = [ir], visited = new Set();
+    while (pending.length) {
+      const value = pending.pop();
+      if (!value || typeof value !== 'object' || visited.has(value)) continue;
+      if (!Object.isFrozen(value)) return null;
+      visited.add(value);
+      for (const child of Object.values(value)) pending.push(child);
+    }
+    index = { nodes:new Set(ir.nodes), byId:new Map(ir.nodes.map(value => [value.id, value])),
+      values:new Map(ir.values.map(value => [value.id, value])) };
+    const entry = ir.blocks.find(block => block.id === ir.entryBlockId);
+    const starts = entry.nodeIds.flatMap(id => index.byId.get(id).origin?.virtualRanges ?? [])
+      .map(range => BigInt(canonicalAddress(range.start)));
+    if (!starts.length) return null;
+    const startAddress = canonicalAddress(starts.reduce((left, right) => left < right ? left : right));
+    const expected = createFunctionId({ binaryId:identity.binaryId, sliceId:identity.sliceId,
+      canonicalStartIdentity:{ address:startAddress } });
+    if (expected !== ir.functionId || (identity.functionId != null && identity.functionId !== expected)) return null;
+    index.startAddress = startAddress;
+    validatedFunctions.set(ir, index);
+    return index;
+  }
+
+  function functionDeclaration({ semanticIr = null } = {}) {
+    try {
+      if (!supported || !isRegisteredABIPlugin(plugin) || abiPluginRegistryDigest(plugin) !== registryDigest
+        || !declarationContextCurrent() || !identity.snapshotId || abiEvidenceState(options, null, plugin)
+        || !fixedDeclaration(options.functionPrototype)) return null;
+      const index = declarationFunctionIndex(semanticIr);
+      if (!index) return null;
+      return frozenAbiRecord({ version:1, basis:'canonical-source-declarations', status:'complete',
+        binaryId:identity.binaryId, sliceId:identity.sliceId, snapshotId:identity.snapshotId,
+        functionId:semanticIr.functionId, startAddress:index.startAddress,
+        abiSemanticIdentity:semanticIdentity, abiId:pluginId, registryDigest, profileIdentity,
+        schemaVersion:identity.schemaVersion, prototype:options.functionPrototype });
+    } catch { return null; }
+  }
+
   function compareCalleeDeclaration(node, call, ir, prototype, arguments_, returned) {
     if (!ir || !node || call !== node.call || abiEvidenceState(options, call, plugin)) return declarationUnknown;
     try {
-      const declaration = options.functionPrototype;
-      const fixed = value => value && !abiResultInvalidState(value)
-        && value.variadic !== true && value.varargs !== true
-        && ['parameters', 'params', 'args', 'arguments'].some(field => Array.isArray(value[field]));
-      if (!fixed(prototype) || !fixed(declaration)) return declarationUnknown;
-      let index = validatedFunctions.get(ir);
-      if (!index) {
-        validateSemanticIrFunction(ir);
-        const pending = [ir], visited = new Set();
-        while (pending.length) {
-          const value = pending.pop();
-          if (!value || typeof value !== 'object' || visited.has(value)) continue;
-          if (!Object.isFrozen(value)) return declarationUnknown;
-          visited.add(value);
-          pending.push(...Object.values(value));
-        }
-        index = { nodes:new Set(ir.nodes), byId:new Map(ir.nodes.map(value => [value.id, value])),
-          values:new Map(ir.values.map(value => [value.id, value])) };
-        validatedFunctions.set(ir, index);
-      }
-      if (!index.nodes.has(node)) return declarationUnknown;
+      if (!fixedDeclaration(prototype) || (!fixedDeclaration(options.functionPrototype)
+        && typeof options.calleeDeclarationFor !== 'function')) return declarationUnknown;
+      const index = declarationFunctionIndex(ir);
+      if (!index?.nodes.has(node)) return declarationUnknown;
       const bound = callPrototypeAuthority?.prototypeForNode(node, call);
       if (!bound?.matched || bound.target == null || bound.address == null) return declarationUnknown;
       if (!node.origin?.virtualRanges?.some(range => canonicalAddress(range.start) === canonicalAddress(bound.address))) return declarationUnknown;
@@ -746,12 +779,33 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
       const targetNode = index.byId.get(targetValue?.definitionNodeId);
       if (targetNode?.kind !== 'const' || targetNode.attributes.constant?.kind !== 'bitvector'
         || canonicalAddress(targetNode.attributes.constant.value) !== canonicalAddress(bound.target)) return declarationUnknown;
-      if (options.binaryId !== identity.binaryId || options.sliceId !== identity.sliceId
-        || (options.functionId ?? null) !== identity.functionId) return declarationUnknown;
+      if (!declarationContextCurrent()) return declarationUnknown;
       const targetAddress = canonicalAddress(bound.target);
-      const functionId = createFunctionId({ binaryId:identity.binaryId, sliceId:identity.sliceId,
+      const calleeFunctionId = createFunctionId({ binaryId:identity.binaryId, sliceId:identity.sliceId,
         canonicalStartIdentity:{ address:targetAddress } });
-      if (functionId !== ir.functionId || (identity.functionId != null && identity.functionId !== functionId)) return declarationUnknown;
+      let declaration = options.functionPrototype;
+      if (calleeFunctionId !== ir.functionId) {
+        if (!identity.snapshotId || typeof options.calleeDeclarationFor !== 'function') return declarationUnknown;
+        const source = options.calleeDeclarationFor(targetAddress, Object.freeze({
+          binaryId:identity.binaryId, sliceId:identity.sliceId, snapshotId:identity.snapshotId,
+          functionId:calleeFunctionId, abiSemanticIdentity:semanticIdentity,
+        }));
+        // This boundary is synchronous. Observe rejection without allowing a
+        // late promise result to replace the current unknown declaration.
+        if (source instanceof Promise) {
+          source.catch(() => {});
+          return declarationUnknown;
+        }
+        if (!source || source.version !== 1 || source.basis !== 'canonical-source-declarations'
+          || source.status !== 'complete' || abiResultInvalidState(source)
+          || source.binaryId !== identity.binaryId || source.sliceId !== identity.sliceId
+          || source.snapshotId !== identity.snapshotId || source.abiSemanticIdentity !== semanticIdentity
+          || source.abiId !== pluginId || source.registryDigest !== registryDigest
+          || source.profileIdentity !== profileIdentity || source.schemaVersion !== identity.schemaVersion
+          || source.functionId !== calleeFunctionId || source.startAddress !== targetAddress) return declarationUnknown;
+        declaration = source.prototype;
+      }
+      if (!fixedDeclaration(declaration)) return declarationUnknown;
       const declaredArguments = classifyCanonicalArguments({ functionPrototype:declaration, resolvePrototype:false });
       const declaredReturn = classifyCanonicalFunctionReturn({ functionPrototype:declaration });
       const argumentSignature = value => value && !abiResultInvalidState(value)
@@ -767,9 +821,11 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
       const right = [argumentSignature(declaredArguments), returnSignature(declaredReturn)];
       const conflict = left.some((value, index) => value != null && right[index] != null && value !== right[index]);
       if (!conflict && !left.every((value, index) => value != null && value === right[index])) return declarationUnknown;
+      if (!declarationContextCurrent() || abiEvidenceState(options, call, plugin)) return declarationUnknown;
       return Object.freeze({ version:1, status:conflict ? 'conflict' : 'agreement',
-        basis:'canonical-source-declarations', functionId, nodeId:node.id,
+        basis:'canonical-source-declarations', functionId:ir.functionId, calleeFunctionId, nodeId:node.id,
         binaryId:identity.binaryId, sliceId:identity.sliceId,
+        snapshotId:identity.snapshotId,
         callsiteAddress:canonicalAddress(bound.address), targetAddress,
         abiSemanticIdentity:semanticIdentity });
     } catch { return declarationUnknown; }
@@ -927,6 +983,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
   }
 
   return Object.freeze({
+    functionDeclaration,
     id:pluginId,
     semanticVersion,
     semanticIdentity,

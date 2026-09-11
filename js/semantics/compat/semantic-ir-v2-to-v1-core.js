@@ -248,10 +248,14 @@ function normalizeCallerCallee(raw, node, ir) {
       || targetNode?.kind !== 'const' || targetNode.attributes.constant?.kind !== 'bitvector'
       || canonicalAddress(targetNode.attributes.constant.value) !== value.targetAddress
       || createFunctionId({ binaryId:value.binaryId, sliceId:value.sliceId,
-        canonicalStartIdentity:{ address:value.targetAddress } }) !== ir.functionId
+        canonicalStartIdentity:{ address:value.targetAddress } }) !== (value.calleeFunctionId ?? value.functionId)
+      || ((value.calleeFunctionId ?? value.functionId) !== value.functionId
+        && (typeof value.snapshotId !== 'string' || !value.snapshotId.length
+          || value.snapshotId !== raw.abiIdentity?.snapshotId))
       || (value.status === 'agreement' && abiNonExact(raw))
       || (value.status === 'conflict' && raw.completeness !== 'conflict')) return unknown;
     return { version:1, status:value.status, basis:value.basis, functionId:value.functionId,
+      calleeFunctionId:value.calleeFunctionId ?? value.functionId, snapshotId:value.snapshotId ?? null,
       nodeId:value.nodeId, binaryId:value.binaryId, sliceId:value.sliceId,
       callsiteAddress:value.callsiteAddress, targetAddress:value.targetAddress,
       abiSemanticIdentity:value.abiSemanticIdentity };

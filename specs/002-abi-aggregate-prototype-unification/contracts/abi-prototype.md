@@ -57,6 +57,26 @@ stale rather than exact.
 
 ## Consumer responsibilities
 
+### Inter-function source declaration handoff
+
+`adapter.functionDeclaration({ semanticIr })` exports a version-1 declaration
+with basis `canonical-source-declarations` only for a registered supported ABI,
+validated immutable function and current nonempty snapshot identity. It binds the
+entry address and function ID to the same binary/slice, and preserves ABI semantic,
+registry, profile and schema identity. It does not infer a prototype from names or
+from the caller's observations.
+
+Callers may supply `calleeDeclarationFor(canonicalTargetAddress, context)` in the
+ordinary adapter input. The resolver must return synchronously, with either a
+matching declaration record or null. Errors, partial data, mismatched identities
+and asynchronous results become unknown. Snapshot producers/providers own record
+invalidation; fresh calls are not served from an adapter-private declaration cache.
+Agreement metadata binds caller and callee function IDs separately. Contradictions
+withhold placements even when only one callsite exists; agreement does not upgrade
+partial ABI classification or claim machine-body/return-summary equivalence.
+
+### Projection
+
 Prototype, aggregate layout, type recovery, summaries, and decompiler rendering
 may format or project the canonical fact, but may not add register literals,
 architecture heuristics, majority-vote caller/callee inference, or hidden
