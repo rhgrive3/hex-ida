@@ -180,8 +180,10 @@ export function parseTlsDirectory(r, dir, image, sharedBudget = null) {
         'tls:template-range-invalid',
         `PE TLS raw-data template range 0x${rawDataStart.toString(16)}..0x${rawDataEnd.toString(16)} is invalid`,
       );
-    } else if (rawDataEnd > rawDataStart) {
-      const span = rawDataEnd - rawDataStart;
+    } else {
+      // PE defines EndAddressOfRawData as the VA of the last initialized byte,
+      // so the validated loaded-image span is inclusive of both endpoints.
+      const span = rawDataEnd - rawDataStart + 1n;
       if (span > BigInt(Number.MAX_SAFE_INTEGER)
           || !loadedImageSpanForAddress(image, rawDataStart, Number(span))) {
         budget.partial(
