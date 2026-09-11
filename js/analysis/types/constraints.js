@@ -205,6 +205,57 @@ function canonicalDescriptorString(layer, descriptor) {
   return stableStringify(canonicalDescriptorMaterial(layer, descriptor));
 }
 
+/**
+ * Structural aggregate members are a semantic set ordered by byte offset, not
+ * by producer traversal order. Canonicalization reorders and deduplicates only
+ * canonically identical members; distinct same-slot or overlapping members are
+ * retained so graph reconciliation can preserve or reject their ambiguity under
+ * its existing hard-fact policy.
+ */
+export function canonicalizeStructuralMembers(members) {
+  if (!Array.isArray(members)) return members;
+  if (!members.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))) {
+    return [...members];
+  }
+
+  const sorted = members.map((member) => ({
+    member,
+    offset: canonicalInteger(member.offset ?? 0),
+    canonical: canonicalDescriptorString('structural', member),
+  })).sort((left, right) => {
+    if (left.offset != null && right.offset != null) {
+      if (left.offset < right.offset) return -1;
+      if (left.offset > right.offset) return 1;
+    } else if (left.offset != null) {
+      return -1;
+    } else if (right.offset != null) {
+      return 1;
+    }
+    return left.canonical.localeCompare(right.canonical);
+  });
+
+  const canonical = [];
+  let previous = null;
+  for (const entry of sorted) {
+    if (entry.canonical === previous) continue;
+    canonical.push(entry.member);
+    previous = entry.canonical;
+  }
+  return canonical;
+}
+
+function canonicalizeStructuralDescriptor(descriptor) {
+  if (!Array.isArray(descriptor.members)) return descriptor;
+  const properties = Object.getOwnPropertyDescriptors(descriptor);
+  properties.members = {
+    ...properties.members,
+    value: canonicalizeStructuralMembers(descriptor.members),
+  };
+  const canonical = {};
+  Object.defineProperties(canonical, properties);
+  return canonical;
+}
+
 function validateDescriptor(layer, descriptor) {
   if (descriptor == null || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
     fail('type-claim-descriptor-required');
@@ -245,10 +296,11 @@ export function createTypeClaim(input = {}) {
   if (!LAYER_SET.has(layer)) fail('type-claim-invalid-layer');
   const descriptor = input.descriptor ?? null;
   if (descriptor == null) fail('type-claim-descriptor-required');
+  const snapshot = snapshotDescriptor(descriptor);
   const claim = {
     layer,
     entityId: nonEmpty(input.entityId, 'type-claim-entity-required'),
-    descriptor: snapshotDescriptor(descriptor),
+    descriptor: layer === 'structural' ? canonicalizeStructuralDescriptor(snapshot) : snapshot,
   };
   validateDescriptor(layer, claim.descriptor);
   claim.key = stableDigest({ layer: claim.layer, entityId: claim.entityId, descriptor: canonicalDescriptorMaterial(layer, claim.descriptor) });
@@ -393,8 +445,10 @@ function aggregateMembersConflict(aMembers, bMembers) {
   }
   if (aMembers.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))
     && bMembers.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))) {
-    const aCanonicalSet = aMembers.map((member) => canonicalDescriptorString('structural', member)).sort();
-    const bCanonicalSet = bMembers.map((member) => canonicalDescriptorString('structural', member)).sort();
+    const aCanonicalSet = canonicalizeStructuralMembers(aMembers)
+      .map((member) => canonicalDescriptorString('structural', member));
+    const bCanonicalSet = canonicalizeStructuralMembers(bMembers)
+      .map((member) => canonicalDescriptorString('structural', member));
     if (aCanonicalSet.length === bCanonicalSet.length
       && aCanonicalSet.every((entry, index) => entry === bCanonicalSet[index])) return false;
   }
