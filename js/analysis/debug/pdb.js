@@ -30,6 +30,7 @@ export const PDB_PROVIDER_ID = 'phase7.debug.pdb';
 export const PDB_PROVIDER_VERSION = '1.0.0';
 
 const MSF_MAGIC = 'Microsoft C/C++ MSF 7.00\r\n\u001aDS\0\0\0';
+const MSF_BLOCK_SIZES = Object.freeze([512, 1024, 2048, 4096]);
 
 /** CodeView symbol record kinds this provider models. */
 const S_PUB32 = 0x110e;
@@ -147,7 +148,7 @@ export function parseMsf(bytes, byteBudget = null) {
   const numBlocks = view.getUint32(40, true);
   const numDirectoryBytes = view.getUint32(44, true);
   const blockMapAddr = view.getUint32(52, true);
-  if (blockSize === 0 || (blockSize & (blockSize - 1)) !== 0) {
+  if (!MSF_BLOCK_SIZES.includes(blockSize)) {
     return { streams: [], diagnostics: ['invalid MSF block size'], complete: false };
   }
   if (freeBlockMapBlock !== 1 && freeBlockMapBlock !== 2) {
