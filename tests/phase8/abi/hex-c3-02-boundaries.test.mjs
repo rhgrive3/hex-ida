@@ -10,6 +10,7 @@ import { createRiscv64DecodedInstruction } from '../../../js/targets/architectur
 import { buildSemanticV2CompatibilityPipeline } from '../../../js/semantics/compat/index.js';
 import { recoverFunctionPrototype } from '../../../js/decompiler/types/prototype.js';
 import { projectSemanticIrV2ToLegacyV1 } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
+import { classifyCallWithAbi } from '../../../js/semantics/compat/semantic-ir-v2-to-v1-core.js';
 import { classifyCallArguments } from '../../../js/ir-core.js';
 import {
   AAPCS64_ABI, DARWIN_ARM64_ABI, SYSV_AMD64_ABI, MICROSOFT_X64_ABI,
@@ -1742,7 +1743,9 @@ test('C3-02 a null callback resolution cannot authorize an exact call ABI', () =
   }
 });
 
-function decodedCallObservationPipeline(prototypes, targets = prototypes.map(() => 0x2000n)) {
+function decodedCallObservationPipeline(prototypes, targets = prototypes.map(() => 0x2000n), {
+  functionPrototype = null, adapterOptions = {}, context = false,
+} = {}) {
   const architecture = architecturePluginV2('riscv64');
   const instructions = prototypes.map((_prototype, index) => {
     const address = 0x1000n + BigInt(index * 4);
@@ -1775,9 +1778,11 @@ function decodedCallObservationPipeline(prototypes, targets = prototypes.map(() 
     origin:{ instructionIds:['c3-observation-ret'] },
   }));
   const blocks = partitionDecodedFunction(instructions, architecture, { callPrototypeAuthority:authority });
-  const adapter = semanticAbiAdapter(RISCV_LP64_ABI, {
+  const input = {
     architecture:'riscv64', platform:'linux', binaryId:'c3-observation-binary', sliceId:'0',
-  }, { callPrototypeAuthority:authority });
+    functionPrototype, ...adapterOptions,
+  };
+  const adapter = semanticAbiAdapter(RISCV_LP64_ABI, input, { callPrototypeAuthority:authority });
   const pipeline = buildSemanticV2CompatibilityPipeline({
     architecturePlugin:architecture, decoderSemanticVersion:'c3-observation-decoder',
     binaryId:'c3-observation-binary', sliceId:'0', addressWidthBits:64, mode:'rv64imc',
@@ -1788,7 +1793,7 @@ function decodedCallObservationPipeline(prototypes, targets = prototypes.map(() 
   assert.ok(pipeline.memorySsa.definitions.length > 0);
   const calls = pipeline.legacyV1.instructions.filter(instruction => instruction.op === 'call');
   assert.equal(calls.length, prototypes.length);
-  return calls;
+  return context ? { calls, pipeline, adapter, input } : calls;
 }
 
 test('C3-02 contradictory direct-call observations survive the decoded SSA compatibility path', () => {
@@ -1913,4 +1918,129 @@ test('C3-02 direct-call argument contradictions do not depend on available retur
       assert.deepEqual(call.extra.returnLocations, []);
     }
   }
+});
+
+test('C3-02 bound recursive callee declaration agrees through decoded compatibility', () => {
+  const declaration = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
+  const observed = { parameters:[{ name:'renamed', type:'int64', bits:64 }], returnType:'int64' };
+  const { calls, pipeline } = decodedCallObservationPipeline([observed], [0x1000n], {
+    functionPrototype:declaration, context:true,
+  });
+  const agreement = calls[0].extra.callerCallee;
+  assert.equal(agreement?.status, 'agreement');
+  assert.equal(agreement.version, 1);
+  assert.equal(agreement.basis, 'canonical-source-declarations');
+  assert.equal(agreement.functionId, pipeline.functionId);
+  assert.equal(agreement.callsiteAddress, '0x1000');
+  assert.equal(agreement.targetAddress, '0x1000');
+  assert.equal(agreement.abiSemanticIdentity, RISCV_LP64_ABI.semanticIdentity);
+  assert.equal(calls[0].extra.abiCompleteness, 'complete');
+  assert.equal(calls[0].callArguments.length, 1);
+  assert.equal(calls[0].extra.returnLocations.length, 1);
+});
+
+test('C3-02 bound recursive callee declaration contradicts even one callsite', () => {
+  const declaration = { parameters:[{ type:'int64', bits:64 }, { type:'int64', bits:64 }], returnType:'int64' };
+  const observed = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
+  const calls = decodedCallObservationPipeline([observed], [0x1000n], { functionPrototype:declaration });
+  assert.equal(calls[0].extra.callerCallee?.status, 'conflict');
+  assert.equal(calls[0].extra.abiCompleteness, 'conflict');
+  assert.equal(calls[0].callArguments, null);
+  assert.deepEqual(calls[0].extra.returnLocations, []);
+  assert.match(calls[0].argumentEvidence, /caller-callee-conflict/);
+});
+
+test('C3-02 bound recursive callee declaration requires exact function and context identity', () => {
+  const prototype = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
+  for (const [target, adapterOptions] of [
+    [0x2000n, {}], [0x1000n, { binaryId:'other-binary' }],
+    [0x1000n, { sliceId:'other-slice' }], [0x1000n, { functionId:'other-function' }],
+  ]) {
+    const calls = decodedCallObservationPipeline([prototype], [target], {
+      functionPrototype:prototype, adapterOptions,
+    });
+    assert.equal(calls[0].extra.callerCallee?.status, 'unknown');
+  }
+});
+
+test('C3-02 bound recursive callee declaration rereads declarations and cancellation', () => {
+  const declaration = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
+  const observed = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
+  const controller = new AbortController();
+  const { pipeline, adapter, input } = decodedCallObservationPipeline([observed], [0x1000n], {
+    functionPrototype:declaration, context:true, adapterOptions:{ signal:controller.signal },
+  });
+  const semanticIr = pipeline.semanticIr;
+  const node = semanticIr.nodes.find(node => node.kind === 'call');
+  const classify = () => adapter.classifyCall({ node, call:node.call, semanticIr });
+  assert.equal(classify().callerCallee.status, 'agreement');
+  declaration.parameters.push({ type:'int64', bits:64 });
+  assert.equal(classify().callerCallee.status, 'conflict');
+  declaration.parameters.pop();
+  assert.equal(classify().callerCallee.status, 'agreement');
+  input.binaryId = 'changed-binary';
+  assert.equal(classify().callerCallee.status, 'unknown');
+  input.binaryId = 'c3-observation-binary';
+  controller.abort();
+  assert.equal(classify().callerCallee.status, 'unknown');
+  assert.deepEqual(classify().returnLocations, []);
+});
+
+test('C3-02 bound recursive callee declaration keeps incomplete evidence unknown', () => {
+  const observed = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
+  for (const declaration of [null, { ...observed, partial:true }, { ...observed, status:'stale' },
+    { ...observed, variadic:true }, { ...observed, returnType:'void' },
+    { ...observed, returnType:'struct Unknown' }]) {
+    const calls = decodedCallObservationPipeline([observed], [0x1000n], { functionPrototype:declaration });
+    assert.equal(calls[0].extra.callerCallee.status, 'unknown');
+  }
+  const { pipeline, adapter } = decodedCallObservationPipeline([observed], [0x1000n], {
+    functionPrototype:observed, context:true,
+  });
+  const semanticIr = pipeline.semanticIr;
+  const node = semanticIr.nodes.find(node => node.kind === 'call');
+  for (const supplied of [null, { ...semanticIr }, { ...semanticIr, functionId:'other-function' },
+    Object.freeze({ ...semanticIr, values:semanticIr.values.slice() })]) {
+    assert.equal(adapter.classifyCall({ node, call:node.call, semanticIr:supplied }).callerCallee.status, 'unknown');
+  }
+  assert.equal(adapter.classifyCall({ node:{ ...node }, call:node.call, semanticIr }).callerCallee.status, 'unknown');
+  assert.equal(adapter.classifyCall({ node, call:{ ...node.call }, semanticIr }).callerCallee.status, 'unknown');
+});
+
+test('C3-02 bound recursive callee declaration rejects copied or malformed publication records', () => {
+  const prototype = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
+  const { pipeline, adapter } = decodedCallObservationPipeline([prototype, prototype], [0x1000n, 0x1000n], {
+    functionPrototype:prototype, context:true,
+  });
+  const semanticIr = pipeline.semanticIr;
+  const nodes = semanticIr.nodes.filter(node => node.kind === 'call');
+  const raw = adapter.classifyCall({ node:nodes[0], call:nodes[0].call, semanticIr });
+  assert.equal(raw.callerCallee.status, 'agreement');
+  const normalize = (node, record) => classifyCallWithAbi(node, semanticIr, new Map(), {
+    abiAdapter:() => ({ ...raw, callerCallee:record }),
+  });
+  assert.equal(normalize(nodes[0], raw.callerCallee).callerCallee.status, 'agreement');
+  assert.equal(normalize(nodes[1], raw.callerCallee).callerCallee.status, 'unknown');
+  for (const mutation of [{ version:2 }, { version:'1' }, { basis:'machine-body-proof' },
+    { binaryId:'other' }, { sliceId:'other' }, { functionId:'other' }, { nodeId:'other' },
+    { targetAddress:'0x2000' }, { callsiteAddress:'0x2000' }, { abiSemanticIdentity:'other' },
+    { targetAddress:['0x1000'] }, { status:'conflict' }]) {
+    assert.equal(normalize(nodes[0], { ...raw.callerCallee, ...mutation }).callerCallee.status, 'unknown');
+  }
+});
+
+test('C3-02 bound recursive callee declaration separates argument and return contradiction proof', () => {
+  for (const [declaration, observed] of [
+    [{ parameters:[], returnType:'int32' }, { parameters:[], returnType:'int64' }],
+    [{ parameters:[], returnType:'void' }, { parameters:[{ type:'int64', bits:64 }], returnType:'void' }],
+  ]) {
+    const calls = decodedCallObservationPipeline([observed], [0x1000n], { functionPrototype:declaration });
+    assert.equal(calls[0].extra.callerCallee.status, 'conflict');
+    assert.equal(calls[0].extra.abiCompleteness, 'conflict');
+    assert.equal(calls[0].callArguments, null);
+    assert.deepEqual(calls[0].extra.returnLocations, []);
+  }
+  const voidPrototype = { parameters:[], returnType:'void' };
+  const calls = decodedCallObservationPipeline([voidPrototype], [0x1000n], { functionPrototype:voidPrototype });
+  assert.equal(calls[0].extra.callerCallee.status, 'unknown', 'null return result is not agreement proof');
 });

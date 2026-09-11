@@ -94,6 +94,28 @@ classification performs at most 64 observation comparisons.
 This local contradiction evidence is not automatic thunk/tail-call discovery or
 an independent callee-definition proof. Those remain separate required evidence.
 
+## Bound caller/callee declaration comparison
+
+Direct recursive calls can compare their instruction-bound source prototype
+against the current function's independent `functionPrototype` declaration.
+The adapter validates immutable Semantic IR, node membership, decoded origin,
+constant direct target, binary/slice identity and canonical function-start ID.
+External callees and custom/unmatched function identities remain `unknown`.
+
+The optional `callerCallee` record has version 1 and the explicit basis
+`canonical-source-declarations`. Complete canonical physical argument and return
+signatures can produce `agreement`; a proven contradiction in either produces
+`conflict` and withholds placements even for a single callsite. Source names are
+not compared. Missing, stale, variadic or unsupported declarations remain unknown;
+a null return classifier does not prove void. The declaration is read again on
+each request, and cancellation invalidates agreement. Compatibility validates the
+record's version, node, origin, target, function and ABI identities before carrying
+it into call metadata. Agreement never upgrades original partial ABI evidence.
+
+This is declaration consistency, not machine-body equivalence, cross-function
+summary proof or automatic thunk/tail-call discovery. Those broader requirements
+remain open; same-target caller consensus alone still cannot establish agreement.
+
 ## Invalidation dependencies
 
 The following invalidate a published fact or summary: architecture/platform/ABI

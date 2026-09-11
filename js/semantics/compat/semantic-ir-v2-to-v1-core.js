@@ -1,5 +1,6 @@
 import { analyzeSemanticDominance, createSemanticCfg } from '../cfg/index.js';
 import { analyzeGraph } from '../../controlflow.js';
+import { canonicalAddress, createFunctionId } from '../../core/identity/index.js';
 import {
   abiResultInvalidState, canonicalAbiEvidence, canonicalAbiHiddenResult, normalizeAbiPieces,
 } from '../../targets/abi/evidence.js';
@@ -229,7 +230,35 @@ function normalizedReturnLocations(raw) {
   }));
 }
 
-function normalizeAbiResult(raw) {
+function normalizeCallerCallee(raw, node, ir) {
+  const unknown = { version:1, status:'unknown', basis:'canonical-source-declarations' };
+  const value = raw.callerCallee;
+  if (!value || value.version !== 1 || value.basis !== unknown.basis
+    || !['agreement', 'conflict'].includes(value.status)) return unknown;
+  try {
+    const targetValue = ir.values.find(target => target.id === node.call.targetValueIds[0]);
+    const targetNode = ir.nodes.find(target => target.id === targetValue?.definitionNodeId);
+    if (value.functionId !== ir.functionId || value.nodeId !== node.id
+      || value.binaryId !== raw.abiIdentity?.binaryId || value.sliceId !== raw.abiIdentity?.sliceId
+      || value.abiSemanticIdentity !== raw.abiSemanticIdentity
+      || canonicalAddress(value.callsiteAddress) !== value.callsiteAddress
+      || canonicalAddress(value.targetAddress) !== value.targetAddress
+      || !node.origin?.virtualRanges?.some(range => canonicalAddress(range.start) === value.callsiteAddress)
+      || node.call.targetValueIds.length !== 1
+      || targetNode?.kind !== 'const' || targetNode.attributes.constant?.kind !== 'bitvector'
+      || canonicalAddress(targetNode.attributes.constant.value) !== value.targetAddress
+      || createFunctionId({ binaryId:value.binaryId, sliceId:value.sliceId,
+        canonicalStartIdentity:{ address:value.targetAddress } }) !== ir.functionId
+      || (value.status === 'agreement' && abiNonExact(raw))
+      || (value.status === 'conflict' && raw.completeness !== 'conflict')) return unknown;
+    return { version:1, status:value.status, basis:value.basis, functionId:value.functionId,
+      nodeId:value.nodeId, binaryId:value.binaryId, sliceId:value.sliceId,
+      callsiteAddress:value.callsiteAddress, targetAddress:value.targetAddress,
+      abiSemanticIdentity:value.abiSemanticIdentity };
+  } catch { return unknown; }
+}
+
+function normalizeAbiResult(raw, node, ir) {
   if (!raw || typeof raw !== 'object' || !canonicalAbiEvidence(raw)) return null;
   const rawCallArguments = Array.isArray(raw.callArguments) ? raw.callArguments
     : Array.isArray(raw.arguments) ? raw.arguments : null;
@@ -277,6 +306,7 @@ function normalizeAbiResult(raw) {
     abiSemanticVersion:raw.abiSemanticVersion == null ? null : String(raw.abiSemanticVersion),
     abiSemanticIdentity:raw.abiSemanticIdentity == null ? null : String(raw.abiSemanticIdentity),
     abiIdentity:raw.abiIdentity ?? null,
+    callerCallee:normalizeCallerCallee(raw, node, ir),
     abiProvenance:raw.provenance ?? null,
     abiInvalidation:raw.invalidation ?? null,
     completeness:raw.completeness ?? (nonExact ? 'unknown' : null),
@@ -304,7 +334,7 @@ export function classifyCallWithAbi(node, ir, legacyValues, options) {
       : typeof adapter.classifyCall === 'function'
         ? adapter.classifyCall({ node, call: node.call, semanticIr: ir, legacyValues })
         : null;
-    const normalized = normalizeAbiResult(raw);
+    const normalized = normalizeAbiResult(raw, node, ir);
     if (normalized) return { ...normalized, adapterStatus: 'used' };
   } catch {
     // Adapter failure must degrade to the same conservative no-ABI behavior.

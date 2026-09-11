@@ -598,6 +598,7 @@ export function projectNode(node, context) {
         abiSemanticVersion: abi.abiSemanticVersion,
         abiSemanticIdentity: abi.abiSemanticIdentity,
         abiIdentity: abi.abiIdentity,
+        callerCallee: abi.callerCallee,
         abiProvenance: abi.abiProvenance,
         abiInvalidation: abi.abiInvalidation,
         abiCompleteness: abi.completeness,

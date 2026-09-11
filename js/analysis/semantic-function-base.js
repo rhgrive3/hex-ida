@@ -9,6 +9,8 @@ import {
 } from '../targets/abi/evidence.js';
 import { buildSemanticV2CompatibilityPipeline } from '../semantics/compat/index.js';
 import { decompileSemantic } from '../decompiler/semantic.js';
+import { canonicalAddress, createFunctionId } from '../core/identity/index.js';
+import { validateSemanticIrFunction } from '../semantics/ir/function.js';
 
 /**
  * Architecture-neutral function-level semantic analysis driver.
@@ -710,6 +712,69 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
     return [scalar(entry), Array.isArray(pieces) ? pieces.map(scalar) : null];
   }
 
+  const declarationUnknown = Object.freeze({ version:1, status:'unknown', basis:'canonical-source-declarations' });
+  const validatedFunctions = new WeakMap();
+  function compareCalleeDeclaration(node, call, ir, prototype, arguments_, returned) {
+    if (!ir || !node || call !== node.call || abiEvidenceState(options, call, plugin)) return declarationUnknown;
+    try {
+      const declaration = options.functionPrototype;
+      const fixed = value => value && !abiResultInvalidState(value)
+        && value.variadic !== true && value.varargs !== true
+        && ['parameters', 'params', 'args', 'arguments'].some(field => Array.isArray(value[field]));
+      if (!fixed(prototype) || !fixed(declaration)) return declarationUnknown;
+      let index = validatedFunctions.get(ir);
+      if (!index) {
+        validateSemanticIrFunction(ir);
+        const pending = [ir], visited = new Set();
+        while (pending.length) {
+          const value = pending.pop();
+          if (!value || typeof value !== 'object' || visited.has(value)) continue;
+          if (!Object.isFrozen(value)) return declarationUnknown;
+          visited.add(value);
+          pending.push(...Object.values(value));
+        }
+        index = { nodes:new Set(ir.nodes), byId:new Map(ir.nodes.map(value => [value.id, value])),
+          values:new Map(ir.values.map(value => [value.id, value])) };
+        validatedFunctions.set(ir, index);
+      }
+      if (!index.nodes.has(node)) return declarationUnknown;
+      const bound = callPrototypeAuthority?.prototypeForNode(node, call);
+      if (!bound?.matched || bound.target == null || bound.address == null) return declarationUnknown;
+      if (!node.origin?.virtualRanges?.some(range => canonicalAddress(range.start) === canonicalAddress(bound.address))) return declarationUnknown;
+      if (call.targetValueIds.length !== 1) return declarationUnknown;
+      const targetValue = index.values.get(call.targetValueIds[0]);
+      const targetNode = index.byId.get(targetValue?.definitionNodeId);
+      if (targetNode?.kind !== 'const' || targetNode.attributes.constant?.kind !== 'bitvector'
+        || canonicalAddress(targetNode.attributes.constant.value) !== canonicalAddress(bound.target)) return declarationUnknown;
+      if (options.binaryId !== identity.binaryId || options.sliceId !== identity.sliceId
+        || (options.functionId ?? null) !== identity.functionId) return declarationUnknown;
+      const targetAddress = canonicalAddress(bound.target);
+      const functionId = createFunctionId({ binaryId:identity.binaryId, sliceId:identity.sliceId,
+        canonicalStartIdentity:{ address:targetAddress } });
+      if (functionId !== ir.functionId || (identity.functionId != null && identity.functionId !== functionId)) return declarationUnknown;
+      const declaredArguments = classifyCanonicalArguments({ functionPrototype:declaration, resolvePrototype:false });
+      const declaredReturn = classifyCanonicalFunctionReturn({ functionPrototype:declaration });
+      const argumentSignature = value => value && !abiResultInvalidState(value)
+        && canonicalAbiEvidence(value) && Array.isArray(value.arguments)
+        && value.arguments.every(argument => argument && argument.possible !== true
+          && argument.exact !== false && argument.mustUse !== false)
+        ? JSON.stringify(value.arguments.map(physicalObservation)) : null;
+      const returnSignature = value => {
+        const locations = canonicalReturnLocations(value);
+        return locations.length ? JSON.stringify([locations.map(physicalObservation), value.indirect === true]) : null;
+      };
+      const left = [argumentSignature(arguments_), returnSignature(returned)];
+      const right = [argumentSignature(declaredArguments), returnSignature(declaredReturn)];
+      const conflict = left.some((value, index) => value != null && right[index] != null && value !== right[index]);
+      if (!conflict && !left.every((value, index) => value != null && value === right[index])) return declarationUnknown;
+      return Object.freeze({ version:1, status:conflict ? 'conflict' : 'agreement',
+        basis:'canonical-source-declarations', functionId, nodeId:node.id,
+        binaryId:identity.binaryId, sliceId:identity.sliceId,
+        callsiteAddress:canonicalAddress(bound.address), targetAddress,
+        abiSemanticIdentity:semanticIdentity });
+    } catch { return declarationUnknown; }
+  }
+
   function callObservationState(node, call, prototype, classified, returned) {
     const group = callPrototypeAuthority?.prototypeObservationsForNode(node, call);
     if (!group) return null;
@@ -1026,7 +1091,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
       ].filter((value) => typeof value === 'string' && value.length > 0);
       return Object.freeze([...new Set(named)]);
     },
-    classifyCall({ node = null, call = null } = {}) {
+    classifyCall({ node = null, call = null, semanticIr = null } = {}) {
       const callPrototype = resolveCallPrototype(call, node);
       const classified = classifyCanonicalArguments({ call, functionPrototype:callPrototype, resolvePrototype:false });
       // A call without a source prototype has no parameter grouping proof.
@@ -1042,7 +1107,10 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
       try { returned = annotateCanonicalResult(plugin?.classifyCallReturn?.(instruction, { ...options, callPrototype:instruction.callPrototype }) ?? null); }
       catch { returned = null; }
       const observationState = callObservationState(node, call, callPrototype, classified, returned);
-      const evidenceState = abiEvidenceState(options, call, plugin) || observationState;
+      const callerCallee = observationState ? declarationUnknown
+        : compareCalleeDeclaration(node, call, semanticIr, callPrototype, classified, returned);
+      const evidenceState = abiEvidenceState(options, call, plugin) || observationState
+        || (callerCallee.status === 'conflict' ? 'conflict' : null);
       const classifierState = abiResultInvalidState(classified);
       const returnState = abiResultInvalidState(returned);
       // A classifier's partial result may still carry a conservative set of
@@ -1101,7 +1169,9 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
         stackArguments:hardInvalid || partial ? null : classified?.stackArguments ?? null,
         stackArgsUnknown:hardInvalid || partial ? true : classified?.stackArgsUnknown ?? true,
         stackArgsMayContainPointers:hardInvalid || partial ? true : classified?.stackArgsMayContainPointers ?? true,
-        argumentEvidence:observationState ? `abi-callsite-observations-${observationState}`
+        callerCallee,
+        argumentEvidence:callerCallee.status === 'conflict' ? 'abi-caller-callee-conflict'
+          : observationState ? `abi-callsite-observations-${observationState}`
           : classified?.evidence ?? `abi-${pluginId}`,
         clobbers:(() => { try { return plugin?.callerSaved?.(options) ?? []; } catch { return []; } })(),
         returnReg:returnRegister,
