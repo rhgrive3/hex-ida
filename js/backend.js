@@ -351,7 +351,10 @@ export class Backend {
   _releaseDisassembly(error) {
     if (this._disasmWorker) { this._disasmWorker.terminate(); this._disasmWorker = null; }
     const failure = error || new Error('disassembly worker released');
-    for (const pending of this._disasmPending.values()) pending.reject(failure);
+    for (const pending of this._disasmPending.values()) {
+      pending.cleanup?.();
+      pending.reject(failure);
+    }
     this._disasmPending.clear();
   }
 
@@ -855,6 +858,7 @@ export class Backend {
         const pending = this._disasmPending.get(event.data?.id);
         if (!pending) return;
         this._disasmPending.delete(event.data.id);
+        pending.cleanup?.();
         if (pending.uiEpoch !== this.gen) { pending.reject(new StaleRequestError()); return; }
         if (event.data.ok) pending.resolve(event.data); else pending.reject(new Error(event.data.error || 'disassembly failed'));
       };
@@ -868,12 +872,17 @@ export class Backend {
     const id = this._disasmSeq++;
     const copy = bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes);
     const priority = decodeContext.priority || 'current';
+    let cleanupSignal = null;
     const promise = new Promise((resolve, reject) => {
-      this._disasmPending.set(id, { resolve, reject, uiEpoch, priority });
+      this._disasmPending.set(id, {
+        resolve, reject, uiEpoch, priority,
+        cleanup: () => cleanupSignal?.(),
+      });
       try {
         this._disasmWorker.postMessage({ id, architecture, address, bytes: copy, riscvIsa:decodeContext.riscvIsa ?? null, priority }, [copy.buffer]);
       } catch (error) {
         this._disasmPending.delete(id);
+        cleanupSignal?.();
         reject(error);
       }
     });
@@ -881,17 +890,22 @@ export class Backend {
       const pending = this._disasmPending.get(id);
       if (!pending) return;
       this._disasmPending.delete(id);
+      pending.cleanup?.();
       try {
         this._disasmWorker?.postMessage({ t: 'cancel', id });
       } catch {}
       pending.reject(cancelledRequestError('disassembly cancelled'));
     };
-    if (decodeContext.signal) {
-      if (decodeContext.signal.aborted) {
-        promise.cancel();
-      } else {
-        decodeContext.signal.addEventListener('abort', () => promise.cancel(), { once: true });
-      }
+    const signal = decodeContext.signal;
+    if (signal) {
+      const onAbort = () => promise.cancel();
+      cleanupSignal = () => {
+        try { signal.removeEventListener?.('abort', onAbort); } catch {}
+      };
+      try {
+        signal.addEventListener?.('abort', onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      } catch {}
     }
     return promise;
   }

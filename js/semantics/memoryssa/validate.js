@@ -89,6 +89,12 @@ export function validateMemorySsa(memorySsa, options = {}) {
       metadataIds.add(`${id}\u0000${item.regionId}`);
       if (!definitionIds.has(id) && !useIds.has(id)) fail('memory-ssa-validate-dangling-access-metadata');
       if (!regionIds.has(item.regionId)) fail('memory-ssa-validate-access-metadata-region-mismatch');
+      // The downstream canonical forwarding path accepts only the closed
+      // use|definition vocabulary; an unknown (or missing) kind must fail
+      // closed here instead of surfacing as a downstream reject (#5419).
+      if (item.entityKind !== 'use' && item.entityKind !== 'definition') {
+        fail('memory-ssa-validate-access-metadata-kind-mismatch');
+      }
       if (item.entityKind === 'use' && !useIds.has(id)) fail('memory-ssa-validate-access-metadata-kind-mismatch');
       if (item.entityKind === 'definition' && !definitionIds.has(id)) fail('memory-ssa-validate-access-metadata-kind-mismatch');
 
