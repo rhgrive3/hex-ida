@@ -58,7 +58,7 @@ function classFrom(map, name) {
 }
 
 // Instance and class methods share the existing 60-method classification
-// budget instead of multiplying it. Class methods consume the remaining room.
+// budget symmetrically via deterministic interleaving so neither domain starves the other.
 {
   const methods = Array.from({ length: 50 }, (_, index) => ({ addr: BigInt(index + 1) }));
   const classMethods = Array.from({ length: 50 }, (_, index) => ({ addr: BigInt(1000 + index) }));
@@ -74,7 +74,53 @@ function classFrom(map, name) {
   });
 
   assert.equal(visited.length, 60);
-  assert.deepEqual(visited.slice(50), classMethods.slice(0, 10).map((method) => method.addr));
+  const expected = [];
+  for (let i = 0; i < 30; i++) {
+    expected.push(methods[i].addr, classMethods[i].addr);
+  }
+  assert.deepEqual(visited, expected);
+}
+
+// Instance methods exceeding the cap must not starve class-method evidence.
+{
+  const methods = Array.from({ length: 65 }, (_, index) => ({ addr: BigInt(index + 1), sel: `dummy_${index}` }));
+  const classMethod = { addr: 0x9000n, sel: 'fetchRemote' };
+  const cls = classRecord('PlainClass', methods, [classMethod]);
+  const map = buildAppMap({
+    fields: fieldsFor(cls),
+    strings: [{ addr: 0x9100n, text: 'https://example.test/feed' }],
+    program: {
+      functionRange: (addr) => addr === classMethod.addr ? { start: 0x9000n, end: 0x9010n } : { start: addr, end: addr + 4n },
+      refsFrom: (start) => start === 0x9000n ? [{ target: 0x9100n }] : [],
+      calleesOf: () => [],
+      callCountOf: () => 0,
+    },
+  });
+
+  const mapped = classFrom(map, cls.name);
+  assert.equal(mapped.category, 'network');
+  assert.ok(mapped.why.some((entry) => entry.code === 'string' && entry.id === 'network'));
+}
+
+// Symmetrically, class methods exceeding the cap must not starve instance-method evidence.
+{
+  const classMethods = Array.from({ length: 65 }, (_, index) => ({ addr: BigInt(2000 + index), sel: `dummy_cm_${index}` }));
+  const instanceMethod = { addr: 0x8000n, sel: 'handleRequest' };
+  const cls = classRecord('PlainClass', [instanceMethod], classMethods);
+  const map = buildAppMap({
+    fields: fieldsFor(cls),
+    strings: [{ addr: 0x8100n, text: 'https://example.test/feed' }],
+    program: {
+      functionRange: (addr) => addr === instanceMethod.addr ? { start: 0x8000n, end: 0x8010n } : { start: addr, end: addr + 4n },
+      refsFrom: (start) => start === 0x8000n ? [{ target: 0x8100n }] : [],
+      calleesOf: () => [],
+      callCountOf: () => 0,
+    },
+  });
+
+  const mapped = classFrom(map, cls.name);
+  assert.equal(mapped.category, 'network');
+  assert.ok(mapped.why.some((entry) => entry.code === 'string' && entry.id === 'network'));
 }
 
 // #5208 remains true for class methods too: an unproven function end must not

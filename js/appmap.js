@@ -101,6 +101,27 @@ export function categoryLabel(id) {
   return extra ? pick(extra.ja, extra.en) : featureLabelOf(id);
 }
 
+function selectClassificationMethods(cls, limit = MAX_METHODS_PER_CLASS) {
+  const instanceMethods = cls.methods || [];
+  const classMethods = cls.classMethods || [];
+  if (instanceMethods.length === 0) return classMethods.slice(0, limit);
+  if (classMethods.length === 0) return instanceMethods.slice(0, limit);
+
+  const selected = [];
+  const maxLen = Math.max(instanceMethods.length, classMethods.length);
+  for (let i = 0; i < maxLen && selected.length < limit; i++) {
+    if (i < instanceMethods.length) {
+      selected.push(instanceMethods[i]);
+      if (selected.length >= limit) break;
+    }
+    if (i < classMethods.length) {
+      selected.push(classMethods[i]);
+      if (selected.length >= limit) break;
+    }
+  }
+  return selected;
+}
+
 function classifyClass(cls, ctx) {
   const votes = new Map();
   const why = [];
@@ -128,7 +149,7 @@ function classifyClass(cls, ctx) {
     add(hit.id, hit.weak ? 1 : NAME_POINTS - 1, 'class-name', { name: cls.name });
   }
 
-  const methods = [...(cls.methods || []), ...(cls.classMethods || [])].slice(0, MAX_METHODS_PER_CLASS);
+  const methods = selectClassificationMethods(cls, MAX_METHODS_PER_CLASS);
   let stringHits = 0;
   let apiHits = 0;
   for (const m of methods) {
