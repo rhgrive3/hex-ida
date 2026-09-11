@@ -326,7 +326,23 @@ export function fuseFunctionCandidates(evidence, options = {}) {
   // Validate and canonicalize before sorting. Comparators are not validation
   // boundaries: malformed plugin records must fail closed deterministically
   // instead of invoking methods on attacker-controlled field shapes.
-  const canonical = evidence.map((item) => canonicalEvidence(item));
+  //
+// `maxCandidates` is also a work budget, not only a result-size check. Once
+// one more distinct start than the budget permits has been observed, the
+// final result is irreversibly `truncated` with no published candidates.
+// Stop at that boundary instead of materializing and sorting the remaining
+// evidence only to discard it afterwards (#4795).
+const canonical = [];
+const candidateStarts = new Set();
+for (let index = 0; index < evidence.length; index += 1) {
+  const item = canonicalEvidence(evidence[index]);
+  canonical.push(item);
+  if (item.start == null) continue;
+  candidateStarts.add(item.start);
+  if (candidateStarts.size > budget.maxCandidates) {
+    return { candidates: [], status: status('truncated', 'budget-exhausted') };
+  }
+}
   const byStart = new Map();
   const orderedEvidence = canonical.sort(compareEvidence);
   for (const item of orderedEvidence) {
