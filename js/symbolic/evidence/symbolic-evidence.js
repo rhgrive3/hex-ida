@@ -62,25 +62,59 @@ function deepFreeze(obj) {
   return obj;
 }
 
+/*
+ * Dynamic keys are stored as own data properties. Assigning with `out[k] = ...`
+ * routes the key `'__proto__'` through the prototype setter, so an own
+ * `__proto__` target silently disappears and distinct targets normalize to the
+ * same canonical form — and therefore to the same Evidence ID (#5903).
+ */
+function canonicalOwn(out, key, value) {
+  Object.defineProperty(out, key, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+  return out;
+}
+
+/* Host-locale independent total order over string keys (UTF-16 code units).
+ * Map entries must project into canonical records by key/value content only;
+ * insertion history and ICU collation differences must not leak (#5774). */
+function compareCanonicalKey(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function sortedMapEntries(map) {
+  const entries = [...map.entries()]
+    .map(([key, value]) => ({ key: String(key), value }))
+    .sort((a, b) => compareCanonicalKey(a.key, b.key));
+  for (let i = 1; i < entries.length; i += 1) {
+    if (entries[i - 1].key === entries[i].key) {
+      throw new TypeError('createSymbolicEvidence: map key projection collision');
+    }
+  }
+  return entries;
+}
+
 function canonicalize(val) {
   if (val === null || typeof val !== 'object') {
     if (typeof val === 'bigint') return `0x${val.toString(16)}`;
     return val;
   }
   if (val instanceof Map) {
-    const entries = [...val.entries()].sort(([k1], [k2]) => String(k1).localeCompare(String(k2)));
-    const out = {};
-    for (const [k, v] of entries) {
-      out[String(k)] = canonicalize(v);
+    let out = {};
+    for (const { key, value } of sortedMapEntries(val)) {
+      out = canonicalOwn(out, key, canonicalize(value));
     }
     return out;
   }
   if (Array.isArray(val)) {
     return val.map(canonicalize);
   }
-  const sorted = {};
+  let sorted = {};
   for (const k of Object.keys(val).sort()) {
-    sorted[k] = canonicalize(val[k]);
+    sorted = canonicalOwn(sorted, k, canonicalize(val[k]));
   }
   return sorted;
 }
@@ -263,8 +297,14 @@ export function createSymbolicEvidence({
   if (witnessModel) {
     if (witnessModel instanceof Map) {
       normalizedWitness = {};
-      for (const [k, v] of witnessModel.entries()) {
-        normalizedWitness[String(k)] = typeof v === 'bigint' ? `0x${v.toString(16)}` : v;
+      // Deterministic code-unit order for Map projection; canonicalOwn keeps
+      // proto-like keys as own data properties (#5774/#5903).
+      for (const { key, value } of sortedMapEntries(witnessModel)) {
+        canonicalOwn(
+          normalizedWitness,
+          key,
+          typeof value === 'bigint' ? `0x${value.toString(16)}` : canonicalize(value)
+        );
       }
     } else if (typeof witnessModel === 'object') {
       normalizedWitness = canonicalize(witnessModel);
@@ -275,8 +315,16 @@ export function createSymbolicEvidence({
   let normalizedOrigins = origins;
   if (origins instanceof Map) {
     normalizedOrigins = {};
-    for (const [k, v] of origins.entries()) {
-      normalizedOrigins[String(k)] = Array.isArray(v) || v instanceof Set ? [...v].map(String).sort() : canonicalize(v);
+    // Deterministic code-unit order for Map projection; retain canonical values.
+    for (const { key, value: rawValue } of sortedMapEntries(origins)) {
+      const value = Array.isArray(rawValue) || rawValue instanceof Set
+        ? [...rawValue].map(String).sort()
+        : canonicalize(rawValue);
+      canonicalOwn(
+        normalizedOrigins,
+        key,
+        value
+      );
     }
   } else if (typeof origins === 'object' && origins !== null) {
     normalizedOrigins = canonicalize(origins);
@@ -334,6 +382,7 @@ export function createSymbolicEvidence({
 export function isProvedEvidence(evidence) {
   if (!evidence || typeof evidence !== 'object') return false;
   return (
+    isCanonicalSymbolicEvidence(evidence) &&
     evidence.verdict === EVIDENCE_VERDICT.PROVED &&
     evidence.proofAuthority === PROOF_AUTHORITY.EXACT &&
     typeof evidence.capabilityFingerprint === 'string' &&
@@ -353,9 +402,44 @@ export function isProvedEvidence(evidence) {
 export function isRefutedEvidence(evidence) {
   if (!evidence || typeof evidence !== 'object') return false;
   return (
+    isCanonicalSymbolicEvidence(evidence) &&
     evidence.verdict === EVIDENCE_VERDICT.REFUTED &&
     evidence.solverStatus === SOLVER_STATUS.SAT &&
     evidence.validationStatus !== VALIDATION_STATUS.REJECTED &&
     !isSolverFailure({ status: evidence.solverStatus })
   );
+}
+
+/**
+ * Authority predicate boundary (#5400): field values alone cannot carry proof
+ * authority — the record must be canonical. The evidence id must be exactly
+ * the digest `computeEvidenceId` derives from the identity-bearing fields, so
+ * forged plain objects and tampered clones (queryHash/backend/fingerprint
+ * swaps) fail closed instead of laundering into PROVED/REFUTED authority.
+ */
+function isCanonicalSymbolicEvidence(evidence) {
+  if (evidence.schemaVersion !== EVIDENCE_SCHEMA_VERSION) return false;
+  if (typeof evidence.id !== 'string' || evidence.id.length === 0) return false;
+  if (typeof evidence.queryKind !== 'string' || evidence.queryKind.length === 0) return false;
+  if (typeof evidence.claimKind !== 'string' || evidence.claimKind.length === 0) return false;
+  if (typeof evidence.queryHash !== 'string' || evidence.queryHash.length === 0) return false;
+  if (typeof evidence.backendId !== 'string' || evidence.backendId.length === 0) return false;
+  if (typeof evidence.backendVersion !== 'string' || evidence.backendVersion.length === 0) return false;
+  if (evidence.capabilityFingerprint !== null && typeof evidence.capabilityFingerprint !== 'string') return false;
+  if (evidence.capabilityFingerprintHash !== (evidence.capabilityFingerprint ? stableDigest(String(evidence.capabilityFingerprint)) : null)) return false;
+  if (!Array.isArray(evidence.targetEntities) || evidence.targetEntities.some((entity) => typeof entity !== 'string')) return false;
+  if (typeof evidence.proofStatement !== 'string' || evidence.proofStatement.length === 0) return false;
+  return computeEvidenceId({
+    schemaVersion: evidence.schemaVersion,
+    queryKind: evidence.queryKind,
+    claimKind: evidence.claimKind,
+    queryHash: evidence.queryHash,
+    backendId: evidence.backendId,
+    backendVersion: evidence.backendVersion,
+    solverStatus: evidence.solverStatus,
+    verdict: evidence.verdict,
+    targetEntities: evidence.targetEntities,
+    proofAuthority: evidence.proofAuthority,
+    capabilityFingerprint: evidence.capabilityFingerprint,
+  }) === evidence.id;
 }

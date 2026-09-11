@@ -1,5 +1,51 @@
 import assert from 'node:assert/strict';
-import { graphRoutingDiagnostics } from '../js/graph-routing.js';
+import { graphRoutingDiagnostics, layoutNodes } from '../js/graph-routing.js';
+import { renderGraph } from '../js/graphview-base.js';
+
+const emptyLayout = layoutNodes([], [], new Map());
+assert.equal(emptyLayout.width, 252);
+assert.ok(Number.isFinite(emptyLayout.height) && emptyLayout.height > 0, 'empty layouts need a positive canvas height');
+const emptyGraph = graphRoutingDiagnostics([], []);
+assert.equal(emptyGraph.routes.length, 0);
+assert.ok(Number.isFinite(emptyGraph.height) && emptyGraph.height > 0, 'empty graph diagnostics need a positive canvas height');
+
+class FakeElement {
+  constructor(tag) {
+    this.tag = tag;
+    this.children = [];
+    this.attributes = new Map();
+    this.style = {};
+    this.clientWidth = 320;
+    this.clientHeight = 320;
+    this.scrollLeft = 0;
+    this.scrollTop = 0;
+  }
+  append(...children) { this.children.push(...children); }
+  addEventListener() {}
+  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  getAttribute(name) { return this.attributes.get(name) || null; }
+  getBoundingClientRect() { return { left:0, top:0, width:this.clientWidth, height:this.clientHeight }; }
+}
+
+const previousDocument = globalThis.document;
+const previousAnimationFrame = globalThis.requestAnimationFrame;
+globalThis.document = {
+  createElement: (tag) => new FakeElement(tag),
+  createElementNS: (_namespace, tag) => new FakeElement(tag),
+};
+globalThis.requestAnimationFrame = (callback) => { callback(); return 0; };
+try {
+  const emptyRendered = renderGraph([], []);
+  const svg = emptyRendered.children.find((node) => node.tag === 'svg');
+  assert.ok(svg, 'empty graph rendering must create an SVG');
+  assert.equal(svg.getAttribute('height'), String(emptyLayout.height));
+  assert.match(svg.getAttribute('viewBox'), /^0 0 \d+ [1-9]\d*$/);
+} finally {
+  if (previousDocument === undefined) delete globalThis.document;
+  else globalThis.document = previousDocument;
+  if (previousAnimationFrame === undefined) delete globalThis.requestAnimationFrame;
+  else globalThis.requestAnimationFrame = previousAnimationFrame;
+}
 
 const nodes = Array.from({ length: 7 }, (_, id) => ({
   id,

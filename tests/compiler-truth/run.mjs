@@ -46,21 +46,48 @@ if (typeof BigInt.prototype.toJSON !== 'function') {
   );
 }
 
+const here = path.dirname(fileURLToPath(import.meta.url));
+const componentNames = ['run-core.mjs', 'extended.mjs', 'language-matrix.mjs'];
+
 // Every compiler-truth suite must bind `decompile` to the guarded call boundary.
 // This small import check prevents a future direct product import from silently
 // bypassing the runtime assertion without attempting to parse call expressions.
-{
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  for (const file of ['run-core.mjs', 'extended.mjs', 'language-matrix.mjs']) {
-    const source = fs.readFileSync(path.join(here, file), 'utf8');
-    assert.match(source,
-      /import\s*\{\s*decompile\s*\}\s*from\s*['"]\.\/deterministic-decompile\.mjs['"]/,
-      `${file} must use the deterministic compiler-truth decompile boundary`);
-    assert.doesNotMatch(source, /from\s*['"][^'"]*js\/decompile\.js['"]/,
-      `${file} must not import the product decompiler directly`);
-  }
+for (const file of componentNames) {
+  const source = fs.readFileSync(path.join(here, file), 'utf8');
+  assert.match(source,
+    /import\s*\{\s*decompile\s*\}\s*from\s*['"]\.\/deterministic-decompile\.mjs['"]/,
+    `${file} must use the deterministic compiler-truth decompile boundary`);
+  assert.doesNotMatch(source, /from\s*['"][^'"]*js\/decompile\.js['"]/,
+    `${file} must not import the product decompiler directly`);
 }
 
-await import('./run-core.mjs');
-await import('./extended.mjs');
-await import('./language-matrix.mjs');
+const { ghidraAvailability } = await import('../../tools/decompiler/ghidra-diff.mjs');
+const {
+  resolveCompilerTruthConcurrency,
+  runCompilerTruthComponents,
+} = await import('./parallel-components.mjs');
+const ghidra = ghidraAvailability();
+const concurrency = ghidra.available
+  ? 1
+  : resolveCompilerTruthConcurrency({ env: process.env });
+
+if (concurrency <= 1) {
+  // Preserve the historical in-process path on hosted CI, nested callers that
+  // explicitly cap this suite, and hosts with an active Ghidra differential.
+  await import('./run-core.mjs');
+  await import('./extended.mjs');
+  await import('./language-matrix.mjs');
+} else {
+  const preludeUrl = new URL('./parallel-prelude.mjs', import.meta.url);
+  const inheritedNodeOptions = String(process.env.NODE_OPTIONS ?? '').trim();
+  const childEnv = {
+    ...process.env,
+    NODE_OPTIONS: [inheritedNodeOptions, `--import=${preludeUrl.href}`].filter(Boolean).join(' '),
+  };
+  await runCompilerTruthComponents({
+    files: componentNames.map((file) => path.join(here, file)),
+    cwd: path.resolve(here, '../..'),
+    env: childEnv,
+    concurrency,
+  });
+}

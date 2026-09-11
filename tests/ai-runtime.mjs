@@ -52,7 +52,8 @@ const controller = new AbortController();
 const cancelling = new AIRuntime({ context: {}, planner: false, provider: { nextTurn: (_request, { signal }) => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new AIError('cancelled', 'cancel')), { once: true })) } });
 const cancelled = cancelling.turn({ mode: 'chat', goal: 'wait' }, { signal: controller.signal });
 controller.abort();
-assert.equal((await cancelled).limits.reason, 'cancelled');
+await assert.rejects(cancelled, (error) => error.type === 'cancelled',
+  'a cancelled turn must reject with cancelled instead of resolving a fallback answer (#5632)');
 
 const timed = new AIRuntime({ context: {}, planner: false, provider: { nextTurn: async () => { throw new AIError('model_timeout', 'timeout'); } } });
 assert.equal((await timed.turn({ mode: 'chat', goal: 'timeout' })).limits.reason, 'model_timeout');

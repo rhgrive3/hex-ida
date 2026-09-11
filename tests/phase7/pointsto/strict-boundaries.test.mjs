@@ -6,9 +6,11 @@ import {
   createOffsetRange,
   createPointsToSet,
   createPointsToTarget,
+  createRootDescriptorSeparatedTarget,
   exactRange,
 } from '../../../js/analysis/pointsto/lattice.js';
 import { pointsToAlias } from '../../../js/analysis/pointsto/alias.js';
+import { deriveCanonicalAddressProof } from '../../../js/analysis/alias/canonical-address-v2.js';
 import { createAnalysisStatus } from '../../../js/analysis/status.js';
 
 const complete = createAnalysisStatus({
@@ -22,6 +24,31 @@ function singleton(target) {
   return createPointsToSet({ targets: [target] });
 }
 
+function canonicalProof(rootEntityId, separationClass) {
+  const valueId = `proof-${separationClass}-${rootEntityId}`;
+  const proof = deriveCanonicalAddressProof({
+    functionId: 'issue-3018-canonical-proof',
+    values: [{
+      id: valueId,
+      kind: 'entry',
+      variableKey: `root-${rootEntityId}`,
+      machineType: { kind: 'address', widthBits: 64 },
+      metadata: {
+        canonicalRoot: {
+          kind: separationClass,
+          rootEntityId,
+          baseOffset: 0,
+          addressSpace: 'memory',
+          linearOffsets: true,
+        },
+      },
+    }],
+    nodes: [],
+    blocks: [],
+  }, valueId);
+  assert.equal(proof.kind, 'rooted');
+  return proof;
+}
 test('#3020 structured offset values fail closed instead of minting exact ranges', () => {
   for (const malformed of [
     ['8'],
@@ -84,16 +111,36 @@ test('#3018 non-string separation metadata cannot produce descriptor-backed NoAl
     widthBitsRight: 64,
   }).relation, 'may');
 
-  const validA = createPointsToTarget({
+  // #6066: the same holds for plain strings — separation authority is minted
+  // only through the canonical proof boundary, never accepted from input.
+  const strA = createPointsToTarget({
     addressSpace: 'memory', rootKind: 'rooted', rootEntityId: 'A',
     separationClass: 'global-like', separationAuthority: 'root-descriptor',
     offsetRange: exactRange(0),
   });
-  const validB = createPointsToTarget({
+  const strB = createPointsToTarget({
     addressSpace: 'memory', rootKind: 'rooted', rootEntityId: 'B',
     separationClass: 'global-like', separationAuthority: 'root-descriptor',
     offsetRange: exactRange(0),
   });
+  assert.equal(strA.separationAuthority, null,
+    'a self-claimed authority string must not be stored as authority');
+  assert.equal(pointsToAlias(singleton(strA), singleton(strB), {
+    status: complete,
+    widthBitsLeft: 64,
+    widthBitsRight: 64,
+  }).relation, 'may');
+
+  // A target minted through the canonical proof boundary keeps the exact
+  // distinct-storage NoAlias the corpus relies on (#1848).
+  const validA = createRootDescriptorSeparatedTarget({
+    addressSpace: 'memory', rootKind: 'rooted', rootEntityId: 'A',
+    offsetRange: exactRange(0),
+  }, canonicalProof('A', 'global-like'));
+  const validB = createRootDescriptorSeparatedTarget({
+    addressSpace: 'memory', rootKind: 'rooted', rootEntityId: 'B',
+    offsetRange: exactRange(0),
+  }, canonicalProof('B', 'global-like'));
   assert.equal(pointsToAlias(singleton(validA), singleton(validB), {
     status: complete,
     widthBitsLeft: 64,

@@ -41,7 +41,10 @@ function semanticIndexTerm(valueId, context, active) {
       };
     }
   } else if ((producer.kind === 'copy' || producer.kind === 'bitcast') && producer.inputs.length === 1) {
-    result = semanticIndexTerm(producer.inputs[0], context, active);
+    const nested = semanticIndexTerm(producer.inputs[0], context, active);
+    if (nested && nested.targetWidthBits === legacyValue?.bits) {
+      result = { ...nested, origin: mergeOrigins(nested.origin, producer.origin, semanticValue?.origin) };
+    }
   } else if ((producer.kind === 'sext' || producer.kind === 'zext') && producer.inputs.length === 1) {
     const nested = semanticIndexTerm(producer.inputs[0], context, active);
     const source = valuesById.get(producer.inputs[0]);
@@ -49,7 +52,11 @@ function semanticIndexTerm(valueId, context, active) {
     const fromBits = Number(producer.attributes?.fromBits ?? source?.bits ?? 0) || null;
     const toBits = Number(producer.attributes?.toBits ?? output?.bits ?? 0) || null;
     const extend = nested && fromBits != null && toBits != null ? extensionToken(producer.kind, fromBits, toBits) : null;
-    if (nested && extend) {
+    // Legacy addresses extend BEFORE scaling. A narrow shift before an
+    // extension may have discarded high bits and cannot be reordered (#5398).
+    if (nested && extend && nested.scale === 0 && nested.extend == null
+        && nested.targetWidthBits === fromBits && source?.bits === fromBits
+        && output?.bits === toBits) {
       result = {
         ...nested,
         extend,
@@ -63,10 +70,15 @@ function semanticIndexTerm(valueId, context, active) {
     const nested = semanticIndexTerm(producer.inputs[0], context, active);
     const amountNode = producerByValueId.get(producer.inputs[1]) ?? null;
     const amount = amountNode?.kind === 'const' ? constantPayload(amountNode) : null;
-    if (nested && amount != null && amount >= 0n && amount <= 63n) {
+    const widthBits = legacyValue?.bits;
+    const composedScale = nested && amount != null ? BigInt(nested.scale) + amount : null;
+    if (nested && Number.isSafeInteger(widthBits) && widthBits > 0
+        && nested.targetWidthBits === widthBits
+        && amount != null && amount >= 0n && amount < BigInt(widthBits)
+        && composedScale >= 0n && composedScale < BigInt(widthBits) && composedScale <= 63n) {
       result = {
         ...nested,
-        scale: Number(amount),
+        scale: Number(composedScale),
         origin: mergeOrigins(nested.origin, producer.origin, amountNode?.origin, semanticValue?.origin),
       };
     }
@@ -151,7 +163,9 @@ function lowerAddress(valueId, context, active) {
     } else if (producer.operator === 'add') {
       const left = lowerAddress(leftId, context, active) ?? baseLeaf(leftId, context);
       const index = semanticIndexTerm(rightId, context, new Set());
-      if (left && left.precise && left.index == null && index) {
+      if (left && left.precise && left.index == null && index
+          && (index.scale === 0 || left.addressWidthBits === index.targetWidthBits)
+          && valuesById.get(valueId)?.bits === left.addressWidthBits) {
         result = {
           ...left,
           index: index.value,
@@ -159,7 +173,7 @@ function lowerAddress(valueId, context, active) {
           extend: index.extend,
           indexSignedness: index.signedness,
           indexWidthBits: index.sourceWidthBits,
-          addressWidthBits: index.targetWidthBits ?? left.addressWidthBits,
+          addressWidthBits: left.addressWidthBits,
           origin: mergeOrigins(left.origin, index.origin, producer.origin, semanticValue?.origin),
         };
       }

@@ -100,7 +100,9 @@ test('the Phase 7 sync check matches the canonical generated-sync check', () => 
     assert.ok(phase7.includes(artifact), `Phase 7 workflow must check ${artifact}`);
   }
   const stamp = 'deployment-identity.generated.js';
-  assert.ok(!canonical.includes(stamp), 'the canonical workflow excludes the deployment stamp');
+  assert.deepEqual(canonical.split('\n').filter((line) => line.includes(stamp)).map((line) => line.trim()),
+    ['run: git restore --source=HEAD --worktree -- js/userscript/deployment-identity.generated.js'],
+    'the canonical workflow may only restore the stamp, not check or write it as userscript output');
   assert.ok(!phase7.split('Generated-output synchronization')[1].split('- name:')[0].includes(`-- ${stamp}`),
     'the Phase 7 workflow must not require the deployment stamp to match');
 });
@@ -108,4 +110,19 @@ test('the Phase 7 sync check matches the canonical generated-sync check', () => 
 test('the ownership gate is reachable as a script', () => {
   const packageJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
   assert.ok(packageJson.scripts['phase7:ownership'], 'phase7:ownership entry point must exist');
+});
+
+
+test('recognition knowledge integration has exact ownership without widening neighboring surfaces (#5723)', () => {
+  const manifest = loadManifest();
+  const files = ['js/analysis/demand-driven-runtime.js', 'js/app.js', 'js/knowledge/index.js',
+    'tests/recognition-intelligence.mjs', 'tests/phase7/analysis/issue-5723-recognition-input-key.test.mjs'];
+  assert.deepEqual(validateFiles(manifest, files).violations, []);
+  for (const file of ['js/app.js', 'js/knowledge/index.js', 'tests/recognition-intelligence.mjs']) {
+    assert.ok(manifest.sharedIntegrationPaths.includes(file));
+    assert.ok(manifest.ownedWithConstraint[file]);
+  }
+  for (const file of ['js/knowledge/other.js', 'js/ui/panel.js', 'tests/unrelated.mjs', 'js/semantics/ir/nodes.js']) {
+    assert.ok(validateFiles(manifest, [...files, file]).violations.length > 0, file);
+  }
 });

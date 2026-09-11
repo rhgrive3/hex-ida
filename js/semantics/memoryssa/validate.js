@@ -30,6 +30,7 @@ export function validateMemorySsa(memorySsa, options = {}) {
     fail('memory-ssa-validate-build-version-mismatch');
   }
   const built = memorySsa.buildVersion === MEMORY_SSA_BUILD_VERSION;
+  if (built && !Array.isArray(memorySsa.accessMetadata)) fail('memory-ssa-validate-access-metadata-required');
   if (built) {
     for (const definition of contract.definitions) {
       assertNotAborted(options);
@@ -42,6 +43,7 @@ export function validateMemorySsa(memorySsa, options = {}) {
   }
 
   const definitionIds = new Set(contract.definitions.map((definition) => definition.id));
+  const definitionById = new Map(contract.definitions.map((definition) => [definition.id, definition]));
   const useIds = new Set(contract.uses.map((use) => use.id));
   const regionIds = new Set(contract.regions.map((region) => region.id));
   if (memorySsa.useDefLinks != null) {
@@ -116,15 +118,19 @@ export function validateMemorySsa(memorySsa, options = {}) {
 
   if (memorySsa.blockStates != null) {
     const blockIds = new Set(options.cfg?.blocks?.map((block) => block.id) ?? memorySsa.blockStates.map((state) => state.blockId));
+    const seenBlockIds = new Set();
     for (const state of memorySsa.blockStates) {
       assertNotAborted(options);
       if (!blockIds.has(state.blockId)) fail('memory-ssa-validate-invalid-block-state');
+      if (seenBlockIds.has(state.blockId)) fail('memory-ssa-validate-duplicate-block-state');
+      seenBlockIds.add(state.blockId);
       for (const side of ['entry', 'exit']) {
         if (!Array.isArray(state[side])) fail('memory-ssa-validate-invalid-block-state');
         const seenRegions = new Set();
         for (const item of state[side]) {
           if (!regionIds.has(item.regionId)) fail('memory-ssa-validate-block-state-region-mismatch');
           if (!definitionIds.has(item.definitionId)) fail('memory-ssa-validate-block-state-definition-mismatch');
+          if (definitionById.get(item.definitionId).regionId !== item.regionId) fail('memory-ssa-validate-block-state-region-mismatch');
           if (seenRegions.has(item.regionId)) fail('memory-ssa-validate-duplicate-block-state-region');
           seenRegions.add(item.regionId);
         }

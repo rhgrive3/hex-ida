@@ -40,7 +40,7 @@ function adapterWithModules(getModulesImplementation) {
 
 test('issue #6185 - initial empty array getModules is a valid ready session', async () => {
   const provider = new DebuggerProvider(adapterWithModules(() => []));
-  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: 's1' }, { connect: false });
+  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: 's1' }, { connect: true });
   assert.equal(session.state, 'ready');
   assert.deepEqual(session.modules.active(), []);
   await session.close();
@@ -56,7 +56,7 @@ for (const malformed of [
   test(`issue #6185 - initial non-array getModules (${malformed === null ? 'null' : typeof malformed}) must reject and not reach ready`, async () => {
     const provider = new DebuggerProvider(adapterWithModules(() => malformed));
     await assert.rejects(
-      () => provider.openSession({ binaryId: 'bin-A', sessionNonce: 's1' }, { connect: false }),
+      () => provider.openSession({ binaryId: 'bin-A', sessionNonce: 's1' }, { connect: true }),
       (error) => error instanceof DebugAdapterError && error.code === 'runtime-invalid-modules',
     );
   });
@@ -65,7 +65,7 @@ for (const malformed of [
 test('issue #6185 - refresh with valid array keeps existing diff-update semantics', async () => {
   let phase = 0;
   const provider = new DebuggerProvider(adapterWithModules(() => (phase === 0 ? [VALID_MODULE] : [])));
-  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: 's1' }, { connect: false });
+  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: 's1' }, { connect: true });
   assert.ok(session.modules.get('m1'));
 
   phase = 1;
@@ -78,7 +78,7 @@ test('issue #6185 - refresh with valid array keeps existing diff-update semantic
 test('issue #6185 - refresh with non-array getModules must reject, never return [] success', async () => {
   let phase = 0;
   const provider = new DebuggerProvider(adapterWithModules(() => (phase === 0 ? [VALID_MODULE] : { malformed: true })));
-  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: 's1' }, { connect: false });
+  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: 's1' }, { connect: true });
   assert.ok(session.modules.get('m1'));
 
   phase = 1;
@@ -92,7 +92,7 @@ test('issue #6185 - refresh with non-array getModules must reject, never return 
 test('issue #6185 - rejected refresh must keep the previous active table (no partial state)', async () => {
   let phase = 0;
   const provider = new DebuggerProvider(adapterWithModules(() => (phase === 0 ? [VALID_MODULE] : { malformed: true })));
-  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: 's1' }, { connect: false });
+  const session = await provider.openSession({ binaryId: 'bin-A', sessionNonce: 's1' }, { connect: true });
   assert.ok(session.modules.get('m1'));
 
   phase = 1;
@@ -108,7 +108,7 @@ test('issue #6185 - rejected refresh must keep the previous active table (no par
 test('issue #6185 - plain DebugAdapterRuntimeProvider rejects non-array modules on open', async () => {
   const provider = new DebugAdapterRuntimeProvider(adapterWithModules(() => ({ not: 'an array' })));
   await assert.rejects(
-    () => provider.openSession({ binaryId: 'bin-A', sessionNonce: 's1' }, { connect: false }),
+    () => provider.openSession({ binaryId: 'bin-A', sessionNonce: 's1' }, { connect: true }),
     (error) => error.code === 'runtime-invalid-modules',
   );
 });

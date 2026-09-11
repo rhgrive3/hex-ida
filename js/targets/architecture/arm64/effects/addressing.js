@@ -24,7 +24,14 @@ function integer(value, code) {
   }
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
-  if (typeof value === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(value.trim())) return BigInt(value.trim());
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (/^-?(?:0x[0-9a-f]+|\d+)$/i.test(text)) {
+      const negative = text.startsWith('-');
+      const magnitude = BigInt(negative ? text.slice(1) : text);
+      return negative ? -magnitude : magnitude;
+    }
+  }
   fail(code);
 }
 
@@ -219,7 +226,21 @@ function memIndex(mem) {
 }
 
 function addressingMode(mem) {
-  const mode = String(mem?.mode || mem?.addressingMode || 'offset').toLowerCase();
+  const modePresent = own(mem, 'mode');
+  const addressingModePresent = own(mem, 'addressingMode');
+  const rawMode = modePresent ? mem.mode : undefined;
+  const rawAddressingMode = addressingModePresent ? mem.addressingMode : undefined;
+  const hasMode = rawMode != null;
+  const hasAddressingMode = rawAddressingMode != null;
+  if (hasMode && typeof rawMode !== 'string') fail('arm64-unsupported-addressing-mode', { mode:rawMode });
+  if (hasAddressingMode && typeof rawAddressingMode !== 'string') {
+    fail('arm64-unsupported-addressing-mode', { mode:rawAddressingMode });
+  }
+  const mode = (hasMode ? rawMode : hasAddressingMode ? rawAddressingMode : 'offset').toLowerCase();
+  const normalizedAddressingMode = hasAddressingMode ? rawAddressingMode.toLowerCase() : null;
+  if (hasMode && hasAddressingMode && normalizedAddressingMode !== mode) {
+    fail('arm64-conflicting-addressing-mode', { mode, addressingMode:normalizedAddressingMode });
+  }
   if (!['offset', 'pre', 'post'].includes(mode)) fail('arm64-unsupported-addressing-mode', { mode });
   return mode;
 }

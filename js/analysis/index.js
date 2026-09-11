@@ -24,12 +24,13 @@ import { TypeConstraintGraph, selectedTypeIfCertain, reconstructStructuralType }
 import { applyDebugTypesToGraph } from './debug/provider.js';
 import { DiscoveryProducerRegistry, fuseFunctionCandidates } from './discovery/fusion.js';
 import { GENERIC_PRODUCERS } from './discovery/producers.js';
+import { validateMemorySsaBinding } from './memoryssa-binding.js';
 import {
   explainMemoryPath as explainMemoryPathQuery,
   reachingMemoryDefinition,
 } from '../semantics/memoryssa/queries.js';
 
-export const PHASE7_ANALYSIS_CONTRACT_VERSION = '1.0.0';
+export const PHASE7_ANALYSIS_CONTRACT_VERSION = '1.1.0';
 
 /**
  * Creates the analysis surface for one function's semantic artifacts.
@@ -87,6 +88,18 @@ export function createAnalysisSurface({
     stopReason,
   });
 
+  // Public MemorySSA queries enforce the same dependency identity floor as
+  // the solver boundary. A serialized snapshot is optional on canonical
+  // artifacts, but when present it is authoritative.
+  function memorySsaQueryBindingIsCurrent() {
+    return validateMemorySsaBinding({
+      memorySsa,
+      ir,
+      binding: solverOptions.memorySsaBinding,
+      snapshotId,
+    }).valid;
+  }
+
   /** Alias relation with proof and completeness. */
   function alias(leftRegion, rightRegion, context = {}) {
     return solver.alias(leftRegion, rightRegion, context);
@@ -94,7 +107,7 @@ export function createAnalysisSurface({
 
   /** The reaching memory definition for one load, with its status. */
   function reachingMemoryDef(useOrId) {
-    if (!memorySsa || memorySsaCompleteness !== 'complete') {
+    if (!memorySsa || !memorySsaQueryBindingIsCurrent()) {
       return { definition: null, status: status('unsupported', memorySsa ? 'dependency-mismatch' : 'dependency-missing') };
     }
     const definition = reachingMemoryDefinition(memorySsa, useOrId);
@@ -109,22 +122,22 @@ export function createAnalysisSurface({
 
   /** The evidence path between a memory source and a sink. */
   function explainMemoryPath(useOrId, pathOptions = {}) {
-    if (!memorySsa || memorySsaCompleteness !== 'complete') {
+    if (!memorySsa || !memorySsaQueryBindingIsCurrent()) {
       return { path: null, status: status('unsupported', memorySsa ? 'dependency-mismatch' : 'dependency-missing') };
     }
     return { path: explainMemoryPathQuery(memorySsa, useOrId, pathOptions), status: status('complete') };
   }
 
-  /** This function's summary, built on demand. */
+  /** Tuning options cannot replace the surface's snapshot or resolver binding. */
   function functionSummary(summaryOptions = {}) {
     if (Object.keys(summaryOptions).length > 0) {
       return buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, {
-        snapshotId, resolveRegion, ...options, ...summaryOptions,
+        ...options, ...summaryOptions, snapshotId, resolveRegion,
       });
     }
     if (localSummary == null) {
       localSummary = buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, {
-        snapshotId, resolveRegion, ...options,
+        ...options, snapshotId, resolveRegion,
       });
     }
     return localSummary;
@@ -136,11 +149,13 @@ export function createAnalysisSurface({
    * Answers `mayWrite` conservatively whenever the summary cannot prove
    * otherwise, which is what keeps an incomplete summary from reading as pure.
    */
-  function memoryEffects({ regionId = null } = {}) {
+  function memoryEffects({ regionId = null, region = null } = {}) {
     const { summary } = functionSummary();
     if (!summary) return { mayWrite: true, summary: null, status: status('partial', 'evidence-missing') };
+    const regionIdentityMismatch = region != null && regionId != null
+      && (typeof regionId !== 'string' || region?.id !== regionId.trim());
     return {
-      mayWrite: summaryMayWriteRegion(summary, regionId),
+      mayWrite: regionIdentityMismatch ? true : summaryMayWriteRegion(summary, region ?? regionId),
       reads: summary.memoryReadRegions,
       writes: summary.memoryWriteRegions,
       unknownCalls: summary.unknownCallEffects,
@@ -155,7 +170,7 @@ export function createAnalysisSurface({
       const pointsTo = solver.pointsToRun();
       escapeResult = pointsTo == null
         ? { escapes: [], nonEscapingRoots: new Set(), status: status('unsupported', 'dependency-missing') }
-        : analyzeEscape(ir, cfg, ssa, pointsTo, { snapshotId, ...options });
+        : analyzeEscape(ir, cfg, ssa, pointsTo, { ...options, snapshotId });
     }
     return escapeResult;
   }

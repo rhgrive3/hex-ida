@@ -28,9 +28,20 @@ function canonicalizeValue(val) {
   if (Array.isArray(val)) {
     return val.map(canonicalizeValue);
   }
+  /*
+   * Dynamic keys are stored as own data properties. Assigning with
+   * `sorted[k] = ...` routes the key `'__proto__'` through the prototype
+   * setter, so an own `__proto__` data property silently disappears and two
+   * different solver configurations collapse into one fingerprint (#5907).
+   */
   const sorted = {};
   for (const k of Object.keys(val).sort()) {
-    sorted[k] = canonicalizeValue(val[k]);
+    Object.defineProperty(sorted, k, {
+      value: canonicalizeValue(val[k]),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
   }
   return sorted;
 }
@@ -165,8 +176,13 @@ export function isCacheableProof({
   if (verdict === 'proved' && solverStatus !== SOLVER_STATUS.UNSAT) return false;
   if (verdict === 'refuted' && solverStatus !== SOLVER_STATUS.SAT) return false;
 
-  // 6. Rejected counterexamples cannot be cached as refuted proofs
-  if (validationStatus === 'rejected' || validationStatus === 'failed') {
+  // 6. Fail-closed validation gate for refuted verdicts. A REFUTED proof is
+  // admitted to the cache only when its SAT counterexample was positively
+  // validated; null/unvalidated/not-applicable/refuted/failed all reject.
+  // This matches the REFUTED validation invariant shared with evidence
+  // admission (createSymbolicEvidence / isRefutedEvidence) so a refutation
+  // cannot enter the proof cache on an unverified solver witness.
+  if (verdict === 'refuted' && validationStatus !== 'validated') {
     return false;
   }
 

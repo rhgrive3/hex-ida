@@ -3,6 +3,8 @@ import path from 'node:path';
 import http from 'node:http';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { waitForFunctionRoute } from './browser-back-wait.mjs';
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
 const SHOTS = process.env.UI_SHOTS ? path.resolve(ROOT, process.env.UI_SHOTS) : null;
@@ -95,6 +97,86 @@ async function shellGeometry(page) {
   });
 }
 
+async function checkUiRootContract(page, browserName, viewportName) {
+  const result = await page.evaluate(async () => {
+    const [{ setUiRoot, uiRoot }, { setLang, lang }] = await Promise.all([
+      import(`/js/ui-root.js?issue5355=${Date.now()}`),
+      import(`/js/i18n.js?issue5355=${Date.now()}`),
+    ]);
+    const hadRoot = Object.prototype.hasOwnProperty.call(globalThis, '__HEX_UI_ROOT__');
+    const previousRoot = globalThis.__HEX_UI_ROOT__;
+    const host = document.createElement('div');
+    const iframe = document.createElement('iframe');
+    document.body.append(host);
+    document.body.append(iframe);
+    try {
+      const documentResult = setUiRoot(document.documentElement);
+      const documentElementAccepted = documentResult === document.documentElement
+        && uiRoot() === document.documentElement;
+      const hostResult = setUiRoot(host);
+      const hostElementAccepted = hostResult === host && uiRoot() === host;
+      const iframeRoot = iframe.contentDocument?.documentElement;
+      const iframeResult = iframeRoot && setUiRoot(iframeRoot);
+      const iframeElementAccepted = iframeResult === iframeRoot && uiRoot() === iframeRoot;
+      setUiRoot(host);
+
+      const invalidRoots = [
+        { nodeType: 1, classList: {}, style: {} },
+        {
+          nodeType: 1,
+          classList: host.classList,
+          style: host.style,
+          setAttribute: host.setAttribute.bind(host),
+          removeAttribute: host.removeAttribute.bind(host),
+          append: host.append.bind(host),
+          ownerDocument: {
+            defaultView: {
+              Element: { prototype: { getAttribute() { return null; } } },
+            },
+          },
+        },
+      ];
+      const rejectedRoots = invalidRoots.map((candidate) => {
+        try {
+          setUiRoot(candidate);
+          return false;
+        } catch (error) {
+          return error instanceof TypeError && /Hex UI root must be an Element/.test(error.message)
+            && uiRoot() === host;
+        }
+      });
+      const [rejectedSimple, rejectedForged] = rejectedRoots;
+      const rejectionPreservedRoot = uiRoot() === host;
+
+      setLang('en');
+      const englishAttribute = host.getAttribute('lang') === 'en';
+      const englishState = lang() === 'en';
+      setLang('ja');
+      const japaneseAttribute = host.getAttribute('lang') === 'ja';
+      const japaneseState = lang() === 'ja';
+      return {
+        documentElementAccepted,
+        hostElementAccepted,
+        iframeElementAccepted,
+        rejectedSimple,
+        rejectedForged,
+        rejectionPreservedRoot,
+        englishAttribute,
+        englishState,
+        japaneseAttribute,
+        japaneseState,
+      };
+    } finally {
+      if (hadRoot) globalThis.__HEX_UI_ROOT__ = previousRoot;
+      else delete globalThis.__HEX_UI_ROOT__;
+      host.remove();
+      iframe.remove();
+    }
+  });
+  const ok = Object.values(result).every(Boolean);
+  check(`${browserName}/${viewportName}: UI root validates native and userscript Elements`, ok, JSON.stringify(result));
+}
+
 async function openSample(page) {
   await page.evaluate(() => window.__app.openSample());
   await page.waitForFunction(() => !!window.__app.store.get('fileInfo'), null, { timeout: 20000 });
@@ -185,6 +267,7 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
     await page.waitForFunction(() => !!window.__hexUi, null, { timeout: 10000 });
     await page.waitForTimeout(350);
     await closeTransient(page);
+    await checkUiRootContract(page, browserName, viewportName);
 
     /*
      * Code first. The landing state is the workbench with its compact
@@ -254,8 +337,21 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
       await page.evaluate(() => { document.querySelector('.ui-route-host').scrollTop = 120; });
       await page.evaluate(() => window.__hexUi.router.navigate('/explorer/functions'));
       await page.evaluate(() => history.back());
-      await page.waitForTimeout(100);
-      check(`${browserName}/${viewportName}: browser back restores function route`, await page.locator('[data-screen="function"]').count() === 1);
+      const expectedFunctionPath = `/function/${fn}/overview`;
+      try {
+        await waitForFunctionRoute(
+          () => page.evaluate(() => ({
+            locationPath: window.location.hash.replace(/^#/, ''),
+            routerPath: window.__hexUi?.router?.current?.fullPath || null,
+            routeHostVisible: document.querySelector('#ui-route-host')?.hidden === false,
+            functionScreenCount: document.querySelectorAll('#ui-route-host:not([hidden]) [data-screen="function"]').length,
+          })),
+          expectedFunctionPath,
+        );
+        check(`${browserName}/${viewportName}: browser back restores function route`, true);
+      } catch (error) {
+        check(`${browserName}/${viewportName}: browser back restores function route`, false, error?.message || String(error));
+      }
       const restoredScroll = await page.evaluate(() => document.querySelector('.ui-route-host').scrollTop);
       check(`${browserName}/${viewportName}: route scroll state restores`, restoredScroll >= 0);
 

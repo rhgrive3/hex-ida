@@ -4,7 +4,7 @@
  */
 import { compileGoal } from '../goalc.js';
 import { createAgentTools } from './tools.js';
-import { planAnalysisGoal } from '../query/planner.js';
+import { createToolCallBudget, planAnalysisGoal } from '../query/planner.js';
 
 function canonicalAddress(value) {
   if (typeof value === 'bigint') return value >= 0n ? value : null;
@@ -16,10 +16,14 @@ function canonicalAddress(value) {
 }
 
 const FUNCTION_ADDRESS_FIRST_ARG_TOOLS = new Set([
-  'get_function', 'get_callers', 'get_callees', 'get_xrefs',
+  'get_function', 'get_callers', 'get_callees',
   'slice_backward', 'slice_forward', 'find_field_writers', 'find_field_readers',
   'find_thresholds', 'find_paths', 'get_semantic_facts', 'verify_field_update',
   'symbolic_execute', 'decompile', 'emulate',
+  // `get_xrefs` intentionally queries arbitrary target addresses (strings,
+  // data, globals) — the query planner routes data addresses through it — and
+  // its tool cost is `functions: 0`. Counting its first argument as function
+  // analysis made data-address lookups exhaust `maxFunctions` (#5917).
 ]);
 
 function addressFromRequest(tool, args) {
@@ -127,6 +131,23 @@ function explicitLimit(value, fallback, minimum = 0) {
   return Math.max(minimum, Math.floor(value));
 }
 
+function defaultMonotonicNow() {
+  try {
+    if (typeof performance !== 'undefined' && typeof performance.now === 'function') return performance.now();
+  } catch { /* fall through to wall clock */ }
+  return Date.now();
+}
+
+function monotonicClockOf(cfg) {
+  if (typeof cfg?.monotonicNow === 'function') return cfg.monotonicNow;
+  if (typeof cfg?.clock === 'function') return cfg.clock;
+  if (typeof cfg?.now === 'function') return cfg.now;
+  const budget = cfg?.budget;
+  if (typeof budget?.monotonicNow === 'function') return budget.monotonicNow;
+  if (typeof budget?.clock === 'function') return budget.clock;
+  return defaultMonotonicNow;
+}
+
 function budgetOf(opts) {
   return {
     maxToolCalls: explicitLimit(opts && opts.maxToolCalls, 24, 0),
@@ -151,6 +172,17 @@ function instructionCost(model) {
   return Number.isSafeInteger(n) && n > 0 ? n : 0;
 }
 
+const RUN_SIGNAL_OPTION_TOOLS = new Set(['search_strings', 'search_functions']);
+
+function toolArgsWithRunSignal(tool, args, signal) {
+  if (!RUN_SIGNAL_OPTION_TOOLS.has(tool)) return args;
+  const next = args.slice();
+  const options = next[1];
+  if (options == null) next[1] = { signal };
+  else if (typeof options === 'object' && !Array.isArray(options)) next[1] = { ...options, signal };
+  return next;
+}
+
 /** Deterministic mode: no model required. */
 export async function runDeterministicAgent(goal, context, opts) {
   const plan = await planAnalysisGoal(goal, context, opts);
@@ -171,11 +203,53 @@ export async function runAgent(config) {
   if (!llm || typeof llm.next !== 'function') return runDeterministicAgent(goal, context, { ...cfg, ...budget });
 
   const query = typeof goal === 'string' ? compileGoal(goal) : goal;
-  const started = Date.now();
-  const deadlineExceeded = () => Date.now() - started >= budget.timeoutMs;
+  const toolCallBudget = createToolCallBudget(budget.maxToolCalls);
+  const monotonicNow = monotonicClockOf(cfg);
+  const started = monotonicNow();
+  const elapsedMs = () => monotonicNow() - started;
+  const deadlineExceeded = () => elapsedMs() >= budget.timeoutMs;
   const externallyCancelled = () => cfg.signal?.aborted === true;
   const cancelled = () => externallyCancelled() || budget.isCancelled() || deadlineExceeded();
   const cancellationReason = () => externallyCancelled() || budget.isCancelled() ? 'cancelled' : 'timeout';
+  const awaitRunBudget = async (startOperation) => {
+    if (cancelled()) throw new Error(cancellationReason());
+    const remainingMs = Math.max(1, budget.timeoutMs - elapsedMs());
+    const controller = new AbortController();
+    const external = cfg.signal;
+    let rejectExternalAbort;
+    const externalAbortPromise = new Promise((_, reject) => { rejectExternalAbort = reject; });
+    let abortHandled = false;
+    const abort = () => {
+      if (abortHandled) return;
+      abortHandled = true;
+      controller.abort(external?.reason ?? 'cancelled');
+      rejectExternalAbort(new Error('cancelled'));
+    };
+    if (external?.aborted) abort();
+    else {
+      external?.addEventListener?.('abort', abort, { once:true });
+      if (external?.aborted) abort();
+    }
+    let timer;
+    const operation = Promise.resolve().then(() => startOperation(controller.signal, remainingMs));
+    try {
+      const value = await Promise.race([
+        operation,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            controller.abort('timeout');
+            reject(new Error('timeout'));
+          }, remainingMs);
+        }),
+        externalAbortPromise,
+      ]);
+      if (cancelled()) throw new Error(cancellationReason());
+      return value;
+    } finally {
+      clearTimeout(timer);
+      external?.removeEventListener?.('abort', abort);
+    }
+  };
   let disassembly = 0;
   const countedContext = typeof context.analyze === 'function' ? {
     ...context,
@@ -203,41 +277,15 @@ export async function runAgent(config) {
     if (cancelled()) { stopReason = cancellationReason(); break; }
     let step;
     try {
-      const remainingMs = Math.max(1, budget.timeoutMs - (Date.now() - started));
-      const controller = new AbortController();
-      const external = cfg.signal;
-      let rejectExternalAbort;
-      const externalAbortPromise = new Promise((_, reject) => { rejectExternalAbort = reject; });
-      let abortHandled = false;
-      const abort = () => {
-        if (abortHandled) return;
-        abortHandled = true;
-        controller.abort(external?.reason ?? 'cancelled');
-        rejectExternalAbort(new Error('cancelled'));
-      };
-      if (external?.aborted) abort();
-      else {
-        external?.addEventListener?.('abort', abort, {once:true});
-        if (external?.aborted) abort();
-      }
-      let timer;
-      try {
-        step = await Promise.race([
-          Promise.resolve(llm.next({
-            goal, query, observations: observations.slice(), availableTools, signal:controller.signal,
-            budget: {
-              remainingToolCalls: budget.maxToolCalls - call,
-              remainingFunctions: Math.max(0, budget.maxFunctions - usedFunctionCount()),
-              remainingDisassembly: Math.max(0, budget.maxDisassembly - disassembly),
-              remainingMs,
-            },
-          })),
-          new Promise((_, reject) => { timer=setTimeout(() => { controller.abort('timeout'); reject(new Error('timeout')); }, remainingMs); }),
-          externalAbortPromise,
-        ]);
-      } finally {
-        clearTimeout(timer); external?.removeEventListener?.('abort', abort);
-      }
+      step = await awaitRunBudget((signal, remainingMs) => llm.next({
+        goal, query, observations: observations.slice(), availableTools, signal,
+        budget: {
+          remainingToolCalls: toolCallBudget.remaining(),
+          remainingFunctions: Math.max(0, budget.maxFunctions - usedFunctionCount()),
+          remainingDisassembly: Math.max(0, budget.maxDisassembly - disassembly),
+          remainingMs,
+        },
+      }));
     } catch (err) {
       if (cancelled() || err?.message === 'cancelled') stopReason = cancellationReason();
       else if (err?.message === 'timeout') stopReason = 'timeout';
@@ -252,12 +300,22 @@ export async function runAgent(config) {
     }
     const addr = addressFromRequest(req.tool, req.args);
     if (addr != null) {
-      functions.add(addr.toString());
+      // Interior addresses of one function share the canonical budget slot:
+      // resolve the function start before accounting, matching the loader's
+      // cache identity (#5424).
+      let budgetKey = addr.toString();
+      try {
+        const range = context.program?.functionRange?.(addr);
+        if (range && range.start != null) budgetKey = range.start.toString();
+      } catch { /* keep the raw address key */ }
+      functions.add(budgetKey);
       if (usedFunctionCount() > budget.maxFunctions) { stopReason = 'function-budget'; break; }
     }
+    if (!toolCallBudget.consume()) { stopReason = 'tool-call-budget'; break; }
     let result;
-    try { result = await tools[req.tool](...req.args); }
-    catch (err) {
+    try {
+      result = await awaitRunBudget((signal) => tools[req.tool](...toolArgsWithRunSignal(req.tool, req.args, signal)));
+    } catch (err) {
       const message = (err && err.message) || String(err);
       result = { tool: req.tool, error: message };
       if (message === 'disassembly-budget' || message === 'function-budget' || message === 'timeout' || message === 'cancelled') stopReason = message;
@@ -275,13 +333,14 @@ export async function runAgent(config) {
   // without starting new analysis work.
   const remainingFunctions = Math.max(0, budget.maxFunctions - usedFunctionCount());
   const remainingDisassembly = Math.max(0, budget.maxDisassembly - disassembly);
-  const remainingTimeout = Math.max(0, budget.timeoutMs - (Date.now() - started));
+  const remainingTimeout = Math.max(0, budget.timeoutMs - (elapsedMs()));
   const plan = await planAnalysisGoal(query, countedContext, {
     maxFunctions: remainingFunctions,
     maxDisassembly: remainingDisassembly,
     maxSearchResults: cfg.maxSearchResults,
     timeoutMs: remainingTimeout,
     isCancelled: cancelled,
+    toolCallBudget,
     tools,
   });
   for (const e of plan.evidence || []) evidence.add(e);
@@ -319,6 +378,6 @@ export async function runAgent(config) {
     plan,
     observations,
     mode: 'agent',
-    stats: { toolCalls: observations.length, functions: usedFunctionCount(), disassembly, elapsedMs: Date.now() - started },
+    stats: { toolCalls: toolCallBudget.used, functions: usedFunctionCount(), disassembly, elapsedMs: elapsedMs() },
   };
 }

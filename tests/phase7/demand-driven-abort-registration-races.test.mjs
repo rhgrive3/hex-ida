@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 const source = fs.readFileSync(new URL('../../js/analysis/demand-driven-runtime.js', import.meta.url), 'utf8');
-const waitStart = source.indexOf('function waitForShared(entry, signal)');
+const waitStart = source.indexOf('function waitForShared(entry, signal, onDetach');
 const waitEnd = source.indexOf('function mergeMapCounts', waitStart);
 const wait = source.slice(waitStart, waitEnd);
-assert.match(wait, /addEventListener\('abort', onAbort, \{ once: true \}\);\n    if \(signal\?\.aborted\) \{ onAbort\(\); return; \}\n    entry\.promise\.then/);
+assert.match(wait, /addEventListener\('abort', onAbort, \{ once: true \}\);\n    entry\.promise\.then/);
+assert.match(wait, /if \(signal\?\.aborted && !settled\) onAbort\(\);/);
 assert.match(wait, /if \(!entry\.settled && entry\.waiters === 0\) \{\n        entry\.cancelled = true;\n        entry\.cancel\?\.\(\);/);
 
 const scheduleStart = source.indexOf('function scheduleBackgroundIdentity(signal)');

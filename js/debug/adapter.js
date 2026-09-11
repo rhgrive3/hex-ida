@@ -71,6 +71,17 @@ function breakpointId(value, fallback) {
   return value;
 }
 
+function breakpointEnabled(spec) {
+  let enabled;
+  try { enabled = spec.enabled; }
+  catch { throw new DebugAdapterError('invalid-breakpoint', 'breakpoint enabled must be a boolean'); }
+  if (enabled === undefined) return true;
+  if (typeof enabled !== 'boolean') {
+    throw new DebugAdapterError('invalid-breakpoint', 'breakpoint enabled must be a boolean');
+  }
+  return enabled;
+}
+
 export function normalizeBreakpoint(spec) {
   if (!spec || typeof spec !== 'object' || Array.isArray(spec)) throw new DebugAdapterError('invalid-breakpoint', 'breakpoint must be an object');
   const kind = spec.kind == null
@@ -80,7 +91,7 @@ export function normalizeBreakpoint(spec) {
   if (kind === 'address') {
     const address = asAddress(spec.address);
     const id = breakpointId(spec.id, `bp:address:${address}`);
-    return { id, kind, address, enabled: spec.enabled !== false };
+    return { id, kind, address, enabled: breakpointEnabled(spec) };
   }
   if (kind === 'function') {
     if (typeof spec.function !== 'string') throw new DebugAdapterError('invalid-breakpoint', 'function breakpoint requires function');
@@ -88,7 +99,7 @@ export function normalizeBreakpoint(spec) {
     if (!fn) throw new DebugAdapterError('invalid-breakpoint', 'function breakpoint requires function');
     const address = spec.address == null ? null : asAddress(spec.address);
     const id = breakpointId(spec.id, `bp:function:${fn}:${address ?? ''}`);
-    return { id, kind, function: fn, address, enabled: spec.enabled !== false };
+    return { id, kind, function: fn, address, enabled: breakpointEnabled(spec) };
   }
   if (kind === 'conditional') {
     if (spec.address == null) throw new DebugAdapterError('invalid-breakpoint', 'conditional breakpoint requires address');
@@ -97,7 +108,7 @@ export function normalizeBreakpoint(spec) {
     const condition = spec.condition.trim();
     if (!condition) throw new DebugAdapterError('invalid-breakpoint', 'conditional breakpoint requires condition');
     const id = breakpointId(spec.id, `bp:conditional:${address}:${condition}`);
-    return { id, kind, address, condition, enabled: spec.enabled !== false };
+    return { id, kind, address, condition, enabled: breakpointEnabled(spec) };
   }
   const address = asAddress(spec.address);
   const size = boundedInteger(spec.size, 1, 1, 4096, 'watchpoint size');
@@ -109,7 +120,7 @@ export function normalizeBreakpoint(spec) {
     throw new DebugAdapterError('invalid-watchpoint-access', `unsupported watchpoint access: ${spec.access}`, { access: spec.access, allowed: WATCHPOINT_ACCESS });
   }
   const id = breakpointId(spec.id, `bp:memory:${address}:${size}:${access}`);
-  return { id, kind: 'memory', address, size, access, enabled: spec.enabled !== false };
+  return { id, kind: 'memory', address, size, access, enabled: breakpointEnabled(spec) };
 }
 
 const METHOD_CAPABILITY = Object.freeze({
@@ -127,6 +138,22 @@ export function capabilityMethod(capability) {
   return null;
 }
 
+function notImplemented(adapter, capability, method) {
+  adapter.require(capability);
+  throw new DebugAdapterError('not-implemented', `${method} is advertised but not implemented`, { capability, method });
+}
+
+function capabilityImplemented(adapter, capability) {
+  const method = capabilityMethod(capability);
+  if (!method) return true;
+  const implementation = adapter[method];
+  if (typeof implementation !== 'function') return false;
+  if (implementation !== DebugAdapter.prototype[method]) return true;
+  return capability !== 'traceFunction'
+    && capability.startsWith('trace')
+    && adapter.trace !== DebugAdapter.prototype.trace;
+}
+
 export class DebugAdapter {
   constructor({ id, kind = 'generic', capabilities = {} } = {}) {
     if (typeof kind !== 'string' || !kind.trim()) {
@@ -137,25 +164,38 @@ export class DebugAdapter {
     }
     this.id = id == null ? `${kind}-adapter` : id;
     this.kind = kind;
-    this.capabilities = normalizeCapabilities({ connect: true, disconnect: true, ...capabilities });
+    this.capabilities = normalizeCapabilities(
+      capabilities instanceof Set
+        ? new Set(['connect', 'disconnect', ...capabilities])
+        : { connect: true, disconnect: true, ...capabilities },
+    );
     this.connected = false;
   }
   negotiate(requested = null) {
-    if (!requested) return this.capabilities;
+    if (!requested) {
+      const out = {};
+      for (const key of DEBUG_CAPABILITIES) {
+        Object.defineProperty(out, key, {
+          value: !!this.capabilities[key] && capabilityImplemented(this, key),
+          enumerable: true, configurable: true, writable: true,
+        });
+      }
+      return Object.freeze(out);
+    }
     const requestedMap = requested instanceof Set || Array.isArray(requested) ? null : requested;
     const keys = requestedMap ? Object.keys(requestedMap) : [...requested];
     const out = {};
     for (const key of keys) {
       const explicitlyRequested = !requestedMap || requestedMap[key] === true;
       const value = explicitlyRequested && DEBUG_CAPABILITIES.includes(key)
-        ? !!this.capabilities[key] && (!capabilityMethod(key) || typeof this[capabilityMethod(key)] === 'function')
+        ? !!this.capabilities[key] && capabilityImplemented(this, key)
         : false;
       Object.defineProperty(out, key, { value, enumerable: true, configurable: true, writable: true });
     }
     return Object.freeze(out);
   }
   require(capability) {
-    if (!this.capabilities[capability]) throw new DebugAdapterError('unsupported', `${this.kind} adapter does not support ${capability}`, { capability });
+    if (!DEBUG_CAPABILITIES.includes(capability) || this.capabilities[capability] !== true) throw new DebugAdapterError('unsupported', `${this.kind} adapter does not support ${capability}`, { capability });
   }
   requireMethod(method) {
     if (!Object.prototype.hasOwnProperty.call(METHOD_CAPABILITY, method)) {
@@ -166,13 +206,13 @@ export class DebugAdapter {
   }
   async connect() { this.connected = true; return { adapter: this.id, capabilities: this.capabilities }; }
   async disconnect() { this.connected = false; return { disconnected: true }; }
-  async attach() { this.require('attach'); }
-  async launch() { this.require('launch'); }
-  async pause() { this.require('pause'); }
-  async resume() { this.require('resume'); }
-  async stepInto() { this.require('stepInto'); }
-  async stepOver() { this.require('stepOver'); }
-  async stepOut() { this.require('stepOut'); }
+  async attach() { return notImplemented(this, 'attach', 'attach'); }
+  async launch() { return notImplemented(this, 'launch', 'launch'); }
+  async pause() { return notImplemented(this, 'pause', 'pause'); }
+  async resume() { return notImplemented(this, 'resume', 'resume'); }
+  async stepInto() { return notImplemented(this, 'stepInto', 'stepInto'); }
+  async stepOver() { return notImplemented(this, 'stepOver', 'stepOver'); }
+  async stepOut() { return notImplemented(this, 'stepOut', 'stepOut'); }
   async setBreakpoint(spec) {
     const bp = normalizeBreakpoint(spec);
     const cap = bp.kind === 'address' ? 'breakpointAddress' : bp.kind === 'function' ? 'breakpointFunction' : bp.kind === 'conditional' ? 'breakpointConditional' : 'watchpointMemory';
@@ -181,14 +221,14 @@ export class DebugAdapter {
   }
   async removeBreakpoint() { this.require('removeBreakpoint'); throw new DebugAdapterError('not-implemented', 'removeBreakpoint is not implemented'); }
   async listBreakpoints() { this.require('listBreakpoints'); throw new DebugAdapterError('not-implemented', 'listBreakpoints is not implemented'); }
-  async readRegisters() { this.require('readRegisters'); }
-  async writeRegister() { this.require('writeRegister'); }
-  async readMemory() { this.require('readMemory'); }
-  async writeMemory() { this.require('writeMemory'); }
-  async getThreads() { this.require('threads'); }
-  async getModules() { this.require('modules'); }
-  async getBacktrace() { this.require('backtrace'); }
-  async evaluate() { this.require('evaluate'); }
+  async readRegisters() { return notImplemented(this, 'readRegisters', 'readRegisters'); }
+  async writeRegister() { return notImplemented(this, 'writeRegister', 'writeRegister'); }
+  async readMemory() { return notImplemented(this, 'readMemory', 'readMemory'); }
+  async writeMemory() { return notImplemented(this, 'writeMemory', 'writeMemory'); }
+  async getThreads() { return notImplemented(this, 'threads', 'getThreads'); }
+  async getModules() { return notImplemented(this, 'modules', 'getModules'); }
+  async getBacktrace() { return notImplemented(this, 'backtrace', 'getBacktrace'); }
+  async evaluate() { return notImplemented(this, 'evaluate', 'evaluate'); }
   async trace(...args) { this.require('traceFunction'); return this._traceCapability('traceFunction', ...args); }
   async traceCall(...args) { this.require('traceCall'); return this._traceCapability('traceCall', ...args); }
   async traceReturn(...args) { this.require('traceReturn'); return this._traceCapability('traceReturn', ...args); }
@@ -201,9 +241,9 @@ export class DebugAdapter {
     }
     throw new DebugAdapterError('not-implemented', `${capability} is advertised but not implemented`, { capability });
   }
-  async watchMemory() { this.require('watchpointMemory'); }
-  async getObjCRuntimeInfo() { this.require('objcRuntime'); }
-  async getSwiftRuntimeInfo() { this.require('swiftRuntime'); }
-  async cancel() { this.require('cancel'); }
-  async replay() { this.require('replay'); }
+  async watchMemory() { return notImplemented(this, 'watchpointMemory', 'watchMemory'); }
+  async getObjCRuntimeInfo() { return notImplemented(this, 'objcRuntime', 'getObjCRuntimeInfo'); }
+  async getSwiftRuntimeInfo() { return notImplemented(this, 'swiftRuntime', 'getSwiftRuntimeInfo'); }
+  async cancel() { return notImplemented(this, 'cancel', 'cancel'); }
+  async replay() { return notImplemented(this, 'replay', 'replay'); }
 }

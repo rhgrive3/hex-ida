@@ -3,11 +3,13 @@ import {
   MEMBER_REF_TABLE,
   METHOD_DEF_TABLE,
   METHOD_SPEC_TABLE,
+  STANDALONE_SIG_TABLE,
   readCilMetadataBlob,
   readCilMetadataString,
 } from './call-signature-metadata.js';
 import {
   parseCilMethodSignature,
+  parseCilLocalVarSignature,
   parseCilMethodSpecInstantiation,
   substituteCilMethodGeneric,
 } from './call-signature-types.js';
@@ -36,7 +38,7 @@ function resolveIndexed(index, token, depth = 0) {
       const base = resolveIndexed(index, baseToken, depth + 1);
       if (!base.complete) return base;
       const args = parseCilMethodSpecInstantiation(readCilMetadataBlob(index.blobHeap, row.instantiation,
-        'cil-call-signature-methodspec-blob-invalid'));
+        'cil-call-signature-methodspec-blob-invalid'), index.typeDefOrRefRowCounts);
       if (args.length !== base.signature.genericParameterCount) fail('cil-call-signature-methodspec-arity-mismatch');
       const parameters = base.signature.parameters.map((value) => substituteCilMethodGeneric(value, args));
       const returnValue = substituteCilMethodGeneric(base.signature.returnValue, args);
@@ -70,7 +72,14 @@ function resolveIndexed(index, token, depth = 0) {
     const methodName = readCilMetadataString(index.stringsHeap, row.nameIndex,
       'cil-call-signature-method-name-invalid');
     const signature = parseCilMethodSignature(readCilMetadataBlob(index.blobHeap, blobIndex,
-      'cil-call-signature-blob-invalid'));
+      'cil-call-signature-blob-invalid'), index.typeDefOrRefRowCounts);
+    if (table === METHOD_DEF_TABLE) {
+      if (!Number.isSafeInteger(row.accessFlags) || row.accessFlags < 0 || row.accessFlags > 0xffff) {
+        fail('cil-call-signature-methoddef-flags-invalid');
+      }
+      const isStatic = (row.accessFlags & 0x0010) !== 0;
+      if (isStatic === signature.hasThis) fail('cil-call-signature-methoddef-static-hasthis-mismatch');
+    }
     return Object.freeze({
       complete:true,
       signature,
@@ -83,6 +92,7 @@ function resolveIndexed(index, token, depth = 0) {
         signatureBlobIndex:blobIndex,
         nameStringIndex:row.nameIndex,
         methodName,
+        ...(table === METHOD_DEF_TABLE ? { methodAccessFlags:row.accessFlags } : {}),
       }),
     });
   } catch (error) {
@@ -93,19 +103,106 @@ function resolveIndexed(index, token, depth = 0) {
   }
 }
 
-export function createCilCallSignatureResolver(cilImage) {
-  let index;
+function buildResolverIndex(cilImage) {
   try {
-    index = buildCilCallMetadataIndex(cilImage?.rawBytes);
+    return { index:buildCilCallMetadataIndex(cilImage?.rawBytes), reason:null };
   } catch (error) {
-    const reason = error instanceof Error ? error.message : 'cil-call-signature-metadata-invalid';
-    return () => Object.freeze({ complete:false, reason });
+    return {
+      index:null,
+      reason:error instanceof Error ? error.message : 'cil-call-signature-metadata-invalid',
+    };
   }
+}
+
+export function createCilCallSignatureResolver(cilImage) {
+  const { index, reason } = buildResolverIndex(cilImage);
+  if (!index) return () => Object.freeze({ complete:false, reason });
   return (token) => resolveIndexed(index, token);
 }
 
-export function createCilCallStackEffect(kind, resolution) {
-  if (!['call', 'callvirt', 'newobj'].includes(kind)) fail('cil-call-stack-kind-invalid');
+export function createCilMethodSignatureResolver(cilImage) {
+  const { index, reason } = buildResolverIndex(cilImage);
+  if (!index) return () => Object.freeze({ complete:false, reason });
+
+  return (methodBody) => {
+    const bodyOffset = methodBody?.headerOffset;
+    if (!Number.isSafeInteger(bodyOffset) || bodyOffset < 0) {
+      return Object.freeze({ complete:false, reason:'cil-return-method-body-identity-unavailable' });
+    }
+
+    const matches = [];
+    for (let row = 0; row < index.methodDefs.length; row++) {
+      if (index.methodDefs[row]?.bodyOffset === bodyOffset) matches.push(row + 1);
+    }
+    if (matches.length !== 1) {
+      return Object.freeze({
+        complete:false,
+        reason:matches.length === 0
+          ? 'cil-return-methoddef-unresolved'
+          : 'cil-return-methoddef-ambiguous',
+      });
+    }
+
+    const rid = matches[0];
+    const methodToken = tokenFor(METHOD_DEF_TABLE, rid);
+    const resolved = resolveIndexed(index, methodToken);
+    return Object.freeze({
+      ...resolved,
+      methodToken,
+      bodyOffset,
+    });
+  };
+}
+
+// Local slot typing for the lifter (#5353): ldloc*/stloc* resolve their width
+// and stack type from the fat header's LocalVarSigTok authority instead of
+// fabricating a 32-bit exact fact. Arguments ride on the MethodDef signature
+// authority already resolved for the enclosing method.
+export function createCilLocalTypeResolver(cilImage) {
+  const { index, reason } = buildResolverIndex(cilImage);
+  if (!index) {
+    return () => Object.freeze({ complete:false, reason, locals:null });
+  }
+
+  const cache = new Map();
+  return (methodBody) => {
+    if (cache.has(methodBody)) return cache.get(methodBody);
+    let declared;
+    const token = methodBody?.localVarSigTok;
+    if (!Number.isSafeInteger(token) || token <= 0) {
+      // No LocalVarSigTok: the method declares zero typed locals, so any
+      // access is out of frame rather than an unknown 32-bit slot.
+      declared = Object.freeze({ complete:true, reason:null, locals:[] });
+    } else if ((token >>> 24) !== STANDALONE_SIG_TABLE) {
+      declared = Object.freeze({ complete:false, reason:'cil-local-var-sig-token-invalid', locals:null });
+    } else {
+      const rid = token & 0x00ffffff;
+      const blobIndex = index.standAloneSigs[rid - 1];
+      if (!Number.isSafeInteger(blobIndex) || blobIndex < 1) {
+        declared = Object.freeze({ complete:false, reason:'cil-local-var-sig-row-missing', locals:null });
+      } else {
+        try {
+          const blob = readCilMetadataBlob(index.blobHeap, blobIndex, 'cil-local-var-sig-blob-invalid');
+          declared = Object.freeze({
+            complete:true,
+            reason:null,
+            locals:parseCilLocalVarSignature(blob, index.typeDefOrRefRowCounts),
+          });
+        } catch (error) {
+          declared = Object.freeze({
+            complete:false,
+            reason:error instanceof Error ? error.message : 'cil-local-var-signature-invalid',
+            locals:null,
+          });
+        }
+      }
+    }
+    cache.set(methodBody, declared);
+    return declared;
+  };
+}
+
+export function createCilCallStackEffect(kind, resolution) {  if (!['call', 'callvirt', 'newobj'].includes(kind)) fail('cil-call-stack-kind-invalid');
   if (!resolution?.complete || !resolution.signature) {
     return Object.freeze({
       complete:false,

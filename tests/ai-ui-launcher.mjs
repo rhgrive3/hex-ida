@@ -3,7 +3,7 @@
  * rule that matters most — opening the assistant must never make the code
  * unreachable.
  */
-import { openApp, reporter, run, stubEngine, ask } from './ai-ui-support.mjs';
+import { openApp, reporter, run, stubEngine, ask, waitForLayoutReady } from './ai-ui-support.mjs';
 
 const VIEWPORTS = [
   ['desktop', 1440, 900, 'dock'],
@@ -17,6 +17,13 @@ await run(async ({ browser }) => {
 
   for (const [name, width, height, expectedLayout] of VIEWPORTS) {
     const { context, page, errors } = await openApp(browser, { width, height });
+
+    if (name === 'desktop') {
+      const prefs = await page.evaluate(() => {
+        try { return JSON.parse(localStorage.getItem('hexviewer.prefs.v1') || 'null'); } catch { return null; }
+      });
+      check('assistant harness marks onboarding seen before app boot', prefs?.guideSeen === true, JSON.stringify(prefs));
+    }
 
     const closed = await page.evaluate(() => {
       const launcher = document.getElementById('ai-launcher');
@@ -42,7 +49,7 @@ await run(async ({ browser }) => {
     check(`${name}: launcher does not sit on top of the primary navigation`, !overlapsNav || width >= 900, JSON.stringify(closed.nav.slice(-1)));
 
     await page.click('#ai-launcher');
-    await page.waitForTimeout(280);
+    await waitForLayoutReady(page, '#ai-panel', expectedLayout);
     const open = await page.evaluate(() => {
       const panel = document.getElementById('ai-panel');
       const rect = panel.getBoundingClientRect();
@@ -90,7 +97,7 @@ await run(async ({ browser }) => {
     }
 
     await page.keyboard.press('Escape');
-    await page.waitForTimeout(220);
+    await page.locator('#ai-panel').waitFor({ state: 'hidden', timeout: 2000 });
     const afterEscape = await page.evaluate(() => ({
       hidden: document.getElementById('ai-panel').hidden,
       focus: document.activeElement && document.activeElement.id,
@@ -100,6 +107,130 @@ await run(async ({ browser }) => {
       afterEscape.hidden === true && afterEscape.focus === 'ai-launcher' && !afterEscape.docked, JSON.stringify(afterEscape));
 
     check(`${name}: no page errors`, errors.length === 0, errors.slice(0, 3).join(' | '));
+    await context.close();
+  }
+
+  /* A deterministic finite animation longer than every historical fixed wait
+   * must still settle through the readiness helper before bounds are sampled. */
+  {
+    const { context, page, errors } = await openApp(browser, { width: 1440, height: 900 });
+    const delayedDuration = 650;
+    await page.addStyleTag({ content: `#ai-panel { animation-duration: ${delayedDuration}ms !important; }` });
+    await page.click('#ai-launcher');
+    const started = await page.evaluate(() => {
+      const panel = document.getElementById('ai-panel');
+      const animation = panel.getAnimations({ subtree: true }).find((item) => {
+        const timing = item.effect?.getComputedTiming?.();
+        return timing?.iterations !== Infinity && (item.playState === 'running' || item.playState === 'pending');
+      });
+      const timing = animation?.effect?.getComputedTiming?.();
+      return { layout: panel.dataset.layout, state: animation?.playState || null, duration: timing?.duration || null };
+    });
+    check('readiness regression delays a finite panel animation beyond fixed waits',
+      started.layout === 'dock' && (started.state === 'running' || started.state === 'pending') && started.duration >= delayedDuration,
+      JSON.stringify(started));
+    await waitForLayoutReady(page, '#ai-panel', 'dock');
+    const settled = await page.evaluate(() => {
+      const panel = document.getElementById('ai-panel');
+      const rect = panel.getBoundingClientRect();
+      return { layout: panel.dataset.layout, x: rect.x, right: rect.right, bottom: rect.bottom };
+    });
+    check('readiness regression samples exact settled viewport bounds',
+      settled.layout === 'dock' && settled.x >= -1 && settled.right <= 1441 && settled.bottom <= 901,
+      JSON.stringify(settled));
+
+    const timeoutStarted = Date.now();
+    let timeoutMessage = '';
+    try { await waitForLayoutReady(page, '#ai-panel', 'layout-that-never-arrives', 120); }
+    catch (error) { timeoutMessage = String(error?.message || error); }
+    const timeoutElapsed = Date.now() - timeoutStarted;
+    check('layout readiness rejects an impossible layout within its bound',
+      /Timed out waiting for #ai-panel layout/.test(timeoutMessage) && timeoutElapsed < 1000,
+      JSON.stringify({ timeoutElapsed, timeoutMessage }));
+    check('deterministic animation readiness probe has no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
+    await context.close();
+  }
+
+  /* The non-onboarding path must not schedule the guide at all.  The timer
+     probe is installed before app.js boots, so this remains deterministic
+     even if the page is slow enough to expose the old cleanup race. */
+  {
+    const { context, page, errors } = await openApp(browser, { width: 1440, height: 900, controlWelcomeTimer: true });
+    const initial = await page.evaluate(() => ({
+      scheduled: window.__hexWelcomeTimerState?.welcomeScheduled ?? null,
+      cleanup: window.__hexWelcomeInitialCleanupComplete === true,
+      guide: !!document.querySelector('#overlays .guide-nav'),
+    }));
+    check('default assistant boot schedules no delayed welcome guide',
+      initial.scheduled === 0 && initial.cleanup && !initial.guide, JSON.stringify(initial));
+    await page.click('#ai-launcher');
+    await page.locator('#ai-panel').waitFor({ state: 'visible', timeout: 2000 });
+    const opened = await page.evaluate(() => ({
+      hidden: document.getElementById('ai-panel').hidden,
+      expanded: document.getElementById('ai-launcher').getAttribute('aria-expanded'),
+    }));
+    check('default assistant launcher remains unobstructed after cleanup',
+      opened.hidden === false && opened.expanded === 'true', JSON.stringify(opened));
+    check('default assistant timer probe has no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
+    await context.close();
+  }
+
+  /* Reproduce the old ordering without relying on wall-clock timing: the
+     welcome callback is captured before boot, the legacy one-shot cleanup
+     completes, and only then is the real product callback released. */
+  {
+    const { context, page, errors } = await openApp(browser, {
+      width: 1440,
+      height: 900,
+      onboarding: true,
+      cleanupOnboarding: true,
+      controlWelcomeTimer: true,
+    });
+    const beforeRelease = await page.evaluate(() => ({
+      scheduled: window.__hexWelcomeTimerState?.welcomeScheduled ?? null,
+      released: window.__hexWelcomeTimerState?.welcomeReleased ?? null,
+      cleanup: window.__hexWelcomeInitialCleanupComplete === true,
+      guide: !!document.querySelector('#overlays .guide-nav'),
+    }));
+    check('legacy cleanup completes before the delayed welcome callback',
+      beforeRelease.scheduled === 1 && beforeRelease.released === 0 && beforeRelease.cleanup && !beforeRelease.guide,
+      JSON.stringify(beforeRelease));
+    const released = await page.evaluate(() => window.__hexReleaseWelcomeGuide());
+    check('the controlled welcome callback releases after cleanup', released === true, String(released));
+    await page.locator('#overlays .guide-nav').waitFor({ state: 'visible', timeout: 2000 });
+    const guide = await page.evaluate(() => ({
+      title: document.querySelector('#overlays .sheet .sheet-title')?.textContent || '',
+      navigation: document.querySelectorAll('#overlays .guide-nav button').length,
+      released: window.__hexWelcomeTimerState?.welcomeReleased ?? null,
+    }));
+    check('a guide arriving after the old cleanup remains real product UI',
+      guide.navigation > 0 && guide.title.length > 0 && guide.released === 1, JSON.stringify(guide));
+    await page.keyboard.press('Escape');
+    await page.locator('#overlays .guide-nav').waitFor({ state: 'detached', timeout: 2000 });
+    check('the delayed guide remains dismissible after controlled release',
+      await page.locator('#overlays .guide-nav').count() === 0);
+    check('controlled delayed-guide regression has no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
+    await context.close();
+  }
+
+  /* Onboarding remains an explicit, independently testable product path. */
+  {
+    const { context, page, errors } = await openApp(browser, { width: 1440, height: 900, onboarding: true });
+    const prefs = await page.evaluate(() => {
+      try { return JSON.parse(localStorage.getItem('hexviewer.prefs.v1') || 'null'); } catch { return null; }
+    });
+    check('explicit onboarding mode leaves the welcome guide enabled', prefs?.guideSeen === false, JSON.stringify(prefs));
+    await page.locator('#overlays .guide-nav').waitFor({ state: 'visible', timeout: 2000 });
+    const guide = await page.evaluate(() => ({
+      title: document.querySelector('#overlays .sheet .sheet-title')?.textContent || '',
+      navigation: document.querySelectorAll('#overlays .guide-nav button').length,
+    }));
+    check('explicit onboarding mode renders the delayed welcome guide', guide.navigation > 0 && guide.title.length > 0, JSON.stringify(guide));
+    await page.keyboard.press('Escape');
+    await page.locator('#overlays .guide-nav').waitFor({ state: 'detached', timeout: 2000 });
+    const dismissed = await page.locator('#overlays .guide-nav').count();
+    check('explicit onboarding mode can dismiss the welcome guide', dismissed === 0, String(dismissed));
+    check('explicit onboarding mode has no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
     await context.close();
   }
 
@@ -153,9 +284,9 @@ await run(async ({ browser }) => {
   {
     const { context, page } = await openApp(browser, { width: 1133, height: 744 });
     await page.click('#ai-launcher');
-    await page.waitForTimeout(200);
+    await waitForLayoutReady(page, '#ai-panel', 'dock');
     await page.setViewportSize({ width: 744, height: 1133 });
-    await page.waitForTimeout(400);
+    await waitForLayoutReady(page, '#ai-panel', 'sheet');
     const rotated = await page.evaluate(() => {
       const panel = document.getElementById('ai-panel');
       const rect = panel.getBoundingClientRect();

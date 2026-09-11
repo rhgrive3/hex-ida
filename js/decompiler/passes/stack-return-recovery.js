@@ -7,6 +7,7 @@ import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
 } from '../../semantics/memoryssa/queries.js';
+import { uniqueReachableMergePredecessorIndex } from './stack-join-arm-proof.js';
 
 const INVERSE = Object.freeze({ eq:'ne', ne:'eq', lt:'ge', le:'gt', gt:'le', ge:'lt' });
 const EXACT_VIEW_MOV_SUBS = new Set([null, 'copy', 'bitcast', 'trunc', 'zext']);
@@ -139,22 +140,10 @@ function branchArms(ir, block, term, opts) {
     : { yes:null, no:null, exact:false };
 }
 
-function canReach(ir, start, target, blocked, cap = 256) {
-  if (start == null || target == null) return false;
-  const queue = [start], seen = new Set();
-  while (queue.length && cap-- > 0) {
-    const at = queue.shift();
-    if (at === target) return true;
-    if (at === blocked || seen.has(at)) continue;
-    seen.add(at);
-    for (const next of ir.blocks?.[at]?.succ || []) if (!seen.has(next)) queue.push(next);
-  }
-  return false;
-}
-
 function armPredecessorIndex(ir, controller, successor, merge, predecessors) {
-  if (successor === merge) return predecessors.indexOf(controller.index);
-  return predecessors.findIndex((pred) => canReach(ir, successor, pred, merge));
+  return uniqueReachableMergePredecessorIndex(
+    ir, controller.index, successor, merge, predecessors,
+  );
 }
 
 function dominates(ir, candidate, node) {

@@ -203,7 +203,6 @@ export function createRiscv64EffectContext(decoded, context = {}) {
 }
 
 export function normalizeRiscv64Instruction(decoded, context = {}) {
-  if (decoded?.contractVersion === 'riscv64-decoded-instruction/v1' && decoded.instructionId && decoded.origin) return decoded;
   return createRiscv64DecodedInstruction({
     ...decoded,
     ...(decoded?.instructionId == null && context.instructionId != null ? { instructionId: context.instructionId } : {}),
@@ -216,11 +215,17 @@ export function normalizeRiscv64Instruction(decoded, context = {}) {
  * RISC-V memory accesses may raise access, page, and misaligned-address
  * exceptions. The frozen Phase 6 profile does not model the privileged
  * architecture, so alignment cannot be proven and the fault stays explicit.
+ * 8-bit accesses are exempt: every byte address is naturally aligned to a
+ * 1-byte datatype, so an address-misaligned cause is architecturally
+ * impossible for LB/LBU/SB.
  */
 export function riscv64MemoryFaults(direction, widthBits) {
+  const causes = Number(widthBits) === 8
+    ? ['access-fault', 'page-fault']
+    : ['access-fault', 'page-fault', 'address-misaligned'];
   return Object.freeze([{
     kind: 'memory-access-fault',
     condition: { kind: 'riscv64-memory-fault', direction, widthBits },
-    detail: { causes: ['access-fault', 'page-fault', 'address-misaligned'] },
+    detail: { causes },
   }]);
 }

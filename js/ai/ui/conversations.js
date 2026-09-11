@@ -18,6 +18,7 @@ import { normalizeResponse } from '../render/normalize.js';
 export const MAX_CONVERSATIONS = 20;
 export const MAX_PERSISTED_TURNS = 40;
 export const MAX_PERSISTED_TEXT = 4000;
+export const MAX_PERSISTED_ERROR = 400;
 export const MAX_TITLE = 28;
 export const LEGACY_STORAGE_KEY = 'hex.ai.conversations.v1';
 export const STORAGE_KEY = 'hex.ai.conversations.v2';
@@ -73,11 +74,25 @@ export function conversationTitle(conversation, ja = true) {
 
 /* ── persistence ────────────────────────────────────────────── */
 
+/** Keep the UTF-16 storage cap without cutting a supplementary code point. */
+function persistedErrorDetail(value) {
+  const text = String(value);
+  let end = Math.min(text.length, MAX_PERSISTED_ERROR);
+  if (end > 0 && end < text.length) {
+    const last = text.charCodeAt(end - 1);
+    const next = text.charCodeAt(end);
+    if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end--;
+  }
+  return text.slice(0, end);
+}
+
 function serializeTurn(turn) {
   const base = { role: turn.role, mode: turn.mode, style: turn.style, scope: turn.scope, at: turn.at || Date.now() };
   if (turn.role === 'user') return { ...base, text: String(turn.text || '').slice(0, MAX_PERSISTED_TEXT) };
   const answer = turn.response && turn.response.answerText ? turn.response.answerText : turn.text;
-  return { ...base, status: turn.status === 'running' ? 'cancelled' : turn.status, text: String(answer || '').slice(0, MAX_PERSISTED_TEXT) };
+  const record = { ...base, status: turn.status === 'running' ? 'cancelled' : turn.status, text: String(answer || '').slice(0, MAX_PERSISTED_TEXT) };
+  if (record.status === 'error' && turn.error) record.error = persistedErrorDetail(turn.error);
+  return record;
 }
 
 function reviveTurn(raw, index) {
@@ -87,9 +102,11 @@ function reviveTurn(raw, index) {
   const text = String(raw.text || '');
   const base = { id: 'r' + index + '-' + Math.random().toString(36).slice(2, 7), mode, style, scope, at: raw.at || Date.now() };
   if (raw.role === 'user') return { ...base, role: 'user', text };
+  const status = raw.status === 'running' ? 'cancelled' : (raw.status || 'done');
+  const error = status === 'error' && raw.error ? persistedErrorDetail(raw.error) : null;
   return {
-    ...base, role: 'assistant', status: raw.status === 'running' ? 'cancelled' : (raw.status || 'done'),
-    effectiveScope: scope, activity: [], error: null, text: '',
+    ...base, role: 'assistant', status,
+    effectiveScope: scope, activity: [], error, text: '',
     response: text ? normalizeResponse({ answer: text }, { mode, style }) : null,
   };
 }
@@ -109,7 +126,6 @@ export function reviveConversation(raw, namespace) {
   const turns = Array.isArray(raw && raw.turns) ? raw.turns.map(reviveTurn) : [];
   return createConversation({ ...raw, turns, namespace });
 }
-
 /**
  * Bounded localStorage for chat history.
  *
@@ -121,6 +137,13 @@ export function reviveConversation(raw, namespace) {
 const MAX_NAMESPACES = 6;
 const INDEX_KEY = 'hex.ai.conversations.v2.index';
 
+// The managed index metadata and a conversation bucket share one flat keyspace
+// (`${key}.${namespace}`), so a namespace literally named `index` would turn the
+// index key into a data bucket: save() would overwrite the conversations with
+// the index object and load() would return an empty history (#5789). The
+// reserved name fails closed instead of colliding.
+const RESERVED_NAMESPACE = 'index';
+
 export function createConversationStore({ namespace, storage, key = STORAGE_KEY } = {}) {
   const backing = () => {
     if (storage) return storage;
@@ -131,13 +154,27 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
     try { value = typeof namespace === 'function' ? namespace() : namespace; } catch { value = null; }
     return value == null || value === '' ? 'default' : String(value);
   };
-  const bucketKey = (space) => `${key}.${space}`;
+  // Re-canonicalize defensively: a boxed/coercible key (e.g. `new String(...)`
+  // with a throwing toString) must never alias the default store's bucket or
+  // index paths, and custom stores must not own the legacy v1 key.
+  const storageKey = (() => {
+    try { return String(key); } catch { return null; }
+  })();
+  // `index` is the managed-metadata component (`INDEX_KEY` / `${key}.index`):
+  // a bucket rooted at it would alias conversation data onto the index key,
+  // deterministically destroying history (#5789). That namespace fails closed
+  // at the storage boundary — same contract as quota/private-mode failures:
+  // nothing persists, nothing corrupts, the live conversation stays in memory.
+  const isReservedNamespace = (space) => space === RESERVED_NAMESPACE;
+  const bucketKey = (space) => `${storageKey}.${space}`;
+  const indexKey = () => storageKey === STORAGE_KEY ? INDEX_KEY : `${storageKey}.index`;
+  const ownsLegacyStorage = storageKey === STORAGE_KEY;
 
   const readIndex = () => {
     const store = backing();
     if (!store) return nullIndex();
     try {
-      const raw = store.getItem(key === STORAGE_KEY ? INDEX_KEY : `${key}.index`);
+      const raw = store.getItem(indexKey());
       const parsed = raw ? JSON.parse(raw) : null;
       return parsed && typeof parsed === 'object' ? toNullIndex(parsed) : nullIndex();
     } catch { return nullIndex(); }
@@ -147,7 +184,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
     const store = backing();
     if (!store) return false;
     try {
-      store.setItem(key === STORAGE_KEY ? INDEX_KEY : `${key}.index`, JSON.stringify(index));
+      store.setItem(indexKey(), JSON.stringify(index));
       return true;
     } catch { return false; }
   };
@@ -172,6 +209,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
   };
 
   const migrateLegacyIfNeeded = () => {
+    if (!ownsLegacyStorage) return;
     const store = backing();
     if (!store) return;
     try {
@@ -197,13 +235,14 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
 
   return {
     get key() {
-      return bucketKey(currentNamespace());
+      return isReservedNamespace(currentNamespace()) ? null : bucketKey(currentNamespace());
     },
     namespace: currentNamespace,
     available: () => !!backing(),
     load(space = currentNamespace()) {
       const store = backing();
       if (!store) return [];
+      if (isReservedNamespace(space)) return [];
       migrateLegacyIfNeeded();
       try {
         const raw = store.getItem(bucketKey(space));
@@ -211,11 +250,13 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
           const parsed = JSON.parse(raw);
           if (Array.isArray(parsed)) return parsed.map((item) => reviveConversation(item, space));
         }
-        const legacyRaw = store.getItem(LEGACY_STORAGE_KEY);
-        if (legacyRaw) {
-          const parsed = JSON.parse(legacyRaw);
-          if (parsed && typeof parsed === 'object' && Array.isArray(parsed[space])) {
-            return parsed[space].map((item) => reviveConversation(item, space));
+        if (ownsLegacyStorage) {
+          const legacyRaw = store.getItem(LEGACY_STORAGE_KEY);
+          if (legacyRaw) {
+            const parsed = JSON.parse(legacyRaw);
+            if (parsed && typeof parsed === 'object' && Array.isArray(parsed[space])) {
+              return parsed[space].map((item) => reviveConversation(item, space));
+            }
           }
         }
       } catch { return []; }
@@ -224,6 +265,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
     save(conversations, space = currentNamespace()) {
       const store = backing();
       if (!store) return false;
+      if (isReservedNamespace(space)) return false;
       migrateLegacyIfNeeded();
       const keep = conversations
         .filter((item) => item.turns.length)
@@ -245,7 +287,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
       const spaces = Object.keys(index);
       if (spaces.length > MAX_NAMESPACES) {
         const ranked = spaces
-          .filter((name) => name !== space)
+          .filter((name) => name !== space && !isReservedNamespace(name))
           .sort((a, b) => (index[a] || 0) - (index[b] || 0));
         for (const name of ranked.slice(0, spaces.length - MAX_NAMESPACES)) {
           dropEntry(index, name);
@@ -261,10 +303,11 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
       try {
         const index = readIndex();
         for (const space of Object.keys(index)) {
+          if (isReservedNamespace(space)) continue;
           try { store.removeItem(bucketKey(space)); } catch { /* best effort */ }
         }
-        store.removeItem(INDEX_KEY);
-        store.removeItem(LEGACY_STORAGE_KEY);
+        store.removeItem(indexKey());
+        if (ownsLegacyStorage) store.removeItem(LEGACY_STORAGE_KEY);
       } catch { /* best effort */ }
     },
   };

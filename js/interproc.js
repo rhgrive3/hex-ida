@@ -8,6 +8,13 @@ import { irFor, OP, VK, originOf } from './ir.js';
 import { semanticFacts, FACT } from './semantic.js';
 import { valueBefore } from './dataflow-semantic.js';
 
+const DEFAULT_SUMMARY_CACHE_ENTRIES = 256;
+
+function summaryCacheLimit(value) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) return DEFAULT_SUMMARY_CACHE_ENTRIES;
+  return Math.max(16, value);
+}
+
 function locKey(loc) {
   return loc && (loc.key || (loc.address != null ? 'g:' + loc.address : null));
 }
@@ -358,7 +365,7 @@ function calleeOptions(opts, depth) {
 export class FunctionSummaryCache {
   constructor(context, opts) {
     this.context = context || {};
-    this.maxEntries = Math.max(16, (opts && opts.maxEntries) || 256);
+    this.maxEntries = summaryCacheLimit(opts?.maxEntries);
     this.maxDepth = Math.max(0, (opts && opts.maxDepth) == null ? 3 : opts.maxDepth);
     this.cache = new Map();
     this.active = new Set();
@@ -384,7 +391,7 @@ export class FunctionSummaryCache {
     }
     if (this.active.has(addressKey)) return { address, cycle: true, engine: 'semantic-ir', reads: [], writes: [], returns: [], calls: [], effects: {}, argumentRoles: [], classification: {} };
     const depth = opts && opts.depth != null ? opts.depth : 0;
-    const cancelled = opts && opts.isCancelled || (() => false);
+    const cancelled = typeof opts?.isCancelled === 'function' ? opts.isCancelled : (() => false);
     if (cancelled()) return null;
     this.active.add(addressKey);
     try {

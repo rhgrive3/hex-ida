@@ -2,9 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createAnalysisStatus } from '../../../js/analysis/status.js';
-import { createFunctionSummary, summaryIsPure } from '../../../js/analysis/summary/contract.js';
+import { createFunctionSummary, functionSummaryDigest, summaryIsPure } from '../../../js/analysis/summary/contract.js';
 import {
   condenseCallGraph,
+  LIBRARY_MODEL_PROVENANCE_SCHEMA,
+  LIBRARY_MODEL_SCHEMA,
+  LIBRARY_MODEL_VERSION,
   solveInterproceduralSummaries,
 } from '../../../js/analysis/summary/interprocedural.js';
 import { collectSummaryMetrics } from '../../../tools/validation/phase7/lanes/summary.mjs';
@@ -12,6 +15,37 @@ import { SUMMARY_QUERIES, buildSummaryGraph } from '../corpus/summaries.mjs';
 
 function solve(graphId, root, options = {}) {
   return solveInterproceduralSummaries({ roots: [root], localSummaries: buildSummaryGraph(graphId), ...options });
+}
+
+function provenLibraryModel(targetEntityId, overrides = {}) {
+  return {
+    modelSchema: LIBRARY_MODEL_SCHEMA,
+    modelVersion: LIBRARY_MODEL_VERSION,
+    targetEntityId,
+    snapshotId: 'snapshot-unbound',
+    completeness: 'complete',
+    stopReason: null,
+    current: true,
+    provenance: {
+      schema: LIBRARY_MODEL_PROVENANCE_SCHEMA,
+      providerId: 'test-library-provider',
+      providerVersion: '1.0.0',
+      evidenceIds: [`model:${targetEntityId}`],
+    },
+    memoryReadRegions: [],
+    memoryWriteRegions: [{
+      regionId: 'region_model',
+      regionKind: 'global-absolute',
+      broad: false,
+      addressSpaces: ['memory'],
+      source: 'library-model',
+      evidenceIds: [`effect:${targetEntityId}:write`],
+    }],
+    escapes: [],
+    noreturn: false,
+    mayThrow: false,
+    ...overrides,
+  };
 }
 
 test('SCCs are condensed in reverse topological order', () => {
@@ -244,16 +278,227 @@ test('a library model fills in a callee the binary does not define', () => {
   const locals = buildSummaryGraph('missing-callee-summary');
   const solved = solveInterproceduralSummaries({
     roots: ['fn_caller'], localSummaries: locals,
-    libraryModels: new Map([['fn_absent', {
-      memoryWriteRegions: [{ regionId: 'region_model', regionKind: 'global-absolute', source: 'library-model' }],
-      noreturn: false, mayThrow: false,
-    }]]),
+    libraryModels: new Map([['fn_absent', provenLibraryModel('fn_absent')]]),
   });
   const summary = solved.summaries.get('fn_caller');
   assert.ok(summary.memoryWriteRegions.some((effect) => effect.regionId === 'region_model'));
+  assert.ok(!summary.memoryWriteRegions.some((effect) => effect.broad));
   assert.equal(summary.status.completeness, 'complete');
 });
 
+test('an unproven library model cannot bypass the unknown-call fallback (#6074)', () => {
+  const locals = buildSummaryGraph('missing-callee-summary');
+  const valid = provenLibraryModel('fn_absent');
+  const impostors = [
+    ['empty object', {}],
+    ['control-only knowledge', { noreturn: false, mayThrow: true }],
+    ['null', null],
+    ['undefined', undefined],
+    ['array', []],
+    ['wrong schema', { ...valid, modelSchema: 'phase7-library-model-unknown' }],
+    ['wrong version', { ...valid, modelVersion: '2' }],
+    ['wrong target', { ...valid, targetEntityId: 'fn_other' }],
+    ['stale snapshot', { ...valid, snapshotId: 'snapshot-old' }],
+    ['incomplete status', { ...valid, completeness: 'partial', stopReason: 'evidence-missing' }],
+    ['not current', { ...valid, current: false }],
+    ['missing reads', { ...valid, memoryReadRegions: undefined }],
+    ['non-array writes', { ...valid, memoryWriteRegions: {} }],
+    ['malformed effect', {
+      ...valid,
+      memoryWriteRegions: [{ ...valid.memoryWriteRegions[0], source: 'proven-summary' }],
+    }],
+    ['invalid noreturn', { ...valid, noreturn: 'maybe' }],
+    ['invalid mayThrow', { ...valid, mayThrow: 1 }],
+    ['missing provenance', { ...valid, provenance: undefined }],
+    ['invalid provenance evidence', {
+      ...valid,
+      provenance: { ...valid.provenance, evidenceIds: 'not-an-array' },
+    }],
+    ['non-array escapes', { ...valid, escapes: {} }],
+    ['malformed escape', {
+      ...valid,
+      escapes: [{ kind: 'return-escape', target: 'fn_absent', evidenceIds: [] }],
+    }],
+  ];
+  for (const [label, impostor] of impostors) {
+    const solved = solveInterproceduralSummaries({
+      roots: ['fn_caller'], localSummaries: locals,
+      libraryModels: new Map([['fn_absent', impostor]]),
+    });
+    const summary = solved.summaries.get('fn_caller');
+    assert.ok(summary.unknownCallEffects.some((effect) =>
+      effect.reason === 'library-model-missing' && effect.targetEntityIds.includes('fn_absent')),
+    `${label} model must fall back to unknown-call`);
+    assert.ok(summary.memoryWriteRegions.some((effect) => effect.broad),
+      `${label} model must retain the broad fallback`);
+    assert.notEqual(summary.status.completeness, 'complete');
+  }
+});
+
+test('a proven library model propagates through a recursive component (#6074)', () => {
+  const base = buildSummaryGraph('self-recursive');
+  const local = createFunctionSummary({
+    ...base.get('fn_self'),
+    directCalls: [
+      ...base.get('fn_self').directCalls,
+      { callSiteId: 'call_fn_self_model', targetEntityIds: ['fn_modeled'] },
+    ],
+  });
+  const solved = solveInterproceduralSummaries({
+    roots: ['fn_self'],
+    localSummaries: new Map([['fn_self', local]]),
+    libraryModels: new Map([['fn_modeled', provenLibraryModel('fn_modeled')]]),
+  });
+  const summary = solved.summaries.get('fn_self');
+  assert.equal(summary.status.completeness, 'complete');
+  assert.ok(summary.memoryWriteRegions.some((effect) => effect.regionId === 'region_self'));
+  assert.ok(summary.memoryWriteRegions.some((effect) => effect.regionId === 'region_model'));
+  assert.equal(summary.unknownCallEffects.length, 0);
+});
+
+test('a proven escape-only library model converges through recursive and indirect callers (#6074)', () => {
+  const complete = createAnalysisStatus({
+    snapshotId: 'snapshot-unbound',
+    analyzerId: 'phase7.summary.local',
+    analyzerVersion: '1.0.0',
+    completeness: 'complete',
+  });
+  const recursiveA = createFunctionSummary({
+    functionId: 'escape-a',
+    directCalls: [{ callSiteId: 'escape-a-to-b', targetEntityIds: ['escape-b'] }],
+    status: complete,
+  });
+  const recursiveB = createFunctionSummary({
+    functionId: 'escape-b',
+    directCalls: [
+      { callSiteId: 'escape-b-to-a', targetEntityIds: ['escape-a'] },
+      { callSiteId: 'escape-b-to-ext', targetEntityIds: ['escape-ext'] },
+    ],
+    status: complete,
+  });
+  const indirect = createFunctionSummary({
+    functionId: 'escape-indirect',
+    indirectCallSets: [{
+      callSiteId: 'escape-indirect-to-ext',
+      candidateEntityIds: ['escape-ext'],
+      exhaustive: true,
+    }],
+    status: complete,
+  });
+  const solved = solveInterproceduralSummaries({
+    roots: ['escape-a', 'escape-indirect'],
+    localSummaries: new Map([
+      ['escape-a', recursiveA],
+      ['escape-b', recursiveB],
+      ['escape-indirect', indirect],
+    ]),
+    libraryModels: new Map([['escape-ext', provenLibraryModel('escape-ext', {
+      memoryReadRegions: [],
+      memoryWriteRegions: [],
+      escapes: [{ kind: 'return-escape', target: 'escape-ext:return', evidenceIds: ['escape-model'] }],
+    })]]),
+    budget: { maxIterationsPerComponent: 4 },
+  });
+
+  assert.equal(solved.status.completeness, 'complete');
+  assert.equal(solved.status.stopReason, null);
+  for (const functionId of ['escape-a', 'escape-b', 'escape-indirect']) {
+    const summary = solved.summaries.get(functionId);
+    assert.equal(summary.status.completeness, 'complete', `${functionId} must converge`);
+    assert.equal(summary.unknownCallEffects.length, 0);
+    assert.deepEqual(summary.escapes.map((escape) => escape.target), ['escape-ext:return']);
+  }
+});
+
+test('library-model escapes publish canonical fields and use locale-independent digest ordering (#6074)', () => {
+  const locals = buildSummaryGraph('missing-callee-summary');
+  const modelFor = (escapes) => provenLibraryModel('fn_absent', {
+    memoryReadRegions: [],
+    memoryWriteRegions: [],
+    escapes,
+  });
+  const modelEscapes = [
+    { kind: ' a-kind ', target: ' target-a ', evidenceIds: [' z ', 'a'], ignored: 'drop-me' },
+    { kind: 'Z-kind', target: null, evidenceIds: ['b'], ignored: { future: true } },
+  ];
+  const previousLocaleCompare = String.prototype.localeCompare;
+  String.prototype.localeCompare = () => {
+    throw new Error('summary identity must not depend on localeCompare');
+  };
+  try {
+    const first = solveInterproceduralSummaries({
+      roots: ['fn_caller'], localSummaries: locals,
+      libraryModels: new Map([['fn_absent', modelFor(modelEscapes)]]),
+    }).summaries.get('fn_caller');
+    const second = solveInterproceduralSummaries({
+      roots: ['fn_caller'], localSummaries: locals,
+      libraryModels: new Map([['fn_absent', modelFor(modelEscapes.slice().reverse())]]),
+    }).summaries.get('fn_caller');
+
+    assert.deepEqual(first.escapes, [
+      { kind: 'Z-kind', target: null, evidenceIds: ['b', 'model:fn_absent'] },
+      { kind: 'a-kind', target: 'target-a', evidenceIds: ['a', 'model:fn_absent', 'z'] },
+    ]);
+    assert.ok(!Object.hasOwn(first.escapes[0], 'ignored'));
+    assert.ok(!Object.hasOwn(first.escapes[1], 'ignored'));
+    assert.deepEqual(first.escapes, second.escapes);
+    assert.equal(functionSummaryDigest(first), functionSummaryDigest(second));
+  } finally {
+    String.prototype.localeCompare = previousLocaleCompare;
+  }
+});
+
+test('same semantic escapes union evidence across propagated and model records (#6074)', () => {
+  const sharedStatus = createAnalysisStatus({
+    snapshotId: 'snapshot-unbound',
+    analyzerId: 'phase7.summary.local',
+    analyzerVersion: '1.0.0',
+    completeness: 'complete',
+  });
+  const propagated = createFunctionSummary({
+    functionId: 'escape-propagated',
+    escapes: [{ kind: 'return-escape', target: 'shared-target', evidenceIds: ['propagated-evidence'] }],
+    status: sharedStatus,
+  });
+  const caller = createFunctionSummary({
+    functionId: 'escape-caller',
+    directCalls: [
+      { callSiteId: 'escape-caller-propagated', targetEntityIds: ['escape-propagated'] },
+      { callSiteId: 'escape-caller-model', targetEntityIds: ['escape-model'] },
+    ],
+    status: sharedStatus,
+  });
+  const model = provenLibraryModel('escape-model', {
+    memoryReadRegions: [],
+    memoryWriteRegions: [],
+    escapes: [
+      { kind: 'return-escape', target: 'shared-target', evidenceIds: ['model-evidence'] },
+      { kind: 'kind\u0000left', target: 'target', evidenceIds: ['separator-evidence'] },
+      { kind: 'kind', target: 'left\u0000target', evidenceIds: ['separator-evidence'] },
+    ],
+  });
+  const solved = solveInterproceduralSummaries({
+    roots: ['escape-caller'],
+    localSummaries: new Map([
+      ['escape-caller', caller],
+      ['escape-propagated', propagated],
+    ]),
+    libraryModels: new Map([['escape-model', model]]),
+  });
+  const escapes = solved.summaries.get('escape-caller').escapes;
+  const shared = escapes.find((escape) =>
+    escape.kind === 'return-escape' && escape.target === 'shared-target');
+  assert.deepEqual(shared, {
+    kind: 'return-escape',
+    target: 'shared-target',
+    evidenceIds: ['model-evidence', 'model:escape-model', 'propagated-evidence'],
+  });
+  assert.equal(escapes.length, 3, 'same semantic escapes merge, but separator-bearing identities remain distinct');
+  assert.equal(escapes.filter((escape) =>
+    escape.kind === 'kind\u0000left' && escape.target === 'target').length, 1);
+  assert.equal(escapes.filter((escape) =>
+    escape.kind === 'kind' && escape.target === 'left\u0000target').length, 1);
+});
 test('cancellation publishes nothing complete', () => {
   const controller = new AbortController();
   controller.abort();

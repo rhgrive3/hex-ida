@@ -1,5 +1,6 @@
 import { AIError } from '../schema.js';
 import { assertSchema } from '../validation.js';
+import { consumeProposalAuthorization } from '../proposals.js';
 import { validatePatchRange } from '../../patch.js';
 
 export class CapabilityExecutor {
@@ -16,13 +17,15 @@ export class CapabilityExecutor {
   async execute(id, args = {}, options = {}) {
     const entry = this.catalog?.get?.(id);
     if (!entry || !entry.agentExposed) throw new AIError('invalid_tool_call', `Unknown or human-only capability: ${id}`);
-    assertSchema(args, entry.inputSchema || { type: 'object' }, 'invalid_tool_call');
+    const executionArgs = entry.requiresApproval ? snapshotApprovedArguments(args) : args;
+    assertSchema(executionArgs, entry.inputSchema || { type: 'object' }, 'invalid_tool_call');
     const runtimePlatform = entry.category === 'runtime' ? await this.resolveRuntimePlatform() : null;
-    this.verifyBinding(entry, args, runtimePlatform);
-    if (entry.requiresApproval && !validAuthorization(options.authorization)) throw new AIError('approval_required', `Capability ${id} requires a proposal approval token.`);
-    if (entry.agentTool) return this.executeTool(entry, args, options);
-    if (entry.actionKind) return this.executeAction(entry, args);
-    return this.executeBuiltIn(entry, args, options, runtimePlatform);
+    this.verifyBinding(entry, executionArgs, runtimePlatform);
+    this.verifyScope(entry, options);
+    if (entry.requiresApproval && !consumeProposalAuthorization(options.authorization, id, executionArgs)) throw new AIError('approval_required', `Capability ${id} requires an approved proposal authorization.`);
+    if (entry.agentTool) return this.executeTool(entry, executionArgs, options);
+    if (entry.actionKind) return this.executeAction(entry, executionArgs);
+    return this.executeBuiltIn(entry, executionArgs, options, runtimePlatform);
   }
 
   verifyBinding(entry, args, runtimePlatform = null) {
@@ -34,6 +37,21 @@ export class CapabilityExecutor {
     if (args.runtimeSessionId == null || String(args.runtimeSessionId) !== String(session.id)) throw new AIError('scope_violation', 'Runtime session identity does not match the requested action.');
     if (binaryId != null && session.binaryHash != null && String(binaryId) !== String(session.binaryHash)) throw new AIError('scope_violation', 'Runtime session is bound to a different binary.');
     if (args.binaryId != null && session.binaryHash && String(args.binaryId) !== String(session.binaryHash)) throw new AIError('scope_violation', 'Runtime action is bound to a different binary.');
+  }
+
+  verifyScope(entry, options = {}) {
+    const scope = options?.scope || 'auto';
+    if (scope === 'auto') return;
+    let allowedScopes;
+    if (entry.agentTool) {
+      const record = this.toolRegistry?.get?.(entry.agentTool);
+      allowedScopes = record?.scopeSupport || entry.scopeSupport || [];
+    } else {
+      allowedScopes = entry.scopeSupport || [];
+    }
+    if (!allowedScopes.includes(scope)) {
+      throw new AIError('scope_violation', `${entry.id} does not support ${scope} scope.`);
+    }
   }
 
   executeTool(entry, args, options) {
@@ -77,8 +95,8 @@ export class CapabilityExecutor {
       case 'runtime.breakpoint-create': return runtimeAdapter(runtimePlatform).setBreakpoint(args.breakpoint || args);
       case 'runtime.watchpoint-create': return runtimeAdapter(runtimePlatform).watchMemory(args.watchpoint || args);
       case 'runtime.breakpoint-remove': case 'runtime.watchpoint-remove': return runtimeAdapter(runtimePlatform).removeBreakpoint(args.id);
-      case 'runtime.continue': return runtimeAdapter(runtimePlatform).resume(options);
-      case 'runtime.pause': return runtimeAdapter(runtimePlatform).pause(options);
+      case 'runtime.continue': return runtimeAdapter(runtimePlatform).resume({ signal: options?.signal });
+      case 'runtime.pause': return runtimeAdapter(runtimePlatform).pause({ signal: options?.signal });
       case 'runtime.step-in': return runtimeAdapter(runtimePlatform).stepInto(options);
       case 'runtime.step-over': return runtimeAdapter(runtimePlatform).stepOver(options);
       case 'runtime.step-out': return runtimeAdapter(runtimePlatform).stepOut(options);
@@ -109,13 +127,47 @@ export class CapabilityExecutor {
   }
 }
 
+function snapshotApprovedArguments(value) {
+  const clone = globalThis.structuredClone;
+  if (typeof clone !== 'function') throw new AIError('tool_failed', 'Structured cloning is unavailable for approved capability arguments.');
+  let snapshot;
+  try {
+    snapshot = clone(value);
+  } catch {
+    throw new AIError('invalid_tool_call', 'Approved capability arguments must be structured-cloneable.');
+  }
+  if (containsSharedMemory(snapshot)) throw new AIError('invalid_tool_call', 'Approved capability arguments must not contain shared memory.');
+  return snapshot;
+}
+
+function containsSharedMemory(value, seen = new WeakSet()) {
+  if (value === null || typeof value !== 'object') return false;
+  const SharedBuffer = globalThis.SharedArrayBuffer;
+  if (typeof SharedBuffer === 'function' && value instanceof SharedBuffer) return true;
+  if (ArrayBuffer.isView(value)) return typeof SharedBuffer === 'function' && value.buffer instanceof SharedBuffer;
+  if (value instanceof ArrayBuffer || seen.has(value)) return false;
+  seen.add(value);
+  if (value instanceof Map) {
+    for (const [key, item] of value) if (containsSharedMemory(key, seen) || containsSharedMemory(item, seen)) return true;
+    return false;
+  }
+  if (value instanceof Set) {
+    for (const item of value) if (containsSharedMemory(item, seen)) return true;
+    return false;
+  }
+  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+    if ('value' in descriptor && containsSharedMemory(descriptor.value, seen)) return true;
+  }
+  return false;
+}
+
 function validAuthorization(value) { return value?.kind === 'proposal' && typeof value.token === 'string' && value.token.length >= 8; }
 function runtimeAdapter(platform) { const session = platform?.currentSession?.(); if (!session?.adapter) throw new AIError('tool_failed', 'Runtime adapter is unavailable.'); return session.adapter; }
 function runtimeStatus(platform) { const session = platform?.currentSession?.(false); return session ? { connected: !!session.adapter?.connected, sessionId: session.id, binaryId: session.binaryHash || null, backend: session.backend, capabilities: session.adapter?.capabilities || {} } : { connected: false, sessionId: null }; }
 
 async function boundedMemoryRead(adapter, args) {
-  const size = Number(args.size ?? 1);
-  if (!Number.isSafeInteger(size) || size < 1 || size > 256 * 1024) throw new AIError('invalid_tool_call', 'Runtime memory read must be between 1 and 262144 bytes.');
+  const size = Object.prototype.hasOwnProperty.call(args, 'size') ? args.size : 1;
+  if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 1 || size > 256 * 1024) throw new AIError('invalid_tool_call', 'Runtime memory read must be between 1 and 262144 bytes.');
   const bytes = await adapter.readMemory(args.address, size);
   return { address: String(args.address), bytes: Array.from(bytes || []) };
 }
@@ -179,8 +231,23 @@ function setNote(app, kind, args, after = null) {
     }
     throw new AIError('tool_failed', `${label} annotation could not be persisted.`);
   }
-  after?.(); app.viewer?.setSymbols?.(app.symbols); app.updateChrome?.();
-  return { ok: true, address: address.toString(), value };
+  after?.();
+  const refreshWarning = refreshDisplay(app);
+  return { ok: true, address: address.toString(), value, ...(refreshWarning ? { refreshWarning } : {}) };
+}
+
+/* The display refresh (viewer symbols + chrome) is not part of the canonical
+   mutation: notes/symbols state is already committed and persisted when it
+   runs. A refresh failure must therefore surface as a warning on a successful
+   result instead of failing an applied mutation — otherwise a `failed`
+   proposal would be recorded while the mutation persisted (#5132). In the
+   rollback path it stays best-effort so it can never mask the original
+   failure. */
+function refreshDisplay(app) {
+  const warnings = [];
+  try { app.viewer?.setSymbols?.(app.symbols); } catch (error) { warnings.push(`viewer symbols refresh failed: ${error?.message || error}`); }
+  try { app.updateChrome?.(); } catch (error) { warnings.push(`chrome refresh failed: ${error?.message || error}`); }
+  return warnings.length ? warnings.join('; ') : null;
 }
 
 // annotation.rename commits two coupled mutations (notes.setName +
@@ -211,11 +278,14 @@ function renameSymbol(app, args) {
     } catch (rollbackError) {
       throw new AIError('tool_failed', `Rename failed and the note mutation could not be rolled back: ${rollbackError?.message || rollbackError}`, { cause: String(error?.message || error) });
     }
-    app.viewer?.setSymbols?.(app.symbols); app.updateChrome?.();
+    // Best effort only: a rollback-path refresh failure must never mask the
+    // original rename failure.
+    try { app.viewer?.setSymbols?.(app.symbols); } catch { /* ignore */ }
+    try { app.updateChrome?.(); } catch { /* ignore */ }
     throw error;
   }
-  app.viewer?.setSymbols?.(app.symbols); app.updateChrome?.();
-  return { ok: true, address: address.toString(), value };
+  const refreshWarning = refreshDisplay(app);
+  return { ok: true, address: address.toString(), value, ...(refreshWarning ? { refreshWarning } : {}) };
 }
 
 function setType(app, args) {
@@ -279,16 +349,75 @@ function setStructField(app, args) {
   return { ok: true, struct: name, field };
 }
 
-function setProjectAnnotation(app, args) {
+async function setProjectAnnotation(app, args) {
   if (!app) throw new AIError('tool_failed', 'Project annotation adapter is unavailable.');
+  if (typeof app.workspace?.autosave !== 'function') throw new AIError('tool_failed', 'Project annotation persistence is unavailable.');
+
+  const previousProjectAnnotations = app.projectAnnotations;
+  const projectAnnotationsSnapshot = Array.isArray(previousProjectAnnotations) ? previousProjectAnnotations.slice() : null;
   if (!Array.isArray(app.projectAnnotations)) app.projectAnnotations = [];
-  const record = { id: String(args.id || `annotation:${Date.now()}`), kind: String(args.kind || 'note'), value: args.value, createdAt: new Date().toISOString() };
-  app.projectAnnotations.push(record);
-  app.autoReport ||= { report: { confirmed: [], deep: [] } };
-  app.autoReport.report ||= { confirmed: [], deep: [] };
-  app.autoReport.report.confirmed ||= [];
-  app.autoReport.report.confirmed.push({ ...record, confirmed: true, source: 'project-annotation' });
-  app.workspace?.autosave?.(); return record;
+  const projectAnnotations = app.projectAnnotations;
+
+  const previousAutoReport = app.autoReport;
+  const autoReportWasObject = previousAutoReport !== null && typeof previousAutoReport === 'object' && !Array.isArray(previousAutoReport);
+  if (!autoReportWasObject) app.autoReport = { report: { confirmed: [], deep: [] } };
+  const autoReport = app.autoReport;
+  const previousReport = autoReport.report;
+  const reportWasObject = previousReport !== null && typeof previousReport === 'object' && !Array.isArray(previousReport);
+  if (!reportWasObject) autoReport.report = { confirmed: [], deep: [] };
+  const report = autoReport.report;
+  const previousConfirmed = report.confirmed;
+  const confirmedSnapshot = Array.isArray(previousConfirmed) ? previousConfirmed.slice() : null;
+  if (!Array.isArray(report.confirmed)) report.confirmed = [];
+  const confirmed = report.confirmed;
+
+  // Upsert-by-id (#3782) with fail-closed autosave rollback (#3762). Existing
+  // append-only duplicates are collapsed only after full array snapshots are
+  // captured so failed persistence can restore the exact prior state.
+  const id = String(args.id || `annotation:${Date.now()}`);
+  const existingIndex = projectAnnotations.findIndex((item) => item?.id === id);
+  const previousRecord = existingIndex >= 0 ? projectAnnotations[existingIndex] : undefined;
+  const findingIndex = confirmed.findIndex((item) => item?.source === 'project-annotation' && item?.id === id);
+
+  const rollback = () => {
+    if (Array.isArray(previousProjectAnnotations)) {
+      previousProjectAnnotations.splice(0, previousProjectAnnotations.length, ...projectAnnotationsSnapshot);
+    } else app.projectAnnotations = previousProjectAnnotations;
+    if (!autoReportWasObject) app.autoReport = previousAutoReport;
+    else if (!reportWasObject) autoReport.report = previousReport;
+    else if (Array.isArray(previousConfirmed)) {
+      previousConfirmed.splice(0, previousConfirmed.length, ...confirmedSnapshot);
+    } else report.confirmed = previousConfirmed;
+  };
+
+  const record = { id, kind: String(args.kind || 'note'), value: args.value, createdAt: previousRecord?.createdAt || new Date().toISOString() };
+  if (existingIndex >= 0) {
+    projectAnnotations[existingIndex] = record;
+    for (let index = projectAnnotations.length - 1; index > existingIndex; index--) {
+      if (projectAnnotations[index]?.id === id) projectAnnotations.splice(index, 1);
+    }
+  } else projectAnnotations.push(record);
+
+  const finding = { ...record, confirmed: true, source: 'project-annotation' };
+  if (findingIndex >= 0) {
+    confirmed[findingIndex] = finding;
+    for (let index = confirmed.length - 1; index > findingIndex; index--) {
+      if (confirmed[index]?.source === 'project-annotation' && confirmed[index]?.id === id) confirmed.splice(index, 1);
+    }
+  } else confirmed.push(finding);
+
+  let saved;
+  try {
+    saved = await app.workspace.autosave();
+  } catch (error) {
+    rollback();
+    throw error;
+  }
+  if (saved === false) {
+    rollback();
+    throw new AIError('tool_failed', 'Project annotation could not be persisted.');
+  }
+  return record;
 }
 
 async function previewPatch(app, args) {
@@ -323,7 +452,12 @@ async function applyPatch(app, args) {
   return { ok: true, output, size: output.size, patches: app.patches.list().map(serializePatch) };
 }
 function serializePatch(item) { return { fileOffset: item.offset.toString(), address: item.addr == null ? null : String(item.addr), before: Array.from(item.before), after: Array.from(item.after), label: item.label || null, reason: item.reason || null }; }
-function byteArray(value) { const raw = Array.from(value || []); for (const byte of raw) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.'); return Uint8Array.from(raw); }
+function byteArray(value) {
+  if (!Array.isArray(value) && !(value instanceof Uint8Array)) throw new AIError('invalid_tool_call', 'Mutation bytes must be an Array or Uint8Array.');
+  const raw = Array.from(value);
+  for (const byte of raw) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.');
+  return Uint8Array.from(raw);
+}
 function equalBytes(a, b) { return a?.length === b?.length && Array.from(a).every((value, index) => value === b[index]); }
 
 function callRequired(target, method, ...args) {

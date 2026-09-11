@@ -4,6 +4,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { scheduleMachineEffectFiles } from '../support/machine-effects-scheduling.mjs';
+
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const files = fs.readdirSync(directory, { withFileTypes: true })
   .filter((entry) => entry.isFile() && entry.name.endsWith('.test.mjs'))
@@ -15,17 +17,19 @@ if (files.length === 0) throw new Error('machine-effects: no Phase 2 tests disco
 // Each MachineEffects test file is an independent denominator/contract proof.
 // Run files in isolated Node processes so heavy finite-denominator scans can use
 // separate cores without sharing module/global state. Keep concurrency bounded
-// to avoid oversubscribing hosted CI runners and preserve deterministic output
-// by publishing captured results in filename order after every worker settles.
+// to avoid oversubscribing hosted CI runners. Heavy known denominators start first
+// to avoid a late critical-path tail, while results are still published in the
+// original canonical filename order after every worker settles.
 const concurrency = Math.max(1, Math.min(4, os.availableParallelism()));
 const results = new Array(files.length);
-let nextIndex = 0;
+const workItems = scheduleMachineEffectFiles(files);
+let nextWorkIndex = 0;
 
 async function worker() {
   while (true) {
-    const index = nextIndex++;
-    if (index >= files.length) return;
-    results[index] = await runFile(files[index]);
+    const item = workItems[nextWorkIndex++];
+    if (!item) return;
+    results[item.index] = await runFile(item.file);
   }
 }
 

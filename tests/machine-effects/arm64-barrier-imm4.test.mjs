@@ -56,7 +56,7 @@ for (const crm of [8, 12]) {
   assert.equal(b.metadata.access, 'all');
 }
 
-for (const b of [lift('dsb', [imm(-1)]), lift('dsb', [imm(16)])]) {
+for (const b of [lift('dsb', [imm(-1)]), lift('dsb', [imm(17)])]) {
   assert.equal(b.completeness, 'partial');
   assert.ok(b.unknownEffects.categories.includes('memory'));
 }

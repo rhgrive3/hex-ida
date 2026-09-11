@@ -69,6 +69,40 @@ test('only matched verdicts carry authority', () => {
   }
 });
 
+test('the canonical debug identity digest covers the matched-partial coverage domain (#5849)', () => {
+  // Coverage decides which records a matched-partial identity treats as hard
+  // authority, so two identities differing only in coverage must not share a
+  // digest — otherwise Phase 7 keys collapse different authority domains.
+  const identityWith = (coverage) => createDebugIdentity({
+    verdict: 'matched-partial', providerId: 'dwarf', providerVersion: '1',
+    expected: 'build-X', observed: 'build-X', method: 'uuid',
+    ...(coverage ? { coverage } : {}),
+  });
+  const a = identityWith({ entityIds: ['A'] });
+  const b = identityWith({ entityIds: ['B'] });
+  assert.notEqual(a.digest, b.digest,
+    'different matched-partial coverage must produce a different canonical digest');
+  assert.equal(identityWith({ entityIds: ['A'] }).digest, a.digest,
+    'the same coverage must produce the same digest (order-insensitive canonicalization)');
+  assert.notEqual(identityWith().digest, identityWith({ entityIds: ['A'] }).digest,
+    'coverage presence itself changes the digest');
+  // Field order inside the coverage object must not matter…
+  const reordered = createDebugIdentity({
+    verdict: 'matched-partial', providerId: 'dwarf', providerVersion: '1',
+    expected: 'build-X', observed: 'build-X', method: 'uuid',
+    coverage: { recordKinds: ['function'], entityIds: ['A'] },
+  });
+  const original = createDebugIdentity({
+    verdict: 'matched-partial', providerId: 'dwarf', providerVersion: '1',
+    expected: 'build-X', observed: 'build-X', method: 'uuid',
+    coverage: { entityIds: ['A'], recordKinds: ['function'] },
+  });
+  assert.equal(reordered.digest, original.digest);
+  // …and neither may element order inside a selector list: selectors are
+  // membership constraints, not ordered evidence.
+  assert.equal(identityWith({ entityIds: ['B', 'A'] }).digest, identityWith({ entityIds: ['A', 'B'] }).digest);
+});
+
 test('DWARF 4 and DWARF 5 both parse from real compiler output', () => {
   const provider = new DwarfDebugInfoProvider();
   for (const variant of [dwarf4, dwarf5]) {

@@ -4,6 +4,16 @@ import { createSymmetricCodeFunctionSet, SYMMETRIC_CODE_PROFILE } from './symmet
 const INSTALL_VERSION = 'symmetric-workspace-diff/v2';
 const MAX_DIFF_FUNCTIONS = 350000;
 const DISCOVERY_GLOBAL_CAP = 400000;
+// #5452: full symmetric diffs widen the matcher budget. The key must be
+// `maxCandidateEdges` — that is the authority `createMatchBudget()` honors
+// (100k default); a `maxEdges` key is silently dropped and the widened
+// budget never applies.
+export const DEFAULT_SYMMETRIC_MATCH_BUDGET = Object.freeze({
+  maxCandidateEvaluations: 1500000,
+  maxCandidateEdges: 300000,
+  maxComponentNodes: 4096,
+  maxComponentEdges: 65536,
+});
 
 function abortError(signal) {
   const error = signal?.reason instanceof Error ? signal.reason : new Error('Binary diff aborted');
@@ -23,12 +33,14 @@ function requestWithSignal(request, signal) {
       fn(value);
     };
     const onAbort = () => {
+      if (settled) return;
       try { request?.cancel?.(); } catch { /* best effort */ }
       finish(reject, abortError(signal));
     };
     if (signal?.aborted) { onAbort(); return; }
     signal?.addEventListener?.('abort', onAbort, { once:true });
     Promise.resolve(request).then((value) => finish(resolve, value), (error) => finish(reject, error));
+    if (signal?.aborted) { onAbort(); return; }
   });
 }
 function executableRegions(regions) {
@@ -64,9 +76,13 @@ async function discoverBaselineFunctions(baseline, { signal = null, onProgress =
     try {
       const result = await requestWithSignal(request, signal);
       if (result?.starts?.length) {
-        symbols.addFunctions(result.starts, { source:'heuristic', confidence:0.55, confirmed:false });
+        // #5558: addFunctions() deduplicates known starts and returns the
+        // number actually added. The global discovery budget must be debited
+        // by that count — duplicate re-discovery from independent region
+        // scans must never exhaust the budget ahead of unscanned regions.
+        const added = symbols.addFunctions(result.starts, { source:'heuristic', confidence:0.55, confirmed:false });
         symbols.guessed = true;
-        remaining = Math.max(0, remaining - result.starts.length);
+        remaining = Math.max(0, remaining - added);
       }
       const complete = result?.discoveryComplete === true || result?.completeness?.complete === true || result?.complete === true;
       results.push({ regionId:region.id, complete, capped:!!result?.capped, discovered:result?.starts?.length || 0 });
@@ -110,6 +126,24 @@ function demoteIncompleteAbsenceClaims(result, reason) {
     }),
   };
 }
+function workspaceCompleteness(result, before, current) {
+  const inputsComplete = before?.complete === true && current?.complete === true;
+  const reasons = [];
+  if (!before?.complete) reasons.push(before?.truncationReason || 'baseline-function-set-incomplete');
+  if (!current?.complete) reasons.push(current?.truncationReason || 'current-function-set-incomplete');
+  if (result?.truncated) reasons.push('matcher-truncated');
+  if (result?.ambiguous) reasons.push('matcher-ambiguous');
+  if (result?.complete !== true && !result?.truncated && !result?.ambiguous) reasons.push('matcher-incomplete');
+  return {
+    complete:inputsComplete && result?.complete === true,
+    reasons:[...new Set(reasons)],
+    evidenceProfile:SYMMETRIC_CODE_PROFILE,
+    fingerprintVersion:before?.fingerprintVersion,
+    evidenceSymmetric:true,
+    baseline:{ complete:before?.complete === true, total:before?.total, scanned:before?.scanned, missingEvidence:before?.missingEvidence, reason:before?.truncationReason },
+    current:{ complete:current?.complete === true, total:current?.total, scanned:current?.scanned, missingEvidence:current?.missingEvidence, reason:current?.truncationReason },
+  };
+}
 function currentRegions(app) {
   return typeof app?.programRegions === 'function' ? app.programRegions() : executableRegions(app?.store?.get?.('regions') || []);
 }
@@ -121,9 +155,20 @@ export function installSymmetricWorkspaceDiff(app) {
 
   workspace.loadBaseline = async function loadSymmetricBaseline(file, options = {}) {
     const baseline = await originalLoadBaseline(file, options);
+    // The base guard ends when originalLoadBaseline resolves. The discovery /
+    // fingerprint awaits below must re-verify that this baseline is still the
+    // live one, or a superseded load can resolve as a normal success (#5492).
+    const assertCurrent = () => {
+      if (workspace.baseline !== baseline) {
+        const error = new Error('workspace-binding-changed');
+        error.code = 'HEX_WORKSPACE_STALE';
+        throw error;
+      }
+    };
     try {
       await discoverBaselineFunctions(baseline, options);
       throwIfAborted(options.signal);
+      assertCurrent();
       baseline.functions = await createSymmetricCodeFunctionSet({
         backend:baseline.backend,
         symbols:baseline.symbols,
@@ -133,11 +178,17 @@ export function installSymmetricWorkspaceDiff(app) {
         signal:options.signal ?? null,
         onProgress:options.onProgress,
       });
+      throwIfAborted(options.signal);
+      assertCurrent();
       baseline.complete = baseline.functions.complete === true;
       baseline.evidenceProfile = baseline.functions.evidenceProfile;
       workspace.diffState = null;
       return baseline;
     } catch (error) {
+      // A superseding load already disposed this baseline's owned backend and
+      // repointed workspace.baseline; only a genuine failure of the live
+      // baseline clears it here.
+      if (error?.code === 'HEX_WORKSPACE_STALE') throw error;
       if (workspace.baseline === baseline) workspace.baseline = null;
       if (baseline?.ownedBackend) baseline.backend?.dispose?.();
       throw error;
@@ -184,24 +235,12 @@ export function installSymmetricWorkspaceDiff(app) {
         mode:'full',
         signal:options.signal,
         threshold:options.threshold ?? 0.62,
-        matchBudget:options.matchBudget || { maxCandidateEvaluations:1500000, maxEdges:300000, maxComponentNodes:4096, maxComponentEdges:65536 },
+        matchBudget:options.matchBudget || DEFAULT_SYMMETRIC_MATCH_BUDGET,
       });
       assertCurrent();
       const inputsComplete = before.complete === true && current.complete === true;
       result = demoteIncompleteAbsenceClaims(result, inputsComplete ? null : 'incomplete-symmetric-code-evidence');
-      const reasons = [];
-      if (!before.complete) reasons.push(before.truncationReason || 'baseline-function-set-incomplete');
-      if (!current.complete) reasons.push(current.truncationReason || 'current-function-set-incomplete');
-      if (result.truncated) reasons.push('matcher-truncated');
-      result.completeness = {
-        complete:inputsComplete && !result.truncated,
-        reasons:[...new Set(reasons)],
-        evidenceProfile:SYMMETRIC_CODE_PROFILE,
-        fingerprintVersion:before.fingerprintVersion,
-        evidenceSymmetric:true,
-        baseline:{ complete:before.complete === true, total:before.total, scanned:before.scanned, missingEvidence:before.missingEvidence, reason:before.truncationReason },
-        current:{ complete:current.complete === true, total:current.total, scanned:current.scanned, missingEvidence:current.missingEvidence, reason:current.truncationReason },
-      };
+      result.completeness = workspaceCompleteness(result, before, current);
       result.provenance = {
         baselineHash:baseline.hash,
         currentHash:workspace.identity?.hash || null,
@@ -229,4 +268,5 @@ export function installSymmetricWorkspaceDiff(app) {
 export const __symmetricWorkspaceInternalsForTests = Object.freeze({
   demoteIncompleteAbsenceClaims,
   discoverBaselineFunctions,
+  workspaceCompleteness,
 });

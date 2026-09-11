@@ -5,7 +5,7 @@ import { OP } from '../../js/ir-core.js';
 import { projectSemanticIrV2ToLegacyV1 } from '../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 import { createSemanticCfg } from '../../js/semantics/cfg/index.js';
 import { createSemanticIrFunction } from '../../js/semantics/ir/function.js';
-import { buildMemorySsa } from '../../js/semantics/memoryssa/build.js';
+import { MEMORY_SSA_BUILD_VERSION, buildMemorySsa } from '../../js/semantics/memoryssa/build.js';
 import { createMemoryRegionRef } from '../../js/semantics/memoryssa/contract.js';
 import { forwardExactStackOperandIdentity } from '../../js/semantics/memoryssa/operand-forwarding.js';
 
@@ -124,7 +124,7 @@ function build(multi) {
       scalarSsaBuildVersion: '1.0.0',
       scalarSsaDigest: 'ssa-digest',
       memorySsaId: `mssa-${multi}`,
-      memorySsaBuildVersion: '1.0.0',
+      memorySsaBuildVersion: MEMORY_SSA_BUILD_VERSION,
       analyzerVersion: 'fixture',
     },
     snapshotId: `snapshot-${multi}`,

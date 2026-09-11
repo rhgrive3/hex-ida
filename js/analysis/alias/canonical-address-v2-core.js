@@ -19,6 +19,10 @@ export const GENERIC_ROOT_DESCRIPTOR_KINDS = Object.freeze([
 const ROOT_KINDS = new Set(GENERIC_ROOT_DESCRIPTOR_KINDS);
 const MAX_DERIVATION_DEPTH = 128;
 const INVALID_ROOT_DESCRIPTOR = Symbol('invalid-root-descriptor');
+const CONFLICTING_ROOT_DESCRIPTORS = Symbol('conflicting-root-descriptors');
+const PROVEN_SEPARATION_DESCRIPTOR_KINDS = new Set(['global-like', 'heap-like', 'tls-like']);
+const ADDRESS_INTEGER_MACHINE_KINDS = new Set(['bitvector', 'address']);
+const INTEGER_CONSTANT_KINDS = new Set(['bitvector', 'integer']);
 
 function identityString(value, { trim = false } = {}) {
   if (typeof value !== 'string' || !value.trim()) return null;
@@ -133,6 +137,88 @@ function rootIdentityKey(root) {
   });
 }
 
+function failRootIdentity(message = 'points-to-invalid-root-identity') {
+  throw new TypeError(message);
+}
+
+/**
+ * Canonical, replay-safe root identity (#5172).
+ *
+ * `rootKey` and canonical proofs are strong same-storage authority: if
+ * normalization erases a caller-visible distinction (such as jsonSafe
+ * collapsing {source:undefined} to {}), alias analysis can turn that collision
+ * into MustAlias. Accept only ordinary JSON-shaped data whose serialization is
+ * lossless for the values we retain, and copy it without executing accessors.
+ */
+export function canonicalRootIdentity(value, seen = new WeakSet()) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))
+        || Object.is(value, -0)) failRootIdentity('points-to-invalid-root-identity');
+    return value;
+  }
+  if (typeof value !== 'object' || seen.has(value)) failRootIdentity('points-to-invalid-root-identity');
+
+  let isArray;
+  let prototype;
+  let descriptors;
+  try {
+    isArray = Array.isArray(value);
+    prototype = Object.getPrototypeOf(value);
+    descriptors = Object.getOwnPropertyDescriptors(value);
+  } catch {
+    failRootIdentity('points-to-invalid-root-identity');
+  }
+  if ((isArray && prototype !== Array.prototype)
+      || (!isArray && prototype !== Object.prototype && prototype !== null)) {
+    failRootIdentity('points-to-invalid-root-identity');
+  }
+
+  seen.add(value);
+  try {
+    const keys = Reflect.ownKeys(descriptors);
+    if (isArray) {
+      const length = descriptors.length?.value;
+      if (!Number.isSafeInteger(length) || length < 0 || keys.length !== length + 1) {
+        failRootIdentity('points-to-invalid-root-identity');
+      }
+      const out = new Array(length);
+      for (let index = 0; index < length; index++) {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+          failRootIdentity('points-to-invalid-root-identity');
+        }
+        out[index] = canonicalRootIdentity(descriptor.value, seen);
+      }
+      for (const key of keys) {
+        if (key === 'length') continue;
+        if (typeof key !== 'string' || !/^(?:0|[1-9][0-9]*)$/.test(key) || Number(key) >= length) {
+          failRootIdentity('points-to-invalid-root-identity');
+        }
+      }
+      return out;
+    }
+
+    const out = {};
+    for (const key of keys) {
+      if (typeof key !== 'string') failRootIdentity('points-to-invalid-root-identity');
+      const descriptor = descriptors[key];
+      if (!descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+        failRootIdentity('points-to-invalid-root-identity');
+      }
+      Object.defineProperty(out, key, {
+        value: canonicalRootIdentity(descriptor.value, seen),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return out;
+  } finally {
+    seen.delete(value);
+  }
+}
+
 // Exported so P7-2's range-valued points-to solver can name exactly the same
 // root as the exact canonical derivation. Two spellings of one root identity
 // would silently split every A2 refinement away from the A1 answer.
@@ -142,6 +228,14 @@ export function normalizeRootIdentity(variable, functionId) {
   const variableKind = variable?.kind == null ? 'unknown-state' : identityString(variable.kind);
   const variableScope = variable?.scope == null ? 'unknown' : identityString(variable.scope);
   if (normalizedFunctionId == null || variableKey == null || variableKind == null || variableScope == null) return null;
+  let physicalIdentity;
+  if (variable?.physicalIdentity !== undefined && variable?.physicalIdentity !== null) {
+    try {
+      physicalIdentity = canonicalRootIdentity(variable.physicalIdentity);
+    } catch {
+      return null;
+    }
+  }
   const identity = {
     kind: 'semantic-state-root',
     functionId: normalizedFunctionId,
@@ -149,7 +243,7 @@ export function normalizeRootIdentity(variable, functionId) {
       key: variableKey,
       kind: variableKind,
       scope: variableScope,
-      ...(variable?.physicalIdentity == null ? {} : { physicalIdentity: jsonSafe(variable.physicalIdentity) }),
+      ...(physicalIdentity == null ? {} : { physicalIdentity }),
     },
   };
   return deepFreeze(identity);
@@ -178,12 +272,20 @@ function normalizeGenericDescriptor(input) {
     const baseOffset = parseInteger(input.baseOffset ?? 0);
     const linearOffsets = normalizeLinearOffsets(input.linearOffsets);
     if (baseOffset == null || linearOffsets == null) return null;
+    let rootIdentity;
+    if (input.rootIdentity !== undefined && input.rootIdentity !== null) {
+      try {
+        rootIdentity = canonicalRootIdentity(input.rootIdentity);
+      } catch {
+        return null;
+      }
+    }
     return deepFreeze({
       kind,
       baseOffset,
       addressSpace,
       linearOffsets,
-      ...(input.rootIdentity == null ? {} : { rootIdentity: jsonSafe(input.rootIdentity) }),
+      ...(rootIdentity == null ? {} : { rootIdentity }),
     });
   }
   if (kind === 'rooted-object' || kind === 'global-like' || kind === 'heap-like' || kind === 'tls-like') {
@@ -193,13 +295,23 @@ function normalizeGenericDescriptor(input) {
     const rootEntityId = input.rootEntityId == null ? null : identityString(input.rootEntityId, { trim: true });
     if (input.rootEntityId != null && rootEntityId == null) return null;
     const resolvedSpace = addressSpace ?? (kind === 'tls-like' ? 'tls' : null);
+    const separationClass = PROVEN_SEPARATION_DESCRIPTOR_KINDS.has(kind) ? kind : null;
+    let rootIdentity;
+    if (input.rootIdentity !== undefined && input.rootIdentity !== null) {
+      try {
+        rootIdentity = canonicalRootIdentity(input.rootIdentity);
+      } catch {
+        return null;
+      }
+    }
     return deepFreeze({
       kind: 'rooted-object',
       baseOffset,
       addressSpace: resolvedSpace,
       linearOffsets,
       ...(rootEntityId ? { rootEntityId } : {}),
-      ...(input.rootIdentity == null ? {} : { rootIdentity: jsonSafe(input.rootIdentity) }),
+      ...(separationClass == null ? {} : { separationClass }),
+      ...(rootIdentity == null ? {} : { rootIdentity }),
     });
   }
   let address;
@@ -225,13 +337,33 @@ function semanticDescriptorCandidates(value, node, variable) {
     node?.metadata?.canonicalRoot,
     node?.attributes?.canonicalRoot,
     variable?.metadata?.canonicalRoot,
-  ].filter(Boolean);
+  ].filter((candidate) => candidate != null);
 }
 
 function suppliedRootDescriptor(ctx, value, node, variable, expectedAddressSpace) {
-  for (const candidate of semanticDescriptorCandidates(value, node, variable)) {
-    const normalized = normalizeGenericDescriptor(candidate);
-    return normalized ?? INVALID_ROOT_DESCRIPTOR;
+  const semantic = semanticDescriptorCandidates(value, node, variable);
+  if (semantic.length) {
+    /*
+     * All proof-grade candidates participate. The old first-match-wins
+     * priority made the same contradictory evidence set yield different
+     * exact roots depending on which slot (value/node/attributes/variable
+     * metadata) each descriptor was stored in (#5802). Malformed candidates
+     * invalidate the result; a single valid candidate
+     * (or several that normalize identically) is used, and genuinely
+     * conflicting candidates fail closed.
+     */
+    let chosen = null;
+    let malformed = false;
+    let conflicting = false;
+    for (const candidate of semantic) {
+      const normalized = normalizeGenericDescriptor(candidate);
+      if (normalized == null) { malformed = true; continue; }
+      if (chosen == null) { chosen = normalized; continue; }
+      if (stableDigest(chosen) !== stableDigest(normalized)) conflicting = true;
+    }
+    if (malformed) return INVALID_ROOT_DESCRIPTOR;
+    if (conflicting) return CONFLICTING_ROOT_DESCRIPTORS;
+    return chosen ?? INVALID_ROOT_DESCRIPTOR;
   }
 
   const keys = [
@@ -262,8 +394,34 @@ function suppliedRootDescriptor(ctx, value, node, variable, expectedAddressSpace
   return normalizeGenericDescriptor(raw) ?? INVALID_ROOT_DESCRIPTOR;
 }
 
+function descriptorSeparationMetadata(descriptor) {
+  const separationClass = descriptor?.separationClass;
+  if (!PROVEN_SEPARATION_DESCRIPTOR_KINDS.has(separationClass)) return {};
+  return { separationClass, separationAuthority: 'root-descriptor' };
+}
+
+function proofSeparationMetadata(proofs) {
+  const first = proofs[0];
+  const separationClass = first?.separationClass;
+  if (!PROVEN_SEPARATION_DESCRIPTOR_KINDS.has(separationClass)
+      || first?.separationAuthority !== 'root-descriptor'
+      || !proofs.every((proof) => (
+        proof?.separationAuthority === 'root-descriptor'
+        && proof.separationClass === separationClass
+      ))) return {};
+  return { separationClass, separationAuthority: 'root-descriptor' };
+}
+
+function stripSeparationMetadata(proof) {
+  const result = { ...proof };
+  delete result.separationClass;
+  delete result.separationAuthority;
+  return result;
+}
+
 function rootFromDescriptor(descriptor, fallbackIdentity, expectedAddressSpace, widthBits) {
   if (descriptor === INVALID_ROOT_DESCRIPTOR) return unknown('canonical-root-descriptor-invalid');
+  if (descriptor === CONFLICTING_ROOT_DESCRIPTORS) return unknown('canonical-root-descriptor-conflict');
   if (!descriptor) return null;
   const addressSpace = descriptor.addressSpace ?? expectedAddressSpace ?? 'memory';
   if (expectedAddressSpace != null && descriptor.addressSpace != null && String(expectedAddressSpace) !== descriptor.addressSpace) {
@@ -298,6 +456,7 @@ function rootFromDescriptor(descriptor, fallbackIdentity, expectedAddressSpace, 
     rootEntityId,
     offset: descriptor.baseOffset,
     widthBits,
+    ...descriptorSeparationMetadata(descriptor),
     separationSafe: descriptor.linearOffsets,
   });
 }
@@ -377,14 +536,45 @@ function constantFromNode(value, node) {
     node?.attributes?.constant,
     node?.metadata?.constant,
   ];
+  // Canonical Semantic IR values are machine-typed. Only integer/address
+  // domains may authorize an exact address constant; legacy untyped inputs
+  // retain their historical behavior. Structured constant kinds must also be
+  // compatible with that domain. Address-typed constants produced by machine
+  // effect lowering intentionally carry a bitvector payload (#5228).
+  const machineType = value?.machineType;
+  let machineKind = null;
+  if (machineType != null && typeof machineType === 'object' && !Array.isArray(machineType)
+      && Object.hasOwn(machineType, 'kind')) {
+    if (!ADDRESS_INTEGER_MACHINE_KINDS.has(machineType.kind)) {
+      return unknown('canonical-address-constant-machine-domain-invalid');
+    }
+    machineKind = machineType.kind;
+  }
+  for (const candidate of candidates) {
+    if (candidate == null || typeof candidate !== 'object' || Array.isArray(candidate)
+        || !Object.hasOwn(candidate, 'kind')) continue;
+    const kind = candidate.kind;
+    const integerKind = INTEGER_CONSTANT_KINDS.has(kind);
+    const addressKind = kind === 'address' && (machineKind == null || machineKind === 'address');
+    if (!integerKind && !addressKind) return unknown('canonical-address-constant-kind-mismatch');
+  }
+  // Proof-grade constants must agree across sources (#5727): adopting the
+  // first parsed value let source priority alone decide the exact address for
+  // contradictory metadata.
+  let parsed = null;
   for (const candidate of candidates) {
     if (candidate == null) continue;
-    const parsed = parseInteger(candidate);
-    if (parsed == null) continue;
-    const widthBits = positiveWidth(candidate?.widthBits) ?? addressWidth(value, node);
-    return scalarConstant(parsed, widthBits, node?.id ?? value?.id ?? null);
+    const value0 = parseInteger(candidate);
+    if (value0 == null) continue;
+    if (parsed != null && parsed !== value0) {
+      return unknown('canonical-address-constant-conflict');
+    }
+    parsed = value0;
   }
-  return null;
+  if (parsed == null) return null;
+  const widthSource = candidates.find((candidate) => candidate != null && parseInteger(candidate) != null);
+  const widthBits = positiveWidth(widthSource?.widthBits) ?? addressWidth(value, node);
+  return scalarConstant(parsed, widthBits, node?.id ?? value?.id ?? null);
 }
 
 function sameRoot(left, right) {
@@ -410,7 +600,8 @@ function mergeAlternatives(proofs, reason) {
   const exactOffsets = proofs.every((proof) => proof.kind !== 'root-only' && proof.offset === first.offset);
   if (exactOffsets) {
     return deepFreeze({
-      ...first,
+      ...stripSeparationMetadata(first),
+      ...proofSeparationMetadata(proofs),
       separationSafe: proofs.every((proof) => proof.separationSafe === true),
     });
   }
@@ -421,6 +612,7 @@ function mergeAlternatives(proofs, reason) {
     rootIdentity: first.rootIdentity,
     ...(first.rootEntityId == null ? {} : { rootEntityId: first.rootEntityId }),
     widthBits: first.widthBits,
+    ...proofSeparationMetadata(proofs),
     reason: String(reason),
   });
 }
@@ -668,8 +860,22 @@ function deriveValue(ctx, valueId, expectedAddressSpace, state) {
   const node = value.definitionNodeId == null ? null : ctx.nodes.get(String(value.definitionNodeId));
   const nextState = { visiting: new Set(state.visiting).add(visitKey), depth: state.depth + 1 };
 
+  // Entry roots are resolved through entryRoot exactly once. Keeping this
+  // before the generic semantic-descriptor path both preserves the variable
+  // identity in provider requests and prevents a null provider response from
+  // being queried a second time.
+  if (value.kind === 'entry') {
+    if (value.variableKey == null) return unknown('canonical-address-entry-root-identity-missing');
+    const variable = { key: value.variableKey, kind: 'logical-state', scope: 'function' };
+    return entryRoot(ctx, value, null, variable, expectedAddressSpace);
+  }
+  if (!node) return unknown('canonical-address-definition-node-missing');
+  if (node.kind === 'state-read') {
+    return deriveStateRead(ctx, value, node, expectedAddressSpace, nextState);
+  }
+
   const semanticDescriptor = suppliedRootDescriptor(ctx, value, node, node?.variable ?? null, expectedAddressSpace);
-  if (semanticDescriptor && node?.kind !== 'state-read') {
+  if (semanticDescriptor) {
     const identity = deepFreeze({
       kind: 'semantic-value-root',
       functionId: String(ctx.ir.functionId),
@@ -679,17 +885,9 @@ function deriveValue(ctx, valueId, expectedAddressSpace, state) {
     if (supplied) return supplied;
   }
 
-  if (value.kind === 'entry') {
-    if (value.variableKey == null) return unknown('canonical-address-entry-root-identity-missing');
-    const variable = { key: value.variableKey, kind: 'logical-state', scope: 'function' };
-    return entryRoot(ctx, value, null, variable, expectedAddressSpace);
-  }
-  if (!node) return unknown('canonical-address-definition-node-missing');
-
   if (node.kind === 'const') {
     return constantFromNode(value, node) ?? unknown('canonical-address-constant-not-exact');
   }
-  if (node.kind === 'state-read') return deriveStateRead(ctx, value, node, expectedAddressSpace, nextState);
   if (node.kind === 'copy') {
     if (!Array.isArray(node.inputs) || node.inputs.length !== 1) return unknown('canonical-address-copy-arity');
     return deriveValue(ctx, node.inputs[0], expectedAddressSpace, nextState);
@@ -724,17 +922,24 @@ export function canonicalAddressProofToRegionEvidence(proof) {
     return deepFreeze({ kind: 'stack-fixed', offset: proof.offset.toString() });
   }
   if (proof.kind !== 'rooted') return null;
+  // Preserve the proof's proven storage domain into the region layer (#5901).
+  // Flat `memory` rooted-offsets keep their historical shape; a rooted proof
+  // in `tls`/`io`/etc. must not silently become a flat memory region.
+  const proofSpace = typeof proof.addressSpace === 'string' && proof.addressSpace && proof.addressSpace !== 'memory'
+    ? proof.addressSpace : null;
   if (proof.separationSafe) {
     return deepFreeze({
       kind: 'rooted-offset',
       rootEntityId: proof.rootEntityId,
       offset: proof.offset.toString(),
+      ...(proofSpace ? { addressSpace: proofSpace } : {}),
     });
   }
   return deepFreeze({
     kind: 'rooted-offset',
     rootEntityId: exactAddressRootId(proof),
     offset: '0',
+    ...(proofSpace ? { addressSpace: proofSpace } : {}),
   });
 }
 

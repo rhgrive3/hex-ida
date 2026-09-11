@@ -226,7 +226,7 @@ for (const malformed of [
   direct('stxr', [w(2), x(2), mem(x(1))]),
   direct('stxr', [w(1), x(2), mem(x(1))]),
   direct('clrex', [{ k:'imm', text:'#16', value:16n }]),
-  direct('dsb', [{ k:'imm', text:'#16', value:16n }]),
+  direct('dsb', [{ k:'imm', text:'#17', value:17n }]),
   direct('isb', [{ k:'imm', text:'#16', value:16n }]),
   direct('ssbb', [imm(0)]),
   direct('pssbb', [imm(4)]),

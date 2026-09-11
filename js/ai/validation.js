@@ -2,6 +2,7 @@ import {
   AI_ACTION_KINDS, AI_MODES, AI_RESULT_SCHEMA, AI_SCOPES, AI_STYLES, AIError,
   MODEL_DECISION_SCHEMA,
 } from './schema.js';
+import { isValidSessionId } from './session-core/index.js';
 
 export function validateSchema(value, schema, path = '$') {
   const errors = [];
@@ -80,6 +81,9 @@ export function assertSchema(value, schema, type = 'invalid_model_output') {
 }
 
 export function normalizeTurnRequest(input = {}) {
+  if (input.sessionId != null && !isValidSessionId(input.sessionId)) {
+    throw new AIError('invalid_model_output', 'AI session id must be a non-empty string.');
+  }
   const mode = AI_MODES.includes(input.mode) ? input.mode : 'chat';
   const style = AI_STYLES.includes(input.style) ? input.style : 'analyst';
   const scope = AI_SCOPES.includes(input.scope) ? input.scope : 'auto';
@@ -129,7 +133,13 @@ export function sanitizeActions(actions, { evidenceStore, proposalStore, address
     if (!value || !AI_ACTION_KINDS.includes(value.kind)) continue;
     const action = { kind: value.kind };
     if (typeof value.label === 'string') action.label = value.label.slice(0, 240);
-    if (value.kind === 'run-agent') { action.target = typeof value.target === 'string' ? value.target.slice(0, 1000) : null; out.push(action); continue; }
+    if (value.kind === 'run-agent') {
+      const target = typeof value.target === 'string' ? value.target.trim().slice(0, 1000) : '';
+      if (!target) continue;
+      action.target = target;
+      out.push(action);
+      continue;
+    }
     if (value.kind === 'review-proposal') {
       const rawId = value.target ?? value.proposalId;
       if (typeof rawId === 'string' && rawId && proposalStore && proposalStore.has(rawId)) { action.target = rawId; out.push(action); }

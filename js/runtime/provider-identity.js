@@ -20,7 +20,9 @@ function optionalIdentity(value, name) {
   if (typeof value !== 'string' || !value.trim()) {
     throw new DebugAdapterError('invalid-runtime-identity', `${name} must be a non-empty string`, { name, value });
   }
-  return value;
+  // Exact identity comparisons downstream assume the canonical spelling:
+  // keep the trimmed form so ' bin ' and 'bin' are the same identity (#5462).
+  return value.trim();
 }
 
 function safeSequence(value, name = 'sequence') {
@@ -131,7 +133,7 @@ function normalizeBinding(input, runtimeSessionId, generation) {
 
 function matchIsStrong(match, targetBinaryId) {
   if (!match || typeof match !== 'object' || match.accepted !== true || match.ambiguous === true) return false;
-  if (targetBinaryId && match.targetBinaryId != null) {
+  if (targetBinaryId) {
     if (typeof match.targetBinaryId !== 'string' || !match.targetBinaryId.trim() || match.targetBinaryId !== targetBinaryId) return false;
   }
   const confidence = match.identityConfidence ?? match.confidence ?? match.score;
@@ -156,8 +158,12 @@ export class RuntimeModuleBindingTable {
     if (active && active.unloadedSequence == null) {
       throw new DebugAdapterError('module-binding-already-loaded', `runtime module binding is already loaded: ${bindingKey}`, { bindingKey, generation: active.generation });
     }
+    const bindingInput = { ...input, bindingKey };
+    if (bindingInput.unloadedSequence != null) {
+      throw new DebugAdapterError('invalid-module-sequence', 'runtime module load cannot include unloadedSequence', { bindingKey });
+    }
     const generation = (this.#generation.get(bindingKey) || 0) + 1;
-    const binding = normalizeBinding({ ...input, bindingKey }, this.runtimeSessionId, generation);
+    const binding = normalizeBinding(bindingInput, this.runtimeSessionId, generation);
     this.#generation.set(bindingKey, generation);
     this.#active.set(bindingKey, binding);
     this.#history.push(binding);

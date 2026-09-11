@@ -5,7 +5,7 @@
  * threshold and semantic facts simultaneously. This adapter de-duplicates by the
  * evidence ID/group emitted by semantic.js before handing items to fuse().
  */
-import { FAMILY, GROUP, fuse } from './evidence.js';
+import { GROUP, fuse, adapterEvidence } from './evidence.js';
 
 function boundedStrength(v) {
   if (v == null || !Number.isFinite(Number(v))) return 0;
@@ -49,14 +49,10 @@ export function semanticEvidenceItems(facts, opts) {
       const strength=boundedStrength(f.confidence);
       if (strength <= 0) continue;
       const verified=isExplicitSemanticProof(f,e);
-      out.push({
-        code: verified ? 'semantic-ir-proof' : 'semantic-ir-observation',
+      out.push(adapterEvidence(
+        verified ? 'semantic-ir-proof' : 'semantic-ir-observation',
         strength,
-        lr: verified ? lr : Math.min(lr, 4),
-        family: verified ? FAMILY.VERIFIED : FAMILY.USAGE,
-        kind: verified ? 'verified' : 'semantic',
-        id: false,
-        detail: {
+        {
           evidenceId: e.id || null,
           instructionId: e.instructionId == null ? null : e.instructionId,
           address: e.address == null ? null : e.address,
@@ -65,7 +61,8 @@ export function semanticEvidenceItems(facts, opts) {
           relation: f.relation || e.relation || null,
           group: GROUP.DATAFLOW,
         },
-      });
+        verified ? lr : Math.min(lr, 4),
+      ));
     }
   }
   return out;
@@ -93,11 +90,7 @@ export function runtimeEvidenceItems(runtimeResult, opts) {
     const key = 'field:' + String(identity);
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({
-      code: 'runtime-field-verified', strength, lr,
-      family: FAMILY.VERIFIED, kind: 'verified', id: false,
-      detail: { ...t, group: GROUP.RUNTIME },
-    });
+    out.push(adapterEvidence('runtime-field-verified', strength, { ...t, group: GROUP.RUNTIME }, lr));
   }
   for (const b of branches) {
     if (!b || typeof b !== 'object') continue;
@@ -106,11 +99,7 @@ export function runtimeEvidenceItems(runtimeResult, opts) {
     const key = 'branch:' + String(identity);
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({
-      code: 'runtime-branch-verified', strength, lr: Math.max(1, Math.sqrt(lr)),
-      family: FAMILY.VERIFIED, kind: 'verified', id: false,
-      detail: { ...b, group: GROUP.RUNTIME },
-    });
+    out.push(adapterEvidence('runtime-branch-verified', strength, { ...b, group: GROUP.RUNTIME }, Math.max(1, Math.sqrt(lr))));
   }
   return out;
 }

@@ -15,12 +15,12 @@ export class ContextBroker {
 
   initialAutoScope(snapshot = null) {
     if (snapshot?.selection || this.local.selection) return 'selection';
-    if (snapshot?.currentFunction?.address || this.currentAddress()) return 'function';
+    if (this.currentAddress(snapshot) != null) return 'function';
     return snapshot?.binaryId || this.local.binaryId || this.local.program || this.local.functions ? 'binary' : 'function';
   }
 
   currentAddress(snapshot = null) {
-    return addressText(snapshot?.currentFunction?.address ?? this.local.currentAddress ?? this.local.activeFunction?.address ?? this.local.currentFunction?.address);
+    return addressText(snapshot?.currentAddress ?? snapshot?.currentFunction?.address ?? this.local.currentAddress ?? this.local.activeFunction?.address ?? this.local.currentFunction?.address);
   }
 
   buildModelContext({ request, session, evidenceStore, hypotheses = [], observations = [], budgetBytes, snapshot = null, effectiveScope = null, includeHistory = true } = {}) {
@@ -95,7 +95,7 @@ function compactSnapshot(snapshot) {
   return {
     id: snapshot.id, binaryIdentity: snapshot.binaryIdentity, projectIdentity: snapshot.projectIdentity,
     architecture: snapshot.architecture, slice: snapshot.slice, runtimeSessionIdentity: snapshot.runtimeSessionIdentity,
-    requestedScope: snapshot.requestedScope, capabilities: snapshot.capabilities,
+    currentAddress: snapshot.currentAddress, requestedScope: snapshot.requestedScope, capabilities: snapshot.capabilities,
   };
 }
 function structuredMemory(session) {
@@ -108,19 +108,34 @@ function compactSelection(value) {
   return { start: addressText(value.start ?? instructions[0]?.address), end: addressText(value.end ?? instructions[instructions.length - 1]?.address), instructions: instructions.slice(0, 80).map(compactInstruction), truncated: instructions.length > 80 || !!value.truncated };
 }
 function compactFunction(value, maxLines) {
-  const instructions = Array.isArray(value.instructions) ? value.instructions.slice(0, maxLines).map(compactInstruction) : undefined;
-  const assembly = typeof value.assembly === 'string' ? value.assembly.split('\n').slice(0, maxLines).join('\n').slice(0, 30000) : undefined;
-  const pseudocode = typeof value.pseudocode === 'string' ? value.pseudocode.split('\n').slice(0, 80).join('\n').slice(0, 16000) : undefined;
-  return removeUndefined({ address: addressText(value.address ?? value.start ?? value.startAddr ?? value.identity?.startAddr), name: value.name || value.identity?.name || null, summary: typeof value.summary === 'string' ? value.summary.slice(0, 4000) : undefined, instructions, assembly, pseudocode, truncated: (Array.isArray(value.instructions) && value.instructions.length > maxLines) || (typeof value.assembly === 'string' && value.assembly.split('\n').length > maxLines), trust: 'untrusted-data' });
+  const instructionValues = Array.isArray(value.instructions) ? value.instructions : null;
+  const instructions = instructionValues ? instructionValues.slice(0, maxLines).map(compactInstruction) : undefined;
+  const assemblyLines = typeof value.assembly === 'string' ? value.assembly.split('\n') : null;
+  const assemblyByLines = assemblyLines ? assemblyLines.slice(0, maxLines).join('\n') : undefined;
+  const assembly = assemblyByLines?.slice(0, 30000);
+  const pseudocodeLines = typeof value.pseudocode === 'string' ? value.pseudocode.split('\n') : null;
+  const pseudocodeByLines = pseudocodeLines ? pseudocodeLines.slice(0, 80).join('\n') : undefined;
+  const pseudocode = pseudocodeByLines?.slice(0, 16000);
+  const truncated = (instructionValues != null && instructionValues.length > maxLines)
+    || (assemblyLines != null && (assemblyLines.length > maxLines || assemblyByLines.length > 30000))
+    || (pseudocodeLines != null && (pseudocodeLines.length > 80 || pseudocodeByLines.length > 16000));
+  return removeUndefined({ address: addressText(value.address ?? value.start ?? value.startAddr ?? value.identity?.startAddr), name: value.name || value.identity?.name || null, summary: typeof value.summary === 'string' ? value.summary.slice(0, 4000) : undefined, instructions, assembly, pseudocode, truncated, trust: 'untrusted-data' });
 }
 function compactInstruction(value) { return removeUndefined({ address: addressText(value?.address), mnemonic: String(value?.mnemonic || '').slice(0, 40), operands: String(value?.operands || '').slice(0, 500) }); }
 function compactEvidence(value) { return removeUndefined({ id: value.id, kind: value.kind, status: value.status, address: value.address, functionAddress: value.functionAddress, functionName: value.functionName, title: value.title, summary: value.summary, sourceTool: value.sourceTool }); }
 function compactHypothesis(value) { return { id: value.id, claim: value.claim, confidence: value.confidence, status: value.status, supportEvidenceIds: value.supportEvidenceIds, contradictionEvidenceIds: value.contradictionEvidenceIds, missingEvidence: value.missingEvidence }; }
+// Observation evidenceIds come from tool/provider data (untrusted at this
+// boundary). Only an actual array may be projected into model context; any
+// other value must not crash context generation with a raw TypeError and must
+// not launder into evidence references (#6136).
+function observationEvidenceIds(value, limit) {
+  return Array.isArray(value) ? value.slice(0, limit) : [];
+}
 function compactObservations(values, maxBytes) {
   const newest = values.slice(-12).reverse(), out = []; let used = 0;
   for (let index = 0; index < newest.length; index++) {
     const value = newest[index];
-    let safe = { kind: 'hex-tool-data', trust: 'untrusted-data', tool: value.tool || value.request?.tool, summary: String(value.summary || '').slice(0, 3000), evidenceIds: (value.evidenceIds || []).slice(0, 100), data: jsonSafe(value.data) };
+    let safe = { kind: 'hex-tool-data', trust: 'untrusted-data', tool: value.tool || value.request?.tool, summary: String(value.summary || '').slice(0, 3000), evidenceIds: observationEvidenceIds(value.evidenceIds, 100), data: jsonSafe(value.data) };
     let size = byteLength(safe), remaining = maxBytes - used;
     if (size > remaining) {
       if (index === 0 && remaining > 256) { safe = fitObservation(safe, remaining); size = byteLength(safe); if (size <= remaining) { out.push(safe); used += size; } }
@@ -131,7 +146,7 @@ function compactObservations(values, maxBytes) {
   return out.reverse();
 }
 function fitObservation(value, maxBytes) {
-  const base = { kind: value.kind, trust: value.trust, tool: value.tool, evidenceIds: (value.evidenceIds || []).slice(0, 32), data: { truncated: true } };
+  const base = { kind: value.kind, trust: value.trust, tool: value.tool, evidenceIds: observationEvidenceIds(value.evidenceIds, 32), data: { truncated: true } };
   let summary = String(value.summary || ''), candidate = { ...base, summary };
   while (summary.length && byteLength(candidate) > maxBytes) { summary = summary.slice(0, Math.floor(summary.length * 0.7)); candidate = { ...base, summary, truncated: true }; }
   return byteLength(candidate) <= maxBytes ? candidate : { kind: value.kind, trust: value.trust, tool: value.tool, truncated: true };
@@ -207,6 +222,26 @@ function trimToBudget(context, maxBytes) {
     context.investigation.rejectedHypotheses = [];
     context.investigation.unresolvedQuestions = (context.investigation.unresolvedQuestions || []).slice(-4);
     if (byteLength(context) <= maxBytes) return;
+    // #5635: confirmedFacts/activeHypotheses/userConstraints are the largest
+    // investigation memory components but only count-bounded at creation, so
+    // ordinary session growth can exceed the budget by themselves. The
+    // semantic budget outranks retained memory: degrade deterministically
+    // (oldest entries first, newest kept longest), never silently.
+    const compactList = (key, keep) => {
+      const list = context.investigation[key];
+      context.investigation[key] = Array.isArray(list) ? list.slice(-keep) : [];
+    };
+    compactList('confirmedFacts', 1);
+    compactList('activeHypotheses', 1);
+    if (byteLength(context) <= maxBytes) return;
+    compactList('confirmedFacts', 0);
+    compactList('activeHypotheses', 0);
+    compactList('userConstraints', 1);
+    if (byteLength(context) <= maxBytes) return;
+    compactList('userConstraints', 0);
+    context.investigation.goal = String(context.investigation.goal || '').slice(0, 200);
+    if (byteLength(context) <= maxBytes) return;
+    context.investigation.goal = '';
   }
   if (context.conversationSummary) {
     context.conversationSummary = context.conversationSummary.slice(0, 500);

@@ -39,9 +39,9 @@ assert.equal(proof.malformedPacDisposition, 'partial-fail-closed-no-baseline-del
 
 assert.equal(proof.knownBaselineDenominators.length, 5);
 assert.equal(proof.knownBaselineEncodingCaseCount, 376_186);
-assert.equal(proof.baselineFeatureAliasOverlapCount, 9,
+assert.equal(proof.baselineFeatureAliasOverlapCount, 13,
   'only the architecturally feature-sensitive PAC/HINT aliases may overlap the baseline raw A64 system region');
-assert.equal(proof.strictBaselineDisjointEncodingCaseCount, 376_177);
+assert.equal(proof.strictBaselineDisjointEncodingCaseCount, 376_173);
 assert.deepEqual(
   proof.baselineFeatureAliasOverlaps.map(({ pacMnemonic }) => pacMnemonic).sort(),
   [...ARM64E_BASELINE_FEATURE_ALIAS_MNEMONICS].sort(),

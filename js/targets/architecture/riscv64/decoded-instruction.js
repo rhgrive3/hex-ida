@@ -10,8 +10,67 @@ function text(value, code) {
   if (!out) throw new TypeError(code);
   return out;
 }
-function bigint(value, code) {
-  try { return BigInt(value); } catch { throw new TypeError(code); }
+// Semantic metadata must be a primitive token already: structured values
+// must never coerce into canonical mode/version authority.
+function strictToken(value, code) {
+  if (typeof value !== 'string') throw new TypeError(code);
+  const out = value.trim();
+  if (!out) throw new TypeError(code);
+  return out;
+}
+function addressValue(value, code) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    if (/^(?:[+-]?\d+|0[xX][0-9a-fA-F]+|0[oO][0-7]+|0[bB][01]+)$/.test(normalized)) {
+      try { return BigInt(normalized); } catch { /* fall through to the contract error */ }
+    }
+  }
+  throw new TypeError(code);
+}
+
+function exactInteger(value, code) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw new TypeError(code);
+  return value;
+}
+
+// `rawBytes` are the architectural authority for every decoded field, so each
+// element must be a genuine byte. Typed conversion coercion (`Uint8Array.from`)
+// must never remap out-of-domain values (275 -> 19) or non-numeric entries into
+// a different canonical instruction. Decoder bridges run in separate realms, so
+// cross-realm Uint8Array views are recognized via their toStringTag, matching
+// the canonical boundary pattern used by the x86-64 decoded instruction.
+const TYPED_ARRAY_TAG_GETTER = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype),
+  Symbol.toStringTag,
+)?.get;
+
+function isUint8ArrayView(value) {
+  if (value instanceof Uint8Array) return true;
+  if (!ArrayBuffer.isView(value)) return false;
+  let tag = null;
+  try { tag = TYPED_ARRAY_TAG_GETTER?.call(value) ?? null; } catch { tag = null; }
+  return tag === 'Uint8Array';
+}
+
+function rawBytesOf(input, expectedLength) {
+  if (isUint8ArrayView(input)) {
+    if (input.byteLength !== expectedLength) throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
+    return Uint8Array.from(input);
+  }
+  if (!Array.isArray(input)) throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
+  if (input.length !== expectedLength) throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
+  const bytes = new Uint8Array(expectedLength);
+  for (let index = 0; index < expectedLength; index += 1) {
+    if (!Object.hasOwn(input, index)) throw new TypeError('riscv64-decoded-instruction-invalid-raw-bytes');
+    const byte = input[index];
+    if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 0xff) {
+      throw new TypeError('riscv64-decoded-instruction-invalid-raw-byte');
+    }
+    bytes[index] = byte;
+  }
+  return bytes;
 }
 
 /**
@@ -24,24 +83,38 @@ function bigint(value, code) {
  */
 export function createRiscv64DecodedInstruction(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('riscv64-decoded-instruction-invalid');
-  const address = bigint(input.address, 'riscv64-decoded-instruction-invalid-address');
-  const size = Number(input.size ?? input.length);
+  const address = addressValue(input.address, 'riscv64-decoded-instruction-invalid-address');
+  const size = exactInteger(input.size ?? input.length, 'riscv64-decoded-instruction-invalid-length');
   if (size !== 2 && size !== 4) throw new TypeError('riscv64-decoded-instruction-invalid-length');
-  const rawBytes = input.rawBytes instanceof Uint8Array ? input.rawBytes.slice() : Uint8Array.from(input.rawBytes || []);
+  const rawBytes = rawBytesOf(input.rawBytes ?? [], size);
   if (rawBytes.length !== size) throw new TypeError('riscv64-decoded-instruction-byte-length-mismatch');
   const encodedLength = riscvInstructionLength(rawBytes[0] | (rawBytes[1] << 8));
   if (encodedLength !== size) throw new TypeError('riscv64-decoded-instruction-length-disagrees-with-encoding');
 
   const fields = decodeRiscv64InstructionWord(rawBytes);
-  const mode = text(input.mode ?? 'rv64imc', 'riscv64-decoded-instruction-mode-required');
+  const mode = strictToken(input.mode === undefined ? 'rv64imc' : input.mode, 'riscv64-decoded-instruction-mode-required');
   if (!RISCV64_DECODE_MODES.includes(mode)) throw new TypeError('riscv64-decoded-instruction-unsupported-mode');
   if (mode === 'rv64im' && size === 2) throw new TypeError('riscv64-decoded-instruction-compressed-disabled');
-  const instructionAlignment = Number(input.instructionAlignment ?? (mode === 'rv64im' ? 4 : 2));
-  if (!Number.isSafeInteger(instructionAlignment) || ![2,4].includes(instructionAlignment)) {
+  const instructionAlignment = exactInteger(
+    input.instructionAlignment ?? (mode === 'rv64im' ? 4 : 2),
+    'riscv64-decoded-instruction-invalid-instruction-alignment',
+  );
+  if (![2,4].includes(instructionAlignment)) {
     throw new TypeError('riscv64-decoded-instruction-invalid-instruction-alignment');
   }
   if (mode === 'rv64im' && instructionAlignment !== 4) throw new TypeError('riscv64-decoded-instruction-mode-alignment-mismatch');
   if (mode === 'rv64imc' && instructionAlignment !== 2) throw new TypeError('riscv64-decoded-instruction-mode-alignment-mismatch');
+
+  // ISA profile metadata must agree with the C-extension capability the
+  // record itself asserts (#5999). `mode:'rv64imc'` (and any compressed
+  // encoding) already requires compressed-instruction capability, so a
+  // `compressedInstructions:false` claim is a self-contradiction that must
+  // fail closed instead of minting contradictory canonical ISA evidence.
+  const compressedInstructions = input.compressedInstructions == null
+    ? null : input.compressedInstructions === true;
+  if (compressedInstructions === false && (mode === 'rv64imc' || size === 2 || fields.compressed === true)) {
+    throw new TypeError('riscv64-decoded-instruction-compressed-profile-contradiction');
+  }
 
   // `rawBytes` is authoritative for `fields`, so the canonical bytes must
   // never share mutable storage with any caller. `Object.freeze` cannot seal
@@ -53,7 +126,7 @@ export function createRiscv64DecodedInstruction(input = {}) {
     instructionAlignment,
     ...(input.isaIdentity == null ? {} : { isaIdentity:String(input.isaIdentity) }),
     ...(input.isaEvidence == null ? {} : { isaEvidence:String(input.isaEvidence) }),
-    ...(input.compressedInstructions == null ? {} : { compressedInstructions:input.compressedInstructions === true }),
+    ...(compressedInstructions == null ? {} : { compressedInstructions }),
     address,
     size,
     length: size,
@@ -63,7 +136,11 @@ export function createRiscv64DecodedInstruction(input = {}) {
     opStr: String(input.opStr ?? ''),
     contractVersion: RISCV64_DECODED_INSTRUCTION_CONTRACT_VERSION,
     decoderContractVersion: RISCV64_DECODED_INSTRUCTION_CONTRACT_VERSION,
-    decoderSemanticVersion: String(input.decoderSemanticVersion ?? RISCV64_DECODER_SEMANTIC_VERSION),
+    decoderSemanticVersion: strictToken(
+      input.decoderSemanticVersion === undefined
+        ? RISCV64_DECODER_SEMANTIC_VERSION : input.decoderSemanticVersion,
+      'riscv64-decoded-instruction-invalid-decoder-semantic-version',
+    ),
     // Structured architectural truth.
     fields,
     // `instructionFamily` is the canonical architectural operation recovered

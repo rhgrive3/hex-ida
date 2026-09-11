@@ -27,8 +27,17 @@ function exactJson(value) {
 function sortedStrings(value, code) {
   if (value == null) return [];
   if (!Array.isArray(value)) fail(code);
-  if (value.some((item) => typeof item !== 'string')) fail(code);
-  return [...new Set(value.filter(Boolean))].sort();
+  // Canonical identity semantics, identical to createArtifactId(): every entry
+  // is trimmed, and empty/whitespace-only IDs fail closed. An input dependency
+  // must never silently vanish from determinism metadata.
+  const out = [];
+  for (const item of value) {
+    if (typeof item !== 'string') fail(code);
+    const text = item.trim();
+    if (!text) fail(code);
+    out.push(text);
+  }
+  return [...new Set(out)].sort();
 }
 
 export function createDeterminismMetadata(input = {}) {
@@ -46,14 +55,17 @@ export function createDeterminismMetadata(input = {}) {
   });
 }
 
+/** Derive immutable analysis-state identity and verify any ID supplied by an importer. */
 export function createAnalysisSnapshot(input = {}) {
   const binaryId = required(input.binaryId, 'snapshot-binary-id-required');
   const projectRevision = exactRevision(input.projectRevision, '0', 'snapshot-project-revision-invalid');
   const analysisEpoch = exactRevision(input.analysisEpoch, '0', 'snapshot-analysis-epoch-invalid');
   const artifactVersions = exactJson(input.artifactVersions ?? {});
-  const snapshotId = input.snapshotId == null
-    ? `snapshot_${stableDigest({ binaryId, projectRevision, analysisEpoch, artifactVersions })}`
-    : required(input.snapshotId, 'snapshot-id-required');
+  const snapshotId = `snapshot_${stableDigest({ binaryId, projectRevision, analysisEpoch, artifactVersions })}`;
+  // Imported IDs are assertions about this state, not an override of it.
+  if (input.snapshotId != null && required(input.snapshotId, 'snapshot-id-required') !== snapshotId) {
+    fail('snapshot-identity-mismatch');
+  }
   return deepFreeze({
     snapshotId,
     binaryId,

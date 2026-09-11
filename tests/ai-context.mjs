@@ -34,4 +34,7 @@ await projectSessions.create({ id: 'persisted', binaryId: 'fixture', goal: 'trac
 const roundtrip = parseHexProject(serializeHexProject(project));
 assert.equal(roundtrip.findings.investigationSessions[0].id, 'persisted');
 assert.equal('apiKey' in roundtrip.findings.investigationSessions[0], false);
+
+// Keep the issue-specific broker regression on the canonical AI runner path.
+await import('./issue-6136-broker-observation-evidence-ids.mjs');
 console.log('ai-context: PASS');

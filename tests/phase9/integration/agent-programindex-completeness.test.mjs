@@ -14,7 +14,7 @@ test('agent call/xref tools preserve ProgramIndex incompleteness metadata withou
   let callersMode = 'capped';
   let xrefMode = 'query-limit';
   const program = {
-    functionRange() { return null; },
+    functionRange(start) { return { start, end: start + 0x100n }; },
     callersOf() {
       if (callersMode === 'capped') {
         return annotated([{ addr: 0x1100n }], {
@@ -38,7 +38,8 @@ test('agent call/xref tools preserve ProgramIndex incompleteness metadata withou
         { addr: 0x1600n },
       ];
     },
-    calleesOf() {
+    calleesOf(start, end) {
+      assert.equal(end, start + 0x100n);
       return annotated([{ addr: 0x2100n }], { complete: false, capped: true });
     },
     refSitesTo() {

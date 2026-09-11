@@ -1,5 +1,5 @@
 const RULES = [
-  ['runtime-verify', /(runtime|debug|実行時|動的|ブレークポイント|検証して|verify.*runtime)/i],
+  ['runtime-verify', /(runtime|debug|実行時|動的|ブレークポイント|verify.*runtime)/i],
   ['compare', /(compare|difference|diff|比較|違い|差分)/i],
   ['project-query', /(project|annotation|comment|rename|プロジェクト|注釈|メモ)/i],
   ['trace-value', /(trace|data.?flow|value of|register|\bx\d+\b|\bw\d+\b|レジスタ|値.*どこ|由来|追跡)/i],

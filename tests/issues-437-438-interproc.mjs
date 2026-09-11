@@ -152,4 +152,55 @@ async function composedConstant(wrapperLines, calleeLines) {
   assert.equal(summary.propagatedReturn, undefined, 'root ABI evidence must not leak into the callee summary');
 }
 
-console.log('issues #437/#438/#831 interproc regressions PASS');
+// #4729: malformed cancellation options must not escape as a call-site TypeError.
+{
+  const cache = createFunctionSummaryCache({ analyze: async () => null });
+  for (const isCancelled of [true, {}, [], 'cancel', false, 0, '']) {
+    await assert.doesNotReject(
+      () => cache.summaryFor(BASE, { isCancelled }),
+      `non-callable isCancelled must use the safe fallback: ${String(isCancelled)}`,
+    );
+  }
+
+  const wrapper = modelAt(BASE, [`bl #0x${CALLEE.toString(16)}`, 'ret']);
+  const callee = modelAt(CALLEE, ['add x0, x0, #1', 'ret']);
+  const recursiveCache = createFunctionSummaryCache({
+    program: { functionRange: () => null },
+    analyze: async (address) => address === BASE ? wrapper : address === CALLEE ? callee : null,
+  }, { maxDepth:2 });
+  await assert.doesNotReject(
+    () => recursiveCache.summaryFor(BASE, { isCancelled: true }),
+    'non-callable isCancelled must remain safe through recursive callee summary resolution',
+  );
+
+  let callbackCalls = 0;
+  const cancelled = await cache.summaryFor(BASE, {
+    isCancelled: () => { callbackCalls++; return true; },
+  });
+  assert.equal(cancelled, null);
+  assert.equal(callbackCalls, 1);
+}
+
+// #4730: cache limits must remain finite, typed, and eviction-capable.
+{
+  const invalid = [{}, [], [1000000], '1000000', true, false, NaN, Infinity, -Infinity, 1.5, 0, -1];
+  for (const maxEntries of invalid) {
+    const cache = createFunctionSummaryCache({}, { maxEntries });
+    assert.equal(cache.maxEntries, 256, `invalid maxEntries must use the finite default: ${String(maxEntries)}`);
+  }
+
+  assert.equal(createFunctionSummaryCache({}, { maxEntries:1 }).maxEntries, 16);
+  assert.equal(createFunctionSummaryCache({}, { maxEntries:16 }).maxEntries, 16);
+  assert.equal(createFunctionSummaryCache({}, { maxEntries:17 }).maxEntries, 17);
+
+  const cache = createFunctionSummaryCache({}, { maxEntries: {} });
+  for (let i = 0; i <= 256; i++) cache._touch(`entry-${i}`, i);
+  assert.equal(cache.cache.size, 256);
+  assert.equal(cache.cache.has('entry-0'), false);
+  assert.equal(cache.cache.get('entry-256'), 256);
+
+  const independentDepth = createFunctionSummaryCache({}, { maxEntries: {}, maxDepth: 1 });
+  assert.equal(independentDepth.maxDepth, 1);
+}
+
+console.log('issues #437/#438/#831/#4729/#4730 interproc regressions PASS');

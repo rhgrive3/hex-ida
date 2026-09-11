@@ -17,11 +17,11 @@ function utf8At(bytes, p, end) {
   if(cp<min || cp>0x10ffff || (cp>=0xd800&&cp<=0xdfff)) return null;
   return {cp,bytes:n};
 }
-function utf16At(bytes,p,end){
+function utf16At(bytes,p,end,be){
   if(p+2>end) return null;
-  const u=bytes[p]|(bytes[p+1]<<8);
+  const u=be?(bytes[p]<<8)|bytes[p+1]:bytes[p]|(bytes[p+1]<<8);
   if(u>=0xd800&&u<=0xdbff){
-    if(p+4>end) return null; const v=bytes[p+2]|(bytes[p+3]<<8);
+    if(p+4>end) return null; const v=be?(bytes[p+2]<<8)|bytes[p+3]:bytes[p+2]|(bytes[p+3]<<8);
     if(v<0xdc00||v>0xdfff) return null;
     return {cp:0x10000+((u-0xd800)<<10)+(v-0xdc00),bytes:4};
   }
@@ -32,33 +32,91 @@ function finiteOption(value,fallback){
   const candidate=value===0?0:(value||fallback), n=Number(candidate);
   return Number.isFinite(n)?n:fallback;
 }
+function resultLimitOption(value){
+  const raw=typeof value==='number'&&Number.isFinite(value)?value:200_000;
+  return Math.max(1,Math.min(1_000_000,Math.floor(raw)));
+}
+function chooseUtf16Encodings(image,option){
+  if(option===false) return [];
+  if(option==='be'||option==='utf16be'||option==='utf-16be') return ['utf16be'];
+  if(option==='le'||option==='utf16le'||option==='utf-16le') return ['utf16le'];
+  if(option==='both') return ['utf16le','utf16be'];
+  return [image?.endian==='big'?'utf16be':'utf16le'];
+}
+function fileRange(item, limit){
+  const start=Number(item?.fileOffset??0), size=Number(item?.fileSize??0);
+  if(!Number.isSafeInteger(start)||!Number.isSafeInteger(size)||start<0||size<=0||start>=limit) return null;
+  const end=Math.min(limit,start+size);
+  return end>start?{start,end}:null;
+}
+function mergeCoverage(ranges){
+  const sorted=ranges.map((x)=>({start:x.start,end:x.end})).sort((a,b)=>a.start-b.start||a.end-b.end), out=[];
+  for(const range of sorted){
+    const last=out[out.length-1];
+    if(!last||range.start>last.end) out.push(range);
+    else if(range.end>last.end) last.end=range.end;
+  }
+  return out;
+}
+function subtractCoverage(range,coverage){
+  const out=[]; let cursor=range.start;
+  for(const covered of coverage){
+    if(covered.end<=cursor) continue;
+    if(covered.start>=range.end) break;
+    if(covered.start>cursor) out.push({start:cursor,end:Math.min(covered.start,range.end)});
+    if(covered.end>cursor) cursor=Math.min(covered.end,range.end);
+    if(cursor>=range.end) break;
+  }
+  if(cursor<range.end) out.push({start:cursor,end:range.end});
+  return out;
+}
+function mappedScanRanges(image,byteLength,includeExecutable){
+  const sections=Array.isArray(image.sections)?image.sections:[], segments=Array.isArray(image.segments)?image.segments:[];
+  if(!sections.length&&!segments.length) return [{start:0,size:byteLength,section:null}];
+  const sectionRanges=sections.map((item)=>({item,range:fileRange(item,byteLength)})).filter((x)=>x.range);
+  const coverage=mergeCoverage(sectionRanges.map((x)=>x.range));
+  const ranges=[];
+  for(const {item,range} of sectionRanges){
+    if(!includeExecutable&&item.perms?.execute) continue;
+    ranges.push({start:range.start,size:range.end-range.start,section:item.name||null});
+  }
+  for(const item of segments){
+    if(!includeExecutable&&item.perms?.execute) continue;
+    const range=fileRange(item,byteLength); if(!range) continue;
+    for(const gap of subtractCoverage(range,coverage)) ranges.push({start:gap.start,size:gap.end-gap.start,section:null});
+  }
+  ranges.sort((a,b)=>a.start-b.start||a.size-b.size);
+  return ranges;
+}
 
 export function scanStrings(image, opts = {}) {
   const min=Math.max(2,finiteOption(opts.minLength,4)), max=Math.max(min,finiteOption(opts.maxLength,4096));
-  const includeUtf16=opts.utf16!==false, includeExecutable=opts.includeExecutable===true;
+  const limit=resultLimitOption(opts.limit), utf16Encodings=chooseUtf16Encodings(image,opts.utf16), includeExecutable=opts.includeExecutable===true;
   const bytes=image.bytes; if(!bytes) return [];
-  const ranges=[];
-  if(image.sections.length){ for(const x of image.sections){ if(!x.fileSize) continue; if(!includeExecutable&&x.perms&&x.perms.execute) continue; ranges.push({start:Number(x.fileOffset),size:Number(x.fileSize),section:x.name}); } }
-  else ranges.push({start:0,size:bytes.length,section:null});
+  const ranges=mappedScanRanges(image,bytes.length,includeExecutable);
   const out=[], seen=new Set();
   for(const range of ranges){
+    if(out.length>=limit) break;
     const start=Math.max(0,range.start), end=Math.min(bytes.length,start+Math.max(0,range.size));
-    for(let p=start;p<end;){
+    for(let p=start;p<end&&out.length<limit;){
       const first=utf8At(bytes,p,end); if(!first||!printableCodePoint(first.cp)){p++;continue;}
       const s=p; let q=p, chars=0;
       while(q<end&&chars<max){ const x=utf8At(bytes,q,end); if(!x||!printableCodePoint(x.cp)) break; q+=x.bytes; chars++; }
       if(chars>=min) emit(image,out,seen,s,q-s,'utf8',range.section);
       p=Math.max(chars>=max?q:q+(q<end?1:0),p+1);
     }
-    if(!includeUtf16) continue;
-    for(let parity=0;parity<2;parity++){
-      let p=start + ((parity - (start & 1) + 2) & 1);
-      while(p+1<end){
-        const first=utf16At(bytes,p,end); if(!first||!printableCodePoint(first.cp)){p+=2;continue;}
-        const s=p; let q=p, chars=0;
-        while(q+1<end&&chars<max){ const x=utf16At(bytes,q,end); if(!x||!printableCodePoint(x.cp)) break; q+=x.bytes; chars++; }
-        if(chars>=min) emit(image,out,seen,s,q-s,'utf16le',range.section);
-        p=Math.max(chars>=max?q:q+(q<end?2:0),p+2);
+    for(const encoding of utf16Encodings){
+      if(out.length>=limit) break;
+      const be=encoding==='utf16be';
+      for(let parity=0;parity<2&&out.length<limit;parity++){
+        let p=start + ((parity - (start & 1) + 2) & 1);
+        while(p+1<end&&out.length<limit){
+          const first=utf16At(bytes,p,end,be); if(!first||!printableCodePoint(first.cp)){p+=2;continue;}
+          const s=p; let q=p, chars=0;
+          while(q+1<end&&chars<max){ const x=utf16At(bytes,q,end,be); if(!x||!printableCodePoint(x.cp)) break; q+=x.bytes; chars++; }
+          if(chars>=min) emit(image,out,seen,s,q-s,encoding,range.section);
+          p=Math.max(chars>=max?q:q+(q<end?2:0),p+2);
+        }
       }
     }
   }
@@ -67,6 +125,6 @@ export function scanStrings(image, opts = {}) {
 function emit(image,out,seen,fileOffset,byteLength,encoding,section){
   const key=`${fileOffset}:${encoding}`; if(seen.has(key)) return; seen.add(key);
   const raw=image.bytes.subarray(fileOffset,fileOffset+byteLength);
-  let text; try { text=new TextDecoder(encoding==='utf16le'?'utf-16le':'utf-8',{fatal:true}).decode(raw); } catch { return; }
+  let text; try { text=new TextDecoder(encoding==='utf16le'?'utf-16le':encoding==='utf16be'?'utf-16be':'utf-8',{fatal:true}).decode(raw); } catch { return; }
   out.push({text,encoding,fileOffset:BigInt(fileOffset),address:image.offsetToAddress(BigInt(fileOffset)),byteLength,section});
 }

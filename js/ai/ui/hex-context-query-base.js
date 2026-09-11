@@ -243,7 +243,11 @@ export function createHexAIContext(app) {
             query:String(query ?? ''),
             from:0,
           }, { offset:regionOffset, limit:remaining }, { signal:options.signal ?? null });
-          if (queryCompleteness(result) === 'unsupported') continue;
+          if (queryCompleteness(result) === 'unsupported') {
+            complete = false;
+            reason ||= queryReason(result) || 'typed-search-producer-unavailable';
+            continue;
+          }
           anySupported = true;
           const regionTotal = Number.isFinite(Number(result?.page?.total)) ? Number(result.page.total) : null;
           if (queryCompleteness(result) !== 'complete') {
@@ -252,12 +256,18 @@ export function createHexAIContext(app) {
           }
           const matches = Array.isArray(result?.value) ? result.value : [];
           if (neededOffset > 0) {
-            if (regionTotal != null && regionTotal <= neededOffset) {
+            if (queryCompleteness(result) === 'complete' && regionTotal != null && regionTotal <= neededOffset) {
               neededOffset -= regionTotal;
               continue;
-            } else {
-              neededOffset = 0;
             }
+            if (matches.length === 0) {
+              // A partial/truncated region's page.total is only the count of
+              // materialized rows, so it cannot prove the requested offset lies
+              // beyond this region. Skipping into later regions on that basis
+              // fabricates the global window position (#5458): stop instead.
+              return { results:[], offset, returned:0, total:null, complete:false, truncated:true, reason: queryReason(result) || 'search-region-total-unproven' };
+            }
+            neededOffset = 0;
           }
           for (const row of matches) {
             const address = toBigInt(row?.addr ?? row?.address);

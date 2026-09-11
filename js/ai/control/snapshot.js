@@ -36,8 +36,18 @@ function selectedSlice(local) {
 }
 
 export function createTurnSnapshot(local = {}, request = {}) {
-  const current = first(local.currentAddress, local.activeFunction?.address, local.currentFunction?.address);
-  const range = resolveFunctionRange(local, current);
+  const cursor = first(local.currentAddress, local.activeFunction?.address, local.currentFunction?.address);
+  const range = resolveFunctionRange(local, cursor);
+  // The cursor identifies the instruction the user is looking at; it is not
+  // necessarily the identity of the containing function. Prefer an explicit
+  // function identity, then an exact range boundary, and only use the cursor
+  // as the final fallback for contexts that have no function metadata.
+  const functionAddress = first(
+    local.activeFunction?.address,
+    local.currentFunction?.address,
+    range?.start,
+    cursor,
+  );
   const selection = snapshotSelection(local.selection);
   const identity = resolveBinaryIdentity(local, request);
   const projectId = firstBinding(request.projectId, local.projectId, local.project?.id, local.project?.binaryHash);
@@ -53,17 +63,18 @@ export function createTurnSnapshot(local = {}, request = {}) {
     projectIdentity: projectId,
     architecture: copyScalar(first(local.architecture, local.binary?.architecture, local.capability?.architecture)),
     slice: copyScalar(first(local.slice, local.sliceIndex, local.binary?.sliceIndex)),
-    currentFunction: current == null ? null : {
-      address: addressText(current),
+    currentAddress: cursor == null ? null : addressText(cursor),
+    currentFunction: functionAddress == null ? null : {
+      address: addressText(functionAddress),
       range,
-      name: first(local.activeFunction?.name, local.currentFunction?.name, safeName(local, current)),
+      name: first(local.activeFunction?.name, local.currentFunction?.name, safeName(local, functionAddress)),
     },
     selection,
     runtimeSessionIdentity: runtimeId,
     runtimeSessionState: runtimeKnown ? (runtimeId == null ? 'none' : 'bound') : 'unknown',
     requestedScope,
     capabilities: snapshotCapabilities(local),
-    neighborhood: snapshotNeighborhood(local, current),
+    neighborhood: snapshotNeighborhood(local, cursor),
   });
 }
 
@@ -80,7 +91,7 @@ export function createSnapshotContext(local = {}, snapshot, scopeController = nu
   frozen.binaryIdentity = snapshot.binaryIdentity;
   frozen.binaryId = snapshot.binaryId;
   frozen.projectId = snapshot.projectIdentity;
-  frozen.currentAddress = parseAddress(snapshot.currentFunction?.address);
+  frozen.currentAddress = parseAddress(snapshot.currentAddress ?? snapshot.currentFunction?.address);
   frozen.activeFunction = snapshot.currentFunction ? {
     address: parseAddress(snapshot.currentFunction.address),
     name: snapshot.currentFunction.name,
@@ -154,26 +165,46 @@ function normalizeIdentity(value) {
 function resolveFunctionRange(local, current) {
   if (current == null) return null;
   let range = null;
-  try {
-    // Prefer an exact function boundary source over ProgramIndex.functionRange.
-    // ProgramIndex intentionally falls back to the executable region end when
-    // an exact end is unknown; using that fallback for AI scope=function would
-    // silently widen one function to the remainder of the region.
-    range = local.functionRange?.(current) || local.symbols?.functionAt?.(current) || local.program?.functionRange?.(current) || null;
-  } catch { /* optional */ }
-  const start = first(range?.start, range?.address, range?.startAddr, local.activeFunction?.start, local.currentFunction?.start, current);
+  // Each boundary source is optional: one source throwing must not skip the
+  // remaining fallbacks, or function scope collapses to the start address
+  // (#5416).
+  for (const candidate of [
+    () => local.functionRange?.(current),
+    () => local.symbols?.functionAt?.(current),
+    () => local.program?.functionRange?.(current),
+  ]) {
+    try {
+      // Prefer an exact function boundary source over ProgramIndex.functionRange.
+      // ProgramIndex intentionally falls back to the executable region end when
+      // an exact end is unknown; using that fallback for AI scope=function would
+      // silently widen one function to the remainder of the region.
+      range = candidate() || null;
+    } catch { range = null; continue; }
+    if (range) break;
+  }
+  const start = first(range?.start, range?.address, range?.startAddr, local.activeFunction?.address, local.currentFunction?.address, local.activeFunction?.start, local.currentFunction?.start, current);
   const end = first(range?.end, range?.endAddr, local.activeFunction?.end, local.currentFunction?.end);
   return { start: addressText(start), end: addressText(end) };
 }
 
 function snapshotSelection(value) {
   if (!value) return null;
-  const instructions = Array.isArray(value.instructions) ? value.instructions.slice(0, 80).map((item) => ({
+  // compactSelection() (and the workbench) accept the selection both as
+  // `{ instructions: [...] }` and as a bare instruction array; only the
+  // object form here dropped the array form, so the turn snapshot lost the
+  // selection boundaries and broke selection scope (#5759).
+  const source = Array.isArray(value) ? { instructions: value } : value;
+  const rawInstructions = Array.isArray(source.instructions) ? source.instructions : [];
+  // The display payload is truncated to 80 entries, but the selection
+  // boundaries authorize the scope: they must derive from the original
+  // instruction list before truncation, or the scope shrinks with the
+  // display payload (#5437).
+  const start = addressText(first(source.start, rawInstructions[0]?.address));
+  const end = addressText(first(source.end, rawInstructions[rawInstructions.length - 1]?.address, start));
+  const instructions = rawInstructions.slice(0, 80).map((item) => ({
     address: addressText(item?.address), mnemonic: String(item?.mnemonic || ''), operands: String(item?.operands || ''),
-  })) : [];
-  const start = addressText(first(value.start, instructions[0]?.address));
-  const end = addressText(first(value.end, instructions[instructions.length - 1]?.address, start));
-  return deepFreeze({ start, end, instructions, truncated: !!value.truncated || (Array.isArray(value.instructions) && value.instructions.length > 80) });
+  }));
+  return deepFreeze({ start, end, instructions, truncated: !!source.truncated || (rawInstructions.length > 80) });
 }
 
 function snapshotCapabilities(local) {

@@ -66,11 +66,25 @@ export function utf8Len(buf, index) {
   return need + 1;
 }
 
+export function functionSeedConfidence(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
+}
+
 export function isExactFunctionSeed(seed) {
   if (!seed) return false;
-  const confidence = Number(seed.confidence ?? 0);
-  if (!Number.isFinite(confidence) || confidence < 0.9) return false;
+  const rawExactConfidence = seed.exactFunctionStartConfidence;
+  if (rawExactConfidence != null) {
+    const exactConfidence = functionSeedConfidence(rawExactConfidence);
+    if (exactConfidence == null) return false;
+    return exactConfidence >= 0.9;
+  }
+  const confidence = functionSeedConfidence(seed.confidence);
+  if (confidence == null || confidence < 0.9) return false;
   if (seed.exactFunctionStart === true) return true;
   const sources = new Set([seed.source, ...(seed.sources || [])]);
+  // A merged source union without per-source confidence is ambiguous; fail
+  // closed instead of allowing unrelated high-confidence evidence to promote
+  // an exact source (#5950).
+  if (Array.isArray(seed.sources)) return false;
   return [...sources].some((s) => ['entrypoint', 'export', 'exception', 'unwind', 'function_starts', 'tls-callback', 'guard-cf'].includes(s));
 }

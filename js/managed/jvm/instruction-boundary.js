@@ -79,5 +79,14 @@ export function decodeJvmInstructionBoundary(bytecode, start) {
 
   const length = fixedLength(opcode);
   if (length === null || start + length > bytecode.length) return malformedBoundary(bytecode, start);
+
+  // JVMS 6.5.invokeinterface has two encoding-level invariants in addition to
+  // its fixed five-byte width: count is non-zero and the trailing reserved
+  // byte is zero. Keep these in the checked boundary decoder so the public
+  // lifter never hands malformed encodings to the unchecked core (#4807).
+  if (opcode === 0xb9 && (bytecode[start + 3] === 0 || bytecode[start + 4] !== 0)) {
+    return malformedBoundary(bytecode, start);
+  }
+
   return Object.freeze({ end: start + length, complete: true, start });
 }

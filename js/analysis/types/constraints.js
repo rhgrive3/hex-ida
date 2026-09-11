@@ -111,12 +111,11 @@ function idList(values, code) {
 
 function toBigInt(val, fallback = 0n) {
   if (val == null) return fallback;
-  if (typeof val === 'bigint') return val;
-  if (typeof val === 'number') {
-    if (!Number.isSafeInteger(val)) return null;
-    return BigInt(val);
-  }
-  try { return BigInt(val); } catch { return null; }
+  /* Structural integer authority accepts only the same primitive forms used
+     by canonicalDescriptorMaterial(). Never invoke BigInt() on a structured
+     value: its ToPrimitive step would launder arrays/objects/booleans into
+     hard layout evidence. */
+  return canonicalInteger(val);
 }
 
 function canonicalInteger(val) {
@@ -207,7 +206,9 @@ function canonicalDescriptorString(layer, descriptor) {
 }
 
 function validateDescriptor(layer, descriptor) {
-  if (descriptor == null || typeof descriptor !== 'object') fail('type-claim-descriptor-required');
+  if (descriptor == null || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
+    fail('type-claim-descriptor-required');
+  }
   if (layer === 'structural') {
     if (descriptor.offset != null) {
       const offset = toBigInt(descriptor.offset, null);
@@ -254,6 +255,26 @@ export function createTypeClaim(input = {}) {
   return deepFreeze(claim);
 }
 
+function canonicalHardAbiProfile(value) {
+  if (value == null) return null;
+  const abiProfile = strictNonEmpty(value, 'abi-profile-invalid');
+  if (abiProfile.startsWith('unsupported')) fail(`abi-profile-unsupported:${abiProfile}`);
+  return abiProfile;
+}
+
+function bindClaimAbiProfile(claim, abiProfile) {
+  if (abiProfile == null) return claim;
+  const hasClaimProfile = Object.hasOwn(claim.descriptor, 'abiProfile');
+  if (!hasClaimProfile && claim.layer !== 'abi') return claim;
+  if (hasClaimProfile && claim.descriptor.abiProfile === abiProfile) return claim;
+
+  const properties = Object.getOwnPropertyDescriptors(claim.descriptor);
+  properties.abiProfile = { value: abiProfile, enumerable: true, configurable: true, writable: true };
+  const descriptor = Array.isArray(claim.descriptor) ? [] : {};
+  Object.defineProperties(descriptor, properties);
+  return createTypeClaim({ layer: claim.layer, entityId: claim.entityId, descriptor });
+}
+
 export function createHardConstraint(input = {}) {
   const kind = strictNonEmpty(input.kind, 'hard-constraint-kind-required');
   if (!HARD_SET.has(kind)) fail('hard-constraint-invalid-kind');
@@ -263,19 +284,25 @@ export function createHardConstraint(input = {}) {
   // cannot state a hard fact no matter how confident it sounds.
   if (!HARD_ORIGINS.has(origin)) fail(`hard-constraint-origin-not-authoritative:${origin}`);
 
-  const abiProfile = input.abiProfile ?? input.claim?.descriptor?.abiProfile ?? null;
-  if (abiProfile != null && typeof abiProfile === 'string' && abiProfile.startsWith('unsupported')) {
-    fail(`abi-profile-unsupported:${abiProfile}`);
+  const claim = createTypeClaim(input.claim ?? {});
+  const constraintAbiProfile = canonicalHardAbiProfile(input.abiProfile);
+  const claimAbiProfile = canonicalHardAbiProfile(
+    Object.hasOwn(claim.descriptor, 'abiProfile') ? claim.descriptor.abiProfile : null,
+  );
+  if (constraintAbiProfile != null && claimAbiProfile != null && constraintAbiProfile !== claimAbiProfile) {
+    fail('abi-profile-conflict');
   }
+  const abiProfile = constraintAbiProfile ?? claimAbiProfile;
+  const canonicalClaim = bindClaimAbiProfile(claim, abiProfile);
 
   return deepFreeze({
     kind,
     origin,
-    claim: createTypeClaim(input.claim ?? {}),
+    claim: canonicalClaim,
     evidenceIds: idList(input.evidenceIds, 'hard-constraint-invalid-evidence-ids'),
     providerVersion: input.providerVersion == null ? null : String(input.providerVersion),
     buildIdentity: input.buildIdentity == null ? null : String(input.buildIdentity),
-    abiProfile: abiProfile == null ? null : String(abiProfile),
+    abiProfile,
   });
 }
 
@@ -336,6 +363,116 @@ function memberTypesConflict(aType, bType) {
   return canonicalDescriptorString('structural', aType) !== canonicalDescriptorString('structural', bType);
 }
 
+function memberFactsConflict(left, right, key = null) {
+  if (stableStringify(left) === stableStringify(right)) return false;
+  if (key != null && NUMERIC_DESCRIPTOR_FIELDS.has(key)) {
+    const a = canonicalInteger(left);
+    const b = canonicalInteger(right);
+    return a == null || b == null || a !== b;
+  }
+  if (left == null || right == null
+    || typeof left !== 'object' || typeof right !== 'object'
+    || Array.isArray(left) || Array.isArray(right)) return true;
+
+  // Missing keys are additive partial facts. A key present on both sides must
+  // carry recursively compatible evidence, matching graph.js reconstruction.
+  for (const [childKey, value] of Object.entries(right)) {
+    if (!Object.hasOwn(left, childKey)) continue;
+    if (memberFactsConflict(left[childKey], value, childKey)) return true;
+  }
+  return false;
+}
+
+function aggregateMembersConflict(aMembers, bMembers) {
+  // Preserve exact/canonically-equivalent member sets, including legacy
+  // descriptors whose nested layout is incomplete. Once the sets differ,
+  // however, compatibility needs interval evidence; an unknown interval must
+  // fail closed rather than mint compatibility from absence of proof.
+  if (!Array.isArray(aMembers) || !Array.isArray(bMembers)) {
+    return canonicalDescriptorString('structural', aMembers) !== canonicalDescriptorString('structural', bMembers);
+  }
+  if (aMembers.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))
+    && bMembers.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))) {
+    const aCanonicalSet = aMembers.map((member) => canonicalDescriptorString('structural', member)).sort();
+    const bCanonicalSet = bMembers.map((member) => canonicalDescriptorString('structural', member)).sort();
+    if (aCanonicalSet.length === bCanonicalSet.length
+      && aCanonicalSet.every((entry, index) => entry === bCanonicalSet[index])) return false;
+  }
+
+  const prepare = (members) => {
+    const prepared = [];
+    const seen = new Set();
+    for (const member of members) {
+      if (member == null || typeof member !== 'object' || Array.isArray(member)) return null;
+      const canonical = canonicalDescriptorString('structural', member);
+      if (seen.has(canonical)) continue;
+      seen.add(canonical);
+      if (member.offset == null || member.sizeBytes == null) return null;
+      const start = toBigInt(member.offset, null);
+      const size = toBigInt(member.sizeBytes, null);
+      if (start == null || size == null || start < 0n || size <= 0n) return null;
+      prepared.push({ member, canonical, start, size, end: start + size });
+    }
+    prepared.sort((left, right) => {
+      if (left.start < right.start) return -1;
+      if (left.start > right.start) return 1;
+      if (left.end < right.end) return -1;
+      if (left.end > right.end) return 1;
+      return left.canonical.localeCompare(right.canonical);
+    });
+
+    // A differing aggregate claim cannot safely add facts to an already
+    // internally-overlapping set without a union/overlay model. Exact-equal
+    // sets returned above; otherwise keep the previous fail-closed behavior.
+    for (let index = 1; index < prepared.length; index += 1) {
+      if (prepared[index - 1].end > prepared[index].start) return null;
+    }
+    return prepared;
+  };
+
+  const aPrepared = prepare(aMembers);
+  const bPrepared = prepare(bMembers);
+  if (aPrepared == null || bPrepared == null) return true;
+
+  // Both lists are now canonical, deduplicated, and non-overlapping within
+  // themselves, so a two-pointer sweep checks every cross-list overlap in
+  // O(n log n + m log m) rather than bypassing graph comparison budgets with
+  // an unbounded quadratic member-pair loop.
+  let aIndex = 0;
+  let bIndex = 0;
+  while (aIndex < aPrepared.length && bIndex < bPrepared.length) {
+    const aEntry = aPrepared[aIndex];
+    const bEntry = bPrepared[bIndex];
+    if (aEntry.end <= bEntry.start) {
+      aIndex += 1;
+      continue;
+    }
+    if (bEntry.end <= aEntry.start) {
+      bIndex += 1;
+      continue;
+    }
+
+    if (aEntry.canonical !== bEntry.canonical) {
+      if (aEntry.start === bEntry.start) {
+        if (aEntry.size !== bEntry.size) return true;
+        if (aEntry.member.alignBytes != null && bEntry.member.alignBytes != null
+          && numericValuesDiffer(aEntry.member.alignBytes, bEntry.member.alignBytes)) return true;
+        // Same-slot members are merged recursively by graph.js. Make the
+        // contradiction detector reject exactly the overlapping fact keys
+        // that merger cannot reconcile, while still allowing one-sided facts.
+        if (memberFactsConflict(aEntry.member, bEntry.member)) return true;
+      }
+
+      if (aEntry.member.memberType == null || bEntry.member.memberType == null) return true;
+      if (memberTypesConflict(aEntry.member.memberType, bEntry.member.memberType)) return true;
+    }
+
+    if (aEntry.end <= bEntry.end) aIndex += 1;
+    if (bEntry.end <= aEntry.end) bIndex += 1;
+  }
+  return false;
+}
+
 /**
  * Do two claims at the same layer conflict?
  *
@@ -377,12 +514,61 @@ export function claimsConflict(left, right) {
     if (aKind != null && bKind != null && aKind !== bKind && aKind !== 'field' && bKind !== 'field') {
       return true;
     }
+
+    // Top-level array claims are complete structural candidates, not field
+    // fragments. Keep their identity intact and compare the array contract
+    // directly before the aggregate interval rules below.
+    if (aKind === 'array' || bKind === 'array') {
+      if (aKind !== bKind) return true;
+      if (a.strideBytes != null && b.strideBytes != null && numericValuesDiffer(a.strideBytes, b.strideBytes)) return true;
+      if (a.length != null && b.length != null && numericValuesDiffer(a.length, b.length)) return true;
+      if (a.sizeBytes != null && b.sizeBytes != null && numericValuesDiffer(a.sizeBytes, b.sizeBytes)) return true;
+      if (a.alignBytes != null && b.alignBytes != null && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
+      if (a.elementEntityId != null && b.elementEntityId != null && a.elementEntityId !== b.elementEntityId) return true;
+      if (a.elementType != null && b.elementType != null && memberTypesConflict(a.elementType, b.elementType)) return true;
+      return false;
+    }
+
     // Check total size or alignment mismatch
     if (a.sizeBytes != null && b.sizeBytes != null && a.offset == null && b.offset == null && numericValuesDiffer(a.sizeBytes, b.sizeBytes)) return true;
     if (a.alignBytes != null && b.alignBytes != null && a.offset == null && b.offset == null && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
 
+    // A member extent must fit inside a co-claimed whole-aggregate size (#5819):
+    // hard aggregate size N + hard field [offset, offset+size) with
+    // offset+size > N are hard facts that cannot both hold.
+    // Only an explicitly typed aggregate can supply a whole-object bound.
+    // Offset-less structural-field metadata is member evidence, not a bound.
+    const isExplicitAggregateDescriptor = (descriptor) => (
+      descriptor.kind === 'struct'
+      && descriptor.offset == null
+      && descriptor.fieldName == null
+      && descriptor.memberType == null
+    );
+    const extentBeyondAggregate = (aggregate, field) => {
+      if (!isExplicitAggregateDescriptor(aggregate)) return false;
+      if (field.offset == null || field.sizeBytes == null) return false;
+      const start = toBigInt(field.offset, null);
+      const size = toBigInt(field.sizeBytes, null);
+      const total = toBigInt(aggregate.sizeBytes, null);
+      if (start == null || size == null || total == null) return false;
+      return start + size > total;
+    };
+    if (extentBeyondAggregate(a, b) || extentBeyondAggregate(b, a)) return true;
+
     // Overlapping byte intervals with incompatible member types conflict;
     // disjoint intervals coexist happily in one aggregate.
+    // A same-offset field is the same storage slot even when its member type
+    // is compatible. Its extent and alignment are still hard layout facts;
+    // compare those before the member-type early return so a width mismatch
+    // cannot be laundered as a compatible type claim (#4423).
+    const sameOffset = a.offset != null && b.offset != null
+      && !numericValuesDiffer(a.offset, b.offset);
+    if (sameOffset) {
+      if (a.sizeBytes != null && b.sizeBytes != null
+        && numericValuesDiffer(a.sizeBytes, b.sizeBytes)) return true;
+      if (a.alignBytes != null && b.alignBytes != null
+        && numericValuesDiffer(a.alignBytes, b.alignBytes)) return true;
+    }
     const overlap = intervalsOverlap(a, b);
     if (!overlap) return false;
 
@@ -391,7 +577,7 @@ export function claimsConflict(left, right) {
       return false;
     }
     if (a.members != null && b.members != null) {
-      return canonicalDescriptorString('structural', a.members) !== canonicalDescriptorString('structural', b.members);
+      return aggregateMembersConflict(a.members, b.members);
     }
     if (a.offset != null && b.offset != null && !numericValuesDiffer(a.offset, b.offset)) {
       return canonicalDescriptorString('structural', a) !== canonicalDescriptorString('structural', b);

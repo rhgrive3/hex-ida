@@ -18,8 +18,10 @@ import {
   integrateX86ExtendedStateAliases,
 } from './extended-state.js';
 import { vectorPrefixOffset } from './extended-state-helpers.js';
+import { canonicalX86ConditionCode } from './flags.js';
 import { closeTrustedX86Partial } from './trusted-decoder-terminal.js';
 import { createX86EffectContext, normalizeX86Instruction, X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION } from './common.js';
+import { hasReceiverRevalidatedX86Row } from '../runtime-provenance.js';
 
 function liftX86IntegerFamily(instruction, context) {
   return liftX86ImplicitSignExtensionEffects(instruction, context)
@@ -29,6 +31,12 @@ function liftX86IntegerFamily(instruction, context) {
 
 function liftX86SimdFamily(instruction, context) {
   return liftX86SimdAndNotEffects(instruction, context) ?? liftX86SimdEffects(instruction, context);
+}
+
+function isCanonicalSetccFamily(family) {
+  if (family === 'setcc') return true;
+  if (!family.startsWith('set')) return false;
+  return canonicalX86ConditionCode(family.slice(3)) != null;
 }
 
 const FAMILIES = Object.freeze([
@@ -87,9 +95,9 @@ function rawVectorPrefixPartial(instruction, ownerId, result, context) {
   });
 }
 
-const STRUCTURED_FAIL_CLOSED_REASON = /^(?:x86-int-delivery-state-unmodelled|x86-(?:fp-)?vector-prefix-metadata-malformed|x86-cmpxchg-structured-implicit-accumulator-missing|x86-string-(?:prefix-state-unmodelled|f2-repeat-prefix-not-proven-for-this-family|implicit-state-unmodelled|address-size-unmodelled|operand-shape-unmodelled))$/;
+const STRUCTURED_FAIL_CLOSED_REASON = /^(?:x86-int-delivery-state-unmodelled|x86-extended-system-family-requires-dedicated-semantics|x86-(?:fp-)?vector-prefix-metadata-malformed|x86-cmpxchg-structured-implicit-accumulator-missing|x86-string-(?:prefix-state-unmodelled|f2-repeat-prefix-not-proven-for-this-family|implicit-state-unmodelled|address-size-unmodelled|operand-shape-unmodelled))$/;
 
-function terminalize(instruction, ownerId, result, context) {
+function terminalize(instruction, ownerId, result, context, provenanceSource) {
   // Structured vector-prefix metadata is semantic authority for VEX/EVEX
   // register width, lane-zeroing, map and mandatory-prefix behavior. Exact
   // semantics are valid only when those bytes exist at the legal raw prefix
@@ -111,6 +119,11 @@ function terminalize(instruction, ownerId, result, context) {
     || result?.metadata?.structuredImplicitAccumulatorMissing === true
     || (!context?.closureMatrixTerminal && STRUCTURED_FAIL_CLOSED_REASON.test(reason))
   )) return result;
+
+  // Terminal exactness is allowed only for rows re-decoded from their raw bytes
+  // inside the dedicated receiver revalidation worker. Public structured parser
+  // calls and transported/copy-only records cannot mint this private brand.
+  if (!hasReceiverRevalidatedX86Row(provenanceSource)) return result;
   return closeTrustedX86Partial(instruction, ownerId, result, context);
 }
 
@@ -119,12 +132,25 @@ export function dispatchX86MachineEffects(decoded, context = {}) {
   if (!instruction.detailAvailable) return Object.freeze({ ownerId: 'fallback', result: null });
   if (invalidNonEvexExtendedVector(instruction)) throw new TypeError('x86-decoded-instruction-high-vector-register-requires-evex');
 
+  // SETcc is a finite condition-code family, not an arbitrary `set*` prefix.
+  // Route non-SETcc `set*` instructions through their architectural owner before
+  // the broad integer-family compatibility matcher can claim them. Unknown
+  // `set*` names fail closed instead of acquiring an exact integer summary.
+  const instructionFamily = String(instruction.instructionFamily || '').toLowerCase();
+  if (instructionFamily.startsWith('set') && !isCanonicalSetccFamily(instructionFamily)) {
+    const systemSet = liftX86SystemEffects(instruction, context);
+    if (systemSet != null) {
+      return Object.freeze({ ownerId:'system', result:terminalize(instruction, 'system', systemSet, context, decoded) });
+    }
+    return Object.freeze({ ownerId:'fallback', result:null });
+  }
+
   // Capstone emits the architectural MOV family for 0F20/21/22/23. These
   // encodings must be claimed before the generic integer MOV owner or their
   // CR/DR physical state and privilege/debug effects would be lost.
   const systemRegisterMove = liftX86SystemRegisterMoveEffects(instruction, context);
   if (systemRegisterMove != null) {
-    return Object.freeze({ ownerId:'system', result:terminalize(instruction, 'system', systemRegisterMove, context) });
+    return Object.freeze({ ownerId:'system', result:terminalize(instruction, 'system', systemRegisterMove, context, decoded) });
   }
 
   // The terminal long-64 residual lane is deliberately provenance- and
@@ -137,7 +163,7 @@ export function dispatchX86MachineEffects(decoded, context = {}) {
     const integrated = integrateX86ExtendedStateAliases(instruction, terminalResidual.result, context);
     return Object.freeze({
       ownerId:terminalResidual.ownerId,
-      result:terminalize(instruction, terminalResidual.ownerId, integrated, context),
+      result:terminalize(instruction, terminalResidual.ownerId, integrated, context, decoded),
     });
   }
 
@@ -145,7 +171,7 @@ export function dispatchX86MachineEffects(decoded, context = {}) {
   if (extended != null && extended.result != null) {
     return Object.freeze({
       ownerId: extended.ownerId,
-      result: terminalize(instruction, extended.ownerId, extended.result, context),
+      result: terminalize(instruction, extended.ownerId, extended.result, context, decoded),
     });
   }
   for (const family of FAMILIES) {
@@ -154,7 +180,7 @@ export function dispatchX86MachineEffects(decoded, context = {}) {
       const integrated = integrateX86ExtendedStateAliases(instruction, result, context);
       return Object.freeze({
         ownerId: family.id,
-        result: terminalize(instruction, family.id, integrated, context),
+        result: terminalize(instruction, family.id, integrated, context, decoded),
       });
     }
   }

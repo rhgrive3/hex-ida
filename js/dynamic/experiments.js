@@ -43,6 +43,16 @@ function normalizeInteger(value, bits, signed) {
   return n;
 }
 
+// Machine-integer boundary for caller-provided experiment values: an unsafe
+// number has already been rounded by IEEE-754 at the call site, so freezing it
+// into a BigInt would publish silently wrong machine values (#5724). Such
+// inputs fail closed exactly like asAddress()/strictMachineInteger().
+function machineIntegerOrThrow(value, name) {
+  const converted = strictMachineInteger(value);
+  if (converted == null) throw new DebugAdapterError('invalid-machine-integer', `${name} must be a machine integer (exact BigInt, safe number, or integer string)`);
+  return converted;
+}
+
 export function generateDifferentialInputs(spec = {}) {
   const bits = spec.bits === 32 ? 32 : 64;
   const signed = spec.signed !== false;
@@ -52,10 +62,10 @@ export function generateDifferentialInputs(spec = {}) {
   if (signed) values.push(-1n);
   values.push(2n, 7n, 16n, 127n, 255n, 1024n);
   if (spec.boundary != null) {
-    const b = BigInt(spec.boundary); values.push(b - 1n, b, b + 1n);
+    const b = machineIntegerOrThrow(spec.boundary, 'boundary'); values.push(b - 1n, b, b + 1n);
   }
   if (spec.expected != null) {
-    const b = BigInt(spec.expected); values.push(b - 1n, b, b + 1n);
+    const b = machineIntegerOrThrow(spec.expected, 'expected'); values.push(b - 1n, b, b + 1n);
   }
   values.push(max);
   if (signed) values.push(min);
@@ -82,8 +92,8 @@ function relationExpected(hypothesis, initial, input, bits, signed) {
   else if (op === 'set' || op === 'assign') result = v;
   else return null;
   result = normalizeInteger(result, bits, signed);
-  if (hypothesis.clampMin != null && result < BigInt(hypothesis.clampMin)) result = BigInt(hypothesis.clampMin);
-  if (hypothesis.clampMax != null && result > BigInt(hypothesis.clampMax)) result = BigInt(hypothesis.clampMax);
+  if (hypothesis.clampMin != null && result < machineIntegerOrThrow(hypothesis.clampMin, 'clampMin')) result = machineIntegerOrThrow(hypothesis.clampMin, 'clampMin');
+  if (hypothesis.clampMax != null && result > machineIntegerOrThrow(hypothesis.clampMax, 'clampMax')) result = machineIntegerOrThrow(hypothesis.clampMax, 'clampMax');
   return normalizeInteger(result, bits, signed);
 }
 
@@ -95,7 +105,7 @@ export function compileExperiment(hypothesis, options = {}) {
   const fieldBits = fieldSize * 8;
   const signed = hypothesis.signed !== false;
   const objectBase = asAddress(options.objectBase ?? hypothesis.objectBase ?? 0x600000001000n, 'objectBase');
-  const initial = normalizeInteger(hypothesis.initial ?? options.initial ?? 100, fieldBits, signed);
+  const initial = normalizeInteger(machineIntegerOrThrow(hypothesis.initial ?? options.initial ?? 100, 'initial'), fieldBits, signed);
   const argIndex = integerInRange(hypothesis.argumentIndex, 1, 0, 31, 'argumentIndex');
   if (fieldOffset != null && argIndex === 0) throw new DebugAdapterError('invalid-hypothesis', 'argumentIndex 0 conflicts with objectBase for field experiments');
   const pointerInput = hypothesis.argumentKind === 'pointer' || hypothesis.pointer === true;
@@ -116,7 +126,10 @@ export function compileExperiment(hypothesis, options = {}) {
   return {
     id:String(hypothesis.id || `experiment:${functionAddress.toString(16)}`),
     hypothesis:{ ...hypothesis, functionAddress, fieldOffset },
-    functionAddress, binaryHash:options.binaryHash || hypothesis.binaryHash || null,
+    // An explicit hypothesis binding wins over an options override so callers
+    // cannot silently re-label a hypothesis onto a different binary; identity
+    // conflicts are rejected upstream before an experiment ever runs.
+    functionAddress, binaryHash:hypothesis.binaryHash || options.binaryHash || null,
     cases, generated:true, compiler:'runtime-experiment-v2'
   };
 }
@@ -124,12 +137,12 @@ export function compileExperiment(hypothesis, options = {}) {
 function observedFieldValue(observation, offset) {
   const after = (observation && observation.memoryAfter) || [];
   const final = after.find((f) => f && f.offset != null && BigInt(f.offset) === offset);
-  if (final && final.value != null) return { observed:true, value:final.value, source:'final-state' };
+  if (final && final.value != null) return { observed:true, value:final.value, source:'final-state', size:final.size };
   const deltas = (observation && observation.memoryDelta) || [];
   let touched = null;
   for (const delta of deltas) if (delta && delta.offset != null && BigInt(delta.offset) === offset && delta.after != null) touched=delta;
-  if (touched) return { observed:true, value:touched.after, source:'delta-final' };
-  return { observed:false, value:null, source:null };
+  if (touched) return { observed:true, value:touched.after, source:'delta-final', size:touched.size };
+  return { observed:false, value:null, source:null, size:null };
 }
 
 export function compareExpected(caseSpec, observation) {
@@ -142,6 +155,18 @@ export function compareExpected(caseSpec, observation) {
     const actual = observedFieldValue(observation, offset);
     if (!actual.observed) return { status:'inconclusive', reason:'expected-field-final-state-not-observed', expected:expected.field.value };
     const bits = Number(expected.field.bits || 64);
+    // #5578: the observation width is part of the field contract —
+    // compileExperiment() watches exactly fieldBits/8 bytes. An under-width,
+    // over-width, or unknown-width observation must never produce the strong
+    // supported/contradicted verdicts; only an exactly-wide observation may.
+    const expectedBytes = bits / 8;
+    const entrySize = Number(actual.size);
+    if (!Number.isSafeInteger(entrySize) || entrySize <= 0) {
+      return { status:'inconclusive', reason:'observed-field-width-unknown', expected:expected.field.value };
+    }
+    if (entrySize !== expectedBytes) {
+      return { status:'inconclusive', reason:'observed-field-width-mismatch', observedWidth:entrySize, expectedWidth:expectedBytes, expected:expected.field.value };
+    }
     const signed = expected.field.signed !== false;
     const observed = normalizeInteger(actual.value, bits, signed);
     const wanted = normalizeInteger(expected.field.value, bits, signed);
@@ -179,6 +204,14 @@ export function classifyHypothesis(caseResults, coverage = null) {
 export class HypothesisVerifier {
   constructor(adapter, evidenceFactory = null) { this.adapter = adapter; this.evidenceFactory = evidenceFactory; }
   async verify(experiment, options = {}) {
+    // A zero-case experiment is a normal inconclusive outcome, not an input
+    // error: classifyHypothesis() already defines the empty shape, so return
+    // it without touching the adapter or the maxCases bound (#5658).
+    if (!experiment.cases.length) {
+      const coverage = { planned:0, executed:0, complete:true, truncated:false, cancelled:false, stoppedOnContradiction:false, unsupported:0, reasons:[] };
+      const verdict = classifyHypothesis([], coverage);
+      return { experimentId:experiment.id, verdict, coverage, cases:[] };
+    }
     const results = []; const maxCases = boundedInteger(options.maxCases, experiment.cases.length, 1, 64, 'maxCases');
     const maxSteps = executionBound(options.maxSteps, 20000, 1000000, 'maxSteps');
     const timeoutMs = options.timeoutMs == null ? undefined : executionBound(options.timeoutMs, undefined, 60000, 'timeoutMs');

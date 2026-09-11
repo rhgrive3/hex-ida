@@ -4,7 +4,7 @@ import {
   EVIDENCE_NODE_FAMILIES, EVIDENCE_EDGE_FAMILIES,
 } from '../js/core/evidence/index.js';
 import {
-  legacyAiEvidenceToCanonical, runtimeEvidenceToCanonical, legacyEvidenceToCanonicalGraph,
+  canonicalEvidenceToLegacyAi, legacyAiEvidenceToCanonical, runtimeEvidenceToCanonical, legacyEvidenceToCanonicalGraph,
 } from '../js/core/evidence/compat.js';
 
 for (const family of ['BinaryEvidence','DecodeEvidence','SemanticEvidence','DataflowEvidence','TypeEvidence','ControlFlowEvidence','SignatureEvidence','KnowledgeEvidence','SymbolicEvidence','RuntimeEvidence','UserEvidence','Claim']) {
@@ -132,7 +132,7 @@ assert.equal(compatGraph.allNodes().length, 2);
       { id: 'claim-unsup', family: 'Claim', targetEntityIds: ['f'], semanticKind: 'p', confirmedByEvidenceIds: ['ev-unsupported'], completeness: 'complete', verdict: 'unknown' },
       { id: 'claim-trunc', family: 'Claim', targetEntityIds: ['f'], semanticKind: 'p', confirmedByEvidenceIds: ['ev-truncated'], completeness: 'complete', verdict: 'unknown' },
       { id: 'claim-part', family: 'Claim', targetEntityIds: ['f'], semanticKind: 'p', confirmedByEvidenceIds: ['ev-partial'], completeness: 'complete', verdict: 'unknown' },
-      { id: 'claim-comp', family: 'Claim', targetEntityIds: ['f'], semanticKind: 'p', confirmedByEvidenceIds: ['ev-complete'], completeness: 'complete', verdict: 'unknown' },
+      { id: 'claim-comp', family: 'Claim', targetEntityIds: ['f'], semanticKind: 'p', confirmedByEvidenceIds: ['ev-complete'], completeness:'complete', verdict:'unknown' },
     ],
   });
 
@@ -143,3 +143,45 @@ assert.equal(compatGraph.allNodes().length, 2);
 }
 
 console.log('core evidence contracts: ok');
+
+
+// #5782: canonical top-level binary identity is authoritative on legacy projection.
+{
+  const canonical = createEvidenceNode({
+    id:'ev-5782-canonical', family:'SemanticEvidence', binaryId:'bin-A',
+    targetEntityIds:['entity-A'], semanticKind:'function-name',
+    completeness:'complete', deterministic:true, payload:{ summary:'demo' },
+  });
+  const legacy = canonicalEvidenceToLegacyAi(canonical);
+  assert.equal(legacy.binaryId, 'bin-A');
+  assert.equal(legacyAiEvidenceToCanonical(legacy).binaryId, 'bin-A');
+
+  const conflict = createEvidenceNode({
+    id:'ev-5782-conflict', family:'SemanticEvidence', binaryId:'bin-A',
+    targetEntityIds:['entity-A'], semanticKind:'function-name',
+    completeness:'complete', deterministic:true,
+    payload:{ binaryId:'bin-B', summary:'conflicting legacy payload' },
+  });
+  const conflictLegacy = canonicalEvidenceToLegacyAi(conflict);
+  assert.equal(conflictLegacy.binaryId, 'bin-A', 'canonical binaryId must override conflicting legacy payload binaryId');
+  assert.notEqual(conflictLegacy.binaryId, 'bin-B', 'legacy payload binaryId must not gain authority over canonical binding');
+  assert.equal(
+    legacyAiEvidenceToCanonical(conflictLegacy).binaryId,
+    'bin-A',
+    'canonical binaryId authority must survive canonical-to-legacy-to-canonical round-trip',
+  );
+
+  const legacyOrigin = legacyAiEvidenceToCanonical({
+    id:'ev-5782-legacy', kind:'observation', status:'supported',
+    binaryId:'bin-B', title:'t',
+  });
+  assert.equal(canonicalEvidenceToLegacyAi(legacyOrigin).binaryId, 'bin-B');
+
+  const unbound = createEvidenceNode({
+    id:'ev-5782-unbound', family:'SemanticEvidence',
+    targetEntityIds:['entity-A'], semanticKind:'function-name',
+    completeness:'complete', deterministic:true, payload:{},
+  });
+  assert.equal(canonicalEvidenceToLegacyAi(unbound).binaryId, undefined);
+  assert.equal(legacyAiEvidenceToCanonical(canonicalEvidenceToLegacyAi(unbound)).binaryId, null);
+}

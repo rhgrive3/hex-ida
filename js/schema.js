@@ -323,14 +323,33 @@ export function looksLikeDataFile(text) { return /\.(csv|tsv|json|plist|dat|txt)
 export async function recoverSchemas(opts) {
   const o = opts || {};
   const { strings, program, read, architecture } = o;
-  const arch = String(architecture || program?.architecture || '').toLowerCase();
-  const unsupported = !!arch && arch !== 'arm64' && arch !== 'aarch64';
-  const isComplete = !unsupported && program?.complete !== false && program?.unsupported !== true;
+  // Architecture support判定は canonical architecture boundary と一致させる:
+  // 実 string だけを identity として受理する（js/targets/architecture/registry.js
+  // ::canonicalArchitectureId と同じ規約）。String() coercion は
+  // `String(['arm64']) === 'arm64'` のように structured 値を supported
+  // architecture へ昇格させてしまう (#5810)。identity が提供されながら
+  // canonical 化できない場合（array/object/boolean/number/空文字）は
+  // fail-closed で unsupported —— 「architecture 未指定」の既定へ黙って
+  // 落とさない。identity 未指定の既存 default は不変。
+  const rawArch = architecture ?? program?.architecture;
+  const arch = typeof rawArch === 'string' ? rawArch.trim().toLowerCase() : '';
+  const unsupported = rawArch != null
+    ? (arch !== 'arm64' && arch !== 'aarch64')
+    : false;
+  const canonicalProgramComplete = program?.completeness?.complete;
+  const programComplete = canonicalProgramComplete == null
+    ? program?.complete !== false
+    : canonicalProgramComplete === true;
+  const isComplete = !unsupported && programComplete && program?.unsupported !== true;
+  const incompleteReason = program?.queryIncompleteReason
+    || program?.completeness?.reasons?.[0]
+    || program?.incompleteReason
+    || null;
   const out = [];
   Object.defineProperties(out, {
     complete: { value: isComplete, enumerable: false, configurable: true },
     unsupported: { value: unsupported || !!program?.unsupported, enumerable: false, configurable: true },
-    incompleteReason: { value: unsupported ? 'unsupported-architecture' : (program?.incompleteReason || null), enumerable: false, configurable: true },
+    incompleteReason: { value: unsupported ? 'unsupported-architecture' : incompleteReason, enumerable: false, configurable: true },
   });
   if (unsupported || !strings || !program || !read || program.unsupported) return out;
   const limit = normalizeSchemaRecoveryLimit(o.limit);
@@ -351,8 +370,15 @@ export async function recoverSchemas(opts) {
   if (!byFunction.size) return out;
   const candidates = Array.from(byFunction.values()).map((e) => {
     const r = program.functionRange(e.addr);
-    return Object.assign({}, e, { range: r, size: r ? Number(r.end - r.start) : 0 });
-  }).filter((e) => e.range && e.size > 16 && e.size <= 64 * 1024).sort((a, b) => b.files.length - a.files.length);
+    /*
+     * ProgramIndex.functionRange() legitimately returns `end: null` when the
+     * function end is undetermined. `Number(null - start)` would coerce to 0,
+     * and BigInt mixing throws outright — an open-ended range is a range with
+     * an unknown size, not an error (#5803).
+     */
+    const size = r && r.end != null ? Number(r.end - r.start) : 0;
+    return Object.assign({}, e, { range: r, size });
+  }).filter((e) => e.range && e.range.end != null && e.size > 16 && e.size <= 64 * 1024).sort((a, b) => b.files.length - a.files.length);
   const targets = candidates.slice(0, limit);
   if (targets.length < candidates.length) {
     const reasons = [...new Set([out.incompleteReason, 'schema-recovery-limit'].filter(Boolean))];
@@ -361,8 +387,11 @@ export async function recoverSchemas(opts) {
       incompleteReason: { value:reasons.join(';'), enumerable:false, configurable:true },
     });
   }
+  let processed = 0;
+  let wasCancelled = false;
   for (let i = 0; i < targets.length; i++) {
-    if (cancelled()) break;
+    if (cancelled()) { wasCancelled = true; break; }
+    processed = i + 1;
     progress({ phase: 'schema', done: i, all: targets.length });
     const t = targets[i];
     let bytes = null;
@@ -375,7 +404,14 @@ export async function recoverSchemas(opts) {
     if (!schema) continue;
     out.push({ loader: t.addr, files: t.files, loaderSize: t.size, tables: schema.tables, best: schema.best });
   }
-  progress({ phase: 'schema', done: targets.length, all: targets.length });
+  if (wasCancelled) {
+    const reasons = [...new Set([out.incompleteReason, 'schema-recovery-cancelled'].filter(Boolean))];
+    Object.defineProperties(out, {
+      complete: { value:false, enumerable:false, configurable:true },
+      incompleteReason: { value:reasons.join(';'), enumerable:false, configurable:true },
+    });
+  }
+  progress({ phase: 'schema', done: processed, all: targets.length });
   out.sort((a, b) => (b.best.consistent === true) - (a.best.consistent === true) || (b.best.columns || 0) - (a.best.columns || 0));
   return out;
 }

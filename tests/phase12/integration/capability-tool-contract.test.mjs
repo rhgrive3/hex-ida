@@ -177,4 +177,105 @@ const baseRegistry = createHexToolRegistry({
   console.log("  ok 11 catalog immutability");
 }
 
+// 12. Audit rejects structured agentTool metadata instead of coercing it (#6160)
+{
+  const audit = auditCapabilityToolContracts({
+    capabilities: [{ id: "cap.structured", agentTool: ["get_function"] }],
+    toolRegistry: baseRegistry,
+  });
+  assert.equal(audit.ok, false, "Structured agentTool must not resolve as a canonical tool");
+  assert.equal(audit.errors.length, 1);
+  assert.match(audit.errors[0], /^invalid-agent-tool-id:array$/);
+  assert.equal(audit.rows[0].toolPresent, false);
+  const objectAudit = auditCapabilityToolContracts({
+    capabilities: [{ id: "cap.object", agentTool: { name: "get_function" } }],
+    toolRegistry: baseRegistry,
+  });
+  assert.equal(objectAudit.ok, false);
+  assert.match(objectAudit.errors[0], /^invalid-agent-tool-id:object$/);
+  console.log("  ok 12 audit rejects structured agentTool metadata");
+}
+
+// 13. analysisToolContract requires a primitive string tool identity (#6160)
+{
+  assert.throws(() => analysisToolContract(baseRegistry, ["get_function"]), /^Error: invalid-analysis-tool-id:array$/);
+  assert.throws(() => analysisToolContract(baseRegistry, { name: "get_function" }), /^Error: invalid-analysis-tool-id:object$/);
+  assert.throws(() => analysisToolContract(baseRegistry, 7), /^Error: invalid-analysis-tool-id:number:7$/);
+  const contract = analysisToolContract(baseRegistry, "get_function");
+  assert.equal(contract.name, "get_function", "String identities keep resolving normally");
+  console.log("  ok 13 analysisToolContract requires a string tool identity");
+}
+
+// 14. ToolRegistry lookup rejects non-string tool identities (#6160)
+{
+  assert.equal(baseRegistry.get(["get_function"]), null, "Array tool name must not launder into a canonical Map key");
+  assert.equal(baseRegistry.has(["get_function"]), false);
+  assert.equal(baseRegistry.get({ name: "get_function" }), null);
+  assert.equal(baseRegistry.get(0), null);
+  assert.equal(baseRegistry.has("get_function"), true);
+  assert.notEqual(baseRegistry.get("get_function"), null);
+  console.log("  ok 14 registry lookup requires string tool identities");
+}
+
+// 15. Audit rejects explicitly present falsy agentTool identities (#6160)
+{
+  const cases = [
+    [null, "invalid-agent-tool-id:null"],
+    [0, "invalid-agent-tool-id:number:0"],
+    [false, "invalid-agent-tool-id:boolean:false"],
+    ["", "invalid-agent-tool-id:string:"],
+  ];
+  for (const [agentTool, expectedError] of cases) {
+    const audit = auditCapabilityToolContracts({
+      capabilities: [{ id: "cap.falsy", agentTool }],
+      toolRegistry: baseRegistry,
+    });
+    assert.equal(audit.ok, false, `Explicit ${typeof agentTool} agentTool must fail closed`);
+    assert.deepEqual(audit.errors, [expectedError]);
+    assert.equal(audit.rows.length, 1);
+    assert.equal(audit.rows[0].toolPresent, false);
+  }
+  const omitted = auditCapabilityToolContracts({
+    capabilities: [{ id: "cap.omitted" }, { id: "cap.undefined", agentTool: undefined }],
+    toolRegistry: baseRegistry,
+  });
+  assert.equal(omitted.ok, true);
+  assert.deepEqual(omitted.rows, [], "Omitted and undefined agentTool values remain optional");
+  console.log("  ok 15 audit rejects explicit falsy agentTool identities and skips only omitted/undefined values");
+}
+
+// 16. Invalid identity diagnostics never invoke caller-owned hooks (#6160)
+{
+  let ownKeysCalled = false;
+  const throwingOwnKeys = new Proxy({}, {
+    ownKeys() { ownKeysCalled = true; throw new Error("ownKeys must not run"); },
+  });
+  let toStringCalled = false;
+  const throwingToString = [{ toString() { toStringCalled = true; throw new Error("toString must not run"); } }];
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+
+  assert.doesNotThrow(() => {
+    const audit = auditCapabilityToolContracts({
+      capabilities: [
+        { id: "cap.proxy-object", agentTool: throwingOwnKeys },
+        { id: "cap.proxy-array", agentTool: throwingToString },
+        { id: "cap.revoked", agentTool: revoked.proxy },
+      ],
+      toolRegistry: baseRegistry,
+    });
+    assert.deepEqual(audit.errors, [
+      "invalid-agent-tool-id:object",
+      "invalid-agent-tool-id:array",
+      "invalid-agent-tool-id:object",
+    ]);
+  });
+  assert.equal(ownKeysCalled, false, "object diagnostics must not enumerate proxy keys");
+  assert.equal(toStringCalled, false, "array diagnostics must not coerce array members");
+
+  assert.throws(() => analysisToolContract(baseRegistry, throwingOwnKeys), /^Error: invalid-analysis-tool-id:object$/);
+  assert.throws(() => analysisToolContract(baseRegistry, throwingToString), /^Error: invalid-analysis-tool-id:array$/);
+  console.log("  ok 16 invalid identity diagnostics are side-effect-free");
+}
+
 console.log("  ok all capability tool contract tests passed!");

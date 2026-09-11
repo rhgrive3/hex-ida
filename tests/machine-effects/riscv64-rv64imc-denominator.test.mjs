@@ -68,8 +68,8 @@ assert.equal(denominator.compressedWordCount, 49_152);
 
 // This is the complete finite 32-bit discriminator product used by the RV64I/M
 // decoder: opcode x funct3 x funct7. Register and ordinary immediate payload
-// bits are non-discriminating; the two exceptions (FENCE and SYSTEM reserved
-// fields) receive their own complete products below.
+// bits are non-discriminating; FENCE HINT/TSO and SYSTEM reserved fields use
+// their own complete products below.
 const observed32Families = new Set();
 for (let opcode = 0; opcode < 0x80; opcode += 1) {
   if ((opcode & 0b11) !== 0b11 || (opcode & 0b11111) === 0b11111) continue;
@@ -88,9 +88,9 @@ for (let opcode = 0; opcode < 0x80; opcode += 1) {
   }
 }
 
-// FENCE validity depends on fm/pred/succ plus the architecturally reserved rd
-// and rs1 fields. Exhaust their complete validity domain, not representative
-// samples, so a reserved form cannot be promoted by an over-broad mask.
+// FENCE validity depends on fm/pred/succ plus the forward-compatible rd and
+// rs1 fields. Exhaust their complete accepted domain, not representative
+// samples, so a reserved or hint form cannot be misclassified by a broad mask.
 for (let fenceMode = 0; fenceMode < 16; fenceMode += 1) {
   for (let predecessor = 0; predecessor < 16; predecessor += 1) {
     for (let successor = 0; successor < 16; successor += 1) {

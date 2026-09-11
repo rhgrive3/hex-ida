@@ -10,48 +10,126 @@ export async function requestJSON(url, body, {
   fetchImpl = globalThis.fetch,
 } = {}) {
   if (typeof fetchImpl !== 'function') throw new AIError('provider_error', 'Fetch is unavailable.');
-  if (signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
+  const external = normalizeExternalSignal(signal);
+  if (external?.initiallyAborted) throw externalAbortError(readExternalAbortReason(external.source));
   const responseLimit = normalizeLimit(maxResponseBytes);
   const timeoutDelay = normalizeTimeout(timeoutMs);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort('timeout'), timeoutDelay);
-  const abort = () => controller.abort(signal?.reason ?? 'cancelled');
-  if (signal) {
-    signal.addEventListener('abort', abort, { once: true });
-    // Close the race between the synchronous check above and listener setup.
-    if (signal.aborted) abort();
-  }
+  let timeout = null;
+  let listenerAttached = false;
+  let externalAborted = false;
+  let externalAbortReason = 'cancelled';
+  const abort = () => {
+    externalAborted = true;
+    externalAbortReason = readExternalAbortReason(external?.source);
+    controller.abort(externalAbortReason);
+  };
   try {
-    if (controller.signal.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
+    if (external) {
+      try {
+        external.addEventListener('abort', abort, { once: true });
+        listenerAttached = true;
+      } catch {
+        // EventTarget-like shims can throw after partially registering. Roll
+        // back best-effort before any timeout or transport I/O is allocated.
+        try { external.removeEventListener('abort', abort); } catch { /* best effort */ }
+        throw new AIError('provider_error', 'AI transport signal must be AbortSignal-compatible.');
+      }
+      // Close the race between the initial snapshot and listener setup. A
+      // hostile/unreadable live abort state is a malformed signal, not a
+      // reason to proceed with transport I/O after validation.
+      const afterRegistrationAborted = readExternalAborted(external.source);
+      if (afterRegistrationAborted === null) {
+        throw new AIError('provider_error', 'AI transport signal must be AbortSignal-compatible.');
+      }
+      if (afterRegistrationAborted) abort();
+    }
+    timeout = setTimeout(() => controller.abort('timeout'), timeoutDelay);
+    if (controller.signal.aborted) {
+      throw externalAborted ? externalAbortError(externalAbortReason) : new AIError('cancelled', 'AI investigation was cancelled.');
+    }
     const response = await fetchImpl(url, {
       method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' },
       body: JSON.stringify(body), signal: controller.signal,
     });
+    if (externalAborted) throw externalAbortError(externalAbortReason);
     const contentLength = Number(response.headers?.get?.('content-length'));
     if (Number.isFinite(contentLength) && contentLength > responseLimit) {
       controller.abort('response-too-large');
       throw new AIError('context_too_large', `The AI service response exceeded ${responseLimit} bytes.`, { bytes: contentLength, maxBytes: responseLimit });
     }
     const text = await readBoundedText(response, responseLimit, controller);
+    if (externalAborted) throw externalAbortError(externalAbortReason);
     let payload;
     try { payload = JSON.parse(text); }
     catch { throw new AIError('provider_error', 'The AI service returned invalid JSON.', { status: response.status }); }
     if (!response.ok) {
-      const type = normalizeRemoteError(payload?.error?.code, response.status, controller.signal, signal);
+      const type = normalizeRemoteError(payload?.error?.code, response.status, controller.signal, externalAborted, externalAbortReason);
       throw new AIError(type, payload?.error?.message || `AI service failed (${response.status}).`, { status: response.status, code: payload?.error?.code });
     }
     return payload;
   } catch (error) {
-    if (error instanceof AIError) throw error;
-    if (signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
+    if (error instanceof AIError) {
+      // An inner controller can report a generic cancellation after the
+      // caller's timeout reason has crossed the transport boundary. Restore
+      // the caller's semantic deadline before rethrowing (#4451).
+      if (error.type === 'cancelled' && externalAborted) throw externalAbortError(externalAbortReason);
+      throw error;
+    }
+    if (externalAborted) throw externalAbortError(externalAbortReason);
     if (controller.signal.aborted) {
       if (controller.signal.reason === 'response-too-large') throw new AIError('context_too_large', `The AI service response exceeded ${responseLimit} bytes.`);
       throw new AIError('model_timeout', 'The AI model request timed out.');
     }
     throw new AIError('provider_error', error?.message || String(error));
   } finally {
-    clearTimeout(timeout);
-    if (signal) signal.removeEventListener('abort', abort);
+    if (timeout != null) clearTimeout(timeout);
+    if (listenerAttached) {
+      try { external.removeEventListener('abort', abort); } catch { /* cleanup must not replace the request outcome */ }
+    }
+  }
+}
+
+function normalizeExternalSignal(value) {
+  if (value == null) return null;
+  try {
+    if (typeof value !== 'object' && typeof value !== 'function') {
+      throw new AIError('provider_error', 'AI transport signal must be AbortSignal-compatible.');
+    }
+    const initiallyAborted = value.aborted;
+    const addEventListener = value.addEventListener;
+    const removeEventListener = value.removeEventListener;
+    if (typeof initiallyAborted !== 'boolean'
+        || typeof addEventListener !== 'function'
+        || typeof removeEventListener !== 'function') {
+      throw new AIError('provider_error', 'AI transport signal must be AbortSignal-compatible.');
+    }
+    return {
+      source: value,
+      initiallyAborted,
+      addEventListener: (...args) => Reflect.apply(addEventListener, value, args),
+      removeEventListener: (...args) => Reflect.apply(removeEventListener, value, args),
+    };
+  } catch (error) {
+    if (error instanceof AIError) throw error;
+    throw new AIError('provider_error', 'AI transport signal must be AbortSignal-compatible.');
+  }
+}
+
+function readExternalAborted(signal) {
+  try {
+    const aborted = signal?.aborted;
+    return typeof aborted === 'boolean' ? aborted : null;
+  } catch {
+    return null;
+  }
+}
+
+function readExternalAbortReason(signal) {
+  try {
+    return signal?.reason ?? 'cancelled';
+  } catch {
+    return 'cancelled';
   }
 }
 
@@ -104,16 +182,27 @@ function normalizeTimeout(value) {
 }
 
 function normalizeLimit(value) {
+  // Only primitive finite positive numbers may become the response byte
+  // authority; structured/boolean values fall back to the default (#5430).
+  if (typeof value !== 'number') return DEFAULT_MAX_RESPONSE_BYTES;
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_MAX_RESPONSE_BYTES;
   return Math.max(1024, Math.min(16 * 1024 * 1024, Math.floor(n)));
 }
 
-function normalizeRemoteError(code, status, localSignal, externalSignal) {
-  if (externalSignal?.aborted) return 'cancelled';
+function normalizeRemoteError(code, status, localSignal, externalAborted, externalAbortReason) {
+  if (externalAborted) return externalAbortReason === 'timeout' ? 'budget_exhausted' : 'cancelled';
   if (localSignal?.aborted || code === 'upstream_timeout' || status === 504) return 'model_timeout';
   if (code === 'invalid_model_output') return 'invalid_model_output';
   if (code === 'request_too_large') return 'context_too_large';
   if (code === 'rate_limited' || code === 'upstream_rate_limited' || code === 'upstream_quota_exceeded') return 'provider_error';
   return 'provider_error';
+}
+
+function externalAbortError(reason) {
+  const timedOut = reason === 'timeout';
+  return new AIError(
+    timedOut ? 'budget_exhausted' : 'cancelled',
+    timedOut ? 'The AI investigation timed out.' : 'AI investigation was cancelled.',
+  );
 }

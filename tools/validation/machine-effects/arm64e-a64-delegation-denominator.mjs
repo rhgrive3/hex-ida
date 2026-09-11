@@ -62,6 +62,10 @@ export const ARM64E_BASELINE_FEATURE_ALIAS_MNEMONICS = Object.freeze([
   'pacibsp',
   'autiasp',
   'autibsp',
+  'paciaz',
+  'pacibz',
+  'autiaz',
+  'autibz',
 ]);
 
 const BASELINE_DENOMINATORS = Object.freeze([

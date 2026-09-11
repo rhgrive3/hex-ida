@@ -1,4 +1,5 @@
 import { checkedRange, fail } from './validation-utils.js';
+import { readDexUleb128, readDexSleb128 } from './leb128.js';
 
 const TYPE_HEADER_ITEM = 0x0000;
 const TYPE_STRING_ID_ITEM = 0x0001;
@@ -67,39 +68,10 @@ function align4(value) {
 }
 
 function readUleb128(bytes, offset, limit, code = RANGE_ERROR) {
-  let value = 0;
-  let factor = 1;
-  let pos = offset;
-  for (let count = 0; count < 5; count++) {
-    if (pos >= limit) fail(code);
-    const byte = bytes[pos++];
-    if (count === 4 && (byte & 0xf0) !== 0) fail(code);
-    value += (byte & 0x7f) * factor;
-    if ((byte & 0x80) === 0) return { value, nextOffset: pos };
-    factor *= 0x80;
-  }
-  fail(code);
+  return readDexUleb128(bytes, offset, limit, code);
 }
-
 function readSleb128(bytes, offset, limit, code = RANGE_ERROR) {
-  let value = 0n;
-  let shift = 0n;
-  let pos = offset;
-  for (let count = 0; count < 5; count++) {
-    if (pos >= limit) fail(code);
-    const byte = bytes[pos++];
-    value |= BigInt(byte & 0x7f) << shift;
-    shift += 7n;
-    if ((byte & 0x80) === 0) {
-      if (count === 4) {
-        const payload = byte & 0x7f;
-        if (payload !== 0x00 && payload !== 0x7f && (payload & 0x70) !== 0x00 && (payload & 0x70) !== 0x70) fail(code);
-      }
-      if ((byte & 0x40) !== 0) value |= -1n << shift;
-      return { value: Number(BigInt.asIntN(32, value)), nextOffset: pos };
-    }
-  }
-  fail(code);
+  return readDexSleb128(bytes, offset, limit, code);
 }
 
 function requireLoopBudget(count, available, minBytes = 1) {

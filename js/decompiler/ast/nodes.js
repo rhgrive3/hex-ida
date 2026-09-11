@@ -1,36 +1,91 @@
-/* Typed decompiler AST. Nodes retain proof/evidence and source-origin metadata. */
+/* Typed decompiler AST. Nodes retain proof/evidence and source-origin metadata.
+ *
+ * Source provenance identity is typed per field. Canonical producers emit:
+ *   addresses -> BigInt (or safe non-negative integer), rows -> safe
+ *   non-negative integers, and ir/ssaDefs/ssaUses -> primitive string IDs or
+ *   safe non-negative integers. Anything else is malformed metadata and is
+ *   dropped at the boundary: coercing it with String() would let an Array,
+ *   boolean or object alias a canonical identity and merge unrelated evidence.
+ */
+const EXPRESSION_KINDS = new Set([
+  'const', 'float-const', 'var', 'unary', 'binary', 'compare',
+  'select', 'call', 'load', 'field', 'index', 'intrinsic',
+]);
+
+export function isExpressionNode(value) {
+  return value !== null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && (() => {
+      try {
+        return EXPRESSION_KINDS.has(value.kind);
+      } catch {
+        return false;
+      }
+    })();
+}
 function freezeArray(v) { return Array.isArray(v) ? v.slice() : []; }
+function canonicalIdentity(v, { allowBigInt = false, allowString = false } = {}) {
+  if (allowBigInt && typeof v === 'bigint') return v >= 0n ? v : null;
+  if (typeof v === 'number') return Number.isSafeInteger(v) && v >= 0 ? v : null;
+  if (allowString && typeof v === 'string') return v;
+  return null;
+}
+function canonicalList(values, options = {}) {
+  if (values == null) return [];
+  const list = Array.isArray(values) ? values : [values];
+  const out = [];
+  for (const v of list) {
+    const canonical = canonicalIdentity(v, options);
+    if (canonical !== null && !out.some((z) => z === canonical)) out.push(canonical);
+  }
+  return out;
+}
 export function sourceOf(source = null) {
   if (!source) return { addresses: [], rows: [], ir: [], ssaDefs: [], ssaUses: [], evidence: [] };
-  const one = (v) => v == null ? [] : Array.isArray(v) ? v.slice() : [v];
-  return { addresses: one(source.addresses ?? source.address), rows: one(source.rows ?? source.row), ir: one(source.ir ?? source.irId), ssaDefs: one(source.ssaDefs ?? source.ssaDef), ssaUses: one(source.ssaUses ?? source.ssaUse), evidence: freezeArray(source.evidence) };
+  return {
+    addresses: canonicalList(source.addresses ?? source.address, { allowBigInt: true }),
+    rows: canonicalList(source.rows ?? source.row),
+    ir: canonicalList(source.ir ?? source.irId, { allowString: true }),
+    ssaDefs: canonicalList(source.ssaDefs ?? source.ssaDef, { allowString: true }),
+    ssaUses: canonicalList(source.ssaUses ?? source.ssaUse, { allowString: true }),
+    evidence: freezeArray(source.evidence),
+  };
 }
 export function mergeSource(...sources) {
   const out = sourceOf();
   for (const s of sources) {
     const x = sourceOf(s);
-    for (const k of ['addresses', 'rows', 'ir', 'ssaDefs', 'ssaUses']) for (const v of x[k]) if (!out[k].some((z) => String(z) === String(v))) out[k].push(v);
+    for (const k of ['addresses', 'rows', 'ir', 'ssaDefs', 'ssaUses']) for (const v of x[k]) if (!out[k].some((z) => z === v)) out[k].push(v);
     out.evidence.push(...x.evidence);
   }
   return out;
 }
-export function node(kind, props = {}, source = null) { return { kind, ...props, source: sourceOf(source || props.source) }; }
+export function node(kind, props = {}, source = null) {
+  // `kind` is the node's category, decided by the constructor — props (and
+  // any extra metadata routed through them) must never redefine it (#4150).
+  return { ...props, kind, source: sourceOf(source || props.source) };
+}
+// Structural/semantic fields are constructor-owned: metadata spread through
+// `extra` is applied first and every constructor-owned field is re-asserted
+// after it, so `{ kind:'forged', effect:'call', signed:true }` in extra can no
+// longer rewrite the node category or effect semantics (#4150).
 export const expr = {
   constant(value, bits = 64, signed = null, source = null) { return node('const', { value: BigInt(value), bits: Number(bits || 64), signed, effect: 'pure' }, source); },
   floatConstant(value, bits = 64, source = null) { return node('float-const', { value:Number(value), bits:Number(bits || 64), signed:null, floating:true, effect:'pure' }, source); },
-  variable(name, bits = 64, signed = null, source = null, extra = {}) { return node('var', { name, bits: Number(bits || 64), signed, effect: 'pure', ...extra }, source); },
-  unary(op, arg, bits = arg?.bits || 64, signed = arg?.signed ?? null, source = null, extra = {}) { return node('unary', { op, arg, bits, signed, effect: effectOf(arg), ...extra }, mergeSource(source, arg?.source)); },
-  binary(op, left, right, bits = left?.bits || right?.bits || 64, signed = null, source = null, extra = {}) { return node('binary', { op, left, right, bits, signed, effect: maxEffect(effectOf(left), effectOf(right)), ...extra }, mergeSource(source, left?.source, right?.source)); },
+  variable(name, bits = 64, signed = null, source = null, extra = {}) { return node('var', { ...extra, name, bits: Number(bits || 64), signed, effect: 'pure' }, source); },
+  unary(op, arg, bits = arg?.bits || 64, signed = arg?.signed ?? null, source = null, extra = {}) { return node('unary', { ...extra, op, arg, bits, signed, effect: effectOf(arg) }, mergeSource(source, arg?.source)); },
+  binary(op, left, right, bits = left?.bits || right?.bits || 64, signed = null, source = null, extra = {}) { return node('binary', { ...extra, op, left, right, bits, signed, effect: maxEffect(effectOf(left), effectOf(right)) }, mergeSource(source, left?.source, right?.source)); },
   compare(op, left, right, signed = null, source = null, extra = {}) {
     const comparisonDomain = extra.comparisonDomain ?? ((left?.floating === true || right?.floating === true || left?.kind === 'float-const' || right?.kind === 'float-const') ? 'floating' : 'integer');
-    return node('compare', { op, left, right, bits: 1, signed: false, compareSigned: signed, comparisonDomain, effect: maxEffect(effectOf(left), effectOf(right)), ...extra }, mergeSource(source, left?.source, right?.source));
+    return node('compare', { ...extra, op, left, right, bits: 1, signed: false, compareSigned: signed, comparisonDomain, effect: maxEffect(effectOf(left), effectOf(right)) }, mergeSource(source, left?.source, right?.source));
   },
   select(condition, whenTrue, whenFalse, bits = whenTrue?.bits || whenFalse?.bits || 64, signed = null, source = null) { return node('select', { condition, whenTrue, whenFalse, bits, signed, effect: maxEffect(effectOf(condition), effectOf(whenTrue), effectOf(whenFalse)) }, mergeSource(source, condition?.source, whenTrue?.source, whenFalse?.source)); },
-  call(callee, args = [], bits = 64, source = null, extra = {}) { return node('call', { callee, args: args.slice(), bits, signed: null, effect: 'call', ...extra }, mergeSource(source, ...args.map((a) => a?.source))); },
-  load(location, bits = 64, source = null, extra = {}) { return node('load', { location, bits, signed: extra.signed ?? null, effect: extra.volatile ? 'volatile' : 'read', ...extra }, source); },
-  field(base, name, offset = 0n, bits = 64, source = null, extra = {}) { return node('field', { base, name, offset: BigInt(offset || 0), bits, signed: extra.signed ?? null, effect: effectOf(base), ...extra }, mergeSource(source, base?.source)); },
-  index(base, index, scale = 1, bits = 64, source = null, extra = {}) { return node('index', { base, index, scale, bits, signed: extra.signed ?? null, effect: maxEffect(effectOf(base), effectOf(index)), ...extra }, mergeSource(source, base?.source, index?.source)); },
-  intrinsic(name, args = [], bits = 64, signed = null, source = null, extra = {}) { return node('intrinsic', { name, args: args.slice(), bits, signed, effect: maxEffect(...args.map(effectOf)), ...extra }, mergeSource(source, ...args.map((a) => a?.source))); },
+  call(callee, args = [], bits = 64, source = null, extra = {}) { return node('call', { ...extra, callee, args: args.slice(), bits, signed: null, effect: 'call' }, mergeSource(source, ...args.map((a) => a?.source))); },
+  load(location, bits = 64, source = null, extra = {}) { return node('load', { ...extra, location, bits, signed: extra.signed ?? null, effect: extra.volatile ? 'volatile' : 'read' }, source); },
+  field(base, name, offset = 0n, bits = 64, source = null, extra = {}) { return node('field', { ...extra, base, name, offset: BigInt(offset || 0), bits, signed: extra.signed ?? null, effect: effectOf(base) }, mergeSource(source, base?.source)); },
+  index(base, index, scale = 1, bits = 64, source = null, extra = {}) { return node('index', { ...extra, base, index, scale, bits, signed: extra.signed ?? null, effect: maxEffect(effectOf(base), effectOf(index)) }, mergeSource(source, base?.source, index?.source)); },
+  intrinsic(name, args = [], bits = 64, signed = null, source = null, extra = {}) { return node('intrinsic', { ...extra, name, args: args.slice(), bits, signed, effect: maxEffect(...args.map(effectOf)) }, mergeSource(source, ...args.map((a) => a?.source))); },
 };
 const EFFECT_RANK = { pure: 0, read: 1, call: 2, write: 3, volatile: 4, unknown: 5 };
 export function maxEffect(...effects) { let best = 'pure'; for (const effect of effects.flat()) if ((EFFECT_RANK[effect] ?? 5) > (EFFECT_RANK[best] ?? 0)) best = effect || 'unknown'; return best; }
@@ -87,13 +142,19 @@ function semanticTag(n) {
 // result-def identity in source metadata, which is the authoritative fallback.
 const anonymousLoadIds = new WeakMap();
 let nextAnonymousLoadId = 1;
+function loadSourceIdentity(v) {
+  return typeof v === 'string' ? `s:${JSON.stringify(v)}` : String(v);
+}
+function loadSourceIdentityList(values) {
+  return values.map(loadSourceIdentity).sort().join(',');
+}
 function loadValueIdentity(n) {
   if (n?.memoryVersion != null) return `mem:${scalar(n.memoryVersion)}`;
   if (n?.loadIdentity != null) return `load:${scalar(n.loadIdentity)}`;
   const source = sourceOf(n?.source);
-  if (source.ssaDefs.length) return `ssa:${source.ssaDefs.map(String).sort().join(',')}`;
-  if (source.ir.length) return `ir:${source.ir.map(String).sort().join(',')}`;
-  if (source.rows.length) return `row:${source.rows.map(String).sort().join(',')}`;
+  if (source.ssaDefs.length) return `ssa:${loadSourceIdentityList(source.ssaDefs)}`;
+  if (source.ir.length) return `ir:${loadSourceIdentityList(source.ir)}`;
+  if (source.rows.length) return `row:${loadSourceIdentityList(source.rows)}`;
   let id = anonymousLoadIds.get(n);
   if (id == null) { id = nextAnonymousLoadId++; anonymousLoadIds.set(n, id); }
   return `anon:${id}`;

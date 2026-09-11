@@ -1,5 +1,7 @@
 import { classifyFunction, discoverSubsystems } from '../../recognition/classifier.js';
+import { assertAnalysisSnapshot } from './snapshot.js';
 import { STRING_SCAN_BUDGET, StringCollectionBudget } from '../../string-budget.js';
+import { jsonSafe, stableDigest } from '../../core/identity/index.js';
 
 const REPORT_BINDINGS = new WeakMap();
 const STRING_STATES = new WeakMap();
@@ -65,8 +67,18 @@ function functionAddress(value) {
   throw new TypeError('analysis-product-function-id-invalid');
 }
 
+function canonicalRecognitionConfidence(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1 ? value : 0;
+}
+
 async function assertCurrentSnapshot(app, snapshot, options = {}) {
   abortIfNeeded(options.signal);
+  // Product surface answers carry snapshot-attributed evidence, so the caller
+  // supplied envelope must satisfy the same canonical AnalysisSnapshot
+  // contract AnalysisQueryAPI enforces before any query. snapshotId string
+  // equality alone would accept a forged envelope whose other identity fields
+  // are missing or contradictory while it names the current snapshot (#5344).
+  assertAnalysisSnapshot(snapshot);
   const current = await app.analysisQueries.snapshot(options);
   abortIfNeeded(options.signal);
   if (!sameSnapshot(snapshot, current)) {
@@ -95,6 +107,23 @@ function stringPriority(region) {
   return 2;
 }
 
+function canonicalSliceStateDimension(app) {
+  // The state key must track the same identity dimensions the snapshot uses.
+  // `Number(['1'])` aliased a structured slice index onto the canonical `1`
+  // and let one snapshot's string state be served to a different snapshot
+  // (#5585). Type-preserving spelling instead of numeric coercion.
+  const raw = app.store?.get?.('sliceIndex');
+  const gen = Number(app.backend?.gen ?? 0);
+  let slice;
+  if (raw == null || (typeof raw === 'string' && !raw)) slice = '-1';
+  else if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'bigint' || typeof raw === 'boolean') {
+    slice = `p:${typeof raw}:${String(raw)}`;
+  } else {
+    try { slice = `s:${stableDigest(jsonSafe(raw))}`; } catch { slice = `s:opaque:${typeof raw}`; }
+  }
+  return `${gen}:${slice}`;
+}
+
 function newStringState(app) {
   const regions = app.store?.get?.('regions') || [];
   const targets = regions.filter((region) => region?.size > 0n &&
@@ -108,14 +137,18 @@ function newStringState(app) {
   for (const region of targets) {
     const bytes = budget.requestBytes(Number(region.size));
     if (bytes <= 0) { skipped.push(region); continue; }
-    plan.push({ region, bytes });
-    if (bytes < Number(region.size)) skipped.push(region);
+    const partial = bytes < Number(region.size);
+    plan.push({ region, bytes, partial });
+    if (partial) {
+      skipped.push(region);
+    }
   }
   return {
-    key: `${Number(app.backend?.gen ?? 0)}:${Number(app.store?.get?.('sliceIndex') ?? -1)}`,
+    key: canonicalSliceStateDimension(app),
     budget,
     plan,
     skipped,
+    totalRegions: targets.length,
     cursor: 0,
     rows: [],
     scannedBytes: 0,
@@ -127,7 +160,7 @@ function newStringState(app) {
 }
 
 function stringState(app) {
-  const key = `${Number(app.backend?.gen ?? 0)}:${Number(app.store?.get?.('sliceIndex') ?? -1)}`;
+  const key = canonicalSliceStateDimension(app);
   let state = STRING_STATES.get(app);
   if (!state || state.key !== key) {
     state = newStringState(app);
@@ -137,7 +170,14 @@ function stringState(app) {
 }
 
 function waitForShared(entry, signal) {
-  abortIfNeeded(signal);
+  if (signal?.aborted) {
+    // A signal that died before this waiter registered owns nothing, but the
+    // entry may be a just-started producer with no other consumer (#5793):
+    // leaving it running would keep a zero-waiter backend request alive with
+    // nobody able to cancel it.
+    if (entry.waiters === 0 && !entry.settled) entry.cancel?.();
+    throw abortError(signal);
+  }
   entry.waiters++;
   if (!signal) return entry.promise.finally(() => { entry.waiters = Math.max(0, entry.waiters - 1); });
   return new Promise((resolve, reject) => {
@@ -158,11 +198,11 @@ function waitForShared(entry, signal) {
       reject(abortError(signal));
     };
     signal.addEventListener('abort', onAbort, { once:true });
+    entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
     if (signal.aborted) {
       onAbort();
       return;
     }
-    entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
   });
 }
 
@@ -189,8 +229,16 @@ async function scanNextStringRegion(app, state, options = {}) {
         ? (progress) => options.onProgress({ ...progress, phase:'strings', region:item.region.id })
         : null,
     );
-    const entry = { waiters:0, cancel:typeof request?.cancel === 'function' ? () => request.cancel() : null, promise:null };
+    const cancelRequest = typeof request?.cancel === 'function' ? () => request.cancel() : null;
+    const entry = { waiters:0, retired:false, cancel:null, promise:null };
+    entry.cancel = () => {
+      if (entry.retired) return;
+      entry.retired = true;
+      if (state.inFlight === entry) state.inFlight = null;
+      cancelRequest?.();
+    };
     entry.promise = Promise.resolve(request).then((result) => {
+      if (entry.retired) return;
       state.scannedBytes += Number(result?.scannedBytes || 0);
       if (result?.complete !== true) state.backendIncomplete = true;
       for (const row of result?.results || []) {
@@ -204,8 +252,16 @@ async function scanNextStringRegion(app, state, options = {}) {
       if (state.inFlight === entry) state.inFlight = null;
     });
     state.inFlight = entry;
+    if (options.signal?.aborted) {
+      // The consumer aborted between the outer check and waiter registration:
+      // cancel the just-started request and detach it, so no zero-waiter
+      // producer survives the race window (#5793).
+      entry.cancel?.();
+      if (state.inFlight === entry) state.inFlight = null;
+    }
   }
-  await waitForShared(state.inFlight, options.signal);
+  if (!state.inFlight) abortIfNeeded(options.signal);
+  else await waitForShared(state.inFlight, options.signal);
 }
 
 function matchingStrings(state, needle) {
@@ -337,13 +393,19 @@ export function createProductSurfaceQueries(app) {
       const globallyComplete = state.complete === true;
       const next = offset + value.length < matches.length || (!globallyComplete && value.length === limit) ? offset + value.length : null;
       await assertCurrentSnapshot(app, snapshot, options);
+      const partiallyPlanned = new Set(state.plan.filter((item) => item.partial).map((item) => item.region.id));
+      const partiallyScanned = state.plan.slice(0, state.cursor)
+        .filter((item) => item.partial)
+        .map((item) => item.region.id);
       return queryEnvelope(snapshot, value, globallyComplete ? 'complete' : 'partial', {
         reason:globallyComplete ? null : state.truncationReason || state.budget.truncationReason || 'string-artifact-incomplete',
         producer:'canonical-product-string-artifact/v1',
         scannedRegions:state.cursor,
-        totalRegions:state.plan.length + state.skipped.length,
+        totalRegions:state.totalRegions,
         scannedBytes:state.scannedBytes,
-        unscannedRegions:state.plan.slice(state.cursor).map((item) => item.region.id).concat(state.skipped.map((region) => region.id)),
+        partiallyScannedRegions:partiallyScanned,
+        unscannedRegions:state.plan.slice(state.cursor).map((item) => item.region.id)
+          .concat(state.skipped.filter((region) => !partiallyPlanned.has(region.id)).map((region) => region.id)),
       }, { offset, limit, returned:value.length, total:globallyComplete ? matches.length : null, next });
     },
 
@@ -398,7 +460,7 @@ export function createProductSurfaceQueries(app) {
       try { local = await app.analyzeFunctionAt(address, { signal:options.signal }); } catch (error) { if (options.signal?.aborted) throw error; }
       const baseResult = base ? {
         classification:base.classification || 'UNKNOWN',
-        confidence:Number(base.confidence || 0),
+        confidence:canonicalRecognitionConfidence(base.confidence),
         evidence:Array.isArray(base.evidence) ? base.evidence.slice() : [],
         knowledgeSourceId:base.knowledgeSourceId || null,
       } : null;

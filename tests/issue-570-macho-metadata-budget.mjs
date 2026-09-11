@@ -60,7 +60,7 @@ function image() {
 
 // Repeat opcode must be prebounded by segment/output capacity, not loop 10M times.
 {
-  const bytes=new Uint8Array([0x70,0x00,0x40,0x5f,0x78,0x00,0xc0,0x64,0x00,0x00]);
+  const bytes=new Uint8Array([0x10,0x70,0x00,0x40,0x5f,0x78,0x00,0x51,0xc0,0x64,0x00,0x00]);
   const img=image(),segment={address:0x1000n,size:0x20n,fileOffset:0n,fileSize:0x20n};
   const budget=createMachOMetadataBudget(img,{limits:{records:100,objects:100,stringBytes:4096,inputBytes:4096,operations:100,warnings:8,estimatedHeapBytes:1<<20,wallClockMs:5000}});
   const status=parseClassicBindings(new ByteView(bytes),{offset:0,size:bytes.length},img,[segment],'bind',budget);

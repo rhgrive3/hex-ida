@@ -165,7 +165,13 @@ export function describePurpose(o) {
       confidence: u.confidence,
     };
     if (o.fields && o.owner) {
-      c.field = o.fields.resolveAccess({ base: c.base, disp: c.disp }, o.owner.className) || null;
+      /*
+       * dataflow が証明した access provenance（self / 位置変数番地）を
+       * そのまま resolver へ渡す。ここで落とすと、証明済み self が
+       * ヒューリスティック certain:false に降格し、位置変数の ivar は
+       * まったく解けなくなる（fields.js の certainty boundary と食い違う）。
+       */
+      c.field = o.fields.resolveAccess({ base: c.base, disp: c.disp, self: c.self, indexAddr: c.indexAddr }, o.owner.className) || null;
     }
     changes.push(c);
   }

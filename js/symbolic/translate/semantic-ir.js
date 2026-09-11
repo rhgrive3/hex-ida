@@ -113,7 +113,25 @@ export function translateSemanticIR(target, options = {}) {
       if (customVal !== null && typeof customVal === 'bigint') {
         res = createBv(width, customVal);
       } else if (customVal !== null && typeof customVal === 'number') {
-        res = createBv(width, BigInt(customVal));
+        // Fail-closed concrete binding: only finite safe integers may become
+        // exact BV constants. Fractional/NaN/Infinity/unsafe numbers are
+        // caller-supplied garbage that must not crash the translator with a
+        // raw BigInt conversion error nor mint as exact evidence.
+        if (!Number.isFinite(customVal) || !Number.isSafeInteger(customVal)) {
+          semanticUnknowns++;
+          unsupportedEntities.push({
+            id: valId,
+            op: `arg:${reg}`,
+            reason: `invalid-numeric-concrete-binding:${String(customVal)}`,
+          });
+          res = createUnknownSemantic(bvSort(width), 'invalid-numeric-concrete-binding', {
+            valueId: valId,
+            reg,
+            argIndex,
+          });
+        } else {
+          res = createBv(width, BigInt(customVal));
+        }
       } else if (typeof customVal === 'string') {
         name = customVal;
         res = createFreshSymbol(bvSort(width), name, { source: 'argument', reg, argIndex });
@@ -154,8 +172,15 @@ export function translateSemanticIR(target, options = {}) {
     }
 
     switch (inst.op) {
-      case OP.CONST:
-        return createBv(width, inst.value != null ? inst.value : 0);
+      case OP.CONST: {
+        const value = inst.value;
+        if (value == null) {
+          semanticUnknowns++;
+          unsupportedEntities.push({ id: inst.id, op: inst.op, reason: 'missing-constant-value' });
+          return createUnknownSemantic(bvSort(width), 'missing-constant-value', { instructionId: inst.id });
+        }
+        return createBv(width, value);
+      }
 
       case OP.MOV:
       case OP.ADDR: {
@@ -164,7 +189,9 @@ export function translateSemanticIR(target, options = {}) {
       }
 
       case OP.BIN: {
-        const subOp = String(inst.subOp || inst.name || 'add').toLowerCase();
+        /* #5202: no invented default operator — classifyOpSupport rejects
+           instructions whose subOp/name discriminator is missing. */
+        const subOp = String(inst.subOp ?? inst.name ?? '').toLowerCase();
         const leftVal = inst.args?.[0]?.value || inst.args?.[0];
         const rightVal = inst.args?.[1]?.value || inst.args?.[1];
         const leftExpr = translateValue(leftVal, width);
@@ -194,7 +221,8 @@ export function translateSemanticIR(target, options = {}) {
       }
 
       case OP.UN: {
-        const subOp = String(inst.subOp || inst.name || 'not').toLowerCase();
+        /* #5202: no invented NOT default. */
+        const subOp = String(inst.subOp ?? inst.name ?? '').toLowerCase();
         const srcVal = inst.args?.[0]?.value || inst.args?.[0];
         const srcExpr = translateValue(srcVal, width);
         if (subOp === 'not') return createUnary(BV_UNARY_OP.NOT, srcExpr);
@@ -205,7 +233,8 @@ export function translateSemanticIR(target, options = {}) {
       }
 
       case OP.CMP: {
-        const condOp = inst.cond || inst.subOp || '==';
+        /* #5202: no invented '==' default. */
+        const condOp = inst.cond || inst.subOp;
         const isSigned = inst.signed === true;
         const leftVal = inst.args?.[0]?.value || inst.args?.[0];
         const rightVal = inst.args?.[1]?.value || inst.args?.[1];
@@ -229,7 +258,14 @@ export function translateSemanticIR(target, options = {}) {
       }
 
       case OP.SEL: {
-        const condExpr = inst.cond ? translateInstruction(inst.cond, width) : createBool(true);
+        /* #5202: a select without a condition must not become an
+           always-true ITE — fail closed with an explicit unknown. */
+        if (!inst.cond) {
+          semanticUnknowns++;
+          unsupportedEntities.push({ id: inst.id, op: 'sel', reason: 'missing-select-condition' });
+          return createUnknownSemantic(boolSort(), 'missing-select-condition', { instructionId: inst.id });
+        }
+        const condExpr = translateInstruction(inst.cond, width);
         const thenExpr = translateValue(inst.args?.[0]?.value || inst.args?.[0], width);
         const elseExpr = translateValue(inst.args?.[1]?.value || inst.args?.[1], width);
         return createIte(condExpr, thenExpr, elseExpr);
@@ -301,6 +337,13 @@ export function translateSemanticIR(target, options = {}) {
     } else if (target.id != null || target.kind != null || target.const != null) {
       rootExpr = translateValue(target, defaultWidth);
     }
+  }
+  // A missing/untranslatable target must fail closed: reporting no expression
+  // as `exact`/complete mints a self-contradictory translation artifact that
+  // downstream proof gates would treat as an exact translation (#5499).
+  if (!rootExpr) {
+    semanticUnknowns++;
+    unsupportedEntities.push({ id: target?.id ?? null, op: 'translation-target', reason: 'missing-translation-target' });
   }
 
   // Determine overall translation status

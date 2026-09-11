@@ -123,14 +123,16 @@ export function createArtifactDescriptor(input = {}) {
   const config = canonicalArtifactKeyValue(input.config ?? {});
   const keyExtras = canonicalArtifactKeyValue(input.keyExtras ?? {});
   const upstreamArtifactIds = sortedStrings(input.upstreamArtifactIds ?? input.inputArtifactIds ?? [], 'artifact-upstream-ids-invalid');
-  const canonicalConfig = canonicalConfigHash(config);
+  const canonicalConfig = stableDigest(config);
   const keyMaterialHash = stableDigest({ config, keyExtras });
+  // Snapshot identity fields once so descriptor and artifactId material cannot diverge.
+  const artifactKind = required(input.artifactKind ?? input.kind, 'artifact-kind-required');
   const descriptor = {
     contractVersion: ARTIFACT_CONTRACT_VERSION,
     binaryId: required(input.binaryId, 'artifact-binary-id-required'),
     sliceId: optional(input.sliceId),
     entityId: optional(input.entityId),
-    artifactKind: required(input.artifactKind ?? input.kind, 'artifact-kind-required'),
+    artifactKind,
     producerId: required(input.producerId ?? input.passId, 'artifact-producer-id-required'),
     producerVersion: required(input.producerVersion ?? input.passVersion ?? '1', 'artifact-producer-version-required'),
     versions: {
@@ -151,7 +153,7 @@ export function createArtifactDescriptor(input = {}) {
   };
   const optionsHash = stableDigest({
     artifactContractVersion:ARTIFACT_CONTRACT_VERSION,
-    artifactKind:required(input.artifactKind ?? input.kind, 'artifact-kind-required'),
+    artifactKind,
     configHash:canonicalConfig,
     keyExtrasHash:stableDigest(keyExtras),
     platformVersion:descriptor.versions.platform,
@@ -196,7 +198,7 @@ export function artifactPayloadChecksum(bytes) {
   return stableDigest(Array.from(view));
 }
 
-function normalizeArtifactPayloadBytes(value, { allowMissing = false } = {}) {
+export function normalizeArtifactPayloadBytes(value, { allowMissing = false } = {}) {
   if (value == null) {
     if (allowMissing) return new Uint8Array(0);
     throw new ArtifactError('artifact-payload-bytes-invalid', 'Artifact payload bytes must be a byte container');

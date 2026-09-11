@@ -27,16 +27,14 @@ export function isUnsat(result) {
 }
 
 export function isSolverFailure(result) {
-  if (!result || !result.status) return true;
-  return (
-    result.status === SOLVER_STATUS.UNKNOWN ||
-    result.status === SOLVER_STATUS.TIMEOUT ||
-    result.status === SOLVER_STATUS.RESOURCE_LIMIT ||
-    result.status === SOLVER_STATUS.UNSUPPORTED ||
-    result.status === SOLVER_STATUS.CANCELLED ||
-    result.status === SOLVER_STATUS.PROVIDER_FAILURE ||
-    result.status === SOLVER_STATUS.INVALID_QUERY
-  );
+  /*
+   * Fail closed (#5820): only the two success statuses of the strict 9-status
+   * taxonomy are not failures. An unknown truthy status (malformed backend
+   * result, provider-invented status, typo) must not pass as a success side;
+   * that matches isValidSolverResult(), which rejects unknown statuses too.
+   */
+  const status = result?.status;
+  return status !== SOLVER_STATUS.SAT && status !== SOLVER_STATUS.UNSAT;
 }
 
 export function createSolverResult({

@@ -1,5 +1,6 @@
 import { deepFreeze, jsonSafe, stableStringify } from '../../core/identity/index.js';
 import { createOriginSet } from '../../core/identity/origin.js';
+import { analyzeSemanticDominance } from '../cfg/index.js';
 
 export const SEMANTIC_SSA_CONTRACT_VERSION = '2.0.0';
 export const SEMANTIC_SSA_DEFINITION_KINDS = Object.freeze([
@@ -141,6 +142,20 @@ function cfgMaps(cfg) {
   return { blocks: new Map((cfg.blocks ?? []).map((block) => [block.id, block])) };
 }
 
+function dominanceFor(cfg, cache) {
+  if (!cfg) return null;
+  if (!cache.has(cfg)) {
+    try {
+      cache.set(cfg, analyzeSemanticDominance(cfg));
+    } catch {
+      // A CFG that cannot answer dominance keeps phi-edge validation at the
+      // predecessor-membership level; everything else still fails closed.
+      cache.set(cfg, null);
+    }
+  }
+  return cache.get(cfg);
+}
+
 export function createSemanticSsaContract(input, options = {}) {
   assertNotAborted(options);
   input = object(input, 'semantic-ssa-invalid-contract');
@@ -150,6 +165,14 @@ export function createSemanticSsaContract(input, options = {}) {
     || input.contractVersion !== SEMANTIC_SSA_CONTRACT_VERSION
   )) {
     fail('semantic-ssa-contract-version-mismatch');
+  }
+
+  const functionId = nonEmpty(input.functionId, 'semantic-ssa-function-id-required');
+  const cfg = options.cfg;
+  // Block IDs are function-local. A foreign CFG cannot authorize this contract
+  // merely because its block/predecessor names happen to match.
+  if (cfg != null && (typeof cfg !== 'object' || Array.isArray(cfg) || cfg.functionId !== functionId)) {
+    fail('semantic-ssa-cfg-function-mismatch');
   }
 
   const rawDefinitions = array(input.definitions, 'semantic-ssa-definitions-required');
@@ -204,7 +227,9 @@ export function createSemanticSsaContract(input, options = {}) {
     definitionIds.add(definition.definitionId);
   }
 
-  const cfgInfo = cfgMaps(options.cfg);
+  const cfgInfo = cfgMaps(cfg);
+  // Dominance is computed at most once per contract validation (#5413).
+  const dominanceCache = new Map();
   const useIds = new Set();
   for (const use of uses) {
     assertNotAborted(options);
@@ -239,6 +264,18 @@ export function createSemanticSsaContract(input, options = {}) {
     if (stableStringify(incomingPreds.slice().sort()) !== stableStringify(block.predecessors.slice().sort())) {
       fail('semantic-ssa-phi-predecessor-set-incomplete');
     }
+    // Each phi argument must be available on its own edge (#5413): the
+    // argument's definition block must be the predecessor itself or dominate
+    // it. A branch-local value attributed to the opposite predecessor (which
+    // it does not dominate) is not canonical SSA. Definitions without a
+    // block stay unpinned.
+    const dominance = dominanceFor(cfg, dominanceCache);
+    for (const incoming of definition.incoming) {
+      const prior = definitionByValue.get(incoming.valueId);
+      if (prior?.blockId == null || prior.blockId === incoming.predecessorBlockId) continue;
+      const dominators = dominance?.dominators?.[incoming.predecessorBlockId];
+      if (!dominators?.includes(prior.blockId)) fail('semantic-ssa-phi-incoming-edge-mismatch');
+    }
   }
 
   const useDefLinks = uses
@@ -259,7 +296,7 @@ export function createSemanticSsaContract(input, options = {}) {
 
   return deepFreeze({
     contractVersion: SEMANTIC_SSA_CONTRACT_VERSION,
-    functionId: nonEmpty(input.functionId, 'semantic-ssa-function-id-required'),
+    functionId,
     definitions,
     uses,
     useDefLinks,

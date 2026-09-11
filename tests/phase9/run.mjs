@@ -14,6 +14,7 @@ export function runPhase9Tests(argv = process.argv.slice(2), { root = DIRECTORY 
     root,
     argv,
     cwd: path.resolve(root, "../.."),
+    parallel: true,
   });
 }
 

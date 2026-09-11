@@ -2,7 +2,7 @@
 
 const PROTOCOLS_KNOWN = Symbol('objc.protocolsKnown');
 
-function cleanClassName(name) {
+export function cleanClassName(name) {
   if (name == null || typeof name !== 'string') return null;
   return name.replace(/^class\s+/, '').replace(/\s*\*+\s*$/, '').replace(/^@?"|"$/g, '').trim() || null;
 }
@@ -396,6 +396,19 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
   if (cleanReceiver) {
     const narrowed = candidates.filter((m) => ranks.has(m.className));
     if (!narrowed.length) {
+      if (!hierarchyComplete(index, chain)) {
+        return {
+          resolved: null,
+          candidates,
+          requirements,
+          confidence: 0,
+          receiverType: cleanReceiver,
+          selector,
+          classMethod: !!classMethod,
+          reason: 'receiver class hierarchy is unavailable or incomplete; selector candidates are inconclusive',
+          partial: true,
+        };
+      }
       return {
         resolved: null,
         candidates: [],
@@ -517,10 +530,36 @@ const ARC_NOISE = [
   /^_?_Block_(copy|release)\b/,
 ];
 
+// Real Objective-C dispatch entry points only. A bare substring match pulls
+// ordinary C/C++ symbols that merely CONTAIN 'objc_msgSend' (wrappers, mangled
+// helpers) into the dispatch path and drops their direct call targets (#5936).
+// Keep debug and fixup forms as disjoint explicit sets: Apple's ABI declares
+// that fixup messengers have no debug variants. `objc_msgSend_noarg` is also a
+// real exported entry point, despite not sharing the ordinary variadic suffix.
+const OBJC_MSG_SEND_SYMBOLS = new Set([
+  'objc_msgSend', 'objc_msgSend_noarg',
+  'objc_msgSendSuper', 'objc_msgSendSuper2',
+  'objc_msgSend_stret', 'objc_msgSendSuper_stret', 'objc_msgSendSuper2_stret',
+  'objc_msgSend_fpret', 'objc_msgSend_fp2ret',
+  'objc_msgSend_debug', 'objc_msgSendSuper2_debug',
+  'objc_msgSend_stret_debug', 'objc_msgSendSuper2_stret_debug',
+  'objc_msgSend_fpret_debug', 'objc_msgSend_fp2ret_debug',
+  'objc_msgSend_fixup', 'objc_msgSend_stret_fixup',
+  'objc_msgSendSuper2_fixup', 'objc_msgSendSuper2_stret_fixup',
+  'objc_msgSend_fpret_fixup', 'objc_msgSend_fp2ret_fixup',
+]);
+
+export function isObjcMsgSendSymbol(name) {
+  const value = String(name || '');
+  const match = /^_?([^$]+)(?:\$(.+))?$/.exec(value);
+  if (!match || (match[2] != null && /\s/.test(match[2]))) return false;
+  return OBJC_MSG_SEND_SYMBOLS.has(match[1]);
+}
+
 export function classifyObjcRuntimeCall(name) {
   const n = String(name || '');
   if (ARC_NOISE.some((r) => r.test(n))) return { runtime: 'objc', noise: true, category: 'ownership', name: n };
-  if (/objc_msgSend/.test(n)) return { runtime: 'objc', noise: false, category: 'dispatch', name: n };
+  if (isObjcMsgSendSymbol(n)) return { runtime: 'objc', noise: false, category: 'dispatch', name: n };
   if (/objc_(get|set)Property/.test(n)) return { runtime: 'objc', noise: false, category: 'property', name: n };
   return null;
 }

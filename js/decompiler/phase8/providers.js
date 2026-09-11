@@ -330,13 +330,13 @@ export function runProviderPass(context = {}, budget = {}, area = null) {
     } catch (error) {
       // A provider that throws is a provider that is switched off for this
       // function. It never takes the generic result down with it.
-      failures.push({ providerId: provider.id, reason: String(error?.message ?? error) });
+      failures.push(Object.freeze({ providerId: provider.id, reason: String(error?.message ?? error) }));
       continue;
     }
     for (const raw of produced) {
       let hint;
       try { hint = normalizeHint(raw, provider); }
-      catch (error) { failures.push({ providerId: provider.id, reason: String(error?.message ?? error) }); continue; }
+      catch (error) { failures.push(Object.freeze({ providerId: provider.id, reason: String(error?.message ?? error) })); continue; }
       const verdict = judgeHint(hint, view);
       hints.push(Object.freeze({
         providerId: provider.id,
@@ -442,6 +442,10 @@ export function providerAuthorityFailures(facts, view) {
     }
     if (hint.status !== 'accepted') continue;
     const region = hint.regionKey == null ? null : view?.regions?.find((entry) => entry.regionKey === hint.regionKey) ?? null;
+    if (hint.regionKey != null && region == null) {
+      failures.push({ providerId: hint.providerId, problem: 'accepted-for-missing-region', detail: hint.regionKey });
+      continue;
+    }
     if (region == null) continue;
     if (region.conflicts.some((kind) => HARD_CONFLICTS.has(kind))) {
       failures.push({ providerId: hint.providerId, problem: 'accepted-over-hard-conflict', detail: `${hint.name} on ${hint.regionKey}` });

@@ -1,5 +1,6 @@
+import { lossyTypeWitness, stableStringify } from '../core/identity/index.js';
 import { DebugAdapterError } from '../debug/adapter.js';
-import { DebugAdapterRuntimeProvider } from './provider.js';
+import { DebugAdapterRuntimeProvider, createRuntimeOperationController } from './provider.js';
 import { RuntimeEventNormalizer } from './events.js';
 import { createInterventionRecord, InterventionLedger } from './evidence-bridge.js';
 import { RuntimeModuleBindingTable } from './provider-identity.js';
@@ -12,11 +13,58 @@ function moduleFields(event) {
 }
 
 function validateInterventionDraft(ledger, input) {
-  const record = createInterventionRecord(input);
+  // Executed occurrences must be distinguishable: the ledger allocates a
+  // monotonic sequence when the draft omits one (#5327), so repeated
+  // identical target/change operations derive distinct intervention ids.
+  const record = createInterventionRecord({
+    ...input,
+    sequence: input.sequence == null ? ledger.nextSequence() : input.sequence,
+  });
   for (const parent of record.parentInterventionIds) {
     if (!ledger.get(parent)) throw new DebugAdapterError('runtime-intervention-parent-missing', `intervention parent not found: ${parent}`);
   }
   return record;
+}
+
+function registerCallOptions(callOptions) {
+  if (callOptions === null) {
+    throw new DebugAdapterError(
+      'runtime-invalid-register-call-options',
+      'register write options must be plain data or a legacy scalar thread id',
+    );
+  }
+  if (typeof callOptions !== 'object') {
+    return { threadId: callOptions, parentInterventionIds: [] };
+  }
+
+  let prototype;
+  let descriptors;
+  try {
+    prototype = Object.getPrototypeOf(callOptions);
+    descriptors = Object.getOwnPropertyDescriptors(callOptions);
+  } catch {
+    throw new DebugAdapterError(
+      'runtime-invalid-register-call-options',
+      'register write options must be plain data or a legacy scalar thread id',
+    );
+  }
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new DebugAdapterError('runtime-invalid-register-call-options', 'register write options must be a plain data object');
+  }
+
+  const ownData = (key) => {
+    if (!Object.prototype.hasOwnProperty.call(descriptors, key)) return undefined;
+    const descriptor = descriptors[key];
+    if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      throw new DebugAdapterError('runtime-invalid-register-call-options', `register write option ${key} must be a data property`);
+    }
+    return descriptor.value;
+  };
+  return {
+    threadId: ownData('threadId'),
+    parentInterventionIds: ownData('parentInterventionIds') ?? [],
+    signal: ownData('signal'),
+  };
 }
 
 function moduleBindingKey(module, index) {
@@ -27,7 +75,10 @@ function sameStructuredIdentity(left, right) {
   if (Object.is(left, right)) return true;
   if (left == null || right == null || typeof left !== 'object' || typeof right !== 'object') return false;
   try {
-    const encode = (value) => JSON.stringify(value, (_key, item) => typeof item === 'bigint' ? `${item}n` : item);
+    const encode = (value) => stableStringify({
+      value,
+      typeWitness: lossyTypeWitness(value),
+    });
     return encode(left) === encode(right);
   } catch {
     return false;
@@ -77,6 +128,12 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
       processKey: session.target.processKey,
     }, this.eventOptions);
     const interventions = new InterventionLedger();
+    /* #5224: the intervention identity digest includes `sequence`, but these
+       write paths never supplied one — two identical writes minted the same
+       interventionId and the ledger returned the first record with its stale
+       acknowledgedResult. Each write intervention is a distinct operation and
+       gets a distinct monotonic sequence. */
+    let interventionSequence = 0;
     let unsubscribe = null;
 
     const ingest = (raw) => {
@@ -122,17 +179,38 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
     const debuggerFacet = Object.freeze({
       ...originalDebugger,
       writeRegister: async (name, value, callOptions = {}) => {
+        const normalizedCallOptions = registerCallOptions(callOptions);
         const draft = validateInterventionDraft(interventions, {
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           kind: 'register-write',
           target: { register: String(name) },
           requestedChange: { value },
-          parentInterventionIds: callOptions.parentInterventionIds ?? [],
+          parentInterventionIds: normalizedCallOptions.parentInterventionIds,
+          sequence: ++interventionSequence,
         });
-        const raw = await this.adapter.writeRegister(name, value, callOptions);
-        const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
-        return { result: raw, intervention };
+        // #5696: propagate a session-owned signal to the adapter so an
+        // epoch switch/close can cancel remote work, while retaining the
+        // completion-time generation check for adapters that ignore abort.
+        const operation = createRuntimeOperationController(session, normalizedCallOptions.signal);
+        const startedEpoch = session.epoch;
+        try {
+          const raw = await this.adapter.writeRegister(
+            name,
+            value,
+            normalizedCallOptions.threadId,
+            { signal: operation.signal },
+          );
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
+            throw new DebugAdapterError('runtime-session-stale', 'register write completed after its runtime epoch changed', {
+              startedEpoch, currentEpoch: session.epoch,
+            });
+          }
+          const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
+          return { result: raw, intervention };
+        } finally {
+          operation.release();
+        }
       },
       writeMemory: async (address, bytes, callOptions = {}) => {
         const draft = validateInterventionDraft(interventions, {
@@ -142,10 +220,22 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
           target: { address },
           requestedChange: { bytes },
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
+          sequence: ++interventionSequence,
         });
-        const raw = await this.adapter.writeMemory(address, bytes, callOptions);
-        const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
-        return { result: raw, intervention };
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
+        const startedEpoch = session.epoch;
+        try {
+          const raw = await this.adapter.writeMemory(address, bytes, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
+            throw new DebugAdapterError('runtime-session-stale', 'memory write completed after its runtime epoch changed', {
+              startedEpoch, currentEpoch: session.epoch,
+            });
+          }
+          const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
+          return { result: raw, intervention };
+        } finally {
+          operation.release();
+        }
       },
       events: Object.freeze({
         ingest,

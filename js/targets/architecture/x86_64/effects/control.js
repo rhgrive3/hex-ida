@@ -210,6 +210,15 @@ export function liftX86ControlEffects(instruction, context = {}) {
     if (family === 'int') {
       const failure = intOperandFailure(ctx);
       if (failure) return ctx.partial(failure, ['control', 'faults', 'other'], { controlEffect:{ kind:'unknown', reason:failure } });
+    } else if (family === 'ud0' || family === 'ud1') {
+      // UD0/UD1 carry the canonical 2-operand ModR/M form (UD0 r32, r/m32 /
+      // UD1 r32, r/m32 per Intel SDM Vol.2B). Their operands are hint text
+      // for #UD reporting — never architectural data accesses — so a legal
+      // 2-operand record still reaches the constant #UD trap; any other
+      // shape stays fail-closed.
+      if (ctx.operands.length !== 2) {
+        return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['control','faults'], { controlEffect:{ kind:'unknown', reason:`x86-${family}-operand-shape-unmodelled` } });
+      }
     } else if (ctx.operands.length !== 0) {
       return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['control','faults'], { controlEffect:{ kind:'unknown', reason:`x86-${family}-operand-shape-unmodelled` } });
     }

@@ -31,12 +31,12 @@ function writeU32(bytes, offset, value) {
   new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint32(offset, value, true);
 }
 
-function validX64Fixture(size = 12) {
+function validX64Fixture(size = 12, { trailingByte = true } = {}) {
   const bytes = new Uint8Array(256);
   writeU32(bytes, 0, 0x2000);
   writeU32(bytes, 4, 0x2010);
   writeU32(bytes, 8, 0x3000);
-  if (size > 12) bytes[12] = 0xaa;
+  if (size > 12 && trailingByte) bytes[12] = 0xaa;
   bytes[128] = 0x01; // UNWIND_INFO version 1, flags 0
 
   const image = new BinaryImage(bytes, { format: 'pe', bits: 64, imageBase: 0n });
@@ -102,6 +102,13 @@ assert.equal(valid.image.functions[0].address, 0x2000n);
 assert.equal(valid.image.functions[0].size, 0x10n);
 assert.equal(valid.image.functions[0].source, 'exception');
 
+const padded = validX64Fixture(24, { trailingByte: false });
+parseExceptionFunctions(new ByteView(padded.bytes), { rva: 0x1000, size: 24 }, padded.image, 0x8664);
+assert.equal(padded.image.metadata.peMetadata?.complete, true, 'zero-filled padding after a valid x64 record remains complete');
+assert.equal(padded.image.metadata.exceptionDirectory?.invalidRecords, 0);
+assert.equal(padded.image.metadata.exceptionDirectory?.count, 1);
+assert.equal(padded.image.functions.length, 1);
+
 const budgeted = validX64Fixture(13);
 const budget = createPEMetadataBudget(budgeted.image, { limits: { inputBytes: 12 } });
 parseExceptionFunctions(new ByteView(budgeted.bytes), { rva: 0x1000, size: 13 }, budgeted.image, 0x8664, budget);
@@ -113,5 +120,37 @@ const unmapped = parseDirectory(13, 0x8664, { mapped: false });
 assert.equal(unmapped.metadata.peMetadata?.complete, false);
 assert.equal(reasons(unmapped).includes('exception:directory-span'), true);
 assert.equal(reasons(unmapped).includes(REMAINDER_REASON), false, 'existing unmapped-span reason remains authoritative');
+
+const bigintSize = validX64Fixture(13);
+assert.doesNotThrow(() => {
+  parseExceptionFunctions(
+    new ByteView(bigintSize.bytes),
+    { rva: 0x1000, size: 13n },
+    bigintSize.image,
+    0x8664,
+  );
+});
+assert.equal(bigintSize.image.metadata.peMetadata?.complete, false);
+assert.equal(reasons(bigintSize.image).includes('exception:directory-span'), true);
+assert.equal(reasons(bigintSize.image).includes(REMAINDER_REASON), false, 'non-number size must fail closed before remainder arithmetic');
+
+for (const size of [-1, Number.MAX_SAFE_INTEGER + 1]) {
+  const invalidSize = validX64Fixture(13);
+  assert.doesNotThrow(() => {
+    parseExceptionFunctions(
+      new ByteView(invalidSize.bytes),
+      { rva: 0x1000, size },
+      invalidSize.image,
+      0x8664,
+    );
+  });
+  assert.equal(invalidSize.image.metadata.peMetadata?.complete, false);
+  assert.equal(reasons(invalidSize.image).includes('exception:directory-span'), true);
+  assert.equal(
+    reasons(invalidSize.image).includes(REMAINDER_REASON),
+    false,
+    `invalid directory size ${String(size)} must fail closed before remainder arithmetic`,
+  );
+}
 
 console.log('issue-3784 PE exception-directory remainder regression: PASS');

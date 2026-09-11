@@ -52,6 +52,8 @@ test('#1809 reallocf exposes allocation semantics with heap return', () => {
 });
 
 test('#1809 distinct effect families keep stable family identities', () => {
-  assert.equal(EXTRA_API_FAMILY_COUNT, 38);
+  // 42: the #6189 vImage Accelerate family is a dedicated image-transform
+  // family, no longer folded into apple_ui_media.
+  assert.equal(EXTRA_API_FAMILY_COUNT, 45);
   assert.ok(extraApiInfo('_qsort') !== extraApiInfo('difftime'));
 });

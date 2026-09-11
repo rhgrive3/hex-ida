@@ -8,11 +8,10 @@ export const DEFAULT_DYNAMIC_SYMBOL_LIMITS = Object.freeze({
 });
 
 function positiveLimit(value, fallback) {
-  const n = Number(value);
-  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
-export function createDynamicSymbolBudget({ limits = {}, onLimit = null } = {}) {
+export function createDynamicSymbolBudget({ limits = {}, onLimit = null, signal = null } = {}) {
   const resolved = {
     maxSymbolRecords: positiveLimit(limits.maxSymbolRecords, DEFAULT_DYNAMIC_SYMBOL_LIMITS.maxSymbolRecords),
     maxOutputObjects: positiveLimit(limits.maxOutputObjects, DEFAULT_DYNAMIC_SYMBOL_LIMITS.maxOutputObjects),
@@ -29,6 +28,7 @@ export function createDynamicSymbolBudget({ limits = {}, onLimit = null } = {}) 
   let estimatedBytes = 0;
   let stopped = false;
   let reason = null;
+  let nextTimeCheck = 4096;
 
   const stop = (message) => {
     if (!stopped) {
@@ -40,6 +40,7 @@ export function createDynamicSymbolBudget({ limits = {}, onLimit = null } = {}) 
   };
   const wallOkay = (stage) => {
     if (stopped) return false;
+    if (signal?.aborted) return stop('aborted');
     if (now() - started > resolved.maxWallMs) return stop(`${stage} exceeded ${resolved.maxWallMs} ms wall-clock budget`);
     return true;
   };
@@ -50,6 +51,7 @@ export function createDynamicSymbolBudget({ limits = {}, onLimit = null } = {}) 
     get reason() { return reason; },
     claimInput(bytes, source = 'dynamic symbol table') {
       if (stopped) return false;
+      if (signal?.aborted) return stop('aborted');
       if (!Number.isSafeInteger(bytes) || bytes < 0) return stop(`${source} input size is not safely representable`);
       if (bytes > resolved.maxInputBytes - inputBytes) return stop(`${source} input bytes exceed ${resolved.maxInputBytes}`);
       inputBytes += bytes;
@@ -57,13 +59,17 @@ export function createDynamicSymbolBudget({ limits = {}, onLimit = null } = {}) 
     },
     step(cost = 1, stage = 'dynamic symbol decode') {
       if (stopped) return false;
+      if (signal?.aborted) return stop('aborted');
       if (!Number.isSafeInteger(cost) || cost < 0) return stop(`${stage} operation cost is invalid`);
       operations += cost;
       if (!Number.isSafeInteger(operations) || operations > resolved.maxOperations) return stop(`${stage} exceeds ${resolved.maxOperations} operations`);
-      return operations === 1 || (operations & 0xfff) === 0 ? wallOkay(stage) : true;
+      const shouldCheckWall = operations === 1 || operations >= nextTimeCheck;
+      if (operations >= nextTimeCheck) nextTimeCheck = operations + 4096;
+      return shouldCheckWall ? wallOkay(stage) : true;
     },
     claimOutput(count = 1, bytesPerObject = 128, source = 'dynamic symbol decode') {
       if (stopped) return false;
+      if (signal?.aborted) return stop('aborted');
       if (!Number.isSafeInteger(count) || count < 0 || !Number.isSafeInteger(bytesPerObject) || bytesPerObject < 0) return stop(`${source} output estimate is invalid`);
       const bytes = count * bytesPerObject;
       if (!Number.isSafeInteger(bytes)) return stop(`${source} output estimate exceeds safe integer range`);

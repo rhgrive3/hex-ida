@@ -43,8 +43,13 @@ assert.ok(rv64imEffects);
 assert.equal(rv64imEffects.metadata.instructionAlignment, 4);
 assert.equal(rv64imEffects.possibleFaults.length, 1, 'RV64IM +2 branch target must retain its 4-byte alignment fault candidate');
 assert.equal(rv64imEffects.possibleFaults[0].kind, 'pc-alignment-fault');
-assert.equal(rv64imEffects.possibleFaults[0].condition.kind, 'riscv64-target-misaligned');
-assert.equal(rv64imEffects.possibleFaults[0].condition.alignmentBytes, 4);
+const rv64imFaultCondition = rv64imEffects.possibleFaults[0].condition;
+assert.equal(rv64imFaultCondition.kind, 'and');
+assert.equal(rv64imFaultCondition.terms.length, 2);
+assert.equal(rv64imFaultCondition.terms[0].kind, 'riscv64-branch-taken');
+assert.equal(rv64imFaultCondition.terms[0].value.temporaryId, rv64imEffects.controlEffect.condition.temporaryId);
+assert.equal(rv64imFaultCondition.terms[1].kind, 'riscv64-target-misaligned');
+assert.equal(rv64imFaultCondition.terms[1].alignmentBytes, 4);
 
 const rv64imMatching = liftRiscv64MachineEffects(rv64im, { instructionAlignment: 4 });
 assert.deepEqual(rv64imMatching, rv64imEffects, 'matching RV64IM IALIGN override must preserve canonical semantics');

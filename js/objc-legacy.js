@@ -164,12 +164,20 @@ function u64(b, o) {
  * read(addr, len) を、64 KiB ごとにまとめて読むように包む。
  * クラス表は飛び飛びに読むので、素直に呼ぶと往復が多くなりすぎる。
  */
+function pagedBudgetInteger(value, fallback, min) {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= min) return value;
+  return fallback;
+}
+
 export function pagedReader(read, pageBytes = 65536, maxPages = 96, options = {}) {
+  pageBytes = pagedBudgetInteger(pageBytes, 65536, 1);
+  maxPages = pagedBudgetInteger(maxPages, 96, 0);
   const signal = options?.signal ?? null;
   const pages = new Map();
   const direct = async (addr, len, soft) => {
     if (signal?.aborted) return null;
     const got = await read(addr, len);
+    if (signal?.aborted) return null;
     if (!got || !got.length) return null;
     // soft: 短くても受け取る（0 で終わる文字列は、区画の端に置かれていることがある）
     if (got.length >= len) return got.subarray(0, len);
@@ -196,6 +204,7 @@ export function pagedReader(read, pageBytes = 65536, maxPages = 96, options = {}
       if (buf === undefined) {
         if (signal?.aborted) return null;
         buf = await read(page, pageBytes);
+        if (signal?.aborted) return null;
         if (pages.size >= maxPages) pages.delete(pages.keys().next().value);
         pages.set(key, buf || null);
       }
@@ -618,7 +627,7 @@ export async function buildObjcModel(read, classList, onProgress, imageBase, poi
   if (classesCompleteness.misalignedBytes) markLegacyPartial(classesCompleteness, 'class-list-size-misaligned');
   if (classesCompleteness.capped) markLegacyPartial(classesCompleteness, 'class-budget');
 
-  const get = pagedReader(read);
+  const get = pagedReader(read, 65536, 96, { signal: options?.signal });
   get.base = imageBase != null
     ? BigInt(imageBase)
     : (classList.vmAddr / 0x100000000n) * 0x100000000n;

@@ -16,7 +16,12 @@ function normalizeArchitectureAddress(value) {
   if (typeof value !== 'string') return null;
   const text = value.trim();
   if (!/^(?:[+-]?\d+|[+-]?0[xX][0-9a-fA-F]+)$/.test(text)) return null;
-  try { return BigInt(text); } catch { return null; }
+  const negative = text.startsWith('-');
+  const unsigned = /^[+-]/.test(text) ? text.slice(1) : text;
+  try {
+    const parsed = BigInt(unsigned);
+    return negative ? -parsed : parsed;
+  } catch { return null; }
 }
 
 function ownTruthy(object, key) {
@@ -48,6 +53,8 @@ export class ArchitectureAdapter {
       if (normalizedAddress == null) return null;
       const rel = normalizedAddress - BigInt(region.vmAddr);
       const size = BigInt(this.fixedInstructionSize);
+      const alignment = BigInt(this.instructionAlignment);
+      if (normalizedAddress % alignment !== 0n) return null;
       if (rel < 0n || rel + size > BigInt(region.size)) return null;
       if (rel % size !== 0n) return null;
       const row = rel / size;
@@ -60,6 +67,7 @@ export class ArchitectureAdapter {
       if (!Number.isSafeInteger(n) || n < 0) return null;
       const size = BigInt(this.fixedInstructionSize);
       const address = BigInt(region.vmAddr) + BigInt(n) * size;
+      if (address % BigInt(this.instructionAlignment) !== 0n) return null;
       return address + size <= BigInt(region.vmAddr) + BigInt(region.size) ? address : null;
     });
     this.validateInstructionPlacement = normalizeAdapterHook(definition.validateInstructionPlacement, 'validateInstructionPlacement', (region, address, length) => {
@@ -70,7 +78,8 @@ export class ArchitectureAdapter {
       const rel = normalizedAddress - BigInt(region.vmAddr);
       const size = BigInt(this.fixedInstructionSize);
       if (rel < 0n || rel + size > BigInt(region.size)) return { ok:false, code:'patch-range', error:'アドレスがコードのセクション範囲外です。' };
-      if (rel % BigInt(this.instructionAlignment) !== 0n || !Number.isInteger(length) || length !== this.fixedInstructionSize) {
+      const alignment = BigInt(this.instructionAlignment);
+      if (normalizedAddress % alignment !== 0n || rel % size !== 0n || !Number.isInteger(length) || length !== this.fixedInstructionSize) {
         return { ok:false, code:'instruction-placement', architecture:this.id, error:`${this.id} 命令の位置または長さが不正です。` };
       }
       return { ok:true };
