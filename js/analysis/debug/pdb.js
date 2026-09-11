@@ -763,6 +763,15 @@ export function describeTypeIndex(index, types, depth = 0) {
   return { name: 'unknown', complete: false };
 }
 
+const UINT64_MAX = (1n << 64n) - 1n;
+
+function canonicalImageBase(value) {
+  // BinaryImage exposes PE ImageBase as bigint. Do not coerce strings or
+  // objects here: this value becomes address authority, so malformed caller
+  // input must fail closed rather than manufacture an absolute VA (#4219).
+  return typeof value === 'bigint' && value >= 0n && value <= UINT64_MAX ? value : null;
+}
+
 function expectedCodeViewIdentity(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const guid = value.guid;
@@ -929,6 +938,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
 
     const tpi = parseTpiStream(msf.streams[2]?.read(), budget);
     const sectionHeaders = parseSectionHeaders(findSectionHeaderStream(msf, dbi, dbiBytes));
+    const imageBase = canonicalImageBase(image?.imageBase);
 
     if (symbols.unmodelled.size) {
       diagnostics.push(`unmodelled CodeView symbol kinds: ${[...symbols.unmodelled].map((kind) => `0x${kind.toString(16)}`).slice(0, 8).join(', ')}`);
@@ -936,7 +946,8 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     if (tpi.unmodelled.size) {
       diagnostics.push(`unmodelled TPI leaf kinds: ${[...tpi.unmodelled].map((leaf) => `0x${leaf.toString(16)}`).slice(0, 8).join(', ')}`);
     }
-    if (!sectionHeaders.length) diagnostics.push('no section header stream: symbol addresses stay segment-relative');
+    if (!sectionHeaders.length) diagnostics.push('no section header stream: symbol addresses stay unresolved');
+    if (imageBase == null) diagnostics.push('PE image base unavailable or invalid: PDB symbol addresses stay unresolved');
 
     const result = createDebugProviderResult({
       ecosystem: 'pdb',
@@ -956,7 +967,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
         ? status('complete', null)
         : status('partial', 'evidence-missing'),
     });
-    return Object.freeze({ ...result, parsed: { info, dbi, symbols, tpi, sectionHeaders } });
+    return Object.freeze({ ...result, parsed: { info, dbi, symbols, tpi, sectionHeaders, imageBase } });
   }
 
   symbols(result, { cursor = null, pageSize = DEBUG_DEFAULT_PAGE_SIZE } = {}) {
@@ -965,12 +976,11 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     const headers = parsed.sectionHeaders;
     const ordered = parsed.symbols.symbols;
     return page(ordered, cursor, pageSize, (symbol) => {
-      // Segment indices are one-based. Without section headers the address
-      // stays segment-relative and the record says so rather than inventing an
-      // RVA. With headers, the offset must land inside the section's virtual
-      // extent: a CodeView (segment, offset) pair outside it is corrupt, and
-      // minting an RVA from it would feed false exact function evidence
-      // downstream (#5678).
+      // Segment indices are one-based. An absolute address needs both the
+      // PDB section-header RVA and the PE image base; either authority missing
+      // leaves the record unresolved rather than publishing an RVA as a VA
+      // (#4219). The CodeView offset must also stay inside the section's
+      // virtual extent, otherwise it is corrupt evidence (#5678).
       const header = headers[symbol.segment - 1] ?? null;
       const extent = sectionVirtualExtent(header);
       // A procedure whose declared size runs past the section extent is
@@ -978,8 +988,14 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       // claims is not backed by that section (#5678).
       const inBounds = symbol.offsetInSegment < extent
         && (symbol.sizeBytes == null || symbol.offsetInSegment + symbol.sizeBytes <= extent);
-      const address = header && inBounds
-        ? `0x${(header.virtualAddress + symbol.offsetInSegment).toString(16)}`
+      const rva = header && inBounds
+        ? BigInt(header.virtualAddress) + BigInt(symbol.offsetInSegment)
+        : null;
+      const absoluteAddress = rva != null && parsed.imageBase != null
+        ? parsed.imageBase + rva
+        : null;
+      const address = absoluteAddress != null && absoluteAddress <= UINT64_MAX
+        ? `0x${absoluteAddress.toString(16)}`
         : null;
       return createDebugRecord({
         kind: 'symbol',

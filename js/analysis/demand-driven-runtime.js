@@ -76,6 +76,9 @@ function pageOf(page = {}) {
     limit: typeof rawLimit === 'number' && Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(MAX_PAGE, rawLimit) : 200,
   };
 }
+function cumulativePageLimit(offset, limit) {
+  return offset > Number.MAX_SAFE_INTEGER - limit ? null : offset + limit;
+}
 function paged(values, page, completeness = 'complete', status = {}) {
   const source = Array.from(values || []);
   const { offset, limit } = pageOf(page);
@@ -559,7 +562,10 @@ function installDemandQueryAPI(app, recognitionVersion) {
       const { program, reason, scannedRegionIds, unscannedRegionIds } = await localProgram(id, 'callers', options);
       if (!program?.callersOf) return unsupported(reason || 'program-index-unavailable');
       if (graphUnsupported(program)) return unsupported(program.queryIncompleteReason || reason || 'unsupported-program-analysis');
-      const { offset, limit } = pageOf(page); const source = program.callersOf(addressOf(id), Math.min(MAX_PAGE, offset + limit));
+      const { offset, limit } = pageOf(page);
+      const cumulativeLimit = cumulativePageLimit(offset, limit);
+      if (cumulativeLimit == null) return paged([], page, 'unsupported', { reason:'page-range-overflow', scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
+      const source = program.callersOf(addressOf(id), cumulativeLimit);
       const relationReason=source?.incompleteReason ?? reason ?? null;
       const result = paged(Array.from(source || []), page, source?.complete === false || reason ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
       if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned; return result;
@@ -570,15 +576,25 @@ function installDemandQueryAPI(app, recognitionVersion) {
       const { program, reason, scannedRegionIds, unscannedRegionIds } = await localProgram(address, 'callees', options);
       if (!program?.calleesOf) return unsupported(reason || 'program-index-unavailable');
       if (graphUnsupported(program)) return unsupported(program.queryIncompleteReason || reason || 'unsupported-program-analysis');
-      const { offset, limit } = pageOf(page); const source = program.calleesOf(range.start, range.end, Math.min(MAX_PAGE, offset + limit));
+      const { offset, limit } = pageOf(page);
+      const cumulativeLimit = offset > Number.MAX_SAFE_INTEGER - limit ? null : offset + limit;
+      if (cumulativeLimit == null) {
+        return { value:[], page:{ offset, limit, returned:0, total:0, next:null }, status:{ completeness:'unsupported', reason:'page-range-overflow', paged:true } };
+      }
+      const source = program.calleesOf(range.start, range.end, cumulativeLimit);
       // The scan only covers the validated range. When the function extent
       // itself is unproven (analysis window or region clip), the scan cannot
       // be complete no matter how the local scan ended (#5991).
       const rangeIncomplete = range.complete === false;
-      const relationReason = source?.incompleteReason ?? (rangeIncomplete ? (range.reason ?? 'function-extent-unproven') : null) ?? reason ?? null;
-      const incomplete = source?.complete === false || !!reason || rangeIncomplete;
-      const result = paged(Array.from(source || []), page, incomplete ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-function', scannedRegionIds, unscannedRegionIds });
-      if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned; return result;
+      const queryLimited = source?.queryLimited === true;
+      const relationReason = source?.incompleteReason ?? (queryLimited ? 'query-limit' : (rangeIncomplete ? (range.reason ?? 'function-extent-unproven') : null)) ?? reason ?? null;
+      const incomplete = source?.complete === false || queryLimited || !!reason || rangeIncomplete;
+      const sourceRows = Array.from(source || []);
+      const result = paged(sourceRows, page, incomplete ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-function', scannedRegionIds, unscannedRegionIds });
+      if (queryLimited && result.page.next == null && sourceRows.length >= result.page.offset) {
+        result.page.next = result.page.offset + (result.page.returned > 0 ? result.page.returned : result.page.limit);
+      }
+      return result;
     },
     async xrefs(_snapshot, id, page = {}, options = {}) {
       const address = addressOf(id); if (address == null) return unsupported('function-address-invalid');
