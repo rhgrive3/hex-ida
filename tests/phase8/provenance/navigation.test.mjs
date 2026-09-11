@@ -3,7 +3,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
 import { createAppAnalysisQueryAdapter } from '../../../js/analysis/query/app-adapter.js';
-import { decompilerSnapshot } from '../../../js/analysis/semantic-function.js';
+import { decompilerSnapshot, analyzeSemanticFunction, analyzeDecodedSemanticFunction } from '../../../js/analysis/semantic-function.js';
 import { decompilerSnapshot as baseSnapshot } from '../../../js/analysis/semantic-function-base.js';
 import { applyPhase8Projection } from '../../../js/decompiler/phase8/projection.js';
 import { buildRenderProvenance } from '../../../js/decompiler/phase8/render-provenance.js';
@@ -14,7 +14,80 @@ import { DEFAULT_RULES } from '../../../js/decompiler/rewrite/rules.js';
 import { recoverExactStackReturn } from '../../../js/decompiler/passes/stack-return-recovery.js';
 import { buildSemanticModel } from '../../../js/blocks.js';
 import { decompileSemantic } from '../../../js/decompiler/semantic-core.js';
+import { decompile } from '../../../js/decompile.js';
+import { createCapstoneX86Session } from '../../phase5/helpers/capstone-session.mjs';
+import { createCapstoneRiscv64Session } from '../../phase6/helpers/capstone-session.mjs';
+import { createX86DecodedInstruction, X86_DECODER_SEMANTIC_VERSION } from '../../../js/targets/architecture/x86_64/decoded-instruction.js';
+import { RISCV64_DECODER_SEMANTIC_VERSION } from '../../../js/targets/architecture/riscv64/decoded-instruction.js';
 import { analysis, consumerFixture, expr, resultWith, source, proofOnlySpillFixture } from './fixture.js';
+
+for (const architecture of ['x86_64','riscv64']) {
+  test(`C4-03 default decoded ${architecture} production drivers publish navigable query projections`, async () => {
+    const session = await (architecture === 'x86_64' ? createCapstoneX86Session() : createCapstoneRiscv64Session());
+    try {
+      const bytes = Buffer.from(architecture === 'x86_64' ? 'b807000000c3' : '1305700067800000','hex');
+      const decoded = session.decode(bytes,0x1000n);
+      const instructions = architecture === 'x86_64' ? decoded.map(row=>createX86DecodedInstruction(row)) : decoded;
+      const input = { architecture,platform:'linux',binaryId:`c4-driver:${architecture}`,sliceId:'text',
+        abiId:architecture === 'x86_64' ? 'sysv-amd64' : 'lp64',
+        decoderSemanticVersion:architecture === 'x86_64' ? X86_DECODER_SEMANTIC_VERSION : RISCV64_DECODER_SEMANTIC_VERSION,
+        instructions,name:'return_seven' };
+      for (const driver of [analyzeSemanticFunction,analyzeDecodedSemanticFunction]) {
+        let epoch = 1, calls = 0;
+        const api = new AnalysisQueryAPI({
+          ...createAppAnalysisQueryAdapter({ analyzeFunction:async () => { calls++; return driver(input); } }),
+          currentIdentity:async () => ({ binaryId:input.binaryId,projectRevision:1,analysisEpoch:epoch,artifactVersions:{} }),
+        });
+        const query = await api.decompile(await api.snapshot(),'0x1000');
+        assert.equal(calls,1);
+        assert.equal(query.value.semantic,true);
+        assert.match(query.value.pseudocode,/return .*7/);
+        assert.equal(query.value.renderProvenance?.completeness,'complete',JSON.stringify(query.value.renderProvenance?.reasons));
+        const nav = createDecompilerNavigation(query,{ currentSnapshot:() => api.snapshot() });
+        assert.equal(nav.available,true,nav.reason);
+        const line = query.value.lines.findIndex(line=>/return .*7/.test(line.text));
+        const selected = await nav.selectLine(line);
+        assert.equal(selected.state,'ready');
+        assert.ok(selected.entities[0].origins.addresses.length);
+        assert.equal((await nav.selectOrigin('addr',selected.entities[0].origins.addresses[0])).state,'ready');
+        epoch++;
+        assert.equal((await nav.selectLine(line)).state,'unavailable');
+      }
+    } finally { session.close(); }
+  });
+}
+
+test('C4-03 default ARM model and direct decompiler adapter routes keep cloneable provenance', async () => {
+  const rows = [{ row:0,address:0x1000n,mn:'mov',ops:'w0, #7' },{ row:1,address:0x1004n,mn:'ret',ops:'' }];
+  const model = buildSemanticModel(rows,{ startRow:0,endRow:1,rowOfAddress:address=>Number((address-0x1000n)/4n),name:'return_seven' });
+  const direct = decompile(model,{ addr:0x1000n,name:'return_seven' });
+  assert.deepEqual(direct.phase8.enabledStages,['canonical-facts'],'ordinary rendering does not opt into optimizer stages');
+  assert.equal(direct.phase8.transformCount,0);
+  assert.equal(direct.renderProvenance?.completeness,'complete',JSON.stringify(direct.renderProvenance?.reasons));
+  assert.ok(direct.ir && direct.ctx,'test crosses the actual internal result boundary');
+  for (const app of [{ analyzeFunction:async () => ({ model }) },{ getDecompile:async () => direct }]) {
+    const api = new AnalysisQueryAPI({ ...createAppAnalysisQueryAdapter(app),
+      currentIdentity:async () => ({ binaryId:'c4-arm-default',projectRevision:1,analysisEpoch:1,artifactVersions:{} }) });
+    const query = await api.decompile(await api.snapshot(),'0x1000');
+    assert.equal(Object.hasOwn(query.value,'ir'),false);
+    assert.equal(Object.hasOwn(query.value,'ctx'),false);
+    const nav = createDecompilerNavigation(query,{ currentSnapshot:() => api.snapshot() });
+    assert.equal(nav.available,true,nav.reason);
+    const entities = Object.values(query.value.renderProvenance.entities).filter(entity=>entity.role === 'semantic');
+    assert.ok(entities.length);
+    for (const entity of entities) {
+      assert.ok(entity.origins.addresses.length);
+      assert.equal((await nav.selectLine(entity.lineIndex)).state,'ready');
+    }
+  }
+  const limited = decompile(model,{ addr:0x1000n,name:'return_seven',phase8WorkBudget:0 });
+  assert.equal(limited.phase8.published,false);
+  assert.equal(limited.renderProvenance ?? null,null,'an unpublished canonical stage is not substituted by a fresh stage');
+  const api = new AnalysisQueryAPI({ ...createAppAnalysisQueryAdapter({ getDecompile:async () => limited }),
+    currentIdentity:async () => ({ binaryId:'c4-arm-limited',projectRevision:1,analysisEpoch:1,artifactVersions:{} }) });
+  const query = await api.decompile(await api.snapshot(),'0x1000');
+  assert.equal(createDecompilerNavigation(query,{ currentSnapshot:() => api.snapshot() }).available,false);
+});
 
 test('C4-03 production pseudocode route consumes the snapshot-bound provenance view', () => {
   const product = fs.readFileSync(new URL('../../../js/ui/product-base.js', import.meta.url), 'utf8');

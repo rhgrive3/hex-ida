@@ -8,6 +8,7 @@
       "js/analysis/alias/regions-v2.js",
       "js/analysis/discovery/layout.js",
       "js/analysis/index.js",
+      "js/analysis/query/app-adapter.js",
       "js/analysis/semantic-function-base.js",
       "js/analysis/semantic-function.js",
       "js/analysis/pointsto/lattice.js",

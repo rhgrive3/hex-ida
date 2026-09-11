@@ -1746,6 +1746,15 @@ function pipelineCompleteness(state) {
   return 'complete';
 }
 
+const representationStages = new WeakMap();
+
+// The wrapper reuses this already-executed interactive stage after recovery.
+// It is not serialized as public result metadata or recomputed for rendering.
+export function readRepresentationStage(result) {
+  const entry = representationStages.get(result);
+  return entry?.ir === result?.ir ? entry.stage : null;
+}
+
 export function enhanceSemanticDecompilation(result, model, opts = {}) {
   if (!result?.semantic || !result.ir) return result;
   const state = {
@@ -1809,7 +1818,7 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
   advanced.printed ||= printProgram(advanced.cAst, { columnWidth: opts.columnWidth || opts.prettyColumnWidth || 88 });
   const explanation = explainSemanticFacts(advanced.facts, result.summary);
   const lines = advanced.cAst.body.map((n) => ({ kind: n.kind, indent: n.indent, text: n.text, row: n.source.rows[0] ?? null, addr: n.source.addresses[0] ?? null, note: null, source: n.source }));
-  return {
+  const enhanced = {
     ...result,
     lines,
     pseudocode: advanced.printed.text,
@@ -1860,6 +1869,8 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
       phase8ElapsedMs: advanced.phase8ElapsedMs ?? null,
     } },
   };
+  representationStages.set(enhanced, { ir:enhanced.ir, stage:phase8 });
+  return enhanced;
 }
 
 export function buildExpressionForTesting(value, state) {

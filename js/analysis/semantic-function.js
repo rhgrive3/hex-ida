@@ -3,11 +3,11 @@ export * from './semantic-function-base.js';
 import { architecturePluginV2 } from '../targets/architecture/index.js';
 import { resolveABIPlugin } from '../targets/abi/index.js';
 import { buildSemanticV2CompatibilityPipeline } from '../semantics/compat/index.js';
-import { decompileSemantic } from '../decompiler/semantic.js';
 import {
   SEMANTIC_FUNCTION_ROUTE,
   canonicalDecodedInstructions,
   decompilerSnapshot,
+  decompileSemanticProjection,
   createSemanticCallPrototypeAuthority,
   isSemanticCallPrototypeAuthority,
   semanticAbiAdapter,
@@ -335,7 +335,7 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
     }),
     switches:[],
   };
-  const decompiler = decompileSemantic(model, {
+  const decompiler = decompileSemanticProjection(model, {
     ir:pipeline.legacyV1,
     abiAdapter,
     decoderSemanticVersion,
@@ -344,6 +344,7 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
     addr:addressOf(orderedInstructions[0]),
     name:model.name,
     functionPrototype:input.functionPrototype ?? null,
+    shouldAbort:() => options.signal?.aborted === true,
   });
   if (!decompiler) throw new Error('semantic-function-shared-decompiler-produced-no-result');
   return Object.freeze({

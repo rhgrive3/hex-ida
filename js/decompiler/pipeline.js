@@ -1,4 +1,4 @@
-import { enhanceSemanticDecompilation as enhanceCore } from './pipeline-core.js';
+import { enhanceSemanticDecompilation as enhanceCore, readRepresentationStage } from './pipeline-core.js';
 import { recoverExactStackPhiExpressions } from './passes/stack-phi-recovery.js';
 import { recoverExactStackReturn } from './passes/stack-return-recovery.js';
 import { recoverLegacySameBlockStackSpills } from './passes/legacy-stack-recovery.js';
@@ -317,8 +317,14 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
   return result;
 }
 
-function fullPhase8Projection(result, model, opts) {
-  if (opts.phase8Optimize !== true || !result?.semantic || !result?.ir) return result;
+function fullPhase8Projection(result, model, opts, interactiveStage) {
+  if (!result?.semantic || !result?.ir) return result;
+  if (opts.phase8Optimize !== true) {
+    // Projection is part of ordinary presentation, not permission to run the
+    // opt-in optimizer set. Reuse the core's existing canonical-facts stage.
+    return interactiveStage?.ledger?.published === true && interactiveStage.analysis
+      ? applyPhase8Projection(result, interactiveStage.analysis, opts) : result;
+  }
   const stage = runPhase8Stage(
     { ir:result.ir, types:result.types, opts },
     {
@@ -354,27 +360,29 @@ function fullPhase8Projection(result, model, opts) {
 export function enhanceSemanticDecompilation(result, model, opts = {}) {
   const proofOnlyRewrites = opts.phase8ProofOnlyRewrites === true;
   const restore = normalizeConditionalSelectAliases(result?.ir);
-  let core;
+  let core, interactiveStage;
   try {
     // The final Phase 8 path executes the full optimizer set once below, after
     // the existing representation pipeline reaches its stable AST. The core is
     // kept on its interactive/canonical lane here so the optimizer is not run
     // twice and does not borrow the PassManager rewrite deadline.
-    core = constrainSemanticValueWidths(enhanceCore(result, model, { ...opts, phase8Optimize:false,phase8ProofOnlyRewrites:proofOnlyRewrites }));
+    core = enhanceCore(result, model, { ...opts, phase8Optimize:false,phase8ProofOnlyRewrites:proofOnlyRewrites });
+    interactiveStage = readRepresentationStage(core);
+    core = constrainSemanticValueWidths(core);
   } finally { restore(); }
   if (proofOnlyRewrites) {
     // Recovery uses additional optional scalar rewrite engines and may remove
     // memory-bearing statements. Preserve the pre-recovery view while this
     // proof path is restricted to independently checked total scalar values.
     const prepared = {...opts,phase8ProofOnlyRewrites:proofOnlyRewrites};
-    return rememberProducerProjection(fullPhase8Projection(core, model, prepared), prepared);
+    return rememberProducerProjection(fullPhase8Projection(core, model, prepared, interactiveStage), prepared);
   }
   const reanchored = reanchorExactStackReturn(core, opts);
   const legacySpillsRecovered = recoverLegacySameBlockStackSpills(reanchored, opts);
   const stackPhiRecovered = recoverExactStackPhiExpressions(legacySpillsRecovered, opts);
   const recovered = recoverExactStackReturn(reanchorExactStackReturn(stackPhiRecovered, opts), opts);
   const prepared = {...opts,phase8ProofOnlyRewrites:proofOnlyRewrites};
-  return rememberProducerProjection(fullPhase8Projection(reanchorRecoveredReturnSource(recovered, opts), model, prepared),prepared);
+  return rememberProducerProjection(fullPhase8Projection(reanchorRecoveredReturnSource(recovered, opts), model, prepared, interactiveStage),prepared);
 }
 
 /** Demand-driven asynchronous proof path. The representation result comes from
