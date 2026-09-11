@@ -194,7 +194,17 @@ function installQueryOverrides(registry, context) {
         context.getCallers(functionAddress, { limit, offset:0, signal:registry.executionSignal }),
         context.getCallees(functionAddress, { limit, offset:0, signal:registry.executionSignal }),
       ]);
-      const normalizeSide = (value) => value?.complete === true ? value : { ...value, total:null };
+      const normalizeSide = (value) => {
+        if (value?.complete === true) return value;
+        const normalized = { ...value, total:null };
+        const nextOffset = value && typeof value === 'object'
+          ? Object.getOwnPropertyDescriptor(value, 'nextOffset')
+          : null;
+        if (nextOffset && Object.prototype.hasOwnProperty.call(nextOffset, 'value')) {
+          Object.defineProperty(normalized, 'nextOffset', { value:nextOffset.value, enumerable:false });
+        }
+        return normalized;
+      };
       const normalizedCallers = normalizeSide(callers);
       const normalizedCallees = normalizeSide(callees);
       const related = buildRelatedFunctionsResult({
