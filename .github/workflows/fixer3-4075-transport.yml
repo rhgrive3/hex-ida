@@ -18,107 +18,26 @@ jobs:
         with:
           ref: ${{ github.ref_name }}
       - name: Apply verified local candidate
+        env:
+          OLD_B64: ICAgICAgICAgIGNvbnN0IGNvbXBsZXRlbmVzcyA9IHRydW5jYXRlZCA/ICd0cnVuY2F0ZWQnIDogIXJhbmdlQ29tcGxldGUgPyAncGFydGlhbCcgOiAnY29tcGxldGUnOwogICAgICAgICAgcmV0dXJuIHBhZ2VkKHJvd3MsIHBhZ2UsIGNvbXBsZXRlbmVzcywgeyByZWFzb246dHJ1bmNhdGVkID8gJ2luc3RydWN0aW9uLXJlYWQtYnVkZ2V0JyA6IHJhbmdlUmVhc29uIH0pOwo=
+          NEW_B64: ICAgICAgICAgIGNvbnN0IGNvbnN1bWVkID0gZGVjb2RlZC5ieXRlc0NvbnN1bWVkOwogICAgICAgICAgY29uc3QgaGFzQ292ZXJhZ2UgPSBjb25zdW1lZCAhPSBudWxsOwogICAgICAgICAgY29uc3QgdmFsaWRDb3ZlcmFnZSA9ICFoYXNDb3ZlcmFnZSB8fCAodHlwZW9mIGNvbnN1bWVkID09PSAnbnVtYmVyJyAmJiBOdW1iZXIuaXNTYWZlSW50ZWdlcihjb25zdW1lZCkgJiYgY29uc3VtZWQgPj0gMCAmJiBjb25zdW1lZCA8PSBsZW5ndGgpOwogICAgICAgICAgY29uc3Qgc2hvcnRDb3ZlcmFnZSA9IHZhbGlkQ292ZXJhZ2UgJiYgaGFzQ292ZXJhZ2UgJiYgY29uc3VtZWQgPCBsZW5ndGg7CiAgICAgICAgICBjb25zdCBjb21wbGV0ZW5lc3MgPSB0cnVuY2F0ZWQKICAgICAgICAgICAgPyAndHJ1bmNhdGVkJwogICAgICAgICAgICA6ICFyYW5nZUNvbXBsZXRlIHx8ICF2YWxpZENvdmVyYWdlIHx8IHNob3J0Q292ZXJhZ2UKICAgICAgICAgICAgICA/ICdwYXJ0aWFsJwogICAgICAgICAgICAgIDogJ2NvbXBsZXRlJzsKICAgICAgICAgIGNvbnN0IHJlYXNvbiA9IHRydW5jYXRlZAogICAgICAgICAgICA/ICdpbnN0cnVjdGlvbi1yZWFkLWJ1ZGdldCcKICAgICAgICAgICAgOiAhcmFuZ2VDb21wbGV0ZQogICAgICAgICAgICAgID8gcmFuZ2VSZWFzb24KICAgICAgICAgICAgICA6ICF2YWxpZENvdmVyYWdlCiAgICAgICAgICAgICAgICA/ICdpbnN0cnVjdGlvbi1yZWFkLWNvdmVyYWdlLWludmFsaWQnCiAgICAgICAgICAgICAgICA6IHNob3J0Q292ZXJhZ2UKICAgICAgICAgICAgICAgICAgPyAnaW5zdHJ1Y3Rpb24tcmVhZC1pbmNvbXBsZXRlJwogICAgICAgICAgICAgICAgICA6IG51bGw7CiAgICAgICAgICByZXR1cm4gcGFnZWQocm93cywgcGFnZSwgY29tcGxldGVuZXNzLCB7IHJlYXNvbiB9KTsK
+          TEST_B64: aW1wb3J0IGFzc2VydCBmcm9tICdub2RlOmFzc2VydC9zdHJpY3QnOwppbXBvcnQgdGVzdCBmcm9tICdub2RlOnRlc3QnOwoKaW1wb3J0IHsgY3JlYXRlQXBwQW5hbHlzaXNRdWVyeUFkYXB0ZXIgfSBmcm9tICcuLi8uLi8uLi9qcy9hbmFseXNpcy9xdWVyeS9hcHAtYWRhcHRlci5qcyc7CgpmdW5jdGlvbiBhZGFwdGVyRm9yKGRlY29kZWQpIHsKICByZXR1cm4gY3JlYXRlQXBwQW5hbHlzaXNRdWVyeUFkYXB0ZXIoewogICAgc3RvcmU6IHsKICAgICAgZ2V0KGtleSkgewogICAgICAgIGlmIChrZXkgPT09ICdhcmNoaXRlY3R1cmUnKSByZXR1cm4gJ2FybTY0JzsKICAgICAgICByZXR1cm4gbnVsbDsKICAgICAgfSwKICAgIH0sCiAgICBiYWNrZW5kOiB7CiAgICAgIGFzeW5jIGRpc2Fzc2VtYmxlQXQoX2FkZHJlc3MsIHsgbGVuZ3RoIH0pIHsKICAgICAgICBjb25zdCByZXN1bHQgPSB0eXBlb2YgZGVjb2RlZCA9PT0gJ2Z1bmN0aW9uJyA/IGRlY29kZWQobGVuZ3RoKSA6IGRlY29kZWQ7CiAgICAgICAgcmV0dXJuIHsgc3VwcG9ydGVkOnRydWUsIGZvdW5kOnRydWUsIGluc3RydWN0aW9uczpbXSwgLi4ucmVzdWx0IH07CiAgICAgIH0sCiAgICB9LAogIH0pOwp9Cgp0ZXN0KCcjNDA3NSBmdWxsIHJlcXVlc3RlZCBpbnN0cnVjdGlvbiBleHRlbnQgcmVtYWlucyBjb21wbGV0ZScsIGFzeW5jICgpID0+IHsKICBjb25zdCBhZGFwdGVyID0gYWRhcHRlckZvcigobGVuZ3RoKSA9PiAoeyBieXRlc0NvbnN1bWVkOmxlbmd0aCB9KSk7CiAgY29uc3QgcmVzdWx0ID0gYXdhaXQgYWRhcHRlci5pbnN0cnVjdGlvbnMobnVsbCwgeyBzdGFydDoweDEwMDBuLCBsZW5ndGg6NjQgfSk7CiAgYXNzZXJ0LmVxdWFsKHJlc3VsdC5zdGF0dXMuY29tcGxldGVuZXNzLCAnY29tcGxldGUnKTsKICBhc3NlcnQuZXF1YWwocmVzdWx0LnN0YXR1cy5yZWFzb24gPz8gbnVsbCwgbnVsbCk7Cn0pOwoKdGVzdCgnIzQwNzUgcHJvZHVjZXIgc2hvcnQgZXh0ZW50IGNhbm5vdCBiZSBwdWJsaXNoZWQgYXMgY29tcGxldGUnLCBhc3luYyAoKSA9PiB7CiAgY29uc3QgYWRhcHRlciA9IGFkYXB0ZXJGb3IoeyBieXRlc0NvbnN1bWVkOjE2IH0pOwogIGNvbnN0IHJlc3VsdCA9IGF3YWl0IGFkYXB0ZXIuaW5zdHJ1Y3Rpb25zKG51bGwsIHsgc3RhcnQ6MHgxMDAwbiwgbGVuZ3RoOjY0IH0pOwogIGFzc2VydC5lcXVhbChyZXN1bHQuc3RhdHVzLmNvbXBsZXRlbmVzcywgJ3BhcnRpYWwnKTsKICBhc3NlcnQuZXF1YWwocmVzdWx0LnN0YXR1cy5yZWFzb24sICdpbnN0cnVjdGlvbi1yZWFkLWluY29tcGxldGUnKTsKfSk7Cgp0ZXN0KCcjNDA3NSBhbiBleGFjdCByZWdpb24tZW5kIGV4dGVudCByZW1haW5zIGNvbXBsZXRlJywgYXN5bmMgKCkgPT4gewogIGNvbnN0IGFkYXB0ZXIgPSBhZGFwdGVyRm9yKHsgYnl0ZXNDb25zdW1lZDoxNiB9KTsKICBjb25zdCByZXN1bHQgPSBhd2FpdCBhZGFwdGVyLmluc3RydWN0aW9ucyhudWxsLCB7IHN0YXJ0OjB4MTAwMG4sIGVuZDoweDEwMTBuIH0pOwogIGFzc2VydC5lcXVhbChyZXN1bHQuc3RhdHVzLmNvbXBsZXRlbmVzcywgJ2NvbXBsZXRlJyk7CiAgYXNzZXJ0LmVxdWFsKHJlc3VsdC5zdGF0dXMucmVhc29uID8/IG51bGwsIG51bGwpOwp9KTsKCnRlc3QoJyM0MDc1IG1hbGZvcm1lZCBwcm9kdWNlciBjb3ZlcmFnZSBtZXRhZGF0YSBmYWlscyBjbG9zZWQnLCBhc3luYyAoKSA9PiB7CiAgZm9yIChjb25zdCBieXRlc0NvbnN1bWVkIG9mIFstMSwgMS41LCBOdW1iZXIuTmFOLCA2NSwgJzY0JywgWzY0XV0pIHsKICAgIGNvbnN0IGFkYXB0ZXIgPSBhZGFwdGVyRm9yKHsgYnl0ZXNDb25zdW1lZCB9KTsKICAgIGNvbnN0IHJlc3VsdCA9IGF3YWl0IGFkYXB0ZXIuaW5zdHJ1Y3Rpb25zKG51bGwsIHsgc3RhcnQ6MHgxMDAwbiwgbGVuZ3RoOjY0IH0pOwogICAgYXNzZXJ0LmVxdWFsKHJlc3VsdC5zdGF0dXMuY29tcGxldGVuZXNzLCAncGFydGlhbCcsIGBjb3ZlcmFnZSAke1N0cmluZyhieXRlc0NvbnN1bWVkKX0gbXVzdCBub3QgcHJvdmUgY29tcGxldGVuZXNzYCk7CiAgICBhc3NlcnQuZXF1YWwocmVzdWx0LnN0YXR1cy5yZWFzb24sICdpbnN0cnVjdGlvbi1yZWFkLWNvdmVyYWdlLWludmFsaWQnKTsKICB9Cn0pOwoKdGVzdCgnIzQwNzUgbGVnYWN5IGRlY29kZXJzIHdpdGhvdXQgY292ZXJhZ2UgbWV0YWRhdGEga2VlcCBjb21wYXRpYmlsaXR5JywgYXN5bmMgKCkgPT4gewogIGNvbnN0IGFkYXB0ZXIgPSBhZGFwdGVyRm9yKHt9KTsKICBjb25zdCByZXN1bHQgPSBhd2FpdCBhZGFwdGVyLmluc3RydWN0aW9ucyhudWxsLCB7IHN0YXJ0OjB4MTAwMG4sIGxlbmd0aDo2NCB9KTsKICBhc3NlcnQuZXF1YWwocmVzdWx0LnN0YXR1cy5jb21wbGV0ZW5lc3MsICdjb21wbGV0ZScpOwp9KTsKCnRlc3QoJyM0MDc1IGlucHV0IGJ1ZGdldCB0cnVuY2F0aW9uIHJlbWFpbnMgc3Ryb25nZXIgdGhhbiBwcm9kdWNlciBjb3ZlcmFnZScsIGFzeW5jICgpID0+IHsKICBjb25zdCBhZGFwdGVyID0gYWRhcHRlckZvcigobGVuZ3RoKSA9PiAoeyBieXRlc0NvbnN1bWVkOmxlbmd0aCB9KSk7CiAgY29uc3QgcmVzdWx0ID0gYXdhaXQgYWRhcHRlci5pbnN0cnVjdGlvbnMobnVsbCwgeyBzdGFydDoweDEwMDBuLCBsZW5ndGg6KDEwMjQgKiAxMDI0KSArIDQgfSk7CiAgYXNzZXJ0LmVxdWFsKHJlc3VsdC5zdGF0dXMuY29tcGxldGVuZXNzLCAndHJ1bmNhdGVkJyk7CiAgYXNzZXJ0LmVxdWFsKHJlc3VsdC5zdGF0dXMucmVhc29uLCAnaW5zdHJ1Y3Rpb24tcmVhZC1idWRnZXQnKTsKfSk7Cg==
         run: |
           python3 - <<'PY'
+          import base64
+          import os
           from pathlib import Path
-
           path = Path('js/analysis/query/app-adapter.js')
           text = path.read_text(encoding='utf-8')
-          old = """          const completeness = truncated ? 'truncated' : !rangeComplete ? 'partial' : 'complete';
-          return paged(rows, page, completeness, { reason:truncated ? 'instruction-read-budget' : rangeReason });
-          """
-          new = """          const consumed = decoded.bytesConsumed;
-          const hasCoverage = consumed != null;
-          const validCoverage = !hasCoverage || (typeof consumed === 'number' && Number.isSafeInteger(consumed) && consumed >= 0 && consumed <= length);
-          const shortCoverage = validCoverage && hasCoverage && consumed < length;
-          const completeness = truncated
-            ? 'truncated'
-            : !rangeComplete || !validCoverage || shortCoverage
-              ? 'partial'
-              : 'complete';
-          const reason = truncated
-            ? 'instruction-read-budget'
-            : !rangeComplete
-              ? rangeReason
-              : !validCoverage
-                ? 'instruction-read-coverage-invalid'
-                : shortCoverage
-                  ? 'instruction-read-incomplete'
-                  : null;
-          return paged(rows, page, completeness, { reason });
-          """
+          old = base64.b64decode(os.environ['OLD_B64']).decode()
+          new = base64.b64decode(os.environ['NEW_B64']).decode()
           if text.count(old) != 1:
               raise SystemExit(f'expected exactly one production hunk, found {text.count(old)}')
           path.write_text(text.replace(old, new), encoding='utf-8')
-
           test = Path('tests/phase7/integration/issue-4075-instruction-short-read-completeness.test.mjs')
           if test.exists():
               raise SystemExit('regression path already exists')
-          test.write_text("""import assert from 'node:assert/strict';
-          import test from 'node:test';
-
-          import { createAppAnalysisQueryAdapter } from '../../../js/analysis/query/app-adapter.js';
-
-          function adapterFor(decoded) {
-            return createAppAnalysisQueryAdapter({
-              store: {
-                get(key) {
-                  if (key === 'architecture') return 'arm64';
-                  return null;
-                },
-              },
-              backend: {
-                async disassembleAt(_address, { length }) {
-                  const result = typeof decoded === 'function' ? decoded(length) : decoded;
-                  return { supported:true, found:true, instructions:[], ...result };
-                },
-              },
-            });
-          }
-
-          test('#4075 full requested instruction extent remains complete', async () => {
-            const adapter = adapterFor((length) => ({ bytesConsumed:length }));
-            const result = await adapter.instructions(null, { start:0x1000n, length:64 });
-            assert.equal(result.status.completeness, 'complete');
-            assert.equal(result.status.reason ?? null, null);
-          });
-
-          test('#4075 producer short extent cannot be published as complete', async () => {
-            const adapter = adapterFor({ bytesConsumed:16 });
-            const result = await adapter.instructions(null, { start:0x1000n, length:64 });
-            assert.equal(result.status.completeness, 'partial');
-            assert.equal(result.status.reason, 'instruction-read-incomplete');
-          });
-
-          test('#4075 an exact region-end extent remains complete', async () => {
-            const adapter = adapterFor({ bytesConsumed:16 });
-            const result = await adapter.instructions(null, { start:0x1000n, end:0x1010n });
-            assert.equal(result.status.completeness, 'complete');
-            assert.equal(result.status.reason ?? null, null);
-          });
-
-          test('#4075 malformed producer coverage metadata fails closed', async () => {
-            for (const bytesConsumed of [-1, 1.5, Number.NaN, 65, '64', [64]]) {
-              const adapter = adapterFor({ bytesConsumed });
-              const result = await adapter.instructions(null, { start:0x1000n, length:64 });
-              assert.equal(result.status.completeness, 'partial', `coverage ${String(bytesConsumed)} must not prove completeness`);
-              assert.equal(result.status.reason, 'instruction-read-coverage-invalid');
-            }
-          });
-
-          test('#4075 legacy decoders without coverage metadata keep compatibility', async () => {
-            const adapter = adapterFor({});
-            const result = await adapter.instructions(null, { start:0x1000n, length:64 });
-            assert.equal(result.status.completeness, 'complete');
-          });
-
-          test('#4075 input budget truncation remains stronger than producer coverage', async () => {
-            const adapter = adapterFor((length) => ({ bytesConsumed:length }));
-            const result = await adapter.instructions(null, { start:0x1000n, length:(1024 * 1024) + 4 });
-            assert.equal(result.status.completeness, 'truncated');
-            assert.equal(result.status.reason, 'instruction-read-budget');
-          });
-          """, encoding='utf-8')
+          test.write_bytes(base64.b64decode(os.environ['TEST_B64']))
           PY
           test "$(git hash-object js/analysis/query/app-adapter.js)" = "d6f66076397a11254a52f1311c119de1d75a4627"
           test "$(git hash-object tests/phase7/integration/issue-4075-instruction-short-read-completeness.test.mjs)" = "75d977320b17d203933ddcc60b96ff57581fc7e0"
