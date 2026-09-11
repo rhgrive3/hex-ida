@@ -25,11 +25,16 @@ const LC_MAIN = 0x80000028;
 const LC_VERSION_MIN_TVOS = 0x2f;
 const LC_VERSION_MIN_WATCHOS = 0x30;
 const LC_BUILD_VERSION = 0x32;
+const LC_ENCRYPTION_INFO = 0x21;
+const LC_ENCRYPTION_INFO_64 = 0x2c;
 const LC_DYLD_EXPORTS_TRIE = 0x80000033;
 const LC_DYLD_CHAINED_FIXUPS = 0x80000034;
 const ARM_THREAD_STATE64 = 6;
 const ARM_THREAD_STATE64_COUNT = 68;
 const ARM_THREAD_STATE64_PC_OFFSET = 256;
+const X86_THREAD_STATE64 = 4;
+const X86_THREAD_STATE64_COUNT = 42;
+const X86_THREAD_STATE64_RIP_OFFSET = 128;
 
 const DYLIB_COMMANDS = new Set([
   LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB, LC_REEXPORT_DYLIB,
@@ -140,6 +145,16 @@ function parseThin(bytes, opts) {
         dyldInfos.push(parseDyldInfo(r, p));
       }
       else if (cmd === LC_BUILD_VERSION && cmdsize >= 24) parseBuildVersion(r, p, image);
+      else if (cmd === LC_ENCRYPTION_INFO || cmd === LC_ENCRYPTION_INFO_64) {
+        // encryption_info_command is 20 bytes; the 64-bit variant adds a pad
+        // field (24). cryptid != 0 marks an encrypted (App Store FairPlay)
+        // image: the evidence must reach the descriptor instead of the
+        // hardcoded encrypted:false (#4994).
+        requireExactCommandSize(cmdsize, bits === 64 ? 24 : 20, 'LC_ENCRYPTION_INFO');
+        const encryption = { cryptoff: r.u32(p + 8), cryptsize: r.u32(p + 12), cryptid: r.u32(p + 16) };
+        if (linkeditData.encryption) markMachOMetadataPartial(image, 'duplicate-encryption-info-command');
+        else linkeditData.encryption = encryption;
+      }
     } catch (e) {
       if (e?.code === 'BINARY_SOURCE_RANGE_MISSING' || e?.code === 'MACHO_SEGMENT_VM_OVERLAP') throw e;
       markMachOMetadataPartial(image, `load-command-0x${cmd.toString(16)}-parse-error`);
@@ -149,6 +164,7 @@ function parseThin(bytes, opts) {
   }
 
   image.metadata.loadCommands = commands.length;
+  if (linkeditData.encryption) image.metadata.encryption = linkeditData.encryption;
   image.metadata.segmentOrder = segmentOrder.map((s) => s.name);
   const text = image.segments.find((s) => s.name === '__TEXT') || image.segments.find((s) => s.perms.execute) || image.segments[0];
   image.imageBase = text ? text.address : 0n;
@@ -401,7 +417,7 @@ function parseThreadEntrypoint(r, p, cmdsize, cpu, bits) {
     if (!Number.isSafeInteger(stateBytes) || stateBytes < 0 || state + stateBytes > end) return null;
     const arch = cpuName(cpu);
     if (arch === 'arm64' && flavor === ARM_THREAD_STATE64 && count === ARM_THREAD_STATE64_COUNT) return r.u64(state + ARM_THREAD_STATE64_PC_OFFSET);
-    if (arch === 'x86_64' && flavor === 4 && stateBytes >= 136) return r.u64(state + 128);
+    if (arch === 'x86_64' && flavor === X86_THREAD_STATE64 && count === X86_THREAD_STATE64_COUNT) return r.u64(state + X86_THREAD_STATE64_RIP_OFFSET);
     if (arch === 'arm' && bits === 32 && flavor === 1 && stateBytes >= 64) return BigInt(r.u32(state + 60));
     q = state + stateBytes;
   }
