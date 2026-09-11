@@ -53,14 +53,8 @@ export function parseSafeSEHLoadConfig(
           }
           previousRva = rva;
           const address = image.imageBase + BigInt(rva);
-          const executable = (image.sections || []).some((section) => (
-            section?.perms?.execute
-            && section.address != null
-            && section.size != null
-            && address >= BigInt(section.address)
-            && address < BigInt(section.address) + BigInt(section.size)
-          ));
-          if (!executable) {
+          const section = typeof image.sectionAt === 'function' ? image.sectionAt(address) : null;
+          if (!section?.perms?.execute) {
             budget.partial('load-config:safeseh-target-non-executable', `Ignored PE SafeSEH handler RVA 0x${rva.toString(16)} outside an executable section`);
             valid = false;
             break;
