@@ -77,6 +77,17 @@ function parseRoutinesCommands(input, image) {
     if (cmdsize < 8 || p + cmdsize > commandEnd) break;
     const is32 = cmd === LC_ROUTINES && kind.bits === 32;
     const is64 = cmd === LC_ROUTINES_64 && kind.bits === 64;
+    const isRoutinesCommand = cmd === LC_ROUTINES || cmd === LC_ROUTINES_64;
+    if (isRoutinesCommand && !is32 && !is64) {
+      sawRoutines = true;
+      const command = cmd === LC_ROUTINES_64 ? 'LC_ROUTINES_64' : 'LC_ROUTINES';
+      budget.partial(
+        `load-command-0x${cmd.toString(16)}-parse-error`,
+        `${command} is incompatible with a ${kind.bits}-bit Mach-O image`,
+      );
+      p += cmdsize;
+      continue;
+    }
     if (is32 || is64) {
       sawRoutines = true;
       const expected = is64 ? 72 : 40;
