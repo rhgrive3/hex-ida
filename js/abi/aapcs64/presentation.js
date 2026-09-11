@@ -10,7 +10,7 @@ export function registerRole(num, isSp = false, isZr = false) {
   if (num === 8) return { id: "x8", ja: "大きな戻り値の置き場所を渡すレジスタ", en: "indirect result register" };
   if (num <= 15) return { id: "temp", ja: "自由に使える一時レジスタ。関数を呼ぶと壊れる", en: "caller-saved scratch register" };
   if (num <= 17) return { id: "ip", ja: "リンカや OS が横取りに使う一時レジスタ", en: "linker scratch register (IP0/IP1)" };
-  if (num === 18) return { id: "x18", ja: "OS 用に予約されたレジスタ（iOS では触らない）", en: "platform-reserved register" };
+  if (num === 18) return { id: "x18", ja: "プラットフォーム依存のレジスタ。予約する ABI では専用用途、予約しない ABI では caller-saved として使われる", en: "platform-specific register; reserved by some platform ABIs (e.g. iOS), otherwise an additional caller-saved register" };
   if (num <= 28) return { id: "saved", ja: "関数をまたいでも値が残るレジスタ（使う前に保存する約束）", en: "callee-saved register" };
   if (num === 29) return { id: "fp", ja: "フレームポインタ。今の関数のスタックの基準点", en: "frame pointer" };
   if (num === 30) return { id: "lr", ja: "戻り先アドレス。関数が終わったらここへ帰る", en: "link register — the return address" };

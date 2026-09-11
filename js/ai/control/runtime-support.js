@@ -46,10 +46,13 @@ export function sessionMatchesSnapshot(session, snapshot) {
     else if (!sessionStrong && !snapshotStrong) binaryMatches = sameLegacy(sessionLegacy, snapshotLegacy);
     else binaryMatches = false;
   }
+  const sessionProjectId = canonicalBindingId(session.projectId);
+  const snapshotProjectId = canonicalBindingId(snapshot.projectIdentity);
+  if (session.projectId != null && sessionProjectId == null) return false;
+  if (snapshot.projectIdentity != null && snapshotProjectId == null) return false;
   const projectMatches = session.projectId == null
-    || (canonicalBindingId(session.projectId) != null
-      && canonicalBindingId(snapshot.projectIdentity) != null
-      && canonicalBindingId(session.projectId) === canonicalBindingId(snapshot.projectIdentity));
+    ? snapshot.projectIdentity == null
+    : sessionProjectId === snapshotProjectId;
   const priorAnchor = session.investigationMemory?.anchor || null;
   const priorRuntimeRaw = priorAnchor?.runtimeSessionId ?? null;
   const priorRuntime = canonicalBindingId(priorRuntimeRaw);
@@ -95,8 +98,52 @@ export function deterministicDecision(plan, request, error = null) {
 export function fallbackEvidence(store, plan) { const planIds = new Set(plan?.evidence || []), exact = store.all().filter((item) => planIds.has(item.id)); if (exact.length) return exact.slice(0, 50); const planned = store.all().filter((item) => item.sourceTool === 'deterministic-goal-planner'); if (planned.length) return planned.slice(-50); return store.all().filter((item) => item.status === 'verified').slice(-50); }
 export function deterministicConfidence(plan) { if (plan?.best?.verification?.verified) return 0.98; if (plan?.best?.semanticFacts?.length) return 0.78; return plan?.best ? 0.45 : 0; }
 export function presentAnswer(answer, style, evidence, plan) { if (style === 'analyst') return answer; const suffix = evidence.length ? `\n\nHex が確認できた根拠は ${evidence.length} 件です。` : '\n\nこの回答には、Hex が確認済みにした根拠がまだありません。'; return `${answer}${suffix}${plan?.missingEvidence?.length ? ` 次に確認する点: ${plan.missingEvidence.slice(0, 3).join('、')}。` : ''}`; }
-export function ensureRunning(signal, started, timeoutMs) { if (signal?.aborted) throw new AIError(signal.reason === 'timeout' ? 'budget_exhausted' : 'cancelled', signal.reason === 'timeout' ? 'The AI investigation timed out.' : 'AI investigation was cancelled.'); if (Date.now() - started >= timeoutMs) throw new AIError('budget_exhausted', 'The AI investigation timed out.'); }
-export function remainingTime(started, timeoutMs) { return Math.max(1, timeoutMs - (Date.now() - started)); }
+export function defaultMonotonicNow() {
+  try {
+    if (typeof performance !== 'undefined' && typeof performance.now === 'function') return performance.now();
+  } catch { /* fall through to the wall clock */ }
+  return Date.now();
+}
+export function resolveMonotonicClock(...candidates) {
+  for (const candidate of candidates) if (typeof candidate === 'function') return candidate;
+  return defaultMonotonicNow;
+}
+// A caller-supplied clock is still an authority input. Freeze each turn's
+// observation to a finite, non-decreasing primitive so a clock correction
+// cannot extend a deadline or make elapsed time negative.
+export function createMonotonicClock(clock = defaultMonotonicNow) {
+  let last = null;
+  return () => {
+    const value = clock();
+    if (typeof value !== 'number' || !Number.isFinite(value)) return last ?? 0;
+    if (last == null || value > last) last = value;
+    return last;
+  };
+}
+
+function elapsedSince(started, nowFn) {
+  const now = nowFn();
+  if (typeof now !== 'number' || !Number.isFinite(now)
+      || typeof started !== 'number' || !Number.isFinite(started)) return 0;
+  return Math.max(0, now - started);
+}
+
+export function ensureRunning(signal, started, timeoutMs, nowFn = defaultMonotonicNow) {
+  if (signal?.aborted) {
+    throw new AIError(
+      signal.reason === 'timeout' ? 'budget_exhausted' : 'cancelled',
+      signal.reason === 'timeout' ? 'The AI investigation timed out.' : 'The AI investigation was cancelled.',
+    );
+  }
+  if (elapsedSince(started, nowFn) >= timeoutMs) {
+    throw new AIError('budget_exhausted', 'The AI investigation timed out.');
+  }
+}
+
+export function remainingTime(started, timeoutMs, nowFn = defaultMonotonicNow) {
+  const elapsed = elapsedSince(started, nowFn);
+  return Math.max(1, Math.min(timeoutMs, timeoutMs - elapsed));
+}
 export function normalizeError(error, signal) { if (error instanceof AIError) return error; if (signal?.aborted || error?.name === 'AbortError') return new AIError(signal?.reason === 'timeout' ? 'budget_exhausted' : 'cancelled', signal?.reason === 'timeout' ? 'The AI investigation timed out.' : 'AI investigation was cancelled.'); return new AIError('provider_error', error?.message || String(error), providerDiagnostics(error)); }
 export function providerDiagnostics(error) { const details = error instanceof AIError ? error.details : error; const provider = safeDiagnosticToken(details?.provider, /^[a-z][a-z0-9-]{0,63}$/); const bridgeCode = safeDiagnosticToken(details?.bridgeCode ?? error?.code, /^[A-Za-z0-9_.-]{1,64}$/); const bridgeStage = safeDiagnosticToken(details?.bridgeStage ?? error?.stage, /^[a-z][a-z0-9-]{0,63}$/); const runtimeBuildId = safeDiagnosticToken(details?.runtimeBuildId, /^[a-f0-9]{1,64}$/i); const out = {}; if (provider) out.provider = provider; if (bridgeCode) out.bridgeCode = bridgeCode; if (bridgeStage) out.bridgeStage = bridgeStage; if (runtimeBuildId) out.runtimeBuildId = runtimeBuildId; return Object.keys(out).length ? out : null; }
 function safeDiagnosticToken(value, pattern) { return typeof value === 'string' && pattern.test(value) ? value : null; }
@@ -129,7 +176,49 @@ export function humanError(error) {
   const diagnostics = visibleProviderDiagnostics(error);
   return diagnostics ? `${label}\n\n${diagnostics}` : label;
 }
-export function addressExistsSync(context, address) { if (typeof context.addressExists === 'function') { const result = context.addressExists(address); if (typeof result === 'boolean') return result; } try { if (context.program?.functionRange) return !!context.program.functionRange(BigInt(address)); if (context.symbols?.functionAt) return !!context.symbols.functionAt(BigInt(address)); } catch { return false; } return true; }
+export function raceAbort(promise, signal, fallback = false) {
+  if (!signal) return Promise.resolve(promise);
+  if (signal.aborted) return Promise.resolve(fallback);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      resolve(value);
+    };
+    const onAbort = () => finish(fallback);
+    signal.addEventListener('abort', onAbort, { once:true });
+    Promise.resolve(promise).then(finish, () => finish(fallback));
+  });
+}
+export function addressExistsSync(context, address) {
+  if (typeof context.addressExists === 'function') {
+    try {
+      const result = context.addressExists(address);
+      if (typeof result === 'boolean') return result;
+      if (result && typeof result.then === 'function') return null;
+      return false;
+    } catch { return false; }
+  }
+  try {
+    if (context.program?.functionRange) return !!context.program.functionRange(BigInt(address));
+    if (context.symbols?.functionAt) return !!context.symbols.functionAt(BigInt(address));
+  } catch { return false; }
+  return true;
+}
+// An `addressExists` capability is authoritative when present: both explicit
+// false and schema-invalid/non-boolean results must fail closed. Program/symbol
+// fallback is used only when that capability is absent (#5790).
+export async function addressExistsAsync(context, address, signal = null) {
+  if (typeof context.addressExists === 'function') {
+    try {
+      const result = await raceAbort(context.addressExists(address), signal, false);
+      return typeof result === 'boolean' ? result : false;
+    } catch { return false; }
+  }
+  return addressExistsSync(context, address);
+}
 export function stableStringify(value) { if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`; if (value && typeof value === 'object') return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`; return JSON.stringify(value); }
 export function addressString(value) { try { return `0x${BigInt(value).toString(16)}`; } catch { return null; } }
 

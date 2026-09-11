@@ -21,8 +21,9 @@ function identityArray(scan, amount = false) {
 function identityAt(values, index) {
   if (!values || index >= values.length) return null;
   const value = values[index];
-  if (value == null || value === '' || value === 0xffffffff || value === 0xffffffffn) return null;
-  return typeof value === 'bigint' ? value.toString() : String(value);
+  if (typeof value === 'string') return value === '' ? null : value;
+  if (typeof value !== 'bigint' || value === 0xffffffffn) return null;
+  return value.toString();
 }
 function keyOf(identity, offset, _site, role = 'target') {
   /*

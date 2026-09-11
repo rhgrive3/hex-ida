@@ -7,6 +7,7 @@ import {
   createRegisterValue,
   createTemporaryValue,
 } from '../../../../semantics/effects/index.js';
+import { canonicalIdentityString } from './common.js';
 
 const ARCHITECTURE_ID = 'arm64';
 const MODE = 'a64';
@@ -59,7 +60,7 @@ function isVectorOperand(op) {
 function instructionIdOf(instruction, context) {
   const id = instruction?.instructionId ?? context?.instructionId;
   if (!id) throw new TypeError('arm64-fp-machine-effects-instruction-id-required');
-  return String(id);
+  return canonicalIdentityString(id, 'arm64-fp-machine-effects-instruction-id-invalid');
 }
 
 function originOf(instruction, context, instructionId) {

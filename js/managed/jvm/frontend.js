@@ -76,6 +76,7 @@ export class JvmFrontend {
         methodName: sourceMethod?.name ?? method.name,
         descriptor: sourceMethod?.descriptor ?? method.descriptor,
         accessFlags: sourceMethod?.accessFlags ?? method.accessFlags,
+        ownerAccessFlags: jvmClass.accessFlags,
         hasCode: sourceMethod?.code != null,
         codeLength: sourceMethod?.code?.codeLength ?? 0,
         classMajorVersion: classMajorVersion(jvmClass),

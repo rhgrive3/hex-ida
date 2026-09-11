@@ -141,7 +141,7 @@ const canonicalIdentity = {
   semanticIrId: 'ir_fixture', scalarSsaId: 'ssa_fixture', memorySsaId: 'mssa_fixture',
   snapshotId: 'snapshot_fixture', semanticIrContractVersion: '2.0.0',
   semanticIrDigest: stableDigest(canonicalIr), scalarSsaBuildVersion: '1.0.0',
-  scalarSsaDigest: 'ssa_fixture_digest', memorySsaBuildVersion: '1.0.0',
+  scalarSsaDigest: 'ssa_fixture_digest', memorySsaBuildVersion: memorySsaBuild.MEMORY_SSA_BUILD_VERSION,
   analyzerVersion: 'memoryssa-fixture',
 };
 const memorySsa = buildMemorySsa(canonicalIr, canonicalCfg, {
@@ -690,7 +690,7 @@ const builtMemorySsa = buildMemorySsa(exactIr, exactCfg, {
     binaryId: 'binary_fixture', sliceId: 'slice_fixture', functionId: exactIr.functionId,
     semanticIrId: 'ir_fixture', snapshotId: 'snapshot_fixture', semanticIrContractVersion: '2.0.0', semanticIrDigest: stableDigest(exactIr),
     scalarSsaId: 'ssa_fixture', scalarSsaBuildVersion: '1.0.0', scalarSsaDigest: 'ssa_fixture_digest',
-    memorySsaId: 'mssa_fixture', memorySsaBuildVersion: '1.0.0', analyzerVersion: 'memoryssa-fixture',
+    memorySsaId: 'mssa_fixture', memorySsaBuildVersion: memorySsaBuild.MEMORY_SSA_BUILD_VERSION, analyzerVersion: 'memoryssa-fixture',
   },
   snapshotId: 'snapshot_fixture',
   canonicalIrIdentity: { functionId: exactIr.functionId, semanticIrId: 'ir_fixture', semanticIrContractVersion: '2.0.0', semanticIrDigest: stableDigest(exactIr) },

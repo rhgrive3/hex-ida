@@ -131,8 +131,11 @@ export class ResourceBudget {
       used: Object.freeze({ ...this.used }),
     };
     if (recursive) {
+      // Deterministic ordering contract (#1161, #6023): child scope names are
+      // validated ASCII, so code-unit comparison is a fixed total order that
+      // must not drift with the host locale the way localeCompare does.
       const sortedChildren = [...this.children.values()]
-        .sort((a, b) => a.name.localeCompare(b.name))
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
         .map((c) => c.snapshot({ recursive: true }));
       snap.children = Object.freeze(sortedChildren);
     }

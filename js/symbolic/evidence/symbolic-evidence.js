@@ -382,6 +382,7 @@ export function createSymbolicEvidence({
 export function isProvedEvidence(evidence) {
   if (!evidence || typeof evidence !== 'object') return false;
   return (
+    isCanonicalSymbolicEvidence(evidence) &&
     evidence.verdict === EVIDENCE_VERDICT.PROVED &&
     evidence.proofAuthority === PROOF_AUTHORITY.EXACT &&
     typeof evidence.capabilityFingerprint === 'string' &&
@@ -401,9 +402,44 @@ export function isProvedEvidence(evidence) {
 export function isRefutedEvidence(evidence) {
   if (!evidence || typeof evidence !== 'object') return false;
   return (
+    isCanonicalSymbolicEvidence(evidence) &&
     evidence.verdict === EVIDENCE_VERDICT.REFUTED &&
     evidence.solverStatus === SOLVER_STATUS.SAT &&
     evidence.validationStatus !== VALIDATION_STATUS.REJECTED &&
     !isSolverFailure({ status: evidence.solverStatus })
   );
+}
+
+/**
+ * Authority predicate boundary (#5400): field values alone cannot carry proof
+ * authority — the record must be canonical. The evidence id must be exactly
+ * the digest `computeEvidenceId` derives from the identity-bearing fields, so
+ * forged plain objects and tampered clones (queryHash/backend/fingerprint
+ * swaps) fail closed instead of laundering into PROVED/REFUTED authority.
+ */
+function isCanonicalSymbolicEvidence(evidence) {
+  if (evidence.schemaVersion !== EVIDENCE_SCHEMA_VERSION) return false;
+  if (typeof evidence.id !== 'string' || evidence.id.length === 0) return false;
+  if (typeof evidence.queryKind !== 'string' || evidence.queryKind.length === 0) return false;
+  if (typeof evidence.claimKind !== 'string' || evidence.claimKind.length === 0) return false;
+  if (typeof evidence.queryHash !== 'string' || evidence.queryHash.length === 0) return false;
+  if (typeof evidence.backendId !== 'string' || evidence.backendId.length === 0) return false;
+  if (typeof evidence.backendVersion !== 'string' || evidence.backendVersion.length === 0) return false;
+  if (evidence.capabilityFingerprint !== null && typeof evidence.capabilityFingerprint !== 'string') return false;
+  if (evidence.capabilityFingerprintHash !== (evidence.capabilityFingerprint ? stableDigest(String(evidence.capabilityFingerprint)) : null)) return false;
+  if (!Array.isArray(evidence.targetEntities) || evidence.targetEntities.some((entity) => typeof entity !== 'string')) return false;
+  if (typeof evidence.proofStatement !== 'string' || evidence.proofStatement.length === 0) return false;
+  return computeEvidenceId({
+    schemaVersion: evidence.schemaVersion,
+    queryKind: evidence.queryKind,
+    claimKind: evidence.claimKind,
+    queryHash: evidence.queryHash,
+    backendId: evidence.backendId,
+    backendVersion: evidence.backendVersion,
+    solverStatus: evidence.solverStatus,
+    verdict: evidence.verdict,
+    targetEntities: evidence.targetEntities,
+    proofAuthority: evidence.proofAuthority,
+    capabilityFingerprint: evidence.capabilityFingerprint,
+  }) === evidence.id;
 }

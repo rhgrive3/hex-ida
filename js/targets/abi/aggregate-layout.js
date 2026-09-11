@@ -379,3 +379,11 @@ export function canonicalAggregateLayout(parameter) {
 export function aggregateLayoutIsProven(parameter) {
   return canonicalAggregateLayout(parameter) != null;
 }
+
+/**
+ * AAPCS64 and Darwin ARM64 use physical aggregate size for the
+ * by-value/indirect-copy boundary.
+ */
+export function aggregateRequiresIndirectCopy(aggregateBytes) {
+  return positiveInteger(aggregateBytes) != null && aggregateBytes > 16;
+}

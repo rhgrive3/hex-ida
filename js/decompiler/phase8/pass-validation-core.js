@@ -5,6 +5,8 @@ import { VERDICT, CLAIM_KIND } from '../../symbolic/verify/query.js';
 export const REWRITE_VALIDATION_VERIFIER = 'hex.symbolic.verify.bounded-equivalence';
 export const REWRITE_VALIDATION_STATUSES = Object.freeze(['equivalent', 'refuted', 'unknown', 'unsupported']);
 
+const CANONICAL_EQUIVALENCE_AUTHORITIES = new WeakSet();
+
 function fail(code) { throw new TypeError(code); }
 
 /**
@@ -84,9 +86,22 @@ function rewriteBinding(rewrite, { beforeTarget = undefined, afterTarget = undef
 }
 
 /**
+ * Read-only authority check for an `equivalent` record minted by the canonical
+ * bounded-equivalence verifier in this exact module instance. The WeakSet is
+ * deliberately module-private: deterministic proof hashes remain diagnostics
+ * and replay protection, never a capability that callers can self-mint.
+ */
+export function hasCanonicalEquivalenceAuthority(validation) {
+  return !!validation && typeof validation === 'object'
+    && CANONICAL_EQUIVALENCE_AUTHORITIES.has(validation);
+}
+
+/**
  * C4-04: deterministic, recomputable identity for one validated rewrite
  * adoption. The digest covers everything the adoption decision depended on;
- * a commit-time recompute must reproduce it or the record is forged.
+ * a commit-time recompute must reproduce it or the record is forged. The digest
+ * is not adoption authority by itself; canonical verifier authority is tracked
+ * separately in the module-private WeakSet above.
  */
 export function rewriteProofDigest(input = {}) {
   const required = [
@@ -178,7 +193,7 @@ export async function validateRewriteAdoption({
       claimKind,
       queryHash: outcome.queryHash ?? null,
     });
-    return Object.freeze({
+    const validation = Object.freeze({
       validation: 'equivalent',
       equivalenceProofId,
       verifier: REWRITE_VALIDATION_VERIFIER,
@@ -187,6 +202,8 @@ export async function validateRewriteAdoption({
       completeness: outcome.completeness ?? null,
       queryHash: outcome.queryHash ?? null,
     });
+    CANONICAL_EQUIVALENCE_AUTHORITIES.add(validation);
+    return validation;
   }
   if (verdict === VERDICT.REFUTED) {
     return Object.freeze({
@@ -212,6 +229,8 @@ export async function validateRewriteAdoption({
  * Used at commit time so a mutated record fails the transaction. A malformed
  * or missing staged rewrite returns null, which the caller treats as a proof
  * mismatch rather than allowing an exception to bypass the fail-closed gate.
+ * This helper is intentionally deterministic/public; matching it does not mint
+ * canonical verifier authority.
  */
 export function recomputeEquivalenceProofId(transform, descriptor) {
   const validation = transform?.validation;

@@ -104,11 +104,14 @@ test('cancellation yields no non-escaping roots', () => {
   assert.equal(escape.nonEscapingRoots.size, 0);
 });
 
-test('only a call with a proven summary preserves a non-escape proof', () => {
-  // Passing a pointer to a callee whose effects are known does not publish it;
-  // every other boundary does.
-  assert.equal(invalidatesNonEscapeProof(createEscapeRecord({ rootKey: 'r', reason: 'passed-to-known-call', boundary: 'known-call' })), false);
-  for (const reason of ['returned', 'stored-to-global', 'stored-through-argument', 'passed-to-unknown-call', 'captured-by-closure', 'published-to-thread', 'unknown']) {
+test('every observed escape fact invalidates a non-escape proof (#5362)', () => {
+  // Full recompute revokes the non-escape proof of a root passed to a
+  // complete known call — the record's root joins `escapedRoots` exactly like
+  // any other reason. The incremental invalidation policy must be the same
+  // contract, so `passed-to-known-call` is no longer spared: an invalidation
+  // that kept the proof would disagree with a fresh analysis of the same
+  // revision.
+  for (const reason of ['returned', 'stored-to-global', 'stored-through-argument', 'passed-to-known-call', 'passed-to-unknown-call', 'captured-by-closure', 'published-to-thread', 'unknown']) {
     assert.equal(invalidatesNonEscapeProof(createEscapeRecord({ rootKey: 'r', reason, boundary: 'unknown' })), true, reason);
   }
 });
@@ -130,6 +133,55 @@ test('language and runtime captures arrive through a provider, not the solver', 
   assert.ok(withProvider.escapes.some((record) => record.reason === 'captured-by-closure'));
   assert.ok(!withProvider.nonEscapingRoots.has(capturedRoot),
     'a provider-reported capture must withdraw the non-escape proof');
+});
+
+test('a malformed structured value reference cannot borrow another value flow (#5783)', () => {
+  // Points-to keys are canonical value ID strings. String-coercing a
+  // structured id ['v1'] onto 'v1' would let one malformed node invent
+  // another value's escape evidence.
+  const pointsToRun = {
+    status: { completeness: 'complete' },
+    pointsTo: new Map([
+      ['v1', { top: false, targets: [{ rootKey: 'root-local', rootKind: 'local-allocation' }] }],
+    ]),
+  };
+  const options = { allocationRootKeys: new Set(['root-local']), snapshotId: 'snapshot_issue_5783' };
+  const node = (id, inputs) => ({ id, kind: 'return', inputs, origin: { instructionIds: [`i-${id}`] } });
+
+  // The canonical id still sees the set and reports the escape.
+  const canonical = analyzeEscape({ nodes: [node('ret-ok', ['v1'])] }, null, null, pointsToRun, options);
+  assert.deepEqual(canonical.escapes.map((record) => record.rootKey), ['root-local']);
+  assert.equal(canonical.nonEscapingRoots.has('root-local'), false);
+
+  // The structured reference must NOT reach 'v1''s set: fail closed to an
+  // unresolved flow, never fabricate an escape from someone else's facts.
+  for (const malformed of [['v1'], { id: 'v1' }, 1, true]) {
+    const result = analyzeEscape({ nodes: [node('ret-bad', [malformed])] }, null, null, pointsToRun, options);
+    assert.deepEqual(result.escapes, [], `structured/typed reference ${JSON.stringify(malformed)} must not resolve to 'v1'`);
+    assert.equal(result.nonEscapingRoots.has('root-local'), false,
+      'an unresolved flow must not confirm non-escape either');
+    assert.equal(result.sawUnresolvedFlow, true, 'the malformed flow must be reported unresolved');
+    assert.equal(result.status.completeness, 'partial');
+  }
+
+  // Same rule on the store path: a malformed stored value must not inherit
+  // 'v1''s targets and get published through the address set.
+  const storeRun = {
+    status: { completeness: 'complete' },
+    pointsTo: new Map([
+      ['v1', { top: false, targets: [{ rootKey: 'root-local', rootKind: 'local-allocation' }] }],
+      ['addr', { top: false, targets: [{ rootKey: 'root-global', rootKind: 'global' }] }],
+    ]),
+  };
+  const store = {
+    id: 'st-1', kind: 'store',
+    inputs: ['addr', ['v1']],
+    memory: { addressExpr: { valueId: 'addr' } },
+    origin: { instructionIds: ['i-st'] },
+  };
+  const stored = analyzeEscape({ nodes: [store] }, null, null, storeRun, options);
+  assert.deepEqual(stored.escapes, [], 'a malformed stored value must not escape through the resolved address');
+  assert.equal(stored.sawUnresolvedFlow, true);
 });
 
 test('the escape corpus meets its declared truth', () => {

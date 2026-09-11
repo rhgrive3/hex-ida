@@ -1,5 +1,15 @@
-function validBits(bits) {
-  return typeof bits === 'number' && Number.isInteger(bits) && bits > 0 && bits <= 64 ? bits : 64;
+// A bit width is the semantic domain of the range/value it describes. An
+// omitted (nullish) width keeps the documented 64-bit default; an explicitly
+// invalid width (non-number, non-integer, <=0, >64) is never repaired to 64 —
+// callers decide the fail-closed behavior for their own error policy (#6155).
+function normalizeBits(bits, defaultBits) {
+  if (bits == null) return defaultBits;
+  if (typeof bits !== 'number' || !Number.isInteger(bits) || bits <= 0 || bits > 64) return null;
+  return bits;
+}
+
+function invalidWidthError() {
+  return new TypeError('bit width must be a positive integer within 1..64');
 }
 
 function strictBigInt(value) {
@@ -29,13 +39,15 @@ function rangeFitsDomain(min, max, bits, signed) {
 }
 
 export function normalizeIntegerValue(value, bits = 64, signed = false) {
-  const width = validBits(bits);
+  const width = normalizeBits(bits, 64);
+  if (width == null) throw invalidWidthError();
   const raw = BigInt.asUintN(width, strictBigInt(value));
   return signed === true ? BigInt.asIntN(width, raw) : raw;
 }
 
 export function rangeWithDomain(min, max, bits = 64, signed = null) {
-  const width = validBits(bits);
+  const width = normalizeBits(bits, 64);
+  if (width == null) throw invalidWidthError();
   const domainSigned = normalizedSignedness(signed);
   const normalizedMin = strictBigInt(min);
   const normalizedMax = strictBigInt(max);
@@ -57,8 +69,10 @@ export function rangeWithDomain(min, max, bits = 64, signed = null) {
  */
 export function normalizeRangeDomain(range, bits, signed) {
   if (!range || range.min == null || range.max == null) return null;
-  const width = validBits(bits || range.bits || 64);
-  const srcBits = validBits(range.bits || width);
+  const width = normalizeBits(bits != null ? bits : (range.bits != null ? range.bits : null), 64);
+  if (width == null) return null;
+  const srcBits = range.bits != null ? normalizeBits(range.bits, width) : width;
+  if (srcBits == null) return null;
   const srcSigned = normalizedSignedness(range.signed);
   const dstSigned = normalizedSignedness(signed);
   if (srcBits !== width) return null;
@@ -93,7 +107,8 @@ export function normalizeRangeDomain(range, bits, signed) {
 export function mergeRangeDomain(a, b, bits = null, signed = undefined) {
   if (!a && !b) return null;
   const source = a || b;
-  const width = validBits(bits || a?.bits || b?.bits || 64);
+  const width = normalizeBits(bits != null ? bits : (a?.bits != null ? a.bits : (b?.bits != null ? b.bits : null)), 64);
+  if (width == null) return null;
   const targetSigned = signed === undefined ? normalizedSignedness(source.signed) : normalizedSignedness(signed);
   if (!a) return normalizeRangeDomain(b, width, targetSigned);
   if (!b) return normalizeRangeDomain(a, width, targetSigned);

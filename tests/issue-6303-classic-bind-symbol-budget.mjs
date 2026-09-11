@@ -51,8 +51,8 @@ function makeImage() {
 
 const SEGMENT = { address: 0x1000n, size: 0x80n };
 
-// SET_SYMBOL_TRAILING_FLAGS_IMM "ab"; SET_SEGMENT_AND_OFFSET_ULEB seg=0 off=0; DO_BIND; DONE
-const STREAM_AB = Uint8Array.from([0x40, 0x61, 0x62, 0x00, 0x70, 0x00, 0x90, 0x00]);
+// SET_DYLIB_ORDINAL_IMM 1; SET_SYMBOL_TRAILING_FLAGS_IMM "ab"; SET_TYPE_IMM pointer; SET_SEGMENT_AND_OFFSET_ULEB seg=0 off=0; DO_BIND; DONE
+const STREAM_AB = Uint8Array.from([0x11, 0x40, 0x61, 0x62, 0x00, 0x51, 0x70, 0x00, 0x90, 0x00]);
 
 test('#6303 symbol string under a 1-byte stringBytes budget fails closed', () => {
   const image = makeImage();
@@ -82,7 +82,7 @@ test('#6303 retained import name is charged again on bind output', () => {
   const budget = createMachOMetadataBudget(image, { limits: { stringBytes: 9, inputBytes: 1024, records: 100, objects: 100, operations: 100, warnings: 100, estimatedHeapBytes: 1024 * 1024, wallClockMs: 1000 } });
   // symbol "ab" decode charges 4; the retained import name charges 4 more —
   // total 8 fits; a second bind of the same symbol would exceed 9.
-  const stream = Uint8Array.from([0x40, 0x61, 0x62, 0x00, 0x70, 0x00, 0x90, 0x40, 0x61, 0x62, 0x00, 0x90, 0x00]);
+  const stream = Uint8Array.from([0x11, 0x40, 0x61, 0x62, 0x00, 0x51, 0x70, 0x00, 0x90, 0x40, 0x61, 0x62, 0x00, 0x90, 0x00]);
   const status = parseClassicBindings(reader(stream), { offset: 0, size: stream.length }, image, [SEGMENT], 'bind', budget);
   assert.equal(status.complete, false, 'second retained name must exhaust the 9-byte string budget');
 });

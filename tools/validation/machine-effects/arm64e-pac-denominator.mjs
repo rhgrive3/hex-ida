@@ -15,6 +15,7 @@ const ZERO = Object.freeze([
 const FIXED = Object.freeze([
   ['paciasp',0xd503233f],['pacibsp',0xd503237f],['pacia1716',0xd503211f],['pacib1716',0xd503215f],
   ['autiasp',0xd50323bf],['autibsp',0xd50323ff],['autia1716',0xd503219f],['autib1716',0xd50321df],
+  ['paciaz',0xd503231f],['pacibz',0xd503235f],['autiaz',0xd503239f],['autibz',0xd50323df],
   ['xpaclri',0xd50320ff],['retaa',0xd65f0bff],['retab',0xd65f0fff],
   ['eretaa',0xd69f0bff],['eretab',0xd69f0fff],
 ]);

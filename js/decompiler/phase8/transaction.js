@@ -19,7 +19,7 @@ class RewriteRefusal extends Error {
   constructor(reason) { super(`phase8-c4-04-refusal:${reason}`); this.reason = reason; }
 }
 
-function admission(result, descriptor) {
+function admission(result, descriptor, metadata) {
   const transforms = [];
   const retainedIndexes = [];
   const diagnostics = [];
@@ -32,6 +32,9 @@ function admission(result, descriptor) {
     }
     if (validation.validation === 'refuted') throw new RewriteRefusal('rewrite-refuted');
     if (validation.validation === 'equivalent') {
+      if (metadata?.[index]?.equivalenceAuthority !== true) {
+        throw new RewriteRefusal('rewrite-equivalence-authority-missing');
+      }
       const expected = recomputeEquivalenceProofId(transform, descriptor);
       if (validation.equivalenceProofId !== expected) throw new RewriteRefusal('rewrite-proof-id-mismatch');
       transforms.push(transform); retainedIndexes.push(index); continue;
@@ -79,7 +82,7 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
       const metadata = validatedRewriteMetadataFor(raw);
       if (metadata == null) return raw;
       const enriched = attachValidatedRewriteMetadata(raw, metadata);
-      const admitted = admission(enriched, pass.descriptor);
+      const admitted = admission(enriched, pass.descriptor, metadata);
       publishedMetadata = metadata;
       retainedIndexes = admitted.retainedIndexes;
       return coreResultOf(enriched, pass.descriptor, admitted);

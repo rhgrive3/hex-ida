@@ -15,8 +15,8 @@ export function auditCapabilityParity(entries) {
       if (!entry.agentTool && !entry.actionKind && entry.category === 'analysis') failures.push({ id, reason: 'missing-agent-analysis-adapter' });
       continue;
     }
-    const reason = String(entry.humanOnlyReason || '');
-    if (!ALLOWED_HUMAN_ONLY_PREFIXES.some((prefix) => reason.startsWith(prefix))) failures.push({ id, reason: 'invalid-human-only-reason' });
+    const reason = entry.humanOnlyReason;
+    if (typeof reason !== 'string' || !ALLOWED_HUMAN_ONLY_PREFIXES.some((prefix) => reason.startsWith(prefix))) failures.push({ id, reason: 'invalid-human-only-reason' });
   }
   return { ok: failures.length === 0, failures, checked: ids.size };
 }

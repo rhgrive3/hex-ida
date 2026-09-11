@@ -3,6 +3,7 @@ import { CachedByteSource } from '../bytesource/cached.js';
 import { describeBinaryImage } from './describe.js';
 import { fingerprintVendors } from '../knowledge/index.js';
 import { hashByteSource } from './hash.js';
+import { compileBytePattern } from './byte-search.js';
 import { boundedOffset, checkedChunkIndex, chunkLength, exactExternalInteger, regionSize, utf8Len, isExactFunctionSeed } from './worker-validation.js';
 import { analysisFromBinaryImage, emptyAnalysis } from './analysis-result.js';
 import { analyzeDecodedSemanticFunction } from '../targets/architecture/x86_64/semantic-function.js';
@@ -125,7 +126,7 @@ async function handle(msg, signal) {
     case 'scanProgram': return emptyProgramScan(msg.regionId);
     case 'fieldAccess': return msg.offsets ? { groups: Object.fromEntries((msg.offsets || []).map((x) => [String(x), []])), unsupported: true } : { results: [], unsupported: true };
     case 'valueShapes': return { groups: [], unsupported: true };
-    case 'metadata': return metadataPage(msg);
+    case 'metadata': return metadataPage(msg, signal);
     case 'hash': return { hash: await hashByteSource(source, { signal, onProgress: ({ done, total }) => self.postMessage({ t: 'analysisProgress', requestId: msg.id, epoch: msg.epoch, phase: 'hash', done, total }) }) };
     case 'memoryStats': return memoryStats();
     case 'cleanupMemory': source?.clear?.(); return memoryStats();
@@ -299,14 +300,15 @@ async function scanStrings(msg, signal) {
   const regionBytes = regionSize(region.size);
   const total = msg.maxBytes == null ? regionBytes : boundedOffset(msg.maxBytes, regionBytes, 'maxBytes');
   const out = [];
-  let pos = 0n, runStart = null, runBytes = [];
+  let pos = 0n, runStart = null, runBytes = [], runChars = 0;
   const flush = () => {
     if (runStart != null && runBytes.length) {
       const text = decoder.decode(new Uint8Array(runBytes)).replace(/\t/g, '\\t').replace(/\n/g, '\\n');
-      if (text.length >= minLength) out.push({ addr: BigInt(region.vmAddr) + runStart, offset: exactExternalInteger(runStart), text });
+      if (runChars >= minLength) out.push({ addr: BigInt(region.vmAddr) + runStart, offset: exactExternalInteger(runStart), text });
     }
     runStart = null;
     runBytes = [];
+    runChars = 0;
   };
   let carry = new Uint8Array(0), carryAt = 0n;
   while (pos < total && out.length < cap) {
@@ -328,6 +330,7 @@ async function scanStrings(msg, signal) {
       if (n === -1 && !last) break;
       if (n <= 0) { flush(); if (out.length >= cap) break; continue; }
       if (runStart == null) { runStart = base + BigInt(i); runBytes = []; }
+      runChars++;
       if (runBytes.length < MAX_STRING_CHARS * 4) for (let k = 0; k < n; k++) runBytes.push(buffer[i + k]);
       i += n - 1;
     }
@@ -359,7 +362,13 @@ async function runSearch(msg, signal) {
   } else {
     const q = String(msg.query || '');
     if (!q) throw new Error('Enter text to search for.');
-    pattern = new TextEncoder().encode(q.toLowerCase());
+    // This is a byte-oriented search, so preserve the query's exact UTF-8
+    // encoding. Unicode toLowerCase() can change code points (including
+    // supplementary-plane characters) and cannot be mirrored safely on raw
+    // haystack bytes without decoding and retaining a byte/address map (#5940).
+    // Keep the established ASCII-insensitive contract by folding both byte
+    // operands with lower() during comparison; non-ASCII bytes remain exact.
+    pattern = new TextEncoder().encode(q);
   }
   const results = [];
   let pos = start, carry = new Uint8Array(0), capped = false;
@@ -368,14 +377,22 @@ async function runSearch(msg, signal) {
     const block = await readFileRange(BigInt(region.fileOffset) + pos, chunkLength(total - pos, SCAN_BLOCK), signal);
     const joined = carry.length ? concat(carry, block) : block;
     const base = pos - BigInt(carry.length);
+    // Capture after each awaited read, so mutable caller data is not cached
+    // across chunks. Small/oversized or exotic patterns keep the old path.
+    const matcher = compileBytePattern(pattern, mask, msg.kind === 'text');
     for (let i = 0; i <= joined.length - pattern.length; i++) {
-      let ok = true;
-      for (let j = 0; j < pattern.length; j++) {
-        const actual = msg.kind === 'text' ? lower(joined[i + j]) : joined[i + j];
-        const expected = pattern[j];
-        if (msg.kind === 'hex' ? ((actual & mask[j]) !== expected) : actual !== expected) { ok = false; break; }
+      if (matcher) {
+        i = matcher.find(joined, i);
+        if (i < 0) break;
+      } else {
+        let ok = true;
+        for (let j = 0; j < pattern.length; j++) {
+          const actual = msg.kind === 'text' ? lower(joined[i + j]) : joined[i + j];
+          const expected = msg.kind === 'text' ? lower(pattern[j]) : pattern[j];
+          if (msg.kind === 'hex' ? ((actual & mask[j]) !== expected) : actual !== expected) { ok = false; break; }
+        }
+        if (!ok) continue;
       }
-      if (!ok) continue;
       const byteOff = base + BigInt(i);
       results.push({ row: exactExternalInteger(byteOff / BigInt(ROW_BYTES)), addr: BigInt(region.vmAddr) + byteOff, byteOff: exactExternalInteger(byteOff) });
       if (results.length >= SEARCH_LIMIT) { capped = true; break; }
@@ -422,17 +439,35 @@ async function readAtAddress(msg, signal) {
   return result;
 }
 
-function metadataPage(msg) {
+function metadataPageInteger(value, fallback, minimum, label) {
+  const resolved = value ?? fallback;
+  if (typeof resolved !== 'number' || !Number.isSafeInteger(resolved) || resolved < minimum) {
+    throw new RangeError(`metadata ${label} must be a ${minimum === 0 ? 'non-negative' : 'positive'} safe integer`);
+  }
+  return resolved === 0 ? 0 : resolved;
+}
+
+async function metadataPage(msg, signal) {
   if (!image) throw new Error('No parsed universal binary is open.');
+  const selected = await pointerImageForSlice(msg.sliceIndex, signal);
+  if (!selected) throw new Error('Invalid Mach-O slice index.');
   const collections = {
-    segments: image.segments, sections: image.sections, imports: image.imports, exports: image.exports,
-    symbols: image.symbols, relocations: image.relocations, functions: image.functions, libraries: image.libraries,
+    segments: selected.segments, sections: selected.sections, imports: selected.imports, exports: selected.exports,
+    symbols: selected.symbols, relocations: selected.relocations, functions: selected.functions, libraries: selected.libraries,
   };
-  if (msg.kind === 'summary') return { summary: image.summary(), metadata: image.metadata, capability: descriptor?.capability || null };
+  if (msg.kind === 'summary') {
+    const capability = selected === image
+      ? descriptor?.capability || null
+      : describeBinaryImage(selected, {
+        name:file?.name || 'binary',
+        engine:{ arm64:selected.arch === 'arm64' || selected.arch === 'arm64e', arm64e:selected.arch === 'arm64e', verified:false },
+      }).capability;
+    return { summary:selected.summary(), metadata:selected.metadata, capability };
+  }
   const list = collections[msg.kind];
   if (!list) throw new Error(`Unknown metadata kind: ${msg.kind}`);
-  const start = Math.max(0, Number(msg.start) || 0);
-  const limit = Math.min(5000, Math.max(1, Number(msg.limit) || 500));
+  const start = metadataPageInteger(msg.start, 0, 0, 'start');
+  const limit = Math.min(5000, metadataPageInteger(msg.limit, 500, 1, 'limit'));
   return { kind: msg.kind, start, total: list.length, items: list.slice(start, start + limit), next: start + limit < list.length ? start + limit : null };
 }
 

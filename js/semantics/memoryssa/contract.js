@@ -1,5 +1,6 @@
 import { canonicalAddress, deepFreeze, jsonSafe, stableStringify } from '../../core/identity/index.js';
 import { createOriginSet } from '../../core/identity/origin.js';
+import { analyzeSemanticDominance } from '../cfg/index.js';
 
 export const MEMORY_SSA_CONTRACT_VERSION = '2.0.0';
 export const MEMORY_SSA_ALIAS_RELATIONS = Object.freeze(['must', 'may', 'no', 'unknown']);
@@ -250,6 +251,20 @@ function cfgMap(cfg) {
   return cfg ? new Map((cfg.blocks ?? []).map((block) => [block.id, block])) : null;
 }
 
+function dominanceFor(cfg, cache) {
+  if (!cfg) return null;
+  if (!cache.has(cfg)) {
+    try {
+      cache.set(cfg, analyzeSemanticDominance(cfg));
+    } catch {
+      // A CFG that cannot answer dominance keeps phi-edge validation at the
+      // predecessor-membership level; everything else still fails closed.
+      cache.set(cfg, null);
+    }
+  }
+  return cache.get(cfg);
+}
+
 export function createMemorySsaContract(input, options = {}) {
   assertNotAborted(options);
   const work = validationWorkGuard(options);
@@ -268,18 +283,22 @@ export function createMemorySsaContract(input, options = {}) {
     fail('memory-ssa-cfg-function-mismatch');
   }
 
-  const regions = array(input.regions, 'memory-ssa-regions-required')
+  const rawRegions = array(input.regions, 'memory-ssa-regions-required');
+  const rawDefinitions = array(input.definitions, 'memory-ssa-definitions-required');
+  const rawUses = array(input.uses, 'memory-ssa-uses-required');
+  if (rawRegions.length > limit(options, 'maxRegions')) budgetFail('memory-ssa-budget-exceeded-maxRegions');
+  if (rawDefinitions.length > limit(options, 'maxDefinitions')) budgetFail('memory-ssa-budget-exceeded-maxDefinitions');
+  if (rawUses.length > limit(options, 'maxUses')) budgetFail('memory-ssa-budget-exceeded-maxUses');
+
+  const regions = rawRegions
     .map((region) => { work(); return createMemoryRegionRef(region); })
     .sort((a, b) => compareId(a.id, b.id));
-  const definitions = array(input.definitions, 'memory-ssa-definitions-required')
+  const definitions = rawDefinitions
     .map((definition) => { work(); return normalizeDefinition(definition); })
     .sort((a, b) => compareId(a.id, b.id));
-  const uses = array(input.uses, 'memory-ssa-uses-required')
+  const uses = rawUses
     .map((use) => { work(); return normalizeUse(use); })
     .sort((a, b) => compareId(a.id, b.id));
-  if (regions.length > limit(options, 'maxRegions')) budgetFail('memory-ssa-budget-exceeded-maxRegions');
-  if (definitions.length > limit(options, 'maxDefinitions')) budgetFail('memory-ssa-budget-exceeded-maxDefinitions');
-  if (uses.length > limit(options, 'maxUses')) budgetFail('memory-ssa-budget-exceeded-maxUses');
 
   const regionById = new Map();
   for (const region of regions) {
@@ -297,6 +316,8 @@ export function createMemorySsaContract(input, options = {}) {
   }
 
   const blocks = cfgMap(cfg);
+  // Dominance is computed at most once per contract validation (#5411).
+  const dominanceCache = new Map();
   for (const definition of definitions) {
     work();
     if (blocks && definition.blockId != null && !blocks.has(definition.blockId)) fail('memory-ssa-invalid-definition-block');
@@ -326,6 +347,18 @@ export function createMemorySsaContract(input, options = {}) {
     }
     if (stableStringify(incomingPreds.slice().sort()) !== stableStringify(block.predecessors.slice().sort())) {
       fail('memory-ssa-phi-predecessor-set-incomplete');
+    }
+    // Each phi argument must be available on its own edge (#5411): the
+    // argument's definition block must be the predecessor itself or dominate
+    // it. A block-local definition attributed to the opposite predecessor
+    // (which it does not dominate) is not canonical MemorySSA. Definitions
+    // without a block stay unpinned.
+    const dominance = dominanceFor(cfg, dominanceCache);
+    for (const incoming of definition.incoming) {
+      const prior = definitionById.get(incoming.definitionId);
+      if (prior?.blockId == null || prior.blockId === incoming.predecessorBlockId) continue;
+      const dominators = dominance?.dominators?.[incoming.predecessorBlockId];
+      if (!dominators?.includes(prior.blockId)) fail('memory-ssa-phi-incoming-edge-mismatch');
     }
   }
 

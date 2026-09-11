@@ -57,20 +57,24 @@ assert.throws(
 // (`{ id: 'rax' }`) stay supported through the register descriptor path.
 const canonical = createX86DecodedInstruction({
   ...base,
+  // A condition code is only valid when the family carries the same
+  // condition suffix. Keep the primitive-string coverage while using a
+  // canonical branch record accepted by the strict decoder boundary.
+  instructionFamily: 'je',
   detailStatus: 'complete',
   detail: {
     operandCount: 1,
     operands: [{ type: 'register', access: 'write', register: 'rax', widthBits: 64 }],
     implicitReads: [{ id: 'rsp' }],
-    conditionCode: 'je',
+    conditionCode: 'e',
   },
 });
 assert.equal(canonical.detailAvailable, true);
 assert.equal(canonical.detail.operands[0].type, 'register');
 assert.equal(canonical.detail.operands[0].access, 'write');
 assert.equal(canonical.detail.implicitReads[0].id, 'rsp');
-assert.equal(canonical.detail.conditionCode, 'je');
-assert.equal(canonical.instructionFamily, 'mov');
+assert.equal(canonical.detail.conditionCode, 'e');
+assert.equal(canonical.instructionFamily, 'je');
 assert.equal(canonical.mode, 'long-64');
 
 console.log('issue-6007-x86-string-authority-primitive: PASS');

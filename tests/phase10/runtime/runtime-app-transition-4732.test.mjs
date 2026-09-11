@@ -184,12 +184,26 @@ function barrierClose(platform) {
   await old.startSession({ adapter: 'symbolic', binaryHash: 'hash-dispose-partial', connect: false });
   const [first, second] = [...old.sessions.sessions.values()];
   let secondClosed = false;
+  let firstAttempts = 0;
+  const origFirst = first.disconnect.bind(first);
   const origSecond = second.disconnect.bind(second);
   second.disconnect = async () => { secondClosed = true; return origSecond(); };
-  first.disconnect = async () => { throw new Error('close-boom'); };
+  first.disconnect = async () => {
+    firstAttempts += 1;
+    if (firstAttempts === 1) throw new Error('close-boom');
+    return origFirst();
+  };
   assert.equal(await resetAppRuntime(app), true);
   assert.equal(secondClosed, true, 'remaining session must still be closed after a sibling failure');
-  assert.equal(old.sessions.sessions.size, 0, 'failed session must still be retired from the manager');
+  assert.equal(firstAttempts, 1);
+  assert.equal(first.closed, false, 'failed session must remain retryable after best-effort disposal');
+  assert.equal(old.sessions.get(first.id), first, 'failed session must remain owned by its manager');
+  assert.equal(old.sessions.sessions.size, 1, 'failed session must remain until cleanup succeeds');
+  assert.equal(await old.sessions.close(first.id), true, 'the retained session must close on retry');
+  assert.equal(firstAttempts, 2);
+  assert.equal(first.closed, true);
+  assert.equal(old.sessions.get(first.id), null);
+  assert.equal(old.sessions.sessions.size, 0, 'successful retry must retire the failed session');
 }
 
 console.log('runtime app transition serialization #4732: PASS');

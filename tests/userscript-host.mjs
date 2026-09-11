@@ -73,6 +73,18 @@ assert.doesNotMatch(embedded.PROTECTED_HOST.css, /@import\b/);
 assert.match(embedded.PROTECTED_HOST.scopedCss, /@scope \(#hex-userscript-host\)/);
 assert.doesNotMatch(embedded.PROTECTED_HOST.scopedCss, /(?:^|[},])\s*(?:html|body)(?=[\s.#:[,{>+~])/);
 
+const x86RevalidationPath = 'js/targets/architecture/x86_64/semantic-revalidation-worker.js';
+const x86RevalidationSource = embedded.PROTECTED_WORKER_ASSETS.classic?.[x86RevalidationPath];
+assert.equal(typeof x86RevalidationSource, 'string', 'the optional x86 receiver must remain an embedded classic worker asset');
+assert.ok(x86RevalidationSource.length > 1_000_000, 'the embedded x86 receiver must retain its Capstone bundle');
+assert.match(x86RevalidationSource, /HexX86CapstoneStructured/);
+assert.match(x86RevalidationSource, /cs_disasm/);
+assert.match(x86RevalidationSource, /globalThis\.MCapstone=/, 'the bundled Capstone factory must remain visible to the protected WASM bootstrap');
+assert.doesNotMatch(x86RevalidationSource, /\bvar MCapstone\s*=/, 'the bundled Capstone factory must not be trapped in the bundle IIFE');
+assert.match(x86RevalidationSource, /node:fs/, 'the guarded Capstone Node fallback remains external, never executed by the browser path');
+assert.doesNotMatch(x86RevalidationSource, /\bimportScripts\s*\(/, 'classic worker dependencies must be inlined into the protected asset');
+assert.doesNotMatch(x86RevalidationSource, /\bimport\s+[^;]*['"]node:fs['"]/, 'node:fs must not become a browser module import');
+
 const backing = new Uint8Array([9, 1, 2, 3, 8]);
 const exact = toExactArrayBuffer(backing.subarray(1, 4));
 assert.ok(exact instanceof ArrayBuffer);
@@ -127,8 +139,20 @@ const expired = await signRuntimeSession({ v: 1, sid: 'session-expired', bid: bu
 assert.equal(await verifyRuntimeSession(expired, signingKey, { now }), null);
 assert.equal(publicRuntimeManifest(build.manifest).assetPath, undefined);
 
+await import('./issue-5025-legacy-failure-launcher.mjs');
+
 console.log('userscript-host secure distribution: ok');
 
 async function walk(url, prefix = '') { const out = []; for (const name of await readdir(url)) { const child = new URL(name + '/', url); const info = await stat(new URL(name, url)); if (info.isDirectory()) out.push(...await walk(child, `${prefix}${name}/`)); else out.push(`${prefix}${name}`); } return out; }
 async function sha256(value) { const digest = await webcrypto.subtle.digest('SHA-256', value); return Buffer.from(digest).toString('hex'); }
 function fromB64(value) { return Buffer.from(value, 'base64url'); }
+
+// #5206: a malformed Base64URL signature part must be an authentication
+// failure (null -> 403 path), never an escaping InvalidCharacterError (500).
+{
+  const malformedToken = `${payloadPart}.%%%`;
+  assert.equal(await verifyRuntimeSession(malformedToken, signingKey, { now }), null,
+    'malformed signature base64url must verify as null');
+  assert.equal(await verifyRuntimeSession('a.%%%', signingKey, { now }), null,
+    'malformed payload part must also verify as null');
+}

@@ -34,12 +34,6 @@ function recordViewCollapse(records, { proof, outerBits, innerBits, sourceBits, 
   }));
 }
 
-/**
- * HEX-C4-03: every rewrite must say which canonical entities it rewrote. The
- * merged source of a collapse carries the union of consumed rows/ir/ssa refs,
- * so the target set is derived from the same evidence the proof consumed —
- * never from rendered text.
- */
 function collectTargets(source, proof) {
   const targets = [];
   for (const ref of source.ir || []) targets.push(`ir:${ref}`);
@@ -235,9 +229,9 @@ function conditionMap(semanticAst, transform) {
   for (const condition of semanticAst?.conditions || []) {
     if (condition?.row == null || !condition.expression) continue;
     const expression = transform(condition.expression);
-    const prior = byRow.get(Number(condition.row));
-    if (prior) byRow.set(Number(condition.row), null);
-    else byRow.set(Number(condition.row), expression);
+    const row = Number(condition.row);
+    if (byRow.has(row)) byRow.set(row, null);
+    else byRow.set(row, expression);
     condition.expression = expression;
     condition.text = printExpression(expression);
   }
@@ -304,13 +298,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
 
   const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
   const lines = (result.cAst.body || []).map((node) => {
-    // HEX-C4-03: a rendered line is produced by its own node location AND by
-    // the rewritten semantic expression that now renders into it. The merged
-    // expression source carries the union of every consumed origin across the
-    // rewrite chain, which is exactly what reverse navigation must reach.
-    const expressionSource = node?.semantic?.expression
-      ? sourceOf(node.semantic.expression.source)
-      : null;
+    const expressionSource = node?.semantic?.expression ? sourceOf(node.semantic.expression.source) : null;
     const conditionSource = (() => {
       const rows = sourceOf(node.source).rows.map(Number);
       const candidates = [...new Set(rows.map((row) => conditions.get(row)).filter(Boolean))];
@@ -319,13 +307,8 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     const sources = [node?.source, expressionSource, conditionSource].filter(Boolean);
     const source = sources.length === 1 ? sources[0] : mergeSource(...sources);
     return {
-      kind:node.kind,
-      indent:node.indent,
-      text:node.text,
-      row:source.rows?.[0] ?? null,
-      addr:source.addresses?.[0] ?? null,
-      note:null,
-      source,
+      kind:node.kind, indent:node.indent, text:node.text,
+      row:source.rows?.[0] ?? null, addr:source.addresses?.[0] ?? null, note:null, source,
     };
   });
   const withLines = {
@@ -335,26 +318,14 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     sourceMap:printed.mapping,
     metrics:refreshMetrics(result, result.semanticAst, printed, records),
     phase8Projection:Object.freeze({
-      version:1,
-      transformCount:records.length,
-      transforms:Object.freeze(records),
+      version:1, transformCount:records.length, transforms:Object.freeze(records),
       inductionNames:Object.freeze(Object.fromEntries(names)),
     }),
   };
-  // HEX-C4-03: bidirectional render provenance. Caller-supplied identity may
-  // only be used when it is a validated wrapper that exactly matches the
-  // canonical identity derived from the current Semantic IR. Stale/plain
-  // overrides fall back to the canonical result instead of minting snapshot
-  // authority for a different IR.
   const resolvedIdentity = boundAnalysisIdentity(result, analysis, opts.analysisIdentity);
   const renderProvenance = buildRenderProvenance({
-    result:withLines,
-    snapshotId:resolvedIdentity?.identity?.snapshotId ?? null,
-    budget:opts.renderProvenanceBudget,
-    shouldAbort:opts.shouldAbort,
+    result:withLines, snapshotId:resolvedIdentity?.identity?.snapshotId ?? null,
+    budget:opts.renderProvenanceBudget, shouldAbort:opts.shouldAbort,
   });
-  return {
-    ...withLines,
-    renderProvenance,
-  };
+  return { ...withLines, renderProvenance };
 }

@@ -42,11 +42,14 @@ assert.deepEqual(
 );
 assert.equal(normalizeRangeDomain({ min:-1n, max:1n, bits:32, signed:true }, 32, false), null);
 
-// #3293: structured/non-number bit widths must not be coerced into valid widths.
-assert.equal(normalizeIntegerValue(0x1ffn, '8', false), 0x1ffn);
+// #6155: the fail-closed contract — an explicitly invalid width (including
+// numeric strings and other structured values) is rejected outright (TypeError)
+// instead of being repaired to the 64-bit default; only an omitted (nullish)
+// width keeps that default.
+assert.throws(() => normalizeIntegerValue(0x1ffn, '8', false), TypeError);
 assert.equal(normalizeIntegerValue(0x1ffn, 8, false), 0xffn);
 for (const bits of ['8', true, [32], { valueOf: () => 16 }, NaN, Infinity, 0, -1, 65, 1.5]) {
-  assert.equal(rangeWithDomain(0n, 1n, bits, false).bits, 64);
+  assert.throws(() => rangeWithDomain(0n, 1n, bits, false), TypeError, `bits ${String(bits)}`);
 }
 for (const bits of [1, 8, 32, 64]) {
   assert.equal(rangeWithDomain(0n, 1n, bits, false).bits, bits);

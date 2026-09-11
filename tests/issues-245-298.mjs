@@ -9,7 +9,7 @@ import { fitCalibration } from '../js/calib.js';
 // different package version behind the workflow's back.
 {
   const workflow = fs.readFileSync(new URL('../.github/workflows/ui-regression.yml', import.meta.url), 'utf8');
-  assert.match(workflow, /playwright@1\.55\.0/);
+  assert.match(workflow, /playwright@1\.62\.1/);
   assert.match(workflow, /npx --no-install playwright install/);
   assert.doesNotMatch(workflow, /npm install --no-save playwright\s*$/m);
 }

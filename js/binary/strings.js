@@ -17,11 +17,11 @@ function utf8At(bytes, p, end) {
   if(cp<min || cp>0x10ffff || (cp>=0xd800&&cp<=0xdfff)) return null;
   return {cp,bytes:n};
 }
-function utf16At(bytes,p,end){
+function utf16At(bytes,p,end,be){
   if(p+2>end) return null;
-  const u=bytes[p]|(bytes[p+1]<<8);
+  const u=be?(bytes[p]<<8)|bytes[p+1]:bytes[p]|(bytes[p+1]<<8);
   if(u>=0xd800&&u<=0xdbff){
-    if(p+4>end) return null; const v=bytes[p+2]|(bytes[p+3]<<8);
+    if(p+4>end) return null; const v=be?(bytes[p+2]<<8)|bytes[p+3]:bytes[p+2]|(bytes[p+3]<<8);
     if(v<0xdc00||v>0xdfff) return null;
     return {cp:0x10000+((u-0xd800)<<10)+(v-0xdc00),bytes:4};
   }
@@ -31,6 +31,17 @@ function utf16At(bytes,p,end){
 function finiteOption(value,fallback){
   const candidate=value===0?0:(value||fallback), n=Number(candidate);
   return Number.isFinite(n)?n:fallback;
+}
+function resultLimitOption(value){
+  const raw=typeof value==='number'&&Number.isFinite(value)?value:200_000;
+  return Math.max(1,Math.min(1_000_000,Math.floor(raw)));
+}
+function chooseUtf16Encodings(image,option){
+  if(option===false) return [];
+  if(option==='be'||option==='utf16be'||option==='utf-16be') return ['utf16be'];
+  if(option==='le'||option==='utf16le'||option==='utf-16le') return ['utf16le'];
+  if(option==='both') return ['utf16le','utf16be'];
+  return [image?.endian==='big'?'utf16be':'utf16le'];
 }
 function fileRange(item, limit){
   const start=Number(item?.fileOffset??0), size=Number(item?.fileSize??0);
@@ -80,28 +91,32 @@ function mappedScanRanges(image,byteLength,includeExecutable){
 
 export function scanStrings(image, opts = {}) {
   const min=Math.max(2,finiteOption(opts.minLength,4)), max=Math.max(min,finiteOption(opts.maxLength,4096));
-  const includeUtf16=opts.utf16!==false, includeExecutable=opts.includeExecutable===true;
+  const limit=resultLimitOption(opts.limit), utf16Encodings=chooseUtf16Encodings(image,opts.utf16), includeExecutable=opts.includeExecutable===true;
   const bytes=image.bytes; if(!bytes) return [];
   const ranges=mappedScanRanges(image,bytes.length,includeExecutable);
   const out=[], seen=new Set();
   for(const range of ranges){
+    if(out.length>=limit) break;
     const start=Math.max(0,range.start), end=Math.min(bytes.length,start+Math.max(0,range.size));
-    for(let p=start;p<end;){
+    for(let p=start;p<end&&out.length<limit;){
       const first=utf8At(bytes,p,end); if(!first||!printableCodePoint(first.cp)){p++;continue;}
       const s=p; let q=p, chars=0;
       while(q<end&&chars<max){ const x=utf8At(bytes,q,end); if(!x||!printableCodePoint(x.cp)) break; q+=x.bytes; chars++; }
       if(chars>=min) emit(image,out,seen,s,q-s,'utf8',range.section);
       p=Math.max(chars>=max?q:q+(q<end?1:0),p+1);
     }
-    if(!includeUtf16) continue;
-    for(let parity=0;parity<2;parity++){
-      let p=start + ((parity - (start & 1) + 2) & 1);
-      while(p+1<end){
-        const first=utf16At(bytes,p,end); if(!first||!printableCodePoint(first.cp)){p+=2;continue;}
-        const s=p; let q=p, chars=0;
-        while(q+1<end&&chars<max){ const x=utf16At(bytes,q,end); if(!x||!printableCodePoint(x.cp)) break; q+=x.bytes; chars++; }
-        if(chars>=min) emit(image,out,seen,s,q-s,'utf16le',range.section);
-        p=Math.max(chars>=max?q:q+(q<end?2:0),p+2);
+    for(const encoding of utf16Encodings){
+      if(out.length>=limit) break;
+      const be=encoding==='utf16be';
+      for(let parity=0;parity<2&&out.length<limit;parity++){
+        let p=start + ((parity - (start & 1) + 2) & 1);
+        while(p+1<end&&out.length<limit){
+          const first=utf16At(bytes,p,end,be); if(!first||!printableCodePoint(first.cp)){p+=2;continue;}
+          const s=p; let q=p, chars=0;
+          while(q+1<end&&chars<max){ const x=utf16At(bytes,q,end,be); if(!x||!printableCodePoint(x.cp)) break; q+=x.bytes; chars++; }
+          if(chars>=min) emit(image,out,seen,s,q-s,encoding,range.section);
+          p=Math.max(chars>=max?q:q+(q<end?2:0),p+2);
+        }
       }
     }
   }
@@ -110,6 +125,6 @@ export function scanStrings(image, opts = {}) {
 function emit(image,out,seen,fileOffset,byteLength,encoding,section){
   const key=`${fileOffset}:${encoding}`; if(seen.has(key)) return; seen.add(key);
   const raw=image.bytes.subarray(fileOffset,fileOffset+byteLength);
-  let text; try { text=new TextDecoder(encoding==='utf16le'?'utf-16le':'utf-8',{fatal:true}).decode(raw); } catch { return; }
+  let text; try { text=new TextDecoder(encoding==='utf16le'?'utf-16le':encoding==='utf16be'?'utf-16be':'utf-8',{fatal:true}).decode(raw); } catch { return; }
   out.push({text,encoding,fileOffset:BigInt(fileOffset),address:image.offsetToAddress(BigInt(fileOffset)),byteLength,section});
 }

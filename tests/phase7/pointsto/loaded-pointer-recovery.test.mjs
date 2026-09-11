@@ -4,7 +4,7 @@ import test from 'node:test';
 import { createSemanticCfg } from '../../../js/semantics/cfg/index.js';
 import { createSemanticIrFunction } from '../../../js/semantics/ir/function.js';
 import { buildSemanticSsa } from '../../../js/semantics/ssa/build.js';
-import { buildMemorySsa } from '../../../js/semantics/memoryssa/build.js';
+import { MEMORY_SSA_BUILD_VERSION, buildMemorySsa } from '../../../js/semantics/memoryssa/build.js';
 import { reachingConcreteStore } from '../../../js/semantics/memoryssa/queries.js';
 import { classifySemanticMemoryRegion } from '../../../js/analysis/alias/regions-v2.js';
 import { A2_ANALYZER_VERSION, analyzeLocalPointsTo } from '../../../js/analysis/pointsto/local.js';
@@ -13,6 +13,7 @@ import {
   createPhase7AliasSolver,
 } from '../../../js/analysis/alias/solver.js';
 import { pointsToDigest } from '../../../js/analysis/pointsto/lattice.js';
+import { createFunctionSummary } from '../../../js/analysis/summary/contract.js';
 import { stableDigest } from '../../../js/core/identity/index.js';
 import {
   PHASE7_ANALYSIS_CONTRACT_VERSION,
@@ -21,7 +22,7 @@ import {
 
 const origin = (id) => ({ instructionIds: [`instruction_${id}`] });
 
-function loadedPointerFixture({ unknownCall = false } = {}) {
+function loadedPointerFixture({ unknownCall = false, twoPointerRoots = false, allocationPointer = false, allocationOffset = '0' } = {}) {
   const functionId = 'function_loaded_pointer_recovery';
   const blockId = 'entry';
   const nodes = [
@@ -103,6 +104,36 @@ function loadedPointerFixture({ unknownCall = false } = {}) {
       origin: origin('node_load'),
     },
   ];
+  if (allocationPointer) {
+    const pointerIndex = nodes.findIndex((node) => node.id === 'node_pointer');
+    assert.notEqual(pointerIndex, -1, 'allocation fixture must contain the pointer node');
+    nodes[pointerIndex] = {
+      id: 'node_pointer',
+      kind: 'call',
+      blockId,
+      inputs: [],
+      outputs: ['pointer'],
+      call: {
+        targetValueIds: [],
+        targetEntityIds: ['callee_alloc'],
+        arguments: [],
+        returns: ['pointer'],
+        stateReads: [],
+        stateWrites: [],
+        memoryRead: { scope: 'none' },
+        memoryWrite: { scope: 'none' },
+        controlEffects: [],
+        determinism: 'deterministic',
+        noreturn: false,
+        mayThrow: false,
+        summarySource: 'issue-4122-fixture',
+        completeness: 'complete',
+      },
+      completeness: 'complete',
+      origin: origin('node_pointer'),
+    };
+  }
+
   if (unknownCall) {
     nodes.splice(nodes.findIndex((node) => node.id === 'node_load'), 0, {
       id: 'node_call_unknown',
@@ -132,6 +163,55 @@ function loadedPointerFixture({ unknownCall = false } = {}) {
       origin: origin('node_call_unknown'),
     });
   }
+
+  if (twoPointerRoots) {
+    const pointerIndex = nodes.findIndex((node) => node.id === 'node_pointer');
+    assert.notEqual(pointerIndex, -1, 'two-root fixture must contain the pointer node');
+    const pointerBase = nodes[pointerIndex];
+    nodes.splice(pointerIndex, 1,
+      {
+        ...pointerBase,
+        id: 'node_pointer_base',
+        outputs: ['pointer_base'],
+        origin: origin('node_pointer_base'),
+      },
+      {
+        id: 'node_alternate_base',
+        kind: 'state-read',
+        blockId,
+        inputs: [],
+        outputs: ['alternate_base'],
+        variable: { key: 'state:fp', kind: 'physical-state', scope: 'function' },
+        origin: origin('node_alternate_base'),
+      },
+      {
+        id: 'node_alternate_pointer',
+        kind: 'binary',
+        blockId,
+        inputs: ['alternate_base', 'target_offset'],
+        outputs: ['alternate_pointer'],
+        operator: 'add',
+        origin: origin('node_alternate_pointer'),
+      },
+      {
+        id: 'node_pointer_choice',
+        kind: 'const',
+        blockId,
+        inputs: [],
+        outputs: ['pointer_choice'],
+        attributes: { constant: { value: '0', widthBits: 1 } },
+        origin: origin('node_pointer_choice'),
+      },
+      {
+        id: 'node_pointer',
+        kind: 'select',
+        blockId,
+        inputs: ['pointer_choice', 'pointer_base', 'alternate_pointer'],
+        outputs: ['pointer'],
+        origin: origin('node_pointer'),
+      },
+    );
+  }
   const addressType = { kind: 'address', widthBits: 64, addressSpace: 'memory' };
   const values = [
     { id: 'base', kind: 'definition', machineType: addressType, definitionNodeId: 'node_base', origin: origin('base') },
@@ -141,6 +221,17 @@ function loadedPointerFixture({ unknownCall = false } = {}) {
     { id: 'pointer', kind: 'definition', machineType: addressType, definitionNodeId: 'node_pointer', origin: origin('pointer') },
     { id: 'loaded', kind: 'definition', machineType: addressType, definitionNodeId: 'node_load', origin: origin('loaded') },
   ];
+  if (twoPointerRoots) {
+    const pointerIndex = values.findIndex((value) => value.id === 'pointer');
+    const pointer = values[pointerIndex];
+    values.splice(pointerIndex, 1,
+      { ...pointer, id: 'pointer_base', definitionNodeId: 'node_pointer_base', origin: origin('pointer_base') },
+      { id: 'alternate_base', kind: 'definition', machineType: addressType, definitionNodeId: 'node_alternate_base', origin: origin('alternate_base') },
+      { id: 'alternate_pointer', kind: 'definition', machineType: addressType, definitionNodeId: 'node_alternate_pointer', origin: origin('alternate_pointer') },
+      { id: 'pointer_choice', kind: 'definition', machineType: { kind: 'bitvector', widthBits: 1 }, definitionNodeId: 'node_pointer_choice', origin: origin('pointer_choice') },
+      pointer,
+    );
+  }
   const ir = createSemanticIrFunction({
     functionId,
     entryBlockId: blockId,
@@ -182,7 +273,7 @@ function loadedPointerFixture({ unknownCall = false } = {}) {
     scalarSsaBuildVersion: '1.0.0',
     scalarSsaDigest,
     memorySsaId: 'mssa-loaded-pointer-fixture',
-    memorySsaBuildVersion: '1.0.0',
+    memorySsaBuildVersion: MEMORY_SSA_BUILD_VERSION,
     analyzerVersion: 'memoryssa-fixture',
   };
   const memorySsa = buildMemorySsa(ir, cfg, {
@@ -204,7 +295,23 @@ function loadedPointerFixture({ unknownCall = false } = {}) {
     assert.ok(reachingStore, 'fixture must contain one exact reaching store proof');
     assert.equal(reachingStore.sourceEntityId, 'node_store');
   }
-  return { ir, cfg, ssa, memorySsa };
+  const calleeSummary = allocationPointer ? createFunctionSummary({
+    functionId: 'callee_alloc',
+    returnProvenance: [{
+      kind: 'allocation',
+      returnIndex: 0,
+      allocationSiteId: 'alloc-site-1',
+      offset: allocationOffset,
+      addressSpace: 'memory',
+    }],
+    status: {
+      snapshotId,
+      analyzerId: 'issue-4122-summary',
+      analyzerVersion: '1',
+      completeness: 'complete',
+    },
+  }) : null;
+  return { ir, cfg, ssa, memorySsa, calleeSummary };
 }
 
 function cloneMemorySsa(built, mutate = () => {}) {
@@ -493,7 +600,16 @@ test('cancellation, iteration, value, and target limits publish no refined point
   assert.equal(valueLimited.status.completeness, 'unsupported');
   assert.equal(valueLimited.pointsTo.size, 0);
 
-  const targetLimited = runWithMemory(built, built.memorySsa, { budget: { maxTargetsPerSet: 0 } });
+  const targetLimitedBuilt = loadedPointerFixture({ twoPointerRoots: true });
+  const targetLimitBaseline = runWithMemory(targetLimitedBuilt, targetLimitedBuilt.memorySsa);
+  const baselinePointer = targetLimitBaseline.pointsTo.get('pointer');
+  assert.equal(baselinePointer.top, false);
+  assert.equal(baselinePointer.targets.length, 2,
+    'the target-cap regression must start with two distinct pointer roots');
+  assert.notEqual(baselinePointer.targets[0].rootKey, baselinePointer.targets[1].rootKey);
+  const targetLimited = runWithMemory(targetLimitedBuilt, targetLimitedBuilt.memorySsa, {
+    budget: { maxTargetsPerSet: 1 },
+  });
   assertUnresolved(targetLimited, 'unresolved-load');
   assert.ok(targetLimited.pointsTo.get('pointer').lossReasons.includes('target-cap'));
   assert.ok(targetLimited.pointsTo.get('loaded').lossReasons.includes('target-cap'));
@@ -574,4 +690,62 @@ test('the public analysis surface observes exact and conservative loaded pointer
     snapshotId: 'snapshot-loaded-pointer-fixture',
   });
   assertUnresolved(negative.pointsTo(), 'unresolved-load');
+});
+
+
+test('#4122 exact MemorySSA spill/reload preserves allocation return provenance', () => {
+  const built = loadedPointerFixture({ allocationPointer: true });
+  const result = analyzeLocalPointsTo(built.ir, built.cfg, built.ssa, {
+    snapshotId: 'snapshot-loaded-pointer-fixture',
+    memorySsa: built.memorySsa,
+    summaries: new Map([['callee_alloc', built.calleeSummary]]),
+    summaryAnalyzerId: 'issue-4122-summary',
+    summaryAnalyzerVersion: '1',
+  });
+  const pointer = result.pointsTo.get('pointer');
+  const loaded = result.pointsTo.get('loaded');
+  assert.equal(pointer.top, false);
+  assert.equal(pointer.targets.length, 1);
+  assert.equal(pointer.targets[0].rootKind, 'allocation');
+  assert.equal(pointer.targets[0].rootEntityId, 'alloc-site-1');
+  assert.equal(loaded.top, false, 'exact allocation pointers are valid stored-pointer provenance');
+  assert.deepEqual(loaded.targets, pointer.targets);
+  assert.equal(result.recovery?.proofs?.loaded?.storeNodeId, 'node_store');
+});
+
+test('#4122 non-zero allocation return offsets survive exact spill/reload', () => {
+  const built = loadedPointerFixture({ allocationPointer: true, allocationOffset: '24' });
+  const result = analyzeLocalPointsTo(built.ir, built.cfg, built.ssa, {
+    snapshotId: 'snapshot-loaded-pointer-fixture',
+    memorySsa: built.memorySsa,
+    summaries: new Map([['callee_alloc', built.calleeSummary]]),
+    summaryAnalyzerId: 'issue-4122-summary',
+    summaryAnalyzerVersion: '1',
+  });
+  const pointer = result.pointsTo.get('pointer');
+  const loaded = result.pointsTo.get('loaded');
+  assert.equal(pointer.top, false);
+  assert.deepEqual(pointer.targets[0].offsetRange, { min: 24n, max: 24n, exact: true });
+  assert.equal(loaded.top, false);
+  assert.deepEqual(loaded.targets, pointer.targets);
+});
+
+test('#4122 allocation provenance still requires exact MemorySSA alias proof', () => {
+  const built = loadedPointerFixture({ allocationPointer: true });
+  const mayAlias = cloneMemorySsa(built, (memorySsa) => {
+    const use = memorySsa.uses.find((item) => item.sourceEntityId === 'node_load');
+    use.aliasRelation = 'may';
+  });
+  const result = analyzeLocalPointsTo(built.ir, built.cfg, built.ssa, {
+    snapshotId: 'snapshot-loaded-pointer-fixture',
+    memorySsa: mayAlias,
+    summaries: new Map([['callee_alloc', built.calleeSummary]]),
+    summaryAnalyzerId: 'issue-4122-summary',
+    summaryAnalyzerVersion: '1',
+  });
+  const pointer = result.pointsTo.get('pointer');
+  assert.equal(pointer.top, false);
+  assert.equal(pointer.targets[0].rootKind, 'allocation');
+  assertUnresolved(result, 'unresolved-load');
+  assert.equal(result.recovery?.proofs?.loaded, undefined);
 });

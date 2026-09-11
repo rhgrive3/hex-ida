@@ -101,6 +101,39 @@ function schedulerDescriptor(name, upstreamArtifactIds = []) {
   assert.equal(calls, 2, 'structured address must not alias the bigint address cache key');
   await memoized(1n, null);
   assert.equal(calls, 2, 'primitive address still hits the cache');
+
+  let canonicalStructuredCalls = 0;
+  const canonicalStructured = memoizeAnalysis(async () => ({ call: ++canonicalStructuredCalls }));
+  const structuredA = await canonicalStructured({ id: 'stable' }, null);
+  const structuredB = await canonicalStructured({ id: 'stable' }, null);
+  assert.equal(canonicalStructuredCalls, 1, 'equivalent canonical structured values must retain digest caching');
+  assert.equal(structuredA.call, structuredB.call, 'canonical structured cache result must remain reusable');
+
+  const addressA = { id: 'a' };
+  addressA.self = addressA;
+  const addressB = { id: 'b' };
+  addressB.self = addressB;
+  let cyclicAddressCalls = 0;
+  const cyclicAddresses = memoizeAnalysis(async (addr) => ({ id: addr.id, call: ++cyclicAddressCalls }));
+  const resultA = await cyclicAddresses(addressA, null);
+  const resultB = await cyclicAddresses(addressB, null);
+  assert.equal(cyclicAddressCalls, 2, 'distinct cyclic addresses must not share an opaque cache key');
+  assert.equal(resultA.id, 'a', 'cyclic address A must reach the analyzer');
+  assert.equal(resultB.id, 'b', 'cyclic address B must reach the analyzer');
+  await cyclicAddresses(addressA, null);
+  assert.equal(cyclicAddressCalls, 3, 'uncanonicalizable cyclic addresses must bypass caching');
+
+  const endA = { id: 'end-a' };
+  endA.self = endA;
+  const endB = { id: 'end-b' };
+  endB.self = endB;
+  let cyclicEndCalls = 0;
+  const cyclicEnds = memoizeAnalysis(async (_addr, end) => ({ id: end.id, call: ++cyclicEndCalls }));
+  const endResultA = await cyclicEnds(1n, endA);
+  const endResultB = await cyclicEnds(1n, endB);
+  assert.equal(cyclicEndCalls, 2, 'distinct cyclic end values must not share an opaque cache key');
+  assert.equal(endResultA.id, 'end-a', 'cyclic end A must reach the analyzer');
+  assert.equal(endResultB.id, 'end-b', 'cyclic end B must reach the analyzer');
 }
 
 // #3344 — EvidenceStore.ingestPlan exact-identity verified authority.

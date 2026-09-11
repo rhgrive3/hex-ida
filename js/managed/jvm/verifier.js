@@ -1,3 +1,5 @@
+import { validateJvmMethodFlags } from './method-flags.js';
+
 function asNonNegativeInteger(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
@@ -343,14 +345,48 @@ export function verifyJvmMethod(decoded, options = {}) {
 
   const metadata = decoded.metadata ?? {};
   const accessFlags = Number.isInteger(metadata.accessFlags) ? metadata.accessFlags : null;
+  const ownerAccessFlags = Number.isInteger(metadata.ownerAccessFlags)
+    ? metadata.ownerAccessFlags
+    : Number.isInteger(options.image?.accessFlags)
+      ? options.image.accessFlags
+      : null;
   const descriptorText = typeof metadata.descriptor === 'string' ? metadata.descriptor : null;
   const isStatic = accessFlags != null && (accessFlags & 0x0008) !== 0;
   const descriptor = parseMethodDescriptor(descriptorText, isStatic);
   if (!descriptor) errors.push({ code: 'jvm-invalid-method-descriptor' });
-  if (metadata.methodName === '<init>') unsupported.add('constructor-initialization-verification');
+  const methodName = typeof metadata.methodName === 'string' ? metadata.methodName : null;
+  if (methodName === '<init>') unsupported.add('constructor-initialization-verification');
+  // JVMS §4.6 special-method descriptor contract re-checked here so a caller
+  // that bypasses the parser cannot launder a malformed special descriptor
+  // into spec-valid (#7321). Void-only for <init>/<clinit>; <clinit> on
+  // major >= 51 takes no parameters.
+  if (methodName === '<init>' || methodName === '<clinit>') {
+    const classMajorVersion = Number.isInteger(metadata.classMajorVersion) ? metadata.classMajorVersion : null;
+    if (descriptor && descriptor.returns.kind !== 'void') {
+      errors.push({ code: 'jvm-special-method-descriptor-not-void' });
+    } else if (methodName === '<clinit>' && descriptor) {
+      const parameterCount = descriptor.parameterSlots - (isStatic ? 0 : 1);
+      if (classMajorVersion == null) unsupported.add('class-version-evidence-missing');
+      else if (classMajorVersion >= 51 && parameterCount > 0) {
+        errors.push({ code: 'jvm-clinit-parameters-forbidden' });
+      }
+    } else if (methodName === '<clinit>' && classMajorVersion == null) {
+      unsupported.add('class-version-evidence-missing');
+    }
+  }
 
   const isNative = accessFlags != null && (accessFlags & 0x0100) !== 0;
   const isAbstract = accessFlags != null && (accessFlags & 0x0400) !== 0;
+  if (accessFlags != null) {
+    const classMajor = Number.isInteger(metadata.classMajorVersion) ? metadata.classMajorVersion : null;
+    const flagValidation = validateJvmMethodFlags(accessFlags, {
+      methodName,
+      ownerAccessFlags,
+      majorVersion: classMajor,
+    });
+    for (const code of flagValidation.errors) errors.push({ code });
+    for (const code of flagValidation.unsupported) unsupported.add(code);
+  }
   const hasCode = metadata.hasCode === true;
   if (metadata.hasCode !== true && metadata.hasCode !== false) unsupported.add('method-code-cardinality-metadata-missing');
   else if ((isNative || isAbstract) && hasCode) errors.push({ code: 'jvm-code-forbidden-by-access-flags' });
@@ -399,6 +435,19 @@ export function verifyJvmMethod(decoded, options = {}) {
     for (const unknown of bundle.unknownEffects ?? []) {
       if (unknown?.reason !== 'invalid-jvm-branch-target') continue;
       errors.push({ code: 'jvm-invalid-branch-target', offset: bundle.bytecodeOffset, target: null });
+    }
+    // Same authority split for local-variable accesses (#5394): the lifter
+    // withholds an out-of-frame location access and reports it as an unknown
+    // effect; the verifier owns the max_locals boundary and fails the method.
+    for (const unknown of bundle.unknownEffects ?? []) {
+      if (typeof unknown?.reason !== 'string' || !unknown.reason.startsWith('jvm-local-index-out-of-frame:')) continue;
+      const [, indexText, slotsText] = unknown.reason.split(':');
+      errors.push({
+        code: 'jvm-local-index-out-of-range',
+        offset: bundle.bytecodeOffset,
+        index: indexText != null && indexText !== '' ? Number(indexText) : null,
+        slots: slotsText != null && slotsText !== '' ? Number(slotsText) : null,
+      });
     }
     for (const access of [...(bundle.locationReads ?? []), ...(bundle.locationWrites ?? [])]) {
       if (access?.kind !== 'local') continue;

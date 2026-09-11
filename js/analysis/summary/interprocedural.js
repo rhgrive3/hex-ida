@@ -24,6 +24,7 @@
  */
 
 import { createAnalysisStatus, mergeAnalysisStatus, weakestCompleteness } from '../status.js';
+import { mergeOriginSets } from '../../core/identity/origin.js';
 import {
   EFFECT_SOURCES,
   createFunctionSummary,
@@ -33,7 +34,7 @@ import {
 } from './contract.js';
 
 export const INTERPROCEDURAL_ANALYZER_ID = 'phase7.summary.interprocedural';
-export const INTERPROCEDURAL_ANALYZER_VERSION = '1.2.0';
+export const INTERPROCEDURAL_ANALYZER_VERSION = '1.3.0';
 
 export const INTERPROCEDURAL_DEFAULT_BUDGET = Object.freeze({
   maxIterationsPerComponent: 16,
@@ -110,8 +111,8 @@ export function condenseCallGraph(roots, successorsOf, {
           component.push(member);
           if (member === frame.node) break;
         }
+        if (components.length >= maxComponents) { truncated = true; return { components, truncated }; }
         components.push(component.sort());
-        if (components.length > maxComponents) { truncated = true; return { components, truncated }; }
       }
       work.pop();
       if (work.length) {
@@ -126,9 +127,6 @@ export function condenseCallGraph(roots, successorsOf, {
 function broadEffect(source, addressSpaces = ['memory']) {
   return createMemoryEffect({ regionKind: 'unknown', broad: true, addressSpaces, source });
 }
-
-/** Authority rank: lower wins, because proven evidence outranks a model. */
-const SOURCE_AUTHORITY_RANK = new Map(EFFECT_SOURCES.map((source, index) => [source, index]));
 
 /**
  * Versioned external-model wire contract. A model is authority only when its
@@ -263,6 +261,9 @@ export function validateLibraryModel(model, { targetEntityId, snapshotId } = {})
   }
 }
 
+/** Authority rank: lower wins, because proven evidence outranks a model. */
+const SOURCE_AUTHORITY_RANK = new Map(EFFECT_SOURCES.map((source, index) => [source, index]));
+
 function strongestSource(left, right) {
   const leftRank = SOURCE_AUTHORITY_RANK.get(left) ?? SOURCE_AUTHORITY_RANK.size;
   const rightRank = SOURCE_AUTHORITY_RANK.get(right) ?? SOURCE_AUTHORITY_RANK.size;
@@ -293,6 +294,13 @@ function mergeEscapes(values) {
     .map(([, escape]) => escape);
 }
 
+
+function mergedRegionProof(left, right) {
+  if (!left || !right || left.id !== right.id || left.kind !== right.kind) return null;
+  try { return { ...left, origin: mergeOriginSets(left.origin, right.origin) }; }
+  catch { return null; }
+}
+
 function mergeEffects(lists, cap) {
   const effectiveCap = Number.isSafeInteger(cap) && cap >= 1 ? cap : 1;
   const byKey = new Map();
@@ -319,6 +327,7 @@ function mergeEffects(lists, cap) {
     byKey.set(key, createMemoryEffect({
       regionId: effect.regionId,
       regionKind: effect.regionKind,
+      region: mergedRegionProof(prior.region ?? null, effect.region ?? null),
       broad: false,
       addressSpaces: [...new Set([...prior.addressSpaces, ...effect.addressSpaces])].sort(),
       source: strongestSource(prior.source, effect.source),
@@ -384,12 +393,23 @@ export function solveInterproceduralSummaries({
     return { summaries: new Map(), components: [], status: status('partial', 'cancelled'), iterations: 0 };
   }
 
+  // A summary is usable for a function only when the map key and the
+  // producer-declared identity agree. A mis-keyed reachable callee is treated
+  // as missing evidence so its caller takes the conservative unknown-call
+  // path; only a requested root is rejected outright (#6208).
+  const isValidLocal = (functionId) => {
+    const local = locals.get(functionId);
+    return !!local && local.functionId === functionId;
+  };
   const calleesOf = (functionId) => {
     const local = locals.get(functionId);
-    if (!local) return [];
+    if (!isValidLocal(functionId)) return [];
     const direct = local.directCalls.flatMap((call) => call.targetEntityIds);
     const indirect = local.indirectCallSets.flatMap((set) => set.candidateEntityIds);
-    return [...new Set([...direct, ...indirect])].filter((id) => locals.has(id));
+    return [...new Set([...direct, ...indirect])].filter(isValidLocal);
+  };
+  for (const root of roots) {
+    if (!isValidLocal(root)) fail('interprocedural-local-summary-identity-mismatch');
   };
 
   const { components, truncated, cancelled } = condenseCallGraph(roots, calleesOf, {
@@ -479,11 +499,47 @@ export function solveInterproceduralSummaries({
 function composeSummary({ functionId, locals, models, solved, component, limits, status, snapshotId, unconverged = false }) {
   const local = locals.get(functionId);
   if (!local) fail('interprocedural-missing-local-summary');
+  if (local.functionId !== functionId) fail('interprocedural-local-summary-identity-mismatch');
 
-  const reads = [local.memoryReadRegions];
-  const writes = [local.memoryWriteRegions];
-  const unknowns = [...local.unknownCallEffects];
-  const statuses = [local.status];
+  // A local P7-3a summary records a placeholder for every call it could not
+  // resolve: an `unknownCallEffect` plus broad fallback memory effects. Once
+  // the callee is solved, that placeholder must be *replaced* by the callee's
+  // proven effects, not unioned with them — inheriting both keeps the call
+  // boundary open forever and pins every upstream summary conservative
+  // (#5851). A call site counts as resolved only when every one of its targets
+  // has a solved summary; a model-covered or still-unknown target keeps the
+  // local fallback in place.
+  const resolvedCallSites = new Set();
+  // A summary can exist in the solve map while still being partial (for
+  // example, because its own callee or memory evidence is unresolved). Such a
+  // summary is not enough to replace this caller's conservative fallback: only
+  // a complete callee proves that the call boundary is closed.
+  const isCompleteSolved = (target) => solved.get(target)?.status?.completeness === 'complete';
+  for (const call of local.directCalls) {
+    if (call.targetEntityIds.length > 0 && call.targetEntityIds.every(isCompleteSolved)) {
+      resolvedCallSites.add(call.callSiteId);
+    }
+  }
+  for (const set of local.indirectCallSets) {
+    if (set.exhaustive && set.candidateEntityIds.length > 0
+      && set.candidateEntityIds.every(isCompleteSolved)) {
+      resolvedCallSites.add(set.callSiteId);
+    }
+  }
+  // Local fallback effects are only replaceable when every unknown the local
+  // pass recorded points at a resolved call site. An unknown from any other
+  // node — an unresolved memory effect, a stale identity, a non-exhaustive
+  // candidate set — keeps the whole local fallback, because the broad effects
+  // are not attributable per call site and dropping them would claim more
+  // than the solve proved.
+  const replaceCallFallbacks = local.unknownCallEffects.length > 0
+    && local.unknownCallEffects.every((unknown) => resolvedCallSites.has(unknown.callSiteId));
+  const notCallFallback = (effect) => effect.source !== 'unknown-call-fallback';
+
+  const reads = [replaceCallFallbacks ? local.memoryReadRegions.filter(notCallFallback) : local.memoryReadRegions];
+  const writes = [replaceCallFallbacks ? local.memoryWriteRegions.filter(notCallFallback) : local.memoryWriteRegions];
+  const unknowns = replaceCallFallbacks ? [] : [...local.unknownCallEffects];
+  const calleeStatuses = [];
   const noreturn = [local.noreturn];
   const mayThrow = [local.mayThrow];
   const escapes = [...local.escapes];
@@ -497,7 +553,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     unknowns.push(...callee.unknownCallEffects);
     noreturn.push(callee.noreturn);
     mayThrow.push(callee.mayThrow);
-    statuses.push(callee.status);
+    calleeStatuses.push(callee.status);
   };
 
   for (const call of local.directCalls) {
@@ -632,6 +688,6 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     mayThrow: hasUnknown ? 'unknown' : unionKnowledge(mayThrow),
     stackDelta: local.stackDelta,
     semanticFacts: local.semanticFacts,
-    status: statuses.length > 1 ? mergeAnalysisStatus(localStatus, statuses.slice(1)) : localStatus,
+    status: calleeStatuses.length ? mergeAnalysisStatus(localStatus, calleeStatuses) : localStatus,
   });
 }

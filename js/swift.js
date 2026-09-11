@@ -118,9 +118,25 @@ export async function readSwiftMangledName(read, address, options = {}) {
   };
 }
 function contextKind(flags) { switch (flags & 0x1f) { case 0:return 'module'; case 1:return 'extension'; case 2:return 'anonymous'; case 3:return 'protocol'; case 16:return 'class'; case 17:return 'struct'; case 18:return 'enum'; default:return 'unknown'; } }
+/* Section descriptor addresses/sizes come from loader-recovered Mach-O
+   metadata, so they must be canonical non-negative values: non-negative
+   bigint, non-negative safe integer, or an explicit decimal/hex string.
+   Anything else must not reach BigInt(), whose raw SyntaxError would abort
+   the whole Swift metadata analysis instead of degrading one scan (#5857). */
+function canonicalSectionValue(value) {
+  if (typeof value === 'bigint' && value >= 0n) return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (/^(?:0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(text)) {
+      try { return BigInt(text); } catch { return null; }
+    }
+  }
+  return null;
+}
 function sectionRange(sections, wanted) {
   const list = Array.isArray(sections) ? sections : Object.values(sections || {});
-  for (const s of list) { const name = s.section || s.name || s.sectname; if (!wanted.includes(name)) continue; const addr = s.vmAddr ?? s.addr ?? s.address, size = s.size ?? s.declaredSize ?? 0; if (addr != null && size != null) return { addr: BigInt(addr), size: BigInt(size), raw: s }; }
+  for (const s of list) { const name = s.section || s.name || s.sectname; if (!wanted.includes(name)) continue; const addr = s.vmAddr ?? s.addr ?? s.address, size = s.size ?? s.declaredSize ?? 0; if (addr != null && size != null) { const addrBig = canonicalSectionValue(addr), sizeBig = canonicalSectionValue(size); if (addrBig == null || sizeBig == null) return { invalid: true, raw: s }; return { addr: addrBig, size: sizeBig, raw: s }; } }
   return null;
 }
 /*
@@ -189,6 +205,20 @@ export async function parseSwiftNominalDescriptor(read, address) {
   if (kind === 'class') {
     const tail = await exact(read, addr + 20n, 24); if (!tail) return null;
     out.superclassType = rel(addr + 20n, i32(tail, 0)); out.metadataNegativeSizeInWords = u32(tail,4); out.metadataPositiveSizeInWords=u32(tail,8); out.numImmediateMembers=u32(tail,12); out.numFields=u32(tail,16); out.fieldOffsetVectorOffset=u32(tail,20);
+  } else if (kind === 'enum') {
+    // EnumDescriptor tail layout differs from StructDescriptor (Swift runtime
+    // Metadata.h): NumPayloadCasesAndPayloadSizeOffset packs the payload case
+    // count in the low 24 bits and the payload-size offset word in the high 8
+    // bits, followed by NumEmptyCases. Reading this as struct NumFields /
+    // FieldOffsetVectorOffset deterministically misdecoded every valid enum
+    // descriptor (#5209), so enums keep their own ABI fields and never grow
+    // struct semantics.
+    const tail = await exact(read, addr + 20n, 8); if (!tail) return null;
+    const numPayloadCasesAndPayloadSizeOffset = u32(tail, 0);
+    out.numPayloadCases = numPayloadCasesAndPayloadSizeOffset & 0x00ffffff;
+    out.payloadSizeOffset = numPayloadCasesAndPayloadSizeOffset >>> 24;
+    out.numEmptyCases = u32(tail, 4);
+    out.numCases = out.numPayloadCases + out.numEmptyCases;
   } else {
     const tail = await exact(read, addr + 20n, 8); if (!tail) return null;
     out.numFields=u32(tail,0); out.fieldOffsetVectorOffset=u32(tail,4);
@@ -260,7 +290,13 @@ export async function parseSwiftProtocolDescriptor(read,address){const addr=BigI
 
 const SWIFT_GENERIC_REQUIREMENT_BYTES=12;
 const SWIFT_PROTOCOL_REQUIREMENT_BYTES=8;
-function swiftProtocolRequirementKind(flags){const kind=Number(flags)&0x0f;return{kind,callable:kind>=1&&kind<=6};}
+/* ProtocolRequirementFlags::Kind (swiftlang/swift include/swift/ABI/MetadataValues.h):
+   kinds 1..8 are function requirements invoked through the witness table —
+   7 = AssociatedTypeAccessFunction, 8 = AssociatedConformanceAccessFunction.
+   Kind 0 (BaseProtocol) is a non-callable pointer entry and 9..15 are
+   reserved/unmodeled, so they must stay fail-closed (#5374). */
+const SWIFT_CALLABLE_PROTOCOL_REQUIREMENT_KINDS=new Set([1,2,3,4,5,6,7,8]);
+function swiftProtocolRequirementKind(flags){const kind=Number(flags)&0x0f;return{kind,callable:SWIFT_CALLABLE_PROTOCOL_REQUIREMENT_KINDS.has(kind)};}
 async function parseSwiftProtocolRequirements(read,protocol,budget=4096){
   const declared=Number(protocol?.numRequirements||0),signature=Number(protocol?.numRequirementsInSignature||0),limit=normalizeBudget(budget,4096,100000);
   if(!Number.isInteger(declared)||declared<0||!Number.isInteger(signature)||signature<0||declared>limit)return{requirements:[],complete:false,reason:'protocol-requirement-budget'};
@@ -336,6 +372,10 @@ export async function parseSwiftWitnessTable(read,address,count,budget=4096,opti
 async function relativePointerSection(read,range,budget,parser,options={}){
   const signal=options?.signal??null;
   const items=[];if(!range)return{items,completeness:{present:false,declared:0,scanned:0,parsed:0,capped:false,unreadableEntries:0,invalidEntries:0,misalignedBytes:0,complete:true}};
+  // A present-but-malformed section descriptor is a scan failure, not an
+  // absent section: fail closed as incomplete instead of leaking a raw
+  // BigInt conversion error or silently claiming completeness (#5857).
+  if(range.invalid===true)return{items,completeness:{present:true,declared:0,scanned:0,parsed:0,capped:false,unreadableEntries:0,invalidEntries:1,misalignedBytes:0,complete:false}};
   const size=range.size,misalignedBytes=Number(size%4n),declared=Number(size/4n),count=Math.min(declared,budget);let scanned=0,unreadableEntries=0,invalidEntries=0;
   for(let i=0;i<count;i++){
     if(signal?.aborted)return{items,completeness:{present:true,declared,scanned,parsed:items.length,capped:true,unreadableEntries,invalidEntries,misalignedBytes,complete:false}};

@@ -6,8 +6,13 @@ const ABI_CLASSIFIER_SOURCES = new WeakMap();
 let ABI_REGISTRY_GENERATION = 0;
 const APPLE_ARM64E_PLATFORMS = new Set([
   'apple', 'darwin', 'macos', 'macosx', 'ios', 'ios-simulator', 'ipados',
-  'tvos', 'watchos', 'visionos',
+  'ipados-simulator', 'tvos', 'tvos-simulator', 'watchos',
+  'watchos-simulator', 'visionos', 'visionos-simulator', 'maccatalyst',
 ]);
+// The LP64 profiles share one architecture/platform match and differ only by
+// float ABI. Only a profile-selecting calling convention disambiguates them;
+// the shared 'riscv-vector-variant' alias does not.
+const RISCV_PROFILE_SELECTORS = new Set(['lp64', 'lp64f', 'lp64d']);
 
 const STRICT_PROTOTYPE_METADATA_ABIS = new Set([
   'sysv-amd64', 'microsoft-x64', 'microsoft-vectorcall', 'darwin-arm64',
@@ -602,24 +607,36 @@ export function isRegisteredABIPlugin(plugin) {
 
 export function registerABIPlugin(definition, { replace = false } = {}) {
   const plugin = definition instanceof ABIPlugin ? definition : new ABIPlugin(definition);
+  const id = plugin.id;
+  const incumbent = ABI_PLUGINS.get(id);
   // A duplicate object may not silently steal publication.  An explicit
   // replacement is allowed for registry lifecycle tooling, but it makes the
   // previous object non-canonical immediately: isRegisteredABIPlugin() checks
   // the map's exact object identity as well as each object's digest.
-  if (ABI_PLUGINS.has(plugin.id) && !replace) {
-    throw new Error(`ABI already registered: ${plugin.id}`);
+  if (incumbent && !replace) {
+    throw new Error(`ABI already registered: ${id}`);
   }
-  ABI_PLUGINS.set(plugin.id, plugin);
-  const generation = ++ABI_REGISTRY_GENERATION;
+
+  // String coercion and calling-convention discovery can execute provider code.
+  // Finish those operations before choosing the next generation or publishing
+  // any registry state. The prepared descriptor is plain canonical data, so the
+  // remaining digest step cannot re-enter provider hooks.
   const classifierDigest = stableDigest(classifierDescriptor(plugin));
+  const preparedDescriptor = registryDescriptor(plugin, { classifierDigest });
+  if (ABI_PLUGINS.get(id) !== incumbent) {
+    throw new Error(`ABI registry changed during registration: ${id}`);
+  }
+  const generation = ABI_REGISTRY_GENERATION + 1;
   const binding = {
-    id:plugin.id,
+    id,
     generation,
     classifierDigest,
-    digest:null,
+    digest:`abi-registry:${stableDigest({ ...preparedDescriptor, generation })}`,
   };
-  binding.digest = expectedRegistryDigest(plugin, binding);
+
   ABI_REGISTRY_BINDINGS.set(plugin, binding);
+  ABI_PLUGINS.set(id, plugin);
+  ABI_REGISTRY_GENERATION = generation;
   return plugin;
 }
 
@@ -665,6 +682,13 @@ export function findABIPlugin({ id = null, architecture = null, platform = null,
   // an architecture-only arm64e target as AAPCS64 would invent register and
   // aggregate placement facts for non-Apple binaries.
   if (arch === 'arm64e' && !APPLE_ARM64E_PLATFORMS.has(platformId)) return abiPlugin('unknown');
+  // riscv64/riscv32 match the soft/single/double float profiles on identical
+  // architecture/platform predicates. Without a profile-selecting calling
+  // convention, the target is ambiguous: registry insertion order must not
+  // invent a float ABI by first-match.
+  if ((arch === 'riscv64' || arch === 'riscv32') && !RISCV_PROFILE_SELECTORS.has(canonicalCallingConvention(callingConvention))) {
+    return abiPlugin('unknown');
+  }
   // An architecture name is not an ABI identity. Require either an explicit
   // registered calling convention or a platform-qualified architecture before
   // selecting a profile; otherwise arm64/x86_64/riscv64 would silently pick a

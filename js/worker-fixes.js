@@ -106,12 +106,34 @@ function __writesLowReg(w) {
   ]).has(kind);
 }
 
+/* Canonical xref target identity (#5872): bigint, non-negative safe integer,
+ * or exact integer numeric string. Structured values must never reach
+ * BigInt()'s ToPrimitive: a malformed request gets a hard error instead of
+ * aliasing a canonical address and leaking xref evidence. Classic scripts
+ * share the worker global scope, so later findXrefs overrides reuse this. */
+function canonicalAddress(value) {
+  if (typeof value === 'bigint') {
+    if (value < 0n) throw new Error('Invalid xref target.');
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error('Invalid xref target.');
+    return BigInt(value);
+  }
+  if (typeof value === 'string' && /^-?(0|[1-9][0-9]*)$/.test(value)) {
+    const parsed = BigInt(value);
+    if (parsed < 0n) throw new Error('Invalid xref target.');
+    return parsed;
+  }
+  throw new Error('Invalid xref target.');
+}
+
 /* Issue #289: ADRP provenance is local to an uninterrupted definition/use
  * chain.  Register redefinitions and CFG/call boundaries invalidate it. */
 findXrefs = async function findXrefsHardened({ regionId, target, limit, requestId, epoch }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
-  const want = BigInt(target);
+  const want = canonicalAddress(target);
   const cap = Math.min(Number(limit) || 2000, 2000);
   const total = Number(region.size);
   const out = [];

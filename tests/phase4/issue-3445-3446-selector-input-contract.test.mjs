@@ -15,6 +15,37 @@ assert.equal(validIndex.count, 3);
 assert.equal(resolveSelectorStub({ address: 16, selectorIndex: validIndex }).selector, 'indexed:');
 assert.equal(resolveSelectorStub({ address: 32, selectorIndex: validIndex }).selector, 'stubbed:');
 assert.equal(resolveSelectorStub({ address: 48, selectorIndex: validIndex }).selector, 'fixed:');
+
+// #4563: the canonical (address, selector, source) entry must be shared by
+// both projections. Different sources at the same address and selector, and
+// the same selector at another address, remain distinct.
+const duplicateIndex = buildSelectorIndex({
+  selectorRefs: [
+    { addr: 0x200, selector: 'duplicate:' },
+    { address: '0x200', sel: 'duplicate:' },
+    { addr: 0x200, selector: 'other:' },
+  ],
+  stubs: [{ addr: 0x200, selector: 'duplicate:' }],
+  fixups: [
+    { addr: 0x200, selector: 'duplicate:' },
+    { addr: 0x204, selector: 'duplicate:' },
+  ],
+});
+assert.equal(duplicateIndex.count, 5);
+assert.equal(duplicateIndex.byAddress.get('512').length, 4);
+assert.equal(duplicateIndex.byAddress.get('516').length, 1);
+assert.equal(duplicateIndex.bySelector.get('duplicate:').length, 4);
+assert.equal(duplicateIndex.bySelector.get('other:').length, 1);
+const addressedEntries = new Set([...duplicateIndex.byAddress.values()].flat());
+for (const entry of duplicateIndex.bySelector.get('duplicate:')) {
+  assert.ok(addressedEntries.has(entry), 'bySelector entries must be canonical byAddress entries');
+}
+const selectorRefEntry = duplicateIndex.byAddress.get('512').find((entry) => entry.source === 'selector-ref');
+assert.equal(duplicateIndex.bySelector.get('duplicate:').find((entry) => entry.source === 'selector-ref'), selectorRefEntry);
+assert.deepEqual(
+  duplicateIndex.byAddress.get('512').map((entry) => entry.source).sort(),
+  ['chained-fixup', 'message-stub', 'selector-ref', 'selector-ref'].sort(),
+);
 const mixedIndex = buildSelectorIndex({
   selectorRefs: {},
   stubs: [{ addr: 96, selector: 'mixedStub:' }],

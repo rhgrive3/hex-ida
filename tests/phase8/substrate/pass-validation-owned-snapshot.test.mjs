@@ -3,7 +3,12 @@ import test from 'node:test';
 
 import { createPassDescriptor, createPassResult } from '../../../js/decompiler/phase8/contract.js';
 import { createAnalysisState, runPassTransaction } from '../../../js/decompiler/phase8/transaction.js';
-import { createValidatedPassResult, validateRewriteAdoption } from '../../../js/decompiler/phase8/pass-validation.js';
+import {
+  createValidatedPassResult,
+  recomputeEquivalenceProofId,
+  REWRITE_VALIDATION_VERIFIER,
+  validateRewriteAdoption,
+} from '../../../js/decompiler/phase8/pass-validation.js';
 import { bvSort, BV_BINARY_OP } from '../../../js/symbolic/expr/kinds.js';
 import { createFreshSymbol, createBinary, createBv } from '../../../js/symbolic/expr/factory.js';
 import { ExhaustiveBvBackend } from '../../../js/symbolic/solver/exhaustive-backend.js';
@@ -90,14 +95,52 @@ test('C4-04 refuted validation refuses atomically', async () => {
   assert.deepEqual(state.snapshot(), beforeState);
 });
 
-test('C4-04 forged equivalent proof id refuses atomically', async () => {
+test('C4-04 copied or modified equivalent validation loses canonical authority', async () => {
   const { rewrite, validation } = await equivalentRecord();
   const forged = Object.freeze({ ...validation, equivalenceProofId:'p8rw_forged' });
-  const outcome = runPassTransaction(createAnalysisState(FULL_STATE), passFor([{
+  const state = createAnalysisState(FULL_STATE);
+  const beforeState = state.snapshot();
+  const outcome = runPassTransaction(state, passFor([{
     kind:'probe', targets:['value_1'], proof:'forged', rewrite, validation:forged,
   }]), {}, {});
   assert.equal(outcome.committed, false);
-  assert.match(outcome.stopReason, /^rewrite-proof-id-mismatch:/);
+  assert.match(outcome.stopReason, /equivalence-authority-required/);
+  assert.deepEqual(state.snapshot(), beforeState);
+});
+
+test('C4-04 public proof recompute cannot self-mint equivalent authority', () => {
+  const d = descriptor();
+  const x = createFreshSymbol(bvSort(4), 'x');
+  const before = createBinary(BV_BINARY_OP.ADD, x, createBv(4, 1));
+  const after = createBinary(BV_BINARY_OP.ADD, x, createBv(4, 2));
+  const rewrite = Object.freeze({ before, after });
+  const template = Object.freeze({
+    validation:'equivalent',
+    equivalenceProofId:'p8rw_placeholder',
+    verifier:REWRITE_VALIDATION_VERIFIER,
+    queryHash:'forged-query',
+  });
+  const equivalenceProofId = recomputeEquivalenceProofId({
+    kind:'probe', targets:['value_1'], rewrite, validation:template,
+  }, d);
+  const validation = Object.freeze({ ...template, equivalenceProofId });
+  const state = createAnalysisState(FULL_STATE);
+  const beforeState = state.snapshot();
+  const pass = {
+    descriptor:d,
+    run() {
+      return createValidatedPassResult({
+        descriptor:d, status:'changed', changed:true,
+        transforms:[{
+          kind:'probe', targets:['value_1'], proof:'self-minted', rewrite, validation,
+        }],
+      });
+    },
+  };
+  const outcome = runPassTransaction(state, pass, {}, {});
+  assert.equal(outcome.committed, false);
+  assert.match(outcome.stopReason, /equivalence-authority-required/);
+  assert.deepEqual(state.snapshot(), beforeState);
 });
 
 test('C4-04 rewrite payload without validation refuses', () => {
@@ -201,8 +244,7 @@ test('C4-04 equivalent validation queryHash is non-coercive', () => {
       },
     }],
   });
-  assert.doesNotThrow(() => make('qh'));
-  assert.equal(make('qh').transforms[0].validation, undefined, 'validation authority stays in the private sidecar');
+  assert.throws(() => make('qh'), /phase8-pass-transform-validation-equivalence-authority-required/);
   for (const value of [['qh'], { toString:() => 'qh' }, true, 1, '']) {
     assert.throws(() => make(value), /phase8-pass-transform-validation-query-hash-required/);
   }

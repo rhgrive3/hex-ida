@@ -59,12 +59,13 @@ test('#3553 nullish navigation keeps the existing empty-navigation default', () 
 
 test('#3553 valid navigation objects preserve their normalized meaning', () => {
   const navigation = {
-    currentFunction: 'fn:1',
+    currentFunction: '0x1000',
     history: ['fn:0', 'fn:1'],
     cursorIndex: 1,
     bookmarks: ['fn:1'],
     lastQuery: 'calls to fn:1',
   };
-  assert.deepEqual(createHexProject({ navigation }).navigation, navigation);
-  assert.deepEqual(validateHexProject(persistedProject(navigation)).navigation, navigation);
+  const normalized = { ...navigation, currentFunction: 0x1000n };
+  assert.deepEqual(createHexProject({ navigation }).navigation, normalized);
+  assert.deepEqual(validateHexProject(persistedProject(navigation)).navigation, normalized);
 });

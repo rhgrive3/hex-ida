@@ -271,8 +271,18 @@ export function validateStage2ProfileEvidence(record, expected = {}) {
       || !candidateCommitValid || !candidateTreeValid || !denominatorIdValid || !denominatorLockHashValid || !implementationIdentityValid) {
       continue;
     }
-    if ((id === 'S2-A7-NATIVE' || id.startsWith('S2-M6-'))
+    // A7 keeps its existential gate here because the exact-set check below is
+    // the full fail-closed contract for its fixed provider list. Managed M6
+    // has no set-level follow-up, so every declared provider profile must be
+    // allowed for that item's frontend (#5809): a single valid entry must not
+    // launder arbitrary or wrong-frontend claims into validated evidence.
+    if (id === 'S2-A7-NATIVE'
       && (!Array.isArray(item.providerProfileIds) || !item.providerProfileIds.some((value) => providerProfileAllowed(id, value)))) {
+      failures.push(`${id}:provider-profile-invalid`);
+    }
+    if (id.startsWith('S2-M6-')
+      && (!Array.isArray(item.providerProfileIds) || item.providerProfileIds.length === 0
+        || !item.providerProfileIds.every((value) => providerProfileAllowed(id, value)))) {
       failures.push(`${id}:provider-profile-invalid`);
     }
     if (id === 'S2-A7-NATIVE' && !same(item.providerProfileIds, A7_PROVIDER_PROFILE_IDS)) failures.push(`${id}:provider-profile-set-mismatch`);

@@ -1,4 +1,5 @@
 import { createPassResult } from './contract.js';
+import { hasCanonicalEquivalenceAuthority } from './pass-validation-core.js';
 export * from './pass-validation-core.js';
 
 const VALIDATED_REWRITE_METADATA = new WeakMap();
@@ -45,13 +46,14 @@ function cloneOwned(value, state = { depth:0, nodes:0, active:new WeakSet() }) {
 function validationRecord(value) {
   if (typeof value === 'string') {
     if (!STATUSES.has(value)) fail(`phase8-pass-transform-validation-unknown:${value}`);
-    return Object.freeze({ validation:value });
+    if (value === 'equivalent') fail('phase8-pass-transform-validation-equivalence-authority-required');
+    return Object.freeze({ record:Object.freeze({ validation:value }), equivalenceAuthority:false });
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('phase8-pass-transform-validation-invalid');
   const validation = nonEmpty(value.validation, 'phase8-pass-transform-validation-required');
   if (!STATUSES.has(validation)) fail(`phase8-pass-transform-validation-unknown:${validation}`);
   if (validation === 'equivalent') {
-    return Object.freeze({
+    const record = Object.freeze({
       validation,
       equivalenceProofId:nonEmpty(value.equivalenceProofId, 'phase8-pass-transform-validation-proof-required'),
       verifier:nonEmpty(value.verifier, 'phase8-pass-transform-validation-verifier-required'),
@@ -60,13 +62,20 @@ function validationRecord(value) {
       completeness:value.completeness == null ? null : cloneOwned(value.completeness),
       queryHash:nonEmpty(value.queryHash, 'phase8-pass-transform-validation-query-hash-required'),
     });
+    if (!hasCanonicalEquivalenceAuthority(value)) {
+      fail('phase8-pass-transform-validation-equivalence-authority-required');
+    }
+    return Object.freeze({ record, equivalenceAuthority:true });
   }
   return Object.freeze({
-    validation,
-    reason:value.reason == null ? null : nonEmpty(value.reason, 'phase8-pass-transform-validation-reason-required'),
-    verifier:value.verifier == null ? null : nonEmpty(value.verifier, 'phase8-pass-transform-validation-verifier-required'),
-    solverStatus:value.solverStatus == null ? null : nonEmpty(value.solverStatus, 'phase8-pass-transform-validation-solver-status-required'),
-    counterexample:value.counterexample == null ? null : cloneOwned(value.counterexample),
+    record:Object.freeze({
+      validation,
+      reason:value.reason == null ? null : nonEmpty(value.reason, 'phase8-pass-transform-validation-reason-required'),
+      verifier:value.verifier == null ? null : nonEmpty(value.verifier, 'phase8-pass-transform-validation-verifier-required'),
+      solverStatus:value.solverStatus == null ? null : nonEmpty(value.solverStatus, 'phase8-pass-transform-validation-solver-status-required'),
+      counterexample:value.counterexample == null ? null : cloneOwned(value.counterexample),
+    }),
+    equivalenceAuthority:false,
   });
 }
 
@@ -84,15 +93,21 @@ export function createValidatedPassResult(input = {}) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail('phase8-pass-transform-invalid');
     baseTransforms.push({ kind:raw.kind, targets:raw.targets, proof:raw.proof, originRefs:raw.originRefs });
     const extra = {};
+    let equivalenceAuthority = false;
     if (Object.hasOwn(raw, 'rewrite')) extra.rewrite = cloneOwned(raw.rewrite);
     if (Object.hasOwn(raw, 'unvalidatedReason')) extra.unvalidatedReason = nonEmpty(raw.unvalidatedReason, 'phase8-pass-transform-unvalidated-reason-required');
-    if (Object.hasOwn(raw, 'validation')) extra.validation = validationRecord(raw.validation);
-    extras.push(Object.freeze(extra));
+    if (Object.hasOwn(raw, 'validation')) {
+      const validated = validationRecord(raw.validation);
+      extra.validation = validated.record;
+      equivalenceAuthority = validated.equivalenceAuthority;
+    }
+    extras.push(Object.freeze({ extra:Object.freeze(extra), equivalenceAuthority }));
   }
   const result = createPassResult({ ...input, transforms:baseTransforms });
   const entries = result.transforms.map((transform, index) => Object.freeze({
     base:Object.freeze({ kind:transform.kind, targets:transform.targets, proof:transform.proof, originRefs:transform.originRefs }),
-    extra:extras[index],
+    extra:extras[index].extra,
+    equivalenceAuthority:extras[index].equivalenceAuthority,
   }));
   VALIDATED_REWRITE_METADATA.set(result, Object.freeze(entries));
   return result;

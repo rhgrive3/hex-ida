@@ -494,12 +494,18 @@
       const pageOff = dv.getUint32(e + 4, true);
       if (!pageOff || pageOff + 8 > buf.length) continue;      // 最後の番人の行
       const kind = dv.getUint32(pageOff, true);
+      /* Second-level entries live inside their own 4 KiB page (lld emits
+       * exactly 4096-byte pages). Only bounding against buf.length let a
+       * malformed entryPageOffset/entryCount walk into the next page, the
+       * LSDA index, or any other __unwind_info payload and reinterpret those
+       * bytes as compact-unwind entries (#5371). */
+      const pageEnd = Math.min(buf.length, pageOff + 0x1000);
       if (kind === 2) {                                        // そのまま並んでいる形
         const entryOff = dv.getUint16(pageOff + 4, true);
         const count = dv.getUint16(pageOff + 6, true);
         for (let k = 0; k < count; k++) {
           const p = pageOff + entryOff + k * 8;
-          if (p + 8 > buf.length) break;
+          if (p + 8 > pageEnd) break;
           out.push(imageBase + BigInt(dv.getUint32(p, true)));
         }
       } else if (kind === 3) {                                 // 圧縮された形
@@ -507,7 +513,7 @@
         const count = dv.getUint16(pageOff + 6, true);
         for (let k = 0; k < count; k++) {
           const p = pageOff + entryOff + k * 4;
-          if (p + 4 > buf.length) break;
+          if (p + 4 > pageEnd) break;
           const v = dv.getUint32(p, true);
           out.push(imageBase + BigInt(funcOffset + (v & 0x00ffffff)));
         }
@@ -737,10 +743,17 @@
           while (q < recordEnd && u8[q] !== 0 && augmentation.length < 64) augmentation += String.fromCharCode(u8[q++]);
           if (q >= recordEnd) { p = recordEnd; continue; }
           q++; // NUL
+          // CIE version 4 inserts address_size and segment_selector_size
+          // between the augmentation string and code_alignment_factor; in the
+          // 32-bit format those two ubytes would otherwise be misread as the
+          // code-align ULEB, derailing every FDE that references this CIE
+          // (#5519).
+          if (version >= 4) {
+            if (q + 2 > recordEnd) { p = recordEnd; continue; }
+            q += 2;
+          }
           const codeAlign = ehReadULEB(u8, q, recordEnd); if (!codeAlign) { p = recordEnd; continue; } q = codeAlign.next;
           const dataAlign = ehReadSLEB(u8, q, recordEnd); if (!dataAlign) { p = recordEnd; continue; } q = dataAlign.next;
-          // Version 1 encodes the return-address register as one byte; later
-          // versions use ULEB128.
           if (version === 1) q++;
           else { const ra = ehReadULEB(u8, q, recordEnd); if (!ra) { p = recordEnd; continue; } q = ra.next; }
           let fdeEncoding = 0x00;

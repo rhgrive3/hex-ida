@@ -100,6 +100,8 @@
     "tests/phase4/migration/issue-4567-analysis-cache-indexeddb-late-success.test.mjs",
     "tests/phase9/verify/global-reachability.test.mjs",
     "js/architecture/compat/ir-core-arm64-aapcs64-v1.js",
+    "js/semantics/cfg/index.js",
+    "tests/issue-7277-cil-leave-control-transfer.mjs",
     "tests/issues-unlinked-batch-20260901.mjs",
     "tests/phase9/expr/hash-serialize.test.mjs",
     "tests/compiler-truth/extended.mjs",

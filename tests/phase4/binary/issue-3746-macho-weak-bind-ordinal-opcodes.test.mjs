@@ -72,8 +72,8 @@ for (const [name, setter] of [
   assert.equal(status.complete, true, 'weak-bind without a dylib ordinal setter must remain valid');
   assert.equal(image.imports.length, 1);
   assert.equal(image.imports[0].source, 'weak-bind');
-  assert.equal(image.imports[0].ordinal, 0);
-  assert.equal(image.imports[0].library, null);
+  assert.equal(image.imports[0].ordinal, -3); // weak-bind carries dyld's implicit flat-undefined ordinal
+  assert.equal(image.imports[0].library, '<weak-lookup>'); // ordinal -3 resolves to the canonical weak-lookup dylib
 }
 
 console.log('issue-3746-macho-weak-bind-ordinal-opcodes: PASS');

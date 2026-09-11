@@ -17,6 +17,15 @@ export const VM_EFFECT_COMPLETENESS = Object.freeze([
   'unknown',
 ]);
 
+/* #5404: the resolution taxonomy mirrors the conservative completeness lattice
+   the runtime evidence bridge derives from resolution states. */
+export const VM_EFFECT_RESOLUTION_COMPLETENESS = Object.freeze([
+  'complete',
+  'bounded',
+  'partial',
+  'unsupported',
+]);
+
 export const VM_LOCATION_KINDS = Object.freeze([
   'stack',
   'local',
@@ -262,11 +271,43 @@ export function createVMEffectFunction(input, options = {}) {
   }
 
   const outBundles = bundles.map((b) => createVMEffectBundle(b, options));
-  const aggregateCompleteness = nonEmpty(input.aggregateCompleteness ?? (
+  const derivedAggregateCompleteness =
     outBundles.some((b) => b.completeness === 'unknown') ? 'unknown' :
     outBundles.some((b) => b.completeness === 'partial') ? 'partial' :
-    outBundles.some((b) => b.completeness === 'exact-with-intrinsic') ? 'exact-with-intrinsic' : 'exact'
-  ), 'vm-effect-aggregate-completeness-required');
+    outBundles.some((b) => b.completeness === 'exact-with-intrinsic') ? 'exact-with-intrinsic' : 'exact';
+  /* #5404: an explicitly supplied aggregate must not out-claim the bundles it
+     summarizes — 'exact' over a partial bundle is exactly the laundering this
+     field exists to prevent. A stronger declaration is a caller contradiction:
+     it fails closed (vm-effect-aggregate-completeness-overclaim) instead of
+     being silently demoted. A more conservative declaration (weaker than the
+     derivation) is honored. Completeness authority fields are primitive
+     strings only: a structured value is rejected, never String()-coerced into
+     an enum token. */
+  const AGGREGATE_STRENGTH = Object.freeze({ unknown: 0, partial: 1, 'exact-with-intrinsic': 2, exact: 3 });
+  let aggregateCompleteness;
+  if (input.aggregateCompleteness != null) {
+    if (typeof input.aggregateCompleteness !== 'string') fail('vm-effect-aggregate-completeness-invalid');
+    const declared = input.aggregateCompleteness;
+    if (!VM_EFFECT_COMPLETENESS.includes(declared)) fail('vm-effect-aggregate-completeness-invalid');
+    if (AGGREGATE_STRENGTH[declared] > AGGREGATE_STRENGTH[derivedAggregateCompleteness]) {
+      fail('vm-effect-aggregate-completeness-overclaim');
+    }
+    aggregateCompleteness = declared;
+  } else {
+    aggregateCompleteness = derivedAggregateCompleteness;
+  }
+  nonEmpty(aggregateCompleteness, 'vm-effect-aggregate-completeness-required');
+  /* #5404: resolution completeness is a typed authority field as well — an
+     arbitrary free-text value must fail closed instead of being adopted. */
+  let resolutionCompleteness;
+  if (input.resolutionCompleteness != null) {
+    if (typeof input.resolutionCompleteness !== 'string') fail('vm-effect-resolution-completeness-invalid');
+    const declared = input.resolutionCompleteness;
+    if (!VM_EFFECT_RESOLUTION_COMPLETENESS.includes(declared)) fail('vm-effect-resolution-completeness-invalid');
+    resolutionCompleteness = declared;
+  } else {
+    resolutionCompleteness = 'complete';
+  }
 
   const out = {
     methodId,
@@ -277,7 +318,7 @@ export function createVMEffectFunction(input, options = {}) {
     exceptionRegions: deepFreeze(exceptionRegions.map((r) => jsonSafe(r))),
     validationReportId: input.validationReportId ? String(input.validationReportId) : null,
     aggregateCompleteness,
-    resolutionCompleteness: input.resolutionCompleteness ? String(input.resolutionCompleteness) : 'complete',
+    resolutionCompleteness: input.resolutionCompleteness != null ? resolutionCompleteness : 'complete',
     origin: createOriginSet(input.origin ?? { parentEntityIds: [methodId] }),
     metadata: input.metadata ? deepFreeze(jsonSafe(input.metadata)) : Object.freeze({}),
   };
@@ -289,5 +330,19 @@ export function validateVMEffectFunction(fn) {
   if (!fn || typeof fn !== 'object') fail('vm-effect-function-invalid');
   if (!fn.methodId || !fn.frontendId || !Array.isArray(fn.bundles)) fail('vm-effect-function-invalid-structure');
   for (const b of fn.bundles) validateVMEffectBundle(b);
+  // #5404: the aggregate field is part of the validated contract, not free text.
+  if (!VM_EFFECT_COMPLETENESS.includes(fn.aggregateCompleteness)) fail('vm-effect-aggregate-completeness-invalid');
+  if (!VM_EFFECT_RESOLUTION_COMPLETENESS.includes(fn.resolutionCompleteness)) fail('vm-effect-resolution-completeness-invalid');
+  // The published aggregate must never out-claim the bundles it summarizes:
+  // re-derive the conservative aggregate from the actual bundles and reject
+  // hand-made / tampered objects that claim stronger authority (#5404).
+  const derived =
+    fn.bundles.some((b) => b.completeness === 'unknown') ? 'unknown' :
+    fn.bundles.some((b) => b.completeness === 'partial') ? 'partial' :
+    fn.bundles.some((b) => b.completeness === 'exact-with-intrinsic') ? 'exact-with-intrinsic' : 'exact';
+  const AGGREGATE_STRENGTH = Object.freeze({ unknown: 0, partial: 1, 'exact-with-intrinsic': 2, exact: 3 });
+  if (AGGREGATE_STRENGTH[fn.aggregateCompleteness] > AGGREGATE_STRENGTH[derived]) {
+    fail('vm-effect-aggregate-completeness-contradiction');
+  }
   return true;
 }

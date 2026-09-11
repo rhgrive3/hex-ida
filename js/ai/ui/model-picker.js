@@ -45,9 +45,15 @@ function normalizeEntry(raw, fallbackLabel) {
 
 function normalizeList(raw, mapper) {
   if (!raw) return [];
-  const items = Array.isArray(raw) ? raw : Object.entries(raw).map(([id, value]) => (
-    value && typeof value === 'object' ? { id, ...value } : { id, label: text(value) || id }
-  ));
+  const items = typeof raw === 'string'
+    ? [raw]
+    : Array.isArray(raw)
+      ? raw
+      : typeof raw === 'object'
+        ? Object.entries(raw).map(([id, value]) => (
+          value && typeof value === 'object' ? { id, ...value } : { id, label: text(value) || id }
+        ))
+        : [];
   return items.map(mapper).filter(Boolean);
 }
 
@@ -134,13 +140,14 @@ export function findModel(provider, id) {
 
 export function findReasoning(provider, model, id) {
   if (!id) return null;
-  const pools = [model && model.reasoning, provider && provider.reasoning];
-  for (const pool of pools) {
-    if (!Array.isArray(pool)) continue;
-    const hit = pool.find((item) => item.id === String(id));
-    if (hit) return hit;
-  }
-  return null;
+  // A nonempty model list is an explicit capability boundary. The normalized
+  // empty list means that no model-level levels were advertised, so the
+  // provider list remains the documented fallback.
+  const modelLevels = Array.isArray(model?.reasoning) && model.reasoning.length
+    ? model.reasoning
+    : null;
+  const pool = modelLevels || (Array.isArray(provider?.reasoning) ? provider.reasoning : []);
+  return pool.find((item) => item.id === String(id)) || null;
 }
 
 /** Everything the chip needs: what to print, and whether it is reachable. */
@@ -156,11 +163,13 @@ export function selectionLabel(capabilities, selection = {}, ja = true) {
   const model = findModel(provider, selection.model);
   if (selection.model && !model) return { text: String(selection.model), unavailable: true, note: unknownLabel };
   const parts = [model ? model.label : provider.label];
+  let reasoning = null;
   if (selection.reasoning) {
-    const reasoning = findReasoning(provider, model, selection.reasoning);
+    reasoning = findReasoning(provider, model, selection.reasoning);
     parts.push(reasoning ? reasoning.label : String(selection.reasoning));
   }
-  const unavailable = provider.available === false || !!(model && model.available === false);
+  const reasoningUnavailable = !!selection.reasoning && (!reasoning || reasoning.available === false);
+  const unavailable = provider.available === false || !!(model && model.available === false) || reasoningUnavailable;
   return { text: parts.join(' · '), unavailable, note: unavailable ? unknownLabel : '' };
 }
 

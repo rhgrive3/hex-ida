@@ -11,7 +11,9 @@ const vmFn = liftCilMethod(0, cilImage);
 
 assert.equal(vmFn.frontendId, 'cil');
 assert.equal(vmFn.bundles.length, 5);
-assert.equal(vmFn.aggregateCompleteness, 'exact');
+// The fixture has no MethodDef signature blob, so ret semantics remain
+// explicitly partial instead of fabricating a void/non-void contract.
+assert.equal(vmFn.aggregateCompleteness, 'partial');
 
 // 1. ldc.i4.5
 assert.equal(vmFn.bundles[0].mnemonic, 'ldc.i4.5');

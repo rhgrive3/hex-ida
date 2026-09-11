@@ -16,7 +16,7 @@ export class ScopeController {
     this.snapshot = snapshot;
     this.requestedScope = requestedScope || 'auto';
     this.effectiveScope = this.requestedScope === 'auto' ? initialScope(snapshot) : this.requestedScope;
-    this.onExpand = onExpand || null;
+    this.onExpand = typeof onExpand === 'function' ? onExpand : null;
     this.expansions = [];
   }
 

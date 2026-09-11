@@ -203,7 +203,7 @@ test('#1142 lifter preserves handler ranges and emits switch/exception control e
     0x2a,
   ]);
   assert.equal(switched.bundles[1].mnemonic, 'switch');
-  assert.deepEqual(switched.bundles[1].controlEffects, [{ kind:'switch', targetOffsets:[10] }]);
+  assert.deepEqual(switched.bundles[1].controlEffects, [{ kind:'switch', targetOffsets:[10], defaultTargetOffset:10 }]);
 
   const leave = liftBytes([0xde, 0x00, 0x2a]);
   assert.deepEqual(leave.bundles[0].controlEffects, [{ kind:'leave', targetOffset:2 }]);
