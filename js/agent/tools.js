@@ -260,9 +260,11 @@ export function createAgentTools(context, opts = {}) {
   const proveExactLimitComplete = async (name, args, result, scope) => {
     if (scope.scopeTruncated || !result || result.complete === true || result.truncated !== true || result.reason !== 'result-limit') return false;
     if (name === 'explain_evidence' && typeof ctx.explainEvidence === 'function') return false;
-    const fallback = name === 'find_constant' ? 100 : 200;
-    const limit = bounded(args[1]?.limit, fallback, 1, 1000);
-    if (result.returned !== limit || !Array.isArray(result.results) || result.results.length !== limit) return false;
+    // `result.returned` is the exact cap actually used by the core when it emits
+    // reason='result-limit'. Never re-read or coerce caller options here: doing
+    // so would create a second authority-bearing observation after the core pass.
+    const limit = Number.isSafeInteger(result.returned) && result.returned > 0 ? result.returned : null;
+    if (limit == null || !Array.isArray(result.results) || result.results.length !== limit) return false;
 
     const ids = name === 'explain_evidence'
       ? new Set(Array.isArray(args[0]) ? args[0] : [args[0]])
