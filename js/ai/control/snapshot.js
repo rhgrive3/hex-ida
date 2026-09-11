@@ -191,7 +191,7 @@ function strongIdentity(identity) {
   return identity?.confidence === 'strong' && identity?.state === 'ready' && typeof id === 'string' && !id.startsWith('fallback:');
 }
 
-function sameStrongIdentity(left, right, local) {
+export function sameStrongIdentity(left, right, local = {}) {
   const leftHash = assertedContentHash(left, local);
   const rightHash = assertedContentHash(right, local);
   if (leftHash != null && rightHash != null) return leftHash === rightHash;

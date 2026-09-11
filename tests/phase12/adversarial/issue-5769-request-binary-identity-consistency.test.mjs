@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { assertLiveBindingsUnchanged } from '../../../js/ai/control/runtime-support.js';
 import { createTurnSnapshot } from '../../../js/ai/control/snapshot.js';
 
 const strongIdentity = (hash, id = `content:${hash}`) => ({
@@ -50,4 +51,24 @@ test('#5769 content id slice assertion must match the selected slice', () => {
     ),
     (error) => error?.type === 'scope_violation',
   );
+});
+
+test('#5769 mid-turn strong identity drift compares hash authority, not only stable id', () => {
+  const snapshot = createTurnSnapshot({ binaryIdentity:strongIdentity('aaaa', 'external:stable') }, {});
+  assert.throws(
+    () => assertLiveBindingsUnchanged(
+      { binaryIdentity:strongIdentity('bbbb', 'external:stable') },
+      snapshot,
+    ),
+    (error) => error?.type === 'scope_violation',
+  );
+});
+
+
+test('#5769 mid-turn strong identity equivalence follows matching content hash', () => {
+  const snapshot = createTurnSnapshot({ binaryIdentity:strongIdentity('aaaa', 'external:snapshot') }, {});
+  assert.doesNotThrow(() => assertLiveBindingsUnchanged(
+    { binaryIdentity:strongIdentity('aaaa', 'external:live') },
+    snapshot,
+  ));
 });
