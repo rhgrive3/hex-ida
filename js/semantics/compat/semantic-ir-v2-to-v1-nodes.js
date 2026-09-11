@@ -699,7 +699,7 @@ export function projectNode(node, context) {
     }
     case 'intrinsic': {
       const carrier = comparisonCarrierByNodeId.get(node.id) ?? null;
-      const addSub = addWithCarryOperands(node, context);
+      const addSub = intrinsicDeclaresSideEffects(node.intrinsic) ? null : addWithCarryOperands(node, context);
       if (addSub) {
         const resultIsWritten = node.outputs?.[0] && hasRegisterStateWriteForValue(node.outputs[0], context);
         const args = [addSub.lhs, addSub.rhs];
