@@ -129,5 +129,15 @@ export function overlayCilMetadata(bytes,parsed){
   const payload=u8.subarray(start+4,start+4+length);
   return {...row,location:'embedded',payload};
  });
+
+ // II.22.18: each FieldRVA must map into the loaded PE image. The metadata
+ // root is metadata, not initial data, so an RVA aliasing it is invalid (#7545).
+ const metadataStart=pe.metadataOffset,metadataEnd=pe.metadataOffset+pe.metadataSize;
+ for(const row of defs.fieldRvas??[]){
+  const off=pe.mapRva(row.rva,1,'cil-fieldrva-rva-unmapped');
+  if(off>=metadataStart&&off<metadataEnd)fail('cil-fieldrva-rva-metadata-area');
+  row.fileOffset=off;
+ }
+
  return deepFreeze({...parsed,runtimeVersion:meta.runtimeVersion,vmSpecEdition:meta.runtimeVersion,types:defs.types,fields:defs.fields,params:defs.params,properties,events:defs.events,methodSemantics:defs.methodSemantics,methods,methodBodies,manifestResources,typeSpecs:defs.typeSpecs,assembly:defs.assembly});
 }
