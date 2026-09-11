@@ -77,10 +77,17 @@ export class AIRuntime {
     // cannot mix a snapshotted investigation with the newly visible binary.
     assertLiveBindingsUnchanged(this.localContext, snapshot);
     const requestedEvidence = Array.from(new Set((decision.evidenceIds || []).map(String)));
+    const hasExplicitEvidenceSelection = requestedEvidence.length > 0;
     const evidence = requestedEvidence.map((id) => evidenceStore.get(id)).filter(Boolean);
     const missingIds = requestedEvidence.filter((id) => !evidenceStore.has(id));
     if (missingIds.length) activity.push({ type: 'consistency-check', label: `${missingIds.length} 件の存在しない evidence 参照を除外`, timestamp: new Date().toISOString() });
-    const finalEvidence = evidence.length ? evidence : fallbackEvidence(evidenceStore, plan);
+    // A non-empty model citation set is authoritative: if none of those IDs
+    // resolve, never silently bind an unrelated deterministic/store fallback.
+    const finalEvidence = evidence.length
+      ? evidence
+      : hasExplicitEvidenceSelection
+        ? []
+        : fallbackEvidence(evidenceStore, plan);
     for (const modelHypothesis of decision.hypotheses || []) hypothesisStore.upsert(modelHypothesis);
     const hasExplicitHypothesisSelection = Array.isArray(decision.hypothesisIds);
     const hypothesisIds = new Set((decision.hypothesisIds || []).map(String));

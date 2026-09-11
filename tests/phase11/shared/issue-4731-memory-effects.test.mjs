@@ -21,7 +21,7 @@ function fixture(memoryEffects, { completeness = 'exact', aggregateCompleteness 
     locationReads: [{ kind: 'register', index: 0, type: { kind: 'address', widthBits: 32 } }],
     memoryEffects,
     completeness,
-    ...(completeness === 'exact' ? {} : { unknownEffects: [{ reason: 'unsupported-memory-shape', categories: ['memory'] }] }),
+    ...(completeness === 'exact' ? {} : { unknownEffects: [{ category: 'memory', reason: 'unsupported-memory-shape' }] }),
   });
   return createVMEffectFunction({
     frontendId: 'jvm',
