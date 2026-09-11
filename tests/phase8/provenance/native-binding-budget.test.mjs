@@ -7,12 +7,47 @@ import * as facade from '../../../js/ir-core.js';
 import * as projector from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 import { readLineExpressionHistory } from '../../../js/decompiler/phase8/projection.js';
 import { PROJECTION_LIMITS } from '../../../js/core/identity/live-data.js';
+import { createOriginSet } from '../../../js/core/identity/origin.js';
 import { createCapstoneX86Session } from '../../phase5/helpers/capstone-session.mjs';
 import { createX86DecodedInstruction, X86_DECODER_SEMANTIC_VERSION } from '../../../js/targets/architecture/x86_64/decoded-instruction.js';
 import { architecturePluginV2 } from '../../../js/targets/architecture/index.js';
 import { resolveABIPlugin } from '../../../js/targets/abi/index.js';
 import { partitionDecodedFunction, semanticAbiAdapter } from '../../../js/analysis/semantic-function.js';
 import { buildSemanticV2CompatibilityPipeline } from '../../../js/semantics/compat/index.js';
+
+test('C4-03 native early-exit loop binds immutable origin envelopes and all actual state histories', () => {
+  const corpus = loadCorpus(), id = 'riscv64.quality.loop_early_exit.O0';
+  const index = corpus.functions.findIndex(entry => entry.id === id);
+  assert.ok(index >= 0);
+  const { result, failure } = decompileEntry(corpus.functions[index], {
+    index, decompilerTimeBudgetMs:20000, toolchain:corpus.toolchain ?? null,
+  });
+  assert.equal(failure ?? null, null);
+  assert.equal(PROJECTION_LIMITS.nodes, 10000);
+  assert.equal(PROJECTION_LIMITS.edges, 100000);
+  assert.equal(PROJECTION_LIMITS.depth, 96);
+  assert.equal(result.expressionHistoryBinding.completeness, 'complete');
+  assert.deepEqual(result.expressionHistoryBinding.reasons, []);
+  assert.equal(result.phase8Projection.history.completeness, 'complete');
+  assert.equal(result.renderProvenance.completeness, 'complete');
+  assert.deepEqual(result.renderProvenance.reasons, []);
+  assert.equal(result.renderProvenance.counts.ledgerTruncated, 0);
+  const states = result.rewriteProof.filter(record => record.rule === 'compact-public-state');
+  assert.ok(states.length > 300, 'the actual previously missing producer operations are retained');
+  assert.equal(new Set(states).size, states.length);
+  const reference = loadFrozenProvenance().observations.find(entry => entry.id === id);
+  const actual = provenanceFromSourceMap(result.sourceMap);
+  assert.deepEqual(reference.sourceAddresses.filter(address => !actual.sourceAddresses.includes(address)), []);
+  const lines = result.lines.filter(line => readLineExpressionHistory(line, result.ir)?.length);
+  assert.ok(lines.length > 1);
+  const source = result.ir.instructions.find(instruction => instruction.origin);
+  assert.ok(source);
+  const before = source.origin;
+  source.origin = createOriginSet({ ...before });
+  assert.notEqual(source.origin, before);
+  assert.ok(lines.every(line => readLineExpressionHistory(line, result.ir) === null),
+    'equal canonical data cannot replace the envelope used by the observed producer');
+});
 
 test('C4-03 native switch retains pre-memory constant reads through actual state aliases before display projection', async () => {
   const corpus = loadCorpus(), id = 'x86_64.quality.structure_switch.O0';

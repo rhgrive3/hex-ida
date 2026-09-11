@@ -1,3 +1,5 @@
+import { isReusableOriginSet } from './origin.js';
+
 /** Shared bounded plain-data observation. No semantic evaluation or proof issuance.
  * Existing solver/decompiler entry points re-export these exact implementations. */
 export function ownDataEntries(value, maxEntries = 40000) {
@@ -25,6 +27,11 @@ export function ownDataEntries(value, maxEntries = 40000) {
 
 export const PROJECTION_LIMITS = Object.freeze({nodes:10000,edges:100000,depth:96,expandedUnits:2000000,string:65536});
 
+// Separate work budget for certifying producer-owned immutable origin payloads.
+// These are not retained live-object observations. The ordinary capture APIs
+// keep their original limits and never infer this mode from a frozen shape.
+export const ORIGIN_CERTIFICATION_LIMITS = Object.freeze({ nodes:100000, edges:1000000, expandedUnits:2000000 });
+
 /**
  * Bounded live-object observation for the SSA/definition graph behind a
  * producer-issued projection. Canonical IR is cyclic (`value.def.dst === value`),
@@ -47,12 +54,18 @@ export function createProjectionIrObserver() {
     // from those real roots, not by an arbitrary walk around SSA cycles. This
     // observes every field; it is not a caller-provided list of exempt objects.
     captureGraph:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, true),
+    // Canonical origins are immutable DATA, not transformation authority. Bind
+    // each exact issued envelope and certify its data once; mutable IR and
+    // unbranded/copy payloads still receive the ordinary full observation.
+    captureOriginGraph:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, 'canonical-origins'),
   });
 }
 
 function captureIrData(roots, shouldAbort, immutable, graph = false) {
   if (!Array.isArray(roots)) throw new TypeError('projection-ir-roots-array-required');
   const records = [], seen = new WeakMap();
+  const originCertificates = [], certification = { nodes:0, edges:0, expandedUnits:0 };
+  const canonicalOrigins = graph === 'canonical-origins';
   let edges = 0, nodes = 0, expandedUnits = 0;
   const started = performance.now();
   function check() {
@@ -120,6 +133,23 @@ function captureIrData(roots, shouldAbort, immutable, graph = false) {
       if (seen.has(value)) return 1;
       if (nodes >= PROJECTION_LIMITS.nodes) throw new TypeError('projection-node-budget');
       nodes++; seen.set(value, 1);
+      if (canonicalOrigins && isReusableOriginSet(value)) {
+        // The private origin issuer establishes normalization provenance; this
+        // ordinary nested capture independently certifies recursive immutable
+        // plain data, scalar limits and height. Merely Object.freeze() is not
+        // sufficient. No public description registers an observation here.
+        const certificate = captureIrData([value], shouldAbort, immutable);
+        check();
+        for (const key of Object.keys(certification)) {
+          certification[key] += certificate.metrics[key];
+          if (certification[key] > ORIGIN_CERTIFICATION_LIMITS[key]) throw new TypeError('projection-origin-certification-budget');
+        }
+        const height = immutable.get(value);
+        if (height == null) throw new TypeError('projection-origin-not-immutable');
+        if (depth + height - 1 > PROJECTION_LIMITS.depth) throw new TypeError('projection-depth-budget');
+        originCertificates.push(value);
+        return 1;
+      }
       const entries = ownDataEntries(value, PROJECTION_LIMITS.edges - edges);
       edges += entries.length;
       records.push({ value, depth, prototype:Object.getPrototypeOf(value), entries,
@@ -174,6 +204,10 @@ function captureIrData(roots, shouldAbort, immutable, graph = false) {
   check();
   function matches(writes = null) {
     try {
+      // Envelopes and descendants cannot change after certification. Parent
+      // fields still bind the exact envelope identity; copied/equal origins or
+      // an ambient normalization-hook change cannot refresh an old binding.
+      if (!originCertificates.every(isReusableOriginSet)) return false;
       let changed = null;
       if (writes != null) {
         if (!Array.isArray(writes) || writes.length > PROJECTION_LIMITS.nodes) return false;
@@ -251,7 +285,9 @@ function captureIrData(roots, shouldAbort, immutable, graph = false) {
       return true;
     } catch { return false; }
   }
-  return Object.freeze({metrics:Object.freeze({nodes,edges,expandedUnits}), matches:() => matches(),
+  return Object.freeze({metrics:Object.freeze({nodes,edges,expandedUnits}),
+    ...(canonicalOrigins ? { originCertification:Object.freeze({ envelopes:originCertificates.length,
+      ...certification }) } : {}), matches:() => matches(),
     // Data matching is not write authority. Callers must authenticate the actual
     // writer and bind its new object graphs before supplying a transition list.
     matchesThroughWrites:writes => matches(writes),

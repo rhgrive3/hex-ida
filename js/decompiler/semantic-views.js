@@ -119,7 +119,7 @@ function performView(ir, writer, source, operation, before, after, inputs, relat
   if (!writer.unavailable && writer.events.length + (writer.prior?.history.events.length || 0) < MAX_VIEW_EVENTS) try {
     const values = new Set([source.dst, before, after, ...inputs].filter(Boolean));
     fields = viewFields(source, values);
-    selection = createProjectionIrObserver().captureGraph([ir.compat, source, ...values, ...related, ...blocks]);
+    selection = createProjectionIrObserver().captureOriginGraph([ir.compat, source, ...values, ...related, ...blocks]);
     event = { source, output:source.dst ?? null, op:source.op, sub:source.sub,
       stage:'decompiler-committed-view', operation, ordinal:writer.expected.count - 1,
       before, after, beforeOp:source.op, beforeSub:source.sub, argumentIndex,

@@ -101,7 +101,7 @@ function consumerObservationBudget(state) {
 
 function captureConsumerIrData(roots, state, graph = false) {
   state.projectionIrObserver ??= createProjectionIrObserver();
-  return state.projectionIrObserver[graph ? 'captureGraph' : 'capture'](roots, state.opts?.shouldAbort);
+  return state.projectionIrObserver[graph ? 'captureOriginGraph' : 'capture'](roots, state.opts?.shouldAbort);
 }
 
 function fieldProjectionRecords(semantic, state) {

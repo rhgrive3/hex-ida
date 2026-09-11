@@ -7,6 +7,7 @@ import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
 import { createDecompilerNavigation } from '../../../js/ui/decompiler-provenance.js';
 import { structuralKey } from '../../../js/decompiler/ast/nodes.js';
 import { captureProjectionIrData, createProjectionIrObserver, PROJECTION_LIMITS } from '../../../js/core/identity/live-data.js';
+import { createOriginSet, createTransformRecord } from '../../../js/core/identity/origin.js';
 import { captureRecoveryIrData } from '../../../js/decompiler/phase8/projection-origin.js';
 import { observeProjectedOperationData } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 import { createExpressionOriginHistoryRecorder, expressionOriginHistory } from '../../../js/decompiler/rewrite/engine.js';
@@ -230,6 +231,81 @@ test('C4-03 graph traversal preserves nested depth, total volume and plain-data 
 test('C4-03 graph and nested captures charge the same fully observed data', () => {
   const shared = { id:42, attributes:[1, 2, 'name'] }, roots = [{ shared }, { shared }];
   assert.deepEqual(createProjectionIrObserver().captureGraph(roots).metrics, captureProjectionIrData(roots).metrics);
+});
+
+test('C4-03 origin graph certifies issued immutable data without retaining every payload object', () => {
+  const origins = Array.from({ length:100 }, (_, id) => createOriginSet({
+    instructionIds:[`issued:${id}`],
+    sourceLocations:Array.from({ length:110 }, (_, line) => ({ file:`source-${id}`, line })),
+  }));
+  const root = { origins, mutable:{ revision:1 } };
+  assert.throws(() => createProjectionIrObserver().captureGraph([root]), /node-budget/);
+  const observation = createProjectionIrObserver().captureOriginGraph([root]);
+  assert.equal(observation.originCertification.envelopes, origins.length);
+  assert.ok(observation.originCertification.nodes > PROJECTION_LIMITS.nodes,
+    'certification work is reported separately, not hidden as a smaller source graph');
+  assert.ok(observation.metrics.nodes < 200, 'retained live records bind exact immutable envelopes');
+  assert.equal(observation.matches(), true);
+  root.mutable.revision++;
+  assert.equal(observation.matches(), false);
+  root.mutable.revision--;
+  origins[0] = createOriginSet({ ...origins[0] });
+  assert.equal(observation.matches(), false, 'equal data cannot replace the originally observed envelope');
+  assert.throws(() => createProjectionIrObserver().captureOriginGraph([structuredClone(origins)]), /node-budget/,
+    'copied origin shapes do not carry the private issuer identity');
+});
+
+test('C4-03 origin graph preserves distinct transforms, strict matching and ambient-hook revocation', () => {
+  const input = { passId:'origin-observation', passVersion:'1', ruleId:'identity', proofKind:'observation',
+    consumedEntityIds:['a'], producedEntityIds:['b'] };
+  const first = createTransformRecord(input), second = createTransformRecord(input);
+  assert.notEqual(first, second);
+  const root = { origin:createOriginSet({ transforms:[first] }) }, prior = root.origin;
+  const observation = createProjectionIrObserver().captureOriginGraph([root]);
+  root.origin = createOriginSet({ transforms:[second] });
+  assert.equal(observation.matches([{ object:root, key:'origin', before:prior, after:root.origin }]), false);
+  root.origin = prior;
+  assert.equal(observation.matches(), true);
+  let calls = 0;
+  const descriptor = Object.getOwnPropertyDescriptor(Object.prototype, 'toJSON');
+  Object.defineProperty(Object.prototype, 'toJSON', { configurable:true, get() { calls++; return () => null; } });
+  try { assert.equal(observation.matches(), false); assert.equal(calls, 0); }
+  finally {
+    if (descriptor) Object.defineProperty(Object.prototype, 'toJSON', descriptor);
+    else delete Object.prototype.toJSON;
+  }
+});
+
+test('C4-03 origin graph retains ordinary limits and validates certified payload height and scalars', () => {
+  const capture = value => createProjectionIrObserver().captureOriginGraph([value]);
+  assert.throws(() => capture(Array.from({ length:PROJECTION_LIMITS.nodes }, () => Object.freeze({}))), /node-budget/);
+  let nested = { leaf:1 };
+  for (let depth = 0; depth < PROJECTION_LIMITS.depth; depth++) nested = { child:nested };
+  assert.throws(() => capture(createOriginSet({ sourceLocations:[nested] })), /depth/);
+  assert.throws(() => capture(createOriginSet({ instructionIds:['x'.repeat(PROJECTION_LIMITS.string + 1)] })), /string-budget/);
+  const origin = createOriginSet({ sourceLocations:[{ nested:{ value:1 } }] });
+  const observer = createProjectionIrObserver();
+  observer.captureOriginGraph([origin]);
+  let deep = origin;
+  for (let depth = 0; depth < PROJECTION_LIMITS.depth; depth++) deep = { child:deep };
+  assert.throws(() => observer.captureOriginGraph([deep]), /depth/);
+  assert.throws(() => observer.captureOriginGraph([origin], () => true), /cancelled/);
+  let calls = 0;
+  assert.throws(() => capture({ get origin() { calls++; return origin; } }), /accessor/);
+  assert.equal(calls, 0);
+});
+
+test('C4-03 origin certification has a separate bounded aggregate work budget', () => {
+  const origins = Array.from({ length:40 }, (_, id) => createOriginSet({
+    instructionIds:[`${id}:` + 'x'.repeat(60000)],
+  }));
+  assert.throws(() => createProjectionIrObserver().captureOriginGraph([origins]), /origin-certification-budget/);
+  const observer = createProjectionIrObserver(), origin = createOriginSet({ instructionIds:['bounded'] });
+  const first = observer.captureOriginGraph([origin]), second = observer.captureOriginGraph([origin]);
+  assert.ok(first.originCertification.edges > 0);
+  assert.equal(second.originCertification.edges, 0, 'only independently certified immutable data is reused');
+  assert.equal(first.matches(), true);
+  assert.equal(second.matches(), true);
 });
 
 test('C4-03 graph warming retains the ordinary immutable height and mutable-cycle checks', () => {

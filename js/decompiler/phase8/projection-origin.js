@@ -57,7 +57,9 @@ export function captureRecoveryIrData(ir, extraRoots, shouldAbort = null) {
   // Canonical IR lists already enumerate the cyclic graph's vertices. Fresh
   // root-distance observation preserves all fields and bounds without treating
   // the traversal order of a def/use cycle as nested metadata depth.
-  const observation = createProjectionIrObserver().captureGraph([...descriptors.slice(0, -1).map(descriptor => descriptor?.value), ...extraRoots], shouldAbort);
+  // Canonical origin payloads are independently certified immutable data;
+  // their exact envelopes remain bound alongside every mutable input.
+  const observation = createProjectionIrObserver().captureOriginGraph([...descriptors.slice(0, -1).map(descriptor => descriptor?.value), ...extraRoots], shouldAbort);
   const edges = observation.metrics.edges + dominance.edges;
   if (edges > PROJECTION_LIMITS.edges) throw new TypeError('recovery-binding-budget');
   return Object.freeze({ metrics:Object.freeze({ ...observation.metrics, edges }), matches() {
