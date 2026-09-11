@@ -112,3 +112,13 @@ test('#4754 same-offset compatible partial member metadata merges into one certa
     { offset:0, sizeBytes:4, memberType:int32, fieldName:'value' },
   );
 });
+
+test('#4754 conflicting same-offset scalar member metadata is a hard contradiction', () => {
+  const left = aggregate('N', [member(0, 4, int32, { fieldName:'a' })]);
+  const right = aggregate('N', [member(0, 4, int32, { fieldName:'b' })]);
+
+  assert.equal(claimsConflict(left, right), true);
+  const structural = solveWith(left, right);
+  assert.equal(structural.contradictions.length, 1);
+  assert.equal(structural.selected, null);
+});

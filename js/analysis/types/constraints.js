@@ -363,6 +363,26 @@ function memberTypesConflict(aType, bType) {
   return canonicalDescriptorString('structural', aType) !== canonicalDescriptorString('structural', bType);
 }
 
+function memberFactsConflict(left, right, key = null) {
+  if (stableStringify(left) === stableStringify(right)) return false;
+  if (key != null && NUMERIC_DESCRIPTOR_FIELDS.has(key)) {
+    const a = canonicalInteger(left);
+    const b = canonicalInteger(right);
+    return a == null || b == null || a !== b;
+  }
+  if (left == null || right == null
+    || typeof left !== 'object' || typeof right !== 'object'
+    || Array.isArray(left) || Array.isArray(right)) return true;
+
+  // Missing keys are additive partial facts. A key present on both sides must
+  // carry recursively compatible evidence, matching graph.js reconstruction.
+  for (const [childKey, value] of Object.entries(right)) {
+    if (!Object.hasOwn(left, childKey)) continue;
+    if (memberFactsConflict(left[childKey], value, childKey)) return true;
+  }
+  return false;
+}
+
 function aggregateMembersConflict(aMembers, bMembers) {
   // Preserve exact/canonically-equivalent member sets, including legacy
   // descriptors whose nested layout is incomplete. Once the sets differ,
@@ -437,6 +457,10 @@ function aggregateMembersConflict(aMembers, bMembers) {
         if (aEntry.size !== bEntry.size) return true;
         if (aEntry.member.alignBytes != null && bEntry.member.alignBytes != null
           && numericValuesDiffer(aEntry.member.alignBytes, bEntry.member.alignBytes)) return true;
+        // Same-slot members are merged recursively by graph.js. Make the
+        // contradiction detector reject exactly the overlapping fact keys
+        // that merger cannot reconcile, while still allowing one-sided facts.
+        if (memberFactsConflict(aEntry.member, bEntry.member)) return true;
       }
 
       if (aEntry.member.memberType == null || bEntry.member.memberType == null) return true;
