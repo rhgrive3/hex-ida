@@ -214,9 +214,19 @@ export function createHexToolRegistry(context = {}, options = {}) {
   register('verify_field_update', 'Deterministically verify a read-modify-write field update and preserve minimal causal paths.', verifyFieldSchema(), async ({ functionAddress, field, limit = 8, pathLimit = 8 }) => legacy.verify_field_update(functionAddress, field, { limit, pathLimit }), {
     verifier: true, cost: 'expensive', scopeSupport: functionScopes, category: 'verification', preferredPrerequisites: ['get_semantic_facts'], resultKind: 'verification', modelProjection: projectVerification,
   });
-  register('get_related_functions', 'Get bounded callers and callees around one function.', addressLimitSchema('functionAddress', 24, false), async ({ functionAddress, limit = 24 }) => ({
-    functionAddress, callers: (await legacy.get_callers(functionAddress, { limit })).results || [], callees: (await legacy.get_callees(functionAddress, { limit })).results || [],
-  }), { scopeSupport: ['auto', 'neighborhood', 'binary', 'project'], category: 'graph', resultKind: 'call-neighborhood', modelProjection: projectGraph });
+  register('get_related_functions', 'Get bounded callers and callees around one function. Partial sides expose dedicated get_callers/get_callees continuation hints.', addressLimitSchema('functionAddress', 24, false), async ({ functionAddress, limit = 24 }) => {
+    const [callers, callees] = await Promise.all([
+      legacy.get_callers(functionAddress, { limit }),
+      legacy.get_callees(functionAddress, { limit }),
+    ]);
+    return buildRelatedFunctionsResult({
+      functionAddress,
+      limit,
+      callers,
+      callees,
+      cursorFor:(tool, params, offset) => pageCursor(tool, params, offset),
+    });
+  }, { scopeSupport: ['auto', 'neighborhood', 'binary', 'project'], category: 'graph', resultKind: 'call-neighborhood', modelProjection: projectGraph });
 
   register('find_constant', 'Find a bounded constant use in explicitly scoped candidate functions.', constantSchema(), async ({ value, functions, limit = 100 }) => boundedResult(await legacy.find_constant(value, { functions, limit }), limit), {
     cost: 'medium', scopeSupport: functionScopes, category: 'discovery', resultKind: 'constant-sites', modelProjection: projectSearch,
@@ -262,8 +272,7 @@ export function createHexToolRegistry(context = {}, options = {}) {
       return runtimeObservations(context, { functionAddress, limit, offset, cursorFor: (next) => pageCursor('get_runtime_observations', params, next) });
     }, { verifier: true, cost: 'medium', scopeSupport: ['auto', 'runtime'], category: 'runtime', resultKind: 'runtime-observations', modelProjection: projectRuntime, deterministic: false });
     register('verify_runtime_hypothesis', 'Run the configured deterministic runtime verifier for a hypothesis.', runtimeVerifySchema(), async ({ hypothesis, options: runtimeOptions }, callOptions = {}) => runtimeVerify(context, hypothesis, { ...(runtimeOptions || {}), signal: callOptions.signal || null }), {
-      verifier: true, cost: 'expensive', scopeSupport: ['auto', 'runtime'], category: 'verification', resultKind: 'runtime-verification', modelProjection: projectVerification, deterministic: false,
-    });
+      verifier: true, cost: 'expensive', scopeSupport: ['auto', 'runtime'], category: 'verification', resultKind: 'runtime-verification', modelProjection: projectVerification, deterministic: false });
   }
   if (context.binaryDiff || context.getBinaryDiff) {
     register('get_binary_diff', 'Get a paged deterministic function-level binary diff.', { type: 'object', properties: { limit: limitProperty(100, 500), cursor: cursorProperty() }, additionalProperties: false }, async ({ limit = 100, cursor }) => {
@@ -483,6 +492,71 @@ async function semanticFactsPage(context, legacy, functionAddress, kinds, limit,
   const page = facts.slice(offset, offset + limit);
   const next = offset + page.length < total ? offset + page.length : null;
   return pageResult({ address: addr, results: page.map(compactFact), evidence: semanticEvidenceIds(page), engine: ir ? 'semantic-ir' : null }, total, offset, page.length, next == null ? null : cursorFor(next));
+}
+
+
+function exactRelatedCount(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function relatedSide(value) {
+  const rows = Array.isArray(value?.results) ? value.results : [];
+  const rawOffset = value?.offset;
+  const rawReturned = value?.returned;
+  const rawTotal = value?.total;
+  const rawComplete = value?.complete;
+  const rawTruncated = value?.truncated;
+  const total = exactRelatedCount(rawTotal);
+  const malformed = (rawOffset != null && exactRelatedCount(rawOffset) !== 0)
+    || (rawReturned != null && exactRelatedCount(rawReturned) !== rows.length)
+    || (rawTotal != null && (total == null || total < rows.length))
+    || (rawComplete !== undefined && typeof rawComplete !== 'boolean')
+    || (rawTruncated !== undefined && typeof rawTruncated !== 'boolean')
+    || (typeof rawComplete === 'boolean' && typeof rawTruncated === 'boolean' && rawTruncated === rawComplete);
+  const complete = !malformed && rawComplete === true;
+  return {
+    rows,
+    page:{
+      offset:0,
+      returned:rows.length,
+      total:malformed ? null : total,
+      complete,
+      truncated:!complete,
+      reason:malformed ? 'malformed-completeness' : (complete ? null : (typeof value?.reason === 'string' && value.reason ? value.reason : 'result-limit')),
+    },
+  };
+}
+
+export function buildRelatedFunctionsResult({ functionAddress, limit = 24, callers, callees, cursorFor }) {
+  const address = addressText(functionAddress);
+  if (!address) throw new Error('invalid-related-function-address');
+  const pageLimit = typeof limit === 'number' && Number.isSafeInteger(limit) && limit > 0 && limit <= 1000 ? limit : 24;
+  const callerSide = relatedSide(callers);
+  const calleeSide = relatedSide(callees);
+  const continuations = {};
+  for (const [key, tool, side] of [
+    ['callers', 'get_callers', callerSide],
+    ['callees', 'get_callees', calleeSide],
+  ]) {
+    if (side.page.complete) continue;
+    const args = { address, limit:pageLimit };
+    if (side.rows.length && typeof cursorFor === 'function') {
+      args.cursor = cursorFor(tool, { address }, side.rows.length);
+    }
+    continuations[key] = { tool, arguments:args };
+  }
+  const complete = callerSide.page.complete && calleeSide.page.complete;
+  return {
+    functionAddress:address,
+    callers:callerSide.rows,
+    callees:calleeSide.rows,
+    callersPage:callerSide.page,
+    calleesPage:calleeSide.page,
+    ...(Object.keys(continuations).length ? { continuations } : {}),
+    complete,
+    truncated:!complete,
+    reason:complete ? null : (callerSide.page.reason || calleeSide.page.reason || 'result-limit'),
+  };
 }
 
 function pageResult(base, total, offset, returned, cursor) {
