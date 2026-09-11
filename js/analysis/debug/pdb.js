@@ -396,15 +396,22 @@ export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
         recordOffset: offset,
       });
     } else if (kind === S_GPROC32 || kind === S_LPROC32 || kind === S_GPROC32_ID || kind === S_LPROC32_ID) {
-      // PROCSYM32: parent/end/next (12) + length/dbgStart/dbgEnd (12) + typeIndex (4)
-      // + offset (4) + segment (2) + flags (1) + name
+      // PROCSYM32: parent/end/next (12) + length/dbgStart/dbgEnd (12) +
+      // type-or-ID index (4) + offset (4) + segment (2) + flags (1) + name.
+      // S_*PROC32 carries a TPI TypeIndex; S_*PROC32_ID carries an IPI FuncId.
+      // Until this provider models IPI LF_FUNC_ID/LF_MFUNC_ID, preserve that
+      // namespace distinction and withhold type authority rather than aliasing
+      // the numeric FuncId into an unrelated TPI record (#4630).
       const nameEntry = cstringWithNext(bytes, offset + 39, end);
       if (!nameEntry) break;
+      const typeOrIdIndex = view.getUint32(offset + 28, true);
+      const isIdProcedure = kind === S_GPROC32_ID || kind === S_LPROC32_ID;
+      if (isIdProcedure) unmodelled.add(kind);
       symbols.push({
         kind: 'procedure',
         isFunction: true,
         sizeBytes: view.getUint32(offset + 16, true),
-        typeIndex: view.getUint32(offset + 28, true),
+        ...(isIdProcedure ? { typeIndex: null, functionIdIndex: typeOrIdIndex } : { typeIndex: typeOrIdIndex }),
         offsetInSegment: view.getUint32(offset + 32, true),
         segment: view.getUint16(offset + 36, true),
         name: nameEntry.value,
