@@ -74,7 +74,7 @@ function buildLdcFixture() {
   emitMethod(10, 11, 1, [0x14, 0x00, 0x0c, 0xad]); // l(): ldc2_w #12; lreturn
   emitMethod(14, 15, 1, [0x14, 0x00, 0x10, 0xaf]); // d(): ldc2_w #16; dreturn
   emitMethod(18, 19, 1, [0x12, 0x15, 0xb0]);       // s(): ldc #21; areturn
-  emitMethod(24, 4, 1, [0x12, 0x0c, 0xac]);        // bad(): ldc #12 (LONG, category 2)
+  emitMethod(24, 4, 1, [0x12, 0x0c, 0xb1]);        // bad(): ldc #12 (LONG, category 2); return
   u2(0); // class attributes_count
   return new Uint8Array(classBytes);
 }
@@ -138,8 +138,9 @@ test('#8004 ldc2_w resolves Long and Double constants', async () => {
 
 test('#8004 ldc resolves a String constant with its reference kind', async () => {
   const r = await run('s');
-  assert.equal(r.produced.stringRef, 'hex-ida-audit');
-  assert.equal(r.valueMetadata?.stringRef, 'hex-ida-audit');
+  assert.equal(r.produced.constant, 'hex-ida-audit');
+  assert.equal(r.valueMetadata?.constant, 'hex-ida-audit');
+  assert.equal(r.valueMetadata?.valueType, 'string');
   assert.equal(r.valueMachineType?.kind, 'address');
   assert.ok(r.pseudocode.includes('"hex-ida-audit"'), `pseudocode must render the string: ${r.pseudocode}`);
 });
