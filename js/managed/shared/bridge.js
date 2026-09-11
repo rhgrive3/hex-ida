@@ -855,6 +855,14 @@ export function analyzeManagedInterprocedural(methods, options = {}) {
   });
 }
 
+function isJvmReferenceConstantMetadata(metadata) {
+  return typeof metadata?.constant === 'string'
+    && (metadata.valueType === 'string'
+      || metadata.valueType === 'class'
+      || metadata.valueType === 'method-handle'
+      || metadata.valueType === 'method-type');
+}
+
 /**
  * M5 — Shared Managed Decompiler.
  * Uses shared decompiler AST and printProgram to produce clean, semantically structured pseudo-C.
@@ -892,7 +900,7 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
       exprMemo.set(valId, s);
       return s;
     }
-    if (val.metadata?.valueType === 'string' && val.metadata?.constant != null) {
+    if (isJvmReferenceConstantMetadata(val.metadata)) {
       const s = expr.variable(JSON.stringify(val.metadata.constant), val.machineType?.widthBits || 32);
       exprMemo.set(valId, s);
       return s;
@@ -927,7 +935,7 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
         exprMemo.set(valId, res);
         return res;
       }
-      if (val.metadata?.valueType === 'string' && val.metadata?.constant != null) {
+      if (isJvmReferenceConstantMetadata(val.metadata)) {
         res = expr.variable(JSON.stringify(val.metadata.constant), bits);
         exprMemo.set(valId, res);
         return res;
