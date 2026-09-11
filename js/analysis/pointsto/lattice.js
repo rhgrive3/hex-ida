@@ -21,7 +21,9 @@
  */
 
 import { canonicalAddress, deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
-import { isCanonicalRootDescriptorProof } from '../alias/canonical-address-v2.js';
+import { canonicalRootIdentity, isCanonicalRootDescriptorProof } from '../alias/canonical-address-v2.js';
+
+export { canonicalRootIdentity };
 
 export const POINTS_TO_LATTICE_VERSION = '1.0.0';
 
@@ -275,15 +277,18 @@ function canonicalAddressSpace(value) {
   return text ? text : 'unknown';
 }
 
-function targetMatchesCanonicalProof(input, proof) {
+function targetMatchesCanonicalProof(input, proof, rootIdentity) {
   if (!canonicalProofMetadataIsValid(proof)) return false;
+  const canonicalIdentity = rootIdentity === undefined
+    ? canonicalRootIdentity(input.rootIdentity ?? null)
+    : rootIdentity;
   const addressSpace = canonicalAddressSpace(input.addressSpace);
   const rootKind = typeof input.rootKind === 'string' ? input.rootKind : 'unknown';
   const rootEntityId = typeof input.rootEntityId === 'string' && input.rootEntityId.trim()
     ? input.rootEntityId : null;
   return addressSpace === canonicalAddressSpace(proof.addressSpace)
     && rootKind === proofRootKind(proof)
-    && stableStringify(input.rootIdentity ?? null) === stableStringify(proof.rootIdentity ?? null)
+    && stableStringify(canonicalIdentity) === stableStringify(proof.rootIdentity ?? null)
     && rootEntityId === (proof.rootEntityId ?? null)
     && input.separationClass === proof.separationClass
     && input.separationAuthority === 'root-descriptor';
@@ -307,7 +312,7 @@ function inputMatchesCanonicalProof(input, proof) {
       : key === 'rootEntityId' && input[key] != null
         ? String(input[key]) : (input[key] ?? null);
     if (key === 'rootIdentity') {
-      if (stableStringify(actual) !== stableStringify(expected)) return false;
+      if (stableStringify(canonicalRootIdentity(actual)) !== stableStringify(expected)) return false;
     } else if (actual !== expected) {
       return false;
     }
@@ -317,10 +322,11 @@ function inputMatchesCanonicalProof(input, proof) {
 
 /** One (root, offset-range) member of a points-to set. */
 export function createPointsToTarget(input = {}) {
+  const rootIdentity = canonicalRootIdentity(input.rootIdentity ?? null);
   // A plain object can never mint authority. Internal copies are accepted only
   // when the exact canonical proof object and its root identity are preserved.
   const proof = input[ROOT_DESCRIPTOR_PROOF];
-  const proven = targetMatchesCanonicalProof(input, proof);
+  const proven = targetMatchesCanonicalProof(input, proof, rootIdentity);
   const canonicalStorageClass = typeof input.canonicalRootStorageClass === 'string' && input.canonicalRootStorageClass.trim()
     ? input.canonicalRootStorageClass.trim()
     : (typeof input.storageClass === 'string' && input.storageClass.trim()
@@ -333,7 +339,7 @@ export function createPointsToTarget(input = {}) {
   const target = {
     addressSpace: canonicalAddressSpace(input.addressSpace),
     rootKind: typeof input.rootKind === 'string' ? input.rootKind : 'unknown',
-    rootIdentity: input.rootIdentity ?? null,
+    rootIdentity,
     // Canonical root token, not the raw spelling (#6063): 'A' and '  A  ' are
     // the same root, and storing the raw string split one root into two
     // identities — a false strong NoAlias between them.
