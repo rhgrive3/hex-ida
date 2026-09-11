@@ -66,6 +66,28 @@ function resolveClassInitializationAuthority(image, declaringClass, method) {
     }
     superType = matches[0]?.superType ?? null;
   }
+
+  // DEX 037 introduced default interface methods. For those formats, class
+  // initialization may need to initialize default-method-bearing
+  // superinterfaces before the class completes initialization. This owner
+  // does not yet have canonical interface-list/default-method authority on
+  // current main, so absence of that metadata cannot prove absence of the
+  // trigger. Legacy pre-037 DEX cannot contain default interface methods and
+  // therefore retains the existing exact clean-chain control.
+  const versionMatch = typeof image.formatVersion === 'string'
+    ? /^dex-(\d{3})$/.exec(image.formatVersion)
+    : null;
+  const dexVersion = versionMatch ? Number(versionMatch[1]) : null;
+  if (!Number.isSafeInteger(dexVersion) || dexVersion >= 37) {
+    return {
+      declaringClass,
+      clinitPresent: false,
+      initializationRequired: true,
+      initializationProven: false,
+      superinterfaceAuthority: 'unavailable',
+    };
+  }
+
   return { declaringClass, clinitPresent: false, initializationRequired: false, initializationProven: false };
 }
 
@@ -133,7 +155,9 @@ export function dexFieldEffects({ opcode, formatByte, fieldIndex, image, method 
       completeness:'partial',
       unknownEffects:[{ category:'calls', reason:classInitialization.superclassAuthority === 'unresolved'
         ? 'dex-class-initialization-superclass-unresolved'
-        : 'dex-class-initialization-unverified' }],
+        : classInitialization.superinterfaceAuthority === 'unavailable'
+          ? 'dex-class-initialization-superinterface-authority-unavailable'
+          : 'dex-class-initialization-unverified' }],
     } : {}),
   };
 }

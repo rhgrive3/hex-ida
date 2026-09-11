@@ -119,18 +119,24 @@ for (const [label, words] of [
   });
 }
 
-// 6. Declaring class without `<clinit>`: no declaring-class initializer code
-// runs; the access stays exact with explicit clinitPresent:false provenance.
+// 6. Modern DEX without canonical superinterface/default-method authority
+// cannot use the absence of a declaring-class `<clinit>` as proof that class
+// initialization has no executable trigger. Keep the access fail-closed; the
+// pre-037 exact control lives in the focused superclass/interface regression.
 {
-  const { decoded } = await lift(fixture([ACCESSOR([0x0060, 0x0000, 0x000f])]), 'no-clinit');
+  const { image, decoded } = await lift(fixture([ACCESSOR([0x0060, 0x0000, 0x000f])]), 'no-clinit');
+  assert.equal(image.formatVersion, 'dex-039');
   const bundle = decoded.bundles.find((b) => b.mnemonic === 'sget');
-  assert.equal(bundle.completeness, 'exact');
-  assert.deepEqual(bundle.unknownEffects, []);
+  assert.equal(bundle.completeness, 'partial');
+  assert.deepEqual(bundle.unknownEffects, [
+    { category: 'calls', reason: 'dex-class-initialization-superinterface-authority-unavailable' },
+  ]);
   assert.deepEqual(bundle.memoryEffects[0].classInitialization, {
     declaringClass: 'LT;',
     clinitPresent: false,
-    initializationRequired: false,
+    initializationRequired: true,
     initializationProven: false,
+    superinterfaceAuthority: 'unavailable',
   });
 }
 
