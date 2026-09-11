@@ -5,6 +5,7 @@ import { createMachOMetadataBudget, ensureMachOMetadataBudget, markMachOMetadata
 import { validateFatSlice, validateFatContainer, probePastEndArm64SliceSync, parseInnerMachOHeader } from './macho-fat.js';
 
 const S_MOD_INIT_FUNC_POINTERS = 0x9;
+const S_INIT_FUNC_OFFSETS = 0x16;
 
 export const DICE_KIND_DATA = 1;
 export const DICE_KIND_JUMP_TABLE8 = 2;
@@ -229,6 +230,7 @@ function parseThin(bytes, opts) {
   }
   if (linkeditData.exportsTrie) parseExportTrie(r, linkeditData.exportsTrie, image, metadataBudget);
   parseModInitFunctions(r, image, bits, metadataBudget);
+  parseInitFuncOffsets(r, image, metadataBudget);
 
   const namesByAddr = new Map();
   const nameIndexEntries = image.symbols.length + image.exports.length;
@@ -1019,6 +1021,103 @@ function parseModInitFunctions(r, image, bits, metadataBudget) {
   }
 }
 
+function parseInitFuncOffsets(r, image, metadataBudget) {
+  const initOffsetSections = image.sections.filter((s) => (s.flags & 0xff) === S_INIT_FUNC_OFFSETS);
+  if (initOffsetSections.length === 0) return;
+
+  image.metadata.initializers ||= [];
+  const entrySize = 4;
+  const entrySizeBig = 4n;
+  const arch = image.arch;
+  const alignment = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
+  const instructionBytes = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
+  const addressLimit = 1n << BigInt(image.bits);
+  const recoveredTargets = new Set();
+
+  for (const sec of initOffsetSections) {
+    if (sec.size % entrySizeBig !== 0n) {
+      metadataBudget.partial(
+        'init-offsets:truncated-section',
+        `Mach-O section ${sec.name} size ${sec.size} is not a multiple of S_INIT_FUNC_OFFSETS entry width 4`,
+      );
+    }
+
+    const declaredCount = sec.size / entrySizeBig;
+    const secFileOffset = sec.fileOffset != null ? Number(sec.fileOffset) : null;
+    const availableInput = secFileOffset != null && Number.isSafeInteger(secFileOffset) && secFileOffset >= 0 && secFileOffset <= r.length
+      ? BigInt(r.length - secFileOffset)
+      : 0n;
+    const declaredFileSize = sec.fileSize != null ? BigInt(sec.fileSize) : 0n;
+    const availableFileBytes = availableInput < declaredFileSize ? availableInput : declaredFileSize;
+    const availableCount = availableFileBytes / entrySizeBig;
+    const safeCountBig = declaredCount < availableCount ? declaredCount : availableCount;
+    const safeCount = Number(safeCountBig);
+
+    if (safeCountBig < declaredCount) {
+      metadataBudget.partial(
+        'init-offsets:file-truncated',
+        `Mach-O section ${sec.name} S_INIT_FUNC_OFFSETS data is truncated or not file-backed`,
+      );
+    }
+
+    for (let i = 0; i < safeCount; i++) {
+      if (!metadataBudget.take({ inputBytes:entrySize, records:1, objects:1, operations:1, estimatedHeapBytes:64 }, 'init-offsets')) break;
+
+      const slotVa = sec.address + BigInt(i * entrySize);
+      const slotFileOff = secFileOffset + i * entrySize;
+      const raw = BigInt(r.u32(slotFileOff));
+      const computedTarget = image.imageBase + raw;
+      const target = computedTarget < addressLimit ? computedTarget : null;
+      let isValid = false;
+      let failureReason = null;
+
+      if (target == null) {
+        failureReason = 'address-out-of-domain';
+      } else {
+        const mapping = image.resolveVirtualMapping(target);
+        if (!mapping) {
+          failureReason = 'unmapped';
+        } else if (!mapping.mapping?.perms?.execute) {
+          failureReason = 'non-executable';
+        } else if (target % alignment !== 0n) {
+          failureReason = 'misaligned';
+        } else if (mapping.kind !== 'file' || mapping.available < instructionBytes) {
+          failureReason = 'not-file-backed';
+        } else {
+          isValid = true;
+        }
+      }
+
+      image.metadata.initializers.push({
+        address: target,
+        raw,
+        slotAddress: slotVa,
+        section: sec.name,
+        encoding: 'S_INIT_FUNC_OFFSETS',
+        valid: isValid,
+      });
+
+      if (isValid) {
+        const targetKey = target.toString();
+        if (!recoveredTargets.has(targetKey)) {
+          recoveredTargets.add(targetKey);
+          image.functions.push(functionSeed(target, {
+            source: 'constructor',
+            confidence: 0.95,
+            exactFunctionStart: true,
+            functionStartEvidence: 'Mach-O S_INIT_FUNC_OFFSETS image-relative loader initializer in validated executable mapping with file-backed instruction bytes',
+          }));
+        }
+      } else {
+        metadataBudget.partial(
+          `init-offsets:${failureReason}`,
+          `Ignored Mach-O initializer offset at 0x${slotVa.toString(16)} (raw 0x${raw.toString(16)}): ${failureReason}`,
+        );
+      }
+    }
+  }
+}
+
 function parseDataInCode(r, dc, image, metadataBudget) {
   const budget = ensureMachOMetadataBudget(image, metadataBudget);
   if (!dc || typeof dc.offset !== 'number' || typeof dc.size !== 'number') return;
@@ -1064,4 +1163,3 @@ function parseDataInCode(r, dc, image, metadataBudget) {
     });
   }
 }
-
