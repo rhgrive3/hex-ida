@@ -27,8 +27,57 @@ const STT_GNU_IFUNC = 10;
 const SHF_WRITE = 0x1n;
 const SHF_ALLOC = 0x2n;
 const SHF_EXECINSTR = 0x4n;
+const EM_X86_64 = 62;
 const EM_RISCV = 243;
 export const STO_RISCV_VARIANT_CC = 0x80;
+
+// x86-64 psABI relocation storage widths in bytes. A zero width denotes a
+// relocation with no storage field. Missing entries are intentionally not
+// guessed: ET_REL publication must fail closed when this table cannot prove
+// the target-field span.
+const X86_64_RELOCATION_FIELD_BYTES = new Map([
+  [0, 0n], // R_X86_64_NONE
+  [1, 8n], // R_X86_64_64
+  [2, 4n], // R_X86_64_PC32
+  [3, 4n], // R_X86_64_GOT32
+  [4, 4n], // R_X86_64_PLT32
+  [5, 0n], // R_X86_64_COPY
+  [6, 8n], // R_X86_64_GLOB_DAT
+  [7, 8n], // R_X86_64_JUMP_SLOT
+  [8, 8n], // R_X86_64_RELATIVE
+  [9, 4n], // R_X86_64_GOTPCREL
+  [10, 4n], // R_X86_64_32
+  [11, 4n], // R_X86_64_32S
+  [12, 2n], // R_X86_64_16
+  [13, 2n], // R_X86_64_PC16
+  [14, 1n], // R_X86_64_8
+  [15, 1n], // R_X86_64_PC8
+  [16, 8n], // R_X86_64_DTPMOD64
+  [17, 8n], // R_X86_64_DTPOFF64
+  [18, 8n], // R_X86_64_TPOFF64
+  [19, 4n], // R_X86_64_TLSGD
+  [20, 4n], // R_X86_64_TLSLD
+  [21, 4n], // R_X86_64_DTPOFF32
+  [22, 4n], // R_X86_64_GOTTPOFF
+  [23, 4n], // R_X86_64_TPOFF32
+  [24, 8n], // R_X86_64_PC64
+  [25, 8n], // R_X86_64_GOTOFF64
+  [26, 4n], // R_X86_64_GOTPC32
+  [27, 8n], // R_X86_64_GOT64
+  [28, 8n], // R_X86_64_GOTPCREL64
+  [29, 8n], // R_X86_64_GOTPC64
+  [30, 8n], // R_X86_64_GOTPLT64
+  [31, 8n], // R_X86_64_PLTOFF64
+  [32, 4n], // R_X86_64_SIZE32
+  [33, 8n], // R_X86_64_SIZE64
+  [34, 4n], // R_X86_64_GOTPC32_TLSDESC
+  [35, 0n], // R_X86_64_TLSDESC_CALL
+  [36, 16n], // R_X86_64_TLSDESC (pair of word64 fields)
+  [37, 8n], // R_X86_64_IRELATIVE
+  [38, 8n], // R_X86_64_RELATIVE64
+  [41, 4n], // R_X86_64_GOTPCRELX
+  [42, 4n], // R_X86_64_REX_GOTPCRELX
+]);
 const SHT_RISCV_ATTRIBUTES = 0x70000003;
 const R_RISCV_JUMP_SLOT = 5;
 const DT_RISCV_VARIANT_CC = 0x70000001n;
@@ -549,6 +598,13 @@ function validateSectionRiscvVariantCcTag(image, sections) {
   if (!image.warnings.includes(warning)) image.warnings.push(warning);
 }
 
+function relocationFieldWidth(machine, type) {
+  if (machine !== EM_X86_64) return undefined;
+  return X86_64_RELOCATION_FIELD_BYTES.has(type)
+    ? X86_64_RELOCATION_FIELD_BYTES.get(type)
+    : null;
+}
+
 function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
   if(!sec.entsize)return;
   const minEnt=BigInt(bits===64?(sec.type===SHT_RELA?24:16):(sec.type===SHT_RELA?12:8));
@@ -583,7 +639,10 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
     let address=offset,fileOffset=image.addressToOffset(offset),addressDomain='virtual';
     if(elfType===ET_REL){
       if(offset>=target.size){budget.partial(`relocations:${sec.index}:offset-range`,`ELF ET_REL relocation offset ${offset} is outside target section ${target.index}`);continue;}
-      address=(target.syntheticAddr??0n)+offset;addressDomain='section-relative-synthetic';fileOffset=target.type===8||offset>=target.size?null:target.offset+offset;
+      const fieldWidth=relocationFieldWidth(Number(image.metadata.machine),type);
+      if(fieldWidth===null){budget.partial(`relocations:${sec.index}:field-width-unknown`,`ELF ET_REL relocation type ${type} has no supported target-field width for machine ${image.metadata.machine}`);continue;}
+      if(fieldWidth!==undefined&&fieldWidth>0n&&fieldWidth>target.size-offset){budget.partial(`relocations:${sec.index}:target-span`,`ELF ET_REL relocation type ${type} has a ${fieldWidth}-byte target field crossing target section ${target.index}`);continue;}
+      address=(target.syntheticAddr??0n)+offset;addressDomain='section-relative-synthetic';fileOffset=target.type===8?null:target.offset+offset;
     }
     if(symIndex!==0&&linkedSymbolTable&&symbolEntryCount==null)continue;
     if(symIndex!==0&&symbolEntryCount!=null&&BigInt(symIndex)>=symbolEntryCount){budget.partial(`relocations:${sec.index}:symbol-index-range`,`ELF relocation section ${sec.index} references symbol index ${symIndex} outside its associated table count ${symbolEntryCount}`);continue;}
