@@ -31,6 +31,13 @@ function metadataObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+const MACHO_ABSENT_COMPONENT = Object.freeze({ complete: true, notPresent: true });
+const MACHO_ABSENT_DYLD_BINDINGS = Object.freeze({
+  complete: true,
+  notPresent: true,
+  streams: Object.freeze({}),
+});
+
 function dyldBindingCompleteness(value) {
   if (value == null) return { affirmative: false, unknown: false };
   if (!metadataObject(value)) return { affirmative: false, unknown: true };
@@ -48,27 +55,48 @@ export function machoSymbolTruth(image) {
   if (!image || image.format !== 'macho') return null;
   const metadata = image.metadata || {};
   const reasons = [];
-  const components = [metadata.machoMetadata, metadata.chainedFixups, metadata.exportTrie, metadata.dyldBindings];
+  // Sample authority inputs once: accessor-backed metadata must not change the
+  // decision between validation and rendering of the normalized components.
+  const metadataBudget = metadata.machoMetadata;
+  const loadCommands = metadata.loadCommands;
+  const ncmds = metadata.ncmds;
+  const rawChainedFixups = metadata.chainedFixups;
+  const rawExportTrie = metadata.exportTrie;
+  const rawDyldBindings = metadata.dyldBindings;
+  // Missing optional dyld components mean "not present" only after the Mach-O
+  // loader has positively completed its load-command scan.  A caller-created
+  // metadata object with one complete subcomponent must not mint parser-wide
+  // completeness merely because the other components are absent (#4935).
+  const parserScanComplete = metadataObject(metadataBudget)
+    && metadataBudget.complete === true
+    && Number.isSafeInteger(loadCommands)
+    && loadCommands >= 0
+    && Number.isSafeInteger(ncmds)
+    && ncmds >= 0
+    && loadCommands === ncmds;
+  const chainedFixups = rawChainedFixups == null && parserScanComplete ? MACHO_ABSENT_COMPONENT : rawChainedFixups;
+  const exportTrie = rawExportTrie == null && parserScanComplete ? MACHO_ABSENT_COMPONENT : rawExportTrie;
+  const dyldBindings = rawDyldBindings == null && parserScanComplete ? MACHO_ABSENT_DYLD_BINDINGS : rawDyldBindings;
+  const components = [metadataBudget, chainedFixups, exportTrie, dyldBindings];
   const componentStatuses = components.map((value, index) => index === 3
     ? dyldBindingCompleteness(value)
     : value == null
       ? { affirmative: false, unknown: false }
       : { affirmative: metadataObject(value) && value.complete === true, unknown: !metadataObject(value) || value.complete !== true });
-  const hasAffirmativeCompleteness = componentStatuses.some((status) => status.affirmative);
-  const hasUnknownPresentComponent = componentStatuses.some((status) => status.unknown);
-  statusReasons(metadata.machoMetadata, 'metadata-budget', reasons);
-  statusReasons(metadata.chainedFixups, 'chained-fixups', reasons);
-  statusReasons(metadata.exportTrie, 'export-trie', reasons);
-  dyldBindingReasons(metadata.dyldBindings, reasons);
-  if ((!hasAffirmativeCompleteness || hasUnknownPresentComponent) && reasons.length === 0) reasons.push('symbol-metadata-unavailable');
+  const allComponentsComplete = componentStatuses.every((status) => status.affirmative && !status.unknown);
+  statusReasons(metadataBudget, 'metadata-budget', reasons);
+  statusReasons(chainedFixups, 'chained-fixups', reasons);
+  statusReasons(exportTrie, 'export-trie', reasons);
+  dyldBindingReasons(dyldBindings, reasons);
+  if (!allComponentsComplete && reasons.length === 0) reasons.push('symbol-metadata-unavailable');
   const unique = [...new Set(reasons)].slice(0, 64);
   return {
-    source: 'BinaryImage', normalized: true, complete: unique.length === 0, reasons: unique,
+    source: 'BinaryImage', normalized: true, complete: allComponentsComplete && unique.length === 0, reasons: unique,
     components: {
-      chainedFixups: metadata.chainedFixups || null,
-      dyldBindings: metadata.dyldBindings || null,
-      exportTrie: metadata.exportTrie || null,
-      metadataBudget: metadata.machoMetadata || null,
+      chainedFixups: chainedFixups || null,
+      dyldBindings: dyldBindings || null,
+      exportTrie: exportTrie || null,
+      metadataBudget: metadataBudget || null,
     },
   };
 }
