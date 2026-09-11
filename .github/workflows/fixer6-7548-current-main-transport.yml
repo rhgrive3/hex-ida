@@ -1,0 +1,101 @@
+name: Fixer6 7548 current-main transport
+
+on:
+  push:
+    branches:
+      - fix/alias-binary-escape-authority-20260909-l4210
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Apply and verify alias authority repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('js/analysis/alias/regions-v2.js')
+          s = p.read_text()
+          old = """function uniqueBinaryId(origin, explicit) {
+            const direct = optionalIdentityString(explicit, 'binary-id');
+            if (direct) return direct;
+            const ids = new Set();
+            for (const range of origin?.byteRanges ?? []) {
+              if (range?.binaryId == null) continue;
+              ids.add(optionalIdentityString(range.binaryId, 'binary-id'));
+            }
+            return ids.size === 1 ? [...ids][0] : null;
+          }
+          """
+          new = """function uniqueBinaryId(origin, explicit) {
+            const direct = optionalIdentityString(explicit, 'binary-id');
+            const ids = new Set();
+            for (const range of origin?.byteRanges ?? []) {
+              if (range?.binaryId == null) continue;
+              ids.add(optionalIdentityString(range.binaryId, 'binary-id'));
+            }
+            // Explicit identity and byte provenance are co-authorities. A direct claim
+            // may not contradict provenance, and it may not collapse provenance that
+            // spans multiple binaries into one precise binary scope (#5218). Without an
+            // explicit claim, however, multi-binary provenance keeps the historical
+            // conservative path: no unique binary authority is available, so callers
+            // can fall back to an unknown/non-binary-scoped region instead of throwing.
+            if (direct && (ids.size > 1 || (ids.size === 1 && !ids.has(direct)))) {
+              throw new TypeError('alias-region-binary-identity-mismatch');
+            }
+            if (direct) return direct;
+            return ids.size === 1 ? [...ids][0] : null;
+          }
+          """
+          if s.count(old) != 1:
+              raise SystemExit('regions uniqueBinaryId anchor mismatch')
+          p.write_text(s.replace(old, new, 1))
+
+          p = Path('js/analysis/alias/solver.js')
+          s = p.read_text()
+          old = """    pointsToRun = candidate.recovery == null
+                ? baseline
+                : { ...baseline, recovery: { ...candidate.recovery, publicationAllowed: false } };
+              return pointsToRun;
+          """
+          new = """    pointsToRun = candidate.recovery == null
+                ? baseline
+                : { ...baseline, recovery: { ...candidate.recovery, publicationAllowed: false } };
+              // Escape facts belong to the points-to map that is actually published. A
+              // rejected refinement restores the baseline map, so proofs cached against
+              // the rejected candidate must not survive into baseline alias answers
+              // (#5215).
+              escapeRun = null;
+              return pointsToRun;
+          """
+          if s.count(old) != 1:
+              raise SystemExit('solver fallback anchor mismatch')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          printf '%s' 'aW1wb3J0IGFzc2VydCBmcm9tICdub2RlOmFzc2VydC9zdHJpY3QnOwppbXBvcnQgdGVzdCBmcm9tICdub2RlOnRlc3QnOwoKaW1wb3J0IHsgZGVyaXZlTWVtb3J5UmVnaW9uIH0gZnJvbSAnLi4vLi4vLi4vanMvYW5hbHlzaXMvYWxpYXMvcmVnaW9ucy12Mi5qcyc7CmltcG9ydCB7IGFsaWFzTWVtb3J5UmVnaW9ucyB9IGZyb20gJy4uLy4uLy4uL2pzL2FuYWx5c2lzL2FsaWFzL2xlZ2FjeS1zYWZldHktZmxvb3IuanMnOwoKY29uc3Qgb25lUmFuZ2UgPSAoYmluYXJ5SWQgPSBudWxsKSA9PiAoewogIGJ5dGVSYW5nZXM6IFt7IC4uLihiaW5hcnlJZCA9PSBudWxsID8ge30gOiB7IGJpbmFyeUlkIH0pLCBzdGFydDogMCwgZW5kOiA0IH1dLAp9KTsKY29uc3QgbXVsdGlSYW5nZSA9ICgpID0+ICh7CiAgYnl0ZVJhbmdlczogWwogICAgeyBiaW5hcnlJZDogJ2Jpbi1BJywgc3RhcnQ6IDAsIGVuZDogMiB9LAogICAgeyBiaW5hcnlJZDogJ2Jpbi1CJywgc3RhcnQ6IDIsIGVuZDogNCB9LAogIF0sCn0pOwoKZnVuY3Rpb24gZGVyaXZlKHsgYmluYXJ5SWQsIG9yaWdpbiA9IG9uZVJhbmdlKCdiaW4tQScpLCBldmlkZW5jZSA9IHsga2luZDogJ2dsb2JhbC1hYnNvbHV0ZScsIGFkZHJlc3M6ICc0MDk2JyB9LCBpbmNsdWRlQmluYXJ5SWQgPSB0cnVlIH0gPSB7fSkgewogIHJldHVybiBkZXJpdmVNZW1vcnlSZWdpb24oewogICAgZnVuY3Rpb25JZDogJ2YnLAogICAgLi4uKGluY2x1ZGVCaW5hcnlJZCA/IHsgYmluYXJ5SWQgfSA6IHt9KSwKICAgIHdpZHRoQml0czogMzIsCiAgICBvcmlnaW4sCiAgICByZWdpb25FdmlkZW5jZTogZXZpZGVuY2UsCiAgfSk7Cn0KCmNvbnN0IHByZWNpc2VDYXNlcyA9IFsKICBbJ3N0YWNrLWZpeGVkJywgeyBraW5kOiAnc3RhY2stZml4ZWQnLCBvZmZzZXQ6ICcxNicgfV0sCiAgWydnbG9iYWwtYWJzb2x1dGUnLCB7IGtpbmQ6ICdnbG9iYWwtYWJzb2x1dGUnLCBhZGRyZXNzOiAnNDA5NicgfV0sCiAgWydyb290ZWQtb2Zmc2V0JywgeyBraW5kOiAncm9vdGVkLW9mZnNldCcsIHJvb3RFbnRpdHlJZDogJ3Jvb3QnLCBvZmZzZXQ6ICc4JyB9XSwKICBbJ3RscycsIHsga2luZDogJ3RscycsIGFkZHJlc3NTcGFjZTogJ3RscycsIHJvb3RJZGVudGl0eTogeyBzbG90OiAneCcgfSB9XSwKICBbJ2lvJywgeyBraW5kOiAnaW8nLCBhZGRyZXNzU3BhY2U6ICdpbycsIHJvb3RJZGVudGl0eTogeyBwb3J0OiAneCcgfSB9XSwKICBbJ3BoeXNpY2FsLXNwYWNlJywgeyBraW5kOiAncGh5c2ljYWwtc3BhY2UnLCBhZGRyZXNzU3BhY2U6ICdwaHlzaWNhbCcsIHJvb3RJZGVudGl0eTogeyBwYWdlOiAneCcgfSB9XSwKXTsKCnRlc3QoJyM1MjE4IGV4cGxpY2l0IGJpbmFyeSBpZGVudGl0eSBjb25mbGljdGluZyB3aXRoIHNpbmdsZS1vcmlnaW4gcHJvdmVuYW5jZSBmYWlscyBjbG9zZWQnLCAoKSA9PiB7CiAgYXNzZXJ0LnRocm93cygKICAgICgpID0+IGRlcml2ZSh7IGJpbmFyeUlkOiAnYmluLUInLCBvcmlnaW46IG9uZVJhbmdlKCdiaW4tQScpIH0pLAogICAgL2FsaWFzLXJlZ2lvbi1iaW5hcnktaWRlbnRpdHktbWlzbWF0Y2gvLAogICk7Cn0pOwoKdGVzdCgnIzUyMTggZXhwbGljaXQgYmluYXJ5IGlkZW50aXR5IGNhbm5vdCBjb2xsYXBzZSBtdWx0aS1iaW5hcnkgcHJvdmVuYW5jZScsICgpID0+IHsKICBhc3NlcnQudGhyb3dzKAogICAgKCkgPT4gZGVyaXZlKHsgYmluYXJ5SWQ6ICdiaW4tQScsIG9yaWdpbjogbXVsdGlSYW5nZSgpIH0pLAogICAgL2FsaWFzLXJlZ2lvbi1iaW5hcnktaWRlbnRpdHktbWlzbWF0Y2gvLAogICk7Cn0pOwoKdGVzdCgnIzUyMTggb21pdHRlZCBleHBsaWNpdCBpZGVudGl0eSBwcmVzZXJ2ZXMgY29uc2VydmF0aXZlIG11bHRpLWJpbmFyeSBmYWxsYmFjaycsICgpID0+IHsKICBjb25zdCB2YWx1ZSA9IGRlcml2ZSh7IGluY2x1ZGVCaW5hcnlJZDogZmFsc2UsIG9yaWdpbjogbXVsdGlSYW5nZSgpIH0pOwogIGFzc2VydC5lcXVhbCh2YWx1ZS5raW5kLCAndW5rbm93bicpOwogIGFzc2VydC5lcXVhbCh2YWx1ZS5iaW5hcnlJZCA/PyBudWxsLCBudWxsKTsKICBhc3NlcnQuZXF1YWwodmFsdWUuZnVuY3Rpb25JZCwgJ2YnKTsKICBhc3NlcnQuZXF1YWwodmFsdWUub3JpZ2luLmJ5dGVSYW5nZXMubGVuZ3RoLCAyKTsKfSk7Cgp0ZXN0KCcjNTIxOCBvbmUgcHJvdmVuYW5jZSBiaW5hcnkgcmVtYWlucyBzdWZmaWNpZW50IHdpdGhvdXQgYW4gZXhwbGljaXQgaWRlbnRpdHknLCAoKSA9PiB7CiAgY29uc3QgdmFsdWUgPSBkZXJpdmUoeyBpbmNsdWRlQmluYXJ5SWQ6IGZhbHNlLCBvcmlnaW46IG9uZVJhbmdlKCdiaW4tQScpIH0pOwogIGFzc2VydC5lcXVhbCh2YWx1ZS5raW5kLCAnZ2xvYmFsLWFic29sdXRlJyk7CiAgYXNzZXJ0LmVxdWFsKHZhbHVlLmJpbmFyeUlkLCAnYmluLUEnKTsKfSk7Cgp0ZXN0KCcjNTIxOCBvcmlnaW4gd2l0aG91dCBiaW5hcnkgaWRlbnRpdHkgcHJlc2VydmVzIGV4cGxpY2l0LW9ubHkgY29tcGF0aWJpbGl0eScsICgpID0+IHsKICBjb25zdCB2YWx1ZSA9IGRlcml2ZSh7IGJpbmFyeUlkOiAnYmluLUInLCBvcmlnaW46IG9uZVJhbmdlKG51bGwpIH0pOwogIGFzc2VydC5lcXVhbCh2YWx1ZS5raW5kLCAnZ2xvYmFsLWFic29sdXRlJyk7CiAgYXNzZXJ0LmVxdWFsKHZhbHVlLmJpbmFyeUlkLCAnYmluLUInKTsKfSk7Cgp0ZXN0KCcjNTIxOCBiaW5hcnkgcHJvdmVuYW5jZSBhZ3JlZW1lbnQgcHJlc2VydmVzIGV2ZXJ5IHByZWNpc2UgcmVnaW9uIGtpbmQnLCAoKSA9PiB7CiAgZm9yIChjb25zdCBba2luZCwgZXZpZGVuY2VdIG9mIHByZWNpc2VDYXNlcykgewogICAgY29uc3QgdmFsdWUgPSBkZXJpdmUoeyBiaW5hcnlJZDogJ2Jpbi1CJywgb3JpZ2luOiBvbmVSYW5nZSgnYmluLUInKSwgZXZpZGVuY2UgfSk7CiAgICBhc3NlcnQuZXF1YWwodmFsdWUua2luZCwga2luZCwgYCR7a2luZH0gbXVzdCBzdGF5IHByZWNpc2Ugd2hlbiBhdXRob3JpdGllcyBhZ3JlZWApOwogICAgYXNzZXJ0LmVxdWFsKHZhbHVlLmJpbmFyeUlkLCAnYmluLUInLCBgJHtraW5kfSBtdXN0IHJldGFpbiB0aGUgYWdyZWVkIGJpbmFyeSBpZGVudGl0eWApOwogIH0KfSk7Cgp0ZXN0KCcjNTIxOCBldmVyeSBwcmVjaXNlIHJlZ2lvbiBraW5kIHJlamVjdHMgY29udHJhZGljdG9yeSBiaW5hcnkgcHJvdmVuYW5jZScsICgpID0+IHsKICBmb3IgKGNvbnN0IFtraW5kLCBldmlkZW5jZV0gb2YgcHJlY2lzZUNhc2VzKSB7CiAgICBhc3NlcnQudGhyb3dzKAogICAgICAoKSA9PiBkZXJpdmUoeyBiaW5hcnlJZDogJ2Jpbi1CJywgb3JpZ2luOiBvbmVSYW5nZSgnYmluLUEnKSwgZXZpZGVuY2UgfSksCiAgICAgIC9hbGlhcy1yZWdpb24tYmluYXJ5LWlkZW50aXR5LW1pc21hdGNoLywKICAgICAgYCR7a2luZH0gbXVzdCBub3QgbWludCBhdXRob3JpdHkgZnJvbSBjb250cmFkaWN0b3J5IHByb3ZlbmFuY2VgLAogICAgKTsKICB9Cn0pOwoKdGVzdCgnIzUyMTggY29udHJhZGljdG9yeSBwcm92ZW5hbmNlIGNhbm5vdCBwcm9kdWNlIGEgZmFsc2UgY3Jvc3MtYmluYXJ5IE11c3RBbGlhcycsICgpID0+IHsKICBjb25zdCByZWFsQiA9IGRlcml2ZSh7IGJpbmFyeUlkOiAnYmluLUInLCBvcmlnaW46IG9uZVJhbmdlKCdiaW4tQicpIH0pOwogIGNvbnN0IHJlYWxBID0gZGVyaXZlKHsgYmluYXJ5SWQ6ICdiaW4tQScsIG9yaWdpbjogb25lUmFuZ2UoJ2Jpbi1BJykgfSk7CiAgYXNzZXJ0Lm5vdEVxdWFsKGFsaWFzTWVtb3J5UmVnaW9ucyhyZWFsQSwgcmVhbEIpLCAnbXVzdCcpOwogIGFzc2VydC50aHJvd3MoCiAgICAoKSA9PiBkZXJpdmUoeyBiaW5hcnlJZDogJ2Jpbi1CJywgb3JpZ2luOiBvbmVSYW5nZSgnYmluLUEnKSB9KSwKICAgIC9hbGlhcy1yZWdpb24tYmluYXJ5LWlkZW50aXR5LW1pc21hdGNoLywKICApOwp9KTsK' | base64 -d > tests/phase7/alias/issue-5218-binary-identity-mismatch.test.mjs
+          rm .github/workflows/fixer6-7548-current-main-transport.yml
+          node --check js/analysis/alias/regions-v2.js
+          node --check js/analysis/alias/solver.js
+          node --check tests/phase7/alias/issue-5215-stale-escape-cache.test.mjs
+          node --check tests/phase7/alias/issue-5218-binary-identity-mismatch.test.mjs
+          TERM=xterm timeout 45s node --test tests/phase7/alias/issue-5215-stale-escape-cache.test.mjs tests/phase7/alias/issue-5218-binary-identity-mismatch.test.mjs
+          mapfile -t alias_files < <(find tests/phase7/alias -maxdepth 1 -type f -name '*.test.mjs' ! -name 'precision-v2.test.mjs' | sort)
+          TERM=xterm timeout 90s node --test "${alias_files[@]}"
+          test "$(git hash-object js/analysis/alias/regions-v2.js)" = "08fe10258a1b723500546b79c3f0d898861ff6b4"
+          test "$(git hash-object js/analysis/alias/solver.js)" = "7e87892dfbf59a1f35e352eee00f96905c348087"
+          test "$(git hash-object tests/phase7/alias/issue-5215-stale-escape-cache.test.mjs)" = "fd4e53375b0f32e0d6ecdde28fb7bf087d4b178d"
+          test "$(git hash-object tests/phase7/alias/issue-5218-binary-identity-mismatch.test.mjs)" = "8008319b24bca4701a7920a4f4790a05b3919134"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(alias): preserve conservative multi-binary fallback (#5218)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
