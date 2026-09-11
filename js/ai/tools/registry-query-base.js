@@ -194,14 +194,37 @@ function installQueryOverrides(registry, context) {
         context.getCallers(functionAddress, { limit, offset:0, signal:registry.executionSignal }),
         context.getCallees(functionAddress, { limit, offset:0, signal:registry.executionSignal }),
       ]);
+      const normalizeSide = (value) => value?.complete === true ? value : { ...value, total:null };
+      const normalizedCallers = normalizeSide(callers);
+      const normalizedCallees = normalizeSide(callees);
+      const related = buildRelatedFunctionsResult({
+        functionAddress,
+        limit,
+        callers:normalizedCallers,
+        callees:normalizedCallees,
+        cursorFor:(tool, params, offset) => queryPaging(registry, tool, params, null).makeCursor(offset),
+      });
+      const continuations = { ...(related.continuations || {}) };
+      for (const [key, tool, side] of [
+        ['callers', 'get_callers', normalizedCallers],
+        ['callees', 'get_callees', normalizedCallees],
+      ]) {
+        if (side?.complete === true || (Array.isArray(side?.results) && side.results.length > 0)) continue;
+        const nextOffset = Number.isSafeInteger(side?.nextOffset) && side.nextOffset > 0 ? side.nextOffset : null;
+        if (nextOffset == null) { delete continuations[key]; continue; }
+        const address = addressText(functionAddress);
+        continuations[key] = {
+          tool,
+          arguments:{
+            address,
+            limit,
+            cursor:queryPaging(registry, tool, { address }, null).makeCursor(nextOffset),
+          },
+        };
+      }
       return {
-        ...buildRelatedFunctionsResult({
-          functionAddress,
-          limit,
-          callers,
-          callees,
-          cursorFor:(tool, params, offset) => queryPaging(registry, tool, params, null).makeCursor(offset),
-        }),
+        ...related,
+        ...(Object.keys(continuations).length ? { continuations } : {}),
         analysisAuthority:'AnalysisQueryAPI',
       };
     });
