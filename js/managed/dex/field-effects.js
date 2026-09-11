@@ -8,27 +8,65 @@ const ACC_STATIC = 0x08;
 const ACC_VOLATILE = 0x40;
 
 // Static-field access carries the declaring class's initialization authority
-// (#8053): ART must ensure the class is initialized before an `sget*`/`sput*`
-// completes, and a declared `<clinit>` may run arbitrary code and fail on the
-// first-access path. That one-time state is not provable per-instruction, so
-// an access that may trigger a declared `<clinit>` fails closed to partial.
-// An access from inside the declaring class's own `<clinit>` is already on
-// the initializing thread and must not invent recursive initialization. A
-// class without a declared `<clinit>` runs no declaring-class initializer
-// code (superclass-chain authority is a separate slice).
+// (#8053). A declared <clinit> in the class or any required superclass may
+// execute arbitrary code and fail before an sget*/sput* completes. Exactness
+// is retained only when that initializer chain is locally proven code-free,
+// or when execution is already inside the declaring class's own <clinit>.
 function resolveClassInitializationAuthority(image, declaringClass, method) {
   if (!Array.isArray(image.methods)) fail('dex-method-definitions-unavailable');
-  const initializers = image.methods.filter((entry) => entry?.classType === declaringClass && entry?.name === '<clinit>');
-  if (initializers.length > 1) fail('dex-class-initialization-ambiguous');
-  const selfInitializing = method?.classType === declaringClass && method?.name === '<clinit>';
-  const clinitPresent = initializers.length === 1;
-  return {
-    declaringClass,
-    clinitPresent,
-    initializationRequired: clinitPresent && !selfInitializing,
-    initializationProven: false,
-    ...(selfInitializing ? { discharged: 'declaring-class-initializer' } : {}),
+  const initializersFor = (classType) => {
+    const initializers = image.methods.filter((entry) => entry?.classType === classType && entry?.name === '<clinit>');
+    if (initializers.length > 1) fail('dex-class-initialization-ambiguous');
+    return initializers.length === 1;
   };
+  const selfInitializing = method?.classType === declaringClass && method?.name === '<clinit>';
+  const clinitPresent = initializersFor(declaringClass);
+  if (selfInitializing) {
+    return {
+      declaringClass,
+      clinitPresent,
+      initializationRequired: false,
+      initializationProven: false,
+      discharged: 'declaring-class-initializer',
+    };
+  }
+  if (clinitPresent) {
+    return { declaringClass, clinitPresent, initializationRequired: true, initializationProven: false };
+  }
+
+  const classes = image.classes ?? [];
+  const declaringMatches = classes.filter((entry) => entry?.classType === declaringClass);
+  if (declaringMatches.length !== 1) fail('dex-class-initialization-class-ambiguous');
+  const seen = new Set([declaringClass]);
+  let superType = declaringMatches[0]?.superType ?? null;
+  while (superType != null) {
+    if (typeof superType !== 'string' || !superType) fail('dex-class-initialization-superclass-invalid');
+    if (seen.has(superType)) fail('dex-class-initialization-superclass-cycle');
+    seen.add(superType);
+    const matches = classes.filter((entry) => entry?.classType === superType);
+    if (matches.length > 1) fail('dex-class-initialization-class-ambiguous');
+    if (matches.length === 0) {
+      return {
+        declaringClass,
+        clinitPresent: false,
+        initializationRequired: true,
+        initializationProven: false,
+        superclassAuthority: 'unresolved',
+      };
+    }
+    if (initializersFor(superType)) {
+      return {
+        declaringClass,
+        clinitPresent: false,
+        initializationRequired: true,
+        initializationProven: false,
+        superclassInitializationRequired: true,
+        superclassInitializerClass: superType,
+      };
+    }
+    superType = matches[0]?.superType ?? null;
+  }
+  return { declaringClass, clinitPresent: false, initializationRequired: false, initializationProven: false };
 }
 
 function resolveFieldDeclaration(image, field, fieldIndex, isStatic) {
@@ -93,7 +131,9 @@ export function dexFieldEffects({ opcode, formatByte, fieldIndex, image, method 
       ...(isStatic ? { classInitialization } : {}) }],
     ...(isStatic && classInitialization.initializationRequired ? {
       completeness:'partial',
-      unknownEffects:[{ category:'calls', reason:'dex-class-initialization-unverified' }],
+      unknownEffects:[{ category:'calls', reason:classInitialization.superclassAuthority === 'unresolved'
+        ? 'dex-class-initialization-superclass-unresolved'
+        : 'dex-class-initialization-unverified' }],
     } : {}),
   };
 }
