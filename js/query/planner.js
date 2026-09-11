@@ -314,7 +314,8 @@ function budgetState(opts) {
     candidateTruncated: false, candidateCount: 0, unaccountedToolCost: false,
     candidateAnalysisFailureCount: 0, candidateAnalysisFailures: [],
     analysisAccountedExternally: !!(opts && opts.tools),
-    searchIncomplete: false, searchReports: [], sourceTotals: Object.fromEntries(POOL_ORDER.map((name) => [name, 0])),
+    searchIncomplete: false, searchReports: [], semanticIncomplete: false, semanticReports: [],
+    sourceTotals: Object.fromEntries(POOL_ORDER.map((name) => [name, 0])),
     controller, signal: controller.signal, timeout: null, externalSignal, externalAbort: null,
   };
   if (b.externalSignal) {
@@ -440,8 +441,9 @@ function searchCompleteness(result, requestedLimit) {
 
   let complete;
   if (malformed) complete = false;
+  else if (values.complete.some((value) => value === false) || truncatedRaw === true) complete = false;
   else if (typeof completeRaw === 'boolean') complete = completeRaw;
-  else complete = truncatedRaw !== true && rows.length < requestedLimit;
+  else complete = rows.length < requestedLimit;
 
   if (coverage == null) {
     if (!malformed && total != null && total > 0) coverage = Math.min(1, returned / total);
@@ -460,6 +462,14 @@ function noteSearch(b, tool, term, result) {
   b.searchReports.push(report);
   if (!report.complete) b.searchIncomplete = true;
   return report.coverage;
+}
+function noteSemanticFacts(b, address, result) {
+  const report = { address, ...searchCompleteness(result, 500) };
+  if (!report.complete) {
+    b.semanticIncomplete = true;
+    if (b.semanticReports.length < b.maxFunctions) b.semanticReports.push(report);
+  }
+  return report;
 }
 function sourcePoolCap(b, pool) {
   const factor = pool === 'recognition' ? 10 : 8;
@@ -716,7 +726,11 @@ async function analyzeCandidates(query, pools, tools, b) {
     c.score += semantic.score; c.scoreComponents.semanticScore += semantic.score; c.semantic = semantic.hits;
     c.evidence = new Set();
     for (const f of semantic.hits) for (const e of f.evidence || []) c.evidence.add(e);
-    c.semanticCompleteness = factsResult.completeness || { complete: !factsResult.truncated, coverage: factsResult.coverage ?? null, reason: factsResult.reason || null };
+    const semanticReport = noteSemanticFacts(b, c.address, factsResult);
+    c.semanticCompleteness = {
+      complete: semanticReport.complete, coverage: semanticReport.coverage, reason: semanticReport.reason,
+      returned: semanticReport.returned, total: semanticReport.total,
+    };
     if (query.expect && query.expect.calls && query.expect.calls.length && c.summary) {
       const names = (c.summary.calls || []).map((x) => lower(x.name || x.selector || ''));
       if (query.expect.calls.some((expected) => names.some((n) => n.includes(lower(expected))))) c.score += 20;
@@ -819,6 +833,7 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
     if (b.shortlistLimited) missingEvidence.push('planner-shortlist-limit');
     if (b.sourcePoolTruncated) missingEvidence.push('candidate-source-limit');
     if (b.searchIncomplete) missingEvidence.push('search-incomplete');
+    if (b.semanticIncomplete) missingEvidence.push('semantic-facts-incomplete');
     if (b.unaccountedToolCost) missingEvidence.push('unaccounted-tool-cost');
     if (toolCallBudgetExhausted(b)) missingEvidence.push('tool-call-budget');
     if (timedOut(b)) missingEvidence.push('timeout');
@@ -826,7 +841,7 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
     if (query.confident === false) missingEvidence.push(...(query.missing || []));
     const search = aggregateSearchCoverage(b.searchReports);
     const sourceCompletenessInfo = b.sourceCompleteness || sourceCompleteness(pools, b);
-    const incomplete = expired(b) || b.shortlistLimited || b.sourcePoolTruncated || b.searchIncomplete || failedCount > 0;
+    const incomplete = expired(b) || b.shortlistLimited || b.sourcePoolTruncated || b.searchIncomplete || b.semanticIncomplete || failedCount > 0;
     const budgetLimited = b.disassemblyExhausted || b.functionExhausted || toolCallBudgetExhausted(b);
     const storedCandidateCoverage = candidateCount === 0 ? 1 : Math.min(1, analyzedCount / candidateCount);
     const candidateCoverage = storedCandidateCoverage * search.coverage * sourceCompletenessInfo.coverage;
@@ -838,7 +853,8 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
             : b.sourcePoolTruncated ? 'candidate-source-limit'
               : b.shortlistLimited ? 'planner-shortlist-limit'
                 : b.searchIncomplete ? (search.reason || 'search-incomplete')
-                  : failedCount > 0 ? 'candidate-analysis-error' : null;
+                  : b.semanticIncomplete ? 'semantic-facts-incomplete'
+                    : failedCount > 0 ? 'candidate-analysis-error' : null;
     const completeness = {
       complete: !incomplete, partial: incomplete, budgetLimited, reason, candidateCoverage,
       storedCandidateCoverage, candidateSourceCoverage: sourceCompletenessInfo.coverage,
@@ -865,6 +881,7 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
         reserved: { functions: b.reservedFunctions, disassembly: b.reservedDisassembly },
       },
       searchCompleteness: search,
+      semanticCompleteness: { complete: !b.semanticIncomplete, incomplete: b.semanticReports.slice() },
       stats: {
         analyzedFunctions: analyzedCount, candidateFunctions: candidateCount, failedFunctions: failedCount,
         unanalyzedFunctions: Math.max(0, candidateCount - analyzedCount),
