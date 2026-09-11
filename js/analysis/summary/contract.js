@@ -219,6 +219,7 @@ export function createSemanticCallTargetClassifier(ir, memorySsa, options = {}) 
     const fallback = classifyCallTargetProof(node?.call);
     const call = node?.call;
     if (fallback.exhaustive || fallback.candidateEntityIds.length || node?.kind !== 'call'
+      || !node.attributes?.abiCallBinding
       || call?.summarySource !== 'machine-effects-abi-neutral-call'
       || ['targetEntityId', 'target', 'callee'].some(key => Object.hasOwn(call, key))
       || call.targetEntityIds?.length !== 0 || call.targetValueIds?.length !== 1

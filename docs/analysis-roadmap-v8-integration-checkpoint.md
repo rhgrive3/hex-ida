@@ -5190,6 +5190,11 @@ analysis-surface paths, serialized artifacts, register-indirect rejection, and
 independent control/constant/origin contradictions even after a container digest
 is refreshed. Existing assertions and ownership manifests are retained.
 
+The existing loaded-pointer fixture's explicit analyzer-version assertion is
+advanced from 1.3.0 to 1.3.1 alongside the production version; all pointer, offset,
+proof and completeness assertions remain unchanged. Untyped CALLs skip the native
+classifier's additional lookup tables before any allocation.
+
 This closes the immediate native CALL value/target-to-summary seam, not the whole
 FR-C1-02A task. Function-level machine unknowns remain partial; recursive component
 integration, indirect target-universe recovery, native aggregate/FP boundaries,
