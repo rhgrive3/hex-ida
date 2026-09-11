@@ -1,0 +1,55 @@
+name: Fixer6 issue 3957 scoring transport
+
+on:
+  push:
+    branches:
+      - fix/issue-3957-expected-call-discovery-20260912-f6
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Apply and verify issue 3957 scoring fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('js/query/planner.js')
+          text = path.read_text()
+          old_start = "async function analyzeCandidates(query, pools, tools, b) {\n  const merged = quotaMerge(pools, b.maxFunctions);"
+          new_start = "async function analyzeCandidates(query, pools, tools, b) {\n  const expectedCalls = expectedCallHints(query).hints;\n  const merged = quotaMerge(pools, b.maxFunctions);"
+          if text.count(old_start) != 1:
+              raise SystemExit('planner analyzeCandidates anchor mismatch')
+          text = text.replace(old_start, new_start, 1)
+          old_score = """    if (query.expect && query.expect.calls && query.expect.calls.length && c.summary) {
+              const names = (c.summary.calls || []).map((x) => lower(x.name || x.selector || ''));
+              if (query.expect.calls.some((expected) => names.some((n) => n.includes(lower(expected))))) c.score += 20;
+            }"""
+          new_score = """    if (expectedCalls.length && c.summary) {
+              const names = (c.summary.calls || []).map((x) => lower(x.name || x.selector || ''));
+              if (expectedCalls.some((expected) => names.some((n) => n.includes(lower(expected))))) c.score += 20;
+            }"""
+          if text.count(old_score) != 1:
+              raise SystemExit('planner expected-call scoring anchor mismatch')
+          path.write_text(text.replace(old_score, new_score, 1))
+          PY
+          printf '%s' 'aW1wb3J0IGFzc2VydCBmcm9tICdub2RlOmFzc2VydC9zdHJpY3QnOwppbXBvcnQgdGVzdCBmcm9tICdub2RlOnRlc3QnOwoKaW1wb3J0IHsgcGxhbkFuYWx5c2lzR29hbCB9IGZyb20gJy4uLy4uLy4uL2pzL3F1ZXJ5L3BsYW5uZXIuanMnOwoKY29uc3QgVEFSR0VUID0gMHg5MDAwbjsKCmZ1bmN0aW9uIHBhZ2UocmVzdWx0cyA9IFtdLCBvdmVycmlkZXMgPSB7fSkgewogIHJldHVybiB7CiAgICByZXN1bHRzLAogICAgY29tcGxldGU6IHRydWUsCiAgICB0cnVuY2F0ZWQ6IGZhbHNlLAogICAgcmV0dXJuZWQ6IHJlc3VsdHMubGVuZ3RoLAogICAgdG90YWw6IHJlc3VsdHMubGVuZ3RoLAogICAgY292ZXJhZ2U6IDEsCiAgICByZWFzb246IG51bGwsCiAgICAuLi5vdmVycmlkZXMsCiAgfTsKfQoKdGVzdCgnaXNzdWUtMzk1NzogbWFsZm9ybWVkIGV4cGVjdGVkLWNhbGwgaGludHMgYXJlIG5ldmVyIGNvZXJjZWQgZHVyaW5nIGNhbmRpZGF0ZSBzY29yaW5nJywgYXN5bmMgKCkgPT4gewogIGxldCBjb2VyY2lvbnMgPSAwOwogIGNvbnN0IGhvc3RpbGVIaW50ID0gewogICAgdG9TdHJpbmcoKSB7CiAgICAgIGNvZXJjaW9ucyArPSAxOwogICAgICB0aHJvdyBuZXcgRXJyb3IoJ2hvc3RpbGUgZXhwZWN0ZWQtY2FsbCBoaW50IHdhcyBjb2VyY2VkJyk7CiAgICB9LAogIH07CiAgY29uc3QgcXVlcnkgPSB7CiAgICBhY3Rpb246ICdzZW5kJywKICAgIGVudGl0eTogeyB0ZXJtczogWydsZXhpY2FsLWhpdCddIH0sCiAgICBjb250ZXh0OiB7IHRlcm1zOiBbXSB9LAogICAgZXZlbnQ6IHsgdGVybXM6IFtdIH0sCiAgICBkYXRhZmxvdzogeyBzaGFwZTogJ3RyYW5zZmVyJyB9LAogICAgZXhwZWN0OiB7IGNhbGxzOiBbaG9zdGlsZUhpbnRdIH0sCiAgICBjb25maWRlbnQ6IHRydWUsCiAgfTsKICBjb25zdCB0b29scyA9IHsKICAgIGFzeW5jIHNlYXJjaF9mdW5jdGlvbnModGVybSkgewogICAgICByZXR1cm4gdGVybSA9PT0gJ2xleGljYWwtaGl0JwogICAgICAgID8gcGFnZShbeyBhZGRyOiBUQVJHRVQsIG5hbWU6ICdsZXhpY2FsX2hpdCcgfV0pCiAgICAgICAgOiBwYWdlKCk7CiAgICB9LAogICAgYXN5bmMgc2VhcmNoX3N0cmluZ3MoKSB7IHJldHVybiBwYWdlKCk7IH0sCiAgICBhc3luYyBnZXRfeHJlZnMoKSB7IHJldHVybiB7IGZ1bmN0aW9uczogW10sIGNvbXBsZXRlOiB0cnVlLCByZXR1cm5lZDogMCwgdG90YWw6IDAsIGNvdmVyYWdlOiAxIH07IH0sCiAgICBhc3luYyBnZXRfY2FsbGVycygpIHsgcmV0dXJuIHBhZ2UoKTsgfSwKICAgIGFzeW5jIGdldF9jYWxsZWVzKCkgeyByZXR1cm4gcGFnZSgpOyB9LAogICAgYXN5bmMgZ2V0X2Z1bmN0aW9uKGFkZHJlc3MpIHsKICAgICAgcmV0dXJuIHsKICAgICAgICBhZGRyZXNzOiBCaWdJbnQoYWRkcmVzcyksCiAgICAgICAgbmFtZTogJ2xleGljYWxfaGl0JywKICAgICAgICBpbnN0cnVjdGlvbnM6IDEsCiAgICAgICAgc3VtbWFyeTogeyBjYWxsczogW3sgbmFtZTogJ2N1cmxfZWFzeV9wZXJmb3JtJyB9XSB9LAogICAgICAgIGNvc3Q6IHsgZnVuY3Rpb25zOiAwLCBkaXNhc3NlbWJseTogMCB9LAogICAgICB9OwogICAgfSwKICAgIGFzeW5jIGdldF9zZW1hbnRpY19mYWN0cygpIHsgcmV0dXJuIHBhZ2UoKTsgfSwKICAgIGFzeW5jIHZlcmlmeV9maWVsZF91cGRhdGUoKSB7IHJldHVybiB7IHZlcmlmaWVkOiBmYWxzZSwgZXZpZGVuY2U6IFtdIH07IH0sCiAgICBhc3luYyBmaW5kX3RocmVzaG9sZHMoKSB7IHJldHVybiBwYWdlKCk7IH0sCiAgfTsKCiAgY29uc3QgcmVzdWx0ID0gYXdhaXQgcGxhbkFuYWx5c2lzR29hbChxdWVyeSwge30sIHsKICAgIHRvb2xzLAogICAgbWF4RnVuY3Rpb25zOiA4LAogICAgbWF4RGlzYXNzZW1ibHk6IDY0LAogICAgbWF4U2VhcmNoUmVzdWx0czogOCwKICAgIG1heEV4cGFuc2lvbnM6IDEsCiAgICB0aW1lb3V0TXM6IDJfMDAwLAogIH0pOwoKICBhc3NlcnQuZXF1YWwoY29lcmNpb25zLCAwLCAnc3RydWN0dXJlZCBleHBlY3RlZC1jYWxsIGhpbnRzIG11c3QgbmV2ZXIgcmVhY2ggU3RyaW5nKCkgY29lcmNpb24nKTsKICBhc3NlcnQub2socmVzdWx0LmNhbmRpZGF0ZXMuc29tZSgocm93KSA9PiByb3cuYWRkcmVzcyA9PT0gVEFSR0VUKSwgJ2xleGljYWwgY2FuZGlkYXRlIG11c3QgcmVhY2ggYW5hbHl6ZUNhbmRpZGF0ZXMnKTsKICBjb25zdCByZXBvcnQgPSByZXN1bHQuc2VhcmNoQ29tcGxldGVuZXNzLnJlcG9ydHMuZmluZCgocm93KSA9PiByb3cudG9vbCA9PT0gJ2V4cGVjdGVkX2NhbGxfaGludHMnKTsKICBhc3NlcnQub2socmVwb3J0LCAnbWFsZm9ybWVkIGhpbnQgbXVzdCByZW1haW4gdmlzaWJsZSBpbiBmYWlsLWNsb3NlZCBjb21wbGV0ZW5lc3MgYWNjb3VudGluZycpOwogIGFzc2VydC5lcXVhbChyZXBvcnQucmVhc29uLCAnbWFsZm9ybWVkLWV4cGVjdGVkLWNhbGwtaGludCcpOwogIGFzc2VydC5lcXVhbChyZXN1bHQuY29tcGxldGVuZXNzLnNlYXJjaENvbXBsZXRlLCBmYWxzZSk7Cn0pOwo=' | base64 -d > tests/phase12/adversarial/issue-3957-query-planner-hostile-scoring.test.mjs
+          rm .github/workflows/fixer6-3957-scoring-transport.yml
+          node --check js/query/planner.js
+          node --check tests/phase12/adversarial/issue-3957-query-planner-hostile-scoring.test.mjs
+          TERM=xterm timeout 30s node --test tests/phase12/adversarial/issue-3957-query-planner-hostile-scoring.test.mjs tests/phase12/adversarial/issue-3957-query-planner-expected-call-discovery.test.mjs
+          test "$(git hash-object js/query/planner.js)" = "57b86506c6a28b6a228ac86c1aa477f75f37f958"
+          test "$(git hash-object tests/phase12/adversarial/issue-3957-query-planner-hostile-scoring.test.mjs)" = "144c5de74a620401111845aaaa7936d227c77112"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(query): validate expected-call hints during scoring (#3957)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
