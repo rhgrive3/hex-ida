@@ -64,6 +64,14 @@ test('non-finite numbers are rejected instead of normalized to null', () => {
   for (const value of [NaN, Infinity, -Infinity]) mustRejectJsonUnsafe({ value });
 });
 
+test('negative zero is rejected instead of canonicalized by JSON persistence', () => {
+  assert.equal(Object.is(-0, 0), false);
+  const roundTripped = JSON.parse(JSON.stringify({ value: -0 }));
+  assert.equal(Object.is(roundTripped.value, -0), false);
+  assert.equal(Object.is(roundTripped.value, 0), true);
+  mustRejectJsonUnsafe({ value: -0 });
+});
+
 test('function Symbol and BigInt are rejected', () => {
   mustRejectJsonUnsafe({ value: () => 1 });
   mustRejectJsonUnsafe({ value: Symbol('x') });

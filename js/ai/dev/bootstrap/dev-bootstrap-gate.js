@@ -81,7 +81,7 @@ function assertIntegrity(value) { const text = nonEmpty(value, 'extension.integr
 function cloneJson(value, field, ancestors = new Set()) {
   const invalid = () => { throw new TypeError(`${field} must be JSON-safe.`); };
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
-  if (typeof value === 'number') { if (!Number.isFinite(value)) invalid(); return value; }
+  if (typeof value === 'number') { if (!Number.isFinite(value) || Object.is(value, -0)) invalid(); return value; }
   if (!value || typeof value !== 'object') invalid();
   if (ancestors.has(value)) invalid();
 
