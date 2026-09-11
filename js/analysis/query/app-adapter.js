@@ -697,13 +697,25 @@ export function createAppAnalysisQueryAdapter(app) {
         return unsupported(id, program.queryIncompleteReason || 'unsupported-program-analysis');
       }
       const { offset, limit } = pageOf(page);
-      const source = program.calleesOf(range.start, range.end, Math.min(MAX_PAGE, offset + limit));
+      const cumulativeLimit = cumulativePageLimit(offset, limit);
+      if (cumulativeLimit == null) return unsupportedPage(id, page, 'page-range-overflow');
+      const source = program.calleesOf(range.start, range.end, cumulativeLimit);
       // The scan only covers the validated range; an unproven function extent
       // (analysis window or region clip) keeps the query partial (#5991).
       const rangeIncomplete = range.complete === false;
-      const reason = source?.incompleteReason ?? (rangeIncomplete ? (range.reason ?? 'function-extent-unproven') : null);
-      const result = paged(Array.from(source || []), page, source?.complete === false || rangeIncomplete ? 'partial' : 'complete', { reason });
-      if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned;
+      const queryLimited = source?.queryLimited === true;
+      const reason = source?.incompleteReason ?? (queryLimited ? 'query-limit' : (rangeIncomplete ? (range.reason ?? 'function-extent-unproven') : null));
+      const result = paged(Array.from(source || []), page, source?.complete === false || queryLimited || rangeIncomplete ? 'partial' : 'complete', { reason });
+      if (queryLimited && result.page.next == null) {
+        const canProbeBeyondPrefix = result.page.total >= result.page.offset;
+        if (canProbeBeyondPrefix) {
+          const next = nextPageOffset(
+            result.page.offset,
+            result.page.returned > 0 ? result.page.returned : result.page.limit,
+          );
+          if (next != null) result.page.next = next;
+        }
+      }
       return result;
     },
 
