@@ -44,6 +44,7 @@ function fixture({
   hmodRva = 0x2000,
   hmodSize = null,
   hmodFileSize = 0,
+  hmodWritable = true,
 } = {}) {
   const bytes = new Uint8Array(0x300);
   const ptrSize = bits === 64 ? 8 : 4;
@@ -78,7 +79,7 @@ function fixture({
       size: BigInt(storageSize),
       fileOffset: BigInt(bytes.length),
       fileSize: BigInt(hmodFileSize),
-      perms: { read: true, write: true, execute: false },
+      perms: { read: true, write: hmodWritable, execute: false },
     });
   }
   const image = {
@@ -106,9 +107,9 @@ function assertAccepted(image) {
   assert.equal(image.imports[0].source, 'PE-delay-import');
 }
 
-function assertRejected(image) {
+function assertRejected(image, reason = 'delay-imports:module-handle-span') {
   assert.equal(image.metadata.peMetadata.complete, false);
-  assert.ok(image.metadata.peMetadata.reasons.includes('delay-imports:module-handle-span'));
+  assert.ok(image.metadata.peMetadata.reasons.includes(reason));
   assert.deepEqual(image.libraries, []);
   assert.deepEqual(image.imports, []);
 }
@@ -135,6 +136,13 @@ test('PE32+ module-handle storage may be zero-fill when its 8-byte span is mappe
 
 test('PE32+ rvaHmod whose 8-byte span crosses its mapping boundary is rejected (#8100)', () => {
   assertRejected(fixture({ bits: 64, hmodSize: 7, hmodFileSize: 0 }));
+});
+
+test('mapped read-only rvaHmod storage is rejected before publication (#8100)', () => {
+  assertRejected(
+    fixture({ bits: 32, hmodSize: 4, hmodFileSize: 0, hmodWritable: false }),
+    'delay-imports:module-handle-non-writable',
+  );
 });
 
 test('legacy VA-form rvaHmod uses the same mapped-span validation (#8100)', () => {
