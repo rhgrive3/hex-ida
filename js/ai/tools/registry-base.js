@@ -177,7 +177,7 @@ export function createHexToolRegistry(context = {}, options = {}) {
     cost: 'medium', scopeSupport: functionScopes, category: 'semantic', resultKind: 'field-reads', modelProjection: projectSemanticFacts,
   });
   register('find_field_writes', 'Find deterministic writes/RMW operations of a field with exact totals and opaque continuation.', fieldSchema(), async ({ functionAddress, field, limit = 100, cursor }) => {
-    const params = { functionAddress, field };
+    const params = { functionAddress };
     const offset = pageOffset('find_field_writes', params, cursor);
     const value = await legacy.find_field_writers(functionAddress, field, { limit, offset });
     return attachContinuation(value, offset, () => pageCursor('find_field_writes', params, offset + Math.max(1, Number(value.returned || limit))));
@@ -214,7 +214,7 @@ export function createHexToolRegistry(context = {}, options = {}) {
   register('verify_field_update', 'Deterministically verify a read-modify-write field update and preserve minimal causal paths.', verifyFieldSchema(), async ({ functionAddress, field, limit = 8, pathLimit = 8 }) => legacy.verify_field_update(functionAddress, field, { limit, pathLimit }), {
     verifier: true, cost: 'expensive', scopeSupport: functionScopes, category: 'verification', preferredPrerequisites: ['get_semantic_facts'], resultKind: 'verification', modelProjection: projectVerification,
   });
-  register('get_related_functions', 'Get bounded callers and callees around one function. Partial sides expose dedicated get_callers/get_callees continuation hints.', addressLimitSchema('functionAddress', 24, false), async ({ functionAddress, limit = 24 }) => {
+  register('get_related_functions', 'Get bounded callers and callees around one function. Actionable partial sides expose dedicated get_callers/get_callees continuation hints.', addressLimitSchema('functionAddress', 24, false), async ({ functionAddress, limit = 24 }) => {
     const [callers, callees] = await Promise.all([
       legacy.get_callers(functionAddress, { limit }),
       legacy.get_callees(functionAddress, { limit }),
@@ -494,7 +494,6 @@ async function semanticFactsPage(context, legacy, functionAddress, kinds, limit,
   return pageResult({ address: addr, results: page.map(compactFact), evidence: semanticEvidenceIds(page), engine: ir ? 'semantic-ir' : null }, total, offset, page.length, next == null ? null : cursorFor(next));
 }
 
-
 function exactRelatedCount(value) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
@@ -514,17 +513,34 @@ function relatedSide(value) {
     || (rawTruncated !== undefined && typeof rawTruncated !== 'boolean')
     || (typeof rawComplete === 'boolean' && typeof rawTruncated === 'boolean' && rawTruncated === rawComplete);
   const complete = !malformed && rawComplete === true;
+  const producerReason = typeof value?.reason === 'string' && value.reason ? value.reason : null;
+  const reason = malformed ? 'malformed-completeness'
+    : complete ? null
+      : producerReason || (rows.length === 0 && total == null ? 'continuation-progress-unprovable' : 'result-limit');
   return {
     rows,
+    malformed,
     page:{
       offset:0,
       returned:rows.length,
       total:malformed ? null : total,
       complete,
       truncated:!complete,
-      reason:malformed ? 'malformed-completeness' : (complete ? null : (typeof value?.reason === 'string' && value.reason ? value.reason : 'result-limit')),
+      reason,
     },
   };
+}
+
+function relatedContinuationOffset(side, pageLimit) {
+  if (side.malformed || side.page.complete) return null;
+  if (side.rows.length > 0) return side.rows.length;
+  // The first-party graph tools consume opaque cursors as absolute offsets. If
+  // the producer authoritatively reports omitted rows but materializes none,
+  // one bounded page has still been consumed; advance by the requested page
+  // width rather than advertising an offset-zero retry. With no exact total,
+  // forward progress is not provable and the continuation is withheld.
+  if (side.page.total != null && side.page.total > 0) return pageLimit;
+  return null;
 }
 
 export function buildRelatedFunctionsResult({ functionAddress, limit = 24, callers, callees, cursorFor }) {
@@ -538,12 +554,16 @@ export function buildRelatedFunctionsResult({ functionAddress, limit = 24, calle
     ['callers', 'get_callers', callerSide],
     ['callees', 'get_callees', calleeSide],
   ]) {
-    if (side.page.complete) continue;
-    const args = { address, limit:pageLimit };
-    if (side.rows.length && typeof cursorFor === 'function') {
-      args.cursor = cursorFor(tool, { address }, side.rows.length);
-    }
-    continuations[key] = { tool, arguments:args };
+    const nextOffset = relatedContinuationOffset(side, pageLimit);
+    if (nextOffset == null || typeof cursorFor !== 'function') continue;
+    continuations[key] = {
+      tool,
+      arguments:{
+        address,
+        limit:pageLimit,
+        cursor:cursorFor(tool, { address }, nextOffset),
+      },
+    };
   }
   const complete = callerSide.page.complete && calleeSide.page.complete;
   return {
