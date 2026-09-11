@@ -19,6 +19,12 @@ CANONICAL_LIST_ENTRIES.set(EMPTY_LIST, []);
 // This bounded module-owned store retains neither caller objects nor IR graphs.
 const PRECONDITION_DATA = new Map();
 let preconditionDataUnits = 0;
+// Canonical list storage is keyed by exact element identity (including distinct
+// transform records), never just an equal serialized transform description.
+// Retain only bounded, producer-normalized immutable data, not external IR.
+const CANONICAL_LIST_DATA = new Map();
+const LIST_ELEMENT_IDENTITIES = new WeakMap();
+let canonicalListDataUnits = 0, nextListElementIdentity = 0;
 
 function fail(code) { throw new TypeError(code); }
 function arrayList(values, code) {
@@ -168,6 +174,40 @@ function sharePreconditionData(value) {
   PRECONDITION_DATA.set(key, { value, cost }); preconditionDataUnits += cost;
   return value;
 }
+function shareCanonicalList(values) {
+  if (values === EMPTY_LIST || !ordinaryJsonPrototypes() || !Object.isFrozen(values)) return values;
+  const entries = CANONICAL_LIST_ENTRIES.get(values);
+  if (!entries || entries.length > 512) return values;
+  let key = '', volume = 0;
+  for (const [serialized, value] of entries) {
+    volume += serialized.length;
+    if (volume > 8192) return values;
+    if (value !== null && typeof value === 'object') {
+      if (!CANONICAL_TRANSFORM_RECORDS.has(value) && !replaySafeJson(value)) return values;
+      if (!LIST_ELEMENT_IDENTITIES.has(value)) {
+        if (!Number.isSafeInteger(nextListElementIdentity + 1)) return values;
+        LIST_ELEMENT_IDENTITIES.set(value, ++nextListElementIdentity);
+      }
+      key += `object:${LIST_ELEMENT_IDENTITIES.get(value)};`;
+    } else {
+      const text = Object.is(value, -0) ? '-0' : String(value);
+      key += `${typeof value}:${text.length}:${text};`;
+    }
+    if (key.length > 8192) return values;
+  }
+  const prior = CANONICAL_LIST_DATA.get(key);
+  if (prior) {
+    CANONICAL_LIST_DATA.delete(key); CANONICAL_LIST_DATA.set(key, prior);
+    return prior.values;
+  }
+  const cost = 128 + 2 * (key.length + volume) + entries.length * 64;
+  while (CANONICAL_LIST_DATA.size >= 4096 || canonicalListDataUnits + cost > 1048576) {
+    const oldest = CANONICAL_LIST_DATA.keys().next().value;
+    canonicalListDataUnits -= CANONICAL_LIST_DATA.get(oldest).cost; CANONICAL_LIST_DATA.delete(oldest);
+  }
+  CANONICAL_LIST_DATA.set(key, { values, cost }); canonicalListDataUnits += cost;
+  return values;
+}
 function normalizedList(values, code, normalize) {
   const input = arrayList(values, code);
   let ordinary = false;
@@ -205,13 +245,15 @@ function mergeCanonicalLists(origins, field) {
   return sortedList(byKey);
 }
 function captureOriginSet(out) {
-  const frozen = deepFreeze(out);
-  CANONICAL_ORIGIN_SETS.add(frozen);
+  let frozen = deepFreeze(out);
   if (ordinaryJsonPrototypes() && ORIGIN_FIELDS.every((field) => CANONICAL_LIST_ENTRIES.has(frozen[field]))
       && frozen.sourceLocations.every((value) => replaySafeJson(value))
       && frozen.transforms.every((value) => CANONICAL_TRANSFORM_RECORDS.has(value))) {
+    const lists = Object.fromEntries(ORIGIN_FIELDS.map(field => [field, shareCanonicalList(frozen[field])]));
+    if (ORIGIN_FIELDS.some(field => lists[field] !== frozen[field])) frozen = Object.freeze({ ...frozen, ...lists });
     REUSABLE_ORIGIN_SETS.add(frozen);
   }
+  CANONICAL_ORIGIN_SETS.add(frozen);
   return frozen;
 }
 // Provenance payloads must be validated before jsonSafe can erase or round numeric evidence.
@@ -270,7 +312,10 @@ export function createTransformRecord(input = {}) {
   });
   if (replaySafeJson(frozen.preconditions)) {
     const preconditions = sharePreconditionData(frozen.preconditions);
-    if (preconditions !== frozen.preconditions) frozen = Object.freeze({ ...frozen, preconditions });
+    const consumedEntityIds = shareCanonicalList(frozen.consumedEntityIds);
+    const producedEntityIds = shareCanonicalList(frozen.producedEntityIds);
+    if (preconditions !== frozen.preconditions || consumedEntityIds !== frozen.consumedEntityIds
+      || producedEntityIds !== frozen.producedEntityIds) frozen = Object.freeze({ ...frozen, preconditions, consumedEntityIds, producedEntityIds });
     CANONICAL_TRANSFORM_RECORDS.add(frozen);
   }
   return frozen;
