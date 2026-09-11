@@ -16,6 +16,25 @@ function textIdentity(value) {
   return String(value);
 }
 
+// Unresolved identity is not a shared cache authority (#5887): two contexts
+// whose binary/analysis identity cannot be resolved must never share a
+// deterministic binding key, so each unresolved context object gets its own
+// non-persistent nonce folded into the key. The nonce is stable per context
+// instance (turn-to-turn continuity inside one unresolved context is
+// preserved) but never crosses a setContext() switch to a different context
+// object. Resolved (complete) bindings keep the exact legacy key layout.
+const UNKNOWN_CONTEXT_NONCES = new WeakMap();
+let UNKNOWN_CONTEXT_NONCE_SEQUENCE = 0;
+function unknownContextNonce(context) {
+  if (!context || typeof context !== 'object') return `ephemeral-${++UNKNOWN_CONTEXT_NONCE_SEQUENCE}`;
+  let nonce = UNKNOWN_CONTEXT_NONCES.get(context);
+  if (nonce == null) {
+    nonce = String(++UNKNOWN_CONTEXT_NONCE_SEQUENCE);
+    UNKNOWN_CONTEXT_NONCES.set(context, nonce);
+  }
+  return nonce;
+}
+
 export function analysisBinding(context = {}, extra = {}) {
   const binaryIdentity = textIdentity(
     extra.binaryIdentity ?? context.binaryIdentity ?? context.binaryId ?? context.binary?.identity ?? context.binary?.id ?? context.binary?.uuid ??
@@ -30,8 +49,13 @@ export function analysisBinding(context = {}, extra = {}) {
     context.project?.analysisSemanticRevision ?? context.project?.modifiedAt ?? 'project:0'
   ) || 'project:0';
   const runtimeSession = textIdentity(extra.runtimeSession ?? context.runtimeSessionId ?? context.runtimeSession?.id ?? context.runtime?.sessionId ?? 'runtime:none') || 'runtime:none';
-  const key = shortHash({ binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession });
-  return { binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession, key };
+  const missing = [];
+  if (binaryIdentity === 'binary:unknown') missing.push('binaryIdentity');
+  if (analysisRevision === 'analysis:0') missing.push('analysisRevision');
+  const complete = missing.length === 0;
+  const key = shortHash({ binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession })
+    + (complete ? '' : `:u${unknownContextNonce(context)}`);
+  return { binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession, complete, missing, key };
 }
 
 function parsePath(path) {
@@ -55,8 +79,10 @@ function atPath(root, path) {
 }
 
 function boundedLimit(value, fallback = 100, max = 500) {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(1, Math.min(max, Math.floor(n))) : fallback;
+  // Paging budgets are schema numbers: structured values must never coerce
+  // into a page limit authority (#5428).
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(1, Math.min(max, Math.floor(value)));
 }
 
 const DEFAULT_MAX_ENTRIES = 256;
@@ -85,8 +111,9 @@ function observationRefKey(detailRef) {
 }
 
 function finiteConfiguredNumber(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) && number !== 0 ? number : fallback;
+  // Retention budgets are schema numbers: only a primitive finite number is
+  // an explicit configured value; strings/arrays/booleans fall back (#5428).
+  return typeof value === 'number' && Number.isFinite(value) && value !== 0 ? value : fallback;
 }
 
 function pageValue(value, offset, limit) {
@@ -169,6 +196,10 @@ export class ObservationStore {
 
   cacheKey(tool, args, extra = {}) {
     const binding = this.binding(extra);
+    // The binding key already carries the per-context-instance nonce for
+    // unresolved identity (#5887): same context keeps its own cache authority,
+    // a different context never shares it. Complete bindings keep the legacy
+    // deterministic key byte-for-byte.
     return `${binding.key}:${tool}:${shortHash(stableSerialize(args || {}))}`;
   }
 

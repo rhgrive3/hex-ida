@@ -1,6 +1,7 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import { createManagedImageId, createManagedModuleId } from '../shared/identity.js';
 import { CLI_HEADER_SIZE, validateCliHeaderSize } from './cli-header.js';
+import { validateMetadataTableValidMask } from './metadata-layout.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -131,6 +132,17 @@ function readPeCliLayout(bytes, view) {
   // root unrecoverable and accepted clearly invalid entry tokens (#7735).
   const cliFlags = readU32(view, cliOffset + 16, 'cil-truncated-cli-header');
   const entryPointToken = readU32(view, cliOffset + 20, 'cil-truncated-cli-header');
+  // II.25.3.3.1: the 32BITREQUIRED (0x2) bit is the loader's native
+  // pointer-width authority and must reach the canonical image (#7775).
+  // II.25.2.2: a 32BITREQUIRED image must also carry IMAGE_FILE_32BIT_MACHINE
+  // in the COFF characteristics. A contradiction is a malformed image, not a
+  // preference to resolve.
+  const characteristics = readU16(view, peOffset + 22, 'cil-truncated-pe-coff-header');
+  const machine32 = (characteristics & 0x0100) !== 0;
+  const requires32Bit = (cliFlags & 0x00000002) !== 0;
+  if (requires32Bit && !machine32) fail('cil-32bitrequired-machine-characteristic-mismatch');
+  // 64-bit authority: PE32+ (0x20b optional-header magic) without 32BITREQUIRED.
+  const requires64Bit = !requires32Bit && readU16(view, optionalOffset, 'cil-truncated-pe-optional-header') === 0x20b;
   // The CLI Resources directory (+24/+28) anchors embedded manifest resource
   // payloads. Without it the ManifestResource rows cannot be resolved to
   // bytes and embedded data vanishes from the canonical image (#7753).
@@ -150,6 +162,8 @@ function readPeCliLayout(bytes, view) {
     metadataSize,
     cliFlags,
     entryPointToken,
+    requires32Bit,
+    requires64Bit,
     resources,
   });
 }
@@ -232,6 +246,7 @@ function parseMetadataTables(bytes, view, tableStream) {
   const validLow = BigInt(readU32(view, start + 8, 'cil-metadata-tables-truncated'));
   const validHigh = BigInt(readU32(view, start + 12, 'cil-metadata-tables-truncated'));
   const valid = validLow | (validHigh << 32n);
+  validateMetadataTableValidMask(valid);
   const rowCounts = new Array(64).fill(0);
   let pos = start + 24;
   for (let table = 0; table < 64; table++) {
@@ -870,6 +885,14 @@ export function parseCil(bytes, options = {}) {
     moduleId,
     formatVersion: 'cli-ecma-335',
     vmSpecEdition: runtimeVersion,
+    // Native pointer-width authority from the CLI header flags (#7775):
+    // `32BITREQUIRED` means the image only loads in a 32-bit process, so
+    // native-size values (`O`, `&`, `native int`) are 32-bit there. PE32+
+    // without 32BITREQUIRED is a known 64-bit target. Any other case leaves
+    // the width unresolved rather than fabricating 64.
+    requires32Bit: peCli?.requires32Bit === true,
+    requires64Bit: peCli?.requires64Bit === true,
+    cliFlags: peCli?.cliFlags ?? null,
     types,
     methods,
     fields,

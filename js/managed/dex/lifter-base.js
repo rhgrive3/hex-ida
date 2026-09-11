@@ -5,6 +5,52 @@ import { decodeDexInstructionBoundary } from './instruction-boundary.js';
 
 function fail(code) { throw new TypeError(code); }
 
+// ART's Generic JNI trampoline acquires the synchronization object before the
+// JNI call and releases it on both normal and abrupt completion
+// (ArtMethod::IsSynchronized covers ACC_SYNCHRONIZED | ACC_DECLARED_SYNCHRONIZED).
+// Until the shared VMEffect schema can encode implicit method monitors
+// losslessly, synchronized methods must fail closed instead of collapsing into
+// plain-method-equivalent exact semantics (#7896; #7854 JVM precedent).
+const SYNCHRONIZED_MONITOR_REASON = 'dex-synchronized-method-monitor-unrepresented';
+const DEX_ACC_STATIC = 0x0008;
+const DEX_ACC_SYNCHRONIZED = 0x0020;
+const DEX_ACC_DECLARED_SYNCHRONIZED = 0x0020000;
+
+function applySynchronizedMethodSemantics(lifted, accessFlags, options = {}) {
+  if ((accessFlags & (DEX_ACC_SYNCHRONIZED | DEX_ACC_DECLARED_SYNCHRONIZED)) === 0) return lifted;
+
+  const firstBundle = lifted.bundles[0] ?? null;
+  const alreadyMarked = firstBundle?.unknownEffects?.some((effect) =>
+    effect?.reason === SYNCHRONIZED_MONITOR_REASON) === true;
+  const bundles = firstBundle ? [{
+    ...firstBundle,
+    completeness: firstBundle.completeness === 'unknown' ? 'unknown' : 'partial',
+    unknownEffects: alreadyMarked
+      ? firstBundle.unknownEffects
+      : [...firstBundle.unknownEffects, {
+        category: 'other',
+        reason: SYNCHRONIZED_MONITOR_REASON,
+      }],
+  }, ...lifted.bundles.slice(1)] : lifted.bundles;
+
+  return createVMEffectFunction({
+    ...lifted,
+    bundles,
+    aggregateCompleteness: lifted.aggregateCompleteness === 'unknown' ? 'unknown' : 'partial',
+    metadata: {
+      ...lifted.metadata,
+      synchronization: {
+        kind: 'implicit-dex-monitor',
+        monitor: (accessFlags & DEX_ACC_STATIC) !== 0 ? 'declaring-class' : 'receiver',
+        acquire: 'method-entry',
+        release: 'normal-or-abrupt-exit',
+        reentrant: true,
+        completeness: 'unrepresented',
+      },
+    },
+  }, options);
+}
+
 export function liftDexMethod(methodIdx, dexImage, options = {}) {
   const methodDef = dexImage.methods[methodIdx];
   if (!methodDef) fail('dex-invalid-method-index');
@@ -39,13 +85,13 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
       controlEffects: [{ kind: 'return' }],
       completeness: 'exact',
     });
-    return createVMEffectFunction({
+    return applySynchronizedMethodSemantics(createVMEffectFunction({
       methodId,
       profileId: dexImage.vmSpecEdition,
       frontendId: 'dex',
       bundles: [bundle],
       aggregateCompleteness: 'exact',
-    });
+    }), accessFlags, options);
   }
 
   const u8 = dexImage.rawBytes;
@@ -106,6 +152,7 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
     let memoryEffects = [];
     let callEffects = [];
     let controlEffects = [];
+    let possibleExceptions = [];
     let producedValues = [];
     let consumedValues = [];
     let unknownEffects = [];
@@ -386,6 +433,13 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
           locationReads.push({ kind: 'register', index: vBB, bits: 32 });
           locationReads.push({ kind: 'register', index: vCC, bits: 32 });
           locationWrites.push({ kind: 'register', index: vAA, bits: 32 });
+          // Dalvik: div-int/rem-int throw java/lang/ArithmeticException when
+          // the divisor (vCC) is zero — a specified exceptional path the
+          // bundle must carry instead of publishing exception-free exact
+          // semantics (#7975; wasm #1134 vocabulary).
+          if (opcode === 0x93 || opcode === 0x94) {
+            possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
+          }
         }
         break;
 
@@ -398,6 +452,9 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
           locationReads.push({ kind: 'register', index: vA, bits: 32 });
           locationReads.push({ kind: 'register', index: vB, bits: 32 });
           locationWrites.push({ kind: 'register', index: vA, bits: 32 });
+          if (opcode === 0xb3 || opcode === 0xb4) {
+            possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
+          }
         }
         break;
 
@@ -414,6 +471,9 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
           locationReads.push({ kind: 'register', index: vBB, bits: 32 });
           locationWrites.push({ kind: 'register', index: vAA, bits: 32 });
           producedValues.push({ bits: 32, constant: lit8 });
+          if (opcode === 0xdb || opcode === 0xdc) {
+            possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
+          }
         }
         break;
 
@@ -447,7 +507,7 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
       memoryEffects,
       callEffects,
       controlEffects,
-      possibleExceptions: [],
+      possibleExceptions,
       origin,
       completeness,
       unknownEffects,
@@ -457,7 +517,7 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
     if (boundary.stop) break;
   }
 
-  return createVMEffectFunction({
+  return applySynchronizedMethodSemantics(createVMEffectFunction({
     methodId,
     profileId: dexImage.vmSpecEdition,
     frontendId: 'dex',
@@ -468,5 +528,5 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
       outsSize,
     },
     exceptionRegions,
-  }, options);
+  }, options), accessFlags, options);
 }
