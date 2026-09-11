@@ -227,12 +227,21 @@ function checkPartialContainment(completeRegions, partialItems) {
   for (const region of completeRegions ?? []) {
     const bounds = regionBounds(region);
     if (!bounds) return { kind: 'extent', detail: 'complete extent region is not parseable', alternatives: [] };
-    complete.push(bounds);
+    complete.push({ ...bounds, ownership: region.ownership });
   }
   for (const item of partialItems ?? []) {
     for (const region of item?.regions ?? []) {
       const bounds = regionBounds(region);
       if (!bounds) return { kind: 'extent', detail: 'partial extent region is not parseable', alternatives: [] };
+      const ownershipConflict = complete.find((c) =>
+        c.start < bounds.end && bounds.start < c.end && c.ownership !== region.ownership);
+      if (ownershipConflict) {
+        return {
+          kind: 'extent',
+          detail: 'partial extent ownership evidence disagrees',
+          alternatives: [ownershipConflict.ownership, region.ownership].sort(),
+        };
+      }
       const contained = complete.some((c) => c.start <= bounds.start && bounds.end <= c.end);
       if (!contained) {
         return {

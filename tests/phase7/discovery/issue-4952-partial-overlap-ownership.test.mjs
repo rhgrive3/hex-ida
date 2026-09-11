@@ -66,3 +66,59 @@ test('exact-range ownership disagreement remains fail closed', () => {
   assert.equal(candidate.extentState, 'unknown');
   assert.deepEqual(candidate.regions, []);
 });
+
+function complete(kind, producerId, regions) {
+  return createDiscoveryEvidence({
+    kind,
+    producerId,
+    start: 0x100n,
+    extentRole: 'complete',
+    regions,
+  });
+}
+
+test('contained partial ownership cannot contradict a complete authoritative claim', () => {
+  const candidate = fuse([
+    complete('unwind-entry', 'complete', [
+      { start: 0x100n, end: 0x140n, ownership: 'exclusive' },
+    ]),
+    partial('loader-function-start', 'partial', 0x110n, 0x120n, 'shared'),
+  ]);
+
+  assert.equal(candidate.extentState, 'unknown');
+  assert.deepEqual(candidate.regions, []);
+  assert.ok(candidate.conflicts.some((conflict) =>
+    conflict.kind === 'extent' && /ownership/.test(conflict.detail)));
+});
+
+test('contained partial with matching complete ownership preserves exact extent', () => {
+  const candidate = fuse([
+    complete('unwind-entry', 'complete', [
+      { start: 0x100n, end: 0x140n, ownership: 'shared' },
+    ]),
+    partial('loader-function-start', 'partial', 0x110n, 0x120n, 'shared'),
+  ]);
+
+  assert.equal(candidate.extentState, 'exact');
+  assert.deepEqual(candidate.regions, [
+    { start: '256', end: '320', ownership: 'shared' },
+  ]);
+  assert.equal(candidate.conflicts.length, 0);
+});
+
+test('touching or disjoint complete ranges with different ownership do not conflict', () => {
+  for (const other of [
+    { start: 0x120n, end: 0x140n, ownership: 'exclusive' },
+    { start: 0x130n, end: 0x140n, ownership: 'exclusive' },
+  ]) {
+    const candidate = fuse([
+      complete('unwind-entry', 'complete', [
+        { start: 0x100n, end: 0x120n, ownership: 'shared' },
+        other,
+      ]),
+      partial('loader-function-start', 'partial', 0x110n, 0x120n, 'shared'),
+    ]);
+    assert.equal(candidate.extentState, 'exact');
+    assert.equal(candidate.conflicts.length, 0);
+  }
+});
