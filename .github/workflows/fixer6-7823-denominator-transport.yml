@@ -1,0 +1,53 @@
+name: Fixer6 7823 denominator transport
+
+on:
+  push:
+    branches:
+      - fix/batch4-5647-wire-20260910-l91
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Append #5647 to current binary denominator and verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = 'package.json';
+          const text = fs.readFileSync(path, 'utf8');
+          const pkg = JSON.parse(text);
+          const needle = 'node tests/issue-5647-detect-fat-structure.mjs';
+          const current = pkg.scripts?.['binary:test'];
+          if (typeof current !== 'string') throw new Error('binary:test script missing');
+          if (current.includes(needle)) throw new Error('#5647 already wired');
+          const next = `${current} && ${needle}`;
+          const oldJson = JSON.stringify(current);
+          const nextJson = JSON.stringify(next);
+          const first = text.indexOf(oldJson);
+          if (first < 0 || text.indexOf(oldJson, first + oldJson.length) >= 0) {
+            throw new Error('binary:test text anchor is not unique');
+          }
+          fs.writeFileSync(path, text.slice(0, first) + nextJson + text.slice(first + oldJson.length));
+          NODE
+          node tests/issue-5647-detect-fat-structure.mjs
+          timeout 120s npm run binary:test
+          test "$(git hash-object js/binary/detect.js)" = "6ea5f75b2f73b752b2cdf9a2326ae4d8b8feda60"
+          test "$(git hash-object js/binary/source-loaders.js)" = "f214f7cae1d60de5ef16638fb86a7bf3050f2948"
+          test "$(git hash-object js/platform/worker.js)" = "23b8633029f4c667ab228a0df7b34455f1c54db6"
+          test "$(git hash-object tests/issue-5647-detect-fat-structure.mjs)" = "8ca088dd5f524df4b692c042c66551818bec28fd"
+          test "$(git hash-object package.json)" = "7bf2b37af7a88e9ad49fbae8b100dd3e5d04146f"
+          rm .github/workflows/fixer6-7823-denominator-transport.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(binary): admit #5647 regression on current denominator"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
