@@ -85,7 +85,19 @@ function parseInteger(value) {
   try {
     if (typeof value === 'bigint') return value;
     if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
-    if (typeof value === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(value.trim())) return BigInt(value.trim());
+    if (typeof value === 'string') {
+      const text = value.trim();
+      // The declared grammar accepts a leading `-` on hex and decimal
+      // literals. `BigInt()` rejects every signed radix-prefixed spelling
+      // ('-0x10'), so the sign must be separated before the magnitude parse
+      // or an accepted input class silently degrades to "unknown constant"
+      // while the semantically identical decimal spelling stays exact (#5011).
+      if (/^-?(?:0x[0-9a-f]+|\d+)$/i.test(text)) {
+        const negative = text.startsWith('-');
+        const parsed = BigInt(negative ? text.slice(1) : text);
+        return negative ? -parsed : parsed;
+      }
+    }
   } catch {}
   return null;
 }
@@ -890,6 +902,15 @@ function deriveValue(ctx, valueId, expectedAddressSpace, state) {
   }
   if (node.kind === 'copy') {
     if (!Array.isArray(node.inputs) || node.inputs.length !== 1) return unknown('canonical-address-copy-arity');
+    const inputValue = ctx.values.get(String(node.inputs[0]));
+    const inputNode = inputValue?.definitionNodeId == null
+      ? null
+      : ctx.nodes.get(String(inputValue.definitionNodeId));
+    const inputWidth = addressWidth(inputValue, inputNode);
+    const outputWidth = addressWidth(value, node);
+    if (inputWidth == null || outputWidth == null || inputWidth !== outputWidth) {
+      return unknown('canonical-address-copy-width-not-preserved');
+    }
     return deriveValue(ctx, node.inputs[0], expectedAddressSpace, nextState);
   }
   if ((node.kind === 'intrinsic' || node.kind === 'binary') && typeof node.operator === 'string' && node.operator.toLowerCase() === 'add-with-carry') {
