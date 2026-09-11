@@ -1,8 +1,10 @@
 import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
-import { parseChainedImports, parseChainedBindingSites, parseClassicBindings, parseExportTrie } from './macho-dyld.js';
+import { parseChainedImports, parseChainedBindingSites, parseClassicBindings, parseExportTrie, resolveMachOPointer } from './macho-dyld.js';
 import { createMachOMetadataBudget, ensureMachOMetadataBudget, markMachOMetadataPartial } from './macho-budget.js';
 import { validateFatSlice, validateFatContainer, probePastEndArm64SliceSync, parseInnerMachOHeader } from './macho-fat.js';
+
+const S_MOD_INIT_FUNC_POINTERS = 0x9;
 
 const LC_SEGMENT = 0x1;
 const LC_SYMTAB = 0x2;
@@ -206,6 +208,7 @@ function parseThin(bytes, opts) {
     if (!linkeditData.exportsTrie && info.export.size) parseExportTrie(r, info.export, image, metadataBudget);
   }
   if (linkeditData.exportsTrie) parseExportTrie(r, linkeditData.exportsTrie, image, metadataBudget);
+  parseModInitFunctions(r, image, bits, metadataBudget);
 
   const namesByAddr = new Map();
   const nameIndexEntries = image.symbols.length + image.exports.length;
@@ -895,3 +898,104 @@ export function parseCompactUnwind(r, image, metadataBudget = null) {
   }
   status.recovered = ranges.length;
 }
+
+function parseModInitFunctions(r, image, bits, metadataBudget) {
+  const modInitSections = image.sections.filter((s) => (s.flags & 0xff) === S_MOD_INIT_FUNC_POINTERS);
+  if (modInitSections.length === 0) return;
+
+  image.metadata.initializers ||= [];
+  const ptrSize = bits === 64 ? 8 : 4;
+  const ptrSizeBig = BigInt(ptrSize);
+  const arch = image.arch;
+  const alignment = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
+  const instructionBytes = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
+  const recoveredTargets = new Set();
+
+  for (const sec of modInitSections) {
+    if (sec.size % ptrSizeBig !== 0n) {
+      metadataBudget.partial(
+        'mod-init:truncated-section',
+        `Mach-O section ${sec.name} size ${sec.size} is not a multiple of pointer width ${ptrSize}`,
+      );
+    }
+    const count = Number(sec.size / ptrSizeBig);
+    const secFileOffset = sec.fileOffset != null ? Number(sec.fileOffset) : null;
+    const secFileSize = sec.fileSize != null ? Number(sec.fileSize) : 0;
+    const fileAvailable = (secFileOffset != null && secFileOffset <= r.length)
+      ? Math.max(0, Math.min(secFileSize, r.length - secFileOffset))
+      : 0;
+    const safeCount = Math.min(count, Math.floor(fileAvailable / ptrSize));
+    if (safeCount < count) {
+      metadataBudget.partial(
+        'mod-init:file-truncated',
+        `Mach-O section ${sec.name} file data is truncated or zero-fill`,
+      );
+    }
+
+    for (let i = 0; i < safeCount; i++) {
+      if (!metadataBudget.take({ inputBytes: ptrSize, records: 1, objects: 1, operations: 1, estimatedHeapBytes: 64 }, 'mod-init')) {
+        break;
+      }
+      const slotVa = sec.address + BigInt(i * ptrSize);
+      const slotFileOff = secFileOffset + i * ptrSize;
+      const raw = bits === 64 ? r.u64(slotFileOff) : BigInt(r.u32(slotFileOff));
+
+      // Resolve under Mach-O pointer/rebase/chained-fixup authority
+      const resolved = resolveMachOPointer(image, raw, { address: slotVa });
+
+      let isValid = false;
+      let target = resolved;
+      let failureReason = null;
+
+      if (target == null) {
+        failureReason = 'unmapped-or-unresolved';
+      } else {
+        const targetSec = image.sectionAt(target);
+        const targetSeg = image.segmentAt(target);
+        const isExecutable = Boolean(targetSec ? targetSec.perms?.execute : targetSeg?.perms?.execute);
+
+        if (!isExecutable) {
+          failureReason = 'non-executable';
+        } else if (target % alignment !== 0n) {
+          failureReason = 'misaligned';
+        } else {
+          const offStart = image.addressToOffset(target);
+          const offEnd = image.addressToOffset(target + instructionBytes - 1n);
+          if (offStart == null || offEnd == null) {
+            failureReason = 'not-file-backed';
+          } else {
+            isValid = true;
+          }
+        }
+      }
+
+      // Record in metadata
+      image.metadata.initializers.push({
+        address: target,
+        raw,
+        slotAddress: slotVa,
+        section: sec.name,
+        valid: isValid,
+      });
+
+      if (isValid) {
+        const targetStr = target.toString();
+        if (!recoveredTargets.has(targetStr)) {
+          recoveredTargets.add(targetStr);
+          image.functions.push(functionSeed(target, {
+            source: 'constructor',
+            confidence: 0.95,
+            exactFunctionStart: true,
+            functionStartEvidence: 'Mach-O S_MOD_INIT_FUNC_POINTERS loader-invoked constructor in validated executable mapping with file-backed instruction bytes',
+          }));
+        }
+      } else {
+        metadataBudget.partial(
+          `mod-init:${failureReason}`,
+          `Ignored Mach-O constructor pointer at 0x${slotVa.toString(16)} (raw 0x${raw.toString(16)}): ${failureReason}`,
+        );
+      }
+    }
+  }
+}
+
