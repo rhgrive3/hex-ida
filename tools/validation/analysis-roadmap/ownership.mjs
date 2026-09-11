@@ -54,6 +54,8 @@ const SPECIAL_PATHS = Object.freeze({
     'tests/phase6/browser/wasm-decode.browser.mjs',
     'tests/semantic-v2/integration-decoder-identity.test.mjs',
     'tests/semantic-v2/integration-pipeline.test.mjs',
+    'js/semantics/memoryssa/build.js',
+    'tests/semantic-v2/memoryssa-cfg.test.mjs',
     'tests/semantic-v2/issue-5414-5865-ssa-link-budget.test.mjs',
     'tests/userscript-sandbox-browser-e2e.mjs',
     'tools/validation/machine-effects/fixtures/move-extension-register-oracle.c',

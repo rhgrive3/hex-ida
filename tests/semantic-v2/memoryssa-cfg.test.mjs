@@ -210,4 +210,34 @@ function phi(memorySsa, blockId) {
   assert.equal(reachingConcreteStore(conservative, use), null);
 }
 
+// Initial memory is a function-wide boundary value, including synthetic roots.
+// A dead predecessor retained by the decoder can feed an otherwise live loop.
+for (const deadLoop of [false, true]) {
+  const blocks = [
+    { id: 'entry', successors: [{ to: 'header', kind: 'branch' }] },
+    { id: 'header', successors: [{ to: 'body', kind: 'conditional-true' }, { to: 'exit', kind: 'conditional-false' }] },
+    { id: 'body', successors: [{ to: 'header', kind: 'branch' }] },
+    { id: 'exit', successors: [] },
+    { id: 'dead', successors: [{ to: deadLoop ? 'dead_header' : 'header', kind: 'branch' }] },
+    ...(deadLoop ? [
+      { id: 'dead_header', successors: [{ to: 'dead_body', kind: 'branch' }] },
+      { id: 'dead_body', successors: [{ to: 'dead_header', kind: 'branch' }] },
+    ] : []),
+  ];
+  const nodes = [
+    makeNode('body_store', 'store', 'body', 'addr_A'),
+    makeNode('exit_load', 'load', 'exit', 'addr_A'),
+    ...(deadLoop ? [makeNode('dead_store', 'store', 'dead_body', 'addr_A')] : []),
+  ];
+  const { memorySsa, cfg } = build(blocks, nodes);
+  const merge = phi(memorySsa, deadLoop ? 'dead_header' : 'header');
+  const initial = memorySsa.definitions.find((definition) => definition.id ===
+    merge.incoming.find((incoming) => incoming.predecessorBlockId === 'dead').definitionId);
+  assert.equal(initial.kind, 'entry');
+  assert.equal(initial.blockId, null, 'initial memory must not pretend to execute in the live entry block');
+  assert.equal(initial.sourceEntityId, functionId);
+  assert.equal(reachingConcreteStore(memorySsa, loadUse(memorySsa, 'exit_load')), null);
+  assert.doesNotThrow(() => validateMemorySsa(memorySsa, { cfg }));
+}
+
 console.log('semantic-v2 MemorySSA CFG/loop tests: PASS');

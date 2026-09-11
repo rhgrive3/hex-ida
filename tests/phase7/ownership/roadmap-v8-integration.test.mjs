@@ -33,6 +33,16 @@ test('v8 ownership fails closed on wrong branch, missing phase and incomplete in
   assert.throws(() => validateRoadmapInventory(BRANCH, 'phase8', ['js/analysis/index.js']));
 });
 
+test('v8 integration owns only the authorized MemorySSA builder repair, not its validation contract', () => {
+  const manifest = loadRoadmapManifest();
+  const assignments = validateRoadmapManifest(manifest);
+  for (const file of ['js/semantics/memoryssa/build.js', 'tests/semantic-v2/memoryssa-cfg.test.mjs']) {
+    assert.equal(assignments.get(file), 'integration');
+  }
+  manifest.owners.integration.push('js/semantics/memoryssa/contract.js');
+  assert.throws(() => validateRoadmapManifest(manifest), /outside integration owner/);
+});
+
 test('v8 ownership is wired in both CircleCI and permanent exact-SHA fallbacks', () => {
   const read = file => fs.readFileSync(new URL(`../../../${file}`, import.meta.url), 'utf8');
   const circle = read('.circleci/config.yml');
