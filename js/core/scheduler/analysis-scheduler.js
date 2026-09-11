@@ -107,15 +107,16 @@ function priorityName(value) {
 }
 
 export class AnalysisScheduler {
-  constructor({ store, maxConcurrency=2, starvationInterval=8, defaultBudget={}, onEvent=null }={}) {
+  constructor({ store, maxConcurrency=2, starvationInterval=8, terminalHistoryLimit=16384, defaultBudget={}, onEvent=null }={}) {
     if (!store) throw new TypeError('artifact-store-required');
     if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency <= 0) throw new TypeError('scheduler-max-concurrency-invalid');
     if (onEvent != null && typeof onEvent !== 'function') throw new TypeError('scheduler-on-event-invalid');
     const normalizedStarvationInterval = strictSafeInteger(starvationInterval, 8, 'scheduler-starvation-interval-invalid', 1);
-    this.store=store; this.maxConcurrency=maxConcurrency; this.starvationInterval=normalizedStarvationInterval; this.defaultBudget=defaultBudget;
+    const normalizedTerminalHistoryLimit = strictSafeInteger(terminalHistoryLimit, 16384, 'scheduler-terminal-history-limit-invalid');
+    this.store=store; this.maxConcurrency=maxConcurrency; this.starvationInterval=normalizedStarvationInterval; this.terminalHistoryLimit=normalizedTerminalHistoryLimit; this.defaultBudget=defaultBudget;
     this.onEvent = onEvent;
     this.seq = 0;
-    this.inflight=new Map(); this.running=0; this.dispatchEpoch=0; this.dag=new Map(); this.dagEdgeCount=0; this.states=new Map(); this.activeConsumers=0;
+    this.inflight=new Map(); this.running=0; this.dispatchEpoch=0; this.dag=new Map(); this.dagEdgeCount=0; this.dagInbound=new Map(); this.states=new Map(); this.terminalHistory=new Map(); this.terminalRoots=new Set(); this.activeConsumers=0;
     this.queue=new IndexedMinHeap((a,b)=>a.orderKey<b.orderKey?-1:a.orderKey>b.orderKey?1:a.artifactId.localeCompare(b.artifactId));
     this.metrics={ requests:0,cacheHits:0,producerInvocations:0,coalescedRequests:0,queueOperations:0,completedJobs:0,failedJobs:0,cancelledJobs:0,cancelledConsumers:0,orphanCancellations:0,budgetExhaustions:0,dependencyFailures:0,producerFailures:0,storageFailures:0,cycleErrors:0,cycleChecks:0,cycleTraversalSteps:0,dependencyIdentityErrors:0,maxObservedRunning:0,observerFailures:0 };
   }
@@ -211,12 +212,20 @@ export class AnalysisScheduler {
     }
 
     const controller=new AbortController();
+    this.terminalHistory.delete(artifactId);
+    this.terminalRoots.delete(artifactId);
     const task={ artifactId,descriptor,request,controller,priority,enqueuedEpoch:null,orderKey:null,state:'waiting-dependency',phase:'dependency',queueResolve:null,queueReject:null,promise:null,settled:false,superseded:false,consumerCount:0 };
     controller.signal.addEventListener('abort',()=>this.#cancelQueuedTask(task),{once:true});
     task.promise=Promise.resolve()
       .then(()=>this.#execute(task,[...ancestry,artifactId]))
       .catch((error)=>{ this.#recordFailure(task,error); throw error; })
-      .finally(()=>{ task.settled=true; if (this.inflight.get(artifactId)===task) this.inflight.delete(artifactId); });
+      .finally(()=>{
+        task.settled=true;
+        if (this.inflight.get(artifactId)===task) {
+          this.inflight.delete(artifactId);
+          this.#rememberTerminal(artifactId);
+        }
+      });
     this.inflight.set(artifactId,task);
     return this.#attachConsumer(task,consumerSignals);
   }
@@ -362,9 +371,70 @@ export class AnalysisScheduler {
       if (path) { this.metrics.cycleErrors++; throw new SchedulerCycleError([artifactId,...path]); }
     }
     const previous=this.dag.get(artifactId)||[];
+    for (const dependencyId of previous) this.#adjustDagInbound(dependencyId,-1);
     this.dagEdgeCount+=ids.length-previous.length;
     this.dag.set(artifactId,Object.freeze(ids));
-    for (const dependencyId of ids) if (!this.dag.has(dependencyId)) this.dag.set(dependencyId,Object.freeze([]));
+    if (!this.dagInbound.has(artifactId)) this.dagInbound.set(artifactId,0);
+    for (const dependencyId of ids) {
+      this.#adjustDagInbound(dependencyId,1);
+      if (!this.dag.has(dependencyId)) this.dag.set(dependencyId,Object.freeze([]));
+    }
+  }
+
+  #adjustDagInbound(artifactId, delta) {
+    const next=(this.dagInbound.get(artifactId)||0)+delta;
+    if (next<0) throw new Error('scheduler-dag-inbound-underflow');
+    this.dagInbound.set(artifactId,next);
+    if (next===0&&this.#dropOrphanDagPlaceholder(artifactId)) return next;
+    if (next===0&&this.terminalHistory.has(artifactId)&&!this.inflight.has(artifactId)) this.terminalRoots.add(artifactId);
+    else this.terminalRoots.delete(artifactId);
+    return next;
+  }
+
+  #dropOrphanDagPlaceholder(artifactId) {
+    if (this.inflight.has(artifactId)||this.terminalHistory.has(artifactId)||this.states.has(artifactId)) return false;
+    const dependencies=this.dag.get(artifactId);
+    if (!dependencies||dependencies.length!==0) return false;
+    this.dag.delete(artifactId);
+    this.dagInbound.delete(artifactId);
+    this.terminalRoots.delete(artifactId);
+    return true;
+  }
+
+  #rememberTerminal(artifactId) {
+    this.terminalHistory.delete(artifactId);
+    this.terminalHistory.set(artifactId,true);
+    if ((this.dagInbound.get(artifactId)||0)===0) this.terminalRoots.add(artifactId);
+    this.#compactTerminalHistory();
+  }
+
+  #compactTerminalHistory() {
+    while (this.terminalHistory.size>this.terminalHistoryLimit&&this.terminalRoots.size) {
+      const artifactId=this.terminalRoots.values().next().value;
+      this.#evictTerminalClosure(artifactId);
+    }
+  }
+
+  #evictTerminalClosure(rootArtifactId) {
+    const pending=[rootArtifactId];
+    while (pending.length&&this.terminalHistory.size>this.terminalHistoryLimit) {
+      const artifactId=pending.pop();
+      if (!this.terminalHistory.has(artifactId)||this.inflight.has(artifactId)||(this.dagInbound.get(artifactId)||0)!==0) continue;
+      this.terminalHistory.delete(artifactId);
+      this.terminalRoots.delete(artifactId);
+      this.states.delete(artifactId);
+      const dependencies=this.dag.get(artifactId)||[];
+      if (!this.dag.delete(artifactId)) {
+        this.dagInbound.delete(artifactId);
+        continue;
+      }
+      this.dagInbound.delete(artifactId);
+      this.dagEdgeCount-=dependencies.length;
+      for (const dependencyId of dependencies) {
+        const inbound=this.#adjustDagInbound(dependencyId,-1);
+        if (inbound===0&&this.terminalHistory.has(dependencyId)&&!this.inflight.has(dependencyId)) pending.push(dependencyId);
+      }
+    }
   }
 
   #pathBetween(start,target) {
@@ -489,5 +559,5 @@ export class AnalysisScheduler {
 
   dependencyIds(artifactId) { return this.dag.get(requireArtifactId(artifactId))||Object.freeze([]); }
   state(artifactId) { return this.states.get(requireArtifactId(artifactId))||'unknown'; }
-  stats() { return Object.freeze({ schedulerVersion:ANALYSIS_SCHEDULER_VERSION,starvationPolicy:'virtual-deadline-v1',starvationInterval:this.starvationInterval,running:this.running,queued:this.queue.size,inflight:this.inflight.size,activeConsumers:this.activeConsumers,dagNodes:this.dag.size,dagEdges:this.dagEdgeCount,queueComparisons:this.queue.comparisons,producerInvocationCount:this.metrics.producerInvocations,...this.metrics }); }
+  stats() { return Object.freeze({ schedulerVersion:ANALYSIS_SCHEDULER_VERSION,starvationPolicy:'virtual-deadline-v1',starvationInterval:this.starvationInterval,terminalHistoryLimit:this.terminalHistoryLimit,terminalHistoryNodes:this.terminalHistory.size,running:this.running,queued:this.queue.size,inflight:this.inflight.size,activeConsumers:this.activeConsumers,dagNodes:this.dag.size,dagEdges:this.dagEdgeCount,queueComparisons:this.queue.comparisons,producerInvocationCount:this.metrics.producerInvocations,...this.metrics }); }
 }

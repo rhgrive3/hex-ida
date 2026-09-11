@@ -72,6 +72,33 @@ function managedRightShiftOperatorForNode(node, frontendId, mnemonic) {
   return node.operator;
 }
 
+const MANAGED_DIV_REM_OPERATORS = new Set(['sdiv', 'udiv', 'smod', 'umod']);
+
+function managedDivisionRemainderOperator(frontendId, mnemonic) {
+  const frontend = typeof frontendId === 'string' ? frontendId.trim().toLowerCase() : '';
+  const text = typeof mnemonic === 'string' ? mnemonic.trim().toLowerCase() : '';
+  if (frontend !== 'wasm') return null;
+  if (/^i(?:32|64)\.div_u$/.test(text)) return 'udiv';
+  if (/^i(?:32|64)\.div_s$/.test(text)) return 'sdiv';
+  if (/^i(?:32|64)\.rem_u$/.test(text)) return 'umod';
+  if (/^i(?:32|64)\.rem_s$/.test(text)) return 'smod';
+  return null;
+}
+
+function managedDivisionRemainderOperatorForNode(node, frontendId, mnemonic) {
+  const mnemonicOperator = managedDivisionRemainderOperator(frontendId, mnemonic);
+  if (node?.operator == null) return mnemonicOperator;
+  if (node.operator === 'div') {
+    return (mnemonicOperator === 'sdiv' || mnemonicOperator === 'udiv') ? mnemonicOperator : null;
+  }
+  if (node.operator === 'rem') {
+    return (mnemonicOperator === 'smod' || mnemonicOperator === 'umod') ? mnemonicOperator : null;
+  }
+  if (!MANAGED_DIV_REM_OPERATORS.has(node.operator)) return null;
+  if (mnemonicOperator && mnemonicOperator !== node.operator) return null;
+  return node.operator;
+}
+
 function safeIdent(s, fallback = 'value') {
   const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_$]/g, '_').replace(/^([0-9])/, '_$1');
   return x || fallback;
@@ -880,19 +907,28 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
       const right = n.inputs[1] ? buildValueExpr(n.inputs[1]) : expr.constant(0n, bits);
       const mn = (n.metadata?.mnemonic || '').toLowerCase();
       let normalizedOp = 'add';
-      if (mn.includes('sub')) normalizedOp = 'sub';
-      else if (mn.includes('mul')) normalizedOp = 'mul';
-      else if (mn.includes('div')) normalizedOp = 'sdiv';
-      else if (mn.includes('rem') || mn.includes('mod')) normalizedOp = 'smod';
-      else if (mn.includes('and')) normalizedOp = 'and';
-      else if (mn.includes('xor')) normalizedOp = 'xor';
-      else if (mn.includes('or')) normalizedOp = 'or';
-      else if (mn.includes('shl')) normalizedOp = 'shl';
-      else if (MANAGED_RIGHT_SHIFT_OPERATORS.has(n.operator) || n.operator === 'shr' || mn.includes('shr')) {
-        const shiftOp = managedRightShiftOperatorForNode(n, frontendId, mn);
-        res = shiftOp
-          ? expr.binary(shiftOp, left, right, bits, shiftOp === 'ashr')
-          : expr.intrinsic(safeIdent(mn || 'managed_right_shift'), [left, right], bits);
+      const wasmDivRem = frontendId === 'wasm' && (mn.includes('div') || mn.includes('rem'));
+      if (wasmDivRem || MANAGED_DIV_REM_OPERATORS.has(n.operator)) {
+        const divRemOp = managedDivisionRemainderOperatorForNode(n, frontendId, mn);
+        res = divRemOp
+          ? expr.binary(divRemOp, left, right, bits)
+          : expr.intrinsic(safeIdent(mn || 'managed_div_rem'), [left, right], bits);
+      }
+      if (!res) {
+        if (mn.includes('sub')) normalizedOp = 'sub';
+        else if (mn.includes('mul')) normalizedOp = 'mul';
+        else if (mn.includes('div')) normalizedOp = 'sdiv';
+        else if (mn.includes('rem') || mn.includes('mod')) normalizedOp = 'smod';
+        else if (mn.includes('and')) normalizedOp = 'and';
+        else if (mn.includes('xor')) normalizedOp = 'xor';
+        else if (mn.includes('or')) normalizedOp = 'or';
+        else if (mn.includes('shl')) normalizedOp = 'shl';
+        else if (MANAGED_RIGHT_SHIFT_OPERATORS.has(n.operator) || n.operator === 'shr' || mn.includes('shr')) {
+          const shiftOp = managedRightShiftOperatorForNode(n, frontendId, mn);
+          res = shiftOp
+            ? expr.binary(shiftOp, left, right, bits, shiftOp === 'ashr')
+            : expr.intrinsic(safeIdent(mn || 'managed_right_shift'), [left, right], bits);
+        }
       }
       if (!res) res = expr.binary(normalizedOp, left, right, bits);
     } else if (n.kind === 'compare') {

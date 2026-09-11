@@ -21,12 +21,12 @@ function assertDirectoryMetadataComplete(image) {
   assert.ok(!image.metadata.peMetadata.reasons.includes(DIRECTORY_TRUNCATION_REASON), JSON.stringify(image.metadata.peMetadata));
 }
 
-function dosAndPeHeader() {
+function dosAndPeHeader(bits = 64) {
   // 'MZ', e_lfanew=0x40, PE\0\0
   return [
     0x4d, 0x5a, ...Array(0x3a).fill(0), 0x40, 0, 0, 0,
     0x50, 0x45, 0, 0,
-    0x64, 0x86, // Machine = AMD64 (overridden for PE32)
+    ...(bits === 64 ? [0x64, 0x86] : [0x4c, 0x01]), // Machine = AMD64 / I386
     1, 0,       // NumberOfSections
     0, 0, 0, 0, // TimeDateStamp
     0, 0, 0, 0, // PointerToSymbolTable
@@ -83,7 +83,7 @@ function sectionEntry({ name, virtualAddress, virtualSize, sizeRaw, ptrRaw, flag
 
 function buildPE({ bits = 64, sizeOptional, numberOfRvaAndSizes, directoryEntries = 0, sections = [] }) {
   const bytes = [
-    ...dosAndPeHeader(),
+    ...dosAndPeHeader(bits),
     ...optionalHeader({ bits, sizeOptional, numberOfRvaAndSizes, directoryEntries }),
     ...sectionTable(sections),
   ];

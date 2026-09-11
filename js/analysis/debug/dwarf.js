@@ -766,6 +766,25 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
         }
       }
 
+      // An address-class DW_AT_high_pc is an absolute end address, not an
+      // unsigned size. A reversed range is malformed debug evidence: keep the
+      // DIE for pagination/diagnostics, but withhold completeness so it cannot
+      // become an exact function extent (#4232).
+      const lowPcEntry = attributes.get(DW_AT.low_pc);
+      const highPcEntry = attributes.get(DW_AT.high_pc);
+      if (lowPcEntry?.value != null && highPcEntry?.value != null && ADDRESS_CLASS_FORMS.includes(highPcEntry.form)) {
+        const low = BigInt(lowPcEntry.value);
+        const high = BigInt(highPcEntry.value);
+        const extent = high - low;
+        if (extent < 0n || extent > BigInt(Number.MAX_SAFE_INTEGER)) {
+          dieComplete = false;
+          complete = false;
+          diagnostics.push(extent < 0n
+            ? `DW_AT_high_pc precedes DW_AT_low_pc at 0x${dieOffset.toString(16)}`
+            : `DW_AT_high_pc range exceeds exact size bounds at 0x${dieOffset.toString(16)}`);
+        }
+      }
+
       const die = {
         offset: dieOffset,
         tag: declaration.tag,
@@ -1196,12 +1215,15 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
       // an addrx form resolved through .debug_addr, #6184).
       const highForm = die.attributes.get(DW_AT.high_pc)?.form;
       const highIsAddress = ADDRESS_CLASS_FORMS.includes(highForm);
+      const absoluteRange = highPc != null && highIsAddress && lowPc != null
+        ? BigInt(highPc) - BigInt(lowPc)
+        : null;
       const sizeBytes = highPc == null
         ? null
         : highIsAddress
-          ? lowPc == null
-            ? null
-            : Number(BigInt(highPc) - BigInt(lowPc))
+          ? absoluteRange != null && absoluteRange >= 0n && absoluteRange <= BigInt(Number.MAX_SAFE_INTEGER)
+            ? Number(absoluteRange)
+            : null
           : Number(highPc);
       const descriptor = {
         isFunction,

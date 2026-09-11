@@ -483,10 +483,10 @@ export function functionSummaryDigest(summary) {
     mayThrow: summary.mayThrow,
     stackDelta: summary.stackDelta,
     semanticFacts: summary.semanticFacts,
-    completeness: summary.status.completeness,
-    stopReason: summary.status.stopReason,
-    analyzerId: summary.status.analyzerId,
-    analyzerVersion: summary.status.analyzerVersion,
+    // Status provenance and identity are part of the published summary state.
+    // Hash the canonical envelope as one unit so a future status field cannot
+    // be silently omitted from dependency identity / fixed-point convergence.
+    status: summary.status,
   });
 }
 

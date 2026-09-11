@@ -117,6 +117,12 @@ function decodeAndroidTable(r, va, size64, image, bits, rela, source, budget, ou
     const relocationCount=readSleb(r,st,end);
     if(relocationCount<0n) throw new Error('negative relocation count');
     let relocationOffset=readSleb(r,st,end), relocationAddend=0n, decoded=0n;
+    const maxAddress=bits===32?0xffffffffn:0xffffffffffffffffn;
+    const validateOffset=()=>{
+      if(relocationOffset<0n) throw new Error('negative relocation field');
+      if(relocationOffset>maxAddress) throw new Error('relocation offset exceeds ELF address width');
+    };
+    validateOffset();
     while(decoded<relocationCount && !budget.stopped){
       if (!budget.step()) break;
       const groupSize=readSleb(r,st,end), flags=readSleb(r,st,end);
@@ -127,9 +133,10 @@ function decodeAndroidTable(r, va, size64, image, bits, rela, source, budget, ou
       for(let i=0n;i<groupSize && !budget.stopped;i++,decoded++){
         if (!budget.step()) break;
         relocationOffset+=groupedDelta?groupDelta:readSleb(r,st,end);
+        validateOffset();
         const info=groupedInfo?groupInfo:readSleb(r,st,end);
         if(hasAddend) relocationAddend+=groupedAddend?groupAddend:readSleb(r,st,end); else if(rela) relocationAddend=0n;
-        if(relocationOffset<0n||info<0n) throw new Error('negative relocation field');
+        if(info<0n) throw new Error('negative relocation field');
         const symIndex=bits===64?Number(info>>32n):Number(info>>8n), type=bits===64?Number(info&0xffffffffn):Number(info&0xffn);
         if(!Number.isSafeInteger(symIndex)||!Number.isSafeInteger(type)) throw new Error('relocation info exceeds safe integer range');
         if (!budget.push(out,{address:relocationOffset,symIndex,type,addend:rela?relocationAddend:null,source},source)) break;
