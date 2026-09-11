@@ -51,6 +51,45 @@ const operation = createMachineOperation({
 }, tightBudget);
 assert.equal(operation.effectSummary.memoryRead.accesses.length, 1);
 assert.equal(operation.effectSummary.memoryWrite.accesses.length, 1);
+
+// The bounded intrinsic path must retain ordering only when atomicity is
+// proven; the raw-list budget must still apply before nested normalization.
+const orderedAccess = Object.freeze({ ...ACCESS, atomic:true, ordering:'acquire' });
+const orderedSummary = createIntrinsicEffectSummary(summary(
+  { scope:'accesses', accesses:[orderedAccess] },
+  { scope:'accesses', accesses:[orderedAccess] },
+), tightBudget);
+assert.equal(orderedSummary.memoryRead.accesses[0].atomic, true);
+assert.equal(orderedSummary.memoryRead.accesses[0].ordering, 'acquire');
+assert.equal(orderedSummary.memoryWrite.accesses[0].atomic, true);
+assert.equal(orderedSummary.memoryWrite.accesses[0].ordering, 'acquire');
+
+const orderedOperation = createMachineOperation({
+  kind: 'intrinsic',
+  intrinsicId: 'audit.bounded-ordered-memory',
+  effectSummary: summary(
+    { scope:'accesses', accesses:[orderedAccess] },
+    { scope:'accesses', accesses:[orderedAccess] },
+  ),
+}, tightBudget);
+assert.equal(orderedOperation.effectSummary.memoryRead.accesses[0].ordering, 'acquire');
+assert.equal(orderedOperation.effectSummary.memoryWrite.accesses[0].ordering, 'acquire');
+
+const unprovenOrderedAccess = { ...ACCESS, ordering:'acquire' };
+assert.throws(
+  () => createIntrinsicEffectSummary(summary(
+    { scope:'accesses', accesses:[unprovenOrderedAccess] },
+    { scope:'accesses', accesses:[unprovenOrderedAccess] },
+  ), tightBudget),
+  /machine-effects-ordering-requires-atomic-access/,
+);
+assert.throws(
+  () => createIntrinsicEffectSummary(summary(
+    { scope:'none' },
+    { scope:'accesses', accesses:[unprovenOrderedAccess] },
+  ), tightBudget),
+  /machine-effects-ordering-requires-atomic-access/,
+);
 assert.throws(
   () => createIntrinsicEffectSummary(summary({
     scope: 'accesses',

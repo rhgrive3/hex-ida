@@ -1,5 +1,11 @@
 import { expr, mapChildren, mergeSource, sourceOf } from '../ast/nodes.js';
 import { expressionReadability, printExpression, printProgram } from '../pretty/c.js';
+import {
+  analysisIdentityMatches,
+  canonicalAnalysisIdentity,
+  isValidatedAnalysisIdentity,
+} from './analysis-identity.js';
+import { buildRenderProvenance } from './render-provenance.js';
 
 function integer(value) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
@@ -14,6 +20,7 @@ function recordViewCollapse(records, { proof, outerBits, innerBits, sourceBits, 
   records.push(Object.freeze({
     kind,
     proof,
+    targets:Object.freeze(collectTargets(source, proof)),
     outerBits,
     innerBits,
     sourceBits,
@@ -25,6 +32,17 @@ function recordViewCollapse(records, { proof, outerBits, innerBits, sourceBits, 
       ssaUses:Object.freeze([...(source.ssaUses || [])]),
     }),
   }));
+}
+
+function collectTargets(source, proof) {
+  const targets = [];
+  for (const ref of source.ir || []) targets.push(`ir:${ref}`);
+  for (const def of source.ssaDefs || []) targets.push(`ssa:def:${def}`);
+  for (const row of source.rows || []) targets.push(`row:${row}`);
+  for (const address of source.addresses || []) targets.push(`addr:${address}`);
+  for (const use of source.ssaUses || []) targets.push(`ssa:use:${use}`);
+  if (targets.length === 0) targets.push(`proof:${proof}`);
+  return targets;
 }
 
 function collapseExactNestedTruncation(node, records) {
@@ -174,6 +192,7 @@ function transformExpression(root, names, records, memo = new Map()) {
       valueId,
       name,
       proof:'upstream natural-loop induction fact has a proved fixed step',
+      targets:Object.freeze(collectTargets(source, 'induction-variable')),
       origin:Object.freeze({
         addresses:Object.freeze([...(source.addresses || [])]),
         rows:Object.freeze([...(source.rows || [])]),
@@ -210,9 +229,9 @@ function conditionMap(semanticAst, transform) {
   for (const condition of semanticAst?.conditions || []) {
     if (condition?.row == null || !condition.expression) continue;
     const expression = transform(condition.expression);
-    const prior = byRow.get(Number(condition.row));
-    if (prior) byRow.set(Number(condition.row), null);
-    else byRow.set(Number(condition.row), expression);
+    const row = Number(condition.row);
+    if (byRow.has(row)) byRow.set(row, null);
+    else byRow.set(row, expression);
     condition.expression = expression;
     condition.text = printExpression(expression);
   }
@@ -231,6 +250,14 @@ function refreshMetrics(result, semanticAst, printed, records) {
     sourceMappedNodes:printed.mapping.length,
     phase8ProjectionTransforms:records.length,
   };
+}
+
+function boundAnalysisIdentity(result, analysis, supplied) {
+  const canonical = canonicalAnalysisIdentity({ ir:result.ir, analysis });
+  if (supplied == null) return canonical;
+  if (supplied?.valid !== true || !isValidatedAnalysisIdentity(supplied.identity)) return canonical;
+  if (canonical?.valid !== true || !isValidatedAnalysisIdentity(canonical.identity)) return canonical;
+  return analysisIdentityMatches(supplied.identity, canonical.identity) ? supplied : canonical;
 }
 
 /**
@@ -270,26 +297,35 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   }
 
   const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
-  const lines = (result.cAst.body || []).map((node) => ({
-    kind:node.kind,
-    indent:node.indent,
-    text:node.text,
-    row:node.source?.rows?.[0] ?? null,
-    addr:node.source?.addresses?.[0] ?? null,
-    note:null,
-    source:node.source,
-  }));
-  return {
+  const lines = (result.cAst.body || []).map((node) => {
+    const expressionSource = node?.semantic?.expression ? sourceOf(node.semantic.expression.source) : null;
+    const conditionSource = (() => {
+      const rows = sourceOf(node.source).rows.map(Number);
+      const candidates = [...new Set(rows.map((row) => conditions.get(row)).filter(Boolean))];
+      return candidates.length === 1 ? sourceOf(candidates[0].source) : null;
+    })();
+    const sources = [node?.source, expressionSource, conditionSource].filter(Boolean);
+    const source = sources.length === 1 ? sources[0] : mergeSource(...sources);
+    return {
+      kind:node.kind, indent:node.indent, text:node.text,
+      row:source.rows?.[0] ?? null, addr:source.addresses?.[0] ?? null, note:null, source,
+    };
+  });
+  const withLines = {
     ...result,
     lines,
     pseudocode:printed.text,
     sourceMap:printed.mapping,
     metrics:refreshMetrics(result, result.semanticAst, printed, records),
     phase8Projection:Object.freeze({
-      version:1,
-      transformCount:records.length,
-      transforms:Object.freeze(records),
+      version:1, transformCount:records.length, transforms:Object.freeze(records),
       inductionNames:Object.freeze(Object.fromEntries(names)),
     }),
   };
+  const resolvedIdentity = boundAnalysisIdentity(result, analysis, opts.analysisIdentity);
+  const renderProvenance = buildRenderProvenance({
+    result:withLines, snapshotId:resolvedIdentity?.identity?.snapshotId ?? null,
+    budget:opts.renderProvenanceBudget, shouldAbort:opts.shouldAbort,
+  });
+  return { ...withLines, renderProvenance };
 }

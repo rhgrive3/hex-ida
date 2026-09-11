@@ -87,6 +87,10 @@ export function createActionRunner(app, { ui, assistant } = {}) {
         return;
       }
       case 'open-evidence': {
+        // Schema-valid empty args must not escape the AIError boundary as a
+        // raw TypeError (BigInt(null)): navigation without a target is a
+        // no-op like the other null-guarded branches (#5383).
+        if (addr == null) return;
         if (!goToCode(app, ui, BigInt(addr), { select: true })) return;
         if (narrow() && assistant) assistant.collapse();
         return;

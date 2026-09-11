@@ -1,12 +1,16 @@
 import { x86EffectiveAddressExpression } from './addressing.js';
 
+const familyOf = (instruction, family) => String(
+  family || instruction?.instructionFamily || instruction?.opcodeName || instruction?.mnemonic || '',
+).toLowerCase();
+
 export const X87_FAMILIES = new Set([
   'fld','fld1','fldz','fldl2e','fldl2t','fldlg2','fldln2','fldpi','fild','fbld',
   'fst','fstp','fist','fistp','fisttp','fbstp','fstpnce',
   'fadd','faddp','fiadd','fsub','fsubp','fisub','fsubr','fsubrp','fisubr',
   'fmul','fmulp','fimul','fdiv','fdivp','fidiv','fdivr','fdivrp','fidivr',
   'fcom','fcomp','fcompp','fucom','fucomp','fucompp','ficom','ficomp','ftst','fxam',
-  'fcomi','fcompi','fucomi','fucompi',
+  'fcomi','fcompi','fcomip','fucomi','fucompi','fucomip',
   'fcmovb','fcmovbe','fcmove','fcmovnb','fcmovnbe','fcmovne','fcmovnu','fcmovu',
   'fcos','fsin','fsincos','fptan','fpatan','fxtract',
   'fxch','fnstcw','fstcw','fldcw','fnstsw','fstsw','fwait','wait',
@@ -16,6 +20,25 @@ export const X87_FAMILIES = new Set([
   'fxsave','fxsave64','fxrstor','fxrstor64',
   'fninit','finit','fnclex','fclex','fnop','fdisi8087_nop','feni8087_nop','fsetpm',
 ]);
+
+export const X87_RFLAGS_FAMILIES = new Set([
+  'fcomi','fcompi','fcomip','fucomi','fucompi','fucomip',
+  'fcmovb','fcmovbe','fcmove','fcmovnb','fcmovnbe','fcmovne','fcmovnu','fcmovu',
+]);
+
+export function isX87RflagsInstruction(instruction, family = null) {
+  const fam = familyOf(instruction, family);
+  return X87_RFLAGS_FAMILIES.has(fam) || fam.startsWith('fcmov');
+}
+
+export function isX87Instruction(instruction, family = null) {
+  if (instruction?.detail?.flagsKind === 'fpu-flags') return true;
+  const fam = familyOf(instruction, family);
+  if (X87_FAMILIES.has(fam)) return true;
+  const groups = instruction?.detail?.groups;
+  return Array.isArray(groups)
+    && groups.some((group) => String(group?.name || '').toLowerCase() === 'fpu');
+}
 export const FP_EVEX_BASES = new Set(['movss','movsd','addss','addsd','subss','subsd','mulss','mulsd','divss','divsd','sqrtss','sqrtsd','ucomiss','ucomisd','comiss','comisd','addps','addpd','subps','subpd','mulps','mulpd','divps','divpd','cvtss2sd','cvtsd2ss','cvtsi2ss','cvtsi2sd','cvttss2si','cvttsd2si']);
 export const SIMD_EVEX_BASES = new Set(['movaps','movups','movapd','movupd','movdqa','movdqu','movd','movq','andps','andpd','pand','orps','orpd','por','xorps','xorpd','pxor','paddb','paddw','paddd','paddq','psubb','psubw','psubd','psubq','pcmpeqb','pcmpeqw','pcmpeqd','pcmpgtb','pcmpgtw','pcmpgtd','psllw','pslld','psllq','psrlw','psrld','psrlq','psraw','psrad','pshufd','punpckldq','pandn']);
 export const X87_STATE = Object.freeze(['x87-stack','fpcw','fpsw','fptw','fop','fip','fdp']);

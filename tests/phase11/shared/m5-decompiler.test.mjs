@@ -372,7 +372,6 @@ const unkFn = createVMEffectFunction({
   methodId: unkMethodId,
   frontendId: 'wasm',
   bundles: unkBundles,
-  aggregateCompleteness: 'partial',
 });
 
 const unkDecompiled = decompileManagedMethod(unkFn);

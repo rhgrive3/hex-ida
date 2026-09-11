@@ -137,6 +137,13 @@ export function reviveConversation(raw, namespace) {
 const MAX_NAMESPACES = 6;
 const INDEX_KEY = 'hex.ai.conversations.v2.index';
 
+// The managed index metadata and a conversation bucket share one flat keyspace
+// (`${key}.${namespace}`), so a namespace literally named `index` would turn the
+// index key into a data bucket: save() would overwrite the conversations with
+// the index object and load() would return an empty history (#5789). The
+// reserved name fails closed instead of colliding.
+const RESERVED_NAMESPACE = 'index';
+
 export function createConversationStore({ namespace, storage, key = STORAGE_KEY } = {}) {
   const backing = () => {
     if (storage) return storage;
@@ -153,6 +160,12 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
   const storageKey = (() => {
     try { return String(key); } catch { return null; }
   })();
+  // `index` is the managed-metadata component (`INDEX_KEY` / `${key}.index`):
+  // a bucket rooted at it would alias conversation data onto the index key,
+  // deterministically destroying history (#5789). That namespace fails closed
+  // at the storage boundary — same contract as quota/private-mode failures:
+  // nothing persists, nothing corrupts, the live conversation stays in memory.
+  const isReservedNamespace = (space) => space === RESERVED_NAMESPACE;
   const bucketKey = (space) => `${storageKey}.${space}`;
   const indexKey = () => storageKey === STORAGE_KEY ? INDEX_KEY : `${storageKey}.index`;
   const ownsLegacyStorage = storageKey === STORAGE_KEY;
@@ -222,13 +235,14 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
 
   return {
     get key() {
-      return bucketKey(currentNamespace());
+      return isReservedNamespace(currentNamespace()) ? null : bucketKey(currentNamespace());
     },
     namespace: currentNamespace,
     available: () => !!backing(),
     load(space = currentNamespace()) {
       const store = backing();
       if (!store) return [];
+      if (isReservedNamespace(space)) return [];
       migrateLegacyIfNeeded();
       try {
         const raw = store.getItem(bucketKey(space));
@@ -251,6 +265,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
     save(conversations, space = currentNamespace()) {
       const store = backing();
       if (!store) return false;
+      if (isReservedNamespace(space)) return false;
       migrateLegacyIfNeeded();
       const keep = conversations
         .filter((item) => item.turns.length)
@@ -272,7 +287,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
       const spaces = Object.keys(index);
       if (spaces.length > MAX_NAMESPACES) {
         const ranked = spaces
-          .filter((name) => name !== space)
+          .filter((name) => name !== space && !isReservedNamespace(name))
           .sort((a, b) => (index[a] || 0) - (index[b] || 0));
         for (const name of ranked.slice(0, spaces.length - MAX_NAMESPACES)) {
           dropEntry(index, name);
@@ -288,6 +303,7 @@ export function createConversationStore({ namespace, storage, key = STORAGE_KEY 
       try {
         const index = readIndex();
         for (const space of Object.keys(index)) {
+          if (isReservedNamespace(space)) continue;
           try { store.removeItem(bucketKey(space)); } catch { /* best effort */ }
         }
         store.removeItem(indexKey());

@@ -50,7 +50,7 @@ function repairDexFieldMemory(fn, lowered) {
   for(const b of fn.bundles){const m=b.memoryEffects?.[0];if(m?.bindingVersion===1)bound.set(b.operationId,{bundle:b,memory:m})}
   if(!bound.size)return lowered;
   const old=lowered.semanticIr, values=[...old.values], valueById=new Map(values.map(v=>[v.id,v]));
-  const replacement=new Map(), additionsBefore=new Map(), additionsAfter=new Map();
+  const replacement=new Map(), additionsBefore=new Map(), additionsAfter=new Map(), repairedUnknownAddressValues=new Set();
   let seq=0;
   const makeValue=(id,machineType,nodeId,origin)=>{const v={id,kind:'definition',machineType,definitionNodeId:nodeId,sourceEntityId:null,variableKey:null,origin};values.push(v);valueById.set(id,v);return v};
   const readsFor=(effectId)=>old.nodes.filter(n=>n.kind==='state-read'&&n.sourceEffectIds?.includes(effectId));
@@ -58,11 +58,13 @@ function repairDexFieldMemory(fn, lowered) {
     if(!['load','store'].includes(node.kind))continue;
     const effectId=node.sourceEffectIds?.find(id=>bound.has(id));if(!effectId)continue;
     const {memory}=bound.get(effectId), reads=readsFor(effectId), getRead=i=>reads[i]?.outputs?.[0];
+    const previousAddressValueId=node.memory?.addressExpr?.valueId, previousAddressValue=valueById.get(previousAddressValueId);
+    if(memory.addressKind==='static-field'&&previousAddressValue?.kind==='unknown'&&previousAddressValue.metadata?.reason==='memory-address-unavailable') repairedUnknownAddressValues.add(previousAddressValueId);
     const addressNodeId=`${node.id}:field-address`, addressValueId=`${addressNodeId}:value`, addressInputs=memory.addressKind==='instance-field'?[getRead(memory.addressReadIndex)].filter(Boolean):[];
     const addressType=valueType('address',32,memory.space), addressValue=makeValue(addressValueId,addressType,addressNodeId,node.origin);
     const addressNode={id:addressNodeId,kind:'intrinsic',blockId:node.blockId,inputs:addressInputs,outputs:[addressValue.id],operator:`managed.dex.${memory.addressKind}-address`,variable:null,memory:null,call:null,intrinsic:{inputs:addressInputs,outputs:[addressValue.id],stateReads:[],stateWrites:[],memoryRead:{scope:'none'},memoryWrite:{scope:'none'},controlEffects:[],determinism:'input-dependent',symbolicDetail:'summary-only'},targets:[],attributes:{fieldIdentity:memory.fieldIdentity,descriptor:memory.descriptor},unknown:null,completeness:'complete',sourceEffectIds:[effectId],origin:node.origin};
     additionsBefore.set(node.id,[addressNode]);
-    const mem={...node.memory,addressSpace:memory.space,addressExpr:{valueId:addressValue.id},widthBits:memory.byteWidth*8};
+    const mem={...node.memory,addressSpace:memory.space,addressExpr:{valueId:addressValue.id},widthBits:memory.byteWidth*8,volatility:memory.volatility??'unknown',atomic:memory.atomic??'unknown',ordering:memory.ordering??'unknown'};
     let updated={...node,memory:mem};
     if(memory.isWrite){let valueId=getRead(memory.valueReadIndex);const extras=[];if(memory.valueBits>memory.byteWidth*8){const id=`${node.id}:field-truncate`,out=`${id}:value`;makeValue(out,valueType('bitvector',memory.byteWidth*8),id,node.origin);extras.push({id,kind:'trunc',blockId:node.blockId,inputs:[valueId],outputs:[out],operator:null,variable:null,memory:null,call:null,intrinsic:null,targets:[],attributes:{},unknown:null,completeness:'complete',sourceEffectIds:[effectId],origin:node.origin});valueId=out}additionsBefore.set(node.id,[addressNode,...extras]);updated={...updated,inputs:[addressValue.id,valueId]}}
     else {updated={...updated,inputs:[addressValue.id]};if(memory.extension){const id=`${node.id}:field-extend`,out=`${id}:value`,kind=memory.extension==='sign'?'sext':'zext';makeValue(out,memory.valueType,id,node.origin);const ext={id,kind,blockId:node.blockId,inputs:[node.outputs[0]],outputs:[out],operator:null,variable:null,memory:null,call:null,intrinsic:null,targets:[],attributes:{},unknown:null,completeness:'complete',sourceEffectIds:[effectId],origin:node.origin};additionsAfter.set(node.id,[ext]);for(const w of old.nodes.filter(n=>n.kind==='state-write'&&n.sourceEffectIds?.includes(effectId)&&n.inputs?.[0]===node.outputs[0]))replacement.set(w.id,{...w,inputs:[out]})}}
@@ -71,7 +73,12 @@ function repairDexFieldMemory(fn, lowered) {
   const nodes=[];for(const n of old.nodes){nodes.push(...(additionsBefore.get(n.id)??[]));nodes.push(replacement.get(n.id)??n);nodes.push(...(additionsAfter.get(n.id)??[]))}
   const byBlock=new Map();for(const n of nodes){if(!byBlock.has(n.blockId))byBlock.set(n.blockId,[]);byBlock.get(n.blockId).push(n.id)}
   const blocks=old.blocks.map(b=>({...b,nodeIds:byBlock.get(b.id)??[]}));
-  const semanticIr={...old,blocks,nodes,values};
+  const retainedValues=values.filter(v=>!repairedUnknownAddressValues.has(v.id));
+  const stillMissingAddress=retainedValues.some(v=>v.kind==='unknown'&&v.metadata?.reason==='memory-address-unavailable');
+  const unknowns=(old.unknowns??[]).filter(u=>u?.reason!=='memory-address-unavailable'||stillMissingAddress);
+  const allNodesComplete=nodes.every(n=>n.completeness==='complete');
+  const completeness=fn.aggregateCompleteness==='exact'&&unknowns.length===0&&allNodesComplete?'complete':old.completeness;
+  const semanticIr={...old,blocks,nodes,values:retainedValues,unknowns,completeness};
   return {...lowered,semanticIr,ssa:buildSemanticSsa(semanticIr,lowered.cfg)};
 }
 

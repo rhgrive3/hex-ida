@@ -1,4 +1,5 @@
 import { stableDigest } from "../../core/identity/index.js";
+import { ANALYSIS_COMPLETENESS } from "../status.js";
 import {
   assertAnalysisSnapshot,
   createAnalysisSnapshot,
@@ -6,7 +7,7 @@ import {
   normalizeAnalysisArtifactVersions,
 } from "./snapshot.js";
 
-const COMPLETENESS = new Set(["complete", "partial", "truncated", "unsupported"]);
+const COMPLETENESS = new Set(ANALYSIS_COMPLETENESS);
 const TYPED_ARRAY_MUTATORS = new Set(["set", "copyWithin", "fill", "reverse", "sort"]);
 const TYPED_ARRAY_CALLBACKS = new Set([
   "forEach", "map", "filter", "every", "some", "find", "findIndex", "findLast", "findLastIndex",
@@ -28,7 +29,7 @@ function safeNonNegativeInteger(value) {
 
 function sameSnapshotIdentity(snapshot, current) {
   const currentRevision = safeNonNegativeInteger(current?.projectRevision === undefined ? 0 : current?.projectRevision);
-  const currentEpoch = safeNonNegativeInteger(current?.analysisEpoch);
+  const currentEpoch = safeNonNegativeInteger(current?.analysisEpoch === undefined ? 0 : current?.analysisEpoch);
   if (currentRevision == null || currentEpoch == null || typeof current?.binaryId !== "string") return false;
   return current.binaryId === snapshot.binaryId
     && currentRevision === snapshot.projectRevision
@@ -260,6 +261,45 @@ function preserveKnownQueryLimitContinuation(result) {
   });
 }
 
+function snapshotDescriptorValue(descriptors, key) {
+  const descriptor = descriptors[key];
+  if (descriptor == null) return undefined;
+  if (!Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+    throw new TypeError("analysis-snapshot-accessor-not-allowed");
+  }
+  return descriptor.value;
+}
+
+function pinValidatedSnapshot(snapshot) {
+  // Acquire caller-owned identity fields once, before validation. This closes
+  // the same-turn validation/read seam for getters and Proxies while retaining
+  // the existing snapshot schema and artifact-version normalization (#5131).
+  if (!snapshot || typeof snapshot !== "object") {
+    throw new TypeError("analysis-snapshot-required");
+  }
+  let descriptors;
+  try {
+    descriptors = Object.getOwnPropertyDescriptors(snapshot);
+  } catch {
+    throw new TypeError("analysis-snapshot-descriptor-read-failed");
+  }
+
+  const pinned = {
+    schemaVersion: snapshotDescriptorValue(descriptors, "schemaVersion"),
+    snapshotId: snapshotDescriptorValue(descriptors, "snapshotId"),
+    binaryId: snapshotDescriptorValue(descriptors, "binaryId"),
+    projectRevision: snapshotDescriptorValue(descriptors, "projectRevision"),
+    analysisEpoch: snapshotDescriptorValue(descriptors, "analysisEpoch"),
+    artifactVersions: normalizeAnalysisArtifactVersions(
+      snapshotDescriptorValue(descriptors, "artifactVersions"),
+    ),
+  };
+  const createdAt = snapshotDescriptorValue(descriptors, "createdAt");
+  if (createdAt != null) pinned.createdAt = createdAt;
+  assertAnalysisSnapshot(pinned);
+  return deepFreezeTree(pinned);
+}
+
 export class AnalysisQueryAPI {
   constructor(adapter) {
     if (!adapter || typeof adapter.currentIdentity !== "function") {
@@ -276,29 +316,30 @@ export class AnalysisQueryAPI {
   }
 
   async #validateAndCheckStale(snapshot, options) {
-    assertAnalysisSnapshot(snapshot);
+    const pinnedSnapshot = pinValidatedSnapshot(snapshot);
     aborted(options);
     const current = await this.adapter.currentIdentity(options);
     aborted(options);
-    if (!sameSnapshotIdentity(snapshot, current)) {
+    if (!sameSnapshotIdentity(pinnedSnapshot, current)) {
       throw new AnalysisSnapshotStaleError("Snapshot is stale before query", {
-        snapshotId: snapshot.snapshotId,
-        expectedEpoch: snapshot.analysisEpoch,
+        snapshotId: pinnedSnapshot.snapshotId,
+        expectedEpoch: pinnedSnapshot.analysisEpoch,
         currentEpoch: current?.analysisEpoch,
       });
     }
+    return pinnedSnapshot;
   }
 
   async #wrapResult(snapshot, executeFn, options) {
-    await this.#validateAndCheckStale(snapshot, options);
-    const result = await executeFn();
+    const pinnedSnapshot = await this.#validateAndCheckStale(snapshot, options);
+    const result = await executeFn(pinnedSnapshot);
     aborted(options);
     const currentAfter = await this.adapter.currentIdentity(options);
     aborted(options);
-    if (!sameSnapshotIdentity(snapshot, currentAfter)) {
+    if (!sameSnapshotIdentity(pinnedSnapshot, currentAfter)) {
       throw new AnalysisSnapshotStaleError("Snapshot became stale during query", {
-        snapshotId: snapshot.snapshotId,
-        expectedEpoch: snapshot.analysisEpoch,
+        snapshotId: pinnedSnapshot.snapshotId,
+        expectedEpoch: pinnedSnapshot.analysisEpoch,
         currentEpoch: currentAfter?.analysisEpoch,
       });
     }
@@ -313,8 +354,8 @@ export class AnalysisQueryAPI {
     const page = frozenQueryValue(result?.page ?? null);
     const cost = frozenQueryValue(result?.cost ?? rawStatus?.cost ?? null);
     return Object.freeze({
-      snapshotId: snapshot.snapshotId,
-      analysisEpoch: snapshot.analysisEpoch,
+      snapshotId: pinnedSnapshot.snapshotId,
+      analysisEpoch: pinnedSnapshot.analysisEpoch,
       completeness,
       value,
       status,
@@ -326,8 +367,8 @@ export class AnalysisQueryAPI {
   async #query(method, snapshot, args, options = {}) {
     return this.#wrapResult(
       snapshot,
-      () => typeof this.adapter[method] === "function"
-        ? this.adapter[method](snapshot, ...args, options)
+      (pinnedSnapshot) => typeof this.adapter[method] === "function"
+        ? this.adapter[method](pinnedSnapshot, ...args, options)
         : unavailable(method),
       options,
     );

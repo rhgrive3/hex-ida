@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import { withReceiverX86FlagDomainEvidence } from '../../js/targets/architecture/x86_64/runtime-provenance.js';
 import { createCapstoneX86Session } from '../phase5/helpers/capstone-session.mjs';
-import { liftX86MachineEffects } from '../../js/targets/architecture/x86_64/effects/index.js';
+import { dispatchX86MachineEffects, liftX86MachineEffects } from '../../js/targets/architecture/x86_64/effects/index.js';
+import { closeTrustedX86Partial } from '../../js/targets/architecture/x86_64/effects/trusted-decoder-terminal.js';
 import { X87_FAMILIES } from '../../js/targets/architecture/x86_64/effects/extended-state-helpers.js';
 
 // #6133: the x87 family decision (^f(?!s|x)/) leaked every `fs*`/`fx*`
@@ -9,6 +11,12 @@ import { X87_FAMILIES } from '../../js/targets/architecture/x86_64/effects/exten
 // the authority: every x87 family must read/write FPU status flags and the
 // x87 environment, and no x87 family may mint rflags.* surfaces here.
 const capstone = await createCapstoneX86Session();
+
+function terminalizeTrustedUnit(decoded, instructionId) {
+  const dispatched = dispatchX86MachineEffects(decoded, { instructionId });
+  if (dispatched.result?.completeness !== 'partial') return dispatched.result;
+  return closeTrustedX86Partial(decoded, dispatched.ownerId, dispatched.result);
+}
 try {
   const fixtures = {
     fsqrt: [0xd9, 0xfa],
@@ -29,7 +37,9 @@ try {
     const raw = capstone.decode(bytes, 0x730000n)[0];
     assert.ok(raw, `${name}: decoder fixture must decode`);
     assert.ok(X87_FAMILIES.has(raw.instructionFamily), `${name}: fixture must be a canonical x87 family`);
-    const bundle = liftX86MachineEffects(raw, { instructionId: `x87-terminal:${name}` });
+    const decoded = withReceiverX86FlagDomainEvidence(raw);
+    assert.equal(decoded.detail?.flagsKind, 'fpu-flags', `${name}: receiver evidence must select the x87 union domain`);
+    const bundle = terminalizeTrustedUnit(decoded, `x87-terminal:${name}`);
     assert.equal(bundle?.completeness, 'exact-with-intrinsic', `${name}: ${bundle?.unknownEffects?.reason}`);
     assert.equal(bundle.metadata.terminalizedBy, 'trusted-capstone-structured-intrinsic', name);
     const intrinsic = bundle.operations.find((op) => op.kind === 'intrinsic');

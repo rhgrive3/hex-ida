@@ -417,7 +417,7 @@ export function createMemoryAccess(input, options = {}) {
   if (atomic != null) out.atomic = atomic;
   if (input.ordering != null) {
     out.ordering = enumValue(input.ordering, SETS.orderings, 'machine-effects-invalid-memory-ordering');
-    if (atomic === false) fail('machine-effects-ordering-requires-atomic-access');
+    if (atomic !== true) fail('machine-effects-ordering-requires-atomic-access');
   }
   return deepFreeze(out);
 }

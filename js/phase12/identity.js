@@ -80,7 +80,11 @@ export function createOperationIdentity(input = {}) {
 export function identityDigest(value) { return stableDigest(value); }
 
 export function assertIdentityMatch(actual, expected, code = 'phase12-identity-mismatch') {
-  if (String(actual ?? '') !== String(expected ?? '')) {
+  // Empty strings remain a valid optional binary-identity sentinel for
+  // checkpoint restoration; all other values still need the primitive string
+  // boundary and canonical surrounding whitespace.
+  const isCanonicalIdentity = (value) => typeof value === 'string' && value === value.trim();
+  if (!isCanonicalIdentity(actual) || !isCanonicalIdentity(expected) || actual !== expected) {
     const error = new Error(code);
     error.code = code;
     throw error;

@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { HEX_CAPABILITIES } from '../js/ai/capabilities/catalog.js';
 import { validateSchema } from '../js/ai/validation.js';
 import { CapabilityExecutor } from '../js/ai/capabilities/executor.js';
+import { executeApprovedCapability } from './ai/support/approved-capability.mjs';
 
 const byId = new Map(HEX_CAPABILITIES.map((entry) => [entry.id, entry]));
 
@@ -115,7 +116,7 @@ for (const entry of HEX_CAPABILITIES.filter((item) => item.runtimeBound)) {
     viewer: { setSymbols() {} }, updateChrome() {},
   };
   const executor = new CapabilityExecutor({ catalog: { get: (id) => byId.get(id) || null }, app });
-  const result = await executor.execute('annotation.rename', { address: '4096', value: 'renamed' }, { authorization: { kind: 'proposal', token: '0123456789abcdef' } });
+  const result = await executeApprovedCapability(executor, 'annotation.rename', { address: '4096', value: 'renamed' });
   assert.equal(result.ok, true);
   assert.equal(names.get('4096'), 'sym:renamed');
 }

@@ -24,6 +24,7 @@
  */
 
 import { createAnalysisStatus, mergeAnalysisStatus, weakestCompleteness } from '../status.js';
+import { mergeOriginSets } from '../../core/identity/origin.js';
 import {
   EFFECT_SOURCES,
   createFunctionSummary,
@@ -33,7 +34,7 @@ import {
 } from './contract.js';
 
 export const INTERPROCEDURAL_ANALYZER_ID = 'phase7.summary.interprocedural';
-export const INTERPROCEDURAL_ANALYZER_VERSION = '1.2.0';
+export const INTERPROCEDURAL_ANALYZER_VERSION = '1.3.0';
 
 export const INTERPROCEDURAL_DEFAULT_BUDGET = Object.freeze({
   maxIterationsPerComponent: 16,
@@ -293,6 +294,13 @@ function mergeEscapes(values) {
     .map(([, escape]) => escape);
 }
 
+
+function mergedRegionProof(left, right) {
+  if (!left || !right || left.id !== right.id || left.kind !== right.kind) return null;
+  try { return { ...left, origin: mergeOriginSets(left.origin, right.origin) }; }
+  catch { return null; }
+}
+
 function mergeEffects(lists, cap) {
   const effectiveCap = Number.isSafeInteger(cap) && cap >= 1 ? cap : 1;
   const byKey = new Map();
@@ -319,6 +327,7 @@ function mergeEffects(lists, cap) {
     byKey.set(key, createMemoryEffect({
       regionId: effect.regionId,
       regionKind: effect.regionKind,
+      region: mergedRegionProof(prior.region ?? null, effect.region ?? null),
       broad: false,
       addressSpaces: [...new Set([...prior.addressSpaces, ...effect.addressSpaces])].sort(),
       source: strongestSource(prior.source, effect.source),

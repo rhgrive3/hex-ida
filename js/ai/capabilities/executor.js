@@ -166,8 +166,8 @@ function runtimeAdapter(platform) { const session = platform?.currentSession?.()
 function runtimeStatus(platform) { const session = platform?.currentSession?.(false); return session ? { connected: !!session.adapter?.connected, sessionId: session.id, binaryId: session.binaryHash || null, backend: session.backend, capabilities: session.adapter?.capabilities || {} } : { connected: false, sessionId: null }; }
 
 async function boundedMemoryRead(adapter, args) {
-  const size = Number(args.size ?? 1);
-  if (!Number.isSafeInteger(size) || size < 1 || size > 256 * 1024) throw new AIError('invalid_tool_call', 'Runtime memory read must be between 1 and 262144 bytes.');
+  const size = Object.prototype.hasOwnProperty.call(args, 'size') ? args.size : 1;
+  if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 1 || size > 256 * 1024) throw new AIError('invalid_tool_call', 'Runtime memory read must be between 1 and 262144 bytes.');
   const bytes = await adapter.readMemory(args.address, size);
   return { address: String(args.address), bytes: Array.from(bytes || []) };
 }
@@ -231,8 +231,23 @@ function setNote(app, kind, args, after = null) {
     }
     throw new AIError('tool_failed', `${label} annotation could not be persisted.`);
   }
-  after?.(); app.viewer?.setSymbols?.(app.symbols); app.updateChrome?.();
-  return { ok: true, address: address.toString(), value };
+  after?.();
+  const refreshWarning = refreshDisplay(app);
+  return { ok: true, address: address.toString(), value, ...(refreshWarning ? { refreshWarning } : {}) };
+}
+
+/* The display refresh (viewer symbols + chrome) is not part of the canonical
+   mutation: notes/symbols state is already committed and persisted when it
+   runs. A refresh failure must therefore surface as a warning on a successful
+   result instead of failing an applied mutation — otherwise a `failed`
+   proposal would be recorded while the mutation persisted (#5132). In the
+   rollback path it stays best-effort so it can never mask the original
+   failure. */
+function refreshDisplay(app) {
+  const warnings = [];
+  try { app.viewer?.setSymbols?.(app.symbols); } catch (error) { warnings.push(`viewer symbols refresh failed: ${error?.message || error}`); }
+  try { app.updateChrome?.(); } catch (error) { warnings.push(`chrome refresh failed: ${error?.message || error}`); }
+  return warnings.length ? warnings.join('; ') : null;
 }
 
 // annotation.rename commits two coupled mutations (notes.setName +
@@ -263,11 +278,14 @@ function renameSymbol(app, args) {
     } catch (rollbackError) {
       throw new AIError('tool_failed', `Rename failed and the note mutation could not be rolled back: ${rollbackError?.message || rollbackError}`, { cause: String(error?.message || error) });
     }
-    app.viewer?.setSymbols?.(app.symbols); app.updateChrome?.();
+    // Best effort only: a rollback-path refresh failure must never mask the
+    // original rename failure.
+    try { app.viewer?.setSymbols?.(app.symbols); } catch { /* ignore */ }
+    try { app.updateChrome?.(); } catch { /* ignore */ }
     throw error;
   }
-  app.viewer?.setSymbols?.(app.symbols); app.updateChrome?.();
-  return { ok: true, address: address.toString(), value };
+  const refreshWarning = refreshDisplay(app);
+  return { ok: true, address: address.toString(), value, ...(refreshWarning ? { refreshWarning } : {}) };
 }
 
 function setType(app, args) {
@@ -331,7 +349,7 @@ function setStructField(app, args) {
   return { ok: true, struct: name, field };
 }
 
-function setProjectAnnotation(app, args) {
+async function setProjectAnnotation(app, args) {
   if (!app) throw new AIError('tool_failed', 'Project annotation adapter is unavailable.');
   if (typeof app.workspace?.autosave !== 'function') throw new AIError('tool_failed', 'Project annotation persistence is unavailable.');
 
@@ -390,7 +408,7 @@ function setProjectAnnotation(app, args) {
 
   let saved;
   try {
-    saved = app.workspace.autosave();
+    saved = await app.workspace.autosave();
   } catch (error) {
     rollback();
     throw error;
