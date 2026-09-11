@@ -20,19 +20,57 @@ export const CANONICAL_ALIAS_ISSUER_VERSIONS = Object.freeze({
 });
 export const CANONICAL_ACCESS_ISSUER = 'semantic-memoryssa.access';
 export const CANONICAL_STORE_VALUE_ISSUER = 'semantic-memoryssa.store-operand';
-const TRUSTED_CANONICAL_ACCESS_PROVIDERS = new WeakSet();
 
-// The callback boundary is intentionally separate from the serialized issuer
-// fields. A caller can copy those fields into a plain object, so the producer
-// also has to recognize the exact provider callback that it registered.
-export function registerCanonicalAccessProvider(provider) {
-  if (typeof provider !== 'function') throw new TypeError('canonical-access-provider-must-be-function');
-  TRUSTED_CANONICAL_ACCESS_PROVIDERS.add(provider);
-  return provider;
+/**
+ * Module-owned ordinary-access provider for the canonical Semantic IR path.
+ *
+ * The callback implementation itself is the capability. Callers may pass this
+ * exact function to MemorySSA, but cannot register or substitute their own
+ * callback. The provider derives every claim from the current descriptor's
+ * canonical machine-effects metadata and refuses everything outside the owned
+ * ARM64 ordinary-memory family.
+ */
+function canonicalSemanticAccessProvider(descriptor) {
+  const memory = descriptor?.memory;
+  const machineEffects = descriptor?.node?.attributes?.machineEffects;
+  const architectureId = machineEffects?.architectureId;
+  const family = machineEffects?.bundleMetadata?.family;
+  if (!memory || !['arm64', 'arm64e'].includes(architectureId)
+      || family !== 'arm64-memory') return null;
+  if (typeof descriptor?.node?.id !== 'string' || descriptor.node.id.length === 0) return null;
+  if (typeof memory.widthBits !== 'number' || !Number.isSafeInteger(memory.widthBits)
+      || memory.widthBits <= 0 || memory.widthBits % 8 !== 0) return null;
+  if (typeof memory.endian !== 'string' || memory.endian.length === 0) return null;
+  if (memory.ordering != null && memory.ordering !== 'unknown') return null;
+  if (memory.atomic === true || memory.volatility === true) return null;
+  return Object.freeze({
+    kind: 'canonical-memory-access-qualifiers',
+    issuer: Object.freeze({
+      type: 'canonical-memory-access-provider',
+      id: CANONICAL_ACCESS_ISSUER,
+      version: MEMORY_SSA_PROOF_VERSION,
+    }),
+    sourceEntityId: descriptor.node.id,
+    architectureId,
+    family,
+    widthBits: memory.widthBits,
+    endian: memory.endian,
+    volatility: false,
+    atomic: false,
+    ordering: 'unknown',
+    evidence: Object.freeze({
+      operationKind: machineEffects.operationKind ?? null,
+      machineFamily: family,
+      sourceMnemonic: machineEffects.bundleMetadata?.mnemonic ?? null,
+    }),
+  });
 }
 
-export function isCanonicalAccessProvider(provider) {
-  return typeof provider === 'function' && TRUSTED_CANONICAL_ACCESS_PROVIDERS.has(provider);
+export function isCanonicalAccessProvider(_provider) {
+  // #4513: caller-supplied callbacks never acquire access-qualifier authority.
+  // canonicalAccessProof() derives the only allowed provider evidence from the
+  // current descriptor inside this module instead.
+  return false;
 }
 
 function weakObject(value) {
@@ -215,11 +253,16 @@ export function canonicalAliasProof({
 export function canonicalAccessProof({ raw, descriptor, identity, functionId, providerCallback }) {
   const memory = descriptor?.memory;
   if (!memory) return null;
-  const sourceEntityId = String(descriptor?.node?.id ?? '');
+  const sourceEntityId = typeof descriptor?.node?.id === 'string' ? descriptor.node.id : '';
   if (!sourceEntityId) return null;
-  const provider = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  // Ignore caller-supplied provider evidence for authority. The canonical
+  // ordinary-access claim is derived from the current descriptor inside this
+  // module, so a callback cannot self-register, forge issuer fields, or execute
+  // user code to close unknown qualifiers.
+  const derivedProvider = canonicalSemanticAccessProvider(descriptor);
+  const provider = derivedProvider ?? {};
   const providerIssuer = weakObject(provider.issuer);
-  const providerAuthority = isCanonicalAccessProvider(providerCallback)
+  const providerAuthority = derivedProvider != null
     && providerIssuer?.type === 'canonical-memory-access-provider'
     && providerIssuer.id === CANONICAL_ACCESS_ISSUER
     && providerIssuer.version === MEMORY_SSA_PROOF_VERSION;
@@ -232,14 +275,15 @@ export function canonicalAccessProof({ raw, descriptor, identity, functionId, pr
     && provider.volatility === false
     && provider.atomic === false
     && (provider.ordering == null || provider.ordering === 'unknown')
-    && provider.widthBits === Number(memory.widthBits)
+    && provider.widthBits === memory.widthBits
     && provider.endian === memory.endian;
   // Some canonical machine-effect producers intentionally leave the
   // source-level qualifiers unknown.  Only their canonical access provider
   // may close that gap; an arbitrary callback cannot turn unknown metadata
   // into an ordinary access proof.
   if (!sourceQualifiersKnown && !providerQualifiersKnown) return null;
-  const rawEvidence = provider.evidence && typeof provider.evidence === 'object' && !Array.isArray(provider.evidence)
+  const rawEvidence = providerAuthority && provider.evidence
+    && typeof provider.evidence === 'object' && !Array.isArray(provider.evidence)
     ? jsonSafe(provider.evidence) : {};
   const base = {
     kind: 'canonical-memory-access-qualifiers',
@@ -259,8 +303,8 @@ export function canonicalAccessProof({ raw, descriptor, identity, functionId, pr
       sourceEntityId,
       sourceOriginDigest: stableDigest(descriptor.node?.origin ?? null),
     },
-    architectureId: provider.architectureId == null ? 'canonical-semantic' : String(provider.architectureId),
-    family: provider.family == null ? 'semantic-memory-access' : String(provider.family),
+    architectureId: providerAuthority && typeof provider.architectureId === 'string' ? provider.architectureId : 'canonical-semantic',
+    family: providerAuthority && typeof provider.family === 'string' ? provider.family : 'semantic-memory-access',
     widthBits: Number(memory.widthBits),
     endian: String(memory.endian ?? ''),
     volatility: false,

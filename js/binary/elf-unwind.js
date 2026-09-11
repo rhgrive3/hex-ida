@@ -152,6 +152,21 @@ function readCStringBounded(r, p0, end) {
   throw new Error('unterminated CIE augmentation string');
 }
 
+// AArch64 CIE augmentation markers produced by current GNU toolchains:
+// `B` selects the PAC B-key for the frame's return address (GAS
+// `.cfi_b_key_frame`), `G` marks an MTE-tagged frame (GAS
+// `.cfi_mte_tagged_frame`). Neither adds augmentation data. Unknown chars
+// keep failing closed (#4255).
+const AARCH64_CIE_AUGMENTATIONS = new Set(['B', 'G']);
+
+function targetSpecificCieAugmentations(image) {
+  const arch = String(image?.architecture || image?.arch || '').toLowerCase();
+  if (arch === 'arm64' || arch === 'aarch64' || arch.startsWith('arm64_32') || arch === 'aarch64_32') {
+    return AARCH64_CIE_AUGMENTATIONS;
+  }
+  return null;
+}
+
 function parseCie(r, image, domain, address, bits) {
   const header = recordHeader(r, domain, address);
   let p = header.payload;
@@ -190,6 +205,7 @@ function parseCie(r, image, domain, address, bits) {
     const augEnd = p + Number(augLength.value);
     if (augEnd > header.end) throw new Error('CIE augmentation data crosses record boundary');
     const ctx = domainContext(domain, image, bits);
+    const targetAugmentations = targetSpecificCieAugmentations(image);
     for (const ch of augmentation.slice(1)) {
       if (ch === 'L') {
         if (p >= augEnd) throw new Error('truncated CIE LSDA encoding');
@@ -203,6 +219,12 @@ function parseCie(r, image, domain, address, bits) {
         const enc = r.u8(p++);
         const personality = decodeEhValue(r, p, enc, ctx, augEnd);
         p = personality.next;
+      } else if (ch === 'B' || ch === 'G') {
+        // AArch64 target-specific markers: `B` = PAC B-key frame
+        // (.cfi_b_key_frame), `G` = MTE tagged frame (.cfi_mte_tagged_frame).
+        // Neither contributes augmentation data; on any other target they
+        // stay unsupported so records keep failing closed (#4255).
+        if (!targetAugmentations?.has(ch)) throw new Error(`unsupported CIE augmentation '${ch}'`);
       } else if (ch !== 'S') {
         throw new Error(`unsupported CIE augmentation '${ch}'`);
       }
@@ -243,7 +265,7 @@ function existingNonUnwindFunction(image, address) {
 }
 
 function recordUnverifiedKnownUnwind(image, address, reason, seen) {
-  if (address == null || address === 0n || !existingNonUnwindFunction(image, address)) return;
+  if (address == null || !existingNonUnwindFunction(image, address)) return;
   const key = BigInt(address).toString();
   if (seen.has(key)) return;
   image.functions.push(functionSeed(address, {
@@ -310,7 +332,7 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
       const initial = decodeEhValue(r, p, tableEnc, ctx, end); p = initial.next;
       const fde = decodeEhValue(r, p, tableEnc, ctx, end); p = fde.next;
       rows.push({ index:i, initial:initial.value, fde:fde.value });
-      if (initial.value != null && initial.value !== 0n) {
+      if (initial.value != null) {
         if (previousInitial != null && initial.value <= previousInitial) tableSorted = false;
         previousInitial = initial.value;
       }
@@ -345,7 +367,7 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
     }
 
     for (const row of rows) {
-      if (row.initial == null || row.initial === 0n || row.fde == null || row.fde === 0n) {
+      if (row.initial == null || row.fde == null) {
         invalidEntries++;
         recordUnverifiedKnownUnwind(image, row.initial, 'missing-fde-evidence', unverifiedSeen);
         continue;

@@ -407,7 +407,7 @@ function sourceSinkFacts(ir, out) {
     out.push({
       id: 'fact:arg:' + value.id, kind: FACT.ARGUMENT,
       row: ir.blocks && ir.blocks[0] ? ir.blocks[0].startRow : 0,
-      address: ir.startAddress || null, function: ir.startAddress || null,
+      address: ir.startAddress ?? null, function: ir.startAddress ?? null,
       value: valueShape(value), relation: 'argument→value', confidence: 1,
       confidenceSource: 'semantic-ir', evidence: [],
     });

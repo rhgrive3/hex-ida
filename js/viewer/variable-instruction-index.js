@@ -27,9 +27,11 @@ function instructionAddress(value, code = 'variable-viewer-invalid-instruction-a
   throw new TypeError(code);
 }
 function int(value, code, min = 0, max = Number.MAX_SAFE_INTEGER) {
-  const n = Number(value);
-  if (!Number.isSafeInteger(n) || n < min || n > max) throw new TypeError(code);
-  return n;
+  // Configuration limits are already Number-valued contracts. Do not let
+  // arrays, boxed numbers, booleans, or valueOf/toString objects cross the
+  // boundary by laundering themselves through Number(value) (#4416).
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) throw new TypeError(code);
+  return value;
 }
 function instructionLength(value, code = 'variable-viewer-invalid-instruction-length', min = 1, max = X86_MAX_INSTRUCTION_BYTES) {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {

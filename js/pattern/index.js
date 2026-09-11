@@ -49,6 +49,27 @@ function validateSnapshotId(value) {
   return value;
 }
 
+function snapshotByteSource(byteSource, options) {
+  if (byteSource instanceof Uint8Array || byteSource instanceof ArrayBuffer || ArrayBuffer.isView(byteSource)) {
+    return byteSource;
+  }
+  if (!byteSource) return byteSource;
+  const read = byteSource.read;
+  if (typeof read !== 'function') return byteSource;
+  const snapshotId = byteSource.snapshotId ?? options.snapshotId ?? null;
+  if (snapshotId !== null && (typeof snapshotId !== 'string' || !snapshotId)) {
+    fail('pattern-source-snapshot-id-invalid');
+  }
+  const size = byteSource.size ?? null;
+  return {
+    snapshotId,
+    size,
+    read(offset, length, request) {
+      return read.call(byteSource, offset, length, request);
+    },
+  };
+}
+
 function validateCompiledPattern(value) {
   if (value && typeof value === 'object' && COMPILED_PATTERNS.has(value)) return value;
 
@@ -112,7 +133,14 @@ export function evaluatePattern(compiled, byteSource, options = {}) {
   const pattern = looksCompiled(compiled)
     ? validateCompiledPattern(compiled)
     : compilePattern(compiled, options);
-  return core.evaluatePattern(pattern, byteSource, options);
+  const rootSpace = pattern.compileOptions.targetAddressSpace;
+  if (options.addressSpace != null && options.addressSpace !== rootSpace) {
+    fail('pattern-address-space-override-mismatch');
+  }
+  const source = snapshotByteSource(byteSource, options);
+  const evaluateOptions = { ...options, addressSpace: rootSpace };
+  if (source !== byteSource) evaluateOptions.snapshotId = source.snapshotId;
+  return core.evaluatePattern(pattern, source, evaluateOptions);
 }
 
 export function evaluatePatternAsync(compiled, byteSource, options = {}) {

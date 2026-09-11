@@ -110,7 +110,7 @@ export function constantComparisons(model, opts) {
 
   let proven = [];
   try { proven = findIrConstantComparisons(model, opts); } catch { return []; }
-  if (!(opts && opts.allowUnscopedPropagated)) {
+  if (opts?.allowUnscopedPropagated !== true) {
     const context = comparisonContextUpdates(model, opts);
     if (distinctCandidateLocations(context) > 1) proven = proven.filter((c) => !c.propagated);
   }

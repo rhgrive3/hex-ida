@@ -231,8 +231,8 @@ test('HEX-C1-02 positive: complete callee yields precise joined target set (arg 
 test('HEX-C1-02 positive: complete callee yields precise target for root and allocation provenance', () => {
   const fixture = callerFixture({
     returnProvenance: [
-      { kind: 'root', returnIndex: 0, rootEntityId: 'global_table', offset: '8' },
-      { kind: 'allocation', returnIndex: 0, allocationSiteId: 'alloc_site_42', offset: '0' },
+      { kind: 'root', returnIndex: 0, rootEntityId: 'global_table', offset: '8', addressSpace: 'memory' },
+      { kind: 'allocation', returnIndex: 0, allocationSiteId: 'alloc_site_42', offset: '0', addressSpace: 'memory' },
     ],
   });
   const result = analyzeLocalPointsTo(fixture.ir, fixture.cfg, fixture.ssa, {
@@ -441,8 +441,8 @@ test('HEX-C1-02 matrix axis 11: unknown provenance kind stays unresolved', () =>
 test('HEX-C1-02 matrix axis 12: points-to budget overflow falls back to conservative top', () => {
   const fixture = callerFixture({
     returnProvenance: [
-      { kind: 'root', returnIndex: 0, rootEntityId: 'root_A', offset: '0' },
-      { kind: 'root', returnIndex: 0, rootEntityId: 'root_B', offset: '0' },
+      { kind: 'root', returnIndex: 0, rootEntityId: 'root_A', offset: '0', addressSpace: 'memory' },
+      { kind: 'root', returnIndex: 0, rootEntityId: 'root_B', offset: '0', addressSpace: 'memory' },
     ],
   });
   const result = analyzeLocalPointsTo(fixture.ir, fixture.cfg, fixture.ssa, {

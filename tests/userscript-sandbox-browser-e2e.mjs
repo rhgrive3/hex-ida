@@ -90,6 +90,71 @@ async function run(name, browserType) {
     assert.equal(await page.evaluate(() => !!document.getElementById('hex-userscript-host')), false, `${name}: legacy DOM absent after ready`);
     assert.equal(await page.evaluate(() => !!document.getElementById('hex-userscript-emergency-close')), false, `${name}: emergency close overlay must stay absent`);
 
+    const x86WorkerState = await child.evaluate(async () => {
+      const request = (worker, message) => new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('worker timeout')), 60_000);
+        worker.onmessage = (event) => { clearTimeout(timer); resolve(event.data); };
+        worker.onerror = (event) => {
+          clearTimeout(timer);
+          reject(new Error(event.message || event.error?.message
+            || `worker error at ${event.filename || 'unknown'}:${event.lineno || 0}:${event.colno || 0}`));
+        };
+        worker.onmessageerror = () => { clearTimeout(timer); reject(new Error('worker message error')); };
+        worker.postMessage(message);
+      });
+      const decoder = new Worker(new URL('https://hex.invalid/js/platform/capstone-disasm-worker.js'));
+      let decoded;
+      try {
+        try {
+          decoded = await request(decoder, {
+            id: 1, architecture: 'x86_64', address: 0x2000n,
+            bytes: new Uint8Array([0x48, 0x8b, 0x03, 0xc3]),
+          });
+        } catch (error) {
+          return { decodedOk: false, decodedError: `decoder: ${error?.message || error}` };
+        }
+      } finally {
+        decoder.terminate();
+      }
+      if (!decoded?.ok) return { decodedOk: false, decodedError: decoded?.error || null };
+
+      // Start the protected receiver directly from the embedded asset. This
+      // is the same worker path used by the platform analysis route after it
+      // transports decoded rows across the Worker boundary.
+      const semanticWorker = new Worker(new URL('https://hex.invalid/js/targets/architecture/x86_64/semantic-revalidation-worker.js'));
+      let analyzed;
+      try {
+        try {
+          analyzed = await request(semanticWorker, {
+            t: 'semanticFunction', id: 2,
+            input: {
+              architecture: 'x86_64', platform: 'linux',
+              binaryId: 'binary:userscript-sandbox-x86', sliceId: 'slice:userscript-sandbox-x86',
+              decoderSemanticVersion: 'capstone-5-x86-structured-v2',
+              instructions: decoded.instructions,
+            },
+          });
+        } catch (error) {
+          return { decodedOk: true, decodedCount: decoded.instructions?.length || 0, analyzedOk: false, analyzedError: `semantic: ${error?.message || error}` };
+        }
+      } finally {
+        semanticWorker.terminate();
+      }
+      const firstMachineEffects = analyzed?.result?.pipeline?.machineEffects?.[0] || null;
+      return {
+        decodedOk: true,
+        decodedCount: decoded.instructions?.length || 0,
+        analyzedOk: analyzed?.ok === true,
+        analyzedError: analyzed?.error || null,
+        firstCompleteness: firstMachineEffects?.completeness || null,
+      };
+    });
+    assert.equal(x86WorkerState.decodedOk, true, `${name}: protected x86 decoder worker failed: ${x86WorkerState.decodedError}`);
+    assert.equal(x86WorkerState.decodedCount, 2, `${name}: protected x86 decoder returned an unexpected instruction count`);
+    assert.equal(x86WorkerState.analyzedOk, true, `${name}: protected x86 semantic worker failed: ${x86WorkerState.analyzedError}`);
+    assert.equal(x86WorkerState.firstCompleteness, 'exact',
+      `${name}: protected x86 semantic worker did not publish terminal exactness: ${JSON.stringify(x86WorkerState)}`);
+
     await child.evaluate(() => globalThis.__HEX_CHATGPT_BRIDGE__.requestUiClose());
     await page.waitForFunction(() => document.getElementById('hex-userscript-iframe-host')?.getAttribute('aria-hidden') === 'true');
     await page.click('#hex-userscript-launcher');

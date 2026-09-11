@@ -89,6 +89,10 @@ async function bundle(entry, { format = 'iife', rewriteImportMeta = false } = {}
 }
 
 async function bundleInlinedClassic(entry, source) {
+  // capstone.js is a classic UMD script. Once its source is wrapped in the
+  // bundle IIFE, keep the factory on the worker global so capstonePrelude can
+  // supply the integrity-bound in-memory WASM bytes before initialization.
+  source = source.replace(/\bvar MCapstone\s*=/, 'globalThis.MCapstone=');
   const result = await build({
     absWorkingDir: root,
     stdin: {
@@ -109,6 +113,10 @@ async function bundleInlinedClassic(entry, source) {
     minifySyntax: true,
     minifyWhitespace: true,
     sourcemap: false,
+    // Emscripten's generated Capstone UMD contains a guarded Node fallback.
+    // Keep that builtin external in this browser-only inline bundle so the
+    // dead branch is retained without making esbuild resolve a Node module.
+    external: ['node:fs'],
   });
   const output = result.outputFiles?.[0]?.contents;
   if (!output) throw new Error(`esbuild produced no protected classic worker for ${entry}`);

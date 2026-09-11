@@ -169,7 +169,9 @@
             "type": "source-includes",
             "path": "js/phase12/package-envelope.js",
             "markers": [
-              "const entries = Array.isArray(value.items) ? value.items : Array.isArray(value.results) ? value.results : [];"
+              "const hasItems = Object.hasOwn(value, 'items');",
+              "if (hasItems && !Array.isArray(value.items)) throw new PackageValidationError('provider-output-schema-invalid', 'items must be an array when supplied');",
+              "const entries = hasItems ? value.items : hasResults ? value.results : [];"
             ]
           }
         },
@@ -268,11 +270,11 @@
             "type": "source-includes",
             "path": "js/knowledge/phase12-recognition.js",
             "markers": [
-              "token.approved !== true",
-              "token.targetMatchId !== result.id",
-              "result.candidateSearchTruncated || result.status === 'ambiguous'",
-              "confirmation: 'user-confirmed'",
-              "authority: 'L4-local-canonical'"
+              "createRecognitionApprovalControl",
+              "requireTrustedDelivery",
+              "recordApproval",
+              "consumeFor",
+              "approval evidence is minted by the host approval control"
             ]
           }
         },

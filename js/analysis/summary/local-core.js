@@ -27,6 +27,43 @@ export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.2.0';
 
 const DEFAULT_ADDRESS_SPACES = Object.freeze(['memory']);
 
+function parseIntegerConstant(candidate) {
+  if (candidate == null) return null;
+  const structured = typeof candidate === 'object' && !Array.isArray(candidate);
+  if (structured) {
+    if (candidate.kind !== 'bitvector') return null;
+    if (!Number.isSafeInteger(candidate.widthBits) || candidate.widthBits <= 0) return null;
+    if (!Object.hasOwn(candidate, 'value') || candidate.value == null) return null;
+  }
+  const raw = structured ? candidate.value : candidate;
+  if (raw == null) return null;
+  try {
+    if (typeof raw === 'bigint') return raw;
+    if (typeof raw === 'number') return Number.isSafeInteger(raw) ? BigInt(raw) : null;
+    if (typeof raw !== 'string') return null;
+    const text = raw.trim();
+    if (!/^[+-]?(?:0x[0-9a-f]+|\d+)$/i.test(text)) return null;
+    return BigInt(text);
+  } catch { return null; }
+}
+
+function integerConstant(value, node) {
+  let parsed = null;
+  for (const candidate of [
+    value?.metadata?.constant,
+    node?.attributes?.constant,
+    node?.metadata?.constant,
+    node?.constant,
+  ]) {
+    if (candidate == null) continue;
+    const next = parseIntegerConstant(candidate);
+    if (next == null) return null;
+    if (parsed != null && parsed !== next) return null;
+    parsed = next;
+  }
+  return parsed;
+}
+
 // Instruction origin evidence carries the same primitive non-empty string
 // contract as the canonical origin set (#5776): a structured value must never
 // launder into a canonical instruction evidence ID via String(), so malformed
@@ -191,13 +228,18 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   }
 
   const formalArgumentIndex = (valueId) => {
+    // Raw/partial call IR may carry a malformed structured argument. Never
+    // let an object reach String() here: its default spelling could collide
+    // with a real value id (and null-prototype records throw on coercion).
+    if (valueId == null || (typeof valueId === 'object' && valueId !== null) || typeof valueId === 'function') return -1;
     if (Array.isArray(ir.inputs)) return ir.inputs.indexOf(valueId);
     const value = valueById.get(String(valueId));
     const explicit = value?.metadata?.argumentIndex
       ?? value?.metadata?.argIndex
       ?? value?.metadata?.abiArgIndex;
-    const index = explicit == null ? null : Number(explicit);
-    return Number.isSafeInteger(index) && index >= 0 ? index : -1;
+    return typeof explicit === 'number' && Number.isSafeInteger(explicit) && explicit >= 0
+      ? explicit
+      : -1;
   };
 
   const summaryIdentityOptions = (functionId) => {
@@ -257,7 +299,12 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     // the canonical structured spelling ({ valueId }); the structured form is
     // unwrapped exactly as escape analysis does (#6151).
     const argumentIds = Array.isArray(callNode.call?.arguments)
-      ? callNode.call.arguments.map((argument) => argument?.valueId ?? argument)
+      ? callNode.call.arguments.map((argument) => {
+        if (argument == null || typeof argument !== 'object') return argument;
+        if (Array.isArray(argument) || !Object.hasOwn(argument, 'valueId')) return null;
+        const valueId = argument.valueId;
+        return typeof valueId === 'string' && valueId.trim() ? valueId : null;
+      })
       : callNode.inputs;
     const composed = [];
     for (const provenance of alternatives) {
@@ -292,7 +339,11 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       }
       if (provenance.kind === 'root' || provenance.kind === 'allocation') {
         const rootEntityId = provenance.rootEntityId ?? provenance.allocationSiteId ?? null;
-        if (rootEntityId == null || !String(rootEntityId).trim()) {
+        if (rootEntityId == null || !String(rootEntityId).trim()
+          // Storage space is required canonical identity on root/allocation
+          // facts (#5242): composing without it would silently degrade a
+          // non-memory return to flat memory at the caller.
+          || typeof provenance.addressSpace !== 'string' || !provenance.addressSpace.trim()) {
           composed.push({ kind: 'unknown', returnIndex: outerReturnIndex });
           continue;
         }
@@ -301,6 +352,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
           returnIndex: outerReturnIndex,
           rootEntityId: String(rootEntityId),
           offset: offset.toString(10),
+          addressSpace: provenance.addressSpace.trim(),
         };
         if (provenance.allocationSiteId != null) fact.allocationSiteId = String(provenance.allocationSiteId);
         composed.push(fact);
@@ -362,7 +414,11 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
           } else if (producer.kind === 'binary' && (producer.operator === 'add' || producer.operator === 'sub')) {
             const rightConst = producer.inputs?.[1];
             const rightProducer = nodeByOutput.get(rightConst);
-            const num = rightProducer?.constant != null ? rightProducer.constant : (typeof rightConst === 'number' || typeof rightConst === 'bigint' ? rightConst : null);
+            const rightValue = valueById.get(String(rightConst));
+            const hasConstantSource = rightProducer != null || rightValue?.metadata?.constant != null;
+            const num = hasConstantSource
+              ? integerConstant(rightValue, rightProducer)
+              : (typeof rightConst === 'number' || typeof rightConst === 'bigint' ? parseIntegerConstant(rightConst) : null);
             if (num != null) {
               offset += (producer.operator === 'sub' ? -BigInt(num) : BigInt(num));
               curr = producer.inputs?.[0];
@@ -481,6 +537,19 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       }));
       controlUnknown = true;
       ensureBroadWrite(node);
+    } else if (node.call.noreturn == null || node.call.mayThrow == null) {
+      // Omitted control knowledge is a missing fact, not a negative proof
+      // (#5854): promoting null here would publish "returns / does not throw"
+      // from raw IR that never carried the fact. Degrade to an unknown call
+      // effect instead of folding in absent knowledge.
+      unknownCallEffects.push(createUnknownCallEffect({
+        callSiteId: node.id,
+        reason: 'summary-incomplete',
+        targetEntityIds: targets,
+        evidenceIds: evidenceOf(node),
+      }));
+      controlUnknown = true;
+      ensureBroadWrite(node);
     } else {
       if (node.call.mayThrow === true) mayThrow = true;
       if (node.call.mayThrow === 'unknown') controlUnknown = true;
@@ -504,13 +573,21 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   }
 
   const hasUnknown = unknownCallEffects.length > 0 || intrinsicScopeUnknown;
+  // A canonical Semantic IR may record what is missing at the function level:
+  // `completeness: 'partial'|'unknown'` with the reasons in `ir.unknowns`,
+  // while every individual node stays complete (#5226). Ignoring those fields
+  // publishes a complete (even pure) summary for a function whose lowering
+  // never covered part of its scope — missing work laundered into "no effect".
+  const functionLevelUnknown = (ir.completeness != null && ir.completeness !== 'complete')
+    || (Array.isArray(ir.unknowns) && ir.unknowns.length > 0);
+
   const localStatus = createAnalysisStatus({
     snapshotId: options.snapshotId ?? 'snapshot-unbound',
     analyzerId: LOCAL_SUMMARY_ANALYZER_ID,
     analyzerVersion: LOCAL_SUMMARY_ANALYZER_VERSION,
-    completeness: hasUnknown ? 'partial' : 'complete',
+    completeness: hasUnknown || functionLevelUnknown ? 'partial' : 'complete',
     budgetClass: options.budgetClass ?? null,
-    stopReason: hasUnknown ? 'evidence-missing' : null,
+    stopReason: hasUnknown || functionLevelUnknown ? 'evidence-missing' : null,
   });
   const status = statuses.length ? mergeAnalysisStatus(localStatus, statuses) : localStatus;
 
