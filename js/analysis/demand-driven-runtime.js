@@ -76,6 +76,9 @@ function pageOf(page = {}) {
     limit: typeof rawLimit === 'number' && Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(MAX_PAGE, rawLimit) : 200,
   };
 }
+function cumulativePageLimit(offset, limit) {
+  return offset > Number.MAX_SAFE_INTEGER - limit ? null : offset + limit;
+}
 function paged(values, page, completeness = 'complete', status = {}) {
   const source = Array.from(values || []);
   const { offset, limit } = pageOf(page);
@@ -559,7 +562,10 @@ function installDemandQueryAPI(app, recognitionVersion) {
       const { program, reason, scannedRegionIds, unscannedRegionIds } = await localProgram(id, 'callers', options);
       if (!program?.callersOf) return unsupported(reason || 'program-index-unavailable');
       if (graphUnsupported(program)) return unsupported(program.queryIncompleteReason || reason || 'unsupported-program-analysis');
-      const { offset, limit } = pageOf(page); const source = program.callersOf(addressOf(id), Math.min(MAX_PAGE, offset + limit));
+      const { offset, limit } = pageOf(page);
+      const cumulativeLimit = cumulativePageLimit(offset, limit);
+      if (cumulativeLimit == null) return paged([], page, 'unsupported', { reason:'page-range-overflow', scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
+      const source = program.callersOf(addressOf(id), cumulativeLimit);
       const relationReason=source?.incompleteReason ?? reason ?? null;
       const result = paged(Array.from(source || []), page, source?.complete === false || reason ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
       if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned; return result;
