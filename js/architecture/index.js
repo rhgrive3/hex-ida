@@ -16,7 +16,12 @@ function normalizeArchitectureAddress(value) {
   if (typeof value !== 'string') return null;
   const text = value.trim();
   if (!/^(?:[+-]?\d+|[+-]?0[xX][0-9a-fA-F]+)$/.test(text)) return null;
-  try { return BigInt(text); } catch { return null; }
+  const negative = text.startsWith('-');
+  const unsigned = /^[+-]/.test(text) ? text.slice(1) : text;
+  try {
+    const parsed = BigInt(unsigned);
+    return negative ? -parsed : parsed;
+  } catch { return null; }
 }
 
 function ownTruthy(object, key) {
