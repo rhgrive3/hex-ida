@@ -8,6 +8,7 @@ import { children, expr, mergeSource, sourceOf, mapChildren, structuralKey, same
 import { RewriteEngine, expressionOriginHistory } from './rewrite/engine.js';
 import { DEFAULT_RULES } from './rewrite/rules.js';
 import { captureProjectionIrData, PROJECTION_LIMITS } from './phase8/projection-origin.js';
+import { createProjectionIrObserver } from '../core/identity/live-data.js';
 import { renderBitvectorCast } from './phase8/proof-expression.js';
 import { recoverArm64ClangIdiom, recognizeClamp, recognizeDivisionByConstant } from './idioms/arm64-clang.js';
 import { recoverHighVariables } from './types/high-variables.js';
@@ -42,6 +43,7 @@ function valueOf(a) { return a?.value || null; }
 // to an expression's text or a shared input's source IDs. No public metadata
 // can issue a binding, and the expression/load identity is never modified.
 const expressionHistoryConsumers = new WeakMap();
+const expressionHistoryInputs = new WeakMap();
 const initialControlConsumers = new WeakMap();
 
 export function readInitialControlConsumer(consumer) {
@@ -81,6 +83,11 @@ function consumerObservationBudget(state) {
     consumers:cap(requested?.maxConsumers, 4096), edges:cap(requested?.maxEdges, PROJECTION_LIMITS.edges),
     reasons:new Set(),
   };
+}
+
+function captureConsumerIrData(roots, state) {
+  state.projectionIrObserver ??= createProjectionIrObserver();
+  return state.projectionIrObserver.capture(roots, state.opts?.shouldAbort);
 }
 
 function fieldProjectionRecords(semantic, state) {
@@ -161,8 +168,7 @@ function bindObservedExpressionConsumer(semantic, value, instruction, state, rec
   }
   budget.consumers--;
   try {
-    const observation = captureProjectionIrData(
-      [semantic.expression, records, value, instruction, semantic.location], state.opts?.shouldAbort);
+    const observation = captureConsumerIrData([semantic, records, value, instruction], state);
     const remaining = budget.edges - observation.metrics.edges;
     budget.edges = Math.max(0, remaining);
     if (remaining < 0) {
@@ -175,11 +181,14 @@ function bindObservedExpressionConsumer(semantic, value, instruction, state, rec
     if (rendered && !rendered.isCurrent()) {
       budget.reasons.add(rendered.reason ?? 'stale-store-render-history'); return semantic;
     }
-    expressionHistoryConsumers.set(semantic, Object.freeze({
+    const inputsCurrent = () => observation.matches() && currentBuildHistory(records);
+    const consumer = Object.freeze({
       ir:state.ir, expression:semantic.expression, op:semantic.op, instructionId:semantic.ir,
       location:semantic.location, records,
-      isCurrent:() => observation.matches() && currentBuildHistory(records) && (!rendered || rendered.isCurrent()),
-    }));
+      isCurrent:() => inputsCurrent() && (!rendered || rendered.isCurrent()),
+    });
+    expressionHistoryInputs.set(consumer, inputsCurrent);
+    expressionHistoryConsumers.set(semantic, consumer);
   } catch {
     // A failed bounded observation must not be retried for every later line.
     budget.edges = 0;
@@ -213,7 +222,7 @@ function bindStoreSpelling(node, known, state) {
   const budget = consumerObservationBudget(state);
   try {
     if (budget.edges <= 0) throw new Error('store-spelling-observation-budget');
-    const observation = captureProjectionIrData([node], state.opts?.shouldAbort);
+    const observation = captureConsumerIrData([node], state);
     budget.edges -= observation.metrics.edges;
     if (budget.edges < 0 || !consumer.isCurrent() || node.text !== known.text) throw new Error('store-spelling-observation-unavailable');
     storeSpellingProducers.set(node, Object.freeze({ ir:state.ir, consumer, observation,
@@ -506,7 +515,7 @@ function recordPhiCollapse(v, instruction, incoming, expression, state) {
     if (budget.edges <= 0) throw new Error('phi-history-budget');
     // Observe the actual choice before polling a caller callback. A later
     // change cannot attach yesterday's selected input to today's phi edges.
-    observation = captureProjectionIrData([instruction, incoming]);
+    observation = captureConsumerIrData([instruction, incoming], state);
     budget.edges = Math.max(-1, budget.edges - observation.metrics.edges);
     if (budget.edges < 0 || state.opts?.shouldAbort?.() || !observation.matches()) throw new Error('phi-history-unavailable');
   } catch {
@@ -551,7 +560,7 @@ function observeBuildSelection(value, instruction, state, kind = 'mov', related 
     });
     // Snapshot BEFORE buildArg can invoke an input's symbol/type callback.
     // Exact roots/positions bind the observed definition, not just its ID.
-    const captured = captureProjectionIrData([value, instruction, ...related]);
+    const captured = captureConsumerIrData([value, instruction, ...related], state);
     budget.edges -= captured.metrics.edges;
     if (budget.edges < 0) throw new Error('build-selection-observation-budget');
     const own = (object, key) => Object.getOwnPropertyDescriptor(object, key)?.value;
@@ -572,7 +581,7 @@ function finishBuildSelection(expression, selection, state) {
   let observation;
   try {
     if (budget.edges <= 0) throw new Error('build-selection-observation-budget');
-    const output = captureProjectionIrData([expression]);
+    const output = captureConsumerIrData([expression], state);
     budget.edges -= output.metrics.edges;
     const deferred = state.stateHistoryTransaction?.observation === selection;
     if (budget.edges < 0 || state.opts?.shouldAbort?.() || (!deferred && !selection.matches()) || !output.matches()) throw new Error('build-selection-unavailable');
@@ -909,7 +918,7 @@ function buildCanonicalExpressions(state) {
     const values = state.ir.values, blocks = state.ir.blocks, instructions = state.ir.instructions;
     // Capture all initial construction inputs once, before any symbol/type/
     // cancellation callback. This is data observation, not producer resealing.
-    const captured = captureProjectionIrData([values, blocks, instructions]);
+    const captured = captureConsumerIrData([values, blocks, instructions], state);
     budget.edges -= captured.metrics.edges;
     if (budget.edges < 0) throw new Error('state-construction-budget');
     const own = (key) => Object.getOwnPropertyDescriptor(state.ir, key)?.value;
@@ -1541,21 +1550,23 @@ function cAstFromLines(result, state) {
       const records = Object.freeze([...initial.records, ...operations]);
       const budget = consumerObservationBudget(state);
       try {
-        const output = captureProjectionIrData([node]);
+        const output = captureConsumerIrData([node], state);
         budget.edges -= output.metrics.edges;
         const rendered = { isCurrent:() => initial.isCurrent() && output.matches() };
         bindObservedExpressionConsumer(semantic, null, instruction, state, records, rendered);
         if (initialControl) {
           const consumer = readExpressionHistoryConsumer(semantic, state.ir);
           if (consumer) {
-            const inputs = captureProjectionIrData([semantic, records]);
-            budget.edges -= inputs.metrics.edges;
-            if (budget.edges < 0) throw new Error('initial-control-consumer-budget');
+            // The consumer already observed this exact descriptor, records and
+            // canonical inputs. Reuse that observation instead of traversing
+            // and charging the same graph again for the owned text handoff.
+            const inputsCurrent = expressionHistoryInputs.get(consumer);
+            if (!inputsCurrent) throw new Error('initial-control-consumer-inputs-unavailable');
             // Only the actual Phase8 condition replacement may refresh its
             // output-node observation. This retained check never forgets the
             // original emitter, canonical inputs or semantic descriptor.
             initialControlConsumers.set(consumer, Object.freeze({
-              isCurrent:() => initial.isCurrent() && inputs.matches() && currentBuildHistory(records),
+              isCurrent:() => initial.isCurrent() && inputsCurrent(),
             }));
           }
         }
@@ -1567,7 +1578,7 @@ function cAstFromLines(result, state) {
       try {
         if (budget.consumers <= 0 || budget.edges <= 0) throw new Error('switch-consumer-budget');
         budget.consumers--;
-        const observation = captureProjectionIrData([node], state.opts?.shouldAbort);
+        const observation = captureConsumerIrData([node], state);
         budget.edges -= observation.metrics.edges;
         if (budget.edges < 0) throw new Error('switch-consumer-budget');
         expressionHistoryConsumers.set(semantic, Object.freeze({ ...switched,
@@ -1581,7 +1592,7 @@ function cAstFromLines(result, state) {
       const budget = consumerObservationBudget(state);
       try {
         if (!consumer || budget.edges <= 0 || node.text !== `${binding.name} = ${binding.callText}`) throw new Error('call-result-spelling-unavailable');
-        const observation = captureProjectionIrData([node], state.opts?.shouldAbort);
+        const observation = captureConsumerIrData([node], state);
         budget.edges -= observation.metrics.edges;
         if (budget.edges < 0) throw new Error('call-result-spelling-budget');
         callResultSpellingProducers.set(node, Object.freeze({ ir:state.ir, consumer, observation, ...binding }));

@@ -33,8 +33,20 @@ export const PROJECTION_LIMITS = Object.freeze({nodes:10000,edges:100000,depth:9
  * only operation is an exact mutation check over the producer-owned objects.
  */
 export function captureProjectionIrData(roots, shouldAbort = null) {
+  return captureIrData(roots, shouldAbort, null);
+}
+
+// A producer-local observer can reuse data proven recursively immutable during
+// an earlier capture. The cache is private: callers cannot seed it or exempt
+// mutable objects from live checks. This shares observations, not authority.
+export function createProjectionIrObserver() {
+  const immutable = new WeakMap();
+  return Object.freeze({ capture:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable) });
+}
+
+function captureIrData(roots, shouldAbort, immutable) {
   if (!Array.isArray(roots)) throw new TypeError('projection-ir-roots-array-required');
-  const records = [], seen = new WeakSet();
+  const records = [], seen = new WeakMap();
   let edges = 0, nodes = 0, expandedUnits = 0;
   const started = performance.now();
   function check() {
@@ -59,13 +71,20 @@ export function captureProjectionIrData(roots, shouldAbort = null) {
     const primitive = scalarCost(value);
     if (primitive != null) return primitive;
     if (depth > PROJECTION_LIMITS.depth) throw new TypeError('projection-depth-budget');
+    const cachedHeight = immutable?.get(value);
+    if (cachedHeight != null) {
+      if (depth + cachedHeight - 1 > PROJECTION_LIMITS.depth) throw new TypeError('projection-depth-budget');
+      return 1;
+    }
     if (seen.has(value)) return 1;
     if (nodes >= PROJECTION_LIMITS.nodes) throw new TypeError('projection-node-budget');
-    nodes++; seen.add(value);
+    nodes++;
+    // Cycles remain ordinary live observations, even if some members are frozen.
+    seen.set(value, 1);
     const entries = ownDataEntries(value,PROJECTION_LIMITS.edges-edges);
     edges += entries.length;
     records.push({value,prototype:Object.getPrototypeOf(value),entries,arrayLength:Array.isArray(value)?value.length:null});
-    let cost = 1;
+    let cost = 1, height = 1, stable = immutable != null && Object.isFrozen(value);
     for (const [key,child] of entries) {
       if (key.length > PROJECTION_LIMITS.string) throw new TypeError('projection-key-budget');
       // `uses` is the reverse SSA index, not execution semantics. Keep its
@@ -73,8 +92,15 @@ export function captureProjectionIrData(roots, shouldAbort = null) {
       // the producer expression's graph.
       const childCost = key === 'uses' ? 1 : visit(child,depth+1);
       cost += key.length + childCost + 1;
+      if (immutable && key !== 'uses' && child !== null && typeof child === 'object') {
+        const childHeight = immutable.get(child);
+        height = Math.max(height, (childHeight ?? seen.get(child)) + 1);
+        stable &&= childHeight != null;
+      }
       if (cost > PROJECTION_LIMITS.expandedUnits) throw new TypeError('projection-expansion-budget');
     }
+    seen.set(value, height);
+    if (stable) immutable.set(value, height);
     return cost;
   }
   for (const root of roots) {

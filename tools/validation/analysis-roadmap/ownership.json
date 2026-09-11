@@ -79,6 +79,7 @@
       "tests/phase8/provenance/typed-call-result-history.test.mjs",
       "tests/phase8/provenance/stack-escape-history.test.mjs",
       "tests/phase8/provenance/abi-binding-history.test.mjs",
+      "tests/phase8/provenance/native-binding-budget.test.mjs",
       "tests/phase8/provenance/call-return-render-history.test.mjs",
       "tests/phase8/provenance/control-render-history.test.mjs",
       "tests/phase8/provenance/initial-expression-render-matrix.test.mjs",

@@ -6,10 +6,59 @@ import { buildRenderProvenance, validateRenderProvenance } from '../../../js/dec
 import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
 import { createDecompilerNavigation } from '../../../js/ui/decompiler-provenance.js';
 import { structuralKey } from '../../../js/decompiler/ast/nodes.js';
+import { captureProjectionIrData, createProjectionIrObserver, PROJECTION_LIMITS } from '../../../js/core/identity/live-data.js';
 import { analysis, consumerFixture as fixture, expr, resultWith, source } from './fixture.js';
 
 
 function identityRecord(map) { return map.ledger.find(record => record.rule === 'add-zero-right' && record.valueId === 3); }
+
+test('C4-03 one producer reuses only recursively immutable observations', () => {
+  const observer = createProjectionIrObserver();
+  const immutable = Object.freeze(Array.from({ length:80 }, (_, id) => Object.freeze({ id, source:Object.freeze([id]) })));
+  const first = observer.capture([immutable]), second = observer.capture([immutable]);
+  assert.ok(first.metrics.edges > 200);
+  assert.equal(second.metrics.edges, 0, 'warm immutable data needs no repeated graph observation');
+  assert.equal(second.matches(), true);
+  assert.equal(createProjectionIrObserver().capture([immutable]).metrics.edges, first.metrics.edges,
+    'observations are scoped to a producer, not a global cache');
+  assert.equal(captureProjectionIrData([immutable]).metrics.edges, first.metrics.edges);
+});
+
+test('C4-03 a frozen envelope cannot exempt mutable children or cycles from live checks', () => {
+  for (const wrap of [child => Object.freeze({ child }), child => Object.freeze([child]),
+    child => { const root = { child }; child.back = root; return Object.freeze(root); }]) {
+    const observer = createProjectionIrObserver(), child = { value:1 }, root = wrap(child);
+    const first = observer.capture([root]), second = observer.capture([root]);
+    assert.ok(second.metrics.edges > 0);
+    assert.equal(first.matches(), true); assert.equal(second.matches(), true);
+    child.value = 2;
+    assert.equal(first.matches(), false); assert.equal(second.matches(), false);
+  }
+});
+
+test('C4-03 warm immutable observations preserve depth, descriptor and cancellation boundaries', () => {
+  const observer = createProjectionIrObserver();
+  let deep = Object.freeze({ value:1 });
+  for (let i = 0; i < 60; i++) deep = Object.freeze({ child:deep });
+  observer.capture([deep]);
+  let nested = deep;
+  for (let i = 0; i < PROJECTION_LIMITS.depth - 60; i++) nested = { child:nested };
+  assert.throws(() => observer.capture([nested]), /depth/);
+  assert.throws(() => observer.capture([deep], () => true), /cancelled/);
+  let invoked = false;
+  const accessor = Object.freeze({ get value() { invoked = true; return 1; } });
+  assert.throws(() => observer.capture([accessor]), /accessor/);
+  assert.equal(invoked, false);
+  assert.throws(() => observer.capture([Object.freeze(new Map())]), /prototype/);
+});
+
+test('C4-03 sharing never caches mutable descriptor checks across consumer reads', () => {
+  const f = fixture();
+  const semantic = f.enhanced.cAst.body[0].semantic;
+  assert.ok(readExpressionHistoryConsumer(semantic, f.enhanced.ir));
+  semantic.unobserved = 'new descriptor field';
+  assert.equal(readExpressionHistoryConsumer(semantic, f.enhanced.ir), null);
+});
 
 test('C4-03 actual store and return consumers bind the same rewritten value, not an unrelated shared input', () => {
   const f = fixture();
