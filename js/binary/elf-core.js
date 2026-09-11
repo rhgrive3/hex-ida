@@ -3,7 +3,7 @@ import { BinaryImage, functionSeed } from './model.js';
 import { parseEhFrameHeader } from './elf-unwind.js';
 import { parseProgramDynamic } from './elf-dynamic.js';
 import { createELFMetadataBudget, markELFMetadataPartial } from './elf-budget.js';
-import { executableELFRange, mappedELFFileSpanForVa } from './elf-mapping.js';
+import { executableELFRange, mappedELFFileSpanForVa, mappedELFFileRangeForVa } from './elf-mapping.js';
 import { parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
 
 const ET_REL = 1;
@@ -89,13 +89,28 @@ export function parseELF(input, options = {}) {
     if (fileSpanInvalid) {
       image.warnings.push(`ELF section ${s.index} (${s.name || 'unnamed'}) has a file span beyond EOF and is excluded from virtual mapping authority`);
     }
+    // A file-backed SHF_ALLOC section covered by a file-backed PT_LOAD must
+    // agree with the segment's VA→file mapping: program headers are the
+    // runtime byte authority, and `BinaryImage` ranks the smallest covering
+    // mapping, so a section header claiming different file bytes for the same
+    // VA would silently replace runtime code (#7611). Such a section
+    // stays listed for metadata but loses mapping authority
+    // ('unmapped-section').
+    let ptLoadConflict = false;
+    if (!fileSpanInvalid && h.type !== ET_REL && s.type !== 8 && (s.flags & SHF_ALLOC) !== 0n && s.size > 0n) {
+      const loadRange = mappedELFFileRangeForVa(image, s.addr);
+      ptLoadConflict = loadRange != null && s.offset !== BigInt(loadRange.start);
+    }
+    if (ptLoadConflict) {
+      image.warnings.push(`ELF section ${s.index} (${s.name || 'unnamed'}) sh_offset disagrees with the covering PT_LOAD VA→file mapping and is excluded from virtual mapping authority`);
+    }
     image.addSection({
       name: s.name || `section_${s.index}`, segment: null,
       address: h.type === ET_REL ? (s.syntheticAddr ?? 0n) : s.addr, size: s.size, fileOffset: s.offset,
       fileSize: s.type === 8 ? 0n : s.size,
       perms: { read: !!(s.flags & SHF_ALLOC), write: !!(s.flags & SHF_WRITE), execute: !!(s.flags & SHF_EXECINSTR) },
       flags: s.flags, type: s.type, index: s.index,
-      source: h.type === ET_REL ? 'ET_REL-synthetic-section' : fileSpanInvalid ? 'unmapped-section' : 'section-header',
+      source: h.type === ET_REL ? 'ET_REL-synthetic-section' : (fileSpanInvalid || ptLoadConflict) ? 'unmapped-section' : 'section-header',
     });
   }
 
