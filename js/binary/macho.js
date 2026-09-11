@@ -52,6 +52,17 @@ function isContiguousFileBackedSpan(image, address, size) {
   return true;
 }
 
+function firstNonZeroRoutinesReservedField(r, commandOffset, is64) {
+  const firstReservedOffset = is64 ? 24 : 16;
+  const fieldWidth = is64 ? 8 : 4;
+  for (let i = 0; i < 6; i++) {
+    const offset = commandOffset + firstReservedOffset + i * fieldWidth;
+    const value = is64 ? r.u64(offset) : BigInt(r.u32(offset));
+    if (value !== 0n) return i + 1;
+  }
+  return null;
+}
+
 function parseRoutinesCommands(input, image) {
   const bytes = selectedThinBytes(input, image);
   if (!bytes) throw new Error('Mach-O selected slice is outside file');
@@ -101,6 +112,15 @@ function parseRoutinesCommands(input, image) {
         continue;
       }
       if (!budget.take({ objects:1, operations:1, estimatedHeapBytes:128 }, 'routines-record')) break;
+      const nonZeroReservedField = firstNonZeroRoutinesReservedField(r, p, is64);
+      if (nonZeroReservedField != null) {
+        budget.partial(
+          `load-command-0x${cmd.toString(16)}-parse-error`,
+          `${command} reserved${nonZeroReservedField} must be zero`,
+        );
+        p += cmdsize;
+        continue;
+      }
       const initAddress = is64 ? r.u64(p + 8) : BigInt(r.u32(p + 8));
       const initModule = is64 ? r.u64(p + 16) : BigInt(r.u32(p + 12));
       const record = {
