@@ -105,3 +105,21 @@ test('#8105 preserves the empty-template form', () => {
   assert.equal(image.metadata.tls.endAddressOfRawData, null);
   assert.equal(image.metadata.peMetadata.complete, true);
 });
+
+test('#8105 treats Raw Data End VA as an inclusive last-byte address', () => {
+  const sectionEnd = IMAGE_BASE + BigInt(SECTION_RVA + SECTION_SIZE);
+  const start = sectionEnd - 4n;
+  const end = sectionEnd;
+  const image = parse({ startAddressOfRawData: start, endAddressOfRawData: end });
+
+  assert.equal(image.metadata.peMetadata.complete, false);
+  assert.ok(image.metadata.peMetadata.reasons.includes('tls:template-range-unmapped'));
+});
+
+test('#8105 treats equal nonzero raw-data endpoints as a one-byte template', () => {
+  const address = IMAGE_BASE + 0x3000n;
+  const image = parse({ startAddressOfRawData: address, endAddressOfRawData: address });
+
+  assert.equal(image.metadata.peMetadata.complete, false);
+  assert.ok(image.metadata.peMetadata.reasons.includes('tls:template-range-unmapped'));
+});
