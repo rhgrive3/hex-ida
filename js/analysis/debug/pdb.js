@@ -396,15 +396,22 @@ export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
         recordOffset: offset,
       });
     } else if (kind === S_GPROC32 || kind === S_LPROC32 || kind === S_GPROC32_ID || kind === S_LPROC32_ID) {
-      // PROCSYM32: parent/end/next (12) + length/dbgStart/dbgEnd (12) + typeIndex (4)
-      // + offset (4) + segment (2) + flags (1) + name
+      // PROCSYM32: parent/end/next (12) + length/dbgStart/dbgEnd (12) +
+      // type-or-ID index (4) + offset (4) + segment (2) + flags (1) + name.
+      // S_*PROC32 carries a TPI TypeIndex; S_*PROC32_ID carries an IPI FuncId.
+      // Until this provider models IPI LF_FUNC_ID/LF_MFUNC_ID, preserve that
+      // namespace distinction and withhold type authority rather than aliasing
+      // the numeric FuncId into an unrelated TPI record (#4630).
       const nameEntry = cstringWithNext(bytes, offset + 39, end);
       if (!nameEntry) break;
+      const typeOrIdIndex = view.getUint32(offset + 28, true);
+      const isIdProcedure = kind === S_GPROC32_ID || kind === S_LPROC32_ID;
+      if (isIdProcedure) unmodelled.add(kind);
       symbols.push({
         kind: 'procedure',
         isFunction: true,
         sizeBytes: view.getUint32(offset + 16, true),
-        typeIndex: view.getUint32(offset + 28, true),
+        ...(isIdProcedure ? { typeIndex: null, functionIdIndex: typeOrIdIndex } : { typeIndex: typeOrIdIndex }),
         offsetInSegment: view.getUint32(offset + 32, true),
         segment: view.getUint16(offset + 36, true),
         name: nameEntry.value,
@@ -502,6 +509,8 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
       types.set(index, {
         leaf, kind: 'procedure',
         returnType: view.getUint32(body, true),
+        callingConvention: view.getUint8(body + 4),
+        functionOptions: view.getUint8(body + 5),
         parameterCount: view.getUint16(body + 6, true),
         argumentList: view.getUint32(body + 8, true),
       });
@@ -517,7 +526,23 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
       if (!fieldList.complete) fieldListsComplete = false;
       types.set(index, { leaf, kind: 'field-list', members: fieldList.members, complete: fieldList.complete });
     } else if (leaf === LF_ARGLIST) {
-      types.set(index, { leaf, kind: 'arg-list' });
+      // Historical fixtures contain a leaf-only LF_ARGLIST. Preserve the
+      // record boundary/stream walk, but never let that shape prove an exact
+      // procedure signature because it does not carry a count.
+      if (body + 4 > end) {
+        types.set(index, { leaf, kind: 'arg-list', arguments: [], complete: false });
+        offset = end;
+        index += 1;
+        continue;
+      }
+      const count = view.getUint32(body, true);
+      const argumentBytes = count * 4;
+      if (!Number.isSafeInteger(argumentBytes) || argumentBytes > end - (body + 4)) break;
+      const arguments_ = [];
+      for (let cursor = body + 4; cursor < body + 4 + argumentBytes; cursor += 4) {
+        arguments_.push(view.getUint32(cursor, true));
+      }
+      types.set(index, { leaf, kind: 'arg-list', arguments: arguments_, complete: true });
     } else {
       unmodelled.add(leaf);
       types.set(index, { leaf, kind: 'unmodelled' });
@@ -695,13 +720,56 @@ export function describeTypeIndex(index, types, depth = 0) {
   }
   if (record.kind === 'procedure') {
     const returns = describeTypeIndex(record.returnType, types, depth + 1);
-    return { name: `${returns.name} (*)()`, class: 'code', complete: returns.complete };
+    const argumentList = types.get(record.argumentList);
+    const hasArgumentList = argumentList?.kind === 'arg-list'
+      && argumentList.complete === true
+      && Array.isArray(argumentList.arguments);
+    let canonicalArgumentIndices = hasArgumentList;
+    if (canonicalArgumentIndices) {
+      for (let i = 0; i < argumentList.arguments.length; i += 1) {
+        if (!Object.prototype.hasOwnProperty.call(argumentList.arguments, i)
+          || !Number.isSafeInteger(argumentList.arguments[i])
+          || argumentList.arguments[i] < 0
+          || argumentList.arguments[i] > 0xffffffff) {
+          canonicalArgumentIndices = false;
+          break;
+        }
+      }
+    }
+    const arguments_ = canonicalArgumentIndices
+      ? argumentList.arguments.map((argument) => describeTypeIndex(argument, types, depth + 1))
+      : [];
+    const validParameterCount = Number.isSafeInteger(record.parameterCount)
+      && record.parameterCount >= 0 && record.parameterCount <= 0xffff;
+    // Calling convention/function-option semantics are not rendered yet. Only
+    // the canonical near-C/no-options encoding can therefore support an exact
+    // textual signature; other encodings remain useful context but fail closed.
+    const canonicalProcedureAttributes = record.callingConvention === 0 && record.functionOptions === 0;
+    const argumentsComplete = canonicalArgumentIndices
+      && validParameterCount
+      && argumentList.arguments.length === record.parameterCount
+      && arguments_.every((argument) => argument.complete === true);
+    const parameters = canonicalArgumentIndices ? arguments_.map((argument) => argument.name).join(', ') : '';
+    return {
+      name: `${returns.name} (*)(${parameters})`,
+      class: 'code',
+      complete: returns.complete && argumentsComplete && canonicalProcedureAttributes,
+    };
   }
   if (record.kind === 'array') {
     const element = describeTypeIndex(record.elementType, types, depth + 1);
     return { name: `${element.name}[]`, sizeBytes: record.sizeBytes, class: 'array', complete: false };
   }
   return { name: 'unknown', complete: false };
+}
+
+const UINT64_MAX = (1n << 64n) - 1n;
+
+function canonicalImageBase(value) {
+  // BinaryImage exposes PE ImageBase as bigint. Do not coerce strings or
+  // objects here: this value becomes address authority, so malformed caller
+  // input must fail closed rather than manufacture an absolute VA (#4219).
+  return typeof value === 'bigint' && value >= 0n && value <= UINT64_MAX ? value : null;
 }
 
 function expectedCodeViewIdentity(value) {
@@ -870,6 +938,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
 
     const tpi = parseTpiStream(msf.streams[2]?.read(), budget);
     const sectionHeaders = parseSectionHeaders(findSectionHeaderStream(msf, dbi, dbiBytes));
+    const imageBase = canonicalImageBase(image?.imageBase);
 
     if (symbols.unmodelled.size) {
       diagnostics.push(`unmodelled CodeView symbol kinds: ${[...symbols.unmodelled].map((kind) => `0x${kind.toString(16)}`).slice(0, 8).join(', ')}`);
@@ -877,7 +946,8 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     if (tpi.unmodelled.size) {
       diagnostics.push(`unmodelled TPI leaf kinds: ${[...tpi.unmodelled].map((leaf) => `0x${leaf.toString(16)}`).slice(0, 8).join(', ')}`);
     }
-    if (!sectionHeaders.length) diagnostics.push('no section header stream: symbol addresses stay segment-relative');
+    if (!sectionHeaders.length) diagnostics.push('no section header stream: symbol addresses stay unresolved');
+    if (imageBase == null) diagnostics.push('PE image base unavailable or invalid: PDB symbol addresses stay unresolved');
 
     const result = createDebugProviderResult({
       ecosystem: 'pdb',
@@ -897,7 +967,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
         ? status('complete', null)
         : status('partial', 'evidence-missing'),
     });
-    return Object.freeze({ ...result, parsed: { info, dbi, symbols, tpi, sectionHeaders } });
+    return Object.freeze({ ...result, parsed: { info, dbi, symbols, tpi, sectionHeaders, imageBase } });
   }
 
   symbols(result, { cursor = null, pageSize = DEBUG_DEFAULT_PAGE_SIZE } = {}) {
@@ -906,12 +976,11 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     const headers = parsed.sectionHeaders;
     const ordered = parsed.symbols.symbols;
     return page(ordered, cursor, pageSize, (symbol) => {
-      // Segment indices are one-based. Without section headers the address
-      // stays segment-relative and the record says so rather than inventing an
-      // RVA. With headers, the offset must land inside the section's virtual
-      // extent: a CodeView (segment, offset) pair outside it is corrupt, and
-      // minting an RVA from it would feed false exact function evidence
-      // downstream (#5678).
+      // Segment indices are one-based. An absolute address needs both the
+      // PDB section-header RVA and the PE image base; either authority missing
+      // leaves the record unresolved rather than publishing an RVA as a VA
+      // (#4219). The CodeView offset must also stay inside the section's
+      // virtual extent, otherwise it is corrupt evidence (#5678).
       const header = headers[symbol.segment - 1] ?? null;
       const extent = sectionVirtualExtent(header);
       // A procedure whose declared size runs past the section extent is
@@ -919,8 +988,14 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       // claims is not backed by that section (#5678).
       const inBounds = symbol.offsetInSegment < extent
         && (symbol.sizeBytes == null || symbol.offsetInSegment + symbol.sizeBytes <= extent);
-      const address = header && inBounds
-        ? `0x${(header.virtualAddress + symbol.offsetInSegment).toString(16)}`
+      const rva = header && inBounds
+        ? BigInt(header.virtualAddress) + BigInt(symbol.offsetInSegment)
+        : null;
+      const absoluteAddress = rva != null && parsed.imageBase != null
+        ? parsed.imageBase + rva
+        : null;
+      const address = absoluteAddress != null && absoluteAddress <= UINT64_MAX
+        ? `0x${absoluteAddress.toString(16)}`
         : null;
       return createDebugRecord({
         kind: 'symbol',

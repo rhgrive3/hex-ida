@@ -451,6 +451,13 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       if (!inner.valueId || fromBits == null || toBits == null || toBits < fromBits) {
         return { valueId: null, reason: inner.reason ?? 'extension-expression-width-invalid' };
       }
+      const innerValue = values.find((value) => value.id === inner.valueId) ?? null;
+      const innerWidth = positiveInteger(innerValue?.machineType?.widthBits);
+      if (innerWidth == null || innerWidth !== fromBits) {
+        // A declared source width that contradicts (or cannot be proven against)
+        // the lowered input must never become a canonical zext/sext (#4576).
+        return { valueId: null, reason: 'extension-expression-input-width-mismatch' };
+      }
       const semanticKind = kind === 'zero-extend' ? 'zext' : 'sext';
       const nodeId = nodeIdFor(effect, `${role}-${semanticKind}`, depth);
       const valueId = valueIdFor(effect, `${role}-${semanticKind}`, depth, expression);
@@ -587,6 +594,8 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
     }] : []);
     const outputs = operation.outputs.map((value, index) => createDefinitionValue(effect, nodeId, value, 'value-output', index));
     const classification = classifyMachineValueOpcode(operation.opcode);
+    const isExtensionKind = classification.kind === 'zext' || classification.kind === 'sext';
+    const extensionWidths = isExtensionKind ? valueOperationExtensionWidths(operation) : null;
     const exact = unresolvedInputs.length === 0;
     const origin = effectOrigin(effect, `value-${classification.kind}`, [nodeId, ...outputs]);
     const issueDetail = {
@@ -628,6 +637,44 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       });
       return;
     }
+    if (isExtensionKind && extensionWidths == null) {
+      // Canonical zext/sext requires declared widths that match the machine
+      // types on both sides (#4576). A value-operation extension whose widths
+      // cannot be proven (or whose producer mislabeled a shrink as a widen)
+      // is not a canonical extension: keep the operation observable as a
+      // partial intrinsic instead of minting an unprovable exact claim.
+      addNode({
+        id: nodeId,
+        kind: 'intrinsic',
+        blockId,
+        inputs,
+        outputs,
+        operator: classification.operator,
+        intrinsic: {
+          inputs,
+          outputs,
+          stateReads: [],
+          stateWrites: [],
+          memoryRead: { scope: 'none' },
+          memoryWrite: { scope: 'none' },
+          controlEffects: [],
+          determinism: 'deterministic',
+          symbolicDetail: 'summary-only',
+        },
+        ...partial,
+        completeness: 'partial',
+        unknown: {
+          reason: 'extension-machine-value-width-unproven',
+          categories: ['value'],
+          knownParts: issueDetail,
+        },
+        attributes: machineAttributes(effect, { machineValueOpcode: operation.opcode }),
+        sourceEffectIds: [effect.sourceEffectId],
+        origin,
+      });
+      addIssue('extension-machine-value-width-unproven', ['value'], issueDetail);
+      return;
+    }
     addNode({
       id: nodeId,
       kind: classification.kind,
@@ -636,10 +683,22 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       outputs,
       operator: classification.operator,
       ...partial,
-      attributes: machineAttributes(effect, { machineValueOpcode: operation.opcode }),
+      attributes: machineAttributes(effect, { machineValueOpcode: operation.opcode, ...extensionWidths }),
       sourceEffectIds: [effect.sourceEffectId],
       origin,
     });
+  }
+
+  function valueOperationExtensionWidths(operation) {
+    // A value-operation zext/sext may stay canonical only when the proven
+    // machine types let it declare its exact widths (#4576): exactly one
+    // input and one output, both with positive integer widths, widening.
+    if (!Array.isArray(operation.inputs) || !Array.isArray(operation.outputs)) return null;
+    if (operation.inputs.length !== 1 || operation.outputs.length !== 1) return null;
+    const fromBits = positiveInteger(machineValueMachineType(operation.inputs[0], { addressWidthBits })?.widthBits);
+    const toBits = positiveInteger(machineValueMachineType(operation.outputs[0], { addressWidthBits })?.widthBits);
+    if (fromBits == null || toBits == null || toBits < fromBits) return null;
+    return { fromBits, toBits };
   }
 
   function lowerStateRead(effect, stateValue, resultValue, role) {
