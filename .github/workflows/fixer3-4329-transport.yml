@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 8bc257e64e26d7cc7d47e5890e8fe5f8799e53e2
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - name: Apply validated Drive-mirror patch
         shell: bash
