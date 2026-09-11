@@ -5157,6 +5157,46 @@ Latest main inspected here is ccabe9f09; it added no overlapping changes to the
 three producer/summary paths since the previous observation. No component merge,
 main merge, other-owner issue repair or device/environment work was performed.
 
+## Native immediate CALL summary consumption (2026-09-11)
+
+The existing local-summary and points-to consumers now share a contextual native
+target classifier. It checks the current IR digest against its identity-bearing
+MemorySSA artifact, ABI binary/slice/architecture/snapshot identity, exact native
+absolute-call control, the independently lowered target constant and its source
+instruction. It looks up the canonical target function ID in the existing summary
+registry and validates function/snapshot identity. An address or declaration
+without that registered summary cannot establish a resolved callee. Original
+CALL target values, empty target entities, effects and completeness are preserved;
+the context-free target contract is not changed or artificially made complete.
+
+Local summary composition follows actual CALL argument values through the existing
+bounded, replay-validated SSA traversal, preserving every phi/unknown alternative
+and adding caller displacement to callee displacement. The real decoded RV64
+caller ADDI/CALL/RET and callee ADDI/RET pair now compose arg0+2. The public
+points-to consumer recovers the CALL result root plus the callee offset and records
+the callee summary digest dependency. Target facts enter existing semanticFacts.
+Local-summary analyzer is 1.3.3; points-to analyzer is 1.3.1. FunctionSummary schema
+and MachineEffects/IR/SSA schemas remain unchanged.
+
+The decoded-function driver forwards its requested snapshot to the native pipeline.
+The summary hardening wrapper leaves already-incomplete CALLs unchanged; rewriting
+unknown to partial added no conservatism but invalidated otherwise matching IR/SSA
+identity when an unrelated unresolved sibling was present. Complete unsupported
+calls still undergo the existing defensive downgrade.
+
+Seven new native tests cover actual caller/callee summary and points-to use,
+missing/foreign/stale/partial evidence, mixed unresolved calls, public decoded and
+analysis-surface paths, serialized artifacts, register-indirect rejection, and
+independent control/constant/origin contradictions even after a container digest
+is refreshed. Existing assertions and ownership manifests are retained.
+
+This closes the immediate native CALL value/target-to-summary seam, not the whole
+FR-C1-02A task. Function-level machine unknowns remain partial; recursive component
+integration, indirect target-universe recovery, native aggregate/FP boundaries,
+current-main/generated/independent admission still remain open. Fetched main
+5b2e87505 includes #4742 full-status summary-digest work; retain it during the
+central reconciliation rather than reimplementing that other-owner issue here.
+
 ## Native CALL scalar value observations (2026-09-11)
 
 The native pipeline now binds explicit, exact full-register GP call arguments

@@ -4,7 +4,7 @@
  * core, then applies the stricter serialized-envelope rules added by
  * #4314/#4320/#4695 without weakening any upstream checks.
  */
-import { deepFreeze } from '../../core/identity/index.js';
+import { canonicalAddress, createFunctionId, deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
 import { isCompleteStatus } from '../status.js';
 import * as core from './contract-core.js';
 
@@ -204,6 +204,67 @@ export function classifyCallTargetProof(call = {}) {
   const result = core.classifyCallTargetProof(call);
   if (result.kind !== 'indirect' || result.candidateEntityIds.length > 0 || !result.exhaustive) return result;
   return deepFreeze({ ...result, exhaustive:false, exactSingletonEntityId:null });
+}
+
+/**
+ * Resolve native immediate calls against an existing summary registry. Target
+ * identity is independent of callee effect completeness: retain the canonical
+ * target value and opaque machine CALL unchanged. Neither an ABI declaration
+ * nor an address alone establishes a callee; the same-snapshot summary must
+ * already exist under the canonical function identity for that binary/slice.
+ */
+export function createSemanticCallTargetClassifier(ir, memorySsa, options = {}) {
+  let digest, nodes, values;
+  return node => {
+    const fallback = classifyCallTargetProof(node?.call);
+    const call = node?.call;
+    if (fallback.exhaustive || fallback.candidateEntityIds.length || node?.kind !== 'call'
+      || call?.summarySource !== 'machine-effects-abi-neutral-call'
+      || ['targetEntityId', 'target', 'callee'].some(key => Object.hasOwn(call, key))
+      || call.targetEntityIds?.length !== 0 || call.targetValueIds?.length !== 1
+      || typeof options.summaryForTarget !== 'function' || options.signal?.aborted) return fallback;
+    try {
+      nodes ??= new Map((ir?.nodes ?? []).map(item => [item.id, item]));
+      values ??= new Map((ir?.values ?? []).map(value => [value.id, value]));
+      if (nodes.get(node.id) !== node) return fallback;
+      const identity = memorySsa?.identity, abi = node.attributes?.abiCallBinding?.abiIdentity;
+      const snapshotId = options.snapshotId ?? 'snapshot-unbound';
+      if (!identity || !abi || identity.functionId !== ir.functionId
+        || memorySsa.functionId !== ir.functionId || identity.snapshotId !== snapshotId
+        || memorySsa.snapshotId !== snapshotId || abi.snapshotId !== snapshotId
+        || !identity.binaryId || !identity.sliceId || !identity.architectureId
+        || abi.binaryId !== identity.binaryId || abi.sliceId !== identity.sliceId
+        || abi.architectureId !== identity.architectureId
+        || (abi.functionId != null && abi.functionId !== ir.functionId)) return fallback;
+      digest ??= stableDigest(ir);
+      if (identity.semanticIrDigest !== digest
+        || memorySsa.canonicalIrIdentity?.semanticIrDigest !== digest
+        || memorySsa.canonicalIrIdentity?.functionId !== ir.functionId) return fallback;
+      const control = node.attributes?.machineControlEffect;
+      if (control?.kind !== 'call' || control.target?.kind !== 'absolute-address'
+        || call.controlEffects?.length !== 1
+        || stableStringify(call.controlEffects[0]) !== stableStringify(control)) return fallback;
+      const target = values.get(call.targetValueIds[0]), producer = nodes.get(target?.definitionNodeId);
+      const constant = target?.metadata?.constant;
+      if (producer?.kind !== 'const' || producer.outputs?.length !== 1
+        || producer.outputs[0] !== target.id || producer.blockId !== node.blockId
+        || constant?.kind !== 'bitvector' || constant.value == null
+        || stableStringify(producer.attributes?.constant) !== stableStringify(constant)
+        || !node.origin?.instructionIds?.length
+        || stableStringify(producer.origin?.instructionIds) !== stableStringify(node.origin.instructionIds)) return fallback;
+      const address = canonicalAddress(control.target.value);
+      if (canonicalAddress(constant.value) !== address) return fallback;
+      const functionId = createFunctionId({ binaryId:identity.binaryId, sliceId:identity.sliceId,
+        canonicalStartIdentity:{ address } });
+      const summary = options.summaryForTarget(functionId);
+      if (options.signal?.aborted || !summaryIdentityMatches(summary, { functionId, snapshotId })) return fallback;
+      return deepFreeze({ kind:'direct', candidateEntityIds:[functionId], exhaustive:true,
+        exactSingletonEntityId:functionId,
+        nativeTargetFact:{ kind:'native-direct-call-target', version:1, callSiteId:node.id,
+          functionId:ir.functionId, targetFunctionId:functionId, address, snapshotId,
+          semanticIrDigest:digest, summaryDigest:functionSummaryDigest(summary) } });
+    } catch { return fallback; }
+  };
 }
 export function createMemoryEffect(input = {}) {
   validateMemoryEffectInput(input);

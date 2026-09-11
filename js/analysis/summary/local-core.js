@@ -17,7 +17,7 @@ import { createAnalysisStatus, isCompleteStatus, mergeAnalysisStatus } from '../
 import { stableStringify } from '../../core/identity/index.js';
 import { buildSemanticSsa, validateSemanticSsa } from '../../semantics/ssa/index.js';
 import {
-  classifyCallTargetProof,
+  createSemanticCallTargetClassifier,
   RETURN_SUMMARY_CANDIDATE_LIMIT,
   createFunctionSummary,
   createMemoryEffect,
@@ -26,7 +26,7 @@ import {
 } from './contract.js';
 
 export const LOCAL_SUMMARY_ANALYZER_ID = 'phase7.summary.local';
-export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.3.2';
+export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.3.3';
 
 const DEFAULT_ADDRESS_SPACES = Object.freeze(['memory']);
 
@@ -161,6 +161,9 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   const calleeSummaries = options.calleeSummaries instanceof Map
     ? options.calleeSummaries
     : new Map(Object.entries(options.calleeSummaries ?? {}));
+  const classifyTarget = createSemanticCallTargetClassifier(ir, memorySsa, {
+    ...options, summaryForTarget:target => calleeSummaries.get(target),
+  });
 
   const memoryReadRegions = [];
   const memoryWriteRegions = [];
@@ -333,7 +336,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   };
 
   const callInfo = (node) => {
-    const targetProof = classifyCallTargetProof(node.call);
+    const targetProof = classifyTarget(node);
     const targets = targetProof.candidateEntityIds;
     const info = { targetProof, targets, resolved:null, identityMismatch:false };
     if (!targetProof.exhaustive || !targets.length || targets.length > RETURN_SUMMARY_CANDIDATE_LIMIT) return info;
@@ -407,17 +410,13 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
         // explicit formal mapping (legacy `ir.inputs` or value metadata); an
         // ABI call ordinal alone is not proof that an internal value is a
         // current function argument.
-        const callerArgIndex = formalArgumentIndex(argumentId);
-        if (!Number.isSafeInteger(callerArgIndex) || callerArgIndex < 0) {
-          composed.push({ kind: 'unknown', returnIndex: outerReturnIndex });
-          continue;
+        for (const terminal of returnTerminals(argumentId)) {
+          const callerArgIndex = formalArgumentIndex(terminal.curr);
+          if (!Number.isSafeInteger(callerArgIndex) || callerArgIndex < 0) {
+            composed.push({ kind:'unknown', returnIndex:outerReturnIndex });
+          } else composed.push({ kind:'arg', returnIndex:outerReturnIndex,
+            argIndex:callerArgIndex, offset:(offset + terminal.offset).toString(10) });
         }
-        composed.push({
-          kind: 'arg',
-          returnIndex: outerReturnIndex,
-          argIndex: callerArgIndex,
-          offset: offset.toString(10),
-        });
         continue;
       }
       if (provenance.kind === 'root' || provenance.kind === 'allocation') {
@@ -552,6 +551,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     }
 
     const { targetProof, targets, resolved, identityMismatch } = callInfo(node);
+    if (targetProof.nativeTargetFact) nativeAbiFacts.set(`target:${node.id}`, targetProof.nativeTargetFact);
 
     if (resolved) {
       // A callee summary can be exact only after the call-site target universe

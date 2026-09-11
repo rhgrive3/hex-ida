@@ -1198,7 +1198,7 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
       dataEndianness:input.dataEndianness,
       instructionEndianness:input.instructionEndianness,
     },
-  }, { signal:options.signal, abiAdapter });
+  }, { signal:options.signal, snapshotId:input.snapshotId ?? options.snapshotId, abiAdapter });
   abortIfRequested(options.signal);
   const decodedByInstructionId = new Map(pipeline.machineEffects.map((bundle, index) => [bundle.instructionId, orderedInstructions[index]]));
   const legacyRows = new Map();

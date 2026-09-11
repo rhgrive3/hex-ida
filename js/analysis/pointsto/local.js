@@ -20,7 +20,7 @@
 import { createAnalysisStatus, isCompleteStatus } from '../status.js';
 import { createPhase7ArtifactDescriptor } from '../artifact-identity.js';
 import {
-  classifyCallTargetProof,
+  createSemanticCallTargetClassifier,
   RETURN_SUMMARY_CANDIDATE_LIMIT,
   functionSummaryDigest,
   summaryIdentityMatches,
@@ -59,7 +59,7 @@ import {
 } from './lattice.js';
 
 export const A2_ANALYZER_ID = 'phase7.pointsto.a2-local';
-export const A2_ANALYZER_VERSION = '1.3.0';
+export const A2_ANALYZER_VERSION = '1.3.1';
 
 function configuredSummaryArtifactIds(options, calleeId) {
   const ids = [];
@@ -637,6 +637,10 @@ function entryRootTarget(definition, functionId, values) {
  * cannot be published as a complete artifact.
  */
 export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
+  const classifyTarget = createSemanticCallTargetClassifier(ir, options.memorySsa, {
+    ...options, summaryForTarget:target => options.summaries?.get(target)
+      ?? options.summaryProvider?.(target) ?? null,
+  });
   const budget = { ...POINTS_TO_DEFAULT_BUDGET, ...(options.budget ?? {}) };
   // The termination gates compare against these numbers, so a non-finite or
   // non-integer cap (e.g. NaN) would silently disable both the iteration cap
@@ -896,7 +900,7 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
       return topPointsTo('unresolved-load');
     }
     if (node.kind === 'call') {
-      const targetProof = classifyCallTargetProof(node.call);
+      const targetProof = classifyTarget(node);
       const targets = targetProof.candidateEntityIds;
       if (!targetProof.exhaustive || !targets.length || targets.length > RETURN_SUMMARY_CANDIDATE_LIMIT) return topPointsTo('unresolved-call');
       const configuredSummaryIdentity = options.summaryIdentity ?? options.expectedSummaryIdentity;

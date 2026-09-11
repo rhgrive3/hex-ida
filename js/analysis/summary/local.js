@@ -1,7 +1,7 @@
 /** Public hardening wrapper around the existing local-summary producer. */
 import { createAnalysisStatus } from '../status.js';
 import {
-  classifyCallTargetProof,
+  createSemanticCallTargetClassifier,
   RETURN_SUMMARY_CANDIDATE_LIMIT,
   createFunctionSummary,
   summaryIdentityMatches,
@@ -9,7 +9,7 @@ import {
 import * as core from './local-core.js';
 
 export const LOCAL_SUMMARY_ANALYZER_ID = core.LOCAL_SUMMARY_ANALYZER_ID;
-export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.3.2';
+export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.3.3';
 
 function summaryForTarget(options, target) {
   return options?.calleeSummaries?.get?.(String(target))
@@ -18,8 +18,8 @@ function summaryForTarget(options, target) {
     ?? options?.summaryProvider?.(String(target))
     ?? null;
 }
-function needsConservativeCall(callNode, options) {
-  const proof = classifyCallTargetProof(callNode.call ?? {});
+function needsConservativeCall(callNode, options, classifyTarget) {
+  const proof = classifyTarget(callNode);
   if (!proof.exhaustive || proof.candidateEntityIds.length > RETURN_SUMMARY_CANDIDATE_LIMIT) return true;
   return proof.candidateEntityIds.some(target => {
     const candidate = summaryForTarget(options, target);
@@ -30,10 +30,14 @@ function needsConservativeCall(callNode, options) {
     });
   });
 }
-function conservativeIr(ir, options) {
+function conservativeIr(ir, memorySsa, options) {
+  const classifyTarget = createSemanticCallTargetClassifier(ir, memorySsa, {
+    ...options, summaryForTarget:target => summaryForTarget(options, target),
+  });
   let changed = false;
   const nodes = (ir?.nodes ?? []).map((node) => {
-    if (node?.kind !== 'call' || !needsConservativeCall(node, options)) return node;
+    if (node?.kind !== 'call' || node.call?.completeness !== 'complete'
+      || !needsConservativeCall(node, options, classifyTarget)) return node;
     changed = true;
     return { ...node, call:{ ...(node.call ?? {}), completeness:'partial' } };
   });
@@ -41,7 +45,7 @@ function conservativeIr(ir, options) {
 }
 
 export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {}) {
-  const result = core.buildLocalFunctionSummary(conservativeIr(ir, options), cfg, ssa, memorySsa, options);
+  const result = core.buildLocalFunctionSummary(conservativeIr(ir, memorySsa, options), cfg, ssa, memorySsa, options);
   if (!result?.summary) return result;
   const oldStatus = result.status ?? result.summary.status;
   const status = createAnalysisStatus({

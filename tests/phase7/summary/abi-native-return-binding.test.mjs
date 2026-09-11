@@ -2,22 +2,24 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { analyzeDecodedSemanticFunction, semanticAbiAdapter, partitionDecodedFunction } from '../../../js/analysis/semantic-function.js';
 import { analyzeLocalPointsTo } from '../../../js/analysis/pointsto/local.js';
+import { createAnalysisSurface } from '../../../js/analysis/index.js';
 import { createSemanticIrFunction } from '../../../js/semantics/ir/index.js';
 import { createSemanticCfg } from '../../../js/semantics/cfg/index.js';
 import { buildSemanticSsa, validateSemanticSsa } from '../../../js/semantics/ssa/index.js';
 import { buildLocalFunctionSummary } from '../../../js/analysis/summary/local.js';
-import { classifyCallTargetProof, functionSummaryDigest, summaryIsPure } from '../../../js/analysis/summary/contract.js';
+import { classifyCallTargetProof, createSemanticCallTargetClassifier, createFunctionSummary, functionSummaryDigest, summaryIsPure } from '../../../js/analysis/summary/contract.js';
 import { architecturePluginV2 } from '../../../js/targets/architecture/index.js';
 import { RISCV_LP64_ABI } from '../../../js/targets/abi/index.js';
 import { createRiscv64DecodedInstruction } from '../../../js/targets/architecture/riscv64/decoded-instruction.js';
 import { buildSemanticV2CompatibilityPipeline } from '../../../js/semantics/compat/index.js';
 import { buildRenderProvenance, validateRenderProvenance } from '../../../js/decompiler/phase8/render-provenance.js';
+import { stableDigest } from '../../../js/core/identity/index.js';
 
 const snapshotId = 'native-abi-return-snapshot';
-function fixture({ returnType = 'int64', words = [0x00150513, 0x00008067], parameters = null, adapterOptions = {}, options = {} } = {}) {
+function fixture({ returnType = 'int64', words = [0x00150513, 0x00008067], parameters = null, adapterOptions = {}, options = {}, baseAddress = 0x2000n } = {}) {
   const architecture = architecturePluginV2('riscv64');
   const instructions = words.map((word, index) => createRiscv64DecodedInstruction({
-    address:0x2000n + BigInt(index * 4), size:4, mode:'rv64imc',
+    address:baseAddress + BigInt(index * 4), size:4, mode:'rv64imc',
     rawBytes:Uint8Array.from([word & 255, (word >>> 8) & 255, (word >>> 16) & 255, word >>> 24]),
     instructionId:`native-return-${index}`, origin:{ instructionIds:[`native-return-${index}`] },
   }));
@@ -187,6 +189,139 @@ test('serialized and reordered native SSA preserves the public summary digest', 
 const callPrototype = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
 const callFixture = (settings = {}) => fixture({ parameters:[parameters[0]],
   words:[0x00150513, 0x000010ef, 0x00008067], adapterOptions:{ callPrototype }, ...settings });
+
+function nativePair() {
+  const caller = callFixture(), callee = fixture({ baseAddress:0x3004n, parameters:[parameters[0]] });
+  const summaries = new Map([[callee.pipeline.functionId, callee.result.summary]]);
+  return { caller, callee, summaries };
+}
+
+test('decoded immediate CALL resolves an existing same-snapshot callee without changing machine effects', () => {
+  const { caller:{ pipeline:p }, callee, summaries } = nativePair();
+  const call = p.semanticIr.nodes.find(node => node.kind === 'call');
+  const before = structuredClone(p.semanticIr);
+  const classify = createSemanticCallTargetClassifier(p.semanticIr, p.memorySsa, {
+    snapshotId, summaryForTarget:target => summaries.get(target),
+  });
+  const proof = classify(call);
+  assert.equal(proof.kind, 'direct'); assert.equal(proof.exhaustive, true);
+  assert.equal(proof.exactSingletonEntityId, callee.pipeline.functionId);
+  assert.equal(proof.nativeTargetFact.summaryDigest, functionSummaryDigest(callee.result.summary));
+  assert.equal(classifyCallTargetProof(call.call).exhaustive, false, 'context-free target contract is unchanged');
+  const result = buildLocalFunctionSummary(p.semanticIr, p.cfg, p.ssa, p.memorySsa, { snapshotId, calleeSummaries:summaries });
+  assert.deepEqual(facts(result.summary), [{ kind:'arg', argIndex:0, offset:'2' }], 'caller ADDI plus callee ADDI');
+  assert.equal(result.summary.directCalls[0].summaryId, callee.pipeline.functionId);
+  assert.equal(result.summary.unknownCallEffects.length, 0);
+  assert.ok(result.summary.semanticFacts.some(fact => fact.kind === 'native-direct-call-target'));
+  assert.equal(result.status.completeness, 'partial', 'resolving one boundary does not erase function-level unknowns');
+  assert.deepEqual(structuredClone(p.semanticIr), before);
+});
+
+test('decoded CALL result reaches the public points-to consumer with the callee digest', () => {
+  const { caller:{ pipeline:p }, summaries, callee } = nativePair();
+  const call = p.semanticIr.nodes.find(node => node.kind === 'call');
+  const result = analyzeLocalPointsTo(p.semanticIr, p.cfg, p.ssa, { snapshotId, summaries, memorySsa:p.memorySsa });
+  const returned = result.pointsTo.get(call.outputs[0]), argument = result.pointsTo.get(call.call.arguments[0]);
+  assert.equal(returned.top, false);
+  assert.equal(returned.targets.length, 1);
+  assert.equal(returned.targets[0].rootEntityId, argument.targets[0].rootEntityId);
+  assert.deepEqual(returned.targets[0].offsetRange, {
+    min:argument.targets[0].offsetRange.min + 1n, max:argument.targets[0].offsetRange.max + 1n, exact:true,
+  });
+  assert.ok(result.calleeSummaryIds.includes(`summary:${functionSummaryDigest(callee.result.summary)}`));
+});
+
+test('native target resolution rejects absent, foreign, stale and conflicting target evidence', () => {
+  const { caller:{ pipeline:p }, summaries, callee } = nativePair();
+  const call = p.semanticIr.nodes.find(node => node.kind === 'call');
+  const cases = [
+    { memorySsa:null }, { memorySsa:{ ...p.memorySsa, snapshotId:'foreign' } },
+    { memorySsa:{ ...p.memorySsa, identity:{ ...p.memorySsa.identity, semanticIrDigest:'forged' } } },
+    { memorySsa:{ ...p.memorySsa, identity:{ ...p.memorySsa.identity, binaryId:'foreign' } } },
+    { summaryForTarget:() => null },
+    { summaryForTarget:() => createFunctionSummary({ ...callee.result.summary, functionId:'foreign' }) },
+    { summaryForTarget:() => createFunctionSummary({ ...callee.result.summary,
+      status:{ ...callee.result.summary.status, snapshotId:'foreign' } }) },
+    { snapshotId:'foreign' },
+  ];
+  for (const entry of cases) {
+    const classify = createSemanticCallTargetClassifier(p.semanticIr, entry.memorySsa === undefined ? p.memorySsa : entry.memorySsa,
+      { snapshotId, summaryForTarget:target => summaries.get(target), ...entry });
+    assert.equal(classify(call).exhaustive, false);
+  }
+  const changed = structuredClone(p.semanticIr), changedCall = changed.nodes.find(node => node.id === call.id);
+  changedCall.call.targetEntityIds = [callee.pipeline.functionId];
+  assert.equal(createSemanticCallTargetClassifier(changed, p.memorySsa, {
+    snapshotId, summaryForTarget:target => summaries.get(target),
+  })(changedCall).exhaustive, false, 'conflicting candidate metadata does not get an independent target upgrade');
+});
+
+test('partial callee evidence and an opaque sibling CALL retain unknown boundaries', () => {
+  const { caller:{ pipeline:p }, summaries, callee } = nativePair();
+  const partial = createFunctionSummary({ ...callee.result.summary,
+    status:{ ...callee.result.summary.status, completeness:'partial', stopReason:'evidence-missing' } });
+  const result = buildLocalFunctionSummary(p.semanticIr, p.cfg, p.ssa, p.memorySsa, {
+    snapshotId, calleeSummaries:new Map([[callee.pipeline.functionId, partial]]),
+  });
+  assert.ok(result.summary.returnProvenance.some(fact => fact.kind === 'unknown'));
+  assert.equal(result.status.completeness, 'partial');
+  const mixed = callFixture({ words:[0x00150513, 0x000010ef, 0x000020ef, 0x00008067] }).pipeline;
+  const composed = buildLocalFunctionSummary(mixed.semanticIr, mixed.cfg, mixed.ssa, mixed.memorySsa, {
+    snapshotId, calleeSummaries:summaries,
+  });
+  assert.equal(composed.summary.directCalls.length, 1);
+  assert.equal(composed.summary.unknownCallEffects.length, 1);
+  assert.equal(composed.status.completeness, 'partial');
+});
+
+test('public decoded driver preserves snapshot binding for native CALL summary lookup', () => {
+  const { caller, summaries } = nativePair();
+  const result = analyzeDecodedSemanticFunction({ architecture:'riscv64', platform:'linux', abiId:'lp64',
+    binaryId:'native-return-binary', sliceId:'0', snapshotId, decoderSemanticVersion:'native-return-decoder',
+    instructions:caller.instructions, functionPrototype:caller.prototype, callPrototype });
+  const p = result.pipeline;
+  assert.equal(p.memorySsa.snapshotId, snapshotId);
+  const composed = buildLocalFunctionSummary(p.semanticIr, p.cfg, p.ssa, p.memorySsa, { snapshotId, calleeSummaries:summaries });
+  assert.deepEqual(facts(composed.summary), [{ kind:'arg', argIndex:0, offset:'2' }]);
+});
+
+test('native target and scalar composition survive serialization without freezing caller artifacts', () => {
+  const { caller:{ pipeline:original }, summaries } = nativePair();
+  const p = structuredClone({ semanticIr:original.semanticIr, cfg:original.cfg, ssa:original.ssa, memorySsa:original.memorySsa });
+  const surface = createAnalysisSurface({ ir:p.semanticIr, cfg:p.cfg, ssa:p.ssa, memorySsa:p.memorySsa,
+    snapshotId, options:{ calleeSummaries:summaries, summaries } });
+  const result = surface.functionSummary();
+  assert.deepEqual(facts(result.summary), [{ kind:'arg', argIndex:0, offset:'2' }]);
+  assert.equal(Object.isFrozen(p.semanticIr), false);
+});
+
+test('native target classification independently checks control, constant, origin and identity claims', () => {
+  const { caller:{ pipeline:p }, summaries } = nativePair();
+  for (const mutate of [
+    node => { node.attributes.machineControlEffect.target.kind = 'register'; },
+    node => { node.call.controlEffects[0].target.value = '0x4000'; },
+    (node, ir) => { ir.values.find(value => value.id === node.call.targetValueIds[0]).metadata.constant.value = '0x4000'; },
+    node => { node.origin.instructionIds = ['different-instruction']; },
+    node => { node.call.targetEntityId = {}; },
+    node => { node.call.summarySource = 'untrusted'; },
+  ]) {
+    const ir = structuredClone(p.semanticIr), node = ir.nodes.find(item => item.kind === 'call');
+    mutate(node, ir);
+    // Refresh only the container digest, so rejection must come from an
+    // independent target cross-check rather than the stale-digest guard.
+    const digest = stableDigest(ir), memorySsa = { ...p.memorySsa,
+      identity:{ ...p.memorySsa.identity, semanticIrDigest:digest },
+      canonicalIrIdentity:{ ...p.memorySsa.canonicalIrIdentity, semanticIrDigest:digest } };
+    assert.equal(createSemanticCallTargetClassifier(ir, memorySsa, {
+      snapshotId, summaryForTarget:target => summaries.get(target),
+    })(node).exhaustive, false);
+  }
+  const indirect = callFixture({ words:[0x00150513, 0x000580e7, 0x00008067] }).pipeline;
+  const node = indirect.semanticIr.nodes.find(item => item.kind === 'call');
+  assert.equal(createSemanticCallTargetClassifier(indirect.semanticIr, indirect.memorySsa, {
+    snapshotId, summaryForTarget:target => summaries.get(target),
+  })(node).exhaustive, false, 'an actual register-indirect CALL is not an immediate target');
+});
 
 test('typed native CALL binds actual arguments and a fresh normal-return value before SSA', () => {
   const { pipeline:p, returns, result } = callFixture();
