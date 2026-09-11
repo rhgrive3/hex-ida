@@ -1,0 +1,46 @@
+name: Fixer 3 transport issue 5184 v2
+on:
+  push:
+    branches:
+      - fixer3/transport-5184-r11
+permissions:
+  contents: write
+jobs:
+  transport:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c90d8b38833ae664defb512be58538e397967f72
+          fetch-depth: 1
+      - name: Apply verified Fixer 3 patch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "c90d8b38833ae664defb512be58538e397967f72"
+          test "$(git hash-object js/analysis/types/constraints.js)" = "b89f90fdb3410bab02a88f8a6ba683a0597337e8"
+          test "$(git hash-object js/analysis/types/graph.js)" = "105e6e837c96d4539b136f11c741ba9228331744"
+          curl --fail --silent --show-error --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github.raw+json" \
+            "https://api.github.com/repos/rhgrive3/hex-ida/contents/.fixer3/issue-5184.patch?ref=fixer3%2Ftransport-5184-r11" \
+            -o /tmp/issue-5184.patch
+          echo "9642c27f4ce9aa657ee6ec7e23e619afbef93aca846af8a855eac3281cd8db34  /tmp/issue-5184.patch" | sha256sum -c -
+          patch --dry-run --batch --forward -p1 < /tmp/issue-5184.patch
+          patch --batch --forward -p1 < /tmp/issue-5184.patch
+          test "$(git hash-object js/analysis/types/constraints.js)" = "7a837b99e19cb979a374fa81d9718533f49b0a4e"
+          test "$(git hash-object js/analysis/types/graph.js)" = "9c674318a0b0f9ea14238672622c9ec04d56f647"
+          test "$(git hash-object tests/phase7/types/issue-5184-structural-member-order.test.mjs)" = "8338a9ef186c9e578d9976c7c35270be17662cb2"
+          node --check js/analysis/types/constraints.js
+          node --check js/analysis/types/graph.js
+          node --check tests/phase7/types/issue-5184-structural-member-order.test.mjs
+          node --test tests/phase7/types/issue-5184-structural-member-order.test.mjs
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c fixer3/issue-5184-structural-member-order
+          git add js/analysis/types/constraints.js js/analysis/types/graph.js tests/phase7/types/issue-5184-structural-member-order.test.mjs
+          git commit -m "fix(types): canonicalize structural member order (#5184) [skip actions]"
+          git push origin HEAD:refs/heads/fixer3/issue-5184-structural-member-order
