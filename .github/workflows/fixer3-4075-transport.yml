@@ -1,0 +1,134 @@
+name: Fixer3 4075 transport
+
+on:
+  push:
+    branches:
+      - fix/analysis-4075-instruction-short-read-fixer3-v2
+
+permissions:
+  contents: write
+
+jobs:
+  transport:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - name: Apply verified local candidate
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('js/analysis/query/app-adapter.js')
+          text = path.read_text(encoding='utf-8')
+          old = """          const completeness = truncated ? 'truncated' : !rangeComplete ? 'partial' : 'complete';
+          return paged(rows, page, completeness, { reason:truncated ? 'instruction-read-budget' : rangeReason });
+"""
+          new = """          const consumed = decoded.bytesConsumed;
+          const hasCoverage = consumed != null;
+          const validCoverage = !hasCoverage || (typeof consumed === 'number' && Number.isSafeInteger(consumed) && consumed >= 0 && consumed <= length);
+          const shortCoverage = validCoverage && hasCoverage && consumed < length;
+          const completeness = truncated
+            ? 'truncated'
+            : !rangeComplete || !validCoverage || shortCoverage
+              ? 'partial'
+              : 'complete';
+          const reason = truncated
+            ? 'instruction-read-budget'
+            : !rangeComplete
+              ? rangeReason
+              : !validCoverage
+                ? 'instruction-read-coverage-invalid'
+                : shortCoverage
+                  ? 'instruction-read-incomplete'
+                  : null;
+          return paged(rows, page, completeness, { reason });
+"""
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one production hunk, found {text.count(old)}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+
+          test = Path('tests/phase7/integration/issue-4075-instruction-short-read-completeness.test.mjs')
+          if test.exists():
+              raise SystemExit('regression path already exists')
+          test.write_text("""import assert from 'node:assert/strict';
+          import test from 'node:test';
+
+          import { createAppAnalysisQueryAdapter } from '../../../js/analysis/query/app-adapter.js';
+
+          function adapterFor(decoded) {
+            return createAppAnalysisQueryAdapter({
+              store: {
+                get(key) {
+                  if (key === 'architecture') return 'arm64';
+                  return null;
+                },
+              },
+              backend: {
+                async disassembleAt(_address, { length }) {
+                  const result = typeof decoded === 'function' ? decoded(length) : decoded;
+                  return { supported:true, found:true, instructions:[], ...result };
+                },
+              },
+            });
+          }
+
+          test('#4075 full requested instruction extent remains complete', async () => {
+            const adapter = adapterFor((length) => ({ bytesConsumed:length }));
+            const result = await adapter.instructions(null, { start:0x1000n, length:64 });
+            assert.equal(result.status.completeness, 'complete');
+            assert.equal(result.status.reason ?? null, null);
+          });
+
+          test('#4075 producer short extent cannot be published as complete', async () => {
+            const adapter = adapterFor({ bytesConsumed:16 });
+            const result = await adapter.instructions(null, { start:0x1000n, length:64 });
+            assert.equal(result.status.completeness, 'partial');
+            assert.equal(result.status.reason, 'instruction-read-incomplete');
+          });
+
+          test('#4075 an exact region-end extent remains complete', async () => {
+            const adapter = adapterFor({ bytesConsumed:16 });
+            const result = await adapter.instructions(null, { start:0x1000n, end:0x1010n });
+            assert.equal(result.status.completeness, 'complete');
+            assert.equal(result.status.reason ?? null, null);
+          });
+
+          test('#4075 malformed producer coverage metadata fails closed', async () => {
+            for (const bytesConsumed of [-1, 1.5, Number.NaN, 65, '64', [64]]) {
+              const adapter = adapterFor({ bytesConsumed });
+              const result = await adapter.instructions(null, { start:0x1000n, length:64 });
+              assert.equal(result.status.completeness, 'partial', `coverage ${String(bytesConsumed)} must not prove completeness`);
+              assert.equal(result.status.reason, 'instruction-read-coverage-invalid');
+            }
+          });
+
+          test('#4075 legacy decoders without coverage metadata keep compatibility', async () => {
+            const adapter = adapterFor({});
+            const result = await adapter.instructions(null, { start:0x1000n, length:64 });
+            assert.equal(result.status.completeness, 'complete');
+          });
+
+          test('#4075 input budget truncation remains stronger than producer coverage', async () => {
+            const adapter = adapterFor((length) => ({ bytesConsumed:length }));
+            const result = await adapter.instructions(null, { start:0x1000n, length:(1024 * 1024) + 4 });
+            assert.equal(result.status.completeness, 'truncated');
+            assert.equal(result.status.reason, 'instruction-read-budget');
+          });
+          """, encoding='utf-8')
+          PY
+          test "$(git hash-object js/analysis/query/app-adapter.js)" = "d6f66076397a11254a52f1311c119de1d75a4627"
+          test "$(git hash-object tests/phase7/integration/issue-4075-instruction-short-read-completeness.test.mjs)" = "75d977320b17d203933ddcc60b96ff57581fc7e0"
+          node --check js/analysis/query/app-adapter.js
+          node --check tests/phase7/integration/issue-4075-instruction-short-read-completeness.test.mjs
+          node --test tests/phase7/integration/issue-4075-instruction-short-read-completeness.test.mjs
+      - name: Commit exact candidate
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/analysis/query/app-adapter.js tests/phase7/integration/issue-4075-instruction-short-read-completeness.test.mjs
+          git commit -m "fix(query): preserve instruction short-read completeness (#4075) [skip actions]"
+          git push origin HEAD:${{ github.ref_name }}
