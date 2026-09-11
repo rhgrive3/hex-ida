@@ -102,9 +102,28 @@ test('#4749 completed binary identity remains a cache hit for a pre-aborted call
   assert.equal(await backend.ensureBinaryId({ signal:controller.signal }), `bin_sha256_${HEX64}`);
 });
 
-test('#4749 scan registration race cancels a zero-waiter request', async () => {
+function emptyScan() {
+  return {
+    regionId:'text',
+    vmAddr:0x1000n,
+    callFrom:new BigUint64Array(0),
+    callTo:new BigUint64Array(0),
+    callCount:0,
+    refFrom:new BigUint64Array(0),
+    refTo:new BigUint64Array(0),
+    refKind:new Uint8Array(0),
+    refCount:0,
+    kinds:new Uint8Array(0),
+    kindsCovered:0,
+    words:0,
+    complete:true,
+  };
+}
+
+test('#4749 scan registration race observes cancellation rejection and permits replacement work', async () => {
   const controller = new AbortController();
   const reason = Object.assign(new Error('aborted-during-scan-registration'), { name:'AbortError' });
+  const producerError = Object.assign(new Error('cancelled-zero-waiter-producer'), { name:'AbortError' });
   let cancelCalls = 0;
   let scanCalls = 0;
   const app = {
@@ -113,10 +132,17 @@ test('#4749 scan registration race cancels a zero-waiter request', async () => {
       binaryId:'test-binary-4749',
       scanProgram() {
         scanCalls++;
-        controller.abort(reason);
-        const request = new Promise(() => {});
-        request.cancel = () => { cancelCalls++; };
-        return request;
+        if (scanCalls === 1) {
+          controller.abort(reason);
+          let rejectRequest;
+          const request = new Promise((_resolve, reject) => { rejectRequest = reject; });
+          request.cancel = () => {
+            cancelCalls++;
+            rejectRequest(producerError);
+          };
+          return request;
+        }
+        return Promise.resolve(emptyScan());
       },
     },
     programRegions:() => [{ id:'text', exec:true, vmAddr:0x1000n, size:0x100n }],
@@ -131,4 +157,14 @@ test('#4749 scan registration race cancels a zero-waiter request', async () => {
   );
   assert.equal(scanCalls, 1, 'race is entered only after scan request creation');
   assert.equal(cancelCalls, 1, 'zero-waiter scan request must be cancelled immediately');
+
+  // Let the cancellation rejection traverse the shared producer chain. With no
+  // observer on entry.promise node:test reports this as an unhandled rejection.
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const replacement = await app.analysisQueries.callers(snapshot, 0x1000n, {}, {});
+  assert.equal(scanCalls, 2, 'a live caller must start replacement work after the retired producer');
+  assert.deepEqual(replacement.value, []);
+  assert.equal(replacement.status.completeness, 'complete');
 });
