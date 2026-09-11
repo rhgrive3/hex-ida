@@ -212,6 +212,26 @@ test('Issue #4153: AnalysisQuery context preserves producer next offset but not 
   assert.equal(callers.complete, false);
 });
 
+test('Issue #4153: QueryAPI next offset beyond the executable context range is withheld', async () => {
+  const app = {
+    analysisQueries:{
+      async snapshot() { return {}; },
+      async callers(_snapshot, _address, page) {
+        return {
+          value:[],
+          page:{ offset:page.offset, limit:page.limit, returned:0, total:1_000_001, next:1_000_001 },
+          status:{ completeness:'partial', reason:'query-limit' },
+        };
+      },
+    },
+  };
+  const context = createHexAIContext(app);
+  const callers = await context.getCallers('0x1000', { offset:1_000_000, limit:2 });
+  assert.equal(callers.nextOffset, undefined);
+  assert.equal(callers.total, null);
+  assert.equal(callers.complete, false);
+});
+
 test('Issue #4153: a partial callee side gets its own executable get_callees continuation', async () => {
   const registry = createHexToolRegistry({
     ...queryContext(),
