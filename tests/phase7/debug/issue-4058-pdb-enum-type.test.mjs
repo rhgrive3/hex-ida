@@ -5,7 +5,10 @@ import { describeTypeIndex, parseTpiStream } from '../../../js/analysis/debug/pd
 
 const LF_PROCEDURE = 0x1008;
 const LF_ARGLIST = 0x1201;
+const LF_FIELDLIST = 0x1203;
+const LF_ENUMERATE = 0x1502;
 const LF_ENUM = 0x1507;
+const LF_STMEMBER = 0x150e;
 const CLASS_OPTION_FORWARD_REFERENCE = 0x0080;
 const CLASS_OPTION_HAS_UNIQUE_NAME = 0x0200;
 
@@ -27,7 +30,7 @@ function record(leaf, body) {
 }
 
 function enumRecord({
-  memberCount = 2,
+  memberCount = 0,
   properties = 0,
   underlying = 0x0074,
   fieldList = 0,
@@ -49,6 +52,19 @@ function enumRecord({
 
 function argList(args = []) {
   return record(LF_ARGLIST, [...u32(args.length), ...args.flatMap(u32)]);
+}
+
+function enumerate(name, value, attributes = 0) {
+  return [
+    ...u16(LF_ENUMERATE),
+    ...u16(attributes),
+    ...u16(value),
+    ...cstring(name),
+  ];
+}
+
+function fieldList(entries = []) {
+  return record(LF_FIELDLIST, entries.flat());
 }
 
 function procedure({ returnType = 0x1000, argumentList = 0x1001, parameterCount = 0 } = {}) {
@@ -74,8 +90,11 @@ function tpi(records) {
   return bytes;
 }
 
-test('#4058: LF_ENUM retains its CodeView tag fields and renders its underlying integer type', () => {
-  const parsed = parseTpiStream(tpi([enumRecord({ fieldList: 0x1001 })]));
+test('#4058: LF_ENUM validates its LF_FIELDLIST/LF_ENUMERATE authority before rendering complete', () => {
+  const parsed = parseTpiStream(tpi([
+    enumRecord({ memberCount: 2, fieldList: 0x1001 }),
+    fieldList([enumerate('Red', 1), enumerate('Blue', 2, 3)]),
+  ]));
 
   assert.equal(parsed.complete, true);
   assert.deepEqual(parsed.types.get(0x1000), {
@@ -89,6 +108,10 @@ test('#4058: LF_ENUM retains its CodeView tag fields and renders its underlying 
     uniqueName: null,
     complete: true,
   });
+  assert.deepEqual(parsed.types.get(0x1001).enumerators, [
+    { name: 'Red', value: 1, attributes: 0 },
+    { name: 'Blue', value: 2, attributes: 3 },
+  ]);
   assert.deepEqual(describeTypeIndex(0x1000, parsed.types), {
     name: 'enum Color',
     widthBits: 32,
@@ -140,6 +163,41 @@ test('#4058: HasUniqueName consumes and retains the second CodeView name', () =>
   assert.equal(parsed.types.get(0x1000).name, 'Color');
   assert.equal(parsed.types.get(0x1000).uniqueName, '.?AW4Color@@');
   assert.equal(parsed.types.get(0x1000).complete, true);
+});
+
+test('#4058: dangling enum FieldList references fail closed', () => {
+  const parsed = parseTpiStream(tpi([enumRecord({ memberCount: 1, fieldList: 0x1001 })]));
+  assert.equal(parsed.complete, false);
+  assert.equal(parsed.types.get(0x1000).complete, false);
+  assert.equal(describeTypeIndex(0x1000, parsed.types).complete, false);
+});
+
+test('#4058: enum FieldList references reject the wrong record kind', () => {
+  const parsed = parseTpiStream(tpi([
+    enumRecord({ memberCount: 1, fieldList: 0x1001 }),
+    argList(),
+  ]));
+  assert.equal(parsed.complete, false);
+  assert.equal(parsed.types.get(0x1000).complete, false);
+});
+
+test('#4058: enum NumEnumerators must agree with validated LF_ENUMERATE children', () => {
+  const parsed = parseTpiStream(tpi([
+    enumRecord({ memberCount: 2, fieldList: 0x1001 }),
+    fieldList([enumerate('Only', 7)]),
+  ]));
+  assert.equal(parsed.complete, false);
+  assert.equal(parsed.types.get(0x1000).complete, false);
+});
+
+test('#4058: unsupported enum field-list children keep enumerator authority partial', () => {
+  const parsed = parseTpiStream(tpi([
+    enumRecord({ memberCount: 1, fieldList: 0x1001 }),
+    fieldList([[...u16(LF_STMEMBER), 0, 0]]),
+  ]));
+  assert.equal(parsed.complete, false);
+  assert.equal(parsed.types.get(0x1000).complete, false);
+  assert.equal(parsed.unmodelled.has(LF_STMEMBER), true);
 });
 
 test('#4058 adversarial: truncated enum fixed fields or missing name terminator fail closed', () => {

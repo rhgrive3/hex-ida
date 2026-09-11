@@ -48,6 +48,7 @@ const LF_STRUCTURE = 0x1505;
 const LF_CLASS = 0x1504;
 const LF_UNION = 0x1506;
 const LF_ENUM = 0x1507;
+const LF_ENUMERATE = 0x1502;
 const LF_ARRAY = 0x1503;
 const LF_MEMBER = 0x150d;
 
@@ -462,6 +463,7 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   let offset = typeDataStart;
   let index = firstIndex;
   let fieldListsComplete = true;
+  let enumFieldListsComplete = true;
 
   while (offset + 4 <= typeDataEnd && index - firstIndex < expectedCount && types.size < maxRecords) {
     const length = view.getUint16(offset, true);
@@ -553,7 +555,9 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
     } else if (leaf === LF_FIELDLIST) {
       const fieldList = parseFieldList(view, bytes, body, end, unmodelled);
       if (!fieldList.complete) fieldListsComplete = false;
-      types.set(index, { leaf, kind: 'field-list', members: fieldList.members, complete: fieldList.complete });
+      types.set(index, {
+        leaf, kind: 'field-list', members: fieldList.members, enumerators: fieldList.enumerators, complete: fieldList.complete,
+      });
     } else if (leaf === LF_ARGLIST) {
       // Historical fixtures contain a leaf-only LF_ARGLIST. Preserve the
       // record boundary/stream walk, but never let that shape prove an exact
@@ -579,6 +583,27 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
     offset = end;
     index += 1;
   }
+  // LF_ENUM completeness also depends on the referenced LF_FIELDLIST: a
+  // non-forward enum is not authoritative unless the reference resolves to a
+  // complete enum-only field list whose LF_ENUMERATE count agrees with
+  // NumEnumerators. Resolve after the stream walk so forward TypeIndex
+  // references are handled without record-order assumptions (#4058).
+  for (const record of types.values()) {
+    if (record.kind !== 'enum' || record.complete !== true) continue;
+    const noMembers = record.memberCount === 0 && record.fieldList === 0;
+    const fields = record.fieldList === 0 ? null : types.get(record.fieldList);
+    const fieldListMatches = noMembers || (
+      fields?.kind === 'field-list'
+      && fields.complete === true
+      && fields.members.length === 0
+      && fields.enumerators.length === record.memberCount
+    );
+    if (!fieldListMatches) {
+      record.complete = false;
+      enumFieldListsComplete = false;
+    }
+  }
+
   // An incomplete field-list child (unsupported subrecord) fails the stream
   // closed (#5773). Complete also only when the declared record extent was
   // fully consumed and the parsed record count matches TypeIndexEnd -
@@ -587,7 +612,8 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   return {
     types,
     unmodelled,
-    complete: fieldListsComplete && expectedCount >= 0 && offset >= typeDataEnd && index - firstIndex === expectedCount,
+    complete: fieldListsComplete && enumFieldListsComplete
+      && expectedCount >= 0 && offset >= typeDataEnd && index - firstIndex === expectedCount,
     firstIndex,
   };
 }
@@ -642,39 +668,52 @@ function readNumeric(view, bytes, offset, end = bytes.length) {
 }
 
 /**
- * Parses an LF_FIELDLIST's children. Only LF_MEMBER is modeled: any other
- * (valid) field-list subrecord — LF_STMEMBER, LF_BCLASS, LF_METHOD, ... —
- * cannot be skipped reliably, so the children after it are unreachable and
- * the field list is incomplete. That incompleteness propagates to the whole
- * TPI result instead of silently publishing a partial member list as an
- * exact layout (#5773).
+ * Parses the field-list children whose shapes this provider can validate.
+ * LF_MEMBER supplies aggregate layout facts; LF_ENUMERATE supplies enum member
+ * authority. Any other valid subrecord — LF_STMEMBER, LF_BCLASS, LF_METHOD,
+ * LF_INDEX, ... — cannot be skipped reliably here, so the list is incomplete
+ * instead of publishing a partial child set as exact evidence (#5773/#4058).
  */
 function parseFieldList(view, bytes, start, end, unmodelled) {
   const members = [];
+  const enumerators = [];
   let offset = start;
   let complete = true;
   while (offset + 2 <= end) {
     const leaf = view.getUint16(offset, true);
-    if (leaf !== LF_MEMBER) {
+    let nameEntry = null;
+    if (leaf === LF_MEMBER) {
+      if (offset + 8 > end) { complete = false; break; }
+      const typeIndex = view.getUint32(offset + 4, true);
+      const numeric = readNumeric(view, bytes, offset + 8, end);
+      if (!numeric || numeric.value == null) { complete = false; break; }
+      const { value: fieldOffset, next } = numeric;
+      nameEntry = cstringWithNext(bytes, next, end);
+      if (!nameEntry) { complete = false; break; }
+      members.push({ name: nameEntry.value, typeIndex, offset: fieldOffset });
+    } else if (leaf === LF_ENUMERATE) {
+      // LF_ENUMERATE = leaf, CV_fldattr_t, numeric value, NUL name. The
+      // enumerator value is retained so later consumers cannot mistake a
+      // counted-but-unparsed child for validated member authority.
+      if (offset + 4 > end) { complete = false; break; }
+      const attributes = view.getUint16(offset + 2, true);
+      const numeric = readNumeric(view, bytes, offset + 4, end);
+      if (!numeric || !Number.isSafeInteger(numeric.value)) { complete = false; break; }
+      nameEntry = cstringWithNext(bytes, numeric.next, end);
+      if (!nameEntry) { complete = false; break; }
+      enumerators.push({ name: nameEntry.value, value: numeric.value, attributes });
+    } else {
       unmodelled.add(leaf);
       complete = false;
       break;
     }
-    if (offset + 8 > end) { complete = false; break; }
-    const typeIndex = view.getUint32(offset + 4, true);
-    const numeric = readNumeric(view, bytes, offset + 8, end);
-    if (!numeric || numeric.value == null) { complete = false; break; }
-    const { value: fieldOffset, next } = numeric;
-    const nameEntry = cstringWithNext(bytes, next, end);
-    if (!nameEntry) { complete = false; break; }
-    members.push({ name: nameEntry.value, typeIndex, offset: fieldOffset });
     // Records are padded to a 4-byte boundary with 0xf1..0xf3 filler.
     let cursor = nameEntry.next;
     while (cursor < end && bytes[cursor] >= 0xf0) cursor += 1;
     if (cursor <= offset) { complete = false; break; }
     offset = cursor;
   }
-  return { members, complete: complete && offset === end };
+  return { members, enumerators, complete: complete && offset === end };
 }
 
 /** Renders a TPI type index as a nominal name plus machine facts. */
@@ -1079,7 +1118,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     for (const [index, record] of parsed.tpi.types) {
       if (record.kind !== 'aggregate' || record.forwardReference || !record.fieldList) continue;
       const fields = parsed.tpi.types.get(record.fieldList);
-      if (!fields || fields.kind !== 'field-list' || fields.complete !== true) continue;
+      if (!fields || fields.kind !== 'field-list' || fields.complete !== true || fields.enumerators?.length) continue;
       out.push({
         typeIndex: index,
         name: record.name,
