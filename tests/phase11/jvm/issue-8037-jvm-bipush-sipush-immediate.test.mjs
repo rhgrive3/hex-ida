@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { liftJvmMethod } from '../js/managed/jvm/lifter.js';
-import { lowerVMEffectsToSemanticIr, decompileManagedMethod } from '../js/managed/shared/bridge-v2.js';
+import { liftJvmMethod } from '../../../js/managed/jvm/lifter.js';
+import { lowerVMEffectsToSemanticIr, decompileManagedMethod } from '../../../js/managed/shared/bridge-v2.js';
 
 // #8037 — JVM `bipush`/`sipush` push an immediate integer constant, but the
 // bridge lowered them into complete zero-input `unary` nodes that carried no
