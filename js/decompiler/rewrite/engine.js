@@ -10,10 +10,46 @@ export const DEFAULT_REWRITE_BUDGET = Object.freeze({
 
 function now() { return globalThis.performance?.now ? globalThis.performance.now() : Date.now(); }
 
+// Producer-local storage of already normalized immutable payloads, never of
+// operations, source objects, currentness or proof authority. Both entry count
+// and retained key/data units are bounded; oversized payloads remain ordinary
+// fresh snapshots and are still subject to downstream observation limits.
+function createSnapshotStorage() {
+  const entries = new Map();
+  let units = 0;
+  return snapshot => {
+    let key = '', elements = 0;
+    for (const [kind, values] of Object.entries(snapshot)) {
+      key += `${kind}:[`;
+      for (const value of values) {
+        if (typeof value === 'string' && value.length > 2048
+            || typeof value === 'bigint' && value >= (1n << 1024n)) return snapshot;
+        key += JSON.stringify([typeof value, Object.is(value, -0) ? '-0' : String(value)]) + ',';
+        elements++;
+        if (key.length > 8192) return snapshot;
+      }
+      key += ']';
+    }
+    const prior = entries.get(key);
+    if (prior) {
+      entries.delete(key); entries.set(key, prior);
+      return prior.snapshot;
+    }
+    const cost = key.length + elements * 8 + 64;
+    if (cost > 131072) return snapshot;
+    while (entries.size >= 512 || units + cost > 131072) {
+      const oldest = entries.keys().next().value;
+      units -= entries.get(oldest).cost; entries.delete(oldest);
+    }
+    entries.set(key, { snapshot, cost }); units += cost;
+    return snapshot;
+  };
+}
+
 // A historical source snapshot, not a new AST/semantic identity. Do not retain
 // mutable nodes or evidence chains here: later rewrites and callers may mutate
 // them, and recursively retaining proof evidence would grow the history.
-function sourceSnapshot(node, cap) {
+function sourceSnapshot(node, cap, storage = null) {
   const { evidence, ...origins } = sourceOf(node?.source);
   let remaining = cap, truncated = false;
   const snapshot = {};
@@ -23,14 +59,24 @@ function sourceSnapshot(node, cap) {
     truncated ||= retained.length !== values.length;
     snapshot[kind] = Object.freeze(retained);
   }
-  return { origins:Object.freeze(snapshot), truncated };
+  const frozen = Object.freeze(snapshot);
+  return { origins:storage ? storage(frozen) : frozen, truncated };
 }
 
 // Shared by real expression producers, including CFG-backed recovery passes.
 // This records history only; it grants neither rewrite admission nor a binding.
 export function expressionOriginHistory(before, after, maximum = 512) {
+  return originHistory(before, after, maximum, null);
+}
+
+export function createExpressionOriginHistoryRecorder() {
+  const storage = createSnapshotStorage();
+  return (before, after, maximum = 512) => originHistory(before, after, maximum, storage);
+}
+
+function originHistory(before, after, maximum, storage) {
   const cap = Number.isSafeInteger(maximum) && maximum >= 0 ? Math.min(maximum, 512) : 512;
-  const left = sourceSnapshot(before, cap), right = sourceSnapshot(after, cap);
+  const left = sourceSnapshot(before, cap, storage), right = sourceSnapshot(after, cap, storage);
   return Object.freeze({ before:left.origins, after:right.origins,
     truncated:left.truncated || right.truncated });
 }
@@ -57,6 +103,8 @@ function validateRule(rule) {
 }
 
 export class RewriteEngine {
+  #snapshotStorage = createSnapshotStorage();
+
   constructor(rules = [], budget = {}) {
     this.rules = rules.map(validateRule);
     this.budget = { ...DEFAULT_REWRITE_BUDGET, ...budget };
@@ -127,7 +175,7 @@ export class RewriteEngine {
           if (!match) continue;
           if (rule.precondition && !rule.precondition(candidate, match, context)) continue;
           const beforeKey = structuralKey(candidate);
-          const beforeOrigins = sourceSnapshot(candidate, this.budget.maxHistoryOrigins);
+          const beforeOrigins = sourceSnapshot(candidate, this.budget.maxHistoryOrigins, this.#snapshotStorage);
           const next = rule.rewrite(candidate, match, context);
           if (!next) continue;
           const afterKey = structuralKey(next);
@@ -137,7 +185,7 @@ export class RewriteEngine {
           if (!rule.allowExpansion && afterCost > beforeCost) continue;
           const evidence = typeof rule.proof === 'function' ? rule.proof(candidate, next, match, context) : rule.proof;
           if (!evidence) continue;
-          const afterOrigins = sourceSnapshot(next, this.budget.maxHistoryOrigins);
+          const afterOrigins = sourceSnapshot(next, this.budget.maxHistoryOrigins, this.#snapshotStorage);
           proof.push({ rule: rule.name, phase: rule.phase, before: beforeKey, after: afterKey, evidence,
             originHistory:Object.freeze({ before:beforeOrigins.origins, after:afterOrigins.origins,
               truncated:beforeOrigins.truncated || afterOrigins.truncated }) });

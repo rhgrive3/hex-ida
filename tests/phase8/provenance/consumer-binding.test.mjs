@@ -7,9 +7,68 @@ import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
 import { createDecompilerNavigation } from '../../../js/ui/decompiler-provenance.js';
 import { structuralKey } from '../../../js/decompiler/ast/nodes.js';
 import { captureProjectionIrData, createProjectionIrObserver, PROJECTION_LIMITS } from '../../../js/core/identity/live-data.js';
+import { createExpressionOriginHistoryRecorder, expressionOriginHistory } from '../../../js/decompiler/rewrite/engine.js';
 import { analysis, consumerFixture as fixture, expr, resultWith, source } from './fixture.js';
 
 
+
+test('C4-03 immutable history payloads share storage without sharing operations or mutable inputs', () => {
+  const record = createExpressionOriginHistoryRecorder();
+  const input = { source:{ ir:['one'], addresses:[1n] } };
+  const first = record(input, input), second = record(input, input);
+  assert.notEqual(first, second);
+  assert.equal(first.before, first.after);
+  assert.equal(first.before, second.before);
+  assert.ok(Object.isFrozen(first.before) && Object.values(first.before).every(Object.isFrozen));
+  assert.equal(Object.isFrozen(input.source), false);
+  assert.deepEqual(first, expressionOriginHistory(input, input));
+  input.source.ir[0] = 'two';
+  const changed = record(input, input);
+  assert.deepEqual(first.before.ir, ['one']);
+  assert.deepEqual(changed.before.ir, ['two']);
+  assert.notEqual(changed.before, first.before);
+  assert.notEqual(createExpressionOriginHistoryRecorder()(input, input).before, changed.before,
+    'independent producers do not share a global pool');
+});
+
+test('C4-03 storage keys retain typed identities and fresh truncation flags', () => {
+  const record = createExpressionOriginHistoryRecorder();
+  const node = value => ({ source:{ ir:[value] } });
+  assert.notEqual(record(node(1), node(1)).before, record(node('1'), node('1')).before);
+  assert.notEqual(record(node(0), node(0)).before, record(node(-0), node(-0)).before);
+  assert.notEqual(record({ source:{ ir:[1, 2] } }, {}).before, record({ source:{ ir:[2, 1] } }, {}).before);
+  assert.notEqual(record(node('1,2'), {}).before, record({ source:{ ir:[1, 2] } }, {}).before);
+  assert.notEqual(record({ source:{ addresses:[1n] } }, {}).before, record({ source:{ addresses:[1] } }, {}).before);
+  const two = { source:{ ir:[1, 2] } }, one = node(1);
+  const truncated = record(two, two, 1), complete = record(one, one);
+  assert.equal(truncated.before, complete.before);
+  assert.equal(truncated.truncated, true);
+  assert.equal(complete.truncated, false);
+  for (const cap of [0, 1, 2, 512]) assert.deepEqual(record(two, two, cap), expressionOriginHistory(two, two, cap));
+  let reads = 0;
+  const getter = { source:{ get ir() { reads++; return [reads]; } } };
+  record(getter, getter);
+  assert.equal(reads, 2, 'every source is normalized again, even when its object identity is unchanged');
+});
+
+test('C4-03 history payload storage has bounded entries and volume, not an observation exemption', () => {
+  for (const [count, width] of [[600, 1], [40, 256]]) {
+    const record = createExpressionOriginHistoryRecorder();
+    const node = index => ({ source:{ ir:Array.from({ length:width }, (_, item) => `${index}:${item}`) } });
+    const input = node(0), first = record(input, input);
+    for (let index = 1; index < count; index++) record(node(index), node(index));
+    const later = record(input, input);
+    assert.notEqual(first.before, later.before, `${count}/${width} evicts the old storage entry`);
+    assert.deepEqual(first, later);
+  }
+  const record = createExpressionOriginHistoryRecorder();
+  const long = { source:{ ir:['x'.repeat(PROJECTION_LIMITS.string + 1)] } };
+  const history = record(long, long);
+  assert.notEqual(history.before, history.after, 'oversized keys do not enter storage');
+  assert.throws(() => captureProjectionIrData([history]), /string-budget/);
+  const huge = record({ source:{ addresses:[1n << 1024n] } }, {});
+  assert.throws(() => captureProjectionIrData([huge]), /bigint-budget/);
+});
 
 function graphFixture() {
   const values = Array.from({ length:200 }, (_, id) => ({ id }));

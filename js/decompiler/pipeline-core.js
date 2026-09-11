@@ -5,7 +5,7 @@
  * fallback at the public facade.
  */
 import { children, expr, mergeSource, sourceOf, mapChildren, structuralKey, sameExpr } from './ast/nodes.js';
-import { RewriteEngine, expressionOriginHistory } from './rewrite/engine.js';
+import { RewriteEngine, createExpressionOriginHistoryRecorder } from './rewrite/engine.js';
 import { DEFAULT_RULES } from './rewrite/rules.js';
 import { captureProjectionIrData, PROJECTION_LIMITS } from './phase8/projection-origin.js';
 import { createProjectionIrObserver } from '../core/identity/live-data.js';
@@ -58,6 +58,10 @@ export function readCallResultSpellingProducer(node, ir) {
 }
 const buildHistoryObservations = new WeakMap();
 const reusableBuildHistoryRecords = new WeakSet();
+function buildOriginHistory(state, before, after) {
+  state.recordOriginHistory ??= createExpressionOriginHistoryRecorder();
+  return state.recordOriginHistory(before, after);
+}
 function valueHistoryRecord(record, valueId) {
   // One observed builder operation is not a new transformation each time a
   // downstream value inherits it. Keep its producer-assigned valueId and exact
@@ -113,7 +117,7 @@ function fieldProjectionRecords(semantic, state) {
       producer.record = Object.freeze({ rule:'render-field-access', phase:'render',
         before:`memory:${producer.instruction.op}:${producer.instruction.id}`, after:structuralKey(producer.access),
         evidence:Object.freeze({ kind:'canonical-memory-access-projection', detail:'field spelling projects an existing memory access; a supplied field name is presentation metadata, not type or layout proof' }),
-        originHistory:expressionOriginHistory({ source:mergeSource(origin(producer.instruction), producer.access.base?.source) }, producer.access),
+        originHistory:buildOriginHistory(state, { source:mergeSource(origin(producer.instruction), producer.access.base?.source) }, producer.access),
       });
       (state.rewriteProof ??= []).push(producer.record);
       state.fieldProjectionCount = (state.fieldProjectionCount || 0) + 1;
@@ -375,7 +379,7 @@ function compareFromFlags(flagValue, cond, state) {
       before:`cmp:${d.sub || 'sub'}:${cond || 'flags'}`, after:`expression:${expression.kind}`,
       evidence:Object.freeze({ kind:'observed-flag-reconstruction-not-equivalence',
         detail:'actual existing NZCV/conditional-compare display construction and visited inputs; not an independent flag, scalar, path or CFG equivalence proof' }),
-      originHistory:expressionOriginHistory(before, expression),
+      originHistory:buildOriginHistory(state, before, expression),
     });
     buildHistoryObservations.set(record, observation);
     reusableBuildHistoryRecords.add(record);
@@ -539,7 +543,7 @@ function recordPhiCollapse(v, instruction, incoming, expression, state) {
     before:'phi:equal-incoming-expressions', after:`expression:${expression.kind}`,
     evidence:Object.freeze({ kind:'observed-phi-view-collapse-not-equivalence',
       detail:'actual legacy expression-builder selection; canonical phi/edges are retained, not independently proved eliminated' }),
-    originHistory:expressionOriginHistory(before, expression),
+    originHistory:buildOriginHistory(state, before, expression),
   });
   buildHistoryObservations.set(record, observation);
   reusableBuildHistoryRecords.add(record);
@@ -600,8 +604,19 @@ function finishBuildSelection(expression, selection, state) {
   let observation;
   try {
     if (budget.edges <= 0) throw new Error('build-selection-observation-budget');
-    const output = captureConsumerIrData([expression], state);
-    budget.edges -= output.metrics.edges;
+    // The same actual builder output can serve multiple observed selections.
+    // Retain its original snapshot, not a cached truth value or a replacement
+    // observation after mutation. Every finish/read still checks it live.
+    state.buildOutputObservations ??= new WeakMap();
+    // Raw call/void-return descriptors can have no expression object. They
+    // remain valid ordinary data observations, not WeakMap keys.
+    const cacheable = expression !== null && typeof expression === 'object';
+    let output = cacheable ? state.buildOutputObservations.get(expression) : null;
+    if (!output) {
+      output = captureConsumerIrData([expression], state);
+      budget.edges -= output.metrics.edges;
+      if (cacheable) state.buildOutputObservations.set(expression, output);
+    }
     const deferred = state.stateHistoryTransaction?.observation === selection;
     if (budget.edges < 0 || state.opts?.shouldAbort?.() || (!deferred && !selection.matches()) || !output.matches()) throw new Error('build-selection-unavailable');
     observation = Object.freeze({ matches:() => selection.matches() && output.matches(),
@@ -622,7 +637,7 @@ function recordMovSelection(value, instruction, expression, selection, state, fl
     evidence:Object.freeze({ kind:cast ? 'observed-explicit-mov-cast-not-equivalence' : 'observed-mov-view-selection-not-equivalence',
       detail:cast ? 'actual proof-preparation rendering of an explicit MOV cast through shared bounded scalar lowering; not a proof or copy/forwarding elimination'
         : 'actual legacy builder operand selection including existing operand-width/shift views; canonical MOV and memory facts remain, not independently proved copy elimination or forwarding' }),
-    originHistory:expressionOriginHistory(before, expression),
+    originHistory:buildOriginHistory(state, before, expression),
   });
   buildHistoryObservations.set(record, observation);
   reusableBuildHistoryRecords.add(record);
@@ -638,7 +653,7 @@ function recordAddressLoadSelection(value, instruction, store, expression, selec
     before:'load:address-reaching-store', after:`expression:${expression.kind}`,
     evidence:Object.freeze({ kind:'observed-address-load-selection-not-memory-equivalence',
       detail:'actual legacy address-mode reachingStore operand selection; canonical load/store and unknown access qualifiers remain, not independent memory forwarding or alias proof' }),
-    originHistory:expressionOriginHistory(before, expression),
+    originHistory:buildOriginHistory(state, before, expression),
   });
   buildHistoryObservations.set(record, observation);
   reusableBuildHistoryRecords.add(record);
@@ -710,7 +725,7 @@ function recordConstantValueSelection(value, expression, selected, state) {
   if (!selected) return;
   const observation = finishBuildSelection(expression, selected.observation, state);
   if (!observation) return;
-  const history = expressionOriginHistory({ source:selected.origins.source }, expression);
+  const history = buildOriginHistory(state, { source:selected.origins.source }, expression);
   const canonicalLoad = selected.kind === 'canonical-load';
   const record = Object.freeze({ rule:canonicalLoad ? 'select-canonical-load-constant' : 'select-precomputed-value', phase:'expression-build', valueId:value?.id ?? null,
     before:canonicalLoad ? 'load:canonical-numeric-forwarding' : `precomputed:${value.def.op}`, after:`expression:${expression.kind}`,
@@ -763,7 +778,7 @@ function recordCompatMemorySelection(value, expression, selected, state) {
     before:'load:canonical-stack-operand', after:'mov:memory-forward',
     evidence:Object.freeze({ kind:'observed-compat-memory-transition-not-new-proof',
       detail:'actual compatibility LOAD-to-MOV operation admitted by the existing canonical stack operand-identity query; original access and store sources retained, not a new memory theorem' }),
-    originHistory:expressionOriginHistory(before, expression),
+    originHistory:buildOriginHistory(state, before, expression),
   });
   buildHistoryObservations.set(record, Object.freeze({ matches:() => observation.matches() && transition.isCurrent() }));
   reusableBuildHistoryRecords.add(record);
@@ -878,7 +893,7 @@ function recordCompatOperationSelection(value, expression, selected, state) {
     if (!observation) continue;
     const source = mergeSource(origin(event.source, event.output), origin(value?.def, value), origins?.source,
       ...event.beforeInputs.map(input => origin(input.def, input)), ...(event.related || []).map(inst => origin(inst)));
-    const history = expressionOriginHistory({ source }, expression);
+    const history = buildOriginHistory(state, { source }, expression);
     const facade = event.stage === 'facade-exact-constants';
     const preserved = event.stage === 'facade-preserved-state';
     const location = event.stage === 'facade-public-location';
@@ -1168,7 +1183,7 @@ function walkIdiom(n, state, records) {
         before:`${mapped.kind}:${mapped.op}`, after:`${recovered.kind}:${recovered.name}`,
         evidence:Object.freeze({ kind:'legacy-idiom-recognition-not-equivalence',
           detail:'actual existing recognizer application; no independent equivalence proof is claimed' }),
-        originHistory:expressionOriginHistory(mapped, recovered),
+        originHistory:buildOriginHistory(state, mapped, recovered),
       }));
       state.idiomHistoryCount = (state.idiomHistoryCount || 0) + 1;
     }
@@ -1437,7 +1452,7 @@ function compoundStoreHistory(instruction, value, expression, location, form, st
     before:'store:assignment', after:`store:${form}`,
     evidence:Object.freeze({ kind:'observed-store-spelling-not-memory-equivalence',
       detail:'actual C AST store spelling; no atomicity, alias, overflow or memory-equivalence proof is issued' }),
-    originHistory:expressionOriginHistory({ source }, { source }),
+    originHistory:buildOriginHistory(state, { source }, { source }),
   });
   (state.rewriteProof ??= []).push(record);
   state.compoundStoreHistoryCount = (state.compoundStoreHistoryCount || 0) + 1;
@@ -1469,7 +1484,7 @@ function initialStoreExpansion(initialStore, instruction, value, expression, loc
     before:`store:${initialStore.spelling.form}`, after:'store:assignment',
     evidence:Object.freeze({ kind:'observed-store-spelling-not-memory-equivalence',
       detail:'actual owned initial-line to C AST assignment transition; no memory equivalence proof' }),
-    originHistory:expressionOriginHistory({ source }, { source }),
+    originHistory:buildOriginHistory(state, { source }, { source }),
   });
   (state.rewriteProof ??= []).push(record);
   state.initialStoreExpansionCount = (state.initialStoreExpansionCount || 0) + 1;
@@ -1490,7 +1505,7 @@ function knownStatementForLine(line, state, lineIndex, initialStore = null, init
         const expression = expressionFor(elision.returned, state);
         const record = Object.freeze({ rule:'suppress-return-spill-statement', phase:'render',
           evidence:Object.freeze({ kind:'memoryssa-return-spill', detail:'existing C AST producer suppressed this return-preservation spill statement' }),
-          originHistory:expressionOriginHistory({ source:mergeSource(line.source, origin(store, elision.storedValue), origin(elision.load)) }, expression),
+          originHistory:buildOriginHistory(state, { source:mergeSource(line.source, origin(store, elision.storedValue), origin(elision.load)) }, expression),
           renderedRemoval:Object.freeze({ scope:'pre-transform-render', operation:'suppress', lineIndex, kind:line.kind || 'null' }),
         });
         state.renderElisions ??= new Map();

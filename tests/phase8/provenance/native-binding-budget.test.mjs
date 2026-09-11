@@ -68,8 +68,8 @@ test('C4-03 native x86 construction reuses observed inputs without losing live c
     'shared construction inputs retain exact mutable root identity after publication');
 });
 
-test('C4-03 native cyclic construction observes full inputs and retains one record per builder operation', () => {
-  const corpus = loadCorpus(), id = 'quality.loop_decrement_step.O1';
+for (const optimization of ['O1', 'O2']) test(`C4-03 native cyclic construction retains complete history in bounded snapshot storage (${optimization})`, () => {
+  const corpus = loadCorpus(), id = `quality.loop_decrement_step.${optimization}`;
   const index = corpus.functions.findIndex(entry => entry.id === id);
   assert.ok(index >= 0);
   const { result, failure } = decompileEntry(corpus.functions[index], {
@@ -82,6 +82,10 @@ test('C4-03 native cyclic construction observes full inputs and retains one reco
   assert.ok(!result.expressionHistoryBinding.reasons.includes('compat-state-construction-observation-unavailable'));
   assert.ok(!result.expressionHistoryBinding.reasons.includes('compat-constant-selection-observation-unavailable'));
   assert.equal(result.semanticStatementRenderHistory.completeness, 'complete');
+  assert.equal(result.expressionHistoryBinding.completeness, 'complete');
+  assert.equal(result.phase8Projection.history.completeness, 'complete');
+  assert.equal(result.renderProvenance.completeness, 'complete');
+  assert.deepEqual(result.renderProvenance.reasons, []);
   const selections = result.rewriteProof.filter(record => record.rule === 'select-mov-operand');
   assert.ok(selections.length > 50, 'actual native selections, not an empty-history success');
   assert.equal(new Set(selections.map(record => record.originHistory)).size, selections.length,
@@ -91,8 +95,11 @@ test('C4-03 native cyclic construction observes full inputs and retains one reco
   const reference = loadFrozenProvenance().observations.find(entry => entry.id === id);
   const actual = provenanceFromSourceMap(result.sourceMap);
   assert.deepEqual(reference.sourceAddresses.filter(address => !actual.sourceAddresses.includes(address)), []);
-  // This regression covers construction and record identity, not the separate
-  // final projection observations that can still report incomplete.
+  const lines = result.lines.filter(line => readLineExpressionHistory(line, result.ir)?.length);
+  assert.ok(lines.length > 1);
+  assert.equal(readLineExpressionHistory({ ...lines[0] }, result.ir), null);
+  result.ir.values = [...result.ir.values];
+  assert.ok(lines.every(line => readLineExpressionHistory(line, result.ir) === null));
 });
 
 for (const optimization of ['O1','O2']) for (const phase8Optimize of [false,true]) {

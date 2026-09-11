@@ -9,6 +9,7 @@ import { fixture as irFixture } from '../helpers/ir-fixtures.mjs';
 import { projectionFixture } from '../helpers/proof-fixtures.mjs';
 import { optimizeSemanticDecompilation } from '../../../js/decompiler/pipeline.js';
 import { analysis } from './fixture.js';
+import { expr } from '../../../js/decompiler/ast/nodes.js';
 
 const records = result => result.renderProvenance.ledger.filter(record => record.rule === 'select-mov-operand');
 
@@ -172,6 +173,33 @@ test('a callback inside the selected input cannot certify a MOV whose operand ch
   assert.ok(records(result).every(record => record.renderedBinding === 'unresolved'));
   assert.ok(f.result.expressionHistoryBinding.reasons.includes('mov-selection-observation-unavailable'));
   assert.equal(result.renderProvenance.completeness, 'incomplete');
+});
+
+test('reusing a builder output never reseals it after a later selection callback changes it', () => {
+  const variable = expr.variable, descriptor = Object.getOwnPropertyDescriptor;
+  let output = null, observedSources = 0, changed = false, f;
+  expr.variable = (...args) => {
+    const value = variable(...args);
+    output ??= value;
+    return value;
+  };
+  Object.getOwnPropertyDescriptor = (object, key) => {
+    if (object === output && key === 'source') observedSources++;
+    return descriptor(object, key);
+  };
+  try {
+    f = fixture({ chain:true, options:{ shouldAbort:() => {
+      // First source read captures the original output; the second belongs
+      // to its live matcher. Mutate only after that first selection finished.
+      if (!changed && observedSources >= 2) { output.bits = 64; changed = true; }
+      return false;
+    } } });
+  } finally { expr.variable = variable; Object.getOwnPropertyDescriptor = descriptor; }
+  assert.equal(changed, true);
+  assert.ok(f.result.expressionHistoryBinding.reasons.includes('mov-selection-observation-unavailable'));
+  const result = applyPhase8Projection(f.result, analysis());
+  assert.equal(result.renderProvenance.completeness, 'incomplete');
+  assert.ok(records(result).every(record => record.renderedBinding === 'unresolved'));
 });
 
 test('MOV history caps and cancellation retain display output but explicitly withhold complete provenance', () => {
