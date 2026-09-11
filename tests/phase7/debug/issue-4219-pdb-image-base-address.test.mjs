@@ -82,8 +82,6 @@ test('#4219: absolute address overflow above uint64 fails closed', () => {
   }
 });
 
-
-t
 test('#4219: uint64 top boundary is accepted per symbol while later offsets still fail closed', () => {
   const base = UINT64_MAX - 0x1000n;
   const { page } = probeWithImage({ ...pdbImage(variant), imageBase: base });
