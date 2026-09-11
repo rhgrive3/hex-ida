@@ -35,7 +35,7 @@ function metadataLimit(value, fallback) {
   return Number.isSafeInteger(n) && n > 0 ? n : fallback;
 }
 
-function resolveMetadataLimits(overrides = {}) {
+export function resolveMachOMetadataLimits(overrides = {}) {
   const out = {};
   for (const [key, fallback] of Object.entries(MACHO_METADATA_LIMITS)) {
     out[key] = metadataLimit(overrides[key], fallback);
@@ -44,7 +44,7 @@ function resolveMetadataLimits(overrides = {}) {
 }
 
 export function createMachOMetadataBudget(image, options = {}) {
-  const limits = resolveMetadataLimits(options.limits || options.metadataLimits || {});
+  const limits = resolveMachOMetadataLimits(options.limits || options.metadataLimits || {});
   const signal = options.signal || null;
   const started = Date.now();
   const used = {

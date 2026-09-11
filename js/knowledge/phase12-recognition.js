@@ -32,7 +32,7 @@ export function createMatchResult(input = {}) {
     conflictingFeatures: list(candidate.conflictingFeatures || candidate.conflicts),
     evidenceIds: list(candidate.evidenceIds || candidate.evidence),
     packageContentHash: String(candidate.packageContentHash || input.packageContentHash || ''),
-    };
+  };
   }).sort((a, b) => b.score - a.score || tierRank(a.tier) - tierRank(b.tier) || a.packageEntryId.localeCompare(b.packageEntryId));
   const top = candidates[0];
   const second = candidates[1] || null;
