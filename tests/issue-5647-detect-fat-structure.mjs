@@ -89,15 +89,17 @@ assert.deepEqual(
   assert.equal(result.fat, true, 'valid minimal FAT64 header confirms macho/fat');
 }
 
-// A short probe prefix of a real fat image still detects: source-backed
+// A short probe prefix of a real fat image still routes: source-backed
 // openBinarySource()/worker routes hand detectBinary() only 16 bytes, so they
 // declare the probe context (probeLength/totalSize) and the arch-table bounds
-// belong to the Mach-O parser, which owns the full input.
+// belong to the Mach-O parser, which owns the full input. The routed result is
+// explicitly PROVISIONAL (truncated:true) — never the confirmed shape.
 {
   const prefix = Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01, ...new Array(8).fill(0)]);
   const result = detectBinary(prefix, { probeLength: 16, totalSize: 0x4000 });
   assert.equal(result.format, 'macho');
-  assert.equal(result.fat, true, '16-byte prefix probe of a real fat image remains confirmed');
+  assert.equal(result.fat, true, '16-byte prefix probe of a real fat image keeps candidate routing');
+  assert.equal(result.truncated, true, 'prefix-probe routing is provisional, not a confirmed detection');
 }
 
 // The probe bypass is derived from sizes, not a caller-controlled boolean:
@@ -126,21 +128,69 @@ assert.equal(
 
 // Size provenance is BigInt-safe: a ByteSource whose size exceeds the
 // safe-integer domain must keep candidate routing (Number narrowing would
-// fail closed for valid fat sources larger than 2^53).
+// fail closed for valid fat sources larger than 2^53). Probe metadata is
+// additionally bound to the bytes actually handed over: probeLength must
+// equal the input length and totalSize must exceed it, otherwise the declared
+// sizes are self-inconsistent and are ignored (fail closed to the structural
+// gate). A direct caller can always forge consistent-looking metadata, so a
+// prefix probe result stays provisional (truncated:true) and never equals the
+// confirmed complete-table shape.
 assert.equal(
   detectBinary(Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01, ...new Array(8).fill(0)]), { probeLength: 16n, totalSize: 9007199254740993n }).fat,
   true,
   'a 16-byte probe of a >2^53-byte source keeps candidate routing',
 );
-assert.equal(
-  detectBinary(Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01]), { probeLength: 8n, totalSize: 9007199254740993n }).fat,
-  true,
-  'an 8-byte prefix declared as part of a huge source keeps candidate routing (parser owns bounds)',
+{
+  const result = detectBinary(
+    Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01]),
+    { probeLength: 8n, totalSize: 28n },
+  );
+  assert.deepEqual(
+    result,
+    { format: 'macho', fat: true, truncated: true },
+    'the R2 forged-consistent counterexample mints only a provisional truncated result',
+  );
+  assert.notDeepEqual(
+    result,
+    { format: 'macho', fat: true },
+    'forged prefix metadata can never reproduce the confirmed complete-table shape',
+  );
+}
+assert.deepEqual(
+  detectBinary(Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01]), { probeLength: 16n, totalSize: 28n }),
+  { format: 'unknown' },
+  'probe/input length mismatch is self-inconsistent metadata: ignored, structural gate applies',
 );
+assert.deepEqual(
+  detectBinary(Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01, ...new Array(8).fill(0)]), { probeLength: 8n, totalSize: 28n }),
+  { format: 'unknown' },
+  'a declared probe longer than the handed-over bytes is ignored',
+);
+for (const malformed of [
+  { probeLength: '16', totalSize: 28 },
+  { probeLength: 16.5, totalSize: 28 },
+  { probeLength: 16, totalSize: -28 },
+  { probeLength: -16, totalSize: 28 },
+  { probeLength: null, totalSize: 28 },
+]) {
+  assert.deepEqual(
+    detectBinary(Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01, ...new Array(8).fill(0)]), malformed),
+    { format: 'unknown' },
+    `malformed probe metadata ${JSON.stringify(malformed)} is ignored (fail closed)`,
+  );
+}
 assert.deepEqual(
   detectBinary(Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01]), { probeLength: 8n, totalSize: 8n }),
   { format: 'unknown' },
   'an 8-byte input declared as the complete source stays fail-closed',
+);
+
+// A complete arch table without probe metadata keeps the CONFIRMED result
+// shape (no truncated marker) — only prefix routing is provisional.
+assert.deepEqual(
+  detectBinary(Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01, ...new Array(20).fill(0)])),
+  { format: 'macho', fat: true },
+  'a complete arch table confirms without a truncated marker',
 );
 
 // #5647 review: a COMPLETE 8-byte input declaring nfat_arch=1 but carrying no

@@ -43,14 +43,18 @@ export function detectBinary(input, options = {}) {
       // little-endian read swaps the two families.
       const entrySize = be === 0xcafebabf || be === 0xbfbafeca ? 32 : 20;
       const tableEnd = 8 + nfatArch * entrySize;
-      // #5647 review: probe routing may only bypass the table-bound gate when
-      // the caller genuinely sees a truncated prefix of a larger input. The
-      // caller declares what it handed us and the total source size; the
-      // truncation is derived from those sizes, so a forged caller-controlled
-      // boolean cannot promote a complete short input to a confirmed FAT.
-      // Sizes are compared as BigInt: a ByteSource's BigInt size authority
-      // must survive beyond the safe-integer domain (a Number narrowing would
-      // fail closed for valid fat sources larger than 2^53).
+      // #5647 review (R2): probe routing may only bypass the table-bound gate
+      // when the caller genuinely sees a truncated prefix of a larger source,
+      // and the result must then stay PROVISIONAL — a direct caller can always
+      // forge consistent-looking size metadata, so a prefix probe must never
+      // mint the same confirmed shape as a complete arch table. The metadata
+      // is additionally bound to the bytes actually handed over: probeLength
+      // must equal the input length and totalSize must exceed it, otherwise
+      // the declared sizes are self-inconsistent and are ignored entirely
+      // (fail closed to the structural gate). Sizes are compared as BigInt: a
+      // ByteSource's BigInt size authority must survive beyond the safe-integer
+      // domain (a Number narrowing would fail closed for valid fat sources
+      // larger than 2^53).
       const asSize = (value) => {
         if (typeof value === 'bigint') return value;
         if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
@@ -58,10 +62,11 @@ export function detectBinary(input, options = {}) {
       };
       const probeLength = asSize(options.probeLength);
       const totalSize = asSize(options.totalSize);
-      const isTruncatedPrefix = probeLength != null && totalSize != null
-        && probeLength >= 0n && totalSize > probeLength;
-      const truncated = isTruncatedPrefix;
-      if (!truncated && r.length < tableEnd) return { format: 'unknown' };
+      const inputLength = BigInt(r.length);
+      const trustedPrefix = probeLength != null && totalSize != null
+        && probeLength === inputLength && totalSize > probeLength;
+      if (trustedPrefix) return { format: 'macho', fat: true, truncated: true };
+      if (r.length < tableEnd) return { format: 'unknown' };
       return { format: 'macho', fat: true };
     }
   }
