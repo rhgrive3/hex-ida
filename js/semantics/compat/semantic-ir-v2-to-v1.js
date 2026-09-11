@@ -107,6 +107,23 @@ function sealConstantTransitions(projected, observer) {
   expectedConstantTransitions.set(projected, observer.expected);
   if (!observer.records.length) return;
   try {
+    const state = stateTransitions.get(projected), aliasedSources = new Set();
+    let stateCurrent = null;
+    const matchesInput = (source, input, index) => {
+      if (input.argument?.value === input.value) return true;
+      const history = state?.get(input.argument);
+      if (!history || !(stateCurrent ??= state.isCurrent())) return false;
+      let expected = input.value, written = false;
+      for (const event of history.events) {
+        if (event.kind !== 'resolve-state-alias' || event.source !== source || event.object !== input.argument
+          || event.key !== 'value' || event.path !== `args:${index}`) continue;
+        if (event.before !== expected) return false;
+        expected = event.after; written = true;
+      }
+      if (!written || input.argument.value !== expected) return false;
+      aliasedSources.add(source);
+      return true;
+    };
     const grouped = new Map();
     for (const event of observer.records) {
       if (!grouped.has(event.source)) grouped.set(event.source, []);
@@ -116,10 +133,17 @@ function sealConstantTransitions(projected, observer) {
       && source.dst?.const === events.at(-1).afterConstant
       && events.every(event => source.dst === event.output && source.op === event.op && source.sub === event.sub
         && source.dst.bits === event.bits && source.args?.length === event.inputs.length
-        && event.inputs.every((input, i) => source.args[i] === input.argument && input.argument?.value === input.value
+        && event.inputs.every((input, i) => source.args[i] === input.argument && matchesInput(source, input, i)
           && input.value?.def === input.definition)
         && (event.op !== V1_OP.LOAD || source.memoryForwarding === event.memoryForwarding)));
-    const isCurrent = observeProjectedOperationData(projected, valid.flatMap(([, events]) => events));
+    const output = observeProjectedOperationData(projected, valid.flatMap(([, events]) => events));
+    // Keep the original constant reads/operations. Only the already-issued
+    // state writer can account for intervening argument aliases; a matching
+    // scalar constant or public alias annotation is not a handoff.
+    const aliased = valid.some(([source]) => aliasedSources.has(source));
+    const isCurrent = !aliased ? output : Object.freeze(Object.assign(() => state.isCurrent() && output(), {
+      matchesThroughWrites:writes => state.matchesThroughWrites(writes) && output.matchesThroughWrites(writes),
+    }));
     constantTransitions.set(projected, new Map(valid.map(([source, events]) => [source,
       Object.freeze({ source, events:Object.freeze(events), isCurrent })])));
   } catch {
@@ -679,8 +703,8 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   projected.memorySafety = memorySafetySummary(projected);
   projected.defUse = () => projected.values;
   sealMemoryOperandTransitions(projected, memoryTransitions);
-  sealConstantTransitions(projected, constantObserver);
   sealStateTransitions(projected, stateObserver);
+  sealConstantTransitions(projected, constantObserver);
   return projected;
 }
 

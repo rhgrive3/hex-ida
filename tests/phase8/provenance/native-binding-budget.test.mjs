@@ -7,6 +7,58 @@ import * as facade from '../../../js/ir-core.js';
 import * as projector from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 import { readLineExpressionHistory } from '../../../js/decompiler/phase8/projection.js';
 import { PROJECTION_LIMITS } from '../../../js/core/identity/live-data.js';
+import { createCapstoneX86Session } from '../../phase5/helpers/capstone-session.mjs';
+import { createX86DecodedInstruction, X86_DECODER_SEMANTIC_VERSION } from '../../../js/targets/architecture/x86_64/decoded-instruction.js';
+import { architecturePluginV2 } from '../../../js/targets/architecture/index.js';
+import { resolveABIPlugin } from '../../../js/targets/abi/index.js';
+import { partitionDecodedFunction, semanticAbiAdapter } from '../../../js/analysis/semantic-function.js';
+import { buildSemanticV2CompatibilityPipeline } from '../../../js/semantics/compat/index.js';
+
+test('C4-03 native switch retains pre-memory constant reads through actual state aliases before display projection', async () => {
+  const corpus = loadCorpus(), id = 'x86_64.quality.structure_switch.O0';
+  const index = corpus.functions.findIndex(entry => entry.id === id);
+  assert.ok(index >= 0);
+  const entry = corpus.functions[index];
+  assert.equal(entry.representation, 'machine-bytes');
+  const bytes = Uint8Array.from(Buffer.from(entry.bytes, 'hex'));
+  const session = await createCapstoneX86Session();
+  try {
+    const decoded = session.decode(bytes, 0x100000n + BigInt(index) * 0x10000n);
+    assert.equal(decoded.reduce((sum, inst) => sum + Number(inst.length ?? inst.size), 0), bytes.length);
+    const instructions = decoded.map((inst, i) => createX86DecodedInstruction({
+      ...inst, instructionId:`phase8:${id}:${i}`,
+    }));
+    const architecturePlugin = architecturePluginV2('x86_64');
+    const abiAdapter = semanticAbiAdapter(resolveABIPlugin({ architecture:'x86_64', platform:'linux' }));
+    const blocks = partitionDecodedFunction(instructions, architecturePlugin);
+    const { legacyV1:ir } = buildSemanticV2CompatibilityPipeline({
+      architecturePlugin, abiAdapter, blocks, entryBlockKey:blocks[0].key,
+      decoderSemanticVersion:X86_DECODER_SEMANTIC_VERSION,
+      binaryId:`phase8-corpus:${id}`, sliceId:`x86_64:${entry.optimization}`,
+      addressWidthBits:64, mode:'long-64',
+      machineEffectsContext:{ dataEndianness:'little', instructionEndianness:'little' },
+    }, { abiAdapter });
+    const sources = ir.instructions.filter(source => projector.projectedConstantTransitionExpected(ir, source));
+    assert.equal(sources.length, 4, 'all actual constant producers, including the two formerly lost reads');
+    const records = sources.map(source => projector.readProjectedConstantTransitions(ir, source));
+    assert.ok(records.every(Boolean));
+    const aliased = records.flatMap(record => record.events.flatMap(event => event.inputs
+      .filter(input => input.argument.value !== input.value).map(input => ({ record, event, input }))));
+    assert.equal(aliased.length, 2);
+    for (const { record, event, input } of aliased) {
+      assert.equal(event.stage, 'pre-memory-scalar-constants');
+      assert.ok(event.beforeInputs.includes(input.value));
+      const state = projector.readProjectedStateTransitions(ir, input.argument);
+      assert.ok(state?.events.some(write => write.kind === 'resolve-state-alias'
+        && write.source === event.source && write.before === input.value && write.after === input.argument.value));
+      assert.equal(record.isCurrent(), true);
+      assert.equal(projector.readProjectedConstantTransitions({ ...ir }, record.source), null);
+    }
+    aliased[0].input.value.const = null;
+    assert.equal(aliased[0].record.isCurrent(), false);
+    assert.equal(projector.readProjectedConstantTransitions(ir, aliased[0].record.source), null);
+  } finally { session.close(); }
+});
 
 for (const id of ['riscv64.quality.aggregate_array_stride.O0', 'riscv64.quality.loop_counted_sum.O0',
   'x86_64.quality.loop_counted_sum.O0']) {

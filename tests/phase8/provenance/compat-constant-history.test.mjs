@@ -3,8 +3,9 @@ import test from 'node:test';
 import { createSemanticIrFunction } from '../../../js/semantics/ir/function.js';
 import { createSemanticCfg } from '../../../js/semantics/cfg/index.js';
 import { buildMemorySsa } from '../../../js/semantics/memoryssa/build.js';
+import { buildSemanticSsa } from '../../../js/semantics/ssa/index.js';
 import { projectSemanticIrV2ToLegacyV1, readProjectedConstantTransitions,
-  projectedConstantTransitionExpected } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
+  projectedConstantTransitionExpected, readProjectedStateTransitions } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 import { propagateScalarConstants, finalizeLegacyProjection } from '../../../js/semantics/compat/semantic-ir-v2-to-v1-finalize.js';
 import { BRANCH, loadRoadmapManifest, validateRoadmapInventory } from '../../../tools/validation/analysis-roadmap/ownership.mjs';
 import { enhanceSemanticDecompilation, readExpressionHistoryConsumer } from '../../../js/decompiler/pipeline-core.js';
@@ -16,6 +17,70 @@ import { annotateValueRanges } from '../../../js/semantics/compat/legacy-value-r
 import { captureProjectionIrData, PROJECTION_LIMITS } from '../../../js/core/identity/live-data.js';
 
 const clone = ir => structuredClone(Object.fromEntries(Object.entries(ir).filter(([, value]) => typeof value !== 'function')));
+
+function aliasConstantFixture(bits = 32) {
+  const functionId = 'constant_state_alias', type = { kind:'bitvector', widthBits:bits };
+  const variable = { key:'physical-state:constant', kind:'physical-state', scope:'function',
+    physicalIdentity:{ kind:'register', registerId:'constant-register' } };
+  const origin = id => ({ instructionIds:[id], operationIds:[`operation:${id}`] });
+  const nodes = [
+    { id:'seed', kind:'const', blockId:'b0', inputs:[], outputs:['v_seed'], attributes:{ value:42 }, origin:origin('seed') },
+    { id:'write', kind:'state-write', blockId:'b0', inputs:['v_seed'], outputs:[], variable, origin:origin('write') },
+    { id:'read', kind:'state-read', blockId:'b0', inputs:[], outputs:['v_read'], variable, origin:origin('read') },
+    { id:'neg', kind:'unary', operator:'neg', blockId:'b0', inputs:['v_read'], outputs:['v_neg'], origin:origin('neg') },
+    { id:'ret', kind:'return', blockId:'b0', inputs:['v_neg'], outputs:[], origin:origin('ret') },
+  ];
+  const values = ['seed','read','neg'].map(id => ({ id:`v_${id}`, kind:'definition', machineType:type,
+    definitionNodeId:id, sourceEntityId:id, ...(id === 'read' ? { variableKey:variable.key } : {}), origin:origin(id) }));
+  const canonical = createSemanticIrFunction({ schemaVersion:2, contractVersion:'2.0.0', functionId, entryBlockId:'b0',
+    blocks:[{ id:'b0', nodeIds:nodes.map(node => node.id), origin:origin('block') }], values, nodes,
+    completeness:'complete', unknowns:[], origin:origin('function') });
+  const cfg = createSemanticCfg({ functionId, entryBlockId:'b0', blocks:[{ id:'b0', successors:[] }] });
+  // Exercise the compatibility contract with a known state definition but no
+  // canonical read-use mapping. The projector itself must discover the local
+  // physical view and emit the alias write; no public projection flag/history
+  // is supplied by this fixture.
+  const ssa = { ...buildSemanticSsa(canonical, cfg), uses:[] };
+  const memorySsa = buildMemorySsa(canonical, cfg, { ssa });
+  const ir = projectSemanticIrV2ToLegacyV1(canonical, { cfg, ssa, memorySsa });
+  return { ir, source:ir.instructions.find(inst => inst.semanticNodeId === 'neg') };
+}
+
+test('actual state alias writes retain original pre-memory constant reads and their live causes', () => {
+  for (const bits of [8,16,32,64]) {
+    const { ir, source } = aliasConstantFixture(bits);
+    const record = readProjectedConstantTransitions(ir, source);
+    assert.ok(record, `${bits}: privately issued state alias handoff`);
+    const event = record.events.find(event => event.stage === 'pre-memory-scalar-constants');
+    assert.ok(event);
+    const input = event.inputs[0];
+    assert.notEqual(input.argument.value, input.value, 'the real writer replaced the argument after constant propagation');
+    assert.equal(event.beforeInputs.includes(input.value), true, 'retain the original read instead of reconstructing it');
+    const state = readProjectedStateTransitions(ir, input.argument);
+    assert.ok(state?.events.some(event => event.kind === 'resolve-state-alias'
+      && event.before === input.value && event.after === input.argument.value));
+    assert.equal(source.dst.const, BigInt.asUintN(bits, -42n));
+    assert.equal(readProjectedConstantTransitions({ ...ir }, source), null);
+    input.value.const = 7n;
+    assert.equal(record.isCurrent(), false);
+    assert.equal(readProjectedConstantTransitions(ir, source), null);
+  }
+});
+
+test('constant alias handoff retains exact root identity and does not authorize caller writes', () => {
+  const { ir, source } = aliasConstantFixture();
+  const record = readProjectedConstantTransitions(ir, source); assert.ok(record);
+  const input = record.events[0].inputs[0], before = input.argument.value, after = input.value;
+  input.argument.value = after;
+  const writes = [{ object:input.argument, key:'value', before, after }];
+  assert.equal(record.isCurrent.matchesThroughWrites(writes), true, 'data matching alone grants no writer authority');
+  assert.equal(record.isCurrent(writes), false);
+  assert.equal(readProjectedConstantTransitions(ir, source), null);
+  const other = aliasConstantFixture(), prior = readProjectedConstantTransitions(other.ir, other.source);
+  assert.ok(prior);
+  other.ir.values = [...other.ir.values];
+  assert.equal(prior.isCurrent(), false);
+});
 
 function fixture({ bits = 32, preMemory = false, unknown = false } = {}) {
   const functionId = 'compat_constant_history';
