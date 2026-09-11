@@ -305,16 +305,31 @@ for (const method of ['captureCertifiedData', 'captureCertifiedDataGraph']) {
   });
 
   test(`C4-03 ${method} certifies shared immutable payloads once without merging their owners`, () => {
-    const source = Object.freeze(Array.from({ length:1000 }, (_, id) => Object.freeze({ id })));
+    for (const withOrigin of [false, true]) {
+    const origin = createOriginSet({ instructionIds:['shared-original'] });
+    const source = Object.freeze(Array.from({ length:1000 }, (_, id) => Object.freeze({ id, ...(withOrigin ? { origin } : {}) })));
     const records = Array.from({ length:200 }, (_, ordinal) => Object.freeze({ ordinal, source }));
     const root = { records };
-    const observation = createProjectionIrObserver()[method]([root]);
+    const observer = createProjectionIrObserver();
+    // An ordinary warmed immutable cache does not certify origin revocation.
+    observer.capture([source]);
+    const observation = observer[method]([root]);
     assert.equal(observation.dataCertification.envelopes, records.length);
     assert.ok(observation.dataCertification.nodes < 5000, 'shared data work is not charged once per owner');
     assert.equal(new Set(records).size, records.length);
     assert.equal(observation.matches(), true);
+    if (withOrigin) {
+      const prior = Object.getOwnPropertyDescriptor(Object.prototype, 'toJSON');
+      Object.defineProperty(Object.prototype, 'toJSON', { configurable:true, value:() => null });
+      try { assert.equal(observation.matches(), false); }
+      finally {
+        if (prior) Object.defineProperty(Object.prototype, 'toJSON', prior);
+        else delete Object.prototype.toJSON;
+      }
+    }
     records[0] = Object.freeze({ ...records[0] });
     assert.equal(observation.matches(), false);
+    }
   });
 }
 

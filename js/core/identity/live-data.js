@@ -33,7 +33,14 @@ export const PROJECTION_LIMITS = Object.freeze({nodes:10000,edges:100000,depth:9
 export const ORIGIN_CERTIFICATION_LIMITS = Object.freeze({ nodes:100000, edges:1000000, expandedUnits:2000000 });
 export const DATA_CERTIFICATION_LIMITS = Object.freeze({ nodes:100000, edges:1000000, expandedUnits:2000000 });
 const normalizationChecks = new WeakMap();
-const normalizationGuard = (origins, guards) => () => origins.every(isReusableOriginSet) && guards.every(check => check());
+const normalizationGuard = (origins, guards) => {
+  const current = (seen = new WeakSet()) => {
+    if (seen.has(current)) return true;
+    seen.add(current);
+    return origins.every(isReusableOriginSet) && guards.every(check => check(seen));
+  };
+  return current;
+};
 
 /**
  * Bounded live-object observation for the SSA/definition graph behind a
@@ -51,7 +58,7 @@ export function captureProjectionIrData(roots, shouldAbort = null) {
 // mutable objects from live checks. This shares observations, not authority.
 export function createProjectionIrObserver() {
   const immutable = new WeakMap();
-  const data = { eligibility:new WeakMap(), originBearing:new WeakMap(), certificates:new WeakMap() };
+  const data = { eligibility:new WeakMap(), guards:new WeakMap(), certificates:new WeakMap() };
   return Object.freeze({
     capture:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable),
     // Complete graph inputs already enumerate their vertices. Visit by distance
@@ -70,7 +77,7 @@ export function createProjectionIrObserver() {
   });
 }
 
-function captureIrData(roots, shouldAbort, immutable, graph = false, data = null) {
+function captureIrData(roots, shouldAbort, immutable, graph = false, data = null, normalizationGuards = null) {
   if (!Array.isArray(roots)) throw new TypeError('projection-ir-roots-array-required');
   const records = [], seen = new WeakMap();
   const originCertificates = [], certification = { nodes:0, edges:0, expandedUnits:0 };
@@ -111,17 +118,15 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
     const entries = ownDataEntries(value, DATA_CERTIFICATION_LIMITS.edges - dataCertification.edges);
     chargeData({ edges:entries.length }); eligibilityEdges += entries.length;
     active.add(value);
-    let height = 1, originBearing = isReusableOriginSet(value);
+    let height = 1;
     for (const [key, child] of entries) {
       if (key === 'uses') continue;
       const childHeight = eligible(child, active, depth + 1);
       if (childHeight == null) { height = null; break; }
       height = Math.max(height, childHeight + 1);
-      originBearing ||= child !== null && typeof child === 'object' && data.originBearing.get(child) === true;
     }
     active.delete(value);
     data.eligibility.set(value, height);
-    data.originBearing.set(value, originBearing);
     return height;
   }
   function certifyData(value, depth) {
@@ -132,9 +137,10 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
     if (!certificate) {
       // The existing bounded observer validates all descriptors, scalar limits,
       // cycles and origins. Eligibility alone is never a data certificate.
-      // Origin-free descriptions can reuse the ordinary immutable subtree
-      // cache. Origin-bearing ones retain the explicit environment guards.
-      const observed = captureIrData([value], shouldAbort, immutable, data.originBearing.get(value) ? 'canonical-origins' : false);
+      // Reuse each immutable subtree together with its normalization guard.
+      // A shared origin-bearing description must not be walked again for each
+      // owning record; the exact owner references are still observed outside.
+      const observed = captureIrData([value], shouldAbort, immutable, false, null, data.guards);
       chargeData(observed.metrics);
       for (const key of Object.keys(certification)) {
         certification[key] += observed.originCertification?.[key] ?? 0;
@@ -154,9 +160,10 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
     const primitive = scalarCost(value);
     if (primitive != null) return primitive;
     if (depth > PROJECTION_LIMITS.depth) throw new TypeError('projection-depth-budget');
-    const cachedHeight = data ? null : immutable?.get(value);
+    const cachedHeight = data || normalizationGuards && !normalizationGuards.has(value) ? null : immutable?.get(value);
     if (cachedHeight != null) {
       if (depth + cachedHeight - 1 > PROJECTION_LIMITS.depth) throw new TypeError('projection-depth-budget');
+      if (normalizationGuards) dataGuards.push(normalizationGuards.get(value));
       return 1;
     }
     if (seen.has(value)) return 1;
@@ -185,7 +192,16 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
       if (cost > PROJECTION_LIMITS.expandedUnits) throw new TypeError('projection-expansion-budget');
     }
     seen.set(value, height);
-    if (stable) immutable.set(value, height);
+    if (stable) {
+      immutable.set(value, height);
+      if (normalizationGuards) {
+        const guards = entries.filter(([key, child]) => key !== 'uses' && child !== null && typeof child === 'object')
+          .map(([, child]) => normalizationGuards.get(child));
+        const current = normalizationGuard(isReusableOriginSet(value) ? [value] : [], guards);
+        normalizationGuards.set(value, current);
+        dataGuards.push(current);
+      }
+    }
     return cost;
   }
   if (graph) {
