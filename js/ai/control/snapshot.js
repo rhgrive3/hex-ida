@@ -119,12 +119,13 @@ export function resolveBinaryIdentity(local = {}, request = {}) {
 
 export function resolveBinaryBinding(local = {}, request = {}) {
   const live = resolveLiveBinaryIdentity(local);
-  const requested = resolveRequestedBinaryIdentity(local, request);
-  const conflict = !!requested && strongIdentity(live) && strongIdentity(requested)
-    && canonicalBindingId(live.id) !== canonicalBindingId(requested.id);
+  const requestBinding = resolveRequestedBinaryBinding(local, request);
+  const requested = requestBinding.identity;
+  const conflict = requestBinding.conflict || (!!requested && strongIdentity(live) && strongIdentity(requested)
+    && !sameStrongIdentity(live, requested, local));
   if (strongIdentity(live)) return { identity:live, source:'live', live, requested, conflict };
-  if (requested) return { identity:requested, source:'request-fallback', live, requested, conflict:false };
-  return { identity:live, source:'live', live, requested:null, conflict:false };
+  if (requested) return { identity:requested, source:'request-fallback', live, requested, conflict };
+  return { identity:live, source:'live', live, requested:null, conflict };
 }
 
 function resolveLiveBinaryIdentity(local = {}) {
@@ -143,15 +144,19 @@ function resolveLiveBinaryIdentity(local = {}) {
   return explicit || derived;
 }
 
-function resolveRequestedBinaryIdentity(local = {}, request = {}) {
+function resolveRequestedBinaryBinding(local = {}, request = {}) {
   const explicit = normalizeIdentity(request.binaryIdentity);
   const contentHash = firstBinding(request.binaryHash);
   const legacyId = firstBinding(request.binaryId);
-  if (!explicit && contentHash == null && legacyId == null) return null;
+  if (!explicit && contentHash == null && legacyId == null) return { identity:null, conflict:false };
   const derived = derivedIdentity(local, { contentHash, legacyId, allowNameFallback:false });
-  if (strongIdentity(explicit)) return explicit;
-  if (strongIdentity(derived)) return derived;
-  return explicit || derived;
+  const explicitStrong = strongIdentity(explicit);
+  const derivedStrong = strongIdentity(derived);
+  const conflict = (explicitStrong && !requestIdentityConsistent(explicit, local))
+    || (explicitStrong && derivedStrong && !sameStrongIdentity(explicit, derived, local));
+  if (explicitStrong) return { identity:explicit, conflict };
+  if (derivedStrong) return { identity:derived, conflict };
+  return { identity:explicit || derived, conflict };
 }
 
 function derivedIdentity(local, { contentHash = null, legacyId = null, allowNameFallback = false } = {}) {
@@ -184,6 +189,37 @@ function strongIdentity(identity) {
   if (canonicalBindingId(identity?.hash) != null) return true;
   if (typeof id === 'string' && id.startsWith('content:')) return true;
   return identity?.confidence === 'strong' && identity?.state === 'ready' && typeof id === 'string' && !id.startsWith('fallback:');
+}
+
+function sameStrongIdentity(left, right, local) {
+  const leftHash = assertedContentHash(left, local);
+  const rightHash = assertedContentHash(right, local);
+  if (leftHash != null && rightHash != null) return leftHash === rightHash;
+  return canonicalBindingId(left?.id) === canonicalBindingId(right?.id);
+}
+
+function assertedContentHash(identity, local) {
+  const hash = canonicalBindingId(identity?.hash);
+  if (hash != null) return hash;
+  const id = canonicalBindingId(identity?.id);
+  if (typeof id !== 'string' || !id.startsWith('content:')) return null;
+  const payload = id.slice('content:'.length);
+  const slice = selectedSlice(local);
+  if (!slice.invalid && slice.value != null) {
+    const suffix = `:${slice.value}`;
+    if (payload.endsWith(suffix) && payload.length > suffix.length) return payload.slice(0, -suffix.length);
+  }
+  return payload || null;
+}
+
+function requestIdentityConsistent(identity, local) {
+  const id = canonicalBindingId(identity?.id);
+  const hash = canonicalBindingId(identity?.hash);
+  if (hash == null || typeof id !== 'string' || !id.startsWith('content:')) return true;
+  const slice = selectedSlice(local);
+  if (slice.invalid) return false;
+  const suffix = slice.value == null ? '' : `:${slice.value}`;
+  return id === `content:${hash}${suffix}`;
 }
 
 function normalizeIdentity(value) {

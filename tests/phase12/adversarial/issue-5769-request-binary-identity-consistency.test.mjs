@@ -1,0 +1,53 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { createTurnSnapshot } from '../../../js/ai/control/snapshot.js';
+
+const strongIdentity = (hash, id = `content:${hash}`) => ({
+  id,
+  kind: id.startsWith('content:') ? 'content-derived' : 'external',
+  confidence: 'strong',
+  state: 'ready',
+  algorithm: 'existing-hash',
+  hash,
+  legacyId: null,
+});
+
+test('#5769 same strong id with a contradictory content hash is rejected', () => {
+  assert.throws(
+    () => createTurnSnapshot(
+      { binaryIdentity:strongIdentity('bbbb') },
+      { binaryIdentity:strongIdentity('aaaa', 'content:bbbb') },
+    ),
+    (error) => error?.type === 'scope_violation',
+  );
+});
+
+test('#5769 equal strong content hashes are equivalent across non-content id spellings', () => {
+  const snapshot = createTurnSnapshot(
+    { binaryHash:'bbbb' },
+    { binaryIdentity:strongIdentity('bbbb', 'external:request-B') },
+  );
+  assert.equal(snapshot.binaryIdentitySource, 'live');
+  assert.equal(snapshot.binaryIdentity.hash, 'bbbb');
+});
+
+test('#5769 request binaryIdentity and binaryHash assertions must agree', () => {
+  assert.throws(
+    () => createTurnSnapshot(
+      {},
+      { binaryIdentity:strongIdentity('aaaa'), binaryHash:'bbbb' },
+    ),
+    (error) => error?.type === 'scope_violation',
+  );
+});
+
+test('#5769 content id slice assertion must match the selected slice', () => {
+  assert.throws(
+    () => createTurnSnapshot(
+      { sliceIndex:1 },
+      { binaryIdentity:strongIdentity('bbbb', 'content:bbbb:2') },
+    ),
+    (error) => error?.type === 'scope_violation',
+  );
+});
