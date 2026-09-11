@@ -87,8 +87,7 @@
     "tools/validation/perf-refinement/cases.mjs",
     "tools/validation/perf-refinement/micro.mjs",
     "tools/validation/perf-refinement/paired.mjs",
-    "tools/validation/perf-refinement/text-probe.mjs",
-    "zip/hex-ida-speed-optimized-20260909.zip"
+    "tools/validation/perf-refinement/text-probe.mjs"
   ],
   "files": [
     {
