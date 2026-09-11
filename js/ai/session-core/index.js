@@ -133,8 +133,12 @@ export class InvestigationSessionStore {
     // rejected on the next turn because binaryId still contains filename:slice.
     if (!Object.prototype.hasOwnProperty.call(patch, 'binaryId') && patch.binaryIdentity?.id) candidate.binaryId = String(patch.binaryIdentity.id);
     if (candidate.binaryId != null) candidate.binaryId = String(candidate.binaryId);
-    candidate.updatedAt = new Date().toISOString();
-    const ownedCandidate = freezeOwned(candidate);
+    // update() is a second session-construction boundary, not a raw object
+    // patcher. Re-run the same canonicalizer used by create/register/load so
+    // enum and collection invariants cannot be bypassed by a later patch
+    // (#4584). createInvestigationSession preserves candidate.createdAt and
+    // refreshes updatedAt while normalizing every persisted field.
+    const ownedCandidate = freezeOwned(createInvestigationSession(candidate));
     await this.persist(ownedCandidate);
     this.sessions.set(id, ownedCandidate);
     return ownedCandidate;
