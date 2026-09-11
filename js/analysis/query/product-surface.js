@@ -229,8 +229,16 @@ async function scanNextStringRegion(app, state, options = {}) {
         ? (progress) => options.onProgress({ ...progress, phase:'strings', region:item.region.id })
         : null,
     );
-    const entry = { waiters:0, cancel:typeof request?.cancel === 'function' ? () => request.cancel() : null, promise:null };
+    const cancelRequest = typeof request?.cancel === 'function' ? () => request.cancel() : null;
+    const entry = { waiters:0, retired:false, cancel:null, promise:null };
+    entry.cancel = () => {
+      if (entry.retired) return;
+      entry.retired = true;
+      if (state.inFlight === entry) state.inFlight = null;
+      cancelRequest?.();
+    };
     entry.promise = Promise.resolve(request).then((result) => {
+      if (entry.retired) return;
       state.scannedBytes += Number(result?.scannedBytes || 0);
       if (result?.complete !== true) state.backendIncomplete = true;
       for (const row of result?.results || []) {

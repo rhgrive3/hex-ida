@@ -402,6 +402,15 @@ export function createPointsToTarget(input = {}) {
   // when the exact canonical proof object and its root identity are preserved.
   const proof = input[ROOT_DESCRIPTOR_PROOF];
   const proven = targetMatchesCanonicalProof(input, proof, rootIdentity);
+  const canonicalStorageClass = typeof input.canonicalRootStorageClass === 'string' && input.canonicalRootStorageClass.trim()
+    ? input.canonicalRootStorageClass.trim()
+    : (typeof input.storageClass === 'string' && input.storageClass.trim()
+      ? input.storageClass.trim()
+      : (typeof input.rootIdentity?.storageClass === 'string' && input.rootIdentity.storageClass.trim()
+        ? input.rootIdentity.storageClass.trim()
+        : (typeof input.metadata?.canonicalRootStorageClass === 'string' && input.metadata.canonicalRootStorageClass.trim()
+          ? input.metadata.canonicalRootStorageClass.trim()
+          : null)));
   const target = {
     addressSpace: canonicalAddressSpace(input.addressSpace),
     rootKind: typeof input.rootKind === 'string' ? input.rootKind : 'unknown',
@@ -412,6 +421,7 @@ export function createPointsToTarget(input = {}) {
     rootEntityId: typeof input.rootEntityId === 'string' && input.rootEntityId.trim() ? input.rootEntityId.trim() : null,
     separationClass: typeof input.separationClass === 'string' ? input.separationClass : null,
     separationAuthority: proven ? 'root-descriptor' : null,
+    ...(canonicalStorageClass ? { canonicalRootStorageClass: canonicalStorageClass } : {}),
     address: canonicalPointsToAddress(input.address),
     offsetRange: canonicalOffsetRange(input.offsetRange),
     widthBits: input.widthBits == null ? null : Number(input.widthBits),
