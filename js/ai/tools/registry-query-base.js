@@ -69,6 +69,10 @@ function markQueryAuthority(value) {
     : value;
 }
 
+function exactPageTotal(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
 function installQueryOverrides(registry, context) {
   if (!queryContext(context)) return registry;
 
@@ -155,7 +159,7 @@ function installQueryOverrides(registry, context) {
       results:rows,
       offset,
       returned:rows.length,
-      total:Number.isFinite(Number(page?.total)) ? Number(page.total) : null,
+      total:exactPageTotal(page?.total),
       complete,
       truncated:!complete,
       reason:complete ? null : (page?.reason || 'result-limit'),
