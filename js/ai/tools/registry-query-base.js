@@ -1,4 +1,4 @@
-import { createHexToolRegistry as createBaseHexToolRegistry, ToolRegistry } from './registry-base.js';
+import { buildRelatedFunctionsResult, createHexToolRegistry as createBaseHexToolRegistry, ToolRegistry } from './registry-base.js';
 import { shortHash, stableSerialize } from './paging/cursor.js';
 import { addressText } from '../validation.js';
 
@@ -195,12 +195,13 @@ function installQueryOverrides(registry, context) {
         context.getCallees(functionAddress, { limit, offset:0, signal:registry.executionSignal }),
       ]);
       return {
-        functionAddress:addressText(functionAddress),
-        callers:pageRows(callers),
-        callees:pageRows(callees),
-        complete:callers?.complete === true && callees?.complete === true,
-        truncated:callers?.complete !== true || callees?.complete !== true,
-        reason:callers?.reason || callees?.reason || null,
+        ...buildRelatedFunctionsResult({
+          functionAddress,
+          limit,
+          callers,
+          callees,
+          cursorFor:(tool, params, offset) => queryPaging(registry, tool, params, null).makeCursor(offset),
+        }),
         analysisAuthority:'AnalysisQueryAPI',
       };
     });
