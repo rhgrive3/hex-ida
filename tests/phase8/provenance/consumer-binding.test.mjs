@@ -7,6 +7,8 @@ import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
 import { createDecompilerNavigation } from '../../../js/ui/decompiler-provenance.js';
 import { structuralKey } from '../../../js/decompiler/ast/nodes.js';
 import { captureProjectionIrData, createProjectionIrObserver, PROJECTION_LIMITS } from '../../../js/core/identity/live-data.js';
+import { captureRecoveryIrData } from '../../../js/decompiler/phase8/projection-origin.js';
+import { observeProjectedOperationData } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 import { createExpressionOriginHistoryRecorder, expressionOriginHistory } from '../../../js/decompiler/rewrite/engine.js';
 import { analysis, consumerFixture as fixture, expr, resultWith, source } from './fixture.js';
 
@@ -96,6 +98,78 @@ function graphFixture() {
   for (let index = 0; index < values.length; index++) values[index].def = instructions[index];
   return { values, instructions };
 }
+
+function producerGraphFixture() {
+  const ir = graphFixture();
+  for (const instruction of ir.instructions) instruction.block = 0;
+  ir.blocks = [{ index:0, phis:[], insts:[...ir.instructions] }];
+  ir.idom = [0];
+  ir.dominators = [new Set([0])];
+  const transitions = ir.instructions.map(source => ({ source, beforeInputs:[] }));
+  return { ir, transitions };
+}
+
+test('C4-03 operation and recovery producers observe cyclic SSA roots without reusing stale captures', () => {
+  for (const capture of [
+    ({ ir, transitions }) => observeProjectedOperationData(ir, transitions),
+    ({ ir }) => { const observation = captureRecoveryIrData(ir, []); return () => observation.matches(); },
+  ]) for (const mutate of [
+    ir => { ir.values = [...ir.values]; },
+    ir => { ir.values[170] = { ...ir.values[170] }; },
+    ir => { ir.instructions[180] = { ...ir.instructions[180] }; },
+    ir => { ir.blocks[0].insts = [...ir.blocks[0].insts]; },
+    ir => { ir.instructions[190].args[0].value.id++; },
+    ir => { Object.setPrototypeOf(ir.values[150], null); },
+    ir => { Object.defineProperty(ir.values[150], 'id', { get:() => 150 }); },
+  ]) {
+    const fixture = producerGraphFixture(), matches = capture(fixture);
+    assert.equal(matches(), true);
+    mutate(fixture.ir);
+    assert.equal(matches(), false);
+  }
+});
+
+test('C4-03 graph operation matching observes only selected roots and never authorizes caller writes', () => {
+  const { ir, transitions } = producerGraphFixture();
+  const matches = observeProjectedOperationData(ir, transitions);
+  const object = ir.instructions[175].args[0], before = object.value, after = ir.values[2];
+  object.value = after;
+  const writes = [{ object, key:'value', before, after }];
+  assert.equal(matches(writes), false);
+  assert.equal(matches.matchesThroughWrites(writes), true);
+  assert.equal(observeProjectedOperationData(ir, transitions)(), true);
+  assert.equal(matches(), false, 'a fresh capture cannot refresh the predecessor');
+  object.extra = 1;
+  assert.equal(matches.matchesThroughWrites(writes), false);
+  const selected = producerGraphFixture();
+  assert.throws(() => observeProjectedOperationData(selected.ir, [selected.transitions[0]]), /depth/,
+    'unselected canonical members do not become roots to bypass depth');
+});
+
+test('C4-03 recovery and operation graph producers retain nested-data and volume limits', () => {
+  const cases = [
+    [() => { let value = {}; for (let i = 0; i <= PROJECTION_LIMITS.depth; i++) value = { child:value }; return value; }, /depth/],
+    [() => Array.from({ length:PROJECTION_LIMITS.nodes }, () => ({})), /node-budget/],
+    [() => Array(PROJECTION_LIMITS.edges + 1).fill(0), /entry-budget/],
+    [() => 'x'.repeat(PROJECTION_LIMITS.string + 1), /string-budget/],
+    [() => 1n << 1024n, /bigint-budget/],
+    [() => new Map(), /prototype/],
+    [() => Array(1), /sparse/],
+  ];
+  for (const [value, error] of cases) for (const capture of [
+    ({ ir, transitions }) => observeProjectedOperationData(ir, transitions),
+    ({ ir }) => captureRecoveryIrData(ir, []),
+  ]) {
+    const fixture = producerGraphFixture();
+    fixture.ir.values[170].metadata = value();
+    assert.throws(() => capture(fixture), error);
+  }
+  const { ir } = producerGraphFixture();
+  assert.throws(() => captureRecoveryIrData(ir, [], () => true), /cancelled/);
+  const extra = { value:1 }, observation = captureRecoveryIrData(ir, [extra]);
+  extra.value = 2;
+  assert.equal(observation.matches(), false, 'additional caller roots remain observed');
+});
 
 test('C4-03 complete SSA graphs are observed by root distance, including every cyclic edge', () => {
   for (const reverse of [false, true]) {

@@ -12,7 +12,7 @@ import {
   assignInstructionIds, memorySafetySummary,
 } from './semantic-ir-v2-to-v1-memory.js';
 import { isCanonicalMemorySsaProducerArtifact } from '../memoryssa/build.js';
-import { captureProjectionIrData, PROJECTION_LIMITS } from '../../core/identity/live-data.js';
+import { createProjectionIrObserver, PROJECTION_LIMITS } from '../../core/identity/live-data.js';
 import { observedRangeAnnotationsMatch } from './legacy-value-ranges.js';
 
 const memoryOperandTransitions = new WeakMap();
@@ -45,7 +45,10 @@ export function observeProjectedOperationData(projected, transitions) {
       if (index < 0) throw new Error('compat-transition-value-missing');
       return { value, index };
     });
-  const captured = captureProjectionIrData([projected.compat,
+  // Transition roots are vertices of one cyclic SSA graph. Observe every
+  // reachable field by distance from these exact roots, with a fresh observer;
+  // unrelated projection members are not additional observation roots.
+  const captured = createProjectionIrObserver().captureGraph([projected.compat,
     ...transitions.flatMap(({ source, store, input, beforeInputs, memory, object, emptyUses }) => [source, store, input, ...beforeInputs, memory, object, emptyUses])]);
   const matches = (writes = null) => (writes == null || Array.isArray(writes) && writes.length <= PROJECTION_LIMITS.nodes)
     && Object.getPrototypeOf(projected) === prototype && rootKeys.every((key, i) => own(projected, key) === roots[i])

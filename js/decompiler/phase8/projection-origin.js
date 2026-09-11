@@ -1,6 +1,6 @@
 /** Bounded data snapshot of an existing producer's projection. No evaluation,
  * proof minting or AST semantics live here. Issuance belongs to pipeline.js. */
-import { ownDataEntries, PROJECTION_LIMITS, captureProjectionIrData } from '../../core/identity/live-data.js';
+import { ownDataEntries, PROJECTION_LIMITS, captureProjectionIrData, createProjectionIrObserver } from '../../core/identity/live-data.js';
 import { readDominanceViewInputs } from '../../controlflow.js';
 export { PROJECTION_LIMITS, captureProjectionIrData } from '../../core/identity/live-data.js';
 
@@ -54,7 +54,10 @@ export function captureRecoveryIrData(ir, extraRoots, shouldAbort = null) {
     throw new TypeError('recovery-ir-data-roots-required');
   }
   const dominance = captureRecoveryDominators(descriptors.at(-1)?.value, shouldAbort);
-  const observation = captureProjectionIrData([...descriptors.slice(0, -1).map(descriptor => descriptor?.value), ...extraRoots], shouldAbort);
+  // Canonical IR lists already enumerate the cyclic graph's vertices. Fresh
+  // root-distance observation preserves all fields and bounds without treating
+  // the traversal order of a def/use cycle as nested metadata depth.
+  const observation = createProjectionIrObserver().captureGraph([...descriptors.slice(0, -1).map(descriptor => descriptor?.value), ...extraRoots], shouldAbort);
   const edges = observation.metrics.edges + dominance.edges;
   if (edges > PROJECTION_LIMITS.edges) throw new TypeError('recovery-binding-budget');
   return Object.freeze({ metrics:Object.freeze({ ...observation.metrics, edges }), matches() {

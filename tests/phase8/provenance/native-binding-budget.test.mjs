@@ -8,6 +8,36 @@ import * as projector from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js
 import { readLineExpressionHistory } from '../../../js/decompiler/phase8/projection.js';
 import { PROJECTION_LIMITS } from '../../../js/core/identity/live-data.js';
 
+test('C4-03 native nested loop retains initial expression, statement and control graph histories', () => {
+  const corpus = loadCorpus(), id = 'quality.loop_nested.O1';
+  const index = corpus.functions.findIndex(entry => entry.id === id);
+  assert.ok(index >= 0);
+  const { result, failure } = decompileEntry(corpus.functions[index], {
+    index, decompilerTimeBudgetMs:20000, toolchain:corpus.toolchain ?? null,
+  });
+  assert.equal(failure ?? null, null);
+  assert.equal(PROJECTION_LIMITS.nodes, 10000);
+  assert.equal(PROJECTION_LIMITS.edges, 100000);
+  assert.equal(PROJECTION_LIMITS.depth, 96);
+  assert.equal(result.expressionHistoryBinding.completeness, 'complete');
+  assert.deepEqual(result.expressionHistoryBinding.reasons, []);
+  assert.equal(result.phase8Projection.history.completeness, 'complete');
+  assert.equal(result.renderProvenance.completeness, 'complete');
+  assert.deepEqual(result.renderProvenance.reasons, []);
+  assert.equal(result.renderProvenance.budget.maxTransformRecords, 1024);
+  assert.equal(result.renderProvenance.counts.ledgerTruncated, 0);
+  assert.ok(result.rewriteProof.length > 400, 'retain the actual native history');
+  const reference = loadFrozenProvenance().observations.find(entry => entry.id === id);
+  const actual = provenanceFromSourceMap(result.sourceMap);
+  assert.deepEqual(reference.sourceAddresses.filter(address => !actual.sourceAddresses.includes(address)), []);
+  const lines = result.lines.filter(line => readLineExpressionHistory(line, result.ir)?.length);
+  assert.ok(lines.length > 1);
+  assert.equal(readLineExpressionHistory({ ...lines[0] }, result.ir), null);
+  assert.equal(readLineExpressionHistory(lines[0], { ...result.ir }), null);
+  result.ir.instructions = [...result.ir.instructions];
+  assert.ok(lines.every(line => readLineExpressionHistory(line, result.ir) === null));
+});
+
 test('C4-03 native producer graph retains full history through immutable precondition storage', () => {
   const corpus = loadCorpus(), id = 'quality.gvn_repeated_expression.O0';
   const index = corpus.functions.findIndex(entry => entry.id === id);
