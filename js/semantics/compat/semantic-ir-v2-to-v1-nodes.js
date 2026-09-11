@@ -251,7 +251,23 @@ function hasRegisterStateWriteForValue(valueId, context) {
     && candidate.variable?.physicalIdentity?.kind === 'register');
 }
 
+// A deterministic value projection is only a faithful stand-in for the
+// intrinsic when the intrinsic declares no effects beyond its value
+// computation. Any declared state/memory/control effect must take the
+// conservative intrinsic path so clobbers, memory barriers and physical
+// state invalidation are preserved instead of silently discarded (#5386).
+function intrinsicDeclaresSideEffects(intrinsic) {
+  if (!intrinsic || typeof intrinsic !== 'object') return true;
+  if ((intrinsic.stateReads?.length ?? 0) > 0) return true;
+  if ((intrinsic.stateWrites?.length ?? 0) > 0) return true;
+  if (intrinsic.memoryRead?.scope != null && intrinsic.memoryRead.scope !== 'none') return true;
+  if (intrinsic.memoryWrite?.scope != null && intrinsic.memoryWrite.scope !== 'none') return true;
+  if ((intrinsic.controlEffects?.length ?? 0) > 0) return true;
+  return false;
+}
+
 function deterministicIntrinsicProjection(node, context, inst, setBasic, primaryOutput, inputValues) {
+  if (intrinsicDeclaresSideEffects(node.intrinsic)) return false;
   const op = node.operator;
   if (op === 'not-bool') { setBasic(V1_OP.UN, 'not'); return true; }
   if (op === 'and-bool') { setBasic(V1_OP.BIN, 'and'); return true; }
