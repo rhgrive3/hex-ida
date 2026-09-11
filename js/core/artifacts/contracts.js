@@ -123,7 +123,7 @@ export function createArtifactDescriptor(input = {}) {
   const config = canonicalArtifactKeyValue(input.config ?? {});
   const keyExtras = canonicalArtifactKeyValue(input.keyExtras ?? {});
   const upstreamArtifactIds = sortedStrings(input.upstreamArtifactIds ?? input.inputArtifactIds ?? [], 'artifact-upstream-ids-invalid');
-  const canonicalConfig = canonicalConfigHash(config);
+  const canonicalConfig = stableDigest(config);
   const keyMaterialHash = stableDigest({ config, keyExtras });
   // Snapshot identity fields once so descriptor and artifactId material cannot diverge.
   const artifactKind = required(input.artifactKind ?? input.kind, 'artifact-kind-required');
