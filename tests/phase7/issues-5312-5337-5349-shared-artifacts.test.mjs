@@ -21,13 +21,14 @@ function stringApp(stringsImpl, regions) {
 }
 
 function programApp(scanProgram) {
+  const regions = [
+    { id: 't1', exec: true, size: 16n, section: '__text', vmAddr: 0x2000n },
+    { id: 't2', exec: true, size: 16n, section: '__text', vmAddr: 0x3000n },
+  ];
   return {
     backend: { gen: 0, scanProgram },
-    store: { get: () => null },
-    programRegions: () => [
-      { id: 't1', exec: true, size: 16n, section: '__text', vmAddr: 0x2000n },
-      { id: 't2', exec: true, size: 16n, section: '__text', vmAddr: 0x3000n },
-    ],
+    store: { get: (key) => key === 'regions' ? regions : null },
+    programRegions: () => regions,
     symbols: { gen: 1, functionStartsComplete: true },
   };
 }

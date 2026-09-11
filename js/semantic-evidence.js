@@ -23,7 +23,12 @@ function isExplicitSemanticProof(f, e) {
 }
 function runtimeCompleted(r) {
   if (!r || typeof r !== 'object') return false;
-  const status=String(r.status || r.state || '').toLowerCase();
+  // A structured status must not launder into a completion alias via String()
+  // coercion (#5367): String(['complete']) === 'complete' minted VERIFIED
+  // evidence from schema-external shapes. Only primitive strings may carry the
+  // status/state alias; the boolean completion flags below stay strict.
+  const rawStatus = r.status || r.state;
+  const status = typeof rawStatus === 'string' ? rawStatus.toLowerCase() : '';
   if (r.ok === false || r.success === false || r.complete === false || r.completed === false || r.truncated === true
       || r.timedOut === true || r.timeout === true || r.budgetExceeded === true
       || ['timeout','timed-out','failed','failure','error','crashed','truncated','partial','aborted','budget-exceeded'].includes(status)) return false;

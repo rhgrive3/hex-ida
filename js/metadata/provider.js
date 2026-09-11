@@ -90,6 +90,25 @@ function strictNonEmptyString(value, code) {
   return text;
 }
 
+function optionalString(value, code) {
+  if (value == null) return null;
+  if (typeof value !== 'string') fail(code);
+  return value;
+}
+
+function metadataAddress(value) {
+  if (typeof value !== 'string') fail('metadata-record-invalid-address');
+  const text = value.trim();
+  if (!/^(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) fail('metadata-record-invalid-address');
+  let address;
+  try {
+    address = BigInt(text);
+  } catch {
+    fail('metadata-record-invalid-address');
+  }
+  return `0x${address.toString(16)}`;
+}
+
 function arrayField(value, code) {
   if (value == null) return [];
   if (!Array.isArray(value)) fail(code);
@@ -303,8 +322,8 @@ export function createLanguageMetadataRecord(input = {}) {
   const record = deepFreeze({
     kind,
     entityId: strictNonEmptyString(input.entityId, 'metadata-record-entity-required'),
-    name: input.name == null ? null : String(input.name),
-    address: input.address == null ? null : strictNonEmptyString(input.address, 'metadata-record-invalid-address'),
+    name: optionalString(input.name, 'metadata-record-invalid-name'),
+    address: input.address == null ? null : metadataAddress(input.address),
     sizeBytes: optionalSizeBytes(input.sizeBytes),
     descriptor: input.descriptor ?? null,
     providerId: nonEmpty(input.providerId, 'metadata-record-provider-required'),

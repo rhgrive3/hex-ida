@@ -102,13 +102,88 @@ test('canonical serialization matches the pinned oracle for containers, cycles a
   }
 });
 
-test('jsonSafe preserves getter read counts and does not execute inherited setters', () => {
-  function capture(serialize) {
-    const reads = [];
+test('#5054 jsonSafe snapshots each enumerable property value exactly once', () => {
+  let invalidReads = 0;
+  const nanThenThrow = {};
+  Object.defineProperty(nanThenThrow, 'x', {
+    enumerable: true,
+    get() {
+      invalidReads++;
+      if (invalidReads > 1) throw new Error('getter evaluated twice');
+      return NaN;
+    },
+  });
+  assert.deepStrictEqual(jsonSafe(nanThenThrow), {});
+  assert.equal(invalidReads, 1);
+
+  let changingReads = 0;
+  const nanThenNull = {};
+  Object.defineProperty(nanThenNull, 'x', {
+    enumerable: true,
+    get() {
+      changingReads++;
+      return changingReads === 1 ? NaN : null;
+    },
+  });
+  assert.deepStrictEqual(jsonSafe(nanThenNull), {});
+  assert.equal(changingReads, 1);
+
+  let nullReads = 0;
+  const nullThenThrow = new Proxy({}, {
+    ownKeys() { return ['x']; },
+    getOwnPropertyDescriptor(_target, key) {
+      if (key === 'x') return { enumerable: true, configurable: true };
+      return undefined;
+    },
+    get(_target, key) {
+      if (key !== 'x') return undefined;
+      nullReads++;
+      if (nullReads > 1) throw new Error('proxy property evaluated twice');
+      return null;
+    },
+  });
+  assert.deepStrictEqual(jsonSafe(nullThenThrow), { x: null });
+  assert.equal(nullReads, 1);
+
+  for (const lossy of [NaN, Infinity, -Infinity, () => 1, Symbol('x')]) {
+    let reads = 0;
     const value = {};
-    Object.defineProperty(value, 'z', { enumerable: true, get() { reads.push('z'); return undefined; } });
-    Object.defineProperty(value, 'a', { enumerable: true, get() { reads.push('a'); return { nested: 4 }; } });
-    return { result: serialize(value), reads };
+    Object.defineProperty(value, 'x', { enumerable: true, get() { reads++; return lossy; } });
+    assert.deepStrictEqual(jsonSafe(value), {});
+    assert.equal(reads, 1);
   }
-  assert.deepStrictEqual(capture(jsonSafe), capture(baseline.jsonSafe));
+
+  let undefinedReads = 0;
+  const explicitUndefined = {};
+  Object.defineProperty(explicitUndefined, 'x', {
+    enumerable: true,
+    get() { undefinedReads++; return undefined; },
+  });
+  assert.deepStrictEqual(jsonSafe(explicitUndefined), { x: undefined });
+  assert.equal(undefinedReads, 1);
+
+  const nestedReads = [];
+  const nested = {};
+  Object.defineProperty(nested, 'outer', {
+    enumerable: true,
+    get() {
+      nestedReads.push('outer');
+      const child = {};
+      Object.defineProperty(child, 'inner', {
+        enumerable: true,
+        get() { nestedReads.push('inner'); return Infinity; },
+      });
+      return child;
+    },
+  });
+  assert.deepStrictEqual(jsonSafe(nested), { outer: {} });
+  assert.deepStrictEqual(nestedReads, ['outer', 'inner']);
+
+  assert.deepStrictEqual(jsonSafe({ keep: null, preserveUntilJson: undefined }), { keep: null, preserveUntilJson: undefined });
+  assert.equal(stableStringify({ z: 1, a: null, dropAtJson: undefined }), '{"a":null,"z":1}');
+  assert.equal(stableDigest({ z: 1, a: null }), baseline.stableDigest({ z: 1, a: null }));
+
+  const cycle = {};
+  cycle.self = cycle;
+  assert.throws(() => jsonSafe(cycle), /identity-cyclic-value/);
 });
