@@ -4,8 +4,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createKnowledgePack } from '../../../js/signature/index.js';
 import { createPackageEnvelope, importPhase12Package, parseBoundedPackageInput, resolvePackageDependencies, validateProviderOutput } from '../../../js/phase12/package-envelope.js';
-import { createMatchResult, promoteKnowledgeSuggestion, recognitionCanClaimUnique } from '../../../js/knowledge/phase12-recognition.js';
+import './harness-event-realm.mjs';
+import { createMatchResult, promoteKnowledgeSuggestion, recognitionCanClaimUnique, createRecognitionApprovalControl, configureRecognitionApprovalHost } from '../../../js/knowledge/phase12-recognition.js';
+import { fireTrustedApprovalGesture, hostRecognitionCapability } from './harness-event-realm.mjs';
 import '../../issue-3783-knowledge-pack-confidence-types.mjs';
+
+// The trusted runner plays the host: the project binding is required host
+// identity for approval minting (review R2 round 5).
+configureRecognitionApprovalHost({ projectBinding: 'package-test-project', capability: hostRecognitionCapability() });
 
 const fixturePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures/profile-evidence/knowledge-package.json');
 const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
@@ -44,10 +50,17 @@ assert.equal(recognitionCanClaimUnique(ambiguous), false);
 const truncated = createMatchResult({ sourceEntityId: 'entity-a', packageEntryId: 'entry-a', candidates: [{ packageEntryId: 'entry-a', score: 0.99 }], candidateSearchTruncated: true });
 assert.equal(truncated.completeness, 'partial');
 assert.equal(truncated.unique, false);
-assert.throws(() => promoteKnowledgeSuggestion(truncated, { approvalToken: { approved: true, targetMatchId: truncated.id }, actorId: 'actor-a' }), /ambiguous or truncated/);
+assert.throws(() => promoteKnowledgeSuggestion(truncated, { approvalGrant: 'unused-grant-token', actorId: 'actor-a' }), /ambiguous or truncated/);
 
 const unique = createMatchResult({ sourceEntityId: 'entity-a', packageEntryId: 'entry-a', candidates: [{ packageEntryId: 'entry-a', score: 0.99, tier: 'exact-content' }], packageContentHash: sameA.contentHash });
-const fact = promoteKnowledgeSuggestion(unique, { approvalToken: { approved: true, targetMatchId: unique.id }, actorId: 'local-user', name: 'localName' });
+// #5216: local promotion is minted only through a host approval control's
+// module-minted surface driven by a browser-trusted gesture (the harness
+// realm simulates the UA delivery).
+let packageApproved = false;
+const packageControl = createRecognitionApprovalControl(unique, { actorId: 'local-user', onApproved: () => { packageApproved = true; } });
+fireTrustedApprovalGesture(packageControl.surface, 'click');
+assert.equal(packageApproved, true, 'the approval gesture minted the promotion');
+const fact = promoteKnowledgeSuggestion(unique, { actorId: 'local-user', name: 'localName' });
 assert.equal(fact.confirmation, 'user-confirmed');
 assert.equal(fact.externalProvenance.packageContentHash, sameA.contentHash);
 console.log('[phase12] package/provenance/recognition tests passed');

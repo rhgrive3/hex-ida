@@ -1,4 +1,4 @@
-import { isExactFunctionSeed } from './worker-validation.js';
+import { functionSeedConfidence, isExactFunctionSeed } from './worker-validation.js';
 
 function provenance(source, confidence = 1) {
   return { source: source || 'binary-metadata', confidence, confirmed: true };
@@ -31,6 +31,13 @@ function metadataObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+const MACHO_ABSENT_COMPONENT = Object.freeze({ complete: true, notPresent: true });
+const MACHO_ABSENT_DYLD_BINDINGS = Object.freeze({
+  complete: true,
+  notPresent: true,
+  streams: Object.freeze({}),
+});
+
 function dyldBindingCompleteness(value) {
   if (value == null) return { affirmative: false, unknown: false };
   if (!metadataObject(value)) return { affirmative: false, unknown: true };
@@ -48,27 +55,48 @@ export function machoSymbolTruth(image) {
   if (!image || image.format !== 'macho') return null;
   const metadata = image.metadata || {};
   const reasons = [];
-  const components = [metadata.machoMetadata, metadata.chainedFixups, metadata.exportTrie, metadata.dyldBindings];
+  // Sample authority inputs once: accessor-backed metadata must not change the
+  // decision between validation and rendering of the normalized components.
+  const metadataBudget = metadata.machoMetadata;
+  const loadCommands = metadata.loadCommands;
+  const ncmds = metadata.ncmds;
+  const rawChainedFixups = metadata.chainedFixups;
+  const rawExportTrie = metadata.exportTrie;
+  const rawDyldBindings = metadata.dyldBindings;
+  // Missing optional dyld components mean "not present" only after the Mach-O
+  // loader has positively completed its load-command scan.  A caller-created
+  // metadata object with one complete subcomponent must not mint parser-wide
+  // completeness merely because the other components are absent (#4935).
+  const parserScanComplete = metadataObject(metadataBudget)
+    && metadataBudget.complete === true
+    && Number.isSafeInteger(loadCommands)
+    && loadCommands >= 0
+    && Number.isSafeInteger(ncmds)
+    && ncmds >= 0
+    && loadCommands === ncmds;
+  const chainedFixups = rawChainedFixups == null && parserScanComplete ? MACHO_ABSENT_COMPONENT : rawChainedFixups;
+  const exportTrie = rawExportTrie == null && parserScanComplete ? MACHO_ABSENT_COMPONENT : rawExportTrie;
+  const dyldBindings = rawDyldBindings == null && parserScanComplete ? MACHO_ABSENT_DYLD_BINDINGS : rawDyldBindings;
+  const components = [metadataBudget, chainedFixups, exportTrie, dyldBindings];
   const componentStatuses = components.map((value, index) => index === 3
     ? dyldBindingCompleteness(value)
     : value == null
       ? { affirmative: false, unknown: false }
       : { affirmative: metadataObject(value) && value.complete === true, unknown: !metadataObject(value) || value.complete !== true });
-  const hasAffirmativeCompleteness = componentStatuses.some((status) => status.affirmative);
-  const hasUnknownPresentComponent = componentStatuses.some((status) => status.unknown);
-  statusReasons(metadata.machoMetadata, 'metadata-budget', reasons);
-  statusReasons(metadata.chainedFixups, 'chained-fixups', reasons);
-  statusReasons(metadata.exportTrie, 'export-trie', reasons);
-  dyldBindingReasons(metadata.dyldBindings, reasons);
-  if ((!hasAffirmativeCompleteness || hasUnknownPresentComponent) && reasons.length === 0) reasons.push('symbol-metadata-unavailable');
+  const allComponentsComplete = componentStatuses.every((status) => status.affirmative && !status.unknown);
+  statusReasons(metadataBudget, 'metadata-budget', reasons);
+  statusReasons(chainedFixups, 'chained-fixups', reasons);
+  statusReasons(exportTrie, 'export-trie', reasons);
+  dyldBindingReasons(dyldBindings, reasons);
+  if (!allComponentsComplete && reasons.length === 0) reasons.push('symbol-metadata-unavailable');
   const unique = [...new Set(reasons)].slice(0, 64);
   return {
-    source: 'BinaryImage', normalized: true, complete: unique.length === 0, reasons: unique,
+    source: 'BinaryImage', normalized: true, complete: allComponentsComplete && unique.length === 0, reasons: unique,
     components: {
-      chainedFixups: metadata.chainedFixups || null,
-      dyldBindings: metadata.dyldBindings || null,
-      exportTrie: metadata.exportTrie || null,
-      metadataBudget: metadata.machoMetadata || null,
+      chainedFixups: chainedFixups || null,
+      dyldBindings: dyldBindings || null,
+      exportTrie: exportTrie || null,
+      metadataBudget: metadataBudget || null,
     },
   };
 }
@@ -92,9 +120,9 @@ export function analysisFromBinaryImage(image) {
   if (!image) return emptyAnalysis();
   const entries = new Map();
   const add = (address, name, kind, exported, prov, priority) => {
-    if (address == null || !name) return;
+    if (address == null || typeof name !== 'string' || !name) return;
     const addr = u64Address(address), key = addr.toString();
-    const next = { address: addr, name: String(name), kind, exported: !!exported, provenance: prov, priority };
+    const next = { address: addr, name, kind, exported: !!exported, provenance: prov, priority };
     const current = entries.get(key);
     if (!current) { entries.set(key, next); return; }
     current.exported ||= next.exported;
@@ -123,36 +151,91 @@ export function analysisFromBinaryImage(image) {
   const addrs = new BigUint64Array(sorted.length), kinds = new Uint8Array(sorted.length), flags = new Uint8Array(sorted.length);
   for (let i = 0; i < sorted.length; i++) { addrs[i] = sorted[i].address; kinds[i] = sorted[i].kind; flags[i] = sorted[i].exported ? 1 : 0; }
 
+  function snapshotFunctionSeed(rawSeed) {
+    if (!rawSeed || typeof rawSeed !== 'object') {
+      return Object.freeze({
+        isValid: false,
+        isExact: false,
+        address: null,
+        source: 'heuristic',
+        effectiveConfidence: 0.5,
+        extentInferred: true,
+        extentConfidence: null,
+        end: null,
+        size: null,
+      });
+    }
+    const rawConfidence = rawSeed.confidence;
+    const rawExactStartConfidence = rawSeed.exactFunctionStartConfidence;
+    const rawExtentConfidence = rawSeed.extentConfidence;
+    const rawExactFunctionStart = rawSeed.exactFunctionStart;
+    const rawExtentInferred = rawSeed.extentInferred;
+    const rawSource = rawSeed.source;
+    const rawSources = rawSeed.sources;
+    const rawAddress = rawSeed.address;
+    const rawEnd = rawSeed.end;
+    const rawSize = rawSeed.size;
+
+    const source = rawSource != null ? String(rawSource) : '';
+    const sources = Array.isArray(rawSources) ? rawSources.map(String) : undefined;
+    const exactFunctionStart = rawExactFunctionStart === true;
+    const extentInferred = rawExtentInferred === true;
+
+    const confidenceNorm = functionSeedConfidence(rawConfidence);
+    const exactConfidenceNorm = rawExactStartConfidence != null ? functionSeedConfidence(rawExactStartConfidence) : null;
+    const extentConfidence = functionSeedConfidence(rawExtentConfidence);
+
+    const plainSeed = {
+      source,
+      sources,
+      exactFunctionStart,
+      exactFunctionStartConfidence: rawExactStartConfidence != null ? (exactConfidenceNorm ?? -1) : null,
+      confidence: confidenceNorm ?? (rawConfidence != null ? -1 : null),
+    };
+    const isExact = isExactFunctionSeed(plainSeed);
+    const effectiveConfidence = rawConfidence == null ? (isExact ? 1 : 0.5) : (confidenceNorm ?? (isExact ? 1 : 0.5));
+
+    return Object.freeze({
+      isValid: rawAddress != null,
+      isExact,
+      address: rawAddress,
+      source: source || 'heuristic',
+      effectiveConfidence,
+      extentInferred,
+      extentConfidence,
+      end: rawEnd,
+      size: rawSize,
+    });
+  }
+
   const seedByAddress = new Map();
   const exactEndByAddress = new Map();
   const conflictingExactEnds = new Set();
+  const seedSnapshots = (image.functions || []).map(snapshotFunctionSeed);
+
   // Duplicate seeds for one address must merge by evidence quality, not by
   // input order: last-write-wins let a trailing heuristic seed demote exact
   // function-start provenance (and vice versa) depending on producer order
   // (#6096). Strength = exact over non-exact, then confidence, then a
   // deterministic source-name tie-break so permutations agree. Keep the
   // normalized confidence identical to the value emitted in provenance.
-  const seedConfidence = (seed, exact) => {
-    const raw = seed?.confidence;
-    if (raw == null) return exact ? 1 : 0.5;
-    const confidence = Number(raw);
-    return Number.isFinite(confidence) ? confidence : (exact ? 1 : 0.5);
-  };
   const seedIsStronger = (next, current) => {
-    const nextExact = isExactFunctionSeed(next), currentExact = isExactFunctionSeed(current);
-    if (nextExact !== currentExact) return nextExact;
-    const nextConfidence = seedConfidence(next, nextExact), currentConfidence = seedConfidence(current, currentExact);
-    if (nextConfidence !== currentConfidence) return nextConfidence > currentConfidence;
+    if (next.isExact !== current.isExact) return next.isExact;
+    if (next.effectiveConfidence !== current.effectiveConfidence) return next.effectiveConfidence > current.effectiveConfidence;
     return String(next.source ?? '') < String(current.source ?? '');
   };
-  for (const seed of image.functions || []) {
-    if (seed?.address == null) continue;
-    const address = u64Address(seed.address);
+  for (const seed of seedSnapshots) {
+    if (!seed.isValid) continue;
+    let address;
+    try {
+      address = u64Address(seed.address);
+    } catch {
+      continue;
+    }
     const key = address.toString();
     const existing = seedByAddress.get(key);
     if (existing == null || seedIsStronger(seed, existing)) seedByAddress.set(key, seed);
-    const extentConfidence = Number(seed.extentConfidence ?? 0);
-    if (!isExactFunctionSeed(seed) || seed.extentInferred === true || !Number.isFinite(extentConfidence) || extentConfidence < 0.9) continue;
+    if (!seed.isExact || seed.extentInferred === true || seed.extentConfidence == null || seed.extentConfidence < 0.9) continue;
     let end = null;
     try {
       if (seed.end != null) end = u64Address(seed.end);
@@ -171,14 +254,14 @@ export function analysisFromBinaryImage(image) {
   const funcEnds = new BigUint64Array(functions.length);
   for (let i = 0; i < functions.length; i++) funcEnds[i] = exactEndByAddress.get(functions[i].toString()) ?? 0n;
   const functionProvenance = functions.map((addr) => {
-    const seed = seedByAddress.get(addr.toString()) || {};
-    const confirmed = isExactFunctionSeed(seed);
-    return { source: seed.source || 'heuristic', confidence: seedConfidence(seed, confirmed), confirmed };
+    const seed = seedByAddress.get(addr.toString());
+    if (!seed) return { source: 'heuristic', confidence: 0.5, confirmed: false };
+    return { source: seed.source, confidence: seed.effectiveConfidence, confirmed: seed.isExact };
   });
   const nameProvenance = sorted.map((entry) => entry.provenance);
   // This describes every raw provider seed. A heuristic duplicate must keep
   // the aggregate non-exact even when exact evidence wins deduplication.
-  const allSeedsExact = functions.length > 0 && (image.functions || []).every(isExactFunctionSeed);
+  const allSeedsExact = functions.length > 0 && seedSnapshots.every((seed) => seed.isExact);
   const discoveryComplete = image.metadata?.functionDiscovery?.complete === true;
   return {
     addrs, kinds, flags, names: sorted.map((x) => x.name), funcs, funcEnds, functionProvenance, nameProvenance,

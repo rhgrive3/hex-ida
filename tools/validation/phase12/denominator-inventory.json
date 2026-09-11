@@ -270,11 +270,11 @@
             "type": "source-includes",
             "path": "js/knowledge/phase12-recognition.js",
             "markers": [
-              "token.approved !== true",
-              "token.targetMatchId !== result.id",
-              "result.candidateSearchTruncated || result.status === 'ambiguous'",
-              "confirmation: 'user-confirmed'",
-              "authority: 'L4-local-canonical'"
+              "createRecognitionApprovalControl",
+              "requireTrustedDelivery",
+              "recordApproval",
+              "consumeFor",
+              "approval evidence is minted by the host approval control"
             ]
           }
         },

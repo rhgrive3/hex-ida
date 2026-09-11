@@ -106,23 +106,59 @@ function cstringWithNext(bytes, offset, limit = bytes.length) {
   };
 }
 
+function createPdbByteBudget(maxBytesScanned) {
+  let remaining = maxBytesScanned;
+  let exhausted = false;
+  let stopContext = null;
+  return {
+    consume(byteLength, context) {
+      if (byteLength === 0) return true;
+      if (exhausted) return false;
+      if (!Number.isSafeInteger(byteLength) || byteLength < 0 || byteLength > remaining) {
+        exhausted = true;
+        stopContext = context ?? 'PDB data';
+        return false;
+      }
+      remaining -= byteLength;
+      return true;
+    },
+    get exhausted() { return exhausted; },
+    get stopContext() { return stopContext; },
+    get remaining() { return remaining; },
+  };
+}
+
 /** Reads the MSF superblock and stream directory. */
-export function parseMsf(bytes) {
+export function parseMsf(bytes, byteBudget = null) {
   const data = bytesOf(bytes);
   if (!data || data.length < 56) return { streams: [], diagnostics: ['file too small for an MSF superblock'], complete: false };
+  if (byteBudget && !byteBudget.consume(56, 'MSF superblock')) {
+    return { streams: [], diagnostics: ['PDB byte budget exhausted while reading the MSF superblock'], complete: false };
+  }
   const magic = new TextDecoder('latin1').decode(data.subarray(0, MSF_MAGIC.length));
   if (magic !== MSF_MAGIC) return { streams: [], diagnostics: ['not an MSF 7.00 container'], complete: false };
 
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const blockSize = view.getUint32(32, true);
+  /* MSF's FreeBlockMapBlock selects which of blocks 1/2 holds the active free
+     block map; the LLVM MSF format documentation allows only those two values
+     (#5672). */
+  const freeBlockMapBlock = view.getUint32(36, true);
   const numBlocks = view.getUint32(40, true);
   const numDirectoryBytes = view.getUint32(44, true);
   const blockMapAddr = view.getUint32(52, true);
   if (blockSize === 0 || (blockSize & (blockSize - 1)) !== 0) {
     return { streams: [], diagnostics: ['invalid MSF block size'], complete: false };
   }
-  if (numBlocks * blockSize > data.length + blockSize) {
-    return { streams: [], diagnostics: ['MSF block count exceeds the file'], complete: false };
+  if (freeBlockMapBlock !== 1 && freeBlockMapBlock !== 2) {
+    return { streams: [], diagnostics: [`invalid MSF free block map index ${freeBlockMapBlock}`], complete: false };
+  }
+  /* NumBlocks is the total block count of the on-disk file (LLVM MSF format
+     documentation): NumBlocks * BlockSize must equal the file size, not
+     merely stay within one block of it (#5665). A missing trailing block
+     would let streams reference unreadable data while reporting complete. */
+  if (numBlocks * blockSize !== data.length) {
+    return { streams: [], diagnostics: ['MSF block count does not match the file size'], complete: false };
   }
   if (numDirectoryBytes < 4) {
     return { streams: [], diagnostics: ['MSF stream directory is truncated'], complete: false };
@@ -156,7 +192,16 @@ export function parseMsf(bytes) {
   const directoryBlocks = [];
   for (let index = 0; index < directoryBlockCount; index += 1) {
     if ((index + 1) * 4 > mapBlock.length) break;
+    if (byteBudget && !byteBudget.consume(4, 'MSF directory block map')) {
+      return { streams: [], diagnostics: ['PDB byte budget exhausted while reading the MSF directory block map'], complete: false };
+    }
     directoryBlocks.push(mapView.getUint32(index * 4, true));
+  }
+  if (directoryBlocks.length * blockSize < numDirectoryBytes) {
+    return { streams: [], diagnostics: ['MSF stream directory is truncated'], complete: false };
+  }
+  if (byteBudget && !byteBudget.consume(numDirectoryBytes, 'MSF stream directory')) {
+    return { streams: [], diagnostics: ['PDB byte budget exhausted while reading the MSF stream directory'], complete: false };
   }
   const directory = concatBlocks(directoryBlocks, numDirectoryBytes);
   if (!directory) return { streams: [], diagnostics: ['MSF stream directory is truncated'], complete: false };
@@ -181,7 +226,16 @@ export function parseMsf(bytes) {
       blocks.push(directoryView.getUint32(cursor, true));
       cursor += 4;
     }
-    streams.push({ index, size: sizes[index], read: () => (sizes[index] === 0 ? new Uint8Array(0) : concatBlocks(blocks, sizes[index])) });
+    streams.push({
+      index,
+      size: sizes[index],
+      read: () => {
+        if (sizes[index] === 0) return new Uint8Array(0);
+        if (blocks.some((blockIndex) => blockIndex * blockSize + blockSize > data.length)) return null;
+        if (byteBudget && !byteBudget.consume(sizes[index], `MSF stream ${index}`)) return null;
+        return concatBlocks(blocks, sizes[index]);
+      },
+    });
   }
   return { streams, blockSize, diagnostics: [], complete: true };
 }
@@ -385,15 +439,22 @@ export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
         recordOffset: offset,
       });
     } else if (kind === S_GPROC32 || kind === S_LPROC32 || kind === S_GPROC32_ID || kind === S_LPROC32_ID) {
-      // PROCSYM32: parent/end/next (12) + length/dbgStart/dbgEnd (12) + typeIndex (4)
-      // + offset (4) + segment (2) + flags (1) + name
+      // PROCSYM32: parent/end/next (12) + length/dbgStart/dbgEnd (12) +
+      // type-or-ID index (4) + offset (4) + segment (2) + flags (1) + name.
+      // S_*PROC32 carries a TPI TypeIndex; S_*PROC32_ID carries an IPI FuncId.
+      // Until this provider models IPI LF_FUNC_ID/LF_MFUNC_ID, preserve that
+      // namespace distinction and withhold type authority rather than aliasing
+      // the numeric FuncId into an unrelated TPI record (#4630).
       const nameEntry = cstringWithNext(bytes, offset + 39, end);
       if (!nameEntry) break;
+      const typeOrIdIndex = view.getUint32(offset + 28, true);
+      const isIdProcedure = kind === S_GPROC32_ID || kind === S_LPROC32_ID;
+      if (isIdProcedure) unmodelled.add(kind);
       symbols.push({
         kind: 'procedure',
         isFunction: true,
         sizeBytes: view.getUint32(offset + 16, true),
-        typeIndex: view.getUint32(offset + 28, true),
+        ...(isIdProcedure ? { typeIndex: null, functionIdIndex: typeOrIdIndex } : { typeIndex: typeOrIdIndex }),
         offsetInSegment: view.getUint32(offset + 32, true),
         segment: view.getUint16(offset + 36, true),
         name: nameEntry.value,
@@ -491,6 +552,8 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
       types.set(index, {
         leaf, kind: 'procedure',
         returnType: view.getUint32(body, true),
+        callingConvention: view.getUint8(body + 4),
+        functionOptions: view.getUint8(body + 5),
         parameterCount: view.getUint16(body + 6, true),
         argumentList: view.getUint32(body + 8, true),
       });
@@ -506,7 +569,23 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
       if (!fieldList.complete) fieldListsComplete = false;
       types.set(index, { leaf, kind: 'field-list', members: fieldList.members, complete: fieldList.complete });
     } else if (leaf === LF_ARGLIST) {
-      types.set(index, { leaf, kind: 'arg-list' });
+      // Historical fixtures contain a leaf-only LF_ARGLIST. Preserve the
+      // record boundary/stream walk, but never let that shape prove an exact
+      // procedure signature because it does not carry a count.
+      if (body + 4 > end) {
+        types.set(index, { leaf, kind: 'arg-list', arguments: [], complete: false });
+        offset = end;
+        index += 1;
+        continue;
+      }
+      const count = view.getUint32(body, true);
+      const argumentBytes = count * 4;
+      if (!Number.isSafeInteger(argumentBytes) || argumentBytes > end - (body + 4)) break;
+      const arguments_ = [];
+      for (let cursor = body + 4; cursor < body + 4 + argumentBytes; cursor += 4) {
+        arguments_.push(view.getUint32(cursor, true));
+      }
+      types.set(index, { leaf, kind: 'arg-list', arguments: arguments_, complete: true });
     } else {
       unmodelled.add(leaf);
       types.set(index, { leaf, kind: 'unmodelled' });
@@ -613,8 +692,8 @@ function parseFieldList(view, bytes, start, end, unmodelled) {
 }
 
 /** Renders a TPI type index as a nominal name plus machine facts. */
-export function describeTypeIndex(index, types, depth = 0) {
-  if (depth > 16) return { name: 'unknown', complete: false };
+export function describeTypeIndex(index, types, depth = 0, maxDepth = DEBUG_DEFAULT_BUDGET.maxDepth) {
+  if (depth > maxDepth) return { name: 'unknown', complete: false };
   if (index < 0x1000) {
     const primitive = PRIMITIVE_TYPES[index];
     if (primitive) return { ...primitive, complete: true };
@@ -623,7 +702,7 @@ export function describeTypeIndex(index, types, depth = 0) {
     const mode = index & 0x0700;
     if (mode === 0x0400 || mode === 0x0500 || mode === 0x0600 || mode === 0x0700) {
       const widthBits = (mode === 0x0400 || mode === 0x0500) ? 32 : (mode === 0x0600) ? 64 : 128;
-      const target = describeTypeIndex(index & 0x00ff, types, depth + 1);
+      const target = describeTypeIndex(index & 0x00ff, types, depth + 1, maxDepth);
       const isKnown = target.name !== 'unknown' && target.complete;
       return {
         name: isKnown ? `${target.name} *` : 'unknown *',
@@ -645,7 +724,7 @@ export function describeTypeIndex(index, types, depth = 0) {
     };
   }
   if (record.kind === 'pointer') {
-    const target = describeTypeIndex(record.referent, types, depth + 1);
+    const target = describeTypeIndex(record.referent, types, depth + 1, maxDepth);
     const attrs = typeof record.attributes === 'number' ? record.attributes : 0;
     const sizeBytes = (attrs >> 13) & 0x3f;
     const pointerKind = attrs & 0x1f;
@@ -668,7 +747,7 @@ export function describeTypeIndex(index, types, depth = 0) {
     };
   }
   if (record.kind === 'modifier') {
-    const target = describeTypeIndex(record.underlying, types, depth + 1);
+    const target = describeTypeIndex(record.underlying, types, depth + 1, maxDepth);
     const modifiers = record.modifiers;
     const validModifiers = Number.isSafeInteger(modifiers) && modifiers >= 0 && modifiers <= 0xffff;
     const qualifiers = [];
@@ -683,14 +762,57 @@ export function describeTypeIndex(index, types, depth = 0) {
     return { ...target, name, complete: target.complete && !hasUnknownModifiers };
   }
   if (record.kind === 'procedure') {
-    const returns = describeTypeIndex(record.returnType, types, depth + 1);
-    return { name: `${returns.name} (*)()`, class: 'code', complete: returns.complete };
+    const returns = describeTypeIndex(record.returnType, types, depth + 1, maxDepth);
+    const argumentList = types.get(record.argumentList);
+    const hasArgumentList = argumentList?.kind === 'arg-list'
+      && argumentList.complete === true
+      && Array.isArray(argumentList.arguments);
+    let canonicalArgumentIndices = hasArgumentList;
+    if (canonicalArgumentIndices) {
+      for (let i = 0; i < argumentList.arguments.length; i += 1) {
+        if (!Object.prototype.hasOwnProperty.call(argumentList.arguments, i)
+          || !Number.isSafeInteger(argumentList.arguments[i])
+          || argumentList.arguments[i] < 0
+          || argumentList.arguments[i] > 0xffffffff) {
+          canonicalArgumentIndices = false;
+          break;
+        }
+      }
+    }
+    const arguments_ = canonicalArgumentIndices
+      ? argumentList.arguments.map((argument) => describeTypeIndex(argument, types, depth + 1, maxDepth))
+      : [];
+    const validParameterCount = Number.isSafeInteger(record.parameterCount)
+      && record.parameterCount >= 0 && record.parameterCount <= 0xffff;
+    // Calling convention/function-option semantics are not rendered yet. Only
+    // the canonical near-C/no-options encoding can therefore support an exact
+    // textual signature; other encodings remain useful context but fail closed.
+    const canonicalProcedureAttributes = record.callingConvention === 0 && record.functionOptions === 0;
+    const argumentsComplete = canonicalArgumentIndices
+      && validParameterCount
+      && argumentList.arguments.length === record.parameterCount
+      && arguments_.every((argument) => argument.complete === true);
+    const parameters = canonicalArgumentIndices ? arguments_.map((argument) => argument.name).join(', ') : '';
+    return {
+      name: `${returns.name} (*)(${parameters})`,
+      class: 'code',
+      complete: returns.complete && argumentsComplete && canonicalProcedureAttributes,
+    };
   }
   if (record.kind === 'array') {
-    const element = describeTypeIndex(record.elementType, types, depth + 1);
+    const element = describeTypeIndex(record.elementType, types, depth + 1, maxDepth);
     return { name: `${element.name}[]`, sizeBytes: record.sizeBytes, class: 'array', complete: false };
   }
   return { name: 'unknown', complete: false };
+}
+
+const UINT64_MAX = (1n << 64n) - 1n;
+
+function canonicalImageBase(value) {
+  // BinaryImage exposes PE ImageBase as bigint. Do not coerce strings or
+  // objects here: this value becomes address authority, so malformed caller
+  // input must fail closed rather than manufacture an absolute VA (#4219).
+  return typeof value === 'bigint' && value >= 0n && value <= UINT64_MAX ? value : null;
 }
 
 function expectedCodeViewIdentity(value) {
@@ -733,6 +855,8 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     const expectedCodeView = image?.identity?.codeView ?? null;
     const pdbBytes = bytesOf(image?.pdbBytes);
     const diagnostics = [];
+    const resolvedBudget = resolveDebugBudget(budget);
+    const byteBudget = createPdbByteBudget(resolvedBudget.maxBytesScanned);
 
     if (!pdbBytes) {
       return createDebugProviderResult({
@@ -751,17 +875,23 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       });
     }
 
-    const msf = parseMsf(pdbBytes);
+    const msf = parseMsf(pdbBytes, byteBudget);
     diagnostics.push(...msf.diagnostics);
     if (!msf.complete || msf.streams.length < 4) {
+      const budgetExhausted = byteBudget.exhausted;
+      const detail = budgetExhausted
+        ? `PDB byte budget exhausted while reading ${byteBudget.stopContext ?? 'the MSF container'}`
+        : 'the PDB container could not be read';
+      if (budgetExhausted && !diagnostics.includes(detail)) diagnostics.push(detail);
       return createDebugProviderResult({
         ecosystem: 'pdb',
         identity: {
-          verdict: 'unsupported', providerId: this.id, providerVersion: this.version,
-          method: 'codeview-guid-age', detail: 'the PDB container could not be read',
+          verdict: budgetExhausted ? 'identity-unavailable' : 'unsupported',
+          providerId: this.id, providerVersion: this.version,
+          method: 'codeview-guid-age', detail,
         },
         diagnostics,
-        status: status('unsupported', 'unsupported-input'),
+        status: budgetExhausted ? status('truncated', 'budget-exhausted') : status('unsupported', 'unsupported-input'),
       });
     }
 
@@ -790,7 +920,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     const symbolStream = dbi && dbi.symRecordStreamIndex < msf.streams.length
       ? msf.streams[dbi.symRecordStreamIndex].read()
       : null;
-    const symbols = parseSymbolRecords(symbolStream, budget);
+    const symbols = parseSymbolRecords(symbolStream, resolvedBudget);
     // The DBI header is part of the identity/authority boundary: matching
     // CodeView and Info Stream data must not launder symbols from a missing or
     // truncated DBI into authoritative evidence (#6042).
@@ -848,7 +978,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       // symbol range exactly [4, SymByteSize): SymByteSize == 4 is the valid
       // boundary meaning zero symbol bytes, not a cue to scan line info as
       // symbol records (#5276).
-      const moduleSymbols = parseSymbolRecords(moduleBytes.subarray(4, declaredSize), budget);
+      const moduleSymbols = parseSymbolRecords(moduleBytes.subarray(4, declaredSize), resolvedBudget);
       symbols.complete = symbols.complete && moduleSymbols.complete;
       for (const symbol of moduleSymbols.symbols) {
         if (symbol.kind !== 'procedure') continue;
@@ -857,8 +987,18 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       for (const kind of moduleSymbols.unmodelled) symbols.unmodelled.add(kind);
     }
 
-    const tpi = parseTpiStream(msf.streams[2]?.read(), budget);
+    const tpi = parseTpiStream(msf.streams[2]?.read(), resolvedBudget);
     const sectionHeaders = parseSectionHeaders(findSectionHeaderStream(msf, dbi, dbiBytes));
+    const imageBase = canonicalImageBase(image?.imageBase);
+
+    if (byteBudget.exhausted) {
+      const budgetDetail = `PDB byte budget exhausted while reading ${byteBudget.stopContext ?? 'PDB data'}`;
+      if (!diagnostics.includes(budgetDetail)) diagnostics.push(budgetDetail);
+      verdict = 'identity-unavailable';
+      detail = budgetDetail;
+      symbols.complete = false;
+      tpi.complete = false;
+    }
 
     if (symbols.unmodelled.size) {
       diagnostics.push(`unmodelled CodeView symbol kinds: ${[...symbols.unmodelled].map((kind) => `0x${kind.toString(16)}`).slice(0, 8).join(', ')}`);
@@ -866,7 +1006,8 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     if (tpi.unmodelled.size) {
       diagnostics.push(`unmodelled TPI leaf kinds: ${[...tpi.unmodelled].map((leaf) => `0x${leaf.toString(16)}`).slice(0, 8).join(', ')}`);
     }
-    if (!sectionHeaders.length) diagnostics.push('no section header stream: symbol addresses stay segment-relative');
+    if (!sectionHeaders.length) diagnostics.push('no section header stream: symbol addresses stay unresolved');
+    if (imageBase == null) diagnostics.push('PE image base unavailable or invalid: PDB symbol addresses stay unresolved');
 
     const result = createDebugProviderResult({
       ecosystem: 'pdb',
@@ -882,11 +1023,13 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       sections: ['pdb-info', 'dbi', 'tpi', 'symbol-records'],
       counts: { streams: msf.streams.length, symbols: symbols.symbols.length, types: tpi.types.size, modules: modules.length },
       diagnostics,
-      status: symbols.complete && tpi.complete && diagnostics.length === 0
-        ? status('complete', null)
-        : status('partial', 'evidence-missing'),
+      status: byteBudget.exhausted
+        ? status('truncated', 'budget-exhausted')
+        : symbols.complete && tpi.complete && diagnostics.length === 0
+          ? status('complete', null)
+          : status('partial', 'evidence-missing'),
     });
-    return Object.freeze({ ...result, parsed: { info, dbi, symbols, tpi, sectionHeaders } });
+    return Object.freeze({ ...result, parsed: { info, dbi, symbols, tpi, sectionHeaders, imageBase, maxDepth: resolvedBudget.maxDepth } });
   }
 
   symbols(result, { cursor = null, pageSize = DEBUG_DEFAULT_PAGE_SIZE } = {}) {
@@ -895,12 +1038,11 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     const headers = parsed.sectionHeaders;
     const ordered = parsed.symbols.symbols;
     return page(ordered, cursor, pageSize, (symbol) => {
-      // Segment indices are one-based. Without section headers the address
-      // stays segment-relative and the record says so rather than inventing an
-      // RVA. With headers, the offset must land inside the section's virtual
-      // extent: a CodeView (segment, offset) pair outside it is corrupt, and
-      // minting an RVA from it would feed false exact function evidence
-      // downstream (#5678).
+      // Segment indices are one-based. An absolute address needs both the
+      // PDB section-header RVA and the PE image base; either authority missing
+      // leaves the record unresolved rather than publishing an RVA as a VA
+      // (#4219). The CodeView offset must also stay inside the section's
+      // virtual extent, otherwise it is corrupt evidence (#5678).
       const header = headers[symbol.segment - 1] ?? null;
       const extent = sectionVirtualExtent(header);
       // A procedure whose declared size runs past the section extent is
@@ -908,8 +1050,14 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       // claims is not backed by that section (#5678).
       const inBounds = symbol.offsetInSegment < extent
         && (symbol.sizeBytes == null || symbol.offsetInSegment + symbol.sizeBytes <= extent);
-      const address = header && inBounds
-        ? `0x${(header.virtualAddress + symbol.offsetInSegment).toString(16)}`
+      const rva = header && inBounds
+        ? BigInt(header.virtualAddress) + BigInt(symbol.offsetInSegment)
+        : null;
+      const absoluteAddress = rva != null && parsed.imageBase != null
+        ? parsed.imageBase + rva
+        : null;
+      const address = absoluteAddress != null && absoluteAddress <= UINT64_MAX
+        ? `0x${absoluteAddress.toString(16)}`
         : null;
       return createDebugRecord({
         kind: 'symbol',
@@ -938,7 +1086,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     // is the record the type graph can actually use.
     const typed = parsed.symbols.symbols.filter((symbol) => symbol.kind === 'procedure' && symbol.typeIndex);
     return page(typed, cursor, pageSize, (symbol) => {
-      const described = describeTypeIndex(symbol.typeIndex, parsed.tpi.types);
+      const described = describeTypeIndex(symbol.typeIndex, parsed.tpi.types, 0, parsed.maxDepth ?? DEBUG_DEFAULT_BUDGET.maxDepth);
       return createDebugRecord({
         kind: 'type',
         entityId: `pdb_sym_${symbol.recordOffset}`,
@@ -973,7 +1121,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
         members: fields.members.map((member) => ({
           name: member.name,
           offset: member.offset,
-          type: describeTypeIndex(member.typeIndex, parsed.tpi.types),
+          type: describeTypeIndex(member.typeIndex, parsed.tpi.types, 0, parsed.maxDepth ?? DEBUG_DEFAULT_BUDGET.maxDepth),
         })),
       });
     }
@@ -1030,8 +1178,12 @@ function findSectionHeaderStream(msf, dbi, dbiBytes) {
 }
 
 function page(items, cursor, pageSize, map) {
+  /* A page size must make progress: pageSize 0 (or any non-positive value)
+     would otherwise return the same cursor forever, letting a normal
+     nextCursor consumer loop without advancing (#5691). */
+  const size = Number.isSafeInteger(pageSize) && pageSize > 0 ? pageSize : DEBUG_DEFAULT_PAGE_SIZE;
   const start = cursor == null ? 0 : Number(cursor);
-  const slice = items.slice(start, start + pageSize);
+  const slice = items.slice(start, start + size);
   const next = start + slice.length;
   return createDebugPage({
     records: slice.map(map),

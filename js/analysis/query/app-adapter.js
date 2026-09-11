@@ -18,12 +18,18 @@ function storeValue(app, key) {
 }
 
 function addressOf(value) {
-  if (typeof value === 'bigint') return value;
+  // The canonical address query boundary enforces one address-domain
+  // invariant regardless of input representation: an address is a
+  // non-negative integer. Only the number branch checked the sign before
+  // (#5196), so -1n / '-1' / 'function:-1' laundered a negative address
+  // into backend calls that the same logical value as a number could not
+  // reach.
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
   if (typeof value === 'string') {
     const text = value.trim().replace(/^(?:fn|function):/i, '');
     if (!text) return null;
-    try { return BigInt(text); } catch { return null; }
+    try { const parsed = BigInt(text); return parsed >= 0n ? parsed : null; } catch { return null; }
   }
   if (value && typeof value === 'object') return addressOf(value.address ?? value.startAddress ?? value.startAddr ?? value.start ?? value.functionId ?? value.id);
   return null;
@@ -390,9 +396,26 @@ export function createAppAnalysisQueryAdapter(app) {
       if (!app?.backend || !range.region || !storeValue(app, 'canDisassemble') || !symbols?.functionCount) return unsupported(id, 'arm64-function-producer-unavailable');
       const alignment = Number(storeValue(app, 'instructionAlignment') ?? storeValue(app, 'capability')?.instructionAlignment ?? 4);
       if (alignment !== 4) return unsupported(id, 'arm64-legacy-producer-requires-4-byte-instructions');
-      const startRow = Number((range.start - BigInt(range.region.vmAddr)) / 4n);
-      const maxRow = Math.max(0, Number(BigInt(range.region.size) / 4n) - 1);
-      const endRow = Math.min(Number((range.end - BigInt(range.region.vmAddr) + 3n) / 4n) - 1, maxRow);
+      // BigInt division floors, so an unaligned function start would silently
+      // analyze the preceding instruction row and publish it as the canonical
+      // result for the unaligned address. Match `App.analyzeFunctionAt()` and
+      // fail closed instead (#4969).
+      const delta = range.start - BigInt(range.region.vmAddr);
+      if (delta < 0n || delta % 4n !== 0n) return unsupported(id, 'arm64-function-start-unaligned');
+      // Legacy row indices are JavaScript numbers end to end. A row index
+      // beyond MAX_SAFE_INTEGER silently rounds to a neighboring instruction
+      // row, so the producer would analyze and publish a different function
+      // than the one requested (#5062); such ranges must fail closed.
+      const rowOffset = delta / 4n;
+      const endRowExact = (range.end - BigInt(range.region.vmAddr) + 3n) / 4n - 1n;
+      const maxRowExact = BigInt(range.region.size) / 4n - 1n;
+      const MAX_ROW = BigInt(Number.MAX_SAFE_INTEGER);
+      if (rowOffset > MAX_ROW || endRowExact > MAX_ROW || maxRowExact > MAX_ROW) {
+        return unsupported(id, 'function-row-index-unrepresentable');
+      }
+      const startRow = Number(rowOffset);
+      const maxRow = Math.max(0, Number(maxRowExact));
+      const endRow = Math.min(Number(endRowExact), maxRow);
       if (startRow < 0 || endRow < startRow) return unsupported(id, 'function-range-empty');
       const value = await analyzeFunctionCached(app.backend, range.region, startRow, endRow, symbols, options.onProgress, options);
       const completeness = value?.truncated ? 'truncated' : range.complete === false ? 'partial' : 'complete';
@@ -674,13 +697,25 @@ export function createAppAnalysisQueryAdapter(app) {
         return unsupported(id, program.queryIncompleteReason || 'unsupported-program-analysis');
       }
       const { offset, limit } = pageOf(page);
-      const source = program.calleesOf(range.start, range.end, Math.min(MAX_PAGE, offset + limit));
+      const cumulativeLimit = cumulativePageLimit(offset, limit);
+      if (cumulativeLimit == null) return unsupportedPage(id, page, 'page-range-overflow');
+      const source = program.calleesOf(range.start, range.end, cumulativeLimit);
       // The scan only covers the validated range; an unproven function extent
       // (analysis window or region clip) keeps the query partial (#5991).
       const rangeIncomplete = range.complete === false;
-      const reason = source?.incompleteReason ?? (rangeIncomplete ? (range.reason ?? 'function-extent-unproven') : null);
-      const result = paged(Array.from(source || []), page, source?.complete === false || rangeIncomplete ? 'partial' : 'complete', { reason });
-      if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned;
+      const queryLimited = source?.queryLimited === true;
+      const reason = source?.incompleteReason ?? (queryLimited ? 'query-limit' : (rangeIncomplete ? (range.reason ?? 'function-extent-unproven') : null));
+      const result = paged(Array.from(source || []), page, source?.complete === false || queryLimited || rangeIncomplete ? 'partial' : 'complete', { reason });
+      if (queryLimited && result.page.next == null) {
+        const canProbeBeyondPrefix = result.page.total >= result.page.offset;
+        if (canProbeBeyondPrefix) {
+          const next = nextPageOffset(
+            result.page.offset,
+            result.page.returned > 0 ? result.page.returned : result.page.limit,
+          );
+          if (next != null) result.page.next = next;
+        }
+      }
       return result;
     },
 

@@ -42,6 +42,12 @@ export function mappedELFFileSpanForVa(image, va, size) {
   return { ...range, spanEnd:range.start + bytes, size:bytes };
 }
 
+/** Architecture-specific alignment gate for exact ELF instruction starts. */
+export function elfInstructionStartAlignmentRejection(image, address) {
+  if (image?.arch === 'arm64' && address % 4n !== 0n) return 'does not satisfy arm64 4-byte alignment';
+  return null;
+}
+
 /**
  * Validate a function extent inside one canonical executable mapping.
  * Sections are preferred when present because they provide the strongest ELF
