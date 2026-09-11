@@ -587,13 +587,25 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
       budget.partial('load-config:guardcf-count-span', 'PE GuardCF count exceeds its mapped file-backed table');
     }
     const count = Number(count64 < BigInt(capacity) ? count64 : BigInt(capacity));
+    const entries = [];
+    let previousRva = null;
+    let ordered = true;
     for (let i = 0; i < count; i++) {
       if (!budget.take({ inputBytes: entrySize, records: 1, objects: 1, operations: 1, estimatedHeapBytes: 128 }, 'guardcf-function')) break;
       const p = tableRange.start + i * entrySize;
       const rva = r.u32(p);
+      const metadataFlags = extra > 0 ? r.u8(p + 4) : 0;
+      if (previousRva !== null && rva < previousRva) {
+        budget.partial('load-config:guardcf-order', 'PE GuardCF function table RVAs are not sorted');
+        ordered = false;
+        break;
+      }
+      previousRva = rva;
+      entries.push([rva, metadataFlags]);
+    }
+    if (ordered) for (const [rva, metadataFlags] of entries) {
       if (!rva) continue;
       const address = image.imageBase + BigInt(rva);
-      const metadataFlags = extra > 0 ? r.u8(p + 4) : 0;
       guardCFFunctionMetadata.push({ rva, address, flags: metadataFlags });
       const sec = image.sectionAt(address);
       if (!sec?.perms?.execute) continue;
