@@ -1,6 +1,11 @@
 import { BudgetExceededError } from '../budgets/index.js';
 import { createSchedulerBudget } from '../budgets/scheduler-budget.js';
-import { ArtifactStorageError, assertCanonicalArtifactDescriptor } from '../artifacts/contracts.js';
+import {
+  ArtifactStorageError,
+  assertCanonicalArtifactDescriptor,
+  decodeArtifactPayload,
+  encodeArtifactPayload,
+} from '../artifacts/contracts.js';
 import {
   ANALYSIS_PRIORITY,
   ANALYSIS_SCHEDULER_VERSION,
@@ -83,6 +88,10 @@ function inflightRequirementsCompatible(producerRequest, consumerRequest) {
   return requestCompleteness(producerRequest) === requestCompleteness(consumerRequest);
 }
 function isStorageFailure(error) { return error?.name === 'ArtifactStorageError' || String(error?.code || '').startsWith('artifact-storage-'); }
+function detachedArtifactValue(value) {
+  if (value == null) return value;
+  return decodeArtifactPayload(encodeArtifactPayload(value));
+}
 
 class IndexedMinHeap {
   constructor(compare) { this.items=[]; this.indices=new Map(); this.compareFn=compare; this.comparisons=0; }
@@ -202,7 +211,7 @@ export class AnalysisScheduler {
         const p = this.#attachConsumer(existing,consumerSignals);
         this.#emit('request.coalesced', existing, { consumerCount: existing.consumerCount });
         if (typeof request.validate === 'function') {
-          return p.then((result)=>this.#validateCoalescedConsumer(result,request,consumerSignals));
+          return p.then((result)=>this.#validateConsumerResult(result,request,consumerSignals));
         }
         return p;
       }
@@ -230,7 +239,13 @@ export class AnalysisScheduler {
         }
       });
     this.inflight.set(artifactId,task);
-    return this.#attachConsumer(task,consumerSignals);
+    const p=this.#attachConsumer(task,consumerSignals);
+    if (typeof request.validate === 'function') {
+      return p.then((result)=>result?.reused===true
+        ? this.#validateConsumerResult(result,request,consumerSignals)
+        : result);
+    }
+    return p;
   }
 
   #attachConsumer(task, signals) {
@@ -294,7 +309,7 @@ export class AnalysisScheduler {
     });
   }
 
-  async #validateCoalescedConsumer(result, request, signals) {
+  async #validateConsumerResult(result, request, signals) {
     const active=uniqueSignals(signals);
     const aborted=active.find((signal)=>signal.aborted);
     if (aborted) { this.metrics.cancelledConsumers++; throw abortError(aborted); }
@@ -315,9 +330,15 @@ export class AnalysisScheduler {
         this.metrics.cancelledConsumers++;
         throw abortError(controller.signal);
       }
+      const validationPayload=detachedArtifactValue(result?.payload);
+      const validationRecord=detachedArtifactValue(result?.record);
+      if (controller.signal.aborted) {
+        this.metrics.cancelledConsumers++;
+        throw abortError(controller.signal);
+      }
       let verdict;
       try {
-        verdict=await request.validate(result?.payload,result?.record,{signal:controller.signal});
+        verdict=await request.validate(validationPayload,validationRecord,{signal:controller.signal});
       } catch (error) {
         if (controller.signal.aborted) {
           this.metrics.cancelledConsumers++;
