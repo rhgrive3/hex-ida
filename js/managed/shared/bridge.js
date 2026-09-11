@@ -122,7 +122,7 @@ function managedStateIdent(variable, frontendId) {
   const frontend = typeof frontendId === 'string' ? frontendId.trim() : '';
   const prefix = frontend ? `vm:${frontend}:` : '';
   const displayKey = prefix && key.startsWith(prefix) ? key.slice(prefix.length) : key;
-  const indexed = /^([A-Za-z][A-Za-z0-9_-]*):([0-9]+)$/.exec(displayKey);
+  const indexed = /^([A-Za-z][A-Za-z0-9_]*):([0-9]+)$/.exec(displayKey);
   if (indexed) return `${indexed[1]}_${indexed[2]}`;
   // Keep arbitrary canonical state keys injective after turning them into a C
   // identifier. Escaping every non-alphanumeric code point (including '$'
