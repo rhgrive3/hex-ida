@@ -191,25 +191,50 @@ function strongIdentity(identity) {
   return identity?.confidence === 'strong' && identity?.state === 'ready' && typeof id === 'string' && !id.startsWith('fallback:');
 }
 
-export function sameStrongIdentity(left, right, local = {}) {
-  const leftHash = assertedContentHash(left, local);
-  const rightHash = assertedContentHash(right, local);
-  if (leftHash != null && rightHash != null) return leftHash === rightHash;
+export function sameStrongIdentity(left, right) {
+  const leftBinding = assertedContentBinding(left);
+  const rightBinding = assertedContentBinding(right);
+  if (leftBinding.invalid || rightBinding.invalid) return false;
+  if (leftBinding.hash != null && rightBinding.hash != null) {
+    if (leftBinding.hash !== rightBinding.hash) return false;
+    if (leftBinding.slice != null || rightBinding.slice != null) {
+      return leftBinding.slice != null && rightBinding.slice != null && leftBinding.slice === rightBinding.slice;
+    }
+    return true;
+  }
   return canonicalBindingId(left?.id) === canonicalBindingId(right?.id);
 }
 
-function assertedContentHash(identity, local) {
+function assertedContentBinding(identity) {
   const hash = canonicalBindingId(identity?.hash);
-  if (hash != null) return hash;
   const id = canonicalBindingId(identity?.id);
-  if (typeof id !== 'string' || !id.startsWith('content:')) return null;
-  const payload = id.slice('content:'.length);
-  const slice = selectedSlice(local);
-  if (!slice.invalid && slice.value != null) {
-    const suffix = `:${slice.value}`;
-    if (payload.endsWith(suffix) && payload.length > suffix.length) return payload.slice(0, -suffix.length);
+  if (typeof id !== 'string' || !id.startsWith('content:')) {
+    return { hash, slice:null, invalid:false };
   }
-  return payload || null;
+
+  if (hash != null) {
+    const prefix = `content:${hash}`;
+    if (id === prefix) return { hash, slice:null, invalid:false };
+    if (id.startsWith(`${prefix}:`)) {
+      const suffix = id.slice(prefix.length + 1);
+      const slice = canonicalSlice(suffix);
+      if (slice != null && slice === suffix) return { hash, slice, invalid:false };
+    }
+    return { hash, slice:null, invalid:true };
+  }
+
+  const payload = id.slice('content:'.length);
+  if (!payload) return { hash:null, slice:null, invalid:true };
+  const separator = payload.lastIndexOf(':');
+  if (separator > 0) {
+    const suffix = payload.slice(separator + 1);
+    const slice = canonicalSlice(suffix);
+    if (slice != null && slice === suffix) {
+      const inferredHash = payload.slice(0, separator);
+      return { hash:inferredHash || null, slice, invalid:!inferredHash };
+    }
+  }
+  return { hash:payload, slice:null, invalid:false };
 }
 
 function requestIdentityConsistent(identity, local) {

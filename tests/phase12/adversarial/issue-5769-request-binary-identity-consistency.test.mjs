@@ -72,3 +72,31 @@ test('#5769 mid-turn strong identity equivalence follows matching content hash',
     snapshot,
   ));
 });
+
+test('#5769 same hash cannot make different identity-bound slices equivalent at snapshot binding', () => {
+  assert.throws(
+    () => createTurnSnapshot(
+      { sliceIndex:1, binaryIdentity:strongIdentity('aaaa', 'content:aaaa:0') },
+      { binaryIdentity:strongIdentity('aaaa', 'content:aaaa:1') },
+    ),
+    (error) => error?.type === 'scope_violation',
+  );
+});
+
+test('#5769 mid-turn slice drift is rejected even when the content hash is unchanged', () => {
+  const local = { binaryHash:'aaaa', sliceIndex:0 };
+  const snapshot = createTurnSnapshot(local, {});
+  local.sliceIndex = 1;
+  assert.throws(
+    () => assertLiveBindingsUnchanged(local, snapshot),
+    (error) => error?.type === 'scope_violation',
+  );
+});
+
+test('#5769 same hash and same identity-bound slice remain equivalent', () => {
+  const snapshot = createTurnSnapshot(
+    { sliceIndex:1, binaryIdentity:strongIdentity('aaaa', 'content:aaaa:1') },
+    { binaryIdentity:strongIdentity('aaaa', 'content:aaaa:1') },
+  );
+  assert.equal(snapshot.binaryIdentity.id, 'content:aaaa:1');
+});
