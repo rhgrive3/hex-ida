@@ -33,6 +33,19 @@ test('v8 ownership fails closed on wrong branch, missing phase and incomplete in
   assert.throws(() => validateRoadmapInventory(BRANCH, 'phase8', ['js/analysis/index.js']));
 });
 
+test('C4 precondition storage owns exact origin implementation and regression paths only', () => {
+  const manifest = loadRoadmapManifest(), assignment = validateRoadmapManifest(manifest);
+  for (const file of ['js/core/identity/origin.js', 'tests/core-origin-canonical-reuse.test.mjs']) {
+    assert.equal(assignment.get(file), 'semanticCompat');
+    const moved = structuredClone(manifest);
+    moved.owners.semanticCompat = moved.owners.semanticCompat.filter(path => path !== file);
+    moved.owners.phase8.push(file);
+    assert.throws(() => validateRoadmapManifest(moved));
+  }
+  manifest.owners.semanticCompat.push('js/core/identity/index.js');
+  assert.throws(() => validateRoadmapManifest(manifest), /outside semanticCompat owner/);
+});
+
 test('v8 integration owns only the authorized MemorySSA builder repair, not its validation contract', () => {
   const manifest = loadRoadmapManifest();
   const assignments = validateRoadmapManifest(manifest);

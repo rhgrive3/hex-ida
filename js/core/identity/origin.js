@@ -14,6 +14,11 @@ const ORIGIN_FIELDS = ['byteRanges', 'virtualRanges', 'instructionIds', 'operati
 const CANONICAL_LIST_ENTRIES = new WeakMap();
 const EMPTY_LIST = Object.freeze([]);
 CANONICAL_LIST_ENTRIES.set(EMPTY_LIST, []);
+// Only normalized, deeply immutable precondition DATA is shared. Transform
+// records, their producer identities and proof/currentness authority are not.
+// This bounded module-owned store retains neither caller objects nor IR graphs.
+const PRECONDITION_DATA = new Map();
+let preconditionDataUnits = 0;
 
 function fail(code) { throw new TypeError(code); }
 function arrayList(values, code) {
@@ -115,6 +120,54 @@ function replaySafeJson(value, active = null) {
     active.delete(value);
   }
 }
+function sharePreconditionData(value) {
+  if (!value || typeof value !== 'object' || !ordinaryJsonPrototypes()) return value;
+  let key = '', nodes = 0;
+  const append = text => {
+    key += text;
+    if (key.length > 8192) throw new RangeError('precondition-storage-key');
+  };
+  const encode = (item, depth) => {
+    if (depth > 16 || ++nodes > 256) throw new RangeError('precondition-storage-shape');
+    if (item === null) { append('null;'); return; }
+    if (typeof item !== 'object') {
+      const text = Object.is(item, -0) ? '-0' : String(item);
+      if (text.length > 2048) throw new RangeError('precondition-storage-text');
+      append(`${typeof item}:${text.length}:${text}`); return;
+    }
+    if (Array.isArray(item)) {
+      if (item.length > 256) throw new RangeError('precondition-storage-array');
+      append(`array:${item.length}:[`);
+      for (const child of item) encode(child, depth + 1);
+    } else {
+      const keys = Object.keys(item);
+      if (keys.length > 256) throw new RangeError('precondition-storage-object');
+      append(`object:${keys.length}:{`);
+      for (const name of keys) {
+        if (name.length > 2048) throw new RangeError('precondition-storage-field');
+        append(`${name.length}:${name}`); encode(item[name], depth + 1);
+      }
+    }
+    append('};');
+  };
+  // replaySafeJson has already certified this producer-normalized immutable
+  // tree. Key encoding uses typed primitive lengths, never ambient JSON hooks.
+  // Oversized trees keep their ordinary fresh payload and observation limits.
+  try { encode(value, 0); } catch { return value; }
+  const prior = PRECONDITION_DATA.get(key);
+  if (prior) {
+    PRECONDITION_DATA.delete(key); PRECONDITION_DATA.set(key, prior);
+    return prior.value;
+  }
+  const cost = key.length + nodes * 32 + 64;
+  if (cost > 131072) return value;
+  while (PRECONDITION_DATA.size >= 512 || preconditionDataUnits + cost > 131072) {
+    const oldest = PRECONDITION_DATA.keys().next().value;
+    preconditionDataUnits -= PRECONDITION_DATA.get(oldest).cost; PRECONDITION_DATA.delete(oldest);
+  }
+  PRECONDITION_DATA.set(key, { value, cost }); preconditionDataUnits += cost;
+  return value;
+}
 function normalizedList(values, code, normalize) {
   const input = arrayList(values, code);
   let ordinary = false;
@@ -205,7 +258,7 @@ export function createTransformRecord(input = {}) {
   const passVersion = requiredString(input.passVersion, 'origin-invalid-transform');
   const ruleId = requiredString(input.ruleId, 'origin-invalid-transform');
   const proofKind = requiredString(input.proofKind, 'origin-invalid-transform');
-  const frozen = deepFreeze({
+  let frozen = deepFreeze({
     passId,
     passVersion,
     ruleId,
@@ -215,7 +268,11 @@ export function createTransformRecord(input = {}) {
     proofKind,
     timestampOrBuildId: input.timestampOrBuildId == null ? null : stringValue(input.timestampOrBuildId, 'origin-invalid-transform'),
   });
-  if (replaySafeJson(frozen.preconditions)) CANONICAL_TRANSFORM_RECORDS.add(frozen);
+  if (replaySafeJson(frozen.preconditions)) {
+    const preconditions = sharePreconditionData(frozen.preconditions);
+    if (preconditions !== frozen.preconditions) frozen = Object.freeze({ ...frozen, preconditions });
+    CANONICAL_TRANSFORM_RECORDS.add(frozen);
+  }
   return frozen;
 }
 

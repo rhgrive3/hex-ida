@@ -24,6 +24,58 @@ function resultOf(fn) {
   catch(error) { return {ok:false, name:error.name, message:error.message}; }
 }
 
+test('immutable precondition payloads share storage, not transform records or caller state', () => {
+  const payload = [{ condition:'storage-only', operands:['left', 'right'], bits:64 }];
+  const first = candidate.createTransformRecord(transform(payload));
+  const second = candidate.createTransformRecord({ ...transform(structuredClone(payload)), ruleId:'another-rule', producedEntityIds:['other'] });
+  assert.notEqual(first, second);
+  assert.equal(first.preconditions, second.preconditions);
+  assert.notEqual(first.ruleId, second.ruleId);
+  assert.notDeepEqual(first.producedEntityIds, second.producedEntityIds);
+  const equal = candidate.createTransformRecord(transform(payload));
+  assert.notEqual(equal, first, 'equal descriptions are still distinct newly issued transform records');
+  assert.equal(equal.preconditions, first.preconditions);
+  payload[0].operands[0] = 'changed';
+  const changed = candidate.createTransformRecord(transform(payload));
+  assert.notEqual(changed.preconditions, first.preconditions);
+  assert.equal(first.preconditions[0].operands[0], 'left');
+  assert.equal(changed.preconditions[0].operands[0], 'changed');
+  deeplyFrozen(first.preconditions);
+  same(changed, oracle.createTransformRecord(transform(payload)));
+});
+
+test('shared precondition keys preserve primitive types, signed zero, order and delimiter content', () => {
+  const inputs = [[0],[-0],['0'],[false],[null],['left','right'],['right','left'],['a:1:[','};'],
+    [{a:1,b:'2'}],[{a:'1',b:2}],[[1]],['array:1:[number:1:1};']];
+  const results = inputs.map(input=>candidate.createTransformRecord(transform(input)));
+  assert.equal(new Set(results.map(record=>record.preconditions)).size, inputs.length);
+  for (const [i, input] of inputs.entries()) {
+    same(results[i], oracle.createTransformRecord(transform(input)));
+    assert.equal(candidate.createTransformRecord(transform(input)).preconditions, results[i].preconditions);
+  }
+});
+
+test('precondition payload storage has entry and volume limits without invalidating prior records', () => {
+  const initial = candidate.createTransformRecord(transform(['storage-entry-first']));
+  for (let i=0;i<600;i++) candidate.createTransformRecord(transform([`storage-entry-${i}`]));
+  assert.notEqual(candidate.createTransformRecord(transform(['storage-entry-first'])).preconditions, initial.preconditions);
+  const large = i => [{ marker:`storage-volume-${i}`, contents:'x'.repeat(1800) }];
+  const first = candidate.createTransformRecord(transform(large('first')));
+  for (let i=0;i<100;i++) candidate.createTransformRecord(transform(large(i)));
+  assert.notEqual(candidate.createTransformRecord(transform(large('first'))).preconditions, first.preconditions);
+  assert.equal(candidate.createTransformRecord(first), first, 'eviction cannot revoke canonical record identity');
+  same(first, oracle.createTransformRecord(transform(large('first'))));
+  let deep = 'leaf';
+  for (let i=0;i<20;i++) deep = { next:deep };
+  for (const input of [['x'.repeat(2049)], Array.from({length:257},(_,i)=>i), deep,
+    Array.from({length:3},()=>Array.from({length:100},(_,i)=>i)),
+    Array.from({length:5},()=> 'x'.repeat(1800))]) {
+    const a=candidate.createTransformRecord(transform(input)), b=candidate.createTransformRecord(transform(input));
+    assert.notEqual(a.preconditions, b.preconditions, 'oversized data remains freshly normalized');
+    same(a, oracle.createTransformRecord(transform(input)));
+  }
+});
+
 test('canonical origin merges preserve content, digest, locale order, and deep immutability', () => {
   const inputs = [
     {byteRanges:[{binaryId:' bin ',offset:16n,length:4n},{start:0,end:'4'}],virtualRanges:[{imageId:' img ',sliceId:' slice ',address:'0x20',length:4}],instructionIds:['z','ä','é','e\u0301','A','a',' a ','"','\\'],bytecodeOperationIds:['op2','op1'],sourceLocations:[{file:'a.c',line:7n}],transforms:[transform([{bound:9n}])]},

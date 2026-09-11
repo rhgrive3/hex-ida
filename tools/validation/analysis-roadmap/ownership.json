@@ -256,6 +256,8 @@
     ],
     "semanticCompat": [
       "js/core/identity/live-data.js",
+      "js/core/identity/origin.js",
+      "tests/core-origin-canonical-reuse.test.mjs",
       "js/ir-core.js",
       "js/ir-base.js",
       "js/semantics/compat/index.js",
