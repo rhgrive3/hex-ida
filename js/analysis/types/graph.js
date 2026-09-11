@@ -338,6 +338,9 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       return m;
     });
 
+    // Absence of size evidence means unknown, not a zero-byte aggregate.
+    // Keep size nullable until an explicit aggregate fact or at least one
+    // concrete member proves it (#5190).
     let maxAlign = explicitAlign ?? 1n;
     for (const m of updatedMembers) {
       let mAlign = null;
@@ -350,7 +353,7 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       if (mAlign > maxAlign) maxAlign = mAlign;
     }
 
-    let calculatedSize = explicitSize ?? 0n;
+    let calculatedSize = explicitSize;
     if (updatedMembers.length > 0) {
       let maxOffsetSpan = 0n;
       for (const m of updatedMembers) {
@@ -371,14 +374,14 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
           : maxOffsetSpan;
     }
 
-    const calculatedSizeWire = structuralIntegerWire(calculatedSize);
-    const maxAlignWire = structuralIntegerWire(maxAlign);
     const structDescriptor = {
       kind: 'struct',
       members: updatedMembers,
-      sizeBytes: calculatedSizeWire,
-      totalSizeBytes: calculatedSizeWire,
-      alignBytes: maxAlignWire,
+      ...(calculatedSize == null ? {} : {
+        sizeBytes: structuralIntegerWire(calculatedSize),
+        totalSizeBytes: structuralIntegerWire(calculatedSize),
+      }),
+      alignBytes: structuralIntegerWire(maxAlign),
       isRecursive,
       recursiveIdentity: isRecursive ? entityId : null,
       sccMembers: sccMembers.length > 1 ? sccMembers : (isRecursive ? [entityId] : null),
