@@ -52,6 +52,8 @@ const DW_TAG = Object.freeze({
   subroutine_type: 0x15,
 });
 
+const SUPPORTED_DW_TAGS = new Set(Object.values(DW_TAG));
+
 const DW_AT = Object.freeze({
   location: 0x02,
   name: 0x03,
@@ -659,6 +661,11 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
         unitComplete = false;
         break;
       }
+      const tagSupported = SUPPORTED_DW_TAGS.has(declaration.tag);
+      if (!tagSupported) {
+        diagnostics.push(`unsupported tag 0x${declaration.tag.toString(16)} at 0x${dieOffset.toString(16)}`);
+        complete = false;
+      }
       // A .debug_info compilation unit roots at exactly one DW_TAG_compile_unit
       // or DW_TAG_partial_unit DIE (DWARF4 §7.5). Any other root tag, or a
       // second top-level DIE, is a structure the format cannot express (#5251).
@@ -683,7 +690,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       // Keep the first declaration for deterministic decoding, but never
       // publish a DIE from an ambiguous abbreviation table as complete
       // evidence (#5728).
-      let dieComplete = !duplicateCode;
+      let dieComplete = !duplicateCode && tagSupported;
       try {
         for (const spec of declaration.attributes) {
           const read = readForm(cursor, spec.form, unit, sections, spec.implicitConst);
@@ -756,6 +763,25 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
         if (!unit.rangesUnsupportedReported) {
           diagnostics.push('DW_AT_ranges range lists (.debug_rnglists/.debug_ranges) are not resolvable; affected DIEs stay incomplete');
           unit.rangesUnsupportedReported = true;
+        }
+      }
+
+      // An address-class DW_AT_high_pc is an absolute end address, not an
+      // unsigned size. A reversed range is malformed debug evidence: keep the
+      // DIE for pagination/diagnostics, but withhold completeness so it cannot
+      // become an exact function extent (#4232).
+      const lowPcEntry = attributes.get(DW_AT.low_pc);
+      const highPcEntry = attributes.get(DW_AT.high_pc);
+      if (lowPcEntry?.value != null && highPcEntry?.value != null && ADDRESS_CLASS_FORMS.includes(highPcEntry.form)) {
+        const low = BigInt(lowPcEntry.value);
+        const high = BigInt(highPcEntry.value);
+        const extent = high - low;
+        if (extent < 0n || extent > BigInt(Number.MAX_SAFE_INTEGER)) {
+          dieComplete = false;
+          complete = false;
+          diagnostics.push(extent < 0n
+            ? `DW_AT_high_pc precedes DW_AT_low_pc at 0x${dieOffset.toString(16)}`
+            : `DW_AT_high_pc range exceeds exact size bounds at 0x${dieOffset.toString(16)}`);
         }
       }
 
@@ -900,12 +926,17 @@ function describeType(die, dies, depth = 0, seen = new Set()) {
 
   switch (die.tag) {
     case DW_TAG.base_type: {
-      const encoding = Number(attributeValue(die, DW_AT.encoding) ?? 0);
+      const rawEncoding = attributeValue(die, DW_AT.encoding);
+      const encoding = rawEncoding == null ? null : Number(rawEncoding);
+      const encodingClass = encoding != null
+        && Object.prototype.hasOwnProperty.call(ENCODING_CLASS, encoding)
+        ? ENCODING_CLASS[encoding]
+        : 'unknown';
       return {
         name: name ?? 'base',
         widthBits: byteSize == null ? null : Number(byteSize) * 8,
-        class: ENCODING_CLASS[encoding] ?? 'integer',
-        complete: byteSize != null && die.complete,
+        class: encodingClass,
+        complete: byteSize != null && encodingClass !== 'unknown' && die.complete,
       };
     }
     case DW_TAG.pointer_type: {
@@ -1184,12 +1215,15 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
       // an addrx form resolved through .debug_addr, #6184).
       const highForm = die.attributes.get(DW_AT.high_pc)?.form;
       const highIsAddress = ADDRESS_CLASS_FORMS.includes(highForm);
+      const absoluteRange = highPc != null && highIsAddress && lowPc != null
+        ? BigInt(highPc) - BigInt(lowPc)
+        : null;
       const sizeBytes = highPc == null
         ? null
         : highIsAddress
-          ? lowPc == null
-            ? null
-            : Number(BigInt(highPc) - BigInt(lowPc))
+          ? absoluteRange != null && absoluteRange >= 0n && absoluteRange <= BigInt(Number.MAX_SAFE_INTEGER)
+            ? Number(absoluteRange)
+            : null
           : Number(highPc);
       const descriptor = {
         isFunction,

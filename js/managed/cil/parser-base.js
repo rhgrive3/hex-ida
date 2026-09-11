@@ -1,6 +1,7 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import { createManagedImageId, createManagedModuleId } from '../shared/identity.js';
 import { CLI_HEADER_SIZE, validateCliHeaderSize } from './cli-header.js';
+import { validateMetadataTableValidMask } from './metadata-layout.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -245,6 +246,7 @@ function parseMetadataTables(bytes, view, tableStream) {
   const validLow = BigInt(readU32(view, start + 8, 'cil-metadata-tables-truncated'));
   const validHigh = BigInt(readU32(view, start + 12, 'cil-metadata-tables-truncated'));
   const valid = validLow | (validHigh << 32n);
+  validateMetadataTableValidMask(valid);
   const rowCounts = new Array(64).fill(0);
   let pos = start + 24;
   for (let table = 0; table < 64; table++) {

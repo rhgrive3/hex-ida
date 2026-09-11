@@ -7,6 +7,15 @@ import { symbolicExecute } from '../symbolic/executor.js';
 import { STACK_TOP } from '../emu.js';
 
 const REMOTE_ARRAY_LIMITS = Object.freeze({ threads:1024, modules:4096, backtrace:4096, breakpoints:4096, trace:20000 });
+// #5842: individual trace capabilities multiplex into trace({capability})
+// via DebugAdapter._traceCapability; each advertised capability must return
+// only its own event class instead of the whole buffer snapshot.
+const TRACE_CAPABILITY_EVENT_TYPES = Object.freeze({
+  traceCall: 'call',
+  traceReturn: 'return',
+  traceBranch: 'branch',
+  traceMemoryWrite: 'memory-write',
+});
 const REMOTE_CALL_METHODS = new Set(['attach','launch','pause','resume','stepInto','stepOver','stepOut','removeBreakpoint','listBreakpoints','readRegisters','writeRegister','readMemory','writeMemory','getThreads','getModules','getBacktrace','evaluate','trace','watchMemory']);
 
 // Listener isolation must cover async failures too: a listener returning a
@@ -509,7 +518,28 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const text = String(expression || '').trim(); if (/^(x([0-9]|[12][0-9]|30)|sp|pc)$/.test(text)) return this.ensureSandbox().getRegister(text);
     throw new DebugAdapterError('unsupported-expression','local evaluate only accepts register names');
   }
-  async trace(options = {}) { if (options.run) await this.resume(options); return this.traceBuffer.snapshot({ limit:options.limit ?? 4096 }); }
+  async trace(options = {}) {
+    if (options.run) await this.resume(options);
+    const filter = TRACE_CAPABILITY_EVENT_TYPES[options?.capability];
+    if (!filter) return this.traceBuffer.snapshot({ limit:options.limit ?? 4096 });
+    // #5842: subtype calls multiplex through trace({capability, args}) — the
+    // subtype's own options (e.g. traceCall({limit:1})) ride inside args, while
+    // the direct discriminator form passes limit at the top level. Both forms
+    // are canonical; an explicit top-level limit is never silently overridden.
+    if (options.args != null && !Array.isArray(options.args)) {
+      throw new DebugAdapterError('invalid-request', 'trace capability args must be an array', { capability: options.capability });
+    }
+    const subtypeOptions = options.args?.find((a) => a && typeof a === 'object' && !Array.isArray(a)) ?? null;
+    const requestedLimit = options.limit ?? subtypeOptions?.limit;
+    // Filter before any limit cut: a subtype limit selects the newest N events
+    // of its own event class; newer heterogeneous events must never displace
+    // them. Ring statistics are reported from the unfiltered snapshot either way.
+    const snap = this.traceBuffer.snapshot();
+    const matched = snap.events.filter((e) => e?.type === filter);
+    if (requestedLimit == null) return { ...snap, events: matched };
+    const limit = boundedInteger(requestedLimit, 0, 0, 100000, 'trace limit');
+    return { ...snap, events: limit === 0 ? [] : matched.slice(-limit) };
+  }
   async watchMemory(spec) { const bp = normalizeBreakpoint({ ...spec, kind:'memory' }); throw new DebugAdapterError('unsupported','hardware-style watchpoints are unavailable in local sandbox; use memory trace/watch fields', { breakpoint:bp }); }
   _normalizeResult(result, memoryEvents = []) {
     const fullTrace = result.trace || [];
