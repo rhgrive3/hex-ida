@@ -1,4 +1,5 @@
 import { sourceOf } from '../ast/nodes.js';
+import { compatOperationEventCandidate } from '../pipeline-core.js';
 import { renderProvenanceRecord } from './contract.js';
 import { readLineExpressionHistory } from './projection.js';
 import { readSwitchLineHistory, readSwitchRenderHistory } from '../switch.js';
@@ -22,6 +23,14 @@ const readFacadeStackEscapeHistory = carried('stackEscape', readOriginalStackEsc
 const readFacadeAbiBindingHistory = carried('abiBinding', readOriginalAbiBindingHistory);
 
 const PUBLIC_STATE_RULES = Object.freeze(['suppress-unused-entry-state', 'reorder-public-state-slot', 'renumber-public-state-version']);
+
+// Both representations remain inspectable. A normalization attached to its
+// actual expression consumer is still a separate witness, not a missing event.
+export function renderPublicStateNormalizations(map) {
+  return Object.freeze((map?.ledger || []).flatMap(record => record.kind === 'public-state-normalization'
+    ? [record] : record.kind === 'normalized-state-expression' && record.publicNormalization
+      ? [record.publicNormalization] : []));
+}
 const readPublicStateNormalization = ir => {
   const batch = semanticViewStateCandidates(ir);
   return batch ? batch.isCurrent() ? batch.normalization : null
@@ -436,7 +445,9 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   const typedResultEvents = typedResult?.events || [];
   const stackEscapeEvents = stackEscape?.events || [];
   const abiBindingEvents = abiBinding?.events || [];
-  const rawRecordCount = expressionRecords.length + rawRecords.length + suppressionRecords.length + publicStateEvents.length + preservedStateEvents.length + publicLocationEvents.length + typedResultEvents.length + stackEscapeEvents.length + abiBindingEvents.length;
+  const sourceRecordCount = expressionRecords.length + rawRecords.length + suppressionRecords.length + publicStateEvents.length + preservedStateEvents.length + publicLocationEvents.length + typedResultEvents.length + stackEscapeEvents.length + abiBindingEvents.length;
+  let rawRecordCount = sourceRecordCount;
+  const unattachedPublicState = new Set(publicStateEvents);
   const ledgerRecords = [];
   for (const record of suppressionRecords.slice(0, Math.max(0, resolvedBudget.maxTransformRecords - ledgerRecords.length))) {
     ledgerRecords.push(renderProvenanceRecord(record));
@@ -450,7 +461,23 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
       continue;
     }
     if (ledgerRecords.length >= resolvedBudget.maxTransformRecords) break;
-    const normalized = expressionHistoryRecord(record, resolvedBudget.maxOriginsPerEntity);
+    let normalized = expressionHistoryRecord(record, resolvedBudget.maxOriginsPerEntity);
+    const event = compatOperationEventCandidate(record, result.ir);
+    if (unattachedPublicState.has(event)) {
+      const normalization = publicStateRecord(event, resolvedBudget.maxOriginsPerEntity);
+      // Never infer correspondence from an ordinal, text, equal origins or a
+      // public flag. This exact private event already supplied this consumer.
+      // Its separate normalization witness must also be fully represented by
+      // the consumer's original inputs; otherwise retain the standalone record.
+      const refs = [...originKeySet(canonicalOrigins(normalization.record.origin))];
+      if (!normalization.truncated && refs.length && refs.every(ref => normalized.originHistory.consumedRefs.includes(ref))) {
+        normalized = Object.freeze({ ...normalized, kind:'normalized-state-expression',
+          publicNormalization:Object.freeze({ ...normalization.record,
+            producedRefs:Object.freeze([]), removedRefs:Object.freeze([]) }) });
+        unattachedPublicState.delete(event);
+        rawRecordCount--;
+      }
+    }
     ledgerRecords.push(normalized);
     historyProducers.set(normalized, record);
     if (normalized.originHistory.completeness !== 'complete') {
@@ -487,7 +514,7 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   }
   // Preserve the existing ledger's budget priority; append this newly observed
   // class without displacing previously retained omission/expression records.
-  for (const event of publicStateEvents.slice(0, Math.max(0, resolvedBudget.maxTransformRecords - ledgerRecords.length))) {
+  for (const event of [...unattachedPublicState].slice(0, Math.max(0, resolvedBudget.maxTransformRecords - ledgerRecords.length))) {
     if (typeof shouldAbort === 'function' && shouldAbort() === true) return cancelledMap(resolvedBudget);
     const normalized = publicStateRecord(event, resolvedBudget.maxOriginsPerEntity);
     ledgerRecords.push(normalized.record);
@@ -671,6 +698,8 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
       entities:Object.keys(entities).length,
       entitiesTruncated,
       transformRecords:rawRecordCount,
+      ...(sourceRecordCount !== rawRecordCount ? { sourceRecordWitnesses:sourceRecordCount,
+        attachedPublicStateNormalizations:sourceRecordCount - rawRecordCount } : {}),
       ledgerTruncated,
       provenanceLoss,
       structuralEntities,
@@ -719,6 +748,21 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
     for (const record of provenanceMap.ledger) {
       if (typeof shouldAbort === 'function' && shouldAbort() === true) {
         reasons.add('cancelled'); validationCancelled = true; break;
+      }
+      if (record?.kind === 'normalized-state-expression' || record?.publicNormalization) {
+        const witness = record.publicNormalization;
+        const flat = witness?.kind === 'public-state-normalization' && !Object.hasOwn(witness, 'publicNormalization')
+          && witness.origin && ['addresses','rows','ir','ssaDefs','ssaUses'].every(key => Array.isArray(witness.origin[key]));
+        const refs = flat ? [...originKeySet(canonicalOrigins(witness.origin))] : [];
+        const inputs = record.originHistory?.consumedRefs;
+        if (record.kind !== 'normalized-state-expression' || record.rule !== 'compact-public-state'
+          || record.proof !== 'observed-state-compaction-not-equivalence' || !flat
+          || typeof record.before !== 'string' || !record.before.startsWith(`${witness.rule}:${witness.publicStateTransition?.ordinal}:`)
+          || witness.publicStateTransition?.completeness !== 'complete'
+          || !Array.isArray(inputs) || !refs.length || refs.some(ref => !inputs.includes(ref))
+          || validateRenderProvenance({ version:RENDER_PROVENANCE_VERSION, entities:{}, ledger:[witness], reasons:[] }).state !== 'complete') {
+          reasons.add('invalid-attached-public-state-history');
+        }
       }
       if (record?.kind === 'display-suppression' || record?.suppressedRender) {
         const omission = record.suppressedRender;
@@ -963,6 +1007,13 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
     }
   }
   if (provenanceMap.budget?.truncated === true) reasons.add('truncated');
+  const attached = provenanceMap.ledger.filter(record => record?.kind === 'normalized-state-expression').length;
+  if (attached || provenanceMap.counts?.attachedPublicStateNormalizations != null) {
+    const counts = provenanceMap.counts;
+    if (counts?.attachedPublicStateNormalizations !== attached
+      || !Number.isSafeInteger(counts?.sourceRecordWitnesses) || !Number.isSafeInteger(counts?.transformRecords)
+      || counts.sourceRecordWitnesses !== counts.transformRecords + attached) reasons.add('invalid-attached-public-state-count');
+  }
 
   const entityEntries = Object.values(provenanceMap.entities);
   const entityStates = validationCancelled ? [] : entityEntries.slice(0, VALIDATION_ENTITY_STATES_LIMIT).map((entity) => Object.freeze({

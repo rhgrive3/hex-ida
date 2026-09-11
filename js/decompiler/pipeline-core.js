@@ -61,6 +61,13 @@ export function readCallResultSpellingProducer(node, ir) {
   return entry && entry.ir === ir && entry.observation.matches() && entry.consumer.isCurrent() ? entry : null;
 }
 const buildHistoryObservations = new WeakMap();
+const compatOperationEvents = new WeakMap();
+// Issued descriptions only, not a currentness certificate. The renderer must
+// also find this exact event in the current owning normalization history.
+export function compatOperationEventCandidate(record, ir) {
+  const candidate = compatOperationEvents.get(record);
+  return candidate?.ir === ir ? candidate.event : null;
+}
 const reusableBuildHistoryRecords = new WeakSet();
 function buildOriginHistory(state, before, after) {
   state.recordOriginHistory ??= createExpressionOriginHistoryRecorder();
@@ -932,6 +939,7 @@ function recordCompatOperationSelection(value, expression, selected, state) {
     });
     const producerChecks = Object.freeze([transition.isCurrent, observation.sourceMatches, ...(origins?.memoryChecks || [])]);
     buildHistoryObservations.set(record, Object.freeze({ matches:observation.outputMatches, producerChecks }));
+    compatOperationEvents.set(record, Object.freeze({ ir:state.ir, event }));
     reusableBuildHistoryRecords.add(record);
     pending.push({ record, producerChecks });
   }

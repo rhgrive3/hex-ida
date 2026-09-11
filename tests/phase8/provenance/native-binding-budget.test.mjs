@@ -6,6 +6,7 @@ import { loadFrozenProvenance } from '../../../tools/validation/phase8/metrics.m
 import * as facade from '../../../js/ir-core.js';
 import * as projector from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 import { readLineExpressionHistory } from '../../../js/decompiler/phase8/projection.js';
+import * as renderHistory from '../../../js/decompiler/phase8/render-provenance.js';
 import { PROJECTION_LIMITS } from '../../../js/core/identity/live-data.js';
 import { createOriginSet } from '../../../js/core/identity/origin.js';
 import { createCapstoneX86Session } from '../../phase5/helpers/capstone-session.mjs';
@@ -14,6 +15,55 @@ import { architecturePluginV2 } from '../../../js/targets/architecture/index.js'
 import { resolveABIPlugin } from '../../../js/targets/abi/index.js';
 import { partitionDecodedFunction, semanticAbiAdapter } from '../../../js/analysis/semantic-function.js';
 import { buildSemanticV2CompatibilityPipeline } from '../../../js/semantics/compat/index.js';
+
+test('C4-03 native counted loop preserves all normalization witnesses within the unchanged ledger cap', () => {
+  const corpus = loadCorpus(), id = 'quality.loop_counted_sum.O2';
+  const index = corpus.functions.findIndex(entry => entry.id === id);
+  assert.ok(index >= 0);
+  const { result, failure } = decompileEntry(corpus.functions[index], {
+    index, decompilerTimeBudgetMs:20000, toolchain:corpus.toolchain ?? null,
+  });
+  assert.equal(failure ?? null, null);
+  const map = result.renderProvenance;
+  assert.equal(result.expressionHistoryBinding.completeness, 'complete');
+  assert.equal(map.completeness, 'complete');
+  assert.deepEqual(map.reasons, []);
+  assert.equal(renderHistory.validateRenderProvenance(map).state, 'complete');
+  assert.equal(map.budget.maxTransformRecords, 1024);
+  assert.equal(map.counts.ledgerTruncated, 0);
+  assert.equal(map.counts.provenanceLoss, 0);
+  assert.equal(map.ledger.length, 937);
+  assert.equal(map.counts.sourceRecordWitnesses, 1190);
+  assert.equal(map.counts.attachedPublicStateNormalizations, 253);
+  const expressions = map.ledger.filter(record => record.originHistory);
+  assert.equal(result.rewriteProof.length, 927);
+  assert.equal(expressions.length, result.rewriteProof.length, 'no expression consumer mapping is coalesced');
+  assert.deepEqual(expressions.map(record => [record.rule, record.before, record.after, record.valueId]),
+    result.rewriteProof.map(record => [record.rule, record.before, record.after, record.valueId ?? null]));
+  const witnesses = renderHistory.renderPublicStateNormalizations(map);
+  assert.equal(witnesses.length, 261);
+  const history = facade.readFacadeStateNormalization(result.ir) || projector.readProjectedStateNormalization(result.ir);
+  assert.ok(history);
+  assert.deepEqual(witnesses.map(record => record.publicStateTransition.ordinal).sort((a,b) => a-b),
+    history.events.map(event => event.ordinal).sort((a,b) => a-b));
+  for (const witness of witnesses) {
+    assert.deepEqual(witness.producedRefs, []);
+    assert.deepEqual(witness.removedRefs, []);
+    const owner = map.ledger.findIndex(record => record === witness || record.publicNormalization === witness);
+    assert.ok(owner >= 0);
+    for (const ref of witness.publicStateTransition.consumedRefs) assert.ok(map.transformReverse[ref].includes(owner));
+  }
+  const reference = loadFrozenProvenance().observations.find(entry => entry.id === id);
+  const actual = provenanceFromSourceMap(result.sourceMap);
+  assert.deepEqual(reference.sourceAddresses.filter(address => !actual.sourceAddresses.includes(address)), []);
+  const lines = result.lines.filter(line => readLineExpressionHistory(line, result.ir)?.length);
+  assert.ok(lines.length > 1);
+  result.ir.values = [...result.ir.values];
+  assert.ok(lines.every(line => readLineExpressionHistory(line, result.ir) === null));
+  const stale = renderHistory.buildRenderProvenance({ result });
+  assert.equal(stale.completeness, 'incomplete');
+  assert.equal(renderHistory.renderPublicStateNormalizations(stale).length, 0);
+});
 
 test('C4-03 native early-exit loop binds immutable origin envelopes and all actual state histories', () => {
   const corpus = loadCorpus(), id = 'riscv64.quality.loop_early_exit.O0';

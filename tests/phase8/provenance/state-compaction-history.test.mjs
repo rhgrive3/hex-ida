@@ -5,10 +5,10 @@ import { projectSemanticIrV2ToLegacyV1, readProjectedStateTransitions,
 import * as stateProjector from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 import { finalizeLegacyProjection } from '../../../js/semantics/compat/semantic-ir-v2-to-v1-finalize.js';
 import { annotateValueRanges } from '../../../js/semantics/compat/legacy-value-ranges.js';
-import { enhanceSemanticDecompilation, readExpressionHistoryConsumer } from '../../../js/decompiler/pipeline-core.js';
+import { enhanceSemanticDecompilation, readExpressionHistoryConsumer, compatOperationEventCandidate } from '../../../js/decompiler/pipeline-core.js';
 import { enhanceSemanticDecompilation as enhancePublic } from '../../../js/decompiler/pipeline.js';
 import { applyPhase8Projection } from '../../../js/decompiler/phase8/projection.js';
-import { buildRenderProvenance, validateRenderProvenance } from '../../../js/decompiler/phase8/render-provenance.js';
+import { buildRenderProvenance, validateRenderProvenance, renderPublicStateNormalizations } from '../../../js/decompiler/phase8/render-provenance.js';
 import { buildSemanticModel } from '../../../js/blocks.js';
 import { decompileSemantic } from '../../../js/decompiler/semantic-core.js';
 import { facadeStateTransitionCandidates, readFacadeStateNormalization } from '../../../js/ir-core.js';
@@ -532,10 +532,10 @@ test('core and public rendering retain normalization history and repeated projec
   for (const publicPipeline of [false, true]) {
     const f = render(normalizationFixture(), {}, publicPipeline);
     let result = applyPhase8Projection(f.result, analysis());
-    const records = result.renderProvenance.ledger.filter(record => record.kind === 'public-state-normalization');
+    const records = renderPublicStateNormalizations(result.renderProvenance);
     assert.ok(records.some(record => record.rule === 'suppress-unused-entry-state'));
     for (let count = 0; count < 3; count++) result = applyPhase8Projection(result, analysis());
-    assert.deepEqual(result.renderProvenance.ledger.filter(record => record.kind === 'public-state-normalization'), records);
+    assert.deepEqual(renderPublicStateNormalizations(result.renderProvenance), records);
     assert.ok(records.every(record => !record.producedRefs.length && !record.removedRefs.length));
   }
 });
@@ -551,6 +551,54 @@ test('public state descriptors cannot manufacture a rendered consumer or issue a
   const forged = buildRenderProvenance({ result:{ lines, phase8Projection:{ transforms:[structuredClone(record)] } }, snapshotId:'normalization' });
   assert.deepEqual(forged.ledger, []);
   assert.ok(forged.reasons.includes('unissued-public-state-history'));
+});
+
+test('normalization attaches only to the exact issued expression event and preserves every witness', () => {
+  const f = render(normalizationFixture(), {}, true), result = applyPhase8Projection(f.result, analysis());
+  const map = result.renderProvenance;
+  const attached = map.ledger.filter(record => record.kind === 'normalized-state-expression');
+  assert.ok(attached.length > 0);
+  const records = result.rewriteProof.filter(record => compatOperationEventCandidate(record, result.ir));
+  assert.ok(records.length > 0);
+  for (const record of records) {
+    assert.equal(compatOperationEventCandidate({ ...record }, result.ir), null);
+    assert.equal(compatOperationEventCandidate(record, { ...result.ir }), null);
+  }
+  const history = readFacadeStateNormalization(result.ir) || stateProjector.readProjectedStateNormalization(result.ir);
+  const witnesses = renderPublicStateNormalizations(map);
+  assert.equal(witnesses.length, history.events.length);
+  assert.deepEqual(witnesses.map(record => record.publicStateTransition.ordinal).sort((a,b) => a-b),
+    history.events.map(event => event.ordinal).sort((a,b) => a-b));
+  assert.equal(map.counts.sourceRecordWitnesses, map.counts.transformRecords + attached.length);
+  for (const record of attached) {
+    const witness = record.publicNormalization;
+    assert.deepEqual(witness.producedRefs, []);
+    assert.deepEqual(witness.removedRefs, []);
+    for (const ref of witness.publicStateTransition.consumedRefs) {
+      assert.ok(record.originHistory.consumedRefs.includes(ref));
+      assert.ok(map.transformReverse[ref].includes(map.ledger.indexOf(record)));
+    }
+  }
+  assert.ok(!validateRenderProvenance(map).reasons.some(reason => reason.startsWith('invalid-attached')));
+  for (const mutate of [
+    record => { delete record.publicNormalization; },
+    record => { delete record.publicNormalization.origin; },
+    record => { record.publicNormalization.publicStateTransition.ordinal++; },
+    record => { record.publicNormalization.publicStateTransition.completeness = 'incomplete'; },
+    record => { record.publicNormalization.producedRefs = ['L0:stmt']; },
+    record => { record.publicNormalization.publicNormalization = {}; },
+    record => { record.before = 1; },
+  ]) {
+    const changed = structuredClone(map);
+    mutate(changed.ledger.find(record => record.kind === 'normalized-state-expression'));
+    assert.ok(validateRenderProvenance(changed).reasons.includes('invalid-attached-public-state-history'));
+  }
+  const changed = structuredClone(map); changed.counts.sourceRecordWitnesses--;
+  assert.ok(validateRenderProvenance(changed).reasons.includes('invalid-attached-public-state-count'));
+  const copied = buildRenderProvenance({ result:{ ...result, rewriteProof:result.rewriteProof.map(record => ({ ...record })) } });
+  assert.ok(!copied.ledger.some(record => record.kind === 'normalized-state-expression'),
+    'copied expression descriptions cannot attach even an otherwise current normalization');
+  assert.equal(renderPublicStateNormalizations(copied).length, history.events.length);
 });
 
 test('normalization metadata rejects deletion, invented lines and malformed identity or slot transitions', () => {
@@ -665,11 +713,13 @@ test('public version/order dependencies retain peer identities without recursive
   assert.ok(!f.result.expressionHistoryBinding.reasons.some(reason => reason.includes('history-budget')),
     JSON.stringify(f.result.expressionHistoryBinding));
   const map = applyPhase8Projection(f.result, analysis()).renderProvenance;
-  const records = map.ledger.filter(record => record.kind === 'public-state-normalization');
+  const records = renderPublicStateNormalizations(map);
   assert.equal(records.length, history.events.length);
   assert.ok(!map.reasons.includes('truncated'), JSON.stringify(map.reasons));
   const counted = records.find(record => record.rule === 'renumber-public-state-version'
     && record.publicStateTransition.consumedRefs.length >= 30);
   assert.ok(counted);
-  for (const ref of counted.publicStateTransition.consumedRefs) assert.ok(map.transformReverse[ref].includes(map.ledger.indexOf(counted)));
+  const ownerIndex = map.ledger.findIndex(record => record === counted || record.publicNormalization === counted);
+  assert.ok(ownerIndex >= 0);
+  for (const ref of counted.publicStateTransition.consumedRefs) assert.ok(map.transformReverse[ref].includes(ownerIndex));
 });
