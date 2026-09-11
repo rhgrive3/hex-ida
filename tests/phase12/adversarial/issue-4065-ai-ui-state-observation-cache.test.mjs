@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHexToolRegistry } from '../../../js/ai/tools/index.js';
+import { ToolRegistry } from '../../../js/ai/tools/registry-core.js';
 import { ObservationStore } from '../../../js/ai/tools/storage/observation-store.js';
 
 function selectionAt(address) {
@@ -74,5 +75,38 @@ assert.equal(firstRegistry.get('get_current_function').deterministic, true, 'UI 
 assert.equal(firstRegistry.get('get_selection_context').deterministic, true, 'UI reads remain deterministic within one snapshot');
 assert.equal(firstRegistry.get('get_current_function').cacheable, false, 'current-function cache policy is separate from determinism');
 assert.equal(firstRegistry.get('get_selection_context').cacheable, false, 'selection cache policy is separate from determinism');
+
+// A custom definition must not be able to re-enable reusable caching for a
+// reserved snapshot-dependent tool name. This keeps the policy authoritative
+// at the registry boundary rather than relying on each built-in definition.
+let customCalls = 0;
+const customStore = new ObservationStore({ context: contextAt(0x1000n) });
+function customRegistryAt(address) {
+  const registry = new ToolRegistry({ context: contextAt(address), observationStore: customStore });
+  registry.register({
+    name: 'get_current_function',
+    cacheable: true,
+    execute: async (_args, { context }) => {
+      customCalls += 1;
+      return { address: `0x${context.currentAddress.toString(16)}` };
+    },
+  });
+  return registry;
+}
+
+const customFirstRegistry = customRegistryAt(0x1000n);
+assert.equal(customFirstRegistry.get('get_current_function').cacheable, false, 'reserved tool name must override custom cacheable:true');
+const customFirst = await customFirstRegistry.execute('get_current_function', {}, { scope: 'binary' });
+assert.equal(customFirst.result.address, '0x1000');
+assert.notEqual(customFirst.cached, true);
+assert.equal(customStore.get(customFirst.detailRef).cacheKey, null);
+
+const customSecondRegistry = customRegistryAt(0x2000n);
+assert.equal(customSecondRegistry.get('get_current_function').cacheable, false);
+const customSecond = await customSecondRegistry.execute('get_current_function', {}, { scope: 'binary' });
+assert.equal(customSecond.result.address, '0x2000', 'custom reserved tool must observe the new UI snapshot');
+assert.notEqual(customSecond.cached, true);
+assert.equal(customStore.get(customSecond.detailRef).cacheKey, null);
+assert.equal(customCalls, 2, 'custom reserved tool must recompute on each snapshot');
 
 console.log('issue #4065 AI UI-state ObservationStore cache: PASS');
