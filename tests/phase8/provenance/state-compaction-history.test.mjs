@@ -20,7 +20,7 @@ import { BRANCH, loadRoadmapManifest, validateRoadmapInventory } from '../../../
 const clone = ir => structuredClone(Object.fromEntries(Object.entries(ir).filter(([, value]) => typeof value !== 'function')));
 const rule = 'compact-public-state';
 
-function fixture({ bits = 64, readBits = bits } = {}) {
+function fixture({ bits = 64, readBits = bits, additionalConsumer = false } = {}) {
   const origin = (role, address = 0x6000n, instructionId = 'same-instruction') => ({ instructionIds:[instructionId],
     operationIds:[`op:${role}`], virtualRanges:[{ start:address, end:address + 4n }], parentEntityIds:[`parent:${role}`] });
   const type = { kind:'bitvector', widthBits:bits }, readType = { kind:'bitvector', widthBits:readBits };
@@ -39,6 +39,7 @@ function fixture({ bits = 64, readBits = bits } = {}) {
     { id:'n_again', kind:'state-read', blockId:'b0', inputs:[], outputs:['again'], variable, origin:origin('again',0x6004n,'again') },
     { id:'n_ret', kind:'return', blockId:'b0', inputs:['again'], outputs:[], origin:origin('return',0x6008n,'ret') },
     { id:'n_other', kind:'return', blockId:'b0', inputs:['other'], outputs:[], origin:origin('other-return',0x6008n,'other-ret') },
+    ...(additionalConsumer ? [{ id:'n_same', kind:'return', blockId:'b0', inputs:['sum'], outputs:[], origin:origin('same-return',0x600cn,'same-ret') }] : []),
   ];
   const canonical = { schemaVersion:2, contractVersion:'2.0.0', functionId:'state_history', entryBlockId:'b0',
     blocks:[{ id:'b0', nodeIds:nodes.map(node => node.id), origin:origin('block') }], values, nodes,
@@ -108,6 +109,32 @@ test('actual state-edge and shadow histories bind only to their rendered consume
     assert.deepEqual(result.renderProvenance.ledger, ledger);
     assert.deepEqual(clone(f.ir), before);
   }
+});
+
+test('inherited state history reuses its actual producer record without inventing consumer transforms', () => {
+  const f = render(fixture({ additionalConsumer:true })), input = f.result;
+  const records = input.rewriteProof.filter(record => record.rule === rule);
+  assert.ok(records.length);
+  assert.equal(new Set(records.map(record => record.originHistory)).size, records.length,
+    'one issued state transformation is published once, not copied for each downstream value');
+  const consumers = [...input.semanticAst.values, ...input.cAst.body.map(node => node.semantic)]
+    .map(semantic => readExpressionHistoryConsumer(semantic, f.ir)).filter(Boolean);
+  const shared = records.find(record => consumers.filter(consumer => consumer.records.includes(record)).length > 1);
+  assert.ok(shared, 'the same producer is retained by multiple actual consumers');
+  const owners = consumers.filter(consumer => consumer.records.includes(shared));
+  assert.ok(owners.every(consumer => consumer.isCurrent()));
+  const unrelated = readExpressionHistoryConsumer(input.cAst.body[1].semantic, f.ir);
+  assert.ok(!unrelated || !unrelated.records.includes(shared));
+  assert.equal(readExpressionHistoryConsumer({ ...input.cAst.body[0].semantic }, f.ir), null,
+    'copying public metadata does not acquire the shared producer');
+  const result = applyPhase8Projection(input, analysis());
+  assert.equal(result.renderProvenance.completeness, 'complete');
+  const ledger = result.renderProvenance.ledger.filter(record => record.rule === rule);
+  assert.ok(ledger.every(record => !record.producedRefs.includes('L1:stmt')));
+  assert.ok(ledger.some(record => record.producedRefs.includes('L0:stmt') && record.producedRefs.includes('L2:stmt')),
+    'the shared producer reaches both real consumers and not the unrelated line');
+  f.ret.args[0] = { ...f.ret.args[0] };
+  assert.ok(owners.every(consumer => !consumer.isCurrent()), 'sharing cannot cache currentness across an IR mutation');
 });
 
 test('ordinary projection preserves frozen predecessor descriptors and their current state consumers', () => {

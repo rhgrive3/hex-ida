@@ -57,7 +57,13 @@ export function readCallResultSpellingProducer(node, ir) {
   return entry && entry.ir === ir && entry.observation.matches() && entry.consumer.isCurrent() ? entry : null;
 }
 const buildHistoryObservations = new WeakMap();
+const reusableStateHistoryRecords = new WeakSet();
 function valueHistoryRecord(record, valueId) {
+  // State normalization is one observed producer operation, not a new
+  // transformation each time a downstream value inherits it. Keep its owning
+  // valueId and exact record identity; consumer.records already carries each
+  // actual dependency. Public copies cannot acquire this private membership.
+  if (reusableStateHistoryRecords.has(record)) return record;
   const copy = { ...record, valueId };
   const observation = buildHistoryObservations.get(record);
   if (observation) buildHistoryObservations.set(copy, observation);
@@ -864,6 +870,7 @@ function recordCompatOperationSelection(value, expression, selected, state) {
     const stateOperation = !!event.kind;
     const identityText = identity => `${String(identity.reg)}:${String(identity.stateKey)}:${String(identity.version)}:${String(identity.compatDerived)}`;
     const record = Object.freeze({ rule:location || typedResult || stackEscape || abiBinding ? event.operation : preserved ? 'restore-abi-preserved-state' : stateOperation ? 'compact-public-state' : facade ? 'fold-facade-constant' : 'fold-compatibility-constant', phase:'compatibility-projection',
+      ...(stateOperation ? { valueId:value?.id ?? null } : {}),
       before:abiBinding ? `${event.stage}:${event.direction}:${event.ordinal}:arguments:${event.beforeArguments.map(arg => arg.value?.id).join(',')}` : stackEscape ? `${event.stage}:${event.ordinal}:store:${event.store.id}` : typedResult ? `${event.stage}:${event.ordinal}:${event.before?.id ?? 'no-public-result'}` : location ? `${event.stage}:${event.ordinal}:${event.before.key}` : preserved ? `${event.stage}:${event.ordinal}:value:${event.before.id}` : stateOperation ? `${event.kind}:${event.ordinal}:${event.path || 'identity'}:${event.identity ? identityText(event.before) : event.before.id}`
         : `${event.stage}:${event.round}:${event.ordinal}:${event.op}:${event.sub ?? ''}:${String(event.beforeConstant)}`,
       after:abiBinding ? `${event.direction}:${event.outcome}:arguments:${event.afterArguments.map(arg => arg.value?.id).join(',')}` : stackEscape ? `compatibility-clobber:call:${event.call.id}` : typedResult ? `call-result-view:${event.output.id}:${event.registerId}:${event.bits}` : location ? `location:${event.after.key}` : preserved ? `value:${event.after.id}:${event.evidence}` : stateOperation ? `${event.identity ? identityText(event.after) : event.after.id}` : `constant:${event.bits}:${String(event.afterConstant)}`,
@@ -880,6 +887,7 @@ function recordCompatOperationSelection(value, expression, selected, state) {
     });
     const producerChecks = Object.freeze([transition.isCurrent, observation.sourceMatches, ...(origins?.memoryChecks || [])]);
     buildHistoryObservations.set(record, Object.freeze({ matches:observation.outputMatches, producerChecks }));
+    if (record.rule === 'compact-public-state') reusableStateHistoryRecords.add(record);
     pending.push({ record, producerChecks });
   }
   // All local finish callbacks have run. Outside canonical construction,
@@ -1089,6 +1097,7 @@ function rewriteAll(state, budget) {
       state.expressionProofs.set(v.id, { expression:root, records });
       state.rewriteProof.push(...records);
     }
+    state.rewriteProof = [...new Set(state.rewriteProof)];
     return state;
   }
   for (const v of state.ir.values || []) {
@@ -1108,6 +1117,7 @@ function rewriteAll(state, budget) {
     state.rewriteStats.budgetExceeded ||= r.stats.budgetExceeded;
     for (const [k, n] of Object.entries(r.stats.byRule)) state.rewriteStats.byRule[k] = (state.rewriteStats.byRule[k] || 0) + n;
   }
+  state.rewriteProof = [...new Set(state.rewriteProof)];
   // A truncated rewrite is a truncated result. Before this, `rewriteStats.budgetExceeded`
   // could be true while the pipeline still reported `degraded: false`, so a consumer
   // reading the pipeline's own completeness flag was told the output was complete
@@ -1733,7 +1743,7 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
     highVariables: advanced.highVariables,
     prototype: advanced.prototype,
     aggregateLayouts: advanced.aggregateLayouts,
-    rewriteProof: advanced.rewriteProof,
+    rewriteProof: [...new Set(advanced.rewriteProof)],
     expressionHistoryBinding:Object.freeze({
       scope:'producer-consumer-observations',
       completeness:advanced.expressionBindingBudget?.reasons.size ? 'incomplete' : 'complete',
