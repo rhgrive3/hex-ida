@@ -12,6 +12,7 @@ export const DEFAULT_MATCH_BUDGET = Object.freeze({
   maxComponentEdges: 20_000,
   maxSolverRelaxations: 500_000,
   maxSolverAugmentations: 2_048,
+  maxPostprocessWork: 500_000,
   maxWallMs: 2_000,
 });
 
@@ -58,6 +59,7 @@ export function createMatchBudget(overrides = {}) {
     maxComponentEdges: limit(overrides.maxComponentEdges, DEFAULT_MATCH_BUDGET.maxComponentEdges),
     maxSolverRelaxations: limit(overrides.maxSolverRelaxations, DEFAULT_MATCH_BUDGET.maxSolverRelaxations),
     maxSolverAugmentations: limit(overrides.maxSolverAugmentations, DEFAULT_MATCH_BUDGET.maxSolverAugmentations),
+    maxPostprocessWork: limit(overrides.maxPostprocessWork, DEFAULT_MATCH_BUDGET.maxPostprocessWork),
     maxWallMs: limit(overrides.maxWallMs, DEFAULT_MATCH_BUDGET.maxWallMs),
   };
   const now = typeof overrides.now === 'function' ? overrides.now : Date.now;
@@ -73,6 +75,9 @@ export function createMatchBudget(overrides = {}) {
   let candidateEdges = 0;
   let solverRelaxations = 0;
   let solverAugmentations = 0;
+  let postprocessWork = 0;
+  let postprocessingStopped = false;
+  let postprocessingReason = null;
   let oversizedComponents = 0;
   let truncated = false;
   let candidateGraphIncomplete = false;
@@ -86,10 +91,26 @@ export function createMatchBudget(overrides = {}) {
     if (reason == null) reason = message;
     return false;
   };
-  const wallOkay = (stage, incomplete = false, preprocessing = false, observeAfterTruncation = false) => {
-    if (truncated && !observeAfterTruncation) return false;
+  const wallOkay = (stage, incomplete = false, preprocessing = false) => {
+    if (truncated) return false;
     if (signal?.aborted) return stop(`${stage} aborted`, incomplete, preprocessing);
     if (now() - started > limits.maxWallMs) return stop(`${stage} exceeded ${limits.maxWallMs} ms wall-clock budget`, incomplete, preprocessing);
+    return true;
+  };
+  const stopPostprocessing = (message) => {
+    truncated = true;
+    postprocessingStopped = true;
+    if (postprocessingReason == null) postprocessingReason = message;
+    // Solver/candidate truncation remains the first-result authority. A later
+    // post-processing failure still has its own diagnostic without replacing
+    // the original reason that made the solver result incomplete.
+    if (reason == null) reason = message;
+    return false;
+  };
+  const postprocessingWallOkay = (stage = 'match post-processing') => {
+    if (postprocessingStopped) return false;
+    if (signal?.aborted) return stopPostprocessing(`${stage} aborted`);
+    if (now() - started > limits.maxWallMs) return stopPostprocessing(`${stage} exceeded ${limits.maxWallMs} ms wall-clock budget`);
     return true;
   };
 
@@ -139,7 +160,17 @@ export function createMatchBudget(overrides = {}) {
     },
     checkCandidateWall() { return wallOkay('candidate generation', true); },
     checkSolverWall(stage = 'matching') { return wallOkay(stage, false); },
-    checkPostprocessingWall(stage = 'match post-processing') { return wallOkay(stage, false, false, true); },
+    checkPostprocessingWall(stage = 'match post-processing') { return postprocessingWallOkay(stage); },
+    postprocess(cost = 1, stage = 'match post-processing') {
+      if (postprocessingStopped) return false;
+      if (!Number.isSafeInteger(cost) || cost < 1) return stopPostprocessing('match post-processing cost is invalid');
+      if (postprocessWork > limits.maxPostprocessWork - cost) {
+        return stopPostprocessing(`post-processing work exceeded ${limits.maxPostprocessWork}`);
+      }
+      if (!postprocessingWallOkay(stage)) return false;
+      postprocessWork += cost;
+      return true;
+    },
     allowComponent(nodeCount, edgeCount) {
       if (nodeCount > limits.maxComponentNodes || edgeCount > limits.maxComponentEdges) {
         oversizedComponents++;
@@ -172,6 +203,9 @@ export function createMatchBudget(overrides = {}) {
         candidateEdges: Math.min(candidateEdges, limits.maxCandidateEdges),
         solverRelaxations,
         solverAugmentations,
+        postprocessWork,
+        postprocessingStopped,
+        postprocessingReason,
         oversizedComponents,
         truncated,
         candidateGraphIncomplete,
