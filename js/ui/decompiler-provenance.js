@@ -1,4 +1,4 @@
-import { validateRenderProvenance } from '../decompiler/phase8/render-provenance.js';
+import { validateRenderProvenance, renderRecordWitnesses } from '../decompiler/phase8/render-provenance.js';
 import { addrHex, parseAddress } from '../format.js';
 import { decompiledText } from '../decompile.js';
 import { h, uiButton } from './primitives.js';
@@ -34,7 +34,7 @@ export function createDecompilerNavigation(query, { currentSnapshot, isCurrent =
     } catch { return signal?.aborted ? 'cancelled' : 'snapshot-unavailable'; }
     return null;
   };
-  const publish = (refs, recordRefs = []) => {
+  const publish = (refs, recordRefs = [], originKey = null) => {
     const entries = [];
     for (const ref of [...new Set(refs)]) {
       const entity = Object.hasOwn(map.entities, ref) ? map.entities[ref] : null;
@@ -47,7 +47,14 @@ export function createDecompilerNavigation(query, { currentSnapshot, isCurrent =
     const transforms = [];
     for (const index of new Set([...recordRefs, ...entries.flatMap(entity => entity.recordRefs)])) {
       if (!Number.isSafeInteger(index) || index < 0 || index >= map.ledger.length) return unavailable('unresolved-transform-record');
-      transforms.push(map.ledger[index]);
+      const record = map.ledger[index];
+      if (!record || typeof record !== 'object' || Array.isArray(record)) return unavailable('unresolved-transform-record');
+      for (const witness of renderRecordWitnesses(record)) {
+        if (record.kind !== 'state-consumer-group' || witness.producedRefs.some(ref => refs.includes(ref))
+            || originKey && (witness.originHistory.consumedRefs.includes(originKey) || witness.originHistory.producedRefs.includes(originKey))) {
+          transforms.push(witness);
+        }
+      }
     }
     selected = Object.freeze(entries.sort((a, b) => a.lineIndex - b.lineIndex));
     return Object.freeze({ state:'ready', reason:null, entities:selected, transforms:Object.freeze(transforms) });
@@ -90,14 +97,16 @@ export function createDecompilerNavigation(query, { currentSnapshot, isCurrent =
       if (!Array.isArray(recordRefs)) return unavailable('invalid-transform-reverse-map');
       for (const index of recordRefs) {
         const record = map.ledger[index];
-        const history = record?.originHistory;
-        const matches = history
+        const matches = renderRecordWitnesses(record).some(witness => {
+        const history = witness?.originHistory;
+        return history
           ? history.consumedRefs?.includes(key) || history.producedRefs?.includes(key)
-          : record?.origin?.[{ addr:'addresses', row:'rows', ir:'ir', ssa:value?.startsWith?.('def:') ? 'ssaDefs' : 'ssaUses' }[kind]]
+          : witness?.origin?.[{ addr:'addresses', row:'rows', ir:'ir', ssa:value?.startsWith?.('def:') ? 'ssaDefs' : 'ssaUses' }[kind]]
             ?.some(origin => String(origin) === (kind === 'ssa' ? String(value).replace(/^(def|use):/, '') : String(value)));
+        });
         if (!matches) return unavailable('inconsistent-transform-reverse-map');
       }
-      return publish(refs, recordRefs);
+      return publish(refs, recordRefs, key);
     },
     async openAddress(address, navigate) {
       const selection = selected;

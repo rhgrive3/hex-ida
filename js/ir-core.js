@@ -438,6 +438,10 @@ function replaceLegacyArg(inst, from, to) {
   return true;
 }
 
+// This directory includes every value in the function, not just candidates
+// for one register. Keep its explicit work bound separate from the 512-entry
+// candidate/argument budgets. The locked native nested loop has 515 values.
+export const ABI_SELECTION_DIRECTORY_LIMIT = 1024;
 function observePreservedStateSelection(projected) {
   const own = (object, key) => {
     if (object == null) return undefined;
@@ -446,7 +450,7 @@ function observePreservedStateSelection(projected) {
     return descriptor?.value;
   };
   const values = own(projected, 'values'), length = own(values, 'length');
-  if (!Array.isArray(values) || length > 512) throw Error('selection-value-budget');
+  if (!Array.isArray(values) || !Number.isSafeInteger(length) || length > ABI_SELECTION_DIRECTORY_LIMIT) throw Error('selection-value-budget');
   const fields = ['id', 'reg', 'kind', 'bits', 'def'];
   const facts = Array.from({ length }, (_, index) => {
     const value = own(values, String(index)), definition = own(value, 'def');
@@ -973,7 +977,7 @@ function observeTypedResultSelection(projected) {
     return descriptor?.value;
   };
   const values = own(projected, 'values'), length = own(values, 'length');
-  if (!Array.isArray(values) || !Number.isSafeInteger(length) || length > 512) throw Error('typed-result-selection-budget');
+  if (!Array.isArray(values) || !Number.isSafeInteger(length) || length > ABI_SELECTION_DIRECTORY_LIMIT) throw Error('typed-result-selection-budget');
   const fields = ['id', 'reg', 'sourceEntityId', 'def', 'version'];
   const facts = Array.from({ length }, (_, index) => {
     const value = own(values, String(index));
@@ -1041,7 +1045,8 @@ function attachCanonicalTypedCallResults(projected, instructionByRow, adapter, o
     const priorVersion = Math.max(-1, ...(projected.values ?? [])
       .filter((value) => value?.reg === reg)
       .map((value) => Number(value.version ?? -1)));
-    const available = observer.records.length < 1024 && (projected.values?.length || 0) <= 512 && (inst.args?.length || 0) <= 512;
+    const available = observer.records.length < 1024 && (projected.values?.length || 0) <= ABI_SELECTION_DIRECTORY_LIMIT
+      && candidates.length <= 512 && (inst.args?.length || 0) <= 512;
     const before = available ? typedResultIdentity(candidates[0]) : null;
     const candidateHistory = available ? Object.freeze(candidates.map(value => Object.freeze({ value, before:typedResultIdentity(value) }))) : null;
     const value = candidates[0] ?? {

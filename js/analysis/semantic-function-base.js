@@ -1109,7 +1109,9 @@ function pipelineSnapshot(pipeline) {
   };
 }
 
-function decompilerSnapshot(result) {
+// Public presentation data only: never publish the private IR/context or its
+// executable observers through the structured-clone query boundary.
+export function decompilerSnapshot(result) {
   return {
     semantic:result.semantic === true,
     signature:result.signature,
@@ -1120,6 +1122,7 @@ function decompilerSnapshot(result) {
     warnings:result.warnings,
     labels:[...(result.labels || [])],
     coverage:result.coverage,
+    ...(result.renderProvenance ? { renderProvenance:result.renderProvenance } : {}),
     unknownInstructions:result.ctx?.unknownInstructions ?? 0,
   };
 }

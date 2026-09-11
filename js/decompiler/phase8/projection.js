@@ -1,5 +1,6 @@
 import { isProducerProjection, producerExpressionToken, readProducerInputExpressions, producerUsesProofOnlyRewrites } from '../pipeline.js';
-import { readExpressionHistoryConsumer, readStoreSpellingProducer, readInitialControlConsumer, readCallResultSpellingProducer } from '../pipeline-core.js';
+import { readExpressionHistoryConsumer, readStoreSpellingProducer, readInitialControlConsumer, readCallResultSpellingProducer,
+  expressionHistoryRecordCount } from '../pipeline-core.js';
 import { expressionOriginHistory } from '../rewrite/engine.js';
 import { readStackPhiHistoryConsumer } from '../passes/stack-phi-recovery.js';
 import { readStackReturnHistoryConsumer } from '../passes/stack-return-recovery.js';
@@ -15,8 +16,9 @@ import {
   canonicalAnalysisIdentity,
   isValidatedAnalysisIdentity,
 } from './analysis-identity.js';
-import { buildRenderProvenance } from './render-provenance.js';
+import { buildRenderProvenance, DEFAULT_RENDER_TRANSFORM_RECORDS } from './render-provenance.js';
 import { readDceResultProof } from './dce.js';
+import { normalizeCompatibilityLine } from '../switch.js';
 
 export const PHASE8_PROJECTION_VERSION = 3;
 
@@ -73,6 +75,20 @@ export function readLineExpressionHistory(line, ir) {
   const entry = lineExpressionHistories.get(line);
   return entry && entry.ir === ir && entry.consumers.every(consumer => consumer.isCurrent()) && entry.observation.matches()
     ? entry.records : null;
+}
+
+// Carry only an already-current private binding through the fixed existing
+// compatibility spelling operation. Arbitrary edits cannot renew a binding.
+export function normalizeProjectedCompatibilityLine(line, ir) {
+  const current = readLineExpressionHistory(line, ir);
+  const entry = current ? lineExpressionHistories.get(line) : null;
+  const previousText = line?.text;
+  normalizeCompatibilityLine(line, ir);
+  if (!entry || previousText === line?.text || !entry.consumers.every(consumer => consumer.isCurrent())) return;
+  try {
+    const observation = observeProjectionData([line]);
+    lineExpressionHistories.set(line, { ...entry, observation });
+  } catch { /* The original invalid observation remains fail-closed. */ }
 }
 
 function integer(value) {
@@ -644,8 +660,10 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   const conditions = conditionMap(result.semanticAst, transform);
 
   const spellingRecords = [], controlRecords = [], dceRecords = [];
+  const existingHistoryRecords = expressionHistoryRecordCount(result.rewriteProof, result.ir);
   const spellingLimit = Number.isSafeInteger(opts.renderProvenanceBudget?.maxTransformRecords)
-    && opts.renderProvenanceBudget.maxTransformRecords >= 0 ? Math.min(opts.renderProvenanceBudget.maxTransformRecords, 1024) : 1024;
+    && opts.renderProvenanceBudget.maxTransformRecords >= 0
+    ? Math.min(opts.renderProvenanceBudget.maxTransformRecords, DEFAULT_RENDER_TRANSFORM_RECORDS) : DEFAULT_RENDER_TRANSFORM_RECORDS;
   let controlHandoffEdges = Number.isSafeInteger(opts.renderProvenanceBindingBudget?.maxEdges)
     ? Math.max(0, Math.min(PROJECTION_LIMITS.edges, opts.renderProvenanceBindingBudget.maxEdges)) : PROJECTION_LIMITS.edges;
   const dceByIndex = new Map(dcePlans.map(plan => [plan.index, plan]));
@@ -654,7 +672,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     if (dce) {
       // Whole-batch observations are rechecked before publication. Do not
       // rewalk every other call's history for each isolated text write.
-      if ((result.rewriteProof?.length || 0) + dceRecords.length >= spellingLimit || opts.shouldAbort?.()) return original;
+      if (existingHistoryRecords + dceRecords.length >= spellingLimit || opts.shouldAbort?.()) return original;
       const source = sourceOf(node.source), consumer = expressionConsumers[index];
       const record = Object.freeze({ rule:'eliminate-dead-call-result', phase:'phase8-render', valueId:dce.spelling.value.id,
         before:'call:result-assignment', after:'call:discarded-result',
@@ -689,7 +707,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
           && spelling.observation.matches();
         if (spelling && !spellingCurrent) historyReasons.add('stale-store-spelling-producer');
         if (spellingCurrent && node.text !== text) {
-          if ((result.rewriteProof?.length || 0) + spellingRecords.length >= spellingLimit) historyReasons.add('store-spelling-history-budget');
+          if (existingHistoryRecords + spellingRecords.length >= spellingLimit) historyReasons.add('store-spelling-history-budget');
           else {
             const source = mergeSource(node.source, consumer.expression?.source, node.semantic.expression.source);
             const record = Object.freeze({ rule:'expand-projected-store-spelling', phase:'phase8-render', valueId:spelling.valueId,
@@ -742,7 +760,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
             const retained = expressionConsumers[index].records;
             let record = null;
             if (beforeText !== replacement.text) {
-              if ((result.rewriteProof?.length || 0) + spellingRecords.length + controlRecords.length >= spellingLimit) throw new Error('initial-control-handoff-budget');
+              if (existingHistoryRecords + spellingRecords.length + controlRecords.length >= spellingLimit) throw new Error('initial-control-handoff-budget');
               const source = mergeSource(node.source, candidates[0].source);
               record = Object.freeze({ rule:'replace-initial-control-condition', phase:'phase8-render',
                 before:`control:${keyword}:initial-condition`, after:`control:${keyword}:canonical-condition`,

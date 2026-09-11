@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
 import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
+import { createAppAnalysisQueryAdapter } from '../../../js/analysis/query/app-adapter.js';
+import { decompilerSnapshot } from '../../../js/analysis/semantic-function.js';
+import { decompilerSnapshot as baseSnapshot } from '../../../js/analysis/semantic-function-base.js';
 import { applyPhase8Projection } from '../../../js/decompiler/phase8/projection.js';
 import { buildRenderProvenance } from '../../../js/decompiler/phase8/render-provenance.js';
 import { createDecompilerNavigation, createDecompilerProvenanceView } from '../../../js/ui/decompiler-provenance.js';
@@ -45,6 +48,28 @@ async function queryFixture(value = projection()) {
   const query = await api.decompile(snapshot, 'function');
   return { api, query, options:{ currentSnapshot:() => api.snapshot() }, advance:() => { epoch++; } };
 }
+
+test('C4-03 shared semantic presentation preserves issued provenance across the app query boundary', async () => {
+  assert.equal(decompilerSnapshot,baseSnapshot,'both semantic analysis routes use the same presentation projection');
+  const result = projection();
+  result.ctx = { unknownInstructions:2, privateObserver:() => {} };
+  const presentation = decompilerSnapshot(result);
+  assert.equal(presentation.renderProvenance,result.renderProvenance);
+  assert.equal(presentation.unknownInstructions,2);
+  for (const key of ['ir','ctx','rewriteProof','phase8Projection']) assert.equal(Object.hasOwn(presentation,key),false);
+  const api = new AnalysisQueryAPI({
+    ...createAppAnalysisQueryAdapter({ analyzeFunction:async () => ({ decompiler:presentation }) }),
+    currentIdentity:async () => ({ binaryId:'presentation-fixture',projectRevision:1,analysisEpoch:1,artifactVersions:{} }),
+  });
+  const query = await api.decompile(await api.snapshot(),'function');
+  assert.deepEqual(query.value.renderProvenance,result.renderProvenance);
+  assert.notEqual(query.value.renderProvenance,result.renderProvenance,'query keeps its isolated snapshot');
+  const navigation = createDecompilerNavigation(query,{ currentSnapshot:() => api.snapshot() });
+  assert.equal(navigation.available,true);
+  assert.equal((await navigation.selectLine(1)).state,'ready');
+  assert.equal(Object.hasOwn(decompilerSnapshot({ lines:[] }),'renderProvenance'),false,
+    'a producer without provenance is not upgraded by presentation');
+});
 
 test('C4-03 query projection navigates both ways through the existing many-to-one map', async () => {
   const f = await queryFixture();

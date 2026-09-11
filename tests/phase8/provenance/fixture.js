@@ -46,7 +46,7 @@ export function inductionFact(valueId = 12) {
   };
 }
 
-export function consumerFixture({ load = false, branch = false, bindingBudget = undefined } = {}) {
+export function consumerFixture({ load = false, branch = false, bindingBudget = undefined, locationText = undefined } = {}) {
   const value = (id, kind = 'def') => ({ id, kind, reg:`x${id}`, bits:64, signed:false, uses:[], def:null, const:null });
   const input = value(1, load ? 'def' : 'arg'), zero = value(2), sum = value(3);
   zero.const = 0n;
@@ -81,7 +81,9 @@ export function consumerFixture({ load = false, branch = false, bindingBudget = 
     lines:[store, unrelated, condition, ret, elseRet].filter(Boolean).map(inst => ({ kind:inst.op === 'cbr' ? 'ctrl' : 'stmt', indent:1,
       text:inst.op === 'ret' ? 'return old;' : inst.op === 'cbr' ? 'if (old) goto loc_taken;' : 'old = value;', row:inst.row, addr:inst.address })),
     warnings:[], evidence:[], coverage:{ mode:'structured' }, summary:'' };
-  const enhanced = enhanceSemanticDecompilation(result, { calls:[] }, { deterministicTransforms:true, renderProvenanceBindingBudget:bindingBudget });
+  const enhanced = enhanceSemanticDecompilation(result, { calls:[] }, { deterministicTransforms:true,
+    renderProvenanceBindingBudget:bindingBudget,
+    ...(locationText == null ? {} : { symbolFor:address => address === 0x2000n ? locationText : null }) });
   if (!enhanced.rewriteProof.some(record => record.rule === 'add-zero-right')) throw new Error('fixture did not exercise the actual RewriteEngine');
   return { enhanced, ir, input, zero, sum, add, store, unrelated, ret };
 }

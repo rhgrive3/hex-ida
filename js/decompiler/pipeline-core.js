@@ -68,6 +68,17 @@ export function compatOperationEventCandidate(record, ir) {
   const candidate = compatOperationEvents.get(record);
   return candidate?.ir === ir ? candidate.event : null;
 }
+export const MAX_EXPRESSION_CONSUMER_WITNESSES = 4096;
+// Count exact issued public-state events once, not their different expression
+// consumers. This is storage accounting only; each consumer keeps its own
+// original observation and source history below.
+export function expressionHistoryRecordCount(records, ir) {
+  if ((records?.length || 0) > MAX_EXPRESSION_CONSUMER_WITNESSES) return records.length;
+  return new Set((records || []).map(record => {
+    const event = compatOperationEventCandidate(record, ir);
+    return event?.stage === 'public-state-normalization' ? event : record;
+  })).size;
+}
 const reusableBuildHistoryRecords = new WeakSet();
 function buildOriginHistory(state, before, after) {
   state.recordOriginHistory ??= createExpressionOriginHistoryRecorder();
@@ -562,18 +573,35 @@ function recordPhiCollapse(v, instruction, incoming, expression, state) {
   state.phiHistoryCount = (state.phiHistoryCount || 0) + 1;
 }
 
-function observeBuildSelection(value, instruction, state, kind = 'mov', related = [], reserve = true) {
+function reserveBuildSelection(state, kind, event = null) {
   const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
   const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
+  const requestedWitnesses = state.opts?.renderProvenanceBudget?.maxConsumerWitnesses;
+  const witnessLimit = Number.isSafeInteger(requestedWitnesses) && requestedWitnesses >= 0
+    ? Math.min(requestedWitnesses, MAX_EXPRESSION_CONSUMER_WITNESSES) : MAX_EXPRESSION_CONSUMER_WITNESSES;
   const budget = consumerObservationBudget(state);
-  if (reserve && (state.buildSelectionHistoryCount || 0) >= maximum) {
-    budget.reasons.add(`${kind}-selection-history-budget`); return null;
+  const shared = event?.stage === 'public-state-normalization';
+  state.normalizationSelectionEvents ??= new WeakSet();
+  const retained = shared && state.normalizationSelectionEvents.has(event);
+  if (!retained && (state.buildSelectionHistoryCount || 0) >= maximum) {
+    budget.reasons.add(`${kind}-selection-history-budget`); return false;
   }
+  if ((state.buildSelectionWitnessCount || 0) >= witnessLimit) {
+    budget.reasons.add(`${kind}-selection-witness-budget`); return false;
+  }
+  state.buildSelectionWitnessCount = (state.buildSelectionWitnessCount || 0) + 1;
+  if (!retained) state.buildSelectionHistoryCount = (state.buildSelectionHistoryCount || 0) + 1;
+  if (shared) state.normalizationSelectionEvents.add(event);
+  return true;
+}
+
+function observeBuildSelection(value, instruction, state, kind = 'mov', related = [], reserve = true) {
+  const budget = consumerObservationBudget(state);
   // Reserve before recursive input construction; nested selections cannot all see
   // the same last free record. Failed observations never refill this budget.
   // A branch consumer only observes roots; the actual CMP producer reserves its
   // transform slot. Both observations still spend the shared edge budget.
-  if (reserve) state.buildSelectionHistoryCount = (state.buildSelectionHistoryCount || 0) + 1;
+  if (reserve && !reserveBuildSelection(state, kind)) return null;
   try {
     if (budget.edges <= 0) throw new Error('build-selection-observation-budget');
     const values = state.ir.values, valueIndex = values?.indexOf(value);
@@ -830,8 +858,6 @@ function compatOperationSelection(value, state, roots = [value?.def, value], fol
     return checked.get(record.isCurrent) ? record : null;
   };
   const budget = consumerObservationBudget(state);
-  const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
-  const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
   while (pending.length && seen.size < 512) {
     const key = pending.pop();
     if (!key || seen.has(key)) continue;
@@ -846,7 +872,7 @@ function compatOperationSelection(value, state, roots = [value?.def, value], fol
     const expectedAbiBinding = facadeAbiBindingExpected(state.ir, key);
     const expectedView = semanticViewTransitionExpected(state.ir, key);
     if (!expectedProjection && !expectedFacade && !expectedState && !expectedPreserved && !expectedLocation && !expectedTypedResult && !expectedStackEscape && !expectedAbiBinding && !expectedView) continue;
-    if ((state.buildSelectionHistoryCount || 0) >= maximum || budget.edges <= 0) {
+    if (budget.edges <= 0) {
       budget.reasons.add('compat-constant-selection-history-budget'); return observeSelected();
     }
     const transitions = [];
@@ -886,14 +912,13 @@ function compatOperationSelection(value, state, roots = [value?.def, value], fol
       // Their original references stay in this event, but their computations
       // must not be recursively attributed to the current expression.
       if (followInputs && event.stage !== 'public-state-normalization') pending.push(...event.inputs.flatMap(input => [input.definition, input.value]));
-      if ((state.buildSelectionHistoryCount || 0) >= maximum || budget.edges <= 0) {
+      if (budget.edges <= 0 || !reserveBuildSelection(state, 'compat-constant', event)) {
         budget.reasons.add('compat-constant-selection-history-budget'); return observeSelected();
       }
       const origins = event.op === 'load' && !['facade-public-location', 'facade-stack-escape'].includes(event.stage) ? selectedValueOrigins(event.output, state) : null;
       const related = [...new Set([...event.beforeInputs.map(input => input.def), ...(event.related || []), ...(origins?.definitions || [])])]
         .filter(definition => definition && definition !== source);
       if (origins?.incomplete) budget.reasons.add('compat-constant-source-history-incomplete');
-      state.buildSelectionHistoryCount = (state.buildSelectionHistoryCount || 0) + 1;
       selected.push({ event, transition, origins, related });
     }
     }

@@ -1,5 +1,5 @@
 import { sourceOf } from '../ast/nodes.js';
-import { compatOperationEventCandidate } from '../pipeline-core.js';
+import { compatOperationEventCandidate, MAX_EXPRESSION_CONSUMER_WITNESSES } from '../pipeline-core.js';
 import { renderProvenanceRecord } from './contract.js';
 import { readLineExpressionHistory } from './projection.js';
 import { readSwitchLineHistory, readSwitchRenderHistory } from '../switch.js';
@@ -27,9 +27,19 @@ const PUBLIC_STATE_RULES = Object.freeze(['suppress-unused-entry-state', 'reorde
 // Both representations remain inspectable. A normalization attached to its
 // actual expression consumer is still a separate witness, not a missing event.
 export function renderPublicStateNormalizations(map) {
-  return Object.freeze((map?.ledger || []).flatMap(record => record.kind === 'public-state-normalization'
+  return Object.freeze((map?.ledger || []).flatMap(renderRecordWitnesses).flatMap(record => record.kind === 'public-state-normalization'
     ? [record] : record.kind === 'normalized-state-expression' && record.publicNormalization
       ? [record.publicNormalization] : []));
+}
+// A group is storage for one exact producer event, not the union of its
+// consumers' sources. Individual witnesses remain independently navigable.
+export function renderRecordWitnesses(record) {
+  return record?.kind === 'state-consumer-group' && Array.isArray(record.consumerWitnesses)
+    ? record.consumerWitnesses : [record];
+}
+export function renderExpressionWitnesses(map) {
+  return Object.freeze((map?.ledger || []).flatMap(renderRecordWitnesses).filter(record => record?.originHistory)
+    .sort((left, right) => (left.sourceRecordIndex ?? Infinity) - (right.sourceRecordIndex ?? Infinity)));
 }
 const readPublicStateNormalization = ir => {
   const batch = semanticViewStateCandidates(ir);
@@ -44,6 +54,10 @@ function readRenderedHistory(line, ir) {
 }
 
 export const RENDER_PROVENANCE_VERSION = 1;
+// The locked native nested-loop product has at least 1247 distinct expression
+// events even after repeated consumers are accounted for separately. This is
+// the final combined ledger, not the per-builder event/ABI-candidate budget.
+export const DEFAULT_RENDER_TRANSFORM_RECORDS = 2048;
 
 const DEFAULT_BUDGET = Object.freeze({
   maxEntities:4096,
@@ -51,7 +65,8 @@ const DEFAULT_BUDGET = Object.freeze({
   // loop return (the older, partial history fit below 512). Retain headroom for
   // these real mappings; explicit smaller caller budgets still truncate.
   maxOriginsPerEntity:1024,
-  maxTransformRecords:1024,
+  maxTransformRecords:DEFAULT_RENDER_TRANSFORM_RECORDS,
+  maxConsumerWitnesses:MAX_EXPRESSION_CONSUMER_WITNESSES,
 });
 
 const VALIDATION_ENTITY_STATES_LIMIT = 32;
@@ -92,6 +107,7 @@ function validateBudget(budget) {
     const value = budget[key];
     if (value == null) continue;
     if (!Number.isSafeInteger(Number(value)) || Number(value) < 1) fail('phase8-render-provenance-budget-invalid');
+    if (key === 'maxConsumerWitnesses' && Number(value) > MAX_EXPRESSION_CONSUMER_WITNESSES) fail('phase8-render-provenance-budget-invalid');
     resolved[key] = Number(value);
   }
   return Object.freeze(resolved);
@@ -433,8 +449,8 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   let ledgerTruncated = 0;
 
   const rewritten = Array.isArray(result.rewriteProof) ? result.rewriteProof : [];
-  const expressionRecords = switches || initialStores || initialStatements || initialControls
-    ? [...new Set([...rewritten, ...(switches?.records || []), ...(initialStores?.records || []), ...(initialStatements?.records || []), ...(initialControls?.records || [])])] : rewritten;
+  const expressionRecords = [...new Set([...rewritten, ...(switches?.records || []), ...(initialStores?.records || []),
+    ...(initialStatements?.records || []), ...(initialControls?.records || [])])];
   const projection = result.phase8Projection;
   const rawRecords = Array.isArray(projection?.history?.transforms) ? projection.history.transforms
     : Array.isArray(projection?.transforms) ? projection.transforms : [];
@@ -448,21 +464,24 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   const sourceRecordCount = expressionRecords.length + rawRecords.length + suppressionRecords.length + publicStateEvents.length + preservedStateEvents.length + publicLocationEvents.length + typedResultEvents.length + stackEscapeEvents.length + abiBindingEvents.length;
   let rawRecordCount = sourceRecordCount;
   const unattachedPublicState = new Set(publicStateEvents);
+  const normalizationEvents = new Set(publicStateEvents), expressionGroups = new Map();
+  let groupedExpressionWitnesses = 0, attachedPublicStateNormalizations = 0, expressionConsumerWitnesses = 0;
   const ledgerRecords = [];
   for (const record of suppressionRecords.slice(0, Math.max(0, resolvedBudget.maxTransformRecords - ledgerRecords.length))) {
     ledgerRecords.push(renderProvenanceRecord(record));
   }
   const historyProducers = new Map();
   let unavailableExpressionHistory = 0;
-  for (const record of expressionRecords) {
+  for (const [sourceRecordIndex, record] of expressionRecords.slice(0, resolvedBudget.maxConsumerWitnesses).entries()) {
     if (typeof shouldAbort === 'function' && shouldAbort() === true) return cancelledMap(resolvedBudget);
     if (!record?.originHistory?.before || !record?.originHistory?.after) {
       unavailableExpressionHistory++;
       continue;
     }
-    if (ledgerRecords.length >= resolvedBudget.maxTransformRecords) break;
-    let normalized = expressionHistoryRecord(record, resolvedBudget.maxOriginsPerEntity);
     const event = compatOperationEventCandidate(record, result.ir);
+    const group = normalizationEvents.has(event) ? expressionGroups.get(event) : null;
+    if (!group && ledgerRecords.length >= resolvedBudget.maxTransformRecords) continue;
+    let normalized = Object.freeze({ ...expressionHistoryRecord(record, resolvedBudget.maxOriginsPerEntity), sourceRecordIndex });
     if (unattachedPublicState.has(event)) {
       const normalization = publicStateRecord(event, resolvedBudget.maxOriginsPerEntity);
       // Never infer correspondence from an ordinal, text, equal origins or a
@@ -476,17 +495,34 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
             producedRefs:Object.freeze([]), removedRefs:Object.freeze([]) }) });
         unattachedPublicState.delete(event);
         rawRecordCount--;
+        attachedPublicStateNormalizations++;
       }
     }
-    ledgerRecords.push(normalized);
+    expressionConsumerWitnesses++;
+    if (group) {
+      group.witnesses.push(normalized);
+      if (group.witnesses.length === 2) ledgerRecords[group.index] = renderProvenanceRecord({
+        kind:'state-consumer-group', proof:'observed-state-event-with-distinct-consumers', rule:normalized.rule,
+        phase:normalized.phase, before:normalized.before, after:normalized.after, valueId:null,
+        origin:{}, targets:[], consumerWitnesses:group.witnesses,
+      });
+      groupedExpressionWitnesses++; rawRecordCount--;
+    } else {
+      if (normalizationEvents.has(event)) expressionGroups.set(event, { index:ledgerRecords.length, witnesses:[normalized] });
+      ledgerRecords.push(normalized);
+    }
     historyProducers.set(normalized, record);
     if (normalized.originHistory.completeness !== 'complete') {
       truncatedScopes.push('expression-history-origins');
       reasons.add('truncated');
     }
   }
+  for (const group of expressionGroups.values()) Object.freeze(group.witnesses);
   if (unavailableExpressionHistory) reasons.add('missing-expression-history');
   for (const record of rawRecords.slice(0, Math.max(0, resolvedBudget.maxTransformRecords - ledgerRecords.length))) {
+    if (record?.kind === 'state-consumer-group' || Object.hasOwn(record ?? {}, 'consumerWitnesses')) {
+      reasons.add('unissued-state-consumer-group'); continue;
+    }
     if (record?.kind === 'abi-argument-binding' || record?.abiBindingTransition) {
       reasons.add('unissued-abi-binding-history'); continue;
     }
@@ -560,6 +596,7 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   const entities = {};
   const reverse = new Map();
   const entityRefsByRecord = ledgerRecords.map(() => new Set());
+  const entityRefsByWitness = new Map(ledgerRecords.flatMap(renderRecordWitnesses).map(record => [record, new Set()]));
   const boundLines = [];
   const lineCount = Math.min(result.lines.length, resolvedBudget.maxEntities);
   if (result.lines.length > lineCount) {
@@ -583,11 +620,17 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     const recordRefs = [];
     for (let recordIndex = 0; recordIndex < ledgerRecords.length; recordIndex += 1) {
       const record = ledgerRecords[recordIndex];
-      if (!recordFeedsEntity(record, entityOriginKeys, boundRecords.has(historyProducers.get(record)))) continue;
+      let feeds = false;
+      for (const witness of renderRecordWitnesses(record)) {
+        if (!recordFeedsEntity(witness, entityOriginKeys, boundRecords.has(historyProducers.get(witness)))) continue;
+        feeds = true;
+        entityRefsByWitness.get(witness).add(entityKey);
+        origins = mergeOrigins(origins, witness.origin);
+        entityOriginKeys = originKeySet(origins);
+      }
+      if (!feeds) continue;
       recordRefs.push(recordIndex);
       entityRefsByRecord[recordIndex].add(entityKey);
-      origins = mergeOrigins(origins, record.origin);
-      entityOriginKeys = originKeySet(origins);
     }
 
     const entityReasons = [];
@@ -631,9 +674,9 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     reverseObject[key] = Object.freeze([...reverse.get(key)].sort((left, right) => left.localeCompare(right, 'en')));
   }
 
-  const ledger = ledgerRecords.map((record, recordIndex) => Object.freeze({
+  const publishRecord = (record, recordIndex, entityRefs) => Object.freeze({
     ...record,
-    ...(record.originHistory ? { renderedBinding:entityRefsByRecord[recordIndex].size ? 'producer-bound' : 'unresolved' } : {}),
+    ...(record.originHistory ? { renderedBinding:entityRefs.size ? 'producer-bound' : 'unresolved' } : {}),
     origin:Object.freeze({
       addresses:Object.freeze(canonicalList(record.origin.addresses, false)),
       rows:Object.freeze(canonicalList(record.origin.rows, true)),
@@ -641,22 +684,26 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
       ssaDefs:Object.freeze(canonicalList(record.origin.ssaDefs, false)),
       ssaUses:Object.freeze(canonicalList(record.origin.ssaUses, false)),
     }),
-    producedRefs:Object.freeze([...entityRefsByRecord[recordIndex]].sort((left, right) => left.localeCompare(right, 'en'))),
+    producedRefs:Object.freeze([...entityRefs].sort((left, right) => left.localeCompare(right, 'en'))),
     // Transform-local render tombstones never identify a current line or a
     // canonical semantic entity. Public copied metadata cannot bind one.
-    removedRefs:Object.freeze(record.renderedRemoval && entityRefsByRecord[recordIndex].size
+    removedRefs:Object.freeze(record.renderedRemoval && entityRefs.size
       ? [`before:${recordIndex}:L${record.renderedRemoval.lineIndex}:${record.renderedRemoval.kind}`] : []),
     version:RENDER_PROVENANCE_VERSION,
-  }));
+  });
+  const ledger = ledgerRecords.map((record, recordIndex) => publishRecord(record.kind === 'state-consumer-group'
+    ? { ...record, consumerWitnesses:Object.freeze(record.consumerWitnesses.map(witness =>
+      publishRecord(witness, recordIndex, entityRefsByWitness.get(witness)))) } : record,
+  recordIndex, entityRefsByRecord[recordIndex]));
 
   // Canonical origin -> transform record. Kept separate from origin -> line:
   // an elided source can have a history even when no rendered consumer is known.
   const transformReverse = {};
   for (let index = 0; index < ledger.length; index++) {
     const record = ledger[index];
-    const refs = record.originHistory
-      ? [...record.originHistory.consumedRefs, ...record.originHistory.producedRefs]
-      : [...originKeySet(canonicalOrigins(record.origin))];
+    const refs = renderRecordWitnesses(record).flatMap(witness => witness.originHistory
+      ? [...witness.originHistory.consumedRefs, ...witness.originHistory.producedRefs]
+      : [...originKeySet(canonicalOrigins(witness.origin))]);
     for (const ref of new Set(refs)) (transformReverse[ref] ??= []).push(index);
   }
   for (const refs of Object.values(transformReverse)) Object.freeze(refs);
@@ -700,7 +747,8 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
       entitiesTruncated,
       transformRecords:rawRecordCount,
       ...(sourceRecordCount !== rawRecordCount ? { sourceRecordWitnesses:sourceRecordCount,
-        attachedPublicStateNormalizations:sourceRecordCount - rawRecordCount } : {}),
+        attachedPublicStateNormalizations, groupedExpressionWitnesses } : {}),
+      expressionConsumerWitnesses,
       ledgerTruncated,
       provenanceLoss,
       structuralEntities,
@@ -740,13 +788,61 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
 
   const reasons = new Set(provenanceMap.reasons ?? []);
   if (typeof shouldAbort === 'function' && shouldAbort() === true) reasons.add('cancelled');
+  const validationRecords = [], witnessOwners = new Map();
+  let groupedWitnesses = 0, witnessCount = 0;
+  const witnessLimit = provenanceMap.budget?.maxConsumerWitnesses ?? MAX_EXPRESSION_CONSUMER_WITNESSES;
+  for (const [index, record] of reasons.has('cancelled') ? [] : provenanceMap.ledger.entries()) {
+    if (typeof shouldAbort === 'function' && shouldAbort() === true) { reasons.add('cancelled'); break; }
+    if (record?.kind !== 'state-consumer-group' && !Object.hasOwn(record ?? {}, 'consumerWitnesses')) {
+      validationRecords.push(record); witnessOwners.set(record,index); continue;
+    }
+    const witnesses = record.consumerWitnesses;
+    const bounded = Array.isArray(witnesses) && witnesses.length >= 2
+      && witnesses.length <= MAX_EXPRESSION_CONSUMER_WITNESSES
+      && witnessCount + witnesses.length <= witnessLimit;
+    if (!bounded) { reasons.add('invalid-state-consumer-group'); continue; }
+    witnessCount += witnesses.length; groupedWitnesses += witnesses.length - 1;
+    const refs = new Set(), ordinals = new Set();
+    let valid = record.kind === 'state-consumer-group' && record.proof === 'observed-state-event-with-distinct-consumers'
+      && record.rule === 'compact-public-state' && record.phase === 'compatibility-projection'
+      && record.valueId === null && record.version === RENDER_PROVENANCE_VERSION
+      && typeof record.before === 'string' && PUBLIC_STATE_RULES.some(rule => record.before.startsWith(rule + ':'))
+      && typeof record.after === 'string' && !Object.hasOwn(record,'originHistory')
+      && !Object.hasOwn(record,'publicNormalization') && !Object.hasOwn(record,'renderedRemoval')
+      && Array.isArray(record.targets) && !record.targets.length
+      && Array.isArray(record.removedRefs) && !record.removedRefs.length
+      && record.origin && ORIGIN_KINDS.every(key => Array.isArray(record.origin[key]) && !record.origin[key].length);
+    for (const witness of witnesses) {
+      valid &&= !!witness && ['expression-rewrite','normalized-state-expression'].includes(witness.kind)
+        && !Object.hasOwn(witness,'consumerWitnesses') && !witness.renderedRemoval
+        && witness.version === RENDER_PROVENANCE_VERSION && witness.originHistory?.scope === 'replacement-expression-source'
+        && witness.proof === 'observed-state-compaction-not-equivalence'
+        && ['rule','phase','before','after'].every(key => witness[key] === record[key])
+        && Number.isSafeInteger(witness.sourceRecordIndex) && witness.sourceRecordIndex >= 0
+        && witness.sourceRecordIndex < MAX_EXPRESSION_CONSUMER_WITNESSES && !ordinals.has(witness.sourceRecordIndex)
+        && witness.origin && ORIGIN_KINDS.every(key => Array.isArray(witness.origin[key]))
+        && Array.isArray(witness.producedRefs) && Array.isArray(witness.removedRefs) && !witness.removedRefs.length;
+      ordinals.add(witness?.sourceRecordIndex);
+      for (const ref of Array.isArray(witness?.producedRefs) ? witness.producedRefs : []) {
+        refs.add(ref);
+        if (!provenanceMap.entities[ref]?.recordRefs?.includes(index)) valid = false;
+      }
+      validationRecords.push(witness); witnessOwners.set(witness,index);
+    }
+    valid &&= Array.isArray(record.producedRefs) && record.producedRefs.length === refs.size
+      && record.producedRefs.every(ref => refs.has(ref));
+    for (const entity of Object.values(provenanceMap.entities)) {
+      if (entity?.recordRefs?.includes(index) && !refs.has(entity.entityKey)) valid = false;
+    }
+    if (!valid) reasons.add('invalid-state-consumer-group');
+  }
   if (snapshotId != null) {
     if (provenanceMap.snapshotId == null) reasons.add('missing-snapshot');
     else if (provenanceMap.snapshotId !== snapshotId) reasons.add('stale-snapshot');
   }
   let validationCancelled = reasons.has('cancelled');
   if (!validationCancelled) {
-    for (const record of provenanceMap.ledger) {
+    for (const record of validationRecords) {
       if (typeof shouldAbort === 'function' && shouldAbort() === true) {
         reasons.add('cancelled'); validationCancelled = true; break;
       }
@@ -965,7 +1061,7 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
           && Number.isSafeInteger(removal.lineIndex) && removal.lineIndex >= 0
           && typeof removal.kind === 'string' && removal.kind.length > 0 && removal.kind.length <= 128;
         const expected = valid && record.renderedBinding === 'producer-bound'
-          ? [`before:${provenanceMap.ledger.indexOf(record)}:L${removal.lineIndex}:${removal.kind}`] : [];
+          ? [`before:${witnessOwners.get(record)}:L${removal.lineIndex}:${removal.kind}`] : [];
         if (!valid || !Array.isArray(record.removedRefs) || record.removedRefs.length !== expected.length
             || expected.some((ref, index) => record.removedRefs[index] !== ref || Object.hasOwn(provenanceMap.entities, ref))) {
           reasons.add('invalid-render-removal');
@@ -984,7 +1080,7 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
       if (history.completeness !== 'complete') reasons.add('incomplete-expression-history');
       if (!Array.isArray(record.producedRefs)
           || (record.renderedBinding === 'producer-bound') !== (record.producedRefs.length > 0)
-          || record.producedRefs.some(ref => !provenanceMap.entities[ref]?.recordRefs?.includes(provenanceMap.ledger.indexOf(record)))) {
+          || record.producedRefs.some(ref => !provenanceMap.entities[ref]?.recordRefs?.includes(witnessOwners.get(record)))) {
         reasons.add('inconsistent-expression-binding');
       }
       const expected = history.completeness === 'complete'
@@ -1008,12 +1104,20 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
     }
   }
   if (provenanceMap.budget?.truncated === true) reasons.add('truncated');
-  const attached = provenanceMap.ledger.filter(record => record?.kind === 'normalized-state-expression').length;
-  if (attached || provenanceMap.counts?.attachedPublicStateNormalizations != null) {
+  const attached = validationRecords.filter(record => record?.kind === 'normalized-state-expression').length;
+  if (attached || groupedWitnesses || provenanceMap.counts?.attachedPublicStateNormalizations != null) {
     const counts = provenanceMap.counts;
     if (counts?.attachedPublicStateNormalizations !== attached
       || !Number.isSafeInteger(counts?.sourceRecordWitnesses) || !Number.isSafeInteger(counts?.transformRecords)
-      || counts.sourceRecordWitnesses !== counts.transformRecords + attached) reasons.add('invalid-attached-public-state-count');
+      || counts.sourceRecordWitnesses !== counts.transformRecords + attached + groupedWitnesses) reasons.add('invalid-attached-public-state-count');
+  }
+  if (groupedWitnesses || provenanceMap.counts?.groupedExpressionWitnesses != null) {
+    if (provenanceMap.counts?.groupedExpressionWitnesses !== groupedWitnesses) reasons.add('invalid-state-consumer-count');
+  }
+  if (!validationCancelled && provenanceMap.counts?.expressionConsumerWitnesses != null) {
+    const consumers = validationRecords.filter(record => Number.isSafeInteger(record?.sourceRecordIndex));
+    if (consumers.length !== provenanceMap.counts.expressionConsumerWitnesses || consumers.length > witnessLimit
+        || new Set(consumers.map(record => record.sourceRecordIndex)).size !== consumers.length) reasons.add('invalid-state-consumer-count');
   }
 
   const entityEntries = Object.values(provenanceMap.entities);

@@ -12,7 +12,7 @@ const loader = registerHooks({ load(url, context, nextLoad) {
   return { ...result, source:source.replace(marker, 'opts.__typedFixture?.(result.legacyV1);\n  ' + marker) };
 } });
 const { buildSemanticModel } = await import('../../../js/blocks.js');
-const { buildIR, readFacadeTypedResultHistory, facadeTypedResultTransitionExpected,
+const { buildIR, ABI_SELECTION_DIRECTORY_LIMIT, readFacadeTypedResultHistory, facadeTypedResultTransitionExpected,
   readFacadeStateNormalization, readFacadePreservedStateHistory } = await import('../../../js/ir-core.js');
 const { captureProjectionIrData } = await import('../../../js/core/identity/live-data.js');
 const { observeProjectedOperationData } = await import('../../../js/semantics/compat/semantic-ir-v2-to-v1.js');
@@ -215,8 +215,15 @@ test('copied typed metadata cannot issue records, canonical values or rendered d
   }
 });
 
+test('typed result directory observes every value beyond the candidate-list bound', () => {
+  const f = fixture({ mutate:ir => { while (ir.values.length < 600) ir.values.push({ id:ir.values.length, reg:null, def:null }); } });
+  assert.ok(readFacadeTypedResultHistory(f.ir));
+  f.ir.values[550].sourceEntityId = f.call.semanticNodeId;
+  assert.equal(readFacadeTypedResultHistory(f.ir),null);
+});
+
 test('typed result observation bounds preserve actual writes and never produce skip-green history', () => {
-  const f = fixture({ mutate:ir => { while (ir.values.length <= 512) ir.values.push({ id:ir.values.length, reg:null, def:null }); } });
+  const f = fixture({ mutate:ir => { while (ir.values.length <= ABI_SELECTION_DIRECTORY_LIMIT) ir.values.push({ id:ir.values.length, reg:null, def:null }); } });
   assert.equal(f.call.dst.compatDerived, 'typed-abi-call-result');
   assert.equal(facadeTypedResultTransitionExpected(f.ir), true);
   assert.equal(readFacadeTypedResultHistory(f.ir), null);

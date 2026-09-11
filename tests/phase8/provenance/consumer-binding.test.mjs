@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readExpressionHistoryConsumer } from '../../../js/decompiler/pipeline-core.js';
-import { applyPhase8Projection } from '../../../js/decompiler/phase8/projection.js';
+import { applyPhase8Projection, readLineExpressionHistory,
+  normalizeProjectedCompatibilityLine as normalizeCompatibilityLine } from '../../../js/decompiler/phase8/projection.js';
 import { buildRenderProvenance, validateRenderProvenance } from '../../../js/decompiler/phase8/render-provenance.js';
 import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
 import { createDecompilerNavigation } from '../../../js/ui/decompiler-provenance.js';
@@ -13,6 +14,29 @@ import { observeProjectedOperationData } from '../../../js/semantics/compat/sema
 import { createExpressionOriginHistoryRecorder, expressionOriginHistory } from '../../../js/decompiler/rewrite/engine.js';
 import { analysis, consumerFixture as fixture, expr, resultWith, source } from './fixture.js';
 
+test('C4-03 final compatibility spelling retains only current issued projection bindings', () => {
+  for (const mode of ['current','edited-line','edited-ir','copied-line','other-ir']) {
+    const f = fixture({ locationText:'local_ab' });
+    const result = applyPhase8Projection(f.enhanced,analysis());
+    const original = result.lines.find(line=>line.text.includes('local_ab'));
+    assert.ok(original,'fixture must exercise the final local-to-var spelling');
+    const prior = readLineExpressionHistory(original,result.ir);
+    assert.ok(prior?.length);
+    const line = mode === 'copied-line' ? { ...original } : original;
+    const ir = mode === 'other-ir' ? { ...result.ir } : result.ir;
+    if (mode === 'edited-line') line.text += ' /* unrelated edit */';
+    if (mode === 'edited-ir') f.add.sub = 'sub';
+    normalizeCompatibilityLine(line,ir);
+    assert.ok(line.text.includes('var_AB'));
+    assert.equal(readLineExpressionHistory(line,ir),mode === 'current' ? prior : null,mode);
+    if (mode === 'current') {
+      normalizeCompatibilityLine(line,ir);
+      assert.equal(readLineExpressionHistory(line,ir),prior,'idempotent normalization retains the same records');
+      line.text += ' /* later edit */';
+      assert.equal(readLineExpressionHistory(line,ir),null);
+    }
+  }
+});
 
 
 test('C4-03 immutable history payloads share storage without sharing operations or mutable inputs', () => {

@@ -7,6 +7,7 @@ import { decompileSemantic } from '../decompiler/semantic.js';
 import {
   SEMANTIC_FUNCTION_ROUTE,
   canonicalDecodedInstructions,
+  decompilerSnapshot,
   createSemanticCallPrototypeAuthority,
   isSemanticCallPrototypeAuthority,
   semanticAbiAdapter,
@@ -227,21 +228,6 @@ function pipelineSnapshot(pipeline) {
     memorySsa:pipeline.memorySsa,
     legacyV1:legacyProjectionSnapshot(pipeline.legacyV1),
     instrumentation:pipeline.instrumentation,
-  };
-}
-
-function decompilerSnapshot(result) {
-  return {
-    semantic:result.semantic === true,
-    signature:result.signature,
-    summary:result.summary,
-    pseudocode:result.pseudocode,
-    lines:result.lines,
-    evidence:result.evidence,
-    warnings:result.warnings,
-    labels:[...(result.labels || [])],
-    coverage:result.coverage,
-    unknownInstructions:result.ctx?.unknownInstructions ?? 0,
   };
 }
 

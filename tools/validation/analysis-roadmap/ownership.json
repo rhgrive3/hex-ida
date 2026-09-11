@@ -9,6 +9,7 @@
       "js/analysis/discovery/layout.js",
       "js/analysis/index.js",
       "js/analysis/semantic-function-base.js",
+      "js/analysis/semantic-function.js",
       "js/analysis/pointsto/lattice.js",
       "js/analysis/pointsto/local.js",
       "js/analysis/shared-app-artifacts.js",

@@ -11,7 +11,7 @@ const loader = registerHooks({ load(url, context, nextLoad) {
   assert.equal(source.split(marker).length, 2);
   return { ...result, source:source.replace(marker, 'opts.__abiFixture?.(result.legacyV1);\n  ' + marker) };
 } });
-const { buildIR, readFacadeAbiBindingHistory, facadeAbiBindingExpected, readFacadeStateNormalization,
+const { buildIR, VK, ABI_SELECTION_DIRECTORY_LIMIT, readFacadeAbiBindingHistory, facadeAbiBindingExpected, readFacadeStateNormalization,
   readFacadeTypedResultHistory, readFacadePreservedStateHistory } = await import('../../../js/ir-core.js');
 const { buildSemanticModel } = await import('../../../js/blocks.js');
 const { annotateValueRanges } = await import('../../../js/semantics/compat/legacy-value-ranges.js');
@@ -258,8 +258,28 @@ test('copied and malformed ABI ledgers do not issue a binding or a new ABI/SSA t
   }
 });
 
+test('ABI directory observation retains unrelated values beyond the candidate-list bound', () => {
+  assert.equal(ABI_SELECTION_DIRECTORY_LIMIT,1024);
+  const f = fixture({ mutate(ir) { while (ir.values.length < 600) ir.values.push({ id:ir.values.length, reg:null, def:null }); } });
+  const history = readFacadeAbiBindingHistory(f.ir);
+  assert.ok(history); assert.equal(history.completeness,'complete');
+  f.ir.values[550].reg = f.call.callArguments[0].reg;
+  assert.equal(readFacadeAbiBindingHistory(f.ir),null,'a previously rejected value becoming eligible revokes selection');
+});
+
+test('ABI candidate selection still refuses more than 512 eligible values', () => {
+  const f = fixture({ mutate(ir) {
+    const reg = ir.instructions.find(inst => inst.op === 'call').callArguments[0].reg;
+    for (let i = 0; i < 513; i++) ir.values.push({ id:ir.values.length, kind:VK.ARG, reg, bits:32, def:null, uses:[] });
+  } });
+  assert.ok(f.ir.values.length < ABI_SELECTION_DIRECTORY_LIMIT);
+  assert.ok(f.call.args.length);
+  assert.equal(readFacadeAbiBindingHistory(f.ir,f.call),null);
+  assert.equal(facadeAbiBindingExpected(f.ir,f.call),true);
+});
+
 test('oversized selection retains actual argument writes and reports missing history', () => {
-  const f = fixture({ mutate(ir) { while (ir.values.length <= 512) ir.values.push({ id:ir.values.length, reg:null, def:null }); } });
+  const f = fixture({ mutate(ir) { while (ir.values.length <= ABI_SELECTION_DIRECTORY_LIMIT) ir.values.push({ id:ir.values.length, reg:null, def:null }); } });
   assert.ok(f.call.args.length && f.ret.args.length);
   assert.equal(facadeAbiBindingExpected(f.ir), true);
   assert.ok(readFacadeAbiBindingHistory(f.ir) === null);

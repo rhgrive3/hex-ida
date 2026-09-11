@@ -2,7 +2,8 @@
 import { decompile as legacyDecompile } from './decompile-legacy.js';
 import { decompileSemantic } from './decompiler/semantic.js';
 import { repairCanonicalPostTestLoop } from './decompiler/loop-repair.js';
-import { structureKnownSwitches, normalizeCompatibilityLine } from './decompiler/switch.js';
+import { structureKnownSwitches } from './decompiler/switch.js';
+import { normalizeProjectedCompatibilityLine } from './decompiler/phase8/projection.js';
 import { enhanceSemanticDecompilation } from './decompiler/pipeline.js';
 import { sourceOf, mergeSource } from './decompiler/ast/nodes.js';
 import { buildRenderProvenance } from './decompiler/phase8/render-provenance.js';
@@ -28,7 +29,7 @@ function asmCount(result) {
 function normalizeCompatibility(result) {
   if (!result) return result;
   for (const l of result.lines || []) {
-    normalizeCompatibilityLine(l, result.ir);
+    normalizeProjectedCompatibilityLine(l, result.ir);
   }
   if (result.semantic) result.pseudocode = textOf(result.lines);
   return result;

@@ -13,8 +13,133 @@ import { createCapstoneX86Session } from '../../phase5/helpers/capstone-session.
 import { createX86DecodedInstruction, X86_DECODER_SEMANTIC_VERSION } from '../../../js/targets/architecture/x86_64/decoded-instruction.js';
 import { architecturePluginV2 } from '../../../js/targets/architecture/index.js';
 import { resolveABIPlugin } from '../../../js/targets/abi/index.js';
-import { partitionDecodedFunction, semanticAbiAdapter } from '../../../js/analysis/semantic-function.js';
+import { partitionDecodedFunction, semanticAbiAdapter, decompilerSnapshot } from '../../../js/analysis/semantic-function.js';
 import { buildSemanticV2CompatibilityPipeline } from '../../../js/semantics/compat/index.js';
+import { compatOperationEventCandidate } from '../../../js/decompiler/pipeline-core.js';
+import { AnalysisQueryAPI } from '../../../js/analysis/query/api.js';
+import { createAppAnalysisQueryAdapter } from '../../../js/analysis/query/app-adapter.js';
+import { createDecompilerNavigation } from '../../../js/ui/decompiler-provenance.js';
+import { readSwitchLineHistory } from '../../../js/decompiler/switch.js';
+import { readSemanticStoreLineHistory, readSemanticStatementLineHistory,
+  readSemanticControlLineHistory } from '../../../js/decompiler/semantic-core.js';
+
+for (const id of ['quality.aggregate_array_stride.O2','quality.loop_nested.O2',
+  'x86_64.quality.aggregate_array_stride.O2','x86_64.quality.loop_nested.O2']) {
+  test(`C4-03 native remaining producer-event consumers retain every distinct mapping (${id})`, async () => {
+    const corpus = loadCorpus(), index = corpus.functions.findIndex(entry => entry.id === id);
+    assert.ok(index >= 0);
+    const { result, failure } = decompileEntry(corpus.functions[index], {
+      index, decompilerTimeBudgetMs:20000, toolchain:corpus.toolchain ?? null,
+    });
+    assert.equal(failure ?? null,null);
+    const map = result.renderProvenance;
+    assert.equal(result.expressionHistoryBinding.completeness,'complete');
+    assert.equal(result.phase8Projection.history.completeness,'complete');
+    assert.equal(map.completeness,'complete',JSON.stringify(map.reasons));
+    assert.equal(renderHistory.validateRenderProvenance(map).state,'complete');
+    assert.equal(map.budget.maxTransformRecords,2048);
+    assert.equal(map.budget.maxConsumerWitnesses,4096);
+    assert.equal(map.counts.ledgerTruncated,0);
+    assert.equal(map.counts.provenanceLoss,0);
+    const witnesses = renderHistory.renderExpressionWitnesses(map);
+    assert.equal(witnesses.length,result.rewriteProof.length);
+    assert.deepEqual(witnesses.map(record => [record.rule,record.before,record.after,record.valueId]),
+      result.rewriteProof.map(record => [record.rule,record.before,record.after,record.valueId ?? null]));
+    const refsOf = origin => ['rows','addresses','ir','ssaDefs','ssaUses'].flatMap((key,index) =>
+      (origin[key] || []).map(value => `${['row','addr','ir','ssa:def','ssa:use'][index]}:${value}`));
+    for (const witness of witnesses) {
+      const original = result.rewriteProof[witness.sourceRecordIndex];
+      for (const ref of refsOf(original.originHistory.before)) assert.ok(witness.originHistory.consumedRefs.includes(ref));
+      for (const ref of refsOf(original.originHistory.after)) assert.ok(witness.originHistory.producedRefs.includes(ref));
+    }
+    const bindings = new Map(Object.values(map.entities).map(entity => {
+      const line = result.lines[entity.lineIndex], ir = result.ir;
+      return [entity.entityKey, new Set(readLineExpressionHistory(line,ir)
+        || readSwitchLineHistory(line,ir)?.records || readSemanticStoreLineHistory(line,ir)?.records
+        || readSemanticStatementLineHistory(line,ir)?.records || readSemanticControlLineHistory(line,ir)?.records || [])];
+    }));
+    const groups = map.ledger.filter(record => record.kind === 'state-consumer-group');
+    assert.ok(groups.length);
+    for (const group of groups) {
+      const index = map.ledger.indexOf(group), events = new Set();
+      assert.ok(Object.isFrozen(group.consumerWitnesses));
+      assert.ok(Object.values(group.origin).every(values => values.length === 0),'group headers do not union consumer sources');
+      for (const witness of group.consumerWitnesses) {
+        const original = result.rewriteProof[witness.sourceRecordIndex];
+        events.add(compatOperationEventCandidate(original,result.ir));
+        for (const [entity, records] of bindings) assert.equal(witness.producedRefs.includes(entity),records.has(original));
+        for (const ref of [...witness.originHistory.consumedRefs,...witness.originHistory.producedRefs]) {
+          assert.ok(map.transformReverse[ref].includes(index));
+        }
+      }
+      assert.equal(events.size,1);
+      assert.equal([...events][0].stage,'public-state-normalization');
+    }
+    const reference = loadFrozenProvenance().observations.find(entry => entry.id === id);
+    const actual = provenanceFromSourceMap(result.sourceMap);
+    assert.deepEqual(reference.sourceAddresses.filter(address => !actual.sourceAddresses.includes(address)),[]);
+    let epoch = 1;
+    const api = new AnalysisQueryAPI({
+      ...createAppAnalysisQueryAdapter({ analyzeFunction:async () => ({ decompiler:decompilerSnapshot(result) }) }),
+      currentIdentity:async () => ({ binaryId:id,projectRevision:1,analysisEpoch:epoch,artifactVersions:{} }),
+    });
+    const query = await api.decompile(await api.snapshot(),'function');
+    const navigation = createDecompilerNavigation(query,{ currentSnapshot:() => api.snapshot() });
+    assert.equal(navigation.available,true,navigation.reason);
+    const group = groups.find(record => record.producedRefs.length);
+    assert.ok(group);
+    for (const entityKey of group.producedRefs) {
+      const selected = await navigation.selectLine(map.entities[entityKey].lineIndex);
+      assert.equal(selected.state,'ready');
+      const members = selected.transforms.filter(record => group.consumerWitnesses.some(member => member.sourceRecordIndex === record.sourceRecordIndex));
+      assert.deepEqual(members.map(record => record.sourceRecordIndex).sort((a,b)=>a-b),
+        group.consumerWitnesses.filter(record => record.producedRefs.includes(entityKey)).map(record=>record.sourceRecordIndex).sort((a,b)=>a-b));
+    }
+    const ref = group.consumerWitnesses[0].originHistory.consumedRefs.find(ref=>ref.startsWith('ir:'));
+    assert.ok(ref);
+    assert.equal((await navigation.selectOrigin('ir',ref.slice(3))).state,'ready');
+    epoch++;
+    assert.equal((await navigation.selectLine(0)).state,'unavailable');
+    if (id === 'x86_64.quality.loop_nested.O2') {
+      const limited = renderHistory.buildRenderProvenance({ result,snapshotId:map.snapshotId,budget:{ maxTransformRecords:1024 } });
+      assert.equal(limited.completeness,'incomplete');
+      assert.ok(limited.ledger.length <= 1024 && limited.counts.ledgerTruncated > 0);
+    }
+    if (id !== 'quality.aggregate_array_stride.O2') return;
+    const limited = renderHistory.buildRenderProvenance({ result,snapshotId:map.snapshotId,budget:{ maxConsumerWitnesses:1 } });
+    assert.equal(limited.completeness,'incomplete');
+    assert.equal(limited.counts.expressionConsumerWitnesses,1);
+    const groupIndex = map.ledger.indexOf(group);
+    for (const mutate of [
+      record => { record.consumerWitnesses = []; },
+      record => { record.kind = 'external-description'; },
+      record => { record.publicNormalization = null; },
+      record => { record.consumerWitnesses[0].consumerWitnesses = []; },
+      record => { delete record.consumerWitnesses[0].originHistory; },
+      record => { record.consumerWitnesses[0].before = 'other'; },
+      record => { record.consumerWitnesses[0].producedRefs = ['L99999:stmt']; },
+      record => { record.consumerWitnesses[0].sourceRecordIndex = record.consumerWitnesses[1].sourceRecordIndex; },
+    ]) {
+      const changed = { ...map,ledger:[...map.ledger] };
+      changed.ledger[groupIndex] = structuredClone(group); mutate(changed.ledger[groupIndex]);
+      assert.equal(renderHistory.validateRenderProvenance(changed).state,'incomplete');
+    }
+    for (const key of ['groupedExpressionWitnesses','sourceRecordWitnesses','expressionConsumerWitnesses']) {
+      const changed = { ...map,counts:{ ...map.counts,[key]:map.counts[key] - 1 } };
+      assert.equal(renderHistory.validateRenderProvenance(changed).state,'incomplete');
+    }
+    const copied = renderHistory.buildRenderProvenance({ result:{ ...result,
+      rewriteProof:result.rewriteProof.map(record=>({ ...record })) },snapshotId:map.snapshotId });
+    assert.ok(!copied.ledger.some(record=>record.kind==='state-consumer-group'));
+    for (const mutate of [() => {},record => { record.kind = 'external-description'; }]) {
+      const copied = structuredClone(group); mutate(copied);
+      const unissued = renderHistory.buildRenderProvenance({ result:{ lines:result.lines,
+        phase8Projection:{ transforms:[copied] } },snapshotId:map.snapshotId });
+      assert.deepEqual(unissued.ledger,[]);
+      assert.ok(unissued.reasons.includes('unissued-state-consumer-group'));
+    }
+  });
+}
 
 test('C4-03 native x86 counted loop retains certified descriptions and its complete dense origin set', () => {
   const corpus = loadCorpus(), id = 'x86_64.quality.loop_counted_sum.O2';
@@ -32,7 +157,7 @@ test('C4-03 native x86 counted loop retains certified descriptions and its compl
   assert.equal(map.completeness, 'complete');
   assert.deepEqual(map.reasons, []);
   assert.equal(renderHistory.validateRenderProvenance(map).state, 'complete');
-  assert.equal(map.budget.maxTransformRecords, 1024);
+  assert.equal(map.budget.maxTransformRecords, 2048);
   assert.equal(map.budget.maxOriginsPerEntity, 1024);
   assert.equal(map.counts.ledgerTruncated, 0);
   assert.equal(map.counts.provenanceLoss, 0);
@@ -60,7 +185,7 @@ test('C4-03 native x86 counted loop retains certified descriptions and its compl
   assert.equal(readLineExpressionHistory(line, result.ir), null, 'equal immutable descriptions cannot refresh the original input binding');
 });
 
-test('C4-03 native counted loop preserves all normalization witnesses within the unchanged ledger cap', () => {
+test('C4-03 native counted loop preserves all normalization witnesses within the bounded default ledger', () => {
   const corpus = loadCorpus(), id = 'quality.loop_counted_sum.O2';
   const index = corpus.functions.findIndex(entry => entry.id === id);
   assert.ok(index >= 0);
@@ -73,13 +198,13 @@ test('C4-03 native counted loop preserves all normalization witnesses within the
   assert.equal(map.completeness, 'complete');
   assert.deepEqual(map.reasons, []);
   assert.equal(renderHistory.validateRenderProvenance(map).state, 'complete');
-  assert.equal(map.budget.maxTransformRecords, 1024);
+  assert.equal(map.budget.maxTransformRecords, 2048);
   assert.equal(map.counts.ledgerTruncated, 0);
   assert.equal(map.counts.provenanceLoss, 0);
-  assert.equal(map.ledger.length, 937);
+  assert.equal(map.ledger.length + map.counts.groupedExpressionWitnesses, 937);
   assert.equal(map.counts.sourceRecordWitnesses, 1190);
   assert.equal(map.counts.attachedPublicStateNormalizations, 253);
-  const expressions = map.ledger.filter(record => record.originHistory);
+  const expressions = renderHistory.renderExpressionWitnesses(map);
   assert.equal(result.rewriteProof.length, 927);
   assert.equal(expressions.length, result.rewriteProof.length, 'no expression consumer mapping is coalesced');
   assert.deepEqual(expressions.map(record => [record.rule, record.before, record.after, record.valueId]),
@@ -93,7 +218,8 @@ test('C4-03 native counted loop preserves all normalization witnesses within the
   for (const witness of witnesses) {
     assert.deepEqual(witness.producedRefs, []);
     assert.deepEqual(witness.removedRefs, []);
-    const owner = map.ledger.findIndex(record => record === witness || record.publicNormalization === witness);
+    const owner = map.ledger.findIndex(record => renderHistory.renderRecordWitnesses(record)
+      .some(member => member === witness || member.publicNormalization === witness));
     assert.ok(owner >= 0);
     for (const ref of witness.publicStateTransition.consumedRefs) assert.ok(map.transformReverse[ref].includes(owner));
   }
@@ -206,7 +332,7 @@ for (const id of ['riscv64.quality.aggregate_array_stride.O0', 'riscv64.quality.
     assert.equal(result.phase8Projection.history.completeness, 'complete');
     assert.equal(result.renderProvenance.completeness, 'complete');
     assert.deepEqual(result.renderProvenance.reasons, []);
-    assert.equal(result.renderProvenance.budget.maxTransformRecords, 1024);
+    assert.equal(result.renderProvenance.budget.maxTransformRecords, 2048);
     assert.equal(result.renderProvenance.counts.ledgerTruncated, 0);
     const states = result.rewriteProof.filter(record => record.rule === 'compact-public-state');
     assert.ok(states.length > 0);
@@ -239,7 +365,7 @@ test('C4-03 native nested loop retains initial expression, statement and control
   assert.equal(result.phase8Projection.history.completeness, 'complete');
   assert.equal(result.renderProvenance.completeness, 'complete');
   assert.deepEqual(result.renderProvenance.reasons, []);
-  assert.equal(result.renderProvenance.budget.maxTransformRecords, 1024);
+  assert.equal(result.renderProvenance.budget.maxTransformRecords, 2048);
   assert.equal(result.renderProvenance.counts.ledgerTruncated, 0);
   assert.ok(result.rewriteProof.length > 400, 'retain the actual native history');
   const reference = loadFrozenProvenance().observations.find(entry => entry.id === id);
@@ -268,7 +394,7 @@ test('C4-03 native producer graph retains full history through immutable precond
   assert.equal(result.phase8Projection.history.completeness, 'complete');
   assert.equal(result.renderProvenance.completeness, 'complete');
   assert.deepEqual(result.renderProvenance.reasons, []);
-  assert.equal(result.renderProvenance.budget.maxTransformRecords, 1024);
+  assert.equal(result.renderProvenance.budget.maxTransformRecords, 2048);
   assert.equal(result.renderProvenance.counts.ledgerTruncated, 0);
   const states = result.rewriteProof.filter(record => record.rule === 'compact-public-state');
   assert.ok(states.length > 200, 'the formerly unavailable real producer history is present');
@@ -287,7 +413,7 @@ test('C4-03 native producer graph retains full history through immutable precond
   assert.ok(lines.every(line => readLineExpressionHistory(line, result.ir) === null));
 });
 
-test('C4-03 native aggregate loop binds every rendered entity within the unchanged default budget', () => {
+test('C4-03 native aggregate loop binds every rendered entity within the bounded default budget', () => {
   const corpus = loadCorpus();
   const index = corpus.functions.findIndex(entry => entry.id === 'quality.aggregate_array_stride.O1');
   assert.ok(index >= 0);
@@ -303,7 +429,7 @@ test('C4-03 native aggregate loop binds every rendered entity within the unchang
   assert.equal(outcome.result.renderProvenance.counts.provenanceLoss, 0);
 });
 
-test('C4-03 native RISC-V state histories retain control handoff within the unchanged default ledger cap', () => {
+test('C4-03 native RISC-V state histories retain control handoff within the bounded default ledger', () => {
   const corpus = loadCorpus(), id = 'riscv64.quality.sccp_dead_branch.O0';
   const index = corpus.functions.findIndex(entry => entry.id === id);
   assert.ok(index >= 0);
@@ -316,7 +442,7 @@ test('C4-03 native RISC-V state histories retain control handoff within the unch
   assert.equal(result.phase8Projection.history.completeness, 'complete');
   assert.equal(result.renderProvenance.completeness, 'complete');
   assert.deepEqual(result.renderProvenance.reasons, []);
-  assert.equal(result.renderProvenance.budget.maxTransformRecords, 1024);
+  assert.equal(result.renderProvenance.budget.maxTransformRecords, 2048);
   assert.ok(result.renderProvenance.counts.transformRecords <= 1024);
   assert.equal(result.renderProvenance.counts.ledgerTruncated, 0);
   const actual = provenanceFromSourceMap(result.sourceMap);
@@ -336,7 +462,7 @@ test('C4-03 native x86 construction reuses observed inputs without losing live c
   assert.equal(result.expressionHistoryBinding.completeness, 'complete');
   assert.deepEqual(result.expressionHistoryBinding.reasons, []);
   assert.equal(result.renderProvenance.completeness, 'complete');
-  assert.equal(result.renderProvenance.budget.maxTransformRecords, 1024);
+  assert.equal(result.renderProvenance.budget.maxTransformRecords, 2048);
   const actual = provenanceFromSourceMap(result.sourceMap);
   assert.deepEqual(reference.sourceAddresses.filter(address => !actual.sourceAddresses.includes(address)), []);
   const lines = result.lines.filter(line => readLineExpressionHistory(line, result.ir)?.length);
@@ -369,7 +495,7 @@ for (const optimization of ['O1', 'O2']) test(`C4-03 native cyclic construction 
   assert.ok(selections.length > 50, 'actual native selections, not an empty-history success');
   assert.equal(new Set(selections.map(record => record.originHistory)).size, selections.length,
     'inherited selections are the same issued operation, not a cloned downstream transform');
-  assert.equal(result.renderProvenance.budget.maxTransformRecords, 1024);
+  assert.equal(result.renderProvenance.budget.maxTransformRecords, 2048);
   assert.equal(result.renderProvenance.counts.ledgerTruncated, 0);
   const reference = loadFrozenProvenance().observations.find(entry => entry.id === id);
   const actual = provenanceFromSourceMap(result.sourceMap);
