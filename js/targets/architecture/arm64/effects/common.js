@@ -69,7 +69,7 @@ function strictInteger(value) {
   if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
   if (typeof value === 'string') {
     const text = value.trim();
-    if (/^-?(?:0x[0-9a-f]+|\\d+)$/i.test(text)) {
+    if (/^-?(?:0x[0-9a-f]+|\d+)$/i.test(text)) {
       try { return BigInt(text); } catch { return null; }
     }
   }
@@ -139,7 +139,13 @@ export function conditionOf(instruction) {
 
 export function directTargetOf(instruction, kind = 'branch') {
   const explicit = kind === 'call' ? instruction?.callTarget : instruction?.branchTarget;
-  if (explicit != null) return strictInteger(explicit);
+  if (explicit != null) {
+    const target = strictInteger(explicit);
+    // A direct branch/call target is an absolute code address: a canonical
+    // integer that is negative is not an architectural A64 target and must
+    // fail closed instead of minting an exact edge (issue #5841).
+    return target != null && target >= 0n ? target : null;
+  }
   const ops = instruction?.ops || [];
   for (let i = ops.length - 1; i >= 0; i--) {
     const value = decodedAbsoluteTargetOf(ops[i]);

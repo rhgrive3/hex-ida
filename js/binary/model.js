@@ -6,9 +6,26 @@ export function sectionHasMappedAddress(sec) {
   return true;
 }
 
-function bigintOrNull(v) {
-  if (v == null) return null;
-  return typeof v === 'bigint' ? v : BigInt(v);
+// Loader/provider output is fixed into canonical BinaryImage mappings here.
+// Raw BigInt() is a conversion API (BigInt(true) === 1n, BigInt(['16']) === 16n),
+// so a structured value would fabricate a real segment/section mapping (#5195).
+// Accept only exact integers: bigint, safe-integer number, or a strict
+// decimal/hex string — the same shared exact-integer grammar the canonical
+// address surface applies (/^-?(?:0x[0-9a-f]+|\d+)$/i). Anything else, and
+// BigInt() success in general, is not schema validation.
+function canonicalMappingBigInt(value, fallback, field) {
+  if (value == null) return fallback;
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) {
+      throw new TypeError(`${field} must be an exact integer`);
+    }
+    return BigInt(value);
+  }
+  if (typeof value === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(value.trim())) {
+    return BigInt(value.trim());
+  }
+  throw new TypeError(`${field} must be an exact integer`);
 }
 
 function strictBigIntOrNull(value) {
@@ -52,9 +69,9 @@ export class BinaryImage {
     this.endian = meta.endian || 'little';
     this.platform = meta.platform || null;
     this.abi = meta.abi || null;
-    this.imageBase = bigintOrNull(meta.imageBase) ?? 0n;
-    this.entrypoint = bigintOrNull(meta.entrypoint);
-    this.fileOffset = bigintOrNull(meta.fileOffset) ?? 0n;
+    this.imageBase = canonicalMappingBigInt(meta.imageBase, 0n, 'Image base');
+    this.entrypoint = canonicalMappingBigInt(meta.entrypoint, null, 'Entrypoint');
+    this.fileOffset = canonicalMappingBigInt(meta.fileOffset, 0n, 'Image fileOffset');
     let defaultFileSize = 0n;
     if (this.bytes) {
       if (this.bytes instanceof Uint8Array) defaultFileSize = BigInt(this.bytes.length);
@@ -65,7 +82,7 @@ export class BinaryImage {
     } else if (this.source?.size != null) {
       defaultFileSize = this.source.size;
     }
-    this.fileSize = bigintOrNull(meta.fileSize) ?? defaultFileSize;
+    this.fileSize = canonicalMappingBigInt(meta.fileSize, defaultFileSize, 'Image fileSize');
     this.segments = [];
     this.sections = [];
     this.imports = [];
@@ -80,10 +97,10 @@ export class BinaryImage {
   }
 
   addSegment(s) {
-    const address = BigInt(s.address ?? 0);
-    const size = BigInt(s.size ?? 0);
-    const fileOffset = BigInt(s.fileOffset ?? 0);
-    const fileSize = BigInt(s.fileSize ?? 0);
+    const address = canonicalMappingBigInt(s.address, 0n, 'Segment address');
+    const size = canonicalMappingBigInt(s.size, 0n, 'Segment size');
+    const fileOffset = canonicalMappingBigInt(s.fileOffset, 0n, 'Segment fileOffset');
+    const fileSize = canonicalMappingBigInt(s.fileSize, 0n, 'Segment fileSize');
     if (address < 0n || size < 0n || fileOffset < 0n || fileSize < 0n) {
       throw new RangeError('Segment address, size, fileOffset, and fileSize must be non-negative');
     }
@@ -102,10 +119,10 @@ export class BinaryImage {
   }
 
   addSection(s) {
-    const address = BigInt(s.address ?? 0);
-    const size = BigInt(s.size ?? 0);
-    const fileOffset = BigInt(s.fileOffset ?? 0);
-    const fileSize = BigInt(s.fileSize ?? s.size ?? 0);
+    const address = canonicalMappingBigInt(s.address, 0n, 'Section address');
+    const size = canonicalMappingBigInt(s.size, 0n, 'Section size');
+    const fileOffset = canonicalMappingBigInt(s.fileOffset, 0n, 'Section fileOffset');
+    const fileSize = canonicalMappingBigInt(s.fileSize ?? s.size, 0n, 'Section fileSize');
     if (address < 0n || size < 0n || fileOffset < 0n || fileSize < 0n) {
       throw new RangeError('Section address, size, fileOffset, and fileSize must be non-negative');
     }

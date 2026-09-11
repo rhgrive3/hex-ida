@@ -330,13 +330,13 @@ export function runProviderPass(context = {}, budget = {}, area = null) {
     } catch (error) {
       // A provider that throws is a provider that is switched off for this
       // function. It never takes the generic result down with it.
-      failures.push({ providerId: provider.id, reason: String(error?.message ?? error) });
+      failures.push(Object.freeze({ providerId: provider.id, reason: String(error?.message ?? error) }));
       continue;
     }
     for (const raw of produced) {
       let hint;
       try { hint = normalizeHint(raw, provider); }
-      catch (error) { failures.push({ providerId: provider.id, reason: String(error?.message ?? error) }); continue; }
+      catch (error) { failures.push(Object.freeze({ providerId: provider.id, reason: String(error?.message ?? error) })); continue; }
       const verdict = judgeHint(hint, view);
       hints.push(Object.freeze({
         providerId: provider.id,

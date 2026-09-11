@@ -135,6 +135,9 @@ export function validateProviderPacket(input) {
   if (packet.type === 'event-batch') {
     packet.facet = facet(packet.facet);
     packet.batch = createRuntimeEventBatch(packet.batch);
+    if (packet.batch.sessionEpoch !== packet.epoch) {
+      throw new DebugAdapterError('protocol-mismatch', 'provider event batch session epoch must match packet epoch');
+    }
   }
   return packet;
 }

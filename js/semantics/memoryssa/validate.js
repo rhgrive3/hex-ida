@@ -30,6 +30,7 @@ export function validateMemorySsa(memorySsa, options = {}) {
     fail('memory-ssa-validate-build-version-mismatch');
   }
   const built = memorySsa.buildVersion === MEMORY_SSA_BUILD_VERSION;
+  if (built && !Array.isArray(memorySsa.accessMetadata)) fail('memory-ssa-validate-access-metadata-required');
   if (built) {
     for (const definition of contract.definitions) {
       assertNotAborted(options);

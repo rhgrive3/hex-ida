@@ -55,7 +55,7 @@ function defineOwn(target, key, value) {
 
 export function sanitizeToolSchema(value, depth = 0) {
   if (depth > 8 || !isObject(value)) return { type: 'object', properties: {} };
-  const allowed = new Set(['type','description','enum','const','properties','required','items','oneOf','anyOf','minimum','maximum','minLength','maxLength','pattern','additionalProperties']);
+  const allowed = new Set(['type','description','enum','const','properties','required','items','oneOf','anyOf','minimum','maximum','minLength','maxLength','maxItems','pattern','additionalProperties']);
   const out = {};
   for (const [key, item] of Object.entries(value).slice(0, 100)) {
     if (!allowed.has(key)) continue;

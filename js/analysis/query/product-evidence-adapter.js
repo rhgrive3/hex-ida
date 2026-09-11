@@ -3,7 +3,7 @@ import { runtimeEvidenceForApp } from '../../runtime/app-runtime.js';
 import { weakestCompleteness } from '../status.js';
 
 const CANONICAL_VERDICTS = new Set([
-  'confirmed', 'supported', 'likely', 'unverified', 'contradicted', 'unknown',
+  'confirmed', 'supported', 'likely', 'unverified', 'contradicted', 'unknown', 'inconclusive',
 ]);
 const MAX_EVIDENCE_ROWS = 5_000;
 
@@ -42,11 +42,16 @@ function canonicalVerdict(value, fallback = 'unverified') {
   return fallback;
 }
 
+function canonicalEvidenceId(value) {
+  return typeof value === 'string' && value.length > 0 && value.trim() === value ? value : null;
+}
+
 function projectEvidence(kind, value, extra = {}, fallbackVerdict = 'unverified') {
   const evidence = value?.evidence ?? value;
   const source = extra.source ?? value?.source ?? evidence?.source ?? evidence?.provenance?.source ?? null;
   const detail = extra.detail ?? value?.detail ?? evidence?.detail ?? evidence?.reason ?? null;
-  const evidenceId = extra.evidenceId ?? value?.evidenceId ?? value?.id ?? evidence?.evidenceId ?? evidence?.id ?? null;
+  const rawEvidenceId = extra.evidenceId ?? value?.evidenceId ?? value?.id ?? evidence?.evidenceId ?? evidence?.id ?? null;
+  const evidenceId = canonicalEvidenceId(rawEvidenceId);
   return { ...extra, evidenceId, kind: typeof value?.kind === 'string' && value.kind.trim() ? value.kind : kind, verdict: canonicalVerdict(value, fallbackVerdict), source, detail, evidence };
 }
 
@@ -95,7 +100,7 @@ export function createAppAnalysisQueryAdapter(app) {
         const value = functionResult?.value ?? null;
         for (const evidence of Array.isArray(value?.evidence) ? value.evidence : []) suffix.push(projectEvidence('function-analysis', evidence, { address }));
         for (const proof of Array.isArray(value?.rewriteProof) ? value.rewriteProof : []) suffix.push(projectEvidence('rewrite-proof', proof, { address, title: typeof proof?.rule === 'string' ? proof.rule : typeof proof?.name === 'string' ? proof.name : 'Decompiler rewrite' }));
-        for (const observation of runtimeEvidenceForApp(app, address)) suffix.push(projectEvidence('runtime-observation', observation, { address, binaryHash: observation?.binaryHash ?? null, sliceIdentity: observation?.sliceIdentity ?? null }, 'confirmed'));
+        for (const observation of runtimeEvidenceForApp(app, address)) suffix.push(projectEvidence('runtime-observation', observation, { address, binaryHash: observation?.binaryHash ?? null, sliceIdentity: observation?.sliceIdentity ?? null }, 'unverified'));
       }
 
       // Preserve the existing supplemental row budget without applying it to
