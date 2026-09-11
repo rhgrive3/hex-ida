@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { buildSemanticModel } from '../../../js/blocks.js';
 import { ScopeController } from '../../../js/ai/control/scope.js';
+import { createSnapshotContext, createTurnSnapshot } from '../../../js/ai/control/snapshot.js';
 import { createHexToolRegistry } from '../../../js/ai/tools/registry.js';
 import { AIError } from '../../../js/ai/schema.js';
 
@@ -131,6 +132,43 @@ test('#4060 legal current-function and broad-scope requests keep working', async
   const broadResult = await broad.registry.execute('find_constant', { value: 123, functions: ['0x2000'], limit: 10 }, { scope: 'binary' });
   assert.equal(broadResult.tool, 'find_constant');
   assert.deepEqual(broad.analyzed, [OUTSIDE]);
+});
+
+test('#4060 real turn snapshot keeps cursor address-neighborhood separate from function identity', async () => {
+  const analyzed = [];
+  const local = {
+    currentAddress: '0x1004',
+    activeFunction: { address: '0x1000', name: 'current', start: '0x1000', end: '0x1100' },
+    allowedNeighborhood: [{ address: '0x1800' }],
+    binaryHash: 'bin-4060-hash',
+    functionRange: () => ({ start: '0x1000', end: '0x1100' }),
+    addressExists: async () => true,
+    analyze: async (address) => {
+      const value = BigInt(address);
+      analyzed.push(value);
+      return modelAt(value);
+    },
+  };
+  const turn = createTurnSnapshot(local, { scope: 'neighborhood' });
+  assert.deepEqual(turn.neighborhood, ['0x1004', '0x1800'], 'generic address neighborhood still includes the current cursor');
+
+  const controller = new ScopeController(turn, 'neighborhood');
+  assert.equal(controller.scopeContainsAddress('neighborhood', '0x1004'), true, 'cursor remains legal as an address');
+  assert.equal(controller.scopeContainsFunction('neighborhood', '0x1004'), false, 'interior cursor must not become a function identity');
+  assert.equal(controller.scopeContainsFunction('neighborhood', '0x1000'), true, 'current function start remains legal');
+  assert.equal(controller.scopeContainsFunction('neighborhood', '0x1800'), true, 'explicit admitted neighbor function remains legal');
+
+  const context = createSnapshotContext(local, turn, controller);
+  const registry = createHexToolRegistry(context, { maxFunctions: 8 });
+  await assert.rejects(
+    () => registry.execute('find_constant', { value: 123, functions: ['0x1004'], limit: 10 }, { scope: 'neighborhood' }),
+    isScopeViolation,
+  );
+  assert.deepEqual(analyzed, [], 'registry must reject the contaminated cursor before analysis');
+
+  const neighborResult = await registry.execute('find_constant', { value: 123, functions: ['0x1800'], limit: 10 }, { scope: 'neighborhood' });
+  assert.equal(neighborResult.tool, 'find_constant');
+  assert.deepEqual(analyzed, [NEIGHBOR]);
 });
 
 // Keep constants exercised so accidental fixture edits cannot silently change the intended topology.

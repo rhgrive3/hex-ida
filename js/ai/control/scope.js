@@ -76,7 +76,12 @@ export class ScopeController {
     if (effective === 'selection') return false;
     if (['binary','project','runtime'].includes(effective)) return true;
     if (sameAddress(this.snapshot.currentFunction?.address, address)) return true;
-    return effective === 'neighborhood' && (this.snapshot.neighborhood || []).some((item) => sameAddress(item, address));
+    if (effective !== 'neighborhood') return false;
+    // createTurnSnapshot() deliberately seeds the current cursor into the generic
+    // address neighborhood. That cursor may be an interior instruction, so it
+    // must not become function-identity authority merely by exact membership.
+    if (sameAddress(this.snapshot.currentAddress, address)) return false;
+    return (this.snapshot.neighborhood || []).some((item) => sameAddress(item, address));
   }
 
   assertToolCall(tool, args = {}) {
@@ -123,7 +128,6 @@ function collectAddresses(value, key = '', tool = '') {
   for (const [childKey, child] of Object.entries(value)) out.push(...collectAddresses(child, childKey, tool));
   return out;
 }
-
 function collectFunctionAddresses(value, key = '', tool = '') {
   const out = [];
   if (TOOL_FUNCTION_ADDRESS_ARRAY_KEYS.get(tool)?.has(key)) {
