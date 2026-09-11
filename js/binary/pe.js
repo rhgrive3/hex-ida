@@ -10,6 +10,7 @@ const IMAGE_DIRECTORY_ENTRY_TLS = 9;
 const IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10;
 const IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT = 13;
 const WINDOWS_IMAGE_RAW_ALIGNMENT = 0x200;
+const WINDOWS_IMAGE_BASE_ALIGNMENT = 0x10000n;
 
 function windowsImageSectionRawMapping(pointerToRawData, { sectionAlignment } = {}) {
   if (pointerToRawData === 0) {
@@ -138,6 +139,7 @@ export function parsePE(input, options = {}) {
   if (sizeOptional < minimumOptionalSize) throw new Error(`PE optional header size ${sizeOptional} is smaller than ${minimumOptionalSize}`);
   const entryRva = r.u32(opt + 16);
   const imageBase = bits === 64 ? r.u64(opt + 24) : BigInt(r.u32(opt + 28));
+  if (imageBase % WINDOWS_IMAGE_BASE_ALIGNMENT !== 0n) throw new Error(`PE ImageBase 0x${imageBase.toString(16)} is not 64 KiB aligned`);
   const sectionAlignment = r.u32(opt + 32);
   const fileAlignment = r.u32(opt + 36);
   const sizeOfImage = r.u32(opt + 56);
