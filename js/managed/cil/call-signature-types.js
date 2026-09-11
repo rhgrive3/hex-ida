@@ -334,7 +334,10 @@ export function parseCilLocalVarSignature(blob, typeDefOrRefRowCounts = null) {
       pos = consumeCustomMods(blob, pos + 1, code, typeDefOrRefRowCounts);
       const inner = parseType(blob, pos, code, 1, null, typeDefOrRefRowCounts);
       pos = inner.next;
-      locals.push(stackType('managed-pointer', null, { referent:inner.value }));
+      // Same inner-type key as method-signature BYREF (parseReturn/parseParam)
+      // and PTR: `pointee`. The outer stackType ('managed-pointer' vs
+      // 'native-int') still distinguishes BYREF from PTR (#7750, #7810).
+      locals.push(stackType('managed-pointer', null, { pointee:inner.value }));
       continue;
     }
     const parsed = parseType(blob, pos, code, 1, null, typeDefOrRefRowCounts);
@@ -374,7 +377,7 @@ export function parseCilTypeSpecSignature(blob, typeDefOrRefRowCounts = null) {
 }
 
 // Structural substitution (#7810): a method generic can appear at any nested
-// identity position of the base signature — a PTR pointee, a BYREF referent,
+// identity position of the base signature — a PTR pointee, a BYREF pointee,
 // an array/SZARRAY element, a GENERICINST argument, or a nested FNPTR
 // signature — not only at the top level. Substituting only top-level values
 // would let a MethodSpec instantiation publish an unresolved generic as an

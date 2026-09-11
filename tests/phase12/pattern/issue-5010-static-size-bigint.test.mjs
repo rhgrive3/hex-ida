@@ -65,7 +65,6 @@ const outer = evaluatePattern({
   name: 'Outer',
   fields: [{ name: 'items', type: { kind: 'array', count: 4, element: huge } }],
 }, {
-  snapshotId: '',
   size: null,
   read() { throw new Error('lazy huge array expansion must not read payload bytes'); },
 });
