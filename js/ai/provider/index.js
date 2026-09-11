@@ -54,6 +54,16 @@ export class WorkerAIProvider extends AIProvider {
   }
 
   #waitForCapabilities(promise, signal) {
+    /* #5144: the waiter is accounted only after the signal contract is proven
+       usable. A malformed truthy signal used to increment capabilitiesWaiters
+       and then throw synchronously inside the executor below, leaking a ghost
+       waiter that permanently disabled shared-preflight cancellation. */
+    if (signal
+      && (typeof signal.addEventListener !== 'function'
+        || typeof signal.removeEventListener !== 'function'
+        || typeof signal.aborted !== 'boolean')) {
+      throw new TypeError('signal must be an AbortSignal.');
+    }
     this.capabilitiesWaiters += 1;
     let released = false;
     const release = (cancelled = false) => {
@@ -66,28 +76,35 @@ export class WorkerAIProvider extends AIProvider {
     };
     if (!signal) return promise.finally(() => release(false));
     return new Promise((resolve, reject) => {
-      const onAbort = () => {
-        signal.removeEventListener('abort', onAbort);
-        release(true);
-        reject(interruptionError(signal));
-      };
-      signal.addEventListener('abort', onAbort, { once: true });
-      if (signal.aborted) {
-        onAbort();
-        return;
+      try {
+        const onAbort = () => {
+          signal.removeEventListener('abort', onAbort);
+          release(true);
+          reject(interruptionError(signal));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        promise.then(
+          (value) => {
+            signal.removeEventListener('abort', onAbort);
+            release(false);
+            resolve(value);
+          },
+          (error) => {
+            signal.removeEventListener('abort', onAbort);
+            release(false);
+            reject(error);
+          },
+        );
+      } catch (error) {
+        /* The waiter count must be reusable no matter what the wiring throws:
+           release before rejecting so cancellation accounting cannot leak. */
+        release(false);
+        reject(error);
       }
-      promise.then(
-        (value) => {
-          signal.removeEventListener('abort', onAbort);
-          release(false);
-          resolve(value);
-        },
-        (error) => {
-          signal.removeEventListener('abort', onAbort);
-          release(false);
-          reject(error);
-        },
-      );
     });
   }
 

@@ -64,7 +64,7 @@ export function classifyJvmFieldDescriptor(descriptor) {
   return null;
 }
 
-export function resolveJvmFieldRef(jvmClass, cpIndex) {
+export function resolveJvmFieldRef(jvmClass, cpIndex, { resolveDeclaredFlags = false } = {}) {
   const fieldRef = cpEntry(jvmClass, cpIndex);
   if (fieldRef?.tag !== 9) return null;
 
@@ -78,6 +78,23 @@ export function resolveJvmFieldRef(jvmClass, cpIndex) {
   const value = classifyJvmFieldDescriptor(descriptor);
   if (!validInternalClassName(owner) || !validUnqualifiedName(name) || !value) return null;
 
+  // JLS §17.4.5 / JVMS §4.5: ACC_VOLATILE on the declared field is the
+  // happens-before authority for field access semantics (#7861). It is only
+  // resolvable when the field's owner IS the current class — a same-owner
+  // same-name same-descriptor declared field may still be ambiguous, so the
+  // declared flags bind only when exactly one declared field matches.
+  let declaredAccessFlags;
+  if (resolveDeclaredFlags) {
+    const declared = Array.isArray(jvmClass?.fields)
+      ? jvmClass.fields.filter((field) => field?.name === name && field?.descriptor === descriptor)
+      : [];
+    if (owner === jvmClass?.thisClassName && declared.length === 1) {
+      declaredAccessFlags = declared[0].accessFlags;
+    } else {
+      declaredAccessFlags = null;
+    }
+  }
+
   return Object.freeze({
     cpIndex,
     owner,
@@ -87,5 +104,13 @@ export function resolveJvmFieldRef(jvmClass, cpIndex) {
     category: value.category,
     slots: value.slots,
     valueKind: value.valueKind,
+    ...(resolveDeclaredFlags
+      ? {
+          // null = volatility unresolvable (external owner or ambiguous match);
+          // the caller must not fabricate a plain access from it.
+          declaredAccessFlags,
+          isVolatile: declaredAccessFlags != null && (declaredAccessFlags & 0x0040) !== 0,
+        }
+      : {}),
   });
 }
