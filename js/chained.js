@@ -41,25 +41,38 @@ function ascii(u8, off, len) {
 }
 
 function utf8z(u8, off) {
-  if (!(off >= 0) || off >= u8.length) return '';
+  if (!(off >= 0) || off >= u8.length) return null;
   let end = off;
   while (end < u8.length && u8[end]) end++;
-  try { return new TextDecoder().decode(u8.subarray(off, end)); }
-  catch {
-    let out = '';
-    for (let i = off; i < end; i++) out += String.fromCharCode(u8[i]);
-    return out;
-  }
+  /* A chained-fixups import name is a NUL-terminated canonical UTF-8 string.
+     A scan that reaches the payload end without a terminator is
+     truncated/malformed input (#5217), and a byte sequence the strict decoder
+     rejects must not launder into U+FFFD replacement characters (#5656):
+     both fail closed instead of minting a symbol. ignoreBOM keeps a leading
+     U+FEFF in the decoded name — the default strips it and the published
+     name would no longer match the pool bytes. */
+  if (end >= u8.length) return null;
+  try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u8.subarray(off, end)); }
+  catch { return null; }
 }
 
 function u32be(dv, off) { return dv.getUint32(off, false); }
+
+const MACHO64_VM_LIMIT = 1n << 64n;
+
+function validMachOVmRange(vmaddr, vmsize) {
+  return vmaddr >= 0n && vmsize >= 0n
+    && vmaddr < MACHO64_VM_LIMIT && vmsize < MACHO64_VM_LIMIT
+    && vmaddr <= MACHO64_VM_LIMIT - vmsize;
+}
 
 function rangeWithin(start, size, parentStart, parentSize) {
   return size >= 0n && start >= parentStart && start - parentStart <= parentSize && size <= parentSize - (start - parentStart);
 }
 
 function stubSectionWithinSegment(segment, addr, size, fileoff) {
-  return !!segment?.validFileRange
+  return segment?.validVmRange !== false
+    && !!segment?.validFileRange
     && rangeWithin(addr, size, segment.vmaddr, segment.vmsize)
     && rangeWithin(fileoff, size, segment.fileoff, segment.filesize);
 }
@@ -126,7 +139,8 @@ async function parseImage(file, sliceIndex) {
       const nsects = dv.getUint32(p + 64, true);
       const segIndex = segments.length;
       const validFileRange = fileoff <= sliceSize && filesize <= sliceSize - fileoff;
-      segments.push({ name, vmaddr, vmsize, fileoff, filesize, validFileRange });
+      const validVmRange = validMachOVmRange(vmaddr, vmsize);
+      segments.push({ name, vmaddr, vmsize, fileoff, filesize, validFileRange, validVmRange });
       let q = p + 72;
       for (let si = 0; si < nsects && q + 80 <= p + size; si++, q += 80) {
         const section = ascii(raw, q, 16);
@@ -181,9 +195,12 @@ function parseImportNames(raw) {
     names[i] = utf8z(raw, symbolsOffset + nameOffset);
   }
 
-  /* starts_in_image uses the Mach-O segment order.  Keep only the pointer
-     format here; locating a stub's GOT slot is cheaper than walking all chains. */
+  /* starts_in_image uses the Mach-O segment order.  Keep the pointer format
+     plus the full dyld_chained_starts_in_segment structure here: a GOT slot
+     only carries a chained fixup if it is reachable through page_start[]/next
+     chain walks (#5388) — the pointer format alone proves nothing. */
   const formats = new Map();
+  const starts = new Map();
   if (startsOffset + 4 <= raw.length) {
     const segCount = dv.getUint32(startsOffset, true);
     if (segCount <= 4096 && startsOffset + 4 + segCount * 4 <= raw.length) {
@@ -192,12 +209,38 @@ function parseImportNames(raw) {
         if (!rel) continue;
         const s = startsOffset + rel;
         if (s + 22 > raw.length) continue;
+        const structSize = dv.getUint32(s, true);
+        const pageSize = dv.getUint16(s + 4, true);
         const pointerFormat = dv.getUint16(s + 6, true);
+        const pageCount = dv.getUint16(s + 20, true);
+        if (structSize < 22 || s + structSize > raw.length) continue;
+        if (22 + pageCount * 2 > structSize) continue;
+        if (pageSize !== 0x1000 && pageSize !== 0x4000) continue;
+        const trailing = structSize - 22 - pageCount * 2;
+        if (trailing % 2 !== 0) continue; // multi-start pool must be uint16-aligned
+        /* dyld resolves a DYLD_CHAINED_PTR_START_MULTI entry against the
+           combined page_start[] array (MachOLayout.cpp indexes
+           segInfo->page_start[overflowIndex]), so keep the trailing entries
+           and the page_start[] entries in one array (#5388 review). */
+        const pool = new Array(pageCount + trailing / 2);
+        for (let pg = 0; pg < pageCount; pg++) pool[pg] = dv.getUint16(s + 22 + pg * 2, true);
+        for (let oi = 0; oi < trailing / 2; oi++) pool[pageCount + oi] = dv.getUint16(s + 22 + pageCount * 2 + oi * 2, true);
         formats.set(i, pointerFormat);
+        starts.set(i, { pointerFormat, pageSize, pageCount, pool });
       }
     }
   }
-  return { names, formats };
+  return { names, formats, starts };
+}
+
+/* `next` field position/stride per pointer format, mirroring dyld's
+   fixup-chains pointer layouts (cf. macho-dyld.js decodeChainedPointer). */
+function chainNext(raw, format) {
+  if (format === 2 || format === 6) return { next: Number((raw >> 51n) & 0xfffn), stride: 4 };
+  if (format === 1 || format === 7 || format === 9 || format === 10 || format === 12) {
+    return { next: Number((raw >> 51n) & 0x7ffn), stride: format === 7 || format === 10 ? 4 : 8 };
+  }
+  return null;
 }
 
 function sign21(v) { return (v & 0x100000) ? v - 0x200000 : v; }
@@ -261,9 +304,40 @@ function bindOrdinal(raw, pointerFormat) {
   return null;
 }
 
+/** Decode `dyld_chained_starts_in_segment` fields for the owning segment. */
+function segmentStarts(starts, segIndex, slot, seg) {
+  const st = starts.get(segIndex);
+  if (!st) return null;
+  const delta = slot - seg.vmaddr;
+  const page = Number(delta / BigInt(st.pageSize));
+  if (page < 0 || page >= st.pageCount) return null;
+  const start = st.pool[page];
+  if (start === 0xffff) return null; // dyld: DYLD_CHAINED_PTR_START_NONE — the page holds no fixups
+  const chainStarts = [];
+  if (start & 0x8000) {
+    let oi = start & 0x7fff;
+    /* The trailing chain_starts[] area begins at combined pool index
+       pageCount; a MULTI index that points back into the page_start[] domain
+       self-references the page's own marker and proves nothing (#5388
+       review). */
+    if (oi < st.pageCount || oi >= st.pool.length) return null;
+    let terminated = false;
+    for (let guard = 0; guard < 4096 && oi < st.pool.length; guard++, oi++) {
+      const x = st.pool[oi];
+      chainStarts.push(x & 0x7fff);
+      if (x & 0x8000) { terminated = true; break; }
+    }
+    if (!terminated) return null; // malformed multi-start list fails closed
+  } else {
+    chainStarts.push(start);
+  }
+  return { st, page, chainStarts };
+}
+
 function segmentFor(segments, addr) {
   for (let i = 0; i < segments.length; i++) {
     const s = segments[i];
+    if (s.validVmRange === false) continue;
     if (addr >= s.vmaddr && addr < s.vmaddr + s.vmsize) return { s, i };
   }
   return null;
@@ -293,6 +367,40 @@ function makeBlockReader(file) {
 }
 
 /**
+ * Walk one fixup chain and collect its member slot VM addresses.  The whole
+ * chain is validated before any membership claim: returns the member set on a
+ * cleanly terminated chain, or null when the chain is malformed (out-of-page
+ * next, non-positive step, unreadable or non-file-backed fixup, iteration
+ * guard) — a malformed chain proves membership for nothing (#5388).
+ */
+async function chainMembers(st, page, chainStart, seg, read64, base) {
+  const pageSize = BigInt(st.pageSize);
+  const pageStart = seg.vmaddr + BigInt(page) * pageSize;
+  const pageVmEnd = pageStart + pageSize < seg.vmaddr + BigInt(seg.vmsize)
+    ? pageStart + pageSize
+    : seg.vmaddr + BigInt(seg.vmsize);
+  if (chainStart < 0 || BigInt(chainStart) + 8n > pageVmEnd - pageStart) return null;
+  let address = pageStart + BigInt(chainStart);
+  const members = new Set();
+  for (let guard = 0; guard < 100000; guard++) {
+    const fileOff = base + seg.fileoff + (address - seg.vmaddr);
+    if (fileOff + 8n > base + seg.fileoff + seg.filesize) return null;
+    const ptr = await read64(fileOff);
+    if (ptr == null) return null;
+    members.add(address);
+    const d = chainNext(ptr, st.pointerFormat);
+    if (d == null) return null;
+    if (d.next === 0) return members;
+    const step = BigInt(d.next) * BigInt(d.stride);
+    if (step <= 0n) return null;
+    const next = address + step;
+    if (next + 8n > pageVmEnd) return null; // chain leaves its page
+    address = next;
+  }
+  return null;
+}
+
+/**
  * Recover external symbol names for __stubs from LC_DYLD_CHAINED_FIXUPS.
  * Returns entries in the same shape worker.js uses: {addr,name,kind}.
  */
@@ -308,6 +416,12 @@ export async function chainedImportSymbols(file, sliceIndex = 0) {
   if (!imports || !imports.names.length) return [];
 
   const read64 = makeBlockReader(file);
+  /* Page-scoped membership memo: many stubs converge on the same GOT page,
+     so cache per (segment, page, chainStart) — a validated member Set (chain
+     walked clean) or null (malformed chain). Malformed stays scoped to its
+     own chainStart, never collapsed into a page-wide invalid flag (#5388
+     review). */
+  const chainMembersCache = new Map();
   const out = [];
   let supplementalReadBytes = raw.length;
   let decodedStubs = 0;
@@ -329,6 +443,25 @@ export async function chainedImportSymbols(file, sliceIndex = 0) {
       if (delta < 0n || delta + 8n > hit.s.filesize) continue;
       const format = imports.formats.get(hit.i);
       if (format == null) continue;
+      /* A GOT slot carries a chained fixup only when the segment's starts
+         structure declares fixups on its page AND the slot lies on one of
+         that page's chains (#5388).  START_NONE pages, off-chain slots and
+         malformed chains must never launder raw bytes into an import name. */
+      const segStarts = segmentStarts(imports.starts, hit.i, slot, hit.s);
+      if (segStarts == null) continue;
+      let member = false;
+      for (const chainStart of segStarts.chainStarts) {
+        const cacheKey = `${hit.i}:${segStarts.page}:${chainStart}`;
+        let members = chainMembersCache.get(cacheKey);
+        if (members === undefined) {
+          members = await chainMembers(segStarts.st, segStarts.page, chainStart, hit.s, read64, image.base);
+          chainMembersCache.set(cacheKey, members);
+        }
+        /* A malformed chain proves no membership for its own start only; a
+           later independent multi-start chain may still cover the slot. */
+        if (members !== null && members.has(slot)) { member = true; break; }
+      }
+      if (!member) continue;
       const fileOff = image.base + hit.s.fileoff + (slot - hit.s.vmaddr);
       const ptr = await read64(fileOff);
       if (ptr == null) continue;
@@ -395,4 +528,4 @@ export async function augmentAnalysisResultWithChainedImports(file, sliceIndex, 
   return Object.assign({}, result, { addrs, kinds, flags, names });
 }
 
-export const __chainedInternalsForTests = Object.freeze({ rangeWithin, stubSectionWithinSegment });
+export const __chainedInternalsForTests = Object.freeze({ validMachOVmRange, rangeWithin, stubSectionWithinSegment, segmentFor });

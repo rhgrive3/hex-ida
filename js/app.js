@@ -987,7 +987,7 @@ export class App {
         if (!res.complete) { backendIncomplete = true; if (!skipped.includes(r)) skipped.push(r); }
         for (const s of res.results || []) {
           if (!collectionBudget.accept(s.text)) break;
-          out.push({ addr: s.addr, text: s.text, region: r });
+          out.push({ addr: s.addr, text: s.text, byteLength: s.byteLength, region: r });
         }
         if (res.capped && !collectionBudget.truncationReason) collectionBudget.truncationReason = res.truncationReason || 'result-budget';
       }

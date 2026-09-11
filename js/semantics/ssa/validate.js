@@ -47,6 +47,83 @@ function originContains(container, required) {
 function blockSetEqual(ir, cfg) {
   return stableStringify(ir.blocks.map((block) => block.id).sort()) === stableStringify(cfg.blocks.map((block) => block.id).sort());
 }
+const CONTROL_PROJECTION_KINDS = new Set(['branch', 'conditional-branch', 'switch', 'return', 'trap', 'unknown-control-effect', 'incomplete']);
+const UNKNOWN_CONTROL_EDGE_KINDS = new Set(['indirect-candidate', 'unknown']);
+
+function isControlProjectionNode(node) {
+  return CONTROL_PROJECTION_KINDS.has(node?.kind)
+    && (node.kind !== 'incomplete' || node.unknown?.categories?.includes('control'));
+}
+
+function controlProjectionNode(block, nodesById) {
+  let control = null;
+  for (const nodeId of block.nodeIds) {
+    const node = nodesById.get(nodeId);
+    if (isControlProjectionNode(node)) control = node;
+  }
+  return control;
+}
+
+function projectionEdgeKey(to, kind) { return `${to}\u0000${kind}`; }
+function sortedProjectionEdges(edges) {
+  return [...new Set(edges.map((edge) => projectionEdgeKey(edge.to, edge.kind)))].sort();
+}
+
+function projectedControlEdges(node) {
+  if (node.kind === 'branch') return node.targets.map((to) => ({ to, kind: 'branch' }));
+  if (node.kind === 'conditional-branch') {
+    return node.targets.map((to, index) => ({ to, kind: index === 0 ? 'conditional-true' : 'conditional-false' }));
+  }
+  if (node.kind === 'switch') return node.targets.map((to) => ({ to, kind: 'switch-case' }));
+  if (node.kind === 'unknown-control-effect' || node.kind === 'incomplete') {
+    const kind = node.attributes?.indirectControl?.targetState === 'candidate' ? 'indirect-candidate' : 'unknown';
+    return node.targets.map((to) => ({ to, kind }));
+  }
+  return [];
+}
+
+function validateControlProjection(ir, cfg) {
+  const nodesById = new Map(ir.nodes.map((node) => [node.id, node]));
+  const cfgById = new Map(cfg.blocks.map((block) => [block.id, block]));
+  for (const irBlock of ir.blocks) {
+    const node = controlProjectionNode(irBlock, nodesById);
+    if (!node) continue;
+    const cfgBlock = cfgById.get(irBlock.id);
+    const successors = cfgBlock.successors;
+    if ((node.kind === 'unknown-control-effect' || node.kind === 'incomplete') && node.targets.length === 0) {
+      if (successors.some((edge) => !UNKNOWN_CONTROL_EDGE_KINDS.has(edge.kind))) fail('semantic-ssa-control-flow-mismatch');
+      continue;
+    }
+    if (node.kind === 'switch') {
+      const expectedTargets = node.targets.slice().sort();
+      const actualTargets = [...new Set(successors.map((edge) => edge.to))].sort();
+      if (stableStringify(expectedTargets) !== stableStringify(actualTargets)
+        || successors.some((edge) => !['switch-case', 'switch-default'].includes(edge.kind))) {
+        fail('semantic-ssa-control-flow-mismatch');
+      }
+      continue;
+    }
+    if (node.kind === 'conditional-branch' && node.targets.length === 1) {
+      const target = node.targets[0];
+      if (successors.length === 0 || successors.some((edge) => edge.to !== target
+        || !['conditional-true', 'conditional-false', 'fallthrough'].includes(edge.kind))) {
+        fail('semantic-ssa-control-flow-mismatch');
+      }
+      continue;
+    }
+    const comparableSuccessors = node.kind === 'conditional-branch'
+      ? successors.filter((edge) => edge.kind !== 'fallthrough')
+      : successors;
+    if (node.kind === 'conditional-branch'
+      && successors.some((edge) => edge.kind === 'fallthrough' && !node.targets.includes(edge.to))) {
+      fail('semantic-ssa-control-flow-mismatch');
+    }
+    if (stableStringify(sortedProjectionEdges(projectedControlEdges(node))) !== stableStringify(sortedProjectionEdges(comparableSuccessors))) {
+      fail('semantic-ssa-control-flow-mismatch');
+    }
+  }
+}
+
 function computeExpectedPhiBlocks(variableKey, definitions, dominance, tick) {
   const reachable = new Set(dominance.reachable);
   const defBlocks = new Set(definitions
@@ -80,6 +157,7 @@ export function validateSemanticSsa(ssaInput, irInput, cfgInput, options = {}) {
   if (ir.functionId !== cfg.functionId) fail('semantic-ssa-function-mismatch');
   if (ir.entryBlockId !== cfg.entryBlockId) fail('semantic-ssa-entry-block-mismatch');
   if (!blockSetEqual(ir, cfg)) fail('semantic-ssa-block-set-mismatch');
+  validateControlProjection(ir, cfg);
   const entry = cfg.blocks.find((block) => block.id === cfg.entryBlockId);
   if (entry.predecessors.length) fail('semantic-ssa-entry-has-predecessors');
   const ssa = createSemanticSsaContract({

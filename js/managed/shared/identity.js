@@ -1,4 +1,4 @@
-import { deepFreeze, stableStringify } from '../../core/identity/index.js';
+import { deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
 
 function fail(code) { throw new TypeError(code); }
 function nonEmpty(value, code) {
@@ -79,9 +79,18 @@ export function createManagedExceptionRegionId(methodId, handlerIndex) {
   return `managed-exc:${meth}:${idx}`;
 }
 
-export function createManagedTargetProfileId(frontendId, formatVersion, vmSpecEdition) {
+export function createManagedTargetProfileId(frontendId, formatVersion, vmSpecEdition, semanticTail = null) {
   const front = nonEmpty(frontendId, 'managed-identity-frontend-id-required');
   const fmt = nameOrIndex(formatVersion, 'managed-identity-format-version-required');
   const spec = nameOrIndex(vmSpecEdition, 'managed-identity-spec-edition-required');
-  return `managed-profile:${front}:${fmt}:${spec}`;
+  // Identity-defining semantic configuration (feature set, validation
+  // policy, decoding options, runtime hint, frontend semantic version) is
+  // part of the canonical tuple (#5401): two profiles that would analyze or
+  // validate differently must never share one id. Absent/empty tail keeps
+  // the base schema for pure descriptive profiles.
+  const hasSemanticTail = semanticTail != null
+    && Object.values(semanticTail).some((value) => value != null && (!Array.isArray(value) || value.length > 0));
+  if (!hasSemanticTail) return `managed-profile:${front}:${fmt}:${spec}`;
+  const tail = stableStringify(semanticTail);
+  return `managed-profile:${front}:${fmt}:${spec}:${stableDigest(tail)}`;
 }
