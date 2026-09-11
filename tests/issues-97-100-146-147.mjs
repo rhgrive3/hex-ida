@@ -37,7 +37,7 @@ function minimalPE({ entry = 0, sectionName = '.text', longName = null } = {}) {
 }
 {
   const bytes = new Uint8Array(0x400); const v = new DataView(bytes.buffer); const u32 = (o, x) => v.setUint32(o, x, true); const u64 = (o, x) => v.setBigUint64(o, BigInt(x), true); const enc = new TextEncoder();
-  u32(0x100, 1); u32(0x104, 0x180); u32(0x10c, 0x240); u32(0x110, 0x200); bytes.set(enc.encode('delay.dll\0'), 0x180); u64(0x200, 0x280n); u64(0x208, 0x3ffn); u64(0x210, 0n); v.setUint16(0x280, 7, true); bytes.set(enc.encode('DelayedApi\0'), 0x282);
+  u32(0x100, 1); u32(0x104, 0x180); u32(0x108, 0x300); u32(0x10c, 0x240); u32(0x110, 0x200); bytes.set(enc.encode('delay.dll\0'), 0x180); u64(0x200, 0x280n); u64(0x208, 0x3ffn); u64(0x210, 0n); v.setUint16(0x280, 7, true); bytes.set(enc.encode('DelayedApi\0'), 0x282);
   const imageBase = 0x10000000n;
   const mapped = { address: imageBase, size: BigInt(bytes.length), fileOffset: 0n, fileSize: BigInt(bytes.length), perms: { read: true, write: true } };
   const image = { bits: 64, imageBase, sections: [mapped], segments: [mapped], imports: [], libraries: [], warnings: [], addressToOffset(address) { const delta = BigInt(address) - imageBase; return delta >= 0n && delta < BigInt(bytes.length) ? delta : null; } };

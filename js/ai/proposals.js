@@ -43,6 +43,17 @@ export class ProposalStore {
       throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
     }
     if (kind === 'struct-field') rejectStructFieldTargetOverride(input.after);
+    if (kind === 'project-annotation' && !hasProjectAnnotationTargetId(input.target)) {
+      /* The precondition reader, the mutation writer and the postcondition
+         reader must resolve the exact same annotation identity that was
+         approved. `setProjectAnnotation` fabricates `annotation:<Date.now()>`
+         when `id` is missing, so an id-less proposal mutated a freshly minted
+         record while the postcondition kept looking for the empty id — a
+         failed proposal with an orphan annotation left behind (#5139).
+         Identity is therefore fixed at creation time or the proposal is
+         rejected before any approval is possible. */
+      throw new AIError('invalid_tool_call', 'A project-annotation proposal requires a non-empty string target id.');
+    }
     const evidenceIds = Array.from(new Set((input.evidenceIds || []).filter((id) => typeof id === 'string' && this.evidenceStore?.has(id))));
     if (!evidenceIds.length) throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
     let id;
@@ -180,6 +191,15 @@ export class ProposalStore {
       return proposalSnapshot(proposal);
     } catch (error) {
       proposal.status = 'failed';
+      /* An indeterminate verification (the mutation applied but its
+         postcondition could not be checked) must not masquerade as
+         "failed = state unchanged". Record the partial outcome on the
+         proposal and in the audit trail so consumers can tell a failed
+         mutation from an applied-but-unverifiable one (#5133). */
+      if (error?.details?.verification === 'indeterminate') {
+        proposal.partial = true;
+        this.audit.push({ type: 'proposal-partial', proposalId: authority.id, timestamp: new Date().toISOString(), reason: String(error?.details?.cause || error?.message || 'postcondition unverifiable').slice(0, 2000) });
+      }
       this.audit.push({ type: 'proposal-failed', proposalId: authority.id, timestamp: new Date().toISOString() });
       throw error;
     } finally {
@@ -225,6 +245,11 @@ function rejectStructFieldTargetOverride(after) {
       throw new AIError('invalid_tool_call', 'A struct-field proposal must not override the approved target through after.');
     }
   }
+}
+
+function hasProjectAnnotationTargetId(target) {
+  const id = target && typeof target === 'object' ? target.id : null;
+  return typeof id === 'string' && id.length > 0;
 }
 
 function structFieldValue(after) {
