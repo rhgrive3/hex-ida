@@ -11,6 +11,8 @@ import { createAgentTools } from '../agent/tools.js';
 
 const POOL_ORDER = Object.freeze(['lexical', 'string', 'graph', 'recognition', 'runtime', 'semantic', 'exploration']);
 const POOL_SHARE = Object.freeze({ lexical: 0.29, string: 0.17, graph: 0.21, recognition: 0.17, runtime: 0.06, semantic: 0.06, exploration: 0.04 });
+const MAX_CANDIDATE_ANALYSIS_FAILURE_DIAGNOSTICS = 8;
+const MAX_CANDIDATE_ANALYSIS_FAILURE_CODE = 128;
 
 function asAddr(v) {
   if (typeof v === 'bigint') return v >= 0n ? v : null;
@@ -310,6 +312,7 @@ function budgetState(opts) {
     timeoutMs, started: Date.now(), isCancelled: typeof opts?.isCancelled === 'function' ? opts.isCancelled : (() => false),
     analyzedInstructions: 0, disassemblyExhausted: false, functionExhausted: false,
     candidateTruncated: false, candidateCount: 0, unaccountedToolCost: false,
+    candidateAnalysisFailureCount: 0, candidateAnalysisFailures: [],
     analysisAccountedExternally: !!(opts && opts.tools),
     searchIncomplete: false, searchReports: [], sourceTotals: Object.fromEntries(POOL_ORDER.map((name) => [name, 0])),
     controller, signal: controller.signal, timeout: null, externalSignal, externalAbort: null,
@@ -376,6 +379,22 @@ function consumeExternalCost(result, b) {
   if (b.analyzedInstructions + raw > b.maxDisassembly) { b.disassemblyExhausted = true; return false; }
   b.analyzedInstructions += raw;
   return true;
+}
+function candidateAnalysisErrorCode(error) {
+  let code = null;
+  let message = null;
+  try { code = error?.code; } catch {}
+  if (typeof code === 'string' && code) return code;
+  try { message = error?.message; } catch {}
+  return typeof message === 'string' && message ? message : 'candidate-analysis-error';
+}
+function recordCandidateAnalysisFailure(b, address, code) {
+  b.candidateAnalysisFailureCount += 1;
+  if (b.candidateAnalysisFailures.length >= MAX_CANDIDATE_ANALYSIS_FAILURE_DIAGNOSTICS) return;
+  b.candidateAnalysisFailures.push({
+    address,
+    code: code.slice(0, MAX_CANDIDATE_ANALYSIS_FAILURE_CODE),
+  });
 }
 function searchCompleteness(result, requestedLimit) {
   const nestedRaw = result?.completeness;
@@ -664,10 +683,11 @@ async function analyzeCandidates(query, pools, tools, b) {
     let fn;
     try { fn = await invokeTool(tools, 'get_function', b, c.address); }
     catch (error) {
-      const code = String(error && (error.code || error.message) || '');
+      const code = candidateAnalysisErrorCode(error);
       if (code === 'disassembly-budget') { b.disassemblyExhausted = true; break; }
       if (code === 'function-budget') { b.functionExhausted = true; break; }
       if (code === 'timeout' || code === 'cancelled') break;
+      recordCandidateAnalysisFailure(b, c.address, code);
       continue;
     }
     if (expired(b)) break;
@@ -772,9 +792,14 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
     const evidence = new Set();
     if (best) for (const e of best.evidence || []) evidence.add(e);
     if (best?.verification?.evidence) for (const e of best.verification.evidence) evidence.add(e);
+    const all = mergedCandidates(pools);
+    const candidateCount = all.size;
+    const analyzedCount = ranked.length;
+    const failedCount = b.candidateAnalysisFailureCount;
     const missingEvidence = [];
-    if (!best) missingEvidence.push('no-candidate-function');
-    else if (!best.verification) missingEvidence.push('no-runtime-or-causal-verification');
+    if (!best && candidateCount === 0) missingEvidence.push('no-candidate-function');
+    else if (best && !best.verification) missingEvidence.push('no-runtime-or-causal-verification');
+    if (failedCount > 0) missingEvidence.push('candidate-analysis-error');
     if (b.disassemblyExhausted) missingEvidence.push('disassembly-budget');
     if (b.functionExhausted) missingEvidence.push('function-budget');
     if (b.shortlistLimited) missingEvidence.push('planner-shortlist-limit');
@@ -787,11 +812,8 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
     if (query.confident === false) missingEvidence.push(...(query.missing || []));
     const search = aggregateSearchCoverage(b.searchReports);
     const sourceCompletenessInfo = b.sourceCompleteness || sourceCompleteness(pools, b);
-    const incomplete = expired(b) || b.shortlistLimited || b.sourcePoolTruncated || b.searchIncomplete;
+    const incomplete = expired(b) || b.shortlistLimited || b.sourcePoolTruncated || b.searchIncomplete || failedCount > 0;
     const budgetLimited = b.disassemblyExhausted || b.functionExhausted || toolCallBudgetExhausted(b);
-    const all = mergedCandidates(pools);
-    const candidateCount = all.size;
-    const analyzedCount = ranked.length;
     const storedCandidateCoverage = candidateCount === 0 ? 1 : Math.min(1, analyzedCount / candidateCount);
     const candidateCoverage = storedCandidateCoverage * search.coverage * sourceCompletenessInfo.coverage;
     const reason = toolCallBudgetExhausted(b) ? 'tool-call-budget'
@@ -801,17 +823,20 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
           : cancelled(b) ? 'cancelled'
             : b.sourcePoolTruncated ? 'candidate-source-limit'
               : b.shortlistLimited ? 'planner-shortlist-limit'
-                : b.searchIncomplete ? (search.reason || 'search-incomplete') : null;
+                : b.searchIncomplete ? (search.reason || 'search-incomplete')
+                  : failedCount > 0 ? 'candidate-analysis-error' : null;
     const completeness = {
       complete: !incomplete, partial: incomplete, budgetLimited, reason, candidateCoverage,
       storedCandidateCoverage, candidateSourceCoverage: sourceCompletenessInfo.coverage,
       searchCoverage: search.coverage, searchComplete: search.complete,
-      analyzedFunctions: analyzedCount, candidateFunctions: candidateCount, unanalyzedFunctions: Math.max(0, candidateCount - analyzedCount),
+      analyzedFunctions: analyzedCount, candidateFunctions: candidateCount, failedFunctions: failedCount,
+      unanalyzedFunctions: Math.max(0, candidateCount - analyzedCount),
     };
     return {
       query,
       candidates: ranked.slice(0, Math.min(20, b.maxFunctions)).map((c) => publicCandidate(c, completeness)),
       best: publicCandidate(best, completeness), evidence: Array.from(evidence), missingEvidence: Array.from(new Set(missingEvidence)),
+      candidateAnalysisFailures: b.candidateAnalysisFailures.map((failure) => ({ ...failure })),
       exhausted: budgetLimited || timedOut(b) || cancelled(b), partial: incomplete, completeness,
       refinementAvailable: !budgetLimited && (b.reservedFunctions > 0 || b.reservedDisassembly > 0),
       candidateSources: {
@@ -827,7 +852,8 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
       },
       searchCompleteness: search,
       stats: {
-        analyzedFunctions: analyzedCount, candidateFunctions: candidateCount, unanalyzedFunctions: Math.max(0, candidateCount - analyzedCount),
+        analyzedFunctions: analyzedCount, candidateFunctions: candidateCount, failedFunctions: failedCount,
+        unanalyzedFunctions: Math.max(0, candidateCount - analyzedCount),
         disassembly: b.analyzedInstructions, toolCalls: b.toolCallBudget.used, elapsedMs: Date.now() - b.started,
         plannerFunctionBudget: b.maxFunctions, requestedFunctionBudget: b.requestedMaxFunctions,
         plannerDisassemblyBudget: b.maxDisassembly, requestedDisassemblyBudget: b.requestedMaxDisassembly,

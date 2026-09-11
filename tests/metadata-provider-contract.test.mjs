@@ -150,6 +150,64 @@ assert.equal(isLanguageRecordAuthoritative(partialResult, coveredRecord), true);
 assert.equal(isLanguageRecordAuthoritative(partialResult, uncoveredRecord), false);
 assert.equal(isLanguageRecordAuthoritative(partialResult, symbolRecord), false);
 
+// #4766: optional record names are already semantic evidence. Structured or
+// otherwise coercible values must not be laundered into primitive symbol names.
+for (const invalidName of [
+  ['malloc'],
+  { toString: () => 'malloc' },
+  new String('malloc'),
+  42,
+  true,
+  false,
+]) {
+  assert.throws(
+    () => createLanguageMetadataRecord({
+      kind: 'symbol',
+      entityId: 'sym@0x3000',
+      name: invalidName,
+      address: '0x3000',
+      providerId: 'go-metadata',
+      providerVersion: '1.0.0',
+      ecosystem: 'go',
+      buildIdentity: 'sha256:abc',
+    }),
+    /metadata-record-invalid-name/,
+  );
+}
+
+const primitiveNameRecord = createLanguageMetadataRecord({
+  kind: 'symbol',
+  entityId: 'sym@0x3000',
+  name: 'malloc',
+  address: '0x3000',
+  providerId: 'go-metadata',
+  providerVersion: '1.0.0',
+  ecosystem: 'go',
+  buildIdentity: 'sha256:abc',
+});
+const unnamedRecord = createLanguageMetadataRecord({
+  kind: 'symbol',
+  entityId: 'sym@0x3001',
+  name: null,
+  address: '0x3001',
+  providerId: 'go-metadata',
+  providerVersion: '1.0.0',
+  ecosystem: 'go',
+  buildIdentity: 'sha256:abc',
+});
+assert.equal(primitiveNameRecord.name, 'malloc');
+assert.equal(unnamedRecord.name, null);
+const primitiveNameEvidence = languageMetadataFunctionEvidence(
+  createLanguageMetadataResult({
+    identity: authIdentity,
+    completeness: { complete: true },
+  }),
+  createLanguageMetadataPage({ records: [primitiveNameRecord] }),
+);
+assert.equal(primitiveNameEvidence.length, 1);
+assert.equal(primitiveNameEvidence[0].name, 'malloc');
+assert.equal(primitiveNameEvidence[0].confidence, 'exact');
+
 // #3423: schemaVersion is not a trust marker for caller-supplied status. A
 // partial status-shaped object must be revalidated by the canonical constructor.
 assert.throws(() => createLanguageMetadataResult({
