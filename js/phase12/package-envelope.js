@@ -422,10 +422,6 @@ export function importPhase12Package(value, options = {}) {
       throw new PackageValidationError('package-input-too-large', `package object exceeds maximum size of ${maxBytes} bytes`);
     }
     parsed = { value: admitted };
-    if (new TextEncoder().encode(encoded).byteLength > maxBytes) {
-      throw new PackageValidationError('package-input-too-large', `package object exceeds maximum size of ${maxBytes} bytes`);
-    }
-    parsed = { value };
   } else {
     parsed = parseBoundedPackageInput(value, options);
   }
