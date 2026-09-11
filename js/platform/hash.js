@@ -1,8 +1,5 @@
 import { asByteSource } from '../binary/source.js';
-
-const FNV_OFFSET = 0xcbf29ce484222325n;
-const FNV_PRIME = 0x100000001b3n;
-const MASK64 = 0xffffffffffffffffn;
+import { fnv64Bytes, fnv64ByteView, fnv64Hex } from '../core/identity/fnv64.js';
 
 // A valid class expression may put a comment between `class` and its name or
 // body. The slash alternative is intentionally syntax-only: Function#toString
@@ -47,33 +44,23 @@ export async function hashByteSource(input, options = {}) {
   const onProgress = optionalProgressCallback(options.onProgress);
   throwIfAborted(options.signal);
   const chunkSize = Math.min(positiveChunkSize(options.chunkSize, 1024 * 1024), source.maxReadLength);
-  let hash = FNV_OFFSET;
+  let low = 0x84222325, high = 0xcbf29ce4;
   let offset = 0n;
   while (offset < source.size) {
     throwIfAborted(options.signal);
     const remaining = source.size - offset;
     const length = Number(remaining < BigInt(chunkSize) ? remaining : BigInt(chunkSize));
     const bytes = await source.readExactly(offset, length, { signal: options.signal });
-    for (let i = 0; i < bytes.length; i++) {
-      hash ^= BigInt(bytes[i]);
-      hash = (hash * FNV_PRIME) & MASK64;
-    }
+    ({ low, high } = fnv64ByteView(bytes, low, high));
     offset += BigInt(bytes.length);
     if (onProgress) Reflect.apply(onProgress, options, [{ done: offset, total: source.size }]);
   }
-  return `fnv1a64:${source.size.toString(16)}:${hash.toString(16).padStart(16, '0')}`;
+  return `fnv1a64:${source.size.toString(16)}:${fnv64Hex(low, high)}`;
 }
 
 export function hashBytes(bytes) {
-  let hash = FNV_OFFSET;
-  for (const b of bytes || []) {
-    if (typeof b !== 'number' || !Number.isInteger(b) || b < 0 || b > 255) {
-      throw new TypeError('hashBytes byte must be an integer 0..255');
-    }
-    hash ^= BigInt(b);
-    hash = (hash * FNV_PRIME) & MASK64;
-  }
-  return hash.toString(16).padStart(16, '0');
+  const { low, high } = fnv64Bytes(bytes || []);
+  return fnv64Hex(low, high);
 }
 
 

@@ -43,7 +43,8 @@ function fatBytes() {
   const source = asByteSource(bytes);
   const a = await parseMachOSource(source, { sliceIndex: 0 });
   const b = await parseMachOSource(source, { sliceIndex: 0 });
-  assert.equal(b, a, 'ByteSource-backed selected-slice caching still works');
+  assert.notEqual(b, a, 'ByteSource-backed cache hits return detached consumer images');
+  assert.equal(b.source, a.source, 'detached images retain the shared source capability');
 }
 
 // Non-selected (whole-container) parses were never cached.

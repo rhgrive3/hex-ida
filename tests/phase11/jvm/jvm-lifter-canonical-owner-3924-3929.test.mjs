@@ -5,9 +5,12 @@ const jvmClass = {
   moduleId: 'managed-mod:test:canonical-jvm-lifter',
   vmSpecEdition: 'java-se-17',
   thisClassName: 'pkg/Test',
+  // #7861: the declared field row binds the (non-volatile) access-flag
+  // authority for the internal owner.
+  fields: [{ accessFlags: 0, name: 'value', descriptor: 'J' }],
   constantPool: [
     null,
-    { tag: 1, value: 'pkg/Owner' },
+    { tag: 1, value: 'pkg/Test' },
     { tag: 7, nameIndex: 1 },
     { tag: 1, value: 'value' },
     { tag: 1, value: 'J' },

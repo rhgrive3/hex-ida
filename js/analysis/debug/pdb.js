@@ -115,14 +115,25 @@ export function parseMsf(bytes) {
 
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const blockSize = view.getUint32(32, true);
+  /* MSF's FreeBlockMapBlock selects which of blocks 1/2 holds the active free
+     block map; the LLVM MSF format documentation allows only those two values
+     (#5672). */
+  const freeBlockMapBlock = view.getUint32(36, true);
   const numBlocks = view.getUint32(40, true);
   const numDirectoryBytes = view.getUint32(44, true);
   const blockMapAddr = view.getUint32(52, true);
   if (blockSize === 0 || (blockSize & (blockSize - 1)) !== 0) {
     return { streams: [], diagnostics: ['invalid MSF block size'], complete: false };
   }
-  if (numBlocks * blockSize > data.length + blockSize) {
-    return { streams: [], diagnostics: ['MSF block count exceeds the file'], complete: false };
+  if (freeBlockMapBlock !== 1 && freeBlockMapBlock !== 2) {
+    return { streams: [], diagnostics: [`invalid MSF free block map index ${freeBlockMapBlock}`], complete: false };
+  }
+  /* NumBlocks is the total block count of the on-disk file (LLVM MSF format
+     documentation): NumBlocks * BlockSize must equal the file size, not
+     merely stay within one block of it (#5665). A missing trailing block
+     would let streams reference unreadable data while reporting complete. */
+  if (numBlocks * blockSize !== data.length) {
+    return { streams: [], diagnostics: ['MSF block count does not match the file size'], complete: false };
   }
   if (numDirectoryBytes < 4) {
     return { streams: [], diagnostics: ['MSF stream directory is truncated'], complete: false };
@@ -286,7 +297,10 @@ export function parseModuleInfo(bytes, dbi) {
   if (end < declaredEnd) complete = false;
   let offset = DBI_HEADER_SIZE;
   while (offset + 64 <= end) {
-    const streamIndex = view.getInt16(offset + 34, true);
+    // ModInfo::ModuleSymStream is uint16_t. Treat only 0xffff as the PDB nil
+    // sentinel; the upper half of the 16-bit namespace contains valid stream
+    // indices and must not become negative through a signed read (#4431).
+    const streamIndex = view.getUint16(offset + 34, true);
     const symbolByteSize = view.getUint32(offset + 36, true);
     const moduleNameEntry = cstringWithNext(bytes, offset + 64, end);
     if (!moduleNameEntry) { complete = false; break; }
@@ -382,15 +396,22 @@ export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
         recordOffset: offset,
       });
     } else if (kind === S_GPROC32 || kind === S_LPROC32 || kind === S_GPROC32_ID || kind === S_LPROC32_ID) {
-      // PROCSYM32: parent/end/next (12) + length/dbgStart/dbgEnd (12) + typeIndex (4)
-      // + offset (4) + segment (2) + flags (1) + name
+      // PROCSYM32: parent/end/next (12) + length/dbgStart/dbgEnd (12) +
+      // type-or-ID index (4) + offset (4) + segment (2) + flags (1) + name.
+      // S_*PROC32 carries a TPI TypeIndex; S_*PROC32_ID carries an IPI FuncId.
+      // Until this provider models IPI LF_FUNC_ID/LF_MFUNC_ID, preserve that
+      // namespace distinction and withhold type authority rather than aliasing
+      // the numeric FuncId into an unrelated TPI record (#4630).
       const nameEntry = cstringWithNext(bytes, offset + 39, end);
       if (!nameEntry) break;
+      const typeOrIdIndex = view.getUint32(offset + 28, true);
+      const isIdProcedure = kind === S_GPROC32_ID || kind === S_LPROC32_ID;
+      if (isIdProcedure) unmodelled.add(kind);
       symbols.push({
         kind: 'procedure',
         isFunction: true,
         sizeBytes: view.getUint32(offset + 16, true),
-        typeIndex: view.getUint32(offset + 28, true),
+        ...(isIdProcedure ? { typeIndex: null, functionIdIndex: typeOrIdIndex } : { typeIndex: typeOrIdIndex }),
         offsetInSegment: view.getUint32(offset + 32, true),
         segment: view.getUint16(offset + 36, true),
         name: nameEntry.value,
@@ -488,6 +509,8 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
       types.set(index, {
         leaf, kind: 'procedure',
         returnType: view.getUint32(body, true),
+        callingConvention: view.getUint8(body + 4),
+        functionOptions: view.getUint8(body + 5),
         parameterCount: view.getUint16(body + 6, true),
         argumentList: view.getUint32(body + 8, true),
       });
@@ -503,7 +526,23 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
       if (!fieldList.complete) fieldListsComplete = false;
       types.set(index, { leaf, kind: 'field-list', members: fieldList.members, complete: fieldList.complete });
     } else if (leaf === LF_ARGLIST) {
-      types.set(index, { leaf, kind: 'arg-list' });
+      // Historical fixtures contain a leaf-only LF_ARGLIST. Preserve the
+      // record boundary/stream walk, but never let that shape prove an exact
+      // procedure signature because it does not carry a count.
+      if (body + 4 > end) {
+        types.set(index, { leaf, kind: 'arg-list', arguments: [], complete: false });
+        offset = end;
+        index += 1;
+        continue;
+      }
+      const count = view.getUint32(body, true);
+      const argumentBytes = count * 4;
+      if (!Number.isSafeInteger(argumentBytes) || argumentBytes > end - (body + 4)) break;
+      const arguments_ = [];
+      for (let cursor = body + 4; cursor < body + 4 + argumentBytes; cursor += 4) {
+        arguments_.push(view.getUint32(cursor, true));
+      }
+      types.set(index, { leaf, kind: 'arg-list', arguments: arguments_, complete: true });
     } else {
       unmodelled.add(leaf);
       types.set(index, { leaf, kind: 'unmodelled' });
@@ -681,7 +720,41 @@ export function describeTypeIndex(index, types, depth = 0) {
   }
   if (record.kind === 'procedure') {
     const returns = describeTypeIndex(record.returnType, types, depth + 1);
-    return { name: `${returns.name} (*)()`, class: 'code', complete: returns.complete };
+    const argumentList = types.get(record.argumentList);
+    const hasArgumentList = argumentList?.kind === 'arg-list'
+      && argumentList.complete === true
+      && Array.isArray(argumentList.arguments);
+    let canonicalArgumentIndices = hasArgumentList;
+    if (canonicalArgumentIndices) {
+      for (let i = 0; i < argumentList.arguments.length; i += 1) {
+        if (!Object.prototype.hasOwnProperty.call(argumentList.arguments, i)
+          || !Number.isSafeInteger(argumentList.arguments[i])
+          || argumentList.arguments[i] < 0
+          || argumentList.arguments[i] > 0xffffffff) {
+          canonicalArgumentIndices = false;
+          break;
+        }
+      }
+    }
+    const arguments_ = canonicalArgumentIndices
+      ? argumentList.arguments.map((argument) => describeTypeIndex(argument, types, depth + 1))
+      : [];
+    const validParameterCount = Number.isSafeInteger(record.parameterCount)
+      && record.parameterCount >= 0 && record.parameterCount <= 0xffff;
+    // Calling convention/function-option semantics are not rendered yet. Only
+    // the canonical near-C/no-options encoding can therefore support an exact
+    // textual signature; other encodings remain useful context but fail closed.
+    const canonicalProcedureAttributes = record.callingConvention === 0 && record.functionOptions === 0;
+    const argumentsComplete = canonicalArgumentIndices
+      && validParameterCount
+      && argumentList.arguments.length === record.parameterCount
+      && arguments_.every((argument) => argument.complete === true);
+    const parameters = canonicalArgumentIndices ? arguments_.map((argument) => argument.name).join(', ') : '';
+    return {
+      name: `${returns.name} (*)(${parameters})`,
+      class: 'code',
+      complete: returns.complete && argumentsComplete && canonicalProcedureAttributes,
+    };
   }
   if (record.kind === 'array') {
     const element = describeTypeIndex(record.elementType, types, depth + 1);
@@ -822,7 +895,13 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
         symbols.complete = false;
         continue;
       }
-      if (module.streamIndex < 0 || module.streamIndex >= msf.streams.length) {
+      if (module.streamIndex === 0xffff) {
+        // A nil ModuleSymStream is valid for modules with no private symbols;
+        // a nonempty declared range is still missing evidence.
+        if (declaredSize > 4) symbols.complete = false;
+        continue;
+      }
+      if (module.streamIndex >= msf.streams.length) {
         if (declaredSize > 4) symbols.complete = false;
         continue;
       }
@@ -1021,8 +1100,12 @@ function findSectionHeaderStream(msf, dbi, dbiBytes) {
 }
 
 function page(items, cursor, pageSize, map) {
+  /* A page size must make progress: pageSize 0 (or any non-positive value)
+     would otherwise return the same cursor forever, letting a normal
+     nextCursor consumer loop without advancing (#5691). */
+  const size = Number.isSafeInteger(pageSize) && pageSize > 0 ? pageSize : DEBUG_DEFAULT_PAGE_SIZE;
   const start = cursor == null ? 0 : Number(cursor);
-  const slice = items.slice(start, start + pageSize);
+  const slice = items.slice(start, start + size);
   const next = start + slice.length;
   return createDebugPage({
     records: slice.map(map),

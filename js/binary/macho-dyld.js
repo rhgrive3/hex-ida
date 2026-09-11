@@ -38,13 +38,23 @@ function chainedPointerCoverageAt(image, address) {
   return null;
 }
 
+// Pointer-authority inputs must be parser-grade primitives (#5189): BigInt()
+// launders arrays and toString()-coercible objects into canonical VAs, which
+// then alias real sections, segments and chained-fixup sites.
+function canonicalPointerScalar(value) {
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === 'string' && value === value.trim() && /^(?:0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(value)) {
+    try { return BigInt(value); } catch { return null; }
+  }
+  return null;
+}
+
 export function resolveMachOPointer(image, rawValue, options = {}) {
   if (!image) return null;
-  let raw, address = null;
-  try {
-    raw = BigInt(rawValue);
-    if (options.address != null) address = BigInt(options.address);
-  } catch { return null; }
+  const raw = canonicalPointerScalar(rawValue);
+  const address = options.address == null ? null : canonicalPointerScalar(options.address);
+  if (raw == null || (options.address != null && address == null)) return null;
   if (raw <= 0n || raw > 0xffffffffffffffffn) return null;
 
   const site = address == null ? null : CHAINED_POINTER_SITES.get(image)?.get(address);
@@ -405,7 +415,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     image.metadata.dyldBindings.complete=false;image.metadata.dyldBindings.streams[source]=invalid;
     image.warnings.push(`${source}: binding stream is truncated`);return invalid;
   }
-  const BIND_OPCODE_MASK = 0xf0, BIND_IMMEDIATE_MASK = 0x0f;
+  const BIND_OPCODE_MASK = 0xf0, BIND_IMMEDIATE_MASK = 0x0f, BIND_SYMBOL_FLAGS_KNOWN_MASK = 0x09;
   const ptrSize = image.bits === 64 ? 8n : 4n;
   let p = dc.offset;
   const end = dc.offset + dc.size;
@@ -417,6 +427,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
   let libOrdinal = source === 'weak-bind' ? -3 : 0, symbol = '', symbolFlags = 0, type = source === 'lazy-bind' ? 1 : 0, addend = 0n, segIndex = 0, segOffset = 0n, locationSet = false;
   let libraryOrdinalSet = source === 'weak-bind';
   let threadedTable = null, threadedTableLimit = 0;
+  let sawDone = false;
   const status = { source, complete: true, decodedBinds: 0, threadedApplies: 0, unsupportedOpcodes: [] };
   image.metadata.dyldBindings ||= { complete: true, streams: {} };
   image.metadata.dyldBindings.streams[source] = status;
@@ -500,6 +511,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     }
     if (op === 0x00) {
       if (source === 'lazy-bind') { symbol = ''; symbolFlags = 0; libOrdinal = 0; libraryOrdinalSet = false; addend = 0n; continue; }
+      sawDone = true;
       break;
     } else if (op === 0x10) {
       if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
@@ -514,6 +526,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
       libOrdinal = imm === 0 ? 0 : signExtend(imm | 0xf0, 8); libraryOrdinalSet = true;
     }
     else if (op === 0x40) {
+      if ((imm & ~BIND_SYMBOL_FLAGS_KNOWN_MASK) !== 0) { fail(`reserved symbol flags 0x${imm.toString(16)}`); break; }
       const x = rawCString(r, p, end);
       // The symbol C-string is a variable-length cost: charge its raw bytes to
       // inputBytes and the decoded string to the shared string budget before
@@ -555,6 +568,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     fail(`bounded stream operand is truncated: ${e.message}`);
   }
   if (threadedTable && threadedTable.length !== threadedTableLimit) fail(`threaded ordinal table expected ${threadedTableLimit} entries, decoded ${threadedTable.length}`);
+  if (source !== 'lazy-bind' && status.complete && !sawDone) fail('binding stream ended without BIND_OPCODE_DONE');
   return status;
 }
 
@@ -583,13 +597,20 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
       if (!Number.isSafeInteger(terminalSize) || terminalSize < 0 || p + terminalSize > end) { markPartial('terminal payload is truncated'); return; }
       const terminalEnd = p + terminalSize;
       if (term.value) {
-        const flagsX = r.uleb(p, 10, terminalEnd); p = flagsX.next; const flags = Number(flagsX.value);
+        const flagsX = r.uleb(p, 10, terminalEnd); p = flagsX.next;
+        // Flag bits must be tested on the exact ULEB128 BigInt BEFORE any
+        // Number() conversion: a rounded double loses the low REEXPORT/STUB
+        // bits (mod 2^32) and even silences the high-bit guard, mis-decoding
+        // the terminal layout while keeping complete:true (#5030). After the
+        // >=6 guard the value is <= 0x3f, so Number() is exact below.
+        const flagsBig = flagsX.value;
+        const flags = Number(flagsBig);
         // Apple dyld's ExportsTrie.cpp rejects terminals with bits >= 6 set
         // ("unknown exports flag bits"). Laundering them into regular
         // exports would mint export metadata the container cannot mean
         // (#5392).
-        if ((flags >>> 6) !== 0) {
-          markPartial(`unknown exports flag bits 0x${flags.toString(16)}`);
+        if ((flagsBig >> 6n) !== 0n) {
+          markPartial(`unknown exports flag bits 0x${flagsBig.toString(16)}`);
         } else if (flags & 0x08) {
           const ord = r.uleb(p, 10, terminalEnd); p = ord.next; const importedX = rawCString(r, p, terminalEnd);
           const imported = importedX.text || null;
@@ -630,7 +651,10 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
               }
             } else {
             const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next;
-            const address = exportKind === 0 ? image.imageBase + addrX.value : addrX.value;
+            // REGULAR and THREAD_LOCAL terminal values are implementation
+            // offsets relative to the image; only ABSOLUTE is already a raw
+            // address (dyld ExportsTrie semantics, #4366).
+            const address = exportKind === 2 ? addrX.value : image.imageBase + addrX.value;
             const kind = exportKind === 1 ? 'thread-local' : exportKind === 2 ? 'absolute' : 'export';
             const ex = { name: prefix, address, kind, flags, source: 'exports-trie' };
             if (flags & 0x10) { const resolverX = r.uleb(p, 10, terminalEnd); p = resolverX.next; ex.resolver = image.imageBase + resolverX.value; }

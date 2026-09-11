@@ -205,6 +205,14 @@ export function validateRemotePacket(packet) {
     if (typeof packet.method !== 'string' || !packet.method || packet.method.length > 128) throw new DebugAdapterError('malformed-packet', 'request method must be a 1..128 character string');
     if (BLOCKED_METHODS.test(packet.method)) throw new DebugAdapterError('blocked-method', 'host command execution is prohibited');
   }
+  /* #5471: an event packet without a valid event identifier would still be
+     dispatched to listeners; the event name carries the same string grammar
+     as a request method. */
+  if (packet.type === 'event') {
+    if (typeof packet.event !== 'string' || !packet.event || packet.event.length > 128) {
+      throw new DebugAdapterError('malformed-packet', 'event name must be a 1..128 character string');
+    }
+  }
   validateResponse(packet);
   return packet;
 }
