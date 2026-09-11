@@ -1,6 +1,6 @@
 import { BudgetExceededError } from '../budgets/index.js';
 import { createSchedulerBudget } from '../budgets/scheduler-budget.js';
-import { assertCanonicalArtifactDescriptor } from '../artifacts/contracts.js';
+import { ArtifactStorageError, assertCanonicalArtifactDescriptor } from '../artifacts/contracts.js';
 import {
   ANALYSIS_PRIORITY,
   ANALYSIS_SCHEDULER_VERSION,
@@ -201,6 +201,9 @@ export class AnalysisScheduler {
         this.metrics.coalescedRequests++;
         const p = this.#attachConsumer(existing,consumerSignals);
         this.#emit('request.coalesced', existing, { consumerCount: existing.consumerCount });
+        if (typeof request.validate === 'function') {
+          return p.then((result)=>this.#validateCoalescedConsumer(result,request,consumerSignals));
+        }
         return p;
       }
       // A distinct completeness requirement cannot share this producer, while
@@ -289,6 +292,50 @@ export class AnalysisScheduler {
       const abortedAfterRegistration=active.find((signal)=>signal.aborted);
       if (abortedAfterRegistration) handleAbort(abortedAfterRegistration);
     });
+  }
+
+  async #validateCoalescedConsumer(result, request, signals) {
+    const active=uniqueSignals(signals);
+    const aborted=active.find((signal)=>signal.aborted);
+    if (aborted) { this.metrics.cancelledConsumers++; throw abortError(aborted); }
+    const controller=new AbortController();
+    const listeners=[];
+    const abortFrom=(signal)=>{
+      if (!controller.signal.aborted) controller.abort(abortError(signal));
+    };
+    try {
+      for (const signal of active) {
+        const listener=()=>abortFrom(signal);
+        listeners.push([signal,listener]);
+        signal.addEventListener('abort',listener,{once:true});
+      }
+      const abortedAfterRegistration=active.find((signal)=>signal.aborted);
+      if (abortedAfterRegistration) abortFrom(abortedAfterRegistration);
+      if (controller.signal.aborted) {
+        this.metrics.cancelledConsumers++;
+        throw abortError(controller.signal);
+      }
+      let verdict;
+      try {
+        verdict=await request.validate(result?.payload,result?.record,{signal:controller.signal});
+      } catch (error) {
+        if (controller.signal.aborted) {
+          this.metrics.cancelledConsumers++;
+          throw abortError(controller.signal);
+        }
+        throw error;
+      }
+      if (controller.signal.aborted) {
+        this.metrics.cancelledConsumers++;
+        throw abortError(controller.signal);
+      }
+      if (verdict!==true) {
+        throw new ArtifactStorageError('artifact-validation-not-passed','artifact-validation-not-passed',{verdict:String(verdict)});
+      }
+      return result;
+    } finally {
+      removeSignalListeners(listeners);
+    }
   }
 
   #waitForInflightSlot(task, signals) {
