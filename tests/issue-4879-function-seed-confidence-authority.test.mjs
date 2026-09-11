@@ -111,4 +111,66 @@ assert.equal(valid.functionStartsExact, true);
 assert.equal(valid.funcEnds[0], 0x4010n);
 assert.equal(valid.functionProvenance[0].confirmed, true);
 
+// Stateful getter regressions: authority-bearing properties must be snapshotted
+// strictly once, preventing TOCTOU promotion from non-exact to exact.
+{
+  let exactReads = 0;
+  const statefulStartSeed = {
+    address: 0x5000n,
+    end: 0x5020n,
+    source: 'entrypoint',
+    exactFunctionStart: true,
+    extentConfidence: 0.99,
+    get exactFunctionStartConfidence() {
+      exactReads++;
+      return exactReads === 1 ? 0.1 : 0.95;
+    },
+  };
+  const result = analysisFromBinaryImage(imageWith(statefulStartSeed));
+  assert.equal(exactReads, 1, 'exactFunctionStartConfidence must be sampled strictly once per seed');
+  assert.equal(result.allSeedsExact, false);
+  assert.equal(result.functionStartsExact, false);
+  assert.equal(result.functionProvenance[0].confirmed, false);
+  assert.equal(result.funcEnds[0], 0n);
+}
+
+{
+  let confidenceReads = 0;
+  const statefulConfidenceSeed = {
+    address: 0x6000n,
+    end: 0x6020n,
+    source: 'symbol',
+    exactFunctionStart: true,
+    extentConfidence: 0.99,
+    get confidence() {
+      confidenceReads++;
+      return confidenceReads === 1 ? 0.1 : 0.95;
+    },
+  };
+  const result = analysisFromBinaryImage(imageWith(statefulConfidenceSeed));
+  assert.equal(confidenceReads, 1, 'confidence must be sampled strictly once per seed');
+  assert.equal(result.allSeedsExact, false);
+  assert.equal(result.functionStartsExact, false);
+  assert.equal(result.functionProvenance[0].confirmed, false);
+  assert.equal(result.funcEnds[0], 0n);
+}
+
+{
+  let extentReads = 0;
+  const statefulExtentSeed = {
+    address: 0x7000n,
+    end: 0x7020n,
+    source: 'entrypoint',
+    confidence: 0.99,
+    exactFunctionStart: true,
+    get extentConfidence() {
+      extentReads++;
+      return extentReads === 1 ? 0.1 : 0.95;
+    },
+  };
+  const result = analysisFromBinaryImage(imageWith(statefulExtentSeed));
+  assert.equal(extentReads, 1, 'extentConfidence must be sampled strictly once per seed');
+  assert.equal(result.funcEnds[0], 0n);
+}
+
 console.log('issue-4879 function-seed confidence authority: PASS');
