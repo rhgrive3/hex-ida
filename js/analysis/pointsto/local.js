@@ -130,6 +130,8 @@ function artifactDescriptorForRun(options, calleeSummaryIds) {
 /** Casts that keep pointer provenance intact when the width does not change. */
 const WIDTH_PRESERVING_CASTS = new Set(['copy', 'bitcast']);
 const WIDTH_CHANGING_CASTS = new Set(['zext', 'sext', 'trunc']);
+const ADDRESS_INTEGER_MACHINE_KINDS = new Set(['bitvector', 'address']);
+const INTEGER_CONSTANT_KINDS = new Set(['bitvector', 'integer']);
 
 function parseInteger(candidate) {
   if (candidate == null) return null;
@@ -152,11 +154,43 @@ function parseInteger(candidate) {
  * does, so A2 and the root service never disagree about what "constant" means.
  */
 function constantOf(value, node) {
-  for (const candidate of [value?.metadata?.constant, node?.attributes?.constant, node?.metadata?.constant]) {
-    const parsed = parseInteger(candidate);
-    if (parsed != null) return parsed;
+  // Canonical address derivation only reads compile-time constants from const
+  // nodes (canonical-address-v2-core derives constants exclusively under
+  // node.kind === 'const'). Adopting integer-looking metadata on state-read/
+  // copy/any non-const operand let A2 mint exact displacements the canonical
+  // authority would reject (#5633).
+  if (node?.kind !== 'const') return null;
+  const candidates = [value?.metadata?.constant, node?.attributes?.constant, node?.metadata?.constant];
+  // Keep A2's displacement authority aligned with the canonical-address
+  // boundary: a float/vector/predicate constant is not an integer offset just
+  // because its payload text parses as one (#5228). Legacy untyped fixtures
+  // remain accepted; canonical Semantic IR always carries a machine kind.
+  const machineType = value?.machineType;
+  let machineKind = null;
+  if (machineType != null && typeof machineType === 'object' && !Array.isArray(machineType)
+      && Object.hasOwn(machineType, 'kind')) {
+    if (!ADDRESS_INTEGER_MACHINE_KINDS.has(machineType.kind)) return null;
+    machineKind = machineType.kind;
   }
-  return null;
+  for (const candidate of candidates) {
+    if (candidate == null || typeof candidate !== 'object' || Array.isArray(candidate)
+        || !Object.hasOwn(candidate, 'kind')) continue;
+    const kind = candidate.kind;
+    const integerKind = INTEGER_CONSTANT_KINDS.has(kind);
+    const addressKind = kind === 'address' && (machineKind == null || machineKind === 'address');
+    if (!integerKind && !addressKind) return null;
+  }
+  let resolved = null;
+  for (const candidate of candidates) {
+    const parsed = parseInteger(candidate);
+    if (parsed == null) continue;
+    if (resolved == null) {
+      resolved = parsed;
+      continue;
+    }
+    if (parsed !== resolved) return null;
+  }
+  return resolved;
 }
 
 function widthOf(value, node) {
@@ -460,7 +494,7 @@ function prepareMemoryBoundary(ir, nodes, values, options, budget) {
 }
 
 /** Turns an exact canonical proof into a singleton points-to set. */
-function targetFromCanonicalProof(proof, evidenceIds) {
+export function targetFromCanonicalProof(proof, evidenceIds) {
   if (!proof || proof.kind === 'unknown' || proof.kind === 'root-only') return null;
   if (proof.kind === 'constant') {
     return createPointsToTarget({
