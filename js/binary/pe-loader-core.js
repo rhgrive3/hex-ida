@@ -514,6 +514,7 @@ export function parseDelayImports(r, dir, image, sharedBudget = null) {
   for(let guard=0;guard<65536&&off+32<=end;guard++,off+=32){
     if(!budget.take({inputBytes:32,records:1,operations:1,estimatedHeapBytes:32},'delay-import-descriptor'))break;
     const attrs=r.u32(off),nameField=r.u32(off+4),iatField=r.u32(off+12),intField=r.u32(off+16),bound=r.u32(off+20),unload=r.u32(off+24),stamp=r.u32(off+28);if(!(attrs||nameField||iatField||intField||bound||unload||stamp))break;
+    if((attrs>>>1)!==0){budget.partial('delay-imports:reserved-attributes','Ignored PE delay-import descriptor with reserved Attributes bits');continue;}
     const nameRva=rvaFromDelayField(nameField,attrs,image),iatRva=rvaFromDelayField(iatField,attrs,image),intRva=rvaFromDelayField(intField,attrs,image);const library=mappedCStringAtRva(r,image,nameRva,budget,'PE delay import library');
     const iatRange=mappedFileRangeForRva(image,iatRva),thunkRange=mappedFileRangeForRva(image,intRva||iatRva);if(!library||!iatRva||!iatRange||!thunkRange){budget.partial('delay-imports:malformed-descriptor','Ignored malformed PE delay-import descriptor');continue;}image.libraries.push(library);
     let terminated=false;
