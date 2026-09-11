@@ -1,5 +1,9 @@
 import { ABIPlugin } from './registry.js';
-import { aggregateLayoutDescriptorPresent, canonicalAggregateLayout } from './aggregate-layout.js';
+import {
+  aggregateLayoutDescriptorPresent,
+  aggregateRequiresIndirectCopy,
+  canonicalAggregateLayout,
+} from './aggregate-layout.js';
 
 function callPrototypeOf(insn, opts) {
   let proto = insn?.callPrototype || null;
@@ -42,7 +46,7 @@ function parameterAbiClass(param) {
   const type = String(param?.type || param?.name || '').toLowerCase();
   const cls = String(param?.abiClass || param?.class || param?.kind || '').toLowerCase();
   const scalableClass = scalableAAPCS64Class(type, cls);
-  const pointer = param?.pointer === true || param?.isPointer === true || /\*|pointer|ptr|object|class|block|closure/.test(type + ' ' + cls);
+  const pointer = param?.pointer === true || param?.isPointer === true || /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(type + ' ' + cls);
   const hfaMeta = aggregateBoolean(param, 'hfa');
   const hvaMeta = aggregateBoolean(param, 'hva');
   const aggregateMetadataInvalid = (hfaMeta.present && hfaMeta.value === null)
@@ -206,7 +210,7 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
       return;
     }
 
-    if (c.aggregate && c.bits > 128) {
+    if (c.aggregate && aggregateRequiresIndirectCopy(c.aggregateBytes)) {
       const reg = gp < 8 ? `x${gp++}` : null;
       const entry = reg
         ? {index,location:'register',reg,abiClass:'aggregate-indirect-copy',pointer:true,bits:64,bytes:8,
@@ -313,22 +317,25 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
     const slots=Math.max(1,Math.ceil(c.bits/64));
     if (c.homogeneous && fp + regsNeeded > 8) fp = 8;
     const homogeneousElementBytes = c.homogeneous ? c.elementBytes : null;
-    // AAPCS64 spills each homogeneous element into its own ABI stack slot.
-    // The slot is at least one 8-byte slot even when the logical element is a
-    // 32-bit HFA member; wider HVA members retain their canonical physical
-    // element span and alignment. Derive all offsets from this one layout.
-    const homogeneousStackElementBytes = c.homogeneous ? Math.max(8, homogeneousElementBytes) : null;
-    const stackBytes=c.homogeneous ? homogeneousStackElementBytes * c.members : slots * 8;
+    // AAPCS64 Stage C for a spilled HFA/HVA: C.3 rounds the argument's WHOLE
+    // size up to a multiple of 8 bytes exactly once; C.4 aligns the NSAA to
+    // the argument's natural alignment; C.6 copies the aggregate contiguously
+    // in its canonical member packing, so members keep their logical element
+    // span and offsets instead of being widened to one 8-byte slot per member
+    // (stack HFAs have "exactly the same layout" as any other composite).
+    const stackAlignmentBytes = c.homogeneous ? Math.max(8, Math.min(16, c.alignment ?? homogeneousElementBytes ?? 8)) : null;
+    if (c.homogeneous) stackOffset = Math.ceil(stackOffset / stackAlignmentBytes) * stackAlignmentBytes;
+    const stackBytes=c.homogeneous ? Math.ceil((homogeneousElementBytes * c.members) / 8) * 8 : slots * 8;
     const entry={index,location:'stack',offset:stackOffset,bytes:stackBytes,abiClass:c.hfa?'hfa':c.hva?'hva':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits,possible:false,mustUse:true,
       ...(c.homogeneous ? {
         aggregate:true, members:c.members, memberCount:c.members, elementBits:c.elementBits,
-        elementBytes:homogeneousElementBytes, stackElementBytes:homogeneousStackElementBytes,
-        homogeneousLayoutProven:true,
+        elementBytes:homogeneousElementBytes, stackElementBytes:homogeneousElementBytes,
+        alignment:stackAlignmentBytes, homogeneousLayoutProven:true,
         pieces:Array.from({length:c.members}, (_unused,piece) => ({
           pieceIndex:piece, order:piece,
-          stackOffset:stackOffset + piece * homogeneousStackElementBytes,
-          bits:c.elementBits, bytes:homogeneousStackElementBytes,
-          byteOffset:piece * homogeneousStackElementBytes, abiClass:c.hfa?'hfa':'hva',
+          stackOffset:stackOffset + piece * homogeneousElementBytes,
+          bits:c.elementBits, bytes:homogeneousElementBytes,
+          byteOffset:piece * homogeneousElementBytes, abiClass:c.hfa?'hfa':'hva',
         })),
       } : {}),
     };
@@ -544,7 +551,7 @@ export function classifyAAPCS64FunctionReturn(opts = {}) {
     || aggregateLayoutDescriptorPresent(proto)
     || malformedReturnAggregate
     ||/aggregate|struct|union|record|array|composite/.test(type+' '+cls);
-  const explicitReturnBits = explicitReturnBitsOf(proto?.returnBits, proto?.bits, opts?.returnBits);
+  const explicitReturnBits = explicitReturnBitsOf(opts?.returnBits, proto?.returnBits, proto?.bits);
   const aggregateLayout = aggregate ? aggregateReturnLayout(proto, explicitReturnBits) : null;
   if (aggregate && !aggregateLayout) {
     return { reg:null, regs:[], bits:explicitReturnBits, bytes:null, aggregate:true, partial:true,
@@ -558,7 +565,7 @@ export function classifyAAPCS64FunctionReturn(opts = {}) {
   if (scalableReturnClass(proto,type,cls)) return null;
   const returnBits = aggregate
     ? explicitReturnBits ?? aggregateLayout?.bits ?? null
-    : returnBitsOf(proto?.returnBits, proto?.bits, opts?.returnBits);
+    : returnBitsOf(opts?.returnBits, proto?.returnBits, proto?.bits);
   if (aggregate && returnBits == null) {
     return { reg:null, regs:[], bits:null, bytes:null, aggregate:true, partial:true,
       reason:'aapcs64-aggregate-return-size-not-proven' };
@@ -622,7 +629,25 @@ export const AAPCS64_ABI = new ABIPlugin({
   classifyArguments:classifyAAPCS64Arguments,
   classifyCallReturn:classifyAAPCS64CallReturn,
   classifyFunctionReturn:classifyAAPCS64FunctionReturn,
-  classifyEntryRegister:(reg) => /^x[0-7]$/.test(String(reg || '')) ? { kind:'argument', reg:String(reg), index:Number(String(reg).slice(1)) } : { kind:'incoming-register-state', reg:String(reg || '') },
+  // v0-v7 are the FP/SIMD argument/result bank of the same call
+  // assignment the argument classifier already uses; narrow views are
+  // canonicalized to their v-register.
+  classifyEntryRegister:(reg) => {
+    const text = String(reg || '').trim().toLowerCase();
+    const integerArgument = /^x([0-7])$/.exec(text);
+    if (integerArgument) return { kind:'argument', reg:text, index:Number(integerArgument[1]), abiClass:'integer' };
+    const vectorArgument = /^v([0-7])$/.exec(text);
+    if (vectorArgument) return {
+      kind:'argument', reg:`v${Number(vectorArgument[1])}`, index:8 + Number(vectorArgument[1]),
+      view:'vector', abiClass:'fp-vector',
+    };
+    const viewArgument = /^(?:[qbdsh])([0-7])$/.exec(text);
+    if (viewArgument) return {
+      kind:'argument', reg:`v${Number(viewArgument[1])}`, index:8 + Number(viewArgument[1]),
+      view:text.slice(0, 1), abiClass:'fp-vector',
+    };
+    return { kind:'incoming-register-state', reg:text };
+  },
   callerSaved:(context)=>callerSavedFor(context),
   calleeSaved:()=>CALLEE_SAVED,
   stackRules:()=>Object.freeze({ alignment:16, stackGrows:'down', argumentSlotBytes:8, variadicRegisterSaveAreas:true }),

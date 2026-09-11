@@ -122,13 +122,16 @@ function readCString(buf, off, maxLen = 1024) {
  * Decodes Go varint / uvarint used in string length and offsets.
  */
 function readUvarint(buf, off) {
-  let val = 0;
+  let value = 0;
   let shift = 0;
   let pos = off;
   while (pos < buf.length && shift < 35) {
     const b = buf[pos++];
-    val |= (b & 0x7f) << shift;
-    if ((b & 0x80) === 0) return { value: val, bytesRead: pos - off };
+    // The decoder is capped at 35 bits, which is safely below Number's 53-bit
+    // integer precision. Arithmetic accumulation preserves bits 32..34; JS
+    // bitwise operators would truncate them to a signed 32-bit value (#5373).
+    value += (b & 0x7f) * (2 ** shift);
+    if ((b & 0x80) === 0) return { value, bytesRead: pos - off };
     shift += 7;
   }
   return null;
@@ -448,6 +451,15 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
 
   probe() {
     if (!this.pclntabBuffer || this.pclntabBuffer.length === 0) {
+      // A section-table hit is metadata evidence even when its bytes were not
+      // supplied for scanning. Keep that state distinct from a stripped
+      // binary with no pclntab section (#5877).
+      const hasPclntabSection = this.sections.some((section) => {
+        const name = typeof section === 'string'
+          ? section
+          : (section?.name ?? section?.section ?? section?.sectname ?? '');
+        return typeof name === 'string' && name.includes('gopclntab');
+      });
       return createLanguageMetadataResult({
         providerId: this.id,
         providerVersion: this.version,
@@ -461,10 +473,21 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
           architecture: this.architecture,
           platform: this.platform,
           method: 'pclntab-probe',
-          detail: 'no pclntab section or buffer present',
+          detail: hasPclntabSection
+            ? 'pclntab section detected but its bytes were not supplied'
+            : 'no pclntab section or buffer present',
         }),
         sections: this.sections.map((s) => s.name || s.section || String(s)),
-        completeness: { present: false, declared: 0, scanned: 0, parsed: 0, complete: true },
+        completeness: hasPclntabSection
+          ? {
+            present: true,
+            declared: 0,
+            scanned: 0,
+            parsed: 0,
+            complete: false,
+            reasons: ['pclntab-section-bytes-unavailable'],
+          }
+          : { present: false, declared: 0, scanned: 0, parsed: 0, complete: true },
       });
     }
 

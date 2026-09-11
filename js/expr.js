@@ -994,7 +994,7 @@ function conditionFromNzcv(f, cc) {
     case 'hi': return c && !z; case 'ls': return !c || z;
     case 'ge': return n === v; case 'lt': return n !== v;
     case 'gt': return !z && n === v; case 'le': return z || n !== v;
-    case 'al': return true; case 'nv': return false; default: return null;
+    case 'al': case 'nv': return true; default: return null;
   }
 }
 

@@ -51,7 +51,11 @@ export function mergeProgramScans(scans = [], options = {}) {
   const inputScans = (scans || []).filter(Boolean);
   const ordered = inputScans.filter((x) => !x.cancelled).slice().sort((a,b) => {
     const av=BigInt(a.vmAddr ?? 0), bv=BigInt(b.vmAddr ?? 0);
-    return av < bv ? -1 : av > bv ? 1 : String(a.regionId||'').localeCompare(String(b.regionId||''));
+    // Same-vmAddr tie-break decides which region's edges survive the global
+    // caps, so it must be locale-invariant: UTF-16 code-unit order, never
+    // localeCompare() (#5758).
+    const aid=String(a.regionId||''), bid=String(b.regionId||'');
+    return av < bv ? -1 : av > bv ? 1 : (aid < bid ? -1 : aid > bid ? 1 : 0);
   });
   const expectedRegionsSpecified = Array.isArray(options.regions);
   const expectedRegions = (expectedRegionsSpecified ? options.regions : []).map((r) => ({ id:r.id ?? null, vmAddr:BigInt(r.vmAddr ?? 0), size:BigInt(r.size ?? 0) }));

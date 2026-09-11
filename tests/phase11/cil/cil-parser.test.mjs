@@ -56,9 +56,20 @@ export function buildMinimalCil() {
   const tables = metadata + 0x40;
   buf[tables + 4] = 2; // tables major version
   buf[tables + 7] = 1; // reserved
-  view.setUint32(tables + 8, 1 << 6, true); // MethodDef valid bit
-  view.setUint32(tables + 24, 1, true); // one MethodDef row
-  view.setUint32(tables + 28, 0x2200, true); // MethodDef RVA -> file 0x400
+  // ECMA-335 II.22.26 rule 2: the MethodDef row needs a TypeDef owner, so the
+  // fixture declares a TypeDef table with one owning row (#7301).
+  view.setUint32(tables + 8, (1 << 2) | (1 << 6), true); // TypeDef + MethodDef valid bits
+  view.setUint32(tables + 24, 1, true); // one TypeDef row
+  view.setUint32(tables + 28, 1, true); // one MethodDef row
+  // TypeDef row (14 bytes, table order first): Flags, Name, Namespace, Extends, FieldList, MethodList.
+  // Indexes stay 0: this minimal fixture has no #Strings heap (legacy null names).
+  view.setUint32(tables + 32, 0, true); // Flags
+  view.setUint16(tables + 36, 0, true); // Name
+  view.setUint16(tables + 38, 0, true); // Namespace
+  view.setUint16(tables + 40, 0, true); // Extends = null
+  view.setUint16(tables + 42, 1, true); // FieldList
+  view.setUint16(tables + 44, 1, true); // MethodList
+  view.setUint32(tables + 46, 0x2200, true); // MethodDef RVA -> file 0x400
 
   // Tiny method body: ldc.i4.5, stloc.0, ldloc.0, ret, nop.
   const method = 0x400;

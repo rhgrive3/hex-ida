@@ -30,7 +30,14 @@ function parseInteger(value, name = 'value', { nonNegative = false } = {}) {
     } else if (typeof value === 'string') {
       const text = value.trim();
       if (!text || !/^[+-]?(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) throw new Error('invalid-string');
-      out = BigInt(text);
+      // The grammar above admits a sign on prefixed hex, but BigInt('±0x10')
+      // throws a SyntaxError: split the sign off and convert the unsigned
+      // literal, so the accepted grammar and the conversion agree and the same
+      // integer value is accepted in every textual representation (#6169).
+      const negative = text.startsWith('-');
+      const unsigned = /^[+-]/.test(text) ? text.slice(1) : text;
+      const parsed = BigInt(unsigned);
+      out = negative ? -parsed : parsed;
     } else throw new Error('invalid-type');
     if (nonNegative && out < 0n) throw new Error('negative');
     return out;
@@ -47,13 +54,13 @@ function requiredAddress(v, name = 'address') { return parseInteger(v, name, { n
 function textOf(v) { return String(v == null ? '' : v).toLowerCase(); }
 function explicitLimit(value, fallback) {
   if (value == null) return fallback;
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.floor(value));
 }
 function bounded(value, fallback, min, max) {
-  const n = value == null ? fallback : Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.max(min, Math.min(max, Math.floor(n)));
+  if (value == null) return fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(value)));
 }
 function nonNegativeOffset(value) {
   if (value == null) return 0;
@@ -129,12 +136,25 @@ class FunctionLoader {
     this.cache.set(key, value);
     while (this.cache.size > this.maxEntries) this.cache.delete(this.cache.keys().next().value);
   }
+  _canonicalKey(addr) {
+    // Interior addresses of one function share the canonical budget/cache
+    // identity: resolve the function start through the ProgramIndex before
+    // keying, so 0x1000/0x1004/0x1008 in one function cost one slot (#5424).
+    if (this.ctx.program && typeof this.ctx.program.functionRange === 'function') {
+      try {
+        const range = this.ctx.program.functionRange(addr);
+        if (range && range.start != null) return range.start.toString();
+      } catch { /* fall back to the raw address key */ }
+    }
+    return addr.toString();
+  }
   async get(address) {
     const addr = requiredAddress(address);
     if (typeof this.ctx.analyze !== 'function') throw new AgentToolError('unsupported', 'function analysis is unavailable', { capability: 'analyze' });
-    const key = addr.toString();
-    if (this.cache.has(key)) {
-      const hit = this.cache.get(key); this._put(key, hit); return hit;
+    const key = this._canonicalKey(addr);
+    const cacheHit = this.cache.get(key);
+    if (cacheHit !== undefined || this.cache.has(key)) {
+      this._put(key, cacheHit); return cacheHit;
     }
     if (this.inflight.has(key)) return this.inflight.get(key);
     if (!this.attempted.has(key) && this.attempted.size >= this.maxFunctions) {
@@ -256,9 +276,44 @@ function programQuery(ctx, method, args) {
   try { return { supported: true, results: fn.apply(ctx.program, args) || [] }; }
   catch (error) { throw new AgentToolError('tool-failed', `${method} failed`, { method, cause: String(error && error.message || error) }); }
 }
-function programResultCompleteness(results, localComplete, cappedReason, sourceSupported) {
+function programResultRows(q) {
+  const value = q?.results;
+  if (Array.isArray(value)) return { rows: value, meta: value, valid: true };
+  if (value && typeof value === 'object') {
+    if (Array.isArray(value.results)) return { rows: value.results, meta: value, valid: true };
+    return { rows: [], meta: value, valid: false };
+  }
+  return { rows: [], meta: value ?? [], valid: value == null };
+}
+
+function programResultTotal(meta) {
+  const nested = meta && typeof meta.completeness === 'object' && meta.completeness !== null
+    ? meta.completeness : {};
+  const total = meta?.total ?? nested.total;
+  return Number.isSafeInteger(total) && total >= 0 ? total : null;
+}
+
+function programResultLocalComplete(rows, meta, offset, returned, request) {
+  const total = programResultTotal(meta);
+  if (total != null) {
+    if (rows.length > total) return false;
+    return offset + returned >= total && offset + returned >= rows.length;
+  }
+  const hasTotal = meta?.total != null
+    || (meta?.completeness && typeof meta.completeness === 'object' && meta.completeness.total != null);
+  if (hasTotal) return false;
+  return rows.length < request || offset + returned >= rows.length;
+}
+
+function programResultConsistentTotal(meta, rows) {
+  const total = programResultTotal(meta);
+  return total != null && rows.length <= total ? total : null;
+}
+
+function programResultCompleteness(results, localComplete, cappedReason, sourceSupported, valid = true) {
   if (sourceSupported !== true) return { complete: false, upstreamComplete: false, reason: 'unsupported-program-query' };
   const meta = results && typeof results === 'object' ? results : {};
+  if (!valid) return { complete: false, upstreamComplete: false, reason: 'invalid-program-result-envelope' };
   const nested = meta.completeness && typeof meta.completeness === 'object' ? meta.completeness : {};
   const upstreamComplete = meta.complete !== false
     && nested.complete !== false
@@ -338,12 +393,15 @@ export function createAgentTools(context, opts) {
       const offset = bounded(options && options.offset, 0, 0, 1000000);
       const request = Math.min(1000000, offset + limit + 1);
       const q = programQuery(ctx, 'callersOf', [addr, request]);
-      const raw = Array.isArray(q.results) ? q.results : [];
+      const { rows: raw, meta, valid } = programResultRows(q);
       const page = raw.slice(offset, offset + limit);
       const results = page.map((r) => ({ ...r, name: nameFor(ctx, r.addr ?? r.function ?? r.functionAddress) }));
-      const localComplete = raw.length < request || offset + results.length >= raw.length;
-      const status = programResultCompleteness(raw, localComplete, 'calls-source-capped', q.supported);
-      const total = status.upstreamComplete && raw.length < request ? raw.length : null;
+      const localComplete = valid && programResultLocalComplete(raw, meta, offset, results.length, request);
+      const status = programResultCompleteness(meta, localComplete, 'calls-source-capped', q.supported, valid);
+      const total = status.upstreamComplete
+        ? (programResultConsistentTotal(meta, raw)
+          ?? (meta?.total == null && meta?.completeness?.total == null && raw.length < request ? raw.length : null))
+        : null;
       return { tool: 'get_callers', address: addr, supported:q.supported, results, offset, returned:results.length, total, complete:status.complete, truncated:!status.complete, reason:status.reason, cost:{ functions:0, disassembly:0 } };
     },
     async get_callees(address, options) {
@@ -353,12 +411,15 @@ export function createAgentTools(context, opts) {
       if (ctx.program && typeof ctx.program.functionRange === 'function') { const rq = programQuery(ctx, 'functionRange', [addr]); range = rq.results; }
       const request = Math.min(1000000, offset + limit + 1);
       const q = programQuery(ctx, 'calleesOf', [addr, range && range.end, request]);
-      const raw = Array.isArray(q.results) ? q.results : [];
+      const { rows: raw, meta, valid } = programResultRows(q);
       const page = raw.slice(offset, offset + limit);
       const results = page.map((r) => ({ ...r, name: nameFor(ctx, r.addr ?? r.function ?? r.functionAddress) }));
-      const localComplete = raw.length < request || offset + results.length >= raw.length;
-      const status = programResultCompleteness(raw, localComplete, 'calls-source-capped', q.supported);
-      const total = status.upstreamComplete && raw.length < request ? raw.length : null;
+      const localComplete = valid && programResultLocalComplete(raw, meta, offset, results.length, request);
+      const status = programResultCompleteness(meta, localComplete, 'calls-source-capped', q.supported, valid);
+      const total = status.upstreamComplete
+        ? (programResultConsistentTotal(meta, raw)
+          ?? (meta?.total == null && meta?.completeness?.total == null && raw.length < request ? raw.length : null))
+        : null;
       return { tool: 'get_callees', address: addr, supported:q.supported, results, offset, returned:results.length, total, complete:status.complete, truncated:!status.complete, reason:status.reason, cost:{ functions:0, disassembly:0 } };
     },
     async get_xrefs(address, options) {
@@ -369,17 +430,23 @@ export function createAgentTools(context, opts) {
       const request = Math.min(1000000, offset + limit + 1);
       const sites = programQuery(ctx, 'refSitesTo', [addr, span, request]);
       const functions = programQuery(ctx, 'functionsReferencing', [addr, span, request]);
-      const rawSites = Array.isArray(sites.results) ? sites.results : [];
-      const rawFunctions = Array.isArray(functions.results) ? functions.results : [];
+      const { rows: rawSites, meta: sitesMeta, valid: sitesValid } = programResultRows(sites);
+      const { rows: rawFunctions, meta: functionsMeta, valid: functionsValid } = programResultRows(functions);
       const siteRows = rawSites.slice(offset, offset + limit);
       const functionRows = rawFunctions.slice(offset, offset + limit);
-      const sitesLocalComplete = rawSites.length < request || offset + siteRows.length >= rawSites.length;
-      const functionsLocalComplete = rawFunctions.length < request || offset + functionRows.length >= rawFunctions.length;
-      const sitesStatus = programResultCompleteness(rawSites, sitesLocalComplete, 'refs-source-capped', sites.supported);
-      const functionsStatus = programResultCompleteness(rawFunctions, functionsLocalComplete, 'refs-source-capped', functions.supported);
+      const sitesLocalComplete = sitesValid && programResultLocalComplete(rawSites, sitesMeta, offset, siteRows.length, request);
+      const functionsLocalComplete = functionsValid && programResultLocalComplete(rawFunctions, functionsMeta, offset, functionRows.length, request);
+      const sitesStatus = programResultCompleteness(sitesMeta, sitesLocalComplete, 'refs-source-capped', sites.supported, sitesValid);
+      const functionsStatus = programResultCompleteness(functionsMeta, functionsLocalComplete, 'refs-source-capped', functions.supported, functionsValid);
       const complete = sitesStatus.complete && functionsStatus.complete;
-      const siteTotal = sitesStatus.upstreamComplete && rawSites.length < request ? rawSites.length : null;
-      const functionTotal = functionsStatus.upstreamComplete && rawFunctions.length < request ? rawFunctions.length : null;
+      const siteTotal = sitesStatus.upstreamComplete
+        ? (programResultConsistentTotal(sitesMeta, rawSites)
+          ?? (sitesMeta?.total == null && sitesMeta?.completeness?.total == null && rawSites.length < request ? rawSites.length : null))
+        : null;
+      const functionTotal = functionsStatus.upstreamComplete
+        ? (programResultConsistentTotal(functionsMeta, rawFunctions)
+          ?? (functionsMeta?.total == null && functionsMeta?.completeness?.total == null && rawFunctions.length < request ? rawFunctions.length : null))
+        : null;
       return { tool: 'get_xrefs', address: addr, supported:{sites:sites.supported,functions:functions.supported}, sites:siteRows, functions:functionRows, offset, returned:Math.max(siteRows.length, functionRows.length), total:siteTotal != null && functionTotal != null ? Math.max(siteTotal, functionTotal) : null, totals:{sites:siteTotal,functions:functionTotal}, complete, truncated:!complete, reason:complete ? null : (!sites.supported || !functions.supported ? 'unsupported-program-query' : (sitesStatus.reason || functionsStatus.reason)), cost:{ functions:0, disassembly:0 } };
     },
 

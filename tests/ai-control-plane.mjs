@@ -9,6 +9,7 @@ import { ContextBroker } from '../js/ai/context/broker.js';
 import { InvestigationSessionStore } from '../js/ai/session-core/index.js';
 import { createAiEngine } from '../js/ai/ui/bridge.js';
 import { AIRuntime } from '../js/ai/runtime.js';
+import { createHexToolRegistry } from '../js/ai/tools/index.js';
 
 // A: current UI navigation after turn start cannot move the turn anchor.
 let current = 0x1000n;
@@ -87,6 +88,19 @@ auto.ensureForIntent('find-behaviour');
 assert.equal(auto.effectiveScope, 'binary');
 assert.equal(auto.expansions.length, 1);
 
+// #4173: optional expansion observers are callable-only; malformed values must not break scope state transitions.
+for (const onExpand of [true, {}, []]) {
+  const guardedAuto = new ScopeController(fnSnap, 'auto', { onExpand });
+  assert.equal(guardedAuto.expandTo('binary', 'search needed'), true);
+  assert.equal(guardedAuto.effectiveScope, 'binary');
+  assert.equal(guardedAuto.expansions.length, 1);
+}
+const expansionEvents = [];
+const observedAuto = new ScopeController(fnSnap, 'auto', { onExpand:event => expansionEvents.push(event) });
+assert.equal(observedAuto.expandTo('binary', 'search needed'), true);
+assert.equal(expansionEvents.length, 1);
+assert.equal(expansionEvents[0], observedAuto.expansions[0]);
+
 // G/H: phase-specific windows stay small but discovery can reach deep tools.
 const names = ['search_functions','search_strings','lookup_known_function','lookup_signature','get_function','get_current_function','get_selection_context','get_semantic_facts','trace_value','get_cfg','get_callers','get_callees','get_related_functions','verify_field_update','get_runtime_observations','verify_runtime_hypothesis'];
 const registry = { definitionsForModel: ({ scope } = {}) => names.filter((name) => !(scope === 'selection' && ['get_current_function','get_semantic_facts','get_cfg','trace_value'].includes(name))).map((name) => ({ name, inputSchema: { type: 'object' } })) };
@@ -114,6 +128,50 @@ assert.ok(continuity.tools.some((tool) => tool.name === 'search_functions'), 'ph
 assert.equal(routeIntent('この関数のx8は何？', fnSnap), 'trace-value');
 assert.equal(shouldRunPlanner({ mode: 'agent', goal: 'この関数のx8は何？' }, fnSnap, 'trace-value'), false);
 assert.equal(shouldRunPlanner({ mode: 'agent', goal: 'XPを増やしている場所を探して' }, fnSnap, 'find-behaviour'), true);
+
+// I2: a general Japanese verification request must stay in static analysis;
+// only an explicit runtime/debug cue may expand an auto scope to runtime.
+for (const goal of [
+  'この関数のCFGを検証して',
+  'この逆コンパイル結果が正しいか検証して',
+  'このcall graphを検証して',
+  'このfield writeを静的に検証して',
+]) {
+  const intent = routeIntent(goal, fnSnap);
+  assert.notEqual(intent, 'runtime-verify', `static request was misrouted: ${goal}`);
+  const staticAuto = new ScopeController(fnSnap, 'auto');
+  staticAuto.ensureForIntent(intent);
+  assert.equal(staticAuto.effectiveScope, 'function', `static request widened scope: ${goal}`);
+  assert.equal(staticAuto.expansions.length, 0, `static request recorded an expansion: ${goal}`);
+}
+for (const goal of ['実行時にこの仮説を検証して', 'runtimeでverifyして', 'debuggerで確認して', '動的に検証して', 'verify this at runtime']) {
+  assert.equal(routeIntent(goal, fnSnap), 'runtime-verify', `runtime request lost its intent: ${goal}`);
+}
+const runtimeAuto = new ScopeController(fnSnap, 'auto');
+runtimeAuto.ensureForIntent(routeIntent('実行時にこの仮説を検証して', fnSnap));
+assert.equal(runtimeAuto.effectiveScope, 'runtime');
+
+// I3: with no runtime backend, the actual registry still exposes static tools
+// for the static request; an explicit intent override remains authoritative.
+const staticRegistry = createHexToolRegistry({});
+const staticIntent = routeIntent('この関数のCFGを検証して', fnSnap);
+const staticWindow = selectToolWindow(staticRegistry, {
+  requestedScope: 'auto', effectiveScope: 'function', intent: staticIntent, maxTools: 9,
+});
+assert.ok(staticWindow.tools.length > 0, 'static verification must retain model-visible tools without a runtime backend');
+assert.ok(staticWindow.tools.some((tool) => ['get_current_function', 'get_cfg', 'get_semantic_facts'].includes(tool.name)));
+assert.equal(staticRegistry.definitionsForModel({ scope: 'runtime' }).length, 0, 'the disconnected registry has no runtime tools');
+const explicitRequest = { goal: 'この関数のCFGを検証して', intent: 'runtime-verify', scope: 'auto' };
+const explicitIntent = explicitRequest.intent || routeIntent(explicitRequest.goal, fnSnap);
+const explicitScope = new ScopeController(fnSnap, explicitRequest.scope);
+explicitScope.ensureForIntent(explicitIntent);
+assert.equal(explicitIntent, 'runtime-verify', 'an explicit request intent must override keyword routing');
+assert.equal(explicitScope.effectiveScope, 'runtime');
+const explicitWindow = selectToolWindow(staticRegistry, {
+  requestedScope: explicitRequest.scope, effectiveScope: explicitScope.effectiveScope, intent: explicitIntent, maxTools: 9,
+});
+assert.equal(explicitWindow.phase, 'runtime');
+assert.equal(explicitWindow.tools.some((tool) => tool.name === 'get_cfg'), false, 'explicit runtime intent must not fall back to static function tools');
 
 // K: provider runtime can carry transcript exactly once (top-level messages).
 const sessionLike = { messages: [{ role: 'user', content: 'one' }], investigationMemory: { goal: 'one', anchor: null, confirmedFacts: [], activeHypotheses: [], rejectedHypotheses: [], unresolvedQuestions: [], userConstraints: [], importantPriorActions: [] } };
@@ -152,17 +210,18 @@ assert.throws(() => assertWireBudget({ messages: [{ role: 'user', content: 'x'.r
   };
   const common = {
     request: { mode: 'chat', style: 'analyst', scope: 'auto' }, decision, plan: null,
-    modelCalls: 1, toolCalls: 0, contextBytes: 0, wireUsage: {}, started: Date.now(),
+    modelCalls: 1, toolCalls: 0, contextBytes: 0, wireUsage: {}, started: 100, monotonicNow: () => 125,
     registry: { analysisStats: { disassembly: 0 }, accounting: { cost: 0 } },
     snapshot: snap, effectiveScope: 'selection',
   };
-  const providerFailure = runtime.finalize({ ...common, activity: [], limitReason: 'provider_error' });
+  const providerFailure = await runtime.finalize({ ...common, activity: [], limitReason: 'provider_error' });
   assert.deepEqual(providerFailure.limits, { exhausted: false, reason: 'provider_error' });
-  const modelTimeout = runtime.finalize({ ...common, activity: [], limitReason: 'model_timeout' });
+  assert.equal(providerFailure.usage.elapsedMs, 25, 'finalize timestamps must share the injected monotonic clock origin');
+  const modelTimeout = await runtime.finalize({ ...common, activity: [], limitReason: 'model_timeout' });
   assert.deepEqual(modelTimeout.limits, { exhausted: false, reason: 'model_timeout' });
-  const budgetFailure = runtime.finalize({ ...common, activity: [], limitReason: 'model-call-budget' });
+  const budgetFailure = await runtime.finalize({ ...common, activity: [], limitReason: 'model-call-budget' });
   assert.deepEqual(budgetFailure.limits, { exhausted: true, reason: 'model-call-budget' });
-  const deadline = runtime.finalize({ ...common, activity: [], limitReason: 'budget_exhausted' });
+  const deadline = await runtime.finalize({ ...common, activity: [], limitReason: 'budget_exhausted' });
   assert.deepEqual(deadline.limits, { exhausted: true, reason: 'budget_exhausted' });
 }
 

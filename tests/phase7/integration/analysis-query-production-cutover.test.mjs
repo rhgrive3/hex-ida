@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { AnalysisQueryAPI, createAppAnalysisQueryAdapter } from '../../../js/analysis/query/index.js';
+import { resolveABIPlugin } from '../../../js/targets/abi/index.js';
 
 const identity = Object.freeze({
   binaryId:'bin_contract',
@@ -142,8 +143,12 @@ assert.equal(bypassCalls, 0, 'production Function Workspace must not fall back t
 assert.equal(canonicalCalls, 1);
 
 const x86Snapshot = await x86Api.snapshot();
-assert.equal((await x86Api.semanticIR(x86Snapshot, '0x1000')).value, semanticIr);
-assert.equal((await x86Api.cfg(x86Snapshot, '0x1000')).value, cfg);
+const detachedSemanticIr = (await x86Api.semanticIR(x86Snapshot, '0x1000')).value;
+assert.notEqual(detachedSemanticIr, semanticIr, 'semantic IR must be detached from the producer-owned value');
+assert.deepEqual(detachedSemanticIr, semanticIr, 'detached semantic IR must preserve canonical content');
+const detachedCfg = (await x86Api.cfg(x86Snapshot, '0x1000')).value;
+assert.notEqual(detachedCfg, cfg, 'CFG must be detached from the producer-owned value');
+assert.deepEqual(detachedCfg, cfg, 'detached CFG must preserve canonical content');
 assert.equal((await x86Api.decompile(x86Snapshot, '0x1000')).value.pseudocode, 'int f(void) { return 1; }');
 assert.equal(canonicalCalls, 4, 'each immutable query reaches the canonical producer or its artifact warm path');
 
@@ -209,10 +214,22 @@ function riscvApp(flags) {
         riscvCalls++;
         assert.equal(options.architecture, 'riscv64');
         assert.equal(options.abiId, 'lp64d', 'EF_RISCV_FLOAT_ABI_DOUBLE must select LP64D');
+        const abi = resolveABIPlugin({
+          architecture:options.architecture,
+          platform:options.platform,
+          abiId:options.abiId,
+        });
+        const floatingArgument = abi.classifyArguments({
+          callPrototype:{ parameters:[{ type:'double', bits:64 }] },
+        }).arguments[0];
+        const floatingReturn = abi.classifyFunctionReturn({
+          functionPrototype:{ returnType:'double', returnBits:64, returnsValue:true },
+        });
         return {
           route:'phase5-shadow-v2',
           architectureId:'riscv64',
           abiId:options.abiId,
+          abiPhysicalProbe:{ argument:floatingArgument, return:floatingReturn },
           pipeline:{ semanticIr, cfg },
           decompiler:{ semantic:true, pseudocode:'long f(void);', lines:[], evidence:[] },
         };
@@ -233,6 +250,10 @@ const rvFunction = await rvApi.function(rvSnapshot, '0x1000');
 assert.equal(rvFunction.completeness, 'complete');
 assert.equal(rvFunction.value.abiId, 'lp64d');
 assert.equal(rvFunction.status.abiEvidence, 'elf-e-flags');
+assert.equal(rvFunction.value.abiPhysicalProbe.argument.reg, 'f10',
+  'metadata-selected LP64D FP arguments must use fa0/f10, never soft-float a0/x10');
+assert.equal(rvFunction.value.abiPhysicalProbe.return.reg, 'f10',
+  'metadata-selected LP64D FP returns must use fa0/f10, never soft-float a0/x10');
 assert.equal(riscvCalls, 1);
 
 const unprovenRv = riscvApp(null);

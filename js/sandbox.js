@@ -348,9 +348,10 @@ const WORKER_POSTLUDE = String.raw`
 })();
 `;
 
-function workerProgram(source, mode, index) {
+function workerProgram(source, mode, index, expectedDefinition) {
   const user = JSON.stringify(String(source || ''));
   const safeIndex = typeof index === 'number' && Number.isSafeInteger(index) && index >= 0 ? index : -1;
+  const expected = expectedDefinition === undefined ? 'null' : JSON.stringify(expectedDefinition);
   let body;
   if (mode === 'discover' || mode === 'plugin') {
     body = `
@@ -368,6 +369,18 @@ function workerProgram(source, mode, index) {
     }
     const def = defs[${safeIndex}];
     if (!def) throw new Error('プラグイン定義が見つかりません。');
+    const expectedDefinition = ${expected};
+    if (expectedDefinition) {
+      const selectedDefinition = {
+        name: String(def.name || '名前のないプラグイン').slice(0, 80),
+        description: String(def.description || '').slice(0, 200),
+      };
+      if (selectedDefinition.name !== expectedDefinition.name
+        || selectedDefinition.description !== expectedDefinition.description) {
+        send({ t: 'error', error: 'プラグイン定義がsourceのcanonical discoveryと一致しません。' });
+        return;
+      }
+    }
     const value = await def.run(hex, print);
     if (value !== undefined) print(value);
     send({ t: 'done', value: null });
@@ -486,7 +499,7 @@ const FRAME = `<!doctype html><meta charset="utf-8">
     publicOutputWindow = Date.now();
     publicOutputWindowCount = 0;
     try {
-      const source = workerProgram(m.source, m.mode, m.index);
+      const source = workerProgram(m.source, m.mode, m.index, m.expectedDefinition);
       const blob = new Blob([source], { type: 'text/javascript' });
       const url = URL.createObjectURL(blob);
       worker = new Worker(url);
@@ -634,6 +647,21 @@ function normalizeSandboxIndex(mode, index) {
   return typeof index === 'number' && Number.isSafeInteger(index) && index >= 0 ? index : null;
 }
 
+function normalizeSandboxDefinition(definition) {
+  if (definition === undefined) return undefined;
+  try {
+    if (!definition || typeof definition !== 'object'
+      || typeof definition.name !== 'string'
+      || typeof definition.description !== 'string') return null;
+    return {
+      name: definition.name.slice(0, 80),
+      description: definition.description.slice(0, 200),
+    };
+  } catch {
+    return null;
+  }
+}
+
 const MAX_TIMER_DELAY = 2_147_483_647;
 
 function normalizeSandboxTimeout(timeout) {
@@ -641,7 +669,7 @@ function normalizeSandboxTimeout(timeout) {
   return Math.min(MAX_TIMER_DELAY, Math.max(50, timeout));
 }
 
-export function runInSandbox({ source, mode = 'script', index = 0, api, out, timeout = 30000, signal }) {
+export function runInSandbox({ source, mode = 'script', index = 0, api, out, timeout = 30000, signal, expectedDefinition }) {
   if (!isAbortSignalLike(signal)) {
     return Promise.resolve({ error: 'キャンセルシグナルが無効です。' });
   }
@@ -652,6 +680,12 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
   const safeTimeout = normalizeSandboxTimeout(timeout);
   if (safeTimeout == null) {
     return Promise.resolve({ error: '実行時間制限が無効です。' });
+  }
+  const safeExpectedDefinition = mode === 'plugin'
+    ? normalizeSandboxDefinition(expectedDefinition)
+    : undefined;
+  if (mode === 'plugin' && expectedDefinition !== undefined && safeExpectedDefinition == null) {
+    return Promise.resolve({ error: 'プラグイン定義の期待値が無効です。' });
   }
 
   return new Promise((resolve) => {
@@ -745,7 +779,9 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
         return;
       }
       if (m.t === 'ready') {
-        channel.port1.postMessage({ t: 'start', source: String(source || ''), mode, index: safeIndex });
+        const start = { t: 'start', source: String(source || ''), mode, index: safeIndex };
+        if (safeExpectedDefinition !== undefined) start.expectedDefinition = safeExpectedDefinition;
+        channel.port1.postMessage(start);
       } else if (m.t === 'print') {
         if (!Array.isArray(m.args)) return failBudget('不正なsandbox出力を受信したため停止しました。');
         const now = Date.now();

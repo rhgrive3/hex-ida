@@ -79,7 +79,9 @@ export function parseAddress(text) {
  */
 export function parseHexPattern(text) {
   if (typeof text !== 'string') return null;
-  const s = text.replace(/0x/gi, '').replace(/[\s,_-]/g, '');
+  // A prefix is syntax only at the beginning of a token.  Removing every
+  // occurrence first would turn malformed input such as `10x2` into `12`.
+  const s = text.replace(/(^|[\s,_-])0x(?=[0-9a-f?])/gi, '$1').replace(/[\s,_-]/g, '');
   if (!s.length || s.length % 2 !== 0) return null;
   if (!/^[0-9a-f?]+$/i.test(s)) return null;
   const n = s.length / 2;
@@ -108,12 +110,14 @@ const FLOW = new Set([
   'jcxz', 'jecxz', 'jrcxz',
 ]);
 
+const ARM64_CONDITIONAL_BRANCH = /^b\.(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/;
+
 export function mnemonicClass(mn) {
   if (!mn || typeof mn !== 'string') return '';
   const m = mn.toLowerCase();
   if (m.charCodeAt(0) === 46) return 'data';           // ".byte" from SKIPDATA
   if (FLOW.has(m)) return 'flow';
-  if (m.charCodeAt(0) === 98 /* b */ && m.length <= 4 && /^b\.?[a-z]{0,2}$/.test(m)) return 'flow';
+  if (ARM64_CONDITIONAL_BRANCH.test(m)) return 'flow';
   if (m.charCodeAt(0) === 106 /* j */ && /^j(?:mp|[a-z]{1,4})$/.test(m)) return 'flow';
   return '';
 }

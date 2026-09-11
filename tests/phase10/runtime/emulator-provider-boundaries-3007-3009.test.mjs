@@ -55,8 +55,10 @@ test('P10 #3008 rejects malformed deterministic authority and keeps replay gate 
   );
   await session.close();
 
+  // #5983: determinism is a positive capability — an engine that never
+  // declared it is unknown and must not gain the replay capability.
   const defaultDeterministic = providerFor(async () => ({ termination: 'return' }));
-  assert.equal(defaultDeterministic.descriptor().capabilities.replay, true);
+  assert.equal(defaultDeterministic.descriptor().capabilities.replay, false);
 });
 
 test('P10 #3009 malformed termination evidence fails closed to exception/truncated', async () => {

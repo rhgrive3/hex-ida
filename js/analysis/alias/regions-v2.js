@@ -252,7 +252,13 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
     });
     const rootKind = rootProof?.kind === 'root-only' ? rootProof.rootKind : rootProof?.kind;
     if (!['rooted', 'stack-like'].includes(String(rootKind))) continue;
-    const rootOffset = rootProof.kind === 'root-only' ? 0n : rootProof.offset;
+    // `root-only` means "same root, exact offset NOT proven" — mergeAlternatives
+    // mints it when two paths through one root disagree on the offset. It is
+    // not evidence for offset 0: converting it into a precise rooted-offset /
+    // stack-fixed descriptor would fabricate exact separation (#5729), so the
+    // conservative unknown-region path stays in force.
+    if (rootProof?.kind === 'root-only') continue;
+    const rootOffset = rootProof.offset;
     if (rootOffset == null) continue;
     const offset = rootOffset + addressOffset;
     if (rootKind === 'stack-like') {

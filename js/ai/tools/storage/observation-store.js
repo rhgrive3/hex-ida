@@ -1,4 +1,5 @@
 import { CursorCodec, shortHash, stableSerialize } from '../paging/cursor.js';
+import { completenessOf } from '../projections/index.js';
 
 const FORBIDDEN_PATH = new Set(['__proto__', 'prototype', 'constructor']);
 
@@ -15,6 +16,25 @@ function textIdentity(value) {
   return String(value);
 }
 
+// Unresolved identity is not a shared cache authority (#5887): two contexts
+// whose binary/analysis identity cannot be resolved must never share a
+// deterministic binding key, so each unresolved context object gets its own
+// non-persistent nonce folded into the key. The nonce is stable per context
+// instance (turn-to-turn continuity inside one unresolved context is
+// preserved) but never crosses a setContext() switch to a different context
+// object. Resolved (complete) bindings keep the exact legacy key layout.
+const UNKNOWN_CONTEXT_NONCES = new WeakMap();
+let UNKNOWN_CONTEXT_NONCE_SEQUENCE = 0;
+function unknownContextNonce(context) {
+  if (!context || typeof context !== 'object') return `ephemeral-${++UNKNOWN_CONTEXT_NONCE_SEQUENCE}`;
+  let nonce = UNKNOWN_CONTEXT_NONCES.get(context);
+  if (nonce == null) {
+    nonce = String(++UNKNOWN_CONTEXT_NONCE_SEQUENCE);
+    UNKNOWN_CONTEXT_NONCES.set(context, nonce);
+  }
+  return nonce;
+}
+
 export function analysisBinding(context = {}, extra = {}) {
   const binaryIdentity = textIdentity(
     extra.binaryIdentity ?? context.binaryIdentity ?? context.binaryId ?? context.binary?.identity ?? context.binary?.id ?? context.binary?.uuid ??
@@ -29,8 +49,13 @@ export function analysisBinding(context = {}, extra = {}) {
     context.project?.analysisSemanticRevision ?? context.project?.modifiedAt ?? 'project:0'
   ) || 'project:0';
   const runtimeSession = textIdentity(extra.runtimeSession ?? context.runtimeSessionId ?? context.runtimeSession?.id ?? context.runtime?.sessionId ?? 'runtime:none') || 'runtime:none';
-  const key = shortHash({ binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession });
-  return { binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession, key };
+  const missing = [];
+  if (binaryIdentity === 'binary:unknown') missing.push('binaryIdentity');
+  if (analysisRevision === 'analysis:0') missing.push('analysisRevision');
+  const complete = missing.length === 0;
+  const key = shortHash({ binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession })
+    + (complete ? '' : `:u${unknownContextNonce(context)}`);
+  return { binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession, complete, missing, key };
 }
 
 function parsePath(path) {
@@ -54,16 +79,41 @@ function atPath(root, path) {
 }
 
 function boundedLimit(value, fallback = 100, max = 500) {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(1, Math.min(max, Math.floor(n))) : fallback;
+  // Paging budgets are schema numbers: structured values must never coerce
+  // into a page limit authority (#5428).
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(1, Math.min(max, Math.floor(value)));
 }
 
 const DEFAULT_MAX_ENTRIES = 256;
 const DEFAULT_MAX_AGE_MS = 30 * 60 * 1000;
 
+const SCOPE_WIDTH = Object.freeze({ selection: 0, function: 1, neighborhood: 2, auto: 3, binary: 3, project: 3, runtime: 3 });
+
+export function assertScopeAccess(record, requestedScope = null, requestedBoundary = null) {
+  if (!record || typeof record !== 'object') return;
+  const requested = typeof requestedScope === 'string' ? requestedScope : null;
+  const requestedWidth = requested ? SCOPE_WIDTH[requested] : null;
+  if (!requested || requested === 'auto' || requestedWidth == null || requestedWidth >= 3) return;
+  const acquired = typeof record.effectiveScope === 'string' ? record.effectiveScope : null;
+  const acquiredWidth = acquired == null ? null : SCOPE_WIDTH[acquired];
+  if (acquiredWidth == null || acquiredWidth > requestedWidth ||
+      !requestedBoundary || !record.scopeBoundary || record.scopeBoundary !== requestedBoundary) {
+    throw new Error('scope_violation');
+  }
+}
+
+// Detail refs are Map identity keys, not coercible text: only a canonical
+// primitive string may reach a record, so a structured value can never alias
+// another observation's payload/provenance (#5425).
+function observationRefKey(detailRef) {
+  return typeof detailRef === 'string' && detailRef ? detailRef : '';
+}
+
 function finiteConfiguredNumber(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) && number !== 0 ? number : fallback;
+  // Retention budgets are schema numbers: only a primitive finite number is
+  // an explicit configured value; strings/arrays/booleans fall back (#5428).
+  return typeof value === 'number' && Number.isFinite(value) && value !== 0 ? value : fallback;
 }
 
 function pageValue(value, offset, limit) {
@@ -92,6 +142,28 @@ function pageValue(value, offset, limit) {
   return { value, total: value == null ? 0 : 1, returned: value == null ? 0 : 1, offset: 0, nextOffset: null, kind: 'scalar' };
 }
 
+function sourceCompleteness(fullResult, selected) {
+  const root = completenessOf(fullResult);
+  if (root.complete === false || selected === fullResult) return root;
+  const selectedCompleteness = completenessOf(selected);
+  return selectedCompleteness.complete === false ? selectedCompleteness : root;
+}
+
+function detailCompleteness(page, source) {
+  const pageComplete = page.nextOffset == null;
+  const sourceComplete = source.complete !== false;
+  const pageCoverage = page.total ? Math.min(1, (page.offset + page.returned) / page.total) : 1;
+  return {
+    // Exhausting a page cannot upgrade a source that was already bounded or
+    // otherwise incomplete. Keep the source reason ahead of page navigation.
+    complete: sourceComplete && pageComplete,
+    returned: page.returned,
+    total: page.total,
+    coverage: sourceComplete ? pageCoverage : source.coverage,
+    reason: sourceComplete ? (pageComplete ? null : 'result-limit') : source.reason,
+  };
+}
+
 export class ObservationStore {
   constructor({ context = {}, maxEntries = DEFAULT_MAX_ENTRIES, maxAgeMs = DEFAULT_MAX_AGE_MS, cursorCodec = null } = {}) {
     this.context = context;
@@ -108,14 +180,14 @@ export class ObservationStore {
   setContext(context) { this.context = context || {}; return this; }
 
   pin(detailRef) {
-    const record = this.records.get(String(detailRef || ''));
+    const record = this.records.get(observationRefKey(detailRef));
     if (!record) return false;
     record.pinned = true;
     return true;
   }
 
   unpin(detailRef) {
-    const record = this.records.get(String(detailRef || ''));
+    const record = this.records.get(observationRefKey(detailRef));
     if (!record) return false;
     record.pinned = false;
     this.evict();
@@ -124,23 +196,27 @@ export class ObservationStore {
 
   cacheKey(tool, args, extra = {}) {
     const binding = this.binding(extra);
+    // The binding key already carries the per-context-instance nonce for
+    // unresolved identity (#5887): same context keeps its own cache authority,
+    // a different context never shares it. Complete bindings keep the legacy
+    // deterministic key byte-for-byte.
     return `${binding.key}:${tool}:${shortHash(stableSerialize(args || {}))}`;
   }
 
-  getCached(tool, args, extra = {}) {
+  getCached(tool, args, extra = {}, requestedScope = null, requestedBoundary = null) {
     const key = this.cacheKey(tool, args, extra);
     const id = this.cache.get(key);
     if (!id) return null;
-    try { return this.get(id); } catch { this.cache.delete(key); return null; }
+    try { return this.get(id, requestedScope, requestedBoundary); } catch { this.cache.delete(key); return null; }
   }
 
-  put({ tool, arguments: args = {}, fullResult, functionIdentity = null, deterministic = true, extraBinding = {} } = {}) {
+  put({ tool, arguments: args = {}, fullResult, functionIdentity = null, deterministic = true, extraBinding = {}, effectiveScope = null, scopeBoundary = null } = {}) {
     const binding = this.binding(extraBinding);
     const cacheKey = deterministic ? this.cacheKey(tool, args, extraBinding) : null;
     if (cacheKey) {
       const existing = this.cache.get(cacheKey);
       if (existing) {
-        try { return this.get(existing); } catch { this.cache.delete(cacheKey); }
+        try { return this.get(existing, effectiveScope, scopeBoundary); } catch { this.cache.delete(cacheKey); }
       }
     }
     this.sequence += 1;
@@ -149,6 +225,8 @@ export class ObservationStore {
       id, tool: String(tool || 'unknown'), arguments: args, fullResult, binding,
       binaryIdentity: binding.binaryIdentity,
       functionIdentity: functionIdentity == null ? null : textIdentity(functionIdentity),
+      effectiveScope: typeof effectiveScope === 'string' && effectiveScope ? effectiveScope : null,
+      scopeBoundary: typeof scopeBoundary === 'string' && scopeBoundary ? scopeBoundary : null,
       createdAt: Date.now(), cacheKey, pinned: false,
     };
     this.records.set(id, record);
@@ -178,18 +256,19 @@ export class ObservationStore {
     }
   }
 
-  get(detailRef) {
+  get(detailRef, requestedScope = null, requestedBoundary = null) {
     this.evict();
-    const record = this.records.get(String(detailRef || ''));
+    const record = this.records.get(observationRefKey(detailRef));
     if (!record) throw new Error('unknown-detail-ref');
+    assertScopeAccess(record, requestedScope, requestedBoundary);
     const current = this.binding();
     if (record.binding.key !== current.key || record.binaryIdentity !== current.binaryIdentity) throw new Error('stale-detail-ref');
     if (!record.pinned && Date.now() - record.createdAt > this.maxAgeMs) throw new Error('stale-detail-ref');
     return record;
   }
 
-  detail({ detailRef, path = '$', cursor = null, limit = 100 } = {}) {
-    const record = this.get(detailRef);
+  detail({ detailRef, path = '$', cursor = null, limit = 100, effectiveScope = null, scopeBoundary = null } = {}) {
+    const record = this.get(detailRef, effectiveScope, scopeBoundary);
     const currentBinding = this.binding();
     let offset = 0;
     let effectivePath = path || '$';
@@ -202,6 +281,7 @@ export class ObservationStore {
     const safeLimit = boundedLimit(limit);
     const selected = atPath(record.fullResult, effectivePath);
     const page = pageValue(selected, offset, safeLimit);
+    const completeness = detailCompleteness(page, sourceCompleteness(record.fullResult, selected));
     const nextCursor = page.nextOffset == null ? null : this.cursorCodec.encode({
       kind: 'observation-detail', bindingKey: currentBinding.key, detailRef: record.id,
       path: effectivePath, offset: page.nextOffset,
@@ -211,19 +291,15 @@ export class ObservationStore {
       tool: record.tool,
       path: effectivePath,
       data: page.value,
-      completeness: {
-        complete: page.nextOffset == null,
-        returned: page.returned,
-        total: page.total,
-        coverage: page.total ? Math.min(1, (page.offset + page.returned) / page.total) : 1,
-        reason: page.nextOffset == null ? null : 'result-limit',
-      },
+      completeness,
       continuation: nextCursor ? { cursor: nextCursor } : null,
       origin: {
         tool: record.tool,
         arguments: record.arguments,
         binaryIdentity: record.binaryIdentity,
         functionIdentity: record.functionIdentity,
+        effectiveScope: record.effectiveScope,
+        scopeBoundary: record.scopeBoundary,
         createdAt: record.createdAt,
       },
     };

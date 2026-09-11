@@ -28,14 +28,13 @@ test('canonical x86 bytes cannot be mutated through the published record', () =>
   assert.equal(decoded.instructionFamily, 'nop');
 });
 
-test('contradictory detail flags never open the exact effects gate', () => {
+test('contradictory detail flags reject before the exact effects gate', () => {
   for (const status of ['unavailable', 'partial', 'malformed']) {
-    const decoded = nop({ detailAvailable: true, detailStatus: status });
-    assert.equal(decoded.detailAvailable, false, `status ${status} must not stay available`);
-    assert.equal(decoded.detailStatus, status);
-    const dispatch = dispatchX86MachineEffects(decoded);
-    assert.equal(dispatch.ownerId, 'fallback', `status ${status} must fall back`);
-    assert.equal(dispatch.result, null);
+    assert.throws(
+      () => nop({ detailAvailable: true, detailStatus: status }),
+      /x86-decoded-instruction-detail-availability-conflict/,
+      `status ${status} must reject contradictory authority`,
+    );
   }
 });
 

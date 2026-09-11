@@ -82,9 +82,12 @@ export function accessShape(mnemonic) {
   return { bytes: 0, signed: false };   // 幅はレジスタ名（w/x/s/d）を見て決める
 }
 
-/** レジスタ名から幅を決める。w0 → 4、x0 → 8、s0 → 4(小数)、d0 → 8(小数)。 */
+/** レジスタ名から幅を決める。w0 → 4、x0 → 8、s0 → 4(小数)、d0 → 8(小数)。
+ *  Register presentation text is producer-owned untrusted data: only a
+ *  primitive string may be interpreted as register evidence (#5660). */
 export function widthOfRegisterName(text) {
-  const s = (text || '').trim().toLowerCase();
+  if (typeof text !== 'string') return null;
+  const s = text.trim().toLowerCase();
   if (/^w\d+$|^wzr$/.test(s)) return { bytes: 4 };
   if (/^x\d+$|^xzr$|^sp$/.test(s)) return { bytes: 8 };
   if (/^b\d+$/.test(s)) return { bytes: 1 };
@@ -150,8 +153,9 @@ export function inferTypes(model) {
   const alias = new Map();          // reg -> 引数の reg
   for (const r of argRegs) alias.set(r, r);
   const gprView = (value) => {
-    const text = typeof value === 'string' ? value : value && value.text;
-    const m = /^([wx])(\d+)$/.exec(String(text || '').toLowerCase());
+    const text = typeof value === 'string' ? value : (value && typeof value.text === 'string' ? value.text : null);
+    if (typeof text !== 'string') return null;
+    const m = /^([wx])(\d+)$/.exec(text.toLowerCase());
     return m ? { reg: 'x' + Number(m[2]), bits: m[1] === 'x' ? 64 : 32 } : null;
   };
   const canonicalGpr = (value) => gprView(value)?.reg || null;

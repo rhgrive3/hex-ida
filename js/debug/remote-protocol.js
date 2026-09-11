@@ -8,12 +8,78 @@ export const WIRE_TAG = '__hex_wire_type__';
 export const BIGINT_TAG = 'bigint';
 export const BYTES_TAG = 'bytes-base64';
 
+function utf8ByteLength(json) {
+  if (typeof Buffer !== 'undefined' && typeof Buffer.byteLength === 'function') return Buffer.byteLength(json, 'utf8');
+  // Exact UTF-8 length without TextEncoder: surrogate pairs are 4 bytes,
+  // unpaired surrogates count as their 3-byte replacement character, so the
+  // byte budget means the same thing on every runtime (#5939).
+  let bytes = 0;
+  for (let i = 0; i < json.length; i += 1) {
+    const code = json.charCodeAt(i);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && json.charCodeAt(i + 1) >= 0xdc00 && json.charCodeAt(i + 1) <= 0xdfff) { bytes += 4; i += 1; }
+    else bytes += 3;
+  }
+  return bytes;
+}
+
 function jsonByteSize(value) {
   let json;
   try { json = JSON.stringify(value); }
   catch { throw new DebugAdapterError('malformed-packet', 'remote packet is not serializable'); }
   if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(json).byteLength;
-  return json.length * 2;
+  return utf8ByteLength(json);
+}
+
+// Snapshot untrusted wire data through own data descriptors before any
+// validation, accounting, or decode pass. This prevents accessor/proxy-backed
+// input from presenting different payloads to those authority boundaries.
+function snapshotWireData(value, depth = 0) {
+  if (depth > 20) throw new DebugAdapterError('malformed-packet', 'remote packet nesting is too deep');
+  if (!value || typeof value !== 'object') return value;
+
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Array.isArray(value)) {
+    const lengthDescriptor = descriptors.length;
+    if (
+      !lengthDescriptor ||
+      !Object.prototype.hasOwnProperty.call(lengthDescriptor, 'value') ||
+      !Number.isSafeInteger(lengthDescriptor.value) ||
+      lengthDescriptor.value < 0 ||
+      lengthDescriptor.value > MAX_ARRAY
+    ) {
+      throw new DebugAdapterError('malformed-packet', 'remote array exceeds limit');
+    }
+    const length = lengthDescriptor.value;
+    const out = new Array(length);
+    for (let i = 0; i < length; i += 1) {
+      const descriptor = descriptors[String(i)];
+      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+        throw new DebugAdapterError('malformed-packet', 'remote arrays must contain own data values');
+      }
+      out[i] = snapshotWireData(descriptor.value, depth + 1);
+    }
+    return out;
+  }
+
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) throw new DebugAdapterError('malformed-packet', 'remote packet objects must be plain data');
+  const entries = Object.entries(descriptors).filter(([, descriptor]) => descriptor.enumerable);
+  if (entries.length > 1024) throw new DebugAdapterError('malformed-packet', 'remote object has too many fields');
+  const out = proto === null ? Object.create(null) : {};
+  for (const [key, descriptor] of entries) {
+    if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      throw new DebugAdapterError('malformed-packet', 'remote packet fields must be own data properties');
+    }
+    Object.defineProperty(out, key, {
+      value: snapshotWireData(descriptor.value, depth + 1),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return out;
 }
 
 function bytesToBase64(bytes) {
@@ -96,11 +162,20 @@ export function decodeWireValue(value, depth = 0) {
     if (
       Object.keys(value).some((k) => ![WIRE_TAG, 'value'].includes(k)) ||
       typeof value.value !== 'string' ||
-      !/^-?\d+$/.test(value.value)
+      // Canonical spelling only: encodeWireValue() emits BigInt.toString(10),
+      // so the wire can carry `0`, `1`, `-1` … but never leading zeros (`01`),
+      // negative zero (`-0`, which BigInt() would alias onto 0), or padded
+      // negatives (`-01`). Accepting those spellings aliased non-canonical
+      // packets onto canonical values (#5709).
+      !/^(0|-?[1-9]\d*)$/.test(value.value)
     ) {
       throw new DebugAdapterError('malformed-packet', 'invalid bigint wire value');
     }
-    return BigInt(value.value);
+    const decoded = BigInt(value.value);
+    if (decoded.toString(10) !== value.value) {
+      throw new DebugAdapterError('malformed-packet', 'invalid bigint wire value');
+    }
+    return decoded;
   }
   if (value[WIRE_TAG] === BYTES_TAG) {
     if (Object.keys(value).some((k) => ![WIRE_TAG, 'value', 'length'].includes(k)) || typeof value.value !== 'string') {
@@ -180,8 +255,26 @@ export function validateRemotePacket(packet) {
     if (typeof packet.method !== 'string' || !packet.method || packet.method.length > 128) throw new DebugAdapterError('malformed-packet', 'request method must be a 1..128 character string');
     if (BLOCKED_METHODS.test(packet.method)) throw new DebugAdapterError('blocked-method', 'host command execution is prohibited');
   }
+  /* #5471: an event packet without a valid event identifier would still be
+     dispatched to listeners; the event name carries the same string grammar
+     as a request method. */
+  if (packet.type === 'event') {
+    if (typeof packet.event !== 'string' || !packet.event || packet.event.length > 128) {
+      throw new DebugAdapterError('malformed-packet', 'event name must be a 1..128 character string');
+    }
+  }
   validateResponse(packet);
   return packet;
+}
+
+// Listener isolation must cover async failures too: a listener returning a
+// promise that later rejects would otherwise leak an unhandledRejection
+// through the sync-only try/catch (#5931).
+function invokeListener(fn, packet) {
+  try {
+    const result = fn(packet);
+    if (result && typeof result.then === 'function') Promise.resolve(result).catch(() => { /* listener isolation */ });
+  } catch { /* listener isolation */ }
 }
 
 function defaultMonotonicNow() {
@@ -306,32 +399,77 @@ export class RemoteProtocolClient {
   }
   receive(raw) {
     let wire;
-    try { wire = validateRemotePacket(raw); } catch { return false; }
-    if (wire.type !== 'hello' && wire.epoch !== this.epoch) return false;
+    try { wire = validateRemotePacket(snapshotWireData(raw)); } catch { return false; }
+    if (wire.type !== 'hello' && wire.epoch !== this.epoch) {
+      // A request opened with an explicit epoch legally receives its response
+      // carrying that request's own epoch (#5726). Keep such a response only
+      // when it settles a pending request opened at that same epoch; every
+      // other foreign-epoch packet stays rejected.
+      const pendingForWire = wire.type === 'response' && Number.isSafeInteger(wire.id)
+        ? this.pending.get(wire.id) : null;
+      if (!pendingForWire || pendingForWire.epoch !== wire.epoch) return false;
+    }
+
+    // Apply event admission to the encoded packet before materializing tagged
+    // BigInt/byte payloads. A saturated window must not spend decode/allocation
+    // work on an event that is guaranteed to be dropped (#5245). Keep the
+    // prospective window state local until decode succeeds so malformed events
+    // that fit the quota still do not consume it.
+    let eventAdmission = null;
+    if (wire.type === 'event') {
+      const now = this._monotonicNow();
+      const reset = now - this.eventWindowStart >= 1000;
+      const count = reset ? 0 : this.eventWindowCount;
+      const usedBytes = reset ? 0 : this.eventWindowBytes;
+      const dropped = reset ? 0 : this.droppedEvents;
+      const bytes = jsonByteSize(wire);
+      if (count + 1 > this.maxEventsPerSecond || usedBytes + bytes > this.maxEventBytesPerSecond) {
+        if (reset) {
+          this.eventWindowStart = now;
+          this.eventWindowCount = 0;
+          this.eventWindowBytes = 0;
+          this.droppedEvents = 0;
+        }
+        this.droppedEvents++;
+        if (dropped === 0) {
+          const notice={version:DEBUG_PROTOCOL_VERSION,type:'event',epoch:this.epoch,event:'stream-truncated',data:{reason:'event-backpressure'}};
+          for (const fn of this.listeners) { invokeListener(fn, notice); }
+        }
+        return false;
+      }
+      eventAdmission = { now, reset, bytes };
+    }
+
     let packet;
     try { packet = decodeWireValue(wire); } catch { return false; }
+    // Accessor-backed input must not be able to change packet class across the
+    // admission/decode boundary and thereby bypass event quotas (or trip a
+    // missing admission record).
+    if ((packet.type === 'event') !== (eventAdmission !== null)) return false;
     if (packet.type === 'response') {
       const pending = this.pending.get(packet.id);
-      if (!pending || pending.epoch !== packet.epoch || packet.epoch !== this.epoch) return false;
+      // The request's own epoch is the settle authority: a pending opened at
+      // an explicit epoch must be settled by its matching response even when
+      // that epoch is not the client's current one (#5726).
+      if (!pending || pending.epoch !== packet.epoch) return false;
       this._cleanupPending(packet.id, pending);
       if (packet.error) pending.reject(new DebugAdapterError(String(packet.error.code || 'remote-error'), String(packet.error.message || 'remote error').slice(0,2048), packet.error.details || null));
       else pending.resolve(packet.result);
       return true;
     }
     if (packet.type === 'event') {
-      const now=this._monotonicNow();
-      if (now-this.eventWindowStart >= 1000) { this.eventWindowStart=now; this.eventWindowCount=0; this.eventWindowBytes=0; this.droppedEvents=0; }
-      const bytes=jsonByteSize(wire);
-      if (this.eventWindowCount + 1 > this.maxEventsPerSecond || this.eventWindowBytes + bytes > this.maxEventBytesPerSecond) {
-        this.droppedEvents++;
-        if (this.droppedEvents === 1) {
-          const notice={version:DEBUG_PROTOCOL_VERSION,type:'event',epoch:this.epoch,event:'stream-truncated',data:{reason:'event-backpressure'}};
-          for (const fn of this.listeners) { try { fn(notice); } catch {} }
-        }
-        return false;
+      // `wire.type` was validated before decode, so every decoded event has a
+      // matching admission record. Commit its window accounting only now that
+      // decode succeeded.
+      if (eventAdmission.reset) {
+        this.eventWindowStart = eventAdmission.now;
+        this.eventWindowCount = 0;
+        this.eventWindowBytes = 0;
+        this.droppedEvents = 0;
       }
-      this.eventWindowCount++; this.eventWindowBytes+=bytes;
-      for (const fn of this.listeners) { try { fn(packet); } catch { /* listener isolation */ } }
+      this.eventWindowCount++;
+      this.eventWindowBytes += eventAdmission.bytes;
+      for (const fn of this.listeners) { invokeListener(fn, packet); }
       return true;
     }
     return false;

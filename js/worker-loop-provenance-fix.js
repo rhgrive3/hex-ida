@@ -230,7 +230,7 @@ findXrefs = async function findXrefsLoopSafe({ regionId, target, limit, requestI
   const prepass = await __backwardLoopEntryKills(region, requestId);
   if (prepass.cancelled) return { results:[], cancelled:true, capped:false };
 
-  const want = BigInt(target);
+  const want = canonicalAddress(target);
   const cap = Math.min(Number(limit) || 2000, 2000);
   const total = Number(region.size);
   const out = [];

@@ -66,14 +66,16 @@ test('an exhaustive singleton direct target keeps the existing direct-call repre
   assert.deepEqual(summary.directCalls[0].targetEntityIds, ['A']);
 });
 
-test('a targetless complete call keeps the existing ABI-rule semantics', () => {
+test('a targetless complete call retains the unresolved-target boundary (#4695)', () => {
   const proof = classifyCallTargetProof({ completeness: 'complete' });
   assert.equal(proof.kind, 'unknown');
   assert.equal(proof.exhaustive, false);
 
   const summary = summaryFor({ completeness: 'complete' });
-  assert.equal(summary.status.completeness, 'complete');
-  assert.equal(summary.unknownCallEffects.length, 0);
+  assert.equal(summary.status.completeness, 'partial');
+  assert.equal(summary.unknownCallEffects.length, 1);
+  assert.equal(summary.unknownCallEffects[0].reason, 'unresolved-target');
+  assert.ok(summary.memoryWriteRegions.some((effect) => effect.broad));
   assert.equal(summary.directCalls.length, 0);
   assert.equal(summary.indirectCallSets.length, 0);
 });

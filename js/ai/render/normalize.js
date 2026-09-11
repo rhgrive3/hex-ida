@@ -203,9 +203,12 @@ function normalizeAction(raw, index) {
   if (!raw || typeof raw !== 'object') return null;
   const kind = String(raw.kind || '');
   if (!ACTION_KINDS.has(kind)) return null;
-  const target = kind === 'run-agent' || kind === 'review-proposal'
-    ? text(raw.target, 1000)
-    : addressString(raw.target);
+  const target = kind === 'run-agent'
+    ? (typeof raw.target === 'string' ? text(raw.target.trim(), 1000) : null)
+    : kind === 'review-proposal'
+      ? text(raw.target, 1000)
+      : addressString(raw.target);
+  if (kind === 'run-agent' && !target) return null;
   if (kind !== 'run-agent' && !target) return null;
   return {
     id: 'act' + index,

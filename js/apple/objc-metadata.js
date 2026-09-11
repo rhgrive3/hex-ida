@@ -7,6 +7,9 @@ const NAME_READ_MAX = 8192;
 const MAX_PROTOCOLS = 20000;
 const MAX_CATEGORIES = 20000;
 const MAX_METHODS = 60000;
+const PROTOCOL_FIXED_SIZE = 72;
+const PROTOCOL_CLASS_PROPERTIES_OFFSET = 88;
+const PROTOCOL_CLASS_PROPERTIES_END = 96;
 
 function u32(b, o = 0) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }
 function i32(b, o = 0) { return u32(b, o) | 0; }
@@ -49,13 +52,14 @@ function emptyListCompleteness(present = false) {
   return { present, declared: 0, scanned: 0, parsed: 0, capped: false, unreadableEntries: 0, invalidEntries: 0, complete: !present };
 }
 
-async function methodList(get, listAddr, owner, classMethod, source) {
+async function methodList(get, listAddr, owner, classMethod, source, opts = {}) {
   const items = [];
   if (listAddr == null) return { items, completeness: { ...emptyListCompleteness(false), complete: true } };
+  if (opts?.signal?.aborted) return { items, completeness: { ...emptyListCompleteness(true), complete: false } };
   const h = await get(listAddr, 8);
   if (!h || h.length < 8) return { items, completeness: { ...emptyListCompleteness(true), unreadableEntries: 1, complete: false } };
   const rawEntsize = u32(h, 0), declared = u32(h, 4);
-  if (!declared) return { items, completeness: { ...emptyListCompleteness(true), complete: true } };
+  if (!declared) return { items, completeness: { ...emptyListCompleteness(true), complete: !opts?.signal?.aborted } };
   if (declared > MAX_METHODS) {
     return { items, completeness: { present: true, declared, scanned: 0, parsed: 0, capped: true, unreadableEntries: 0, invalidEntries: 0, complete: false } };
   }
@@ -65,6 +69,11 @@ async function methodList(get, listAddr, owner, classMethod, source) {
   }
   let scanned = 0, unreadableEntries = 0, invalidEntries = 0;
   for (let i = 0; i < declared; i++) {
+    if (opts?.signal?.aborted) break;
+    if ((i & 63) === 0 && i > 0) {
+      await new Promise((r) => setTimeout(r, 0));
+      if (opts?.signal?.aborted) break;
+    }
     const at = listAddr + 8n + BigInt(i * stride);
     const b = await get(at, relative ? 12 : 24);
     if (!b || b.length < (relative ? 12 : 24)) { unreadableEntries++; break; }
@@ -100,15 +109,16 @@ async function methodList(get, listAddr, owner, classMethod, source) {
       capped: false,
       unreadableEntries,
       invalidEntries,
-      complete: unreadableEntries === 0 && invalidEntries === 0 && scanned === declared && items.length === declared,
+      complete: !opts?.signal?.aborted && unreadableEntries === 0 && invalidEntries === 0 && scanned === declared && items.length === declared,
     },
   };
 }
 
 async function protocolName(get, address) { if (address == null) return null; const b = await get(address, 16); if (!b) return null; return cstring(get, await decodedPointer(get, u64(b, 8), address + 8n)); }
-async function protocolRefs(get, listAddr) {
+async function protocolRefs(get, listAddr, opts = {}) {
   const items = [];
   if (listAddr == null) return { items, completeness: { ...emptyListCompleteness(false), complete: true } };
+  if (opts?.signal?.aborted) return { items, completeness: { ...emptyListCompleteness(true), complete: false } };
   const h = await get(listAddr, PTR);
   if (!h || h.length < PTR) return { items, completeness: { ...emptyListCompleteness(true), unreadableEntries: 1, complete: false } };
   const count64 = u64(h, 0);
@@ -118,6 +128,11 @@ async function protocolRefs(get, listAddr) {
   const declared = Number(count64);
   let scanned = 0, unreadableEntries = 0, invalidEntries = 0;
   for (let i = 0; i < declared; i++) {
+    if (opts?.signal?.aborted) break;
+    if ((i & 63) === 0 && i > 0) {
+      await new Promise((r) => setTimeout(r, 0));
+      if (opts?.signal?.aborted) break;
+    }
     const slot = listAddr + 8n + BigInt(i * PTR);
     const raw = await get(slot, PTR);
     if (!raw || raw.length < PTR) { unreadableEntries++; continue; }
@@ -138,40 +153,164 @@ async function protocolRefs(get, listAddr) {
       capped: false,
       unreadableEntries,
       invalidEntries,
-      complete: unreadableEntries === 0 && invalidEntries === 0 && scanned === declared && items.length === declared,
+      complete: !opts?.signal?.aborted && unreadableEntries === 0 && invalidEntries === 0 && scanned === declared && items.length === declared,
     },
   };
 }
 
-async function parseProtocol(get, address) {
+async function parseProtocol(get, address, opts = {}) {
+  if (opts?.signal?.aborted) return null;
   const b = await get(address, 64, true); if (!b || b.length < 56) return null;
+  const layout = await get(address + 64n, 8, true);
+  const sizeReadable = !!layout && layout.length >= 4;
+  const flagsReadable = !!layout && layout.length >= 8;
+  const size = sizeReadable ? u32(layout, 0) : null;
+  const flags = flagsReadable ? u32(layout, 4) : null;
+  const prefixComplete = b.length >= 64;
+  let layoutComplete = flagsReadable && size >= PROTOCOL_FIXED_SIZE && prefixComplete;
+  let classPropertiesAddress = null;
+  const classPropertiesDeclared = size != null && size > PROTOCOL_CLASS_PROPERTIES_OFFSET;
+  if (classPropertiesDeclared) {
+    if (size < PROTOCOL_CLASS_PROPERTIES_END) {
+      layoutComplete = false;
+    } else {
+      const field = await get(address + BigInt(PROTOCOL_CLASS_PROPERTIES_OFFSET), PTR, true);
+      if (!field || field.length < PTR) {
+        layoutComplete = false;
+      } else {
+        const rawClassProperties = u64(field);
+        classPropertiesAddress = await decodedPointer(get, rawClassProperties, address + BigInt(PROTOCOL_CLASS_PROPERTIES_OFFSET));
+        if (rawClassProperties !== 0n && classPropertiesAddress == null) layoutComplete = false;
+      }
+    }
+  }
   const name = await cstring(get, await decodedPointer(get, u64(b, 8), address + 8n)); if (!name) return null;
-  const inherited = await protocolRefs(get, await decodedPointer(get, u64(b, 16), address + 16n));
-  const methods = await methodList(get, await decodedPointer(get, u64(b, 24), address + 24n), name, false, 'protocol');
-  const classMethods = await methodList(get, await decodedPointer(get, u64(b, 32), address + 32n), name, true, 'protocol');
-  const optionalInstanceMethods = await methodList(get, await decodedPointer(get, u64(b, 40), address + 40n), name, false, 'protocol-optional');
-  const optionalClassMethods = await methodList(get, await decodedPointer(get, u64(b, 48), address + 48n), name, true, 'protocol-optional');
+  const inherited = await protocolRefs(get, await decodedPointer(get, u64(b, 16), address + 16n), opts);
+  const methods = await methodList(get, await decodedPointer(get, u64(b, 24), address + 24n), name, false, 'protocol', opts);
+  const classMethods = await methodList(get, await decodedPointer(get, u64(b, 32), address + 32n), name, true, 'protocol', opts);
+  const optionalInstanceMethods = await methodList(get, await decodedPointer(get, u64(b, 40), address + 40n), name, false, 'protocol-optional', opts);
+  const optionalClassMethods = await methodList(get, await decodedPointer(get, u64(b, 48), address + 48n), name, true, 'protocol-optional', opts);
   const methodCompleteness = {
     instanceMethods: methods.completeness,
     classMethods: classMethods.completeness,
     optionalInstanceMethods: optionalInstanceMethods.completeness,
     optionalClassMethods: optionalClassMethods.completeness,
   };
-  const completeness = { methods: methodCompleteness, protocols: inherited.completeness, complete: inherited.completeness.complete && Object.values(methodCompleteness).every((x) => x.complete === true) };
-  return { runtime: 'objc', kind: 'protocol', address, name, protocols: inherited.items, methods: methods.items, instanceMethods: methods.items, classMethods: classMethods.items, optionalInstanceMethods: optionalInstanceMethods.items, optionalClassMethods: optionalClassMethods.items, instancePropertiesAddress: b.length >= 64 ? await decodedPointer(get, u64(b, 56), address + 56n) : null, completeness };
+  const completeness = { methods: methodCompleteness, protocols: inherited.completeness, complete: !opts?.signal?.aborted && layoutComplete && inherited.completeness.complete && Object.values(methodCompleteness).every((x) => x.complete === true) };
+  return { runtime: 'objc', kind: 'protocol', address, name, size, flags, protocols: inherited.items, methods: methods.items, instanceMethods: methods.items, classMethods: classMethods.items, optionalInstanceMethods: optionalInstanceMethods.items, optionalClassMethods: optionalClassMethods.items, instancePropertiesAddress: prefixComplete ? await decodedPointer(get, u64(b, 56), address + 56n) : null, classPropertiesAddress, completeness };
 }
 
-async function parseCategory(get, address, classByAddress) {
+function canonicalExternalClassName(name) {
+  if (typeof name !== 'string') return null;
+  const m = /^_OBJC_CLASS_\$_([A-Za-z_][A-Za-z0-9_]*)$/.exec(name);
+  return m ? m[1] : null;
+}
+
+function classNameFromReference(value) {
+  if (typeof value === 'string') {
+    const canonical = canonicalExternalClassName(value);
+    if (canonical) return canonical;
+    const plain = value.trim();
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(plain) ? plain : null;
+  }
+  if (!value || typeof value !== 'object') return null;
+  if (value.complete !== undefined && value.complete !== true) return null;
+  if (value.completeness && typeof value.completeness === 'object'
+    && value.completeness.complete !== undefined && value.completeness.complete !== true) return null;
+  const candidate = value.className ?? value.targetClass ?? value.target ?? value.name;
+  return typeof candidate === 'string' ? classNameFromReference(candidate) : null;
+}
+
+function classNameFromBinding(value) {
+  const rawName = typeof value === 'string'
+    ? value
+    : value && typeof value === 'object'
+      ? (value.name ?? value.symbol ?? value.import ?? null)
+      : null;
+  return canonicalExternalClassName(rawName);
+}
+
+async function resolveExternalCategoryClassName(get, storageAddress) {
+  if (get == null || storageAddress == null) return null;
+  if (typeof get.resolveClassReference === 'function') {
+    try {
+      const resolved = await get.resolveClassReference(storageAddress);
+      const className = classNameFromReference(resolved);
+      if (className) return className;
+    } catch { /* fail closed */ }
+  }
+  const bindingAt = typeof get.bindingAt === 'function' ? get.bindingAt : null;
+  if (!bindingAt) return null;
+  let binding = null;
+  try { binding = await bindingAt(storageAddress); } catch { return null; }
+  if (!binding) return null;
+  if (typeof binding === 'object' && binding.complete !== true) return null;
+  return classNameFromBinding(binding);
+}
+
+function collectCategoryBindImports(sections, opts) {
+  const out = [];
+  for (const src of [opts?.binaryImage, sections?.binaryImage, opts, sections]) {
+    const imports = src?.imports;
+    if (Array.isArray(imports)) out.push(...imports);
+  }
+  return out;
+}
+
+function categoryBindImportsAreComplete(sections, opts) {
+  for (const src of [opts?.binaryImage, sections?.binaryImage, opts, sections]) {
+    const imports = src?.imports;
+    if (!Array.isArray(imports) || imports.length === 0) continue;
+    const chainedFixups = src?.metadata?.chainedFixups;
+    if (!chainedFixups || typeof chainedFixups !== 'object'
+      || chainedFixups.complete !== true
+      || chainedFixups.importsComplete !== true
+      || chainedFixups.bindingSitesComplete !== true) return false;
+  }
+  return true;
+}
+
+function buildBindingAtFromImports(imports) {
+  const byAddress = new Map();
+  for (const imp of imports) {
+    if (!imp || typeof imp.name !== 'string' || !Array.isArray(imp.sites)) continue;
+    for (const site of imp.sites) {
+      try {
+        if (site?.address == null) continue;
+        const key = BigInt(site.address).toString();
+        const binding = { name: imp.name, complete: true };
+        if (!byAddress.has(key)) byAddress.set(key, binding);
+        else if (byAddress.get(key)?.name !== imp.name) byAddress.set(key, null);
+      } catch { /* ignore malformed site address */ }
+    }
+  }
+  return (address) => {
+    try { return byAddress.get(BigInt(address).toString()) || null; }
+    catch { return null; }
+  };
+}
+
+async function parseCategory(get, address, classByAddress, opts = {}) {
+  if (opts?.signal?.aborted) return null;
   const b = await get(address, 56, true); if (!b || b.length < 48) return null;
   const name = await cstring(get, await decodedPointer(get, u64(b, 0), address)); if (!name) return null;
-  const classAddress = await decodedPointer(get, u64(b, 8), address + 8n);
-  const target = classAddress != null ? classByAddress.get(classAddress.toString()) : null, className = target?.name || null;
-  const methods = await methodList(get, await decodedPointer(get, u64(b, 16), address + 16n), className, false, 'category');
-  const classMethods = await methodList(get, await decodedPointer(get, u64(b, 24), address + 24n), className, true, 'category');
-  const protocols = await protocolRefs(get, await decodedPointer(get, u64(b, 32), address + 32n));
+  const rawClassPointer = u64(b, 8);
+  const classAddress = await decodedPointer(get, rawClassPointer, address + 8n);
+  const target = classAddress != null ? classByAddress.get(classAddress.toString()) : null;
+  let className = target?.name || null;
+  // Keep numeric pointer decoding fail-closed. Symbolic recovery is only
+  // considered for a non-zero pointer that the numeric resolver identified as
+  // an unresolved bind, never for an unknown ordinary address or null pointer.
+  if (!className && classAddress == null && rawClassPointer !== 0n) {
+    const external = await resolveExternalCategoryClassName(get, address + 8n);
+    if (external) className = external;
+  }
+  const methods = await methodList(get, await decodedPointer(get, u64(b, 16), address + 16n), className, false, 'category', opts);
+  const classMethods = await methodList(get, await decodedPointer(get, u64(b, 24), address + 24n), className, true, 'category', opts);
+  const protocols = await protocolRefs(get, await decodedPointer(get, u64(b, 32), address + 32n), opts);
   const methodCompleteness = { instanceMethods: methods.completeness, classMethods: classMethods.completeness };
-  const completeness = { methods: methodCompleteness, protocols: protocols.completeness, complete: protocols.completeness.complete && Object.values(methodCompleteness).every((x) => x.complete === true) };
-  return { runtime: 'objc', kind: 'category', address, name, classAddress, className, methods: methods.items, instanceMethods: methods.items, classMethods: classMethods.items, protocols: protocols.items, instancePropertiesAddress: await decodedPointer(get, u64(b, 40), address + 40n), classPropertiesAddress: b.length >= 56 ? await decodedPointer(get, u64(b, 48), address + 48n) : null, completeness };
+  const completeness = { methods: methodCompleteness, protocols: protocols.completeness, complete: !opts?.signal?.aborted && protocols.completeness.complete && Object.values(methodCompleteness).every((x) => x.complete === true) };
+  return { runtime: 'objc', kind: 'category', address, name, classAddress, className, targetClass: className, target: className, methods: methods.items, instanceMethods: methods.items, classMethods: classMethods.items, protocols: protocols.items, instancePropertiesAddress: await decodedPointer(get, u64(b, 40), address + 40n), classPropertiesAddress: b.length >= 56 ? await decodedPointer(get, u64(b, 48), address + 48n) : null, completeness };
 }
 
 function pointerTableSize(value) {
@@ -184,6 +323,9 @@ function pointerTableAddress(value) {
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
   if (typeof value === 'string' && /^(?:0x[0-9a-f]+|[0-9]+)$/i.test(value.trim())) return BigInt(value.trim());
   return null;
+}
+function isCancellationError(error) {
+  return error?.name === 'AbortError' || error?.code === 'ABORT_ERR';
 }
 async function pointerTable(get, range, budget, parse, opts = {}) {
   const items = [];
@@ -221,7 +363,10 @@ async function pointerTable(get, range, budget, parse, opts = {}) {
         items.push(item);
         if (item.completeness?.complete === false) incompleteItems++;
       } else invalidEntries++;
-    } catch { invalidEntries++; }
+    } catch (error) {
+      if (isCancellationError(error)) throw error;
+      invalidEntries++;
+    }
   }
   const capped = declared > budget;
   const complete = sizeValid && misalignedBytes === 0 && !capped && unreadableSlots === 0 && invalidEntries === 0 && incompleteItems === 0 && items.length === scanned && scanned === declared && !opts?.signal?.aborted;
@@ -234,18 +379,32 @@ export async function parseObjcExtendedMetadata(read, sections = {}, opts = {}) 
   get.resolvePointer = opts.resolvePointer || opts.binaryImage?.resolvePointer || opts.binaryImage?.decodePointer || null;
   get.validateImplementation = typeof opts.validateImplementation === 'function' ? opts.validateImplementation : null;
   get.requireImplementationProof = opts.requireImplementationProof === true;
+  if (typeof opts.resolveClassReference === 'function') get.resolveClassReference = opts.resolveClassReference;
+  else if (typeof sections?.resolveClassReference === 'function') get.resolveClassReference = sections.resolveClassReference;
+  else if (typeof opts.binaryImage?.resolveClassReference === 'function') get.resolveClassReference = opts.binaryImage.resolveClassReference;
+  else if (typeof sections?.binaryImage?.resolveClassReference === 'function') get.resolveClassReference = sections.binaryImage.resolveClassReference;
+  if (typeof opts.bindingAt === 'function') get.bindingAt = opts.bindingAt;
+  else if (typeof sections?.bindingAt === 'function') get.bindingAt = sections.bindingAt;
+  else {
+    const bindImports = collectCategoryBindImports(sections, opts);
+    if (bindImports.length && categoryBindImportsAreComplete(sections, opts)) {
+      get.bindingAt = buildBindingAtFromImports(bindImports);
+    }
+  }
   const classByAddress = new Map(
     (Array.isArray(opts.classes) ? opts.classes : [])
       .map((c) => [pointerTableAddress(c?.addr), c])
       .filter(([address]) => address != null)
       .map(([address, c]) => [address.toString(), c]),
   );
-  const protocolTable = await pointerTable(get, sections.protocolList, MAX_PROTOCOLS, (address) => parseProtocol(get, address), opts);
-  const categoryTable = await pointerTable(get, sections.categoryList, MAX_CATEGORIES, (address) => parseCategory(get, address, classByAddress), opts);
+  const protocolTable = await pointerTable(get, sections.protocolList, MAX_PROTOCOLS, (address) => parseProtocol(get, address, opts), opts);
+  const categoryTable = await pointerTable(get, sections.categoryList, MAX_CATEGORIES, (address) => parseCategory(get, address, classByAddress, opts), opts);
   const completeness = {
     protocols: protocolTable.completeness,
     categories: categoryTable.completeness,
-    complete: protocolTable.completeness.complete && categoryTable.completeness.complete,
+    complete: !opts?.signal?.aborted && protocolTable.completeness.complete && categoryTable.completeness.complete,
   };
   return { runtime: 'objc', protocols: protocolTable.items, categories: categoryTable.items, completeness };
 }
+
+export { methodList, protocolRefs, parseProtocol, parseCategory };

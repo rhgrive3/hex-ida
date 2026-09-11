@@ -129,7 +129,10 @@ function executeFramePublicMessages(messages, { advanceClock = false } = {}) {
   return { hostMessages, worker };
 }
 
-async function executeWorker(source, mode = 'script', index = 0, { rejectUncloneableControl = false } = {}) {
+async function executeWorker(source, mode = 'script', index = 0, {
+  expectedDefinition,
+  rejectUncloneableControl = false,
+} = {}) {
   const rawMessages = [];
   const controlMessages = [];
   const blobs = new Map();
@@ -144,6 +147,7 @@ async function executeWorker(source, mode = 'script', index = 0, { rejectUnclone
 
   const sandbox = {
     Blob: FakeBlob,
+    structuredClone,
     URL: {
       createObjectURL(blob) {
         const url = `blob:test-${nextBlob++}`;
@@ -174,7 +178,7 @@ async function executeWorker(source, mode = 'script', index = 0, { rejectUnclone
     new vm.Script(imported).runInContext(context);
   };
 
-  new vm.Script(workerProgram(source, mode, index)).runInContext(context);
+  new vm.Script(workerProgram(source, mode, index, expectedDefinition)).runInContext(context);
   assert.equal(typeof sandbox.onmessage, 'function', 'worker must wait for a private control port');
   const control = {
     onmessage: null,
@@ -223,6 +227,34 @@ test('user script cannot capture worker-private lexical capabilities', async () 
   assert.equal(result.rawMessages.length, 1);
   assert.equal(result.rawMessages[0].t, 'userOutput');
   assert.equal(result.rawMessages[0].value.t, 'done');
+});
+
+test('plugin execution rejects selected metadata drift before calling run', async () => {
+  const result = await executeWorker(
+    `hex.plugin({ name: 'B', description: 'B', run(_hex, print) { print('ran'); } });`,
+    'plugin',
+    0,
+    { expectedDefinition: { name: 'A', description: 'A' } },
+  );
+
+  assert.equal(result.controlMessages.some((m) => m.t === 'print'), false);
+  const error = result.controlMessages.find((m) => m.t === 'error');
+  assert.equal(error?.t, 'error');
+  assert.equal(error?.error, 'プラグイン定義がsourceのcanonical discoveryと一致しません。');
+});
+
+test('plugin execution runs after matching metadata check', async () => {
+  const result = await executeWorker(
+    `hex.plugin({ name: 'B', description: 'B', run(_hex, print) { print('ran'); } });`,
+    'plugin',
+    0,
+    { expectedDefinition: { name: 'B', description: 'B' } },
+  );
+
+  assert.deepEqual(Array.from(result.controlMessages.find((m) => m.t === 'print')?.args || []), ['ran']);
+  const done = result.controlMessages.find((m) => m.t === 'done');
+  assert.equal(done?.t, 'done');
+  assert.equal(done?.value, null);
 });
 
 test('oversized public postMessage is budgeted before crossing the raw worker boundary', async () => {

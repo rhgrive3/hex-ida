@@ -27,10 +27,10 @@ console.log('Testing Rust Metadata Provider...');
   assert.equal(r2.parsed, true);
   assert.equal(r2.demangled, 'core::fmt::num');
 
-  // Impl path: _RNvM4core3str
-  const r3 = demangleRustV0('_RNvM4core3str');
+  // Impl path: _RNvMC4coreC3str3len
+  const r3 = demangleRustV0('_RNvMC4coreC3str3len');
   assert.equal(r3.parsed, true);
-  assert.equal(r3.demangled, '<core::str>');
+  assert.equal(r3.demangled, '<core::str>::len');
 }
 
 // 2. Positive: Rust Legacy Demangling
@@ -294,3 +294,4 @@ await import('./issue-6203-rust-v0-backref.mjs');
 await import('./issue-6237-rust-v0-punycode.mjs');
 await import('./issue-6239-rust-v0-array.mjs');
 await import('./issue-3715-rust-v0-impl-disambiguator.mjs');
+await import('./phase12/integration/issue-5864-rust-nested-identifier.test.mjs');

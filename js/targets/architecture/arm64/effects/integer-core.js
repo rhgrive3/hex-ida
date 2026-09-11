@@ -1,6 +1,7 @@
 import {
   asUnsigned,
   bitMask,
+  canonicalAddressValue,
   createArm64EffectContext,
   immediateOf,
   instructionBits,
@@ -237,8 +238,7 @@ function liftMove(ctx, ops, mnemonic, instruction) {
 
   if (mnemonic === 'adr' || mnemonic === 'adrp') {
     if (widthBits !== 64) return ctx.partial(`arm64-${mnemonic}-destination-width-invalid`, ['registers','other']);
-    let target = instruction?.pcRelTarget;
-    try { if (target != null) target = BigInt(target); } catch { target = null; }
+    let target = canonicalAddressValue(instruction?.pcRelTarget);
     if (target == null) return ctx.partial(`arm64-${mnemonic}-target-unavailable`, ['registers','other']);
     result = ctx.constant(64, target);
   } else if (mnemonic === 'mov') {

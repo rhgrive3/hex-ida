@@ -1,5 +1,5 @@
 import { DebugAdapterError } from '../debug/adapter.js';
-import { RuntimeProviderSession, createRuntimeProviderDescriptor } from './provider.js';
+import { RuntimeProviderSession, createRuntimeOperationController, createRuntimeProviderDescriptor } from './provider.js';
 import { RuntimeEventNormalizer } from './events.js';
 import { createInterventionRecord, InterventionLedger } from './evidence-bridge.js';
 import { normalizeRuntimeModuleBinding } from './module-binding.js';
@@ -16,7 +16,13 @@ function requiredMethod(backend, method, capability) {
 }
 
 function validateInterventionDraft(ledger, input) {
-  const record = createInterventionRecord(input);
+  // Executed occurrences must be distinguishable: the ledger allocates a
+  // monotonic sequence when the draft omits one (#5327), so repeated
+  // identical target/change operations derive distinct intervention ids.
+  const record = createInterventionRecord({
+    ...input,
+    sequence: input.sequence == null ? ledger.nextSequence() : input.sequence,
+  });
   for (const parent of record.parentInterventionIds) {
     if (!ledger.get(parent)) throw new DebugAdapterError('runtime-intervention-parent-missing', `intervention parent not found: ${parent}`);
   }
@@ -41,7 +47,74 @@ function probeHandle(result) {
 }
 
 function eventProbeHandle(raw) {
-  return normalizeProbeHandle(raw?.probeHandle ?? raw?.handle ?? raw?.payload?.probeHandle ?? raw?.payload?.handle ?? null);
+  const source = raw && raw.type === 'event' && typeof raw.event === 'string'
+    ? (raw.data && typeof raw.data === 'object' && !Array.isArray(raw.data) ? raw.data : {})
+    : raw;
+  return normalizeProbeHandle(source?.probeHandle ?? source?.handle ?? source?.payload?.probeHandle ?? source?.payload?.handle ?? null);
+}
+
+function eventInterventionIds(raw) {
+  const protocolEnvelope = raw && raw.type === 'event' && typeof raw.event === 'string';
+  const source = protocolEnvelope
+    ? (raw.data && typeof raw.data === 'object' && !Array.isArray(raw.data) ? raw.data : {})
+    : raw;
+  return protocolEnvelope && raw.interventionIds != null
+    ? raw.interventionIds
+    : source?.interventionIds ?? null;
+}
+
+function materializeRuntimeValue(value, seen = new WeakMap()) {
+  if (value == null || typeof value !== 'object') {
+    if (typeof value === 'function') throw new DebugAdapterError('runtime-invalid-event', 'runtime event contains a function');
+    return value;
+  }
+  if (seen.has(value)) return seen.get(value);
+  if (value instanceof Date) return new Date(value.getTime());
+  if (value instanceof RegExp) return new RegExp(value.source, value.flags);
+  if (value instanceof ArrayBuffer) return value.slice(0);
+  if (value instanceof DataView) {
+    const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    const ownedBytes = Uint8Array.from(bytes);
+    return new DataView(ownedBytes.buffer);
+  }
+  if (ArrayBuffer.isView(value)) return new value.constructor(value);
+  if (value instanceof Map) {
+    const output = new Map();
+    seen.set(value, output);
+    for (const [key, item] of value) {
+      output.set(materializeRuntimeValue(key, seen), materializeRuntimeValue(item, seen));
+    }
+    return output;
+  }
+  if (value instanceof Set) {
+    const output = new Set();
+    seen.set(value, output);
+    for (const item of value) output.add(materializeRuntimeValue(item, seen));
+    return output;
+  }
+
+  const output = Array.isArray(value) ? [] : {};
+  seen.set(value, output);
+  if (Array.isArray(value)) output.length = value.length;
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string' || key === 'length') continue;
+    Object.defineProperty(output, key, {
+      value: materializeRuntimeValue(value[key], seen),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return output;
+}
+
+function materializeRuntimeEvent(raw) {
+  try {
+    return materializeRuntimeValue(raw);
+  } catch (error) {
+    if (error instanceof DebugAdapterError) throw error;
+    throw new DebugAdapterError('runtime-invalid-event', `runtime event could not be materialized: ${String(error?.message || error)}`);
+  }
 }
 
 export class InstrumentationProvider {
@@ -82,11 +155,12 @@ export class InstrumentationProvider {
     if (this.activeSession && !this.activeSession.closed) throw new DebugAdapterError('runtime-session-active', 'instrumentation provider already has an open session');
     let session;
     let unsubscribe = null;
+    let connectedBySession = false;
     session = new RuntimeProviderSession({
       provider: this,
       request,
       close: async () => {
-        if (typeof this.backend.disconnect === 'function') await this.backend.disconnect();
+        if (connectedBySession && typeof this.backend.disconnect === 'function') await this.backend.disconnect();
         if (typeof unsubscribe === 'function') { try { unsubscribe(); } catch {} }
         unsubscribe = null;
         if (this.activeSession === session) this.activeSession = null;
@@ -104,12 +178,18 @@ export class InstrumentationProvider {
     const probes = new Map();
 
     const ingest = (raw) => {
-      if (typeof this.options.eventFilter === 'function' && this.options.eventFilter(raw) === false) return null;
-      const handle = eventProbeHandle(raw);
+      const ownedRaw = materializeRuntimeEvent(raw);
+      if (typeof this.options.eventFilter === 'function' && this.options.eventFilter(ownedRaw) === false) return null;
+      const handle = eventProbeHandle(ownedRaw);
       const interventionId = handle == null ? null : probes.get(handle) ?? null;
-      const event = interventionId
-        ? normalizer.push({ ...raw, interventionIds: [...new Set([...(Array.isArray(raw?.interventionIds) ? raw.interventionIds : []), interventionId])] })
-        : normalizer.push(raw);
+      const existingInterventionIds = eventInterventionIds(ownedRaw);
+      const enrichedRaw = interventionId && (existingInterventionIds == null || Array.isArray(existingInterventionIds))
+        ? {
+            ...ownedRaw,
+            interventionIds: [...new Set([...(existingInterventionIds ?? []), interventionId])],
+          }
+        : ownedRaw;
+      const event = normalizer.push(enrichedRaw);
       if (!event) return null;
       const module = moduleFields(event);
       if (event.kind === 'module-load' && (module.runtimeBase ?? module.base) != null && (module.runtimeSize ?? module.size) != null) {
@@ -127,8 +207,14 @@ export class InstrumentationProvider {
       return event;
     };
 
+    // Claim provider ownership before the first await. A second open must not
+    // race through while this session is still connecting or enumerating.
+    this.activeSession = session;
     try {
-      if (options.connect !== false && typeof this.backend.connect === 'function') await this.backend.connect(options.connectOptions || request);
+      if (options.connect !== false && typeof this.backend.connect === 'function') {
+        connectedBySession = true;
+        await this.backend.connect(options.connectOptions || request);
+      }
       if (typeof this.backend.onEvent === 'function') {
         const maybe = this.backend.onEvent(ingest);
         if (maybe != null && typeof maybe !== 'function') throw new DebugAdapterError('event-subscription', 'instrumentation backend onEvent must return an unsubscribe function');
@@ -162,7 +248,17 @@ export class InstrumentationProvider {
           requestedChange: { install: true },
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
-        const result = await install(spec, callOptions);
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
+        const startedEpoch = session.epoch;
+        let result;
+        try {
+          result = await install(spec, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
+            throw new DebugAdapterError('runtime-session-stale', 'probe installation completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
+          }
+        } finally {
+          operation.release();
+        }
         const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         const handle = probeHandle(result);
         if (handle != null) probes.set(handle, intervention.interventionId);
@@ -181,7 +277,17 @@ export class InstrumentationProvider {
           requestedChange: { remove: true },
           parentInterventionIds: [...new Set([...(callOptions.parentInterventionIds ?? []), ...(parent ? [parent] : [])])],
         });
-        const result = await remove(handle, callOptions);
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
+        const startedEpoch = session.epoch;
+        let result;
+        try {
+          result = await remove(handle, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
+            throw new DebugAdapterError('runtime-session-stale', 'probe removal completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
+          }
+        } finally {
+          operation.release();
+        }
         const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         probes.delete(normalizedHandle);
         return { result, intervention };
@@ -198,7 +304,17 @@ export class InstrumentationProvider {
           requestedChange: { install: true },
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
-        const result = await install(spec, callOptions);
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
+        const startedEpoch = session.epoch;
+        let result;
+        try {
+          result = await install(spec, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
+            throw new DebugAdapterError('runtime-session-stale', 'interception completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
+          }
+        } finally {
+          operation.release();
+        }
         const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         const handle = probeHandle(result);
         if (handle != null) probes.set(handle, intervention.interventionId);
@@ -216,11 +332,37 @@ export class InstrumentationProvider {
           requestedChange: replacement,
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
-        const result = await replace(target, replacement, callOptions);
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
+        const startedEpoch = session.epoch;
+        let result;
+        try {
+          result = await replace(target, replacement, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
+            throw new DebugAdapterError('runtime-session-stale', 'function replacement completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
+          }
+        } finally {
+          operation.release();
+        }
         const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         return { result, intervention };
       },
-      readMemory: async (...args) => requiredMethod(this.backend, 'readMemory', 'memory read')(...args),
+      // #5694: reads also participate in the session lifecycle so stale
+      // target bytes cannot cross an epoch boundary. The optional third
+      // argument is the canonical backend call-options object.
+      readMemory: async (address, size, callOptions = {}) => {
+        const read = requiredMethod(this.backend, 'readMemory', 'memory read');
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
+        const startedEpoch = session.epoch;
+        try {
+          const result = await read(address, size, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
+            throw new DebugAdapterError('runtime-session-stale', 'memory read completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
+          }
+          return result;
+        } finally {
+          operation.release();
+        }
+      },
       writeMemory: async (address, bytes, callOptions = {}) => {
         const authorized = await this.#authorizeMutation('memory-write', { address, byteLength: bytes?.byteLength ?? bytes?.length ?? null }, callOptions);
         if (!authorized) throw new DebugAdapterError('permission-denied', 'instrumentation memory write requires provider-authorized mutation capability');
@@ -233,7 +375,17 @@ export class InstrumentationProvider {
           requestedChange: { bytes },
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
-        const result = await write(address, bytes, callOptions);
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
+        const startedEpoch = session.epoch;
+        let result;
+        try {
+          result = await write(address, bytes, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
+            throw new DebugAdapterError('runtime-session-stale', 'memory write completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
+          }
+        } finally {
+          operation.release();
+        }
         const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         return { result, intervention };
       },

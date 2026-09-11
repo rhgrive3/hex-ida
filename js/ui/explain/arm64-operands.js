@@ -101,6 +101,10 @@ function parseMem(text) {
     if (reg) { if (mem.index) return null; mem.index = reg; continue; }
     const sh = SHIFT_RE.exec(p) || EXT_RE.exec(p);
     if (sh) mem.shift = { op: sh[1].toLowerCase(), amount: sh[2] != null ? Number(bigOf(sh[2])) : null };
+    // Keep unsupported address modifiers visible to the caller instead of
+    // silently presenting the remaining components as a different address
+    // (#4872, e.g. SVE's "MUL VL").
+    else return null;
   }
   if (mem.mode === "pre" && mem.disp) mem.writebackDisp = mem.disp;
   return mem;
@@ -239,7 +243,10 @@ export function memExpr(m) {
   let s = m.base.text;
   if (m.index) {
     const index = modifiedValueExpr(m.index.text, m.shift);
-    const needsGrouping = m.shift && EXTEND_OPS.has(m.shift.op) && m.shift.amount != null;
+    // A shifted index is evaluated before it is added to the base. Keep that
+    // order explicit in the beginner-facing expression (the machine decoder's
+    // address semantics are independent of this presentation adapter).
+    const needsGrouping = m.shift && (!EXTEND_OPS.has(m.shift.op) || m.shift.amount != null);
     s += " + " + (needsGrouping ? "(" + index + ")" : index);
   } else if (m.disp && m.disp.value != null && m.disp.value !== 0n && m.mode !== "post") {
     s += (m.disp.value < 0n ? " - " : " + ") + immShort({ ...m.disp, value: m.disp.value < 0n ? -m.disp.value : m.disp.value });

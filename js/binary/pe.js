@@ -1,6 +1,6 @@
 import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
-import { parseImports, parseExports, parseExceptionFunctions, parseBaseRelocations, parseCoffSymbols, parseDelayImports, parseTlsDirectory, parseLoadConfig, resolveCoffSectionName, directory, peMachineName, createPEMetadataBudget } from './pe-loader.js';
+import { parseImports, parseExports, parseExceptionFunctions, parseBaseRelocations, parseCoffSymbols, parseDelayImports, parseTlsDirectory, parseLoadConfig, directory, peMachineName, createPEMetadataBudget } from './pe-loader.js';
 
 const IMAGE_DIRECTORY_ENTRY_EXPORT = 0;
 const IMAGE_DIRECTORY_ENTRY_IMPORT = 1;
@@ -10,10 +10,49 @@ const IMAGE_DIRECTORY_ENTRY_TLS = 9;
 const IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10;
 const IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT = 13;
 const WINDOWS_IMAGE_RAW_ALIGNMENT = 0x200;
+const WINDOWS_IMAGE_BASE_ALIGNMENT = 0x10000n;
 
-function windowsImageSectionRawMapping(pointerToRawData) {
+// Width is architectural authority only for machine values whose image class
+// this parser understands. Keep UNKNOWN/unsupported machines format-neutral,
+// rather than guessing from numeric ranges or IMAGE_FILE_32BIT_MACHINE.
+const PE_MACHINE_BITS = new Map([
+  [0x014c, 32], // IMAGE_FILE_MACHINE_I386
+  [0x01c0, 32], // IMAGE_FILE_MACHINE_ARM
+  [0x01c4, 32], // IMAGE_FILE_MACHINE_ARMNT
+  [0x5032, 32], // IMAGE_FILE_MACHINE_RISCV32
+  [0x8664, 64], // IMAGE_FILE_MACHINE_AMD64
+  [0xaa64, 64], // IMAGE_FILE_MACHINE_ARM64
+  [0xa641, 64], // IMAGE_FILE_MACHINE_ARM64EC
+  [0xa64e, 64], // IMAGE_FILE_MACHINE_ARM64X
+  [0x5064, 64], // IMAGE_FILE_MACHINE_RISCV64
+]);
+
+function validatePEMachineMagic(machine, bits) {
+  const machineBits = PE_MACHINE_BITS.get(machine);
+  if (machineBits != null && machineBits !== bits) {
+    const format = bits === 64 ? 'PE32+' : 'PE32';
+    throw new Error(`PE Machine 0x${machine.toString(16)} is incompatible with ${format}`);
+  }
+}
+
+function windowsImageSectionRawMapping(pointerToRawData, { sectionAlignment } = {}) {
   if (pointerToRawData === 0) {
     return { effectiveFileOffset: 0, fileBacked: false, roundedDown: false };
+  }
+  // The Windows loader's 0x200 sector round-down only applies to images
+  // mapped at the default page granularity. Low-alignment images
+  // (SectionAlignment < 0x1000, e.g. pefile issue #465's resource-only PE
+  // with SectionAlignment = FileAlignment = 0x10) are consumed with their
+  // declared raw offsets: the loader does not reinterpret PointerToRawData,
+  // and rounding it down would redirect the mapping into the MZ/header
+  // bytes (#5539).
+  if (Number.isSafeInteger(sectionAlignment) && sectionAlignment > 0 && sectionAlignment < 0x1000) {
+    return {
+      effectiveFileOffset: pointerToRawData,
+      fileBacked: true,
+      roundedDown: false,
+      policy: 'low-alignment-declared-raw-offset',
+    };
   }
   const effectiveFileOffset = pointerToRawData - (pointerToRawData % WINDOWS_IMAGE_RAW_ALIGNMENT);
   return {
@@ -56,8 +95,11 @@ function seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine) {
   if (!segment.perms?.execute) { reject('section is not executable'); return; }
   const offset = address - segment.address;
   if (offset < 0n || offset >= segment.fileSize) { reject('entrypoint has no file-backed instruction byte'); return; }
+  // RISC-V base ISA is IALIGN=32 (4-byte); the issue only demands rejecting
+  // non-instruction-boundary addresses, and 2 is the loosest legal IALIGN, so
+  // 2-byte alignment is the fail-closed floor for RISC-V entrypoints (#5545).
   const alignment = machine === 0xaa64 || machine === 0x01c0 ? 4n
-    : machine === 0x01c4 ? 2n
+    : machine === 0x5032 || machine === 0x5064 || machine === 0x01c4 ? 2n
     : 1n;
   if (address % alignment !== 0n) { reject(`address is not ${alignment}-byte aligned`); return; }
   image.metadata.entrypointValid = true;
@@ -118,8 +160,10 @@ export function parsePE(input, options = {}) {
   const bits = magic === 0x20b ? 64 : 32;
   const minimumOptionalSize = bits === 64 ? 112 : 96;
   if (sizeOptional < minimumOptionalSize) throw new Error(`PE optional header size ${sizeOptional} is smaller than ${minimumOptionalSize}`);
+  validatePEMachineMagic(machine, bits);
   const entryRva = r.u32(opt + 16);
   const imageBase = bits === 64 ? r.u64(opt + 24) : BigInt(r.u32(opt + 28));
+  if (imageBase % WINDOWS_IMAGE_BASE_ALIGNMENT !== 0n) throw new Error(`PE ImageBase 0x${imageBase.toString(16)} is not 64 KiB aligned`);
   const sectionAlignment = r.u32(opt + 32);
   const fileAlignment = r.u32(opt + 36);
   const sizeOfImage = r.u32(opt + 56);
@@ -153,7 +197,10 @@ export function parsePE(input, options = {}) {
   if (numberOfSections > 4096 || secBase + numberOfSections * 40 > r.length) throw new Error('PE section table is invalid');
   for (let i = 0; i < numberOfSections; i++) {
     const p = secBase + i * 40;
-    const name = resolveCoffSectionName(r, r.ascii(p, 8), ptrSymbols, numberOfSymbols);
+    // Executable-image section-table names are literal 8-byte fields. The
+    // /NNN indirection belongs to COFF object-file section names; using it
+    // here can replace an image section's identity with unrelated symbol data.
+    const name = r.ascii(p, 8);
     const virtualSize = r.u32(p + 8);
     const virtualAddress = r.u32(p + 12);
     const sizeRaw = r.u32(p + 16);
@@ -171,7 +218,7 @@ export function parsePE(input, options = {}) {
     const beyondRvaDomain = endRva > rvaLimit;
     const beyondSizeOfImage = endRva > BigInt(sizeOfImage);
     const virtualRangeInvalid = beyondRvaDomain || beyondSizeOfImage;
-    const rawMapping = windowsImageSectionRawMapping(ptrRaw);
+    const rawMapping = windowsImageSectionRawMapping(ptrRaw, { sectionAlignment });
     const rawSize = windowsImageSectionRawSize(sizeRaw, fileAlignment, sectionAlignment);
     const availableFileBytes = rawMapping.fileBacked ? Math.max(0, bytes.length - rawMapping.effectiveFileOffset) : 0;
     const rawAvailableNumber = rawMapping.fileBacked ? Math.min(rawSize.effectiveRawSize, availableFileBytes) : 0;
@@ -186,7 +233,7 @@ export function parsePE(input, options = {}) {
       sizeOfRawData: sizeRaw,
       fileBacked: rawMapping.fileBacked,
       roundedDown: rawMapping.roundedDown,
-      policy: 'windows-image-loader-0x200-round-down',
+      policy: rawMapping.policy || 'windows-image-loader-0x200-round-down',
     });
     image.metadata.peSectionRawSizes.push({
       sectionIndex: i + 1,

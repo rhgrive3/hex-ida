@@ -7,9 +7,12 @@ function makeClass(descriptor, bytecode, { fieldTag = 9 } = {}) {
     moduleId: 'managed-mod:test',
     vmSpecEdition: 'java-se-17',
     thisClassName: 'pkg/Test',
+    // #7861: volatility authority binds when the field owner IS the current
+    // class; the declared field row makes the non-volatile flag resolvable.
+    fields: [{ accessFlags: 0, name: 'value', descriptor }],
     constantPool: [
       null,
-      { tag: 1, value: 'pkg/Owner' },
+      { tag: 1, value: 'pkg/Test' },
       { tag: 7, nameIndex: 1 },
       { tag: 1, value: 'value' },
       { tag: 1, value: descriptor },
@@ -57,11 +60,13 @@ for (const invalid of [
   assert.equal(classifyJvmFieldDescriptor(invalid), null, `must reject invalid field descriptor ${invalid}`);
 }
 
-const resolved = resolveJvmFieldRef(makeClass('J', [0xb2, 0, 6]), 6);
-assert.equal(resolved?.owner, 'pkg/Owner');
+const resolved = resolveJvmFieldRef(makeClass('J', [0xb2, 0, 6]), 6, { resolveDeclaredFlags: true });
+assert.equal(resolved?.owner, 'pkg/Test');
 assert.equal(resolved?.name, 'value');
 assert.equal(resolved?.descriptor, 'J');
 assert.equal(resolved?.slots, 2);
+assert.equal(resolved?.isVolatile, false);
+assert.equal(resolved?.declaredAccessFlags, 0);
 
 const getLong = fieldBundle('J', 0xb2);
 assert.equal(getLong.completeness, 'exact');
@@ -102,5 +107,42 @@ for (const bundle of [
   assert.ok(bundle.unknownEffects.some((effect) => effect.category === 'stack'));
   assert.ok(bundle.unknownEffects.some((effect) => effect.category === 'memory'));
 }
+
+// #7861: an external owner cannot resolve the declared ACC_VOLATILE flag, so
+// the access must not be published as an exact plain access.
+const external = {
+  moduleId: 'managed-mod:test',
+  vmSpecEdition: 'java-se-17',
+  thisClassName: 'pkg/Test',
+  fields: [],
+  constantPool: [
+    null,
+    { tag: 1, value: 'pkg/Owner' },
+    { tag: 7, nameIndex: 1 },
+    { tag: 1, value: 'value' },
+    { tag: 1, value: 'J' },
+    { tag: 12, nameIndex: 3, descriptorIndex: 4 },
+    { tag: 9, classIndex: 2, nameAndTypeIndex: 5 },
+  ],
+  methods: [{
+    accessFlags: 0x0009,
+    name: 'm',
+    descriptor: '()V',
+    code: { maxStack: 8, maxLocals: 1, offset: 0, exceptionTable: [], bytecode: Uint8Array.from([0xb2, 0x00, 0x06, 0xb1]) },
+  }],
+};
+const externalBundle = liftJvmMethod(0, external).bundles[0];
+assert.equal(externalBundle.completeness, 'partial');
+assert.ok(externalBundle.unknownEffects.some((effect) => effect.reason === 'jvm-field-volatility-unresolvable'));
+assert.equal(externalBundle.memoryEffects[0].isVolatile, undefined);
+
+// #7861: a declared volatile field keeps the access exact and carries the
+// synchronizes-with ordering authority.
+const volatileImage = makeClass('J', [0xb2, 0x00, 0x06, 0xb1]);
+volatileImage.fields = [{ accessFlags: 0x0040, name: 'value', descriptor: 'J' }];
+const volatileBundle = liftJvmMethod(0, volatileImage).bundles[0];
+assert.equal(volatileBundle.completeness, 'exact');
+assert.equal(volatileBundle.memoryEffects[0].isVolatile, true);
+assert.equal(volatileBundle.memoryEffects[0].ordering, 'synchronizes-with');
 
 console.log('jvm field descriptor semantics #3929: PASS');

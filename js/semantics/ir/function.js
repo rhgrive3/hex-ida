@@ -1,5 +1,5 @@
 import { deepFreeze, stableStringify } from '../../core/identity/index.js';
-import { createOriginSet } from '../../core/identity/origin.js';
+import { createOriginSet, isReusableOriginSet } from '../../core/identity/origin.js';
 import {
   SEMANTIC_IR_CONTRACT_VERSION,
   SEMANTIC_IR_SCHEMA_VERSION,
@@ -12,6 +12,7 @@ import {
   fail,
   nonEmpty,
   object,
+  positiveInteger,
   requiredOrigin,
   serializable,
   sortedUniqueStrings,
@@ -42,8 +43,16 @@ function normalizeFunctionUnknown(input) {
 }
 
 function assertVersion(input) {
-  if (input.schemaVersion != null && Number(input.schemaVersion) !== SEMANTIC_IR_SCHEMA_VERSION) fail('semantic-ir-schema-version-mismatch');
-  if (input.contractVersion != null && String(input.contractVersion) !== SEMANTIC_IR_CONTRACT_VERSION) fail('semantic-ir-contract-version-mismatch');
+  const schemaVersion = input.schemaVersion;
+  if (schemaVersion != null
+      && (typeof schemaVersion !== 'number' || schemaVersion !== SEMANTIC_IR_SCHEMA_VERSION)) {
+    fail('semantic-ir-schema-version-mismatch');
+  }
+  const contractVersion = input.contractVersion;
+  if (contractVersion != null
+      && (typeof contractVersion !== 'string' || contractVersion !== SEMANTIC_IR_CONTRACT_VERSION)) {
+    fail('semantic-ir-contract-version-mismatch');
+  }
 }
 
 const REFERENCE_COUNT_OVERFLOW = Number.MAX_SAFE_INTEGER + 1;
@@ -107,6 +116,11 @@ function cloneReferenceTarget(value) {
 function cacheReferenceReads(value, seen = new WeakMap()) {
   if (!value || typeof value !== 'object'
     || ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date) return value;
+  // Only this producer-owned, recursively checked immutable payload is safe
+  // to retain. Proxying it would discard the normalizer's ownership brand and
+  // copy/normalize the whole provenance tree again for each semantic entity.
+  // Caller-owned frozen objects, accessors and mutable children still capture.
+  if (isReusableOriginSet(value)) return value;
   const cached = seen.get(value);
   if (cached) return cached;
   const target = needsReferenceClone(value) ? cloneReferenceTarget(value) : value;
@@ -200,6 +214,26 @@ function countRawReferences(blocks, values, nodes, seen) {
   return count;
 }
 
+function sameStringSequence(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function callInputsMatchNode(node) {
+  const argumentInputs = node.call.arguments;
+  // An unresolved call with no target or argument summary may still carry
+  // opaque generic inputs for conservative accounting. There is no embedded
+  // I/O claim to contradict in that shape, so preserve the legacy boundary.
+  if (node.call.targetEntityIds.length === 0
+    && node.call.targetValueIds.length === 0
+    && argumentInputs.length === 0) return true;
+  // Direct calls and enriched indirect calls keep the target separate from
+  // the ABI argument list; ABI-neutral lowering may also expose the target as
+  // the leading generic input. Both are canonical, but no third value may
+  // appear in either representation.
+  if (sameStringSequence(node.inputs, argumentInputs)) return true;
+  return sameStringSequence(node.inputs, [...node.call.targetValueIds, ...argumentInputs]);
+}
+
 function validateNormalizedFunction(out, options) {
   assertNotAborted(options);
   const blockById = new Map();
@@ -243,8 +277,25 @@ function validateNormalizedFunction(out, options) {
       if (!value) fail('semantic-ir-dangling-value-id');
       if (value.kind !== 'definition' || value.definitionNodeId !== node.id) fail('semantic-ir-output-definition-mismatch');
     }
+    if (node.kind === 'zext' || node.kind === 'sext') {
+      // Canonical extension type relation (#4576): a zext/sext may exist as a
+      // canonical exact operation only when its declared source/target widths
+      // equal the machine types on both sides. This is the non-bypassable
+      // boundary check; the lowering-side guard stays as defense in depth.
+      const fromBits = positiveInteger(node.attributes?.fromBits, 'semantic-ir-extension-width-attributes-required');
+      const toBits = positiveInteger(node.attributes?.toBits, 'semantic-ir-extension-width-attributes-required');
+      if (toBits < fromBits) fail('semantic-ir-extension-width-relation-invalid');
+      if (node.inputs.length !== 1 || node.outputs.length !== 1) fail('semantic-ir-extension-operand-count-invalid');
+      const extensionInput = valueById.get(node.inputs[0]);
+      const extensionOutput = valueById.get(node.outputs[0]);
+      if (!extensionInput || !extensionOutput) fail('semantic-ir-dangling-value-id');
+      if (extensionInput.machineType.widthBits !== fromBits) fail('semantic-ir-extension-input-width-mismatch');
+      if (extensionOutput.machineType.widthBits !== toBits) fail('semantic-ir-extension-output-width-mismatch');
+    }
     if (node.memory && !valueById.has(node.memory.addressExpr.valueId)) fail('semantic-ir-dangling-address-value-id');
     if (node.call) {
+      if (!callInputsMatchNode(node)) fail('semantic-ir-call-input-mismatch');
+      if (!sameStringSequence(node.outputs, node.call.returns)) fail('semantic-ir-call-output-mismatch');
       for (const id of [...node.call.targetValueIds, ...node.call.arguments, ...node.call.returns]) {
         if (!valueById.has(id)) fail('semantic-ir-dangling-call-value-id');
       }
@@ -255,6 +306,8 @@ function validateNormalizedFunction(out, options) {
       }
     }
     if (node.intrinsic) {
+      if (!sameStringSequence(node.inputs, node.intrinsic.inputs)) fail('semantic-ir-intrinsic-input-mismatch');
+      if (!sameStringSequence(node.outputs, node.intrinsic.outputs)) fail('semantic-ir-intrinsic-output-mismatch');
       for (const id of [...node.intrinsic.inputs, ...node.intrinsic.outputs]) {
         if (!valueById.has(id)) fail('semantic-ir-dangling-intrinsic-value-id');
       }
@@ -273,7 +326,10 @@ function validateNormalizedFunction(out, options) {
     if (!node || !node.outputs.includes(value.id)) fail('semantic-ir-value-definition-mismatch');
   }
 
-  const hasUnknownNode = out.nodes.some((node) => SEMANTIC_SETS.unknownOperations.has(node.kind) || node.completeness !== 'complete');
+  // A node-local unknown payload is explicit unknown evidence even on an
+  // ordinary node, so it must keep the function from claiming completeness
+  // (defense in depth alongside the constructor's own conflict check; #5390).
+  const hasUnknownNode = out.nodes.some((node) => SEMANTIC_SETS.unknownOperations.has(node.kind) || node.completeness !== 'complete' || node.unknown != null);
   if (out.completeness === 'complete' && (hasUnknownNode || out.unknowns.length)) fail('semantic-ir-completeness-conflict');
   if (out.completeness !== 'complete' && out.unknowns.length === 0) fail('semantic-ir-function-unknowns-required');
 }
@@ -296,18 +352,20 @@ export function createSemanticIrFunction(input, options = {}) {
   // Preflight the complete reference denominator before nested normalization.
   assertWithinBudget(countRawReferences(rawBlocks, rawValues, rawNodes, referenceReads), options, 'maxReferences');
 
+  // Fixed UTF-16 code-unit order keeps canonical serialization locale independent (#5765).
+  const compareCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
   const out = {
     schemaVersion: SEMANTIC_IR_SCHEMA_VERSION,
     contractVersion: SEMANTIC_IR_CONTRACT_VERSION,
     functionId: nonEmpty(input.functionId, 'semantic-ir-function-id-required'),
     entryBlockId: nonEmpty(input.entryBlockId, 'semantic-ir-entry-block-required'),
-    blocks: rawBlocks.map((block) => normalizeBlock(cacheReferenceReads(block, referenceReads))).sort((a, b) => a.id.localeCompare(b.id)),
-    values: rawValues.map((value) => createSemanticValue(cacheReferenceReads(value, referenceReads))).sort((a, b) => a.id.localeCompare(b.id)),
-    nodes: rawNodes.map((node) => createSemanticNode(cacheReferenceReads(node, referenceReads))).sort((a, b) => a.id.localeCompare(b.id)),
+    blocks: rawBlocks.map((block) => normalizeBlock(cacheReferenceReads(block, referenceReads))).sort((a, b) => compareCodeUnit(a.id, b.id)),
+    values: rawValues.map((value) => createSemanticValue(cacheReferenceReads(value, referenceReads))).sort((a, b) => compareCodeUnit(a.id, b.id)),
+    nodes: rawNodes.map((node) => createSemanticNode(cacheReferenceReads(node, referenceReads))).sort((a, b) => compareCodeUnit(a.id, b.id)),
     completeness: enumValue(input.completeness ?? 'complete', SEMANTIC_SETS.completeness, 'semantic-ir-invalid-function-completeness'),
     unknowns: array(input.unknowns ?? [], 'semantic-ir-invalid-function-unknowns')
       .map(normalizeFunctionUnknown)
-      .sort((a, b) => stableStringify(a).localeCompare(stableStringify(b))),
+      .sort((a, b) => compareCodeUnit(stableStringify(a), stableStringify(b))),
     origin: requiredOrigin(input, 'semantic-ir-function-origin-required'),
   };
   assertWithinBudget(countReferences(out.nodes, out.values, out.blocks), options, 'maxReferences');

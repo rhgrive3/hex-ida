@@ -86,17 +86,30 @@ function buildLocalSigPeCli({
   if (includeBlobStream) addStream(0x100, 0x40, '#Blob');
 
   const tablesOffset = metadataOffset + 0x80;
-  let valid = 1n << 6n; // MethodDef
+  // ECMA-335 II.22.26 rule 2: the MethodDef row needs a TypeDef owner, so the
+  // fixture declares a TypeDef table with one owning row (#7301).
+  let valid = (1n << 2n) | (1n << 6n); // TypeDef, MethodDef
   if (includeStandAloneSig) valid |= 1n << 17n;
   view.setUint32(tablesOffset + 8, Number(valid & 0xffffffffn), true);
   view.setUint32(tablesOffset + 12, Number(valid >> 32n), true);
   let tablePos = tablesOffset + 24;
+  view.setUint32(tablePos, 1, true); // one TypeDef
+  tablePos += 4;
   view.setUint32(tablePos, 1, true); // one MethodDef
   tablePos += 4;
   if (includeStandAloneSig) {
     view.setUint32(tablePos, 1, true); // one StandAloneSig
     tablePos += 4;
   }
+
+  // TypeDef row (14 bytes): Flags, Name, Namespace, Extends, FieldList, MethodList.
+  // Name/Namespace stay at index 0 (legacy null) because this fixture has no #Strings.
+  view.setUint32(tablePos, 0, true); tablePos += 4;
+  view.setUint16(tablePos, 0, true); tablePos += 2;
+  view.setUint16(tablePos, 0, true); tablePos += 2;
+  view.setUint16(tablePos, 0, true); tablePos += 2; // Extends = null
+  view.setUint16(tablePos, 1, true); tablePos += 2; // FieldList
+  view.setUint16(tablePos, 1, true); tablePos += 2; // MethodList
 
   // MethodDef row: RVA + ImplFlags + Flags + Name + Signature + ParamList.
   view.setUint32(tablePos, 0x2300, true);
@@ -201,10 +214,11 @@ test('#5350 truncated operands fail closed with a typed error', () => {
     assert.throws(() => liftCilMethod(0, bad), /cil-truncated-operand/,
       `truncated ${[...bytecode].map((b) => b.toString(16))} must not lift`);
   }
-  // Complete operands still lift exactly.
+  // Complete operands lift; the metadata-light fixture keeps unresolved ret
+  // semantics partial rather than claiming an exact return shape.
   const good = liftCilMethod(0, image);
   assert.equal(good.bundles[0].mnemonic, 'ldc.i4.5');
-  assert.equal(good.aggregateCompleteness, 'exact');
+  assert.equal(good.aggregateCompleteness, 'partial');
 });
 
 test('#5356 filter clauses publish filterOffset, not catchToken', () => {

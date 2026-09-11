@@ -39,9 +39,32 @@ const VECTOR_VARIANT_CALLEE_SAVED = Object.freeze([
   ...Array.from({ length:7 }, (_unused, index) => `v${1 + index}`),
   ...Array.from({ length:8 }, (_unused, index) => `v${24 + index}`),
 ]);
+// psABI vector calling convention variant: v0 and v8-v23 (the vector argument
+// window) are caller-clobbered; v1-v7 and v24-v31 are callee-saved. `vstart`
+// is deliberately absent from every preservation list: per the psABI it is
+// not a plain caller-saved register but a dedicated zero-on-call-boundary
+// contract (see RISCV_VECTOR_VSTART_CONTRACT) (#5707).
 const VECTOR_VARIANT_CALLER_SAVED = Object.freeze([
-  'v0', ...VECTOR_ARGUMENT_REGISTERS, 'vl', 'vtype', 'vxrm', 'vxsat', 'vstart',
+  'v0', ...VECTOR_ARGUMENT_REGISTERS, 'vl', 'vtype', 'vxrm', 'vxsat',
 ]);
+// Standard psABI vector convention: v0-v31 are all temporaries (not preserved
+// across calls) and vl/vtype/vxrm/vxsat carry no cross-call guarantee, so an
+// unknown call may clobber all of them regardless of the float ABI in force
+// (#5707).
+const ALL_VECTOR_REGISTERS = Object.freeze(Array.from({ length:32 }, (_unused, index) => `v${index}`));
+const VECTOR_CSR_CALLER_SAVED = Object.freeze(['vl', 'vtype', 'vxrm', 'vxsat']);
+
+// Keep the registry vocabulary and both argument/return classifiers on one
+// alias set. LLVM/Clang commonly emits the underscore spelling while the
+// repository's canonical ABI identity uses the hyphen spelling.
+export const RISCV_VECTOR_CALLING_CONVENTION_ALIASES = Object.freeze([
+  'riscv-vector-variant', 'riscv_vector_cc',
+]);
+
+function canonicalRiscvVectorCallingConvention(value) {
+  const text = String(value ?? '').trim().toLowerCase();
+  return text === 'riscv_vector_cc' ? 'riscv-vector-variant' : text;
+}
 
 const ABI_ALIAS = Object.freeze({
   x1:'ra', x2:'sp', x3:'gp', x4:'tp', x5:'t0', x6:'t1', x7:'t2', x8:'s0', x9:'s1',
@@ -97,17 +120,55 @@ function vectorDescriptor(parameter) {
   const type = String(parameter?.type || '').toLowerCase();
   const abiClass = String(parameter?.abiClass || parameter?.class || parameter?.kind || '').toLowerCase();
   const vector = parameter?.vector === true || parameter?.isVector === true
-    || /\b(?:vbool|v(?:u?int|float)\d+mf?\d+_t|vector)\b/.test(type)
+    || /\b(?:vbool(?:1|2|4|8|16|32|64)_t|v(?:u?int|float)\d+mf?\d+(?:x\d+)?_t|vector)\b/.test(type)
     || /vector/.test(abiClass);
   if (!vector) return null;
   const mask = parameter?.mask === true || parameter?.vectorMask === true || /\bvbool|mask/.test(`${type} ${abiClass}`);
-  const explicitLmul = Number(parameter?.lmul ?? parameter?.LMUL);
+  const explicitLmulRaw = parameter?.lmul ?? parameter?.LMUL;
+  const explicitLmul = Number(explicitLmulRaw);
   const parsed = /m(1|2|4|8)(?:_t|\b)/.exec(type);
-  const lmul = Number.isInteger(explicitLmul) && [1,2,4,8].includes(explicitLmul)
-    ? explicitLmul : parsed ? Number(parsed[1]) : 1;
-  const tupleCount = Math.max(1, Math.min(8, Number(parameter?.tupleCount ?? parameter?.nf ?? 1) || 1));
+  // Standard RVV tuple typedefs spell the group multiplier and field count as
+  // `m<LMUL>x<NFIELDS>` (e.g. vint32m2x3_t). The bare `m<LMUL>(?:_t|\b)` scan
+  // cannot match them — 'm2' is followed by 'x' — and without an NFIELDS path
+  // the tuple silently degraded to LMUL=1/NFIELDS=1, i.e. one register for a
+  // 6-register tuple (#5628). The descriptor must never reconcile conflicting
+  // evidence or out-of-range NFIELDS silently: both fail closed as `conflict`
+  // so placement stays partial instead of minting an exact group (#5628).
+  const tupleMatch = /m(f?)(1|2|4|8)x(\d+)(?:_t|\b)/.exec(type);
+  // A spelling that carries the tuple shape (m<LMUL>x<NFIELDS>_t) but parses to
+  // no valid descriptor (nonstandard m3x2/m9x2) is conflicting evidence — never
+  // a default 1/1 group, and never an integer-convention exact fallback (#6018).
+  // Fractional tuple LMULs (e.g. vint8mf8x2_t) occupy one register per field with
+  // 1-register alignment, so their occupancy multiplier normalizes to 1; the
+  // explicit-metadata conflict comparison still sees that normalized value.
+  const tupleShaped = /mf?\d+x\d+_t/.test(type);
+  const tupleFractional = tupleMatch?.[1] === 'f';
+  const parsedLmul = tupleMatch
+    ? (tupleFractional ? 1 : Number(tupleMatch[2]))
+    : parsed ? Number(parsed[1]) : null;
+  const parsedNf = tupleMatch ? Number(tupleMatch[3]) : null;
+  const explicitLmulValid = Number.isInteger(explicitLmul) && [1,2,4,8].includes(explicitLmul);
+  let conflict = false;
+  if (tupleShaped && !tupleMatch) conflict = true;
+  else if (explicitLmulRaw != null && !explicitLmulValid) conflict = true;
+  else if (explicitLmulValid && parsedLmul != null && parsedLmul !== explicitLmul) conflict = true;
+  const lmul = explicitLmulValid ? explicitLmul : parsedLmul ?? 1;
+  const explicitNfRaw = parameter?.tupleCount ?? parameter?.nf;
+  const explicitNf = Number(explicitNfRaw);
+  let tupleCount;
+  if (explicitNfRaw == null) {
+    tupleCount = parsedNf ?? 1;
+  } else if (Number.isSafeInteger(explicitNf) && explicitNf >= 1 && explicitNf <= 8) {
+    tupleCount = explicitNf;
+    if (parsedNf != null && parsedNf !== explicitNf) conflict = true;
+  } else {
+    conflict = true;
+  }
+  if (parsedNf != null && (parsedNf < 1 || parsedNf > 8 || parsedLmul * parsedNf > 8)) conflict = true;
   const fixedLength = parameter?.fixedLengthVector === true || /fixed[-_ ]?length/.test(abiClass);
-  return { mask, lmul, tupleCount, fixedLength };
+  return conflict
+    ? { mask, lmul, tupleCount, fixedLength, conflict:true }
+    : { mask, lmul, tupleCount, fixedLength };
 }
 
 function aggregateMembers(parameter) {
@@ -159,8 +220,10 @@ function callSymbol(instruction, options) {
 }
 
 function vectorVariantRequested(instruction, options, prototype) {
-  const explicit = String(instruction?.callingConvention || prototype?.callingConvention || options?.callingConvention || '').toLowerCase();
-  if (explicit === 'riscv-vector-variant' || explicit === 'riscv_vector_cc') return true;
+  const explicit = canonicalRiscvVectorCallingConvention(
+    instruction?.callingConvention || prototype?.callingConvention || options?.callingConvention,
+  );
+  if (explicit === 'riscv-vector-variant') return true;
   return callSymbol(instruction, options)?.riscvVariantCc === true;
 }
 
@@ -181,12 +244,23 @@ function parameterList(prototype) {
 function parameterClass(parameter) {
   const type = String(parameter?.type || parameter?.name || '').trim().toLowerCase();
   const abiClass = String(parameter?.abiClass || parameter?.class || parameter?.kind || '').trim().toLowerCase();
-  const pointer = parameter?.pointer === true || parameter?.isPointer === true || /\*|pointer|ptr|object/.test(`${type} ${abiClass}`);
+  const pointer = parameter?.pointer === true || parameter?.isPointer === true
+    || /\*|\b(?:pointer|ptr|object)\b/.test(`${type} ${abiClass}`);
   const aggregate = !pointer && (parameter?.aggregate === true || parameter?.isAggregate === true
     || aggregateLayoutDescriptorPresent(parameter) || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
   const vector = !aggregate ? vectorDescriptor(parameter) : null;
   const floating = !aggregate && !vector && (parameter?.floating === true || isFloatingType(type) || /\bfp\b/.test(abiClass));
   const declaredBits = parameter?.bits ?? parameter?.sizeBits;
+  // Width aliases must agree when several are declared: a silent `bits`-wins
+  // pick would launder conflicting evidence into an exact placement (#5713).
+  const declaredWidthAliases = [parameter?.bits, parameter?.sizeBits].filter((alias) => alias != null);
+  const widthConflict = declaredWidthAliases.length > 1
+    && new Set(declaredWidthAliases.map((alias) => Number(alias))).size > 1;
+  // Exact placement of a fixed-length vector needs a *declared* width: the
+  // type name alone carries no size, so the riscvTypeBits fallback must not
+  // stand in for one (#5713).
+  const bitsDeclared = !widthConflict && declaredBits != null
+    && Number.isSafeInteger(Number(declaredBits)) && Number(declaredBits) > 0;
   const aggregateLayout = aggregate ? canonicalAggregateLayout(parameter) : null;
   const aggregateLayoutProven = !aggregate || aggregateLayout != null;
   const declaredBitsNumber = Number(aggregateLayout?.bits ?? declaredBits);
@@ -197,7 +271,11 @@ function parameterClass(parameter) {
   const bytes = aggregate
     ? aggregateLayout?.bytes ?? (bits > 0 ? Math.ceil(bits / 8) : 0)
     : bits > 0 ? Math.ceil(bits / 8) : 0;
-  return { type, abiClass, pointer, aggregate, aggregateLayoutProven, aggregateLayout, floating, vector, bits, bytes };
+  // C++ call-triviality evidence: positive proof only. Absence cannot prove
+  // triviality, while any explicit nontrivial evidence selects the sound
+  // by-reference convention (#5623).
+  const nonTrivialForCalls = aggregate && (parameter?.nonTrivialForCalls === true || parameter?.nonTrivial === true);
+  return { type, abiClass, pointer, aggregate, aggregateLayoutProven, aggregateLayout, floating, vector, bits, bytes, nonTrivialForCalls, bitsDeclared, widthConflict };
 }
 
 function registerSource(reg, bits = XLEN, extra = {}) {
@@ -283,6 +361,13 @@ function createClassifier(profile) {
     let allocationUnknown = false;
     const vectorVariant = vectorVariantRequested(instruction, options, prototype);
     let vectorCursor = 8;
+    // psABI vector calling convention allocation state: only the FIRST mask
+    // argument is v0; every later mask and all data/tuple arguments allocate
+    // an unused, LMUL-aligned group from v8..v23. The search restarts at v8
+    // for every argument so a smaller later argument can reuse the alignment
+    // hole a larger earlier one left behind (#5615).
+    const usedVectorRegisters = new Set();
+    let maskAllocated = false;
 
     function useInteger(reg, extra = {}) {
       if (!seen.has(reg)) { seen.add(reg); srcs.push(registerSource(reg, XLEN, extra)); }
@@ -300,15 +385,46 @@ function createClassifier(profile) {
         partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown', ...extra });
     }
     function allocateVectorGroup(descriptor) {
-      if (descriptor.mask) return ['v0'];
+      if (descriptor.mask && !maskAllocated) { maskAllocated = true; usedVectorRegisters.add('v0'); return ['v0']; }
       if (descriptor.fixedLength && !(Number(options?.abiVlen) > 0)) return null;
       const group = descriptor.lmul * descriptor.tupleCount;
-      let start = vectorCursor;
-      while (start <= 23 && (start % descriptor.lmul) !== 0) start += 1;
+      // Re-scan from v8 for every argument: the psABI allocator explicitly
+      // allows a later, smaller argument to take a register BELOW the previous
+      // argument's allocation when alignment left a hole (#5615).
+      let start = 8;
+      while (start <= 23 && ((start % descriptor.lmul) !== 0
+        || Array.from({ length:group }, (_unused, index) => start + index).some((reg) => usedVectorRegisters.has(`v${reg}`)))) start += 1;
       if (start + group - 1 > 23) return null;
-      vectorCursor = start + group;
+      for (let reg = start; reg < start + group; reg++) usedVectorRegisters.add(`v${reg}`);
+      vectorCursor = Math.max(vectorCursor, start + group);
       return Array.from({ length:group }, (_unused, index) => `v${start + index}`);
     }
+    /*
+     * psABI hardware floating-point flattening recurses through the full
+     * struct/array hierarchy: `struct { struct { float f[1]; } a[2]; }` is
+     * classified exactly like `struct { float f0; float f1; }`. Leaves carry
+     * their proven absolute byte span so register placement can be validated
+     * against the physical layout. A nested aggregate without a proven layout,
+     * or a leaf that is neither a FP real nor an integer, keeps the previous
+     * fail-closed ineligibility (integer convention, still exact) (#5619).
+     */
+    function collectFlattenLeaves(member, offset) {
+      const classifiedMember = parameterClass(member);
+      if (classifiedMember.vector || (!classifiedMember.floating && classifiedMember.bits > XLEN)) return null;
+      if (!classifiedMember.aggregate) {
+        return [{ member:classifiedMember, byteOffset:offset, bytes:Math.ceil(classifiedMember.bits / 8) }];
+      }
+      const nestedCanonical = canonicalAggregateLayout(member);
+      if (!nestedCanonical) return null;
+      const leaves = [];
+      for (const nested of nestedCanonical.members) {
+        const nestedLeaves = collectFlattenLeaves(nested, offset + nested.byteOffset);
+        if (!nestedLeaves) return null;
+        leaves.push(...nestedLeaves);
+      }
+      return leaves;
+    }
+
     function flattenAggregate(parameter) {
       const canonical = canonicalAggregateLayout(parameter);
       const members = canonical?.members ?? aggregateMembers(parameter);
@@ -319,11 +435,33 @@ function createClassifier(profile) {
         ? { bytes:canonical.bytes, members:canonical.members }
         : aggregateMemberLayout(members, classifiedMembers);
       if (!layout) return null;
-      if (classifiedMembers.some((member) => member.aggregate || member.vector || member.bits > XLEN)) return { eligible:false, known:true };
-      const floatMembers = classifiedMembers.filter((member) => member.floating && member.bits <= abiFlen);
-      if (!floatMembers.length || classifiedMembers.some((member) => member.floating && member.bits > abiFlen)) return { eligible:false, known:true };
-      if (classifiedMembers.some((member) => !member.floating && member.bits > XLEN)) return { eligible:false, known:true };
-      return { eligible:true, known:true, members:classifiedMembers, layout };
+      const leaves = [];
+      for (const [memberIndex, member] of members.entries()) {
+        if (!classifiedMembers[memberIndex].aggregate) {
+          const classifiedMember = classifiedMembers[memberIndex];
+          if (classifiedMember.vector || classifiedMember.bits > XLEN) return { eligible:false, known:true };
+          leaves.push({ member:classifiedMember,
+            byteOffset:layout.members?.[memberIndex]?.byteOffset ?? 0,
+            bytes:layout.members?.[memberIndex]?.bytes ?? Math.ceil(classifiedMember.bits / 8) });
+          continue;
+        }
+        const nestedLeaves = collectFlattenLeaves(member, layout.members?.[memberIndex]?.byteOffset ?? 0);
+        // An unproven nested layout leaves FP-eligibility undecidable: fail
+        // closed to unknown instead of minting an exact integer slot (#5619).
+        if (!nestedLeaves) return null;
+        leaves.push(...nestedLeaves);
+      }
+      if (!leaves.length || leaves.length > 2) return { eligible:false, known:true };
+      const flattenMembers = leaves.map((leaf) => leaf.member);
+      const floatMembers = flattenMembers.filter((member) => member.floating && member.bits <= abiFlen);
+      if (!floatMembers.length || flattenMembers.some((member) => member.floating && member.bits > abiFlen)) return { eligible:false, known:true };
+      if (flattenMembers.some((member) => !member.floating && member.bits > XLEN)) return { eligible:false, known:true };
+      return {
+        eligible:true,
+        known:true,
+        members:flattenMembers,
+        layout:{ bytes:canonical?.bytes ?? layout.bytes, members:leaves.map((leaf) => ({ byteOffset:leaf.byteOffset, bytes:leaf.bytes })) },
+      };
     }
 
     /*
@@ -358,7 +496,7 @@ function createClassifier(profile) {
       : parameters.length;
 
     parameters.forEach((parameter, index) => {
-      const classified = parameterClass(parameter);
+      let classified = parameterClass(parameter);
       const variadicArgument = variadic && (
         parameter?.variadic === true || parameter?.unnamed === true || parameter?.named === false || index >= fixedParameterCount
       );
@@ -377,9 +515,45 @@ function createClassifier(profile) {
         return;
       }
 
-      if (classified.vector) {
-        if (!vectorVariant) {
-          unknownArgument(index, classified, 'vector-calling-convention-unknown', { candidates:['riscv-vector-variant','non-vector-fallback'] });
+      if (classified.vector && !vectorVariant) {
+        /*
+         * psABI base integer calling convention: "Fixed-length vectors are
+         * treated as aggregates." Under the standard convention a fixed-length
+         * vector therefore follows the aggregate size rules (a0-a7 / stack /
+         * by-reference) instead of degrading to 'unknown' (#5713). Scalable
+         * RVV vectors still require the vector variant, and a conflicting
+         * descriptor stays fail-closed (#6018).
+         */
+        if (classified.vector.fixedLength === true && classified.vector.conflict !== true) {
+          if (classified.widthConflict) {
+            unknownArgument(index, classified, 'fixed-vector-width-evidence-conflict', {});
+            return;
+          }
+          if (!(classified.bits > 0 && classified.bitsDeclared)) {
+            unknownArgument(index, classified, 'fixed-length-vector-size-unproven', { vector:classified.vector });
+            return;
+          }
+          // Present the vector to the shared integer-convention aggregate
+          // placement below. FP flattening never applies: the psABI routes
+          // fixed-length vectors through the *integer* convention (#5713).
+          classified = {
+            ...classified,
+            vector:null,
+            aggregate:true,
+            aggregateLayoutProven:true,
+            fixedVectorAggregate:true,
+          };
+        } else {
+          unknownArgument(index, classified,
+            classified.vector.conflict ? 'vector-descriptor-conflict' : 'vector-calling-convention-unknown',
+            classified.vector.conflict ? { vector:classified.vector } : { candidates:['riscv-vector-variant','non-vector-fallback'] });
+          return;
+        }
+      } else if (classified.vector) {
+        // Conflicting or malformed descriptor evidence (spelling vs explicit
+        // metadata, out-of-range NFIELDS) must not mint an exact group (#5628).
+        if (classified.vector.conflict) {
+          unknownArgument(index, classified, 'vector-descriptor-conflict', { vector:classified.vector });
           return;
         }
         const regs = allocateVectorGroup(classified.vector);
@@ -393,6 +567,23 @@ function createClassifier(profile) {
       }
 
       if (classified.aggregate) {
+        // C++ aggregates with nontrivial copy constructors, destructors, or
+        // vtables are passed by reference regardless of size or FP flattening.
+        if (classified.nonTrivialForCalls) {
+          aggregateProven = true;
+          const reg = INTEGER_ARGUMENT_REGISTERS[integerIndex];
+          if (reg) {
+            integerIndex += 1;
+            useInteger(reg, { purpose:'aggregate-by-reference' });
+            arguments_.push({ index, location:'register', reg, aggregate:true, abiName:ABI_ALIAS[reg], abiClass:'aggregate-by-reference', pointer:true, bits:XLEN, bytes:8, pointeeBits:classified.bits, hiddenIndirection:true, nonTrivialForCalls:true,
+              pieces:[aggregatePiece({ pieceIndex:0, reg, bits:XLEN, bytes:8, byteOffset:0, abiClass:'aggregate-by-reference' })] });
+          } else {
+            const entry = { index, location:'stack', offset:stackOffset, offsetBase:'incoming-stack-arguments', bytes:8, aggregate:true, abiClass:'aggregate-by-reference', pointer:true, bits:XLEN, pointeeBits:classified.bits, hiddenIndirection:true, nonTrivialForCalls:true,
+              pieces:[aggregatePiece({ pieceIndex:0, stackOffset, bits:XLEN, bytes:8, byteOffset:0, abiClass:'aggregate-by-reference' })] };
+            arguments_.push(entry); stackArguments.push(entry); stackOffset += 8; stackArgsMayContainPointers = true;
+          }
+          return;
+        }
         if (!classified.aggregateLayoutProven) {
           aggregatePartial = true;
           unknownArgument(index, classified, 'aggregate-size-layout-unproven', { candidates:['integer-convention','memory-by-reference'] });
@@ -415,10 +606,12 @@ function createClassifier(profile) {
           }
           return;
         }
-        /* Hard-float aggregate flattening is exact only with member evidence. */
+        /* Hard-float aggregate flattening is exact only with member evidence.
+         * A fixed-length vector routed through the integer convention is not
+         * an FP-flattening candidate at all (#5713). */
         const needed = bytes > XLEN / 8 ? 2 : 1;
-        const flattening = hardFloat ? flattenAggregate(parameter) : null;
-        if (hardFloat && flattening == null) {
+        const flattening = hardFloat && !classified.fixedVectorAggregate ? flattenAggregate(parameter) : null;
+        if (hardFloat && flattening == null && !classified.fixedVectorAggregate) {
           aggregatePartial = true;
           unknownArgument(index, classified, 'aggregate-hard-float-layout-unproven', { candidates:['fp-flattening','integer-convention'] });
           return;
@@ -725,7 +918,10 @@ function createClassifier(profile) {
     const aggregate = prototype.aggregate === true || !!returnAggregate || malformedReturnAggregate
       || aggregateLayoutDescriptorPresent(prototype)
       || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
-    const declaredBits = prototype.returnBits ?? prototype.bits ?? options.returnBits;
+    // A call-site options.returnBits is a return-width override (#5636): it
+    // outranks the prototype's own (possibly stale/coarser) width metadata,
+    // matching the scalar override order used by the other ABI surfaces.
+    const declaredBits = options.returnBits ?? prototype.returnBits ?? prototype.bits;
     const declaredBitsNumber = Number(declaredBits);
     // Preserve every top-level and nested descriptor alias until the shared
     // canonicalizer sees it.  Spreading returnAggregate here would let a
@@ -733,8 +929,11 @@ function createClassifier(profile) {
     // creating a second, adapter-specific truth for the return layout.
     const aggregateLayoutParameter = aggregate ? { ...prototype } : null;
     // Return prototypes conventionally call the width `returnBits`; normalize
-    // it to the shared layout descriptor's `bits` field before proving spans.
-    if (aggregateLayoutParameter && Number.isSafeInteger(declaredBitsNumber) && declaredBitsNumber > 0) {
+    // it to the shared layout descriptor's `bits` field only when that alias is
+    // genuinely absent. Every explicit `bits` value, including malformed or
+    // non-numeric evidence, must remain visible to the canonicalizer (#5600).
+    if (aggregateLayoutParameter && Number.isSafeInteger(declaredBitsNumber)
+      && declaredBitsNumber > 0 && !Object.hasOwn(prototype, 'bits')) {
       aggregateLayoutParameter.bits = declaredBitsNumber;
     }
     const aggregateLayout = aggregate
@@ -751,18 +950,69 @@ function createClassifier(profile) {
       ? aggregateLayoutProven ? canonicalDeclaredBits : 0
       : Number(declaredBits ?? riscvTypeBits(type, XLEN));
     const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : 0;
+    // The C++ non-trivial rule is authoritative even when aggregate layout
+    // evidence is absent or padded: the return still uses caller memory.
+    if (aggregate && (prototype.nonTrivialForCalls === true || prototype.nonTrivial === true || prototype.returnNonTrivialForCalls === true)) {
+      return indirectResult();
+    }
     if (aggregate && !aggregateLayoutProven) {
       return { reg:null, bits:null, bytes:null, aggregate:true, partial:true, location:'unknown',
         reason:`${profile.id}-aggregate-return-size-layout-unproven` };
     }
     if (aggregate && aggregateLayout?.bytes > Math.ceil(bits / 8)) {
+      if (aggregateLayout.bytes > 2 * XLEN / 8) return indirectResult();
       return { reg:null, bits, bytes:aggregateLayout.bytes, aggregate:true, partial:true, location:'unknown',
         reason:`${profile.id}-padded-aggregate-return-layout-not-represented` };
     }
     const returnVector = vectorDescriptor({ type, abiClass, ...(prototype.returnVector || {}), vector:prototype.vectorReturn === true || prototype.returnVector?.vector === true, mask:prototype.returnVector?.mask, lmul:prototype.returnVector?.lmul, tupleCount:prototype.returnVector?.tupleCount, fixedLengthVector:prototype.returnVector?.fixedLengthVector });
-    const vectorVariant = String(prototype.callingConvention || options.callingConvention || '').toLowerCase().replace('_cc','-variant') === 'riscv-vector-variant';
+    const vectorVariant = canonicalRiscvVectorCallingConvention(
+      prototype.callingConvention || options.callingConvention,
+    ) === 'riscv-vector-variant';
     if (returnVector) {
-      if (!vectorVariant) return { reg:null, partial:true, location:'unknown', reason:'vector-return-calling-convention-unknown' };
+      if (!vectorVariant) {
+        /*
+         * psABI: a fixed-length vector returns the same way the first named
+         * argument of that type would be passed — an aggregate under the base
+         * integer convention (#5713). <=2*XLEN returns in a0/a1, larger ones
+         * in memory via the hidden result pointer. Scalable vectors still
+         * require the vector variant; conflicting descriptors stay
+         * fail-closed (#6018).
+         */
+        if (returnVector.fixedLength !== true || returnVector.conflict === true) {
+          return returnVector.conflict
+            ? { reg:null, partial:true, location:'unknown', reason:'vector-return-descriptor-conflict', vector:returnVector }
+            : { reg:null, partial:true, location:'unknown', reason:'vector-return-calling-convention-unknown' };
+        }
+        // Prototype-internal width aliases must agree before an exact return
+        // placement is minted. A call-site options.returnBits is the documented
+        // override (#5636) and is not part of the conflict set.
+        const returnWidthAliases = [
+          Object.hasOwn(prototype, 'returnBits') ? prototype.returnBits : null,
+          Object.hasOwn(prototype, 'bits') ? prototype.bits : null,
+        ].filter((alias) => alias != null);
+        if (options?.returnBits == null && returnWidthAliases.length > 1
+          && new Set(returnWidthAliases.map((alias) => Number(alias))).size > 1) {
+          return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-width-evidence-conflict' };
+        }
+        if (!(bits > 0 && Number.isSafeInteger(declaredBitsNumber) && declaredBitsNumber > 0)) {
+          return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-size-unproven' };
+        }
+        if (bits > 2 * XLEN) return indirectResult();
+        const fixedRegs = bits > XLEN ? INTEGER_RETURN_REGISTERS.slice(0, 2) : INTEGER_RETURN_REGISTERS.slice(0, 1);
+        const fixedPieces = fixedRegs.map((reg, pieceIndex) => aggregatePiece({
+          pieceIndex,
+          reg,
+          bits:Math.min(XLEN, Math.max(1, bits - pieceIndex * XLEN)),
+          bytes:8,
+          byteOffset:pieceIndex * 8,
+          abiClass:'aggregate-integer',
+        }));
+        return {
+          reg:fixedRegs[0], regs:fixedRegs, pieces:fixedPieces, bytes:fixedRegs.length * 8,
+          abiNames:fixedRegs.map((reg) => ABI_ALIAS[reg]), bits, aggregate:true, fixedVectorAggregate:true,
+        };
+      }
+      if (returnVector.conflict) return { reg:null, partial:true, location:'unknown', reason:'vector-return-descriptor-conflict', vector:returnVector };
       if (returnVector.fixedLength && !(Number(options?.abiVlen) > 0)) return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-abi-vlen-required' };
       const count = returnVector.mask ? 1 : returnVector.lmul * returnVector.tupleCount;
       if (!returnVector.mask && count > VECTOR_ARGUMENT_REGISTERS.length) return { reg:null, partial:true, location:'unknown', reason:'vector-return-group-too-large' };
@@ -847,35 +1097,78 @@ function createClassifier(profile) {
 function createRiscvAbi(profile) {
   const { classifyArguments, classifyReturn } = createClassifier(profile);
   const abiFlenBits = profile.floatAbi === 'single' ? 32 : profile.floatAbi === 'double' ? 64 : 0;
-  const callerSavedFor = ({ valueWidthBits = null } = {}) => {
-    if (profile.floatAbi === 'soft') return CALLER_SAVED;
-    const width = Number(valueWidthBits);
-    const calleeSavedFpWidthProven = Number.isSafeInteger(width) && width > 0 && width <= abiFlenBits;
-    return calleeSavedFpWidthProven
-      ? Object.freeze([...CALLER_SAVED, ...FLOAT_CALLER_SAVED])
-      : Object.freeze([...CALLER_SAVED, ...ALL_FLOAT_REGISTERS]);
+  // The caller-saved vector set depends on the calling-convention identity in
+  // force: the standard convention leaves every vector register and the vector
+  // CSRs unpreserved, while the riscv_vector_cc variant keeps v1-v7/v24-v31
+  // alive across calls. Requests that do not carry a convention id use the
+  // standard convention's wider (safer) clobber set (#5707).
+  const vectorCallerSavedFor = (request = {}) => {
+    const explicit = canonicalRiscvVectorCallingConvention(
+      request?.callingConvention ?? request?.callingConventionId ?? request?.convention,
+    );
+    return explicit === 'riscv-vector-variant'
+      ? VECTOR_VARIANT_CALLER_SAVED
+      : [...ALL_VECTOR_REGISTERS, ...VECTOR_CSR_CALLER_SAVED];
   };
-  const calleeSavedFor = ({ valueWidthBits = null } = {}) => {
-    if (profile.floatAbi === 'soft') return CALLEE_SAVED;
-    const width = Number(valueWidthBits);
+  const callerSavedFor = (request = {}) => {
+    const vectorCallerSaved = vectorCallerSavedFor(request);
+    if (profile.floatAbi === 'soft') {
+      return Object.freeze([...CALLER_SAVED, ...vectorCallerSaved]);
+    }
+    const width = Number(request?.valueWidthBits);
     const calleeSavedFpWidthProven = Number.isSafeInteger(width) && width > 0 && width <= abiFlenBits;
     return calleeSavedFpWidthProven
-      ? Object.freeze([...CALLEE_SAVED, ...FLOAT_CALLEE_SAVED])
-      : CALLEE_SAVED;
+      ? Object.freeze([...CALLER_SAVED, ...FLOAT_CALLER_SAVED, ...vectorCallerSaved])
+      : Object.freeze([...CALLER_SAVED, ...ALL_FLOAT_REGISTERS, ...vectorCallerSaved]);
+  };
+  // The vector variant's callee-saved vector registers compose with the base
+  // integer/FP callee sets; non-variant requests keep the standard convention
+  // in which no vector register is preserved.
+  const vectorCalleeSavedFor = (request = {}) => {
+    const explicit = canonicalRiscvVectorCallingConvention(
+      request?.callingConvention ?? request?.callingConventionId ?? request?.convention,
+    );
+    return explicit === 'riscv-vector-variant' ? VECTOR_VARIANT_CALLEE_SAVED : [];
+  };
+  const calleeSavedFor = (request = {}) => {
+    const vectorCalleeSaved = vectorCalleeSavedFor(request);
+    if (profile.floatAbi === 'soft') {
+      return vectorCalleeSaved.length
+        ? Object.freeze([...CALLEE_SAVED, ...vectorCalleeSaved]) : CALLEE_SAVED;
+    }
+    const width = Number(request?.valueWidthBits);
+    const calleeSavedFpWidthProven = Number.isSafeInteger(width) && width > 0 && width <= abiFlenBits;
+    return calleeSavedFpWidthProven
+      ? (vectorCalleeSaved.length
+        ? Object.freeze([...CALLEE_SAVED, ...FLOAT_CALLEE_SAVED, ...vectorCalleeSaved])
+        : Object.freeze([...CALLEE_SAVED, ...FLOAT_CALLEE_SAVED]))
+      : (vectorCalleeSaved.length
+        ? Object.freeze([...CALLEE_SAVED, ...vectorCalleeSaved]) : CALLEE_SAVED);
   };
   return new ABIPlugin({
     id:profile.id,
     semanticVersion:'1',
     architectureId:'riscv64',
     platformPredicate:({ platform }) => !platform || ['linux','freebsd','netbsd','openbsd','unix','bare-metal','unknown'].includes(platform),
-    callingConventions:()=>Object.freeze([profile.id, 'riscv-vector-variant']),
+    // The classifier's vectorVariantRequested() accepts both the canonical
+    // 'riscv-vector-variant' and the legacy 'riscv_vector_cc' alias; the
+    // registry must claim the same spellings so an explicit ABI id resolves
+    // instead of degrading to 'unknown' (#6026).
+    callingConventions:()=>Object.freeze([profile.id, ...RISCV_VECTOR_CALLING_CONVENTION_ALIASES]),
     classifyArguments,
-    classifyCallReturn:(instruction, options = {}) => classifyReturn(callPrototypeOf(instruction, options), options),
+    classifyCallReturn:(instruction, options = {}) => classifyReturn(
+      callPrototypeOf(instruction, options),
+      instruction?.callingConvention == null
+        ? options
+        : { ...options, callingConvention:instruction.callingConvention },
+    ),
     classifyFunctionReturn:(options = {}) => classifyReturn(options.functionPrototype || options.prototype || {}, options),
     classifyEntryRegister:(reg) => {
       const id = String(reg || '').toLowerCase();
       const index = INTEGER_ARGUMENT_REGISTERS.indexOf(id);
       if (index >= 0) return { kind:'argument', reg:id, abiName:ABI_ALIAS[id], index, abiClass:'integer' };
+      const floatIndex = abiFlenBits > 0 ? FLOAT_ARGUMENT_REGISTERS.indexOf(id) : -1;
+      if (floatIndex >= 0) return { kind:'argument', reg:id, abiName:`fa${floatIndex}`, index:floatIndex, abiClass:'float' };
       if (id === 'x2') return { kind:'stack-pointer', reg:id, abiName:'sp' };
       if (id === 'x1') return { kind:'return-address', reg:id, abiName:'ra' };
       if (UNALLOCATABLE.includes(id)) return { kind:'reserved-register-state', reg:id, abiName:ABI_ALIAS[id] ?? 'zero' };
@@ -942,6 +1235,20 @@ export const RISCV_ABI_ALIAS = ABI_ALIAS;
 export const RISCV_VECTOR_ARGUMENT_REGISTERS = VECTOR_ARGUMENT_REGISTERS;
 export const RISCV_VECTOR_VARIANT_CALLEE_SAVED = VECTOR_VARIANT_CALLEE_SAVED;
 export const RISCV_VECTOR_VARIANT_CALLER_SAVED = VECTOR_VARIANT_CALLER_SAVED;
+
+/* psABI vector calling convention: `vstart` is not a plain caller-saved
+ * register. A procedure may assume vstart=0 at entry, and any procedure that
+ * writes a non-zero vstart must zero it again before returning or calling
+ * another procedure. It therefore belongs to no preservation set — both
+ * callerSavedFor()/calleeSavedFor() exclude it — and its cross-call behaviour
+ * is pinned by this dedicated contract descriptor (#5707). */
+export const RISCV_VECTOR_VSTART_CONTRACT = Object.freeze({
+  register:'vstart',
+  contract:'zero-on-call-boundary',
+  preservedAcrossCalls:false,
+  zeroAssumedAtProcedureEntry:true,
+  mustZeroBeforeReturnOrCall:true,
+});
 
 /*
  * psABI variant selection from ELF e_flags.

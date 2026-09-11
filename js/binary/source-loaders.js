@@ -15,11 +15,36 @@ const FAT_KINDS = new Map([
   ['bfbafeca', { bits: 64, littleEndian: true }],
 ]);
 
+// A valid ByteSource may cap every single read (maxReadLength). Fixed-size
+// probes and variable-length container metadata (the FAT slice table, 20/32
+// bytes per slice) must be materialized through bounded chunk reads instead of
+// one readExactly that can exceed the declared per-read ceiling (#5896, #6129).
+async function readBoundedRange(source, offset, length, signal) {
+  const limit = Number(source.maxReadLength);
+  if (!Number.isSafeInteger(limit) || limit <= 0 || length <= limit) {
+    return source.readExactly(offset, length, { signal });
+  }
+  const chunks = [];
+  let done = 0;
+  while (done < length) {
+    const take = Math.min(limit, length - done);
+    chunks.push(await source.readExactly(offset + BigInt(done), take, { signal }));
+    done += take;
+  }
+  const out = new Uint8Array(length);
+  let at = 0;
+  for (const chunk of chunks) { out.set(chunk, at); at += chunk.byteLength; }
+  return out;
+}
+
 export async function openBinarySource(input, opts = {}) {
   const sourceOptions = opts.source || {};
   const source = asByteSource(input, sourceOptions);
+  // Format probes must respect the source's per-read ceiling (#5896): a valid
+  // ByteSource may cap every read below the 16-byte probe, so assemble the
+  // prefix through bounded chunk reads instead of one fixed readExactly.
   const prefixLength = Number(source.size < 16n ? source.size : 16n);
-  const prefix = await source.readExactly(0n, prefixLength, { signal: opts.signal });
+  const prefix = await readBoundedRange(source, 0n, prefixLength, opts.signal);
   const detected = detectBinary(prefix);
   const rangeOptions = withSignal(opts.ranges || {}, opts.signal);
 
@@ -80,7 +105,7 @@ async function parseMachOSourceWithPrefix(source, opts, prefix, rangeOptions) {
   const tableSize = count * entrySize;
   const extraSize = (fat.bits === 32 && source.size >= 8n + BigInt(tableSize + 20)) ? 20 : 0;
   if (8n + BigInt(tableSize) > source.size) throw new Error('Mach-O universal slice table is truncated');
-  const table = await source.readExactly(8n, tableSize + extraSize, { signal: opts.signal });
+  const table = await readBoundedRange(source, 8n, tableSize + extraSize, opts.signal);
   const r = new ByteView(table, { littleEndian: fat.littleEndian, base: 8 });
   const all = [];
   for (let i = 0, p = 0; i < count; i++, p += entrySize) {
@@ -104,7 +129,7 @@ async function parseMachOSourceWithPrefix(source, opts, prefix, rangeOptions) {
     if (slice.offset < 0n || slice.size <= 0n || slice.offset + slice.size > source.size) {
       throw new Error('Mach-O universal binary slice is outside file bounds');
     }
-    const headerBytes = await source.readExactly(slice.offset, Math.min(32, Number(slice.size)), { signal: opts.signal });
+    const headerBytes = await readBoundedRange(source, slice.offset, Math.min(32, Number(slice.size)), opts.signal);
     const inner = parseInnerMachOHeader(headerBytes);
     validateFatSlice(slice, inner, source.size, opts);
   }
@@ -154,7 +179,7 @@ function withInitial(prefix, options) {
 }
 
 async function readPrefix(source, signal) {
-  return source.readExactly(0n, Number(source.size < 16n ? source.size : 16n), { signal });
+  return readBoundedRange(source, 0n, Number(source.size < 16n ? source.size : 16n), signal);
 }
 
 function fatKind(bytes) {

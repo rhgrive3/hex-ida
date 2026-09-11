@@ -90,6 +90,25 @@ function strictNonEmptyString(value, code) {
   return text;
 }
 
+function optionalString(value, code) {
+  if (value == null) return null;
+  if (typeof value !== 'string') fail(code);
+  return value;
+}
+
+function metadataAddress(value) {
+  if (typeof value !== 'string') fail('metadata-record-invalid-address');
+  const text = value.trim();
+  if (!/^(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) fail('metadata-record-invalid-address');
+  let address;
+  try {
+    address = BigInt(text);
+  } catch {
+    fail('metadata-record-invalid-address');
+  }
+  return `0x${address.toString(16)}`;
+}
+
 function arrayField(value, code) {
   if (value == null) return [];
   if (!Array.isArray(value)) fail(code);
@@ -111,6 +130,33 @@ function cloneCoverage(value) {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cloneCoverage(item)]));
   }
   return value;
+}
+
+const COVERAGE_LIST_SELECTORS = new Set(['entityIds', 'recordKinds', 'addresses', 'buildIdentities', 'modules']);
+const COVERAGE_STRING_SELECTORS = new Set(['module', 'ecosystem']);
+
+function canonicalCoverageList(value) {
+  if (value == null || !Array.isArray(value)) return null;
+  if (value.some((item) => typeof item !== 'string' || !item.trim())) return null;
+  return [...new Set(value.map((item) => item.trim()))].sort();
+}
+
+function canonicalCoverage(value) {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return cloneCoverage(value);
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (COVERAGE_LIST_SELECTORS.has(key)) {
+      const list = canonicalCoverageList(item);
+      out[key] = list == null ? cloneCoverage(item) : list;
+      continue;
+    }
+    if (COVERAGE_STRING_SELECTORS.has(key) && typeof item === 'string' && item.trim()) {
+      out[key] = item.trim();
+      continue;
+    }
+    out[key] = cloneCoverage(item);
+  }
+  return out;
 }
 
 function nonNegativeSafeInteger(value, code) {
@@ -139,7 +185,7 @@ export function createLanguageMetadataIdentity(input = {}) {
     observed: input.observed == null ? null : strictNonEmptyString(input.observed, 'metadata-identity-invalid-observed'),
     method: nonEmpty(input.method ?? 'runtime-metadata', 'metadata-identity-method-required'),
     detail: input.detail == null ? null : String(input.detail),
-    coverage: input.coverage == null ? null : cloneCoverage(input.coverage),
+    coverage: input.coverage == null ? null : canonicalCoverage(input.coverage),
   };
 
   if (identity.method === 'filename') fail('metadata-identity-filename-is-not-authority');
@@ -159,6 +205,9 @@ export function createLanguageMetadataIdentity(input = {}) {
     binaryIdentity: identity.binaryIdentity,
     observed: identity.observed,
     expected: identity.expected,
+    // coverage constrains `matched-partial` authority, so two identities with
+    // different authoritative record sets must not share a digest (#5949).
+    coverage: identity.coverage,
   });
 
   const frozen = deepFreeze(identity);
@@ -178,10 +227,8 @@ export function isAuthoritative(identity) {
 }
 
 function coverageList(value) {
-  if (value == null) return null;
-  if (!Array.isArray(value)) return null;
-  if (value.some((item) => typeof item !== 'string' || !item.trim())) return null;
-  return new Set(value.map((item) => item.trim()));
+  const list = canonicalCoverageList(value);
+  return list == null ? null : new Set(list);
 }
 
 function languageRecordMatchesIdentitySource(identity, record) {
@@ -275,15 +322,15 @@ export function createLanguageMetadataRecord(input = {}) {
   const record = deepFreeze({
     kind,
     entityId: strictNonEmptyString(input.entityId, 'metadata-record-entity-required'),
-    name: input.name == null ? null : String(input.name),
-    address: input.address == null ? null : strictNonEmptyString(input.address, 'metadata-record-invalid-address'),
+    name: optionalString(input.name, 'metadata-record-invalid-name'),
+    address: input.address == null ? null : metadataAddress(input.address),
     sizeBytes: optionalSizeBytes(input.sizeBytes),
     descriptor: input.descriptor ?? null,
     providerId: nonEmpty(input.providerId, 'metadata-record-provider-required'),
     providerVersion: nonEmpty(input.providerVersion, 'metadata-record-provider-version-required'),
     ecosystem: nonEmpty(input.ecosystem ?? 'generic', 'metadata-record-ecosystem-required'),
     buildIdentity: input.buildIdentity == null ? null : strictNonEmptyString(input.buildIdentity, 'metadata-record-invalid-build-identity'),
-    evidenceIds: [...new Set((input.evidenceIds ?? []).map((value) => strictNonEmptyString(value, 'metadata-record-invalid-evidence-id')))].sort(),
+    evidenceIds: [...new Set(arrayField(input.evidenceIds, 'metadata-record-evidence-ids-must-be-array').map((value) => strictNonEmptyString(value, 'metadata-record-invalid-evidence-id')))].sort(),
   });
   CANONICAL_RECORDS.add(record);
   return record;

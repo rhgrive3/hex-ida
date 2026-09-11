@@ -1,4 +1,4 @@
-import { ChangeLog } from './index.js';
+import { ChangeLog, compareOperationId } from './index.js';
 
 function assertGate(gate) {
   if (!gate || typeof gate.validate !== 'function' || typeof gate.accept !== 'function') throw new TypeError('RemoteCollaborationGate required');
@@ -25,7 +25,7 @@ function drainReadyPending(log, results) {
   let progressed = true;
   while (progressed) {
     progressed = false;
-    for (const [operationId, operation] of [...log.pending.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    for (const [operationId, operation] of [...log.pending.entries()].sort(([a], [b]) => compareOperationId(a, b))) {
       if (!operation.causalParents.every((parent) => log.operations.has(parent))) continue;
       // Tombstone-protected operations require an explicit resurrection; merely
       // receiving unrelated envelopes cannot make the same queued SET valid.

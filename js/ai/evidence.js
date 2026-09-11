@@ -86,21 +86,46 @@ function semanticRecord(record) {
     navigation: record.navigation ?? null,
   });
 }
-
 function sameSemanticRecord(left, right) {
   return JSON.stringify(semanticRecord(left)) === JSON.stringify(semanticRecord(right));
+}
+
+// Observation provenance references are identity keys, not presentation text:
+// only a canonical non-empty primitive string may reach a record, so a
+// structured value can never launder into another observation's identity
+// (#5425). Identity fields, including identity-bearing paths, fail closed.
+function canonicalIdentityRef(value) {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+// A present-but-unusable sourceRef: neither canonicalizable to a reference
+// nor absent. String refs are always canonical; object refs must carry at
+// least one canonical identity field, and an explicit path must itself be a
+// canonical primitive string because ingest() uses it for permanent IDs.
+function malformedSourceRef(sourceRef) {
+  if (sourceRef == null) return false;
+  if (typeof sourceRef === 'string') return sourceRef.length === 0;
+  if (typeof sourceRef !== 'object') return true;
+  if (Object.hasOwn(sourceRef, 'detailRef') && sourceRef.detailRef != null && !canonicalIdentityRef(sourceRef.detailRef)) return true;
+  if (Object.hasOwn(sourceRef, 'evidenceSourceId') && sourceRef.evidenceSourceId != null && !canonicalIdentityRef(sourceRef.evidenceSourceId)) return true;
+  if (Object.hasOwn(sourceRef, 'bindingKey') && sourceRef.bindingKey != null && !canonicalIdentityRef(sourceRef.bindingKey)) return true;
+  if (Object.hasOwn(sourceRef, 'path') && !canonicalIdentityRef(sourceRef.path)) return true;
+  if (canonicalIdentityRef(sourceRef.detailRef) || canonicalIdentityRef(sourceRef.evidenceSourceId)) return false;
+  return true;
 }
 
 function normalizeSourceRef(sourceRef) {
   if (!sourceRef) return null;
   if (typeof sourceRef === 'string') return { detailRef: sourceRef, path: '$' };
   if (typeof sourceRef !== 'object') return null;
-  if (sourceRef.detailRef) return {
-    detailRef: String(sourceRef.detailRef),
-    path: String(sourceRef.path || '$'),
-    ...(sourceRef.bindingKey ? { bindingKey: String(sourceRef.bindingKey) } : {}),
+  const path = Object.hasOwn(sourceRef, 'path') ? canonicalIdentityRef(sourceRef.path) : '$';
+  if (!path) return null;
+  if (canonicalIdentityRef(sourceRef.detailRef)) return {
+    detailRef: sourceRef.detailRef,
+    path,
+    ...(canonicalIdentityRef(sourceRef.bindingKey) ? { bindingKey: sourceRef.bindingKey } : {}),
   };
-  if (sourceRef.evidenceSourceId) return { evidenceSourceId: String(sourceRef.evidenceSourceId), path: String(sourceRef.path || '$') };
+  if (canonicalIdentityRef(sourceRef.evidenceSourceId)) return { evidenceSourceId: sourceRef.evidenceSourceId, path };
   return null;
 }
 
@@ -135,7 +160,7 @@ export class EvidenceStore {
         if (sourceId && this.sourcePayloads.has(sourceId)) {
           const stored = this.observationStore.put({
             tool: record.sourceTool || 'evidence-source', arguments: { evidenceId: record.id },
-            fullResult: this.sourcePayloads.get(sourceId), functionIdentity: record.functionAddress ?? record.address ?? null, deterministic: true,
+            fullResult: this.sourcePayloads.get(sourceId), functionIdentity: record.functionAddress ?? record.address ?? null, deterministic: true, effectiveScope: record.effectiveScope || null, scopeBoundary: record.scopeBoundary || null,
           });
           record.sourceRef = { detailRef: stored.id, path: record.sourceRef.path || '$', bindingKey: stored.binding.key };
           record.sourceBinding = stored.binding.key;
@@ -152,6 +177,17 @@ export class EvidenceStore {
     // Validate before either source-data persistence path can create durable state.
     // The same normalized value is reused for the canonical record (#5946).
     const timestamp = evidenceTimestamp(input.timestamp);
+    // An explicitly supplied but malformed sourceRef is a caller contract
+    // violation: rejecting the whole evidence record keeps the malformed
+    // provenance from being silently replaced (new observation) or dropped
+    // (no sourceRef) while sourceData persists anyway (#5425).
+    if (malformedSourceRef(input.sourceRef)) return null;
+    let explicitId = null;
+    if (input.id != null && input.id !== '') {
+      if (typeof input.id !== 'string') return null;
+      explicitId = input.id.trim();
+      if (!explicitId) return null;
+    }
     let status = EVIDENCE_STATUSES.includes(input.status) ? input.status : 'unknown';
     if (status === 'verified' && authority !== DETERMINISTIC_VERIFICATION) status = 'supported';
 
@@ -165,6 +201,8 @@ export class EvidenceStore {
           fullResult: input.sourceData,
           functionIdentity: input.functionAddress ?? input.address ?? null,
           deterministic: true,
+          effectiveScope: typeof input.effectiveScope === 'string' && input.effectiveScope ? input.effectiveScope : null,
+          scopeBoundary: typeof input.scopeBoundary === 'string' && input.scopeBoundary ? input.scopeBoundary : null,
         });
         sourceRef = { detailRef: stored.id, path: '$', bindingKey: stored.binding.key };
       } else {
@@ -175,12 +213,14 @@ export class EvidenceStore {
       }
     }
     const sourceBinding = String(input.sourceBinding ?? sourceRef?.bindingKey ?? '');
-    const identity = JSON.stringify(jsonSafe([
+    const sourceCoordinate = canonicalIdentityRef(input.sourceCoordinate);
+    const identityParts = [
       input.sourceTool || 'unknown', input.sourceId || null, sourceBinding || null, input.address ?? null,
       input.functionAddress ?? null, input.kind || 'observation', input.title || '',
-    ]));
-    if (input.id && typeof input.id !== 'string') return null;
-    const id = input.id || `ev_${stableDigest(identity).slice(0, 32)}`;
+    ];
+    if (sourceCoordinate) identityParts.push({ sourceCoordinate });
+    const identity = JSON.stringify(jsonSafe(identityParts));
+    const id = explicitId || `ev_${stableDigest(identity).slice(0, 32)}`;
     const record = {
       id,
       kind: String(input.kind || 'observation'),
@@ -190,6 +230,8 @@ export class EvidenceStore {
     };
     if (sourceBinding) record.sourceBinding = sourceBinding;
     if (sourceRef) record.sourceRef = sourceRef;
+    if (typeof input.effectiveScope === 'string' && input.effectiveScope) record.effectiveScope = input.effectiveScope;
+    if (typeof input.scopeBoundary === 'string' && input.scopeBoundary) record.scopeBoundary = input.scopeBoundary;
     const address = addressText(input.address);
     const functionAddress = addressText(input.functionAddress);
     if (address) record.address = address;
@@ -232,9 +274,10 @@ export class EvidenceStore {
     return storedRecord;
   }
 
-  ingest(toolName, result, { verifier = false, sourceRef = null } = {}) {
+  ingest(toolName, result, { verifier = false, sourceRef = null, effectiveScope = null, scopeBoundary = null } = {}) {
     const output = result && result.result != null ? result.result : result;
     if (!output || typeof output !== 'object') return [];
+    if (malformedSourceRef(sourceRef)) return [];
     const rootSourceRef = normalizeSourceRef(sourceRef);
     const outputVerifiedIds = verifiedEvidenceIds(output);
     const rows = factRows(output);
@@ -253,6 +296,13 @@ export class EvidenceStore {
         ...rootSourceRef,
         path: key === 'result' ? (rootSourceRef.path || '$') : `${rootSourceRef.path === '$' ? '$.' : `${rootSourceRef.path}.`}${key}[${index}]`,
       } : null;
+      // A producer-supplied row id/evidence id is the stable identity. When it
+      // is absent, retain the fact's source coordinate so sibling rows cannot
+      // collapse into one record. sourceRef.path is already canonicalized;
+      // the generated path covers results without an external sourceRef.
+      const sourceCoordinate = ids.length
+        ? null
+        : (rowSourceRef?.path || `$.${key}[${index}]`);
       for (const sourceId of sourceIds.length ? sourceIds : [null]) {
         const sourceVerified = sourceId != null && (rowVerifiedIds.has(sourceId) || outputVerifiedIds.has(sourceId));
         const verified = verifier === true && (sourceVerified || rowVerdict || singleTopLevelVerdict);
@@ -260,7 +310,9 @@ export class EvidenceStore {
         const kind = String(row.kind || key || 'observation');
         const evidence = this.add({
           sourceId, sourceTool: toolName, sourceRef: rowSourceRef, sourceBinding: rowSourceRef?.bindingKey,
+          sourceCoordinate,
           kind, status, address: addr, functionAddress: fnAddr,
+          effectiveScope, scopeBoundary,
           functionName: row.functionName || row.name || output.name,
           title: `${toolName}: ${kind}`,
           summary: summarizeRow(row), sourceData: row,
@@ -384,7 +436,6 @@ function summarizeRow(row) {
   if (addr) parts.push(`address=${addr}`);
   return parts.join('; ').slice(0, 2000) || 'Deterministic tool observation';
 }
-
 function uniqueById(values) {
   return Array.from(new Map(values.map((value) => [value.id, value])).values());
 }

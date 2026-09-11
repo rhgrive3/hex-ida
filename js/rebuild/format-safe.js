@@ -252,7 +252,12 @@ function parsePe(bytes) {
   let certificateTableOffset = 0;
   let certificateTableSize = 0;
   if (optional.numberOfRvaAndSizes > 4) {
-    ensureRange(bytes, dataDirectoryOffset, 5 * 8, 'format-safe-pe-data-directory-truncated');
+    /* Microsoft PE/COFF: probing the Data Directory must not read past
+     * SizeOfOptionalHeader. NumberOfRvaAndSizes alone is not a boundary
+     * authority — with a minimal header the Certificate Table entry would
+     * alias section-table bytes (#5568). The optional header was already
+     * range-checked in-file, so header containment implies file bounds. */
+    if (dataDirectoryOffset + 5 * 8 > optionalOffset + optionalHeaderSize) fail('format-safe-pe-data-directory-truncated');
     certificateTableOffset = u32(bytes, dataDirectoryOffset + 4 * 8);
     certificateTableSize = u32(bytes, dataDirectoryOffset + 4 * 8 + 4);
     if ((certificateTableOffset === 0) !== (certificateTableSize === 0)) fail('format-safe-pe-certificate-directory-invalid');
@@ -585,7 +590,27 @@ function machoSectionSizePlan(source, image, mutation) {
   const next = image.sections.filter((section) => section.segment === segmentName && section.offset > target.offset).sort((left, right) => left.offset - right.offset)[0];
   const nextSectionOffset = next?.offset ?? segment.fileOffset + segment.fileSize;
   if (target.offset + target.size > nextSectionOffset) fail('format-safe-macho-layout-source-overlap');
-  const availableGap = nextSectionOffset - (target.offset + target.size);
+  let availableGap = nextSectionOffset - (target.offset + target.size);
+  /* Mach-O section file offsets and VM addresses are independent invariants:
+     extending within the file gap can still drive the section's VM range into
+     the next section's address range. Sections are identified by their owning
+     LC_SEGMENT_64 command (commandIndex), not by the segment name string, and
+     the source state must be overlap-free against every same-segment section
+     before any extension is planned (#5001). */
+  const segmentSections = image.sections.filter((section) => section.commandIndex === target.commandIndex);
+  for (const section of segmentSections) {
+    if (section === target || !section.size) continue;
+    if (section.address < target.address + target.size && target.address < section.address + section.size) {
+      fail('format-safe-macho-layout-source-vm-overlap');
+    }
+  }
+  const nextByAddress = segmentSections
+    .filter((section) => section.address > target.address)
+    .sort((left, right) => left.address - right.address)[0];
+  if (nextByAddress) {
+    const availableVmGap = nextByAddress.address - (target.address + target.size);
+    if (availableVmGap < availableGap) availableGap = availableVmGap;
+  }
   const requestedSize = integerInRange(mutation.size, target.size + 1, target.size + availableGap, 'format-safe-macho-layout-size-invalid');
   const sectionHeaderOffset = target.headerOffset;
   return {
@@ -811,7 +836,9 @@ export function validateFormatSafeMutation({ transaction, original, output } = {
     }
     if (safeState.kind === 'macho-section-size') {
       if (format !== 'macho' || transaction.operations?.length !== 1 || transaction.impact?.layoutMoving !== true) return reject('format-safe-macho-layout-operation-invalid');
-      const expected = machoSectionSizePlan(source, sourceImage, safeState);
+      let expected;
+      try { expected = machoSectionSizePlan(source, sourceImage, safeState); }
+      catch (error) { return reject(String(error?.message || 'format-safe-macho-layout-plan-invalid')); }
       const canonicalExpectedOperations = expected.operations.map((operation) => ({
         ...operation,
         offset: String(operation.offset),

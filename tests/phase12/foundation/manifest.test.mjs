@@ -50,6 +50,18 @@ const aggregatePass = validateAggregateFiles([
   'userscript/hex.user.template.js',
 ], manifest);
 assert.equal(aggregatePass.ok, true);
+
+const rustMirrorPath = 'tests/metadata-rust.test.mjs';
+const rustMirrorPass = validateAggregateFiles([rustMirrorPath], manifest);
+assert.equal(rustMirrorPass.ok, true, 'the Rust metadata mirror must be explicitly owned');
+assert.deepEqual(rustMirrorPass.violations, []);
+const rustNeighborPath = 'tests/metadata-rust-max-depth-3162.test.mjs';
+const rustNeighborViolation = validateAggregateFiles([rustNeighborPath], manifest);
+assert.equal(rustNeighborViolation.ok, false, 'ownership must not broaden to adjacent Rust metadata tests');
+assert.deepEqual(
+  rustNeighborViolation.violations.map(({ file, category }) => ({ file, category })),
+  [{ file: rustNeighborPath, category: 'unowned' }],
+);
 const aggregateViolation = validateAggregateFiles(['js/unknown-phase12-file.js'], manifest);
 assert.equal(aggregateViolation.ok, false);
 assert.ok(aggregateViolation.violations.some((item) => item.category === 'unowned'));

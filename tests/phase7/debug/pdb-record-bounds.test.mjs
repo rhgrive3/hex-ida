@@ -42,6 +42,8 @@ const tpiStream = (records) => {
   const view = new DataView(header.buffer);
   view.setUint32(4, 56, true);        // headerSize
   view.setUint32(8, 0x1000, true);    // firstIndex
+  view.setUint32(12, 0x1000 + 1, true); // lastIndex: one record
+  view.setUint32(16, records.length, true); // typeRecordBytes
   return Uint8Array.from([...header, ...records]);
 };
 

@@ -105,9 +105,16 @@ export function checkProofEligibility({
     }
   }
 
-  // 9. Solver result status (must be exact UNSAT for proof)
+  // 9. Solver result status (must be exact UNSAT for proof). The authority is
+  // the status carried by the validated result object itself: a decoupled
+  // solverResultStatus argument that disagrees with solverResult.status must
+  // fail closed instead of laundering a SAT/UNKNOWN result into an UNSAT
+  // proof (#5498).
   if (solverResultStatus !== SOLVER_STATUS.UNSAT) {
     reasons.push(`solver-status-not-unsat:${solverResultStatus || 'unspecified'}`);
+  }
+  if (solverResult?.status !== SOLVER_STATUS.UNSAT) {
+    reasons.push(`solver-result-status-not-unsat:${solverResult?.status || 'unspecified'}`);
   }
 
   if (!validSolverResult || !isValidSolverResult(solverResult, { query, backend })) {

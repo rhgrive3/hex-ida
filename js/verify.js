@@ -192,6 +192,13 @@ export function verifyFunctionHandlesField(model, offset) {
 
 export function callsSelector(model, re) {
   const out = [];
-  for (const c of (model && model.calls) || []) if (c?.selector && re.test(c.selector)) out.push({ selector: c.selector, row: c.row != null ? c.row : null });
+  // Stateful expressions must start each selector at zero without changing
+  // the caller's cursor. Retain sticky anchoring as well as the other flags.
+  const matcher = re?.global || re?.sticky ? new RegExp(re.source, re.flags) : re;
+  for (const c of (model && model.calls) || []) {
+    if (!c?.selector) continue;
+    if (matcher !== re) matcher.lastIndex = 0;
+    if (matcher.test(c.selector)) out.push({ selector: c.selector, row: c.row != null ? c.row : null });
+  }
   return out;
 }
