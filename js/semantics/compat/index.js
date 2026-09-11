@@ -49,7 +49,7 @@ export const SEMANTIC_V2_MIGRATION_MODES = Object.freeze({
   SHADOW_DIFFERENTIAL: 'semantic-v2-shadow-differential',
 });
 
-export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.3.0';
+export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.4.0';
 export const SEMANTIC_V2_COMPAT_PATH = Object.freeze([
   'machine-effects',
   'semantic-ir-v2',
@@ -362,6 +362,54 @@ function bindDeclaredScalarReturns(ir, input, options) {
   }, options.semanticIrOptions ?? {});
 }
 
+/** Exact full-register formal arguments seed the existing SSA entry model. */
+function bindDeclaredEntryArguments(ir, input, options) {
+  const prototype = input.functionPrototype ?? options.functionReturn?.functionPrototype;
+  const adapter = input.abiAdapter ?? options.abiAdapter ?? options.compatOptions?.abiAdapter;
+  if (!prototype || !adapter || ir.completeness !== 'complete' || ir.unknowns.length) return ir;
+  let classified;
+  try { classified = adapter.classifyArguments?.({ functionPrototype:prototype }); }
+  catch { return ir; }
+  if (!canonicalAbiEvidence(classified) || abiResultInvalidState(classified)
+    || classified.partial === true || !Array.isArray(classified.arguments)) return ir;
+  const identity = classified.abiIdentity;
+  const snapshotId = options.memorySsaOptions?.snapshotId ?? options.snapshotId;
+  if (identity.architectureId !== input.architecturePlugin.id
+    || (identity.binaryId != null && identity.binaryId !== input.binaryId)
+    || (identity.sliceId != null && identity.sliceId !== input.sliceId)
+    || (identity.functionId != null && identity.functionId !== ir.functionId)
+    || (snapshotId != null && identity.snapshotId !== snapshotId)) return ir;
+  const descriptors = architectureRegisterDescriptors(input.architecturePlugin);
+  const values = [...ir.values];
+  for (const argument of classified.arguments) {
+    assertNotAborted(options);
+    if (argument.location !== 'register' || argument.exact !== true || argument.possible === true
+      || argument.aggregate === true || argument.pieces?.length || argument.regs?.length > 1
+      || !Number.isSafeInteger(argument.index) || argument.index < 0) continue;
+    const descriptor = descriptors.find(reg => reg.id === argument.reg && reg.kind === 'gp');
+    const widthBits = descriptor?.physicalBits ?? descriptor?.bits;
+    if (!Number.isSafeInteger(widthBits) || argument.bits !== widthBits) continue;
+    // A duplicated physical location is a contradiction, not two formals.
+    if (classified.arguments.filter(item => item.reg === argument.reg).length !== 1) continue;
+    const variable = createPhysicalStateVariable({ kind:'register', registerId:descriptor.physicalId ?? descriptor.id });
+    if (!ir.nodes.some(node => node.variable?.key === variable.key)
+      || ir.values.some(value => value.variableKey === variable.key
+        && ['entry', 'undef', 'unknown'].includes(value.kind))) continue;
+    const fact = { kind:'abi-entry-argument', version:1, functionId:ir.functionId,
+      abiIdentity:identity, argumentIndex:argument.index, variableKey:variable.key,
+      location:{ reg:argument.reg, bits:argument.bits, abiClass:argument.abiClass } };
+    const id = `abi_entry_value_${stableDigest(fact)}`;
+    const origin = appendTransform(ir.origin, createTransformRecord({
+      passId:'semantic-abi-entry-binding', passVersion:'1.0.0', ruleId:'declared-register-argument',
+      proofKind:'canonical-abi-location', consumedEntityIds:[ir.functionId], producedEntityIds:[id], preconditions:[fact],
+    }));
+    values.push({ id, kind:'entry', variableKey:variable.key,
+      machineType:{ kind:'bitvector', widthBits }, origin,
+      metadata:{ argumentIndex:argument.index, abiArgumentBinding:fact } });
+  }
+  return values.length === ir.values.length ? ir : createSemanticIrFunction({ ...ir, values }, options.semanticIrOptions ?? {});
+}
+
 export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   assertNotAborted(options);
   input = object(input, 'semantic-v2-integration-input-required');
@@ -559,7 +607,7 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     unknowns: [...issues.values()],
     origin: functionOrigin,
   }, options.semanticIrOptions ?? {});
-  const ir = bindDeclaredScalarReturns(machineIr, input, options);
+  const ir = bindDeclaredEntryArguments(bindDeclaredScalarReturns(machineIr, input, options), input, options);
 
   const nodeById = new Map(ir.nodes.map((node) => [node.id, node]));
   const successorMap = new Map();

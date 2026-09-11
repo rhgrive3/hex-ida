@@ -14,6 +14,8 @@
  */
 
 import { createAnalysisStatus, isCompleteStatus, mergeAnalysisStatus } from '../status.js';
+import { stableStringify } from '../../core/identity/index.js';
+import { buildSemanticSsa, validateSemanticSsa } from '../../semantics/ssa/index.js';
 import {
   classifyCallTargetProof,
   RETURN_SUMMARY_CANDIDATE_LIMIT,
@@ -24,7 +26,7 @@ import {
 } from './contract.js';
 
 export const LOCAL_SUMMARY_ANALYZER_ID = 'phase7.summary.local';
-export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.3.0';
+export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.3.1';
 
 const DEFAULT_ADDRESS_SPACES = Object.freeze(['memory']);
 
@@ -222,6 +224,8 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   }
 
   const returnProvenance = [];
+  const nativeAbiFacts = new Map();
+  let nativeReturnIncomplete = false;
   const nodeByOutput = new Map();
   const valueById = new Map((ir.values ?? []).map((value) => [String(value.id), value]));
   for (const n of ir.nodes ?? []) {
@@ -235,12 +239,81 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     if (valueId == null || (typeof valueId === 'object' && valueId !== null) || typeof valueId === 'function') return -1;
     if (Array.isArray(ir.inputs)) return ir.inputs.indexOf(valueId);
     const value = valueById.get(String(valueId));
+    const binding = value?.metadata?.abiArgumentBinding;
+    if (binding != null) {
+      if (value.kind !== 'entry' || binding.kind !== 'abi-entry-argument' || binding.version !== 1
+        || binding.functionId !== ir.functionId || binding.variableKey !== value.variableKey
+        || binding.argumentIndex !== value.metadata.argumentIndex
+        || binding.location?.bits !== value.machineType?.widthBits
+        || binding.abiIdentity?.snapshotId !== (options.snapshotId ?? 'snapshot-unbound')) return -1;
+    }
     const explicit = value?.metadata?.argumentIndex
       ?? value?.metadata?.argIndex
       ?? value?.metadata?.abiArgIndex;
-    return typeof explicit === 'number' && Number.isSafeInteger(explicit) && explicit >= 0
-      ? explicit
-      : -1;
+    if (typeof explicit !== 'number' || !Number.isSafeInteger(explicit) || explicit < 0) return -1;
+    if (binding != null) nativeAbiFacts.set(value.id, binding);
+    return explicit;
+  };
+
+  // SSA is an authority boundary. Structural validation alone only establishes
+  // dominance; it does not reject a forged link to an older dominating write.
+  // Replay the existing canonical builder once on demand, under a fixed work
+  // ceiling, and compare the whole normalized contract before traversing it.
+  let nativeSsa = null, nativeSsaChecked = false;
+  const nativeSsaIndex = () => {
+    if (nativeSsaChecked) return nativeSsa;
+    nativeSsaChecked = true;
+    try {
+      const settings = { signal:options.signal, budget:{ maxWorkItems:65536 } };
+      const verified = validateSemanticSsa(ssa, ir, cfg, settings);
+      const rebuilt = buildSemanticSsa(ir, cfg, settings);
+      if (stableStringify(verified) !== stableStringify(rebuilt)) throw new Error('summary-ssa-binding-mismatch');
+      nativeSsa = { definitions:new Map(verified.definitions.map(def => [def.valueId, def])),
+        reads:new Map(verified.uses.filter(use => use.proof?.kind === 'renamed-use')
+          .map(use => [use.proof.sourceSemanticValueId, use])) };
+    } catch { nativeReturnIncomplete = true; }
+    return nativeSsa;
+  };
+  const returnTerminals = valueId => {
+    const result = [], pending = [{ curr:valueId, offset:0n, seen:new Set() }];
+    let work = 0;
+    while (pending.length) {
+      if (++work > 4096 || result.length >= 63 || options.signal?.aborted) {
+        nativeReturnIncomplete = true;
+        result.push({ curr:null, offset:0n }); break;
+      }
+      const item = pending.pop(), { curr, offset } = item;
+      const key = `${item.ssa ? 'ssa' : 'value'}:${curr}`;
+      if (curr == null || item.seen.has(key)) { result.push({ curr:null, offset }); continue; }
+      const seen = new Set(item.seen); seen.add(key);
+      const next = (id, ssaValue = false, add = 0n) => pending.push({ curr:id, offset:offset + add, seen, ssa:ssaValue });
+      if (item.ssa) {
+        const definition = nativeSsaIndex()?.definitions.get(curr);
+        if (definition?.kind === 'phi' && definition.incoming.length) {
+          for (const input of definition.incoming) next(input.valueId, true);
+        } else if (definition?.kind === 'entry' || definition?.kind === 'definition') {
+          next(definition.proof?.sourceSemanticValueId);
+        } else result.push({ curr:null, offset });
+        continue;
+      }
+      if (formalArgumentIndex(curr) >= 0) { result.push({ curr, offset }); continue; }
+      const producer = nodeByOutput.get(curr);
+      if (producer?.kind === 'state-read') {
+        const use = nativeSsaIndex()?.reads.get(curr);
+        if (use?.sourceEntityId === producer.id) next(use.valueId, true);
+        else result.push({ curr:null, offset });
+      } else if (producer?.kind === 'copy' || producer?.kind === 'bitcast') {
+        next(producer.inputs?.[0]);
+      } else if (producer?.kind === 'binary' && ['add', 'sub'].includes(producer.operator)) {
+        const right = producer.inputs?.[1], rightProducer = nodeByOutput.get(right), rightValue = valueById.get(String(right));
+        const num = rightProducer != null || rightValue?.metadata?.constant != null
+          ? integerConstant(rightValue, rightProducer)
+          : (typeof right === 'number' || typeof right === 'bigint' ? parseIntegerConstant(right) : null);
+        if (num != null) next(producer.inputs?.[0], false, producer.operator === 'sub' ? -num : num);
+        else result.push({ curr, offset });
+      } else result.push({ curr, offset });
+    }
+    return result;
   };
 
   const summaryIdentityOptions = (functionId) => {
@@ -413,50 +486,33 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       for (let retIdx = 0; retIdx < (node.inputs ?? []).length; retIdx++) {
         const inputValId = node.inputs[retIdx];
         returnValues.add(String(inputValId));
-        let curr = inputValId;
-        let offset = 0n;
-        const visited = new Set();
-        while (curr && !visited.has(curr)) {
-          visited.add(curr);
-          const producer = nodeByOutput.get(curr);
-          if (!producer) break;
-          if (producer.kind === 'copy' || producer.kind === 'bitcast') {
-            curr = producer.inputs?.[0];
-          } else if (producer.kind === 'binary' && (producer.operator === 'add' || producer.operator === 'sub')) {
-            const rightConst = producer.inputs?.[1];
-            const rightProducer = nodeByOutput.get(rightConst);
-            const rightValue = valueById.get(String(rightConst));
-            const hasConstantSource = rightProducer != null || rightValue?.metadata?.constant != null;
-            const num = hasConstantSource
-              ? integerConstant(rightValue, rightProducer)
-              : (typeof rightConst === 'number' || typeof rightConst === 'bigint' ? parseIntegerConstant(rightConst) : null);
-            if (num != null) {
-              offset += (producer.operator === 'sub' ? -BigInt(num) : BigInt(num));
-              curr = producer.inputs?.[0];
-            } else break;
-          } else break;
-        }
-        const terminalProducer = nodeByOutput.get(curr);
-        const composed = terminalProducer?.kind === 'call'
-          ? composeCallReturnProvenance(terminalProducer, curr, retIdx, offset)
-          : null;
-        if (composed) {
-          returnProvenance.push(...composed);
-          continue;
-        }
-        const inputIndex = formalArgumentIndex(curr);
-        if (inputIndex >= 0) {
-          returnProvenance.push({
-            kind: 'arg',
-            returnIndex: retIdx,
-            argIndex: inputIndex,
-            offset: offset.toString(10),
-          });
-        } else {
-          // Absence of a recovered alternative is not proof that the other
-          // alternatives are exhaustive. Keep an explicit unknown member so a
-          // caller cannot turn one understood return path into a singleton.
-          returnProvenance.push({ kind: 'unknown', returnIndex: retIdx });
+        const binding = node.attributes?.abiReturnBinding;
+        if (binding?.kind === 'abi-return-location' && binding.version === 1
+          && binding.functionId === ir.functionId && binding.returnNodeId === node.id && binding.valueId === inputValId
+          && binding.abiIdentity?.snapshotId === (options.snapshotId ?? 'snapshot-unbound')) nativeAbiFacts.set(node.id, binding);
+        for (const { curr, offset } of returnTerminals(inputValId)) {
+          const terminalProducer = nodeByOutput.get(curr);
+          const composed = terminalProducer?.kind === 'call'
+            ? composeCallReturnProvenance(terminalProducer, curr, retIdx, offset)
+            : null;
+          if (composed) {
+            returnProvenance.push(...composed);
+            continue;
+          }
+          const inputIndex = formalArgumentIndex(curr);
+          if (inputIndex >= 0) {
+            returnProvenance.push({
+              kind: 'arg',
+              returnIndex: retIdx,
+              argIndex: inputIndex,
+              offset: offset.toString(10),
+            });
+          } else {
+            // Absence of a recovered alternative is not proof that the other
+            // alternatives are exhaustive. Keep an explicit unknown member so a
+            // caller cannot turn one understood return path into a singleton.
+            returnProvenance.push({ kind: 'unknown', returnIndex: retIdx });
+          }
         }
       }
       continue;
@@ -586,7 +642,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     }
   }
 
-  const hasUnknown = unknownCallEffects.length > 0 || intrinsicScopeUnknown;
+  const hasUnknown = unknownCallEffects.length > 0 || intrinsicScopeUnknown || nativeReturnIncomplete;
   // A canonical Semantic IR may record what is missing at the function level:
   // `completeness: 'partial'|'unknown'` with the reasons in `ir.unknowns`,
   // while every individual node stays complete (#5226). Ignoring those fields
@@ -623,7 +679,11 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     noreturn: controlUnknown ? 'unknown' : (sawNoreturnCall && !sawReturn),
     mayThrow: controlUnknown ? 'unknown' : mayThrow,
     stackDelta: options.stackDelta ?? null,
-    semanticFacts: options.semanticFacts ?? [],
+    // The summary owns its fact snapshots, including when a deserialized IR
+    // was supplied. Freezing a summary must not freeze the caller's IR graph.
+    semanticFacts: [...(options.semanticFacts ?? []), ...[...nativeAbiFacts]
+      .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+      .map(([, fact]) => JSON.parse(stableStringify(fact)))],
     status,
   });
 

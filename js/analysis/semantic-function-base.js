@@ -1192,6 +1192,7 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     blocks,
     completeness: controlUnknowns.length ? 'partial' : 'complete',
     unknowns: controlUnknowns,
+    functionPrototype:input.functionPrototype ?? null,
     abiAdapter,
     machineEffectsContext:input.machineEffectsContext ?? {
       dataEndianness:input.dataEndianness,

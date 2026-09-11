@@ -5113,6 +5113,50 @@ The C1 and C3 component heads and the ZIP import branch remain untouched.
 The one new test path is explicitly assigned to Phase 7 in the integration
 inventory; no component allowlist or frozen-path exemption is widened.
 
+## Native SSA return provenance and public ABI facts (2026-09-11)
+
+Integration now seeds full-width GP argument entry values from the explicit
+canonical ABI classification and forwards the decoded driver's declaration to
+that producer. Existing physical-state identity and SSA entry contracts are
+reused. No register-name convention, guessed argument ordinal, narrow partial
+register, aggregate or unsupported ABI placement can establish a formal value.
+The shared adapter forwarding path is explicitly assigned to this integration
+inventory; C3's frozen component allowlist and classifier logic are unchanged.
+
+The local summary follows native state reads through canonical SSA definitions
+and all phi alternatives, retaining unknown for clobbers, missing evidence and
+cycles. Structural SSA validation alone proves dominance, not the most recent
+definition: a regression deliberately substitutes an older dominating write
+that passes that validation. One bounded replay of the existing SSA builder
+compares the full normalized contract before new provenance is consumed. This
+is not a second reaching-definition engine. Replay is demand-driven with a
+65,536-work-item ceiling; return traversal caps work at 4,096 and alternatives
+at 64 including an explicit unknown frontier. No speed improvement is claimed.
+
+Identity-matched ABI entry/return facts now reach the default summary's existing
+semanticFacts field and therefore its digest. Facts are independently copied
+before freezing, so publication cannot freeze a deserialized caller-owned IR.
+Summary analyzer version advances to 1.3.1 and native pipeline version to 1.4.0;
+the C1 1.4 recursive-equation schema from its separate component is not copied.
+
+Nine new regressions extend the prior eight decoded native-return cases:
+argument/offset precision, public decoded driver, overwrite/narrowing negatives,
+known/unknown phi alternatives, loop termination, missing/foreign/forged SSA,
+snapshot mismatch, actual outer points-to consumption and serialized/reordered
+SSA with independent fact ownership. A decoded add-and-return function now
+produces arg0+1; the actual outer points-to solver consumes its digest and
+recovers that root/offset. A constant overwrite remains TOP at that consumer.
+Initial full canonical summary, lint/modules and ownership checks pass; exact
+committed-head proof is retained separately rather than inferred from that run.
+
+This advances the real native producer-to-consumer path but does not complete
+FR-C1-02A, FR-C3-02A or the 21-FR roadmap. Typed native CALL result/effect/target
+handoff, full aggregate/FP entry and return reconstruction, C1 recursive lane
+integration and current-main/generated/independent admission remain unfinished.
+Latest main inspected here is ccabe9f09; it added no overlapping changes to the
+three producer/summary paths since the previous observation. No component merge,
+main merge, other-owner issue repair or device/environment work was performed.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for
