@@ -10,6 +10,30 @@ const IMAGE_DIRECTORY_ENTRY_TLS = 9;
 const IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10;
 const IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT = 13;
 const WINDOWS_IMAGE_RAW_ALIGNMENT = 0x200;
+const WINDOWS_IMAGE_BASE_ALIGNMENT = 0x10000n;
+
+// Width is architectural authority only for machine values whose image class
+// this parser understands. Keep UNKNOWN/unsupported machines format-neutral,
+// rather than guessing from numeric ranges or IMAGE_FILE_32BIT_MACHINE.
+const PE_MACHINE_BITS = new Map([
+  [0x014c, 32], // IMAGE_FILE_MACHINE_I386
+  [0x01c0, 32], // IMAGE_FILE_MACHINE_ARM
+  [0x01c4, 32], // IMAGE_FILE_MACHINE_ARMNT
+  [0x5032, 32], // IMAGE_FILE_MACHINE_RISCV32
+  [0x8664, 64], // IMAGE_FILE_MACHINE_AMD64
+  [0xaa64, 64], // IMAGE_FILE_MACHINE_ARM64
+  [0xa641, 64], // IMAGE_FILE_MACHINE_ARM64EC
+  [0xa64e, 64], // IMAGE_FILE_MACHINE_ARM64X
+  [0x5064, 64], // IMAGE_FILE_MACHINE_RISCV64
+]);
+
+function validatePEMachineMagic(machine, bits) {
+  const machineBits = PE_MACHINE_BITS.get(machine);
+  if (machineBits != null && machineBits !== bits) {
+    const format = bits === 64 ? 'PE32+' : 'PE32';
+    throw new Error(`PE Machine 0x${machine.toString(16)} is incompatible with ${format}`);
+  }
+}
 
 function windowsImageSectionRawMapping(pointerToRawData, { sectionAlignment } = {}) {
   if (pointerToRawData === 0) {
@@ -136,8 +160,10 @@ export function parsePE(input, options = {}) {
   const bits = magic === 0x20b ? 64 : 32;
   const minimumOptionalSize = bits === 64 ? 112 : 96;
   if (sizeOptional < minimumOptionalSize) throw new Error(`PE optional header size ${sizeOptional} is smaller than ${minimumOptionalSize}`);
+  validatePEMachineMagic(machine, bits);
   const entryRva = r.u32(opt + 16);
   const imageBase = bits === 64 ? r.u64(opt + 24) : BigInt(r.u32(opt + 28));
+  if (imageBase % WINDOWS_IMAGE_BASE_ALIGNMENT !== 0n) throw new Error(`PE ImageBase 0x${imageBase.toString(16)} is not 64 KiB aligned`);
   const sectionAlignment = r.u32(opt + 32);
   const fileAlignment = r.u32(opt + 36);
   const sizeOfImage = r.u32(opt + 56);

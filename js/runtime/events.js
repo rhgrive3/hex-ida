@@ -312,28 +312,48 @@ export function createRuntimeEvent(input = {}, options = {}) {
   const processKey = admittedOptionalText(input.processKey, 'processKey');
   const threadKey = admittedOptionalText(input.threadKey, 'threadKey');
   const moduleBindingKey = admittedOptionalText(input.moduleBindingKey, 'moduleBindingKey');
-  const identity = {
-    runtimeSessionId,
-    providerId,
-    providerVersion,
-    sessionEpoch,
-    streamId,
-    sequence,
-    providerEventId,
-    kind,
-    processKey,
-    threadKey,
-    moduleBindingKey,
-    moduleGeneration,
-    payload,
-  };
   const rawEventId = admitted(input.eventId);
-  const eventId = rawEventId == null
-    ? `runtimeevent_${stableDigest(identity)}`
+  const explicitEventId = rawEventId == null
+    ? null
     : required(rawEventId, 'runtime-event-id-invalid', 'runtime event id must be a non-empty string');
   const predecessorIds = arrayOfStrings(admittedSnapshot(input.predecessorIds), 'predecessorIds');
-  const timestamp = admittedOptionalText(input.timestamp, 'timestamp');
+  const rawTimestamp = admitted(input.timestamp);
+  if (rawTimestamp != null && typeof rawTimestamp !== 'string') {
+    throw new DebugAdapterError('runtime-invalid-event-text', 'timestamp must be a string');
+  }
+  const timestamp = optionalText(rawTimestamp);
   const interventionIds = arrayOfStrings(admittedSnapshot(input.interventionIds), 'interventionIds');
+  let eventId = explicitEventId;
+  if (eventId == null) {
+    const hasProviderOccurrenceIdentity = providerEventId != null || (streamId != null && sequence != null);
+    const occurrenceIdentity = !hasProviderOccurrenceIdentity && options.occurrenceIdentity != null
+      ? safeInteger(options.occurrenceIdentity, null, 'occurrenceIdentity', { min: 1 })
+      : null;
+    const identity = {
+      runtimeSessionId,
+      providerId,
+      providerVersion,
+      sessionEpoch,
+      streamId,
+      sequence,
+      providerEventId,
+      kind,
+      processKey,
+      threadKey,
+      moduleBindingKey,
+      moduleGeneration,
+      payload,
+      ...(hasProviderOccurrenceIdentity ? {} : {
+        timestamp,
+        observationMode,
+        completeness,
+        predecessorIds,
+        interventionIds,
+        ...(occurrenceIdentity == null ? {} : { occurrenceIdentity }),
+      }),
+    };
+    eventId = `runtimeevent_${stableDigest(identity)}`;
+  }
   return deepFreeze({
     eventId,
     runtimeSessionId,
@@ -434,6 +454,14 @@ export class RuntimeEventNormalizer {
   #queue = [];
   #seen = new Set();
   #dropped = 0;
+  #occurrence = 0;
+
+  #nextOccurrence() {
+    if (this.#occurrence >= Number.MAX_SAFE_INTEGER) {
+      throw new DebugAdapterError('runtime-event-occurrence-exhausted', 'runtime event occurrence counter exhausted');
+    }
+    return ++this.#occurrence;
+  }
 
   constructor(context = {}, options = {}) {
     this.context = { ...context };
@@ -447,11 +475,12 @@ export class RuntimeEventNormalizer {
     const hasDirectIdentity = input && typeof input === 'object'
       && ['runtimeSessionId', 'providerId', 'sessionEpoch'].some((key) => Object.hasOwn(input, key));
     const remainingBytes = Math.max(0, this.maxBytes - this.queuedBytes);
+    const occurrenceIdentity = this.#nextOccurrence();
     let event;
     try {
       event = hasDirectIdentity
-        ? createRuntimeEvent(input, { maxBytes:remainingBytes })
-        : normalizeLegacyRuntimeEvent(input, this.context, { maxBytes:remainingBytes });
+        ? createRuntimeEvent(input, { maxBytes:remainingBytes, occurrenceIdentity })
+        : normalizeLegacyRuntimeEvent(input, this.context, { maxBytes:remainingBytes, occurrenceIdentity });
     } catch (error) {
       if (error?.code !== 'runtime-event-resource-limit') throw error;
       this.#dropped++;
@@ -489,6 +518,7 @@ export class RuntimeEventNormalizer {
     this.queuedBytes = 0;
     this.#dropped = 0;
     if (dropped > 0) {
+      const markerOccurrenceIdentity = this.#nextOccurrence();
       while (true) {
         const marker = createRuntimeEvent({
           ...this.context,
@@ -496,7 +526,7 @@ export class RuntimeEventNormalizer {
           payload: { dropped },
           observationMode: 'observed',
           completeness: 'truncated',
-        });
+        }, { occurrenceIdentity:markerOccurrenceIdentity });
         const markerBytes = encodedByteLength(stableStringify(marker));
         if (events.length + 1 <= this.maxEvents && queuedBytes + markerBytes <= this.maxBytes) {
           events.unshift(marker);

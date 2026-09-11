@@ -84,6 +84,7 @@ const STRING_POINTS = 2;
 const API_POINTS = 2;
 const VENDOR_POINTS = 6;
 const MAX_METHODS_PER_CLASS = 60;
+const MAX_STRINGS_TO_SCAN = 4000;
 
 const VENDOR_KIND_TO_CATEGORY = {
   ads: 'ads', analytics: 'system', marketing: 'system',
@@ -345,9 +346,10 @@ export function buildStringMap(opts) {
   const groups = new Map();
   if (!program) return { subsystems: [], hasClasses: false, classCount: 0, byStrings: true };
 
-  let scanned = 0;
+  let inspected = 0;
   for (const s of o.strings || []) {
-    if (scanned >= 4000) break;
+    if (inspected >= MAX_STRINGS_TO_SCAN) break;
+    inspected++;
     const hits = classifyString(s.text);
     if (!hits.length) continue;
     // The xref span is a virtual-address byte range (#5698): use the string's
@@ -357,7 +359,6 @@ export function buildStringMap(opts) {
     if (span == null) continue;
     const users = program.functionsReferencing(s.addr, BigInt(Math.min(span, 128)), 8);
     if (!users.length) continue;
-    scanned++;
     for (const hit of hits) {
       if (!groups.has(hit.id)) groups.set(hit.id, { id: hit.id, funcs: new Map(), score: 0 });
       const g = groups.get(hit.id);

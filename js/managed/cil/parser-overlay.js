@@ -1,5 +1,5 @@
 import { deepFreeze } from '../../core/identity/index.js';
-import { metadataRowSize } from './metadata-layout.js';
+import { metadataRowSize, validateMetadataTableValidMask } from './metadata-layout.js';
 import { readCilMetadataStreams } from './metadata-streams.js';
 import { readCilDefinitions } from './metadata-definitions.js';
 import { parseCilMethodSignature, parseCilPropertySignature } from './call-signature-types.js';
@@ -29,7 +29,7 @@ function peLayout(bytes,view){
 }
 function tableLayout(bytes,view,stream){
  range(bytes,stream.offset,stream.size,'cil-metadata-tables-out-of-bounds');if(stream.size<24)fail('cil-metadata-tables-truncated');const start=stream.offset,end=start+stream.size,heapSizes=bytes[start+6];
- const valid=BigInt(u32(view,start+8,'cil-metadata-tables-truncated'))|(BigInt(u32(view,start+12,'cil-metadata-tables-truncated'))<<32n);let pos=start+24;const rowCounts=new Array(64).fill(0),tableOffsets=new Array(64).fill(null),rowSizes=new Array(64).fill(0);
+ const valid=BigInt(u32(view,start+8,'cil-metadata-tables-truncated'))|(BigInt(u32(view,start+12,'cil-metadata-tables-truncated'))<<32n);validateMetadataTableValidMask(valid);let pos=start+24;const rowCounts=new Array(64).fill(0),tableOffsets=new Array(64).fill(null),rowSizes=new Array(64).fill(0);
  for(let t=0;t<64;t++){if((valid&(1n<<BigInt(t)))===0n)continue;if(pos+4>end)fail('cil-metadata-row-counts-truncated');rowCounts[t]=u32(view,pos,'cil-metadata-row-counts-truncated');pos+=4}
  for(let t=0;t<64;t++){const rows=rowCounts[t];if(!rows)continue;const size=metadataRowSize(t,rowCounts,heapSizes);if(!Number.isSafeInteger(size)||size<1||rows>Math.floor((end-pos)/size))fail('cil-metadata-table-data-truncated');tableOffsets[t]=pos;rowSizes[t]=size;pos+=rows*size}
  return {rowCounts,tableOffsets,rowSizes,heapSizes};

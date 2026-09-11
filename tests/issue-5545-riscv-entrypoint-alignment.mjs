@@ -6,7 +6,7 @@ import { parsePE } from '../js/binary/pe.js';
 // (alignment fell through to 1 byte). An odd address can never start a
 // RISC-V instruction (IALIGN=32 base, 16 with compressed extensions).
 
-function makePE({ machine, entryRva, bits = 64 }) {
+function makePE({ machine, entryRva, bits = machine === 0x5032 || machine === 0x01c4 ? 32 : 64 }) {
   const bytes = new Uint8Array(0x400);
   const view = new DataView(bytes.buffer);
   const pe = 0x80, coff = pe + 4;
@@ -66,7 +66,8 @@ for (const machine of [0x5032, 0x5064]) {
     assert.equal(state.valid, true, `0x${machine.toString(16)} entrypoint 0x${rva.toString(16)} stays valid`);
     assert.equal(state.diagnostic, null);
     assert.equal(state.seeds.length, 1);
-    assert.equal(state.seeds[0].address, 0x140000000n + BigInt(rva));
+    const imageBase = machine === 0x5032 ? 0x10000000n : 0x140000000n;
+    assert.equal(state.seeds[0].address, imageBase + BigInt(rva));
   }
 }
 
