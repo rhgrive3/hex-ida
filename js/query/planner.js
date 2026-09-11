@@ -11,6 +11,8 @@ import { createAgentTools } from '../agent/tools.js';
 
 const POOL_ORDER = Object.freeze(['lexical', 'string', 'graph', 'recognition', 'runtime', 'semantic', 'exploration']);
 const POOL_SHARE = Object.freeze({ lexical: 0.29, string: 0.17, graph: 0.21, recognition: 0.17, runtime: 0.06, semantic: 0.06, exploration: 0.04 });
+const MAX_CANDIDATE_ANALYSIS_FAILURE_DIAGNOSTICS = 8;
+const MAX_CANDIDATE_ANALYSIS_FAILURE_CODE = 128;
 
 function asAddr(v) {
   if (typeof v === 'bigint') return v >= 0n ? v : null;
@@ -310,8 +312,10 @@ function budgetState(opts) {
     timeoutMs, started: Date.now(), isCancelled: typeof opts?.isCancelled === 'function' ? opts.isCancelled : (() => false),
     analyzedInstructions: 0, disassemblyExhausted: false, functionExhausted: false,
     candidateTruncated: false, candidateCount: 0, unaccountedToolCost: false,
+    candidateAnalysisFailureCount: 0, candidateAnalysisFailures: [],
     analysisAccountedExternally: !!(opts && opts.tools),
-    searchIncomplete: false, searchReports: [], sourceTotals: Object.fromEntries(POOL_ORDER.map((name) => [name, 0])),
+    searchIncomplete: false, searchReports: [], semanticIncomplete: false, semanticReports: [],
+    sourceTotals: Object.fromEntries(POOL_ORDER.map((name) => [name, 0])),
     controller, signal: controller.signal, timeout: null, externalSignal, externalAbort: null,
   };
   if (b.externalSignal) {
@@ -377,6 +381,22 @@ function consumeExternalCost(result, b) {
   b.analyzedInstructions += raw;
   return true;
 }
+function candidateAnalysisErrorCode(error) {
+  let code = null;
+  let message = null;
+  try { code = error?.code; } catch {}
+  if (typeof code === 'string' && code) return code;
+  try { message = error?.message; } catch {}
+  return typeof message === 'string' && message ? message : 'candidate-analysis-error';
+}
+function recordCandidateAnalysisFailure(b, address, code) {
+  b.candidateAnalysisFailureCount += 1;
+  if (b.candidateAnalysisFailures.length >= MAX_CANDIDATE_ANALYSIS_FAILURE_DIAGNOSTICS) return;
+  b.candidateAnalysisFailures.push({
+    address,
+    code: code.slice(0, MAX_CANDIDATE_ANALYSIS_FAILURE_CODE),
+  });
+}
 function searchCompleteness(result, requestedLimit) {
   const nestedRaw = result?.completeness;
   const nested = nestedRaw == null || (typeof nestedRaw === 'object' && !Array.isArray(nestedRaw)) ? nestedRaw : null;
@@ -421,8 +441,9 @@ function searchCompleteness(result, requestedLimit) {
 
   let complete;
   if (malformed) complete = false;
+  else if (values.complete.some((value) => value === false) || truncatedRaw === true) complete = false;
   else if (typeof completeRaw === 'boolean') complete = completeRaw;
-  else complete = truncatedRaw !== true && rows.length < requestedLimit;
+  else complete = rows.length < requestedLimit;
 
   if (coverage == null) {
     if (!malformed && total != null && total > 0) coverage = Math.min(1, returned / total);
@@ -441,6 +462,14 @@ function noteSearch(b, tool, term, result) {
   b.searchReports.push(report);
   if (!report.complete) b.searchIncomplete = true;
   return report.coverage;
+}
+function noteSemanticFacts(b, address, result) {
+  const report = { address, ...searchCompleteness(result, 500) };
+  if (!report.complete) {
+    b.semanticIncomplete = true;
+    if (b.semanticReports.length < b.maxFunctions) b.semanticReports.push(report);
+  }
+  return report;
 }
 function sourcePoolCap(b, pool) {
   const factor = pool === 'recognition' ? 10 : 8;
@@ -521,13 +550,27 @@ async function candidatePools(query, tools, ctx, b) {
   }
 
   const priors = Array.isArray(ctx.candidateFunctions) ? ctx.candidateFunctions : [];
+  const priorIdentities = Object.fromEntries(POOL_ORDER.map((name) => [name, new Set()]));
   for (const c of priors) {
     const pool = classifyPrior(c);
-    b.sourceTotals[pool]++;
+    const rawAddress = c?.addr != null ? c.addr : c?.address != null ? c.address : c;
+    const address = asAddr(rawAddress);
+    if (address == null) {
+      // Malformed source rows remain unaccounted evidence and therefore keep
+      // source completeness fail-closed. They have no trustworthy identity
+      // by which they could be deduplicated.
+      b.sourceTotals[pool]++;
+    } else {
+      const key = address.toString();
+      if (!priorIdentities[pool].has(key)) {
+        priorIdentities[pool].add(key);
+        b.sourceTotals[pool]++;
+      }
+    }
     addCandidate(
       pools,
       pool,
-      c?.addr != null ? c.addr : c?.address != null ? c.address : c,
+      address,
       c?.source || `${pool}-prior`,
       null,
       Number(c?.score || 1),
@@ -664,10 +707,11 @@ async function analyzeCandidates(query, pools, tools, b) {
     let fn;
     try { fn = await invokeTool(tools, 'get_function', b, c.address); }
     catch (error) {
-      const code = String(error && (error.code || error.message) || '');
+      const code = candidateAnalysisErrorCode(error);
       if (code === 'disassembly-budget') { b.disassemblyExhausted = true; break; }
       if (code === 'function-budget') { b.functionExhausted = true; break; }
       if (code === 'timeout' || code === 'cancelled') break;
+      recordCandidateAnalysisFailure(b, c.address, code);
       continue;
     }
     if (expired(b)) break;
@@ -682,7 +726,11 @@ async function analyzeCandidates(query, pools, tools, b) {
     c.score += semantic.score; c.scoreComponents.semanticScore += semantic.score; c.semantic = semantic.hits;
     c.evidence = new Set();
     for (const f of semantic.hits) for (const e of f.evidence || []) c.evidence.add(e);
-    c.semanticCompleteness = factsResult.completeness || { complete: !factsResult.truncated, coverage: factsResult.coverage ?? null, reason: factsResult.reason || null };
+    const semanticReport = noteSemanticFacts(b, c.address, factsResult);
+    c.semanticCompleteness = {
+      complete: semanticReport.complete, coverage: semanticReport.coverage, reason: semanticReport.reason,
+      returned: semanticReport.returned, total: semanticReport.total,
+    };
     if (query.expect && query.expect.calls && query.expect.calls.length && c.summary) {
       const names = (c.summary.calls || []).map((x) => lower(x.name || x.selector || ''));
       if (query.expect.calls.some((expected) => names.some((n) => n.includes(lower(expected))))) c.score += 20;
@@ -772,14 +820,20 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
     const evidence = new Set();
     if (best) for (const e of best.evidence || []) evidence.add(e);
     if (best?.verification?.evidence) for (const e of best.verification.evidence) evidence.add(e);
+    const all = mergedCandidates(pools);
+    const candidateCount = all.size;
+    const analyzedCount = ranked.length;
+    const failedCount = b.candidateAnalysisFailureCount;
     const missingEvidence = [];
-    if (!best) missingEvidence.push('no-candidate-function');
-    else if (!best.verification) missingEvidence.push('no-runtime-or-causal-verification');
+    if (!best && candidateCount === 0) missingEvidence.push('no-candidate-function');
+    else if (best && !best.verification) missingEvidence.push('no-runtime-or-causal-verification');
+    if (failedCount > 0) missingEvidence.push('candidate-analysis-error');
     if (b.disassemblyExhausted) missingEvidence.push('disassembly-budget');
     if (b.functionExhausted) missingEvidence.push('function-budget');
     if (b.shortlistLimited) missingEvidence.push('planner-shortlist-limit');
     if (b.sourcePoolTruncated) missingEvidence.push('candidate-source-limit');
     if (b.searchIncomplete) missingEvidence.push('search-incomplete');
+    if (b.semanticIncomplete) missingEvidence.push('semantic-facts-incomplete');
     if (b.unaccountedToolCost) missingEvidence.push('unaccounted-tool-cost');
     if (toolCallBudgetExhausted(b)) missingEvidence.push('tool-call-budget');
     if (timedOut(b)) missingEvidence.push('timeout');
@@ -787,11 +841,8 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
     if (query.confident === false) missingEvidence.push(...(query.missing || []));
     const search = aggregateSearchCoverage(b.searchReports);
     const sourceCompletenessInfo = b.sourceCompleteness || sourceCompleteness(pools, b);
-    const incomplete = expired(b) || b.shortlistLimited || b.sourcePoolTruncated || b.searchIncomplete;
+    const incomplete = expired(b) || b.shortlistLimited || b.sourcePoolTruncated || b.searchIncomplete || b.semanticIncomplete || failedCount > 0;
     const budgetLimited = b.disassemblyExhausted || b.functionExhausted || toolCallBudgetExhausted(b);
-    const all = mergedCandidates(pools);
-    const candidateCount = all.size;
-    const analyzedCount = ranked.length;
     const storedCandidateCoverage = candidateCount === 0 ? 1 : Math.min(1, analyzedCount / candidateCount);
     const candidateCoverage = storedCandidateCoverage * search.coverage * sourceCompletenessInfo.coverage;
     const reason = toolCallBudgetExhausted(b) ? 'tool-call-budget'
@@ -801,17 +852,21 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
           : cancelled(b) ? 'cancelled'
             : b.sourcePoolTruncated ? 'candidate-source-limit'
               : b.shortlistLimited ? 'planner-shortlist-limit'
-                : b.searchIncomplete ? (search.reason || 'search-incomplete') : null;
+                : b.searchIncomplete ? (search.reason || 'search-incomplete')
+                  : b.semanticIncomplete ? 'semantic-facts-incomplete'
+                    : failedCount > 0 ? 'candidate-analysis-error' : null;
     const completeness = {
       complete: !incomplete, partial: incomplete, budgetLimited, reason, candidateCoverage,
       storedCandidateCoverage, candidateSourceCoverage: sourceCompletenessInfo.coverage,
       searchCoverage: search.coverage, searchComplete: search.complete,
-      analyzedFunctions: analyzedCount, candidateFunctions: candidateCount, unanalyzedFunctions: Math.max(0, candidateCount - analyzedCount),
+      analyzedFunctions: analyzedCount, candidateFunctions: candidateCount, failedFunctions: failedCount,
+      unanalyzedFunctions: Math.max(0, candidateCount - analyzedCount),
     };
     return {
       query,
       candidates: ranked.slice(0, Math.min(20, b.maxFunctions)).map((c) => publicCandidate(c, completeness)),
       best: publicCandidate(best, completeness), evidence: Array.from(evidence), missingEvidence: Array.from(new Set(missingEvidence)),
+      candidateAnalysisFailures: b.candidateAnalysisFailures.map((failure) => ({ ...failure })),
       exhausted: budgetLimited || timedOut(b) || cancelled(b), partial: incomplete, completeness,
       refinementAvailable: !budgetLimited && (b.reservedFunctions > 0 || b.reservedDisassembly > 0),
       candidateSources: {
@@ -826,8 +881,10 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
         reserved: { functions: b.reservedFunctions, disassembly: b.reservedDisassembly },
       },
       searchCompleteness: search,
+      semanticCompleteness: { complete: !b.semanticIncomplete, incomplete: b.semanticReports.slice() },
       stats: {
-        analyzedFunctions: analyzedCount, candidateFunctions: candidateCount, unanalyzedFunctions: Math.max(0, candidateCount - analyzedCount),
+        analyzedFunctions: analyzedCount, candidateFunctions: candidateCount, failedFunctions: failedCount,
+        unanalyzedFunctions: Math.max(0, candidateCount - analyzedCount),
         disassembly: b.analyzedInstructions, toolCalls: b.toolCallBudget.used, elapsedMs: Date.now() - b.started,
         plannerFunctionBudget: b.maxFunctions, requestedFunctionBudget: b.requestedMaxFunctions,
         plannerDisassemblyBudget: b.maxDisassembly, requestedDisassemblyBudget: b.requestedMaxDisassembly,

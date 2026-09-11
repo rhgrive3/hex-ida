@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import { liftCilMethod } from '../../../js/managed/cil/lifter-core.js';
 import { WasmFrontend } from '../../../js/managed/wasm/frontend.js';
 import { lowerVMEffectsToSemanticIr } from '../../../js/managed/shared/bridge-v2.js';
+import { decompileManagedMethod } from '../../../js/managed/index.js';
 import { projectSemanticIrV2ToLegacyV1 } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 
 function cilImage(bytecode) {
@@ -109,12 +110,16 @@ test('#7943 cil div keeps its operator while main #7937 fails closed on exceptio
 // review's counterexamples are `0xffffffff / 2` => 0 signed but 2147483647
 // unsigned, and `0x80000000 >> 1` => 0xc0000000 arithmetic but 0x40000000
 // logical — so the bridge must not collapse either pair into one complete
-// `div`/`rem`/`shr` operator without signedness authority.
+// `div`/`rem`/`shr` operator without signedness authority. The written
+// spellings are the canonical operator vocabulary the managed decompiler
+// consumes (main #4016/#4019: shifts `lshr`/`ashr`, division/remainder
+// `sdiv`/`udiv`/`smod`/`umod`); any unknown spelling fail-closes to intrinsic
+// rendering downstream, which a competing suffix spelling would cause.
 test('#7943 wasm signed/unsigned binary variants stay canonically distinguishable', async () => {
   const pairs = [
-    [0x6d, 0x6e, 'div-s', 'div-u'],
-    [0x6f, 0x70, 'rem-s', 'rem-u'],
-    [0x75, 0x76, 'shr-s', 'shr-u'],
+    [0x6d, 0x6e, 'sdiv', 'udiv'],
+    [0x6f, 0x70, 'smod', 'umod'],
+    [0x75, 0x76, 'ashr', 'lshr'],
   ];
   for (const [signedOpcode, unsignedOpcode, signedOperator, unsignedOperator] of pairs) {
     const signed = await wasmBinaryNode(signedOpcode);
@@ -137,12 +142,12 @@ test('#7943 wasm signed/unsigned binary variants project distinct v1 sub spellin
     const legacy = projectSemanticIrV2ToLegacyV1(bridged.semanticIr, { cfg: bridged.cfg, ssa: bridged.ssa });
     return legacy.instructions.find((i) => i.semanticNodeId === node.id)?.sub ?? null;
   };
-  assert.equal(await v1Sub(0x6d), 'div-s');
-  assert.equal(await v1Sub(0x6e), 'div-u');
-  assert.equal(await v1Sub(0x6f), 'rem-s');
-  assert.equal(await v1Sub(0x70), 'rem-u');
-  assert.equal(await v1Sub(0x75), 'shr-s');
-  assert.equal(await v1Sub(0x76), 'shr-u');
+  assert.equal(await v1Sub(0x6d), 'sdiv');
+  assert.equal(await v1Sub(0x6e), 'udiv');
+  assert.equal(await v1Sub(0x6f), 'smod');
+  assert.equal(await v1Sub(0x70), 'umod');
+  assert.equal(await v1Sub(0x75), 'ashr');
+  assert.equal(await v1Sub(0x76), 'lshr');
 });
 
 test('#7943 non-suffixed binary mnemonics keep their bare operator spelling', () => {
@@ -153,4 +158,20 @@ test('#7943 non-suffixed binary mnemonics keep their bare operator spelling', ()
   assert.equal(cilBinaryNode(0x5d).operator, 'rem');
   assert.equal(cilBinaryNode(0x62).operator, 'shl');
   assert.deepEqual(cilBinaryNode(0x63).attributes, {});
+});
+
+test('#7943 bridge-written operators keep the landed decompiler vocabulary end-to-end', async () => {
+  // The v2 bridge writes the operator; the managed decompiler (main #4019)
+  // consumes it and must keep rendering the typed division/shift, never the
+  // fail-closed intrinsic fallback — the exact regression a competing suffix
+  // spelling caused while this PR was in flight.
+  for (const [opcode, yes, no] of [
+    [0x6e, /\(uint32_t\)/, /i32_div_u\(/],
+    [0x76, />>/, /i32_shr_u\(/],
+  ]) {
+    const { bridged, node } = await wasmBinaryNode(opcode);
+    const out = decompileManagedMethod(bridged).pseudocode;
+    assert.match(out, yes, `opcode 0x${opcode.toString(16)} renders through the canonical operator`);
+    assert.doesNotMatch(out, no, `opcode 0x${opcode.toString(16)} must not fall back to an intrinsic`);
+  }
 });
