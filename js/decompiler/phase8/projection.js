@@ -804,7 +804,13 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     ...result,
     lines,
     pseudocode:printed.text,
-    sourceMap:printed.mapping,
+    // Only this producer's current line binding may carry consumed histories
+    // into the printed span. Raw/copied rewrite metadata is not a source edge.
+    sourceMap:printed.mapping.map((entry, index) => {
+      const history = readLineExpressionHistory(lines[index], result.ir);
+      return history ? { ...entry, source:mergeSource(entry.source,
+        ...history.map(record => record.originHistory?.before).filter(Boolean)) } : entry;
+    }),
     metrics:refreshMetrics(result, result.semanticAst, printed, records),
     phase8Projection:Object.freeze({
       version:PHASE8_PROJECTION_VERSION,

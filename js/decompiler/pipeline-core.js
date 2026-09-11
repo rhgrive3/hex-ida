@@ -1722,7 +1722,14 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
     semanticAst: advanced.semanticAst,
     cAst: advanced.cAst,
     semanticFacts: advanced.facts,
-    sourceMap: advanced.printed.mapping,
+    // A selected-away operation may have no surviving AST source. Retain its
+    // observed origins on the actual consumer's output span, not on every line
+    // sharing an input. Keep the expression/load identity and sources intact.
+    sourceMap: advanced.printed.mapping.map((entry, index) => {
+      const consumer = readExpressionHistoryConsumer(advanced.cAst.body[index]?.semantic, advanced.ir);
+      return consumer ? { ...entry, source:mergeSource(entry.source,
+        ...consumer.records.map(record => record.originHistory?.before).filter(Boolean)) } : entry;
+    }),
     highVariables: advanced.highVariables,
     prototype: advanced.prototype,
     aggregateLayouts: advanced.aggregateLayouts,

@@ -83,6 +83,24 @@ test('C4-03 consumer binding preserves the surviving load identity and source ar
   assert.equal(structuralKey(result.cAst.body[0].semantic.expression), key);
 });
 
+test('C4-03 printed source spans retain only their producer-bound consumed histories', () => {
+  const f = fixture({ load:true });
+  const expression = f.enhanced.cAst.body[0].semantic.expression;
+  const originalSource = structuredClone(expression.source);
+  for (const result of [f.enhanced, applyPhase8Projection(f.enhanced, analysis())]) {
+    const mapped = result.sourceMap.flatMap((entry, index) => entry.source.addresses.includes(f.add.address) ? [index] : []);
+    assert.deepEqual(mapped, [0,2], 'an unrelated shared-input store is not a consumer of the removed add');
+    assert.deepEqual(result.sourceMap.map(entry => [entry.outputStartLine, entry.outputEndLine]), [[1,1],[2,2],[3,3]]);
+  }
+  assert.deepEqual(expression.source, originalSource);
+  const foreign = source(999, 900), raw = resultWith(expr.variable('foreign', 64, false, source(1)));
+  raw.rewriteProof = [{ ...f.enhanced.rewriteProof[0], originHistory:{ before:foreign, after:foreign } }];
+  const unbound = applyPhase8Projection(raw, analysis());
+  assert.ok(Array.isArray(unbound.sourceMap));
+  assert.equal(unbound.sourceMap.some(entry => entry.source.addresses.includes(foreign.addresses[0])), false,
+    'copied metadata cannot create a source-map edge');
+});
+
 test('C4-03 query navigation reaches the real consumers of an elided operator origin', async () => {
   const f = fixture();
   const result = applyPhase8Projection(f.enhanced, analysis());
