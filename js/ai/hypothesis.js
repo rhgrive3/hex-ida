@@ -37,8 +37,10 @@ export class HypothesisStore {
     const contradictionEvidenceIds = Object.hasOwn(input, 'contradictionEvidenceIds')
       ? knownIds(input.contradictionEvidenceIds, this.evidenceStore)
       : previous?.contradictionEvidenceIds || [];
-    let status = Object.hasOwn(input, 'status')
-      ? (HYPOTHESIS_STATUSES.includes(input.status) ? input.status : 'open')
+    const hasStatusUpdate = Object.hasOwn(input, 'status');
+    const requestedStatus = hasStatusUpdate ? input.status : null;
+    let status = hasStatusUpdate
+      ? (HYPOTHESIS_STATUSES.includes(requestedStatus) ? requestedStatus : 'open')
       : previous?.status || 'open';
 
     /* `verified` and `rejected` are application verdicts, not model vocabulary.
