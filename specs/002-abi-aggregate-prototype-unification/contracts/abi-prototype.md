@@ -81,6 +81,15 @@ producer/consumer wiring remains an integration responsibility at
 sibling private summary implementation, or treat a test-only injected fact as
 production integration.
 
+The decoded call/return fixture also exposes a separate missing data handoff:
+native `return` nodes have no source-language value inputs, so the public summary
+has no `returnValues`/`returnProvenance` even though the compatibility call reports
+ABI result locations. Its unresolved call remains explicitly partial and broad.
+Closing that gap requires a canonical, identity-bound ABI-result-to-SSA-value
+mapping before C1 summary construction; register placement alone cannot supply
+the missing value provenance. These absence assertions document unfinished
+integration, not a passing proof of positive return-summary precision.
+
 ### Function-local control uncertainty
 
 Canonical compatibility projection calls `adapter.observeFunction({ semanticIr })`

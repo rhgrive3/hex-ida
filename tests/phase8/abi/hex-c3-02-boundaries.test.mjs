@@ -2461,8 +2461,14 @@ test('C3-02 public summaries do not turn ABI declaration agreement into exact va
   const { summary } = publicSummaryOf(pipeline);
   assert.ok(summary.unknownCallEffects.length, 'an ABI declaration is not a complete callee effect summary');
   assert.equal(summaryIsPure(summary), false);
-  assert.ok(summary.returnProvenance.some(value => value.kind === 'unknown'), 'unresolved return provenance remains explicit');
-  assert.equal(summary.returnProvenance.some(value => value.kind === 'arg' || value.kind === 'root' || value.kind === 'allocation'), false);
+  // This native return has no source-language value binding yet. Record that
+  // integration gap explicitly; an ABI result register must not invent one.
+  const returns = pipeline.semanticIr.nodes.filter(node => node.kind === 'return');
+  assert.ok(returns.length);
+  assert.equal(returns.every(node => node.inputs.length === 0), true);
+  assert.deepEqual(summary.returnValues, []);
+  assert.deepEqual(summary.returnProvenance, []);
+  assert.equal(summary.status.completeness, 'partial');
 });
 
 test('C3-02 public summary identity remains snapshot-bound and cancellation publishes nothing', () => {
