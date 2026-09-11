@@ -193,6 +193,19 @@ for (const tc of [
   assert.ok(routineSeed(image, 0x1180n));
 }
 
+// The 32/64-bit command variants are not interchangeable: reject a command from the wrong ABI.
+for (const [bytes, offset, replacement] of [
+  [macho64(), 104, LC_ROUTINES],
+  [macho32(), 84, LC_ROUTINES_64],
+]) {
+  new DataView(bytes.buffer).setUint32(offset, replacement, true);
+  const image = parseMachO(bytes);
+  assert.equal(image.metadata.routines, undefined);
+  assert.equal(image.metadata.machoMetadata.complete, false);
+  assert.ok(image.metadata.machoMetadata.reasons.includes(`load-command-0x${replacement.toString(16)}-parse-error`));
+  assert.equal(image.functions.length, 0);
+}
+
 // Both commands are fixed-layout structures: oversized records are malformed and unpublished.
 for (const bytes of [macho64({ routineSize:80 }), macho32({ routineSize:48 })]) {
   const image = parseMachO(bytes);
