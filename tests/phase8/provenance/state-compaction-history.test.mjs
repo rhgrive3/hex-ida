@@ -588,6 +588,7 @@ test('normalization attaches only to the exact issued expression event and prese
     record => { record.publicNormalization.producedRefs = ['L0:stmt']; },
     record => { record.publicNormalization.publicNormalization = {}; },
     record => { record.before = 1; },
+    record => { record.kind = 'external-description'; record.publicNormalization = null; },
   ]) {
     const changed = structuredClone(map);
     mutate(changed.ledger.find(record => record.kind === 'normalized-state-expression'));
@@ -599,6 +600,28 @@ test('normalization attaches only to the exact issued expression event and prese
   assert.ok(!copied.ledger.some(record => record.kind === 'normalized-state-expression'),
     'copied expression descriptions cannot attach even an otherwise current normalization');
   assert.equal(renderPublicStateNormalizations(copied).length, history.events.length);
+});
+
+test('external transform descriptions cannot reissue an attached normalization under any record kind', () => {
+  const f = render(normalizationFixture(), {}, true);
+  const attached = applyPhase8Projection(f.result, analysis()).renderProvenance.ledger
+    .find(record => record.kind === 'normalized-state-expression');
+  assert.ok(attached);
+  for (const mutate of [
+    () => {},
+    record => { record.kind = 'expression-rewrite'; },
+    record => { record.kind = 'external-description'; delete record.originHistory; },
+    record => { record.kind = 'external-description'; record.publicNormalization = null; },
+    record => { delete record.publicNormalization; },
+  ]) {
+    const record = structuredClone(attached); mutate(record);
+    const map = buildRenderProvenance({ result:{ lines:f.result.lines,
+      phase8Projection:{ transforms:[record] } }, snapshotId:'external-normalization' });
+    assert.deepEqual(map.ledger, []);
+    assert.ok(map.reasons.includes('unissued-public-state-history'));
+    assert.equal(map.completeness, 'incomplete');
+    assert.ok(Object.values(map.entities).every(entity => entity.recordRefs.length === 0));
+  }
 });
 
 test('normalization metadata rejects deletion, invented lines and malformed identity or slot transitions', () => {

@@ -502,7 +502,8 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     if (record?.kind === 'abi-state-restoration' || record?.abiStateTransition) {
       reasons.add('unissued-abi-state-history'); continue;
     }
-    if (record?.kind === 'public-state-normalization' || record?.publicStateTransition) {
+    if (record?.kind === 'public-state-normalization' || record?.publicStateTransition
+        || record?.kind === 'normalized-state-expression' || Object.hasOwn(record ?? {}, 'publicNormalization')) {
       reasons.add('unissued-public-state-history'); continue;
     }
     if (record?.kind === 'display-suppression' || record?.suppressedRender) {
@@ -749,7 +750,7 @@ export function validateRenderProvenance(provenanceMap, { snapshotId = null, sho
       if (typeof shouldAbort === 'function' && shouldAbort() === true) {
         reasons.add('cancelled'); validationCancelled = true; break;
       }
-      if (record?.kind === 'normalized-state-expression' || record?.publicNormalization) {
+      if (record?.kind === 'normalized-state-expression' || Object.hasOwn(record ?? {}, 'publicNormalization')) {
         const witness = record.publicNormalization;
         const flat = witness?.kind === 'public-state-normalization' && !Object.hasOwn(witness, 'publicNormalization')
           && witness.origin && ['addresses','rows','ir','ssaDefs','ssaUses'].every(key => Array.isArray(witness.origin[key]));
