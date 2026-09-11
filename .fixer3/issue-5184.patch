@@ -1,0 +1,235 @@
+--- a/js/analysis/types/constraints.js
++++ b/js/analysis/types/constraints.js
+@@ -205,6 +205,57 @@
+   return stableStringify(canonicalDescriptorMaterial(layer, descriptor));
+ }
+ 
++/**
++ * Structural aggregate members are a semantic set ordered by byte offset, not
++ * by producer traversal order. Canonicalization reorders and deduplicates only
++ * canonically identical members; distinct same-slot or overlapping members are
++ * retained so graph reconciliation can preserve or reject their ambiguity under
++ * its existing hard-fact policy.
++ */
++export function canonicalizeStructuralMembers(members) {
++  if (!Array.isArray(members)) return members;
++  if (!members.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))) {
++    return [...members];
++  }
++
++  const sorted = members.map((member) => ({
++    member,
++    offset: canonicalInteger(member.offset ?? 0),
++    canonical: canonicalDescriptorString('structural', member),
++  })).sort((left, right) => {
++    if (left.offset != null && right.offset != null) {
++      if (left.offset < right.offset) return -1;
++      if (left.offset > right.offset) return 1;
++    } else if (left.offset != null) {
++      return -1;
++    } else if (right.offset != null) {
++      return 1;
++    }
++    return left.canonical.localeCompare(right.canonical);
++  });
++
++  const canonical = [];
++  let previous = null;
++  for (const entry of sorted) {
++    if (entry.canonical === previous) continue;
++    canonical.push(entry.member);
++    previous = entry.canonical;
++  }
++  return canonical;
++}
++
++function canonicalizeStructuralDescriptor(descriptor) {
++  if (!Array.isArray(descriptor.members)) return descriptor;
++  const properties = Object.getOwnPropertyDescriptors(descriptor);
++  properties.members = {
++    ...properties.members,
++    value: canonicalizeStructuralMembers(descriptor.members),
++  };
++  const canonical = {};
++  Object.defineProperties(canonical, properties);
++  return canonical;
++}
++
+ function validateDescriptor(layer, descriptor) {
+   if (descriptor == null || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
+     fail('type-claim-descriptor-required');
+@@ -245,10 +296,11 @@
+   if (!LAYER_SET.has(layer)) fail('type-claim-invalid-layer');
+   const descriptor = input.descriptor ?? null;
+   if (descriptor == null) fail('type-claim-descriptor-required');
++  const snapshot = snapshotDescriptor(descriptor);
+   const claim = {
+     layer,
+     entityId: nonEmpty(input.entityId, 'type-claim-entity-required'),
+-    descriptor: snapshotDescriptor(descriptor),
++    descriptor: layer === 'structural' ? canonicalizeStructuralDescriptor(snapshot) : snapshot,
+   };
+   validateDescriptor(layer, claim.descriptor);
+   claim.key = stableDigest({ layer: claim.layer, entityId: claim.entityId, descriptor: canonicalDescriptorMaterial(layer, claim.descriptor) });
+@@ -393,8 +445,10 @@
+   }
+   if (aMembers.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))
+     && bMembers.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))) {
+-    const aCanonicalSet = aMembers.map((member) => canonicalDescriptorString('structural', member)).sort();
+-    const bCanonicalSet = bMembers.map((member) => canonicalDescriptorString('structural', member)).sort();
++    const aCanonicalSet = canonicalizeStructuralMembers(aMembers)
++      .map((member) => canonicalDescriptorString('structural', member));
++    const bCanonicalSet = canonicalizeStructuralMembers(bMembers)
++      .map((member) => canonicalDescriptorString('structural', member));
+     if (aCanonicalSet.length === bCanonicalSet.length
+       && aCanonicalSet.every((entry, index) => entry === bCanonicalSet[index])) return false;
+   }
+--- a/js/analysis/types/graph.js
++++ b/js/analysis/types/graph.js
+@@ -31,6 +31,7 @@
+ import { ANALYSIS_STATUS_SCHEMA_VERSION, createAnalysisStatus, isCompleteStatus, weakestCompleteness } from '../status.js';
+ import {
+   TYPE_LAYERS,
++  canonicalizeStructuralMembers,
+   claimsConflict,
+   createContradiction,
+   createHardConstraint,
+@@ -40,7 +41,7 @@
+ import { condenseTypeGraph } from './scc.js';
+ 
+ export const TYPE_GRAPH_ANALYZER_ID = 'phase7.types.constraint-graph';
+-export const TYPE_GRAPH_ANALYZER_VERSION = '1.1.0';
++export const TYPE_GRAPH_ANALYZER_VERSION = '1.1.1';
+ export const TYPE_RESULT_SCHEMA_VERSION = 1;
+ export const TYPE_GRAPH_RESULT_SCHEMA_VERSION = 1;
+ 
+@@ -316,13 +317,9 @@
+       }
+     }
+ 
+-    const members = [...membersByOffset.values()]
+-      .sort((left, right) => {
+-        if (left.offset < right.offset) return -1;
+-        if (left.offset > right.offset) return 1;
+-        return stableStringify(left.member).localeCompare(stableStringify(right.member));
+-      })
+-      .map((entry) => entry.member);
++    const members = canonicalizeStructuralMembers(
++      [...membersByOffset.values()].map((entry) => entry.member),
++    );
+ 
+     const sccMembers = sccContext?.sccMembers ?? [entityId];
+     const isRecursive = sccContext?.isRecursive === true
+--- /dev/null
++++ b/tests/phase7/types/issue-5184-structural-member-order.test.mjs
+@@ -0,0 +1,110 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++
++import { stableDigest } from '../../../js/core/identity/index.js';
++import {
++  claimsConflict,
++  createHardConstraint,
++  createTypeClaim,
++} from '../../../js/analysis/types/constraints.js';
++import { TypeConstraintGraph } from '../../../js/analysis/types/graph.js';
++
++const int32 = Object.freeze({ kind:'integer', widthBits:32, signed:true });
++const float32 = Object.freeze({ kind:'float', widthBits:32 });
++
++function member(name, offset, sizeBytes = 4, memberType = int32) {
++  return { name, offset, sizeBytes, memberType };
++}
++
++function claim(entityId, members) {
++  return createTypeClaim({
++    layer:'structural',
++    entityId,
++    descriptor:{ kind:'struct', members },
++  });
++}
++
++function hard(claimValue, evidenceId) {
++  return createHardConstraint({
++    kind:'debug-type',
++    origin:'debug-matched',
++    claim:claimValue,
++    evidenceIds:[evidenceId],
++  });
++}
++
++function permutations(values) {
++  if (values.length < 2) return [values];
++  return values.flatMap((value, index) => permutations([
++    ...values.slice(0, index),
++    ...values.slice(index + 1),
++  ]).map((tail) => [value, ...tail]));
++}
++
++test('#5184 two-member permutation has one canonical descriptor and claim digest', () => {
++  const a = member('a', 0);
++  const b = member('b', 8);
++  const left = claim('S', [a, b]);
++  const right = claim('S', [b, a]);
++
++  assert.equal(claimsConflict(left, right), false);
++  assert.equal(left.key, right.key);
++  assert.deepEqual(left.descriptor, right.descriptor);
++  assert.deepEqual(left.descriptor.members.map((entry) => entry.offset), [0, 8]);
++});
++
++test('#5184 all permutations of three members preserve semantic identity', () => {
++  const members = [member('a', 0), member('b', 8), member('c', 16)];
++  const variants = permutations(members).map((order) => claim('P', order));
++  const keys = new Set(variants.map((entry) => entry.key));
++
++  assert.equal(keys.size, 1);
++  for (const variant of variants) {
++    assert.equal(claimsConflict(variants[0], variant), false);
++    assert.deepEqual(variant.descriptor.members.map((entry) => entry.offset), [0, 8, 16]);
++  }
++});
++
++test('#5184 canonicalization does not erase real size/type disagreement or offset identity', () => {
++  const base = claim('C', [member('a', 0)]);
++  const moved = claim('C', [member('a', 4)]);
++  assert.notEqual(base.key, moved.key);
++  assert.equal(claimsConflict(base, claim('C', [member('a', 0, 8)])), true);
++  assert.equal(claimsConflict(base, claim('C', [member('a', 0, 4, float32)])), true);
++});
++
++test('#5184 exact duplicates dedupe while distinct overlapping members retain ambiguity', () => {
++  const duplicate = member('a', 0);
++  const overlapping = member('overlay', 0, 4, float32);
++  const withDuplicate = claim('D', [duplicate, { ...duplicate }]);
++  const singleton = claim('D', [duplicate]);
++  const ambiguous = claim('O', [overlapping, duplicate]);
++
++  assert.equal(withDuplicate.descriptor.members.length, 1);
++  assert.equal(withDuplicate.key, singleton.key);
++  assert.equal(ambiguous.descriptor.members.length, 2);
++  assert.equal(claimsConflict(claim('O', [duplicate]), claim('O', [overlapping])), true);
++});
++
++test('#5184 graph result is invariant to provider insertion and member traversal order', () => {
++  const a = member('a', 0);
++  const b = member('b', 8);
++  const forward = hard(claim('G', [a, b]), 'ev-forward');
++  const reverse = hard(claim('G', [b, a]), 'ev-reverse');
++
++  const solve = (constraints) => {
++    const graph = new TypeConstraintGraph({ snapshotId:'issue-5184' });
++    for (const constraint of constraints) graph.addHardConstraint(constraint);
++    return graph.solveEntity('G');
++  };
++
++  const first = solve([forward, reverse]);
++  const second = solve([reverse, forward]);
++  assert.equal(first.status.analyzerVersion, '1.1.1');
++  assert.equal(first.layers.structural.hardConstraints.length, 1);
++  assert.equal(second.layers.structural.hardConstraints.length, 1);
++  assert.equal(first.layers.structural.contradictions.length, 0);
++  assert.equal(second.layers.structural.contradictions.length, 0);
++  assert.deepEqual(first.layers.structural.selected, second.layers.structural.selected);
++  assert.equal(stableDigest(first), stableDigest(second));
++});
