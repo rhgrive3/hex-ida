@@ -323,6 +323,9 @@ export function projectNode(node, context) {
     blockIndex, row, valuesById, ir, nodeById, blockBySemanticId, options,
     stateProjection, comparisonCarrierByNodeId,
   } = context;
+  // The same function-scoped adapter is consumed by prototype recovery later.
+  // Observe the complete canonical function, not a mnemonic or rendered branch.
+  options.abiAdapter?.observeFunction?.({ semanticIr:ir });
   const inst = baseInstruction(node, blockIndex, row, options);
   const inputValues = node.inputs.map((id) => valuesById.get(id)).filter(Boolean);
   const outputValues = node.outputs.map((id) => valuesById.get(id)).filter(Boolean);

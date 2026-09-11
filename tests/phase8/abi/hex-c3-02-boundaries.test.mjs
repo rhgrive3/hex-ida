@@ -9,6 +9,8 @@ import { architecturePluginV2 } from '../../../js/targets/architecture/index.js'
 import { createRiscv64DecodedInstruction } from '../../../js/targets/architecture/riscv64/decoded-instruction.js';
 import { buildSemanticV2CompatibilityPipeline } from '../../../js/semantics/compat/index.js';
 import { recoverFunctionPrototype } from '../../../js/decompiler/types/prototype.js';
+import { decompileSemantic } from '../../../js/decompiler/semantic.js';
+import { enhanceSemanticDecompilation } from '../../../js/decompiler/pipeline.js';
 import { projectSemanticIrV2ToLegacyV1 } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 import { classifyCallWithAbi } from '../../../js/semantics/compat/semantic-ir-v2-to-v1-core.js';
 import { classifyCallArguments } from '../../../js/ir-core.js';
@@ -2191,7 +2193,7 @@ function decodedTransferDeclaration(words, addresses = null) {
   const caller = decodedCallObservationPipeline([prototype], [0x2000n], {
     adapterOptions:{ snapshotId:'c3-declaration-snapshot', calleeDeclarationFor:() => declaration },
   });
-  return { declaration, caller, pipeline };
+  return { declaration, caller, pipeline, adapter, prototype, instructions };
 }
 
 test('C3-02 transfer frontier discovers direct and indirect unresolved exits from decoded bytes', () => {
@@ -2277,4 +2279,128 @@ test('C3-02 transfer frontier retains missing fallthrough after conditional targ
   assert.equal(declaration.status, 'ambiguous');
   assert.equal(caller[0].extra.callerCallee.status, 'ambiguous');
   assert.equal(caller[0].callArguments, null);
+});
+
+test('C3-02 function publication retains discovered uncertainty in prototype recovery', () => {
+  for (const [words, status] of [
+    [[0x00050593, 0x00050067], 'ambiguous'],
+    [Array.from({ length:65 }, () => 0x00050067), 'budget-limited'],
+  ]) {
+    const { pipeline, adapter, prototype } = decodedTransferDeclaration(words);
+    const recovered = recoverFunctionPrototype(pipeline.legacyV1, { values:new Map() }, {
+      abiAdapter:adapter, functionPrototype:prototype,
+    });
+    assert.equal(recovered.completeness, status);
+    assert.equal(recovered.conventionKnown, false);
+    assert.equal(recovered.returnLocationKnown, false);
+    assert.deepEqual(recovered.returnLocations, []);
+    assert.deepEqual(recovered.arguments, []);
+    assert.deepEqual(adapter.argumentLocations({ functionPrototype:prototype }), []);
+    assert.deepEqual(adapter.returnLocations({ functionPrototype:prototype }), []);
+  }
+});
+
+test('C3-02 function publication reaches the real decompiler prototype without option flags', () => {
+  for (const [lastWord, expectedKnown] of [[0x00008067, true], [0x00050067, false]]) {
+    const { pipeline, adapter, prototype, instructions } = decodedTransferDeclaration([0x00050593, lastWord]);
+    const model = { name:'declaration_fixture', instructions:instructions.map((instruction, row) => ({
+      row, address:instruction.address, size:instruction.size, mn:'', ops:'',
+    })), switches:[] };
+    const options = {
+      ir:pipeline.legacyV1, abiAdapter:adapter, functionPrototype:prototype,
+    };
+    const result = enhanceSemanticDecompilation(decompileSemantic(model, options), model, options);
+    assert.ok(result?.prototype, 'actual enhanced decompiler must expose its prototype');
+    assert.equal(result.prototype.conventionKnown, expectedKnown);
+    if (!expectedKnown) {
+      assert.equal(result.prototype.completeness, 'ambiguous');
+      assert.deepEqual(result.prototype.returnLocations, []);
+    }
+  }
+});
+
+test('C3-02 function publication rejects preclassified returns at every own-function projection', () => {
+  const known = decodedTransferDeclaration([0x00050593, 0x00008067]);
+  const uncertain = decodedTransferDeclaration([0x00050593, 0x00050067]);
+  const options = { functionPrototype:known.prototype, returnType:'int64' };
+  const classified = known.adapter.classifyFunctionReturn(options);
+  assert.ok(classified);
+  assert.equal(known.adapter.returnRegister(options), 'x10');
+  assert.ok(known.adapter.returnLocations({ ...options, classified }).length);
+  assert.equal(uncertain.adapter.classifyFunctionReturn(options), null);
+  assert.equal(uncertain.adapter.returnRegister(options), null);
+  assert.deepEqual(uncertain.adapter.returnLocations({ ...options, classified }), []);
+  assert.deepEqual(uncertain.adapter.argumentRegisters({ functionPrototype:known.prototype }), []);
+});
+
+test('C3-02 function publication is monotone across normalized copies and rejects cross-function reuse', () => {
+  const known = decodedTransferDeclaration([0x00050593, 0x00008067]);
+  const uncertain = decodedTransferDeclaration([0x00050593, 0x00050067]);
+  const bounded = decodedTransferDeclaration(Array.from({ length:65 }, () => 0x00050067));
+  projectSemanticIrV2ToLegacyV1(known.pipeline.semanticIr, { abiAdapter:known.adapter });
+  assert.equal(known.adapter.completeness, 'canonical');
+  known.adapter.observeFunction({ semanticIr:uncertain.pipeline.semanticIr });
+  assert.equal(known.adapter.completeness, 'ambiguous');
+  known.adapter.observeFunction({ semanticIr:bounded.pipeline.semanticIr });
+  assert.equal(known.adapter.completeness, 'budget-limited');
+  known.adapter.observeFunction({ semanticIr:known.pipeline.semanticIr });
+  assert.equal(known.adapter.completeness, 'budget-limited', 'resolved replay must not clear discovered evidence');
+  const other = decodedTransferDeclaration([0x00050593, 0x00008067], [0x3000n, 0x3004n]);
+  known.adapter.observeFunction({ semanticIr:other.pipeline.semanticIr });
+  assert.equal(known.adapter.completeness, 'stale');
+  known.adapter.observeFunction({ semanticIr:known.pipeline.semanticIr });
+  assert.equal(known.adapter.completeness, 'stale');
+  assert.deepEqual(known.adapter.argumentLocations({ functionPrototype:known.prototype }), []);
+});
+
+test('C3-02 function publication retains live snapshot and cancellation invalidation', () => {
+  const source = decodedTransferDeclaration([0x00050593, 0x00008067]);
+  const controller = new AbortController();
+  const options = { architecture:'riscv64', platform:'linux', binaryId:'c3-observation-binary',
+    sliceId:'0', snapshotId:'c3-declaration-snapshot', signal:controller.signal, functionPrototype:source.prototype };
+  const adapter = semanticAbiAdapter(RISCV_LP64_ABI, options);
+  const ir = projectSemanticIrV2ToLegacyV1(source.pipeline.semanticIr, { abiAdapter:adapter });
+  assert.equal(adapter.completeness, 'canonical');
+  options.snapshotId = 'new-snapshot';
+  assert.equal(recoverFunctionPrototype(ir, { values:new Map() }, {
+    abiAdapter:adapter, functionPrototype:source.prototype,
+  }).completeness, 'stale');
+  assert.deepEqual(adapter.returnLocations({ returnType:'int64' }), []);
+  options.snapshotId = 'c3-declaration-snapshot';
+  options.schemaVersion = 2;
+  assert.equal(adapter.completeness, 'stale');
+  options.schemaVersion = null;
+  controller.abort();
+  assert.equal(adapter.completeness, 'cancelled');
+  assert.deepEqual(adapter.argumentLocations({ functionPrototype:source.prototype }), []);
+});
+
+test('C3-02 function publication withholds malformed observations without later replay promotion', () => {
+  const valid = decodedTransferDeclaration([0x00008067]).pipeline.semanticIr;
+  const accessor = Object.freeze({ ...valid, get nodes() { return valid.nodes; } });
+  for (const malformed of [null, {}, structuredClone(valid), accessor]) {
+    const source = decodedTransferDeclaration([0x00008067]);
+    source.adapter.observeFunction({ semanticIr:malformed });
+    assert.equal(source.adapter.completeness, 'malformed');
+    source.adapter.observeFunction({ semanticIr:source.pipeline.semanticIr });
+    assert.equal(source.adapter.completeness, 'malformed');
+    assert.equal(source.adapter.returnRegister({ returnType:'int64' }), null);
+  }
+});
+
+test('C3-02 function publication does not invalidate an independently resolved external callee', () => {
+  const source = decodedTransferDeclaration([0x00050593, 0x00008067]);
+  const { calls, pipeline, adapter } = decodedCallObservationPipeline([source.prototype], [0x2000n], {
+    functionPrototype:source.prototype, context:true, terminalWord:0x00050067,
+    adapterOptions:{ snapshotId:'c3-declaration-snapshot', calleeDeclarationFor:() => source.declaration },
+  });
+  assert.equal(adapter.completeness, 'ambiguous');
+  assert.equal(calls[0].extra.callerCallee.status, 'agreement');
+  assert.ok(calls[0].callArguments.length);
+  assert.ok(calls[0].extra.returnLocations.length);
+  const own = recoverFunctionPrototype(pipeline.legacyV1, { values:new Map() }, {
+    abiAdapter:adapter, functionPrototype:source.prototype,
+  });
+  assert.equal(own.completeness, 'ambiguous');
+  assert.equal(own.conventionKnown, false);
 });

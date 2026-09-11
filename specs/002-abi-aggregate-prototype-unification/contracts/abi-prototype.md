@@ -57,6 +57,24 @@ stale rather than exact.
 
 ## Consumer responsibilities
 
+### Function-local control uncertainty
+
+Canonical compatibility projection calls `adapter.observeFunction({ semanticIr })`
+with the full validated immutable function. It shares the declaration producer's
+control-transfer frontier; it does not infer thunks from mnemonics or rendered
+text. Ambiguous and budget-limited frontiers reach the adapter's live completeness
+and the real enhanced decompiler's own `prototype`. Own-function argument/return
+locations, return registers and return classification are withheld, including
+when a previously classified return is supplied by the consumer.
+
+This observation is negative evidence only. Resolved observations do not mint
+body-equivalence or return-summary proof. Reprojecting the same function is safe;
+resolved copies cannot erase prior ambiguity or truncation. Another function on
+the same adapter is stale; mutable/malformed observations remain malformed.
+Snapshot/context drift and cancellation stay live at the publication boundary.
+Separately resolved external callee declarations retain their own scoped
+classification; caller function uncertainty must not impersonate callee evidence.
+
 ### Inter-function source declaration handoff
 
 `adapter.functionDeclaration({ semanticIr })` exports a version-2 declaration

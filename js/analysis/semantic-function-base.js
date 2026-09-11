@@ -718,33 +718,43 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
     && value.variadic !== true && value.varargs !== true
     && ['parameters', 'params', 'args', 'arguments'].some(field => Array.isArray(value[field]));
   function declarationContextCurrent() {
-    return options.binaryId === identity.binaryId && options.sliceId === identity.sliceId
+    return (options.binaryId ?? null) === identity.binaryId && (options.sliceId ?? null) === identity.sliceId
       && (options.functionId ?? null) === identity.functionId
-      && (options.snapshotId ?? options.analysisSnapshotId ?? null) === identity.snapshotId;
+      && (options.snapshotId ?? options.analysisSnapshotId ?? null) === identity.snapshotId
+      && (options.schemaVersion ?? options.semanticIrSchemaVersion ?? options.semanticIRSchemaVersion ?? null) === identity.schemaVersion
+      && (options.analyzerId ?? options.analysisAnalyzerId ?? null) === identity.analyzerId
+      && (options.analyzerVersion ?? options.analysisAnalyzerVersion ?? null) === identity.analyzerVersion;
   }
-  function declarationFunctionIndex(ir) {
+  function bindDeclarationIndex(ir, index) {
+    if (index.startAddress == null) return null;
+    const expected = createFunctionId({ binaryId:identity.binaryId, sliceId:identity.sliceId,
+      canonicalStartIdentity:{ address:index.startAddress } });
+    return expected === ir.functionId && (identity.functionId == null || identity.functionId === expected) ? index : null;
+  }
+  function declarationFunctionIndex(ir, { bindIdentity = true } = {}) {
     let index = validatedFunctions.get(ir);
-    if (index) return index;
+    if (index) return bindIdentity ? bindDeclarationIndex(ir, index) : index;
     validateSemanticIrFunction(ir);
     const pending = [ir], visited = new Set();
     while (pending.length) {
       const value = pending.pop();
       if (!value || typeof value !== 'object' || visited.has(value)) continue;
       if (!Object.isFrozen(value)) return null;
+      const prototype = Object.getPrototypeOf(value);
+      if (Array.isArray(value) ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) return null;
       visited.add(value);
-      for (const child of Object.values(value)) pending.push(child);
+      for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+        if (!Object.hasOwn(descriptor, 'value')) return null;
+        pending.push(descriptor.value);
+      }
     }
     index = { nodes:new Set(ir.nodes), byId:new Map(ir.nodes.map(value => [value.id, value])),
       values:new Map(ir.values.map(value => [value.id, value])) };
     const entry = ir.blocks.find(block => block.id === ir.entryBlockId);
     const starts = entry.nodeIds.flatMap(id => index.byId.get(id).origin?.virtualRanges ?? [])
       .map(range => BigInt(canonicalAddress(range.start)));
-    if (!starts.length) return null;
-    const startAddress = canonicalAddress(starts.reduce((left, right) => left < right ? left : right));
-    const expected = createFunctionId({ binaryId:identity.binaryId, sliceId:identity.sliceId,
-      canonicalStartIdentity:{ address:startAddress } });
-    if (expected !== ir.functionId || (identity.functionId != null && identity.functionId !== expected)) return null;
-    index.startAddress = startAddress;
+    index.startAddress = starts.length
+      ? canonicalAddress(starts.reduce((left, right) => left < right ? left : right)) : null;
     const blocks = new Map(ir.blocks.map(block => [block.id, block]));
     const missingFallthrough = new Set(ir.unknowns
       .filter(unknown => unknown.reason === 'semantic-cfg-missing-fallthrough')
@@ -773,7 +783,42 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
       status:truncated ? 'budget-limited' : candidates.length ? 'ambiguous' : 'resolved',
       truncated, candidates:Object.freeze(candidates) });
     validatedFunctions.set(ir, index);
-    return index;
+    return bindIdentity ? bindDeclarationIndex(ir, index) : index;
+  }
+
+  // Function-local negative evidence, not a new source of exact ABI facts.
+  // Projection may normalize the same function into fresh immutable roots;
+  // accumulate uncertainty instead of letting a later resolved copy erase it.
+  // Reusing this function-scoped adapter for another function is stale.
+  let observedFunctionId = null;
+  let observedFunctionState = null;
+  const observedFunctions = new WeakSet();
+  function functionEvidenceState() {
+    if (observedFunctionId === null && observedFunctionState === null) return null;
+    return abiEvidenceState(options, null, plugin)
+      || (!declarationContextCurrent() ? 'stale' : observedFunctionState);
+  }
+  function observeFunction({ semanticIr = null } = {}) {
+    try {
+      if (observedFunctions.has(semanticIr)) return functionEvidenceState();
+      const index = declarationFunctionIndex(semanticIr, { bindIdentity:false });
+      if (!index) throw new TypeError('abi-function-observation-not-immutable');
+      if ((observedFunctionId != null && observedFunctionId !== semanticIr.functionId)
+        || (identity.functionId != null && identity.functionId !== semanticIr.functionId)
+        || (identity.binaryId != null && identity.sliceId != null && !bindDeclarationIndex(semanticIr, index))) {
+        observedFunctionState = 'stale';
+      } else if (!['stale', 'malformed'].includes(observedFunctionState)) {
+        const status = index.controlTransfers.status;
+        if (status === 'budget-limited' || (status === 'ambiguous' && observedFunctionState == null)) {
+          observedFunctionState = status;
+        }
+      }
+      observedFunctionId ??= semanticIr.functionId;
+      observedFunctions.add(semanticIr);
+    } catch {
+      observedFunctionState = 'malformed';
+    }
+    return functionEvidenceState();
   }
 
   function functionDeclaration({ semanticIr = null } = {}) {
@@ -1032,6 +1077,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
 
   return Object.freeze({
     functionDeclaration,
+    observeFunction,
     id:pluginId,
     semanticVersion,
     semanticIdentity,
@@ -1063,7 +1109,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
     // consumers cannot recover cached placements after producer invalidation.
     // Keep it live: the options and AbortSignal can change after construction.
     get completeness() {
-      return supported ? abiEvidenceState(options, null, plugin) || 'canonical' : 'unsupported';
+      return supported ? abiEvidenceState(options, null, plugin) || functionEvidenceState() || 'canonical' : 'unsupported';
     },
     stackRules:() => stackRules,
     unwindRules:() => unwindRules,
@@ -1076,7 +1122,9 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
      * placement or aggregate classification.
      */
     classifyArguments:classifyCanonicalArguments,
-    classifyFunctionReturn:classifyCanonicalFunctionReturn,
+    classifyFunctionReturn(returnOptions = {}) {
+      return functionEvidenceState() ? null : classifyCanonicalFunctionReturn(returnOptions);
+    },
     classifyEntryRegister(reg) {
       try { return plugin?.classifyEntryRegister?.(reg) || null; }
       catch { return null; }
@@ -1089,7 +1137,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
      * imprecise, it reads the wrong location.
      */
     returnLocations({ classified = null, functionPrototype = null, returnType = null, ...returnOptions } = {}) {
-      if (abiEvidenceState({ ...options, ...returnOptions }, null, plugin)) return Object.freeze([]);
+      if (functionEvidenceState() || abiEvidenceState({ ...options, ...returnOptions }, null, plugin)) return Object.freeze([]);
       const prototype = functionPrototype ?? (returnType == null ? null : {
         returnType, returnsValue:true,
       });
@@ -1108,7 +1156,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
       if (!type || type.toLowerCase() === 'void') return null;
       const functionPrototype = returnOptions?.functionPrototype
         ?? (returnOptions && typeof returnOptions === 'object' ? returnOptions : null);
-      if (abiEvidenceState({ ...options, ...returnOptions }, null, plugin)) return null;
+      if (functionEvidenceState() || abiEvidenceState({ ...options, ...returnOptions }, null, plugin)) return null;
       const classified = classifyCanonicalFunctionReturn({
         ...returnOptions, functionPrototype, returnType:type,
       });
@@ -1123,6 +1171,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
      * lose arguments, it reports the stack pointer as one.
      */
     argumentLocations({ functionPrototype = null } = {}) {
+      if (functionEvidenceState()) return Object.freeze([]);
       const classified = classifyCanonicalArguments({ functionPrototype });
       // Physical argument locations are publishable only from the canonical
       // identity-bearing result.  Keep a producer's explicitly uncertain
