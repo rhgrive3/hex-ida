@@ -164,9 +164,34 @@ export function parseTlsDirectory(r, dir, image, sharedBudget = null) {
 
   const budget = ensureBudget(image, sharedBudget);
   const header = mappedFileSpanForRva(image, dir.rva, need);
+  const rawDataStart = header
+    ? (image.bits === 64 ? r.u64(header.start) : BigInt(r.u32(header.start)))
+    : 0n;
+  const rawDataEnd = header
+    ? (image.bits === 64 ? r.u64(header.start + 8) : BigInt(r.u32(header.start + 4)))
+    : 0n;
   const addressOfIndex = header
     ? (image.bits === 64 ? r.u64(header.start + 16) : BigInt(r.u32(header.start + 8)))
     : 0n;
+
+  if (rawDataStart || rawDataEnd) {
+    if (!rawDataStart || !rawDataEnd || rawDataEnd < rawDataStart) {
+      budget.partial(
+        'tls:template-range-invalid',
+        `PE TLS raw-data template range 0x${rawDataStart.toString(16)}..0x${rawDataEnd.toString(16)} is invalid`,
+      );
+    } else if (rawDataEnd > rawDataStart) {
+      const span = rawDataEnd - rawDataStart;
+      if (span > BigInt(Number.MAX_SAFE_INTEGER)
+          || !loadedImageSpanForAddress(image, rawDataStart, Number(span))) {
+        budget.partial(
+          'tls:template-range-unmapped',
+          `PE TLS raw-data template 0x${rawDataStart.toString(16)}..0x${rawDataEnd.toString(16)} is not fully mapped in the loaded image`,
+        );
+      }
+    }
+  }
+
   if (addressOfIndex) {
     if (!loadedImageSpanForAddress(image, addressOfIndex, 1)) {
       budget.partial(
@@ -186,14 +211,18 @@ export function parseTlsDirectory(r, dir, image, sharedBudget = null) {
     }
   }
 
-  const publishIndexAddress = (result) => {
-    if (image.metadata?.tls) image.metadata.tls.addressOfIndex = addressOfIndex || null;
+  const publishTlsAddresses = (result) => {
+    if (image.metadata?.tls) {
+      image.metadata.tls.startAddressOfRawData = rawDataStart || null;
+      image.metadata.tls.endAddressOfRawData = rawDataEnd || null;
+      image.metadata.tls.addressOfIndex = addressOfIndex || null;
+    }
     return result;
   };
 
   const sectionAt = image.sectionAt;
   if (typeof sectionAt !== 'function') {
-    return publishIndexAddress(parseTlsDirectoryCore(r, dir, image, budget));
+    return publishTlsAddresses(parseTlsDirectoryCore(r, dir, image, budget));
   }
 
   // The core already decides whether a callback is publishable by asking
@@ -225,7 +254,7 @@ export function parseTlsDirectory(r, dir, image, sharedBudget = null) {
     return sec;
   };
 
-  return publishIndexAddress(parseTlsDirectoryCore(r, dir, tlsImage, budget));
+  return publishTlsAddresses(parseTlsDirectoryCore(r, dir, tlsImage, budget));
 }
 
 function mappedCStringAtRva(r, image, rva, budget, label) {
