@@ -26,6 +26,7 @@
       "tests/phase7/alias/c1-root-rename-metamorphism.test.mjs",
       "tests/phase7/summary/issue-4064-region-proof-merge.test.mjs",
       "tests/phase7/summary/c1-02-exhaustive-return-matrix.test.mjs",
+      "tests/phase7/summary/abi-native-return-binding.test.mjs",
       "tests/phase7/summary/issue-4314-4320-summary-consumer-validation.test.mjs",
       "tests/phase7/summary/issue-5752-intrinsic-scope-completeness.test.mjs",
       "tests/phase7/summary/issue-5851-call-fallback-replacement.test.mjs",

@@ -7,7 +7,9 @@ import {
   stableDigest,
   stableStringify,
 } from '../../core/identity/index.js';
-import { createOriginSet, mergeOriginSets } from '../../core/identity/origin.js';
+import { appendTransform, createTransformRecord, createOriginSet, mergeOriginSets } from '../../core/identity/origin.js';
+import { abiResultInvalidState, canonicalAbiEvidence } from '../../targets/abi/evidence.js';
+import { createPhysicalStateVariable } from '../ir/normalize-effects.js';
 import { classifySemanticMemoryRegion } from '../../analysis/alias/index-v2.js';
 import { createPhase7AliasSolver } from '../../analysis/alias/solver.js';
 import { createSemanticCfg } from '../cfg/index.js';
@@ -47,7 +49,7 @@ export const SEMANTIC_V2_MIGRATION_MODES = Object.freeze({
   SHADOW_DIFFERENTIAL: 'semantic-v2-shadow-differential',
 });
 
-export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.2.0';
+export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.3.0';
 export const SEMANTIC_V2_COMPAT_PATH = Object.freeze([
   'machine-effects',
   'semantic-ir-v2',
@@ -290,6 +292,76 @@ function canonicalMemoryAccessProof(descriptor, architectureId) {
  * not rediscover CFG structure or parse mnemonics. Stable FunctionId, BlockId,
  * and InstructionId values are minted only through the canonical identity API.
  */
+/**
+ * Observe a declared scalar ABI result before SSA, not by searching rendered
+ * register names after projection. The architectural return target stays in
+ * its original control attributes. This adds a value observation, not a claim
+ * about that value's root, a callee's effects, or aggregate reconstruction.
+ */
+function bindDeclaredScalarReturns(ir, input, options) {
+  const adapter = input.abiAdapter ?? options.abiAdapter ?? options.compatOptions?.abiAdapter;
+  if (!adapter || ir.completeness !== 'complete' || ir.unknowns.length
+    || !ir.nodes.some(node => node.kind === 'return' && node.inputs.length === 0)) return ir;
+  let classified, locations;
+  try {
+    adapter.observeFunction?.({ semanticIr:ir });
+    classified = adapter.classifyFunctionReturn?.(options.functionReturn ?? {});
+    if (!canonicalAbiEvidence(classified) || abiResultInvalidState(classified)
+      || classified.partial === true || classified.unsupported === true) return ir;
+    locations = adapter.returnLocations?.({ ...(options.functionReturn ?? {}), classified });
+  } catch { return ir; }
+  const identity = classified.abiIdentity;
+  const snapshotId = options.memorySsaOptions?.snapshotId ?? options.snapshotId;
+  if (identity.architectureId !== input.architecturePlugin.id
+    || (identity.binaryId != null && identity.binaryId !== input.binaryId)
+    || (identity.sliceId != null && identity.sliceId !== input.sliceId)
+    || (identity.functionId != null && identity.functionId !== ir.functionId)
+    || (snapshotId != null && identity.snapshotId !== snapshotId)) return ir;
+  if (!Array.isArray(locations) || locations.length !== 1) return ir;
+  const location = locations[0];
+  if (location.kind !== 'register' || location.aggregate === true) return ir;
+  const descriptor = architectureRegisterDescriptors(input.architecturePlugin)
+    .find(reg => reg.id === location.reg && reg.kind === 'gp');
+  const widthBits = descriptor?.physicalBits ?? descriptor?.bits;
+  if (!Number.isSafeInteger(widthBits) || widthBits <= 0
+    || !Number.isSafeInteger(location.bits) || location.bits <= 0 || location.bits > widthBits) return ir;
+  const variable = createPhysicalStateVariable({ kind:'register', registerId:descriptor.physicalId ?? descriptor.id });
+  const nodes = [], values = [...ir.values], before = new Map();
+  for (const node of ir.nodes) {
+    assertNotAborted(options);
+    if (node.kind !== 'return' || node.inputs.length) { nodes.push(node); continue; }
+    const fact = { kind:'abi-return-location', version:1, functionId:ir.functionId,
+      returnNodeId:node.id, abiIdentity:identity, location };
+    const key = stableDigest(fact);
+    const readId = `abi_return_read_${key}`, valueId = `abi_return_value_${key}`;
+    const narrow = location.bits !== widthBits;
+    const truncId = `abi_return_trunc_${key}`, resultId = narrow ? `abi_return_result_${key}` : valueId;
+    const addedIds = narrow ? [readId, truncId] : [readId];
+    const origin = appendTransform(node.origin, createTransformRecord({
+      passId:'semantic-abi-return-binding', passVersion:'1.0.0', ruleId:'declared-scalar-result',
+      proofKind:'canonical-abi-location', consumedEntityIds:[node.id],
+      producedEntityIds:[...addedIds, valueId, ...(narrow ? [resultId] : [])], preconditions:[fact],
+    }));
+    nodes.push({ id:readId, kind:'state-read', blockId:node.blockId,
+      inputs:[], outputs:[valueId], variable, origin });
+    values.push({ id:valueId, kind:'definition', definitionNodeId:readId,
+      machineType:{ kind:'bitvector', widthBits }, origin });
+    if (narrow) {
+      nodes.push({ id:truncId, kind:'trunc', blockId:node.blockId,
+        inputs:[valueId], outputs:[resultId], origin });
+      values.push({ id:resultId, kind:'definition', definitionNodeId:truncId,
+        machineType:{ kind:'bitvector', widthBits:location.bits }, origin });
+    }
+    before.set(node.id, addedIds);
+    nodes.push({ ...node, inputs:[resultId], origin,
+      attributes:{ ...node.attributes, abiReturnBinding:{ ...fact, valueId:resultId } } });
+  }
+  return createSemanticIrFunction({ ...ir, nodes, values,
+    blocks:ir.blocks.map(block => ({ ...block,
+      nodeIds:block.nodeIds.flatMap(id => [...(before.get(id) ?? []), id]) })),
+  }, options.semanticIrOptions ?? {});
+}
+
 export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   assertNotAborted(options);
   input = object(input, 'semantic-v2-integration-input-required');
@@ -477,7 +549,7 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     const merged = blocks.get(block.id);
     if (merged && block.origin != null) merged.origin = mergeOriginSets(merged.origin ?? createOriginSet({}), block.origin);
   }
-  const ir = createSemanticIrFunction({
+  const machineIr = createSemanticIrFunction({
     functionId,
     entryBlockId: entryRecord.id,
     blocks: [...blocks.values()],
@@ -487,6 +559,7 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     unknowns: [...issues.values()],
     origin: functionOrigin,
   }, options.semanticIrOptions ?? {});
+  const ir = bindDeclaredScalarReturns(machineIr, input, options);
 
   const nodeById = new Map(ir.nodes.map((node) => [node.id, node]));
   const successorMap = new Map();

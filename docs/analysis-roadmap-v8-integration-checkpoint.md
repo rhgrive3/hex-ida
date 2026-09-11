@@ -5071,6 +5071,48 @@ attachment. No older archive has been substituted and no ZIP import is claimed.
 Generated rebuild, final actual-inventory validation, exact-head verification
 and normal backup to the existing PR remain reconciliation exit obligations.
 
+## Native ABI return-value handoff — source implementation (2026-09-11)
+
+The C3 public-summary audit identified empty native RETURN value inputs even
+when a typed ABI return location was available. Integration now observes a
+declared scalar GP-register result before canonical SSA construction. It uses
+the existing registered ABI classifier, physical-state identity constructor,
+IR constructor and SSA builder; there is no separate reaching-definition
+engine and no search through rendered text. Narrow integer results read the
+whole physical register and use an explicit truncation node. The original
+architectural return target and machine-effect bundles are unchanged.
+
+The resulting native return value reaches the default public local summary.
+Every added observation retains an identity-bound ABI/location transform and
+the original return instruction origin. Pipeline version advances to 1.3.0;
+the new IR/SSA content participates in the existing artifact digests. The
+ARM64 compatibility facade forwards its existing explicit return declaration
+to this same producer. No architecture, SSA, C1 or C3 frozen contract is edited.
+
+Unknown/void declarations, incomplete IR, unresolved control, opaque calls,
+stale binary/slice/function/snapshot identity, aggregates and non-GP returns
+do not gain scalar bindings. ABI placement is not pointer provenance: the
+local summary still reports unknown provenance for these observed values.
+Following SSA values to argument/root facts, typed callee result observations,
+aggregate reconstruction and default ABI semantic-fact publication remain
+unfinished integration work. This does not close SC-001, SC-007 or FR-C3-02A.
+
+The eight new decoded-production tests cover positive native IR/SSA/summary
+handoff, narrowing, declaration absence, identity mismatch, unresolved control,
+cancellation, unchanged machine effects/deterministic provenance and two
+independent return exits. Initial focused tests plus the existing typed ARM64
+return, pipeline and ABI binding-history suites pass. Exact committed-head
+receipts are retained separately; no full integration admission is claimed.
+
+Live main was fetched at 366feddd5 during this work. Its overlapping pipeline
+and summary changes and the open summary/ABI PR inventory were inspected; the
+new return observation is not already present there. This is source progress
+on the existing integration branch, not a component merge or completion of
+the still-locked current-main/generated/independent-verification transaction.
+The C1 and C3 component heads and the ZIP import branch remain untouched.
+The one new test path is explicitly assigned to Phase 7 in the integration
+inventory; no component allowlist or frozen-path exemption is widened.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

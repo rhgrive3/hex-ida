@@ -1294,6 +1294,13 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
     rootDescriptorProvider: aapcs64RegionRootDescriptorProvider(opts, abiAdapter),
   }, {
     signal: opts.signal,
+    functionReturn: {
+      functionPrototype:opts.functionPrototype ?? null,
+      returnType:opts.returnType ?? null,
+      returnClass:opts.returnClass ?? null,
+      returnBits:opts.returnBits ?? null,
+      returnsValue:opts.returnsValue,
+    },
     semanticIrOptions: opts.semanticIrOptions,
     ssaOptions: opts.ssaOptions,
     memorySsaOptions: opts.memorySsaOptions,
