@@ -21,7 +21,9 @@
  */
 
 import { canonicalAddress, deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
-import { isCanonicalRootDescriptorProof } from '../alias/canonical-address-v2.js';
+import { canonicalRootIdentity, isCanonicalRootDescriptorProof } from '../alias/canonical-address-v2.js';
+
+export { canonicalRootIdentity };
 
 export const POINTS_TO_LATTICE_VERSION = '1.0.0';
 
@@ -246,83 +248,6 @@ function rootKeyOf(target) {
     rootEntityId: target.rootEntityId ?? null,
     address: target.address ?? null,
   });
-}
-
-/**
- * Canonical, replay-safe root identity (#5172).
- *
- * `rootKey` is strong same-storage authority: if normalization erases a
- * caller-visible distinction, `pointsToAlias()` can turn that collision into
- * MustAlias. Accept only ordinary JSON-shaped data whose serialization is
- * lossless for the values we retain, and copy it without executing accessors.
- */
-function canonicalRootIdentity(value, seen = new WeakSet()) {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))
-        || Object.is(value, -0)) fail('points-to-invalid-root-identity');
-    return value;
-  }
-  if (typeof value !== 'object' || seen.has(value)) fail('points-to-invalid-root-identity');
-
-  let isArray;
-  let prototype;
-  let descriptors;
-  try {
-    isArray = Array.isArray(value);
-    prototype = Object.getPrototypeOf(value);
-    descriptors = Object.getOwnPropertyDescriptors(value);
-  } catch {
-    fail('points-to-invalid-root-identity');
-  }
-  if ((isArray && prototype !== Array.prototype)
-      || (!isArray && prototype !== Object.prototype && prototype !== null)) {
-    fail('points-to-invalid-root-identity');
-  }
-
-  seen.add(value);
-  try {
-    const keys = Reflect.ownKeys(descriptors);
-    if (isArray) {
-      const length = descriptors.length?.value;
-      if (!Number.isSafeInteger(length) || length < 0 || keys.length !== length + 1) {
-        fail('points-to-invalid-root-identity');
-      }
-      const out = new Array(length);
-      for (let index = 0; index < length; index++) {
-        const descriptor = descriptors[String(index)];
-        if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
-          fail('points-to-invalid-root-identity');
-        }
-        out[index] = canonicalRootIdentity(descriptor.value, seen);
-      }
-      for (const key of keys) {
-        if (key === 'length') continue;
-        if (typeof key !== 'string' || !/^(?:0|[1-9][0-9]*)$/.test(key) || Number(key) >= length) {
-          fail('points-to-invalid-root-identity');
-        }
-      }
-      return out;
-    }
-
-    const out = {};
-    for (const key of keys) {
-      if (typeof key !== 'string') fail('points-to-invalid-root-identity');
-      const descriptor = descriptors[key];
-      if (!descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
-        fail('points-to-invalid-root-identity');
-      }
-      Object.defineProperty(out, key, {
-        value: canonicalRootIdentity(descriptor.value, seen),
-        enumerable: true,
-        configurable: true,
-        writable: true,
-      });
-    }
-    return out;
-  } finally {
-    seen.delete(value);
-  }
 }
 
 function proofRootKind(proof) {

@@ -24,12 +24,12 @@ function widthBytes(widthBits) {
   return BigInt(Math.ceil(bits / 8));
 }
 
-function absoluteInterval(target, accessWidth) {
+function absoluteInterval(target, accessWidth, fallbackWidthBits = null) {
   const range = target?.offsetRange;
   if (target?.address == null || range?.min == null || range?.max == null) {
     return { interval: null, reason: null };
   }
-  const pointerWidth = target.widthBits;
+  const pointerWidth = target.widthBits ?? (fallbackWidthBits != null ? Number(fallbackWidthBits) : null);
   if (typeof pointerWidth !== 'number'
       || !Number.isSafeInteger(pointerWidth) || pointerWidth <= 0 || pointerWidth > 512) {
     return { interval: null, reason: 'provenance-lost' };
@@ -169,8 +169,8 @@ export function pointsToAlias(left, right, options = {}) {
 
         if (hasCanonicalAddressA && hasCanonicalAddressB) {
           try {
-            const absoluteA = absoluteInterval(a, widthA);
-            const absoluteB = absoluteInterval(b, widthB);
+            const absoluteA = absoluteInterval(a, widthA, options.widthBitsLeft);
+            const absoluteB = absoluteInterval(b, widthB, options.widthBitsRight);
             if (absoluteA.reason) reasonCodes.add(absoluteA.reason);
             if (absoluteB.reason) reasonCodes.add(absoluteB.reason);
             if (absoluteA.interval && absoluteB.interval) {

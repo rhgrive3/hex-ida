@@ -137,6 +137,88 @@ function rootIdentityKey(root) {
   });
 }
 
+function failRootIdentity(message = 'points-to-invalid-root-identity') {
+  throw new TypeError(message);
+}
+
+/**
+ * Canonical, replay-safe root identity (#5172).
+ *
+ * `rootKey` and canonical proofs are strong same-storage authority: if
+ * normalization erases a caller-visible distinction (such as jsonSafe
+ * collapsing {source:undefined} to {}), alias analysis can turn that collision
+ * into MustAlias. Accept only ordinary JSON-shaped data whose serialization is
+ * lossless for the values we retain, and copy it without executing accessors.
+ */
+export function canonicalRootIdentity(value, seen = new WeakSet()) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))
+        || Object.is(value, -0)) failRootIdentity('points-to-invalid-root-identity');
+    return value;
+  }
+  if (typeof value !== 'object' || seen.has(value)) failRootIdentity('points-to-invalid-root-identity');
+
+  let isArray;
+  let prototype;
+  let descriptors;
+  try {
+    isArray = Array.isArray(value);
+    prototype = Object.getPrototypeOf(value);
+    descriptors = Object.getOwnPropertyDescriptors(value);
+  } catch {
+    failRootIdentity('points-to-invalid-root-identity');
+  }
+  if ((isArray && prototype !== Array.prototype)
+      || (!isArray && prototype !== Object.prototype && prototype !== null)) {
+    failRootIdentity('points-to-invalid-root-identity');
+  }
+
+  seen.add(value);
+  try {
+    const keys = Reflect.ownKeys(descriptors);
+    if (isArray) {
+      const length = descriptors.length?.value;
+      if (!Number.isSafeInteger(length) || length < 0 || keys.length !== length + 1) {
+        failRootIdentity('points-to-invalid-root-identity');
+      }
+      const out = new Array(length);
+      for (let index = 0; index < length; index++) {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+          failRootIdentity('points-to-invalid-root-identity');
+        }
+        out[index] = canonicalRootIdentity(descriptor.value, seen);
+      }
+      for (const key of keys) {
+        if (key === 'length') continue;
+        if (typeof key !== 'string' || !/^(?:0|[1-9][0-9]*)$/.test(key) || Number(key) >= length) {
+          failRootIdentity('points-to-invalid-root-identity');
+        }
+      }
+      return out;
+    }
+
+    const out = {};
+    for (const key of keys) {
+      if (typeof key !== 'string') failRootIdentity('points-to-invalid-root-identity');
+      const descriptor = descriptors[key];
+      if (!descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+        failRootIdentity('points-to-invalid-root-identity');
+      }
+      Object.defineProperty(out, key, {
+        value: canonicalRootIdentity(descriptor.value, seen),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return out;
+  } finally {
+    seen.delete(value);
+  }
+}
+
 // Exported so P7-2's range-valued points-to solver can name exactly the same
 // root as the exact canonical derivation. Two spellings of one root identity
 // would silently split every A2 refinement away from the A1 answer.
@@ -146,6 +228,14 @@ export function normalizeRootIdentity(variable, functionId) {
   const variableKind = variable?.kind == null ? 'unknown-state' : identityString(variable.kind);
   const variableScope = variable?.scope == null ? 'unknown' : identityString(variable.scope);
   if (normalizedFunctionId == null || variableKey == null || variableKind == null || variableScope == null) return null;
+  let physicalIdentity;
+  if (variable?.physicalIdentity !== undefined && variable?.physicalIdentity !== null) {
+    try {
+      physicalIdentity = canonicalRootIdentity(variable.physicalIdentity);
+    } catch {
+      return null;
+    }
+  }
   const identity = {
     kind: 'semantic-state-root',
     functionId: normalizedFunctionId,
@@ -153,7 +243,7 @@ export function normalizeRootIdentity(variable, functionId) {
       key: variableKey,
       kind: variableKind,
       scope: variableScope,
-      ...(variable?.physicalIdentity == null ? {} : { physicalIdentity: jsonSafe(variable.physicalIdentity) }),
+      ...(physicalIdentity == null ? {} : { physicalIdentity }),
     },
   };
   return deepFreeze(identity);
@@ -182,12 +272,20 @@ function normalizeGenericDescriptor(input) {
     const baseOffset = parseInteger(input.baseOffset ?? 0);
     const linearOffsets = normalizeLinearOffsets(input.linearOffsets);
     if (baseOffset == null || linearOffsets == null) return null;
+    let rootIdentity;
+    if (input.rootIdentity !== undefined && input.rootIdentity !== null) {
+      try {
+        rootIdentity = canonicalRootIdentity(input.rootIdentity);
+      } catch {
+        return null;
+      }
+    }
     return deepFreeze({
       kind,
       baseOffset,
       addressSpace,
       linearOffsets,
-      ...(input.rootIdentity == null ? {} : { rootIdentity: jsonSafe(input.rootIdentity) }),
+      ...(rootIdentity == null ? {} : { rootIdentity }),
     });
   }
   if (kind === 'rooted-object' || kind === 'global-like' || kind === 'heap-like' || kind === 'tls-like') {
@@ -198,6 +296,14 @@ function normalizeGenericDescriptor(input) {
     if (input.rootEntityId != null && rootEntityId == null) return null;
     const resolvedSpace = addressSpace ?? (kind === 'tls-like' ? 'tls' : null);
     const separationClass = PROVEN_SEPARATION_DESCRIPTOR_KINDS.has(kind) ? kind : null;
+    let rootIdentity;
+    if (input.rootIdentity !== undefined && input.rootIdentity !== null) {
+      try {
+        rootIdentity = canonicalRootIdentity(input.rootIdentity);
+      } catch {
+        return null;
+      }
+    }
     return deepFreeze({
       kind: 'rooted-object',
       baseOffset,
@@ -205,7 +311,7 @@ function normalizeGenericDescriptor(input) {
       linearOffsets,
       ...(rootEntityId ? { rootEntityId } : {}),
       ...(separationClass == null ? {} : { separationClass }),
-      ...(input.rootIdentity == null ? {} : { rootIdentity: jsonSafe(input.rootIdentity) }),
+      ...(rootIdentity == null ? {} : { rootIdentity }),
     });
   }
   let address;
