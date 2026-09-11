@@ -80,6 +80,41 @@ test('partial xrefs do not publish the materialized subset length as exact total
   assert.equal(result.page.next, 2);
 });
 
+function queryLimitedXrefsApp(limitedSource) {
+  const refs = [
+    { site: 0x1010n, target: 0x1000n, kind: 'data' },
+  ];
+  const calls = [
+    { site: 0x1030n, target: 0x1000n, caller: 0x2000n },
+  ];
+  Object.defineProperty(refs, 'complete', { value: true, enumerable: false });
+  Object.defineProperty(calls, 'complete', { value: true, enumerable: false });
+  Object.defineProperty(limitedSource === 'refs' ? refs : calls, 'queryLimited', { value: true, enumerable: false });
+
+  const app = baseApp();
+  app.ensureProgram = async () => ({
+    refSitesTo() { return refs; },
+    callSitesTo() { return calls; },
+  });
+  return app;
+}
+
+test('query-limited refSitesTo keeps xrefs partial even without complete:false', async () => {
+  const result = await createAppAnalysisQueryAdapter(queryLimitedXrefsApp('refs')).xrefs({}, 0x1000n, { offset: 0, limit: 2 });
+  assert.equal(result.status.completeness, 'partial');
+  assert.equal(result.status.reason, 'query-limit');
+  assert.equal(result.status.truncationReason, 'query-limit');
+  assert.equal(result.page.total, null);
+});
+
+test('query-limited callSitesTo keeps xrefs partial even without complete:false', async () => {
+  const result = await createAppAnalysisQueryAdapter(queryLimitedXrefsApp('calls')).xrefs({}, 0x1000n, { offset: 0, limit: 2 });
+  assert.equal(result.status.completeness, 'partial');
+  assert.equal(result.status.reason, 'query-limit');
+  assert.equal(result.status.truncationReason, 'query-limit');
+  assert.equal(result.page.total, null);
+});
+
 test('truncated auto-report evidence keeps total unknown', async () => {
   const app = baseApp({
     autoReport: { report: { deep: [{ id: 1 }, { id: 2 }, { id: 3 }], truncated: true } },

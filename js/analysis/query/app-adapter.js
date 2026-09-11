@@ -745,10 +745,10 @@ export function createAppAnalysisQueryAdapter(app) {
         ...Array.from(refs).map((x) => ({ kind:'reference', site:x.site, target:x.target, refKind:x.kind ?? null })),
         ...Array.from(calls).map((x) => ({ kind:'call', site:x.site, target:address, caller:x.caller ?? null })),
       ].sort((a, b) => BigInt(a.site) < BigInt(b.site) ? -1 : BigInt(a.site) > BigInt(b.site) ? 1 : 0);
-      const complete = refs.complete !== false && calls.complete !== false;
       const queryLimited = refs.queryLimited === true || calls.queryLimited === true;
+      const complete = refs.complete !== false && calls.complete !== false && !queryLimited;
       return paged(rows, page, complete ? 'complete' : 'partial', {
-        reason:refs.incompleteReason ?? calls.incompleteReason ?? null,
+        reason:refs.incompleteReason ?? calls.incompleteReason ?? (queryLimited ? 'query-limit' : null),
         ...(queryLimited ? { truncationReason:'query-limit' } : {}),
       });
     },
