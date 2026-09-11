@@ -54,20 +54,31 @@ function binOp(name, a, b, bits = 64) {
     const av = a.value, bv = b.value;
     try {
       let value;
+      // Shift amounts wrap modulo the width (nonnegative). `& (width - 1)` is
+      // only equivalent for power-of-two widths, so a 24-bit shift by 8 would
+      // otherwise collapse to a shift by 0 (#4621).
+      const amount = ((bv % BigInt(width)) + BigInt(width)) % BigInt(width);
       if (name === 'add') value = av + bv;
       else if (name === 'sub') value = av - bv;
       else if (name === 'mul') value = av * bv;
       else if (name === 'and') value = av & bv;
       else if (name === 'or' || name === 'orr') value = av | bv;
       else if (name === 'xor' || name === 'eor') value = av ^ bv;
-      else if (name === 'shl') value = av << (bv & BigInt(width - 1));
-      else if (name === 'lshr') value = BigInt.asUintN(width, av) >> (bv & BigInt(width - 1));
-      else if (name === 'ashr') value = BigInt.asIntN(width, av) >> (bv & BigInt(width - 1));
+      else if (name === 'shl') value = av << amount;
+      else if (name === 'lshr') value = BigInt.asUintN(width, av) >> amount;
+      else if (name === 'ashr') value = BigInt.asIntN(width, av) >> amount;
       else return op(name, a, b);
       return c(BigInt.asUintN(width, value));
     } catch { /* symbolic fallback */ }
   }
     if (name === 'shl' || name === 'lshr' || name === 'ashr') {
+  // The symbolic amount is normalized by masking with `width - 1`, which is
+  // exact only for power-of-two widths. For any other canonical width the
+  // masked expression would disagree with the constant path, so fail closed
+  // instead of minting a wrong expression (#4621).
+  if ((width & (width - 1)) !== 0) {
+    return unknown('shift-amount-normalization-unsupported', { bits: width });
+  }
   const masked = { kind:SYM.OP, op:'and', args:[b, c(BigInt(width - 1))], bits:width };
   return { kind: SYM.OP, op: name, args: [a, masked], bits:width };
 }

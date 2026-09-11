@@ -43,6 +43,62 @@ function managedUnaryOperatorForNode(node, mnemonic) {
   return node.operator;
 }
 
+const MANAGED_RIGHT_SHIFT_OPERATORS = new Set(['lshr', 'ashr']);
+
+function managedRightShiftOperator(frontendId, mnemonic) {
+  const frontend = typeof frontendId === 'string' ? frontendId.trim().toLowerCase() : '';
+  const text = typeof mnemonic === 'string' ? mnemonic.trim().toLowerCase() : '';
+  if (frontend === 'wasm') {
+    if (/^i(?:32|64)\.shr_u$/.test(text)) return 'lshr';
+    if (/^i(?:32|64)\.shr_s$/.test(text)) return 'ashr';
+  } else if (frontend === 'jvm') {
+    if (text === 'iushr' || text === 'lushr') return 'lshr';
+    if (text === 'ishr' || text === 'lshr') return 'ashr';
+  } else if (frontend === 'dex') {
+    if (/^ushr-(?:int(?:\/(?:2addr|lit8))?|long(?:\/2addr)?)$/.test(text)) return 'lshr';
+    if (/^shr-(?:int(?:\/(?:2addr|lit8))?|long(?:\/2addr)?)$/.test(text)) return 'ashr';
+  } else if (frontend === 'cil') {
+    if (text === 'shr.un') return 'lshr';
+    if (text === 'shr') return 'ashr';
+  }
+  return null;
+}
+
+function managedRightShiftOperatorForNode(node, frontendId, mnemonic) {
+  const mnemonicOperator = managedRightShiftOperator(frontendId, mnemonic);
+  if (node?.operator == null || node.operator === 'shr') return mnemonicOperator;
+  if (!MANAGED_RIGHT_SHIFT_OPERATORS.has(node.operator)) return null;
+  if (mnemonicOperator && mnemonicOperator !== node.operator) return null;
+  return node.operator;
+}
+
+const MANAGED_DIV_REM_OPERATORS = new Set(['sdiv', 'udiv', 'smod', 'umod']);
+
+function managedDivisionRemainderOperator(frontendId, mnemonic) {
+  const frontend = typeof frontendId === 'string' ? frontendId.trim().toLowerCase() : '';
+  const text = typeof mnemonic === 'string' ? mnemonic.trim().toLowerCase() : '';
+  if (frontend !== 'wasm') return null;
+  if (/^i(?:32|64)\.div_u$/.test(text)) return 'udiv';
+  if (/^i(?:32|64)\.div_s$/.test(text)) return 'sdiv';
+  if (/^i(?:32|64)\.rem_u$/.test(text)) return 'umod';
+  if (/^i(?:32|64)\.rem_s$/.test(text)) return 'smod';
+  return null;
+}
+
+function managedDivisionRemainderOperatorForNode(node, frontendId, mnemonic) {
+  const mnemonicOperator = managedDivisionRemainderOperator(frontendId, mnemonic);
+  if (node?.operator == null) return mnemonicOperator;
+  if (node.operator === 'div') {
+    return (mnemonicOperator === 'sdiv' || mnemonicOperator === 'udiv') ? mnemonicOperator : null;
+  }
+  if (node.operator === 'rem') {
+    return (mnemonicOperator === 'smod' || mnemonicOperator === 'umod') ? mnemonicOperator : null;
+  }
+  if (!MANAGED_DIV_REM_OPERATORS.has(node.operator)) return null;
+  if (mnemonicOperator && mnemonicOperator !== node.operator) return null;
+  return node.operator;
+}
+
 function safeIdent(s, fallback = 'value') {
   const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_$]/g, '_').replace(/^([0-9])/, '_$1');
   return x || fallback;
@@ -827,13 +883,35 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
     const val = valueMap.get(valId);
     if (!val) return expr.variable(`v_${valId}`);
 
+    // Metadata authority first (#8028): a value carrying an explicit
+    // constant/string/null fact renders from that fact regardless of the
+    // defining node's shape — a zero-input unary must not fabricate `(0)`
+    // from a value whose authority was published by the frontend.
+    if (val.metadata?.stringRef != null) {
+      const s = expr.variable(JSON.stringify(val.metadata.stringRef), val.machineType?.widthBits || 32);
+      exprMemo.set(valId, s);
+      return s;
+    }
+    if (val.metadata?.valueType === 'string' && val.metadata?.constant != null) {
+      const s = expr.variable(JSON.stringify(val.metadata.constant), val.machineType?.widthBits || 32);
+      exprMemo.set(valId, s);
+      return s;
+    }
+    if (val.metadata?.isNull === true) {
+      const z = expr.variable('null', val.machineType?.widthBits || 32);
+      exprMemo.set(valId, z);
+      return z;
+    }
+    if (val.metadata?.constant != null) {
+      const c = val.machineType?.kind === 'float'
+        ? expr.floatConstant(Number(val.metadata.constant), val.machineType?.widthBits || 32)
+        : expr.constant(BigInt(val.metadata.constant), val.machineType?.widthBits || 32);
+      exprMemo.set(valId, c);
+      return c;
+    }
+
     const defNode = val.definitionNodeId ? nodeMap.get(val.definitionNodeId) : null;
     if (!defNode) {
-      if (val.metadata?.constant != null) {
-        const c = expr.constant(BigInt(val.metadata.constant), val.machineType?.widthBits || 32);
-        exprMemo.set(valId, c);
-        return c;
-      }
       const vExpr = expr.variable(safeIdent(val.id || `v_${valId}`));
       exprMemo.set(valId, vExpr);
       return vExpr;
@@ -844,6 +922,21 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
     let res = null;
 
     if (n.kind === 'const') {
+      if (val.metadata?.stringRef != null) {
+        res = expr.variable(JSON.stringify(val.metadata.stringRef), bits);
+        exprMemo.set(valId, res);
+        return res;
+      }
+      if (val.metadata?.valueType === 'string' && val.metadata?.constant != null) {
+        res = expr.variable(JSON.stringify(val.metadata.constant), bits);
+        exprMemo.set(valId, res);
+        return res;
+      }
+      if (val.metadata?.isNull === true) {
+        res = expr.variable('null', bits);
+        exprMemo.set(valId, res);
+        return res;
+      }
       const cVal = val.metadata?.constant != null ? BigInt(val.metadata.constant) : 0n;
       res = expr.constant(cVal, bits);
     } else if (n.kind === 'binary') {
@@ -851,16 +944,30 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
       const right = n.inputs[1] ? buildValueExpr(n.inputs[1]) : expr.constant(0n, bits);
       const mn = (n.metadata?.mnemonic || '').toLowerCase();
       let normalizedOp = 'add';
-      if (mn.includes('sub')) normalizedOp = 'sub';
-      else if (mn.includes('mul')) normalizedOp = 'mul';
-      else if (mn.includes('div')) normalizedOp = 'sdiv';
-      else if (mn.includes('rem') || mn.includes('mod')) normalizedOp = 'smod';
-      else if (mn.includes('and')) normalizedOp = 'and';
-      else if (mn.includes('xor')) normalizedOp = 'xor';
-      else if (mn.includes('or')) normalizedOp = 'or';
-      else if (mn.includes('shl')) normalizedOp = 'shl';
-      else if (mn.includes('shr')) normalizedOp = 'ashr';
-      res = expr.binary(normalizedOp, left, right, bits);
+      const wasmDivRem = frontendId === 'wasm' && (mn.includes('div') || mn.includes('rem'));
+      if (wasmDivRem || MANAGED_DIV_REM_OPERATORS.has(n.operator)) {
+        const divRemOp = managedDivisionRemainderOperatorForNode(n, frontendId, mn);
+        res = divRemOp
+          ? expr.binary(divRemOp, left, right, bits)
+          : expr.intrinsic(safeIdent(mn || 'managed_div_rem'), [left, right], bits);
+      }
+      if (!res) {
+        if (mn.includes('sub')) normalizedOp = 'sub';
+        else if (mn.includes('mul')) normalizedOp = 'mul';
+        else if (mn.includes('div')) normalizedOp = 'sdiv';
+        else if (mn.includes('rem') || mn.includes('mod')) normalizedOp = 'smod';
+        else if (mn.includes('and')) normalizedOp = 'and';
+        else if (mn.includes('xor')) normalizedOp = 'xor';
+        else if (mn.includes('or')) normalizedOp = 'or';
+        else if (mn.includes('shl')) normalizedOp = 'shl';
+        else if (MANAGED_RIGHT_SHIFT_OPERATORS.has(n.operator) || n.operator === 'shr' || mn.includes('shr')) {
+          const shiftOp = managedRightShiftOperatorForNode(n, frontendId, mn);
+          res = shiftOp
+            ? expr.binary(shiftOp, left, right, bits, shiftOp === 'ashr')
+            : expr.intrinsic(safeIdent(mn || 'managed_right_shift'), [left, right], bits);
+        }
+      }
+      if (!res) res = expr.binary(normalizedOp, left, right, bits);
     } else if (n.kind === 'compare') {
       const left = n.inputs[0] ? buildValueExpr(n.inputs[0]) : expr.constant(0n, bits);
       const right = n.inputs[1] ? buildValueExpr(n.inputs[1]) : expr.constant(0n, bits);
@@ -950,6 +1057,21 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
         } else if (n.inputs.length === 2) {
           const val = printExpression(buildValueExpr(n.inputs[1]));
           body.push({ kind: 'field_store', indent: isLoop ? 2 : 1, text: `${base}->${n.metadata?.fieldName || 'field'} = ${val};` });
+        } else if (n.inputs.length === 1) {
+          // A store whose address/identity is carried by the canonical memory
+          // access (e.g. JVM putstatic: one value input, field identity in
+          // attributes.fieldIdentity + memory.addressExpr) must still render —
+          // dropping the statement silently erases the static mutation (#8036).
+          const val = printExpression(buildValueExpr(n.inputs[0]));
+          const fid = n.attributes?.fieldIdentity;
+          if (fid && typeof fid.owner === 'string' && typeof fid.name === 'string') {
+            const target = fid.static ? `${fid.owner}.${fid.name}` : `${fid.owner}->${fid.name}`;
+            body.push({ kind: 'field_store', indent: isLoop ? 2 : 1, text: `${target} = ${val};` });
+          } else {
+            const addr = n.memory?.addressExpr?.valueId;
+            const base = addr ? `mem_${safeIdent(addr)}` : (n.memory?.addressSpace || 'memory');
+            body.push({ kind: 'field_store', indent: isLoop ? 2 : 1, text: `${base}[${n.memory?.addressSpace || 'memory'}] = ${val};` });
+          }
         }
       } else if (n.kind === 'return') {
         if (n.inputs && n.inputs.length > 0) {

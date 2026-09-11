@@ -396,7 +396,13 @@ export function createAppAnalysisQueryAdapter(app) {
       if (!app?.backend || !range.region || !storeValue(app, 'canDisassemble') || !symbols?.functionCount) return unsupported(id, 'arm64-function-producer-unavailable');
       const alignment = Number(storeValue(app, 'instructionAlignment') ?? storeValue(app, 'capability')?.instructionAlignment ?? 4);
       if (alignment !== 4) return unsupported(id, 'arm64-legacy-producer-requires-4-byte-instructions');
-      const startRow = Number((range.start - BigInt(range.region.vmAddr)) / 4n);
+      // BigInt division floors, so an unaligned function start would silently
+      // analyze the preceding instruction row and publish it as the canonical
+      // result for the unaligned address. Match `App.analyzeFunctionAt()` and
+      // fail closed instead (#4969).
+      const delta = range.start - BigInt(range.region.vmAddr);
+      if (delta < 0n || delta % 4n !== 0n) return unsupported(id, 'arm64-function-start-unaligned');
+      const startRow = Number(delta / 4n);
       const maxRow = Math.max(0, Number(BigInt(range.region.size) / 4n) - 1);
       const endRow = Math.min(Number((range.end - BigInt(range.region.vmAddr) + 3n) / 4n) - 1, maxRow);
       if (startRow < 0 || endRow < startRow) return unsupported(id, 'function-range-empty');
