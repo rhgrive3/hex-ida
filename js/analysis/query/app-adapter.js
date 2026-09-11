@@ -172,7 +172,13 @@ function paged(values, page, completeness = 'complete', status = {}) {
   const items = source.slice(offset, offset + limit);
   return {
     value:items,
-    page:{ offset, limit, returned:items.length, total:source.length, next:offset + items.length < source.length ? offset + items.length : null },
+    page:{
+      offset,
+      limit,
+      returned:items.length,
+      total:completeness === 'complete' ? source.length : null,
+      next:offset + items.length < source.length ? offset + items.length : null,
+    },
     status:{ ...status, completeness, paged:true },
   };
 }
@@ -673,7 +679,7 @@ export function createAppAnalysisQueryAdapter(app) {
         // itself, but stop when the producer's entire prefix is already below
         // the requested offset: there is no evidence for another page and an
         // unconditional cursor would create an infinite empty continuation.
-        const canProbeBeyondPrefix = result.page.total >= result.page.offset;
+        const canProbeBeyondPrefix = sourceRows.length >= result.page.offset;
         if (canProbeBeyondPrefix) {
           const next = nextPageOffset(
             result.page.offset,
@@ -700,14 +706,15 @@ export function createAppAnalysisQueryAdapter(app) {
       const cumulativeLimit = cumulativePageLimit(offset, limit);
       if (cumulativeLimit == null) return unsupportedPage(id, page, 'page-range-overflow');
       const source = program.calleesOf(range.start, range.end, cumulativeLimit);
+      const sourceRows = Array.from(source || []);
       // The scan only covers the validated range; an unproven function extent
       // (analysis window or region clip) keeps the query partial (#5991).
       const rangeIncomplete = range.complete === false;
       const queryLimited = source?.queryLimited === true;
       const reason = source?.incompleteReason ?? (queryLimited ? 'query-limit' : (rangeIncomplete ? (range.reason ?? 'function-extent-unproven') : null));
-      const result = paged(Array.from(source || []), page, source?.complete === false || queryLimited || rangeIncomplete ? 'partial' : 'complete', { reason });
+      const result = paged(sourceRows, page, source?.complete === false || queryLimited || rangeIncomplete ? 'partial' : 'complete', { reason });
       if (queryLimited && result.page.next == null) {
-        const canProbeBeyondPrefix = result.page.total >= result.page.offset;
+        const canProbeBeyondPrefix = sourceRows.length >= result.page.offset;
         if (canProbeBeyondPrefix) {
           const next = nextPageOffset(
             result.page.offset,
