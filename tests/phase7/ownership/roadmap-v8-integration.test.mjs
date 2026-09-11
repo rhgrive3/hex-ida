@@ -46,6 +46,21 @@ test('C4 precondition storage owns exact origin implementation and regression pa
   assert.throws(() => validateRoadmapManifest(manifest), /outside semanticCompat owner/);
 });
 
+test('C4 committed views own the exact existing writer and readonly history module, without a facade wildcard', () => {
+  const manifest = loadRoadmapManifest(), assignment = validateRoadmapManifest(manifest);
+  for (const file of ['js/decompiler/semantic.js','js/decompiler/semantic-views.js']) {
+    assert.equal(assignment.get(file), 'semanticCompat');
+    const moved = structuredClone(manifest);
+    moved.owners.semanticCompat = moved.owners.semanticCompat.filter(path => path !== file);
+    assert.throws(() => validateRoadmapManifest(moved), /committed view writer owner/);
+    moved.owners.phase8.push(file);
+    assert.throws(() => validateRoadmapManifest(moved), /committed view writer owner/);
+  }
+  manifest.owners.phase8 = manifest.owners.phase8.filter(file => file !== 'js/decompiler/semantic-core.js');
+  manifest.owners.semanticCompat.push('js/decompiler/semantic-core.js');
+  assert.throws(() => validateRoadmapManifest(manifest), /outside semanticCompat owner/);
+});
+
 test('v8 integration owns only the authorized MemorySSA builder repair, not its validation contract', () => {
   const manifest = loadRoadmapManifest();
   const assignments = validateRoadmapManifest(manifest);

@@ -32,6 +32,10 @@ import { readFacadeConstantTransitions, facadeConstantTransitionExpected, facade
   readFacadeTypedResultHistory, facadeTypedResultTransitionExpected,
   readFacadeStackEscapeHistory, facadeStackEscapeTransitionExpected,
   readFacadeAbiBindingHistory, facadeAbiBindingExpected, readFacadeProjectedMemoryOperandTransition } from '../ir-core.js';
+import { semanticViewStateCandidates, semanticViewPredecessorCandidate, readSemanticViewPredecessor,
+  readSemanticViewHistory, semanticViewTransitionExpected } from './semantic-views.js';
+
+const readViewCarried = (channel, original) => (ir, source) => readSemanticViewPredecessor(ir, channel, source) || original(ir, source);
 import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
@@ -750,7 +754,8 @@ function compatMemorySelection(value, state) {
   if (expected && ((state.buildSelectionHistoryCount || 0) >= maximum || consumerObservationBudget(state).edges <= 0)) {
     observeBuildSelection(value, instruction, state, 'compat-memory'); return null;
   }
-  const transition = readFacadeProjectedMemoryOperandTransition(state.ir, instruction)
+  const transition = readSemanticViewPredecessor(state.ir, 'memoryOperand', instruction)
+    || readFacadeProjectedMemoryOperandTransition(state.ir, instruction)
     || readProjectedMemoryOperandTransition(state.ir, instruction);
   if (!transition) {
     if (expected
@@ -809,7 +814,8 @@ function compatOperationSelection(value, state, roots = [value?.def, value], fol
     }
     return selected;
   };
-  const stateCandidates = facadeStateTransitionCandidates(state.ir) || projectedStateTransitionCandidates(state.ir), checkedState = new Map();
+  const stateCandidates = semanticViewStateCandidates(state.ir) || facadeStateTransitionCandidates(state.ir)
+    || projectedStateTransitionCandidates(state.ir), checkedState = new Map();
   const readCandidate = record => {
     if (!record) return null;
     const checked = state.stateHistoryTransaction?.checks || checkedState;
@@ -831,18 +837,22 @@ function compatOperationSelection(value, state, roots = [value?.def, value], fol
     const expectedTypedResult = facadeTypedResultTransitionExpected(state.ir, key);
     const expectedStackEscape = facadeStackEscapeTransitionExpected(state.ir, key);
     const expectedAbiBinding = facadeAbiBindingExpected(state.ir, key);
-    if (!expectedProjection && !expectedFacade && !expectedState && !expectedPreserved && !expectedLocation && !expectedTypedResult && !expectedStackEscape && !expectedAbiBinding) continue;
+    const expectedView = semanticViewTransitionExpected(state.ir, key);
+    if (!expectedProjection && !expectedFacade && !expectedState && !expectedPreserved && !expectedLocation && !expectedTypedResult && !expectedStackEscape && !expectedAbiBinding && !expectedView) continue;
     if ((state.buildSelectionHistoryCount || 0) >= maximum || budget.edges <= 0) {
       budget.reasons.add('compat-constant-selection-history-budget'); return observeSelected();
     }
     const transitions = [];
-    for (const [expected, read, kind] of [[expectedProjection, (ir, key) => readCandidate(facadeProjectedConstantTransitionCandidate(ir, key) || projectedConstantTransitionCandidate(ir, key)), 'constant'],
-      [expectedFacade, readFacadeConstantTransitions, 'constant'], [expectedState, (_, key) => readCandidate(stateCandidates?.get(key)), 'state'],
-      [expectedPreserved, readFacadePreservedStateHistory, 'preserved-state'],
-      [expectedLocation, readFacadeLocationHistory, 'public-location'],
-      [expectedTypedResult, readFacadeTypedResultHistory, 'typed-call-result'],
-      [expectedStackEscape, readFacadeStackEscapeHistory, 'stack-escape'],
-      [expectedAbiBinding, readFacadeAbiBindingHistory, 'abi-binding']]) {
+    for (const [expected, read, kind] of [[expectedProjection, (ir, key) => readCandidate(semanticViewPredecessorCandidate(ir, 'projectedConstant', key)
+      || facadeProjectedConstantTransitionCandidate(ir, key) || projectedConstantTransitionCandidate(ir, key)), 'constant'],
+      [expectedFacade, readViewCarried('facadeConstant', readFacadeConstantTransitions), 'constant'],
+      [expectedState, (_, key) => readCandidate(stateCandidates?.get(key)), 'state'],
+      [expectedPreserved, readViewCarried('preservedState', readFacadePreservedStateHistory), 'preserved-state'],
+      [expectedLocation, readViewCarried('location', readFacadeLocationHistory), 'public-location'],
+      [expectedTypedResult, readViewCarried('typedResult', readFacadeTypedResultHistory), 'typed-call-result'],
+      [expectedStackEscape, readViewCarried('stackEscape', readFacadeStackEscapeHistory), 'stack-escape'],
+      [expectedAbiBinding, readViewCarried('abiBinding', readFacadeAbiBindingHistory), 'abi-binding'],
+      [expectedView, readSemanticViewHistory, 'committed-view']]) {
       if (!expected) continue;
       const transition = read(state.ir, key);
       if (transition) transitions.push(transition);
@@ -900,16 +910,18 @@ function recordCompatOperationSelection(value, expression, selected, state) {
     const typedResult = event.stage === 'facade-typed-call-result';
     const stackEscape = event.stage === 'facade-stack-escape';
     const abiBinding = event.stage === 'facade-abi-binding';
+    const view = event.stage === 'decompiler-committed-view';
     const stateOperation = !!event.kind;
     const identityText = identity => `${String(identity.reg)}:${String(identity.stateKey)}:${String(identity.version)}:${String(identity.compatDerived)}`;
-    const record = Object.freeze({ rule:location || typedResult || stackEscape || abiBinding ? event.operation : preserved ? 'restore-abi-preserved-state' : stateOperation ? 'compact-public-state' : facade ? 'fold-facade-constant' : 'fold-compatibility-constant', phase:'compatibility-projection',
+    const record = Object.freeze({ rule:view || location || typedResult || stackEscape || abiBinding ? event.operation : preserved ? 'restore-abi-preserved-state' : stateOperation ? 'compact-public-state' : facade ? 'fold-facade-constant' : 'fold-compatibility-constant', phase:'compatibility-projection',
       valueId:value?.id ?? null,
-      before:abiBinding ? `${event.stage}:${event.direction}:${event.ordinal}:arguments:${event.beforeArguments.map(arg => arg.value?.id).join(',')}` : stackEscape ? `${event.stage}:${event.ordinal}:store:${event.store.id}` : typedResult ? `${event.stage}:${event.ordinal}:${event.before?.id ?? 'no-public-result'}` : location ? `${event.stage}:${event.ordinal}:${event.before.key}` : preserved ? `${event.stage}:${event.ordinal}:value:${event.before.id}` : stateOperation ? `${event.kind}:${event.ordinal}:${event.path || 'identity'}:${event.identity ? identityText(event.before) : event.before.id}`
+      before:view ? `${event.operation}:${event.ordinal}:${event.beforeOp}:${event.beforeSub ?? ''}:value:${event.before?.id ?? 'none'}` : abiBinding ? `${event.stage}:${event.direction}:${event.ordinal}:arguments:${event.beforeArguments.map(arg => arg.value?.id).join(',')}` : stackEscape ? `${event.stage}:${event.ordinal}:store:${event.store.id}` : typedResult ? `${event.stage}:${event.ordinal}:${event.before?.id ?? 'no-public-result'}` : location ? `${event.stage}:${event.ordinal}:${event.before.key}` : preserved ? `${event.stage}:${event.ordinal}:value:${event.before.id}` : stateOperation ? `${event.kind}:${event.ordinal}:${event.path || 'identity'}:${event.identity ? identityText(event.before) : event.before.id}`
         : `${event.stage}:${event.round}:${event.ordinal}:${event.op}:${event.sub ?? ''}:${String(event.beforeConstant)}`,
-      after:abiBinding ? `${event.direction}:${event.outcome}:arguments:${event.afterArguments.map(arg => arg.value?.id).join(',')}` : stackEscape ? `compatibility-clobber:call:${event.call.id}` : typedResult ? `call-result-view:${event.output.id}:${event.registerId}:${event.bits}` : location ? `location:${event.after.key}` : preserved ? `value:${event.after.id}:${event.evidence}` : stateOperation ? `${event.identity ? identityText(event.after) : event.after.id}` : `constant:${event.bits}:${String(event.afterConstant)}`,
-      evidence:Object.freeze({ kind:abiBinding ? 'observed-abi-argument-binding-not-new-abi-proof' : stackEscape ? 'observed-stack-escape-invalidation-not-new-memory-proof' : typedResult ? 'observed-typed-call-result-not-new-abi-proof' : location ? 'observed-public-location-restoration-not-new-memory-proof' : preserved ? 'observed-abi-state-restoration-not-equivalence' : stateOperation ? 'observed-state-compaction-not-equivalence'
+      after:view ? `${event.afterOp}:${event.afterSub ?? ''}:value:${event.after?.id ?? 'none'}` : abiBinding ? `${event.direction}:${event.outcome}:arguments:${event.afterArguments.map(arg => arg.value?.id).join(',')}` : stackEscape ? `compatibility-clobber:call:${event.call.id}` : typedResult ? `call-result-view:${event.output.id}:${event.registerId}:${event.bits}` : location ? `location:${event.after.key}` : preserved ? `value:${event.after.id}:${event.evidence}` : stateOperation ? `${event.identity ? identityText(event.after) : event.after.id}` : `constant:${event.bits}:${String(event.afterConstant)}`,
+      evidence:Object.freeze({ kind:view ? 'observed-committed-view-not-equivalence' : abiBinding ? 'observed-abi-argument-binding-not-new-abi-proof' : stackEscape ? 'observed-stack-escape-invalidation-not-new-memory-proof' : typedResult ? 'observed-typed-call-result-not-new-abi-proof' : location ? 'observed-public-location-restoration-not-new-memory-proof' : preserved ? 'observed-abi-state-restoration-not-equivalence' : stateOperation ? 'observed-state-compaction-not-equivalence'
         : facade ? 'observed-facade-constant-write-not-equivalence' : 'observed-compat-constant-write-not-equivalence',
-        detail:abiBinding ? 'actual canonical ABI descriptors and ordered reaching-value selection replaced compatibility arguments; original control and value sources retained, not a new ABI theorem'
+        detail:view ? 'actual decompiler view replacement with original operands, stores, block selection and predecessor histories; not a new scalar, memory or ABI theorem'
+          : abiBinding ? 'actual canonical ABI descriptors and ordered reaching-value selection replaced compatibility arguments; original control and value sources retained, not a new ABI theorem'
           : stackEscape ? 'actual compatibility store-link invalidation by the first intervening call with a stack-carrying argument; original store and canonical memory facts are retained, not re-proved'
           : typedResult ? 'actual typed result attachment from the selected canonical ABI adapter, anchored to the original CALL; compatibility value identity is not a new canonical SSA definition'
           : location ? 'actual public location reuse/replacement and map write with original address inputs and existing evidence; not a new alias, memory forwarding or field-layout theorem'
@@ -946,7 +958,7 @@ function recordCompatOperationSelection(value, expression, selected, state) {
 }
 
 function buildCanonicalExpressions(state) {
-  const batch = facadeStateTransitionCandidates(state.ir) || projectedStateTransitionCandidates(state.ir);
+  const batch = semanticViewStateCandidates(state.ir) || facadeStateTransitionCandidates(state.ir) || projectedStateTransitionCandidates(state.ir);
   if (!batch) {
     for (const value of state.ir.values || []) buildValue(value, state);
     return state;

@@ -23,6 +23,11 @@ const stateTransitions = new WeakMap();
 const expectedStateTransitions = new WeakMap();
 const expectedStateNormalizations = new WeakMap();
 
+// Producer identity only, not a currentness or semantic-equivalence claim.
+export function isIssuedSemanticProjection(projected) {
+  return expectedStateTransitions.has(projected);
+}
+
 // Shared pure-data observation for projector and facade operation issuers. This
 // function registers nothing: only private owning call sites issue records;
 // obtaining a data matcher cannot attach/reseal a public or copied history.

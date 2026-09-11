@@ -6,14 +6,27 @@ import { readSemanticSuppressionHistory, readSemanticStoreLineHistory, readSeman
   readSemanticStatementLineHistory, readSemanticStatementRenderHistory,
   readSemanticControlLineHistory, readSemanticControlRenderHistory } from '../semantic-core.js';
 import { readProjectedStateNormalization, projectedStateNormalizationExpected } from '../../semantics/compat/semantic-ir-v2-to-v1.js';
-import { readFacadeStateNormalization, readFacadePreservedStateHistory, facadePreservedStateTransitionExpected,
-  readFacadeLocationHistory, facadeLocationTransitionExpected,
-  readFacadeTypedResultHistory, facadeTypedResultTransitionExpected,
-  readFacadeStackEscapeHistory, facadeStackEscapeTransitionExpected, FACADE_STACK_ESCAPE_EVIDENCE,
-  readFacadeAbiBindingHistory, facadeAbiBindingExpected } from '../../ir-core.js';
+import { readFacadeStateNormalization, readFacadePreservedStateHistory as readOriginalPreservedStateHistory, facadePreservedStateTransitionExpected,
+  readFacadeLocationHistory as readOriginalLocationHistory, facadeLocationTransitionExpected,
+  readFacadeTypedResultHistory as readOriginalTypedResultHistory, facadeTypedResultTransitionExpected,
+  readFacadeStackEscapeHistory as readOriginalStackEscapeHistory, facadeStackEscapeTransitionExpected, FACADE_STACK_ESCAPE_EVIDENCE,
+  readFacadeAbiBindingHistory as readOriginalAbiBindingHistory, facadeAbiBindingExpected } from '../../ir-core.js';
+import { semanticViewStateCandidates, readSemanticViewPredecessor, readSemanticViewHistory,
+  semanticViewTransitionExpected } from '../semantic-views.js';
+
+const carried = (channel, read) => ir => readSemanticViewPredecessor(ir, channel) || read(ir);
+const readFacadePreservedStateHistory = carried('preservedState', readOriginalPreservedStateHistory);
+const readFacadeLocationHistory = carried('location', readOriginalLocationHistory);
+const readFacadeTypedResultHistory = carried('typedResult', readOriginalTypedResultHistory);
+const readFacadeStackEscapeHistory = carried('stackEscape', readOriginalStackEscapeHistory);
+const readFacadeAbiBindingHistory = carried('abiBinding', readOriginalAbiBindingHistory);
 
 const PUBLIC_STATE_RULES = Object.freeze(['suppress-unused-entry-state', 'reorder-public-state-slot', 'renumber-public-state-version']);
-const readPublicStateNormalization = ir => readFacadeStateNormalization(ir) || readProjectedStateNormalization(ir);
+const readPublicStateNormalization = ir => {
+  const batch = semanticViewStateCandidates(ir);
+  return batch ? batch.isCurrent() ? batch.normalization : null
+    : readFacadeStateNormalization(ir) || readProjectedStateNormalization(ir);
+};
 
 function readRenderedHistory(line, ir) {
   return readLineExpressionHistory(line, ir) || readSwitchLineHistory(line, ir)?.records
@@ -372,6 +385,9 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   const typedResult = readFacadeTypedResultHistory(result.ir);
   const stackEscape = readFacadeStackEscapeHistory(result.ir);
   const abiBinding = readFacadeAbiBindingHistory(result.ir);
+  const committedViews = readSemanticViewHistory(result.ir);
+  if (semanticViewTransitionExpected(result.ir) && !committedViews) reasons.add('unavailable-committed-view-history');
+  if (committedViews?.completeness === 'incomplete') reasons.add('incomplete-committed-view-history');
   if (facadeAbiBindingExpected(result.ir) && !abiBinding) reasons.add('unavailable-abi-binding-history');
   if (abiBinding?.completeness === 'incomplete') reasons.add('incomplete-abi-binding-history');
   if (facadeStackEscapeTransitionExpected(result.ir) && !stackEscape) reasons.add('unavailable-stack-escape-history');
@@ -624,6 +640,7 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   if (typedResult && readFacadeTypedResultHistory(result.ir) !== typedResult) reasons.add('stale-typed-call-result-history');
   if (stackEscape && readFacadeStackEscapeHistory(result.ir) !== stackEscape) reasons.add('stale-stack-escape-history');
   if (abiBinding && readFacadeAbiBindingHistory(result.ir) !== abiBinding) reasons.add('stale-abi-binding-history');
+  if (committedViews && readSemanticViewHistory(result.ir) !== committedViews) reasons.add('stale-committed-view-history');
   if (suppressions && readSemanticSuppressionHistory(result) !== suppressions) reasons.add('stale-semantic-suppression-history');
   if (boundLines.some(([line, binding]) => readRenderedHistory(line, result.ir) !== binding)) {
     reasons.add('stale-expression-binding');

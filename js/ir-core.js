@@ -29,6 +29,7 @@ import { resolveABIPlugin } from './targets/abi/index.js';
 import { semanticAbiAdapter } from './analysis/semantic-function-base.js';
 import { observeProjectedOperationData, projectedStateTransitionCandidates, projectedConstantTransitionCandidate,
   projectedMemoryOperandTransitionCandidate } from './semantics/compat/semantic-ir-v2-to-v1.js';
+import { PROJECTION_LIMITS } from './core/identity/live-data.js';
 
 const facadeConstantTransitions = new WeakMap();
 const expectedFacadeConstantTransitions = new WeakMap();
@@ -63,6 +64,14 @@ export function readFacadeAbiBindingHistory(projected, instruction = null) {
 
 export function facadeProjectedConstantTransitionCandidate(projected, instruction) {
   return facadeProjectedConstants.get(projected)?.get(instruction) ?? null;
+}
+
+export function facadeConstantTransitionCandidate(projected, instruction) {
+  return facadeConstantTransitions.get(projected)?.get(instruction) ?? null;
+}
+
+export function facadeProjectedMemoryOperandTransitionCandidate(projected, instruction) {
+  return facadeProjectedMemoryOperands.get(projected)?.get(instruction) ?? null;
 }
 
 export function readFacadeProjectedMemoryOperandTransition(projected, instruction) {
@@ -163,11 +172,14 @@ function sealFacadeStateTransitions(projected, history) {
     // through its exact write chain. No caller can supply or register writes.
     const definitions = projected.instructions.map(inst => ({ source:inst, beforeInputs:[] }));
     const output = observeProjectedOperationData(projected, definitions);
-    const isCurrent = () => source.matchesThroughWrites(writes) && output();
+    const isCurrent = Object.freeze(Object.assign(() => source.matchesThroughWrites(writes) && output(), {
+      matchesThroughWrites:following => Array.isArray(following) && following.length + writes.length <= PROJECTION_LIMITS.nodes
+        && source.matchesThroughWrites([...writes, ...following]) && output.matchesThroughWrites(following),
+    }));
     if (!isCurrent()) return;
     const cached = new Map();
     const normalization = Object.freeze({ ...source.normalization, isCurrent });
-    facadeStateTransitions.set(projected, Object.freeze({ isCurrent, normalization, get(key) {
+    facadeStateTransitions.set(projected, Object.freeze({ isCurrent, matchesThroughWrites:isCurrent.matchesThroughWrites, normalization, get(key) {
       const original = source.get(key);
       if (!original) return null;
       if (!cached.has(original)) cached.set(original, Object.freeze({ ...original, isCurrent }));
@@ -185,7 +197,10 @@ function sealFacadeProjectedOperations(projected, history, groups) {
       const records = new Map();
       for (const [source, candidate] of candidates) {
         if (!checks.has(candidate.isCurrent)) {
-          const current = () => candidate.isCurrent.matchesThroughWrites(writes) && output();
+          const current = Object.freeze(Object.assign(() => candidate.isCurrent.matchesThroughWrites(writes) && output(), {
+            matchesThroughWrites:following => Array.isArray(following) && following.length + writes.length <= PROJECTION_LIMITS.nodes
+              && candidate.isCurrent.matchesThroughWrites([...writes, ...following]) && output.matchesThroughWrites(following),
+          }));
           checks.set(candidate.isCurrent, current() ? current : null);
         }
         const isCurrent = checks.get(candidate.isCurrent);
@@ -563,7 +578,9 @@ function sealFacadePreservedStateHistory(projected, observer, constants, typedRe
         && input.value.kind === input.kind && input.value.bits === input.bits
         && (input.value.const === input.constant || written.has(input.value) && written.get(input.value) === input.value.const)));
     const output = observeProjectedOperationData(projected, valid);
-    const isCurrent = () => observer.selection(typedResults) && output();
+    const isCurrent = Object.freeze(Object.assign(() => observer.selection(typedResults) && output(), {
+      matchesThroughWrites:writes => observer.selection(typedResults) && output.matchesThroughWrites(writes),
+    }));
     const events = Object.freeze(valid), history = Object.freeze({ events, isCurrent,
       completeness:valid.length === observer.count ? 'complete' : 'incomplete' });
     facadePreservedStateHistories.set(projected, { history, bySource:new Map(valid.map(event => [event.source,
@@ -752,11 +769,14 @@ function sealFacadeLocationHistory(projected, observer, escapes = null) {
     const proofsCurrent = () => valid.every(event => !event.memory || event.base?.def?.op === LEGACY_OP.LOAD
       && event.base.def.memoryForwarding === event.memory && isCanonicalExactMemoryForwarding(event.memory,
         canonicalMemoryForwardingContextForLoad(event.memory, event.base.def, event.proofContext)));
-    const isCurrent = () => Object.getOwnPropertyDescriptor(projected, 'locations')?.value === locations
+    const bindingsCurrent = () => Object.getOwnPropertyDescriptor(projected, 'locations')?.value === locations
       && Object.getPrototypeOf(locations) === Map.prototype && !Reflect.ownKeys(locations).length
       && size.call(locations) === bindings.length && bindings.every(([key, value]) => Map.prototype.has.call(locations, key)
         && Map.prototype.get.call(locations, key) === value)
-      && output() && proofsCurrent();
+      && proofsCurrent();
+    const isCurrent = Object.freeze(Object.assign(() => bindingsCurrent() && output(), {
+      matchesThroughWrites:writes => bindingsCurrent() && output.matchesThroughWrites(writes),
+    }));
     if (!isCurrent()) return;
     const history = Object.freeze({ events:Object.freeze(valid), isCurrent,
       completeness:valid.length === observer.count ? 'complete' : 'incomplete' });
@@ -878,7 +898,10 @@ function sealFacadeAbiBindings(projected, calls, returns, typedResults, writes) 
       checks.push(() => observer.selection(following));
       for (const event of observer.records) {
         const observed = observer.observations.get(event), chain = Object.freeze(writes.writes.slice(observed.offset));
-        const current = () => observed.current.matchesThroughWrites(chain);
+        const current = Object.freeze(Object.assign(() => observed.current.matchesThroughWrites(chain), {
+          matchesThroughWrites:following => Array.isArray(following) && following.length + chain.length <= PROJECTION_LIMITS.nodes
+            && observed.current.matchesThroughWrites([...chain, ...following]),
+        }));
         if (!current()) continue;
         valid.push(event); checks.push(current);
       }
@@ -886,7 +909,10 @@ function sealFacadeAbiBindings(projected, calls, returns, typedResults, writes) 
     if (!valid.length) return;
     const uses = [...new Set(valid.flatMap(event => event.beforeInputs))].map(value => value.uses);
     const output = observeProjectedOperationData(projected, [...valid, { beforeInputs:[], object:{ finalUses:uses } }]);
-    const isCurrent = () => output() && checks.every(check => check());
+    const isCurrent = Object.freeze(Object.assign(() => output() && checks.every(check => check()), {
+      matchesThroughWrites:writes => output.matchesThroughWrites(writes)
+        && checks.every(check => check.matchesThroughWrites ? check.matchesThroughWrites(writes) : check()),
+    }));
     if (!isCurrent()) return;
     const history = Object.freeze({ events:Object.freeze(valid), isCurrent, completeness:valid.length === expected.count ? 'complete' : 'incomplete' });
     facadeAbiBindings.set(projected, { history, bySource:new Map(valid.map(event => [event.source,
@@ -972,7 +998,9 @@ function sealFacadeTypedResultHistory(projected, observer) {
       && event.source.returnReg === event.registerId && event.source.returnBits === event.bits
       && event.source.returnEvidence === event.evidence);
     const output = observeProjectedOperationData(projected, valid);
-    const isCurrent = () => selection() && output();
+    const isCurrent = Object.freeze(Object.assign(() => selection() && output(), {
+      matchesThroughWrites:writes => selection() && output.matchesThroughWrites(writes),
+    }));
     if (!isCurrent()) return;
     const history = Object.freeze({ events:Object.freeze(valid), isCurrent,
       completeness:valid.length === observer.count ? 'complete' : 'incomplete' });
