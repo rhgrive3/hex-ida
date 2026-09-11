@@ -15,6 +15,23 @@ function strictELFInteger(value, label) {
   throw new TypeError(`${label} must be a bigint, safe integer, or non-empty integer string`);
 }
 
+/** Require a VA span to remain inside one loaded PT_LOAD memory mapping. */
+export function mappedELFMemorySpanForVa(image, va, size = 1n) {
+  const address = strictELFInteger(va, 'va');
+  const n = strictELFInteger(size, 'size');
+  if (n < 0n) return null;
+  for (const segment of image?.segments || []) {
+    const start = BigInt(segment.address ?? 0);
+    const memSize = BigInt(segment.size ?? 0);
+    if (memSize <= 0n || address < start || address >= start + memSize) continue;
+    if (n === 0n || n <= start + memSize - address) return { segment, address, size:n };
+    // Overlapping PT_LOADs are legal enough to encounter in hostile inputs;
+    // another owner may still contain the entire requested span.
+    continue;
+  }
+  return null;
+}
+
 /** Return the file-backed suffix of the PT_LOAD that owns `va`. */
 export function mappedELFFileRangeForVa(image, va) {
   const address = strictELFInteger(va, 'va');
