@@ -5,6 +5,7 @@ import { createMachOMetadataBudget, ensureMachOMetadataBudget, markMachOMetadata
 import { validateFatSlice, validateFatContainer, probePastEndArm64SliceSync, parseInnerMachOHeader } from './macho-fat.js';
 
 const S_MOD_INIT_FUNC_POINTERS = 0x9;
+const S_ATTR_PURE_INSTRUCTIONS = 0x80000000;
 
 export const DICE_KIND_DATA = 1;
 export const DICE_KIND_JUMP_TABLE8 = 2;
@@ -254,18 +255,15 @@ function parseThin(bytes, opts) {
     const seeded = new Set(image.functions.map((f) => f.address.toString()));
     for (const sym of image.symbols) {
       if (!sym.defined || sym.address == null || seeded.has(sym.address.toString())) continue;
-      const sec = image.sectionAt(sym.address);
-      if (sec && sec.perms.execute && sym.name !== '__mh_execute_header' && metadataBudget.take({ objects:1, operations:1, estimatedHeapBytes:128 }, 'symbol-function-fallback')) image.functions.push(functionSeed(sym.address, { name: sym.name, source: 'symbol', confidence: 0.9 }));
+      if (isSymbolFunctionCandidate(image, sym.address, false) && sym.name !== '__mh_execute_header' && metadataBudget.take({ objects:1, operations:1, estimatedHeapBytes:128 }, 'symbol-function-fallback')) image.functions.push(functionSeed(sym.address, { name: sym.name, source: 'symbol', confidence: 0.9 }));
     }
   } else {
     for (const sym of image.symbols) {
       if (!sym.defined || sym.address == null) continue;
-      const sec = image.sectionAt(sym.address);
       // A symbol is only a high-confidence function seed when its section is
       // explicitly S_ATTR_PURE_INSTRUCTIONS. S_ATTR_SOME_INSTRUCTIONS alone
       // only proves a mixed section contains some code, not this symbol (#5559).
-      const hasInstructions = !!sec && (sec.flags & 0x80000000) !== 0;
-      if (sec && hasInstructions && sec.perms.execute && sym.name !== '__mh_execute_header' && metadataBudget.take({ objects:1, operations:1, estimatedHeapBytes:128 }, 'symbol-function-fallback')) image.functions.push(functionSeed(sym.address, { name: sym.name, source: 'symbol', confidence: 0.9 }));
+      if (isSymbolFunctionCandidate(image, sym.address, true) && sym.name !== '__mh_execute_header' && metadataBudget.take({ objects:1, operations:1, estimatedHeapBytes:128 }, 'symbol-function-fallback')) image.functions.push(functionSeed(sym.address, { name: sym.name, source: 'symbol', confidence: 0.9 }));
     }
   }
 
@@ -508,6 +506,22 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
     }
     void sect;
   }
+}
+
+function isSymbolFunctionCandidate(image, address, requirePureInstructions) {
+  const sec = image.sectionAt(address);
+  if (!sec || !sec.perms.execute) return false;
+  if (requirePureInstructions && (sec.flags & S_ATTR_PURE_INSTRUCTIONS) === 0) return false;
+
+  const instructionBytes = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32')
+    ? 4n
+    : image.arch === 'arm' ? 2n : 1n;
+  if (sec.size < instructionBytes || address > sec.address + sec.size - instructionBytes) return false;
+
+  // Keep symbol metadata even when it is not safe to strengthen into function
+  // evidence. This shared boundary covers ISA alignment, file-backed bytes,
+  // executable ownership, and LC_DATA_IN_CODE exclusion (#8159).
+  return image.isInstructionAllowed(address);
 }
 
 function parseFunctionStarts(r, dc, image, sharedBudget = null) {
@@ -1064,4 +1078,3 @@ function parseDataInCode(r, dc, image, metadataBudget) {
     });
   }
 }
-
