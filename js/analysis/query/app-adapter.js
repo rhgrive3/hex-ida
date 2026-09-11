@@ -612,8 +612,25 @@ export function createAppAnalysisQueryAdapter(app) {
         const decoded = await app.backend.disassembleAt(start, { architecture:architectureOf(app), length, signal:options.signal ?? null });
         if (decoded?.supported && decoded?.found) {
           const rows = (decoded.instructions || []).map((insn, i) => ({ id:insn.instructionId ?? `${functionId(insn.address ?? start)}:${i}`, address:insn.address == null ? null : BigInt(insn.address), size:Number(insn.length ?? insn.size ?? 0), mnemonic:String(insn.mnemonic ?? insn.instructionFamily ?? ''), operands:String(insn.opStr ?? insn.operands ?? ''), raw:insn }));
-          const completeness = truncated ? 'truncated' : !rangeComplete ? 'partial' : 'complete';
-          return paged(rows, page, completeness, { reason:truncated ? 'instruction-read-budget' : rangeReason });
+          const consumed = decoded.bytesConsumed;
+          const hasCoverage = consumed != null;
+          const validCoverage = !hasCoverage || (typeof consumed === 'number' && Number.isSafeInteger(consumed) && consumed >= 0 && consumed <= length);
+          const shortCoverage = validCoverage && hasCoverage && consumed < length;
+          const completeness = truncated
+            ? 'truncated'
+            : !rangeComplete || !validCoverage || shortCoverage
+              ? 'partial'
+              : 'complete';
+          const reason = truncated
+            ? 'instruction-read-budget'
+            : !rangeComplete
+              ? rangeReason
+              : !validCoverage
+                ? 'instruction-read-coverage-invalid'
+                : shortCoverage
+                  ? 'instruction-read-incomplete'
+                  : null;
+          return paged(rows, page, completeness, { reason });
         }
       }
       const result = await loadFunction(request.functionId ?? start, options);
