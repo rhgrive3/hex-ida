@@ -57,14 +57,20 @@ export function collectRelrRelocations(r, tags, image, bits, context = null) {
   if(off==null||size==null){partial(image,'DT_RELR table crosses a file-backed PT_LOAD boundary');return out;}
   if (!budget.claimInput(size, 'DT_RELR')) return out;
   if (size % word) partial(image,'DT_RELRSZ is not a multiple of DT_RELRENT');
-  let base=0n, hasBase=false; const wordBits=BigInt(word*8);
+  let base=0n, hasBase=false; const wordBits=BigInt(word*8), wordSize=BigInt(word), addressBits=bits===64?64:32, maxAddress=(1n<<BigInt(addressBits))-1n;
+  const checkedAddressAdd=(value,delta,label)=>{
+    if(value>maxAddress-delta){partial(image,`DT_RELR ${label} exceeds ${addressBits}-bit address range`);return null;}
+    return value+delta;
+  };
   const count=Math.floor(size/word);
   outer: for(let i=0;i<count;i++){
     if (!budget.step()) break;
     const entry=word===8?r.u64(off+i*word):BigInt(r.u32(off+i*word));
     if((entry&1n)===0n){
       if (!budget.push(out,{address:entry,symIndex:0,type:null,addend:null,source:'PT_DYNAMIC-RELR',relative:true},'DT_RELR')) break;
-      base=entry+BigInt(word);
+      const nextBase=checkedAddressAdd(entry,wordSize,'base advance');
+      if(nextBase==null)break;
+      base=nextBase;
       hasBase=true;
       continue;
     }
@@ -72,10 +78,14 @@ export function collectRelrRelocations(r, tags, image, bits, context = null) {
     for(let bit=1n;bit<wordBits;bit++) {
       if (!budget.step()) break outer;
       if(entry&(1n<<bit)) {
-        if (!budget.push(out,{address:base+(bit-1n)*BigInt(word),symIndex:0,type:null,addend:null,source:'PT_DYNAMIC-RELR',relative:true},'DT_RELR')) break outer;
+        const address=checkedAddressAdd(base,(bit-1n)*wordSize,'bitmap relocation');
+        if(address==null)break outer;
+        if (!budget.push(out,{address,symIndex:0,type:null,addend:null,source:'PT_DYNAMIC-RELR',relative:true},'DT_RELR')) break outer;
       }
     }
-    base+=(wordBits-1n)*BigInt(word);
+    const nextBase=checkedAddressAdd(base,(wordBits-1n)*wordSize,'bitmap base advance');
+    if(nextBase==null)break;
+    base=nextBase;
   }
   return out;
 }
@@ -107,6 +117,12 @@ function decodeAndroidTable(r, va, size64, image, bits, rela, source, budget, ou
     const relocationCount=readSleb(r,st,end);
     if(relocationCount<0n) throw new Error('negative relocation count');
     let relocationOffset=readSleb(r,st,end), relocationAddend=0n, decoded=0n;
+    const maxAddress=bits===32?0xffffffffn:0xffffffffffffffffn;
+    const validateOffset=()=>{
+      if(relocationOffset<0n) throw new Error('negative relocation field');
+      if(relocationOffset>maxAddress) throw new Error('relocation offset exceeds ELF address width');
+    };
+    validateOffset();
     while(decoded<relocationCount && !budget.stopped){
       if (!budget.step()) break;
       const groupSize=readSleb(r,st,end), flags=readSleb(r,st,end);
@@ -117,9 +133,10 @@ function decodeAndroidTable(r, va, size64, image, bits, rela, source, budget, ou
       for(let i=0n;i<groupSize && !budget.stopped;i++,decoded++){
         if (!budget.step()) break;
         relocationOffset+=groupedDelta?groupDelta:readSleb(r,st,end);
+        validateOffset();
         const info=groupedInfo?groupInfo:readSleb(r,st,end);
         if(hasAddend) relocationAddend+=groupedAddend?groupAddend:readSleb(r,st,end); else if(rela) relocationAddend=0n;
-        if(relocationOffset<0n||info<0n) throw new Error('negative relocation field');
+        if(info<0n) throw new Error('negative relocation field');
         const symIndex=bits===64?Number(info>>32n):Number(info>>8n), type=bits===64?Number(info&0xffffffffn):Number(info&0xffn);
         if(!Number.isSafeInteger(symIndex)||!Number.isSafeInteger(type)) throw new Error('relocation info exceeds safe integer range');
         if (!budget.push(out,{address:relocationOffset,symIndex,type,addend:rela?relocationAddend:null,source},source)) break;
