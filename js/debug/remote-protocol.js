@@ -32,6 +32,56 @@ function jsonByteSize(value) {
   return utf8ByteLength(json);
 }
 
+// Snapshot untrusted wire data through own data descriptors before any
+// validation, accounting, or decode pass. This prevents accessor/proxy-backed
+// input from presenting different payloads to those authority boundaries.
+function snapshotWireData(value, depth = 0) {
+  if (depth > 20) throw new DebugAdapterError('malformed-packet', 'remote packet nesting is too deep');
+  if (!value || typeof value !== 'object') return value;
+
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Array.isArray(value)) {
+    const lengthDescriptor = descriptors.length;
+    if (
+      !lengthDescriptor ||
+      !Object.prototype.hasOwnProperty.call(lengthDescriptor, 'value') ||
+      !Number.isSafeInteger(lengthDescriptor.value) ||
+      lengthDescriptor.value < 0 ||
+      lengthDescriptor.value > MAX_ARRAY
+    ) {
+      throw new DebugAdapterError('malformed-packet', 'remote array exceeds limit');
+    }
+    const length = lengthDescriptor.value;
+    const out = new Array(length);
+    for (let i = 0; i < length; i += 1) {
+      const descriptor = descriptors[String(i)];
+      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+        throw new DebugAdapterError('malformed-packet', 'remote arrays must contain own data values');
+      }
+      out[i] = snapshotWireData(descriptor.value, depth + 1);
+    }
+    return out;
+  }
+
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) throw new DebugAdapterError('malformed-packet', 'remote packet objects must be plain data');
+  const entries = Object.entries(descriptors).filter(([, descriptor]) => descriptor.enumerable);
+  if (entries.length > 1024) throw new DebugAdapterError('malformed-packet', 'remote object has too many fields');
+  const out = proto === null ? Object.create(null) : {};
+  for (const [key, descriptor] of entries) {
+    if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      throw new DebugAdapterError('malformed-packet', 'remote packet fields must be own data properties');
+    }
+    Object.defineProperty(out, key, {
+      value: snapshotWireData(descriptor.value, depth + 1),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return out;
+}
+
 function bytesToBase64(bytes) {
   if (typeof Buffer !== 'undefined') return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
   if (typeof btoa !== 'function') throw new DebugAdapterError('encoding-unavailable', 'base64 encoder is unavailable');
@@ -349,7 +399,7 @@ export class RemoteProtocolClient {
   }
   receive(raw) {
     let wire;
-    try { wire = validateRemotePacket(raw); } catch { return false; }
+    try { wire = validateRemotePacket(snapshotWireData(raw)); } catch { return false; }
     if (wire.type !== 'hello' && wire.epoch !== this.epoch) {
       // A request opened with an explicit epoch legally receives its response
       // carrying that request's own epoch (#5726). Keep such a response only
