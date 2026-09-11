@@ -678,8 +678,13 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
         if (!hasPriorHistory && !spelling && consumer?.records.some(record => record.rule === 'render-compound-store')) {
           historyReasons.add('unavailable-store-spelling-producer');
         }
-        if (spelling && (spelling.consumer !== consumer || spelling.text !== node.text)) historyReasons.add('stale-store-spelling-producer');
-        if (spelling && spelling.consumer === consumer && spelling.text === node.text && node.text !== text) {
+        // The output descriptor may now be an owned copy. Recheck the actual
+        // incoming producer too: matching copied text cannot hide a late write
+        // to its original node during an analysis callback.
+        const spellingCurrent = spelling && spelling.consumer === consumer && spelling.text === node.text
+          && spelling.observation.matches();
+        if (spelling && !spellingCurrent) historyReasons.add('stale-store-spelling-producer');
+        if (spellingCurrent && node.text !== text) {
           if ((result.rewriteProof?.length || 0) + spellingRecords.length >= spellingLimit) historyReasons.add('store-spelling-history-budget');
           else {
             const source = mergeSource(node.source, consumer.expression?.source, node.semantic.expression.source);

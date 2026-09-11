@@ -25,13 +25,14 @@ const { annotateValueRanges } = await import('../../../js/semantics/compat/legac
 const { enhanceSemanticDecompilation } = await import('../../../js/decompiler/pipeline-core.js');
 const { enhanceSemanticDecompilation:enhancePublic } = await import('../../../js/decompiler/pipeline.js');
 const { captureRecoveryIrData } = await import('../../../js/decompiler/phase8/projection-origin.js');
-const { readStackReturnHistoryConsumer } = await import('../../../js/decompiler/passes/stack-return-recovery.js');
+const { readStackReturnHistoryConsumer, recoverExactStackReturn } = await import('../../../js/decompiler/passes/stack-return-recovery.js');
 const { applyPhase8Projection } = await import('../../../js/decompiler/phase8/projection.js');
 const { buildRenderProvenance, validateRenderProvenance } = await import('../../../js/decompiler/phase8/render-provenance.js');
 const { AnalysisQueryAPI } = await import('../../../js/analysis/query/api.js');
 const { createDecompilerNavigation } = await import('../../../js/ui/decompiler-provenance.js');
 const { BRANCH, loadRoadmapManifest, validateRoadmapInventory } = await import('../../../tools/validation/analysis-roadmap/ownership.mjs');
 const { analysis } = await import('./fixture.js');
+const { expr } = await import('../../../js/decompiler/ast/nodes.js');
 loader.deregister();
 
 const rule = 'invalidate-escaped-stack-forwarding';
@@ -185,6 +186,25 @@ test('public return recovery retains private preimages and revokes after displac
   const projected = applyPhase8Projection(f.result, analysis());
   assert.ok(!projected.renderProvenance.ledger.some(record => record.rule === rule && record.kind === 'expression-rewrite' && record.producedRefs.length));
   }
+});
+
+test('return recovery retains a frozen predecessor descriptor instead of changing its observed expression', () => {
+  const f = render(fixture()), node = f.result.cAst.body.find(node => node.semantic?.op === 'return');
+  const before = node.semantic, expression = before.expression;
+  // Core rendering already selected a constant. Supply the actual stack-load
+  // root at the recovery entry, as the public reanchor does, so this exercises
+  // a real recovery write rather than the constant-root no-op path.
+  f.result.semanticAst.outputs.find(output => output.name === 'return').expression = expr.load(
+    f.load.loc, f.load.dst.bits, { address:f.load.address, row:f.load.row, ir:f.load.id, ssaDef:f.load.dst.id });
+  Object.freeze(before);
+  recoverExactStackReturn(f.result, { deterministicTransforms:true });
+  assert.notEqual(node.semantic, before);
+  assert.equal(before.expression, expression);
+  const consumer = readStackReturnHistoryConsumer(node.semantic, f.ir);
+  assert.ok(consumer);
+  assert.ok(consumer.records.some(record => record.rule === rule));
+  f.beforeUse.kind = 'changed';
+  assert.equal(readStackReturnHistoryConsumer(node.semantic, f.ir), null);
 });
 
 test('recovery observes native dominance sets without invoking public iterators or accepting replacements', () => {

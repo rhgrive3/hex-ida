@@ -513,7 +513,10 @@ function rewriteReturn(result, expression, opts) {
   for (const node of result.cAst?.body || []) {
     if (node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim())) {
       node.text = `return ${printExpression(expression)};`;
-      if (node.semantic) node.semantic.expression = expression;
+      // Retain the predecessor descriptor observed by the incoming consumer.
+      // The owning recovery below binds this new descriptor to that preimage;
+      // mutating the old descriptor would revoke the history being carried.
+      if (node.semantic) node.semantic = { ...node.semantic, expression };
       changed = true;
     }
   }
