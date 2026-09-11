@@ -320,6 +320,29 @@ function inputMatchesCanonicalProof(input, proof) {
   return true;
 }
 
+function canonicalTargetWidthBits(widthBits) {
+  if (widthBits == null) return null;
+  if (typeof widthBits !== 'number' || !Number.isSafeInteger(widthBits) || widthBits <= 0) {
+    fail('phase7-pointsto-target-invalid-width-bits');
+  }
+  return widthBits;
+}
+
+function canonicalTargetEvidenceIds(evidenceIds) {
+  if (evidenceIds == null) return [];
+  if (!Array.isArray(evidenceIds)) fail('phase7-pointsto-target-invalid-evidence-ids');
+  const canonical = [];
+  for (let index = 0; index < evidenceIds.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(evidenceIds, String(index));
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')
+        || typeof descriptor.value !== 'string' || descriptor.value.length === 0) {
+      fail('phase7-pointsto-target-invalid-evidence-ids');
+    }
+    canonical.push(descriptor.value);
+  }
+  return [...new Set(canonical)].sort();
+}
+
 /** One (root, offset-range) member of a points-to set. */
 export function createPointsToTarget(input = {}) {
   const rootIdentity = canonicalRootIdentity(input.rootIdentity ?? null);
@@ -349,8 +372,8 @@ export function createPointsToTarget(input = {}) {
     ...(canonicalStorageClass ? { canonicalRootStorageClass: canonicalStorageClass } : {}),
     address: canonicalPointsToAddress(input.address),
     offsetRange: canonicalOffsetRange(input.offsetRange),
-    widthBits: input.widthBits == null ? null : Number(input.widthBits),
-    evidenceIds: [...new Set((input.evidenceIds ?? []).map(String))].sort(),
+    widthBits: canonicalTargetWidthBits(input.widthBits),
+    evidenceIds: canonicalTargetEvidenceIds(input.evidenceIds),
   };
   if (proven) target[ROOT_DESCRIPTOR_PROOF] = proof;
   target.rootKey = rootKeyOf(target);
