@@ -139,4 +139,26 @@ assert.throws(
   );
 }
 
+// 12. The public validator must not execute accessor-backed category authority.
+//     Persisted/forged evidence is only admissible when category is stable own data.
+{
+  const canonical = bundle();
+  let categoryReads = 0;
+  const effect = { reason: 'stateful-validator-category' };
+  Object.defineProperty(effect, 'category', {
+    enumerable: true,
+    get() {
+      categoryReads += 1;
+      return 'memory';
+    },
+  });
+  const forged = { ...canonical, unknownEffects: [effect] };
+  assert.throws(
+    () => validateVMEffectBundle(forged),
+    /vm-effect-invalid-unknown-category/,
+    'validator must reject executable category authority',
+  );
+  assert.equal(categoryReads, 0, 'validator must not invoke a category getter');
+}
+
 console.log('issue-4953 unknown-effect category taxonomy: ok');

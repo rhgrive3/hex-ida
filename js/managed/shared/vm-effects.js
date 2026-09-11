@@ -134,7 +134,11 @@ function assertAllowedKeys(input, allowed, code) {
 }
 function validateUnknownEffect(value) {
   const effect = object(value, 'vm-effect-invalid-unknown-effect');
-  const category = effect.category;
+  const categoryDescriptor = Object.getOwnPropertyDescriptor(effect, 'category');
+  if (!categoryDescriptor || !Object.prototype.hasOwnProperty.call(categoryDescriptor, 'value')) {
+    fail('vm-effect-invalid-unknown-category');
+  }
+  const category = categoryDescriptor.value;
   if (typeof category !== 'string' || !SETS.unknownCategories.has(category)) {
     fail('vm-effect-invalid-unknown-category');
   }
