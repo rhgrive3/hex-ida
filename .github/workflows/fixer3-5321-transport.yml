@@ -1,0 +1,183 @@
+name: Fixer 3 issue 5321 transport
+on:
+  push:
+    branches:
+      - fixer3/issue-5321-width-preserving-casts
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fixer3/issue-5321-width-preserving-casts
+          fetch-depth: 1
+      - name: Verify validated base and apply focused patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object js/analysis/alias/canonical-address-v2-core.js)" = bc341bea9baa9ba50c2cd84e76fa39b0483a90be
+          test "$(git hash-object js/analysis/pointsto/local.js)" = 89273250b0266f91bbf5694e43ead9fd4e7a2670
+          test "$(git hash-object tests/phase7/pointsto/loaded-pointer-recovery.test.mjs)" = a8e34bd08022b04551901f34f3442b3417d35f0d
+          cat > /tmp/issue5321.patch <<'PATCH'
+          --- a/js/analysis/alias/canonical-address-v2-core.js
+          +++ b/js/analysis/alias/canonical-address-v2-core.js
+          @@ -902,6 +902,15 @@
+            }
+            if (node.kind === 'copy') {
+              if (!Array.isArray(node.inputs) || node.inputs.length !== 1) return unknown('canonical-address-copy-arity');
+          +    const inputValue = ctx.values.get(String(node.inputs[0]));
+          +    const inputNode = inputValue?.definitionNodeId == null
+          +      ? null
+          +      : ctx.nodes.get(String(inputValue.definitionNodeId));
+          +    const inputWidth = addressWidth(inputValue, inputNode);
+          +    const outputWidth = addressWidth(value, node);
+          +    if (inputWidth == null || outputWidth == null || inputWidth !== outputWidth) {
+          +      return unknown('canonical-address-copy-width-not-preserved');
+          +    }
+              return deriveValue(ctx, node.inputs[0], expectedAddressSpace, nextState);
+            }
+            if ((node.kind === 'intrinsic' || node.kind === 'binary') && typeof node.operator === 'string' && node.operator.toLowerCase() === 'add-with-carry') {
+          --- a/js/analysis/pointsto/local.js
+          +++ b/js/analysis/pointsto/local.js
+          @@ -58,7 +58,7 @@
+           } from './lattice.js';
+           
+           export const A2_ANALYZER_ID = 'phase7.pointsto.a2-local';
+          -export const A2_ANALYZER_VERSION = '1.2.0';
+          +export const A2_ANALYZER_VERSION = '1.2.1';
+           
+           function configuredSummaryArtifactIds(options, calleeId) {
+             const ids = [];
+          @@ -879,7 +879,17 @@
+                return merged;
+              }
+           
+          -    if (WIDTH_PRESERVING_CASTS.has(node.kind) && node.inputs.length === 1) return irGet(node.inputs[0]);
+          +    if (WIDTH_PRESERVING_CASTS.has(node.kind) && node.inputs.length === 1) {
+          +      const inputValue = values.get(String(node.inputs[0]));
+          +      const inputNode = inputValue?.definitionNodeId == null
+          +        ? null
+          +        : nodes.get(String(inputValue.definitionNodeId));
+          +      const inputWidth = widthOf(inputValue, inputNode);
+          +      if (inputWidth == null || width == null || inputWidth !== width) {
+          +        return topPointsTo('integer-to-pointer');
+          +      }
+          +      return irGet(node.inputs[0]);
+          +    }
+              if (WIDTH_CHANGING_CASTS.has(node.kind) && node.inputs.length === 1) {
+                const inputValue = values.get(String(node.inputs[0]));
+                const inputWidth = widthOf(inputValue, null);
+          --- a/tests/phase7/pointsto/loaded-pointer-recovery.test.mjs
+          +++ b/tests/phase7/pointsto/loaded-pointer-recovery.test.mjs
+          @@ -358,7 +358,7 @@
+            assert.deepEqual(loaded.targets.map((target) => target.offsetRange), [{ min: 32n, max: 32n, exact: true }]);
+            assert.equal(loaded.targets[0].widthBits, 64);
+            assert.equal(result.status.completeness, 'complete');
+          -  assert.equal(A2_ANALYZER_VERSION, '1.2.0');
+          +  assert.equal(A2_ANALYZER_VERSION, '1.2.1');
+            assert.equal(result.status.analyzerVersion, A2_ANALYZER_VERSION);
+            assert.equal(result.recovery?.proofs?.loaded?.storeNodeId, 'node_store');
+          });
+          --- /dev/null
+          +++ b/tests/phase7/pointsto/issue-5321-width-preserving-casts.test.mjs
+          @@ -0,0 +1,78 @@
+          +import assert from 'node:assert/strict';
+          +import test from 'node:test';
+          +
+          +import { deriveCanonicalAddressProof } from '../../../js/analysis/alias/canonical-address-v2-core.js';
+          +import { analyzeLocalPointsTo } from '../../../js/analysis/pointsto/local.js';
+          +
+          +function castIr(kind, outputWidth, inputWidth = 64) {
+          +  const constant = { kind: 'bitvector', value: '4096', widthBits: inputWidth };
+          +  return {
+          +    functionId: `issue5321_${kind}_${inputWidth}_${outputWidth}`,
+          +    values: [
+          +      {
+          +        id: 'input',
+          +        kind: 'definition',
+          +        machineType: { kind: 'address', widthBits: inputWidth, addressSpace: 'memory' },
+          +        definitionNodeId: 'input-const',
+          +        metadata: { constant },
+          +      },
+          +      {
+          +        id: 'output',
+          +        kind: 'definition',
+          +        machineType: { kind: 'address', widthBits: outputWidth, addressSpace: 'memory' },
+          +        definitionNodeId: 'cast',
+          +      },
+          +    ],
+          +    nodes: [
+          +      {
+          +        id: 'input-const',
+          +        kind: 'const',
+          +        inputs: [],
+          +        outputs: ['input'],
+          +        attributes: { constant },
+          +      },
+          +      { id: 'cast', kind, inputs: ['input'], outputs: ['output'] },
+          +    ],
+          +    blocks: [],
+          +  };
+          +}
+          +
+          +function pointsTo(ir) {
+          +  return analyzeLocalPointsTo(ir, null, { definitions: [], uses: [] }, { snapshotId: 'issue-5321' });
+          +}
+          +
+          +for (const kind of ['copy', 'bitcast']) {
+          +  test(`#5321 ${kind} preserves provenance only when the machine width is unchanged`, () => {
+          +    const result = pointsTo(castIr(kind, 64));
+          +    const output = result.pointsTo.get('output');
+          +    assert.ok(output);
+          +    assert.equal(output.top, false);
+          +    assert.equal(output.targets.length, 1);
+          +    assert.equal(output.targets[0].address, '4096');
+          +    assert.equal(output.targets[0].widthBits, 64);
+          +  });
+          +
+          +  test(`#5321 ${kind} width mismatch fails closed instead of retaining the input pointer target`, () => {
+          +    const result = pointsTo(castIr(kind, 32));
+          +    const output = result.pointsTo.get('output');
+          +    assert.ok(output);
+          +    assert.equal(output.top, true);
+          +    assert.ok(output.lossReasons.includes('integer-to-pointer'));
+          +    assert.equal(output.targets.length, 0);
+          +  });
+          +}
+          +
+          +test('#5321 canonical copy derivation rejects a width-changing copy', () => {
+          +  const proof = deriveCanonicalAddressProof(castIr('copy', 32), 'output');
+          +  assert.equal(proof.kind, 'unknown');
+          +  assert.equal(proof.reason, 'canonical-address-copy-width-not-preserved');
+          +});
+          +
+          +test('#5321 canonical copy derivation keeps an equal-width copy exact', () => {
+          +  const proof = deriveCanonicalAddressProof(castIr('copy', 64), 'output');
+          +  assert.equal(proof.kind, 'absolute');
+          +  assert.equal(proof.address, 4096n);
+          +  assert.equal(proof.widthBits, 64);
+          +});
+          +
+          +console.log('issue #5321 width-preserving cast regressions: PASS');
+          PATCH
+          git apply --check /tmp/issue5321.patch
+          git apply /tmp/issue5321.patch
+          test "$(git hash-object js/analysis/alias/canonical-address-v2-core.js)" = a7d46c9af130444e720be93967bc815909f5e508
+          test "$(git hash-object js/analysis/pointsto/local.js)" = fee907c420649ced03d76b9c8d344532c3429935
+          test "$(git hash-object tests/phase7/pointsto/loaded-pointer-recovery.test.mjs)" = 04ca6b28716ca90d7be0bf35caad91bddea0a161
+          test "$(git hash-object tests/phase7/pointsto/issue-5321-width-preserving-casts.test.mjs)" = 333a4074d991402cf1d122be67be07d076d16404
+          node --check js/analysis/alias/canonical-address-v2-core.js
+          node --check js/analysis/pointsto/local.js
+          node --check tests/phase7/pointsto/issue-5321-width-preserving-casts.test.mjs
+          node --test tests/phase7/pointsto/issue-5321-width-preserving-casts.test.mjs tests/phase7/pointsto/loaded-pointer-recovery.test.mjs
+          git diff --check
+          git rm .github/workflows/fixer3-5321-transport.yml
+          git add js/analysis/alias/canonical-address-v2-core.js js/analysis/pointsto/local.js tests/phase7/pointsto/loaded-pointer-recovery.test.mjs tests/phase7/pointsto/issue-5321-width-preserving-casts.test.mjs
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'fix(pointsto): require width-preserving casts (#5321)'
+          git push origin HEAD:fixer3/issue-5321-width-preserving-casts
