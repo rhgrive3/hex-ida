@@ -52,6 +52,8 @@ const DW_TAG = Object.freeze({
   subroutine_type: 0x15,
 });
 
+const SUPPORTED_DW_TAGS = new Set(Object.values(DW_TAG));
+
 const DW_AT = Object.freeze({
   location: 0x02,
   name: 0x03,
@@ -659,6 +661,11 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
         unitComplete = false;
         break;
       }
+      const tagSupported = SUPPORTED_DW_TAGS.has(declaration.tag);
+      if (!tagSupported) {
+        diagnostics.push(`unsupported tag 0x${declaration.tag.toString(16)} at 0x${dieOffset.toString(16)}`);
+        complete = false;
+      }
       // A .debug_info compilation unit roots at exactly one DW_TAG_compile_unit
       // or DW_TAG_partial_unit DIE (DWARF4 §7.5). Any other root tag, or a
       // second top-level DIE, is a structure the format cannot express (#5251).
@@ -683,7 +690,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       // Keep the first declaration for deterministic decoding, but never
       // publish a DIE from an ambiguous abbreviation table as complete
       // evidence (#5728).
-      let dieComplete = !duplicateCode;
+      let dieComplete = !duplicateCode && tagSupported;
       try {
         for (const spec of declaration.attributes) {
           const read = readForm(cursor, spec.form, unit, sections, spec.implicitConst);
