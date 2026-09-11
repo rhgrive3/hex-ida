@@ -513,13 +513,15 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     if (!isProducerProjection(original)) return original;
     if (!proved && opts.phase8RewritePlan.entries.length) return original;
   }
-  if (proofRequested || dcePlans.length) {
-    // The input projection remains intact on a late cancellation or refusal.
-    result = {...result,semanticAst:{...result.semanticAst},cAst:{...result.cAst,
-      body:(result.cAst.body ?? []).map(n=>({...n,semantic:n.semantic?{...n.semantic}:n.semantic}))}};
-    for (const key of ['values','stores','outputs','conditions']) result.semanticAst[key] =
-      (original.semanticAst[key] ?? []).map(item=>({...item}));
-  }
+  // Every expression projection writes its own descriptors. Mutating the
+  // observed predecessor would revoke its consumers even on an ordinary view
+  // update. Initial controls retain their existing exact text-write handoff;
+  // proof/DCE transactions isolate those nodes too for cancellation rollback.
+  result = {...result,semanticAst:{...result.semanticAst},cAst:{...result.cAst,
+    body:(result.cAst.body ?? []).map(node => !proofRequested && !dcePlans.length && node.semantic?.op === 'control-render'
+      ? node : {...node,semantic:node.semantic ? {...node.semantic} : node.semantic})}};
+  for (const key of ['values','stores','outputs','conditions']) result.semanticAst[key] =
+    (original.semanticAst[key] ?? []).map(item=>({...item}));
   const records = [], replacements = new Map(), memo = new Map(), proofExpressions = new Map(), proofRecords = new Map();
   if (proved) {
     const selectedReplacements = new Map();

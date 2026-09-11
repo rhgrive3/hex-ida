@@ -110,6 +110,32 @@ test('actual state-edge and shadow histories bind only to their rendered consume
   }
 });
 
+test('ordinary projection preserves frozen predecessor descriptors and their current state consumers', () => {
+  const f = render(fixture()), input = f.result, semantic = input.cAst.body[0].semantic;
+  const consumer = readExpressionHistoryConsumer(semantic, f.ir), expression = semantic.expression;
+  assert.ok(consumer);
+  for (const key of ['values','stores','outputs','conditions']) {
+    for (const item of input.semanticAst[key] || []) Object.freeze(item);
+    if (input.semanticAst[key]) Object.freeze(input.semanticAst[key]);
+  }
+  for (const node of input.cAst.body) {
+    if (node.semantic) Object.freeze(node.semantic);
+    Object.freeze(node);
+  }
+  Object.freeze(input.cAst.body); Object.freeze(input.cAst); Object.freeze(input.semanticAst);
+  const result = applyPhase8Projection(input, analysis());
+  assert.notEqual(result.cAst, input.cAst);
+  assert.notEqual(result.cAst.body[0].semantic, semantic);
+  assert.equal(semantic.expression, expression);
+  assert.equal(readExpressionHistoryConsumer(semantic, f.ir), consumer);
+  assert.equal(consumer.isCurrent(), true);
+  assert.equal(result.renderProvenance.completeness, 'complete');
+  assert.ok(result.renderProvenance.ledger.some(record => record.rule === rule && record.renderedBinding === 'producer-bound'));
+  const again = applyPhase8Projection(result, analysis());
+  assert.equal(again.renderProvenance.completeness, 'complete');
+  assert.deepEqual(again.renderProvenance.ledger, result.renderProvenance.ledger);
+});
+
 test('post-seal source, original-input, edge-slot and root mutations revoke state history', () => {
   for (const mutate of [
     f => { f.ret.args[0] = { ...f.ret.args[0] }; },
