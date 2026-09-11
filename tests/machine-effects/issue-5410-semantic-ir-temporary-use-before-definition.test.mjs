@@ -115,6 +115,30 @@ test('#5410: canonical boundary rejects directly constructed same-block use-befo
   }), /semantic-ir-value-use-before-definition-in-block/);
 });
 
+test('#5410: canonical boundary rejects a node consuming its own output', () => {
+  const ordered = lowerMachineEffectBundleToSemanticIr(
+    buildBundle([OP_COPY_DEFINES_T(), OP_ADD_USES_T()]),
+    { functionId: 'fn:5410:self', blockId: 'blk:0' },
+  );
+  assert.equal(ordered.completeness, 'complete');
+  const copyNode = blockNodeOrder(ordered).find((node) => node.kind === 'copy');
+  assert.ok(copyNode, 'copy must lower to a copy node');
+  assert.equal(copyNode.outputs.length, 1);
+  const nodes = ordered.nodes.map((node) => (
+    node.id === copyNode.id ? { ...node, inputs: [copyNode.outputs[0]] } : node
+  ));
+  assert.throws(() => createSemanticIrFunction({
+    functionId: 'fn:5410:self-cycle',
+    entryBlockId: ordered.entryBlockId,
+    blocks: ordered.blocks,
+    values: ordered.values,
+    nodes,
+    completeness: ordered.completeness,
+    unknowns: ordered.unknowns,
+    origin: ordered.origin,
+  }), /semantic-ir-value-use-before-definition-in-block/);
+});
+
 test('#5410: correctly ordered temporary def-use stays exact and connects to the real definition', () => {
   const fn = lowerMachineEffectBundleToSemanticIr(
     buildBundle([OP_COPY_DEFINES_T(), OP_ADD_USES_T()]),
