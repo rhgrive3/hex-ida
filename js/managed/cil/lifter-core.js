@@ -481,8 +481,23 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             const token = view.getUint32(pc, true);
             pc += 4;
             mnemonic = 'ldstr';
-            // A string reference is an `O` native-size value (#7775).
-            producedValues.push({ ...(nativePointerBits == null ? {} : { bits: nativePointerBits }), stringToken: token });
+            // A string reference is an `O` native-size value (#7775). The
+            // token's low bits byte-address the #US heap (II.24.2.4); when
+            // that literal authority is available it must reach the canonical
+            // IR — a token-only projection collapsed distinct literals (#8007).
+            const userString = typeof cilImage.userStrings?.get === 'function'
+              ? cilImage.userStrings.get(token & 0xffffff) ?? null
+              : null;
+            producedValues.push({
+              ...(nativePointerBits == null ? {} : { bits: nativePointerBits }),
+              stringToken: token,
+              ...(typeof userString === 'string' ? {
+                stringRef: userString,
+                // The width authority stays exactly #7775's: the reference is
+                // typed only when the native pointer size is proven.
+                ...(nativePointerBits == null ? {} : { type: { kind: 'address', widthBits: nativePointerBits, addressSpace: 'managed-heap' } }),
+              } : {}),
+            });
             currentStackHeight++;
           }
           break;

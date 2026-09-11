@@ -103,8 +103,8 @@ function canonicalIdentityDimension(value, fallback) {
   }
   try {
     return `structured:${stableDigest(jsonSafe(value))}`;
-  } catch {
-    return `structured:opaque:${typeof value}`;
+  } catch (cause) {
+    throw new TypeError('analysis-query-artifact-identity-dimension-invalid', { cause });
   }
 }
 
