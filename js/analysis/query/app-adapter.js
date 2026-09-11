@@ -612,31 +612,31 @@ export function createAppAnalysisQueryAdapter(app) {
         const decoded = await app.backend.disassembleAt(start, { architecture:architectureOf(app), length, signal:options.signal ?? null });
         if (decoded?.supported && decoded?.found) {
           const rows = (decoded.instructions || []).map((insn, i) => ({ id:insn.instructionId ?? `${functionId(insn.address ?? start)}:${i}`, address:insn.address == null ? null : BigInt(insn.address), size:Number(insn.length ?? insn.size ?? 0), mnemonic:String(insn.mnemonic ?? insn.instructionFamily ?? ''), operands:String(insn.opStr ?? insn.operands ?? ''), raw:insn }));
-          const completeness = truncated ? 'truncated' : !rangeComplete ? 'partial' : 'complete';
-          return paged(rows, page, completeness, { reason:truncated ? 'instruction-read-budget' : rangeReason });
+          const consumed = decoded.bytesConsumed;
+          const hasCoverage = consumed != null;
+          const validCoverage = !hasCoverage || (typeof consumed === 'number' && Number.isSafeInteger(consumed) && consumed >= 0 && consumed <= length);
+          const shortCoverage = validCoverage && hasCoverage && consumed < length;
+          const completeness = truncated
+            ? 'truncated'
+            : !rangeComplete || !validCoverage || shortCoverage
+              ? 'partial'
+              : 'complete';
+          const reason = truncated
+            ? 'instruction-read-budget'
+            : !rangeComplete
+              ? rangeReason
+              : !validCoverage
+                ? 'instruction-read-coverage-invalid'
+                : shortCoverage
+                  ? 'instruction-read-incomplete'
+                  : null;
+          return paged(rows, page, completeness, { reason });
         }
       }
       const result = await loadFunction(request.functionId ?? start, options);
       const rows = result?.value?.model?.instructions;
       return rows ? paged(rows, page, result.status?.completeness ?? completenessOf(result.value)) : unsupported(request.functionId ?? start, 'instruction-producer-unavailable');
     },
-
-    async semanticIR(_snapshot, id, options = {}) {
-      if (typeof app?.getSemanticIR === 'function') {
-        const value = await app.getSemanticIR(id, options);
-        if (value != null) return wrap(value);
-      }
-      const result = await loadFunction(id, options);
-      const value = semanticIR(result?.value);
-      return value == null ? unsupported(id, result?.value ? 'semantic-ir-v2-unavailable' : 'function-producer-unavailable') : wrap(value, result.status?.completeness);
-    },
-
-    async cfg(_snapshot, id, options = {}) {
-      if (typeof app?.getCFG === 'function') {
-        const value = await app.getCFG(id, options);
-        if (value != null) return wrap(value);
-      }
-      const result = await loadFunction(id, options);
       const value = semanticCFG(result?.value);
       return value == null ? unsupported(id, result?.value ? 'cfg-unavailable' : 'function-producer-unavailable') : wrap(value, result.status?.completeness);
     },
