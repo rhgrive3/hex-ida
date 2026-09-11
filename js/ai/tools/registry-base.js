@@ -177,7 +177,7 @@ export function createHexToolRegistry(context = {}, options = {}) {
     cost: 'medium', scopeSupport: functionScopes, category: 'semantic', resultKind: 'field-reads', modelProjection: projectSemanticFacts,
   });
   register('find_field_writes', 'Find deterministic writes/RMW operations of a field with exact totals and opaque continuation.', fieldSchema(), async ({ functionAddress, field, limit = 100, cursor }) => {
-    const params = { functionAddress };
+    const params = { functionAddress, field };
     const offset = pageOffset('find_field_writes', params, cursor);
     const value = await legacy.find_field_writers(functionAddress, field, { limit, offset });
     return attachContinuation(value, offset, () => pageCursor('find_field_writes', params, offset + Math.max(1, Number(value.returned || limit))));
