@@ -1,4 +1,3 @@
-# diagnostic rerun 2
 name: Fixer3 4329 materialize
 on:
   push:
@@ -24,70 +23,86 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
       - name: Restore current-main public wrapper
         run: git show c90d8b38833ae664defb512be58538e397967f72:js/analysis/alias/canonical-address-v2.js > js/analysis/alias/canonical-address-v2.js
-      - name: Materialize core projection
+      - name: Apply validated core patch
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('js/analysis/alias/canonical-address-v2-core.js')
-          s = p.read_text()
-          old = """function exactAddressRootId(proof) {
-            return `entity_memory_address_${stableDigest({
-              version: CANONICAL_ADDRESS_DERIVATION_VERSION,
-              addressSpace: proof.addressSpace,
-              rootKind: proof.kind,
-              rootIdentity: proof.rootIdentity,
-              rootEntityId: proof.rootEntityId ?? null,
-              canonicalOffset: proof.offset.toString(),
-              widthBits: proof.widthBits ?? null,
-            })}`;
-          }
-          """
-          new = old + """
-          function absoluteAddressRootId(proof, address) {
-            return `entity_memory_address_${stableDigest({
-              version: CANONICAL_ADDRESS_DERIVATION_VERSION,
-              addressSpace: proof.addressSpace,
-              rootKind: proof.kind,
-              canonicalAddress: address,
-              widthBits: proof.widthBits ?? null,
-            })}`;
-          }
-          """
-          assert old in s, 'exactAddressRootId anchor mismatch'
-          s = s.replace(old, new, 1)
-          old = """  if (proof.kind === 'absolute') {
-            return deepFreeze({ kind: 'global-absolute', address: canonicalAddress(proof.address) });
-          }
-          """
-          new = """  if (proof.kind === 'absolute') {
-            const address = canonicalAddress(proof.address);
-            const proofSpace = typeof proof.addressSpace === 'string' && proof.addressSpace
-              ? proof.addressSpace
-              : 'memory';
-            if (proofSpace === 'memory') return deepFreeze({ kind: 'global-absolute', address });
-            return deepFreeze({
-              kind: 'rooted-offset',
-              rootEntityId: absoluteAddressRootId(proof, address),
-              offset: '0',
-              addressSpace: proofSpace,
-            });
-          }
-          """
-          assert old in s, 'absolute projection anchor mismatch'
-          p.write_text(s.replace(old, new, 1))
-          PY
+          set -euo pipefail
+          git apply --check - <<'PATCH'
+          diff --git a/js/analysis/alias/canonical-address-v2-core.js b/js/analysis/alias/canonical-address-v2-core.js
+          --- a/js/analysis/alias/canonical-address-v2-core.js
+          +++ b/js/analysis/alias/canonical-address-v2-core.js
+          @@ -934,10 +934,30 @@ function exactAddressRootId(proof) {
+             })}`;
+           }
+          
+          +function absoluteAddressRootId(proof, address) {
+          +  return `entity_memory_address_${stableDigest({
+          +    version: CANONICAL_ADDRESS_DERIVATION_VERSION,
+          +    addressSpace: proof.addressSpace,
+          +    rootKind: proof.kind,
+          +    canonicalAddress: address,
+          +    widthBits: proof.widthBits ?? null,
+          +  })}`;
+          +}
+          +
+           export function canonicalAddressProofToRegionEvidence(proof) {
+             if (!proof || proof.kind === 'unknown' || proof.kind === 'constant' || proof.kind === 'root-only') return null;
+             if (proof.kind === 'absolute') {
+          -    return deepFreeze({ kind: 'global-absolute', address: canonicalAddress(proof.address) });
+          +    const address = canonicalAddress(proof.address);
+          +    const proofSpace = typeof proof.addressSpace === 'string' && proof.addressSpace
+          +      ? proof.addressSpace
+          +      : 'memory';
+          +    if (proofSpace === 'memory') return deepFreeze({ kind: 'global-absolute', address });
+          +    return deepFreeze({
+          +      kind: 'rooted-offset',
+          +      rootEntityId: absoluteAddressRootId(proof, address),
+          +      offset: '0',
+          +      addressSpace: proofSpace,
+          +    });
+             }
+             if (proof.kind === 'stack-like') {
+               return deepFreeze({ kind: 'stack-fixed', offset: proof.offset.toString() });
+          PATCH
+          git apply - <<'PATCH'
+          diff --git a/js/analysis/alias/canonical-address-v2-core.js b/js/analysis/alias/canonical-address-v2-core.js
+          --- a/js/analysis/alias/canonical-address-v2-core.js
+          +++ b/js/analysis/alias/canonical-address-v2-core.js
+          @@ -934,10 +934,30 @@ function exactAddressRootId(proof) {
+             })}`;
+           }
+          
+          +function absoluteAddressRootId(proof, address) {
+          +  return `entity_memory_address_${stableDigest({
+          +    version: CANONICAL_ADDRESS_DERIVATION_VERSION,
+          +    addressSpace: proof.addressSpace,
+          +    rootKind: proof.kind,
+          +    canonicalAddress: address,
+          +    widthBits: proof.widthBits ?? null,
+          +  })}`;
+          +}
+          +
+           export function canonicalAddressProofToRegionEvidence(proof) {
+             if (!proof || proof.kind === 'unknown' || proof.kind === 'constant' || proof.kind === 'root-only') return null;
+             if (proof.kind === 'absolute') {
+          -    return deepFreeze({ kind: 'global-absolute', address: canonicalAddress(proof.address) });
+          +    const address = canonicalAddress(proof.address);
+          +    const proofSpace = typeof proof.addressSpace === 'string' && proof.addressSpace
+          +      ? proof.addressSpace
+          +      : 'memory';
+          +    if (proofSpace === 'memory') return deepFreeze({ kind: 'global-absolute', address });
+          +    return deepFreeze({
+          +      kind: 'rooted-offset',
+          +      rootEntityId: absoluteAddressRootId(proof, address),
+          +      offset: '0',
+          +      addressSpace: proofSpace,
+          +    });
+             }
+             if (proof.kind === 'stack-like') {
+               return deepFreeze({ kind: 'stack-fixed', offset: proof.offset.toString() });
+          PATCH
       - name: Bind regression to core
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('tests/phase7/alias/issue-4329-nonmemory-absolute-address-space.test.mjs')
-          s = p.read_text()
-          old = "../../../js/analysis/alias/canonical-address-v2.js"
-          new = "../../../js/analysis/alias/canonical-address-v2-core.js"
-          assert old in s, 'regression import anchor mismatch'
-          p.write_text(s.replace(old, new, 1))
-          PY
+        run: python3 -c "from pathlib import Path; p=Path('tests/phase7/alias/issue-4329-nonmemory-absolute-address-space.test.mjs'); s=p.read_text(); old='../../../js/analysis/alias/canonical-address-v2.js'; assert old in s; p.write_text(s.replace(old, '../../../js/analysis/alias/canonical-address-v2-core.js', 1))"
       - name: Verify exact candidate blobs
         run: |
           test "$(git hash-object js/analysis/alias/canonical-address-v2.js)" = 32be82d579743c951693ddb403eec43c11ad3ff8
