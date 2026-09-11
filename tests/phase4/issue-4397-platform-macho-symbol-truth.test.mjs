@@ -47,7 +47,7 @@ assert.deepEqual(explicitIncomplete.reasons, ['metadata-budget:incomplete']);
 
 const legacyDyldStreams = machoSymbolTruth({
   format:'macho',
-  metadata:{ machoMetadata:{ complete:true }, dyldBindings:{ lazy:{ complete:true } } },
+  metadata:{ loadCommands:1, machoMetadata:{ complete:true }, dyldBindings:{ lazy:{ complete:true } } },
 });
 assert.equal(legacyDyldStreams.complete, true);
 assert.deepEqual(legacyDyldStreams.reasons, []);
