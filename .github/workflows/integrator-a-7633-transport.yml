@@ -1,0 +1,89 @@
+name: integrator-a-7633-transport
+
+on:
+  push:
+    branches:
+      - fix/issue-4422-semantic-endianness-luna
+    paths:
+      - .github/workflows/integrator-a-7633-transport.yml
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      EXPECTED_H0: 1efd0da0adf56e153f6ef4a1208d0fcba24a1ace
+      EXPECTED_B0: c90d8b38833ae664defb512be58538e397967f72
+      TARGET_BRANCH: fix/issue-4422-semantic-endianness-luna
+      TRANSPORT_PATH: .github/workflows/integrator-a-7633-transport.yml
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Guard transport lineage
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_H0"
+          test "$(git diff --name-only "$EXPECTED_H0" HEAD)" = "$TRANSPORT_PATH"
+          git fetch --no-tags origin main "$TARGET_BRANCH"
+          test "$(git rev-parse origin/main)" = "$EXPECTED_B0"
+          test "$(git rev-parse origin/$TARGET_BRANCH)" = "$GITHUB_SHA"
+      - name: Reconcile current main and canonical generated artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "hex-ida Landing Integrator A"
+          git config user.email "rhgrive3@users.noreply.github.com"
+          set +e
+          git merge --no-ff --no-commit "$EXPECTED_B0"
+          merge_rc=$?
+          set -e
+          conflicts="$(git diff --name-only --diff-filter=U | sort)"
+          if [ -n "$conflicts" ]; then
+            bad="$(printf '%s\n' "$conflicts" | grep -Ev '^(userscript/hex\.user\.template\.js|userscript/release-version\.json)$' || true)"
+            test -z "$bad" || { echo "unexpected conflicts:"; printf '%s\n' "$bad"; exit 21; }
+          fi
+          git checkout "$EXPECTED_B0" -- userscript/hex.user.template.js userscript/release-version.json
+          git add userscript/hex.user.template.js userscript/release-version.json
+          test -z "$(git diff --name-only --diff-filter=U)"
+          npm ci --no-audit --no-fund
+          npm run userscript:build
+          cp userscript/hex.user.template.js /tmp/hex.user.template.js
+          cp userscript/release-version.json /tmp/release-version.json
+          npm run userscript:build
+          cmp userscript/hex.user.template.js /tmp/hex.user.template.js
+          cmp userscript/release-version.json /tmp/release-version.json
+      - name: Validate owner slice
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TERM=xterm
+          node --check js/analysis/semantic-function-base.js
+          node --check js/analysis/semantic-function.js
+          node --check tests/phase7/analysis/issue-4422-semantic-endianness.test.mjs
+          node --test tests/phase7/analysis/issue-4422-semantic-endianness.test.mjs tests/phase7/issue-3134-semantic-function-selectors.test.mjs tests/phase6/cross-architecture/same-middle-end.test.mjs tests/phase6/foundation/issue-5837-instruction-endianness-contract.test.mjs tests/phase5/effects/memory/issue-5839-x86-memory-endianness-profile.test.mjs
+          node --test tests/phase7/analysis/*.test.mjs
+          npm run phase7:ownership
+          npm run lint
+      - name: Finalize and push non-force reconcile
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object js/analysis/semantic-function-base.js)" = "9b70954e6644630be6437eff1f88139c2bd28bcc"
+          test "$(git hash-object js/analysis/semantic-function.js)" = "7f5acbec0d3f7413371eff03a61b671875d8237e"
+          test "$(git hash-object tests/phase7/analysis/issue-4422-semantic-endianness.test.mjs)" = "7202850fe06dace209833478331584669b8c9807"
+          git rm "$TRANSPORT_PATH"
+          git add userscript/hex.user.template.js userscript/release-version.json js/userscript/deployment-identity.generated.js
+          expected=$'js/analysis/semantic-function-base.js\njs/analysis/semantic-function.js\ntests/phase7/analysis/issue-4422-semantic-endianness.test.mjs\nuserscript/hex.user.template.js\nuserscript/release-version.json'
+          actual="$(git diff --cached --name-only "$EXPECTED_B0" | sort)"
+          test "$actual" = "$expected" || { echo "unexpected final delta:"; printf '%s\n' "$actual"; exit 22; }
+          git fetch --no-tags origin main "$TARGET_BRANCH"
+          test "$(git rev-parse origin/main)" = "$EXPECTED_B0"
+          test "$(git rev-parse origin/$TARGET_BRANCH)" = "$GITHUB_SHA"
+          git commit -m "chore: reconcile #4422 onto current main [skip actions]"
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
