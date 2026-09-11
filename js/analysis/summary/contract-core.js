@@ -204,7 +204,7 @@ export function createUnknownCallEffect(input = {}) {
 }
 
 export function createDirectCall(input = {}) {
-  // A direct call record with zero resolved targets is an unresolved call,
+  // A direct call record with zero targets is an unresolved call,
   // not a call that contributes nothing: publishing it lets the summary pass
   // the fail-closed consistency checks while its callee resolves to nothing
   // (#5328, P7-INV-004). Unresolved calls belong in `unknownCallEffects`.
@@ -483,10 +483,10 @@ export function functionSummaryDigest(summary) {
     mayThrow: summary.mayThrow,
     stackDelta: summary.stackDelta,
     semanticFacts: summary.semanticFacts,
-    completeness: summary.status.completeness,
-    stopReason: summary.status.stopReason,
-    analyzerId: summary.status.analyzerId,
-    analyzerVersion: summary.status.analyzerVersion,
+    // Status provenance and identity are part of the published summary state.
+    // Hash the canonical envelope as one unit so a future status field cannot
+    // be silently omitted from dependency identity / fixed-point convergence.
+    status: summary.status,
   });
 }
 
