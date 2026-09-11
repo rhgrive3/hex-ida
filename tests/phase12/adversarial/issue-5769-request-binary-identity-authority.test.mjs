@@ -5,10 +5,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { AIRuntime } from '../js/ai/runtime.js';
-import { assertLiveBindingsUnchanged } from '../js/ai/control/runtime-support.js';
-import { createTurnSnapshot, createSnapshotContext, resolveBinaryIdentity } from '../js/ai/control/snapshot.js';
-import { createHexToolRegistry } from '../js/ai/tools/index.js';
+import { AIRuntime } from '../../../js/ai/runtime.js';
+import { assertLiveBindingsUnchanged } from '../../../js/ai/control/runtime-support.js';
+import { createTurnSnapshot, createSnapshotContext, resolveBinaryIdentity } from '../../../js/ai/control/snapshot.js';
+import { createHexToolRegistry } from '../../../js/ai/tools/index.js';
 
 const strongIdentity = (hash) => ({
   id: `content:${hash}`,
@@ -152,6 +152,7 @@ test('#5769 actual createHexToolRegistry sees the live-authoritative snapshot co
   assert.equal(observed.result.functionAddress, '0x2000');
   assert.equal(observed.result.found, true);
 });
+
 test('#5769 request-fallback snapshot still rejects a later live binary binding change', () => {
   const local = {};
   const snapshot = createTurnSnapshot(local, { binaryIdentity:strongIdentity('aaaa') });
