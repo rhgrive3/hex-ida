@@ -96,6 +96,7 @@ test('parser-scan authority is primitive-safe and never coerces loadCommands', (
 test('loadCommands authority is sampled once before normalization', () => {
   let reads = 0;
   const metadata = {
+    ncmds: 0,
     machoMetadata: { complete: true },
     get loadCommands() { reads++; return 0; },
   };
@@ -103,6 +104,32 @@ test('loadCommands authority is sampled once before normalization', () => {
   assert.equal(truth.complete, true);
   assert.equal(reads, 1);
   assert.equal(truth.components.chainedFixups.notPresent, true);
+});
+
+test('declared vs observed load-command mismatch fails closed (#4935 review blocker)', () => {
+  const truth = machoSymbolTruth({
+    format: 'macho',
+    metadata: { ncmds: 1, loadCommands: 0, machoMetadata: { complete: true } },
+  });
+  assert.equal(truth.complete, false);
+  assert.ok(truth.reasons.includes('symbol-metadata-unavailable'));
+});
+
+test('ncmds authority is primitive-safe and requires non-negative safe integer equal to loadCommands', () => {
+  let coercions = 0;
+  const hostile = {
+    valueOf() { coercions++; return 0; },
+    toString() { coercions++; return '0'; },
+  };
+  for (const ncmds of ['0', [], new Number(0), hostile, NaN, Infinity, -1, 0.5, undefined, null]) {
+    const truth = machoSymbolTruth({
+      format: 'macho',
+      metadata: { ncmds, loadCommands: 0, machoMetadata: { complete: true } },
+    });
+    assert.equal(truth.complete, false);
+    assert.ok(truth.reasons.includes('symbol-metadata-unavailable'));
+  }
+  assert.equal(coercions, 0);
 });
 
 test('cross-realm component records keep capability-based completeness', () => {

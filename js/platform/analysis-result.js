@@ -59,6 +59,7 @@ export function machoSymbolTruth(image) {
   // decision between validation and rendering of the normalized components.
   const metadataBudget = metadata.machoMetadata;
   const loadCommands = metadata.loadCommands;
+  const ncmds = metadata.ncmds;
   const rawChainedFixups = metadata.chainedFixups;
   const rawExportTrie = metadata.exportTrie;
   const rawDyldBindings = metadata.dyldBindings;
@@ -69,7 +70,10 @@ export function machoSymbolTruth(image) {
   const parserScanComplete = metadataObject(metadataBudget)
     && metadataBudget.complete === true
     && Number.isSafeInteger(loadCommands)
-    && loadCommands >= 0;
+    && loadCommands >= 0
+    && Number.isSafeInteger(ncmds)
+    && ncmds >= 0
+    && loadCommands === ncmds;
   const chainedFixups = rawChainedFixups == null && parserScanComplete ? MACHO_ABSENT_COMPONENT : rawChainedFixups;
   const exportTrie = rawExportTrie == null && parserScanComplete ? MACHO_ABSENT_COMPONENT : rawExportTrie;
   const dyldBindings = rawDyldBindings == null && parserScanComplete ? MACHO_ABSENT_DYLD_BINDINGS : rawDyldBindings;
