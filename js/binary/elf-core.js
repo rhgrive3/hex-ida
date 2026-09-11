@@ -32,9 +32,9 @@ const EM_RISCV = 243;
 export const STO_RISCV_VARIANT_CC = 0x80;
 
 // x86-64 psABI relocation storage widths in bytes. A zero width denotes a
-// relocation with no storage field. Missing entries are intentionally not
-// guessed: ET_REL publication must fail closed when this table cannot prove
-// the target-field span.
+// relocation with no storage field. Relocations whose field is `wordclass`
+// are kept separate because x86-64 ILP32 uses 4-byte words while LP64 uses
+// 8-byte words. Missing entries are intentionally not guessed.
 const X86_64_RELOCATION_FIELD_BYTES = new Map([
   [0, 0n], // R_X86_64_NONE
   [1, 8n], // R_X86_64_64
@@ -42,9 +42,6 @@ const X86_64_RELOCATION_FIELD_BYTES = new Map([
   [3, 4n], // R_X86_64_GOT32
   [4, 4n], // R_X86_64_PLT32
   [5, 0n], // R_X86_64_COPY
-  [6, 8n], // R_X86_64_GLOB_DAT
-  [7, 8n], // R_X86_64_JUMP_SLOT
-  [8, 8n], // R_X86_64_RELATIVE
   [9, 4n], // R_X86_64_GOTPCREL
   [10, 4n], // R_X86_64_32
   [11, 4n], // R_X86_64_32S
@@ -73,10 +70,24 @@ const X86_64_RELOCATION_FIELD_BYTES = new Map([
   [34, 4n], // R_X86_64_GOTPC32_TLSDESC
   [35, 0n], // R_X86_64_TLSDESC_CALL
   [36, 16n], // R_X86_64_TLSDESC (pair of word64 fields)
-  [37, 8n], // R_X86_64_IRELATIVE
   [38, 8n], // R_X86_64_RELATIVE64
   [41, 4n], // R_X86_64_GOTPCRELX
   [42, 4n], // R_X86_64_REX_GOTPCRELX
+  [43, 4n], // R_X86_64_CODE_4_GOTPCRELX
+  [44, 4n], // R_X86_64_CODE_4_GOTTPOFF
+  [45, 4n], // R_X86_64_CODE_4_GOTPC32_TLSDESC
+  [46, 4n], // R_X86_64_CODE_5_GOTPCRELX
+  [47, 4n], // R_X86_64_CODE_5_GOTTPOFF
+  [48, 4n], // R_X86_64_CODE_5_GOTPC32_TLSDESC
+  [49, 4n], // R_X86_64_CODE_6_GOTPCRELX
+  [50, 4n], // R_X86_64_CODE_6_GOTTPOFF
+  [51, 4n], // R_X86_64_CODE_6_GOTPC32_TLSDESC
+]);
+const X86_64_WORDCLASS_RELOCATIONS = new Set([
+  6, // R_X86_64_GLOB_DAT
+  7, // R_X86_64_JUMP_SLOT
+  8, // R_X86_64_RELATIVE
+  37, // R_X86_64_IRELATIVE
 ]);
 const SHT_RISCV_ATTRIBUTES = 0x70000003;
 const R_RISCV_JUMP_SLOT = 5;
@@ -598,8 +609,9 @@ function validateSectionRiscvVariantCcTag(image, sections) {
   if (!image.warnings.includes(warning)) image.warnings.push(warning);
 }
 
-function relocationFieldWidth(machine, type) {
+function relocationFieldWidth(machine, type, bits) {
   if (machine !== EM_X86_64) return undefined;
+  if (X86_64_WORDCLASS_RELOCATIONS.has(type)) return BigInt(bits === 64 ? 8 : 4);
   return X86_64_RELOCATION_FIELD_BYTES.has(type)
     ? X86_64_RELOCATION_FIELD_BYTES.get(type)
     : null;
@@ -639,7 +651,7 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
     let address=offset,fileOffset=image.addressToOffset(offset),addressDomain='virtual';
     if(elfType===ET_REL){
       if(offset>=target.size){budget.partial(`relocations:${sec.index}:offset-range`,`ELF ET_REL relocation offset ${offset} is outside target section ${target.index}`);continue;}
-      const fieldWidth=relocationFieldWidth(Number(image.metadata.machine),type);
+      const fieldWidth=relocationFieldWidth(Number(image.metadata.machine),type,bits);
       if(fieldWidth===null){budget.partial(`relocations:${sec.index}:field-width-unknown`,`ELF ET_REL relocation type ${type} has no supported target-field width for machine ${image.metadata.machine}`);continue;}
       if(fieldWidth!==undefined&&fieldWidth>0n&&fieldWidth>target.size-offset){budget.partial(`relocations:${sec.index}:target-span`,`ELF ET_REL relocation type ${type} has a ${fieldWidth}-byte target field crossing target section ${target.index}`);continue;}
       address=(target.syntheticAddr??0n)+offset;addressDomain='section-relative-synthetic';fileOffset=target.type===8?null:target.offset+offset;
