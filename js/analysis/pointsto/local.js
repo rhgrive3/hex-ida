@@ -494,7 +494,7 @@ function prepareMemoryBoundary(ir, nodes, values, options, budget) {
 }
 
 /** Turns an exact canonical proof into a singleton points-to set. */
-function targetFromCanonicalProof(proof, evidenceIds) {
+export function targetFromCanonicalProof(proof, evidenceIds) {
   if (!proof || proof.kind === 'unknown' || proof.kind === 'root-only') return null;
   if (proof.kind === 'constant') {
     return createPointsToTarget({
