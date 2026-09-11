@@ -125,11 +125,21 @@ const ENCODING_CLASS = Object.freeze({
 const DEFAULT_MAX_ABBREV_DECLARATIONS = 65_536;
 const DEFAULT_MAX_ABBREV_ATTRIBUTES = 1_048_576;
 
+// Historical direct parser callers do not carry object metadata, so an omitted
+// byte order keeps the existing little-endian behavior. An explicit unknown or
+// invalid value is different: callers supplied metadata but it cannot authorize
+// fixed-width interpretation, so it must fail closed (#4055).
+function resolveDebugEndian(endian) {
+  if (endian == null) return 'little';
+  return endian === 'little' || endian === 'big' ? endian : null;
+}
+
 class Cursor {
-  constructor(bytes, offset = 0) {
+  constructor(bytes, offset = 0, endian = 'little') {
     this.bytes = bytes;
     this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     this.offset = offset;
+    this.littleEndian = endian === 'little';
     // Reads must not walk past a caller-declared end (a compilation-unit
     // boundary, #1860). `subarray()` silently clamps an out-of-range end, so a
     // short block would otherwise read nothing, advance the offset anyway, and
@@ -140,9 +150,9 @@ class Cursor {
   get eof() { return this.offset >= this.limit; }
 
   u8() { if (this.offset + 1 > this.limit) throw new RangeError('dwarf-read-past-limit'); const value = this.view.getUint8(this.offset); this.offset += 1; return value; }
-  u16() { if (this.offset + 2 > this.limit) throw new RangeError('dwarf-read-past-limit'); const value = this.view.getUint16(this.offset, true); this.offset += 2; return value; }
-  u32() { if (this.offset + 4 > this.limit) throw new RangeError('dwarf-read-past-limit'); const value = this.view.getUint32(this.offset, true); this.offset += 4; return value; }
-  u64() { if (this.offset + 8 > this.limit) throw new RangeError('dwarf-read-past-limit'); const value = this.view.getBigUint64(this.offset, true); this.offset += 8; return value; }
+  u16() { if (this.offset + 2 > this.limit) throw new RangeError('dwarf-read-past-limit'); const value = this.view.getUint16(this.offset, this.littleEndian); this.offset += 2; return value; }
+  u32() { if (this.offset + 4 > this.limit) throw new RangeError('dwarf-read-past-limit'); const value = this.view.getUint32(this.offset, this.littleEndian); this.offset += 4; return value; }
+  u64() { if (this.offset + 8 > this.limit) throw new RangeError('dwarf-read-past-limit'); const value = this.view.getBigUint64(this.offset, this.littleEndian); this.offset += 8; return value; }
 
   uleb() {
     let result = 0n;
@@ -242,12 +252,16 @@ function parseAbbrev(bytes, tableOffset, state = null) {
   return { table, stopReason: null, duplicateCode, invalidChildByte };
 }
 
-/** Reads a bounded little-endian unsigned integer of exactly `width` bytes. */
+/** Reads a bounded unsigned integer of exactly `width` bytes in object byte order. */
 function readUnsignedWidth(cursor, width) {
   if (!Number.isInteger(width) || width < 1 || width > 8) throw new RangeError('dwarf-address-size-unsupported');
   let value = 0n;
-  for (let index = 0; index < width; index += 1) {
-    value |= BigInt(cursor.u8()) << BigInt(index * 8);
+  if (cursor.littleEndian) {
+    for (let index = 0; index < width; index += 1) {
+      value |= BigInt(cursor.u8()) << BigInt(index * 8);
+    }
+  } else {
+    for (let index = 0; index < width; index += 1) value = (value << 8n) | BigInt(cursor.u8());
   }
   return value;
 }
@@ -267,18 +281,14 @@ function readForm(cursor, form, unit, sections, implicitConst) {
       // following attribute (#5305).
       const width = unit.addressSize;
       if (!Number.isSafeInteger(width) || width < 1 || width > 8) return { value: null, unsupported: true, fatal: true };
-      let value = 0n;
-      for (let index = 0; index < width; index++) value |= BigInt(cursor.u8()) << BigInt(8 * index);
-      return { value };
+      return { value: readUnsignedWidth(cursor, width) };
     }
     case DW_FORM.data1: case DW_FORM.ref1: case DW_FORM.strx1: case DW_FORM.addrx1: case DW_FORM.flag:
       return { value: BigInt(cursor.u8()) };
     case DW_FORM.data2: case DW_FORM.ref2: case DW_FORM.strx2: case DW_FORM.addrx2:
       return { value: BigInt(cursor.u16()) };
-    case DW_FORM.strx3: case DW_FORM.addrx3: {
-      const low = cursor.u16();
-      return { value: BigInt(low | (cursor.u8() << 16)) };
-    }
+    case DW_FORM.strx3: case DW_FORM.addrx3:
+      return { value: readUnsignedWidth(cursor, 3) };
     case DW_FORM.data4: case DW_FORM.ref4: case DW_FORM.strx4: case DW_FORM.addrx4:
       return { value: BigInt(cursor.u32()) };
     case DW_FORM.ref_sup4:
@@ -351,7 +361,9 @@ function strxString(index, unit, sections) {
   const at = base + Number(index) * entrySize;
   if (at + entrySize > table.length) return null;
   const view = new DataView(table.buffer, table.byteOffset, table.byteLength);
-  const offset = entrySize === 8 ? Number(view.getBigUint64(at, true)) : view.getUint32(at, true);
+  const offset = entrySize === 8
+    ? Number(view.getBigUint64(at, unit.littleEndian))
+    : view.getUint32(at, unit.littleEndian);
   return cstring(sections.debug_str, offset);
 }
 
@@ -363,7 +375,7 @@ function strxString(index, unit, sections) {
  * the base is not a header/interior offset and binds it to the header fields
  * that define the entry layout (#6184).
  */
-function debugAddrContributionAtBase(table, base, state = null) {
+function debugAddrContributionAtBase(table, base, state = null, littleEndian = true) {
   if (!table || !Number.isSafeInteger(base) || base < 0 || base > table.length) return null;
   const view = new DataView(table.buffer, table.byteOffset, table.byteLength);
   let offset = 0;
@@ -377,12 +389,12 @@ function debugAddrContributionAtBase(table, base, state = null) {
     }
     if (state) state.scans += 1;
     if (offset + 4 > table.length) return null;
-    const initialLength = view.getUint32(offset, true);
+    const initialLength = view.getUint32(offset, littleEndian);
     let length;
     let lengthFieldSize;
     if (initialLength === 0xffffffff) {
       if (offset + 12 > table.length) return null;
-      const wideLength = view.getBigUint64(offset + 4, true);
+      const wideLength = view.getBigUint64(offset + 4, littleEndian);
       if (wideLength > BigInt(Number.MAX_SAFE_INTEGER)) return null;
       length = Number(wideLength);
       lengthFieldSize = 12;
@@ -402,7 +414,7 @@ function debugAddrContributionAtBase(table, base, state = null) {
     const contribution = {
       entriesStart,
       end,
-      version: view.getUint16(bodyStart, true),
+      version: view.getUint16(bodyStart, littleEndian),
       addressSize: view.getUint8(bodyStart + 2),
       segmentSelectorSize: view.getUint8(bodyStart + 3),
     };
@@ -426,7 +438,7 @@ function addrxAddress(index, unit, sections, state = null) {
     // The shared state is charged by contribution header below, not once per
     // lookup: a late base may otherwise make a fresh full-section walk for
     // every distinct CU and exceed the global work budget (#6184).
-    contribution = debugAddrContributionAtBase(table, base, state);
+    contribution = debugAddrContributionAtBase(table, base, state, unit.littleEndian);
     if (state?.cache) state.cache.set(base, contribution);
   }
   if (!contribution
@@ -444,7 +456,11 @@ function addrxAddress(index, unit, sections, state = null) {
   if (!Number.isSafeInteger(at) || at + entrySize > contribution.end) return null;
   const view = new DataView(table.buffer, table.byteOffset, table.byteLength);
   let value = 0n;
-  for (let i = 0; i < entrySize; i += 1) value |= BigInt(view.getUint8(at + i)) << BigInt(8 * i);
+  if (unit.littleEndian) {
+    for (let i = 0; i < entrySize; i += 1) value |= BigInt(view.getUint8(at + i)) << BigInt(8 * i);
+  } else {
+    for (let i = 0; i < entrySize; i += 1) value = (value << 8n) | BigInt(view.getUint8(at + i));
+  }
   return value;
 }
 
@@ -455,11 +471,16 @@ function addrxAddress(index, unit, sections, state = null) {
  * is what DW_AT_type references need, and it avoids building a deep object
  * graph for a structure that is already addressed by offset.
  */
-export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal = null } = {}) {
+export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal = null, endian = null } = {}) {
   const info = sections.debug_info;
   const diagnostics = [];
   const dies = new Map();
   if (!info) return { dies, units: [], diagnostics: ['missing .debug_info'], complete: false, cancelled: false };
+  const resolvedEndian = resolveDebugEndian(endian);
+  if (resolvedEndian == null) {
+    return { dies, units: [], diagnostics: ['debug image byte order unavailable'], complete: false, cancelled: false };
+  }
+  const littleEndian = resolvedEndian === 'little';
   // Missing or malformed budgets fall back to explicit defaults, never disable
   // a cap: comparisons against undefined/NaN are always false (#5352, #3932,
   // #5604). maxRecords merges over the shared provider defaults; the abbrev
@@ -473,7 +494,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
     : DEFAULT_MAX_ABBREV_ATTRIBUTES;
 
   const units = [];
-  const cursor = new Cursor(info, 0);
+  const cursor = new Cursor(info, 0, resolvedEndian);
   const abbrevCache = new Map();
   const requestedAddrContributionScans = Number.isSafeInteger(budget?.maxAddrContributionScans)
     && budget.maxAddrContributionScans > 0
@@ -562,7 +583,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       }
     }
 
-    const unit = { start: unitStart, version, addressSize, offsetSize, abbrevOffset, unitType, strOffsetsBase: null, addrBase: null };
+    const unit = { start: unitStart, version, addressSize, offsetSize, abbrevOffset, unitType, strOffsetsBase: null, addrBase: null, littleEndian };
     let abbrev;
     let duplicateCode = false;
     let invalidChildByte = false;
@@ -1030,14 +1051,17 @@ function toAddress(value) {
  * Returns null when the note is absent — which becomes `identity-unavailable`,
  * not a match.
  */
-export function readBuildId(noteSection) {
+export function readBuildId(noteSection, { endian = null } = {}) {
   if (!noteSection || noteSection.length < 16) return null;
+  const resolvedEndian = resolveDebugEndian(endian);
+  if (resolvedEndian == null) return null;
+  const littleEndian = resolvedEndian === 'little';
   const view = new DataView(noteSection.buffer, noteSection.byteOffset, noteSection.byteLength);
   let offset = 0;
   while (offset + 12 <= noteSection.length) {
-    const nameSize = view.getUint32(offset, true);
-    const descSize = view.getUint32(offset + 4, true);
-    const type = view.getUint32(offset + 8, true);
+    const nameSize = view.getUint32(offset, littleEndian);
+    const descSize = view.getUint32(offset + 4, littleEndian);
+    const type = view.getUint32(offset + 8, littleEndian);
     const nameStart = offset + 12;
     if (nameSize > noteSection.length - nameStart) return null;
     const paddedNameSize = Math.ceil(nameSize / 4) * 4;
@@ -1074,8 +1098,11 @@ export function gnuDebugLinkCrc32(bytes) {
 }
 
 /** Parses `.gnu_debuglink`: a NUL-terminated name followed by a CRC32. */
-export function readDebugLink(section) {
+export function readDebugLink(section, { endian = null } = {}) {
   if (!section || section.length < 5) return null;
+  const resolvedEndian = resolveDebugEndian(endian);
+  if (resolvedEndian == null) return null;
+  const littleEndian = resolvedEndian === 'little';
   let nulOffset = 0;
   while (nulOffset < section.length && section[nulOffset] !== 0) nulOffset += 1;
   if (nulOffset === section.length) return null;
@@ -1083,7 +1110,7 @@ export function readDebugLink(section) {
   const crcOffset = (nulOffset + 4) & ~3;
   if (crcOffset + 4 > section.length) return null;
   const view = new DataView(section.buffer, section.byteOffset, section.byteLength);
-  return { name, crc32: view.getUint32(crcOffset, true) >>> 0 };
+  return { name, crc32: view.getUint32(crcOffset, littleEndian) >>> 0 };
 }
 
 /**
@@ -1143,9 +1170,32 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
       });
     }
 
+    const endian = resolveDebugEndian(image?.endian);
+    if (endian == null) {
+      const diagnostic = 'debug image byte order unavailable';
+      const parsed = { dies: new Map(), units: [], diagnostics: [diagnostic], complete: false, cancelled: false };
+      const result = createDebugProviderResult({
+        ecosystem: 'dwarf',
+        identity: {
+          verdict: 'identity-unavailable',
+          providerId: this.id,
+          providerVersion: this.version,
+          expected: image?.identity?.buildId ?? null,
+          observed: null,
+          method: 'byte-order-unavailable',
+          detail: diagnostic,
+        },
+        sections: [],
+        counts: { dies: 0, units: 0 },
+        diagnostics: [diagnostic],
+        status: status('partial', 'evidence-missing'),
+      });
+      return Object.freeze({ ...result, parsed });
+    }
+
     const expected = image?.identity?.buildId ?? null;
-    const observed = readBuildId(sections['.note.gnu.build-id'] ?? sections.note_gnu_build_id);
-    const debugLink = readDebugLink(sections['.gnu_debuglink'] ?? sections.gnu_debuglink);
+    const observed = readBuildId(sections['.note.gnu.build-id'] ?? sections.note_gnu_build_id, { endian });
+    const debugLink = readDebugLink(sections['.gnu_debuglink'] ?? sections.gnu_debuglink, { endian });
 
     let verdict = 'identity-unavailable';
     let method = 'unavailable';
@@ -1203,7 +1253,7 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
     }
 
     const normalized = normalizeSections(parseSource);
-    const parsed = parseDebugInfo(normalized, budget, { signal });
+    const parsed = parseDebugInfo(normalized, budget, { signal, endian });
     diagnostics.push(...parsed.diagnostics);
 
     const result = createDebugProviderResult({
