@@ -566,8 +566,14 @@ function observeBuildSelection(value, instruction, state, kind = 'mov', related 
     });
     // Snapshot BEFORE buildArg can invoke an input's symbol/type callback.
     // Exact roots/positions bind the observed definition, not just its ID.
-    const captured = captureConsumerIrData([value, instruction, ...related], state);
-    budget.edges -= captured.metrics.edges;
+    // Canonical construction already captured every value and definition
+    // before callbacks. These exact root/slot checks select within that same
+    // observed graph; retain its live matcher instead of recapturing overlapping
+    // inputs for each MOV/precomputed/address selection. Output expressions and
+    // consumer descriptors still get their own observations below.
+    const shared = state.stateHistoryTransaction?.observation;
+    const captured = shared || captureConsumerIrData([value, instruction, ...related], state);
+    budget.edges -= shared ? 0 : captured.metrics.edges;
     if (budget.edges < 0) throw new Error('build-selection-observation-budget');
     const own = (object, key) => Object.getOwnPropertyDescriptor(object, key)?.value;
     return Object.freeze({ kind, matches:() => own(state.ir, 'values') === values && (value == null || own(values, valueIndex) === value)

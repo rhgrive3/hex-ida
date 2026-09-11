@@ -5,6 +5,8 @@ import { decompileEntry, provenanceFromSourceMap } from '../../../tools/validati
 import { loadFrozenProvenance } from '../../../tools/validation/phase8/metrics.mjs';
 import * as facade from '../../../js/ir-core.js';
 import * as projector from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
+import { readLineExpressionHistory } from '../../../js/decompiler/phase8/projection.js';
+import { PROJECTION_LIMITS } from '../../../js/core/identity/live-data.js';
 
 test('C4-03 native aggregate loop binds every rendered entity within the unchanged default budget', () => {
   const corpus = loadCorpus();
@@ -40,6 +42,30 @@ test('C4-03 native RISC-V state histories retain control handoff within the unch
   assert.equal(result.renderProvenance.counts.ledgerTruncated, 0);
   const actual = provenanceFromSourceMap(result.sourceMap);
   assert.deepEqual(reference.sourceAddresses.filter(address => !actual.sourceAddresses.includes(address)), []);
+});
+
+test('C4-03 native x86 construction reuses observed inputs without losing live consumer checks', () => {
+  const corpus = loadCorpus(), id = 'x86_64.quality.gvn_load_reuse.O0';
+  const index = corpus.functions.findIndex(entry => entry.id === id);
+  assert.ok(index >= 0);
+  const reference = loadFrozenProvenance().observations.find(entry => entry.id === id);
+  const { result, failure } = decompileEntry(corpus.functions[index], {
+    index, decompilerTimeBudgetMs:20000, toolchain:corpus.toolchain ?? null,
+  });
+  assert.equal(failure ?? null, null);
+  assert.equal(PROJECTION_LIMITS.edges, 100000);
+  assert.equal(result.expressionHistoryBinding.completeness, 'complete');
+  assert.deepEqual(result.expressionHistoryBinding.reasons, []);
+  assert.equal(result.renderProvenance.completeness, 'complete');
+  assert.equal(result.renderProvenance.budget.maxTransformRecords, 1024);
+  const actual = provenanceFromSourceMap(result.sourceMap);
+  assert.deepEqual(reference.sourceAddresses.filter(address => !actual.sourceAddresses.includes(address)), []);
+  const lines = result.lines.filter(line => readLineExpressionHistory(line, result.ir)?.length);
+  assert.ok(lines.length > 1);
+  assert.equal(readLineExpressionHistory({ ...lines[0] }, result.ir), null);
+  result.ir.instructions = [...result.ir.instructions];
+  assert.ok(lines.every(line => readLineExpressionHistory(line, result.ir) === null),
+    'shared construction inputs retain exact mutable root identity after publication');
 });
 
 for (const optimization of ['O1','O2']) for (const phase8Optimize of [false,true]) {
