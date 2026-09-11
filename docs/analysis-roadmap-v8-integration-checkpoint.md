@@ -5157,6 +5157,44 @@ Latest main inspected here is ccabe9f09; it added no overlapping changes to the
 three producer/summary paths since the previous observation. No component merge,
 main merge, other-owner issue repair or device/environment work was performed.
 
+## Native CALL scalar value observations (2026-09-11)
+
+The native pipeline now binds explicit, exact full-register GP call arguments
+before CALL and writes its fresh scalar normal-return value after the existing
+broad unknown-state clobber. The call's canonical arguments/returns/output value
+IDs therefore participate in the existing SSA builder. Original machine effects,
+target values/entities, unknown memory/control/state effects and partial status
+are retained. No address is promoted to a callee function identity, no unknown
+call is declared pure, and no unresolved candidate becomes exhaustive.
+
+When all remaining function unknowns are the typed calls' contextual effect gaps,
+declared entry/return values can also be observed without changing that partial
+status. Opaque calls and every other frontier keep the return observation closed.
+Partial-register, aggregate/FP, stack and implicit ABI inputs remain unsupported
+by this full-register bridge; their prior compatibility behavior is preserved.
+New node/value growth is charged to canonical IR budgets before allocation.
+
+The public summary publishes identity-matched abi-call-values in its existing
+semanticFacts field (analyzer 1.3.2). Native pipeline version is 1.5.0. Seven new
+tests cover actual argument/reaching result SSA, unchanged unknown effects and
+target evidence, uncertain/narrow/stale declarations, a later opaque call,
+deterministic origins/navigation, the default decoded driver and graph budgets.
+Root provenance through a native callee remains unknown pending actual complete
+target/effect-summary integration; the test does not inject a fake callee proof.
+
+Full-width native results bypass the old compatibility-only typed result writer.
+Its existing provenance fixture now includes a narrow argument, a real remaining
+fallback case, so all old private-history/ownership/negative assertions remain
+unchanged. The new native path separately validates its canonical SSA and render
+provenance; no fixture switch in production or compatibility-history fabrication
+was added. This is a deliberate transition between actual product paths, not a
+waiver of the old history contract.
+
+Initial focused native/ABI/history and full summary, lint/modules checks pass.
+Exact committed-head evidence is retained separately. The 21-FR goal, complete
+native callee summary composition, aggregate/FP reconstruction, component union,
+main reconciliation and generated/independent admission remain unfinished.
+
 ## Ownership and regression policy
 
 `tools/validation/analysis-roadmap/ownership.json` enumerates exact paths for

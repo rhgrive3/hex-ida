@@ -32,7 +32,11 @@ const rule = 'attach-new-typed-call-result';
 function fixture({ bits = 64, fp = false, prototype = undefined, lines = null, mutate = null, returnType = null } = {}) {
   lines ??= ['bl #0x100001000', 'ret'];
   if (prototype === undefined) prototype = { returnType:fp ? bits === 32 ? 'float' : 'double' : bits === 32 ? 'int32' : 'int64',
-    returnBits:bits, returnsValue:true, args:[] };
+    // This suite covers the remaining compatibility-only writer. Full-width
+    // scalar native calls now have canonical SSA results and never run it.
+    // A narrow argument still requires this real production fallback; keep
+    // every history/ownership/negative assertion below unchanged.
+    returnBits:bits, returnsValue:true, args:[{ type:'int32', bits:32 }] };
   const rows = lines.map((line, row) => {
     const index = line.indexOf(' ');
     return { row, address:0x100000000n + BigInt(row * 4), mn:index < 0 ? line : line.slice(0, index), ops:index < 0 ? '' : line.slice(index + 1) };

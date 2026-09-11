@@ -6,11 +6,12 @@ import { createSemanticIrFunction } from '../../../js/semantics/ir/index.js';
 import { createSemanticCfg } from '../../../js/semantics/cfg/index.js';
 import { buildSemanticSsa, validateSemanticSsa } from '../../../js/semantics/ssa/index.js';
 import { buildLocalFunctionSummary } from '../../../js/analysis/summary/local.js';
-import { functionSummaryDigest } from '../../../js/analysis/summary/contract.js';
+import { classifyCallTargetProof, functionSummaryDigest, summaryIsPure } from '../../../js/analysis/summary/contract.js';
 import { architecturePluginV2 } from '../../../js/targets/architecture/index.js';
 import { RISCV_LP64_ABI } from '../../../js/targets/abi/index.js';
 import { createRiscv64DecodedInstruction } from '../../../js/targets/architecture/riscv64/decoded-instruction.js';
 import { buildSemanticV2CompatibilityPipeline } from '../../../js/semantics/compat/index.js';
+import { buildRenderProvenance, validateRenderProvenance } from '../../../js/decompiler/phase8/render-provenance.js';
 
 const snapshotId = 'native-abi-return-snapshot';
 function fixture({ returnType = 'int64', words = [0x00150513, 0x00008067], parameters = null, adapterOptions = {}, options = {} } = {}) {
@@ -181,6 +182,114 @@ test('serialized and reordered native SSA preserves the public summary digest', 
   const binding = p.semanticIr.nodes.find(node => node.kind === 'return').attributes.abiReturnBinding;
   assert.equal(Object.isFrozen(binding), false, 'summary publication cannot freeze caller-owned deserialized IR');
   assert.notEqual(result.summary.semanticFacts.find(fact => fact.kind === 'abi-return-location'), binding);
+});
+
+const callPrototype = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
+const callFixture = (settings = {}) => fixture({ parameters:[parameters[0]],
+  words:[0x00150513, 0x000010ef, 0x00008067], adapterOptions:{ callPrototype }, ...settings });
+
+test('typed native CALL binds actual arguments and a fresh normal-return value before SSA', () => {
+  const { pipeline:p, returns, result } = callFixture();
+  const call = p.semanticIr.nodes.find(node => node.kind === 'call');
+  assert.equal(call.call.arguments.length, 1);
+  assert.equal(call.outputs.length, 1);
+  assert.deepEqual(call.call.returns, call.outputs);
+  const argument = p.semanticIr.values.find(value => value.id === call.call.arguments[0]);
+  const read = p.semanticIr.nodes.find(node => node.id === argument.definitionNodeId);
+  assert.equal(read.kind, 'state-read');
+  assert.equal(read.variable.physicalIdentity.registerId, 'x10');
+  const argumentUse = p.ssa.uses.find(use => use.sourceEntityId === read.id);
+  const argumentDefinition = p.ssa.definitions.find(def => def.valueId === argumentUse.valueId);
+  assert.equal(argumentDefinition.kind, 'definition', 'argument is the preceding ADDI, not entry a0');
+  assert.ok(p.ssa.definitions.some(def => def.kind === 'unknown' && def.proof.broadUnknown));
+  const returned = p.semanticIr.values.find(value => value.id === returns[0].inputs[0]);
+  const returnedUse = p.ssa.uses.find(use => use.sourceEntityId === returned.definitionNodeId);
+  const resultWrite = p.ssa.definitions.find(def => def.valueId === returnedUse.valueId);
+  assert.equal(resultWrite.proof.sourceSemanticValueId, call.outputs[0]);
+  assert.equal(result.summary.returnValues.length, 1);
+  assert.ok(result.summary.returnProvenance.every(fact => fact.kind === 'unknown'));
+  assert.ok(result.summary.semanticFacts.some(fact => fact.kind === 'abi-call-values' && fact.callNodeId === call.id));
+});
+
+test('typed CALL value binding never resolves its callee identity or unknown effects', () => {
+  const typed = callFixture(), opaque = callFixture({ adapterOptions:{} });
+  const call = typed.pipeline.semanticIr.nodes.find(node => node.kind === 'call');
+  const old = opaque.pipeline.semanticIr.nodes.find(node => node.kind === 'call');
+  assert.deepEqual(typed.pipeline.machineEffects, opaque.pipeline.machineEffects);
+  for (const field of ['targetEntityIds', 'targetValueIds', 'stateReads', 'stateWrites', 'memoryRead', 'memoryWrite',
+    'controlEffects', 'determinism', 'noreturn', 'mayThrow', 'completeness', 'unknownEffects', 'summarySource']) {
+    assert.deepEqual(call.call[field], old.call[field], field);
+  }
+  assert.deepEqual(call.call.targetEntityIds, []);
+  assert.equal(classifyCallTargetProof(call.call).exhaustive, false, 'a direct address is not a callee summary identity');
+  assert.equal(typed.result.status.completeness, 'partial');
+  assert.equal(summaryIsPure(typed.result.summary), false);
+  assert.equal(typed.result.summary.unknownCallEffects.length, 1);
+  assert.ok(typed.result.summary.memoryWriteRegions.some(effect => effect.broad));
+});
+
+test('opaque, stale and partial-register CALL declarations do not mint native results', () => {
+  for (const adapterOptions of [{}, { callPrototype, snapshotId:'stale' },
+    { callPrototype:{ ...callPrototype, returnType:'int32' } },
+    { callPrototype:{ parameters:[{ type:'int32', bits:32 }], returnType:'int64' } },
+    { callPrototype, callerCalleeConflict:true }]) {
+    const { pipeline, returns } = callFixture({ adapterOptions });
+    const call = pipeline.semanticIr.nodes.find(node => node.kind === 'call');
+    assert.deepEqual(call.outputs, []);
+    assert.deepEqual(call.call.arguments, []);
+    assert.deepEqual(returns[0].inputs, []);
+  }
+});
+
+test('a later opaque call clobbers a typed native result and keeps the return frontier closed', () => {
+  const f = callFixture({ words:[0x000010ef, 0x000020ef, 0x00008067],
+    adapterOptions:{ callPrototypeFor:(_target, call) =>
+      BigInt(call?.controlEffects?.[0]?.target?.value ?? 0) === 0x3000n ? callPrototype : null } });
+  const calls = f.pipeline.semanticIr.nodes.filter(node => node.kind === 'call');
+  assert.equal(calls.filter(node => node.outputs.length === 1).length, 1);
+  assert.equal(calls.filter(node => node.outputs.length === 0).length, 1);
+  assert.deepEqual(f.returns[0].inputs, []);
+  assert.equal(f.result.status.completeness, 'partial');
+});
+
+test('typed native CALL observations are deterministic and preserve source navigation', () => {
+  const first = callFixture(), second = callFixture();
+  assert.deepEqual(first.pipeline.semanticIr, second.pipeline.semanticIr);
+  assert.deepEqual(first.pipeline.ssa, second.pipeline.ssa);
+  const call = first.pipeline.semanticIr.nodes.find(node => node.kind === 'call');
+  const binding = call.attributes.abiCallBinding;
+  assert.equal(binding.callNodeId, call.id);
+  assert.equal(binding.functionId, first.pipeline.functionId);
+  assert.deepEqual(binding.argumentValueIds, call.call.arguments);
+  assert.equal(binding.returnValueId, call.outputs[0]);
+  const transform = call.origin.transforms.find(item => item.passId === 'semantic-abi-call-binding');
+  assert.ok(transform.producedEntityIds.includes(call.outputs[0]));
+  assert.ok(call.origin.instructionIds.length > 0);
+  const map = buildRenderProvenance({ result:{ ir:first.pipeline.legacyV1, lines:[] }, snapshotId });
+  assert.deepEqual(validateRenderProvenance(map).reasons, []);
+});
+
+test('the default decoded CALL driver publishes native values without resolving unknown callee effects', () => {
+  const f = callFixture();
+  const result = analyzeDecodedSemanticFunction({ architecture:'riscv64', platform:'linux', abiId:'lp64',
+    binaryId:'native-return-binary', sliceId:'0', snapshotId, decoderSemanticVersion:'native-return-decoder',
+    instructions:f.instructions, functionPrototype:f.prototype, callPrototype });
+  const p = result.pipeline, call = p.semanticIr.nodes.find(node => node.kind === 'call');
+  assert.equal(call.outputs.length, 1);
+  assert.equal(call.call.arguments.length, 1);
+  assert.ok(result.decompiler);
+  const summary = buildLocalFunctionSummary(p.semanticIr, p.cfg, p.ssa, p.memorySsa, { snapshotId }).summary;
+  assert.equal(summary.returnValues.length, 1);
+  assert.equal(summary.status.completeness, 'partial');
+  assert.equal(summaryIsPure(summary), false);
+});
+
+test('native CALL expansion charges canonical graph budgets before publication', () => {
+  const original = callFixture({ adapterOptions:{} }).pipeline.semanticIr;
+  for (const [key, maximum] of [['maxNodes', original.nodes.length], ['maxValues', original.values.length]]) {
+    assert.throws(() => callFixture({ options:{ semanticIrOptions:{ budget:{ [key]:maximum } } } }),
+      new RegExp(`semantic-ir-budget-exceeded-${key}`));
+  }
 });
 
 test('narrow integer result observes the physical register before explicit truncation', () => {

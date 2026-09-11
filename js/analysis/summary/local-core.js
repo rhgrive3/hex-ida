@@ -26,7 +26,7 @@ import {
 } from './contract.js';
 
 export const LOCAL_SUMMARY_ANALYZER_ID = 'phase7.summary.local';
-export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.3.1';
+export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.3.2';
 
 const DEFAULT_ADDRESS_SPACES = Object.freeze(['memory']);
 
@@ -541,6 +541,15 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     }
 
     if (node.kind !== 'call') continue;
+
+    const binding = node.attributes?.abiCallBinding;
+    if (binding?.kind === 'abi-call-values' && binding.version === 1
+      && binding.functionId === ir.functionId && binding.callNodeId === node.id
+      && binding.abiIdentity?.snapshotId === (options.snapshotId ?? 'snapshot-unbound')
+      && stableStringify(binding.argumentValueIds) === stableStringify(node.call.arguments)
+      && node.call.returns.length === 1 && binding.returnValueId === node.call.returns[0]) {
+      nativeAbiFacts.set(node.id, binding);
+    }
 
     const { targetProof, targets, resolved, identityMismatch } = callInfo(node);
 

@@ -19,6 +19,7 @@ import {
 } from '../effects/index.js';
 import {
   SEMANTIC_IR_SCHEMA_VERSION,
+  SEMANTIC_IR_DEFAULT_BUDGET,
   createSemanticIrFunction,
   lowerMachineEffectBundleToSemanticIr,
 } from '../ir/index.js';
@@ -49,7 +50,7 @@ export const SEMANTIC_V2_MIGRATION_MODES = Object.freeze({
   SHADOW_DIFFERENTIAL: 'semantic-v2-shadow-differential',
 });
 
-export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.4.0';
+export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.5.0';
 export const SEMANTIC_V2_COMPAT_PATH = Object.freeze([
   'machine-effects',
   'semantic-ir-v2',
@@ -298,9 +299,19 @@ function canonicalMemoryAccessProof(descriptor, architectureId) {
  * its original control attributes. This adds a value observation, not a claim
  * about that value's root, a callee's effects, or aggregate reconstruction.
  */
+function declaredValuesObservable(ir) {
+  if (ir.completeness === 'complete' && ir.unknowns.length === 0) return true;
+  // A typed call's normal-return value can be observed without settling any
+  // of its memory, control or other state effects. Every other frontier stays
+  // closed, and the original partial status/unknowns are never removed.
+  return ir.completeness === 'partial' && ir.unknowns.length > 0
+    && ir.unknowns.every(item => item.reason === 'call-context-effects-not-enriched')
+    && ir.nodes.filter(node => node.kind === 'call').every(node => node.attributes?.abiCallBinding != null);
+}
+
 function bindDeclaredScalarReturns(ir, input, options) {
   const adapter = input.abiAdapter ?? options.abiAdapter ?? options.compatOptions?.abiAdapter;
-  if (!adapter || ir.completeness !== 'complete' || ir.unknowns.length
+  if (!adapter || !declaredValuesObservable(ir)
     || !ir.nodes.some(node => node.kind === 'return' && node.inputs.length === 0)) return ir;
   let classified, locations;
   try {
@@ -366,7 +377,7 @@ function bindDeclaredScalarReturns(ir, input, options) {
 function bindDeclaredEntryArguments(ir, input, options) {
   const prototype = input.functionPrototype ?? options.functionReturn?.functionPrototype;
   const adapter = input.abiAdapter ?? options.abiAdapter ?? options.compatOptions?.abiAdapter;
-  if (!prototype || !adapter || ir.completeness !== 'complete' || ir.unknowns.length) return ir;
+  if (!prototype || !adapter || !declaredValuesObservable(ir)) return ir;
   let classified;
   try { classified = adapter.classifyArguments?.({ functionPrototype:prototype }); }
   catch { return ir; }
@@ -408,6 +419,88 @@ function bindDeclaredEntryArguments(ir, input, options) {
       metadata:{ argumentIndex:argument.index, abiArgumentBinding:fact } });
   }
   return values.length === ir.values.length ? ir : createSemanticIrFunction({ ...ir, values }, options.semanticIrOptions ?? {});
+}
+
+/** Bind normal-return scalar values; do not resolve targets or callee effects. */
+function bindDeclaredCallValues(ir, input, options) {
+  const adapter = input.abiAdapter ?? options.abiAdapter ?? options.compatOptions?.abiAdapter;
+  if (!adapter || !ir.nodes.some(node => node.kind === 'call')) return ir;
+  const descriptors = architectureRegisterDescriptors(input.architecturePlugin);
+  const physical = location => {
+    if (location?.aggregate === true) return null;
+    const descriptor = descriptors.find(reg => reg.id === location?.reg && reg.kind === 'gp');
+    const widthBits = descriptor?.physicalBits ?? descriptor?.bits;
+    if (!Number.isSafeInteger(widthBits) || widthBits <= 0 || location.bits !== widthBits) return null;
+    return { widthBits, variable:createPhysicalStateVariable({ kind:'register', registerId:descriptor.physicalId ?? descriptor.id }) };
+  };
+  const nodes = [], values = [...ir.values], replacements = new Map();
+  let addedNodes = 0;
+  for (const node of ir.nodes) {
+    assertNotAborted(options);
+    let raw = null;
+    if (node.kind === 'call' && !node.outputs.length && !node.call.arguments.length && !node.call.returns.length) {
+      try { raw = adapter.classifyCall?.({ node, call:node.call, semanticIr:ir }); } catch { /* unknown */ }
+    }
+    if (!raw || !canonicalAbiEvidence(raw) || abiResultInvalidState(raw) || raw.partial === true
+      || raw.noreturn === true || raw.returnAggregate === true || raw.returnIndirect === true
+      || raw.returnLocations?.length !== 1 || raw.returnLocations[0].kind !== 'register'
+      || !Array.isArray(raw.explicitArguments) || raw.explicitArguments.length > 64
+      || raw.implicitInputs?.length || raw.stackArguments?.length || raw.stackArgsUnknown !== false) {
+      nodes.push(node); continue;
+    }
+    const identity = raw.abiIdentity, snapshotId = options.memorySsaOptions?.snapshotId ?? options.snapshotId;
+    if (identity.architectureId !== input.architecturePlugin.id
+      || (identity.binaryId != null && identity.binaryId !== input.binaryId)
+      || (identity.sliceId != null && identity.sliceId !== input.sliceId)
+      || (identity.functionId != null && identity.functionId !== ir.functionId)
+      || (snapshotId != null && identity.snapshotId !== snapshotId)) { nodes.push(node); continue; }
+    const returned = physical(raw.returnLocations[0]);
+    const args = raw.explicitArguments.map((argument, index) => argument.index === index
+      && argument.location === 'register' && argument.exact === true && argument.possible !== true
+      && !argument.pieces?.length && !(argument.regs?.length > 1) ? physical(argument) : null);
+    if (!returned || args.some(argument => !argument)
+      || new Set(args.map(argument => argument.variable.key)).size !== args.length) { nodes.push(node); continue; }
+    // Charge before allocating the expanded graph, not after building an
+    // arbitrarily large set of register observations for the constructor.
+    const growth = args.length + 1;
+    if (ir.nodes.length + addedNodes + growth > (options.semanticIrOptions?.budget?.maxNodes ?? SEMANTIC_IR_DEFAULT_BUDGET.maxNodes)) {
+      fail('semantic-ir-budget-exceeded-maxNodes');
+    }
+    if (values.length + growth > (options.semanticIrOptions?.budget?.maxValues ?? SEMANTIC_IR_DEFAULT_BUDGET.maxValues)) {
+      fail('semantic-ir-budget-exceeded-maxValues');
+    }
+    addedNodes += growth;
+    const fact = { kind:'abi-call-values', version:1, functionId:ir.functionId, callNodeId:node.id,
+      abiIdentity:identity, arguments:raw.explicitArguments, returnLocation:raw.returnLocations[0] };
+    const key = stableDigest(fact), resultId = `abi_call_result_${key}`, writeId = `abi_call_write_${key}`;
+    const readIds = args.map((_, index) => `abi_call_read_${key}_${index}`);
+    const argumentIds = args.map((_, index) => `abi_call_arg_${key}_${index}`);
+    const origin = appendTransform(node.origin, createTransformRecord({
+      passId:'semantic-abi-call-binding', passVersion:'1.0.0', ruleId:'declared-scalar-call-values',
+      proofKind:'canonical-abi-location', consumedEntityIds:[node.id],
+      producedEntityIds:[...readIds, ...argumentIds, resultId, writeId], preconditions:[fact],
+    }));
+    args.forEach((argument, index) => {
+      nodes.push({ id:readIds[index], kind:'state-read', blockId:node.blockId,
+        inputs:[], outputs:[argumentIds[index]], variable:argument.variable, origin });
+      values.push({ id:argumentIds[index], kind:'definition', definitionNodeId:readIds[index],
+        machineType:{ kind:'bitvector', widthBits:argument.widthBits }, origin });
+    });
+    values.push({ id:resultId, kind:'definition', definitionNodeId:node.id,
+      machineType:{ kind:'bitvector', widthBits:returned.widthBits }, origin });
+    nodes.push({ ...node, inputs:[...new Set([...node.inputs, ...argumentIds])], outputs:[resultId],
+      call:{ ...node.call, arguments:argumentIds, returns:[resultId] }, origin,
+      attributes:{ ...node.attributes, abiCallBinding:{ ...fact, argumentValueIds:argumentIds, returnValueId:resultId } } });
+    // SSA still applies the CALL's broad unknown-state write first. Only the
+    // declared result cell receives the fresh call value on normal continuation.
+    nodes.push({ id:writeId, kind:'state-write', blockId:node.blockId,
+      inputs:[resultId], outputs:[], variable:returned.variable, origin });
+    replacements.set(node.id, [...readIds, node.id, writeId]);
+  }
+  return replacements.size === 0 ? ir : createSemanticIrFunction({ ...ir, nodes, values,
+    blocks:ir.blocks.map(block => ({ ...block,
+      nodeIds:block.nodeIds.flatMap(id => replacements.get(id) ?? [id]) })),
+  }, options.semanticIrOptions ?? {});
 }
 
 export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
@@ -607,7 +700,8 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     unknowns: [...issues.values()],
     origin: functionOrigin,
   }, options.semanticIrOptions ?? {});
-  const ir = bindDeclaredEntryArguments(bindDeclaredScalarReturns(machineIr, input, options), input, options);
+  const callIr = bindDeclaredCallValues(machineIr, input, options);
+  const ir = bindDeclaredEntryArguments(bindDeclaredScalarReturns(callIr, input, options), input, options);
 
   const nodeById = new Map(ir.nodes.map((node) => [node.id, node]));
   const successorMap = new Map();
