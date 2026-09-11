@@ -84,6 +84,7 @@ const STRING_POINTS = 2;
 const API_POINTS = 2;
 const VENDOR_POINTS = 6;
 const MAX_METHODS_PER_CLASS = 60;
+const MAX_STRINGS_TO_SCAN = 4000;
 
 const VENDOR_KIND_TO_CATEGORY = {
   ads: 'ads', analytics: 'system', marketing: 'system',
@@ -98,6 +99,27 @@ const EXTRA_LABEL = {
 export function categoryLabel(id) {
   const extra = EXTRA_LABEL[id];
   return extra ? pick(extra.ja, extra.en) : featureLabelOf(id);
+}
+
+function selectClassificationMethods(cls, limit = MAX_METHODS_PER_CLASS) {
+  const instanceMethods = cls.methods || [];
+  const classMethods = cls.classMethods || [];
+  if (instanceMethods.length === 0) return classMethods.slice(0, limit);
+  if (classMethods.length === 0) return instanceMethods.slice(0, limit);
+
+  const selected = [];
+  const maxLen = Math.max(instanceMethods.length, classMethods.length);
+  for (let i = 0; i < maxLen && selected.length < limit; i++) {
+    if (i < instanceMethods.length) {
+      selected.push(instanceMethods[i]);
+      if (selected.length >= limit) break;
+    }
+    if (i < classMethods.length) {
+      selected.push(classMethods[i]);
+      if (selected.length >= limit) break;
+    }
+  }
+  return selected;
 }
 
 function classifyClass(cls, ctx) {
@@ -127,7 +149,7 @@ function classifyClass(cls, ctx) {
     add(hit.id, hit.weak ? 1 : NAME_POINTS - 1, 'class-name', { name: cls.name });
   }
 
-  const methods = (cls.methods || []).slice(0, MAX_METHODS_PER_CLASS);
+  const methods = selectClassificationMethods(cls, MAX_METHODS_PER_CLASS);
   let stringHits = 0;
   let apiHits = 0;
   for (const m of methods) {
@@ -345,9 +367,10 @@ export function buildStringMap(opts) {
   const groups = new Map();
   if (!program) return { subsystems: [], hasClasses: false, classCount: 0, byStrings: true };
 
-  let scanned = 0;
+  let inspected = 0;
   for (const s of o.strings || []) {
-    if (scanned >= 4000) break;
+    if (inspected >= MAX_STRINGS_TO_SCAN) break;
+    inspected++;
     const hits = classifyString(s.text);
     if (!hits.length) continue;
     // The xref span is a virtual-address byte range (#5698): use the string's
@@ -357,7 +380,6 @@ export function buildStringMap(opts) {
     if (span == null) continue;
     const users = program.functionsReferencing(s.addr, BigInt(Math.min(span, 128)), 8);
     if (!users.length) continue;
-    scanned++;
     for (const hit of hits) {
       if (!groups.has(hit.id)) groups.set(hit.id, { id: hit.id, funcs: new Map(), score: 0 });
       const g = groups.get(hit.id);

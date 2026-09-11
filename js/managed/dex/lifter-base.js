@@ -152,6 +152,7 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
     let memoryEffects = [];
     let callEffects = [];
     let controlEffects = [];
+    let possibleExceptions = [];
     let producedValues = [];
     let consumedValues = [];
     let unknownEffects = [];
@@ -432,6 +433,13 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
           locationReads.push({ kind: 'register', index: vBB, bits: 32 });
           locationReads.push({ kind: 'register', index: vCC, bits: 32 });
           locationWrites.push({ kind: 'register', index: vAA, bits: 32 });
+          // Dalvik: div-int/rem-int throw java/lang/ArithmeticException when
+          // the divisor (vCC) is zero — a specified exceptional path the
+          // bundle must carry instead of publishing exception-free exact
+          // semantics (#7975; wasm #1134 vocabulary).
+          if (opcode === 0x93 || opcode === 0x94) {
+            possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
+          }
         }
         break;
 
@@ -444,6 +452,9 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
           locationReads.push({ kind: 'register', index: vA, bits: 32 });
           locationReads.push({ kind: 'register', index: vB, bits: 32 });
           locationWrites.push({ kind: 'register', index: vA, bits: 32 });
+          if (opcode === 0xb3 || opcode === 0xb4) {
+            possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
+          }
         }
         break;
 
@@ -460,6 +471,9 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
           locationReads.push({ kind: 'register', index: vBB, bits: 32 });
           locationWrites.push({ kind: 'register', index: vAA, bits: 32 });
           producedValues.push({ bits: 32, constant: lit8 });
+          if (opcode === 0xdb || opcode === 0xdc) {
+            possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
+          }
         }
         break;
 
@@ -493,7 +507,7 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
       memoryEffects,
       callEffects,
       controlEffects,
-      possibleExceptions: [],
+      possibleExceptions,
       origin,
       completeness,
       unknownEffects,
