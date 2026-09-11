@@ -57,6 +57,12 @@ const MODIFIER_VOLATILE = 0x0002;
 const MODIFIER_UNALIGNED = 0x0004;
 const MODIFIER_KNOWN_MASK = MODIFIER_CONST | MODIFIER_VOLATILE | MODIFIER_UNALIGNED;
 
+/** CodeView ClassOptions used by tag records, including LF_ENUM. */
+const CLASS_OPTION_FORWARD_REFERENCE = 0x0080;
+const CLASS_OPTION_HAS_UNIQUE_NAME = 0x0200;
+// LLVM's current ClassOptions set: all other bits are semantically unknown here.
+const CLASS_OPTIONS_KNOWN_MASK = 0x27ff;
+
 /** CV_PUBSYMFLAGS: bit 1 marks a function. */
 const CVPSF_FUNCTION = 0x00000002;
 
@@ -471,7 +477,7 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
     const bodyEnd = {
       [LF_STRUCTURE]: body + 18, [LF_CLASS]: body + 18, [LF_UNION]: body + 10,
       [LF_POINTER]: body + 8, [LF_MODIFIER]: body + 6, [LF_PROCEDURE]: body + 12,
-      [LF_ARRAY]: body + 8, [LF_ENUM]: body + 8,
+      [LF_ARRAY]: body + 8, [LF_ENUM]: body + 12,
     }[leaf] ?? end;
     if (bodyEnd > end) break;
 
@@ -495,7 +501,7 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
         leaf, kind: 'aggregate', keyword,
         // Bit 7 of the property field marks a forward reference: it names the
         // type but carries no layout, so it is not a complete fact.
-        forwardReference: (properties & 0x0080) !== 0,
+        forwardReference: (properties & CLASS_OPTION_FORWARD_REFERENCE) !== 0,
         memberCount: count,
         fieldList,
         sizeBytes,
@@ -520,7 +526,30 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
       const { value: sizeBytes } = numeric;
       types.set(index, { leaf, kind: 'array', elementType: view.getUint32(body, true), sizeBytes });
     } else if (leaf === LF_ENUM) {
-      types.set(index, { leaf, kind: 'enum', underlying: view.getUint32(body + 4, true), name: null });
+      // LF_ENUM is a TagRecord: NumEnumerators, Properties, UnderlyingType,
+      // FieldListType, Name, and (when HasUniqueName is set) UniqueName.
+      // Retaining only UnderlyingType made a recognized record render as
+      // `unknown`, while also skipping structural validation of its names
+      // (#4058).
+      const memberCount = view.getUint16(body, true);
+      const properties = view.getUint16(body + 2, true);
+      const underlying = view.getUint32(body + 4, true);
+      const fieldList = view.getUint32(body + 8, true);
+      const nameEntry = cstringWithNext(bytes, body + 12, end);
+      if (!nameEntry) break;
+      let uniqueName = null;
+      if ((properties & CLASS_OPTION_HAS_UNIQUE_NAME) !== 0) {
+        const uniqueNameEntry = cstringWithNext(bytes, nameEntry.next, end);
+        if (!uniqueNameEntry) break;
+        uniqueName = uniqueNameEntry.value;
+      }
+      const knownProperties = (properties & ~CLASS_OPTIONS_KNOWN_MASK) === 0;
+      if (!knownProperties) unmodelled.add(leaf);
+      types.set(index, {
+        leaf, kind: 'enum', memberCount, properties, underlying, fieldList,
+        name: nameEntry.value, uniqueName,
+        complete: knownProperties && (properties & CLASS_OPTION_FORWARD_REFERENCE) === 0,
+      });
     } else if (leaf === LF_FIELDLIST) {
       const fieldList = parseFieldList(view, bytes, body, end, unmodelled);
       if (!fieldList.complete) fieldListsComplete = false;
@@ -759,6 +788,21 @@ export function describeTypeIndex(index, types, depth = 0) {
   if (record.kind === 'array') {
     const element = describeTypeIndex(record.elementType, types, depth + 1);
     return { name: `${element.name}[]`, sizeBytes: record.sizeBytes, class: 'array', complete: false };
+  }
+  if (record.kind === 'enum') {
+    const underlying = describeTypeIndex(record.underlying, types, depth + 1);
+    // CodeView enumerations have an integral underlying machine type. Do not
+    // launder a malformed/unknown target into authoritative enum width/class.
+    const integralUnderlying = underlying.complete === true
+      && underlying.class === 'integer'
+      && Number.isSafeInteger(underlying.widthBits)
+      && underlying.widthBits > 0;
+    return {
+      name: record.name ? `enum ${record.name}` : 'enum <anonymous>',
+      widthBits: integralUnderlying ? underlying.widthBits : undefined,
+      class: integralUnderlying ? 'integer' : undefined,
+      complete: record.complete === true && integralUnderlying,
+    };
   }
   return { name: 'unknown', complete: false };
 }
