@@ -85,8 +85,8 @@ export class ContextBroker {
 export { UNTRUSTED_NOTICE };
 
 function boundedPositiveNumber(value, fallback, minimum, integer = false) {
-  const numeric = Number(value ?? fallback);
-  if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
+  const numeric = value ?? fallback;
+  if (typeof numeric !== 'number' || !Number.isFinite(numeric) || numeric <= 0) return fallback;
   const bounded = Math.max(minimum, numeric);
   return integer ? Math.floor(bounded) : bounded;
 }

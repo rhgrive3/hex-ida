@@ -90,6 +90,12 @@ function strictNonEmptyString(value, code) {
   return text;
 }
 
+function optionalString(value, code) {
+  if (value == null) return null;
+  if (typeof value !== 'string') fail(code);
+  return value;
+}
+
 function metadataAddress(value) {
   if (typeof value !== 'string') fail('metadata-record-invalid-address');
   const text = value.trim();
@@ -316,7 +322,7 @@ export function createLanguageMetadataRecord(input = {}) {
   const record = deepFreeze({
     kind,
     entityId: strictNonEmptyString(input.entityId, 'metadata-record-entity-required'),
-    name: input.name == null ? null : String(input.name),
+    name: optionalString(input.name, 'metadata-record-invalid-name'),
     address: input.address == null ? null : metadataAddress(input.address),
     sizeBytes: optionalSizeBytes(input.sizeBytes),
     descriptor: input.descriptor ?? null,

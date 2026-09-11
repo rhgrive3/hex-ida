@@ -34,7 +34,7 @@ function putDynamic(view, index, tag, value) {
 }
 
 // stOther: 0x80 = STO_RISCV_VARIANT_CC, 0 = ordinary
-function fixture(stOther) {
+function fixture(stOther, { executable = false, symbolValue = BASE + 0x1000n } = {}) {
   const bytes = new Uint8Array(0x800);
   const view = new DataView(bytes.buffer);
   const strtabVa = BASE + BigInt(STRTAB_OFFSET);
@@ -59,7 +59,7 @@ function fixture(stOther) {
   view.setUint8(SYMTAB_OFFSET + 28, 0x12); // STB_GLOBAL | STT_FUNC
   view.setUint8(SYMTAB_OFFSET + 29, stOther);
   view.setUint16(SYMTAB_OFFSET + 30, 1, true);
-  view.setBigUint64(SYMTAB_OFFSET + 32, BASE + 0x1000n, true);
+  view.setBigUint64(SYMTAB_OFFSET + 32, symbolValue, true);
   view.setBigUint64(SYMTAB_OFFSET + 40, 16n, true);
 
   const segment = {
@@ -67,7 +67,9 @@ function fixture(stOther) {
     size: 0x800n,
     fileOffset: 0n,
     fileSize: 0x800n,
-    perms: { read: true, write: true, execute: false },
+    perms: executable
+      ? { read: true, write: false, execute: true }
+      : { read: true, write: true, execute: false },
   };
   const image = {
     warnings: [],
@@ -145,4 +147,29 @@ test('6061: non-RISC-V machine never claims variant-cc', () => {
   const sym = image.symbols.find((s) => s.name === 'vecfn');
   assert.ok(sym, 'vecfn must be decoded');
   assert.equal(sym.riscvVariantCc, false);
+});
+
+// #6061 residual: the section-backed parser propagates variant-cc evidence
+// into function seeds (callingConvention/abiMetadata) and registers the
+// function in metadata.riscvVariantCcFunctions; the PT_DYNAMIC path must
+// mint identical evidence for the same byte.
+test('6061: PT_DYNAMIC STT_FUNC seed carries variant-cc calling-convention evidence', () => {
+  const { image } = fixture(0x80, { executable: true, symbolValue: BASE + 0x20n });
+  const seed = image.functions.find((f) => f.name === 'vecfn');
+  assert.ok(seed, 'variant-cc function seed must be minted from the dynamic symbol');
+  assert.equal(seed.exactFunctionStart, true);
+  assert.equal(seed.callingConvention, 'riscv-vector-variant');
+  assert.deepEqual(seed.abiMetadata, { riscvVariantCc: true, stOther: 0x80 });
+  assert.deepEqual(image.metadata.riscvVariantCcFunctions, [
+    { name: 'vecfn', address: BASE + 0x20n, symbolIndex: 1, tableIndex: -1, stOther: 0x80, callingConvention: 'riscv-vector-variant' },
+  ]);
+});
+
+test('6061: ordinary PT_DYNAMIC function seed keeps null calling convention and no registry', () => {
+  const { image } = fixture(0, { executable: true, symbolValue: BASE + 0x20n });
+  const seed = image.functions.find((f) => f.name === 'vecfn');
+  assert.ok(seed, 'ordinary function seed must still be minted');
+  assert.equal(seed.callingConvention, null);
+  assert.equal(seed.abiMetadata, null);
+  assert.equal(image.metadata.riscvVariantCcFunctions, undefined);
 });

@@ -52,6 +52,8 @@ const DW_TAG = Object.freeze({
   subroutine_type: 0x15,
 });
 
+const SUPPORTED_DW_TAGS = new Set(Object.values(DW_TAG));
+
 const DW_AT = Object.freeze({
   location: 0x02,
   name: 0x03,
@@ -96,6 +98,10 @@ const DW_FORM = Object.freeze({
 const ADDRX_FORMS = Object.freeze([DW_FORM.addrx, DW_FORM.addrx1, DW_FORM.addrx2, DW_FORM.addrx3, DW_FORM.addrx4]);
 /** Forms whose resolved value is an absolute address (direct or addrx-resolved). */
 const ADDRESS_CLASS_FORMS = Object.freeze([DW_FORM.addr, ...ADDRX_FORMS]);
+// Supplementary-object references live in a distinct debug object namespace.
+// Until that object is loaded and identity-validated, they must never fall
+// back to offsets in the current `.debug_info` / `.debug_str` (#4206).
+const SUPPLEMENTARY_REFERENCE_FORMS = Object.freeze([DW_FORM.ref_sup4, DW_FORM.ref_sup8]);
 const DEFAULT_MAX_ADDR_CONTRIBUTION_SCANS = 4096;
 
 const DW_UT = Object.freeze({
@@ -273,10 +279,16 @@ function readForm(cursor, form, unit, sections, implicitConst) {
       const low = cursor.u16();
       return { value: BigInt(low | (cursor.u8() << 16)) };
     }
-    case DW_FORM.data4: case DW_FORM.ref4: case DW_FORM.strx4: case DW_FORM.addrx4: case DW_FORM.ref_sup4:
+    case DW_FORM.data4: case DW_FORM.ref4: case DW_FORM.strx4: case DW_FORM.addrx4:
       return { value: BigInt(cursor.u32()) };
-    case DW_FORM.data8: case DW_FORM.ref8: case DW_FORM.ref_sig8: case DW_FORM.ref_sup8:
+    case DW_FORM.ref_sup4:
+      cursor.u32();
+      return { value: null, unsupported: true };
+    case DW_FORM.data8: case DW_FORM.ref8: case DW_FORM.ref_sig8:
       return { value: cursor.u64() };
+    case DW_FORM.ref_sup8:
+      cursor.u64();
+      return { value: null, unsupported: true };
     case DW_FORM.data16: return { value: cursor.slice(16) };
     case DW_FORM.sdata: return { value: cursor.sleb() };
     case DW_FORM.udata: case DW_FORM.ref_udata: case DW_FORM.strx: case DW_FORM.addrx:
@@ -305,8 +317,11 @@ function readForm(cursor, form, unit, sections, implicitConst) {
       return { value: unit.version === 2
         ? readUnsignedWidth(cursor, unit.addressSize)
         : (unit.offsetSize === 8 ? cursor.u64() : BigInt(cursor.u32())) };
-    case DW_FORM.sec_offset: case DW_FORM.strp_sup:
+    case DW_FORM.sec_offset:
       return { value: unit.offsetSize === 8 ? cursor.u64() : BigInt(cursor.u32()) };
+    case DW_FORM.strp_sup:
+      if (unit.offsetSize === 8) cursor.u64(); else cursor.u32();
+      return { value: null, unsupported: true };
     case DW_FORM.exprloc: case DW_FORM.block: {
       const length = Number(cursor.uleb());
       return { value: cursor.slice(length) };
@@ -529,7 +544,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
 
     // DWARF5 extends the common unit header according to unit_type. These bytes
     // are metadata, not DIE abbreviation codes (#3810). Reads stay unit-local so
-    // truncated type signatures/type offsets/dwo_ids fail closed.
+    // truncated type signatures/type_offsets/dwo_ids fail closed.
     if (version === 5) {
       try {
         if (unitType === DW_UT.type || unitType === DW_UT.split_type) {
@@ -659,6 +674,11 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
         unitComplete = false;
         break;
       }
+      const tagSupported = SUPPORTED_DW_TAGS.has(declaration.tag);
+      if (!tagSupported) {
+        diagnostics.push(`unsupported tag 0x${declaration.tag.toString(16)} at 0x${dieOffset.toString(16)}`);
+        complete = false;
+      }
       // A .debug_info compilation unit roots at exactly one DW_TAG_compile_unit
       // or DW_TAG_partial_unit DIE (DWARF4 §7.5). Any other root tag, or a
       // second top-level DIE, is a structure the format cannot express (#5251).
@@ -683,7 +703,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       // Keep the first declaration for deterministic decoding, but never
       // publish a DIE from an ambiguous abbreviation table as complete
       // evidence (#5728).
-      let dieComplete = !duplicateCode;
+      let dieComplete = !duplicateCode && tagSupported;
       try {
         for (const spec of declaration.attributes) {
           const read = readForm(cursor, spec.form, unit, sections, spec.implicitConst);
@@ -759,6 +779,25 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
         }
       }
 
+      // An address-class DW_AT_high_pc is an absolute end address, not an
+      // unsigned size. A reversed range is malformed debug evidence: keep the
+      // DIE for pagination/diagnostics, but withhold completeness so it cannot
+      // become an exact function extent (#4232).
+      const lowPcEntry = attributes.get(DW_AT.low_pc);
+      const highPcEntry = attributes.get(DW_AT.high_pc);
+      if (lowPcEntry?.value != null && highPcEntry?.value != null && ADDRESS_CLASS_FORMS.includes(highPcEntry.form)) {
+        const low = BigInt(lowPcEntry.value);
+        const high = BigInt(highPcEntry.value);
+        const extent = high - low;
+        if (extent < 0n || extent > BigInt(Number.MAX_SAFE_INTEGER)) {
+          dieComplete = false;
+          complete = false;
+          diagnostics.push(extent < 0n
+            ? `DW_AT_high_pc precedes DW_AT_low_pc at 0x${dieOffset.toString(16)}`
+            : `DW_AT_high_pc range exceeds exact size bounds at 0x${dieOffset.toString(16)}`);
+        }
+      }
+
       const die = {
         offset: dieOffset,
         tag: declaration.tag,
@@ -817,14 +856,18 @@ function attributeName(die, dies) {
   return inherited && typeof inherited.entry.value === 'string' ? inherited.entry.value : null;
 }
 
-/** Resolves one DW_AT_specification target, honoring unit-relative ref forms. */
-function specificationTarget(die, dies) {
-  const entry = die.attributes.get(DW_AT.specification);
-  if (!entry) return null;
-  const raw = Number(entry.value ?? 0);
+/** Preserves existing reference dispatch while blocking supplementary-object fallback. */
+function nonSupplementaryReferenceTarget(entry, owner, dies) {
+  if (!entry || entry.value == null || SUPPLEMENTARY_REFERENCE_FORMS.includes(entry.form)) return null;
+  const raw = Number(entry.value);
   const isUnitRelative = [DW_FORM.ref1, DW_FORM.ref2, DW_FORM.ref4, DW_FORM.ref8, DW_FORM.ref_udata].includes(entry.form);
-  const target = isUnitRelative && die.unit ? die.unit.start + raw : raw;
+  const target = isUnitRelative && owner.unit ? owner.unit.start + raw : raw;
   return dies.get(target) ?? null;
+}
+
+/** Resolves one DW_AT_specification target, honoring reference namespaces. */
+function specificationTarget(die, dies) {
+  return nonSupplementaryReferenceTarget(die.attributes.get(DW_AT.specification), die, dies);
 }
 
 /**
@@ -878,11 +921,7 @@ function specificationResolved(die, dies) {
 function referencedType(die, dies) {
   const effective = effectiveAttribute(die, DW_AT.type, dies);
   if (!effective) return null;
-  const { entry, owner } = effective;
-  const raw = Number(entry.value ?? 0);
-  const isUnitRelative = [DW_FORM.ref1, DW_FORM.ref2, DW_FORM.ref4, DW_FORM.ref8, DW_FORM.ref_udata].includes(entry.form);
-  const target = isUnitRelative && owner.unit ? owner.unit.start + raw : raw;
-  return dies.get(target) ?? null;
+  return nonSupplementaryReferenceTarget(effective.entry, effective.owner, dies);
 }
 
 /**
@@ -900,21 +939,44 @@ function describeType(die, dies, depth = 0, seen = new Set()) {
 
   switch (die.tag) {
     case DW_TAG.base_type: {
-      const encoding = Number(attributeValue(die, DW_AT.encoding) ?? 0);
+      const rawEncoding = attributeValue(die, DW_AT.encoding);
+      const encoding = rawEncoding == null ? null : Number(rawEncoding);
+      const encodingClass = encoding != null
+        && Object.prototype.hasOwnProperty.call(ENCODING_CLASS, encoding)
+        ? ENCODING_CLASS[encoding]
+        : 'unknown';
       return {
         name: name ?? 'base',
         widthBits: byteSize == null ? null : Number(byteSize) * 8,
-        class: ENCODING_CLASS[encoding] ?? 'integer',
-        complete: byteSize != null && die.complete,
+        class: encodingClass,
+        complete: byteSize != null && encodingClass !== 'unknown' && die.complete,
       };
     }
     case DW_TAG.pointer_type: {
-      const target = describeType(referencedType(die, dies), dies, depth + 1, seen);
+      const specificationComplete = specificationResolved(die, dies);
+      const effectiveType = effectiveAttribute(die, DW_AT.type, dies);
+      const widthBits = byteSize == null ? die.unit.addressSize * 8 : Number(byteSize) * 8;
+
+      // DW_AT_type may be omitted for a genuine void pointer.  That absence is
+      // authoritative only when the specification chain itself is resolved;
+      // otherwise a missing inherited type would be indistinguishable from
+      // a legal void pointee (#4657).
+      if (!effectiveType) {
+        return {
+          name: specificationComplete ? 'void *' : 'unknown *',
+          widthBits,
+          class: 'pointer',
+          complete: die.complete && specificationComplete,
+        };
+      }
+
+      const targetDie = nonSupplementaryReferenceTarget(effectiveType.entry, effectiveType.owner, dies);
+      const target = describeType(targetDie, dies, depth + 1, seen);
       return {
         name: `${target.name} *`,
-        widthBits: byteSize == null ? die.unit.addressSize * 8 : Number(byteSize) * 8,
+        widthBits,
         class: 'pointer',
-        complete: die.complete,
+        complete: die.complete && specificationComplete && target.complete,
       };
     }
     case DW_TAG.typedef: {
@@ -1184,12 +1246,15 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
       // an addrx form resolved through .debug_addr, #6184).
       const highForm = die.attributes.get(DW_AT.high_pc)?.form;
       const highIsAddress = ADDRESS_CLASS_FORMS.includes(highForm);
+      const absoluteRange = highPc != null && highIsAddress && lowPc != null
+        ? BigInt(highPc) - BigInt(lowPc)
+        : null;
       const sizeBytes = highPc == null
         ? null
         : highIsAddress
-          ? lowPc == null
-            ? null
-            : Number(BigInt(highPc) - BigInt(lowPc))
+          ? absoluteRange != null && absoluteRange >= 0n && absoluteRange <= BigInt(Number.MAX_SAFE_INTEGER)
+            ? Number(absoluteRange)
+            : null
           : Number(highPc);
       const descriptor = {
         isFunction,
