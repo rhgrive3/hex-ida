@@ -1,0 +1,92 @@
+name: Fixer3 4329 transport
+on:
+  push:
+    branches:
+      - fixer3/issue-4329-nonmemory-absolute-space
+permissions:
+  contents: write
+jobs:
+  transport:
+    if: ${{ !contains(github.event.head_commit.message, '[transport-applied]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply validated Drive-mirror patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=c90d8b38833ae664defb512be58538e397967f72
+          git show "$BASE:js/analysis/alias/canonical-address-v2.js" > js/analysis/alias/canonical-address-v2.js
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('js/analysis/alias/canonical-address-v2-core.js')
+          s = p.read_text()
+          old = '''function exactAddressRootId(proof) {
+            return `entity_memory_address_${stableDigest({
+              version: CANONICAL_ADDRESS_DERIVATION_VERSION,
+              addressSpace: proof.addressSpace,
+              rootKind: proof.kind,
+              rootIdentity: proof.rootIdentity,
+              rootEntityId: proof.rootEntityId ?? null,
+              canonicalOffset: proof.offset.toString(),
+              widthBits: proof.widthBits ?? null,
+            })}`;
+          }
+          '''
+          new = old + '''
+          function absoluteAddressRootId(proof, address) {
+            return `entity_memory_address_${stableDigest({
+              version: CANONICAL_ADDRESS_DERIVATION_VERSION,
+              addressSpace: proof.addressSpace,
+              rootKind: proof.kind,
+              canonicalAddress: address,
+              widthBits: proof.widthBits ?? null,
+            })}`;
+          }
+          '''
+          if old not in s:
+              raise SystemExit('exactAddressRootId anchor mismatch')
+          s = s.replace(old, new, 1)
+          old = '''  if (proof.kind === 'absolute') {
+            return deepFreeze({ kind: 'global-absolute', address: canonicalAddress(proof.address) });
+          }
+          '''
+          new = '''  if (proof.kind === 'absolute') {
+            const address = canonicalAddress(proof.address);
+            const proofSpace = typeof proof.addressSpace === 'string' && proof.addressSpace
+              ? proof.addressSpace
+              : 'memory';
+            if (proofSpace === 'memory') return deepFreeze({ kind: 'global-absolute', address });
+            return deepFreeze({
+              kind: 'rooted-offset',
+              rootEntityId: absoluteAddressRootId(proof, address),
+              offset: '0',
+              addressSpace: proofSpace,
+            });
+          }
+          '''
+          if old not in s:
+              raise SystemExit('absolute projection anchor mismatch')
+          p.write_text(s.replace(old, new, 1))
+
+          t = Path('tests/phase7/alias/issue-4329-nonmemory-absolute-address-space.test.mjs')
+          x = t.read_text().replace(
+              "../../../js/analysis/alias/canonical-address-v2.js",
+              "../../../js/analysis/alias/canonical-address-v2-core.js",
+          )
+          t.write_text(x)
+          PY
+          rm .github/workflows/fixer3-4329-transport.yml
+          test "$(git hash-object js/analysis/alias/canonical-address-v2.js)" = 32be82d579743c951693ddb403eec43c11ad3ff8
+          test "$(git hash-object js/analysis/alias/canonical-address-v2-core.js)" = dd0dda3b677ed5e71e623a10015cf5c6d7fa436e
+          test "$(git hash-object tests/phase7/alias/issue-4329-nonmemory-absolute-address-space.test.mjs)" = 92c868f2f74833681d86b59ffa706900734c9d1a
+          node --check js/analysis/alias/canonical-address-v2-core.js
+          node --test tests/phase7/alias/issue-4329-nonmemory-absolute-address-space.test.mjs
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/analysis/alias/canonical-address-v2.js js/analysis/alias/canonical-address-v2-core.js tests/phase7/alias/issue-4329-nonmemory-absolute-address-space.test.mjs .github/workflows/fixer3-4329-transport.yml
+          git commit -m 'fix(alias): patch core absolute-space projection (#4329) [transport-applied]'
+          git push origin HEAD:fixer3/issue-4329-nonmemory-absolute-space
