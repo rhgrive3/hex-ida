@@ -9,7 +9,6 @@ const {
   CANONICAL_ACCESS_ISSUER,
   MEMORY_SSA_PROOF_VERSION,
   canonicalAccessProof,
-  canonicalSemanticAccessProvider,
   isCanonicalAccessProvider,
 } = memorySsaProof;
 
@@ -120,8 +119,8 @@ assert.equal(Object.hasOwn(memorySsaProof, 'registerCanonicalAccessProvider'), f
   'arbitrary callers must not receive a self-service canonical-provider registrar');
 assert.equal(isCanonicalAccessProvider(candidateProvider), false,
   'an arbitrary canonical-looking callback must not acquire provider authority');
-assert.equal(isCanonicalAccessProvider(canonicalSemanticAccessProvider), true,
-  'the module-owned fixed provider is the sole callback identity with authority');
+assert.equal(Object.hasOwn(memorySsaProof, 'canonicalSemanticAccessProvider'), false,
+  'canonical provider implementation must remain module-private');
 
 assert.equal(canonicalAccessProof({
   raw: { ...exact, issuer: { ...exact.issuer, id: 'untrusted.provider' } },
@@ -138,21 +137,25 @@ assert.equal(canonicalAccessProof({
   providerCallback: candidateProvider,
 }), null, 'issuer version mismatch must not close unknown source qualifiers');
 
-const forgedCanonicalMetadata = buildWith(candidateProvider);
+let hostileCalls = 0;
+const hostileProvider = () => {
+  hostileCalls += 1;
+  throw new Error('caller access provider must never execute');
+};
+const forgedCanonicalMetadata = buildWith(hostileProvider);
 assert.equal(forgedCanonicalMetadata.accessProof, null,
-  'matching issuer/version/source/width/endian fields cannot self-mint callback authority');
+  'caller callback cannot mint a canonical access proof');
 assert.equal(forgedCanonicalMetadata.memory.volatility, 'unknown');
 assert.equal(forgedCanonicalMetadata.memory.atomic, 'unknown');
+assert.equal(hostileCalls, 0, 'untrusted access provider must not execute');
 
-const fixedProviderWithoutCanonicalEvidence = buildWith(canonicalSemanticAccessProvider);
-assert.equal(fixedProviderWithoutCanonicalEvidence.accessProof, null,
-  'fixed callback identity alone cannot fabricate missing canonical machine-effects evidence');
-
-const canonicalMetadata = buildWith(canonicalSemanticAccessProvider, memory(), { canonicalMachineEffects: true });
-assert.ok(canonicalMetadata.accessProof, 'module-owned provider must keep the legitimate canonical route reachable');
+const canonicalMetadata = buildWith(hostileProvider, memory(), { canonicalMachineEffects: true });
+assert.ok(canonicalMetadata.accessProof,
+  'producer-owned canonical machine-effects route must remain reachable without caller authority');
 assert.equal(canonicalMetadata.accessProof.issuer.id, CANONICAL_ACCESS_ISSUER);
 assert.equal(canonicalMetadata.memory.volatility, false);
 assert.equal(canonicalMetadata.memory.atomic, false);
+assert.equal(hostileCalls, 0, 'canonical route must not execute the caller callback');
 
 const knownSourceMetadata = buildWith(candidateProvider, memory({ volatility: false, atomic: false }));
 assert.ok(knownSourceMetadata.accessProof, 'already-proven source qualifiers must retain the provider-free path');

@@ -30,7 +30,7 @@ export const CANONICAL_STORE_VALUE_ISSUER = 'semantic-memoryssa.store-operand';
  * canonical machine-effects metadata and refuses everything outside the owned
  * ARM64 ordinary-memory family.
  */
-export function canonicalSemanticAccessProvider(descriptor) {
+function canonicalSemanticAccessProvider(descriptor) {
   const memory = descriptor?.memory;
   const machineEffects = descriptor?.node?.attributes?.machineEffects;
   const architectureId = machineEffects?.architectureId;
@@ -66,8 +66,11 @@ export function canonicalSemanticAccessProvider(descriptor) {
   });
 }
 
-export function isCanonicalAccessProvider(provider) {
-  return provider === canonicalSemanticAccessProvider;
+export function isCanonicalAccessProvider(_provider) {
+  // #4513: caller-supplied callbacks never acquire access-qualifier authority.
+  // canonicalAccessProof() derives the only allowed provider evidence from the
+  // current descriptor inside this module instead.
+  return false;
 }
 
 function weakObject(value) {
@@ -252,9 +255,14 @@ export function canonicalAccessProof({ raw, descriptor, identity, functionId, pr
   if (!memory) return null;
   const sourceEntityId = typeof descriptor?.node?.id === 'string' ? descriptor.node.id : '';
   if (!sourceEntityId) return null;
-  const provider = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  // Ignore caller-supplied provider evidence for authority. The canonical
+  // ordinary-access claim is derived from the current descriptor inside this
+  // module, so a callback cannot self-register, forge issuer fields, or execute
+  // user code to close unknown qualifiers.
+  const derivedProvider = canonicalSemanticAccessProvider(descriptor);
+  const provider = derivedProvider ?? {};
   const providerIssuer = weakObject(provider.issuer);
-  const providerAuthority = isCanonicalAccessProvider(providerCallback)
+  const providerAuthority = derivedProvider != null
     && providerIssuer?.type === 'canonical-memory-access-provider'
     && providerIssuer.id === CANONICAL_ACCESS_ISSUER
     && providerIssuer.version === MEMORY_SSA_PROOF_VERSION;
