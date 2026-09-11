@@ -136,7 +136,10 @@ export function describeBinaryImage(image, options = {}) {
     isArm64: image.arch === 'arm64' || image.arch === 'arm64e',
     isArm64e: image.arch === 'arm64e',
     textVM: (regions.find((r) => r.exec)?.vmAddr ?? image.imageBase ?? 0n),
-    encrypted: false,
+    /* Parser evidence is the encryption authority: cryptid != 0 marks an
+       encrypted (App Store FairPlay) image. Images without encryption
+       metadata keep the legacy plaintext default (#4994). */
+    encrypted: image.metadata?.encryption ? image.metadata.encryption.cryptid !== 0 : false,
     endian: image.endian,
     format: image.format,
     capability,
@@ -151,6 +154,7 @@ export function describeBinaryImage(image, options = {}) {
     endian: image.endian,
   };
   if (image.platform != null) formatMetadata.platform = image.platform;
+  if (image.metadata?.encryption != null) formatMetadata.encryption = { ...image.metadata.encryption };
   if (image.abi != null) formatMetadata.abi = image.abi;
   if (image.entrypoint != null) formatMetadata.entrypoint = image.entrypoint;
   if (image.imageBase != null) formatMetadata.imageBase = image.imageBase;

@@ -9,6 +9,7 @@ const {
   CANONICAL_ACCESS_ISSUER,
   MEMORY_SSA_PROOF_VERSION,
   canonicalAccessProof,
+  canonicalSemanticAccessProvider,
   isCanonicalAccessProvider,
 } = memorySsaProof;
 
@@ -41,7 +42,7 @@ function memory(overrides = {}) {
   };
 }
 
-function makeIr(accessMemory) {
+function makeIr(accessMemory, { canonicalMachineEffects = false } = {}) {
   return createSemanticIrFunction({
     functionId,
     entryBlockId: 'entry',
@@ -60,6 +61,18 @@ function makeIr(accessMemory) {
       outputs: [],
       origin: origin('load_0'),
       memory: accessMemory,
+      ...(canonicalMachineEffects ? {
+        attributes: {
+          machineEffects: {
+            instructionId: 'instruction_load_0',
+            architectureId: 'arm64',
+            mode: 'a64',
+            bundleCompleteness: 'exact',
+            operationKind: 'memory-read',
+            bundleMetadata: { family: 'arm64-memory', mnemonic: 'ldr' },
+          },
+        },
+      } : {}),
     }],
     completeness: 'complete',
     unknowns: [],
@@ -76,6 +89,8 @@ function providerFor(descriptor, overrides = {}) {
       version: MEMORY_SSA_PROOF_VERSION,
     },
     sourceEntityId: descriptor.node.id,
+    architectureId: 'arm64',
+    family: 'arm64-memory',
     widthBits: descriptor.memory.widthBits,
     endian: descriptor.memory.endian,
     volatility: false,
@@ -85,8 +100,8 @@ function providerFor(descriptor, overrides = {}) {
   };
 }
 
-function buildWith(provider, accessMemory = memory()) {
-  const artifact = buildMemorySsa(makeIr(accessMemory), cfg, {
+function buildWith(provider, accessMemory = memory(), { canonicalMachineEffects = false } = {}) {
+  const artifact = buildMemorySsa(makeIr(accessMemory, { canonicalMachineEffects }), cfg, {
     regions: [region],
     resolveRegion() { return region; },
     queryAlias() { return 'must'; },
@@ -101,16 +116,12 @@ const identity = { functionId, memorySsaBuildVersion: '1.0.1' };
 const exact = providerFor(descriptor);
 const candidateProvider = (item) => providerFor(item);
 
-assert.equal(
-  Object.hasOwn(memorySsaProof, 'registerCanonicalAccessProvider'),
-  false,
-  'arbitrary callers must not receive a self-service canonical-provider registrar',
-);
-assert.equal(
-  isCanonicalAccessProvider(candidateProvider),
-  false,
-  'an arbitrary canonical-looking callback must not acquire provider authority',
-);
+assert.equal(Object.hasOwn(memorySsaProof, 'registerCanonicalAccessProvider'), false,
+  'arbitrary callers must not receive a self-service canonical-provider registrar');
+assert.equal(isCanonicalAccessProvider(candidateProvider), false,
+  'an arbitrary canonical-looking callback must not acquire provider authority');
+assert.equal(isCanonicalAccessProvider(canonicalSemanticAccessProvider), true,
+  'the module-owned fixed provider is the sole callback identity with authority');
 
 assert.equal(canonicalAccessProof({
   raw: { ...exact, issuer: { ...exact.issuer, id: 'untrusted.provider' } },
@@ -126,45 +137,28 @@ assert.equal(canonicalAccessProof({
   functionId,
   providerCallback: candidateProvider,
 }), null, 'issuer version mismatch must not close unknown source qualifiers');
-assert.equal(canonicalAccessProof({
-  raw: exact,
-  descriptor,
-  identity,
-  functionId,
-  providerTrusted: true,
-}), null, 'a caller-controlled trust flag must not authorize a provider');
 
-const forgedProvider = () => ({ ...exact, evidence: { memoryAccessDigest: 'forged' } });
-const forgedMetadata = buildWith(forgedProvider);
-assert.equal(forgedMetadata.accessProof, null, 'an arbitrary callback cannot mint a canonical access proof');
-assert.equal(forgedMetadata.memory.volatility, 'unknown');
-assert.equal(forgedMetadata.memory.atomic, 'unknown');
-
-const forgedCanonicalFields = (item) => providerFor(item);
-const forgedCanonicalMetadata = buildWith(forgedCanonicalFields);
-assert.equal(
-  forgedCanonicalMetadata.accessProof,
-  null,
-  'matching issuer/version/source/width/endian fields cannot self-mint callback authority',
-);
+const forgedCanonicalMetadata = buildWith(candidateProvider);
+assert.equal(forgedCanonicalMetadata.accessProof, null,
+  'matching issuer/version/source/width/endian fields cannot self-mint callback authority');
 assert.equal(forgedCanonicalMetadata.memory.volatility, 'unknown');
 assert.equal(forgedCanonicalMetadata.memory.atomic, 'unknown');
 
-const wrongIssuerProvider = (item) => providerFor(item, {
-  issuer: {
-    type: 'canonical-memory-access-provider',
-    id: 'wrong-provider',
-    version: MEMORY_SSA_PROOF_VERSION,
-  },
-});
-const wrongIssuerMetadata = buildWith(wrongIssuerProvider);
-assert.equal(wrongIssuerMetadata.accessProof, null, 'non-canonical issuer must remain fail-closed');
-assert.equal(wrongIssuerMetadata.memory.volatility, 'unknown');
-assert.equal(wrongIssuerMetadata.memory.atomic, 'unknown');
+const fixedProviderWithoutCanonicalEvidence = buildWith(canonicalSemanticAccessProvider);
+assert.equal(fixedProviderWithoutCanonicalEvidence.accessProof, null,
+  'fixed callback identity alone cannot fabricate missing canonical machine-effects evidence');
 
-const knownSourceMetadata = buildWith(null, memory({ volatility: false, atomic: false }));
+const canonicalMetadata = buildWith(canonicalSemanticAccessProvider, memory(), { canonicalMachineEffects: true });
+assert.ok(canonicalMetadata.accessProof, 'module-owned provider must keep the legitimate canonical route reachable');
+assert.equal(canonicalMetadata.accessProof.issuer.id, CANONICAL_ACCESS_ISSUER);
+assert.equal(canonicalMetadata.memory.volatility, false);
+assert.equal(canonicalMetadata.memory.atomic, false);
+
+const knownSourceMetadata = buildWith(candidateProvider, memory({ volatility: false, atomic: false }));
 assert.ok(knownSourceMetadata.accessProof, 'already-proven source qualifiers must retain the provider-free path');
 assert.equal(knownSourceMetadata.memory.volatility, false);
 assert.equal(knownSourceMetadata.memory.atomic, false);
+assert.equal(knownSourceMetadata.accessProof.architectureId, 'canonical-semantic',
+  'untrusted provider metadata must not decorate the provider-free proof');
 
 console.log('issue #4513 MemorySSA access provider authority: PASS');

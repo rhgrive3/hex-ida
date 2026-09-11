@@ -63,7 +63,7 @@ function validExtendShape(family, destinationWidthBits, sourceWidthBits) {
   }
   if (family === 'movzx' || family === 'movsx') {
     return (sourceWidth === 8 && [16,32,64].includes(destinationWidth))
-      || (sourceWidth === 16 && [16,32,64].includes(destinationWidth));
+      || (sourceWidth === 16 && [32,64].includes(destinationWidth));
   }
   return false;
 }

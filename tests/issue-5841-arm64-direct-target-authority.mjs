@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { directTargetOf } from '../../js/targets/architecture/arm64/effects/common.js';
-import { liftArm64ControlEffects } from '../../js/targets/architecture/arm64/effects/control.js';
+import { directTargetOf } from '../js/targets/architecture/arm64/effects/common.js';
+import { liftArm64ControlEffects } from '../js/targets/architecture/arm64/effects/control.js';
 
 function branchInstruction(explicitTarget, id = 'issue-5841-b') {
   return {
@@ -46,10 +46,12 @@ function callInstruction(explicitTarget, id = 'issue-5841-bl') {
       return 4096;
     },
   };
+  // Canonical explicit-target grammar per the #5841 contract (and the merged
+  // #7479 PR body): bigint, safe non-negative numbers, and canonical numeric
+  // strings are accepted primitive spellings; everything else — arrays,
+  // booleans, and structured coercion-hook objects — must never mint an edge.
   const malformed = [
     [4096],
-    ['4096'],
-    4096,
     true,
     coercible,
   ];
@@ -67,6 +69,16 @@ function callInstruction(explicitTarget, id = 'issue-5841-bl') {
     assert.equal(call.completeness, 'partial');
     assert.equal(call.controlEffect.kind, 'unknown');
     assert.equal(call.unknownEffects.reason, 'arm64-bl-target-unavailable');
+  }
+
+  // The accepted primitive spellings all canonicalize to the same target.
+  for (const spelling of [4096n, 4096, '4096', '0x1000']) {
+    assert.equal(directTargetOf({ branchTarget: spelling }, 'branch'), 4096n);
+    assert.equal(directTargetOf({ callTarget: spelling }, 'call'), 4096n);
+  }
+  // Negative and non-integer numbers are not architectural addresses.
+  for (const invalid of [-4096, 4096.5]) {
+    assert.equal(directTargetOf({ branchTarget: invalid }, 'branch'), null);
   }
 
   assert.equal(coercions, 0, 'explicit direct-target authority must not invoke structured coercion hooks');

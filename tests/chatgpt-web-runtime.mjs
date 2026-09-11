@@ -44,7 +44,18 @@ async function testConversationRouting() {
   assert.equal(fresh, 1, 'routing away from an existing conversation must still explicitly create a fresh ChatGPT conversation');
   current = { id: 'beta', url: 'https://chatgpt.com/c/beta' }; router.bind('B', current);
   links.set('beta', conversationLink('beta', () => { current = { id: 'beta', url: 'https://chatgpt.com/c/beta' }; }));
-  await router.route('A'); assert.equal(current.id, 'alpha');
+  let prefixClicks = 0;
+  links.delete('alpha');
+  links.set('alpha-prefix', conversationLinkHref('/c/alpha-older', () => {
+    prefixClicks++;
+    current = { id: 'alpha-older', url: 'https://chatgpt.com/c/alpha-older' };
+  }));
+  links.set('alpha', conversationLinkHref('/c/alpha?model=gpt-5#turn', () => {
+    current = { id: 'alpha', url: 'https://chatgpt.com/c/alpha' };
+  }));
+  await router.route('A');
+  assert.equal(current.id, 'alpha');
+  assert.equal(prefixClicks, 0, 'conversation routing must not select a link whose ID merely starts with the bound ID');
   await router.route('B'); assert.equal(current.id, 'beta');
   assert.equal(JSON.parse(storage.getItem('hex.chatgpt.conversations.v1')).A.url, 'https://chatgpt.com/c/alpha');
 }
@@ -472,7 +483,8 @@ function realChatGPTTurnFixture(role, id, text) {
 }
 
 function option(label, click) { return { label, model: /Sol/.test(label) ? 'chatgpt-web/sol' : null, reasoning: /High/.test(label) ? 'high' : null, node: { click } }; }
-function conversationLink(id, click) { return { getAttribute: (name) => name === 'href' ? `/c/${id}` : null, click }; }
+function conversationLink(id, click) { return conversationLinkHref(`/c/${id}`, click); }
+function conversationLinkHref(href, click) { return { getAttribute: (name) => name === 'href' ? href : null, click }; }
 function memoryStorage() { const values = new Map(); return { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value) }; }
 async function testTransientConversationGapIsNotASwitch() {
   /*

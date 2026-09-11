@@ -8,17 +8,55 @@ function boundedFunctionCount(value, maximum) {
   return Number.isNaN(count) ? 0 : Math.min(maximum, Math.max(0, Math.floor(count)));
 }
 
+const MAX_U64_ADDRESS = 0xffffffffffffffffn;
+
+function canonicalAddressKey(value) {
+  let address;
+  if (typeof value === 'bigint') address = value;
+  else if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) return null;
+    address = BigInt(value);
+  } else if (typeof value === 'string') {
+    const text = value.trim();
+    const isHex = /^0[xX][0-9a-fA-F]+$/.test(text);
+    const isDecimal = /^[0-9]+$/.test(text);
+    if ((!isHex && !isDecimal) || (isHex ? text.length > 18 : text.length > 20)) return null;
+    try { address = BigInt(text); } catch { return null; }
+  } else return null;
+  if (address < 0n || address > MAX_U64_ADDRESS) return null;
+  return address.toString();
+}
+
+function symbolColumns(addresses, names) {
+  const addressColumn = Array.isArray(addresses) || (ArrayBuffer.isView(addresses) && typeof addresses.length === 'number') ? addresses : [];
+  const nameColumn = Array.isArray(names) ? names : [];
+  const count = Math.min(addressColumn.length, nameColumn.length);
+  let malformed = false;
+  for (let i = 0; i < count; i++) {
+    if (canonicalAddressKey(addressColumn[i]) == null || typeof nameColumn[i] !== 'string') { malformed = true; break; }
+  }
+  if (!malformed) return { addresses:addressColumn, names:nameColumn, count };
+  const safeAddresses = [], safeNames = [];
+  for (let i = 0; i < count; i++) {
+    if (canonicalAddressKey(addressColumn[i]) == null || typeof nameColumn[i] !== 'string') continue;
+    safeAddresses.push(addressColumn[i]);
+    safeNames.push(nameColumn[i]);
+  }
+  return { addresses:safeAddresses, names:safeNames, count:safeAddresses.length };
+}
+
 export function createCompactFunctionSet(symbols, architecture, limit = 350000) {
   const functionAddresses = symbols?.funcs || [];
   const total = Number(functionAddresses.length || 0);
   const count = boundedFunctionCount(limit, total);
+  const symbolsForIdentity = symbolColumns(symbols?.addrs, symbols?.names);
   return Object.freeze({
     schema: COMPACT_DIFF_FUNCTION_SET_SCHEMA,
     evidenceProfile: SYMMETRIC_DIFF_PROFILE,
     architecture: String(architecture || 'unknown').toLowerCase(),
     functionAddresses,
-    symbolAddresses: symbols?.addrs || [],
-    symbolNames: symbols?.names || [],
+    symbolAddresses: symbolsForIdentity.addresses,
+    symbolNames: symbolsForIdentity.names,
     count,
     total,
     complete: count === total && symbols?.functionStartsComplete === true,
@@ -30,11 +68,12 @@ export function materializeCompactFunctionSet(input) {
   if (input?.schema !== COMPACT_DIFF_FUNCTION_SET_SCHEMA) return input || [];
   const functions = input.functionAddresses || [];
   const count = boundedFunctionCount(input.count, functions.length);
-  const symbolAddresses = input.symbolAddresses || [];
-  const symbolNames = input.symbolNames || [];
+  const symbolsForIdentity = symbolColumns(input.symbolAddresses, input.symbolNames);
   const names = new Map();
-  for (let i = 0; i < Math.min(symbolAddresses.length, symbolNames.length); i++) {
-    if (symbolNames[i]) names.set(String(symbolAddresses[i]), symbolNames[i]);
+  for (let i = 0; i < symbolsForIdentity.count; i++) {
+    const name = symbolsForIdentity.names[i];
+    const key = canonicalAddressKey(symbolsForIdentity.addresses[i]);
+    if (key != null && name) names.set(key, name);
   }
   const out = new Array(count);
   for (let i = 0; i < count; i++) {
@@ -42,7 +81,7 @@ export function materializeCompactFunctionSet(input) {
     const next = i + 1 < functions.length ? functions[i + 1] : null;
     out[i] = {
       address,
-      name: names.get(String(address)) || null,
+      name: names.get(canonicalAddressKey(address)) || null,
       size: next != null && next > address ? Number(next - address) : 0,
       architecture: input.architecture,
       strings: [], calls: [], imports: [], semantic: { writes: [], thresholds: [] }, fieldAccessShape: [],

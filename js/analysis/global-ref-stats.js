@@ -1,7 +1,25 @@
 function abortError(signal) {
-  const reason = signal?.reason;
-  if (reason instanceof Error && reason.name === 'AbortError') return reason;
-  const error = new Error(reason instanceof Error && reason.message ? reason.message : 'Operation aborted');
+  let reason;
+  try { reason = signal?.reason; } catch { /* unavailable reason uses fallback */ }
+  let errorReason = false;
+  try { errorReason = reason instanceof Error; } catch { /* hostile reason stays opaque */ }
+  if (errorReason) {
+    try { if (reason.name === 'AbortError') return reason; } catch { /* wrap below */ }
+  }
+
+  let message = 'Operation aborted';
+  if (reason !== undefined) {
+    if (errorReason) {
+      try {
+        if (typeof reason.message === 'string') message = reason.message;
+        else message = String(reason);
+      } catch { /* preserve the reason as cause and keep fallback message */ }
+    } else {
+      try { message = String(reason); } catch { /* preserve the reason as cause and keep fallback message */ }
+    }
+  }
+
+  const error = reason === undefined ? new Error(message) : new Error(message, { cause:reason });
   error.name = 'AbortError';
   return error;
 }
