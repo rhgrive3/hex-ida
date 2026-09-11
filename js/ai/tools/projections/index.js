@@ -193,6 +193,9 @@ export function projectGraph(result, meta = {}) {
   for (const key of ['results', 'functions', 'sites', 'callers', 'callees', 'nodes', 'blocks', 'paths', 'edges']) {
     if (Array.isArray(result?.[key])) data[key] = result[key].slice(0, key === 'edges' ? 40 : 28).map((row) => boundedProjection(row, { arrayLimit: 16, stringLimit: 1400, objectLimit: 48 }));
   }
+  for (const key of ['callersPage', 'calleesPage', 'continuations']) {
+    if (result?.[key] && typeof result[key] === 'object') data[key] = boundedProjection(result[key], { arrayLimit: 8, stringLimit: 1400, objectLimit: 24 });
+  }
   if (result?.from !== undefined) data.from = result.from;
   if (result?.to !== undefined) data.to = result.to;
   if (result?.view !== undefined) data.view = result.view;
