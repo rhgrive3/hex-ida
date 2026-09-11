@@ -775,6 +775,7 @@ function sourceCompleteness(pools, b) {
 }
 
 async function analyzeCandidates(query, pools, tools, b) {
+  const expectedCalls = expectedCallHints(query).hints;
   const merged = quotaMerge(pools, b.maxFunctions);
   b.candidateCount = merged.all.size;
   b.shortlistLimited = merged.all.size > b.maxFunctions;
@@ -812,9 +813,9 @@ async function analyzeCandidates(query, pools, tools, b) {
       complete: semanticReport.complete, coverage: semanticReport.coverage, reason: semanticReport.reason,
       returned: semanticReport.returned, total: semanticReport.total,
     };
-    if (query.expect && query.expect.calls && query.expect.calls.length && c.summary) {
+    if (expectedCalls.length && c.summary) {
       const names = (c.summary.calls || []).map((x) => lower(x.name || x.selector || ''));
-      if (query.expect.calls.some((expected) => names.some((n) => n.includes(lower(expected))))) c.score += 20;
+      if (expectedCalls.some((expected) => names.some((n) => n.includes(lower(expected))))) c.score += 20;
     }
     analyzed.push(c);
   }
