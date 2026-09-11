@@ -387,6 +387,8 @@ async function relativePointerSection(read,range,budget,parser,options={}){
   return{items,completeness:{present:true,declared,scanned,parsed:items.length,capped,unreadableEntries,invalidEntries,misalignedBytes,complete}};
 }
 
+const SWIFT_WITNESS_TABLE_FIRST_REQUIREMENT_OFFSET=1n;
+
 export async function buildSwiftMetadataModel(read,sections,opts={}){
   const signal=opts.signal??null;
   if(signal?.aborted)return null;
@@ -433,12 +435,12 @@ export async function buildSwiftMetadataModel(read,sections,opts={}){
     const requirements=protocol.requirements||[];
     if(requirements.length!==Number(protocol.numRequirements)||requirements.some((r)=>r.witnessCallable!==true)){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: non-callable protocol requirements prevent exact witness projection.`);continue;}
     if(!requirements.length)continue;
-    const seed={address:c.witnessTable,count:requirements.length,typeAddress:type.address,typeName:type.name,protocolAddress:protocol.address,protocolName:protocol.name,source:'conformance'};
+    const seed={address:c.witnessTable,count:requirements.length,entriesAddress:c.witnessTable+SWIFT_WITNESS_TABLE_FIRST_REQUIREMENT_OFFSET*8n,typeAddress:type.address,typeName:type.name,protocolAddress:protocol.address,protocolName:protocol.name,source:'conformance'};
     witnessSeeds.push(seed);seedAddresses.add(c.witnessTable.toString());
   }
   for(const w of witnessSeeds){
     if(signal?.aborted)return null;
-    const entries=await parseSwiftWitnessTable(get,w.address,w.count,budget,opts),expected=Math.min(normalizeBudget(w.count,0,100000),budget);if(entries.length!==expected||Number(w.count)>budget||entries.some((x)=>x.resolved!==true))witnessTablesComplete=false;witnessTables.push({...w,entries});
+    const entries=await parseSwiftWitnessTable(get,w.entriesAddress??w.address,w.count,budget,opts),expected=Math.min(normalizeBudget(w.count,0,100000),budget);if(entries.length!==expected||Number(w.count)>budget||entries.some((x)=>x.resolved!==true))witnessTablesComplete=false;witnessTables.push({...w,entries});
   }
   const completeness={types:typeScan.completeness,protocols:protoScan.completeness,conformances:confScan.completeness,vtables:{complete:vtablesComplete},witnessTables:{complete:witnessTablesComplete}};
   completeness.complete=Object.values(completeness).every((x)=>x?.complete===true);
