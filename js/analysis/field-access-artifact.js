@@ -94,10 +94,19 @@ function entryFor(backend, requestParams) {
   const map = cacheFor(backend);
   const key = artifactKey(requestParams);
   let entry = map.get(key);
+  if (entry?.retired === true) {
+    if (map.get(key) === entry) map.delete(key);
+    entry = null;
+  }
   if (entry) return entry;
 
   const request = backend.fieldAccess(requestParams);
-  entry = { request, waiters:0, result:null, promise:null };
+  entry = { request, waiters:0, result:null, promise:null, retired:false, retire:null };
+  entry.retire = () => {
+    if (entry.retired) return;
+    entry.retired = true;
+    if (map.get(key) === entry) map.delete(key);
+  };
   entry.promise = Promise.resolve(request)
     .then((result) => {
       if (!validBackendResult(result)) throw new TypeError('field-access-invalid-result');
@@ -108,14 +117,14 @@ function entryFor(backend, requestParams) {
         ...state,
       });
       if (result.cancelled === true) {
-        if (map.get(key) === entry) map.delete(key);
+        entry.retire();
         return artifact;
       }
       entry.result = artifact;
       return artifact;
     })
     .catch((error) => {
-      if (!entry.result) map.delete(key);
+      if (!entry.result) entry.retire();
       throw error;
     });
   map.set(key, entry);
@@ -141,7 +150,10 @@ export function fieldAccessRegion(backend, region, offset, size, { signal } = {}
     };
     const onAbort = () => {
       finish(reject, abortError(signal));
-      if (entry.waiters === 0 && !entry.result && typeof entry.request?.cancel === 'function') entry.request.cancel();
+      if (entry.waiters === 0 && !entry.result && !entry.retired && typeof entry.request?.cancel === 'function') {
+        entry.retire();
+        entry.request.cancel();
+      }
     };
     if (signal?.aborted) { onAbort(); return; }
     signal?.addEventListener?.('abort', onAbort, { once:true });

@@ -136,7 +136,12 @@ export function normalizeAnalysisArtifactVersions(value) {
     if (Object.prototype.hasOwnProperty.call(normalized, cleanKey)) {
       throw new TypeError("analysis-snapshot-artifact-version-key-ambiguous");
     }
-    normalized[cleanKey] = normalizeArtifactVersionValue(descriptor.value);
+    Object.defineProperty(normalized, cleanKey, {
+      value: normalizeArtifactVersionValue(descriptor.value),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   }
   return normalized;
 }
