@@ -953,12 +953,30 @@ function describeType(die, dies, depth = 0, seen = new Set()) {
       };
     }
     case DW_TAG.pointer_type: {
-      const target = describeType(referencedType(die, dies), dies, depth + 1, seen);
+      const specificationComplete = specificationResolved(die, dies);
+      const effectiveType = effectiveAttribute(die, DW_AT.type, dies);
+      const widthBits = byteSize == null ? die.unit.addressSize * 8 : Number(byteSize) * 8;
+
+      // DW_AT_type may be omitted for a genuine void pointer.  That absence is
+      // authoritative only when the specification chain itself is resolved;
+      // otherwise a missing inherited type would be indistinguishable from
+      // a legal void pointee (#4657).
+      if (!effectiveType) {
+        return {
+          name: specificationComplete ? 'void *' : 'unknown *',
+          widthBits,
+          class: 'pointer',
+          complete: die.complete && specificationComplete,
+        };
+      }
+
+      const targetDie = nonSupplementaryReferenceTarget(effectiveType.entry, effectiveType.owner, dies);
+      const target = describeType(targetDie, dies, depth + 1, seen);
       return {
         name: `${target.name} *`,
-        widthBits: byteSize == null ? die.unit.addressSize * 8 : Number(byteSize) * 8,
+        widthBits,
         class: 'pointer',
-        complete: die.complete,
+        complete: die.complete && specificationComplete && target.complete,
       };
     }
     case DW_TAG.typedef: {
