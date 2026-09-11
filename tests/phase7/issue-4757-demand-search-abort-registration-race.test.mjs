@@ -168,7 +168,7 @@ test('late backend rejection after consumer abort is observed, not unhandled (#4
   }
 });
 
-test('signal-less completion and capped completeness remain unchanged (#4757)', async () => {
+test('signal-less completion remains complete and capped search stays bounded (#4757, #3953)', async () => {
   let capped = false;
   const app = makeApp(() => Promise.resolve({
     results: [{ addr: 1n }],
@@ -182,7 +182,7 @@ test('signal-less completion and capped completeness remain unchanged (#4757)', 
   assert.deepEqual(complete.value, [{ addr: 1n }]);
 
   capped = true;
-  const partial = await app.analysisQueries.search(snapshot, { kind: 'text', query: 'x' });
-  assert.equal(partial.status.completeness, 'partial');
-  assert.equal(partial.status.reason, 'search-result-cap');
+  const cappedResult = await app.analysisQueries.search(snapshot, { kind: 'text', query: 'x' });
+  assert.equal(cappedResult.status.completeness, 'truncated');
+  assert.equal(cappedResult.status.reason, 'search-result-cap');
 });

@@ -624,7 +624,7 @@ function installDemandQueryAPI(app, recognitionVersion) {
       if (value?.unsupported === true) {
         return unsupported(value?.unsupportedReason ?? 'search-kind-unsupported');
       }
-      const completeness = value?.capped || value?.cancelled ? 'partial' : 'complete';
+      const completeness = value?.cancelled ? 'partial' : value?.capped ? 'truncated' : 'complete';
       return paged(value?.results || [], page, completeness, { reason:value?.cancelled ? 'cancelled' : value?.capped ? 'search-result-cap' : null });
     },
   };
