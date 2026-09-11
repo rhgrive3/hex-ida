@@ -1,6 +1,13 @@
-import { evaluateFinalHeadAdmission as evaluateLegacyFinalHeadAdmission } from './final-head-admission.mjs';
+import { createHash } from 'node:crypto';
+
+import {
+  FINAL_HEAD_ADMISSION_CHECK_NAME,
+  FINAL_HEAD_ADMISSION_CONTEXT,
+  evaluateFinalHeadAdmission as evaluateLegacyFinalHeadAdmission,
+} from './final-head-admission.mjs';
 
 const SHA_RE = /^[0-9a-f]{40}$/i;
+const EVIDENCE_REVISION_RE = /^[0-9a-f]{64}$/i;
 
 function text(value) {
   return typeof value === 'string' ? value : '';
@@ -44,6 +51,68 @@ function tupleBoundReviews(reviews, headSha, baseSha) {
   });
 }
 
+function isAdmissionStatus(status) {
+  return text(status?.context) === FINAL_HEAD_ADMISSION_CONTEXT;
+}
+
+function isAdmissionCheck(check) {
+  return text(check?.name) === FINAL_HEAD_ADMISSION_CHECK_NAME
+    || /final[- ]head admission/i.test(text(check?.name));
+}
+
+function canonicalRows(values, project) {
+  return values.map((value) => JSON.stringify(project(value))).sort();
+}
+
+// Bind publication to exactly the mutable GitHub evidence that can affect an
+// admission decision. The controller's own status/check is excluded so its
+// status write cannot change the revision it is validating.
+export function admissionEvidenceRevision({
+  draft = false,
+  reviews = [],
+  statuses = [],
+  checkRuns = [],
+  unresolvedReviewThreads = 0,
+} = {}) {
+  const reviewRows = canonicalRows(reviews, (review) => ({
+    author: text(review?.author?.login || review?.user?.login).trim().toLowerCase(),
+    state: text(review?.state).trim().toUpperCase(),
+    commitId: text(review?.commit_id).toLowerCase(),
+    body: text(review?.body),
+    submittedAt: text(review?.submitted_at),
+    createdAt: text(review?.created_at),
+    updatedAt: text(review?.updated_at),
+    dismissedAt: text(review?.dismissed_at),
+  }));
+  const statusRows = canonicalRows(
+    statuses.filter((status) => !isAdmissionStatus(status)),
+    (status) => ({
+      context: text(status?.context),
+      state: text(status?.state).toLowerCase(),
+      updatedAt: text(status?.updated_at),
+      submittedAt: text(status?.submitted_at),
+      createdAt: text(status?.created_at),
+    }),
+  );
+  const checkRows = canonicalRows(
+    checkRuns.filter((check) => !isAdmissionCheck(check)),
+    (check) => ({
+      name: text(check?.name),
+      status: text(check?.status),
+      conclusion: text(check?.conclusion).toLowerCase(),
+      appSlug: text(check?.app?.slug).trim().toLowerCase(),
+    }),
+  );
+  const threadCount = Number(unresolvedReviewThreads);
+  const payload = JSON.stringify({
+    draft: draft === true,
+    unresolvedReviewThreads: Number.isFinite(threadCount) ? threadCount : 0,
+    reviews: reviewRows,
+    statuses: statusRows,
+    checkRuns: checkRows,
+  });
+  return createHash('sha256').update(payload).digest('hex');
+}
 
 function currentTupleMatches(tuple, headSha, baseSha) {
   return tuple?.open === true
@@ -51,20 +120,28 @@ function currentTupleMatches(tuple, headSha, baseSha) {
     && text(tuple?.baseSha).toLowerCase() === baseSha;
 }
 
-// Publish a status only for the tuple that was evaluated, then verify the
-// mutable authorities again after the write. A base/head advance can occur
-// between the pre-write guard and GitHub's status write; in that case a
-// fail-closed pending correction is published on the evaluated HEAD so the
-// stale result cannot remain the latest authority for this context.
+function currentEvidenceMatches(tuple, evidenceRevision) {
+  return EVIDENCE_REVISION_RE.test(text(tuple?.evidenceRevision))
+    && text(tuple?.evidenceRevision).toLowerCase() === evidenceRevision;
+}
+
+// Publish a status only for the tuple and mutable evidence revision that were
+// evaluated, then verify both authorities again after the write. A later review,
+// CI result, thread update, draft transition, or HEAD/BASE advance can otherwise
+// let an older concurrent run overwrite a newer blocking result.
 export async function publishTupleBoundAdmissionStatus({
   evaluatedHeadSha,
   evaluatedBaseSha,
+  evaluatedEvidenceRevision,
   readCurrentTuple,
   publishEvaluatedStatus,
   publishPendingStatus,
 } = {}) {
   if (!SHA_RE.test(text(evaluatedHeadSha)) || !SHA_RE.test(text(evaluatedBaseSha))) {
     throw new TypeError('final-head-admission-invalid-publication-tuple');
+  }
+  if (!EVIDENCE_REVISION_RE.test(text(evaluatedEvidenceRevision))) {
+    throw new TypeError('final-head-admission-invalid-evidence-revision');
   }
   if (
     typeof readCurrentTuple !== 'function'
@@ -76,9 +153,13 @@ export async function publishTupleBoundAdmissionStatus({
 
   const headSha = evaluatedHeadSha.toLowerCase();
   const baseSha = evaluatedBaseSha.toLowerCase();
+  const evidenceRevision = evaluatedEvidenceRevision.toLowerCase();
   const before = await readCurrentTuple();
   if (!currentTupleMatches(before, headSha, baseSha)) {
     return Object.freeze({ published: false, corrected: false, reason: 'pre-publish-drift' });
+  }
+  if (!currentEvidenceMatches(before, evidenceRevision)) {
+    return Object.freeze({ published: false, corrected: false, reason: 'pre-publish-evidence-drift' });
   }
 
   await publishEvaluatedStatus();
@@ -90,6 +171,10 @@ export async function publishTupleBoundAdmissionStatus({
   if (!currentTupleMatches(after, headSha, baseSha)) {
     await publishPendingStatus();
     return Object.freeze({ published: true, corrected: true, reason: 'post-publish-drift' });
+  }
+  if (!currentEvidenceMatches(after, evidenceRevision)) {
+    await publishPendingStatus();
+    return Object.freeze({ published: true, corrected: true, reason: 'post-publish-evidence-drift' });
   }
 
   return Object.freeze({ published: true, corrected: false, reason: null });

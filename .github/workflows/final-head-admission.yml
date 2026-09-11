@@ -166,45 +166,59 @@ jobs:
               return;
             }
 
-            const reviews = await github.paginate(github.rest.pulls.listReviews, {
-              owner, repo, pull_number: pr.number, per_page: 100,
-            });
+            async function readUnresolvedReviewThreads(number) {
+              let unresolvedReviewThreads = 0;
+              let cursor = null;
+              for (;;) {
+                const page = await github.graphql(`
+                  query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+                    repository(owner: $owner, name: $repo) {
+                      pullRequest(number: $number) {
+                        reviewThreads(first: 100, after: $cursor) {
+                          nodes { isResolved }
+                          pageInfo { hasNextPage endCursor }
+                        }
+                      }
+                    }
+                  }
+                `, { owner, repo, number, cursor });
+                const threads = page.repository?.pullRequest?.reviewThreads;
+                if (!threads) throw new Error('final-head-admission-review-threads-unavailable');
+                unresolvedReviewThreads += threads.nodes.filter((thread) => !thread.isResolved).length;
+                if (!threads.pageInfo.hasNextPage) break;
+                cursor = threads.pageInfo.endCursor;
+              }
+              return unresolvedReviewThreads;
+            }
+
+            async function readAdmissionEvidence(number, sha) {
+              const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                owner, repo, pull_number: number, per_page: 100,
+              });
+              const statuses = await github.paginate(github.rest.repos.listCommitStatusesForRef, {
+                owner, repo, ref: sha, per_page: 100,
+              });
+              const checkRuns = await github.paginate(
+                github.rest.checks.listForRef,
+                { owner, repo, ref: sha, per_page: 100, filter: 'latest' },
+                (response) => response.data.check_runs ?? [],
+              );
+              const unresolvedReviewThreads = await readUnresolvedReviewThreads(number);
+              return { reviews, statuses, checkRuns, unresolvedReviewThreads };
+            }
+
             // Current-base review identity: the authoritative base is the live
             // head of the PR's target branch, not the PR's creation-time base.
             const { data: baseBranch } = await github.rest.repos.getBranch({
               owner, repo, branch: pr.base.ref,
             });
             const evaluatedBaseSha = baseBranch?.commit?.sha ?? null;
-            const statuses = await github.paginate(github.rest.repos.listCommitStatusesForRef, {
-              owner, repo, ref: headSha, per_page: 100,
+            const evidence = await readAdmissionEvidence(pr.number, headSha);
+            const { reviews, statuses, checkRuns, unresolvedReviewThreads } = evidence;
+            const evaluatedEvidenceRevision = evaluator.admissionEvidenceRevision({
+              draft: pr.draft === true,
+              ...evidence,
             });
-            const checkRuns = await github.paginate(
-              github.rest.checks.listForRef,
-              { owner, repo, ref: headSha, per_page: 100, filter: 'latest' },
-              (response) => response.data.check_runs ?? [],
-            );
-
-            let unresolvedReviewThreads = 0;
-            let cursor = null;
-            for (;;) {
-              const page = await github.graphql(`
-                query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
-                  repository(owner: $owner, name: $repo) {
-                    pullRequest(number: $number) {
-                      reviewThreads(first: 100, after: $cursor) {
-                        nodes { isResolved }
-                        pageInfo { hasNextPage endCursor }
-                      }
-                    }
-                  }
-                }
-              `, { owner, repo, number: pr.number, cursor });
-              const threads = page.repository?.pullRequest?.reviewThreads;
-              if (!threads) throw new Error('final-head-admission-review-threads-unavailable');
-              unresolvedReviewThreads += threads.nodes.filter((thread) => !thread.isResolved).length;
-              if (!threads.pageInfo.hasNextPage) break;
-              cursor = threads.pageInfo.endCursor;
-            }
 
             const result = evaluator.evaluateFinalHeadAdmission({
               headSha,
@@ -237,21 +251,28 @@ jobs:
                 owner, repo, pull_number: pr.number,
               });
               if (!currentPr || currentPr.state !== 'open') {
-                return { open: false, headSha: null, baseSha: null };
+                return { open: false, headSha: null, baseSha: null, evidenceRevision: null };
               }
+              const currentHeadSha = currentPr.head?.sha ?? null;
               const { data: currentBaseBranch } = await github.rest.repos.getBranch({
                 owner, repo, branch: currentPr.base.ref,
               });
+              const currentEvidence = await readAdmissionEvidence(currentPr.number, currentHeadSha);
               return {
                 open: true,
-                headSha: currentPr.head?.sha ?? null,
+                headSha: currentHeadSha,
                 baseSha: currentBaseBranch?.commit?.sha ?? null,
+                evidenceRevision: evaluator.admissionEvidenceRevision({
+                  draft: currentPr.draft === true,
+                  ...currentEvidence,
+                }),
               };
             }
 
             const publication = await evaluator.publishTupleBoundAdmissionStatus({
               evaluatedHeadSha: headSha,
               evaluatedBaseSha,
+              evaluatedEvidenceRevision,
               readCurrentTuple: readCurrentAdmissionTuple,
               publishEvaluatedStatus: () => github.rest.repos.createCommitStatus({
                 owner,
@@ -268,17 +289,17 @@ jobs:
                 sha: headSha,
                 state: 'pending',
                 context: evaluator.FINAL_HEAD_ADMISSION_CONTEXT,
-                description: 'Admission tuple changed during status publication; fresh evaluation required',
+                description: 'Admission authority changed during status publication; fresh evaluation required',
                 target_url: targetUrl,
               }),
             });
 
             if (!publication.published) {
-              core.info(`Admission tuple changed before final status write; discarding evaluated ${result.state}.`);
+              core.info(`Admission authority changed before final status write; discarding evaluated ${result.state}.`);
               return;
             }
             if (publication.corrected) {
-              core.notice('Admission tuple changed during final status write; stale result corrected to pending.');
+              core.notice('Admission authority changed during final status write; stale result corrected to pending.');
               return;
             }
 
