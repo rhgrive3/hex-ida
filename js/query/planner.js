@@ -457,8 +457,8 @@ function searchCompleteness(result, requestedLimit) {
     : nested?.reason ?? result?.reason ?? (complete ? null : 'result-limit');
   return { complete, coverage, reason, returned, total };
 }
-function noteSearch(b, tool, term, result) {
-  const report = { tool, term, ...searchCompleteness(result, b.maxSearchResults) };
+function noteSearch(b, tool, term, result, requestedLimit = b.maxSearchResults) {
+  const report = { tool, term, ...searchCompleteness(result, requestedLimit) };
   b.searchReports.push(report);
   if (!report.complete) b.searchIncomplete = true;
   return report.coverage;
@@ -594,6 +594,7 @@ async function expandCallNeighborhood(pools, tools, b) {
     if (expired(b)) break;
     const callers = await invokeTool(tools, 'get_callers', b, c.address, { limit: 12 });
     if (expired(b)) break;
+    const callerCoverage = noteSearch(b, 'get_callers', `caller@${c.address}`, callers, 12);
     for (const row of callers.results || []) {
       addCandidate(
         pools,
@@ -602,12 +603,13 @@ async function expandCallNeighborhood(pools, tools, b) {
         'caller',
         null,
         2,
-        1,
+        callerCoverage,
         graphCap,
       );
     }
     const callees = await invokeTool(tools, 'get_callees', b, c.address, { limit: 12 });
     if (expired(b)) break;
+    const calleeCoverage = noteSearch(b, 'get_callees', `callee@${c.address}`, callees, 12);
     for (const row of callees.results || []) {
       addCandidate(
         pools,
@@ -616,7 +618,7 @@ async function expandCallNeighborhood(pools, tools, b) {
         'callee',
         null,
         1,
-        1,
+        calleeCoverage,
         graphCap,
       );
     }
