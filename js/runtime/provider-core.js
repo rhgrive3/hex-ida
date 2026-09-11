@@ -17,6 +17,22 @@ function required(value, code, message) {
   return text;
 }
 
+// #5465: the session nonce fallback accepts the same `startedAt`
+// representations the target binding accepts — non-empty strings,
+// non-negative safe-integer numbers, and non-negative bigints. Booleans,
+// objects, and negative or unsafe numbers fail closed with
+// `runtime-session-nonce-required` instead of being coerced.
+function sessionNonceFallback(startedAt) {
+  if (startedAt == null) return `${Date.now()}:${Math.random()}`;
+  if (typeof startedAt === 'string') {
+    if (!startedAt.trim()) throw new DebugAdapterError('runtime-session-nonce-required', 'runtime session nonce is required');
+    return startedAt;
+  }
+  if (typeof startedAt === 'number' && Number.isSafeInteger(startedAt) && startedAt >= 0) return String(startedAt);
+  if (typeof startedAt === 'bigint' && startedAt >= 0n) return startedAt.toString();
+  throw new DebugAdapterError('runtime-session-nonce-required', 'runtime session nonce is required');
+}
+
 function normalizeFacetNames(value) {
   if (value == null) return Object.freeze([]);
   const isArray = Array.isArray(value);
@@ -76,7 +92,13 @@ export class RuntimeProviderSession {
       binaryId: requestBinaryValue,
       providerId: this.providerId,
       targetIdentity: request.targetIdentity ?? request.target ?? { processKey: request.processKey ?? 'default' },
-      sessionNonce: request.sessionNonce ?? request.startedAt ?? `${Date.now()}:${Math.random()}`,
+      // #5465: the session nonce fallback accepts the same `startedAt`
+      // representations the target binding accepts. A numeric startedAt is a
+      // legitimate caller input (Date.now()-style), so it canonicalizes to its
+      // decimal string instead of tripping the identity gate's string-only
+      // `runtime-session-nonce-required`. Booleans/objects/negative or
+      // non-safe-integer numbers still fail closed.
+      sessionNonce: request.sessionNonce ?? sessionNonceFallback(request.startedAt),
     });
     const requestBinaryId = requestBinaryValue.trim(); // validated and canonicalized by createRuntimeProviderSessionId()
     const requestSliceValue = request.sliceId;
