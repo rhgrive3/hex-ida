@@ -343,6 +343,7 @@ export function fuseFunctionCandidates(evidence, options = {}) {
       return { candidates: [], status: status('truncated', 'budget-exhausted') };
     }
   }
+
   const byStart = new Map();
   const orderedEvidence = canonical.sort(compareEvidence);
   for (const item of orderedEvidence) {
