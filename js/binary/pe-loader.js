@@ -1,4 +1,5 @@
 import { functionSeed } from './model.js';
+import { parseSafeSEHLoadConfig } from './pe-safeseh.js';
 import {
   createPEMetadataBudget,
   mappedFileRangeForRva,
@@ -51,19 +52,31 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
   if (!dir || !dir.rva || dir.size < 4) return parseLoadConfigCore(r, dir, image, sharedBudget);
   const budget = ensureBudget(image, sharedBudget);
   const head = mappedFileSpanForRva(image, dir.rva, 4);
-  if (head) {
-    const internalSize = r.u32(head.start);
-    if (internalSize > dir.size) {
-      budget.partial(
-        'load-config:size-mismatch',
-        `PE load-config Size ${internalSize} exceeds directory size ${dir.size}`,
-      );
-    }
+  const internalSize = head ? r.u32(head.start) : 0;
+  if (head && internalSize > dir.size) {
+    budget.partial(
+      'load-config:size-mismatch',
+      `PE load-config Size ${internalSize} exceeds directory size ${dir.size}`,
+    );
   }
+  const parseSafeSEH = () => {
+    if (!head) return;
+    parseSafeSEHLoadConfig(
+      r,
+      head.start,
+      Math.min(internalSize, dir.size),
+      image,
+      budget,
+      mappedFileRangeForRva,
+      mappedFileSpanForRva,
+    );
+  };
 
   const sectionAt = image.sectionAt;
   if (typeof sectionAt !== 'function') {
-    return parseLoadConfigCore(r, dir, image, budget);
+    const result = parseLoadConfigCore(r, dir, image, budget);
+    parseSafeSEH();
+    return result;
   }
 
   // The core already decides whether a GuardCF target is publishable by asking
@@ -95,7 +108,9 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
     return sec;
   };
 
-  return parseLoadConfigCore(r, dir, loadConfigImage, budget);
+  const result = parseLoadConfigCore(r, dir, loadConfigImage, budget);
+  parseSafeSEH();
+  return result;
 }
 
 export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = null) {
