@@ -174,6 +174,7 @@ export function createMemoryEffect(input = {}) {
   const regionId = input.regionId == null ? null : nonEmpty(input.regionId, 'function-summary-invalid-region-id');
   const regionKind = nonEmpty(input.regionKind ?? 'unknown', 'function-summary-invalid-region-kind');
   const broad = input.broad === true;
+  if (!broad && regionId == null) fail('function-summary-unresolved-memory-region');
   if (broad && input.region != null) fail('function-summary-broad-effect-cannot-carry-region-proof');
   const region = input.region == null ? null : canonicalSummaryRegion(input.region, regionId, regionKind);
   if (input.region != null && region == null) fail('function-summary-invalid-region-proof');

@@ -902,6 +902,15 @@ function deriveValue(ctx, valueId, expectedAddressSpace, state) {
   }
   if (node.kind === 'copy') {
     if (!Array.isArray(node.inputs) || node.inputs.length !== 1) return unknown('canonical-address-copy-arity');
+    const inputValue = ctx.values.get(String(node.inputs[0]));
+    const inputNode = inputValue?.definitionNodeId == null
+      ? null
+      : ctx.nodes.get(String(inputValue.definitionNodeId));
+    const inputWidth = addressWidth(inputValue, inputNode);
+    const outputWidth = addressWidth(value, node);
+    if (inputWidth == null || outputWidth == null || inputWidth !== outputWidth) {
+      return unknown('canonical-address-copy-width-not-preserved');
+    }
     return deriveValue(ctx, node.inputs[0], expectedAddressSpace, nextState);
   }
   if ((node.kind === 'intrinsic' || node.kind === 'binary') && typeof node.operator === 'string' && node.operator.toLowerCase() === 'add-with-carry') {
