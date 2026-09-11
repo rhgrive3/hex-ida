@@ -415,7 +415,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     image.metadata.dyldBindings.complete=false;image.metadata.dyldBindings.streams[source]=invalid;
     image.warnings.push(`${source}: binding stream is truncated`);return invalid;
   }
-  const BIND_OPCODE_MASK = 0xf0, BIND_IMMEDIATE_MASK = 0x0f;
+  const BIND_OPCODE_MASK = 0xf0, BIND_IMMEDIATE_MASK = 0x0f, BIND_SYMBOL_FLAGS_KNOWN_MASK = 0x09;
   const ptrSize = image.bits === 64 ? 8n : 4n;
   let p = dc.offset;
   const end = dc.offset + dc.size;
@@ -524,6 +524,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
       libOrdinal = imm === 0 ? 0 : signExtend(imm | 0xf0, 8); libraryOrdinalSet = true;
     }
     else if (op === 0x40) {
+      if ((imm & ~BIND_SYMBOL_FLAGS_KNOWN_MASK) !== 0) { fail(`reserved symbol flags 0x${imm.toString(16)}`); break; }
       const x = rawCString(r, p, end);
       // The symbol C-string is a variable-length cost: charge its raw bytes to
       // inputBytes and the decoded string to the shared string budget before
