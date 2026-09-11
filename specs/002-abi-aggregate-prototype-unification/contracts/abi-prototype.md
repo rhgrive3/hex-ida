@@ -57,6 +57,30 @@ stale rather than exact.
 
 ## Consumer responsibilities
 
+### C1 public summary boundary and remaining integration obligation
+
+The existing public `buildLocalFunctionSummary` producer consumes canonical
+Semantic IR/CFG/SSA/MemorySSA. It preserves function-control incompleteness;
+an ABI source-declaration agreement alone cannot settle unknown call effects or
+invent an exact argument/root/allocation return provenance. Conversely, C1's
+effect/value-provenance status is not an ABI placement classifier. C3 must keep
+the two proof domains distinct.
+
+`functionSummaryDigest` binds semantic dependency content but intentionally does
+not include the snapshot envelope. Consumers must also use `summaryIdentityMatches`
+with the expected function/snapshot/analyzer identity; equal digests are not
+freshness proof. Cancellation before summary construction publishes no summary.
+
+The decoded-production regressions exercise these existing public boundaries.
+They do **not** close SC-001/SC-007's full summary ABI/prototype propagation proof:
+the current default summary path does not automatically populate ABI facts.
+Its existing `semanticFacts` extension participates in the digest, but automatic
+producer/consumer wiring remains an integration responsibility at
+`js/analysis/index.js` / the public summary orchestration, outside this component's
+38-path ownership. Do not fabricate ABI fields in C1 return provenance, copy a
+sibling private summary implementation, or treat a test-only injected fact as
+production integration.
+
 ### Function-local control uncertainty
 
 Canonical compatibility projection calls `adapter.observeFunction({ semanticIr })`

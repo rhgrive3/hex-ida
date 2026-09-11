@@ -22,6 +22,8 @@ import {
 } from '../../../js/targets/abi/index.js';
 import { abiPhysicalIntervalsValid, normalizeAbiPieces } from '../../../js/targets/abi/evidence.js';
 import { canonicalAggregateLayout } from '../../../js/targets/abi/aggregate-layout.js';
+import { buildLocalFunctionSummary } from '../../../js/analysis/summary/local.js';
+import { createFunctionSummary, functionSummaryDigest, summaryIdentityMatches, summaryIsPure } from '../../../js/analysis/summary/contract.js';
 
 function value(id, reg) { return { id, reg, uses:[{}] }; }
 
@@ -2414,4 +2416,70 @@ test('C3-02 function publication preserves valid typed canonical start identitie
     abiAdapter:source.adapter, functionPrototype:source.prototype,
   }).conventionKnown, true);
   assert.equal(source.declaration, null, 'negative observation does not mint a new exact external declaration binding');
+});
+
+function publicSummaryOf(pipeline, options = {}) {
+  return buildLocalFunctionSummary(pipeline.semanticIr, pipeline.cfg, pipeline.ssa, pipeline.memorySsa, {
+    snapshotId:'c3-declaration-snapshot', ...options,
+  });
+}
+
+test('C3-02 public summaries and own prototypes retain the same decoded control uncertainty', () => {
+  for (const [words, summaryState, abiState] of [
+    [[0x00050593, 0x00008067], 'complete', 'canonical'],
+    [[0x00050593, 0x00050067], 'partial', 'ambiguous'],
+    [Array.from({ length:65 }, () => 0x00050067), 'partial', 'budget-limited'],
+  ]) {
+    const source = decodedTransferDeclaration(words);
+    const { summary } = publicSummaryOf(source.pipeline);
+    assert.ok(summary);
+    assert.equal(summary.status.completeness, summaryState);
+    assert.equal(source.adapter.completeness, abiState);
+    assert.equal(summaryIdentityMatches(summary, {
+      functionId:source.pipeline.semanticIr.functionId, snapshotId:'c3-declaration-snapshot',
+    }), true);
+    assert.equal(functionSummaryDigest(publicSummaryOf(source.pipeline).summary), functionSummaryDigest(summary));
+    if (summaryState !== 'complete') {
+      const own = recoverFunctionPrototype(source.pipeline.legacyV1, { values:new Map() }, {
+        abiAdapter:source.adapter, functionPrototype:source.prototype,
+      });
+      assert.equal(own.conventionKnown, false);
+      assert.deepEqual(own.returnLocations, []);
+      assert.equal(summaryIsPure(summary), false);
+    }
+  }
+});
+
+test('C3-02 public summaries do not turn ABI declaration agreement into exact value provenance', () => {
+  const source = decodedTransferDeclaration([0x00050593, 0x00008067]);
+  const { calls, pipeline } = decodedCallObservationPipeline([source.prototype], [0x2000n], {
+    functionPrototype:source.prototype, context:true,
+    adapterOptions:{ snapshotId:'c3-declaration-snapshot', calleeDeclarationFor:() => source.declaration },
+  });
+  assert.equal(calls[0].extra.callerCallee.status, 'agreement');
+  assert.ok(calls[0].extra.returnLocations.length);
+  const { summary } = publicSummaryOf(pipeline);
+  assert.ok(summary.unknownCallEffects.length, 'an ABI declaration is not a complete callee effect summary');
+  assert.equal(summaryIsPure(summary), false);
+  assert.ok(summary.returnProvenance.some(value => value.kind === 'unknown'), 'unresolved return provenance remains explicit');
+  assert.equal(summary.returnProvenance.some(value => value.kind === 'arg' || value.kind === 'root' || value.kind === 'allocation'), false);
+});
+
+test('C3-02 public summary identity remains snapshot-bound and cancellation publishes nothing', () => {
+  const source = decodedTransferDeclaration([0x00050593, 0x00008067]);
+  const { summary } = publicSummaryOf(source.pipeline);
+  assert.equal(summaryIdentityMatches(summary, { snapshotId:'other-snapshot' }), false);
+  assert.equal(summaryIdentityMatches({ ...summary, contractVersion:'stale-contract' }), false);
+  const other = createFunctionSummary({ ...summary, status:{ ...summary.status, snapshotId:'other-snapshot' } });
+  // The public digest describes semantic dependency content, not the snapshot
+  // envelope. Snapshot identity must be checked even when that digest matches.
+  assert.equal(functionSummaryDigest(other), functionSummaryDigest(summary));
+  assert.equal(summaryIdentityMatches(other, { snapshotId:'c3-declaration-snapshot' }), false);
+  const changed = createFunctionSummary({ ...summary, semanticFacts:[...summary.semanticFacts, { kind:'c3-test-changed-semantic-fact' }] });
+  assert.notEqual(functionSummaryDigest(changed), functionSummaryDigest(summary));
+  const controller = new AbortController();
+  controller.abort();
+  const cancelled = publicSummaryOf(source.pipeline, { signal:controller.signal });
+  assert.equal(cancelled.summary, null);
+  assert.equal(cancelled.status.stopReason, 'cancelled');
 });
