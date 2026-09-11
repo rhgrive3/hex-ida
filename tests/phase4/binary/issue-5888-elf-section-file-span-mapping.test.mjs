@@ -91,10 +91,8 @@ test('#5888: SHT_NOBITS has no file bytes and cannot shadow PT_LOAD file-backed 
   void image;
   const sec = nobitsImage.sections.find((s) => s.index === 1);
   assert.equal(sec?.fileSize, 0n);
-  // Reconciled with #7611: the PT_LOAD has filesz === memsz (no zero-fill
-  // tail), so this NOBITS section's VA range overlaps file-backed loader
-  // bytes. Zero-fill authority there would shadow runtime bytes; the section
-  // stays listed for metadata but loses mapping authority fail-closed.
+  // Reconciled with #7611: this PT_LOAD has no zero-fill tail, so the NOBITS
+  // range overlaps loader file bytes and cannot become zero-fill authority.
   assert.equal(sec?.source, 'unmapped-section', 'NOBITS over file-backed PT_LOAD bytes has no zero-fill authority');
   assert.ok(nobitsImage.warnings.some((w) => w.includes('excluded from virtual mapping authority')));
   assert.equal(nobitsImage.addressToOffset(0x400020n), 0x120n, 'the validated PT_LOAD owns the mapping');

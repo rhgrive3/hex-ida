@@ -32,20 +32,12 @@ export function mappedELFFileRangeForVa(image, va) {
 }
 
 /**
- * A file-backed SHF_ALLOC section may only serve as virtual mapping authority
- * when its sh_addr→sh_offset relation agrees with the runtime loader contract:
- * for the file-backed part of its address range, every intersecting PT_LOAD's
- * VA→file mapping must reproduce `sh_offset + delta` (issue #7611). The union
- * of those validated file-backed PT_LOAD intervals must also cover the entire
- * section span. Conflicting overlapping owners therefore fail closed instead
- * of becoming order-dependent.
- *
- * SHT_NOBITS (`noBits = true`) has no file bytes at all: it may only claim
- * zero-fill authority where the runtime loader also zero-fills, i.e. strictly
- * inside a single PT_LOAD's `p_filesz..p_memsz` tail. A NOBITS section that
- * overlaps any PT_LOAD file-backed byte, spans more than one PT_LOAD, or has
- * no owning PT_LOAD is de-authorized (#7611): otherwise it shadows the
- * loader's file bytes with zero-fill.
+ * Decide whether a runtime SHF_ALLOC section can safely participate in virtual
+ * mapping authority. PT_LOAD is the runtime byte authority (#7611). A
+ * file-backed section therefore has to be covered for its entire VA span by
+ * PT_LOAD file bytes, and every PT_LOAD intersecting that span must reproduce
+ * the section's VA→file relation. SHT_NOBITS has no file bytes and is accepted
+ * only when its entire span belongs to one unambiguous PT_LOAD zero-fill tail.
  */
 export function elfSectionFileSpanConsistentWithLoads(image, address, size, fileOffset, noBits = false) {
   const start = strictELFInteger(address, 'address');
@@ -55,49 +47,60 @@ export function elfSectionFileSpanConsistentWithLoads(image, address, size, file
   if (length === 0n) return true;
   const end = start + length;
   const loads = image?.segments || [];
+
   if (noBits) {
     let owner = null;
     for (const segment of loads) {
       const segStart = BigInt(segment.address ?? 0);
       const segSize = BigInt(segment.size ?? 0);
-      const segFilesz = BigInt(segment.fileSize ?? 0);
-      if (segSize <= 0n) continue;
-      if (start < segStart || end > segStart + segSize) continue;
+      const segFileSize = BigInt(segment.fileSize ?? 0);
+      if (segSize <= 0n || segFileSize < 0n || segFileSize > segSize) return false;
+      const segEnd = segStart + segSize;
+      const overlapStart = start > segStart ? start : segStart;
+      const overlapEnd = end < segEnd ? end : segEnd;
+      if (overlapStart >= overlapEnd) continue;
+
+      // Any intersecting PT_LOAD must see these bytes as zero-fill. Partial
+      // owners are rejected too: NOBITS authority is intentionally bound to a
+      // single complete PT_LOAD tail rather than stitched across loaders.
+      const zeroStart = segStart + segFileSize;
+      if (overlapStart < zeroStart || start < segStart || end > segEnd) return false;
       if (owner != null) return false;
-      owner = { segStart, segSize, segFilesz };
+      owner = segment;
     }
-    return owner != null && start >= owner.segStart + owner.segFilesz;
+    return owner != null;
   }
 
-  const fileRegions = [];
+  const coverage = [];
   for (const segment of loads) {
     const segStart = BigInt(segment.address ?? 0);
-    const segFilesz = BigInt(segment.fileSize ?? 0);
-    if (segFilesz <= 0n) continue;
-    const region = {
-      begin:segStart,
-      end:segStart + segFilesz,
-      segStart,
-      segOffset:BigInt(segment.fileOffset ?? 0),
-    };
-    if (region.end <= start || region.begin >= end) continue;
+    const segSize = BigInt(segment.size ?? 0);
+    const segFileSize = BigInt(segment.fileSize ?? 0);
+    const segOffset = BigInt(segment.fileOffset ?? 0);
+    if (segSize <= 0n || segFileSize < 0n || segFileSize > segSize || segOffset < 0n) return false;
+    const segEnd = segStart + segSize;
+    const overlapStart = start > segStart ? start : segStart;
+    const overlapEnd = end < segEnd ? end : segEnd;
+    if (overlapStart >= overlapEnd) continue;
 
-    // Validate each intersecting PT_LOAD independently before doing union
-    // coverage. This prevents an earlier full-span owner from hiding a later
-    // overlapping owner with a contradictory VA→file relation.
-    const overlapStart = region.begin > start ? region.begin : start;
-    const segmentFileOffset = region.segOffset + (overlapStart - region.segStart);
-    const sectionFileOffset = off + (overlapStart - start);
-    if (segmentFileOffset !== sectionFileOffset) return false;
-    fileRegions.push(region);
+    // A file-backed section must never provide bytes where an intersecting
+    // loader segment provides zero-fill. This also closes file→zero straddles.
+    const fileEnd = segStart + segFileSize;
+    if (overlapEnd > fileEnd) return false;
+
+    const expectedOffset = off + (overlapStart - start);
+    const actualOffset = segOffset + (overlapStart - segStart);
+    if (actualOffset !== expectedOffset) return false;
+    coverage.push({ begin: overlapStart, end: overlapEnd });
   }
 
-  // Relation checks above are complete for every overlapping owner. Now prove
-  // separately that the union of validated file-backed intervals covers the
-  // full section span; gaps or a file→zero-fill tail fail closed.
-  fileRegions.sort((a, b) => (a.begin < b.begin ? -1 : a.begin > b.begin ? 1 : 0));
+  // Validate provenance above against every overlapping PT_LOAD first; only
+  // then prove that their union covers the whole section. This makes the
+  // decision independent of segment order and rejects a later conflicting
+  // owner even when an earlier one already covers the complete span.
+  coverage.sort((a, b) => a.begin < b.begin ? -1 : a.begin > b.begin ? 1 : a.end < b.end ? -1 : a.end > b.end ? 1 : 0);
   let cursor = start;
-  for (const region of fileRegions) {
+  for (const region of coverage) {
     if (region.end <= cursor) continue;
     if (region.begin > cursor) return false;
     if (region.end > cursor) cursor = region.end;
