@@ -39,6 +39,8 @@ assert.deepEqual(
   complete.matches.map(({ before: item }) => String(item.address)),
   before.map((item) => String(item.address)),
 );
+assert.ok(complete.matching.budget.postprocessWork > 0, 'successful post-processing must charge deterministic work');
+assert.equal(complete.matching.budget.postprocessingStopped, false);
 
 // A synthetic budget clock expires immediately after the candidate/solver
 // work. Post-processing must observe it and fail closed instead of publishing
@@ -102,6 +104,7 @@ assert.equal(solverTruncatedThenTimedOut.matches.length, 0);
 assert.equal(solverTruncatedThenTimedOut.unresolvedBefore.length, 1);
 assert.equal(solverTruncatedThenTimedOut.unresolvedAfter.length, 1);
 assert.match(solverTruncatedThenTimedOut.matching.budget.reason, /solver relaxations exceeded 1/);
+assert.match(solverTruncatedThenTimedOut.matching.budget.postprocessingReason, /wall-clock budget/);
 assert.ok(solverTruncatedWallCalls >= 9, 'post-processing must sample the wall clock after solver truncation');
 
 // The same independence is required for cancellation. Before this regression,
@@ -127,12 +130,36 @@ assert.equal(solverTruncatedThenAborted.matches.length, 0);
 assert.equal(solverTruncatedThenAborted.unresolvedBefore.length, 1);
 assert.equal(solverTruncatedThenAborted.unresolvedAfter.length, 1);
 assert.match(solverTruncatedThenAborted.matching.budget.reason, /solver relaxations exceeded 1/);
+assert.match(solverTruncatedThenAborted.matching.budget.postprocessingReason, /aborted/);
 assert.ok(solverTruncatedAbortReads >= 8, 'post-processing must sample AbortSignal after solver truncation');
+
+// The dedicated work denominator is independent from wall-clock sampling. Hold
+// time constant, truncate the solver first, then exhaust the post-processing
+// work cap. The original solver reason remains authoritative, but the later
+// post-processing failure is recorded separately and no prefix match escapes.
+const solverTruncatedThenWorkCapped = matchFunctionsFast(before.slice(0, 1), after.slice(0, 1), {
+  matchBudget: {
+    maxSolverRelaxations: 1,
+    maxPostprocessWork: 1,
+    maxWallMs: 30_000,
+    now: () => 0,
+  },
+});
+assert.equal(solverTruncatedThenWorkCapped.truncated, true);
+assert.equal(solverTruncatedThenWorkCapped.matching.postprocessingIncomplete, true);
+assert.equal(solverTruncatedThenWorkCapped.matches.length, 0);
+assert.equal(solverTruncatedThenWorkCapped.unresolvedBefore.length, 1);
+assert.equal(solverTruncatedThenWorkCapped.unresolvedAfter.length, 1);
+assert.match(solverTruncatedThenWorkCapped.matching.budget.reason, /solver relaxations exceeded 1/);
+assert.match(solverTruncatedThenWorkCapped.matching.budget.postprocessingReason, /post-processing work exceeded 1/);
+assert.equal(solverTruncatedThenWorkCapped.matching.budget.postprocessWork, 1);
+assert.equal(solverTruncatedThenWorkCapped.matching.budget.postprocessingStopped, true);
 
 // Keep the regression tied to the expensive boundary: the old comparator
 // re-scanned the complete before array for every comparison.
 const matcherSource = fs.readFileSync(new URL('../../../js/recognition/matcher.js', import.meta.url), 'utf8');
 assert.doesNotMatch(matcherSource, /before\.findIndex/);
 assert.match(matcherSource, /beforeIndex/);
+assert.match(matcherSource, /postprocessStep/);
 
 console.log('issue #4527 matcher post-processing budget/order regressions: PASS');
