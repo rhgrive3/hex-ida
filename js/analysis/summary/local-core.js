@@ -14,7 +14,7 @@
  */
 
 import { createAnalysisStatus, isCompleteStatus, mergeAnalysisStatus } from '../status.js';
-import { stableStringify } from '../../core/identity/index.js';
+import { stableDigest, stableStringify } from '../../core/identity/index.js';
 import { buildSemanticSsa, validateSemanticSsa } from '../../semantics/ssa/index.js';
 import {
   createSemanticCallTargetClassifier,
@@ -26,7 +26,7 @@ import {
 } from './contract.js';
 
 export const LOCAL_SUMMARY_ANALYZER_ID = 'phase7.summary.local';
-export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.3.3';
+export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.3.4';
 
 const DEFAULT_ADDRESS_SPACES = Object.freeze(['memory']);
 
@@ -175,6 +175,10 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   const writtenVariables = new Set();
   const returnValues = new Set();
   const statuses = [];
+  const closedNativeCalls = new Map();
+  const escapes = [...(options.escapes ?? [])];
+  const allocations = new Set(options.allocations ?? []);
+  const frees = new Set(options.frees ?? []);
 
   let sawReturn = false;
   let sawNoreturnCall = false;
@@ -562,8 +566,25 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       // be laundered into proven-summary by one composition step.
       for (const callee of resolved) {
         statuses.push(callee.status);
-        memoryReadRegions.push(...callee.memoryReadRegions.map((effect) => createMemoryEffect({ ...effect })));
-        memoryWriteRegions.push(...callee.memoryWriteRegions.map((effect) => createMemoryEffect({ ...effect })));
+        const contextualEffect = effect => {
+          // A callee-local/argument region is not the caller's region identity.
+          // Without an actual-argument region substitution proof, preserve its
+          // address-space effect conservatively rather than asserting disjointness.
+          if (targetProof.nativeTargetFact && !effect.broad && effect.regionKind !== 'global-absolute') {
+            return createMemoryEffect({ regionKind:'unknown', broad:true,
+              addressSpaces:effect.addressSpaces, source:effect.source, evidenceIds:effect.evidenceIds });
+          }
+          return createMemoryEffect({ ...effect });
+        };
+        memoryReadRegions.push(...callee.memoryReadRegions.map(contextualEffect));
+        memoryWriteRegions.push(...callee.memoryWriteRegions.map(contextualEffect));
+        if (targetProof.nativeTargetFact) {
+          for (const input of callee.inputs) readVariables.add(input);
+          for (const effect of callee.registerEffects) registerEffects.add(effect);
+          for (const site of callee.allocations) allocations.add(site);
+          for (const site of callee.frees) frees.add(site);
+          escapes.push(...callee.escapes.map(escape => JSON.parse(stableStringify(escape))));
+        }
         for (const unknown of callee.unknownCallEffects) {
           // Keep the originating call site. Composing a path prefix here would
           // make the effect set grow every time a summary is recomposed, which is
@@ -574,6 +595,13 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
         }
         if (callee.mayThrow === true) mayThrow = true;
         if (callee.mayThrow === 'unknown' || callee.noreturn === 'unknown') controlUnknown = true;
+      }
+      if (targetProof.nativeTargetFact && resolved.every(callee => isCompleteStatus(callee.status)
+        && callee.unknownCallEffects.length === 0 && callee.noreturn === false
+        && typeof callee.mayThrow === 'boolean' && callee.escapes.length === 0)) {
+        // Escape roots need caller-context substitution and non-returning calls
+        // need CFG continuation reconciliation before either can close this scope.
+        closedNativeCalls.set(node.id, targetProof.nativeTargetFact);
       }
       // A possible non-returning target does not prove that the call cannot
       // return. That fact requires agreement of the entire candidate set.
@@ -657,8 +685,42 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   // while every individual node stays complete (#5226). Ignoring those fields
   // publishes a complete (even pure) summary for a function whose lowering
   // never covered part of its scope — missing work laundered into "no effect".
-  const functionLevelUnknown = (ir.completeness != null && ir.completeness !== 'complete')
+  let functionLevelUnknown = (ir.completeness != null && ir.completeness !== 'complete')
     || (Array.isArray(ir.unknowns) && ir.unknowns.length > 0);
+
+  // Discharge only the exact native-lowering obligations that were solved in
+  // this run. Unknown reasons elsewhere, unaccounted partial nodes, missing
+  // evidence and a different SSA snapshot keep the original partial status.
+  // This changes the contextual summary, never the canonical IR/SSA artifacts.
+  if (functionLevelUnknown && !hasUnknown && !controlUnknown && ir.completeness === 'partial'
+    && ir.unknowns?.length && closedNativeCalls.size && nativeSsaIndex()
+    && memorySsa?.identity?.scalarSsaDigest === stableDigest(ssa)) {
+    const categories = ['control', 'memory', 'state'];
+    const expectedIssues = new Set();
+    const coveredNodes = ir.nodes.every(node => {
+      if (node.kind !== 'call') return node.completeness === 'complete' && node.unknown == null;
+      if (!closedNativeCalls.has(node.id)) return false;
+      const control = node.attributes?.machineControlEffect;
+      const reason = 'ABI and callee effects are outside MachineEffects-to-SemanticIR lowering';
+      if (node.completeness !== 'partial'
+        || stableStringify(node.unknown) !== stableStringify({ reason, categories, knownParts:{ machineControlEffect:control } })
+        || stableStringify(node.call.unknownEffects) !== stableStringify({ reason, categories })) return false;
+      expectedIssues.add(stableStringify({ reason:'call-context-effects-not-enriched', categories, detail:{ control } }));
+      return true;
+    });
+    const actualIssues = new Set(ir.unknowns.map(issue => stableStringify(issue)));
+    if (coveredNodes && actualIssues.size === expectedIssues.size
+      && [...actualIssues].every(issue => expectedIssues.has(issue))) {
+      functionLevelUnknown = false;
+      nativeAbiFacts.set('contextual-call-discharge', {
+        kind:'native-call-effects-discharge', version:1, functionId:ir.functionId,
+        snapshotId:options.snapshotId ?? 'snapshot-unbound',
+        semanticIrDigest:memorySsa.identity.semanticIrDigest, scalarSsaDigest:memorySsa.identity.scalarSsaDigest,
+        calls:[...closedNativeCalls.values()].sort((a, b) => a.callSiteId.localeCompare(b.callSiteId)),
+        obligations:[...actualIssues].sort().map(issue => JSON.parse(issue)),
+      });
+    }
+  }
 
   const localStatus = createAnalysisStatus({
     snapshotId: options.snapshotId ?? 'snapshot-unbound',
@@ -678,9 +740,9 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     registerEffects: [...registerEffects],
     memoryReadRegions,
     memoryWriteRegions,
-    escapes: options.escapes ?? [],
-    allocations: options.allocations ?? [],
-    frees: options.frees ?? [],
+    escapes,
+    allocations: [...allocations],
+    frees: [...frees],
     directCalls,
     indirectCallSets,
     unknownCallEffects,

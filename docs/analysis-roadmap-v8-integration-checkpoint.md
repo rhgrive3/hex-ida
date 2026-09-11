@@ -5157,6 +5157,41 @@ Latest main inspected here is ccabe9f09; it added no overlapping changes to the
 three producer/summary paths since the previous observation. No component merge,
 main merge, other-owner issue repair or device/environment work was performed.
 
+## Contextual native CALL effect closure (2026-09-11)
+
+The local summary now discharges native CALL lowering obligations only when
+every corresponding CALL has an exhaustive, identity-matched complete callee
+summary, explicit normal-return/control knowledge, and no unmapped escape roots.
+All function-level unknown records must equal the covered native-lowering records;
+every partial node must be one of those covered CALLs. The exact canonical SSA
+replay and its identity-bearing digest must agree. Unrelated unknowns, missing or
+different category coverage, another partial node, stale SSA, incomplete callee
+scope and unresolved control retain partial. The canonical IR/SSA/MemorySSA
+artifacts stay unchanged; only the context-sensitive FunctionSummary can become
+complete. A versioned semanticFacts receipt binds obligations and callee digests.
+
+Native callee input/register effects and allocation/free dimensions are retained.
+Memory effects preserve source authority; a callee-local/argument region without
+actual-argument substitution is conservatively broadened within its address spaces
+rather than copied as a falsely disjoint caller region. Global-absolute regions
+remain exact. Escape facts are preserved but their unmapped caller context blocks
+completion; known non-returning callees likewise await CFG continuation handling.
+Local summary analyzer version is 1.3.4; canonical schemas remain unchanged.
+
+Eight added tests exercise a real decoded RV64 three-function call chain returning
+arg0+3, actual decoded stores/register writes, unrelated lowering failures, unknown
+control/escape/partial callees, allocation/free/exception effects, exact SSA and
+evidence ownership, independent obligation/node coverage, and unknown leaf returns
+remaining TOP through complete contextual wrappers. The existing positive target
+test now expects a complete contextual summary while still asserting the original
+IR remains partial and byte-for-byte unchanged. Serialization also preserves the
+complete summary digest without freezing caller-owned artifacts.
+
+This supersedes the previous stage's blanket function-level partial limitation
+only for those fully accounted contexts. It does not rebuild MemorySSA from callee
+effects, solve recursive SCCs, prove indirect target universes, implement escape
+root substitution/non-returning CFG pruning, or complete the full FR backlog.
+
 ## Native immediate CALL summary consumption (2026-09-11)
 
 The existing local-summary and points-to consumers now share a contextual native

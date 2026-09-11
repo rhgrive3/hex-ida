@@ -16,7 +16,7 @@ import { buildRenderProvenance, validateRenderProvenance } from '../../../js/dec
 import { stableDigest } from '../../../js/core/identity/index.js';
 
 const snapshotId = 'native-abi-return-snapshot';
-function fixture({ returnType = 'int64', words = [0x00150513, 0x00008067], parameters = null, adapterOptions = {}, options = {}, baseAddress = 0x2000n } = {}) {
+function fixture({ returnType = 'int64', words = [0x00150513, 0x00008067], parameters = null, adapterOptions = {}, options = {}, baseAddress = 0x2000n, inputOptions = {} } = {}) {
   const architecture = architecturePluginV2('riscv64');
   const instructions = words.map((word, index) => createRiscv64DecodedInstruction({
     address:baseAddress + BigInt(index * 4), size:4, mode:'rv64imc',
@@ -32,7 +32,7 @@ function fixture({ returnType = 'int64', words = [0x00150513, 0x00008067], param
   const pipeline = buildSemanticV2CompatibilityPipeline({
     architecturePlugin:architecture, decoderSemanticVersion:'native-return-decoder',
     binaryId:'native-return-binary', sliceId:'0', addressWidthBits:64, mode:'rv64imc',
-    entryBlockKey:blocks[0].key, blocks, abiAdapter:adapter, functionPrototype:prototype,
+    entryBlockKey:blocks[0].key, blocks, abiAdapter:adapter, functionPrototype:prototype, ...inputOptions,
   }, { snapshotId, ...options });
   const result = buildLocalFunctionSummary(pipeline.semanticIr, pipeline.cfg, pipeline.ssa, pipeline.memorySsa, { snapshotId });
   return { pipeline, adapter, result, prototype, instructions, returns:pipeline.semanticIr.nodes.filter(node => node.kind === 'return') };
@@ -213,7 +213,8 @@ test('decoded immediate CALL resolves an existing same-snapshot callee without c
   assert.equal(result.summary.directCalls[0].summaryId, callee.pipeline.functionId);
   assert.equal(result.summary.unknownCallEffects.length, 0);
   assert.ok(result.summary.semanticFacts.some(fact => fact.kind === 'native-direct-call-target'));
-  assert.equal(result.status.completeness, 'partial', 'resolving one boundary does not erase function-level unknowns');
+  assert.equal(result.status.completeness, 'complete', 'the contextual summary accounts for every native call obligation');
+  assert.equal(p.semanticIr.completeness, 'partial', 'the canonical machine-level unknowns are not erased');
   assert.deepEqual(structuredClone(p.semanticIr), before);
 });
 
@@ -292,7 +293,142 @@ test('native target and scalar composition survive serialization without freezin
     snapshotId, options:{ calleeSummaries:summaries, summaries } });
   const result = surface.functionSummary();
   assert.deepEqual(facts(result.summary), [{ kind:'arg', argIndex:0, offset:'2' }]);
+  assert.equal(result.status.completeness, 'complete');
+  assert.equal(functionSummaryDigest(result.summary), functionSummaryDigest(summarizeNative(original, summaries).summary));
   assert.equal(Object.isFrozen(p.semanticIr), false);
+});
+
+const summarizeNative = (p, summaries, options = {}) => buildLocalFunctionSummary(
+  p.semanticIr, p.cfg, p.ssa, p.memorySsa, { snapshotId, calleeSummaries:summaries, ...options });
+
+test('contextual native CALL closure enables a real three-function decoded return chain', () => {
+  const { caller:{ pipeline:middle }, summaries, callee } = nativePair();
+  const inner = summarizeNative(middle, summaries).summary;
+  assert.equal(inner.status.completeness, 'complete');
+  const proof = inner.semanticFacts.find(fact => fact.kind === 'native-call-effects-discharge');
+  assert.equal(proof.calls.length, 1); assert.deepEqual(proof.obligations, middle.semanticIr.unknowns);
+  assert.equal(proof.calls[0].summaryDigest, functionSummaryDigest(callee.result.summary));
+  const outer = callFixture({ baseAddress:0xffcn }).pipeline;
+  const registry = new Map([...summaries, [middle.functionId, inner]]);
+  const result = summarizeNative(outer, registry).summary;
+  assert.equal(result.status.completeness, 'complete');
+  assert.deepEqual(facts(result), [{ kind:'arg', argIndex:0, offset:'3' }]);
+  const call = outer.semanticIr.nodes.find(node => node.kind === 'call');
+  const pointsTo = analyzeLocalPointsTo(outer.semanticIr, outer.cfg, outer.ssa, {
+    snapshotId, summaries:registry, memorySsa:outer.memorySsa,
+  });
+  assert.equal(pointsTo.pointsTo.get(call.outputs[0]).top, false);
+  assert.ok(pointsTo.calleeSummaryIds.includes(`summary:${functionSummaryDigest(inner)}`));
+  assert.equal(outer.memorySsa.completeness, 'partial', 'contextual summary closure is not MemorySSA reconstruction');
+});
+
+test('native contextual closure retains actual decoded stores and callee register writes', () => {
+  const caller = callFixture().pipeline;
+  const callee = fixture({ baseAddress:0x3004n, parameters:parameters.slice(0, 2),
+    words:[0x00a5b023, 0x00900613, 0x00150513, 0x00008067] });
+  assert.equal(callee.result.status.completeness, 'complete');
+  assert.ok(callee.result.summary.memoryWriteRegions.length > 0);
+  const result = summarizeNative(caller, new Map([[callee.pipeline.functionId, callee.result.summary]])).summary;
+  assert.equal(result.status.completeness, 'complete');
+  assert.equal(summaryIsPure(result), false);
+  assert.ok(result.memoryWriteRegions.some(effect => effect.broad));
+  for (const key of callee.result.summary.registerEffects) assert.ok(result.registerEffects.includes(key));
+  for (const key of callee.result.summary.inputs) assert.ok(result.inputs.includes(key));
+});
+
+test('native call discharge does not erase unrelated lowering obligations', () => {
+  const { summaries } = nativePair();
+  for (const inputOptions of [
+    { completeness:'partial', unknowns:[{ reason:'unmodeled-fault', categories:['faults'] }] },
+    { completeness:'unknown' },
+  ]) {
+    const p = callFixture({ inputOptions }).pipeline;
+    const result = summarizeNative(p, summaries).summary;
+    assert.equal(result.status.completeness, 'partial');
+    assert.equal(result.semanticFacts.some(fact => fact.kind === 'native-call-effects-discharge'), false);
+    assert.ok(result.semanticFacts.some(fact => fact.kind === 'native-direct-call-target'), 'target is independently resolved');
+  }
+});
+
+test('native closure rejects unresolved control, escapes and partial callee scope', () => {
+  const { caller:{ pipeline:p }, callee } = nativePair();
+  for (const change of [
+    { mayThrow:'unknown' }, { noreturn:'unknown' }, { noreturn:true },
+    { escapes:[{ rootKey:'callee-root', reason:'passed-to-unknown-call', boundary:'unknown-call', evidenceIds:[] }] },
+    { status:{ ...callee.result.summary.status, completeness:'partial', stopReason:'evidence-missing' } },
+  ]) {
+    const candidate = createFunctionSummary({ ...callee.result.summary, ...change });
+    const result = summarizeNative(p, new Map([[callee.pipeline.functionId, candidate]])).summary;
+    assert.equal(result.status.completeness, 'partial');
+    assert.equal(result.semanticFacts.some(fact => fact.kind === 'native-call-effects-discharge'), false);
+  }
+});
+
+test('native contextual summaries retain allocation, free and known exception dimensions', () => {
+  const { caller:{ pipeline:p }, callee } = nativePair();
+  const candidate = createFunctionSummary({ ...callee.result.summary,
+    allocations:['callee-allocation'], frees:['callee-free'], mayThrow:true });
+  const result = summarizeNative(p, new Map([[callee.pipeline.functionId, candidate]])).summary;
+  assert.equal(result.status.completeness, 'complete');
+  assert.deepEqual(result.allocations, ['callee-allocation']); assert.deepEqual(result.frees, ['callee-free']);
+  assert.equal(result.mayThrow, true); assert.equal(summaryIsPure(result), false);
+});
+
+test('native discharge binds the exact SSA dependency and copies its evidence', () => {
+  const { caller:{ pipeline:p }, summaries } = nativePair();
+  const staleMemory = { ...p.memorySsa, identity:{ ...p.memorySsa.identity, scalarSsaDigest:'stale' } };
+  const stale = buildLocalFunctionSummary(p.semanticIr, p.cfg, p.ssa, staleMemory, { snapshotId, calleeSummaries:summaries }).summary;
+  assert.equal(stale.status.completeness, 'partial');
+  assert.ok(stale.semanticFacts.some(fact => fact.kind === 'native-direct-call-target'));
+  assert.equal(stale.semanticFacts.some(fact => fact.kind === 'native-call-effects-discharge'), false);
+  const plain = structuredClone({ semanticIr:p.semanticIr, cfg:p.cfg, ssa:p.ssa, memorySsa:p.memorySsa });
+  const result = summarizeNative(plain, summaries).summary;
+  const proof = result.semanticFacts.find(fact => fact.kind === 'native-call-effects-discharge');
+  assert.deepEqual(proof.obligations, plain.semanticIr.unknowns);
+  assert.notEqual(proof.obligations[0], plain.semanticIr.unknowns[0]);
+  assert.equal(Object.isFrozen(plain.semanticIr.unknowns[0]), false);
+  assert.equal(Object.isFrozen(proof.obligations[0]), true);
+});
+
+test('native discharge requires exact obligation coverage and no other partial node', () => {
+  const { caller:{ pipeline:p }, summaries } = nativePair();
+  assert.throws(() => createSemanticIrFunction({ ...p.semanticIr, unknowns:[] }),
+    /semantic-ir-function-unknowns-required/, 'the canonical producer already rejects missing partial-scope reasons');
+  for (const mutate of [
+    ir => { ir.unknowns[0].categories = ['memory']; },
+    ir => { const node = ir.nodes.find(item => item.kind === 'binary');
+      node.completeness = 'partial'; node.unknown = { reason:'unmodeled-value', categories:['other'] }; },
+    ir => { ir.nodes.find(item => item.kind === 'call').unknown.reason = 'different-obligation'; },
+  ]) {
+    const raw = structuredClone(p.semanticIr); mutate(raw);
+    const ir = createSemanticIrFunction(raw), ssa = buildSemanticSsa(ir, p.cfg);
+    const digest = stableDigest(ir), memorySsa = { ...p.memorySsa,
+      identity:{ ...p.memorySsa.identity, semanticIrDigest:digest, scalarSsaDigest:stableDigest(ssa) },
+      canonicalIrIdentity:{ ...p.memorySsa.canonicalIrIdentity, semanticIrDigest:digest } };
+    // Bind the transformed IR/SSA identities so the scope-coverage checks,
+    // rather than an unrelated stale-digest rejection, must retain partial.
+    const result = buildLocalFunctionSummary(ir, p.cfg, ssa, memorySsa, { snapshotId, calleeSummaries:summaries }).summary;
+    assert.ok(result.semanticFacts.some(fact => fact.kind === 'native-direct-call-target'));
+    assert.equal(result.status.completeness, 'partial');
+    assert.equal(result.semanticFacts.some(fact => fact.kind === 'native-call-effects-discharge'), false);
+  }
+});
+
+test('unknown decoded leaf returns stay unknown through complete contextual wrappers', () => {
+  const { caller:{ pipeline:middle }, summaries:knownSummaries } = nativePair();
+  const known = summarizeNative(middle, knownSummaries).summary;
+  const leaf = fixture({ baseAddress:0x3004n, parameters:[parameters[0]], words:[0x00700513, 0x00008067] });
+  const changed = summarizeNative(middle, new Map([[leaf.pipeline.functionId, leaf.result.summary]])).summary;
+  assert.equal(changed.status.completeness, 'complete', 'effect scope is complete, not return precision');
+  assert.ok(changed.returnProvenance.every(fact => fact.kind === 'unknown'));
+  assert.notEqual(functionSummaryDigest(changed), functionSummaryDigest(known));
+  const outer = callFixture({ baseAddress:0xffcn }).pipeline;
+  const summaries = new Map([[middle.functionId, changed]]);
+  const result = summarizeNative(outer, summaries).summary;
+  assert.ok(result.returnProvenance.every(fact => fact.kind === 'unknown'));
+  const pointsTo = analyzeLocalPointsTo(outer.semanticIr, outer.cfg, outer.ssa, { snapshotId, summaries, memorySsa:outer.memorySsa });
+  const call = outer.semanticIr.nodes.find(node => node.kind === 'call');
+  assert.equal(pointsTo.pointsTo.get(call.outputs[0]).top, true);
 });
 
 test('native target classification independently checks control, constant, origin and identity claims', () => {
