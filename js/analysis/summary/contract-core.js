@@ -204,7 +204,7 @@ export function createUnknownCallEffect(input = {}) {
 }
 
 export function createDirectCall(input = {}) {
-  // A direct call record with zero targets is an unresolved call,
+  // A direct call record with zero resolved targets is an unresolved call,
   // not a call that contributes nothing: publishing it lets the summary pass
   // the fail-closed consistency checks while its callee resolves to nothing
   // (#5328, P7-INV-004). Unresolved calls belong in `unknownCallEffects`.
