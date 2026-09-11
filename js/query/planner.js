@@ -840,6 +840,7 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
     if (cancelled(b)) missingEvidence.push('cancelled');
     if (query.confident === false) missingEvidence.push(...(query.missing || []));
     const search = aggregateSearchCoverage(b.searchReports);
+    const sourceCompletenessInfo = b.sourceCompleteness || sourceCompleteness(pools, b);
     const incomplete = expired(b) || b.shortlistLimited || b.sourcePoolTruncated || b.searchIncomplete || b.semanticIncomplete || failedCount > 0;
     const budgetLimited = b.disassemblyExhausted || b.functionExhausted || toolCallBudgetExhausted(b);
     const storedCandidateCoverage = candidateCount === 0 ? 1 : Math.min(1, analyzedCount / candidateCount);
