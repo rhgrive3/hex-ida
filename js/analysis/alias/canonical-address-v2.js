@@ -1,8 +1,7 @@
-import { canonicalAddress, deepFreeze, stableDigest } from '../../core/identity/index.js';
 import {
   CANONICAL_ADDRESS_DERIVATION_VERSION,
   GENERIC_ROOT_DESCRIPTOR_KINDS,
-  canonicalAddressProofToRegionEvidence as canonicalAddressProofToRegionEvidenceCore,
+  canonicalAddressProofToRegionEvidence,
   canonicalRootIdentity,
   deriveCanonicalAddressProof as deriveCanonicalAddressProofCore,
   sameCanonicalAddressProof,
@@ -11,6 +10,7 @@ import {
 export {
   CANONICAL_ADDRESS_DERIVATION_VERSION,
   GENERIC_ROOT_DESCRIPTOR_KINDS,
+  canonicalAddressProofToRegionEvidence,
   canonicalRootIdentity,
   sameCanonicalAddressProof,
 };
@@ -99,29 +99,6 @@ export {
   defaultRootEntityId,
   normalizeRootIdentity,
 } from './canonical-address-v2-core.js';
-
-export function canonicalAddressProofToRegionEvidence(proof) {
-  if (proof?.kind !== 'absolute') return canonicalAddressProofToRegionEvidenceCore(proof);
-  const proofSpace = typeof proof.addressSpace === 'string' && proof.addressSpace
-    ? proof.addressSpace
-    : 'memory';
-  if (proofSpace === 'memory') return canonicalAddressProofToRegionEvidenceCore(proof);
-
-  const address = canonicalAddress(proof.address);
-  const rootEntityId = `entity_memory_address_${stableDigest({
-    version: CANONICAL_ADDRESS_DERIVATION_VERSION,
-    addressSpace: proofSpace,
-    rootKind: proof.kind,
-    canonicalAddress: address,
-    widthBits: proof.widthBits ?? null,
-  })}`;
-  return deepFreeze({
-    kind: 'rooted-offset',
-    rootEntityId,
-    offset: '0',
-    addressSpace: proofSpace,
-  });
-}
 
 export function deriveCanonicalAddressProof(ir, addressValueId, options = {}) {
   const normalizedOptions = addressProofOptions(options);

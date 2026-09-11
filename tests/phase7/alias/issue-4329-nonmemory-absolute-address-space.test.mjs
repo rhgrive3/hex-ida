@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {
   canonicalAddressProofToRegionEvidence,
   deriveCanonicalAddressProof,
-} from '../../../js/analysis/alias/canonical-address-v2.js';
+} from '../../../js/analysis/alias/canonical-address-v2-core.js';
 import { deriveMemoryRegion, classifySemanticMemoryRegion } from '../../../js/analysis/alias/regions-v2.js';
 import { a1RegionAlias, provenAddressSpace } from '../../../js/analysis/alias/a1-region-alias.js';
 import { effectSummaryAliasRelation } from '../../../js/analysis/alias/legacy-safety-floor.js';
