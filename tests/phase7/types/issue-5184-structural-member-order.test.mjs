@@ -108,3 +108,30 @@ test('#5184 graph result is invariant to provider insertion and member traversal
   assert.deepEqual(first.layers.structural.selected, second.layers.structural.selected);
   assert.equal(stableDigest(first), stableDigest(second));
 });
+
+test('#5184 nested aggregate permutations share claim and graph identity', () => {
+  const nestedForward = { kind:'struct', members:[member('a', 0), member('b', 8)] };
+  const nestedReverse = { kind:'struct', members:[member('b', 8), member('a', 0)] };
+  const left = claim('N', [member('nested', 0, 16, nestedForward)]);
+  const right = claim('N', [member('nested', 0, 16, nestedReverse)]);
+
+  assert.equal(left.key, right.key);
+  assert.equal(claimsConflict(left, right), false);
+  assert.deepEqual(left.descriptor.members[0].memberType.members.map((entry) => entry.offset), [0, 8]);
+  assert.deepEqual(right.descriptor.members[0].memberType.members.map((entry) => entry.offset), [0, 8]);
+
+  const solve = (constraints) => {
+    const graph = new TypeConstraintGraph({ snapshotId:'issue-5184-nested' });
+    for (const constraint of constraints) graph.addHardConstraint(constraint);
+    return graph.solveEntity('N');
+  };
+  const forward = hard(left, 'ev-nested-forward');
+  const reverse = hard(right, 'ev-nested-reverse');
+  const first = solve([forward, reverse]);
+  const second = solve([reverse, forward]);
+
+  assert.equal(first.layers.structural.contradictions.length, 0);
+  assert.equal(second.layers.structural.contradictions.length, 0);
+  assert.deepEqual(first.layers.structural.selected, second.layers.structural.selected);
+  assert.equal(stableDigest(first), stableDigest(second));
+});

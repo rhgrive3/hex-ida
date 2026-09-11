@@ -207,22 +207,69 @@ function canonicalDescriptorString(layer, descriptor) {
 
 /**
  * Structural aggregate members are a semantic set ordered by byte offset, not
- * by producer traversal order. Canonicalization reorders and deduplicates only
- * canonically identical members; distinct same-slot or overlapping members are
- * retained so graph reconciliation can preserve or reject their ambiguity under
- * its existing hard-fact policy.
+ * by producer traversal order. Canonicalization is recursive: nested aggregate
+ * descriptors use the same ordering and exact-deduplication contract as the
+ * root. Distinct same-slot or overlapping members remain separate facts.
  */
-export function canonicalizeStructuralMembers(members) {
-  if (!Array.isArray(members)) return members;
-  if (!members.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))) {
-    return [...members];
+function canonicalizeStructuralValue(value, seen) {
+  if (value == null || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+
+  if (Array.isArray(value)) {
+    const out = [];
+    seen.set(value, out);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    for (const key of Reflect.ownKeys(descriptors)) {
+      if (key === 'length') continue;
+      const property = descriptors[key];
+      if (!Object.prototype.hasOwnProperty.call(property, 'value')) {
+        Object.defineProperty(out, key, property);
+        continue;
+      }
+      Object.defineProperty(out, key, {
+        ...property,
+        value: canonicalizeStructuralValue(property.value, seen),
+      });
+    }
+    if (descriptors.length) Object.defineProperty(out, 'length', descriptors.length);
+    return out;
   }
 
-  const sorted = members.map((member) => ({
-    member,
-    offset: canonicalInteger(member.offset ?? 0),
-    canonical: canonicalDescriptorString('structural', member),
-  })).sort((left, right) => {
+  const out = {};
+  seen.set(value, out);
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    const property = descriptors[key];
+    if (!Object.prototype.hasOwnProperty.call(property, 'value')) {
+      Object.defineProperty(out, key, property);
+      continue;
+    }
+    const child = key === 'members' && Array.isArray(property.value)
+      ? canonicalizeStructuralMembersInternal(property.value, seen)
+      : canonicalizeStructuralValue(property.value, seen);
+    Object.defineProperty(out, key, { ...property, value: child });
+  }
+  return out;
+}
+
+function canonicalizeStructuralMembersInternal(members, seen) {
+  if (seen.has(members)) return seen.get(members);
+  const canonical = [];
+  seen.set(members, canonical);
+
+  if (!members.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))) {
+    for (const member of members) canonical.push(canonicalizeStructuralValue(member, seen));
+    return canonical;
+  }
+
+  const sorted = members.map((rawMember) => {
+    const member = canonicalizeStructuralValue(rawMember, seen);
+    return {
+      member,
+      offset: canonicalInteger(member.offset ?? 0),
+      canonical: canonicalDescriptorString('structural', member),
+    };
+  }).sort((left, right) => {
     if (left.offset != null && right.offset != null) {
       if (left.offset < right.offset) return -1;
       if (left.offset > right.offset) return 1;
@@ -234,7 +281,6 @@ export function canonicalizeStructuralMembers(members) {
     return left.canonical.localeCompare(right.canonical);
   });
 
-  const canonical = [];
   let previous = null;
   for (const entry of sorted) {
     if (entry.canonical === previous) continue;
@@ -244,16 +290,13 @@ export function canonicalizeStructuralMembers(members) {
   return canonical;
 }
 
+export function canonicalizeStructuralMembers(members) {
+  if (!Array.isArray(members)) return members;
+  return canonicalizeStructuralMembersInternal(members, new WeakMap());
+}
+
 function canonicalizeStructuralDescriptor(descriptor) {
-  if (!Array.isArray(descriptor.members)) return descriptor;
-  const properties = Object.getOwnPropertyDescriptors(descriptor);
-  properties.members = {
-    ...properties.members,
-    value: canonicalizeStructuralMembers(descriptor.members),
-  };
-  const canonical = {};
-  Object.defineProperties(canonical, properties);
-  return canonical;
+  return canonicalizeStructuralValue(descriptor, new WeakMap());
 }
 
 function validateDescriptor(layer, descriptor) {
