@@ -251,6 +251,16 @@ function parameterClass(parameter) {
   const vector = !aggregate ? vectorDescriptor(parameter) : null;
   const floating = !aggregate && !vector && (parameter?.floating === true || isFloatingType(type) || /\bfp\b/.test(abiClass));
   const declaredBits = parameter?.bits ?? parameter?.sizeBits;
+  // Width aliases must agree when several are declared: a silent `bits`-wins
+  // pick would launder conflicting evidence into an exact placement (#5713).
+  const declaredWidthAliases = [parameter?.bits, parameter?.sizeBits].filter((alias) => alias != null);
+  const widthConflict = declaredWidthAliases.length > 1
+    && new Set(declaredWidthAliases.map((alias) => Number(alias))).size > 1;
+  // Exact placement of a fixed-length vector needs a *declared* width: the
+  // type name alone carries no size, so the riscvTypeBits fallback must not
+  // stand in for one (#5713).
+  const bitsDeclared = !widthConflict && declaredBits != null
+    && Number.isSafeInteger(Number(declaredBits)) && Number(declaredBits) > 0;
   const aggregateLayout = aggregate ? canonicalAggregateLayout(parameter) : null;
   const aggregateLayoutProven = !aggregate || aggregateLayout != null;
   const declaredBitsNumber = Number(aggregateLayout?.bits ?? declaredBits);
@@ -265,7 +275,7 @@ function parameterClass(parameter) {
   // triviality, while any explicit nontrivial evidence selects the sound
   // by-reference convention (#5623).
   const nonTrivialForCalls = aggregate && (parameter?.nonTrivialForCalls === true || parameter?.nonTrivial === true);
-  return { type, abiClass, pointer, aggregate, aggregateLayoutProven, aggregateLayout, floating, vector, bits, bytes, nonTrivialForCalls };
+  return { type, abiClass, pointer, aggregate, aggregateLayoutProven, aggregateLayout, floating, vector, bits, bytes, nonTrivialForCalls, bitsDeclared, widthConflict };
 }
 
 function registerSource(reg, bits = XLEN, extra = {}) {
@@ -486,7 +496,7 @@ function createClassifier(profile) {
       : parameters.length;
 
     parameters.forEach((parameter, index) => {
-      const classified = parameterClass(parameter);
+      let classified = parameterClass(parameter);
       const variadicArgument = variadic && (
         parameter?.variadic === true || parameter?.unnamed === true || parameter?.named === false || index >= fixedParameterCount
       );
@@ -505,11 +515,41 @@ function createClassifier(profile) {
         return;
       }
 
-      if (classified.vector) {
-        if (!vectorVariant) {
-          unknownArgument(index, classified, 'vector-calling-convention-unknown', { candidates:['riscv-vector-variant','non-vector-fallback'] });
+      if (classified.vector && !vectorVariant) {
+        /*
+         * psABI base integer calling convention: "Fixed-length vectors are
+         * treated as aggregates." Under the standard convention a fixed-length
+         * vector therefore follows the aggregate size rules (a0-a7 / stack /
+         * by-reference) instead of degrading to 'unknown' (#5713). Scalable
+         * RVV vectors still require the vector variant, and a conflicting
+         * descriptor stays fail-closed (#6018).
+         */
+        if (classified.vector.fixedLength === true && classified.vector.conflict !== true) {
+          if (classified.widthConflict) {
+            unknownArgument(index, classified, 'fixed-vector-width-evidence-conflict', {});
+            return;
+          }
+          if (!(classified.bits > 0 && classified.bitsDeclared)) {
+            unknownArgument(index, classified, 'fixed-length-vector-size-unproven', { vector:classified.vector });
+            return;
+          }
+          // Present the vector to the shared integer-convention aggregate
+          // placement below. FP flattening never applies: the psABI routes
+          // fixed-length vectors through the *integer* convention (#5713).
+          classified = {
+            ...classified,
+            vector:null,
+            aggregate:true,
+            aggregateLayoutProven:true,
+            fixedVectorAggregate:true,
+          };
+        } else {
+          unknownArgument(index, classified,
+            classified.vector.conflict ? 'vector-descriptor-conflict' : 'vector-calling-convention-unknown',
+            classified.vector.conflict ? { vector:classified.vector } : { candidates:['riscv-vector-variant','non-vector-fallback'] });
           return;
         }
+      } else if (classified.vector) {
         // Conflicting or malformed descriptor evidence (spelling vs explicit
         // metadata, out-of-range NFIELDS) must not mint an exact group (#5628).
         if (classified.vector.conflict) {
@@ -566,10 +606,12 @@ function createClassifier(profile) {
           }
           return;
         }
-        /* Hard-float aggregate flattening is exact only with member evidence. */
+        /* Hard-float aggregate flattening is exact only with member evidence.
+         * A fixed-length vector routed through the integer convention is not
+         * an FP-flattening candidate at all (#5713). */
         const needed = bytes > XLEN / 8 ? 2 : 1;
-        const flattening = hardFloat ? flattenAggregate(parameter) : null;
-        if (hardFloat && flattening == null) {
+        const flattening = hardFloat && !classified.fixedVectorAggregate ? flattenAggregate(parameter) : null;
+        if (hardFloat && flattening == null && !classified.fixedVectorAggregate) {
           aggregatePartial = true;
           unknownArgument(index, classified, 'aggregate-hard-float-layout-unproven', { candidates:['fp-flattening','integer-convention'] });
           return;
@@ -927,7 +969,49 @@ function createClassifier(profile) {
       prototype.callingConvention || options.callingConvention,
     ) === 'riscv-vector-variant';
     if (returnVector) {
-      if (!vectorVariant) return { reg:null, partial:true, location:'unknown', reason:'vector-return-calling-convention-unknown' };
+      if (!vectorVariant) {
+        /*
+         * psABI: a fixed-length vector returns the same way the first named
+         * argument of that type would be passed — an aggregate under the base
+         * integer convention (#5713). <=2*XLEN returns in a0/a1, larger ones
+         * in memory via the hidden result pointer. Scalable vectors still
+         * require the vector variant; conflicting descriptors stay
+         * fail-closed (#6018).
+         */
+        if (returnVector.fixedLength !== true || returnVector.conflict === true) {
+          return returnVector.conflict
+            ? { reg:null, partial:true, location:'unknown', reason:'vector-return-descriptor-conflict', vector:returnVector }
+            : { reg:null, partial:true, location:'unknown', reason:'vector-return-calling-convention-unknown' };
+        }
+        // Prototype-internal width aliases must agree before an exact return
+        // placement is minted. A call-site options.returnBits is the documented
+        // override (#5636) and is not part of the conflict set.
+        const returnWidthAliases = [
+          Object.hasOwn(prototype, 'returnBits') ? prototype.returnBits : null,
+          Object.hasOwn(prototype, 'bits') ? prototype.bits : null,
+        ].filter((alias) => alias != null);
+        if (options?.returnBits == null && returnWidthAliases.length > 1
+          && new Set(returnWidthAliases.map((alias) => Number(alias))).size > 1) {
+          return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-width-evidence-conflict' };
+        }
+        if (!(bits > 0 && Number.isSafeInteger(declaredBitsNumber) && declaredBitsNumber > 0)) {
+          return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-size-unproven' };
+        }
+        if (bits > 2 * XLEN) return indirectResult();
+        const fixedRegs = bits > XLEN ? INTEGER_RETURN_REGISTERS.slice(0, 2) : INTEGER_RETURN_REGISTERS.slice(0, 1);
+        const fixedPieces = fixedRegs.map((reg, pieceIndex) => aggregatePiece({
+          pieceIndex,
+          reg,
+          bits:Math.min(XLEN, Math.max(1, bits - pieceIndex * XLEN)),
+          bytes:8,
+          byteOffset:pieceIndex * 8,
+          abiClass:'aggregate-integer',
+        }));
+        return {
+          reg:fixedRegs[0], regs:fixedRegs, pieces:fixedPieces, bytes:fixedRegs.length * 8,
+          abiNames:fixedRegs.map((reg) => ABI_ALIAS[reg]), bits, aggregate:true, fixedVectorAggregate:true,
+        };
+      }
       if (returnVector.conflict) return { reg:null, partial:true, location:'unknown', reason:'vector-return-descriptor-conflict', vector:returnVector };
       if (returnVector.fixedLength && !(Number(options?.abiVlen) > 0)) return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-abi-vlen-required' };
       const count = returnVector.mask ? 1 : returnVector.lmul * returnVector.tupleCount;

@@ -60,11 +60,16 @@ function isPlainObject(value) {
   return prototype === Object.prototype || prototype === null;
 }
 
+function stringField(value, code, trim = false) {
+  if (typeof value !== "string") throw new TypeError(code);
+  return trim ? value.trim() : value;
+}
+
 export function validatePluginManifest(manifest) {
   if (!manifest || typeof manifest !== "object") throw new TypeError("plugin-manifest-invalid");
-  const pluginId = String(manifest.id || "");
+  const pluginId = stringField(manifest.id, "plugin-manifest-id-invalid");
   if (!ID_RE.test(pluginId)) throw new TypeError("plugin-manifest-id-invalid");
-  const name = String(manifest.name || "").trim();
+  const name = stringField(manifest.name, "plugin-manifest-name-invalid", true);
   if (!name || name.length > 200) throw new TypeError("plugin-manifest-name-invalid");
 
   parseSemver(manifest.version);
@@ -94,7 +99,7 @@ export function validatePluginManifest(manifest) {
   const targets = [];
   const targetSet = new Set();
   for (const t of manifest.supportedTargets) {
-    const targetStr = String(t || "").trim();
+    const targetStr = stringField(t, "plugin-manifest-supported-targets-invalid", true);
     if (!targetStr || targetSet.has(targetStr)) throw new TypeError("plugin-manifest-supported-targets-invalid");
     targetSet.add(targetStr);
     targets.push(targetStr);
@@ -108,7 +113,7 @@ export function validatePluginManifest(manifest) {
   for (const c of manifest.contributions) {
     if (!c || typeof c !== "object") throw new TypeError("plugin-manifest-contribution-invalid");
     if (c.type !== "analyzer") throw new TypeError("plugin-manifest-unsupported-contribution-type");
-    const contributionId = String(c.id || "");
+    const contributionId = stringField(c.id, "plugin-manifest-contribution-id-invalid");
     if (!ID_RE.test(contributionId)) throw new TypeError("plugin-manifest-contribution-id-invalid");
     if (contribSet.has(contributionId)) throw new TypeError("plugin-manifest-duplicate-contribution-id");
     contribSet.add(contributionId);
@@ -120,7 +125,7 @@ export function validatePluginManifest(manifest) {
       if (!Array.isArray(c.capabilities)) throw new TypeError("plugin-manifest-capabilities-invalid");
       const capSet = new Set();
       for (const cap of c.capabilities) {
-        const capStr = String(cap || "").trim();
+        const capStr = stringField(cap, "plugin-manifest-capabilities-invalid", true);
         if (!ALLOWED_ANALYZER_CAPABILITIES.has(capStr) || capSet.has(capStr)) {
           throw new TypeError(`plugin-manifest-unknown-capability:${capStr}`);
         }
