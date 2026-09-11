@@ -105,6 +105,67 @@ test('Issue #4153: QueryAPI related-functions exposes per-side completeness and 
   assert.equal(typeof first.modelData.continuations.callers.arguments.cursor, 'string');
 });
 
+test('Issue #4153: zero-row QueryAPI partial page advances through the canonical caller cursor contract', async () => {
+  const observedOffsets = [];
+  const registry = createHexToolRegistry({
+    ...queryContext(),
+    binaryId:'issue-4153-zero-row-query',
+    async getCallers(_address, options = {}) {
+      const offset = options.offset ?? 0;
+      observedOffsets.push(offset);
+      if (offset === 0) {
+        return {
+          results:[],
+          offset:0,
+          returned:0,
+          total:3,
+          complete:false,
+          truncated:true,
+          reason:'query-limit',
+        };
+      }
+      return {
+        results:[{ address:'0x4000' }],
+        offset,
+        returned:1,
+        total:3,
+        complete:true,
+        truncated:false,
+        reason:null,
+      };
+    },
+  });
+
+  const first = await registry.execute('get_related_functions', {
+    functionAddress:'0x1000', limit:2,
+  }, { scope:'neighborhood' });
+  assert.deepEqual(first.result.callers, []);
+  assert.equal(first.result.callersPage.total, 3);
+  assert.equal(first.result.callersPage.complete, false);
+  const next = first.result.continuations?.callers;
+  assert.equal(next?.tool, 'get_callers');
+  assert.equal(next?.arguments?.address, '0x1000');
+  assert.equal(next?.arguments?.limit, 2);
+  assert.equal(typeof next?.arguments?.cursor, 'string');
+
+  const continued = await registry.execute(next.tool, next.arguments, { scope:'neighborhood' });
+  assert.equal(continued.result.offset, 2);
+  assert.deepEqual(continued.result.results.map((row) => row.address), ['0x4000']);
+  assert.deepEqual(observedOffsets, [0, 2]);
+  await assert.rejects(
+    () => registry.execute(next.tool, { ...next.arguments, address:'0x1001' }, { scope:'neighborhood' }),
+    (error) => error?.type === 'invalid_tool_call',
+    'zero-row continuation must remain bound to the original function address',
+  );
+  await assert.rejects(
+    () => registry.execute('get_callees', { address:'0x1000', limit:2, cursor:next.arguments.cursor }, { scope:'neighborhood' }),
+    (error) => error?.type === 'invalid_tool_call',
+    'zero-row caller continuation must remain bound to get_callers',
+  );
+  assert.equal(first.modelData.continuations.callers.tool, 'get_callers');
+  assert.equal(typeof first.modelData.continuations.callers.arguments.cursor, 'string');
+});
+
 test('Issue #4153: a partial callee side gets its own executable get_callees continuation', async () => {
   const registry = createHexToolRegistry({
     ...queryContext(),
@@ -171,6 +232,35 @@ test('Issue #4153: legacy related-functions does not launder a capped caller set
   assert.equal(out.modelData.continuations.callers.tool, 'get_callers');
 });
 
+test('Issue #4153: zero-row legacy incomplete side with unknown total withholds a non-actionable continuation', async () => {
+  const callers = [];
+  callers.queryLimited = true;
+  callers.reason = 'query-limit';
+  const callees = [{ addr:0x5000n }];
+  const registry = createHexToolRegistry({
+    binaryId:'issue-4153-zero-row-legacy',
+    analysisRevision:'rev-1',
+    addressExists:() => true,
+    program:{
+      callersOf() { return callers; },
+      functionRange(address) { return { start:address, end:address + 4n }; },
+      calleesOf() { return callees; },
+    },
+  });
+
+  const out = await registry.execute('get_related_functions', {
+    functionAddress:'0x1000', limit:2,
+  }, { scope:'neighborhood' });
+  assert.deepEqual(out.result.callers, []);
+  assert.equal(out.result.callersPage.total, null);
+  assert.equal(out.result.callersPage.complete, false);
+  assert.equal(out.result.callersPage.truncated, true);
+  assert.equal(out.result.callersPage.reason, 'query-limit');
+  assert.equal(out.result.continuations?.callers, undefined);
+  assert.equal(out.modelData.continuations?.callers, undefined);
+  assert.equal(out.result.complete, false);
+});
+
 test('Issue #4153: unknown or malformed per-side totals are never coerced into exact totals', async () => {
   for (const total of [null, '3', ['3'], { value:3 }, true]) {
     const registry = createHexToolRegistry({
@@ -219,5 +309,6 @@ test('Issue #4153: contradictory per-side completeness fails closed and cannot f
   assert.equal(out.result.callersPage.truncated, true);
   assert.equal(out.result.callersPage.reason, 'malformed-completeness');
   assert.equal(out.result.complete, false);
-  assert.equal(out.result.continuations.callers.tool, 'get_callers');
+  assert.equal(out.result.continuations?.callers, undefined);
+  assert.equal(out.modelData.continuations?.callers, undefined);
 });
