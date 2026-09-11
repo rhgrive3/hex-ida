@@ -24,8 +24,8 @@ function canonicalText(value) {
 export function isManagedExternalCall(targetEntityIds, dispatchKind) {
   const kind = canonicalText(dispatchKind);
   if (kind && EXTERNAL_DISPATCH_KINDS.has(kind)) return true;
-  if (!Array.isArray(targetEntityIds)) return false;
-  return targetEntityIds.some((target) => {
+  if (!Array.isArray(targetEntityIds) || targetEntityIds.length === 0) return false;
+  return targetEntityIds.every((target) => {
     const identity = canonicalText(target);
     return identity != null && EXTERNAL_TARGET_PREFIXES.some((prefix) => identity.startsWith(prefix));
   });
