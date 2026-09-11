@@ -8,6 +8,7 @@ import {
   exactRange,
 } from '../../../js/analysis/pointsto/lattice.js';
 import { pointsToAlias } from '../../../js/analysis/pointsto/alias.js';
+import { targetFromCanonicalProof } from '../../../js/analysis/pointsto/local.js';
 import { deriveCanonicalAddressProof } from '../../../js/analysis/alias/canonical-address-v2.js';
 import { createAnalysisStatus } from '../../../js/analysis/status.js';
 
@@ -97,11 +98,58 @@ test('#4214 stack-fixed spelling does not prove separation from a bare absolute'
   assert.ok(!result.reasonCodes.includes('distinct-proven-root'));
 });
 
-test('#4214 explicit non-escape proof still separates the stack root', () => {
+test('#4214 non-escaping stack vs bare absolute stays may', () => {
   const left = stack('stack-like');
   const result = aliasOf(left, absolute('4096'), new Set([left.rootKey]));
+  assert.equal(result.relation, 'may');
+  assert.ok(result.reasonCodes.includes('escape-unproven'));
+  assert.ok(!result.reasonCodes.includes('distinct-proven-root'));
+  assert.ok(!result.reasonCodes.includes('distinct-non-escaping-allocation'));
+});
+
+test('#4214 function-local-stack vs proven image-global-static yields no', () => {
+  const left = createPointsToTarget({
+    addressSpace: 'memory',
+    rootKind: 'stack-like',
+    rootEntityId: 'stack:frame',
+    canonicalRootStorageClass: 'function-local-stack',
+    offsetRange: exactRange(0),
+    widthBits: 64,
+  });
+  const right = createPointsToTarget({
+    addressSpace: 'memory',
+    rootKind: 'absolute',
+    address: '4096',
+    canonicalRootStorageClass: 'image-global-static',
+    offsetRange: exactRange(0),
+    widthBits: 64,
+  });
+  const result = aliasOf(left, right);
   assert.equal(result.relation, 'no');
-  assert.ok(result.reasonCodes.includes('distinct-non-escaping-allocation'));
+  assert.ok(result.reasonCodes.includes('distinct-proven-root'));
+});
+
+test('#4214 canonical constant-pointer from targetFromCanonicalProof does not produce unproven distinct-proven-root or distinct-non-escaping-allocation', () => {
+  const left = stack('stack-like');
+  const proof = { kind: 'constant', value: 4096n, widthBits: 64 };
+  const constantTarget = targetFromCanonicalProof(proof, ['ev-const']);
+  assert.ok(constantTarget);
+  assert.equal(constantTarget.rootKind, 'absolute');
+  assert.equal(constantTarget.address, '4096');
+
+  // Without non-escaping
+  const result1 = aliasOf(left, constantTarget);
+  assert.equal(result1.relation, 'may');
+  assert.ok(result1.reasonCodes.includes('escape-unproven'));
+  assert.ok(!result1.reasonCodes.includes('distinct-proven-root'));
+  assert.ok(!result1.reasonCodes.includes('distinct-non-escaping-allocation'));
+
+  // With non-escaping stack root
+  const result2 = aliasOf(left, constantTarget, new Set([left.rootKey]));
+  assert.equal(result2.relation, 'may');
+  assert.ok(result2.reasonCodes.includes('escape-unproven'));
+  assert.ok(!result2.reasonCodes.includes('distinct-proven-root'));
+  assert.ok(!result2.reasonCodes.includes('distinct-non-escaping-allocation'));
 });
 
 test('#4214 proof-bearing descriptor separation remains strong', () => {
