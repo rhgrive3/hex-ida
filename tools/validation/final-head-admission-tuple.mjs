@@ -60,6 +60,20 @@ function isAdmissionCheck(check) {
     || /final[- ]head admission/i.test(text(check?.name));
 }
 
+function checkAppSlug(check) {
+  return text(check?.app?.slug).trim().toLowerCase();
+}
+
+// GitHub Actions-created check suites do not schedule check_run workflows.
+// Keep them outside this controller's mutable authority; the required CI
+// denominator is the explicit commit-status set. External checks remain
+// authority because their check_run lifecycle is event-covered below.
+export function admissionAuthorityCheckRuns(checkRuns = []) {
+  return checkRuns.filter((check) => (
+    !isAdmissionCheck(check) && checkAppSlug(check) !== 'github-actions'
+  ));
+}
+
 function canonicalRows(values, project) {
   return values.map((value) => JSON.stringify(project(value))).sort();
 }
@@ -72,7 +86,6 @@ export function admissionEvidenceRevision({
   reviews = [],
   statuses = [],
   checkRuns = [],
-  unresolvedReviewThreads = 0,
 } = {}) {
   const reviewRows = canonicalRows(reviews, (review) => ({
     author: text(review?.author?.login || review?.user?.login).trim().toLowerCase(),
@@ -95,18 +108,16 @@ export function admissionEvidenceRevision({
     }),
   );
   const checkRows = canonicalRows(
-    checkRuns.filter((check) => !isAdmissionCheck(check)),
+    admissionAuthorityCheckRuns(checkRuns),
     (check) => ({
       name: text(check?.name),
       status: text(check?.status),
       conclusion: text(check?.conclusion).toLowerCase(),
-      appSlug: text(check?.app?.slug).trim().toLowerCase(),
+      appSlug: checkAppSlug(check),
     }),
   );
-  const threadCount = Number(unresolvedReviewThreads);
   const payload = JSON.stringify({
     draft: draft === true,
-    unresolvedReviewThreads: Number.isFinite(threadCount) ? threadCount : 0,
     reviews: reviewRows,
     statuses: statusRows,
     checkRuns: checkRows,
@@ -127,8 +138,8 @@ function currentEvidenceMatches(tuple, evidenceRevision) {
 
 // Publish a status only for the tuple and mutable evidence revision that were
 // evaluated, then verify both authorities again after the write. A later review,
-// CI result, thread update, draft transition, or HEAD/BASE advance can otherwise
-// let an older concurrent run overwrite a newer blocking result.
+// CI result, draft transition, or HEAD/BASE advance can otherwise let an older
+// concurrent run overwrite a newer blocking result.
 export async function publishTupleBoundAdmissionStatus({
   evaluatedHeadSha,
   evaluatedBaseSha,
@@ -183,6 +194,7 @@ export async function publishTupleBoundAdmissionStatus({
 export function evaluateFinalHeadAdmission({
   currentBaseSha,
   reviews = [],
+  checkRuns = [],
   ...input
 } = {}) {
   if (!SHA_RE.test(text(currentBaseSha))) {
@@ -193,6 +205,11 @@ export function evaluateFinalHeadAdmission({
   return evaluateLegacyFinalHeadAdmission({
     ...input,
     reviews: tupleBoundReviews(reviews, input.headSha, baseSha),
+    checkRuns: admissionAuthorityCheckRuns(checkRuns),
+    // Review-thread resolution is enforced by the native main-branch ruleset.
+    // It is intentionally excluded from this workflow controller because Actions
+    // has no resolve/unresolve event for pull-request review threads.
+    unresolvedReviewThreads: 0,
     currentBaseSha: baseSha,
   });
 }

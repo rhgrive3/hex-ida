@@ -10,6 +10,8 @@ on:
   pull_request_review_comment:
     types: [created, edited, deleted]
   status:
+  check_run:
+    types: [created, rerequested, completed, requested_action]
   workflow_run:
     workflows:
       - PR fast gate
@@ -50,7 +52,7 @@ permissions:
   statuses: write
 
 concurrency:
-  group: final-head-admission-${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || github.event.sha || inputs.pr_number || github.run_id }}
+  group: final-head-admission-${{ github.event.pull_request.number || github.event.check_run.pull_requests[0].number || github.event.workflow_run.pull_requests[0].number || github.event.check_run.head_sha || github.event.sha || inputs.pr_number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -136,6 +138,9 @@ jobs:
               prNumber = context.payload.workflow_run?.pull_requests?.[0]?.number ?? null;
             } else if (context.eventName === 'status') {
               triggeringHead = context.payload.sha ?? null;
+            } else if (context.eventName === 'check_run') {
+              triggeringHead = context.payload.check_run?.head_sha ?? null;
+              prNumber = context.payload.check_run?.pull_requests?.[0]?.number ?? null;
             } else if (context.eventName === 'workflow_dispatch') {
               const parsed = Number(process.env.DISPATCH_PR_NUMBER);
               if (Number.isSafeInteger(parsed) && parsed > 0) prNumber = parsed;
@@ -166,31 +171,6 @@ jobs:
               return;
             }
 
-            async function readUnresolvedReviewThreads(number) {
-              let unresolvedReviewThreads = 0;
-              let cursor = null;
-              for (;;) {
-                const page = await github.graphql(`
-                  query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
-                    repository(owner: $owner, name: $repo) {
-                      pullRequest(number: $number) {
-                        reviewThreads(first: 100, after: $cursor) {
-                          nodes { isResolved }
-                          pageInfo { hasNextPage endCursor }
-                        }
-                      }
-                    }
-                  }
-                `, { owner, repo, number, cursor });
-                const threads = page.repository?.pullRequest?.reviewThreads;
-                if (!threads) throw new Error('final-head-admission-review-threads-unavailable');
-                unresolvedReviewThreads += threads.nodes.filter((thread) => !thread.isResolved).length;
-                if (!threads.pageInfo.hasNextPage) break;
-                cursor = threads.pageInfo.endCursor;
-              }
-              return unresolvedReviewThreads;
-            }
-
             async function readAdmissionEvidence(number, sha) {
               const reviews = await github.paginate(github.rest.pulls.listReviews, {
                 owner, repo, pull_number: number, per_page: 100,
@@ -203,9 +183,15 @@ jobs:
                 { owner, repo, ref: sha, per_page: 100, filter: 'latest' },
                 (response) => response.data.check_runs ?? [],
               );
-              const unresolvedReviewThreads = await readUnresolvedReviewThreads(number);
-              return { reviews, statuses, checkRuns, unresolvedReviewThreads };
+              return { reviews, statuses, checkRuns };
             }
+
+            // Review-thread resolution is enforced independently by the active
+            // main-branch ruleset (required_review_thread_resolution). GitHub
+            // Actions has no pull_request_review_thread resolve/unresolve trigger,
+            // so thread state is intentionally not controller admission authority.
+            // This keeps the mutable authority set closed over the events that can
+            // actually schedule this privileged controller.
 
             // Current-base review identity: the authoritative base is the live
             // head of the PR's target branch, not the PR's creation-time base.
@@ -214,7 +200,7 @@ jobs:
             });
             const evaluatedBaseSha = baseBranch?.commit?.sha ?? null;
             const evidence = await readAdmissionEvidence(pr.number, headSha);
-            const { reviews, statuses, checkRuns, unresolvedReviewThreads } = evidence;
+            const { reviews, statuses, checkRuns } = evidence;
             const evaluatedEvidenceRevision = evaluator.admissionEvidenceRevision({
               draft: pr.draft === true,
               ...evidence,
@@ -226,7 +212,6 @@ jobs:
               reviews,
               statuses,
               checkRuns,
-              unresolvedReviewThreads,
               // AUTO markers are review evidence, not authentication. Only the
               // repository owner is trusted to mint them in this repository.
               trustedAutoReviewers: [owner],
@@ -312,7 +297,7 @@ jobs:
               .addRaw(`AUTO approvals on head/base: ${result.evidence.exactAutoApprovalCount}\n`)
               .addRaw(`Required CI contexts: ${result.evidence.requiredStatusContextCount}\n`)
               .addRaw(`Missing required CI contexts: ${result.evidence.missingRequiredStatusCount}\n`)
-              .addRaw(`Unresolved review threads: ${result.evidence.unresolvedReviewThreads}\n`)
+              .addRaw(`Review threads: enforced by native required-thread-resolution ruleset\n`)
               .addRaw(`CodeRabbit evidence: ${result.evidence.codeRabbitEvidenceCount}\n`)
               .addRaw(`CI statuses/checks: ${result.evidence.ciStatusCount}/${result.evidence.ciCheckCount}\n`)
               .addRaw(`Blockers: ${result.blockers.join(' | ') || '(none)'}\n`)

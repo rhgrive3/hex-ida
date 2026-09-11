@@ -52,3 +52,4 @@ jobs:
           node tests/ci/final-head-admission-6570.test.mjs
           node tests/ci/final-head-admission-auto-reviewer-identity-6570.test.mjs
           node tests/ci/final-head-admission-base-identity-6570.test.mjs
+          node tests/ci/final-head-admission-event-authority-6570.test.mjs
