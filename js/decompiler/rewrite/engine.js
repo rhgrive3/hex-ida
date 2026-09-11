@@ -20,16 +20,20 @@ function createSnapshotStorage() {
   return snapshot => {
     let key = '', elements = 0;
     for (const [kind, values] of Object.entries(snapshot)) {
-      key += `${kind}:[`;
+      key += `${kind}:${values.length}:[`;
       for (const value of values) {
         if (typeof value === 'string' && value.length > 2048
             || typeof value === 'bigint' && value >= (1n << 1024n)) return snapshot;
-        key += JSON.stringify([typeof value, Object.is(value, -0) ? '-0' : String(value)]) + ',';
+        // Length-prefix primitive text directly. JSON serialization could
+        // execute an inherited toJSON hook on the encoding's own arrays.
+        const text = Object.is(value, -0) ? '-0' : String(value);
+        key += `${typeof value}:${text.length}:${text}`;
         elements++;
         if (key.length > 8192) return snapshot;
       }
       key += ']';
     }
+    if (key.length > 8192) return snapshot;
     const prior = entries.get(key);
     if (prior) {
       entries.delete(key); entries.set(key, prior);

@@ -51,6 +51,26 @@ test('C4-03 storage keys retain typed identities and fresh truncation flags', ()
   assert.equal(reads, 2, 'every source is normalized again, even when its object identity is unchanged');
 });
 
+test('C4-03 storage keys do not evaluate ambient JSON conversion hooks', () => {
+  for (const prototype of [Array.prototype, Object.prototype]) {
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, 'toJSON');
+    let calls = 0;
+    try {
+      Object.defineProperty(prototype, 'toJSON', { configurable:true, value:() => { calls++; return 'same'; } });
+      const record = createExpressionOriginHistoryRecorder();
+      const first = record({ source:{ ir:['first'] } }, {});
+      const second = record({ source:{ ir:['second'] } }, {});
+      assert.deepEqual(first.before.ir, ['first']);
+      assert.deepEqual(second.before.ir, ['second']);
+      assert.notEqual(first.before, second.before);
+      assert.equal(calls, 0);
+    } finally {
+      if (descriptor) Object.defineProperty(prototype, 'toJSON', descriptor);
+      else delete prototype.toJSON;
+    }
+  }
+});
+
 test('C4-03 history payload storage has bounded entries and volume, not an observation exemption', () => {
   for (const [count, width] of [[600, 1], [40, 256]]) {
     const record = createExpressionOriginHistoryRecorder();
