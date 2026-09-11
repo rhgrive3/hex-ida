@@ -57,14 +57,20 @@ export function collectRelrRelocations(r, tags, image, bits, context = null) {
   if(off==null||size==null){partial(image,'DT_RELR table crosses a file-backed PT_LOAD boundary');return out;}
   if (!budget.claimInput(size, 'DT_RELR')) return out;
   if (size % word) partial(image,'DT_RELRSZ is not a multiple of DT_RELRENT');
-  let base=0n, hasBase=false; const wordBits=BigInt(word*8);
+  let base=0n, hasBase=false; const wordBits=BigInt(word*8), wordSize=BigInt(word), addressBits=bits===64?64:32, maxAddress=(1n<<BigInt(addressBits))-1n;
+  const checkedAddressAdd=(value,delta,label)=>{
+    if(value>maxAddress-delta){partial(image,`DT_RELR ${label} exceeds ${addressBits}-bit address range`);return null;}
+    return value+delta;
+  };
   const count=Math.floor(size/word);
   outer: for(let i=0;i<count;i++){
     if (!budget.step()) break;
     const entry=word===8?r.u64(off+i*word):BigInt(r.u32(off+i*word));
     if((entry&1n)===0n){
       if (!budget.push(out,{address:entry,symIndex:0,type:null,addend:null,source:'PT_DYNAMIC-RELR',relative:true},'DT_RELR')) break;
-      base=entry+BigInt(word);
+      const nextBase=checkedAddressAdd(entry,wordSize,'base advance');
+      if(nextBase==null)break;
+      base=nextBase;
       hasBase=true;
       continue;
     }
@@ -72,10 +78,14 @@ export function collectRelrRelocations(r, tags, image, bits, context = null) {
     for(let bit=1n;bit<wordBits;bit++) {
       if (!budget.step()) break outer;
       if(entry&(1n<<bit)) {
-        if (!budget.push(out,{address:base+(bit-1n)*BigInt(word),symIndex:0,type:null,addend:null,source:'PT_DYNAMIC-RELR',relative:true},'DT_RELR')) break outer;
+        const address=checkedAddressAdd(base,(bit-1n)*wordSize,'bitmap relocation');
+        if(address==null)break outer;
+        if (!budget.push(out,{address,symIndex:0,type:null,addend:null,source:'PT_DYNAMIC-RELR',relative:true},'DT_RELR')) break outer;
       }
     }
-    base+=(wordBits-1n)*BigInt(word);
+    const nextBase=checkedAddressAdd(base,(wordBits-1n)*wordSize,'bitmap base advance');
+    if(nextBase==null)break;
+    base=nextBase;
   }
   return out;
 }
@@ -184,9 +194,9 @@ export function parseDynamicSymbolVersions(r,tags,image,symbolCount,stringAt,con
   const out=new Map(),versym=one(tags,DT_VERSYM);if(versym==null||symbolCount<=0)return out;const budget=symbolBudgetContext(image,context);const count=Math.min(symbolCount,budget.limits.maxSymbolRecords);if(symbolCount>count)partial(image,`DT_VERSYM symbol count ${symbolCount} exceeds record limit ${count}; clamped`);
   const vspan=mappedELFFileSpanForVa(image,versym,count*2);if(!vspan){partial(image,'DT_VERSYM table crosses a file-backed PT_LOAD boundary');return out;}const voff=vspan.start;if(!budget.claimInput(count*2,'DT_VERSYM'))return out;const names=new Map();
   let unsupportedRevision = false;
-  const verdefPair=symbolVersionPair(tags,DT_VERDEF,DT_VERDEFNUM,'DT_VERDEF/DT_VERDEFNUM',image),verdef=verdefPair.address,verdefnum=verdefPair.count;
+  const verdefPair=symbolVersionPair(tags,DT_VERDEF,DT_VERDEFNUM,'DT_VERDEF/DT_VERDEFNUM',image),verdef=verdefPaiir.address,verdefnum=verdefPair.count;
   if(verdefPair.valid&&verdef!=null&&verdefnum){const range=mappedELFFileRangeForVa(image,verdef);let p=range?.start??null,decoded=0;for(let i=0;p!=null&&i<Math.min(verdefnum,65536)&&!budget.stopped;i++){
-    if(!budget.step(1,'DT_VERDEF decode'))break;if(p+20>range.end){partial(image,'DT_VERDEF crosses a file-backed PT_LOAD boundary');break;}if(!budget.claimInput(20,'DT_VERDEF'))break;if(!validateSymbolVersionRevision(r,p,VER_DEF_CURRENT,'DT_VERDEF',image)){unsupportedRevision=true;break;}decoded++;const ndx=r.u16(p+4)&0x7fff,cnt=r.u16(p+6),aux=r.u32(p+12),next=r.u32(p+16),ap=p+aux;
+    if(!budget.step(1,'DT_VERDEF decode'))break;if(p+20>range.end){partial(image,'DT_VERDEF crosses a file-backed PT_LOAD boundary');break;}if(!budget.claimInput(20,'DT_VERDF'))break;if(!validateSymbolVersionRevision(r,p,VER_DEF_CURRENT,'DT_VERDEF',image)){unsupportedRevision=true;break;}decoded++;const ndx=r.u16(p+4)&0x7fff,cnt=r.u16(p+6),aux=r.u32(p+12),next=r.u32(p+16),ap=p+aux;
     if(cnt<1||aux<20){partial(image,'DT_VERDEF has no valid first auxiliary entry');break;}if(ap<p||ap+8>range.end){partial(image,'DT_VERDEF auxiliary entry crosses a file-backed PT_LOAD boundary');break;}if(!budget.claimInput(8,'DT_VERDEF auxiliary'))break;const name=stringAt(BigInt(r.u32(ap)));if(name){if(!budget.claimOutput(1,96,'DT_VERDEF names'))break;names.set(ndx,{name,definition:true,library:null});}if(!next)break;if(decoded===verdefnum){partial(image,`DT_VERDEF chain continues past declared count ${verdefnum}`);break;}if(next<20||p+next<=p||p+next>range.end){partial(image,'DT_VERDEF next pointer leaves its mapped table');break;}p+=next;
   }if(decoded!==verdefnum)partial(image,`DT_VERDEFNUM declares ${verdefnum} records but ${decoded} were reachable`);}
   const verneedPair=symbolVersionPair(tags,DT_VERNEED,DT_VERNEEDNUM,'DT_VERNEED/DT_VERNEEDNUM',image),verneed=verneedPair.address,verneednum=verneedPair.count;

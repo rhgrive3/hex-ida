@@ -228,6 +228,33 @@ function isMemberRecursive(member, entityId, sccMembers = []) {
   return member?.isRecursive === true || member?.memberType?.isRecursive === true;
 }
 
+const STRUCTURAL_NUMERIC_FACT_KEYS = new Set(['widthBits', 'sizeBytes', 'alignBytes', 'offset', 'strideBytes', 'length']);
+const MEMBER_FACT_CONFLICT = Symbol('member-fact-conflict');
+
+function mergeCompatibleMemberFacts(left, right, key = null) {
+  if (stableStringify(left) === stableStringify(right)) return left;
+  if (key != null && STRUCTURAL_NUMERIC_FACT_KEYS.has(key)) {
+    const a = exactStructuralInteger(left);
+    const b = exactStructuralInteger(right);
+    return a != null && b != null && a === b ? left : MEMBER_FACT_CONFLICT;
+  }
+  if (left == null || right == null
+    || typeof left !== 'object' || typeof right !== 'object'
+    || Array.isArray(left) || Array.isArray(right)) return MEMBER_FACT_CONFLICT;
+
+  const merged = { ...left };
+  for (const [childKey, value] of Object.entries(right)) {
+    if (!Object.hasOwn(merged, childKey)) {
+      merged[childKey] = value;
+      continue;
+    }
+    const combined = mergeCompatibleMemberFacts(merged[childKey], value, childKey);
+    if (combined === MEMBER_FACT_CONFLICT) return MEMBER_FACT_CONFLICT;
+    merged[childKey] = combined;
+  }
+  return merged;
+}
+
 function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
   const distinct = [...new Map(claims.map((claim) => [claim.key, claim])).values()]
     .sort((left, right) => left.key.localeCompare(right.key));
@@ -281,7 +308,9 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       const key = offset.toString();
       const existing = membersByOffset.get(key);
       if (existing) {
-        if (stableStringify(existing.member) !== stableStringify(member)) return null;
+        const merged = mergeCompatibleMemberFacts(existing.member, member);
+        if (merged === MEMBER_FACT_CONFLICT) return null;
+        membersByOffset.set(key, { offset, member: merged });
       } else {
         membersByOffset.set(key, { offset, member });
       }

@@ -43,6 +43,35 @@ function managedUnaryOperatorForNode(node, mnemonic) {
   return node.operator;
 }
 
+const MANAGED_RIGHT_SHIFT_OPERATORS = new Set(['lshr', 'ashr']);
+
+function managedRightShiftOperator(frontendId, mnemonic) {
+  const frontend = typeof frontendId === 'string' ? frontendId.trim().toLowerCase() : '';
+  const text = typeof mnemonic === 'string' ? mnemonic.trim().toLowerCase() : '';
+  if (frontend === 'wasm') {
+    if (/^i(?:32|64)\.shr_u$/.test(text)) return 'lshr';
+    if (/^i(?:32|64)\.shr_s$/.test(text)) return 'ashr';
+  } else if (frontend === 'jvm') {
+    if (text === 'iushr' || text === 'lushr') return 'lshr';
+    if (text === 'ishr' || text === 'lshr') return 'ashr';
+  } else if (frontend === 'dex') {
+    if (/^ushr-(?:int(?:\/(?:2addr|lit8))?|long(?:\/2addr)?)$/.test(text)) return 'lshr';
+    if (/^shr-(?:int(?:\/(?:2addr|lit8))?|long(?:\/2addr)?)$/.test(text)) return 'ashr';
+  } else if (frontend === 'cil') {
+    if (text === 'shr.un') return 'lshr';
+    if (text === 'shr') return 'ashr';
+  }
+  return null;
+}
+
+function managedRightShiftOperatorForNode(node, frontendId, mnemonic) {
+  const mnemonicOperator = managedRightShiftOperator(frontendId, mnemonic);
+  if (node?.operator == null || node.operator === 'shr') return mnemonicOperator;
+  if (!MANAGED_RIGHT_SHIFT_OPERATORS.has(node.operator)) return null;
+  if (mnemonicOperator && mnemonicOperator !== node.operator) return null;
+  return node.operator;
+}
+
 function safeIdent(s, fallback = 'value') {
   const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_$]/g, '_').replace(/^([0-9])/, '_$1');
   return x || fallback;
@@ -859,8 +888,13 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
       else if (mn.includes('xor')) normalizedOp = 'xor';
       else if (mn.includes('or')) normalizedOp = 'or';
       else if (mn.includes('shl')) normalizedOp = 'shl';
-      else if (mn.includes('shr')) normalizedOp = 'ashr';
-      res = expr.binary(normalizedOp, left, right, bits);
+      else if (MANAGED_RIGHT_SHIFT_OPERATORS.has(n.operator) || n.operator === 'shr' || mn.includes('shr')) {
+        const shiftOp = managedRightShiftOperatorForNode(n, frontendId, mn);
+        res = shiftOp
+          ? expr.binary(shiftOp, left, right, bits, shiftOp === 'ashr')
+          : expr.intrinsic(safeIdent(mn || 'managed_right_shift'), [left, right], bits);
+      }
+      if (!res) res = expr.binary(normalizedOp, left, right, bits);
     } else if (n.kind === 'compare') {
       const left = n.inputs[0] ? buildValueExpr(n.inputs[0]) : expr.constant(0n, bits);
       const right = n.inputs[1] ? buildValueExpr(n.inputs[1]) : expr.constant(0n, bits);
