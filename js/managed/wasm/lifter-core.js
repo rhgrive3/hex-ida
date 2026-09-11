@@ -254,6 +254,9 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         for (let i = 0; i < type.results.length; i++) producedValues.push({ id: `result_${i}`, bits: typeBits(type.results[i]), type: type.results[i] });
         produce(type.results.length);
         callEffects.push({ typeIndex: tr.value, tableIndex: table.value, dispatchKind: 'indirect', unresolved: true, signature: { params: type.params, results: type.results } });
+        possibleExceptions.push({ kind: 'indirect-call-table-oob', tableIndex: table.value, condition: 'u32(selector)>=tableSize' });
+        possibleExceptions.push({ kind: 'indirect-call-null-target', tableIndex: table.value, condition: 'selectedElement==null' });
+        possibleExceptions.push({ kind: 'indirect-call-type-mismatch', tableIndex: table.value, typeIndex: tr.value, condition: 'selectedFunctionType!=declaredType' });
         break;
       }
       case 0x1a: mnemonic = 'drop'; consumedValues.push({ id: 'top' }); consume(1); break;
@@ -287,7 +290,8 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         const memory = validateWasmMemoryInstruction(memoryContext, opcode, memarg.align, memarg.memoryIndex);
         const bits = (opcode === 0x29 || opcode === 0x2b) ? 64 : 32; const byteWidth = opcode === 0x2c || opcode === 0x2d ? 1 : opcode === 0x2e || opcode === 0x2f ? 2 : bits / 8;
         mnemonic = opcode === 0x28 ? 'i32.load' : opcode === 0x29 ? 'i64.load' : opcode === 0x2a ? 'f32.load' : opcode === 0x2b ? 'f64.load' : 'load';
-        consumedValues.push({ id: 'addr', bits: 32 }); consume(1); producedValues.push({ bits }); produce(1); memoryEffects.push({ space: 'linear-memory', memoryIndex: memory.memoryIndex, byteWidth, offset: memarg.offset, align: memarg.align, isWrite: false });
+        const resultType = opcode === 0x2a ? { kind: 'float', widthBits: 32, format: 'binary32' } : opcode === 0x2b ? { kind: 'float', widthBits: 64, format: 'binary64' } : null;
+        consumedValues.push({ id: 'addr', bits: 32 }); consume(1); producedValues.push(resultType ? { bits, type: resultType } : { bits }); produce(1); memoryEffects.push({ space: 'linear-memory', memoryIndex: memory.memoryIndex, byteWidth, offset: memarg.offset, align: memarg.align, isWrite: false });
         possibleExceptions.push({ kind: 'linear-memory-oob', memoryIndex: memory.memoryIndex, condition: `effectiveAddress+${byteWidth}>memorySize` });
         break;
       }

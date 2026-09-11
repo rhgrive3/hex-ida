@@ -33,6 +33,148 @@ function externalAbortError(signal) {
   );
 }
 
+function plannerBudgetError(reason) {
+  const error = new AIError('budget_exhausted', reason === 'tool-cost-budget'
+    ? 'The AI tool cost budget was exhausted.'
+    : 'The AI tool call budget was exhausted.', { reason });
+  // planAnalysisGoal treats this code as a bounded partial-plan stop. Keep the
+  // public AIError type for injected/custom planners that propagate it instead.
+  error.code = 'tool-call-budget';
+  return error;
+}
+
+function plannerToolAddress(value) {
+  if (typeof value === 'string') return /^0x[0-9a-fA-F]+$/.test(value) ? value : null;
+  if (typeof value === 'bigint') return value >= 0n ? `0x${value.toString(16)}` : null;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return `0x${value.toString(16)}`;
+  return null;
+}
+
+function plannerRegistryInput(name, args) {
+  const first = args[0];
+  const second = args[1];
+  const third = args[2];
+  const secondOptions = second && typeof second === 'object' && !Array.isArray(second) ? second : {};
+  const thirdOptions = third && typeof third === 'object' && !Array.isArray(third) ? third : {};
+  switch (name) {
+    case 'search_functions':
+    case 'search_strings':
+      return { query: first, ...(secondOptions.limit == null ? {} : { limit: secondOptions.limit }) };
+    case 'get_xrefs':
+    case 'get_callers':
+    case 'get_callees':
+      return { address: plannerToolAddress(first), ...(secondOptions.limit == null ? {} : { limit: secondOptions.limit }) };
+    case 'get_function':
+      return { address: plannerToolAddress(first) };
+    case 'get_semantic_facts':
+      return {
+        functionAddress: plannerToolAddress(first),
+        ...(secondOptions.kinds == null ? {} : { kinds: secondOptions.kinds }),
+        ...(secondOptions.limit == null ? {} : { limit: secondOptions.limit }),
+      };
+    case 'verify_field_update':
+      return {
+        functionAddress: plannerToolAddress(first), field: second,
+        ...(thirdOptions.limit == null ? {} : { limit: thirdOptions.limit }),
+        ...(thirdOptions.pathLimit == null ? {} : { pathLimit: thirdOptions.pathLimit }),
+      };
+    case 'find_thresholds':
+      return {
+        functionAddress: plannerToolAddress(first),
+        ...(secondOptions.value == null ? {} : { value: secondOptions.value }),
+        ...(secondOptions.limit == null ? {} : { limit: secondOptions.limit }),
+      };
+    default:
+      throw new AIError('invalid_tool_call', `Planner tool is not registered for shared accounting: ${name}`);
+  }
+}
+
+function plannerCallSignal(args, fallback) {
+  for (let index = args.length - 1; index >= 0; index--) {
+    const value = args[index];
+    if (value && typeof value === 'object' && !Array.isArray(value) && value.signal) return value.signal;
+  }
+  return fallback;
+}
+
+function createPlannerToolCallBudget(limit) {
+  const bounded = typeof limit === 'number' && Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
+  let used = 0;
+  let blocked = false;
+  return Object.freeze({
+    limit: bounded,
+    get used() { return used; },
+    // The query planner checks remaining() again after starting a tool. Keep
+    // one sentinel unit at the exact ceiling so the final permitted async
+    // registry execution is awaited; the next consume() marks exhaustion
+    // before any additional tool can start.
+    remaining() {
+      if (blocked) return 0;
+      return used < bounded ? bounded - used : 1;
+    },
+    consume() {
+      if (used >= bounded) { blocked = true; return false; }
+      used += 1;
+      return true;
+    },
+  });
+}
+
+function markPlannerBudgetLimited(plan, reason) {
+  if (!plan || !reason) return plan;
+  const completeness = {
+    ...(plan.completeness || {}),
+    complete: false,
+    partial: true,
+    budgetLimited: true,
+    reason,
+  };
+  const boundedCandidate = (candidate) => candidate
+    ? { ...candidate, complete: false, budgetLimited: true }
+    : candidate;
+  return {
+    ...plan,
+    candidates: Array.isArray(plan.candidates) ? plan.candidates.map(boundedCandidate) : [],
+    best: boundedCandidate(plan.best),
+    missingEvidence: Array.from(new Set([...(plan.missingEvidence || []), reason])),
+    exhausted: true,
+    partial: true,
+    completeness,
+  };
+}
+
+function createBudgetedPlannerTools(registry, { budget, scope, signal, onBudgetExhausted }) {
+  const names = [
+    'search_functions', 'search_strings', 'get_xrefs', 'get_callers', 'get_callees',
+    'get_function', 'get_semantic_facts', 'verify_field_update', 'find_thresholds',
+  ];
+  return Object.fromEntries(names.map((name) => [name, async (...args) => {
+    if (registry.accounting.calls >= budget.maxToolCalls) {
+      onBudgetExhausted('tool-call-budget');
+      throw plannerBudgetError('tool-call-budget');
+    }
+    const weight = registry.costWeight(name);
+    if (registry.accounting.cost + weight > budget.maxCost) {
+      onBudgetExhausted('tool-cost-budget');
+      throw plannerBudgetError('tool-cost-budget');
+    }
+    const beforeDisassembly = registry.analysisStats?.disassembly || 0;
+    const observation = await registry.execute(name, plannerRegistryInput(name, args), {
+      scope,
+      signal: plannerCallSignal(args, signal),
+    });
+    const afterDisassembly = registry.analysisStats?.disassembly || beforeDisassembly;
+    const result = observation.result;
+    // Query planner's external-tool contract requires explicit disassembly
+    // cost for function analysis. The registry already owns that accounting;
+    // project the per-call delta without re-running the legacy tool.
+    if (name === 'get_function' && result && typeof result === 'object') {
+      return { ...result, cost: { ...(result.cost || {}), disassembly: Math.max(0, afterDisassembly - beforeDisassembly) } };
+    }
+    return result;
+  }]));
+}
+
 export async function executeTurn(input = {}, options = {}) {
     const request = normalizeTurnRequest(input);
     const budgetOverrides = { ...request.budget, ...options.budget };
@@ -111,18 +253,32 @@ export async function executeTurn(input = {}, options = {}) {
       session = await this.sessionStore.get(session.id);
       addActivity({ type: 'turn-start', label: request.mode === 'agent' ? '調査を開始' : '質問を解析', intent, requestedScope: request.scope, effectiveScope: scopeController.effectiveScope, snapshotId: snapshot.id });
 
+      let plannerBudgetReason = null;
       try {
         ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
+        const plannerTools = createBudgetedPlannerTools(registry, {
+          budget,
+          scope: scopeController.effectiveScope,
+          signal,
+          onBudgetExhausted: (reason) => { plannerBudgetReason ||= reason; },
+        });
         if (this.planner && shouldRunPlanner(request, snapshot, intent)) {
           assertLiveBindingsUnchanged(this.localContext, snapshot);
           addActivity({ type: 'plan-start', label: '決定論的候補探索を開始' });
+          const plannerStartCalls = registry.accounting.calls;
+          const plannerToolCallBudget = createPlannerToolCallBudget(Math.max(0, budget.maxToolCalls - plannerStartCalls));
           plan = await this.planner(request.goal, snapshotContext, {
             maxFunctions: budget.maxFunctions, maxDisassembly: budget.maxDisassembly,
+            toolCallBudget: plannerToolCallBudget,
             maxSearchResults: request.maxSearchResults || 40,
             timeoutMs: Math.max(1, Math.min(turnTimeoutMs, request.plannerTimeoutMs || 15000)),
             isCancelled: () => !!signal?.aborted || monotonicNow() - started >= turnTimeoutMs,
-            tools: registry.legacyTools,
+            tools: plannerTools,
           });
+          toolCalls = registry.accounting.calls;
+          if (plannerBudgetReason) plan = markPlannerBudgetLimited(plan, plannerBudgetReason);
+          if (!limitReason && plannerBudgetReason) limitReason = plannerBudgetReason;
+          if (!limitReason && plan?.exhausted && registry.accounting.calls >= budget.maxToolCalls) limitReason = 'tool-call-budget';
           assertLiveBindingsUnchanged(this.localContext, snapshot);
           const plannedEvidence = evidenceStore.ingestPlan(plan);
           observations.push({
@@ -174,6 +330,9 @@ export async function executeTurn(input = {}, options = {}) {
                 signal,
                 ...(Number.isFinite(turnTimeoutMs) ? { timeoutMs: remainingTime(started, turnTimeoutMs, monotonicNow) } : {}),
               });
+              // Provider cooperation is not deadline authority: discard a late
+              // result before it can be validated or adopted (#5815).
+              ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
               const visibleToolNames = tools.map((tool) => tool.name);
               const previousTool = observations.length ? observations[observations.length - 1]?.tool : null;
               if (
@@ -202,7 +361,7 @@ export async function executeTurn(input = {}, options = {}) {
             }
             addActivity({ type: 'model-result', label: next.type === 'tool' ? `ツール ${next.tool} を選択` : '回答候補を生成' });
             if (next.type === 'final') { decision = next; break; }
-            if (toolCalls >= budget.maxToolCalls) { limitReason = 'tool-call-budget'; break; }
+            if (registry.accounting.calls >= budget.maxToolCalls) { limitReason = 'tool-call-budget'; break; }
             if (registry.accounting.cost + registry.costWeight(next.tool) > budget.maxCost) { limitReason = 'tool-cost-budget'; break; }
             const signature = `${next.tool}:${stableStringify(next.arguments)}`;
             const repeated = (seenCalls.get(signature) || 0) + 1; seenCalls.set(signature, repeated);
@@ -214,7 +373,7 @@ export async function executeTurn(input = {}, options = {}) {
             assertLiveBindingsUnchanged(this.localContext, snapshot);
             scopeController.assertToolCall(next.tool, next.arguments);
             const observation = await registry.execute(next.tool, next.arguments, { scope: scopeController.effectiveScope, signal });
-            toolCalls++;
+            toolCalls = registry.accounting.calls;
             observations.push({ tool: next.tool, summary: observation.summary, evidenceIds: observation.evidenceIds, data: observation.modelData });
             await this.sessionStore.updateMemory(session.id, { importantPriorActions: [{ tool: next.tool, summary: observation.summary, evidenceIds: observation.evidenceIds }] });
             session = await this.sessionStore.get(session.id);
@@ -232,7 +391,9 @@ export async function executeTurn(input = {}, options = {}) {
         // drift detected at the planner boundary could otherwise be masked by
         // restoring the bindings before the final guard. Latch fail-closed.
         if (normalized.type === 'scope_violation') throw normalized;
-        limitReason = normalized.type;
+        limitReason = plannerBudgetReason && normalized.type === 'budget_exhausted'
+          ? plannerBudgetReason
+          : normalized.type;
         addActivity({ type: 'error', errorType: normalized.type, label: humanError(normalized), ...(providerDiagnostics(normalized) || {}) });
         if (!decision) decision = deterministicDecision(plan, request, normalized);
       }
@@ -251,6 +412,7 @@ export async function executeTurn(input = {}, options = {}) {
         }
       };
       assertDeadlineHonest();
+      toolCalls = registry.accounting.calls;
       const result = await this.finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, monotonicNow, limitReason, registry, snapshot, effectiveScope: scopeController.effectiveScope, stores: { evidenceStore, hypothesisStore, proposalStore }, signal });
       // Every asynchronous persistence boundary gets a pre/post binding check.
       // The payloads below are snapshot-derived; a live workbench switch while

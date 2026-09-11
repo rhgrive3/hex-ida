@@ -166,6 +166,10 @@ export function createSemanticCallSummary(input) {
   const unresolved = out.memoryRead.scope === 'unknown' || out.memoryWrite.scope === 'unknown'
     || out.determinism === 'unknown' || out.noreturn === 'unknown' || out.mayThrow === 'unknown';
   if (completeness === 'complete' && (unknownEffects != null || unresolved)) fail('semantic-ir-complete-call-has-unknown-effects');
+  /* Omitted control knowledge is a missing fact, not a negative proof (#5854):
+     a complete call must carry explicit noreturn/mayThrow knowledge, otherwise
+     downstream consumers read the null as "returns / does not throw". */
+  if (completeness === 'complete' && (out.noreturn == null || out.mayThrow == null)) fail('semantic-ir-complete-call-missing-control-knowledge');
   if (completeness !== 'complete' && unknownEffects == null) fail('semantic-ir-partial-call-requires-unknown-effects');
   return deepFreeze(out);
 }
