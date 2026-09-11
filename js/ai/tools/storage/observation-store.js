@@ -1,4 +1,5 @@
 import { CursorCodec, shortHash, stableSerialize } from '../paging/cursor.js';
+import { completenessOf } from '../projections/index.js';
 
 const FORBIDDEN_PATH = new Set(['__proto__', 'prototype', 'constructor']);
 
@@ -15,6 +16,25 @@ function textIdentity(value) {
   return String(value);
 }
 
+// Unresolved identity is not a shared cache authority (#5887): two contexts
+// whose binary/analysis identity cannot be resolved must never share a
+// deterministic binding key, so each unresolved context object gets its own
+// non-persistent nonce folded into the key. The nonce is stable per context
+// instance (turn-to-turn continuity inside one unresolved context is
+// preserved) but never crosses a setContext() switch to a different context
+// object. Resolved (complete) bindings keep the exact legacy key layout.
+const UNKNOWN_CONTEXT_NONCES = new WeakMap();
+let UNKNOWN_CONTEXT_NONCE_SEQUENCE = 0;
+function unknownContextNonce(context) {
+  if (!context || typeof context !== 'object') return `ephemeral-${++UNKNOWN_CONTEXT_NONCE_SEQUENCE}`;
+  let nonce = UNKNOWN_CONTEXT_NONCES.get(context);
+  if (nonce == null) {
+    nonce = String(++UNKNOWN_CONTEXT_NONCE_SEQUENCE);
+    UNKNOWN_CONTEXT_NONCES.set(context, nonce);
+  }
+  return nonce;
+}
+
 export function analysisBinding(context = {}, extra = {}) {
   const binaryIdentity = textIdentity(
     extra.binaryIdentity ?? context.binaryIdentity ?? context.binaryId ?? context.binary?.identity ?? context.binary?.id ?? context.binary?.uuid ??
@@ -29,8 +49,13 @@ export function analysisBinding(context = {}, extra = {}) {
     context.project?.analysisSemanticRevision ?? context.project?.modifiedAt ?? 'project:0'
   ) || 'project:0';
   const runtimeSession = textIdentity(extra.runtimeSession ?? context.runtimeSessionId ?? context.runtimeSession?.id ?? context.runtime?.sessionId ?? 'runtime:none') || 'runtime:none';
-  const key = shortHash({ binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession });
-  return { binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession, key };
+  const missing = [];
+  if (binaryIdentity === 'binary:unknown') missing.push('binaryIdentity');
+  if (analysisRevision === 'analysis:0') missing.push('analysisRevision');
+  const complete = missing.length === 0;
+  const key = shortHash({ binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession })
+    + (complete ? '' : `:u${unknownContextNonce(context)}`);
+  return { binaryIdentity, analysisRevision, sliceIdentity, projectRevision, runtimeSession, complete, missing, key };
 }
 
 function parsePath(path) {
@@ -54,8 +79,10 @@ function atPath(root, path) {
 }
 
 function boundedLimit(value, fallback = 100, max = 500) {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(1, Math.min(max, Math.floor(n))) : fallback;
+  // Paging budgets are schema numbers: structured values must never coerce
+  // into a page limit authority (#5428).
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(1, Math.min(max, Math.floor(value)));
 }
 
 const DEFAULT_MAX_ENTRIES = 256;
@@ -84,8 +111,9 @@ function observationRefKey(detailRef) {
 }
 
 function finiteConfiguredNumber(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) && number !== 0 ? number : fallback;
+  // Retention budgets are schema numbers: only a primitive finite number is
+  // an explicit configured value; strings/arrays/booleans fall back (#5428).
+  return typeof value === 'number' && Number.isFinite(value) && value !== 0 ? value : fallback;
 }
 
 function pageValue(value, offset, limit) {
@@ -112,6 +140,28 @@ function pageValue(value, offset, limit) {
     };
   }
   return { value, total: value == null ? 0 : 1, returned: value == null ? 0 : 1, offset: 0, nextOffset: null, kind: 'scalar' };
+}
+
+function sourceCompleteness(fullResult, selected) {
+  const root = completenessOf(fullResult);
+  if (root.complete === false || selected === fullResult) return root;
+  const selectedCompleteness = completenessOf(selected);
+  return selectedCompleteness.complete === false ? selectedCompleteness : root;
+}
+
+function detailCompleteness(page, source) {
+  const pageComplete = page.nextOffset == null;
+  const sourceComplete = source.complete !== false;
+  const pageCoverage = page.total ? Math.min(1, (page.offset + page.returned) / page.total) : 1;
+  return {
+    // Exhausting a page cannot upgrade a source that was already bounded or
+    // otherwise incomplete. Keep the source reason ahead of page navigation.
+    complete: sourceComplete && pageComplete,
+    returned: page.returned,
+    total: page.total,
+    coverage: sourceComplete ? pageCoverage : source.coverage,
+    reason: sourceComplete ? (pageComplete ? null : 'result-limit') : source.reason,
+  };
 }
 
 export class ObservationStore {
@@ -146,6 +196,10 @@ export class ObservationStore {
 
   cacheKey(tool, args, extra = {}) {
     const binding = this.binding(extra);
+    // The binding key already carries the per-context-instance nonce for
+    // unresolved identity (#5887): same context keeps its own cache authority,
+    // a different context never shares it. Complete bindings keep the legacy
+    // deterministic key byte-for-byte.
     return `${binding.key}:${tool}:${shortHash(stableSerialize(args || {}))}`;
   }
 
@@ -227,6 +281,7 @@ export class ObservationStore {
     const safeLimit = boundedLimit(limit);
     const selected = atPath(record.fullResult, effectivePath);
     const page = pageValue(selected, offset, safeLimit);
+    const completeness = detailCompleteness(page, sourceCompleteness(record.fullResult, selected));
     const nextCursor = page.nextOffset == null ? null : this.cursorCodec.encode({
       kind: 'observation-detail', bindingKey: currentBinding.key, detailRef: record.id,
       path: effectivePath, offset: page.nextOffset,
@@ -236,13 +291,7 @@ export class ObservationStore {
       tool: record.tool,
       path: effectivePath,
       data: page.value,
-      completeness: {
-        complete: page.nextOffset == null,
-        returned: page.returned,
-        total: page.total,
-        coverage: page.total ? Math.min(1, (page.offset + page.returned) / page.total) : 1,
-        reason: page.nextOffset == null ? null : 'result-limit',
-      },
+      completeness,
       continuation: nextCursor ? { cursor: nextCursor } : null,
       origin: {
         tool: record.tool,
