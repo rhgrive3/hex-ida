@@ -311,8 +311,10 @@ export function createSoftEvidence(input = {}) {
   if (!SOFT_SET.has(kind)) fail('soft-evidence-invalid-kind');
   const origin = strictNonEmpty(input.origin ?? 'heuristic', 'soft-evidence-origin-required');
   if (!ORIGIN_SET.has(origin)) fail('soft-evidence-invalid-origin');
-  const weight = Number(input.weight ?? 0.5);
-  if (!Number.isFinite(weight) || weight < 0 || weight > 1) fail('soft-evidence-invalid-weight');
+  const weight = input.weight ?? 0.5;
+  if (typeof weight !== 'number' || !Number.isFinite(weight) || weight < 0 || weight > 1) {
+    fail('soft-evidence-invalid-weight');
+  }
   return deepFreeze({
     kind,
     origin,
