@@ -59,8 +59,11 @@ export class ToolRegistry {
       description: "", inputSchema: { type: "object" }, outputSchema: null, cost: "cheap",
       scopeSupport: ["auto", "binary", "project"], mutability: "read-only", needsApproval: false,
       category: "discovery", preferredPrerequisites: [], resultKind: "observation",
-      deterministic: true, cacheable: !SNAPSHOT_DEPENDENT_UNKEYED_TOOLS.has(definition.name), storeResult: true, modelProjection: projectBounded,
+      deterministic: true, cacheable: true, storeResult: true, modelProjection: projectBounded,
       ...definition,
+      // Reserved snapshot-dependent reads must never be made reusable by a
+      // custom definition; their UI snapshot is absent from the cache key.
+      cacheable: SNAPSHOT_DEPENDENT_UNKEYED_TOOLS.has(definition.name) ? false : (definition.cacheable ?? true),
     }));
     return this;
   }
