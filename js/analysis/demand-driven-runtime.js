@@ -26,6 +26,32 @@ function abortError(signal, message = 'Analysis query aborted') {
   const error = new Error(message); error.name = 'AbortError'; return error;
 }
 function abortIfNeeded(signal) { if (signal?.aborted) throw abortError(signal); }
+function waitForSearchRequest(request, signal) {
+  const task = Promise.resolve(request);
+  if (signal?.aborted) {
+    try { request?.cancel?.(); } catch { /* cancellation is best-effort */ }
+    void task.catch(() => {});
+    return Promise.reject(abortError(signal, 'Search aborted'));
+  }
+  if (!signal?.addEventListener) return task;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener?.('abort', onAbort);
+      fn(value);
+    };
+    const onAbort = () => {
+      if (settled) return;
+      try { request?.cancel?.(); } catch { /* cancellation is best-effort */ }
+      finish(reject, abortError(signal, 'Search aborted'));
+    };
+    signal.addEventListener('abort', onAbort, { once:true });
+    task.then((value) => finish(resolve, value), (error) => finish(reject, error));
+    if (signal.aborted && !settled) onAbort();
+  });
+}
 function optionalCallback(value) { return typeof value === 'function' ? value : null; }
 function addressOf(value) {
   // Same canonical address-domain contract as the query adapter: an address
@@ -43,11 +69,11 @@ function addressOf(value) {
   return null;
 }
 function pageOf(page = {}) {
-  const rawOffset = Number(page.offset ?? page.start ?? 0);
-  const rawLimit = Number(page.limit ?? page.size ?? 200);
+  const rawOffset = page.offset ?? page.start ?? 0;
+  const rawLimit = page.limit ?? page.size ?? 200;
   return {
-    offset: Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0,
-    limit: Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(MAX_PAGE, rawLimit) : 200,
+    offset: typeof rawOffset === 'number' && Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0,
+    limit: typeof rawLimit === 'number' && Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(MAX_PAGE, rawLimit) : 200,
   };
 }
 function paged(values, page, completeness = 'complete', status = {}) {
@@ -207,6 +233,9 @@ function installWorkerBackedIdentity(app) {
     if (this.binaryId) return Promise.resolve(this.binaryId);
     if (!this.file) return Promise.reject(new Error('binary-id-file-unavailable'));
     let entry = this._binaryIdEntry;
+    // #4611: a single-flight entry whose last waiter aborted is cancelled but
+    // may not have settled yet; the owner must not hand it to a new caller.
+    if (entry?.cancelled) entry = null;
     if (!entry) {
       const file = this.file; const epoch = this.gen;
       const controller = new AbortController();
@@ -372,6 +401,7 @@ function installCancellableFunctionDiscovery(app) {
       const key = `${epoch}:${unique.map((item) => item.id).join('|')}`;
       if (symbols.functionDiscovery?.attempted === true && symbols.functionDiscovery?.regionSetKey === unique.map((item) => item.id).join('|')) return symbols;
       let entry = producers.get(key);
+      if (entry?.cancelled) entry = null;
       if (!entry) {
         const producerController = new AbortController();
         entry = {
@@ -480,6 +510,7 @@ function installDemandQueryAPI(app, recognitionVersion) {
     const profile = `${limits.callLimit}:${limits.refLimit}:${limits.kindLimit}`;
     const key = `${epoch}:${region.id}:${profile}`;
     let entry = regionScans.get(key);
+    if (entry?.cancelled) entry = null;
     if (!entry) {
       const request = app.backend.scanProgram(region.id, options.onProgress, { ...limits, analysisPriority:options.priority || 'interactive' });
       entry = { request, promise:null, settled:false, waiters:0 };
@@ -569,11 +600,7 @@ function installDemandQueryAPI(app, recognitionVersion) {
     async search(_snapshot, query, page = {}, options = {}) {
       if (!query || typeof query !== 'object' || typeof app?.backend?.search !== 'function') return unsupported('typed-search-producer-unavailable');
       abortIfNeeded(options.signal); const request = app.backend.search(query, options.onProgress);
-      const value = await new Promise((resolve, reject) => {
-        const onAbort = () => { request.cancel?.(); reject(abortError(options.signal, 'Search aborted')); };
-        options.signal?.addEventListener('abort', onAbort, { once:true });
-        Promise.resolve(request).then(resolve, reject).finally(() => options.signal?.removeEventListener('abort', onAbort));
-      });
+      const value = await waitForSearchRequest(request, options.signal);
       abortIfNeeded(options.signal);
       // An explicit backend `unsupported` must survive the query boundary:
       // "the backend cannot run this search" is not a complete empty result

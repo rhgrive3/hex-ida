@@ -122,13 +122,16 @@ function readCString(buf, off, maxLen = 1024) {
  * Decodes Go varint / uvarint used in string length and offsets.
  */
 function readUvarint(buf, off) {
-  let val = 0;
+  let value = 0;
   let shift = 0;
   let pos = off;
   while (pos < buf.length && shift < 35) {
     const b = buf[pos++];
-    val |= (b & 0x7f) << shift;
-    if ((b & 0x80) === 0) return { value: val, bytesRead: pos - off };
+    // The decoder is capped at 35 bits, which is safely below Number's 53-bit
+    // integer precision. Arithmetic accumulation preserves bits 32..34; JS
+    // bitwise operators would truncate them to a signed 32-bit value (#5373).
+    value += (b & 0x7f) * (2 ** shift);
+    if ((b & 0x80) === 0) return { value, bytesRead: pos - off };
     shift += 7;
   }
   return null;

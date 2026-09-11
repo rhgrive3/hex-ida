@@ -12,6 +12,7 @@ import {
   fail,
   nonEmpty,
   object,
+  positiveInteger,
   requiredOrigin,
   serializable,
   sortedUniqueStrings,
@@ -275,6 +276,21 @@ function validateNormalizedFunction(out, options) {
       const value = valueById.get(id);
       if (!value) fail('semantic-ir-dangling-value-id');
       if (value.kind !== 'definition' || value.definitionNodeId !== node.id) fail('semantic-ir-output-definition-mismatch');
+    }
+    if (node.kind === 'zext' || node.kind === 'sext') {
+      // Canonical extension type relation (#4576): a zext/sext may exist as a
+      // canonical exact operation only when its declared source/target widths
+      // equal the machine types on both sides. This is the non-bypassable
+      // boundary check; the lowering-side guard stays as defense in depth.
+      const fromBits = positiveInteger(node.attributes?.fromBits, 'semantic-ir-extension-width-attributes-required');
+      const toBits = positiveInteger(node.attributes?.toBits, 'semantic-ir-extension-width-attributes-required');
+      if (toBits < fromBits) fail('semantic-ir-extension-width-relation-invalid');
+      if (node.inputs.length !== 1 || node.outputs.length !== 1) fail('semantic-ir-extension-operand-count-invalid');
+      const extensionInput = valueById.get(node.inputs[0]);
+      const extensionOutput = valueById.get(node.outputs[0]);
+      if (!extensionInput || !extensionOutput) fail('semantic-ir-dangling-value-id');
+      if (extensionInput.machineType.widthBits !== fromBits) fail('semantic-ir-extension-input-width-mismatch');
+      if (extensionOutput.machineType.widthBits !== toBits) fail('semantic-ir-extension-output-width-mismatch');
     }
     if (node.memory && !valueById.has(node.memory.addressExpr.valueId)) fail('semantic-ir-dangling-address-value-id');
     if (node.call) {
