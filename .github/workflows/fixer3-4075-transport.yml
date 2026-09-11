@@ -26,7 +26,7 @@ jobs:
           text = path.read_text(encoding='utf-8')
           old = """          const completeness = truncated ? 'truncated' : !rangeComplete ? 'partial' : 'complete';
           return paged(rows, page, completeness, { reason:truncated ? 'instruction-read-budget' : rangeReason });
-"""
+          """
           new = """          const consumed = decoded.bytesConsumed;
           const hasCoverage = consumed != null;
           const validCoverage = !hasCoverage || (typeof consumed === 'number' && Number.isSafeInteger(consumed) && consumed >= 0 && consumed <= length);
@@ -46,7 +46,7 @@ jobs:
                   ? 'instruction-read-incomplete'
                   : null;
           return paged(rows, page, completeness, { reason });
-"""
+          """
           if text.count(old) != 1:
               raise SystemExit(f'expected exactly one production hunk, found {text.count(old)}')
           path.write_text(text.replace(old, new), encoding='utf-8')
