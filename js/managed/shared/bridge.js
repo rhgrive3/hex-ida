@@ -87,7 +87,13 @@ function managedDivisionRemainderOperator(frontendId, mnemonic) {
 
 function managedDivisionRemainderOperatorForNode(node, frontendId, mnemonic) {
   const mnemonicOperator = managedDivisionRemainderOperator(frontendId, mnemonic);
-  if (node?.operator == null || node.operator === 'div' || node.operator === 'rem') return mnemonicOperator;
+  if (node?.operator == null) return mnemonicOperator;
+  if (node.operator === 'div') {
+    return (mnemonicOperator === 'sdiv' || mnemonicOperator === 'udiv') ? mnemonicOperator : null;
+  }
+  if (node.operator === 'rem') {
+    return (mnemonicOperator === 'smod' || mnemonicOperator === 'umod') ? mnemonicOperator : null;
+  }
   if (!MANAGED_DIV_REM_OPERATORS.has(node.operator)) return null;
   if (mnemonicOperator && mnemonicOperator !== node.operator) return null;
   return node.operator;

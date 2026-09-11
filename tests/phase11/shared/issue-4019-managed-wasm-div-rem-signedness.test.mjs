@@ -72,4 +72,18 @@ test('unknown or contradictory WASM div authority fails closed', () => {
   const out = decompileManagedMethod(conflict).pseudocode;
   assert.match(out, /i32_div_u\(/);
   assert.doesNotMatch(out, / [/%] /);
+
+  const divRemConflict1 = structuredClone(lower('i32.div_u'));
+  const drc1 = divRemConflict1.semanticIr.nodes.find((x) => x.metadata?.mnemonic === 'i32.div_u');
+  drc1.operator = 'rem';
+  const out1 = decompileManagedMethod(divRemConflict1).pseudocode;
+  assert.match(out1, /i32_div_u\(/);
+  assert.doesNotMatch(out1, / [/%] /);
+
+  const divRemConflict2 = structuredClone(lower('i32.rem_u'));
+  const drc2 = divRemConflict2.semanticIr.nodes.find((x) => x.metadata?.mnemonic === 'i32.rem_u');
+  drc2.operator = 'div';
+  const out2 = decompileManagedMethod(divRemConflict2).pseudocode;
+  assert.match(out2, /i32_rem_u\(/);
+  assert.doesNotMatch(out2, / [/%] /);
 });
