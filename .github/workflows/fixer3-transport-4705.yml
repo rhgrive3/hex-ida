@@ -1,0 +1,48 @@
+name: Fixer3 transport 4705
+
+on:
+  push:
+    branches:
+      - fixer3/transport-4705-soft-evidence-weight
+
+permissions:
+  contents: write
+
+jobs:
+  transport:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c90d8b38833ae664defb512be58538e397967f72
+          fetch-depth: 1
+      - name: Apply and verify Fixer 3 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "c90d8b38833ae664defb512be58538e397967f72"
+          test "$(git hash-object js/analysis/types/constraints.js)" = "b89f90fdb3410bab02a88f8a6ba683a0597337e8"
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('js/analysis/types/constraints.js')
+          s = p.read_text()
+          old = "  const weight = Number(input.weight ?? 0.5);\n  if (!Number.isFinite(weight) || weight < 0 || weight > 1) fail('soft-evidence-invalid-weight');\n"
+          new = "  const weight = input.weight ?? 0.5;\n  if (typeof weight !== 'number' || !Number.isFinite(weight) || weight < 0 || weight > 1) {\n    fail('soft-evidence-invalid-weight');\n  }\n"
+          if s.count(old) != 1:
+              raise SystemExit('expected soft-evidence weight anchor exactly once')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          printf '%s' 'aW1wb3J0IGFzc2VydCBmcm9tICdub2RlOmFzc2VydC9zdHJpY3QnOwppbXBvcnQgdGVzdCBmcm9tICdub2RlOnRlc3QnOwoKaW1wb3J0IHsgY3JlYXRlU29mdEV2aWRlbmNlIH0gZnJvbSAnLi4vLi4vLi4vanMvYW5hbHlzaXMvdHlwZXMvY29uc3RyYWludHMuanMnOwppbXBvcnQgeyBUeXBlQ29uc3RyYWludEdyYXBoIH0gZnJvbSAnLi4vLi4vLi4vanMvYW5hbHlzaXMvdHlwZXMvZ3JhcGguanMnOwoKY29uc3QgY2xhaW0gPSBPYmplY3QuZnJlZXplKHsKICBsYXllcjogJ25vbWluYWwnLAogIGVudGl0eUlkOiAndjAnLAogIGRlc2NyaXB0b3I6IE9iamVjdC5mcmVlemUoeyBuYW1lOiAnQ2FuZGlkYXRlJyB9KSwKfSk7CgpmdW5jdGlvbiBldmlkZW5jZSh3ZWlnaHRNYXJrZXIgPSBTeW1ib2wuZm9yKCdvbWl0dGVkJykpIHsKICBjb25zdCBpbnB1dCA9IHsKICAgIGtpbmQ6ICdkZWNvbXBpbGVyLWhpbnQnLAogICAgb3JpZ2luOiAnaGV1cmlzdGljJywKICAgIGNsYWltLAogICAgZXZpZGVuY2VJZHM6IFsnaXNzdWUtNDcwNSddLAogIH07CiAgaWYgKHdlaWdodE1hcmtlciAhPT0gU3ltYm9sLmZvcignb21pdHRlZCcpKSBpbnB1dC53ZWlnaHQgPSB3ZWlnaHRNYXJrZXI7CiAgcmV0dXJuIGlucHV0Owp9Cgp0ZXN0KCcjNDcwNSBvbWl0dGVkL251bGxpc2ggd2VpZ2h0IGtlZXBzIGRvY3VtZW50ZWQgMC41IGRlZmF1bHQgYW5kIHByaW1pdGl2ZSBudW1lcmljIHdlaWdodHMgc3RheSBleGFjdCcsICgpID0+IHsKICBhc3NlcnQuZXF1YWwoY3JlYXRlU29mdEV2aWRlbmNlKGV2aWRlbmNlKCkpLndlaWdodCwgMC41KTsKICBhc3NlcnQuZXF1YWwoY3JlYXRlU29mdEV2aWRlbmNlKGV2aWRlbmNlKHVuZGVmaW5lZCkpLndlaWdodCwgMC41KTsKICBhc3NlcnQuZXF1YWwoY3JlYXRlU29mdEV2aWRlbmNlKGV2aWRlbmNlKG51bGwpKS53ZWlnaHQsIDAuNSk7CiAgZm9yIChjb25zdCB3ZWlnaHQgb2YgWzAsIC0wLCAwLjI1LCAwLjUsIDAuNzUsIDFdKSB7CiAgICBhc3NlcnQuZXF1YWwoT2JqZWN0LmlzKGNyZWF0ZVNvZnRFdmlkZW5jZShldmlkZW5jZSh3ZWlnaHQpKS53ZWlnaHQsIHdlaWdodCksIHRydWUsIGB3ZWlnaHQgJHt3ZWlnaHR9IGNoYW5nZWRgKTsKICB9Cn0pOwoKdGVzdCgnIzQ3MDUgY29lcmNpYmxlIG5vbi1udW1iZXIgd2VpZ2h0cyBhcmUgcmVqZWN0ZWQgaW5zdGVhZCBvZiBiZWNvbWluZyByYW5raW5nIGF1dGhvcml0eScsICgpID0+IHsKICBmb3IgKGNvbnN0IHdlaWdodCBvZiBbdHJ1ZSwgZmFsc2UsICcxJywgJzAuNzUnLCBbJzEnXSwgWzFdLCB7fSwgbmV3IE51bWJlcigxKV0pIHsKICAgIGFzc2VydC50aHJvd3MoCiAgICAgICgpID0+IGNyZWF0ZVNvZnRFdmlkZW5jZShldmlkZW5jZSh3ZWlnaHQpKSwKICAgICAgL3NvZnQtZXZpZGVuY2UtaW52YWxpZC13ZWlnaHQvLAogICAgICBgYWNjZXB0ZWQgbWFsZm9ybWVkIHdlaWdodCAke09iamVjdC5wcm90b3R5cGUudG9TdHJpbmcuY2FsbCh3ZWlnaHQpfWAsCiAgICApOwogIH0KICBmb3IgKGNvbnN0IHdlaWdodCBvZiBbTmFOLCBJbmZpbml0eSwgLUluZmluaXR5LCAtMC4wMSwgMS4wMV0pIHsKICAgIGFzc2VydC50aHJvd3MoKCkgPT4gY3JlYXRlU29mdEV2aWRlbmNlKGV2aWRlbmNlKHdlaWdodCkpLCAvc29mdC1ldmlkZW5jZS1pbnZhbGlkLXdlaWdodC8pOwogIH0KfSk7Cgp0ZXN0KCcjNDcwNSB3ZWlnaHQgdmFsaWRhdGlvbiBkb2VzIG5vdCBpbnZva2UgY2FsbGVyLW93bmVkIGNvZXJjaW9uIGhvb2tzJywgKCkgPT4gewogIGxldCBjb2VyY2lvbnMgPSAwOwogIGNvbnN0IHdlaWdodCA9IHsKICAgIFtTeW1ib2wudG9QcmltaXRpdmVdKCkgewogICAgICBjb2VyY2lvbnMgKz0gMTsKICAgICAgcmV0dXJuIDE7CiAgICB9LAogIH07CiAgYXNzZXJ0LnRocm93cygoKSA9PiBjcmVhdGVTb2Z0RXZpZGVuY2UoZXZpZGVuY2Uod2VpZ2h0KSksIC9zb2Z0LWV2aWRlbmNlLWludmFsaWQtd2VpZ2h0Lyk7CiAgYXNzZXJ0LmVxdWFsKGNvZXJjaW9ucywgMCk7Cn0pOwoKdGVzdCgnIzQ3MDUgbWFsZm9ybWVkIG1heGltdW0gd2VpZ2h0IGNhbm5vdCBjcmVhdGUgYSBwcm9iYWJsZSBncmFwaCBjYW5kaWRhdGUgb3IgZ2hvc3QgZW50aXR5JywgKCkgPT4gewogIGNvbnN0IGdyYXBoID0gbmV3IFR5cGVDb25zdHJhaW50R3JhcGgoeyBzbmFwc2hvdElkOiAnaXNzdWUtNDcwNScgfSk7CiAgYXNzZXJ0LnRocm93cygKICAgICgpID0+IGdyYXBoLmFkZFNvZnRFdmlkZW5jZShldmlkZW5jZSh0cnVlKSksCiAgICAvc29mdC1ldmlkZW5jZS1pbnZhbGlkLXdlaWdodC8sCiAgKTsKICBhc3NlcnQuZGVlcEVxdWFsKGdyYXBoLmVudGl0eUlkcygpLCBbXSk7CiAgY29uc3QgcmVzdWx0ID0gZ3JhcGguc29sdmVFbnRpdHkoJ3YwJyk7CiAgYXNzZXJ0LmVxdWFsKHJlc3VsdC5zdGF0dXMuY29tcGxldGVuZXNzLCAndW5zdXBwb3J0ZWQnKTsKICBhc3NlcnQuZXF1YWwocmVzdWx0LnN0YXR1cy5zdG9wUmVhc29uLCAnZXZpZGVuY2UtbWlzc2luZycpOwp9KTsKCnRlc3QoJyM0NzA1IHZhbGlkIHJhbmtpbmcgdGhyZXNob2xkIHNlbWFudGljcyByZW1haW4gdW5jaGFuZ2VkJywgKCkgPT4gewogIGNvbnN0IHBvc3NpYmxlID0gbmV3IFR5cGVDb25zdHJhaW50R3JhcGgoeyBzbmFwc2hvdElkOiAnaXNzdWUtNDcwNS1wb3NzaWJsZScgfSk7CiAgcG9zc2libGUuYWRkU29mdEV2aWRlbmNlKGV2aWRlbmNlKDAuNzQpKTsKICBjb25zdCBwb3NzaWJsZVJlc3VsdCA9IHBvc3NpYmxlLnNvbHZlRW50aXR5KCd2MCcpOwogIGFzc2VydC5lcXVhbChwb3NzaWJsZVJlc3VsdC5sYXllcnMubm9taW5hbC5jb25maWRlbmNlLCAncG9zc2libGUnKTsKICBhc3NlcnQuZXF1YWwocG9zc2libGVSZXN1bHQubGF5ZXJzLm5vbWluYWwuY2FuZGlkYXRlc1swXS53ZWlnaHQsIDAuNzQpOwoKICBjb25zdCBwcm9iYWJsZSA9IG5ldyBUeXBlQ29uc3RyYWludEdyYXBoKHsgc25hcHNob3RJZDogJ2lzc3VlLTQ3MDUtcHJvYmFibGUnIH0pOwogIHByb2JhYmxlLmFkZFNvZnRFdmlkZW5jZShldmlkZW5jZSgwLjc1KSk7CiAgY29uc3QgcHJvYmFibGVSZXN1bHQgPSBwcm9iYWJsZS5zb2x2ZUVudGl0eSgndjAnKTsKICBhc3NlcnQuZXF1YWwocHJvYmFibGVSZXN1bHQubGF5ZXJzLm5vbWluYWwuY29uZmlkZW5jZSwgJ3Byb2JhYmxlJyk7CiAgYXNzZXJ0LmVxdWFsKHByb2JhYmxlUmVzdWx0LmxheWVycy5ub21pbmFsLmNhbmRpZGF0ZXNbMF0ud2VpZ2h0LCAwLjc1KTsKfSk7Cg==' | base64 -d > tests/phase7/types/issue-4705-soft-evidence-weight.test.mjs
+          test "$(git hash-object js/analysis/types/constraints.js)" = "2cfb7f32d52c9c3f4f7a5a601d7954d42cf45476"
+          test "$(git hash-object tests/phase7/types/issue-4705-soft-evidence-weight.test.mjs)" = "6d635943c7f97848dca3f214a4c61790b4335795"
+          git diff --check
+          node --check js/analysis/types/constraints.js
+          node --check tests/phase7/types/issue-4705-soft-evidence-weight.test.mjs
+          node --test --test-reporter=spec tests/phase7/types/issue-4705-soft-evidence-weight.test.mjs
+          git config user.name 'Fixer 3 Analysis'
+          git config user.email 'actions@users.noreply.github.com'
+          git switch -c fixer3/issue-4705-soft-evidence-weight
+          git add js/analysis/types/constraints.js tests/phase7/types/issue-4705-soft-evidence-weight.test.mjs
+          git commit -m 'fix(types): validate soft evidence weights (#4705)'
+          git push origin HEAD:refs/heads/fixer3/issue-4705-soft-evidence-weight
