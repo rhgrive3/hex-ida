@@ -222,54 +222,87 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
       },
     };
   };
-  const postprocessingBudgetOkay = (stage = 'match post-processing') => (
-    budget.checkPostprocessingWall(stage)
-  );
-  if (!postprocessingBudgetOkay()) return incompletePostprocessing();
+  const postprocessStep = (stage = 'match post-processing', cost = 1) => budget.postprocess(cost, stage);
+  const collectAlternatives = (list, excludedIndex, side, confidence) => {
+    const alternatives = [];
+    for (const x of list) {
+      if (!postprocessStep('alternative scanning')) return null;
+      if ((side === 'after' && x.j === excludedIndex) || (side === 'before' && x.i === excludedIndex)
+        || x.confidence < confidence - ambiguityWindow) continue;
+      alternatives.push({
+        side,
+        index: side === 'after' ? x.j : x.i,
+        address: side === 'after' ? after[x.j].address : before[x.i].address,
+        confidence: x.confidence,
+        identity: x.identity,
+        reasons: x.reasons,
+      });
+      if (alternatives.length === 4) break;
+    }
+    return alternatives;
+  };
+  const sortAlternatives = (alternatives) => {
+    try {
+      alternatives.sort((a, b) => {
+        if (!postprocessStep('alternative ordering')) throw MATCH_POSTPROCESSING_BUDGET_STOP;
+        return b.confidence - a.confidence || String(a.side).localeCompare(String(b.side)) || a.index - b.index;
+      });
+    } catch (error) {
+      if (error === MATCH_POSTPROCESSING_BUDGET_STOP) return false;
+      throw error;
+    }
+    return true;
+  };
+  if (!budget.checkPostprocessingWall()) return incompletePostprocessing();
 
   const usedBefore = new Set(), usedAfter = new Set(), matchRecords = [];
   for (const c of selected) {
-    if (!postprocessingBudgetOkay()) return incompletePostprocessing();
+    if (!postprocessStep('match construction')) return incompletePostprocessing();
     // Ambiguity is evidence about the original candidate distribution, not a
     // side-effect of assignment order. Keep candidates even when another match
     // consumes their after-function.
-    const forwardAlternatives = (eligibleByBefore.get(c.i) || []).filter((x) => x.j !== c.j && x.confidence >= c.confidence - ambiguityWindow)
-      .slice(0, 4).map((x) => ({ side:'after', index:x.j, address:after[x.j].address, confidence:x.confidence, identity:x.identity, reasons:x.reasons }));
-    const reverseAlternatives = (eligibleByAfter.get(c.j) || []).filter((x) => x.i !== c.i && x.confidence >= c.confidence - ambiguityWindow)
-      .slice(0, 4).map((x) => ({ side:'before', index:x.i, address:before[x.i].address, confidence:x.confidence, identity:x.identity, reasons:x.reasons }));
-    const alternatives = [...forwardAlternatives, ...reverseAlternatives]
-      .sort((a,b)=>b.confidence-a.confidence || String(a.side).localeCompare(String(b.side)) || a.index-b.index).slice(0, 4);
-    const ambiguous = alternatives.length > 0;
+    const forwardAlternatives = collectAlternatives(eligibleByBefore.get(c.i) || [], c.j, 'after', c.confidence);
+    if (!forwardAlternatives) return incompletePostprocessing();
+    const reverseAlternatives = collectAlternatives(eligibleByAfter.get(c.j) || [], c.i, 'before', c.confidence);
+    if (!reverseAlternatives) return incompletePostprocessing();
+    const alternatives = [...forwardAlternatives, ...reverseAlternatives];
+    if (!sortAlternatives(alternatives)) return incompletePostprocessing();
+    const candidates = alternatives.slice(0, 4);
+    const ambiguous = candidates.length > 0;
     matchRecords.push({
       beforeIndex: c.i,
       afterIndex: c.j,
-      match: { before: before[c.i], after: after[c.j], confidence: c.confidence, identity: c.identity, reasons: c.reasons, evidence: c.evidence, ambiguous, candidates: alternatives },
+      match: { before: before[c.i], after: after[c.j], confidence: c.confidence, identity: c.identity, reasons: c.reasons, evidence: c.evidence, ambiguous, candidates },
     });
     usedBefore.add(c.i); usedAfter.add(c.j);
     if (!ambiguous && c.confidence >= 0.82 && before[c.i].address != null && after[c.j].address != null) anchors.set(String(before[c.i].address), String(after[c.j].address));
-    if (!postprocessingBudgetOkay()) return incompletePostprocessing();
+    if (!budget.checkPostprocessingWall()) return incompletePostprocessing();
   }
   try {
     matchRecords.sort((a, b) => {
-      if (!postprocessingBudgetOkay('match ordering')) throw MATCH_POSTPROCESSING_BUDGET_STOP;
+      if (!postprocessStep('match ordering')) throw MATCH_POSTPROCESSING_BUDGET_STOP;
       return a.beforeIndex - b.beforeIndex || a.afterIndex - b.afterIndex;
     });
   } catch (error) {
     if (error === MATCH_POSTPROCESSING_BUDGET_STOP) return incompletePostprocessing();
     throw error;
   }
-  if (!postprocessingBudgetOkay('match ordering')) return incompletePostprocessing();
-  const matches = matchRecords.map(({ match }) => match);
+  if (!budget.checkPostprocessingWall('match ordering')) return incompletePostprocessing();
+  const matches = [];
+  for (const { match } of matchRecords) {
+    if (!postprocessStep('match publication')) return incompletePostprocessing();
+    matches.push(match);
+  }
   const deleted = [], added = [];
   for (let i = 0; i < before.length; i++) {
-    if (!postprocessingBudgetOkay()) return incompletePostprocessing();
+    if (!postprocessStep('deleted collection')) return incompletePostprocessing();
     if (!usedBefore.has(i)) deleted.push(before[i]);
   }
   for (let i = 0; i < after.length; i++) {
-    if (!postprocessingBudgetOkay()) return incompletePostprocessing();
+    if (!postprocessStep('new collection')) return incompletePostprocessing();
     if (!usedAfter.has(i)) added.push(after[i]);
   }
-  if (!postprocessingBudgetOkay()) return incompletePostprocessing();
+  if (!budget.checkPostprocessingWall()) return incompletePostprocessing();
   const matchingBudget = budget.snapshot();
   const truncated = matchingBudget.truncated || solved.truncatedComponents.length > 0;
   return {
