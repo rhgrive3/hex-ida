@@ -417,8 +417,18 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
       }
     }
     if (decodedBodySig != null && decodedDeclarationSig != null) {
-      failIf(stableStringify({ parameters: decodedBodySig.parameters, returnValue: decodedBodySig.returnValue })
-        !== stableStringify({ parameters: decodedDeclarationSig.parameters, returnValue: decodedDeclarationSig.returnValue }),
+      const canonicalSig = (sig) => ({
+        callConvention: sig.callConvention,
+        kind: sig.kind,
+        hasThis: sig.hasThis,
+        explicitThis: sig.explicitThis,
+        genericParameterCount: sig.genericParameterCount ?? 0,
+        sentinelIndex: sig.sentinelIndex ?? null,
+        parameters: sig.parameters,
+        returnValue: sig.returnValue,
+      });
+      failIf(stableStringify(canonicalSig(decodedBodySig))
+        !== stableStringify(canonicalSig(decodedDeclarationSig)),
         'cil-methodimpl-signature-mismatch');
     }
     failIf(seenImplDeclarations.has(`${row.classToken}\u0000${row.methodDeclarationToken}`), 'cil-methodimpl-declaration-duplicate');
