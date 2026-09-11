@@ -31,7 +31,7 @@ import { readFacadeConstantTransitions, facadeConstantTransitionExpected, facade
   readFacadeLocationHistory, facadeLocationTransitionExpected,
   readFacadeTypedResultHistory, facadeTypedResultTransitionExpected,
   readFacadeStackEscapeHistory, facadeStackEscapeTransitionExpected,
-  readFacadeAbiBindingHistory, facadeAbiBindingExpected } from '../ir-core.js';
+  readFacadeAbiBindingHistory, facadeAbiBindingExpected, readFacadeProjectedMemoryOperandTransition } from '../ir-core.js';
 import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
@@ -57,13 +57,13 @@ export function readCallResultSpellingProducer(node, ir) {
   return entry && entry.ir === ir && entry.observation.matches() && entry.consumer.isCurrent() ? entry : null;
 }
 const buildHistoryObservations = new WeakMap();
-const reusableStateHistoryRecords = new WeakSet();
+const reusableBuildHistoryRecords = new WeakSet();
 function valueHistoryRecord(record, valueId) {
-  // State normalization is one observed producer operation, not a new
+  // State normalization or memory selection is one producer operation, not a new
   // transformation each time a downstream value inherits it. Keep its owning
   // valueId and exact record identity; consumer.records already carries each
   // actual dependency. Public copies cannot acquire this private membership.
-  if (reusableStateHistoryRecords.has(record)) return record;
+  if (reusableBuildHistoryRecords.has(record)) return record;
   const copy = { ...record, valueId };
   const observation = buildHistoryObservations.get(record);
   if (observation) buildHistoryObservations.set(copy, observation);
@@ -719,7 +719,8 @@ function compatMemorySelection(value, state) {
   if (expected && ((state.buildSelectionHistoryCount || 0) >= maximum || consumerObservationBudget(state).edges <= 0)) {
     observeBuildSelection(value, instruction, state, 'compat-memory'); return null;
   }
-  const transition = readProjectedMemoryOperandTransition(state.ir, instruction);
+  const transition = readFacadeProjectedMemoryOperandTransition(state.ir, instruction)
+    || readProjectedMemoryOperandTransition(state.ir, instruction);
   if (!transition) {
     if (expected
       || instruction?.sub === 'memory-forward' || instruction?.extra?.originalMemoryOp === 'load') {
@@ -742,13 +743,14 @@ function recordCompatMemorySelection(value, expression, selected, state) {
   }
   const before = { source:mergeSource(origin(transition.source, value), origin(transition.store),
     origin(transition.input.def, transition.input), ...transition.beforeInputs.map(input => origin(input.def, input))) };
-  const record = Object.freeze({ rule:'project-stack-load-to-operand', phase:'compatibility-projection',
+  const record = Object.freeze({ rule:'project-stack-load-to-operand', phase:'compatibility-projection', valueId:value?.id ?? null,
     before:'load:canonical-stack-operand', after:'mov:memory-forward',
     evidence:Object.freeze({ kind:'observed-compat-memory-transition-not-new-proof',
       detail:'actual compatibility LOAD-to-MOV operation admitted by the existing canonical stack operand-identity query; original access and store sources retained, not a new memory theorem' }),
     originHistory:expressionOriginHistory(before, expression),
   });
   buildHistoryObservations.set(record, Object.freeze({ matches:() => observation.matches() && transition.isCurrent() }));
+  reusableBuildHistoryRecords.add(record);
   (state.buildHistoryFrame.records ??= new Set()).add(record);
 }
 
@@ -887,7 +889,7 @@ function recordCompatOperationSelection(value, expression, selected, state) {
     });
     const producerChecks = Object.freeze([transition.isCurrent, observation.sourceMatches, ...(origins?.memoryChecks || [])]);
     buildHistoryObservations.set(record, Object.freeze({ matches:observation.outputMatches, producerChecks }));
-    if (record.rule === 'compact-public-state') reusableStateHistoryRecords.add(record);
+    if (record.rule === 'compact-public-state') reusableBuildHistoryRecords.add(record);
     pending.push({ record, producerChecks });
   }
   // All local finish callbacks have run. Outside canonical construction,

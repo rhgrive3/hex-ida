@@ -3,6 +3,8 @@ import test from 'node:test';
 import { loadCorpus } from '../../../tools/validation/phase8/build-corpus.mjs';
 import { decompileEntry, provenanceFromSourceMap } from '../../../tools/validation/phase8/decompile-corpus.mjs';
 import { loadFrozenProvenance } from '../../../tools/validation/phase8/metrics.mjs';
+import * as facade from '../../../js/ir-core.js';
+import * as projector from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 
 test('C4-03 native aggregate loop binds every rendered entity within the unchanged default budget', () => {
   const corpus = loadCorpus();
@@ -52,5 +54,47 @@ for (const optimization of ['O1','O2']) for (const phase8Optimize of [false,true
     assert.equal(outcome.failure ?? null, null);
     const actual = provenanceFromSourceMap(outcome.result.sourceMap);
     assert.deepEqual(reference.sourceAddresses.filter(address => !actual.sourceAddresses.includes(address)), []);
+  });
+}
+
+for (const name of ['aggregate_struct_fields','dce_observable_store','dce_volatile_read','sccp_narrow_extend','sccp_wraparound']) {
+  test(`C4-03 native memory history survives the actual facade writes (${name})`, () => {
+    const corpus = loadCorpus(), id = `quality.${name}.O0`;
+    const index = corpus.functions.findIndex(entry => entry.id === id);
+    assert.ok(index >= 0);
+    const reference = loadFrozenProvenance().observations.find(entry => entry.id === id);
+    const { result, failure } = decompileEntry(corpus.functions[index], {
+      index, decompilerTimeBudgetMs:20000, toolchain:corpus.toolchain ?? null,
+    });
+    assert.equal(failure ?? null, null);
+    assert.equal(result.expressionHistoryBinding.completeness, 'complete');
+    assert.equal(result.renderProvenance.completeness, 'complete');
+    assert.deepEqual(result.renderProvenance.reasons, []);
+    const records = result.rewriteProof.filter(record => record.rule === 'project-stack-load-to-operand');
+    assert.ok(records.length);
+    assert.equal(new Set(records.map(record => record.originHistory)).size, records.length,
+      'inherited memory selections remain one producer, not a transform per downstream consumer');
+    const actual = provenanceFromSourceMap(result.sourceMap);
+    assert.deepEqual(reference.sourceAddresses.filter(address => !actual.sourceAddresses.includes(address)), []);
+
+    const { ir } = result;
+    const source = ir.instructions.find(inst => facade.readFacadeProjectedMemoryOperandTransition(ir, inst));
+    assert.ok(source, 'the real facade handed off an existing memory producer');
+    const producer = facade.readFacadeProjectedMemoryOperandTransition(ir, source);
+    const predecessor = projector.projectedMemoryOperandTransitionCandidate(ir, source);
+    assert.ok(predecessor);
+    assert.notEqual(producer, predecessor);
+    assert.equal(producer.proof, predecessor.proof, 'retain the canonical memory proof, do not issue a new one');
+    assert.equal(producer.memory, predecessor.memory);
+    assert.equal(producer.store, predecessor.store);
+    assert.equal(producer.input, predecessor.input);
+    assert.equal(projector.readProjectedMemoryOperandTransition(ir, source), null,
+      'do not silently reseal the original observer after facade writes');
+    assert.equal(facade.readFacadeProjectedMemoryOperandTransition({ ...ir }, source), null);
+    assert.equal(facade.readFacadeProjectedMemoryOperandTransition(ir, { ...source }), null);
+    source.extra = { ...source.extra };
+    assert.equal(producer.isCurrent(), false);
+    assert.equal(facade.readFacadeProjectedMemoryOperandTransition(ir, source), null,
+      'a later caller-owned metadata write cannot refresh the private facade handoff');
   });
 }

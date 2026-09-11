@@ -27,7 +27,8 @@ import {
 import { ARM64_ARCHITECTURE } from './targets/architecture/index.js';
 import { resolveABIPlugin } from './targets/abi/index.js';
 import { semanticAbiAdapter } from './analysis/semantic-function-base.js';
-import { observeProjectedOperationData, projectedStateTransitionCandidates, projectedConstantTransitionCandidate } from './semantics/compat/semantic-ir-v2-to-v1.js';
+import { observeProjectedOperationData, projectedStateTransitionCandidates, projectedConstantTransitionCandidate,
+  projectedMemoryOperandTransitionCandidate } from './semantics/compat/semantic-ir-v2-to-v1.js';
 
 const facadeConstantTransitions = new WeakMap();
 const expectedFacadeConstantTransitions = new WeakMap();
@@ -41,6 +42,7 @@ const expectedFacadeTypedResults = new WeakMap();
 const facadeStackEscapeHistories = new WeakMap();
 const expectedFacadeStackEscapes = new WeakMap();
 const facadeProjectedConstants = new WeakMap();
+const facadeProjectedMemoryOperands = new WeakMap();
 const facadeAbiBindings = new WeakMap();
 const expectedFacadeAbiBindings = new WeakMap();
 
@@ -61,6 +63,11 @@ export function readFacadeAbiBindingHistory(projected, instruction = null) {
 
 export function facadeProjectedConstantTransitionCandidate(projected, instruction) {
   return facadeProjectedConstants.get(projected)?.get(instruction) ?? null;
+}
+
+export function readFacadeProjectedMemoryOperandTransition(projected, instruction) {
+  const record = facadeProjectedMemoryOperands.get(projected)?.get(instruction);
+  return record?.isCurrent() ? record : null;
 }
 
 export function facadeStackEscapeTransitionExpected(projected, instruction = null) {
@@ -169,21 +176,24 @@ function sealFacadeStateTransitions(projected, history) {
   } catch { /* Missing bounded handoff never authorizes a stale predecessor. */ }
 }
 
-function sealFacadeProjectedConstants(projected, history, candidates) {
-  if (!history || history.unavailable || !history.writes.length || !candidates.size) return;
+function sealFacadeProjectedOperations(projected, history, groups) {
+  if (!history || history.unavailable || !history.writes.length || !groups.some(group => group.candidates.size)) return;
   try {
-    const writes = Object.freeze(history.writes), checks = new Map(), records = new Map();
+    const writes = Object.freeze(history.writes), checks = new Map();
     const output = observeProjectedOperationData(projected, projected.instructions.map(source => ({ source, beforeInputs:[] })));
-    for (const [source, candidate] of candidates) {
-      if (!checks.has(candidate.isCurrent)) {
-        const current = () => candidate.isCurrent.matchesThroughWrites(writes) && output();
-        checks.set(candidate.isCurrent, current() ? current : null);
+    for (const { candidates, target } of groups) {
+      const records = new Map();
+      for (const [source, candidate] of candidates) {
+        if (!checks.has(candidate.isCurrent)) {
+          const current = () => candidate.isCurrent.matchesThroughWrites(writes) && output();
+          checks.set(candidate.isCurrent, current() ? current : null);
+        }
+        const isCurrent = checks.get(candidate.isCurrent);
+        if (isCurrent) records.set(source, Object.freeze({ ...candidate, isCurrent }));
       }
-      const isCurrent = checks.get(candidate.isCurrent);
-      if (isCurrent) records.set(source, Object.freeze({ ...candidate, isCurrent }));
+      target.set(projected, records);
     }
-    facadeProjectedConstants.set(projected, records);
-  } catch { /* Only the actual bounded facade writes can carry old constants. */ }
+  } catch { /* Only actual bounded facade writes carry old operations, not new proofs. */ }
 }
 
 export function readFacadeConstantTransitions(projected, instruction) {
@@ -1376,12 +1386,18 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
     })), null, 2) + '\n');
   }
   const stateSource = projectedStateTransitionCandidates(result.legacyV1);
-  const constantCandidates = new Map(), constantChecks = new Map();
+  const operationGroups = [
+    { read:projectedConstantTransitionCandidate, candidates:new Map(), target:facadeProjectedConstants },
+    { read:projectedMemoryOperandTransitionCandidate, candidates:new Map(), target:facadeProjectedMemoryOperands },
+  ];
+  const operationChecks = new Map();
   for (const source of result.legacyV1.instructions) {
-    const candidate = projectedConstantTransitionCandidate(result.legacyV1, source);
-    if (!candidate) continue;
-    if (!constantChecks.has(candidate.isCurrent)) constantChecks.set(candidate.isCurrent, candidate.isCurrent());
-    if (constantChecks.get(candidate.isCurrent)) constantCandidates.set(source, candidate);
+    for (const { read, candidates } of operationGroups) {
+      const candidate = read(result.legacyV1, source);
+      if (!candidate) continue;
+      if (!operationChecks.has(candidate.isCurrent)) operationChecks.set(candidate.isCurrent, candidate.isCurrent());
+      if (operationChecks.get(candidate.isCurrent)) candidates.set(source, candidate);
+    }
   }
   const currentStateSource = stateSource?.isCurrent() ? stateSource : null;
   const stateHistory = { source:currentStateSource, writes:[], unavailable:false };
@@ -1393,7 +1409,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
   const stackEscapeObserver = invalidateEscapedStackForwarding(result.legacyV1, stateHistory);
   const returnBindingObserver = attachCanonicalFunctionReturns(result.legacyV1, abiAdapter, opts, stateHistory);
   sealFacadeStateTransitions(result.legacyV1, stateHistory);
-  sealFacadeProjectedConstants(result.legacyV1, stateHistory, constantCandidates);
+  sealFacadeProjectedOperations(result.legacyV1, stateHistory, operationGroups);
   sealFacadeConstantTransitions(result.legacyV1, constantObserver);
   sealFacadePreservedStateHistory(result.legacyV1, preservedStateObserver, constantObserver, typedResultObserver);
   sealFacadeLocationHistory(result.legacyV1, locationObserver, stackEscapeObserver);

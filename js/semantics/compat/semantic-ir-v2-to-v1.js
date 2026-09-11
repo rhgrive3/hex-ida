@@ -86,8 +86,14 @@ function sealMemoryOperandTransitions(projected, transitions) {
 }
 
 export function readProjectedMemoryOperandTransition(projected, instruction) {
-  const record = memoryOperandTransitions.get(projected)?.get(instruction);
+  const record = projectedMemoryOperandTransitionCandidate(projected, instruction);
   return record?.isCurrent() ? record : null;
+}
+
+// Descriptions are not current authority. The owning facade must validate the
+// predecessor before its writes and retain the exact observed write handoff.
+export function projectedMemoryOperandTransitionCandidate(projected, instruction) {
+  return memoryOperandTransitions.get(projected)?.get(instruction) ?? null;
 }
 
 export function projectedMemoryOperandTransitionExpected(projected, instruction) {
