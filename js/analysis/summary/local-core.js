@@ -64,6 +64,17 @@ function integerConstant(value, node) {
   return parsed;
 }
 
+function integerConstantForOperand(operand, nodeByOutput, valueById) {
+  if (operand == null || (typeof operand === 'object' && operand !== null) || typeof operand === 'function') return null;
+  const producer = nodeByOutput.get(operand);
+  const value = valueById.get(String(operand));
+  const hasConstantSource = producer != null || value?.metadata?.constant != null;
+  if (hasConstantSource) return integerConstant(value, producer);
+  return typeof operand === 'number' || typeof operand === 'bigint'
+    ? parseIntegerConstant(operand)
+    : null;
+}
+
 // Instruction origin evidence carries the same primitive non-empty string
 // contract as the canonical origin set (#5776): a structured value must never
 // launder into a canonical instruction evidence ID via String(), so malformed
@@ -339,7 +350,11 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       }
       if (provenance.kind === 'root' || provenance.kind === 'allocation') {
         const rootEntityId = provenance.rootEntityId ?? provenance.allocationSiteId ?? null;
-        if (rootEntityId == null || !String(rootEntityId).trim()) {
+        if (rootEntityId == null || !String(rootEntityId).trim()
+          // Storage space is required canonical identity on root/allocation
+          // facts (#5242): composing without it would silently degrade a
+          // non-memory return to flat memory at the caller.
+          || typeof provenance.addressSpace !== 'string' || !provenance.addressSpace.trim()) {
           composed.push({ kind: 'unknown', returnIndex: outerReturnIndex });
           continue;
         }
@@ -348,6 +363,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
           returnIndex: outerReturnIndex,
           rootEntityId: String(rootEntityId),
           offset: offset.toString(10),
+          addressSpace: provenance.addressSpace.trim(),
         };
         if (provenance.allocationSiteId != null) fact.allocationSiteId = String(provenance.allocationSiteId);
         composed.push(fact);
@@ -407,16 +423,17 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
           if (producer.kind === 'copy' || producer.kind === 'bitcast') {
             curr = producer.inputs?.[0];
           } else if (producer.kind === 'binary' && (producer.operator === 'add' || producer.operator === 'sub')) {
-            const rightConst = producer.inputs?.[1];
-            const rightProducer = nodeByOutput.get(rightConst);
-            const rightValue = valueById.get(String(rightConst));
-            const hasConstantSource = rightProducer != null || rightValue?.metadata?.constant != null;
-            const num = hasConstantSource
-              ? integerConstant(rightValue, rightProducer)
-              : (typeof rightConst === 'number' || typeof rightConst === 'bigint' ? parseIntegerConstant(rightConst) : null);
-            if (num != null) {
-              offset += (producer.operator === 'sub' ? -BigInt(num) : BigInt(num));
-              curr = producer.inputs?.[0];
+            const leftOperand = producer.inputs?.[0];
+            const rightOperand = producer.inputs?.[1];
+            const rightConstant = integerConstantForOperand(rightOperand, nodeByOutput, valueById);
+            if (rightConstant != null) {
+              offset += producer.operator === 'sub' ? -rightConstant : rightConstant;
+              curr = leftOperand;
+            } else if (producer.operator === 'add') {
+              const leftConstant = integerConstantForOperand(leftOperand, nodeByOutput, valueById);
+              if (leftConstant == null) break;
+              offset += leftConstant;
+              curr = rightOperand;
             } else break;
           } else break;
         }
@@ -532,6 +549,19 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       }));
       controlUnknown = true;
       ensureBroadWrite(node);
+    } else if (node.call.noreturn == null || node.call.mayThrow == null) {
+      // Omitted control knowledge is a missing fact, not a negative proof
+      // (#5854): promoting null here would publish "returns / does not throw"
+      // from raw IR that never carried the fact. Degrade to an unknown call
+      // effect instead of folding in absent knowledge.
+      unknownCallEffects.push(createUnknownCallEffect({
+        callSiteId: node.id,
+        reason: 'summary-incomplete',
+        targetEntityIds: targets,
+        evidenceIds: evidenceOf(node),
+      }));
+      controlUnknown = true;
+      ensureBroadWrite(node);
     } else {
       if (node.call.mayThrow === true) mayThrow = true;
       if (node.call.mayThrow === 'unknown') controlUnknown = true;
@@ -555,13 +585,21 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   }
 
   const hasUnknown = unknownCallEffects.length > 0 || intrinsicScopeUnknown;
+  // A canonical Semantic IR may record what is missing at the function level:
+  // `completeness: 'partial'|'unknown'` with the reasons in `ir.unknowns`,
+  // while every individual node stays complete (#5226). Ignoring those fields
+  // publishes a complete (even pure) summary for a function whose lowering
+  // never covered part of its scope — missing work laundered into "no effect".
+  const functionLevelUnknown = (ir.completeness != null && ir.completeness !== 'complete')
+    || (Array.isArray(ir.unknowns) && ir.unknowns.length > 0);
+
   const localStatus = createAnalysisStatus({
     snapshotId: options.snapshotId ?? 'snapshot-unbound',
     analyzerId: LOCAL_SUMMARY_ANALYZER_ID,
     analyzerVersion: LOCAL_SUMMARY_ANALYZER_VERSION,
-    completeness: hasUnknown ? 'partial' : 'complete',
+    completeness: hasUnknown || functionLevelUnknown ? 'partial' : 'complete',
     budgetClass: options.budgetClass ?? null,
-    stopReason: hasUnknown ? 'evidence-missing' : null,
+    stopReason: hasUnknown || functionLevelUnknown ? 'evidence-missing' : null,
   });
   const status = statuses.length ? mergeAnalysisStatus(localStatus, statuses) : localStatus;
 

@@ -174,8 +174,17 @@ function loadIsReusable(definition) {
   if (access.atomic !== false) {
     return { ok: false, reason: `atomicity is ${access.atomic === true ? 'yes' : 'unknown'}` };
   }
-  if (access.ordering != null && access.ordering !== 'unknown' && access.ordering !== 'relaxed') {
-    return { ok: false, reason: `access imposes ordering: ${access.ordering}` };
+  // Ordering follows the same rule: an unproved `unknown` is not evidence of
+  // "no ordering", and reuse across an unknown ordering is a wrong program.
+  // Only an absent or explicit null, or an explicit `relaxed`, proves the
+  // access imposes none (#5541).
+  if (access.ordering != null && access.ordering !== 'relaxed') {
+    return {
+      ok: false,
+      reason: access.ordering === 'unknown'
+        ? 'access ordering is unproved'
+        : `access imposes ordering: ${access.ordering}`,
+    };
   }
   if (definition.unknownAliasBarrier != null) {
     return { ok: false, reason: 'an unknown store lies between this load and its source' };

@@ -28,12 +28,15 @@ import { fireTrustedApprovalGesture, syntheticEvent, hostRecognitionCapability }
 const { createMatchResult, promoteKnowledgeSuggestion, createRecognitionApprovalControl } = recognition;
 
 function uniqueResult(overrides = {}) {
+  // #5332: candidates must carry the same source identity as the result —
+  // bind the candidate to the (possibly overridden) outer source entity.
+  const sourceEntityId = overrides.sourceEntityId ?? 'fn:1000';
   return createMatchResult({
-    sourceEntityId: 'fn:1000',
+    sourceEntityId,
     packageEntryId: 'pkg:entry',
     packageContentHash: 'hash-a',
     candidates: [{
-      sourceEntityId: 'fn:1000', packageEntryId: 'pkg:entry', tier: 'semantic',
+      sourceEntityId, packageEntryId: 'pkg:entry', tier: 'semantic',
       score: 0.95, confidence: 0.95, featuresUsed: ['semantic-hash'],
       conflictingFeatures: [], evidenceIds: ['ev:1'],
     }],

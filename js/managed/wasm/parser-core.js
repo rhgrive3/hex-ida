@@ -9,7 +9,9 @@ export function probeWasm(bytes) {
   if (u8[0] === 0x00 && u8[1] === 0x61 && u8[2] === 0x73 && u8[3] === 0x6d) {
     const version = u8[4] | (u8[5] << 8) | (u8[6] << 16) | (u8[7] << 24);
     if (version === 1) return { supported: true, confidence: 1.0, formatVersion: '1', vmSpecEdition: 'core-3.0' };
-    return { supported: true, confidence: 0.8, formatVersion: String(version), vmSpecEdition: 'unknown' };
+    // Only version 1 is openable; the public probe must not claim support
+    // for versions openManagedImage would reject (#5384).
+    return { supported: false, confidence: 0.6, reason: 'unsupported-version', formatVersion: String(version) };
   }
   return { supported: false, confidence: 0, reason: 'invalid-magic' };
 }
@@ -61,7 +63,7 @@ function readFunctionInstructionImmediate(bytes,offset,opcode){
 function validateFunctionExpression(bytecode){if(bytecode.length===0)fail('wasm-function-missing-end');const control=[{kind:'function',elseSeen:false}];let pos=0;while(pos<bytecode.length){const opcode=bytecode[pos++];if(opcode===0x02||opcode===0x03||opcode===0x04){pos=readFunctionBlockType(bytecode,pos);control.push({kind:opcode===0x04?'if':opcode===0x03?'loop':'block',elseSeen:false});continue;}if(opcode===0x05){const frame=control.at(-1);if(!frame||frame.kind!=='if'||frame.elseSeen)fail('wasm-invalid-else');frame.elseSeen=true;continue;}if(opcode===0x0b){const frame=control.pop();if(!frame)fail('wasm-unmatched-end');if(frame.kind==='function'){if(pos!==bytecode.length)fail('wasm-trailing-bytes-after-function-end');return;}continue;}pos=readFunctionInstructionImmediate(bytecode,pos,opcode);}fail('wasm-function-missing-end');}
 
 export function parseWasm(bytes,options={}){
-  const probe=probeWasm(bytes);if(!probe.supported)fail('wasm-unsupported-binary');if(probe.formatVersion!=='1')fail('wasm-unsupported-version');
+  const probe=probeWasm(bytes);if(!probe.supported)fail(probe.reason === 'unsupported-version' ? 'wasm-unsupported-version' : 'wasm-unsupported-binary');if(probe.formatVersion!=='1')fail('wasm-unsupported-version');
   const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes);let pos=8;
   const sections=[],types=[],imports=[],functions=[],tables=[],memories=[],globals=[],exports=[],elements=[],codeBodies=[],dataSegments=[],customSections=[];let startFunction=null;
   const seenSections=new Set();let lastStandardSection=0;

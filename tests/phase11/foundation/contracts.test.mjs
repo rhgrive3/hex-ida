@@ -62,7 +62,15 @@ const profile = createManagedTargetProfile({
   vmSpecEdition: 'core-3.0',
   featureSet: ['simd', 'multi-memory'],
 });
-assert.equal(profile.id, 'managed-profile:wasm:1:core-3.0');
+// #5401: the id binds the readable triple to a digest of the semantic tail.
+assert.ok(profile.id.startsWith('managed-profile:wasm:1:core-3.0:'), profile.id);
+assert.equal(profile.id, createManagedTargetProfileId('wasm', '1', 'core-3.0', {
+  frontendSemanticVersion: profile.frontendSemanticVersion,
+  featureSet: profile.featureSet,
+  runtimeVersionHint: profile.runtimeVersionHint,
+  validationPolicy: profile.validationPolicy,
+  decodingOptionsHash: profile.decodingOptionsHash,
+}));
 assert.equal(validateManagedTargetProfile(profile), true);
 
 assert.throws(() => {

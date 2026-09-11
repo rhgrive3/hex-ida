@@ -262,7 +262,7 @@ async function schedulerOracles(report) {
   await addCase(report, 'budget behavior', 'E', 'p4-2', async () => {
     const backend = new MemoryArtifactBackend(); const scheduler = new AnalysisScheduler({ store: new ArtifactStore({ backend }), maxConcurrency: 1 });
     const d = descriptor({ entityId: 'budget' }); let error = null;
-    try { await scheduler.request({ descriptor: d, budget: { workUnits: 1 }, produce: async ({ budget }) => { budget.consume('workUnits', 2); return {}; } });
+    try { await scheduler.request({ descriptor: d, budget: { workUnits: 1 }, produce: async ({ budget }) => { budget.consume('workUnits', 2); return {}; } }); }
     catch (caught) { error = caught; }
     const published = await backend.has(d.artifactId);
     if (!(error instanceof BudgetExceededError) || published) count(report, 'budgetFailures');
