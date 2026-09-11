@@ -1,4 +1,4 @@
-name: Fixer 3 #4795 transport
+name: Fixer 3 4795 transport
 
 on:
   push:
@@ -10,16 +10,56 @@ permissions:
 
 jobs:
   transport:
-    if: ${{ !contains(github.event.head_commit.message, '[transport-done]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           ref: fixer3/issue-4795-discovery-budget
-          fetch-depth: 2
+          fetch-depth: 20
       - name: Apply verified Fixer 3 change
         shell: bash
         env:
           EXPECTED_BASE: a41489725a3e3954c01c5992c8c8ca7901a26c13
-          TEST_B64: aW1wb3J0IGFzc2VydCBmcm9tICdub2RlOmFzc2VydC9zdHJpY3QnOwppbXBvcnQgdGVzdCBmcm9tICdub2RlOnRlc3QnOwoKaW1wb3J0IHsgZnVzZUZ1bmN0aW9uQ2FuZGlkYXRlcyB9IGZyb20gJy4uLy4uLy4uL2pzL2FuYWx5c2lzL2Rpc2NvdmVyeS9mdXNpb24uanMnOwoKZnVuY3Rpb24gZXZpZGVuY2Uoc3RhcnQsIHByb2R1Y2VySWQgPSAncHJvYmUnKSB7CiAgcmV0dXJuIHsKICAgIGtpbmQ6ICdkaXJlY3QtY2FsbC10YXJnZXQnLAogICAgc3RhcnQsCiAgICBwcm9kdWNlcklkLAogICAgcmVnaW9uczogW10sCiAgfTsKfQoKZnVuY3Rpb24gY2FuZGlkYXRlQnVkZ2V0KG1heENhbmRpZGF0ZXMpIHsKICByZXR1cm4gewogICAgc25hcHNob3RJZDogJ2lzc3VlLTQ3OTUnLAogICAgYnVkZ2V0OiB7IG1heENhbmRpZGF0ZXMsIG1heEV2aWRlbmNlUGVyQ2FuZGlkYXRlOiAyIH0sCiAgfTsKfQoKdGVzdCgnIzQ3OTUgc3RvcHMgZXZpZGVuY2UgaW5nZXN0aW9uIGFzIHNvb24gYXMgbWF4Q2FuZGlkYXRlcyBpcyBpcnJldmVyc2libHkgZXhjZWVkZWQnLCAoKSA9PiB7CiAgY29uc3Qgcm93cyA9IFtldmlkZW5jZSgnNDA5NicpLCBldmlkZW5jZSgnODE5MicpLCBldmlkZW5jZSgnMTIyODgnKV07CiAgT2JqZWN0LmRlZmluZVByb3BlcnR5KHJvd3MsIDIsIHsKICAgIGNvbmZpZ3VyYWJsZTogdHJ1ZSwKICAgIGVudW1lcmFibGU6IHRydWUsCiAgICBnZXQoKSB7CiAgICAgIHRocm93IG5ldyBFcnJvcigndGhpcmQgZXZpZGVuY2UgbXVzdCBub3QgYmUgY29uc3VtZWQgYWZ0ZXIgY2FuZGlkYXRlIGJ1ZGdldCBleGhhdXN0aW9uJyk7CiAgICB9LAogIH0pOwoKICBjb25zdCByZXN1bHQgPSBmdXNlRnVuY3Rpb25DYW5kaWRhdGVzKHJvd3MsIGNhbmRpZGF0ZUJ1ZGdldCgxKSk7CiAgYXNzZXJ0LmRlZXBFcXVhbChyZXN1bHQuY2FuZGlkYXRlcywgW10pOwogIGFzc2VydC5lcXVhbChyZXN1bHQuc3RhdHVzLmNvbXBsZXRlbmVzcywgJ3RydW5jYXRlZCcpOwogIGFzc2VydC5lcXVhbChyZXN1bHQuc3RhdHVzLnN0b3BSZWFzb24sICdidWRnZXQtZXhoYXVzdGVkJyk7Cn0pOwoKdGVzdCgnIzQ3OTUgZHVwbGljYXRlIGV2aWRlbmNlIGZvciBvbmUgc3RhcnQgZG9lcyBub3QgY29uc3VtZSBjYW5kaWRhdGUgYnVkZ2V0JywgKCkgPT4gewogIGNvbnN0IHJlc3VsdCA9IGZ1c2VGdW5jdGlvbkNhbmRpZGF0ZXMoWwogICAgZXZpZGVuY2UoJzQwOTYnLCAnYScpLAogICAgZXZpZGVuY2UoJzQwOTYnLCAnYicpLAogICAgZXZpZGVuY2UoJzQwOTYnLCAnYycpLAogIF0sIGNhbmRpZGF0ZUJ1ZGdldCgxKSk7CgogIGFzc2VydC5lcXVhbChyZXN1bHQuY2FuZGlkYXRlcy5sZW5ndGgsIDEpOwogIGFzc2VydC5lcXVhbChyZXN1bHQuY2FuZGlkYXRlc1swXS5zdGFydCwgJzQwOTYnKTsKICBhc3NlcnQuZXF1YWwocmVzdWx0LnN0YXR1cy5jb21wbGV0ZW5lc3MsICd0cnVuY2F0ZWQnLCAncGVyLWNhbmRpZGF0ZSBldmlkZW5jZSBvdmVyZmxvdyByZW1haW5zIGZhaWwtY2xvc2VkJyk7CiAgYXNzZXJ0LmVxdWFsKHJlc3VsdC5zdGF0dXMuc3RvcFJlYXNvbiwgJ2J1ZGdldC1leGhhdXN0ZWQnKTsKfSk7Cgp0ZXN0KCcjNDc5NSBleGFjdGx5IG1heENhbmRpZGF0ZXMgZGlzdGluY3Qgc3RhcnRzIHJlbWFpbnMgY29tcGxldGUnLCAoKSA9PiB7CiAgY29uc3QgcmVzdWx0ID0gZnVzZUZ1bmN0aW9uQ2FuZGlkYXRlcyhbCiAgICBldmlkZW5jZSgnNDA5NicpLAogICAgZXZpZGVuY2UoJzgxOTInKSwKICBdLCBjYW5kaWRhdGVCdWRnZXQoMikpOwoKICBhc3NlcnQuZGVlcEVxdWFsKHJlc3VsdC5jYW5kaWRhdGVzLm1hcCgoY2FuZGlkYXRlKSA9PiBjYW5kaWRhdGUuc3RhcnQpLCBbJzQwOTYnLCAnODE5MiddKTsKICBhc3NlcnQuZXF1YWwocmVzdWx0LnN0YXR1cy5jb21wbGV0ZW5lc3MsICdjb21wbGV0ZScpOwogIGFzc2VydC5lcXVhbChyZXN1bHQuc3RhdHVzLnN0b3BSZWFzb24sIG51bGwpOwp9KTsKCnRlc3QoJyM0Nzk1IG1heENhbmRpZGF0ZXMgcGx1cyBvbmUgc3RpbGwgcHVibGlzaGVzIG5vIHBhcnRpYWwgY2FuZGlkYXRlIHNldCcsICgpID0+IHsKICBjb25zdCByZXN1bHQgPSBmdXNlRnVuY3Rpb25DYW5kaWRhdGVzKFsKICAgIGV2aWRlbmNlKCc0MDk2JyksCiAgICBldmlkZW5jZSgnODE5MicpLAogICAgZXZpZGVuY2UoJzEyMjg4JyksCiAgXSwgY2FuZGlkYXRlQnVkZ2V0KDIpKTsKCiAgYXNzZXJ0LmRlZXBFcXVhbChyZXN1bHQuY2FuZGlkYXRlcywgW10pOwogIGFzc2VydC5lcXVhbChyZXN1bHQuc3RhdHVzLmNvbXBsZXRlbmVzcywgJ3RydW5jYXRlZCcpOwogIGFzc2VydC5lcXVhbChyZXN1bHQuc3RhdHVzLnN0b3BSZWFzb24sICdidWRnZXQtZXhoYXVzdGVkJyk7Cn0pOwoKdGVzdCgnIzQ3OTUgd2l0aGluLWJ1ZGdldCBmdXNpb24gcmVtYWlucyBpbnB1dC1vcmRlciBkZXRlcm1pbmlzdGljJywgKCkgPT4gewogIGNvbnN0IHJvd3MgPSBbCiAgICBldmlkZW5jZSgnNDA5NicsICd6JyksCiAgICBldmlkZW5jZSgnNDA5NicsICdhJyksCiAgICBldmlkZW5jZSgnODE5MicsICdiJyksCiAgXTsKICBjb25zdCBvcHRpb25zID0gY2FuZGlkYXRlQnVkZ2V0KDIpOwogIGNvbnN0IGZvcndhcmQgPSBmdXNlRnVuY3Rpb25DYW5kaWRhdGVzKHJvd3MsIG9wdGlvbnMpOwogIGNvbnN0IHJldmVyc2UgPSBmdXNlRnVuY3Rpb25DYW5kaWRhdGVzKFsuLi5yb3dzXS5yZXZlcnNlKCksIG9wdGlvbnMpOwogIGFzc2VydC5kZWVwRXF1YWwoZm9yd2FyZCwgcmV2ZXJzZSk7Cn0pOwo=
+          BRANCH: fixer3/issue-4795-discovery-budget
+        run: |
+          set -euo pipefail
+          if git log -1 --pretty=%B | grep -Fq '[transport-done]'; then
+            exit 0
+          fi
+          git merge-base --is-ancestor "$EXPECTED_BASE" HEAD
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('js/analysis/discovery/fusion.js')
+          text = path.read_text()
+          old = "  const canonical = evidence.map((item) => canonicalEvidence(item));"
+          new = """  //
+          // `maxCandidates` is also a work budget, not only a result-size check. Once
+          // one more distinct start than the budget permits has been observed, the
+          // final result is irreversibly `truncated` with no published candidates.
+          // Stop at that boundary instead of materializing and sorting the remaining
+          // evidence only to discard it afterwards (#4795).
+          const canonical = [];
+          const candidateStarts = new Set();
+          for (let index = 0; index < evidence.length; index += 1) {
+            const item = canonicalEvidence(evidence[index]);
+            canonical.push(item);
+            if (item.start == null) continue;
+            candidateStarts.add(item.start);
+            if (candidateStarts.size > budget.maxCandidates) {
+              return { candidates: [], status: status('truncated', 'budget-exhausted') };
+            }
+          }
+          """.rstrip()
+          if text.count(old) != 1:
+              raise SystemExit('fusion patch authority mismatch')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          node --check js/analysis/discovery/fusion.js
+          git diff --check
+          git config user.name 'Fixer 3 Analysis'
+          git config user.email 'actions@users.noreply.github.com'
+          git add js/analysis/discovery/fusion.js
+          git commit -m '[transport-done] fix(discovery): bound candidate budget ingestion (#4795)'
+          git push origin HEAD:"$BRANCH"
