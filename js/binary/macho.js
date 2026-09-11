@@ -1,7 +1,10 @@
 import { parseMachO as parseMachOCore } from './macho-core.js';
 import { functionSeed, mergeFunctionSeeds } from './model.js';
 import { ByteView } from './reader.js';
-import { markMachOMetadataPartial } from './macho-budget.js';
+import { ensureMachOMetadataBudget, markMachOMetadataPartial } from './macho-budget.js';
+
+const LC_ROUTINES = 0x11;
+const LC_ROUTINES_64 = 0x1a;
 
 const KNOWN_LOAD_COMMAND_MIN_SIZE = new Map([
   [0x80000028, 24], // LC_MAIN
@@ -31,6 +34,105 @@ function selectedThinBytes(input, image) {
   const offset = Number(selected.offset), size = Number(selected.size);
   if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size < 0 || offset > bytes.length || size > bytes.length - offset) return null;
   return bytes.subarray(offset, offset + size);
+}
+
+function machoInstructionUnit(arch) {
+  if (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') return 4n;
+  if (arch === 'arm') return 2n;
+  return 1n;
+}
+
+function isContiguousFileBackedSpan(image, address, size) {
+  let previous = null;
+  for (let i = 0n; i < size; i++) {
+    const offset = image.addressToOffset(address + i);
+    if (offset == null || (previous != null && offset !== previous + 1n)) return false;
+    previous = offset;
+  }
+  return true;
+}
+
+function parseRoutinesCommands(input, image) {
+  const bytes = selectedThinBytes(input, image);
+  if (!bytes) throw new Error('Mach-O selected slice is outside file');
+  const kind = thinMachOKind(bytes);
+  if (!kind) return image;
+  const r = new ByteView(bytes, { littleEndian:kind.littleEndian });
+  const headerSize = kind.bits === 64 ? 32 : 28;
+  if (r.length < headerSize) return image;
+  const ncmds = r.u32(16);
+  const sizeofcmds = r.u32(20);
+  if (headerSize + sizeofcmds > r.length) return image;
+  const commandEnd = headerSize + sizeofcmds;
+  const budget = ensureMachOMetadataBudget(image);
+  const instructionUnit = machoInstructionUnit(image.arch);
+  const records = [];
+  const newSeeds = [];
+  let sawRoutines = false;
+  let p = headerSize;
+
+  for (let i = 0; i < ncmds; i++) {
+    if (p + 8 > commandEnd) break;
+    const cmd = r.u32(p), cmdsize = r.u32(p + 4);
+    if (cmdsize < 8 || p + cmdsize > commandEnd) break;
+    const is32 = cmd === LC_ROUTINES && kind.bits === 32;
+    const is64 = cmd === LC_ROUTINES_64 && kind.bits === 64;
+    if (is32 || is64) {
+      sawRoutines = true;
+      const expected = is64 ? 72 : 40;
+      const command = is64 ? 'LC_ROUTINES_64' : 'LC_ROUTINES';
+      if (cmdsize !== expected) {
+        budget.partial(
+          `load-command-0x${cmd.toString(16)}-parse-error`,
+          `load command 0x${cmd.toString(16)}: invalid ${command} size ${cmdsize}; expected exactly ${expected}`,
+        );
+        p += cmdsize;
+        continue;
+      }
+      if (!budget.take({ objects:1, operations:1, estimatedHeapBytes:128 }, 'routines-record')) break;
+      const initAddress = is64 ? r.u64(p + 8) : BigInt(r.u32(p + 8));
+      const initModule = is64 ? r.u64(p + 16) : BigInt(r.u32(p + 12));
+      const record = {
+        command, commandOffset:p, initAddress, initModule,
+        validTarget:initAddress === 0n ? null : false,
+        promoted:false, reason:null,
+      };
+      records.push(record);
+      if (initAddress === 0n) { p += cmdsize; continue; }
+
+      const mapping = image.resolveVirtualMapping(initAddress);
+      if (!mapping) record.reason = 'unmapped';
+      else if (!mapping.mapping?.perms?.execute) record.reason = 'non-executable';
+      else if (instructionUnit > 1n && initAddress % instructionUnit !== 0n) record.reason = 'misaligned';
+      else if (!isContiguousFileBackedSpan(image, initAddress, instructionUnit)) record.reason = 'not-file-backed';
+
+      if (record.reason) {
+        budget.partial(
+          `routines:initializer-${record.reason}`,
+          `${command} initializer 0x${initAddress.toString(16)} is ${record.reason.replaceAll('-', ' ')}`,
+        );
+        p += cmdsize;
+        continue;
+      }
+      record.validTarget = true;
+      if (!budget.take({ objects:1, operations:1, estimatedHeapBytes:128 }, 'routines-function-output')) {
+        record.reason = 'metadata-budget';
+        break;
+      }
+      newSeeds.push(functionSeed(initAddress, {
+        source:'routines', confidence:0.999, exactFunctionStart:true,
+        functionStartEvidence:`Mach-O ${command} loader initializer in validated executable file-backed instruction span`,
+        abiMetadata:{ command, initModule },
+      }));
+      record.promoted = true;
+    }
+    p += cmdsize;
+  }
+
+  if (sawRoutines && records.length) image.metadata.routines = records;
+  if (newSeeds.length) image.functions = mergeFunctionSeeds([...(image.functions || []), ...newSeeds], image);
+  image.metadata.machoMetadata = budget.snapshot();
+  return image;
 }
 
 function validateKnownLoadCommandSizes(input, image) {
@@ -80,5 +182,6 @@ export function repairMachOZeroEntrypoint(image) {
 export function parseMachO(input, opts = {}) {
   const image = parseMachOCore(input, opts);
   validateKnownLoadCommandSizes(input, image);
+  parseRoutinesCommands(input, image);
   return repairMachOZeroEntrypoint(image);
 }
