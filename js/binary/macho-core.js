@@ -6,6 +6,20 @@ import { validateFatSlice, validateFatContainer, probePastEndArm64SliceSync, par
 
 const S_MOD_INIT_FUNC_POINTERS = 0x9;
 
+export const DICE_KIND_DATA = 1;
+export const DICE_KIND_JUMP_TABLE8 = 2;
+export const DICE_KIND_JUMP_TABLE16 = 3;
+export const DICE_KIND_JUMP_TABLE32 = 4;
+export const DICE_KIND_ABS_JUMP_TABLE32 = 5;
+
+export const DICE_KIND_NAMES = Object.freeze({
+  [DICE_KIND_DATA]: 'DICE_KIND_DATA',
+  [DICE_KIND_JUMP_TABLE8]: 'DICE_KIND_JUMP_TABLE8',
+  [DICE_KIND_JUMP_TABLE16]: 'DICE_KIND_JUMP_TABLE16',
+  [DICE_KIND_JUMP_TABLE32]: 'DICE_KIND_JUMP_TABLE32',
+  [DICE_KIND_ABS_JUMP_TABLE32]: 'DICE_KIND_ABS_JUMP_TABLE32',
+});
+
 const LC_SEGMENT = 0x1;
 const LC_SYMTAB = 0x2;
 const LC_THREAD = 0x4;
@@ -21,6 +35,7 @@ const LC_SEGMENT_64 = 0x19;
 const LC_DYLD_INFO = 0x22;
 const LC_DYLD_INFO_ONLY = 0x80000022;
 const LC_FUNCTION_STARTS = 0x26;
+const LC_DATA_IN_CODE = 0x29;
 const LC_VERSION_MIN_MACOSX = 0x24;
 const LC_VERSION_MIN_IPHONEOS = 0x25;
 const LC_MAIN = 0x80000028;
@@ -134,6 +149,10 @@ function parseThin(bytes, opts) {
         requireExactCommandSize(cmdsize, 16, 'LC_FUNCTION_STARTS');
         linkeditData.functionStarts = dataCommand(r, p);
       }
+      else if (cmd === LC_DATA_IN_CODE) {
+        requireExactCommandSize(cmdsize, 16, 'LC_DATA_IN_CODE');
+        linkeditData.dataInCode = dataCommand(r, p);
+      }
       else if (cmd === LC_DYLD_CHAINED_FIXUPS) {
         requireExactCommandSize(cmdsize, 16, 'LC_DYLD_CHAINED_FIXUPS');
         linkeditData.chainedFixups = dataCommand(r, p);
@@ -195,6 +214,7 @@ function parseThin(bytes, opts) {
   }
 
   for (const st of symtabs) parseSymbolTable(r, st, image, bits, metadataBudget);
+  if (linkeditData.dataInCode) parseDataInCode(r, linkeditData.dataInCode, image, metadataBudget);
   const hadFunctionStarts = !!linkeditData.functionStarts;
   if (linkeditData.functionStarts) parseFunctionStarts(r, linkeditData.functionStarts, image, metadataBudget);
   parseCompactUnwind(r, image, metadataBudget);
@@ -518,7 +538,7 @@ function parseFunctionStarts(r, dc, image, sharedBudget = null) {
     const next = addr + x.value;
     addr = next;
     const seg = image.segmentAt(addr);
-    if (!seg || !seg.perms.execute || (alignment > 1n && addr % alignment !== 0n)) {
+    if (!seg || !seg.perms.execute || (alignment > 1n && addr % alignment !== 0n) || image.isDataInCode(addr)) {
       status.complete = false; status.partialReason = 'invalid-entry';
       image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)}`);
       break;
@@ -996,6 +1016,52 @@ function parseModInitFunctions(r, image, bits, metadataBudget) {
         );
       }
     }
+  }
+}
+
+function parseDataInCode(r, dc, image, metadataBudget) {
+  const budget = ensureMachOMetadataBudget(image, metadataBudget);
+  if (!dc || typeof dc.offset !== 'number' || typeof dc.size !== 'number') return;
+
+  if (dc.offset > r.length || dc.size > r.length - dc.offset) {
+    budget.partial('data-in-code:out-of-range', 'LC_DATA_IN_CODE data range exceeds input');
+    image.warnings.push('LC_DATA_IN_CODE data range exceeds input');
+    return;
+  }
+
+  if (dc.size % 8 !== 0) {
+    budget.partial('data-in-code:truncated', `LC_DATA_IN_CODE data size ${dc.size} is not a multiple of entry size 8`);
+    image.warnings.push(`LC_DATA_IN_CODE data size ${dc.size} is not a multiple of entry size 8`);
+  }
+
+  image.metadata.dataInCode = image.dataInCode;
+  const count = Math.floor(dc.size / 8);
+
+  for (let i = 0; i < count; i++) {
+    if (!budget.take({ inputBytes: 8, records: 1, objects: 1, operations: 1, estimatedHeapBytes: 64 }, 'data-in-code')) {
+      budget.partial('data-in-code:budget-exhausted', 'LC_DATA_IN_CODE metadata budget exhausted');
+      break;
+    }
+    const entryPos = dc.offset + i * 8;
+    const offset = r.u32(entryPos);
+    const length = r.u16(entryPos + 4);
+    const kind = r.u16(entryPos + 6);
+
+    if (offset > r.length || length > r.length - offset) {
+      budget.partial('data-in-code:entry-out-of-range', `data_in_code_entry offset 0x${offset.toString(16)} length ${length} exceeds Mach-O slice`);
+      image.warnings.push(`data_in_code_entry offset 0x${offset.toString(16)} length ${length} exceeds Mach-O slice`);
+      continue;
+    }
+
+    const address = image.offsetToAddress(BigInt(offset));
+    const kindName = DICE_KIND_NAMES[kind] || `DICE_KIND_UNKNOWN_${kind}`;
+    image.addDataInCodeEntry({
+      offset,
+      length,
+      kind,
+      kindName,
+      address,
+    });
   }
 }
 
