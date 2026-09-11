@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHexToolRegistry } from '../../../js/ai/tools/registry.js';
+import { createHexAIContext } from '../../../js/ai/ui/hex-context.js';
 
 function queryContext() {
   return {
@@ -59,7 +60,7 @@ test('Issue #4153: QueryAPI related-functions exposes per-side completeness and 
   assert.deepEqual(first.result.callersPage, {
     offset:0,
     returned:2,
-    total:3,
+    total:null,
     complete:false,
     truncated:true,
     reason:'query-limit',
@@ -80,8 +81,6 @@ test('Issue #4153: QueryAPI related-functions exposes per-side completeness and 
   assert.equal(typeof next?.arguments?.cursor, 'string');
   assert.equal(first.result.continuations?.callees, undefined);
 
-  // The hint must be directly executable by the actual first-party registry;
-  // this proves its opaque cursor uses the get_callers producer contract.
   const continued = await registry.execute(next.tool, next.arguments, { scope:'neighborhood' });
   assert.equal(continued.result.offset, 2);
   assert.deepEqual(continued.result.results.map((row) => row.address), ['0x4000']);
@@ -97,15 +96,13 @@ test('Issue #4153: QueryAPI related-functions exposes per-side completeness and 
     'a caller continuation must not be reusable as a callee cursor',
   );
 
-  // Model-visible graph projection must not hide the only path to the rest of
-  // the caller set.
   assert.equal(first.modelData.callersPage.complete, false);
-  assert.equal(first.modelData.callersPage.total, 3);
+  assert.equal(first.modelData.callersPage.total, null);
   assert.equal(first.modelData.continuations.callers.tool, 'get_callers');
   assert.equal(typeof first.modelData.continuations.callers.arguments.cursor, 'string');
 });
 
-test('Issue #4153: zero-row QueryAPI partial page advances through the canonical caller cursor contract', async () => {
+test('Issue #4153: zero-row QueryAPI partial page advances only through producer-proven next offset', async () => {
   const observedOffsets = [];
   const registry = createHexToolRegistry({
     ...queryContext(),
@@ -118,7 +115,8 @@ test('Issue #4153: zero-row QueryAPI partial page advances through the canonical
           results:[],
           offset:0,
           returned:0,
-          total:3,
+          total:null,
+          nextOffset:2,
           complete:false,
           truncated:true,
           reason:'query-limit',
@@ -140,7 +138,7 @@ test('Issue #4153: zero-row QueryAPI partial page advances through the canonical
     functionAddress:'0x1000', limit:2,
   }, { scope:'neighborhood' });
   assert.deepEqual(first.result.callers, []);
-  assert.equal(first.result.callersPage.total, 3);
+  assert.equal(first.result.callersPage.total, null);
   assert.equal(first.result.callersPage.complete, false);
   const next = first.result.continuations?.callers;
   assert.equal(next?.tool, 'get_callers');
@@ -164,6 +162,54 @@ test('Issue #4153: zero-row QueryAPI partial page advances through the canonical
   );
   assert.equal(first.modelData.continuations.callers.tool, 'get_callers');
   assert.equal(typeof first.modelData.continuations.callers.arguments.cursor, 'string');
+});
+
+test('Issue #4153: zero-row incomplete side never guesses continuation from total and requested limit', async () => {
+  const registry = createHexToolRegistry({
+    ...queryContext(),
+    binaryId:'issue-4153-zero-row-no-next',
+    async getCallers() {
+      return {
+        results:[],
+        offset:0,
+        returned:0,
+        total:3,
+        complete:false,
+        truncated:true,
+        reason:'query-limit',
+      };
+    },
+  });
+  const out = await registry.execute('get_related_functions', {
+    functionAddress:'0x1000', limit:2,
+  }, { scope:'neighborhood' });
+  assert.equal(out.result.callersPage.total, null);
+  assert.equal(out.result.callersPage.complete, false);
+  assert.equal(out.result.continuations?.callers, undefined);
+  assert.equal(out.modelData.continuations?.callers, undefined);
+});
+
+test('Issue #4153: AnalysisQuery context preserves producer next offset but not partial-prefix total', async () => {
+  const app = {
+    analysisQueries:{
+      async snapshot() { return {}; },
+      async callers(_snapshot, _address, page) {
+        return {
+          value:[],
+          page:{ offset:page.offset, limit:page.limit, returned:0, total:24, next:2 },
+          status:{ completeness:'partial', reason:'query-limit' },
+        };
+      },
+    },
+  };
+  const context = createHexAIContext(app);
+  const callers = await context.getCallers('0x1000', { offset:0, limit:2 });
+  assert.deepEqual(callers.results, []);
+  assert.equal(callers.total, null, 'bounded partial prefix is not an exact global total');
+  assert.equal(callers.completeness.total, null);
+  assert.equal(callers.nextOffset, 2, 'producer page.next is retained for the related-functions bridge');
+  assert.equal(Object.keys(callers).includes('nextOffset'), false, 'internal next offset is not exposed in direct tool JSON');
+  assert.equal(callers.complete, false);
 });
 
 test('Issue #4153: a partial callee side gets its own executable get_callees continuation', async () => {
