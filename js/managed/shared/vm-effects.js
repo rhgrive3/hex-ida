@@ -150,6 +150,28 @@ function normalizeUnknownEffect(value) {
   validateUnknownEffect(normalized);
   return normalized;
 }
+function unknownEffectsForValidation(bundle) {
+  const descriptor = Object.getOwnPropertyDescriptor(bundle, 'unknownEffects');
+  if (!descriptor) {
+    if ('unknownEffects' in bundle) fail('vm-effect-invalid-unknown-effects');
+    return [];
+  }
+  if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+    fail('vm-effect-invalid-unknown-effects');
+  }
+  const effects = descriptor.value;
+  if (effects == null) return [];
+  array(effects, 'vm-effect-invalid-unknown-effects');
+  const stable = new Array(effects.length);
+  for (let index = 0; index < effects.length; index += 1) {
+    const elementDescriptor = Object.getOwnPropertyDescriptor(effects, String(index));
+    if (!elementDescriptor || !Object.prototype.hasOwnProperty.call(elementDescriptor, 'value')) {
+      fail('vm-effect-invalid-unknown-effect');
+    }
+    stable[index] = elementDescriptor.value;
+  }
+  return stable;
+}
 function assertNotAborted(options) {
   if (options?.signal?.aborted) {
     const error = new Error('vm-effects-cancelled');
@@ -264,9 +286,7 @@ export function validateVMEffectBundle(bundle) {
   if (!bundle || typeof bundle !== 'object') fail('vm-effect-bundle-invalid');
   if (!bundle.operationId || !bundle.methodId || !bundle.frontendId) fail('vm-effect-bundle-missing-identity');
   if (!SETS.completeness.has(bundle.completeness)) fail('vm-effect-bundle-invalid-completeness');
-  const unknownEffects = bundle.unknownEffects == null
-    ? []
-    : array(bundle.unknownEffects, 'vm-effect-invalid-unknown-effects');
+  const unknownEffects = unknownEffectsForValidation(bundle);
   for (const effect of unknownEffects) validateUnknownEffect(effect);
   if ((bundle.completeness === 'partial' || bundle.completeness === 'unknown') && unknownEffects.length === 0) {
     fail('vm-effect-partial-must-specify-unknown-effects');

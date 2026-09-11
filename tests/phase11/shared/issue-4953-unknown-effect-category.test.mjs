@@ -161,4 +161,47 @@ assert.throws(
   assert.equal(categoryReads, 0, 'validator must not invoke a category getter');
 }
 
+// 13. The validator must not execute an accessor-backed unknownEffects field.
+{
+  const canonical = bundle();
+  let collectionReads = 0;
+  const forged = { ...canonical };
+  Object.defineProperty(forged, 'unknownEffects', {
+    enumerable: true,
+    get() {
+      collectionReads += 1;
+      return [{ category: 'memory', reason: 'stateful-collection' }];
+    },
+  });
+  assert.throws(
+    () => validateVMEffectBundle(forged),
+    /vm-effect-invalid-unknown-effects/,
+    'validator must reject executable unknownEffects authority',
+  );
+  assert.equal(collectionReads, 0, 'validator must not invoke an unknownEffects getter');
+}
+
+// 14. Array element accessors must not be authority either; validation reads
+//     stable own data descriptors rather than iteration/index getters.
+{
+  const canonical = bundle();
+  let elementReads = 0;
+  const unknownEffects = [];
+  Object.defineProperty(unknownEffects, '0', {
+    enumerable: true,
+    configurable: true,
+    get() {
+      elementReads += 1;
+      return { category: 'memory', reason: 'stateful-index' };
+    },
+  });
+  unknownEffects.length = 1;
+  assert.throws(
+    () => validateVMEffectBundle({ ...canonical, unknownEffects }),
+    /vm-effect-invalid-unknown-effect/,
+    'validator must reject accessor-backed collection members',
+  );
+  assert.equal(elementReads, 0, 'validator must not invoke an unknownEffects index getter');
+}
+
 console.log('issue-4953 unknown-effect category taxonomy: ok');
