@@ -218,7 +218,6 @@ export function parseELF(input, options = {}) {
   const hasDynamic = rawSections.some((s) => s.type === SHT_DYNAMIC);
   parseProgramDynamic(r, programHeaders, image, bits, {
     signal: options.signal,
-    metadataBudget,
     symbols: !hasDynsym,
     relocations: !hasRelocations,
     sectionDynamicPresent: hasDynamic,
