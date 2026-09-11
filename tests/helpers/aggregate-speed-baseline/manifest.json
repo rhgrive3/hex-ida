@@ -1,0 +1,50 @@
+{
+  "sourceCommit": "f18c60ad3dfbd0ec16e23a9cb942fd4ac3c2c727",
+  "archiveSha256": "01ecd2fcb586c05f6f73247a71aa4679583c59860f8419f52e7e5f21827203c8",
+  "files": {
+    "js/core/identity/index.js": {
+      "sha256": "c1b0fb8ce7623d003c1205e282b132023eee204a3962a4da1d0685b2807a0c99",
+      "size": 17353
+    },
+    "js/core/identity/fnv64.js": {
+      "sha256": "d1f1db7e1dd0e39a43903728c2be81916058971ada5861ab7756ec2b36a1d38d",
+      "size": 2664
+    },
+    "js/core/identity/origin.js": {
+      "sha256": "49ff052dc375345930790bd8baf6dad4b99cc7d764e99aa936d42ce8919fc986",
+      "size": 13238
+    },
+    "js/semantics/ir/function.js": {
+      "sha256": "afca2dd341ac19c42a5ed7d180c170061bc87881a4af367a9f432e5850ba76fb",
+      "size": 15092
+    },
+    "js/semantics/ir/common.js": {
+      "sha256": "1d7d6083f6fe96904aabcf1e14c0dbafb60b4460ad5bef89a9b4e56091e5de38",
+      "size": 6669
+    },
+    "js/semantics/ir/nodes.js": {
+      "sha256": "91a41d2b65a344cdf2997b1ae5e3a5cc93aab217749c9378feee3e3e7fe5592e",
+      "size": 6920
+    },
+    "js/semantics/ir/types.js": {
+      "sha256": "646806d1350766ad1e75ed695e7a1d27690a53c74e7e0eaea91df98435cbbabc",
+      "size": 11798
+    },
+    "js/semantics/memoryssa/proof.js": {
+      "sha256": "ae29d63a99dbad6bc56e495e02b614910853fb0e8a8d56e205dd598d183b39f7",
+      "size": 15166
+    },
+    "js/decompiler/phase8/analysis-identity.js": {
+      "sha256": "8169c9bdffe10ff504736d6ff78aef3262c28c0931dd6684a20939456e290c23",
+      "size": 36877
+    },
+    "js/semantics/ssa/contract.js": {
+      "sha256": "c5252fe079606fbdf912f1b2bf0530274d14b135ac7825b4cbc937db22a92578",
+      "size": 11935
+    },
+    "js/semantics/memoryssa/contract.js": {
+      "sha256": "3b084de4818541c5b0b1cde3472bc0b94df8afb7912ac15a011c9a0859a0bcd7",
+      "size": 16273
+    }
+  }
+}

@@ -7,7 +7,7 @@ import {
   nonEmpty,
   object,
   requiredOrigin,
-  serializable,
+  serializableForFrozenOutput,
   sortedUniqueStrings,
   uniqueStrings,
 } from './common.js';
@@ -23,11 +23,19 @@ const MEMORY_NODE_KINDS = new Set(['load', 'store']);
 const VARIABLE_NODE_KINDS = new Set(['state-read', 'state-write']);
 const CONTROL_NODE_KINDS = new Set(['branch', 'conditional-branch', 'switch']);
 
+// Private, unchanged field whitelists: allocate once, not per normalized entity.
+const ALLOWED_VALUE = new Set([
+    'id', 'kind', 'machineType', 'definitionNodeId', 'sourceEntityId', 'variableKey', 'origin', 'metadata',
+  ]);
+const ALLOWED_UNKNOWN = new Set(['reason', 'categories', 'missing', 'knownParts']);
+const ALLOWED_NODE = new Set([
+    'id', 'kind', 'blockId', 'inputs', 'outputs', 'operator', 'variable', 'memory', 'call', 'intrinsic',
+    'targets', 'attributes', 'unknown', 'completeness', 'sourceEffectIds', 'origin', 'metadata',
+  ]);
+
 export function createSemanticValue(input) {
   input = object(input, 'semantic-ir-invalid-value');
-  assertAllowedKeys(input, new Set([
-    'id', 'kind', 'machineType', 'definitionNodeId', 'sourceEntityId', 'variableKey', 'origin', 'metadata',
-  ]), 'semantic-ir-unexpected-value-field');
+  assertAllowedKeys(input, ALLOWED_VALUE, 'semantic-ir-unexpected-value-field');
   const kind = enumValue(input.kind, SEMANTIC_SETS.values, 'semantic-ir-invalid-value-kind');
   const out = {
     id: nonEmpty(input.id, 'semantic-ir-value-id-required'),
@@ -40,7 +48,7 @@ export function createSemanticValue(input) {
   };
   if (kind === 'definition' && out.definitionNodeId == null) fail('semantic-ir-definition-node-required');
   if (kind !== 'definition' && out.definitionNodeId != null) fail('semantic-ir-nondefinition-has-definition-node');
-  if (input.metadata != null) out.metadata = serializable(input.metadata, 'semantic-ir-invalid-value-metadata');
+  if (input.metadata != null) out.metadata = serializableForFrozenOutput(input.metadata, 'semantic-ir-invalid-value-metadata');
   return deepFreeze(out);
 }
 
@@ -50,7 +58,7 @@ function normalizeUnknown(input, kind) {
     return null;
   }
   input = object(input, 'semantic-ir-invalid-unknown-detail');
-  assertAllowedKeys(input, new Set(['reason', 'categories', 'missing', 'knownParts']), 'semantic-ir-unexpected-unknown-field');
+  assertAllowedKeys(input, ALLOWED_UNKNOWN, 'semantic-ir-unexpected-unknown-field');
   const out = {
     reason: nonEmpty(input.reason, 'semantic-ir-unknown-reason-required'),
     categories: sortedUniqueStrings(input.categories ?? [], 'semantic-ir-invalid-unknown-categories'),
@@ -61,16 +69,13 @@ function normalizeUnknown(input, kind) {
   } else if (input.missing != null) {
     out.missing = sortedUniqueStrings(input.missing, 'semantic-ir-invalid-unknown-missing');
   }
-  if (input.knownParts != null) out.knownParts = serializable(input.knownParts, 'semantic-ir-invalid-known-parts');
+  if (input.knownParts != null) out.knownParts = serializableForFrozenOutput(input.knownParts, 'semantic-ir-invalid-known-parts');
   return deepFreeze(out);
 }
 
 export function createSemanticNode(input) {
   input = object(input, 'semantic-ir-invalid-node');
-  assertAllowedKeys(input, new Set([
-    'id', 'kind', 'blockId', 'inputs', 'outputs', 'operator', 'variable', 'memory', 'call', 'intrinsic',
-    'targets', 'attributes', 'unknown', 'completeness', 'sourceEffectIds', 'origin', 'metadata',
-  ]), 'semantic-ir-unexpected-node-field');
+  assertAllowedKeys(input, ALLOWED_NODE, 'semantic-ir-unexpected-node-field');
   const kind = enumValue(input.kind, SEMANTIC_SETS.operations, 'semantic-ir-invalid-node-kind');
   const out = {
     id: nonEmpty(input.id, 'semantic-ir-node-id-required'),
@@ -84,7 +89,7 @@ export function createSemanticNode(input) {
     call: input.call == null ? null : createSemanticCallSummary(input.call),
     intrinsic: input.intrinsic == null ? null : createSemanticIntrinsicSummary(input.intrinsic),
     targets: uniqueStrings(input.targets ?? [], 'semantic-ir-invalid-node-targets', false),
-    attributes: input.attributes == null ? {} : serializable(input.attributes, 'semantic-ir-invalid-node-attributes'),
+    attributes: input.attributes == null ? {} : serializableForFrozenOutput(input.attributes, 'semantic-ir-invalid-node-attributes'),
     unknown: normalizeUnknown(input.unknown, kind),
     completeness: enumValue(input.completeness ?? (SEMANTIC_SETS.unknownOperations.has(kind) ? 'unknown' : 'complete'), SEMANTIC_SETS.completeness, 'semantic-ir-invalid-node-completeness'),
     sourceEffectIds: sortedUniqueStrings(input.sourceEffectIds ?? [], 'semantic-ir-invalid-source-effect-ids'),
@@ -117,6 +122,6 @@ export function createSemanticNode(input) {
   if (!SEMANTIC_SETS.unknownOperations.has(kind) && out.completeness !== 'complete' && out.unknown == null) {
     fail('semantic-ir-partial-node-requires-unknown-detail');
   }
-  if (input.metadata != null) out.metadata = serializable(input.metadata, 'semantic-ir-invalid-node-metadata');
+  if (input.metadata != null) out.metadata = serializableForFrozenOutput(input.metadata, 'semantic-ir-invalid-node-metadata');
   return deepFreeze(out);
 }

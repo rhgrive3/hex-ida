@@ -1,4 +1,14 @@
-import { fnv64Text } from './fnv64.js';
+import { IDENTITY_REUSE_BUDGETS as REUSE } from './reuse-budgets.js';
+import { fnv64TextDigest } from './fnv64.js';
+import { BoundedWeakCache } from './bounded-weak-cache.js';
+import { isKnownCanonicalJsonData, isKnownImmutableData, ordinaryJsonBehavior, ordinaryHashBehavior } from './immutable-data.js';
+
+const IMMUTABLE_DIGESTS = new BoundedWeakCache(REUSE.immutableDigest.entries, REUSE.immutableDigest.bytes);
+const IMMUTABLE_JSON_TEXT = new BoundedWeakCache(REUSE.immutableJson.entries, REUSE.immutableJson.bytes);
+// Only bounded text/digest results survive a call. Normalization projections
+// share children within one stringify call, not for the source graph lifetime.
+// Public jsonSafe never exposes these internal projections.
+const MAX_IMMUTABLE_JSON_TEXT = REUSE.immutableJson.maxTextLength;
 
 const ID_SCHEMA_VERSION = 1;
 const HEX_RE = /^[0-9a-f]+$/i;
@@ -88,13 +98,57 @@ export function jsonSafe(value, seen = new WeakSet()) {
   return out;
 }
 
+function immutableJsonProjection(value, projections = new WeakMap()) {
+  if (typeof value === 'bigint') return value.toString();
+  if (value == null || typeof value !== 'object') return value;
+  if (isKnownCanonicalJsonData(value)) return value;
+  const cached = projections.get(value);
+  if (cached !== undefined) return cached;
+  let out;
+  if (Array.isArray(value)) out = value.map((item) => immutableJsonProjection(item, projections));
+  else {
+    out = {};
+    for (const key of Object.keys(value).sort()) {
+      const normalized = immutableJsonProjection(value[key], projections);
+      // Certification excludes lossy null-producing values; retain the public
+      // normalizer's own-property semantics, including inherited setters.
+      if (key in out) Object.defineProperty(out, key, {
+        value: normalized, enumerable: true, configurable: true, writable: true,
+      });
+      else out[key] = normalized;
+    }
+  }
+  projections.set(value, out);
+  return out;
+}
+
 export function stableStringify(value) {
-  return JSON.stringify(jsonSafe(value));
+  // Cache only the complete spelling of an already certified immutable root.
+  // Public jsonSafe still creates detached mutable copies. In particular, no
+  // mutable wrapper/getter is traversed through a subtree/string-only shortcut.
+  const reusable = isKnownImmutableData(value) && ordinaryJsonBehavior();
+  if (reusable) {
+    const cached = IMMUTABLE_JSON_TEXT.get(value);
+    if (cached !== undefined) return cached;
+  }
+  const text = JSON.stringify(reusable ? immutableJsonProjection(value) : jsonSafe(value));
+  if (reusable && typeof text === 'string' && text.length <= MAX_IMMUTABLE_JSON_TEXT
+    && ordinaryJsonBehavior()) IMMUTABLE_JSON_TEXT.set(value, text, text.length * 2);
+  return text;
 }
 
 export function stableDigest(value) {
+  // A shallow freeze is not a snapshot. The recursive eligibility check is
+  // essential: Map/Set/Date, accessors and mutable descendants never reuse IDs.
+  const reusable = isKnownImmutableData(value) && ordinaryJsonBehavior() && ordinaryHashBehavior();
+  if (reusable) {
+    const cached = IMMUTABLE_DIGESTS.get(value);
+    if (cached !== undefined) return cached;
+  }
   const text = stableStringify(value);
-  return fnv64Text(text) + fnv64Text(text, 0xcbf29ce4, 0x84222325);
+  const digest = fnv64TextDigest(text);
+  if (reusable && ordinaryJsonBehavior() && ordinaryHashBehavior()) IMMUTABLE_DIGESTS.set(value, digest, digest.length * 2);
+  return digest;
 }
 
 function canonicalWitnessParts(value, seen = new WeakSet()) {
@@ -399,7 +453,8 @@ function normalizeIdentity(value, code) {
 }
 
 export function deepFreeze(value, seen = new WeakSet()) {
-  if (!value || typeof value !== 'object' || Object.isFrozen(value) || ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
+  if (!value || typeof value !== 'object' || isKnownImmutableData(value)
+    || Object.isFrozen(value) || ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
   if (seen.has(value)) return value;
   seen.add(value);
   for (const child of Object.values(value)) deepFreeze(child, seen);

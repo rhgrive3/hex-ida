@@ -1,4 +1,5 @@
 import { canonicalAddress, deepFreeze, jsonSafe, stableStringify } from '../../core/identity/index.js';
+import { isDeeplyFrozenPlainData, isKnownCanonicalJsonData, ordinaryJsonBehavior } from '../../core/identity/immutable-data.js';
 import { createOriginSet } from '../../core/identity/origin.js';
 import { analyzeSemanticDominance } from '../cfg/index.js';
 
@@ -32,6 +33,19 @@ export const MEMORY_SSA_DEFAULT_BUDGET = Object.freeze({
 const ALIAS_SET = new Set(MEMORY_SSA_ALIAS_RELATIONS);
 const REGION_SET = new Set(MEMORY_REGION_KINDS);
 const DEF_SET = new Set(MEMORY_SSA_DEFINITION_KINDS);
+
+// These projections are published only after deepFreeze. Reusing a verified
+// canonical immutable child preserves JSON spelling without exposing aliases
+// through the public jsonSafe API or skipping contract/budget validation.
+function jsonForFrozenOutput(value) {
+  return isKnownCanonicalJsonData(value) && ordinaryJsonBehavior() ? value : jsonSafe(value);
+}
+
+const REGION_FIELDS = new Set(['id','kind','functionId','binaryId','offset','address','rootEntityId','addressSpace','rootIdentity','uncertaintyIdentity','widthBits','origin','metadata']);
+const PHI_INCOMING_FIELDS = new Set(['predecessorBlockId', 'definitionId']);
+const DEFINITION_FIELDS = new Set(['id','kind','regionId','blockId','previousDefinitionIds','incoming','aliasRelation','sourceEntityId','origin','effectSummary','proof']);
+const USE_FIELDS = new Set(['id','regionId','reachingDefinitionId','aliasRelation','blockId','sourceEntityId','origin']);
+const CONTRACT_FIELDS = new Set(['contractVersion','functionId','regions','definitions','uses']);
 
 function fail(code) { throw new TypeError(code); }
 
@@ -136,7 +150,7 @@ function limit(options, key) {
 
 export function createMemoryRegionRef(input) {
   input = object(input, 'memory-ssa-invalid-region');
-  assertAllowedKeys(input, new Set(['id','kind','functionId','binaryId','offset','address','rootEntityId','addressSpace','rootIdentity','uncertaintyIdentity','widthBits','origin','metadata']), 'memory-ssa-unexpected-region-field');
+  assertAllowedKeys(input, REGION_FIELDS, 'memory-ssa-unexpected-region-field');
   const kind = nonEmpty(input.kind, 'memory-ssa-region-kind-required');
   if (!REGION_SET.has(kind)) fail('memory-ssa-invalid-region-kind');
   const out = {
@@ -162,17 +176,17 @@ export function createMemoryRegionRef(input) {
     if (input.addressSpace != null) out.addressSpace = nonEmpty(input.addressSpace, 'memory-ssa-region-address-space-required');
   } else if (kind === 'tls' || kind === 'io' || kind === 'physical-space') {
     out.addressSpace = nonEmpty(input.addressSpace, 'memory-ssa-region-address-space-required');
-    if (input.rootIdentity != null) out.rootIdentity = jsonSafe(input.rootIdentity);
+    if (input.rootIdentity != null) out.rootIdentity = jsonForFrozenOutput(input.rootIdentity);
   } else if (kind === 'unknown') {
     if (input.uncertaintyIdentity == null
       || (typeof input.uncertaintyIdentity === 'string' && !input.uncertaintyIdentity.trim())) {
       fail('memory-ssa-unknown-region-identity-required');
     }
-    out.uncertaintyIdentity = jsonSafe(input.uncertaintyIdentity);
+    out.uncertaintyIdentity = jsonForFrozenOutput(input.uncertaintyIdentity);
   }
   if (input.widthBits != null) out.widthBits = positiveInteger(input.widthBits, 'memory-ssa-invalid-region-width');
   if (Object.hasOwn(input, 'origin')) out.origin = createOriginSet(input.origin);
-  if (input.metadata != null) out.metadata = jsonSafe(input.metadata);
+  if (input.metadata != null) out.metadata = jsonForFrozenOutput(input.metadata);
   return deepFreeze(out);
 }
 
@@ -180,7 +194,7 @@ function normalizeIncoming(value) {
   return array(value ?? [], 'memory-ssa-invalid-phi-incoming')
     .map((item) => {
       item = object(item, 'memory-ssa-invalid-phi-incoming');
-      assertAllowedKeys(item, new Set(['predecessorBlockId', 'definitionId']), 'memory-ssa-unexpected-phi-incoming-field');
+      assertAllowedKeys(item, PHI_INCOMING_FIELDS, 'memory-ssa-unexpected-phi-incoming-field');
       return {
         predecessorBlockId: nonEmpty(item.predecessorBlockId, 'memory-ssa-phi-predecessor-required'),
         definitionId: nonEmpty(item.definitionId, 'memory-ssa-phi-definition-required'),
@@ -191,7 +205,7 @@ function normalizeIncoming(value) {
 
 function normalizeDefinition(input) {
   input = object(input, 'memory-ssa-invalid-definition');
-  assertAllowedKeys(input, new Set(['id','kind','regionId','blockId','previousDefinitionIds','incoming','aliasRelation','sourceEntityId','origin','effectSummary','proof']), 'memory-ssa-unexpected-definition-field');
+  assertAllowedKeys(input, DEFINITION_FIELDS, 'memory-ssa-unexpected-definition-field');
   const kind = nonEmpty(input.kind, 'memory-ssa-definition-kind-required');
   if (!DEF_SET.has(kind)) fail('memory-ssa-invalid-definition-kind');
   const previousDefinitionIds = [...new Set(
@@ -226,14 +240,14 @@ function normalizeDefinition(input) {
     sourceEntityId: input.sourceEntityId == null ? null : nonEmpty(input.sourceEntityId, 'memory-ssa-invalid-source-entity-id'),
     origin: requiredOrigin(input, 'memory-ssa-definition-origin-required'),
   };
-  if (input.effectSummary != null) out.effectSummary = jsonSafe(input.effectSummary);
-  if (input.proof != null) out.proof = jsonSafe(input.proof);
+  if (input.effectSummary != null) out.effectSummary = jsonForFrozenOutput(input.effectSummary);
+  if (input.proof != null) out.proof = jsonForFrozenOutput(input.proof);
   return deepFreeze(out);
 }
 
 function normalizeUse(input) {
   input = object(input, 'memory-ssa-invalid-use');
-  assertAllowedKeys(input, new Set(['id','regionId','reachingDefinitionId','aliasRelation','blockId','sourceEntityId','origin']), 'memory-ssa-unexpected-use-field');
+  assertAllowedKeys(input, USE_FIELDS, 'memory-ssa-unexpected-use-field');
   const relation = input.aliasRelation == null ? 'must' : aliasRelation(input.aliasRelation, 'memory-ssa-invalid-alias-relation');
   if (relation === 'no') fail('memory-ssa-reaching-definition-cannot-be-no-alias');
   return deepFreeze({
@@ -270,7 +284,7 @@ export function createMemorySsaContract(input, options = {}) {
   const work = validationWorkGuard(options);
   work();
   input = object(input, 'memory-ssa-invalid-contract');
-  assertAllowedKeys(input, new Set(['contractVersion','functionId','regions','definitions','uses']), 'memory-ssa-unexpected-contract-field');
+  assertAllowedKeys(input, CONTRACT_FIELDS, 'memory-ssa-unexpected-contract-field');
   if (input.contractVersion != null && String(input.contractVersion) !== MEMORY_SSA_CONTRACT_VERSION) {
     fail('memory-ssa-contract-version-mismatch');
   }
@@ -384,7 +398,7 @@ export function createMemorySsaContract(input, options = {}) {
   }
   reachingDefinitionLinks.sort((a, b) => compareId(a.useId, b.useId));
 
-  return deepFreeze({
+  const frozen = deepFreeze({
     contractVersion: MEMORY_SSA_CONTRACT_VERSION,
     functionId,
     regions,
@@ -392,4 +406,6 @@ export function createMemorySsaContract(input, options = {}) {
     uses,
     reachingDefinitionLinks,
   });
+  isDeeplyFrozenPlainData(frozen);
+  return frozen;
 }

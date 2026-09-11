@@ -1,4 +1,13 @@
 import { jsonSafe, stableDigest } from '../../core/identity/index.js';
+import { isKnownImmutableData, ordinaryJsonBehavior, ordinaryHashBehavior } from '../../core/identity/immutable-data.js';
+
+const IMMUTABLE_ARTIFACT_DIGESTS = new WeakMap();
+const MEMORY_SSA_PAYLOAD_KEYS = Object.freeze([
+  'contractVersion', 'functionId', 'buildVersion', 'completeness', 'unknowns',
+  'identity', 'canonicalIrIdentity', 'snapshotId', 'regions', 'definitions',
+  'uses', 'reachingDefinitionLinks', 'useDefLinks', 'defUseLinks',
+  'accessMetadata', 'canonicalAccessBindings', 'byteCoverage', 'blockStates',
+]);
 
 /*
  * MemorySSA forwarding is allowed to consume only evidence emitted by the
@@ -78,7 +87,23 @@ export function canonicalMemorySsaPayload(artifact) {
 }
 
 export function canonicalMemorySsaDigest(artifact) {
-  return stableDigest(canonicalMemorySsaPayload(artifact));
+  // Repeated load queries must check the same full producer payload, but its
+  // exact digest need not be recomputed for every load once it is immutable.
+  // Mutable or shallow-frozen transport copies keep the original full walk;
+  // independent producer binding is still checked by the consuming query.
+  // Missing properties can still come from a mutable prototype, even when
+  // every own field is frozen. Cache only complete, own-property payloads.
+  const reusable = isKnownImmutableData(artifact) && ordinaryJsonBehavior() && ordinaryHashBehavior();
+  if (reusable) {
+    const cached = IMMUTABLE_ARTIFACT_DIGESTS.get(artifact);
+    if (cached !== undefined) return cached;
+  }
+  const digest = stableDigest(canonicalMemorySsaPayload(artifact));
+  if (reusable && ordinaryJsonBehavior() && ordinaryHashBehavior()
+    && MEMORY_SSA_PAYLOAD_KEYS.every((key) => Object.hasOwn(artifact, key))) {
+    IMMUTABLE_ARTIFACT_DIGESTS.set(artifact, digest);
+  }
+  return digest;
 }
 
 /*

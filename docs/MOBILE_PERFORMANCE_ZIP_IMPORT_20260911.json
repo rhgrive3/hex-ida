@@ -1,0 +1,557 @@
+{
+  "schemaVersion": 1,
+  "purpose": "User-requested performance ZIP import; source component, not integration or release evidence",
+  "importBase": "f26b6af4c292c8afd35fae4f6effb7246b8d621e",
+  "archive": {
+    "name": "hex-ida-mobile-final-20260911.zip",
+    "sha256": "8dede37e694d0dcbbc0600e9096086311994458c0ce21a8ae8e810440dc5c9c6",
+    "baseCommit": "4ced78359ee317f32486ff18e67ca0e88c7265bd",
+    "patchSha256": "64b0d7c836b19bb48676db224910bc3442d29539cec90e538e92cce733257a9c"
+  },
+  "mergeMethod": "Three-way merge of each declared changed file against its hash-verified archive base and importBase; retain later main changes.",
+  "preservedMainChanges": [
+    "js/semantics/ir/function.js: #4576 extension input/output width validation"
+  ],
+  "supersededArchive": {
+    "name": "hex-ida-speed-optimized-20260909.zip",
+    "sha256": "6b99b4f5ba29fd703f7cda782021a90144c751c45765498623087e42df3e4b9c",
+    "alreadyIntegratedCommit": "8ca9e6370",
+    "note": "Nine product changes were already incorporated in main. Five files match byte-for-byte; remaining differences are subsequent artifact ID, JSON getter snapshot, deterministic origin ordering, metadata pagination/slice, and IR validation fixes. Do not reapply the old snapshot."
+  },
+  "generatedOutput": "Component build is ephemeral. Integration owner must regenerate, verify, and commit canonical output before release.",
+  "measurementScope": "Archive benchmark results are historical, not current-head or iOS performance. aggregate-speed/compare.mjs retains its historical 180/90 outcome and 30% target contract; do not treat it as current-main acceptance.",
+  "allowedPaths": [
+    "docs/MOBILE_PERFORMANCE_ZIP_IMPORT_20260911.json",
+    "js/core/identity/bounded-weak-cache.js",
+    "js/core/identity/fnv64.js",
+    "js/core/identity/immutable-data.js",
+    "js/core/identity/index.js",
+    "js/core/identity/reuse-budgets.js",
+    "js/decompiler/passes/manager.js",
+    "js/decompiler/phase8/analysis-identity.js",
+    "js/graph-routing.js",
+    "js/semantics/ir/common.js",
+    "js/semantics/ir/function.js",
+    "js/semantics/ir/nodes.js",
+    "js/semantics/ir/types.js",
+    "js/semantics/memoryssa/build.js",
+    "js/semantics/memoryssa/contract.js",
+    "js/semantics/memoryssa/proof.js",
+    "js/semantics/ssa/contract.js",
+    "tests/helpers/aggregate-speed-baseline/README.md",
+    "tests/helpers/aggregate-speed-baseline/js/core/identity/fnv64.js",
+    "tests/helpers/aggregate-speed-baseline/js/core/identity/index.js",
+    "tests/helpers/aggregate-speed-baseline/js/core/identity/origin.js",
+    "tests/helpers/aggregate-speed-baseline/js/decompiler/phase8/analysis-identity.js",
+    "tests/helpers/aggregate-speed-baseline/js/semantics/ir/common.js",
+    "tests/helpers/aggregate-speed-baseline/js/semantics/ir/function.js",
+    "tests/helpers/aggregate-speed-baseline/js/semantics/ir/nodes.js",
+    "tests/helpers/aggregate-speed-baseline/js/semantics/ir/types.js",
+    "tests/helpers/aggregate-speed-baseline/js/semantics/memoryssa/contract.js",
+    "tests/helpers/aggregate-speed-baseline/js/semantics/memoryssa/proof.js",
+    "tests/helpers/aggregate-speed-baseline/js/semantics/ssa/contract.js",
+    "tests/helpers/aggregate-speed-baseline/manifest.json",
+    "tests/helpers/aggregate-speed-fixtures.mjs",
+    "tests/helpers/mobile-final-baseline/README.md",
+    "tests/helpers/mobile-final-baseline/js/core/identity/fnv64.js",
+    "tests/helpers/mobile-final-baseline/js/core/identity/index.js",
+    "tests/helpers/mobile-final-baseline/js/core/identity/origin.js",
+    "tests/helpers/mobile-final-baseline/js/decompiler/legacy-exact-return-repair.js",
+    "tests/helpers/mobile-final-baseline/js/decompiler/passes/manager.js",
+    "tests/helpers/mobile-final-baseline/js/decompiler/phase8/analysis-identity.js",
+    "tests/helpers/mobile-final-baseline/manifest.json",
+    "tests/helpers/refinement-baseline/README.md",
+    "tests/helpers/refinement-baseline/js/core/identity/fnv64.js",
+    "tests/helpers/refinement-baseline/js/decompiler/ast/nodes.js",
+    "tests/helpers/refinement-baseline/js/decompiler/rewrite/engine.js",
+    "tests/helpers/refinement-baseline/js/graph-routing.js",
+    "tests/helpers/refinement-baseline/manifest.json",
+    "tests/performance/aggregate-analysis-identity.test.mjs",
+    "tests/performance/aggregate-immutable.test.mjs",
+    "tests/performance/aggregate-ir.test.mjs",
+    "tests/performance/aggregate-memoryssa.test.mjs",
+    "tests/performance/aggregate-ssa.test.mjs",
+    "tests/performance/mobile-bounded-cache.test.mjs",
+    "tests/performance/mobile-final-pass-clone.test.mjs",
+    "tests/performance/mobile-final-retention.test.mjs",
+    "tests/performance/mobile-identity-retention.test.mjs",
+    "tests/performance/refinement-bytes.test.mjs",
+    "tests/performance/refinement-graph-ast.test.mjs",
+    "tests/performance/refinement-origin.test.mjs",
+    "tools/validation/aggregate-speed/capture.mjs",
+    "tools/validation/aggregate-speed/compare.mjs",
+    "tools/validation/aggregate-speed/run.mjs",
+    "tools/validation/aggregate-speed/workload.json",
+    "tools/validation/mobile-balanced/retention.mjs",
+    "tools/validation/perf-refinement/README.md",
+    "tools/validation/perf-refinement/cases.mjs",
+    "tools/validation/perf-refinement/micro.mjs",
+    "tools/validation/perf-refinement/paired.mjs",
+    "tools/validation/perf-refinement/text-probe.mjs",
+    "zip/hex-ida-speed-optimized-20260909.zip"
+  ],
+  "files": [
+    {
+      "path": "js/core/identity/bounded-weak-cache.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "c35810bc494eb46f4d347dde9104239b302c16a43add38880aa261c52c00b0f4",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "js/core/identity/fnv64.js",
+      "archiveBaseSha256": "d1f1db7e1dd0e39a43903728c2be81916058971ada5861ab7756ec2b36a1d38d",
+      "archiveCandidateSha256": "8c5d17bd336db6af83991352583dfbc2f8ca84e8ddf7daa990d0e8d92a3a7d7e",
+      "importBaseSha256": "d1f1db7e1dd0e39a43903728c2be81916058971ada5861ab7756ec2b36a1d38d",
+      "conflict": false
+    },
+    {
+      "path": "js/core/identity/immutable-data.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "4833e9efd76f5153476dd0e3cd74af82e47ea610e889ee42ef2f81931e117643",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "js/core/identity/index.js",
+      "archiveBaseSha256": "cd73db15767ddc5ec6f7464fa3c1173d495fdbfda578253fd6625f46dc04be75",
+      "archiveCandidateSha256": "0a3d4e6c9ca023072c07dc7fd546c156ad470f0869039099b7ab0425aa6cdbc1",
+      "importBaseSha256": "cd73db15767ddc5ec6f7464fa3c1173d495fdbfda578253fd6625f46dc04be75",
+      "conflict": false
+    },
+    {
+      "path": "js/core/identity/reuse-budgets.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "e0418f7a5f137bcd7c23390596e28750eb97cfa4d6823c395148eddfc1d1b3fe",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "js/decompiler/passes/manager.js",
+      "archiveBaseSha256": "28f30611f3b7a80b8558214bfbad3569fe4b56a6780b8f2fc340f665fe2597b2",
+      "archiveCandidateSha256": "e94471ce2f8d7ac92afd2685d8b1b3de97bcf4265167a5be86e12a70c3791d5f",
+      "importBaseSha256": "28f30611f3b7a80b8558214bfbad3569fe4b56a6780b8f2fc340f665fe2597b2",
+      "conflict": false
+    },
+    {
+      "path": "js/decompiler/phase8/analysis-identity.js",
+      "archiveBaseSha256": "8169c9bdffe10ff504736d6ff78aef3262c28c0931dd6684a20939456e290c23",
+      "archiveCandidateSha256": "c006c320b17de0a9c6fff7f95ce4bccf915eec1d34e1051c66323e61aa6ba5ab",
+      "importBaseSha256": "8169c9bdffe10ff504736d6ff78aef3262c28c0931dd6684a20939456e290c23",
+      "conflict": false
+    },
+    {
+      "path": "js/graph-routing.js",
+      "archiveBaseSha256": "628f6377171158ae36a3dcea50654727d9237ee3c053af0ff1148ebb686c3edd",
+      "archiveCandidateSha256": "b6cdb126bd5f620ec0528f6d9493c36ad4b2e4f8c27eeef5b7cc3206bd40621c",
+      "importBaseSha256": "628f6377171158ae36a3dcea50654727d9237ee3c053af0ff1148ebb686c3edd",
+      "conflict": false
+    },
+    {
+      "path": "js/semantics/ir/common.js",
+      "archiveBaseSha256": "1d7d6083f6fe96904aabcf1e14c0dbafb60b4460ad5bef89a9b4e56091e5de38",
+      "archiveCandidateSha256": "7f148651e1d75f38cf37a1e8e1afce380ca2cdb89881331cba50081631c4f866",
+      "importBaseSha256": "1d7d6083f6fe96904aabcf1e14c0dbafb60b4460ad5bef89a9b4e56091e5de38",
+      "conflict": false
+    },
+    {
+      "path": "js/semantics/ir/function.js",
+      "archiveBaseSha256": "ffae8a89f9424c59422b6c855dd7bb6f2fbc384c179d4ade0a6141ead93f67b6",
+      "archiveCandidateSha256": "c7624225bacf15e89c5d6ad95945f44eeaf64de2b2cd6a8a59a283a7e87797b0",
+      "importBaseSha256": "92ee9bee43c71324c8852b75b7cf09a6e7d21351d3d88b390435e5d12c693ed5",
+      "conflict": false
+    },
+    {
+      "path": "js/semantics/ir/nodes.js",
+      "archiveBaseSha256": "1f0bda74bbbe02e51b2255cd5596bba01e72771d2f0cc7bacabefb28348a88c4",
+      "archiveCandidateSha256": "712033d300ac35e0ef5c01cbce2bf6803dab6160c2e4f66b88da6da25497e1e9",
+      "importBaseSha256": "1f0bda74bbbe02e51b2255cd5596bba01e72771d2f0cc7bacabefb28348a88c4",
+      "conflict": false
+    },
+    {
+      "path": "js/semantics/ir/types.js",
+      "archiveBaseSha256": "aa62f742a6b578e39f87eadd21884d5f77263d0e30aa0a392a679eff285b32a9",
+      "archiveCandidateSha256": "751fd12a16657eeef454c87e4d59a7d43ef2919bbe95b68abe54a806f960f70d",
+      "importBaseSha256": "aa62f742a6b578e39f87eadd21884d5f77263d0e30aa0a392a679eff285b32a9",
+      "conflict": false
+    },
+    {
+      "path": "js/semantics/memoryssa/build.js",
+      "archiveBaseSha256": "e00c1e363a4d6b9342cc079327ce7fc5cd8f831ef16ec446c924dc81bf9511cc",
+      "archiveCandidateSha256": "8a017d030810f910ad62889422100b06406c692e2071d49dfe9f3a4afe496e8e",
+      "importBaseSha256": "e00c1e363a4d6b9342cc079327ce7fc5cd8f831ef16ec446c924dc81bf9511cc",
+      "conflict": false
+    },
+    {
+      "path": "js/semantics/memoryssa/contract.js",
+      "archiveBaseSha256": "844a597f3b1676058d1ab4c60466bc870663004b0791db2053207e8e520320a5",
+      "archiveCandidateSha256": "deab6123c4d93da8d032ab99e0fdaa142aaa27fd44686449e9117fb15a3c2685",
+      "importBaseSha256": "844a597f3b1676058d1ab4c60466bc870663004b0791db2053207e8e520320a5",
+      "conflict": false
+    },
+    {
+      "path": "js/semantics/memoryssa/proof.js",
+      "archiveBaseSha256": "ae29d63a99dbad6bc56e495e02b614910853fb0e8a8d56e205dd598d183b39f7",
+      "archiveCandidateSha256": "04ab39b2cadfc504571d5a57ed4ff8bcd51a3f6fdb1606eaf9307e9fafbf2af4",
+      "importBaseSha256": "ae29d63a99dbad6bc56e495e02b614910853fb0e8a8d56e205dd598d183b39f7",
+      "conflict": false
+    },
+    {
+      "path": "js/semantics/ssa/contract.js",
+      "archiveBaseSha256": "1b544f98222287db6b5c0d8654b5db296c87311e69cb0d00019be5ca70c913f8",
+      "archiveCandidateSha256": "d8c233264d1e728a56363111f8028f3b2109096eb7725afaa63b10c3fcd9a672",
+      "importBaseSha256": "1b544f98222287db6b5c0d8654b5db296c87311e69cb0d00019be5ca70c913f8",
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/aggregate-speed-baseline/README.md",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "99052254a3fc2e26e1c89f71f3bd87806c9c4c6b7a1478a86d8c137180e5367e",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/aggregate-speed-baseline/js/core/identity/fnv64.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "d1f1db7e1dd0e39a43903728c2be81916058971ada5861ab7756ec2b36a1d38d",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/aggregate-speed-baseline/js/core/identity/index.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "c1b0fb8ce7623d003c1205e282b132023eee204a3962a4da1d0685b2807a0c99",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/aggregate-speed-baseline/js/core/identity/origin.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "49ff052dc375345930790bd8baf6dad4b99cc7d764e99aa936d42ce8919fc986",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/aggregate-speed-baseline/js/decompiler/phase8/analysis-identity.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "8169c9bdffe10ff504736d6ff78aef3262c28c0931dd6684a20939456e290c23",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/aggregate-speed-baseline/js/semantics/ir/common.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "1d7d6083f6fe96904aabcf1e14c0dbafb60b4460ad5bef89a9b4e56091e5de38",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/aggregate-speed-baseline/js/semantics/ir/function.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "afca2dd341ac19c42a5ed7d180c170061bc87881a4af367a9f432e5850ba76fb",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/aggregate-speed-baseline/js/semantics/ir/nodes.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "91a41d2b65a344cdf2997b1ae5e3a5cc93aab217749c9378feee3e3e7fe5592e",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/aggregate-speed-baseline/js/semantics/ir/types.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "646806d1350766ad1e75ed695e7a1d27690a53c74e7e0eaea91df98435cbbabc",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/aggregate-speed-baseline/js/semantics/memoryssa/contract.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "3b084de4818541c5b0b1cde3472bc0b94df8afb7912ac15a011c9a0859a0bcd7",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/aggregate-speed-baseline/js/semantics/memoryssa/proof.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "ae29d63a99dbad6bc56e495e02b614910853fb0e8a8d56e205dd598d183b39f7",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/aggregate-speed-baseline/js/semantics/ssa/contract.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "c5252fe079606fbdf912f1b2bf0530274d14b135ac7825b4cbc937db22a92578",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/aggregate-speed-baseline/manifest.json",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "4dcde39d08999ff9aa0497f8cb8fc8525a910b0f3daae4e4c83b7c9ca9346cd6",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/aggregate-speed-fixtures.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "b07ce295eedabb0677417fa9022ab306f668c7bc3493e5f40fa8f9ab26bd0592",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/mobile-final-baseline/README.md",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "d517f85591f33a559dca09053fc7df5170659de33e7979f91c409543f27e4f18",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/mobile-final-baseline/js/core/identity/fnv64.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "d1f1db7e1dd0e39a43903728c2be81916058971ada5861ab7756ec2b36a1d38d",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/mobile-final-baseline/js/core/identity/index.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "cd73db15767ddc5ec6f7464fa3c1173d495fdbfda578253fd6625f46dc04be75",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/mobile-final-baseline/js/core/identity/origin.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "4f29518231e9ab4794d63176a6ba7c1924e9caabd6b296d52a2d2099f50743ba",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/mobile-final-baseline/js/decompiler/legacy-exact-return-repair.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "21cb0fae873d0f834016a98142326d7ba2d9d4d164af2ce9f980451f0e7503b1",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/mobile-final-baseline/js/decompiler/passes/manager.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "28f30611f3b7a80b8558214bfbad3569fe4b56a6780b8f2fc340f665fe2597b2",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/mobile-final-baseline/js/decompiler/phase8/analysis-identity.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "8169c9bdffe10ff504736d6ff78aef3262c28c0931dd6684a20939456e290c23",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/mobile-final-baseline/manifest.json",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "9feac356e6bd23be85d6c35300dfa50a9754ecdd9e0ce53c7530cb49cd9b999e",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/refinement-baseline/README.md",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "8058b02adfe736cb9aa88fa9148ea3c005965a8ee3e1e8a5d8c6d4528cfa3399",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/refinement-baseline/js/core/identity/fnv64.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "d1f1db7e1dd0e39a43903728c2be81916058971ada5861ab7756ec2b36a1d38d",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/refinement-baseline/js/decompiler/ast/nodes.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "d36c21366b950152434fae783f44e7bcdb70f214c2278246486bdb9c8ef0a9a9",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/refinement-baseline/js/decompiler/rewrite/engine.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "fc1749f816300d1a6826f4c3e9b8476292c5718056a3b4fa313450462d4fdcff",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/refinement-baseline/js/graph-routing.js",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "628f6377171158ae36a3dcea50654727d9237ee3c053af0ff1148ebb686c3edd",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/helpers/refinement-baseline/manifest.json",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "9adfd9c6ac175f8036c5d05d36e654bd0963e68efa7ae2b15106340e620e2eca",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/performance/aggregate-analysis-identity.test.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "363f9a996a7aafbfa77a077be63e3e69a5095d95fb29c0d9c03d6f639f9da3b3",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/performance/aggregate-immutable.test.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "db315c7a0c3876639766915c068917d41a466c58c0f18f4fd44e1d8ee01dd280",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/performance/aggregate-ir.test.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "6578ab10b03bb4a2c15e9a299f9c3ea4f9a19210111b52a7cab470c4f6354909",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/performance/aggregate-memoryssa.test.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "074918ae8cfbc9df31038b562ce2331a234dd090350a03b39869339da6a20fd0",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/performance/aggregate-ssa.test.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "22715bf5803c9930fae94de97a03b45e18e8fa3368ca1798bd645cde9a32dd20",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/performance/mobile-bounded-cache.test.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "4e67c63c6cd16baa8f1ae8369140f1a10f4a6b579afe07b971b56173a7f9afed",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/performance/mobile-final-pass-clone.test.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "021b5f87371c4ef2fc3783b47e312d09887c02be60cf5af9757e147194d602a6",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/performance/mobile-final-retention.test.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "c85ce8807f4f497f9eb7e9d1213e08c04e234c12f46138eb4d3dbe0d53ff6c92",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/performance/mobile-identity-retention.test.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "124c802facf876729ccab31cd230c980f44418bf3d77f3b6656009671e961eeb",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/performance/refinement-bytes.test.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "e1dc770005bcb868abdbdcc38bf809f6847d92c74fb1c47b1da606d5a91c597b",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/performance/refinement-graph-ast.test.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "beafb76f1c8d05603b28f311fec2c18fe6b5403ab06dc718f47f86e798914182",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tests/performance/refinement-origin.test.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "84a1ec1dec9a6e4ca900413dc34b37f82674693249d4b6bdb3d55d3c78646b28",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tools/validation/aggregate-speed/capture.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "1b0bcb6a0f2a4997f515f88a400b0fa939e24aeca48abb13b045eede0e470a1f",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tools/validation/aggregate-speed/compare.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "4ca63ac6d6330b7f81d174b6639e96556d826466a13df79148968b8b614d5849",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tools/validation/aggregate-speed/run.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "5557b3f58f47f1637321cce95207c314cc66a1855a25afb00c88f004462b4799",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tools/validation/aggregate-speed/workload.json",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "c4d1224ec9be237d92f06018832a839d158da06b64c11dab8d0f633e2daf16ef",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tools/validation/mobile-balanced/retention.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "b792de9857160fb7af0431bf28059dfdc5b9ec4b1e6c002762a6e8930ceb7625",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tools/validation/perf-refinement/README.md",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "22407e1a29acc09bd8da703ca3085e74df257b3c7c429aa3c77cf8b19cfc33c6",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tools/validation/perf-refinement/cases.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "cdbfc7223f376fa5507b08a9bf28812684d1d817a2ec9d3321d7068964b007dd",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tools/validation/perf-refinement/micro.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "179f736e77a9abe1d90673e472c678153ad4f38e9f0e582a98405f0423a4ac3f",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tools/validation/perf-refinement/paired.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "27c34196c6cbfb1aa15c941fdddb8b03f9a699451506e2b2d65db2328b53d498",
+      "importBaseSha256": null,
+      "conflict": false
+    },
+    {
+      "path": "tools/validation/perf-refinement/text-probe.mjs",
+      "archiveBaseSha256": null,
+      "archiveCandidateSha256": "8a3f0b85d889d59a919a9c0028aee9bf36c3c2e1546ce61c0e69e7e2a0ea44c4",
+      "importBaseSha256": null,
+      "conflict": false
+    }
+  ]
+}

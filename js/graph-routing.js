@@ -28,13 +28,16 @@ export function layoutNodes(nodes, edges, byId) {
   }
 
   const rank = new Map();
-  const queue = nodes.filter((n) => indeg.get(n.id) === 0).map((n) => n.id);
-  if (!queue.length && nodes.length) queue.push(nodes[0].id);
-  for (const id of queue) rank.set(id, 0);
-  let guard = 0;
-  const work = queue.slice();
-  while (work.length && guard++ < 20000) {
-    const id = work.shift();
+  const work = nodes.filter((n) => indeg.get(n.id) === 0).map((n) => n.id);
+  if (!work.length && nodes.length) work.push(nodes[0].id);
+  for (const id of work) rank.set(id, 0);
+  let guard = 0, head = 0;
+  while (head < work.length && guard++ < 20000) {
+    const id = work[head];
+    work[head++] = undefined;
+    // Amortized FIFO removal without retaining an ever-growing consumed prefix.
+    // Keep the same enqueue order and the existing 20,000-step cycle guard.
+    if (head >= 1024 && head * 2 >= work.length) { work.splice(0, head); head = 0; }
     for (const s of succ.get(id) || []) {
       const r = (rank.get(id) || 0) + 1;
       if (!rank.has(s) || rank.get(s) < r) {
@@ -75,9 +78,15 @@ export function layoutNodes(nodes, edges, byId) {
     if (!byId.has(e.from) || !byId.has(e.to) || e.kind === 'back') continue;
     pred.get(e.to).push(e.from);
   }
-  const mean = (ids) => (ids.length
-    ? ids.reduce((s, id) => s + (order.get(id) != null ? order.get(id) : 0), 0) / ids.length
-    : null);
+  const meanOutsideRank = (ids, currentRank) => {
+    let sum = 0, count = 0;
+    for (const id of ids) {
+      if (rank.get(id) === currentRank) continue;
+      sum += order.get(id) ?? 0;
+      count++;
+    }
+    return count ? sum / count : null;
+  };
 
   for (let pass = 0; pass < 6; pass++) {
     const down = pass % 2 === 0;
@@ -88,7 +97,7 @@ export function layoutNodes(nodes, edges, byId) {
       const key = new Map();
       for (const id of ids) {
         const neighbours = down ? pred.get(id) : (succ.get(id) || []);
-        const m = mean(neighbours.filter((x) => rank.get(x) !== r));
+        const m = meanOutsideRank(neighbours, r);
         key.set(id, m == null ? order.get(id) : m);
       }
       ids.sort((a, b) => key.get(a) - key.get(b) || order.get(a) - order.get(b));
@@ -251,6 +260,8 @@ function assignEndpointTracks(items, sourcePort, targetPort, layout) {
   const sourceJogY = new Map();
   const targetJogY = new Map();
   const corridors = new Map();
+  const orderedRanks = layout.ranksSorted.every((rank, index, ranks) =>
+    Number.isFinite(rank) && (index === 0 || ranks[index - 1] <= rank));
   const add = (key, item, endpoint, baseX) => {
     if (!corridors.has(key)) corridors.set(key, []);
     corridors.get(key).push({ item, endpoint, baseX });
@@ -265,18 +276,25 @@ function assignEndpointTracks(items, sourcePort, targetPort, layout) {
   for (const [key, records] of corridors) {
     records.sort((a, b) => a.baseX - b.baseX || a.item.index - b.item.index || (a.endpoint < b.endpoint ? -1 : 1));
     const used = [];
+    // Tiny corridors are faster with the existing linear scan. Only dense
+    // corridors pay for ordered reservations and their eligibility scan.
+    const finiteTracks = records.length >= 16 && records.every((record) => Number.isFinite(record.baseX));
     for (const record of records) {
-      const x = nearestFreeTrack(record.baseX, used);
-      used.push(x);
+      const x = nearestFreeTrack(record.baseX, used, finiteTracks);
+      if (!finiteTracks) used.push(x);
       (record.endpoint === 'source' ? sourceTrack : targetTrack).set(record.item, x);
     }
 
-    const bounds = corridorBounds(key, layout);
+    const bounds = corridorBounds(key, layout, orderedRanks);
     const height = Math.max(24, bounds.bottom - bounds.top);
-    const sourceRecords = records.filter((r) => r.endpoint === 'source')
-      .sort((a, b) => a.baseX - b.baseX || a.item.index - b.item.index);
-    const targetRecords = records.filter((r) => r.endpoint === 'target')
-      .sort((a, b) => a.baseX - b.baseX || a.item.index - b.item.index);
+    // Filtering an ordered finite corridor already preserves both keys. Avoid
+    // two redundant sorts; unusual non-finite input keeps the original path.
+    const sourceRecords = records.filter((r) => r.endpoint === 'source');
+    const targetRecords = records.filter((r) => r.endpoint === 'target');
+    if (!finiteTracks) {
+      sourceRecords.sort((a, b) => a.baseX - b.baseX || a.item.index - b.item.index);
+      targetRecords.sort((a, b) => a.baseX - b.baseX || a.item.index - b.item.index);
+    }
     const sourceLow = bounds.top + 4;
     const sourceHigh = bounds.top + Math.max(8, height * 0.28);
     const targetLow = bounds.bottom - Math.max(8, height * 0.28);
@@ -291,14 +309,23 @@ function assignEndpointTracks(items, sourcePort, targetPort, layout) {
   return { sourceTrack, targetTrack, sourceJogY, targetJogY };
 }
 
-function corridorBounds(key, layout) {
+function corridorBounds(key, layout, orderedRanks) {
   if (key === 'top') {
     const first = layout.rowBounds.get(layout.ranksSorted[0]);
     return { top: Math.max(2, first.top - 42), bottom: first.top - 2 };
   }
   const rank = Number(key.slice(4));
   const from = layout.rowBounds.get(rank);
-  const nextRank = layout.ranksSorted.find((r) => r > rank);
+  let nextRank;
+  if (orderedRanks) {
+    let low = 0, high = layout.ranksSorted.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (layout.ranksSorted[middle] <= rank) low = middle + 1;
+      else high = middle;
+    }
+    nextRank = layout.ranksSorted[low];
+  } else nextRank = layout.ranksSorted.find((r) => r > rank);
   if (from && nextRank != null) {
     const to = layout.rowBounds.get(nextRank);
     return { top: from.bottom, bottom: to.top - 2 };
@@ -307,17 +334,38 @@ function corridorBounds(key, layout) {
   return { top, bottom: Math.min(layout.height - 2, top + 42) };
 }
 
-function nearestFreeTrack(baseX, used) {
+function trackInsertionIndex(used, x) {
+  let low = 0, high = used.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (used[middle] < x) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function nearestFreeTrack(baseX, used, ordered = false) {
   const spacing = 6;
   const clearance = 3;
   for (let ring = 0; ring <= 8; ring++) {
     const offsets = ring === 0 ? [0] : [ring * spacing, -ring * spacing];
     for (const offset of offsets) {
       const candidate = baseX + offset;
-      if (used.every((x) => Math.abs(x - candidate) >= clearance)) return candidate;
+      if (ordered) {
+        // In a sorted finite set only the two adjacent tracks can conflict.
+        // Reserve in the same array; no long-lived index or extra cache.
+        const at = trackInsertionIndex(used, candidate);
+        if ((at === 0 || Math.abs(used[at - 1] - candidate) >= clearance)
+          && (at === used.length || Math.abs(used[at] - candidate) >= clearance)) {
+          used.splice(at, 0, candidate);
+          return candidate;
+        }
+      } else if (used.every((x) => Math.abs(x - candidate) >= clearance)) return candidate;
     }
   }
-  return baseX + (used.length + 1) * spacing;
+  const fallback = baseX + (used.length + 1) * spacing;
+  if (ordered) used.splice(trackInsertionIndex(used, fallback), 0, fallback);
+  return fallback;
 }
 
 function endpointTrackedPoints(sx, stx, sourceY, sourceJogY, laneY, ttx, tx, targetJogY, targetY) {

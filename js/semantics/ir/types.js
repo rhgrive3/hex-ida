@@ -10,14 +10,25 @@ import {
   object,
   optionalPositiveInteger,
   positiveInteger,
-  serializable,
+  serializableForFrozenOutput,
   sortedUniqueStrings,
   uniqueStrings,
 } from './common.js';
 
+// Private, unchanged field whitelists: allocate once, not per normalized entity.
+const ALLOWED_MACHINE_TYPE = new Set(['kind', 'widthBits', 'format', 'laneCount', 'elementType', 'addressSpace']);
+const ALLOWED_VARIABLE = new Set(['key', 'kind', 'scope', 'physicalIdentity', 'metadata']);
+const ALLOWED_FAULT = new Set(['kind', 'condition', 'detail']);
+const ALLOWED_MEMORY = new Set(['addressSpace', 'addressExpr', 'addressValueId', 'widthBits', 'endian', 'alignment', 'volatility', 'atomic', 'ordering', 'faults']);
+const ALLOWED_ADDRESS_EXPRESSION = new Set(['valueId']);
+const ALLOWED_EFFECT_MEMORY = new Set(['scope', 'accesses', 'addressSpaces', 'detail']);
+const ALLOWED_INTRINSIC_SUMMARY = new Set(['inputs', 'outputs', 'stateReads', 'stateWrites', 'memoryRead', 'memoryWrite', 'controlEffects', 'determinism', 'symbolicDetail']);
+const ALLOWED_CALL_SUMMARY = new Set(['targetValueIds', 'targetEntityIds', 'arguments', 'returns', 'stateReads', 'stateWrites', 'memoryRead', 'memoryWrite', 'controlEffects', 'determinism', 'noreturn', 'mayThrow', 'summarySource', 'completeness', 'unknownEffects']);
+const ALLOWED_CALL_UNKNOWN_EFFECT = new Set(['reason', 'categories']);
+
 export function createSemanticMachineType(input, seenTypes = new WeakSet()) {
   input = object(input, 'semantic-ir-invalid-machine-type');
-  assertAllowedKeys(input, new Set(['kind', 'widthBits', 'format', 'laneCount', 'elementType', 'addressSpace']), 'semantic-ir-unexpected-machine-type-field');
+  assertAllowedKeys(input, ALLOWED_MACHINE_TYPE, 'semantic-ir-unexpected-machine-type-field');
   const kind = enumValue(input.kind, SEMANTIC_SETS.machineTypes, 'semantic-ir-invalid-machine-type-kind');
   /*
    * Vector element types must be flat: nesting is validated AFTER recursion,
@@ -53,14 +64,14 @@ export function createSemanticMachineType(input, seenTypes = new WeakSet()) {
 
 export function createSemanticVariableRef(input) {
   input = object(input, 'semantic-ir-invalid-variable-ref');
-  assertAllowedKeys(input, new Set(['key', 'kind', 'scope', 'physicalIdentity', 'metadata']), 'semantic-ir-unexpected-variable-field');
+  assertAllowedKeys(input, ALLOWED_VARIABLE, 'semantic-ir-unexpected-variable-field');
   const out = {
     key: nonEmpty(input.key, 'semantic-ir-variable-key-required'),
     kind: enumValue(input.kind, SEMANTIC_SETS.variables, 'semantic-ir-invalid-variable-kind'),
     scope: enumValue(input.scope ?? 'function', SEMANTIC_SETS.variableScopes, 'semantic-ir-invalid-variable-scope'),
   };
-  if (input.physicalIdentity != null) out.physicalIdentity = serializable(input.physicalIdentity, 'semantic-ir-invalid-physical-identity');
-  if (input.metadata != null) out.metadata = serializable(input.metadata, 'semantic-ir-invalid-variable-metadata');
+  if (input.physicalIdentity != null) out.physicalIdentity = serializableForFrozenOutput(input.physicalIdentity, 'semantic-ir-invalid-physical-identity');
+  if (input.metadata != null) out.metadata = serializableForFrozenOutput(input.metadata, 'semantic-ir-invalid-variable-metadata');
   return deepFreeze(out);
 }
 
@@ -68,20 +79,20 @@ function normalizeFaults(value) {
   if (value == null) return [];
   return array(value, 'semantic-ir-invalid-faults').map((item) => {
     item = object(item, 'semantic-ir-invalid-fault');
-    assertAllowedKeys(item, new Set(['kind', 'condition', 'detail']), 'semantic-ir-unexpected-fault-field');
+    assertAllowedKeys(item, ALLOWED_FAULT, 'semantic-ir-unexpected-fault-field');
     const out = { kind: nonEmpty(item.kind, 'semantic-ir-fault-kind-required') };
-    if (item.condition != null) out.condition = serializable(item.condition, 'semantic-ir-invalid-fault-condition');
-    if (item.detail != null) out.detail = serializable(item.detail, 'semantic-ir-invalid-fault-detail');
+    if (item.condition != null) out.condition = serializableForFrozenOutput(item.condition, 'semantic-ir-invalid-fault-condition');
+    if (item.detail != null) out.detail = serializableForFrozenOutput(item.detail, 'semantic-ir-invalid-fault-detail');
     return out;
   }).sort((a, b) => stableStringify(a).localeCompare(stableStringify(b)));
 }
 
 export function createSemanticMemoryAccess(input) {
   input = object(input, 'semantic-ir-invalid-memory-access');
-  assertAllowedKeys(input, new Set(['addressSpace', 'addressExpr', 'addressValueId', 'widthBits', 'endian', 'alignment', 'volatility', 'atomic', 'ordering', 'faults']), 'semantic-ir-unexpected-memory-field');
+  assertAllowedKeys(input, ALLOWED_MEMORY, 'semantic-ir-unexpected-memory-field');
   const rawAddress = input.addressExpr ?? (input.addressValueId == null ? null : { valueId: input.addressValueId });
   const addressExpr = object(rawAddress, 'semantic-ir-address-expression-required');
-  assertAllowedKeys(addressExpr, new Set(['valueId']), 'semantic-ir-unexpected-address-expression-field');
+  assertAllowedKeys(addressExpr, ALLOWED_ADDRESS_EXPRESSION, 'semantic-ir-unexpected-address-expression-field');
   const out = {
     addressSpace: nonEmpty(input.addressSpace, 'semantic-ir-memory-address-space-required'),
     addressExpr: { valueId: nonEmpty(addressExpr.valueId, 'semantic-ir-address-value-id-required') },
@@ -101,7 +112,7 @@ export function createSemanticMemoryAccess(input) {
 
 export function createSemanticMemoryScope(input) {
   input = object(input, 'semantic-ir-effect-memory-scope-required');
-  assertAllowedKeys(input, new Set(['scope', 'accesses', 'addressSpaces', 'detail']), 'semantic-ir-unexpected-effect-memory-field');
+  assertAllowedKeys(input, ALLOWED_EFFECT_MEMORY, 'semantic-ir-unexpected-effect-memory-field');
   const scope = enumValue(input.scope, SEMANTIC_SETS.intrinsicMemoryScopes, 'semantic-ir-invalid-effect-memory-scope');
   const out = { scope };
   if (scope === 'accesses') {
@@ -112,13 +123,13 @@ export function createSemanticMemoryScope(input) {
     out.addressSpaces = sortedUniqueStrings(input.addressSpaces, 'semantic-ir-effect-address-spaces-required');
     if (!out.addressSpaces.length) fail('semantic-ir-effect-address-spaces-required');
   } else if (input.addressSpaces != null) fail('semantic-ir-effect-address-spaces-not-allowed');
-  if (input.detail != null) out.detail = serializable(input.detail, 'semantic-ir-invalid-effect-memory-detail');
+  if (input.detail != null) out.detail = serializableForFrozenOutput(input.detail, 'semantic-ir-invalid-effect-memory-detail');
   return deepFreeze(out);
 }
 
 export function createSemanticIntrinsicSummary(input) {
   input = object(input, 'semantic-ir-intrinsic-summary-required');
-  assertAllowedKeys(input, new Set(['inputs', 'outputs', 'stateReads', 'stateWrites', 'memoryRead', 'memoryWrite', 'controlEffects', 'determinism', 'symbolicDetail']), 'semantic-ir-unexpected-intrinsic-summary-field');
+  assertAllowedKeys(input, ALLOWED_INTRINSIC_SUMMARY, 'semantic-ir-unexpected-intrinsic-summary-field');
   return deepFreeze({
     inputs: uniqueStrings(input.inputs ?? [], 'semantic-ir-invalid-intrinsic-inputs', false),
     outputs: uniqueStrings(input.outputs ?? [], 'semantic-ir-invalid-intrinsic-outputs', false),
@@ -126,7 +137,7 @@ export function createSemanticIntrinsicSummary(input) {
     stateWrites: array(input.stateWrites ?? [], 'semantic-ir-invalid-intrinsic-state-writes').map(createSemanticVariableRef).sort((a, b) => a.key.localeCompare(b.key)),
     memoryRead: createSemanticMemoryScope(input.memoryRead),
     memoryWrite: createSemanticMemoryScope(input.memoryWrite),
-    controlEffects: array(input.controlEffects ?? [], 'semantic-ir-invalid-intrinsic-control-effects').map((value) => serializable(value, 'semantic-ir-invalid-intrinsic-control-effect')),
+    controlEffects: array(input.controlEffects ?? [], 'semantic-ir-invalid-intrinsic-control-effects').map((value) => serializableForFrozenOutput(value, 'semantic-ir-invalid-intrinsic-control-effect')),
     determinism: enumValue(input.determinism, SEMANTIC_SETS.intrinsicDeterminism, 'semantic-ir-invalid-intrinsic-determinism'),
     symbolicDetail: enumValue(input.symbolicDetail, SEMANTIC_SETS.intrinsicSymbolicDetail, 'semantic-ir-invalid-intrinsic-symbolic-detail'),
   });
@@ -134,12 +145,12 @@ export function createSemanticIntrinsicSummary(input) {
 
 export function createSemanticCallSummary(input) {
   input = object(input, 'semantic-ir-call-summary-required');
-  assertAllowedKeys(input, new Set(['targetValueIds', 'targetEntityIds', 'arguments', 'returns', 'stateReads', 'stateWrites', 'memoryRead', 'memoryWrite', 'controlEffects', 'determinism', 'noreturn', 'mayThrow', 'summarySource', 'completeness', 'unknownEffects']), 'semantic-ir-unexpected-call-summary-field');
+  assertAllowedKeys(input, ALLOWED_CALL_SUMMARY, 'semantic-ir-unexpected-call-summary-field');
   const completeness = enumValue(input.completeness, SEMANTIC_SETS.callCompleteness, 'semantic-ir-invalid-call-completeness');
   let unknownEffects = null;
   if (input.unknownEffects != null) {
     const unknown = object(input.unknownEffects, 'semantic-ir-invalid-call-unknown-effects');
-    assertAllowedKeys(unknown, new Set(['reason', 'categories']), 'semantic-ir-unexpected-call-unknown-effect-field');
+    assertAllowedKeys(unknown, ALLOWED_CALL_UNKNOWN_EFFECT, 'semantic-ir-unexpected-call-unknown-effect-field');
     unknownEffects = deepFreeze({
       reason: nonEmpty(unknown.reason, 'semantic-ir-call-unknown-reason-required'),
       categories: sortedUniqueStrings(unknown.categories ?? [], 'semantic-ir-invalid-call-unknown-categories'),
@@ -155,7 +166,7 @@ export function createSemanticCallSummary(input) {
     stateWrites: array(input.stateWrites ?? [], 'semantic-ir-invalid-call-state-writes').map(createSemanticVariableRef).sort((a, b) => a.key.localeCompare(b.key)),
     memoryRead: createSemanticMemoryScope(input.memoryRead),
     memoryWrite: createSemanticMemoryScope(input.memoryWrite),
-    controlEffects: array(input.controlEffects ?? [], 'semantic-ir-invalid-call-control-effects').map((value) => serializable(value, 'semantic-ir-invalid-call-control-effect')),
+    controlEffects: array(input.controlEffects ?? [], 'semantic-ir-invalid-call-control-effects').map((value) => serializableForFrozenOutput(value, 'semantic-ir-invalid-call-control-effect')),
     determinism: enumValue(input.determinism, SEMANTIC_SETS.intrinsicDeterminism, 'semantic-ir-invalid-call-determinism'),
     noreturn: normalizeBooleanKnowledge(input.noreturn, 'semantic-ir-invalid-call-noreturn'),
     mayThrow: normalizeBooleanKnowledge(input.mayThrow, 'semantic-ir-invalid-call-may-throw'),

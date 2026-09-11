@@ -1,0 +1,11 @@
+{
+  "sourceCommit": "4ced78359ee317f32486ff18e67ca0e88c7265bd",
+  "files": {
+    "js/decompiler/passes/manager.js": "28f30611f3b7a80b8558214bfbad3569fe4b56a6780b8f2fc340f665fe2597b2",
+    "js/decompiler/legacy-exact-return-repair.js": "21cb0fae873d0f834016a98142326d7ba2d9d4d164af2ce9f980451f0e7503b1",
+    "js/decompiler/phase8/analysis-identity.js": "8169c9bdffe10ff504736d6ff78aef3262c28c0931dd6684a20939456e290c23",
+    "js/core/identity/index.js": "cd73db15767ddc5ec6f7464fa3c1173d495fdbfda578253fd6625f46dc04be75",
+    "js/core/identity/origin.js": "4f29518231e9ab4794d63176a6ba7c1924e9caabd6b296d52a2d2099f50743ba",
+    "js/core/identity/fnv64.js": "d1f1db7e1dd0e39a43903728c2be81916058971ada5861ab7756ec2b36a1d38d"
+  }
+}

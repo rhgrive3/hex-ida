@@ -1,4 +1,5 @@
 import { jsonSafe } from '../../core/identity/index.js';
+import { isKnownCanonicalJsonData, ordinaryJsonBehavior } from '../../core/identity/immutable-data.js';
 import { createOriginSet } from '../../core/identity/origin.js';
 
 export const SEMANTIC_IR_SCHEMA_VERSION = 2;
@@ -121,6 +122,16 @@ function strictSerializable(value, code, seen = new WeakSet()) {
 export function serializable(value, code) {
   strictSerializable(value, code);
   return jsonSafe(value);
+}
+/**
+ * Internal constructor path: the enclosing result is always deeply frozen.
+ * Public serializable() still returns a fresh mutable normalization. Reuse
+ * only a previously certified, fully immutable, normalization-idempotent JSON
+ * tree; all untrusted or non-idempotent data keeps strict validation/copying.
+ */
+export function serializableForFrozenOutput(value, code) {
+  if (isKnownCanonicalJsonData(value) && ordinaryJsonBehavior()) return value;
+  return serializable(value, code);
 }
 export function requiredOrigin(input, code) {
   if (!Object.hasOwn(input, 'origin')) fail(code);

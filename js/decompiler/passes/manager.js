@@ -12,7 +12,6 @@ function validTimeBudgetMs(value, fallback) {
 
 function forkValue(value, seen) {
   if (value === null || typeof value !== 'object') return value;
-  if (typeof value === 'function') return value;
   const cached = seen.get(value);
   if (cached !== undefined) return cached;
   if (value instanceof Date) {
@@ -28,26 +27,41 @@ function forkValue(value, seen) {
   if (value instanceof Map) {
     const forked = new Map();
     seen.set(value, forked);
-    for (const [key, entry] of value) forked.set(forkValue(key, seen), forkValue(entry, seen));
+    for (const [key, entry] of value) {
+      // Primitive leaves need no graph lookup or recursive call. Keep reads
+      // and recursive object visits in the original depth-first order.
+      forked.set(
+        key !== null && typeof key === 'object' ? forkValue(key, seen) : key,
+        entry !== null && typeof entry === 'object' ? forkValue(entry, seen) : entry,
+      );
+    }
     return forked;
   }
   if (value instanceof Set) {
     const forked = new Set();
     seen.set(value, forked);
-    for (const entry of value) forked.add(forkValue(entry, seen));
+    for (const entry of value) {
+      forked.add(entry !== null && typeof entry === 'object' ? forkValue(entry, seen) : entry);
+    }
     return forked;
   }
   if (Array.isArray(value)) {
     const forked = new Array(value.length);
     seen.set(value, forked);
-    for (let index = 0; index < value.length; index += 1) forked[index] = forkValue(value[index], seen);
+    for (let index = 0; index < value.length; index += 1) {
+      const entry = value[index];
+      forked[index] = entry !== null && typeof entry === 'object' ? forkValue(entry, seen) : entry;
+    }
     return forked;
   }
   const proto = Object.getPrototypeOf(value);
   if (proto !== Object.prototype && proto !== null) return value;
   const forked = {};
   seen.set(value, forked);
-  for (const key of Object.keys(value)) forked[key] = forkValue(value[key], seen);
+  for (const key of Object.keys(value)) {
+    const entry = value[key];
+    forked[key] = entry !== null && typeof entry === 'object' ? forkValue(entry, seen) : entry;
+  }
   return forked;
 }
 

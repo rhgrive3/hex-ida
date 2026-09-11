@@ -1,4 +1,5 @@
 import { deepFreeze, stableStringify } from '../../core/identity/index.js';
+import { isDeeplyFrozenPlainData, isKnownImmutableData, isKnownCanonicalJsonData, ordinaryDataPrototypes, ordinaryJsonBehavior } from '../../core/identity/immutable-data.js';
 import { createOriginSet, isReusableOriginSet } from '../../core/identity/origin.js';
 import {
   SEMANTIC_IR_CONTRACT_VERSION,
@@ -14,15 +15,43 @@ import {
   object,
   positiveInteger,
   requiredOrigin,
-  serializable,
+  serializableForFrozenOutput,
   sortedUniqueStrings,
   uniqueStrings,
 } from './common.js';
 import { createSemanticNode, createSemanticValue } from './nodes.js';
 
+// Only this constructor can issue the private normalized-root brand. A frozen
+// transport (even an identical one) must go through complete normalization.
+const NORMALIZED_FUNCTIONS = new WeakSet();
+const SEMANTIC_SET_SNAPSHOTS = Object.values(SEMANTIC_SETS).map((set) => ({ set, values: [...set] }));
+const STRING_TRIM = Object.getOwnPropertyDescriptor(String.prototype, 'trim')?.value;
+const NUMBER_IS_SAFE_INTEGER = Object.getOwnPropertyDescriptor(Number, 'isSafeInteger')?.value;
+const NUMBER_IS_FINITE = Object.getOwnPropertyDescriptor(Number, 'isFinite')?.value;
+function ordinaryNormalizationRules() {
+  if (Object.getOwnPropertyDescriptor(String.prototype, 'trim')?.value !== STRING_TRIM
+    || Object.getOwnPropertyDescriptor(Number, 'isSafeInteger')?.value !== NUMBER_IS_SAFE_INTEGER
+    || Object.getOwnPropertyDescriptor(Number, 'isFinite')?.value !== NUMBER_IS_FINITE) return false;
+  // Exported enum Sets are mutable despite their frozen containing object.
+  // Do not reuse a validation made against different rules or custom methods.
+  for (const {set, values} of SEMANTIC_SET_SNAPSHOTS) {
+    if (Reflect.ownKeys(set).length || set.size !== values.length) return false;
+    for (const value of values) if (!set.has(value)) return false;
+  }
+  return true;
+}
+
+// Private, unchanged field whitelists: allocate once, not per normalized entity.
+const ALLOWED_BLOCK = new Set(['id', 'nodeIds', 'origin']);
+const ALLOWED_FUNCTION_UNKNOWN = new Set(['reason', 'categories', 'detail']);
+const ALLOWED_FUNCTION = new Set([
+    'schemaVersion', 'contractVersion', 'functionId', 'entryBlockId', 'blocks', 'values', 'nodes',
+    'completeness', 'unknowns', 'origin',
+  ]);
+
 function normalizeBlock(input) {
   input = object(input, 'semantic-ir-invalid-block');
-  assertAllowedKeys(input, new Set(['id', 'nodeIds', 'origin']), 'semantic-ir-unexpected-block-field');
+  assertAllowedKeys(input, ALLOWED_BLOCK, 'semantic-ir-unexpected-block-field');
   const out = {
     id: nonEmpty(input.id, 'semantic-ir-block-id-required'),
     nodeIds: uniqueStrings(input.nodeIds ?? [], 'semantic-ir-invalid-block-node-ids', false),
@@ -33,12 +62,12 @@ function normalizeBlock(input) {
 
 function normalizeFunctionUnknown(input) {
   input = object(input, 'semantic-ir-invalid-function-unknown');
-  assertAllowedKeys(input, new Set(['reason', 'categories', 'detail']), 'semantic-ir-unexpected-function-unknown-field');
+  assertAllowedKeys(input, ALLOWED_FUNCTION_UNKNOWN, 'semantic-ir-unexpected-function-unknown-field');
   const out = {
     reason: nonEmpty(input.reason, 'semantic-ir-function-unknown-reason-required'),
     categories: sortedUniqueStrings(input.categories ?? [], 'semantic-ir-invalid-function-unknown-categories'),
   };
-  if (input.detail != null) out.detail = serializable(input.detail, 'semantic-ir-invalid-function-unknown-detail');
+  if (input.detail != null) out.detail = serializableForFrozenOutput(input.detail, 'semantic-ir-invalid-function-unknown-detail');
   return out;
 }
 
@@ -56,6 +85,11 @@ function assertVersion(input) {
 }
 
 const REFERENCE_COUNT_OVERFLOW = Number.MAX_SAFE_INTEGER + 1;
+// These fields are consumed as complete JSON data by serializableForFrozenOutput,
+// never as optional reference-bearing summaries. Preserve proxies on the latter.
+const SERIALIZABLE_DATA_FIELDS = new Set([
+  'metadata', 'attributes', 'detail', 'knownParts', 'physicalIdentity', 'condition', 'controlEffects',
+]);
 
 function addReferenceCount(total, amount) {
   if (total === REFERENCE_COUNT_OVERFLOW
@@ -120,7 +154,7 @@ function cacheReferenceReads(value, seen = new WeakMap()) {
   // to retain. Proxying it would discard the normalizer's ownership brand and
   // copy/normalize the whole provenance tree again for each semantic entity.
   // Caller-owned frozen objects, accessors and mutable children still capture.
-  if (isReusableOriginSet(value)) return value;
+  if (isReusableOriginSet(value) || (seen.immutableReads && isKnownImmutableData(value))) return value;
   const cached = seen.get(value);
   if (cached) return cached;
   const target = needsReferenceClone(value) ? cloneReferenceTarget(value) : value;
@@ -137,7 +171,8 @@ function cacheReferenceReads(value, seen = new WeakMap()) {
         reads.set(property, result);
         return result;
       }
-      const captured = cacheReferenceReads(result, seen);
+      const captured = SERIALIZABLE_DATA_FIELDS.has(property) && isKnownCanonicalJsonData(result)
+        && ordinaryJsonBehavior() ? result : cacheReferenceReads(result, seen);
       reads.set(property, captured);
       return captured;
     },
@@ -334,23 +369,71 @@ function validateNormalizedFunction(out, options) {
   if (out.completeness !== 'complete' && out.unknowns.length === 0) fail('semantic-ir-function-unknowns-required');
 }
 
+function inertReadOptions(options) {
+  if (!ordinaryDataPrototypes() || !ordinaryJsonBehavior()) return false;
+  // A getter-backed budget/cancellation option may change inherited fields
+  // between preflight and normalization. Preserve captured reads in that case.
+  // Effectful options always retain the original captured-read path.
+  try {
+    if (!options || typeof options !== 'object') return false;
+    const prototype = Object.getPrototypeOf(options);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+    for (const key of ['signal', 'budget']) {
+      const descriptor = Object.getOwnPropertyDescriptor(options, key);
+      if (descriptor && !Object.hasOwn(descriptor, 'value')) return false;
+      const value = descriptor?.value;
+      if (value == null) continue;
+      if (key === 'signal' || typeof value !== 'object') return false;
+      const budgetPrototype = Object.getPrototypeOf(value);
+      if (budgetPrototype !== Object.prototype && budgetPrototype !== null) return false;
+      for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+        if (!Object.hasOwn(descriptor, 'value')) return false;
+      }
+    }
+    return true;
+  } catch { return false; }
+}
+
 export function createSemanticIrFunction(input, options = {}) {
   assertNotAborted(options);
   input = object(input, 'semantic-ir-invalid-function');
-  assertAllowedKeys(input, new Set([
-    'schemaVersion', 'contractVersion', 'functionId', 'entryBlockId', 'blocks', 'values', 'nodes',
-    'completeness', 'unknowns', 'origin',
-  ]), 'semantic-ir-unexpected-function-field');
+  assertAllowedKeys(input, ALLOWED_FUNCTION, 'semantic-ir-unexpected-function-field');
   assertVersion(input);
   const referenceReads = new WeakMap();
-  const rawBlocks = cacheReferenceReads(array(input.blocks, 'semantic-ir-blocks-required'), referenceReads);
-  const rawValues = cacheReferenceReads(array(input.values, 'semantic-ir-values-required'), referenceReads);
-  const rawNodes = cacheReferenceReads(array(input.nodes, 'semantic-ir-nodes-required'), referenceReads);
+  // Optional fields may be inherited. Prototype getters must keep the original
+  // captured-read behavior even when the input's own data is immutable.
+  const inertOptions = inertReadOptions(options);
+  referenceReads.immutableReads = isKnownImmutableData(input) && inertOptions;
+  const inputBlocks = array(input.blocks, 'semantic-ir-blocks-required');
+  const rawBlocks = cacheReferenceReads(inputBlocks, referenceReads);
+  const inputValues = array(input.values, 'semantic-ir-values-required');
+  const rawValues = cacheReferenceReads(inputValues, referenceReads);
+  const inputNodes = array(input.nodes, 'semantic-ir-nodes-required');
+  const rawNodes = cacheReferenceReads(inputNodes, referenceReads);
   assertWithinBudget(rawBlocks.length, options, 'maxBlocks');
   assertWithinBudget(rawValues.length, options, 'maxValues');
   assertWithinBudget(rawNodes.length, options, 'maxNodes');
   // Preflight the complete reference denominator before nested normalization.
   assertWithinBudget(countRawReferences(rawBlocks, rawValues, rawNodes, referenceReads), options, 'maxReferences');
+  // Caller-owned data retains every captured read, including transparent
+  // Proxies that cannot be identified by property-descriptor inspection.
+  // Only the producer-owned immutable root can bypass capture above.
+
+  // Re-normalizing this exact private immutable publication cannot change its
+  // field values under the unchanged rules. Reuse that normalization only;
+  // raw and normalized reference budgets, cancellation and cross-entity
+  // validation still run for the current call, not from a cached verdict.
+  if (inertOptions && NORMALIZED_FUNCTIONS.has(input)
+    && ordinaryDataPrototypes() && ordinaryJsonBehavior() && ordinaryNormalizationRules()) {
+    assertWithinBudget(countReferences(input.nodes, input.values, input.blocks), options, 'maxReferences');
+    validateNormalizedFunction(input, options);
+    // Preserve the constructor's fresh root identity while sharing immutable
+    // normalized records. Certifying this shell only visits already known children.
+    const reused = Object.freeze({ ...input });
+    isDeeplyFrozenPlainData(reused);
+    NORMALIZED_FUNCTIONS.add(reused);
+    return reused;
+  }
 
   // Fixed UTF-16 code-unit order keeps canonical serialization locale independent (#5765).
   const compareCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
@@ -370,7 +453,15 @@ export function createSemanticIrFunction(input, options = {}) {
   };
   assertWithinBudget(countReferences(out.nodes, out.values, out.blocks), options, 'maxReferences');
   validateNormalizedFunction(out, options);
-  return deepFreeze(out);
+  const frozen = deepFreeze(out);
+  // Publish the private normalization brand only for fully immutable plain
+  // data under the ordinary schema rules. It carries no authority for any
+  // analysis artifact and cannot suppress caller-specific validation budgets.
+  if (isDeeplyFrozenPlainData(frozen) && inertOptions
+    && ordinaryDataPrototypes() && ordinaryJsonBehavior() && ordinaryNormalizationRules()) {
+    NORMALIZED_FUNCTIONS.add(frozen);
+  }
+  return frozen;
 }
 
 export function validateSemanticIrFunction(input, options = {}) {

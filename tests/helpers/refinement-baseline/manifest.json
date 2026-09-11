@@ -1,0 +1,11 @@
+{
+  "purpose": "Unmodified differential oracles from the input Drive archive; test-only, never imported by product modules.",
+  "archiveCommit": "6f14592138d575a9073dc73f7f43c3f3e88528d2",
+  "archiveSha256": "e504bc41e71c331bc2704720128414fecd7a6ac0119b04b94634a1e5f4726bc8",
+  "files": {
+    "js/graph-routing.js": "628f6377171158ae36a3dcea50654727d9237ee3c053af0ff1148ebb686c3edd",
+    "js/decompiler/rewrite/engine.js": "fc1749f816300d1a6826f4c3e9b8476292c5718056a3b4fa313450462d4fdcff",
+    "js/decompiler/ast/nodes.js": "d36c21366b950152434fae783f44e7bcdb70f214c2278246486bdb9c8ef0a9a9",
+    "js/core/identity/fnv64.js": "d1f1db7e1dd0e39a43903728c2be81916058971ada5861ab7756ec2b36a1d38d"
+  }
+}

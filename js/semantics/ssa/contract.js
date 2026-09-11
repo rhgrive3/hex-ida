@@ -1,4 +1,5 @@
 import { deepFreeze, jsonSafe, stableStringify } from '../../core/identity/index.js';
+import { isDeeplyFrozenPlainData, isKnownCanonicalJsonData, ordinaryJsonBehavior } from '../../core/identity/immutable-data.js';
 import { createOriginSet } from '../../core/identity/origin.js';
 import { analyzeSemanticDominance } from '../cfg/index.js';
 
@@ -17,6 +18,18 @@ export const SEMANTIC_SSA_DEFAULT_BUDGET = Object.freeze({
 });
 
 const DEF_KINDS = new Set(SEMANTIC_SSA_DEFINITION_KINDS);
+
+// These projections are published only after deepFreeze. Reusing a verified
+// canonical immutable child preserves JSON spelling without exposing aliases
+// through the public jsonSafe API or skipping contract/budget validation.
+function jsonForFrozenOutput(value) {
+  return isKnownCanonicalJsonData(value) && ordinaryJsonBehavior() ? value : jsonSafe(value);
+}
+
+const PHI_INCOMING_FIELDS = new Set(['predecessorBlockId', 'valueId']);
+const DEFINITION_FIELDS = new Set(['definitionId','valueId','kind','blockId','variableKey','sourceEntityId','incoming','origin','proof']);
+const USE_FIELDS = new Set(['useId','valueId','blockId','sourceEntityId','origin','proof']);
+const CONTRACT_FIELDS = new Set(['contractVersion','functionId','definitions','uses']);
 
 function fail(code) { throw new TypeError(code); }
 function object(value, code) {
@@ -92,7 +105,7 @@ function normalizeIncoming(value) {
   return array(value ?? [], 'semantic-ssa-invalid-phi-incoming')
     .map((item) => {
       item = object(item, 'semantic-ssa-invalid-phi-incoming');
-      assertAllowedKeys(item, new Set(['predecessorBlockId', 'valueId']), 'semantic-ssa-unexpected-phi-incoming-field');
+      assertAllowedKeys(item, PHI_INCOMING_FIELDS, 'semantic-ssa-unexpected-phi-incoming-field');
       return {
         predecessorBlockId: nonEmpty(item.predecessorBlockId, 'semantic-ssa-phi-predecessor-required'),
         valueId: nonEmpty(item.valueId, 'semantic-ssa-phi-value-required'),
@@ -103,7 +116,7 @@ function normalizeIncoming(value) {
 
 function normalizeDefinition(input, incomingSnapshot) {
   input = object(input, 'semantic-ssa-invalid-definition');
-  assertAllowedKeys(input, new Set(['definitionId','valueId','kind','blockId','variableKey','sourceEntityId','incoming','origin','proof']), 'semantic-ssa-unexpected-definition-field');
+  assertAllowedKeys(input, DEFINITION_FIELDS, 'semantic-ssa-unexpected-definition-field');
   const kind = nonEmpty(input.kind, 'semantic-ssa-definition-kind-required');
   if (!DEF_KINDS.has(kind)) fail('semantic-ssa-invalid-definition-kind');
   const incoming = normalizeIncoming(incomingSnapshot);
@@ -119,13 +132,13 @@ function normalizeDefinition(input, incomingSnapshot) {
     incoming,
     origin: requiredOrigin(input, 'semantic-ssa-definition-origin-required'),
   };
-  if (input.proof != null) out.proof = jsonSafe(input.proof);
+  if (input.proof != null) out.proof = jsonForFrozenOutput(input.proof);
   return deepFreeze(out);
 }
 
 function normalizeUse(input) {
   input = object(input, 'semantic-ssa-invalid-use');
-  assertAllowedKeys(input, new Set(['useId','valueId','blockId','sourceEntityId','origin','proof']), 'semantic-ssa-unexpected-use-field');
+  assertAllowedKeys(input, USE_FIELDS, 'semantic-ssa-unexpected-use-field');
   const out = {
     useId: nonEmpty(input.useId, 'semantic-ssa-use-id-required'),
     valueId: nonEmpty(input.valueId, 'semantic-ssa-use-value-id-required'),
@@ -133,7 +146,7 @@ function normalizeUse(input) {
     sourceEntityId: nonEmpty(input.sourceEntityId, 'semantic-ssa-use-source-entity-required'),
     origin: requiredOrigin(input, 'semantic-ssa-use-origin-required'),
   };
-  if (input.proof != null) out.proof = jsonSafe(input.proof);
+  if (input.proof != null) out.proof = jsonForFrozenOutput(input.proof);
   return deepFreeze(out);
 }
 
@@ -159,7 +172,7 @@ function dominanceFor(cfg, cache) {
 export function createSemanticSsaContract(input, options = {}) {
   assertNotAborted(options);
   input = object(input, 'semantic-ssa-invalid-contract');
-  assertAllowedKeys(input, new Set(['contractVersion','functionId','definitions','uses']), 'semantic-ssa-unexpected-contract-field');
+  assertAllowedKeys(input, CONTRACT_FIELDS, 'semantic-ssa-unexpected-contract-field');
   if (input.contractVersion != null && (
     typeof input.contractVersion !== 'string'
     || input.contractVersion !== SEMANTIC_SSA_CONTRACT_VERSION
@@ -294,7 +307,7 @@ export function createSemanticSsaContract(input, options = {}) {
     useIds: usesByDefinition.get(definition.definitionId).sort(),
   }));
 
-  return deepFreeze({
+  const frozen = deepFreeze({
     contractVersion: SEMANTIC_SSA_CONTRACT_VERSION,
     functionId,
     definitions,
@@ -302,4 +315,6 @@ export function createSemanticSsaContract(input, options = {}) {
     useDefLinks,
     defUseLinks,
   });
+  isDeeplyFrozenPlainData(frozen);
+  return frozen;
 }

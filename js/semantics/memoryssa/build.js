@@ -1,3 +1,4 @@
+import { isDeeplyFrozenPlainData } from '../../core/identity/immutable-data.js';
 import {
   deepFreeze,
   jsonSafe,
@@ -1470,5 +1471,8 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
     canonicalDigest: canonicalMemorySsaDigest(artifact),
   };
   const published = deepFreeze(new CanonicalMemorySsaArtifact(unpublished));
+  // Certify immutable data only after the producer has frozen the publication.
+  // This certificate permits content memoization, never forwarding authority.
+  isDeeplyFrozenPlainData(published);
   return published;
 }

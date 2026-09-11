@@ -1,3 +1,5 @@
+import { IDENTITY_REUSE_BUDGETS as REUSE } from '../../core/identity/reuse-budgets.js';
+import { BoundedWeakCache, BoundedWeakMetadata } from '../../core/identity/bounded-weak-cache.js';
 /**
  * Canonical identity for Phase 8 analysis products.
  *
@@ -7,6 +9,7 @@
  */
 
 import { stableDigest } from '../../core/identity/index.js';
+import { isKnownImmutableData, ordinaryJsonBehavior, ordinaryHashBehavior } from '../../core/identity/immutable-data.js';
 
 const REQUIRED_FIELDS = Object.freeze([
   'binaryId', 'functionId', 'snapshotId', 'semanticIrId', 'ssaId', 'analyzerVersion',
@@ -35,13 +38,13 @@ function token(value) {
 
 const NON_SEMANTIC_KEYS = new Set(['dst', 'uses']);
 const NO_SKIPPED_KEYS = new Set();
-const DEEPLY_FROZEN_CACHE = new WeakMap();
+const DEEPLY_FROZEN_CACHE = new BoundedWeakMetadata(REUSE.frozenMetadataEntries);
 // Values in the existing validator's true-cache have only deeply immutable
 // own data properties (no Map/Set/Date/accessor children). Keep their exact
 // typed spelling weakly, and cap individual entries to avoid retaining giant
 // strings beside large live graphs. Mutable/unvalidated data always re-encodes.
-const FROZEN_IDENTITY_TEXT = new WeakMap();
-const MAX_CACHED_IDENTITY_TEXT = 16 * 1024;
+const FROZEN_IDENTITY_TEXT = new BoundedWeakCache(REUSE.frozenIdentityText.entries, REUSE.frozenIdentityText.bytes);
+const MAX_CACHED_IDENTITY_TEXT = REUSE.frozenIdentityText.maxTextLength;
 
 /* Semantic identity only accepts enumerable, own, data properties.  Reading a
  * getter while issuing an artifact ID would make identity depend on timing or
@@ -91,6 +94,7 @@ const DERIVED_IR_KEYS = new Set([
 function deeplyFrozen(value, active = new Set()) {
   if (value == null || ['string', 'boolean', 'number', 'bigint'].includes(typeof value)) return true;
   if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') return false;
+  if (isKnownImmutableData(value)) return true;
   const cached = DEEPLY_FROZEN_CACHE.get(value);
   if (cached != null) return cached;
   if (!Object.isFrozen(value)) return false;
@@ -130,8 +134,39 @@ function fastJsonTextDigest(text) {
   return [hash0, hash1, hash2, hash3].map((hash) => hash.toString(16).padStart(8, '0')).join('');
 }
 
+// Every element is already accepted by deeplyFrozen() in semanticDigest.
+// The table is private and ordered: a weak trie keys the full exact sequence,
+// not a hash of hashes, so the digest spelling and collision domain are intact.
+// No mutable metadata, partial table or failed encoding is ever memoized.
+let ORIGIN_TABLE_DIGESTS = new WeakMap();
+let originTableNodes = 0;
+const MAX_ORIGIN_TABLE_NODES = REUSE.originTableNodes;
+let emptyOriginTableDigest;
 function fastFrozenOriginDigest(value) {
-  return fastJsonGraphDigest(value);
+  if (!ordinaryJsonBehavior() || !ordinaryHashBehavior()) return fastJsonGraphDigest(value);
+  if (value.length === 0) return emptyOriginTableDigest ??= fastJsonGraphDigest(value);
+  // This trie is a disposable hint, never identity authority. Bound even its
+  // weak-key bookkeeping while many origins stay live. Oversized sequences
+  // use the exact encoder without entering the cache.
+  if (value.length > MAX_ORIGIN_TABLE_NODES) return fastJsonGraphDigest(value);
+  if (originTableNodes + value.length > MAX_ORIGIN_TABLE_NODES) {
+    ORIGIN_TABLE_DIGESTS = new WeakMap();
+    originTableNodes = 0;
+  }
+  let table = ORIGIN_TABLE_DIGESTS, node;
+  for (const origin of value) {
+    node = table.get(origin);
+    if (node === undefined) {
+      node = { next: new WeakMap(), digest: undefined };
+      table.set(origin, node);
+      originTableNodes++;
+    }
+    table = node.next;
+  }
+  if (node.digest !== undefined) return node.digest;
+  const digest = fastJsonGraphDigest(value);
+  if (ordinaryJsonBehavior() && ordinaryHashBehavior()) node.digest = digest;
+  return digest;
 }
 
 function canonicalSortText(value) {
@@ -141,15 +176,90 @@ function canonicalSortText(value) {
   return typedIdentityText(value);
 }
 
-function typedIdentityText(root) {
+/**
+ * Detached shape graphs have already been constructed by this module. The
+ * projection validates caller descriptors and tracks raw scalar/array escapes;
+ * escaped shapes stay on the original strict encoder. Private projections can
+ * encode each shared subgraph once, preserving holes and custom array fields. This spelling is byte-for-byte
+ * the strict encoder's format, NOT a new hash domain or identity definition.
+ */
+function createPassiveTextCache() {
+  return { values: new WeakMap(), payloadBytes: 0, entryCount: 0 };
+}
+
+function typedPassiveIdentityText(root, texts = createPassiveTextCache()) {
+  // Only detached, privately constructed projections reach this encoder. Its
+  // own enumerable properties were already checked by semanticObject; unlike
+  // public metadata, no getter or caller-owned object is traversed here.
+  const visit = (value) => {
+    if (value === null) return 'null;';
+    switch (typeof value) {
+      case 'undefined': return 'undefined;';
+      case 'string': return `string:${value.length}:${value};`;
+      case 'boolean': return value ? 'boolean:1;' : 'boolean:0;';
+      case 'number':
+        if (!Number.isFinite(value)) throw new TypeError('identity-non-finite-number');
+        return `number:${Object.is(value, -0) ? '-0' : String(value)};`;
+      case 'bigint': return `bigint:${value};`;
+      case 'function':
+      case 'symbol': throw new TypeError('identity-invalid-semantic-metadata');
+      default: break;
+    }
+    const cached = texts.values.get(value);
+    if (cached !== undefined) return cached;
+    let text;
+    if (Array.isArray(value)) {
+      const keys = Object.keys(value), length = value.length;
+      // Integer array keys precede every custom property. Equal cardinality
+      // and a final length-1 key prove the dense case, without a hasOwn/regex
+      // check for every element. Sparse/custom arrays retain the full format.
+      const dense = keys.length === length && (length === 0 || keys[length - 1] === String(length - 1));
+      let items = '';
+      if (dense) {
+        for (let index = 0; index < length; index++) items += visit(value[index]);
+      } else {
+        for (let index = 0; index < length; index++) items += Object.hasOwn(value, index) ? visit(value[index]) : 'hole;';
+      }
+      text = `array:${length}[${items}]`;
+      const properties = dense ? [] : keys.filter((key) => !arrayIndexKey(key)).sort();
+      if (properties.length) {
+        let props = '';
+        for (const key of properties) props += `key:${key.length}:${key};${visit(value[key])}`;
+        text += `properties:${properties.length}{${props}}`;
+      }
+    } else {
+      const keys = Object.keys(value).sort();
+      let items = '';
+      for (const key of keys) items += `key:${key.length}:${key};${visit(value[key])}`;
+      text = `object:${keys.length}{${items}}`;
+    }
+    // Bound the entire shared shape/SSA encoding call, not just each entry.
+    // A chain of individually small subtrees must not retain quadratic text.
+    const weight = text.length * 2;
+    if (weight <= REUSE.passiveText.maxEntryBytes && texts.payloadBytes + weight <= REUSE.passiveText.bytes
+      && texts.entryCount < REUSE.passiveText.entries) {
+      texts.values.set(value, text);
+      texts.payloadBytes += weight;
+      texts.entryCount++;
+    }
+    return text;
+  };
+  return visit(root);
+}
+
+function typedIdentityText(root, privateShape = false, sharedTexts = null) {
+  if (privateShape && ordinaryJsonBehavior() && ordinaryHashBehavior()) {
+    return typedPassiveIdentityText(root, sharedTexts ?? createPassiveTextCache());
+  }
   const active = new Set();
   const visit = (value) => {
-    if (value != null && typeof value === 'object' && DEEPLY_FROZEN_CACHE.get(value) === true) {
+    if (value != null && typeof value === 'object'
+      && (DEEPLY_FROZEN_CACHE.get(value) === true || isKnownImmutableData(value))) {
       if (active.has(value)) throw new TypeError('identity-cyclic-semantic-metadata');
       const cached = FROZEN_IDENTITY_TEXT.get(value);
       if (cached !== undefined) return cached;
       const text = encode(value);
-      if (text.length <= MAX_CACHED_IDENTITY_TEXT) FROZEN_IDENTITY_TEXT.set(value, text);
+      if (text.length <= MAX_CACHED_IDENTITY_TEXT) FROZEN_IDENTITY_TEXT.set(value, text, text.length * 2);
       return text;
     }
     return encode(value);
@@ -219,8 +329,18 @@ function typedIdentityText(root) {
   return visit(root);
 }
 
-function fastJsonGraphDigest(value) {
-  return fastJsonTextDigest(typedIdentityText(value));
+const IMMUTABLE_GRAPH_DIGESTS = new BoundedWeakCache(REUSE.graphDigest.entries, REUSE.graphDigest.bytes);
+function fastJsonGraphDigest(value, privateShape = false, sharedTexts = null) {
+  // Reuse the exact typed digest only for previously certified immutable
+  // own-data graphs. Mutable legacy shapes still re-encode on every request.
+  const reusable = isKnownImmutableData(value) && ordinaryJsonBehavior() && ordinaryHashBehavior();
+  if (reusable) {
+    const cached = IMMUTABLE_GRAPH_DIGESTS.get(value);
+    if (cached !== undefined) return cached;
+  }
+  const digest = fastJsonTextDigest(typedIdentityText(value, privateShape, sharedTexts));
+  if (reusable && ordinaryJsonBehavior() && ordinaryHashBehavior()) IMMUTABLE_GRAPH_DIGESTS.set(value, digest, digest.length * 2);
+  return digest;
 }
 
 /**
@@ -251,15 +371,10 @@ function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = 
   seen.add(value);
   const ownKeys = semanticOwnKeys(value);
   const semanticProperties = (keys, propertyPath = path) => {
-    const properties = {};
+    const properties = Object.create(null);
     for (const key of keys.sort()) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      Object.defineProperty(properties, key, {
-        value: semanticObject(descriptor.value, seen, NO_SKIPPED_KEYS, `${propertyPath}.${key}`, memo),
-        enumerable: true,
-        configurable: true,
-        writable: true,
-      });
+      properties[key] = semanticObject(descriptor.value, seen, NO_SKIPPED_KEYS, `${propertyPath}.${key}`, memo);
     }
     return properties;
   };
@@ -304,19 +419,14 @@ function semanticObject(value, seen = new Set(), skip = NO_SKIPPED_KEYS, path = 
     if (prototype !== Object.prototype && prototype !== null) {
       throw new TypeError('identity-unsupported-semantic-metadata');
     }
-    result = {};
+    result = Object.create(null);
     for (const key of ownKeys.sort()) {
       if (skip.has(key)) continue;
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       // A skip list describes this known wrapper object only.  Applying it to
       // nested `extra`/metadata objects would silently erase a semantic field
       // whose name happens to be `uses` or `dst`.
-      Object.defineProperty(result, key, {
-        value: semanticObject(descriptor.value, seen, NO_SKIPPED_KEYS, `${path}.${key}`, memo),
-        enumerable: true,
-        configurable: true,
-        writable: true,
-      });
+      result[key] = semanticObject(descriptor.value, seen, NO_SKIPPED_KEYS, `${path}.${key}`, memo);
     }
   }
   seen.delete(value);
@@ -371,9 +481,54 @@ function semanticDigest(value, memo, digests, path, trustedFrozen = false) {
   return digest;
 }
 
+// Only private projections with no raw object-valued scalar escape can share
+// encodings between shape and SSA hashing inside this one identity request.
+// There is no cross-request cache of mutable legacy IR.
+const DETACHED_SHAPES = new WeakSet();
+const SHAPE_ARRAY_MAP = Array.prototype.map;
+function shapeArrayMap(array, digests) {
+  // Read the method at the original evaluation point exactly once. A Proxy
+  // can replace .map without exposing an own descriptor; never treat that
+  // caller's result as a detached private projection.
+  const method = array.map;
+  if (method !== SHAPE_ARRAY_MAP) digests.detached = false;
+  return (callback) => Reflect.apply(method, array, [callback]);
+}
+function scalarShape(value, digests) {
+  if (value !== null && typeof value === 'object') digests.detached = false;
+  return value;
+}
+function checkShapeArrays(record, keys, digests) {
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    if (descriptor && !Object.hasOwn(descriptor, 'value')) { digests.detached = false; continue; }
+    const value = descriptor?.value;
+    if (Array.isArray(value) && (Object.getPrototypeOf(value) !== Array.prototype
+      || Object.hasOwn(value, 'map') || Object.hasOwn(value, 'constructor'))) digests.detached = false;
+  }
+}
+
+
+// Static private projection field sets; no allocation per entity.
+const ARGUMENT_SHAPE_FIELDS = new Set(['value', 'origin', ...NON_SEMANTIC_KEYS]);
+const INCOMING_SHAPE_FIELDS = new Set(['value', 'origin', ...NON_SEMANTIC_KEYS]);
+const MEMORY_NODE_SHAPE_FIELDS = new Set([
+    'kind', 'key', 'definitionId', 'regionId', 'block', 'reason', 'unknownAlias', 'aliasRelation',
+    'inst', 'prev', 'previous', 'incoming', 'effectSummary', 'proof', 'origin',
+  ]);
+const MEMORY_LOCATION_SHAPE_FIELDS = new Set([
+    'key', 'kind', 'size', 'regionId', 'base', 'index', 'scale', 'address', 'disp',
+    'uncertaintyIdentity', 'origin',
+  ]);
+const ADDRESS_BASE_INDEX_FIELDS = new Set(['base', 'index']);
+const VALUE_SHAPE_FIELDS = new Set([
+    'id', 'bits', 'kind', 'signed', 'const', 'origin', 'def', 'uses',
+  ]);
+const BLOCK_SHAPE_FIELDS = new Set(['insts', 'phis', 'memPhis', 'successorEdges', 'succ', 'pred', 'origin', ...NON_SEMANTIC_KEYS]);
+
 function argumentShape(argument, memo, digests) {
   if (argument == null || typeof argument !== 'object') return { valueId: token(argument) };
-  const shape = semanticObject(argument, new Set(), new Set(['value', 'origin', ...NON_SEMANTIC_KEYS]), '$.argument', memo);
+  const shape = semanticObject(argument, new Set(), ARGUMENT_SHAPE_FIELDS, '$.argument', memo);
   shape.valueId = token(argument.value?.id ?? argument.id);
   shape.originDigest = semanticDigest(argument.origin, memo, digests, '$.argument.origin', true);
   return shape;
@@ -381,7 +536,7 @@ function argumentShape(argument, memo, digests) {
 
 function incomingShape(incoming, memo, digests) {
   if (incoming == null || typeof incoming !== 'object') return { valueId: token(incoming) };
-  const shape = semanticObject(incoming, new Set(), new Set(['value', 'origin', ...NON_SEMANTIC_KEYS]), '$.incoming', memo);
+  const shape = semanticObject(incoming, new Set(), INCOMING_SHAPE_FIELDS, '$.incoming', memo);
   shape.valueId = token(incoming.value?.id ?? incoming.id);
   shape.originDigest = semanticDigest(incoming.origin, memo, digests, '$.incoming.origin', true);
   return shape;
@@ -393,20 +548,21 @@ function incomingShape(incoming, memo, digests) {
 // valid loop with a memory phi is mistaken for malformed cyclic IR.
 function memoryNodeShape(node, memo, digests) {
   if (node == null || typeof node !== 'object') return node ?? null;
+  checkShapeArrays(node, ['previous', 'incoming'], digests);
   const shape = {
-    kind: node.kind ?? null,
-    key: node.key ?? null,
+    kind: scalarShape(node.kind ?? null, digests),
+    key: scalarShape(node.key ?? null, digests),
     definitionId: token(node.definitionId),
     regionId: token(node.regionId),
-    block: node.block ?? null,
-    reason: node.reason ?? null,
-    unknownAlias: node.unknownAlias ?? null,
-    aliasRelation: node.aliasRelation ?? null,
+    block: scalarShape(node.block ?? null, digests),
+    reason: scalarShape(node.reason ?? null, digests),
+    unknownAlias: scalarShape(node.unknownAlias ?? null, digests),
+    aliasRelation: scalarShape(node.aliasRelation ?? null, digests),
     instructionId: token(node.inst?.instructionId ?? node.inst?.id),
     previousId: token(node.prev?.definitionId),
-    previousIds: Array.isArray(node.previous) ? node.previous.map((item) => token(item?.definitionId)) : null,
-    incoming: Array.isArray(node.incoming) ? node.incoming.map((item) => ({
-      from: item?.from ?? null,
+    previousIds: Array.isArray(node.previous) ? shapeArrayMap(node.previous, digests)((item) => token(item?.definitionId)) : null,
+    incoming: Array.isArray(node.incoming) ? shapeArrayMap(node.incoming, digests)((item) => ({
+      from: scalarShape(item?.from ?? null, digests),
       semanticPredecessorBlockId: token(item?.semanticPredecessorBlockId),
       definitionId: token(item?.node?.definitionId ?? item?.definitionId),
     })) : null,
@@ -414,10 +570,7 @@ function memoryNodeShape(node, memo, digests) {
     proofDigest: semanticDigest(node.proof, memo, digests, '$.memory.proof'),
     originDigest: semanticDigest(node.origin, memo, digests, '$.memory.origin', true),
   };
-  const metadata = metadataProjection(node, new Set([
-    'kind', 'key', 'definitionId', 'regionId', 'block', 'reason', 'unknownAlias', 'aliasRelation',
-    'inst', 'prev', 'previous', 'incoming', 'effectSummary', 'proof', 'origin',
-  ]), '$.memory.metadata', memo);
+  const metadata = metadataProjection(node, MEMORY_NODE_SHAPE_FIELDS, '$.memory.metadata', memo);
   if (metadata != null) shape.metadata = metadata;
   return shape;
 }
@@ -425,28 +578,26 @@ function memoryNodeShape(node, memo, digests) {
 function memoryLocationShape(location, memo, digests) {
   if (location == null || typeof location !== 'object') return location ?? null;
   const shape = {
-    key: location.key ?? null,
-    kind: location.kind ?? null,
-    size: location.size ?? null,
+    key: scalarShape(location.key ?? null, digests),
+    kind: scalarShape(location.kind ?? null, digests),
+    size: scalarShape(location.size ?? null, digests),
     regionId: token(location.regionId),
     baseId: token(location.base?.id ?? location.base),
     indexId: token(location.index?.id ?? location.index),
-    scale: location.scale ?? null,
+    scale: scalarShape(location.scale ?? null, digests),
     address: location.address == null ? null : semanticObject(location.address, new Set(), NO_SKIPPED_KEYS, '$.memory.address', memo),
     disp: location.disp == null ? null : semanticObject(location.disp, new Set(), NO_SKIPPED_KEYS, '$.memory.disp', memo),
     uncertaintyIdentityDigest: semanticDigest(location.uncertaintyIdentity, memo, digests, '$.memory.uncertainty'),
     originDigest: semanticDigest(location.origin, memo, digests, '$.memory.location.origin', true),
   };
-  const metadata = metadataProjection(location, new Set([
-    'key', 'kind', 'size', 'regionId', 'base', 'index', 'scale', 'address', 'disp',
-    'uncertaintyIdentity', 'origin',
-  ]), '$.memory.location.metadata', memo);
+  const metadata = metadataProjection(location, MEMORY_LOCATION_SHAPE_FIELDS, '$.memory.location.metadata', memo);
   if (metadata != null) shape.metadata = metadata;
   return shape;
 }
 
 function definitionShape(definition, extraSkip = [], memo = null, digests = null, definitionCache = null) {
   if (definition == null || typeof definition !== 'object') return null;
+  checkShapeArrays(definition, ['args', 'incoming', 'memDefs', 'memKills'], digests);
   const cacheKey = extraSkip.length === 0 ? '' : [...extraSkip].sort().join('\u0000');
   const cached = definitionCache?.get(definition)?.get(cacheKey);
   if (cached != null) return cached;
@@ -455,11 +606,11 @@ function definitionShape(definition, extraSkip = [], memo = null, digests = null
     'memUse', 'memDef', 'memDefs', 'memKills', 'reachingStore', 'unknownAliasBarrier',
     ...NON_SEMANTIC_KEYS, ...extraSkip,
   ]), '$.definition', memo);
-  shape.args = Array.isArray(definition.args) ? definition.args.map((argument) => argumentShape(argument, memo, digests)) : null;
+  shape.args = Array.isArray(definition.args) ? shapeArrayMap(definition.args, digests)((argument) => argumentShape(argument, memo, digests)) : null;
   shape.incoming = Array.isArray(definition.incoming)
-    ? definition.incoming.map((incoming) => incomingShape(incoming, memo, digests)) : null;
+    ? shapeArrayMap(definition.incoming, digests)((incoming) => incomingShape(incoming, memo, digests)) : null;
   shape.addr = definition.addr == null
-    ? null : semanticObject(definition.addr, new Set(), new Set(['base', 'index']), '$.definition.addr', memo);
+    ? null : semanticObject(definition.addr, new Set(), ADDRESS_BASE_INDEX_FIELDS, '$.definition.addr', memo);
   shape.addrBaseId = token(definition.addr?.base?.id ?? definition.addr?.base);
   shape.addrIndexId = token(definition.addr?.index?.id ?? definition.addr?.index);
   shape.conditionValueId = token(definition.conditionValue?.id);
@@ -470,9 +621,9 @@ function definitionShape(definition, extraSkip = [], memo = null, digests = null
   shape.memoryUse = memoryNodeShape(definition.memUse, memo, digests);
   shape.memoryDef = memoryNodeShape(definition.memDef, memo, digests);
   shape.memoryDefs = Array.isArray(definition.memDefs)
-    ? definition.memDefs.map((node) => memoryNodeShape(node, memo, digests)) : null;
+    ? shapeArrayMap(definition.memDefs, digests)((node) => memoryNodeShape(node, memo, digests)) : null;
   shape.memoryKills = Array.isArray(definition.memKills)
-    ? definition.memKills.map((location) => memoryLocationShape(location, memo, digests)) : null;
+    ? shapeArrayMap(definition.memKills, digests)((location) => memoryLocationShape(location, memo, digests)) : null;
   shape.reachingStoreId = token(definition.reachingStore?.instructionId ?? definition.reachingStore?.id);
   shape.unknownAliasBarrierId = token(definition.unknownAliasBarrier?.instructionId ?? definition.unknownAliasBarrier?.id);
   if (definitionCache != null) {
@@ -487,16 +638,14 @@ function valueShape(value, memo, digests, definitionCache) {
   if (value == null || typeof value !== 'object') return value ?? null;
   const shape = {
     id: token(value.id),
-    bits: value.bits ?? null,
-    kind: value.kind ?? null,
-    signed: value.signed ?? null,
-    constant: value.const ?? null,
+    bits: scalarShape(value.bits ?? null, digests),
+    kind: scalarShape(value.kind ?? null, digests),
+    signed: scalarShape(value.signed ?? null, digests),
+    constant: scalarShape(value.const ?? null, digests),
     originDigest: semanticDigest(value.origin, memo, digests, '$.value.origin', true),
     definition: definitionShape(value.def, [], memo, digests, definitionCache),
   };
-  const metadata = metadataProjection(value, new Set([
-    'id', 'bits', 'kind', 'signed', 'const', 'origin', 'def', 'uses',
-  ]), '$.value.metadata', memo);
+  const metadata = metadataProjection(value, VALUE_SHAPE_FIELDS, '$.value.metadata', memo);
   if (metadata != null) shape.metadata = metadata;
   return shape;
 }
@@ -509,19 +658,20 @@ function instructionShape(instruction, memo, digests, definitionCache) {
 
 function blockShape(block, memo, digests, definitionCache) {
   if (block == null || typeof block !== 'object') return block ?? null;
-  const shape = semanticObject(block, new Set(), new Set(['insts', 'phis', 'memPhis', 'successorEdges', 'succ', 'pred', 'origin', ...NON_SEMANTIC_KEYS]), '$.block', memo);
-  shape.index = block.index ?? null;
+  checkShapeArrays(block, ['succ', 'pred', 'successorEdges', 'insts', 'phis', 'memPhis'], digests);
+  const shape = semanticObject(block, new Set(), BLOCK_SHAPE_FIELDS, '$.block', memo);
+  shape.index = scalarShape(block.index ?? null, digests);
   shape.id = token(block.id);
-  shape.succ = Array.isArray(block.succ) ? block.succ.map(token) : null;
-  shape.pred = Array.isArray(block.pred) ? block.pred.map(token) : null;
+  shape.succ = Array.isArray(block.succ) ? shapeArrayMap(block.succ, digests)(token) : null;
+  shape.pred = Array.isArray(block.pred) ? shapeArrayMap(block.pred, digests)(token) : null;
   shape.successorEdges = Array.isArray(block.successorEdges)
-    ? block.successorEdges.map((edge) => semanticObject(edge, new Set(), NO_SKIPPED_KEYS, '$.block.successorEdge', memo)) : null;
+    ? shapeArrayMap(block.successorEdges, digests)((edge) => semanticObject(edge, new Set(), NO_SKIPPED_KEYS, '$.block.successorEdge', memo)) : null;
   shape.insts = Array.isArray(block.insts)
-    ? block.insts.map((instruction) => instructionShape(instruction, memo, digests, definitionCache)) : null;
+    ? shapeArrayMap(block.insts, digests)((instruction) => instructionShape(instruction, memo, digests, definitionCache)) : null;
   shape.phis = Array.isArray(block.phis)
-    ? block.phis.map((definition) => definitionShape(definition, [], memo, digests, definitionCache)) : null;
+    ? shapeArrayMap(block.phis, digests)((definition) => definitionShape(definition, [], memo, digests, definitionCache)) : null;
   shape.memPhis = Array.isArray(block.memPhis)
-    ? block.memPhis.map((node) => memoryNodeShape(node, memo, digests)) : null;
+    ? shapeArrayMap(block.memPhis, digests)((node) => memoryNodeShape(node, memo, digests)) : null;
   shape.originDigest = semanticDigest(block.origin, memo, digests, '$.block.origin', true);
   return shape;
 }
@@ -531,6 +681,8 @@ function irShape(ir) {
   try {
     const memo = new WeakMap();
     const digests = new WeakMap();
+    digests.detached = true;
+    checkShapeArrays(ir, ['blocks', 'values', 'instructions', 'backEdges', 'loops'], digests);
     digests.originRefs = new WeakMap();
     digests.originValues = [];
     const definitionCache = new WeakMap();
@@ -538,10 +690,10 @@ function irShape(ir) {
     shape.entry = token(ir.entry);
     shape.originDigest = semanticDigest(ir.origin, memo, digests, '$.origin', true);
     shape.blocks = Array.isArray(ir.blocks)
-      ? ir.blocks.map((block) => blockShape(block, memo, digests, definitionCache))
+      ? shapeArrayMap(ir.blocks, digests)((block) => blockShape(block, memo, digests, definitionCache))
         .sort((left, right) => String(left.index).localeCompare(String(right.index))) : [];
     shape.values = Array.isArray(ir.values)
-      ? ir.values.map((value) => valueShape(value, memo, digests, definitionCache))
+      ? shapeArrayMap(ir.values, digests)((value) => valueShape(value, memo, digests, definitionCache))
         .sort((left, right) => String(left.id).localeCompare(String(right.id))) : [];
     // Some canonical IR producers expose a flat instruction table in addition
     // to block-local `insts`. It is semantic input, not derived bookkeeping:
@@ -549,20 +701,21 @@ function irShape(ir) {
     shape.instructions = ir.instructions == null
       ? null
       : Array.isArray(ir.instructions)
-        ? ir.instructions.map((instruction) => instructionShape(instruction, memo, digests, definitionCache))
+        ? shapeArrayMap(ir.instructions, digests)((instruction) => instructionShape(instruction, memo, digests, definitionCache))
         : semanticObject(ir.instructions, new Set(), NO_SKIPPED_KEYS, '$.instructions', memo);
     // Loop/back-edge facts are canonical upstream inputs to widening.  Keep
     // their scalar shape when present, while avoiding Maps/Sets used only as
     // derived lookup caches in graph products.
     shape.backEdges = Array.isArray(ir.backEdges)
-      ? ir.backEdges.map((edge) => semanticObject(edge, new Set(), NO_SKIPPED_KEYS, '$.backEdge', memo)) : [];
+      ? shapeArrayMap(ir.backEdges, digests)((edge) => semanticObject(edge, new Set(), NO_SKIPPED_KEYS, '$.backEdge', memo)) : [];
     shape.loops = Array.isArray(ir.loops)
-      ? ir.loops.map((loop) => semanticObject(loop, new Set(), NO_SKIPPED_KEYS, '$.loop', memo)) : [];
+      ? shapeArrayMap(ir.loops, digests)((loop) => semanticObject(loop, new Set(), NO_SKIPPED_KEYS, '$.loop', memo)) : [];
     try {
       shape.originTableDigest = `origin-table:${fastFrozenOriginDigest(digests.originValues)}`;
     } catch {
       return null;
     }
+    if (digests.detached) DETACHED_SHAPES.add(shape);
     return shape;
   } catch {
     return null;
@@ -664,7 +817,7 @@ function shapeBinding(source) {
   return field(source, 'semanticIrShapeDigest', 'semanticIRShapeDigest', 'irShapeDigest', 'canonicalIrDigest', 'shapeDigest');
 }
 
-function sourceIsBoundToShape(source, identity, shapeDigest, shape) {
+function sourceIsBoundToShape(source, identity, shapeDigest, shape, sharedTexts = null) {
   if (source == null || typeof source !== 'object' || Array.isArray(source)) return true;
   const explicitBinding = shapeBinding(source);
   if (explicitBinding != null) return explicitBinding === shapeDigest;
@@ -690,14 +843,14 @@ function sourceIsBoundToShape(source, identity, shapeDigest, shape) {
       functionId: identity.functionId,
       shapeDigest,
     })}`;
-    const expectedSsa = `ssa:${ssaIdentityDigest(expectedSemantic, shape.values)}`;
+    const expectedSsa = `ssa:${ssaIdentityDigest(expectedSemantic, shape.values, sharedTexts)}`;
     if (suppliedSsa !== expectedSsa) return false;
   }
   return true;
 }
 
-function ssaIdentityDigest(semanticIrId, values) {
-  try { return fastJsonGraphDigest({ semanticIrId, values }); }
+function ssaIdentityDigest(semanticIrId, values, sharedTexts = null) {
+  try { return fastJsonGraphDigest({ semanticIrId, values }, sharedTexts !== null, sharedTexts); }
   catch { return null; }
 }
 
@@ -750,15 +903,16 @@ export function canonicalAnalysisIdentity(context = {}) {
   // `shape` is the acyclic plain projection assembled above. Use the same
   // width-preserving typed serializer as canonical origins; malformed values
   // fail closed instead of falling back to a lossy alternate representation.
+  const sharedTexts = DETACHED_SHAPES.has(shape) ? createPassiveTextCache() : null;
   let shapeDigest;
-  try { shapeDigest = `shape:${fastJsonGraphDigest(shape)}`; }
+  try { shapeDigest = `shape:${fastJsonGraphDigest(shape, sharedTexts !== null, sharedTexts)}`; }
   catch { return { identity: null, valid: false, reason: 'canonical Semantic IR identity is unavailable' }; }
   const functionId = field(source, 'functionId') ?? field(ir, 'functionId') ?? `function:${shapeDigest}`;
   const binaryId = field(source, 'binaryId') ?? field(ir, 'binaryId') ?? `binary:${stableDigest({ functionId, shapeDigest })}`;
   const snapshotId = field(source, 'snapshotId') ?? field(ir, 'snapshotId') ?? `snapshot:${stableDigest({ binaryId, functionId, shapeDigest })}`;
   const semanticIrId = field(source, 'semanticIrId', 'semanticIRId') ?? field(ir, 'semanticIrId', 'semanticIRId')
     ?? `semantic-ir:${stableDigest({ snapshotId, functionId, shapeDigest })}`;
-  const computedSsaDigest = ssaIdentityDigest(semanticIrId, shape.values);
+  const computedSsaDigest = ssaIdentityDigest(semanticIrId, shape.values, sharedTexts);
   if (computedSsaDigest == null) return { identity: null, valid: false, reason: 'canonical SSA identity is unavailable' };
   const ssaId = field(source, 'ssaId') ?? field(ir, 'ssaId')
     ?? `ssa:${computedSsaDigest}`;
@@ -767,8 +921,8 @@ export function canonicalAnalysisIdentity(context = {}) {
   const identity = Object.freeze({ binaryId, functionId, snapshotId, semanticIrId, ssaId, analyzerVersion });
   if (!isValidatedAnalysisIdentity(identity)) return { identity: null, valid: false, reason: 'analysis identity fields are invalid' };
   if (!sameKnownSourceFields(identity, source) || !sameKnownSourceFields(identity, irSourceIdentity)
-      || !sourceIsBoundToShape(source, identity, shapeDigest, shape)
-      || !sourceIsBoundToShape(irSourceIdentity, identity, shapeDigest, shape)) {
+      || !sourceIsBoundToShape(source, identity, shapeDigest, shape, sharedTexts)
+      || !sourceIsBoundToShape(irSourceIdentity, identity, shapeDigest, shape, sharedTexts)) {
     return { identity: null, valid: false, reason: 'analysis identity is stale for the Semantic IR' };
   }
   return { identity, valid: true, reason: null };

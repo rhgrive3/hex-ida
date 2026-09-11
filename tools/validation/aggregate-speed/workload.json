@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "id": "aggregate-workflow-v2-fixed-work",
+  "frozenAtUtc": "2026-09-09T09:53:24.162606+00:00",
+  "sourceArchiveSha256": "01ecd2fcb586c05f6f73247a71aa4679583c59860f8419f52e7e5f21827203c8",
+  "sourceCommit": "f18c60ad3dfbd0ec16e23a9cb942fd4ac3c2c727",
+  "corpusSha256": "1e651ac6cd63ba393c9b09db6aaf27dec50d348f092d08d254e13eceb704f228",
+  "payloadBytes": 8388608,
+  "seed": 1047632421,
+  "phase8OptimizeModes": [
+    false,
+    true
+  ],
+  "architectureOrder": [
+    "arm64",
+    "x86_64",
+    "riscv64"
+  ],
+  "decompilerTimeBudgetMs": 20000,
+  "deterministicTransforms": true,
+  "searches": [
+    {
+      "kind": "hex",
+      "pattern": "speed-pattern-16"
+    },
+    {
+      "kind": "masked-hex",
+      "pattern": "speed-pattern-16"
+    },
+    {
+      "kind": "text",
+      "pattern": "SpEeD-Pattern-16"
+    },
+    {
+      "kind": "hex-short",
+      "bytes": [
+        23,
+        89,
+        144
+      ]
+    },
+    {
+      "kind": "wildcard",
+      "length": 4
+    },
+    {
+      "kind": "prefix",
+      "length": 32
+    }
+  ],
+  "repetitions": 3,
+  "pairedOrder": [
+    "base",
+    "work",
+    "work",
+    "base",
+    "base",
+    "work"
+  ],
+  "acceptance": "median(sum of measured stage milliseconds in each complete workflow) <= 0.70 * baseline median; exact observational equality required; no stage ratio averaging, corpus removal or repeat-count retuning",
+  "scope": "Node product-path workload, not browser/UI/network/iPad latency. Synthetic 8 MiB Mach-O payload plus full unmodified 135-entry compiler corpus (including every existing failure). Setup fixture generation, evidence encoding and external test harness costs are not application time.",
+  "protocolRevision": {
+    "previousId": "aggregate-workflow-v1",
+    "reason": "Exploratory A/B had a single 18 ms rewrite wall-clock cutoff difference (x86_64.quality.loop_nested.O2). Use the existing deterministicTransforms mode in BOTH snapshots for fixed work; do not count incomplete work as a speedup. Counts, inputs, work limits, budget constants and stage sequence remain unchanged. Production-clock runs are supplemental."
+  }
+}
