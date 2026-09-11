@@ -32,6 +32,9 @@ const LC_DYLD_CHAINED_FIXUPS = 0x80000034;
 const ARM_THREAD_STATE64 = 6;
 const ARM_THREAD_STATE64_COUNT = 68;
 const ARM_THREAD_STATE64_PC_OFFSET = 256;
+const X86_THREAD_STATE64 = 4;
+const X86_THREAD_STATE64_COUNT = 42;
+const X86_THREAD_STATE64_RIP_OFFSET = 128;
 
 const DYLIB_COMMANDS = new Set([
   LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB, LC_REEXPORT_DYLIB,
@@ -414,7 +417,7 @@ function parseThreadEntrypoint(r, p, cmdsize, cpu, bits) {
     if (!Number.isSafeInteger(stateBytes) || stateBytes < 0 || state + stateBytes > end) return null;
     const arch = cpuName(cpu);
     if (arch === 'arm64' && flavor === ARM_THREAD_STATE64 && count === ARM_THREAD_STATE64_COUNT) return r.u64(state + ARM_THREAD_STATE64_PC_OFFSET);
-    if (arch === 'x86_64' && flavor === 4 && stateBytes >= 136) return r.u64(state + 128);
+    if (arch === 'x86_64' && flavor === X86_THREAD_STATE64 && count === X86_THREAD_STATE64_COUNT) return r.u64(state + X86_THREAD_STATE64_RIP_OFFSET);
     if (arch === 'arm' && bits === 32 && flavor === 1 && stateBytes >= 64) return BigInt(r.u32(state + 60));
     q = state + stateBytes;
   }
