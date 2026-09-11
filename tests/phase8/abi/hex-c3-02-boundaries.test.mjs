@@ -2171,7 +2171,7 @@ test('C3-02 bound recursive callee declaration separates argument and return con
   assert.equal(calls[0].extra.callerCallee.status, 'unknown', 'null return result is not agreement proof');
 });
 
-function decodedTransferDeclaration(words, addresses = null) {
+function decodedTransferDeclaration(words, addresses = null, canonicalStartIdentity = null) {
   const architecture = architecturePluginV2('riscv64');
   const prototype = { parameters:[{ type:'int64', bits:64 }], returnType:'int64' };
   const instructions = words.map((word, index) => createRiscv64DecodedInstruction({
@@ -2188,6 +2188,7 @@ function decodedTransferDeclaration(words, addresses = null) {
     architecturePlugin:architecture, decoderSemanticVersion:'c3-transfer-decoder',
     binaryId:'c3-observation-binary', sliceId:'0', addressWidthBits:64, mode:'rv64imc',
     entryBlockKey:blocks[0].key, blocks, abiAdapter:adapter,
+    ...(canonicalStartIdentity == null ? {} : { canonicalStartIdentity }),
   }, { abiAdapter:adapter });
   const declaration = adapter.functionDeclaration({ semanticIr:pipeline.semanticIr });
   const caller = decodedCallObservationPipeline([prototype], [0x2000n], {
@@ -2403,4 +2404,14 @@ test('C3-02 function publication does not invalidate an independently resolved e
   });
   assert.equal(own.completeness, 'ambiguous');
   assert.equal(own.conventionKnown, false);
+});
+
+test('C3-02 function publication preserves valid typed canonical start identities', () => {
+  const source = decodedTransferDeclaration([0x00050593, 0x00008067], null, { address:0x2000n });
+  assert.equal(source.adapter.completeness, 'canonical');
+  assert.equal(source.adapter.returnRegister({ returnType:'int64' }), 'x10');
+  assert.equal(recoverFunctionPrototype(source.pipeline.legacyV1, { values:new Map() }, {
+    abiAdapter:source.adapter, functionPrototype:source.prototype,
+  }).conventionKnown, true);
+  assert.equal(source.declaration, null, 'negative observation does not mint a new exact external declaration binding');
 });

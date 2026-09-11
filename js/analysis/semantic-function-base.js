@@ -803,9 +803,12 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
       if (observedFunctions.has(semanticIr)) return functionEvidenceState();
       const index = declarationFunctionIndex(semanticIr, { bindIdentity:false });
       if (!index) throw new TypeError('abi-function-observation-not-immutable');
+      // The function ID is opaque here. Legacy producers may supply a typed
+      // canonicalStartIdentity (for example a bigint address); recomputing an
+      // address-only declaration ID would falsely invalidate that valid route.
+      // Exact external declaration comparison still uses bindDeclarationIndex.
       if ((observedFunctionId != null && observedFunctionId !== semanticIr.functionId)
-        || (identity.functionId != null && identity.functionId !== semanticIr.functionId)
-        || (identity.binaryId != null && identity.sliceId != null && !bindDeclarationIndex(semanticIr, index))) {
+        || (identity.functionId != null && identity.functionId !== semanticIr.functionId)) {
         observedFunctionState = 'stale';
       } else if (!['stale', 'malformed'].includes(observedFunctionState)) {
         const status = index.controlTransfers.status;
