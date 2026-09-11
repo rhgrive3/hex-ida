@@ -125,7 +125,8 @@ test('C4-03 history origin truncation cannot certify an absent replacement origi
 test('C4-03 history and final projection share one ledger budget and chronology', () => {
   const rewritten = identityRewrite().rewritten;
   const result = resultWith(rewritten.root);
-  result.rewriteProof = [...rewritten.proof, ...rewritten.proof, ...rewritten.proof];
+  // Three distinct events, not the same issued record referenced three times.
+  result.rewriteProof = [0,1,2].flatMap(() => rewritten.proof.map(record => ({ ...record })));
   result.phase8Projection = { transforms:[{ kind:'later', proof:'fixture', targets:['row:1'], origin:{ rows:[1] } }] };
   result.lines = [{ kind:'stmt', text:'return a1;', source:source(1, 1) }];
   const map = buildRenderProvenance({ result, snapshotId:'current', budget:{ maxTransformRecords:2 } });

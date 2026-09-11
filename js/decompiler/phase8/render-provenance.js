@@ -1,6 +1,6 @@
 import { sourceOf } from '../ast/nodes.js';
-import { compatOperationEventCandidate, MAX_EXPRESSION_CONSUMER_WITNESSES } from '../pipeline-core.js';
-import { renderProvenanceRecord } from './contract.js';
+import { compatOperationEventCandidate } from '../pipeline-core.js';
+import { renderProvenanceRecord, MAX_EXPRESSION_CONSUMER_WITNESSES } from './contract.js';
 import { readLineExpressionHistory } from './projection.js';
 import { readSwitchLineHistory, readSwitchRenderHistory } from '../switch.js';
 import { readSemanticSuppressionHistory, readSemanticStoreLineHistory, readSemanticStoreRenderHistory,

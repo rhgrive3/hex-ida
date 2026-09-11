@@ -37,6 +37,10 @@
  */
 export const PHASE8_CONTRACT_VERSION = 7;
 
+// Shared storage ceiling lives in the dependency-free contract so importing a
+// producer before its renderer cannot observe an uninitialized cyclic export.
+export const MAX_EXPRESSION_CONSUMER_WITNESSES = 4096;
+
 /**
  * Ordered pipeline stages. Order here is the dependency order Phase 8 accepts;
  * it is a declared contract rather than the incidental order of an array

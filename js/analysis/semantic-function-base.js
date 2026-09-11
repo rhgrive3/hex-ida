@@ -1130,7 +1130,7 @@ export function decompilerSnapshot(result) {
 
 export function decompileSemanticProjection(model, options) {
   const result = decompileSemantic(model, options);
-  return result ? enhanceSemanticDecompilation(result, model, options) : result;
+  return result ? enhanceSemanticDecompilation(result, model, { ...options, renderProvenance:true }) : result;
 }
 
 function addressWidthBitsFor(architecturePlugin) {

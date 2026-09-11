@@ -15,6 +15,8 @@ import { recoverHighVariables } from './types/high-variables.js';
 import { recoverFunctionPrototype } from './types/prototype.js';
 import { recoverAggregateLayouts } from './types/layout.js';
 import { PassManager } from './passes/manager.js';
+import { MAX_EXPRESSION_CONSUMER_WITNESSES } from './phase8/contract.js';
+export { MAX_EXPRESSION_CONSUMER_WITNESSES } from './phase8/contract.js';
 import { INTERACTIVE_STAGES as PHASE8_INTERACTIVE_STAGES, PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
 import { printExpression, printProgram, expressionReadability } from './pretty/c.js';
 import { explainSemanticFacts } from './explain.js';
@@ -68,7 +70,6 @@ export function compatOperationEventCandidate(record, ir) {
   const candidate = compatOperationEvents.get(record);
   return candidate?.ir === ir ? candidate.event : null;
 }
-export const MAX_EXPRESSION_CONSUMER_WITNESSES = 4096;
 // Count exact issued public-state events once, not their different expression
 // consumers. This is storage accounting only; each consumer keeps its own
 // original observation and source history below.

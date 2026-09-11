@@ -58,7 +58,7 @@ function augmentLegacy(fallback, reason, semantic = null) {
 
 function finalize(result, model, opts) {
   result = normalizeCompatibility(structureKnownSwitches(result, model, opts));
-  if (result?.semantic) result = enhanceSemanticDecompilation(result, model, opts);
+  if (result?.semantic) result = enhanceSemanticDecompilation(result, model, { ...opts, renderProvenance:true });
   result = normalizeCompatibility(result);
   if (!result?.semantic && result?.switchRenderHistory) {
     // No semantic-mode promotion or invented analysis snapshot for fallback

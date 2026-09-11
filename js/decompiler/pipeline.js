@@ -320,6 +320,11 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
 function fullPhase8Projection(result, model, opts, interactiveStage) {
   if (!result?.semantic || !result?.ir) return result;
   if (opts.phase8Optimize !== true) {
+    // The intermediate representation API and explicit proof preparation keep
+    // their existing pre-projection endpoint. Product presentation facades
+    // request the final map; a zero history allowance still disables history.
+    if (opts.renderProvenance !== true || opts.phase8PrepareProof === true
+        || opts.renderProvenanceBudget?.maxTransformRecords === 0) return result;
     // Projection is part of ordinary presentation, not permission to run the
     // opt-in optimizer set. Reuse the core's existing canonical-facts stage.
     return interactiveStage?.ledger?.published === true && interactiveStage.analysis
