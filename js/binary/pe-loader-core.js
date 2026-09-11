@@ -395,6 +395,31 @@ function mappedBaseRelocationTarget(image, rva) {
   }
   return null;
 }
+function baseRelocationTargetWidth(type) {
+  if (type === 1 || type === 2 || type === 4) return 2;
+  if (type === 3) return 4;
+  if (type === 10) return 8;
+  return 1;
+}
+function mappedBaseRelocationTargetSpan(image, rva, width) {
+  if (!Number.isSafeInteger(width) || width <= 0) return false;
+  const sizeOfImage = image.metadata?.sizeOfImage;
+  if (Number.isSafeInteger(sizeOfImage) && sizeOfImage >= 0 && (rva > sizeOfImage - width)) return false;
+  const start = image.imageBase + BigInt(rva), finish = start + BigInt(width);
+  const owners = [...(image.sections || []), ...(image.segments || [])];
+  let cursor = start;
+  while (cursor < finish) {
+    let coveredTo = cursor;
+    for (const owner of owners) {
+      if (!owner || typeof owner.address !== 'bigint' || typeof owner.size !== 'bigint' || owner.size <= 0n) continue;
+      const ownerEnd = owner.address + owner.size;
+      if (owner.address <= cursor && cursor < ownerEnd && ownerEnd > coveredTo) coveredTo = ownerEnd;
+    }
+    if (coveredTo === cursor) return false;
+    cursor = coveredTo;
+  }
+  return true;
+}
 export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget = null) {
   if(!dir||!dir.rva||dir.size===0)return; const budget=ensureBudget(image,sharedBudget);
   if(dir.size<8){budget.partial('relocations:malformed-block','Malformed PE base-relocation block: directory is shorter than a block header');return;}
@@ -422,6 +447,8 @@ export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget
       }
       const targetRva=pageRva+within,address=mappedBaseRelocationTarget(image,targetRva);
       if(address===null){budget.partial('relocations:unmapped-target',`Ignored PE base relocation target outside loaded image at RVA 0x${targetRva.toString(16)}`);continue;}
+      const targetWidth=baseRelocationTargetWidth(type);
+      if(!mappedBaseRelocationTargetSpan(image,targetRva,targetWidth)){budget.partial('relocations:target-span',`Ignored PE base relocation whose ${targetWidth}-byte target field crosses the loaded image at RVA 0x${targetRva.toString(16)}`);continue;}
       image.relocations.push({address,fileOffset:image.addressToOffset(address),type,symbol:null,addend,section:null,source:'PE-base-reloc'});
     }
     off+=blockSize;
