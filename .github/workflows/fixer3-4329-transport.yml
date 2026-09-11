@@ -15,15 +15,17 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Materialize validated Drive candidate
-        shell: bash
+      - name: Guard exact live main
         run: |
           set -euo pipefail
-          BASE=c90d8b38833ae664defb512be58538e397967f72
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          test "$(git rev-parse refs/remotes/origin/main)" = "$BASE"
+          test "$(git rev-parse refs/remotes/origin/main)" = c90d8b38833ae664defb512be58538e397967f72
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          git show "$BASE:js/analysis/alias/canonical-address-v2.js" > js/analysis/alias/canonical-address-v2.js
+      - name: Restore current-main public wrapper
+        run: git show c90d8b38833ae664defb512be58538e397967f72:js/analysis/alias/canonical-address-v2.js > js/analysis/alias/canonical-address-v2.js
+      - name: Materialize core projection
+        shell: bash
+        run: |
           python3 - <<'PY'
           from pathlib import Path
           p = Path('js/analysis/alias/canonical-address-v2-core.js')
@@ -51,8 +53,7 @@ jobs:
             })}`;
           }
           """
-          if old not in s:
-              raise SystemExit('exactAddressRootId anchor mismatch')
+          assert old in s, 'exactAddressRootId anchor mismatch'
           s = s.replace(old, new, 1)
           old = """  if (proof.kind === 'absolute') {
             return deepFreeze({ kind: 'global-absolute', address: canonicalAddress(proof.address) });
@@ -72,25 +73,35 @@ jobs:
             });
           }
           """
-          if old not in s:
-              raise SystemExit('absolute projection anchor mismatch')
+          assert old in s, 'absolute projection anchor mismatch'
           p.write_text(s.replace(old, new, 1))
-          t = Path('tests/phase7/alias/issue-4329-nonmemory-absolute-address-space.test.mjs')
-          x = t.read_text()
-          old_import = "../../../js/analysis/alias/canonical-address-v2.js"
-          new_import = "../../../js/analysis/alias/canonical-address-v2-core.js"
-          if old_import not in x:
-              raise SystemExit('focused regression import anchor mismatch')
-          t.write_text(x.replace(old_import, new_import, 1))
           PY
+      - name: Bind regression to core
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('tests/phase7/alias/issue-4329-nonmemory-absolute-address-space.test.mjs')
+          s = p.read_text()
+          old = "../../../js/analysis/alias/canonical-address-v2.js"
+          new = "../../../js/analysis/alias/canonical-address-v2-core.js"
+          assert old in s, 'regression import anchor mismatch'
+          p.write_text(s.replace(old, new, 1))
+          PY
+      - name: Verify exact candidate blobs
+        run: |
           test "$(git hash-object js/analysis/alias/canonical-address-v2.js)" = 32be82d579743c951693ddb403eec43c11ad3ff8
           test "$(git hash-object js/analysis/alias/canonical-address-v2-core.js)" = dd0dda3b677ed5e71e623a10015cf5c6d7fa436e
           test "$(git hash-object tests/phase7/alias/issue-4329-nonmemory-absolute-address-space.test.mjs)" = 92c868f2f74833681d86b59ffa706900734c9d1a
+      - name: Focused validation
+        run: |
           node --check js/analysis/alias/canonical-address-v2-core.js
           node --test tests/phase7/alias/issue-4329-nonmemory-absolute-address-space.test.mjs tests/phase7/alias/issue-5901-rooted-offset-address-space.test.mjs
+      - name: Commit materialized candidate
+        run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add js/analysis/alias/canonical-address-v2.js js/analysis/alias/canonical-address-v2-core.js tests/phase7/alias/issue-4329-nonmemory-absolute-address-space.test.mjs
           test "$(git diff --cached --name-only | wc -l | tr -d ' ')" = 3
           git commit -m 'fix(alias): materialize core absolute-space projection (#4329) [skip actions] [transport-applied]'
-          git push origin HEAD:refs/heads/fixer3/issue-4329-nonmemory-absolute-space
+      - name: Fast-forward branch
+        run: git push origin HEAD:refs/heads/fixer3/issue-4329-nonmemory-absolute-space
