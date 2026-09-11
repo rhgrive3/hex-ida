@@ -395,10 +395,13 @@ function mappedBaseRelocationTarget(image, rva) {
   }
   return null;
 }
-function baseRelocationTargetWidth(type) {
-  if (type === 1 || type === 2 || type === 4) return 2;
-  if (type === 3) return 4;
+function baseRelocationTargetWidth(machine, type) {
   if (type === 10) return 8;
+  if (type === 3) return 4;
+  if ((machine === 0x01c0 || machine === 0x01c4) && (type === 5 || type === 7)) return 8;
+  if ((machine === 0xaa64 || machine === 0xa641) && type === 4) return 4;
+  if ((machine === 0x5032 || machine === 0x5064) && (type === 5 || type === 7 || type === 8)) return 4;
+  if (type === 1 || type === 2 || type === 4) return 2;
   return 1;
 }
 function mappedBaseRelocationTargetSpan(image, rva, width) {
@@ -447,7 +450,7 @@ export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget
       }
       const targetRva=pageRva+within,address=mappedBaseRelocationTarget(image,targetRva);
       if(address===null){budget.partial('relocations:unmapped-target',`Ignored PE base relocation target outside loaded image at RVA 0x${targetRva.toString(16)}`);continue;}
-      const targetWidth=baseRelocationTargetWidth(type);
+      const targetWidth=baseRelocationTargetWidth(machine,type);
       if(!mappedBaseRelocationTargetSpan(image,targetRva,targetWidth)){budget.partial('relocations:target-span',`Ignored PE base relocation whose ${targetWidth}-byte target field crosses the loaded image at RVA 0x${targetRva.toString(16)}`);continue;}
       image.relocations.push({address,fileOffset:image.addressToOffset(address),type,symbol:null,addend,section:null,source:'PE-base-reloc'});
     }

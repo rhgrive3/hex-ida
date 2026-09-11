@@ -108,6 +108,22 @@ test('#8059 HIGH, LOW, and HIGHADJ require complete 2-byte target fields', () =>
   }
 });
 
+test('#8059 machine-specific instruction relocations validate their complete instruction span', () => {
+  // ARM/Thumb MOV32 relocations patch a consecutive MOVW/MOVT pair (8 bytes).
+  for (const [machine, type] of [[0x01c0, 5], [0x01c4, 7]]) {
+    assertAccepted({ machine, type, targetRva: SIZE_OF_IMAGE - 8 });
+    assertSpanRejected({ machine, type, targetRva: SIZE_OF_IMAGE - 7 });
+  }
+
+  // ARM64 PAGEBASE_REL21 and RISC-V HIGH20/LOW12I/LOW12S patch 4-byte instructions.
+  assertAccepted({ machine: 0xaa64, type: 4, targetRva: SIZE_OF_IMAGE - 4 });
+  assertSpanRejected({ machine: 0xaa64, type: 4, targetRva: SIZE_OF_IMAGE - 3 });
+  for (const type of [5, 7, 8]) {
+    assertAccepted({ machine: 0x5064, type, targetRva: SIZE_OF_IMAGE - 4 });
+    assertSpanRejected({ machine: 0x5064, type, targetRva: SIZE_OF_IMAGE - 3 });
+  }
+});
+
 test('#8059 HIGHADJ still consumes its payload slot when its target span is invalid', () => {
   const { bytes, image, r } = fixture();
   const entries = [
