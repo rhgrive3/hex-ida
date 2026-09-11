@@ -7,6 +7,30 @@ const VARIANT_TYPES = [/^[IF]$/, /^[JD]$/, /^(?:L|\[)/, /^Z$/, /^B$/, /^C$/, /^S
 const ACC_STATIC = 0x08;
 const ACC_VOLATILE = 0x40;
 
+// Static-field access carries the declaring class's initialization authority
+// (#8053): ART must ensure the class is initialized before an `sget*`/`sput*`
+// completes, and a declared `<clinit>` may run arbitrary code and fail on the
+// first-access path. That one-time state is not provable per-instruction, so
+// an access that may trigger a declared `<clinit>` fails closed to partial.
+// An access from inside the declaring class's own `<clinit>` is already on
+// the initializing thread and must not invent recursive initialization. A
+// class without a declared `<clinit>` runs no declaring-class initializer
+// code (superclass-chain authority is a separate slice).
+function resolveClassInitializationAuthority(image, declaringClass, method) {
+  if (!Array.isArray(image.methods)) fail('dex-method-definitions-unavailable');
+  const initializers = image.methods.filter((entry) => entry?.classType === declaringClass && entry?.name === '<clinit>');
+  if (initializers.length > 1) fail('dex-class-initialization-ambiguous');
+  const selfInitializing = method?.classType === declaringClass && method?.name === '<clinit>';
+  const clinitPresent = initializers.length === 1;
+  return {
+    declaringClass,
+    clinitPresent,
+    initializationRequired: clinitPresent && !selfInitializing,
+    initializationProven: false,
+    ...(selfInitializing ? { discharged: 'declaring-class-initializer' } : {}),
+  };
+}
+
 function resolveFieldDeclaration(image, field, fieldIndex, isStatic) {
   const owners = (image.classes ?? []).filter((cls) => cls?.classType === field.classType);
   if (owners.length === 0) return null;
@@ -30,7 +54,7 @@ function resolveFieldDeclaration(image, field, fieldIndex, isStatic) {
   return accessFlags;
 }
 
-export function dexFieldEffects({ opcode, formatByte, fieldIndex, image }) {
+export function dexFieldEffects({ opcode, formatByte, fieldIndex, image, method }) {
   const isStatic = opcode >= 0x60;
   const relative = opcode - (isStatic ? 0x60 : 0x52);
   const isWrite = relative >= 7, variant = relative % 7;
@@ -50,6 +74,9 @@ export function dexFieldEffects({ opcode, formatByte, fieldIndex, image }) {
   if (accessFlags == null) fail('dex-field-declaration-unresolved');
   const isVolatile = (accessFlags & ACC_VOLATILE) !== 0;
   const fieldIdentity = createManagedFieldId(createManagedTypeId(image.moduleId,field.classType),fieldIndex);
+  const classInitialization = isStatic
+    ? resolveClassInitializationAuthority(image, field.classType, method)
+    : null;
   return {
     mnemonic:`${isStatic ? 's' : 'i'}${isWrite ? 'put' : 'get'}${SUFFIXES[variant]}`,
     locationReads:reads, locationWrites:isWrite ? [] : [valueLocation],
@@ -62,6 +89,11 @@ export function dexFieldEffects({ opcode, formatByte, fieldIndex, image }) {
       addressKind:isStatic ? 'static-field' : 'instance-field',
       declarationResolved:true, declarationAccessFlags:accessFlags,
       volatility:isVolatile, atomic:isVolatile,
-      ordering:isVolatile ? (isWrite ? 'release' : 'acquire') : 'unknown' }],
+      ordering:isVolatile ? (isWrite ? 'release' : 'acquire') : 'unknown',
+      ...(isStatic ? { classInitialization } : {}) }],
+    ...(isStatic && classInitialization.initializationRequired ? {
+      completeness:'partial',
+      unknownEffects:[{ category:'calls', reason:'dex-class-initialization-unverified' }],
+    } : {}),
   };
 }
