@@ -21,6 +21,8 @@ const MAX_DERIVATION_DEPTH = 128;
 const INVALID_ROOT_DESCRIPTOR = Symbol('invalid-root-descriptor');
 const CONFLICTING_ROOT_DESCRIPTORS = Symbol('conflicting-root-descriptors');
 const PROVEN_SEPARATION_DESCRIPTOR_KINDS = new Set(['global-like', 'heap-like', 'tls-like']);
+const ADDRESS_INTEGER_MACHINE_KINDS = new Set(['bitvector', 'address']);
+const INTEGER_CONSTANT_KINDS = new Set(['bitvector', 'integer']);
 
 function identityString(value, { trim = false } = {}) {
   if (typeof value !== 'string' || !value.trim()) return null;
@@ -428,6 +430,28 @@ function constantFromNode(value, node) {
     node?.attributes?.constant,
     node?.metadata?.constant,
   ];
+  // Canonical Semantic IR values are machine-typed. Only integer/address
+  // domains may authorize an exact address constant; legacy untyped inputs
+  // retain their historical behavior. Structured constant kinds must also be
+  // compatible with that domain. Address-typed constants produced by machine
+  // effect lowering intentionally carry a bitvector payload (#5228).
+  const machineType = value?.machineType;
+  let machineKind = null;
+  if (machineType != null && typeof machineType === 'object' && !Array.isArray(machineType)
+      && Object.hasOwn(machineType, 'kind')) {
+    if (!ADDRESS_INTEGER_MACHINE_KINDS.has(machineType.kind)) {
+      return unknown('canonical-address-constant-machine-domain-invalid');
+    }
+    machineKind = machineType.kind;
+  }
+  for (const candidate of candidates) {
+    if (candidate == null || typeof candidate !== 'object' || Array.isArray(candidate)
+        || !Object.hasOwn(candidate, 'kind')) continue;
+    const kind = candidate.kind;
+    const integerKind = INTEGER_CONSTANT_KINDS.has(kind);
+    const addressKind = kind === 'address' && (machineKind == null || machineKind === 'address');
+    if (!integerKind && !addressKind) return unknown('canonical-address-constant-kind-mismatch');
+  }
   // Proof-grade constants must agree across sources (#5727): adopting the
   // first parsed value let source priority alone decide the exact address for
   // contradictory metadata.
@@ -442,8 +466,7 @@ function constantFromNode(value, node) {
     parsed = value0;
   }
   if (parsed == null) return null;
-  const widthSource = [value?.metadata?.constant, node?.attributes?.constant, node?.metadata?.constant]
-    .find((candidate) => candidate != null && parseInteger(candidate) != null);
+  const widthSource = candidates.find((candidate) => candidate != null && parseInteger(candidate) != null);
   const widthBits = positiveWidth(widthSource?.widthBits) ?? addressWidth(value, node);
   return scalarConstant(parsed, widthBits, node?.id ?? value?.id ?? null);
 }

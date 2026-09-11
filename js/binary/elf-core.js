@@ -559,6 +559,7 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
   const symbolTable=sections[sec.link];
   const symbolMinEnt=BigInt(bits===64?24:16);
   const linkedSymbolTable=symbolTable&&(symbolTable.type===SHT_SYMTAB||symbolTable.type===SHT_DYNSYM);
+  if(!linkedSymbolTable){budget.partial(`relocations:${sec.index}:symbol-table-link`,`ELF relocation section ${sec.index} has invalid sh_link ${sec.link}; expected SHT_SYMTAB or SHT_DYNSYM`);return;}
   let symbolEntryCount=null;
   if(linkedSymbolTable){
     if(symbolTable.entsize<symbolMinEnt){
@@ -623,6 +624,12 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
   }
 
   const str = sections[sec.link];
+  if (!str || str.type !== SHT_STRTAB) {
+    budget.partial(
+      `dynamic-section:${sec.index}:string-table-link`,
+      `ELF SHT_DYNAMIC ${sec.index} has invalid sh_link ${sec.link}`,
+    );
+  }
   const strStart = str?.type === SHT_STRTAB ? safeOffset(str.offset) : null;
   const strSize = str?.type === SHT_STRTAB ? safeOffset(str.size) : null;
   const stringTableValid = str?.type === SHT_STRTAB
