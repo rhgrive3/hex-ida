@@ -107,18 +107,30 @@ async function discoverBaselineFunctions(baseline, { signal = null, onProgress =
     });
     try {
       const result = await requestWithSignal(request, signal);
+      let exceedsBudget = false;
       if (result?.starts?.length) {
+        // #5105: `share` is the requested limit, not an enforced one — a
+        // backend that over-return must never ingest past the global budget.
+        // The consumer bounds ingestion; a wholly-new capped prefix means the
+        // dropped tail was plausibly new discoveries, so record the excess
+        // fail-closed instead of trusting the backend's self-restraint.
+        // Duplicate-only over-return stays tolerated: #5558 proved heuristic
+        // region scans legitimately re-report known starts.
+        const overReturned = result.starts.length > share;
+        const ingested = overReturned ? result.starts.slice(0, share) : result.starts;
         // #5558: addFunctions() deduplicates known starts and returns the
         // number actually added. The global discovery budget must be debited
         // by that count — duplicate re-discovery from independent region
         // scans must never exhaust the budget ahead of unscanned regions.
-        const added = symbols.addFunctions(result.starts, { source:'heuristic', confidence:0.55, confirmed:false });
+        const added = symbols.addFunctions(ingested, { source:'heuristic', confidence:0.55, confirmed:false });
         symbols.guessed = true;
         remaining = Math.max(0, remaining - added);
+        exceedsBudget = overReturned && added === ingested.length;
       }
-      const complete = result?.discoveryComplete === true || result?.completeness?.complete === true || result?.complete === true;
-      results.push({ regionId:region.id, complete, capped:!!result?.capped, discovered:result?.starts?.length || 0 });
-      if (!complete) reasons.push(`${region.id}:${result?.completeness?.reason || result?.truncationReason || 'function-discovery-incomplete'}`);
+      const complete = !exceedsBudget && (result?.discoveryComplete === true || result?.completeness?.complete === true || result?.complete === true);
+      results.push({ regionId:region.id, complete, capped:exceedsBudget || !!result?.capped, discovered:result?.starts?.length || 0 });
+      if (exceedsBudget) reasons.push(`${region.id}:backend-result-exceeds-budget`);
+      else if (!complete) reasons.push(`${region.id}:${result?.completeness?.reason || result?.truncationReason || 'function-discovery-incomplete'}`);
     } catch (error) {
       if (signal?.aborted || error?.name === 'AbortError') throw error;
       results.push({ regionId:region.id, complete:false, error:true });
