@@ -308,6 +308,89 @@ function parseX64UnwindDescriptor(r, image, runtimeFunction, budget, seen = new 
   return { primary:{ begin, finish, unwind }, fragments:[] };
 }
 
+function arm64UnwindOpcode(r, start, size, index) {
+  const first = r.u8(start + index);
+  let length = 1;
+  if (first >= 0xc0 && first <= 0xdf) length = 2;
+  else if (first === 0xe0) length = 4;
+  else if (first === 0xe2) length = 2;
+  else if (first === 0xe7) length = 3;
+  else if ((first >= 0xed && first <= 0xfb) || first >= 0xfd) return { reserved:true, length:1 };
+  if (index + length > size) return { truncated:true, length };
+  if (first === 0xe7) {
+    const second = r.u8(start + index + 1), third = r.u8(start + index + 2);
+    // save_any encodings with bit 7 set are reserved. For the P-register form
+    // (type=11, p=1), registers p0-p3 are reserved as well.
+    if ((second & 0x80) !== 0 || ((third & 0xc0) === 0xc0 && (second & 0x10) !== 0 && (second & 0x0f) < 4)) {
+      return { reserved:true, length };
+    }
+  }
+  return { length, end:first === 0xe4 };
+}
+
+function validateArm64XdataUnwindCodes(r, image, kind, xdataRva, recordSpan, headerBytes, packedEpilog, epilogCount, codeWords, budget) {
+  const codeBytes = codeWords * 4;
+  if (!codeBytes) {
+    return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-unwind-index', `Ignored ARM64 .xdata record without an unwind-code byte pool at RVA 0x${xdataRva.toString(16)}`);
+  }
+  const scopeBytes = packedEpilog ? 0 : epilogCount * 4;
+  const codeStart = recordSpan.start + headerBytes + scopeBytes;
+  if (!budget.take({ estimatedHeapBytes:codeBytes }, 'arm64-xdata-unwind-index-set')) return null;
+  const requiredStarts = new Uint8Array(codeBytes);
+  requiredStarts[0] = 1;
+  let unresolvedStarts = 1, maxStart = 0;
+  const requireStart = (index) => {
+    if (!Number.isSafeInteger(index) || index < 0 || index >= codeBytes) return false;
+    if (!requiredStarts[index]) { requiredStarts[index] = 1; unresolvedStarts++; }
+    if (index > maxStart) maxStart = index;
+    return true;
+  };
+
+  if (packedEpilog) {
+    if (!requireStart(epilogCount)) {
+      return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-unwind-index', `Ignored ARM64 .xdata packed epilog index ${epilogCount} outside its unwind-code pool at RVA 0x${xdataRva.toString(16)}`);
+    }
+  } else if (epilogCount > 0) {
+    if (!budget.take({ inputBytes:scopeBytes }, 'arm64-xdata-epilog-indices')) return null;
+    const scopeStart = recordSpan.start + headerBytes;
+    for (let i = 0; i < epilogCount; i++) {
+      if (!budget.take({ operations:1 }, 'arm64-xdata-epilog-index')) return null;
+      const scope = r.u32(scopeStart + i * 4), index = scope >>> 22;
+      if (!requireStart(index)) {
+        return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-unwind-index', `Ignored ARM64 .xdata epilog index ${index} outside its unwind-code pool at RVA 0x${xdataRva.toString(16)}`);
+      }
+    }
+  }
+
+  // The whole declared code pool is metadata input, while operation cost is
+  // charged only for decoded reachable opcodes. Decoding stops at the first
+  // real `end` at/after the greatest referenced start, so trailing word
+  // padding is never interpreted as unwind instructions.
+  if (!budget.take({ inputBytes:codeBytes }, 'arm64-xdata-unwind-codes')) return null;
+  let cursor = 0, finalEnd = -1;
+  while (cursor < codeBytes) {
+    if (!budget.take({ operations:1 }, 'arm64-xdata-unwind-opcode')) return null;
+    if (requiredStarts[cursor]) { requiredStarts[cursor] = 0; unresolvedStarts--; }
+    const opcode = arm64UnwindOpcode(r, codeStart, codeBytes, cursor);
+    if (opcode.reserved) {
+      return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-unwind-reserved', `Ignored ARM64 .xdata record with a reserved unwind opcode at byte index ${cursor} (RVA 0x${(xdataRva + headerBytes + scopeBytes + cursor).toString(16)})`);
+    }
+    if (opcode.truncated) {
+      return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-unwind-truncated', `Ignored ARM64 .xdata record with a truncated unwind opcode at byte index ${cursor} (RVA 0x${(xdataRva + headerBytes + scopeBytes + cursor).toString(16)})`);
+    }
+    if (opcode.end) finalEnd = cursor;
+    cursor += opcode.length;
+    if (finalEnd >= maxStart) break;
+  }
+  if (unresolvedStarts !== 0) {
+    return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-unwind-index', `Ignored ARM64 .xdata epilog index that does not name an unwind opcode boundary at RVA 0x${xdataRva.toString(16)}`);
+  }
+  if (finalEnd < maxStart) {
+    return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-unwind-unterminated', `Ignored ARM64 .xdata unwind sequence without a reachable end opcode at RVA 0x${xdataRva.toString(16)}`);
+  }
+  return true;
+}
+
 function parseArm64XdataDescriptor(r, image, begin, xdataRva, budget) {
   const kind = 'arm64-pdata';
   const first = mappedFileSpanForRva(image, xdataRva, 4);
@@ -324,9 +407,11 @@ function parseArm64XdataDescriptor(r, image, begin, xdataRva, budget) {
     if (!budget.take({ inputBytes:4, operations:1 }, 'arm64-xdata-extension')) return null;
   }
   const recordBytes = headerBytes + (packedEpilog ? 0 : epilogCount * 4) + codeWords * 4 + (hasHandler ? 4 : 0);
-  if (!Number.isSafeInteger(recordBytes) || !mappedFileSpanForRva(image, xdataRva, recordBytes)) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-span', `Ignored ARM64 .xdata record that crosses its file-backed mapping at RVA 0x${xdataRva.toString(16)}`);
+  const recordSpan = Number.isSafeInteger(recordBytes) ? mappedFileSpanForRva(image, xdataRva, recordBytes) : null;
+  if (!recordSpan) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-span', `Ignored ARM64 .xdata record that crosses its file-backed mapping at RVA 0x${xdataRva.toString(16)}`);
   const bytes = functionLength * 4;
   if (!executableRvaRange(image, begin, bytes)) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-range', `Ignored ARM64 .xdata range outside executable mapping at RVA 0x${begin.toString(16)}`);
+  if (!validateArm64XdataUnwindCodes(r, image, kind, xdataRva, recordSpan, headerBytes, packedEpilog, epilogCount, codeWords, budget)) return null;
   return { size:bytes, xdataRva, version, hasHandler, packedEpilog, epilogCount, codeWords };
 }
 
