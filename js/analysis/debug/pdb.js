@@ -106,10 +106,56 @@ function cstringWithNext(bytes, offset, limit = bytes.length) {
   };
 }
 
+function createPdbByteBudget(maxBytesScanned) {
+  let remaining = maxBytesScanned;
+  let exhausted = false;
+  let stopContext = null;
+  return {
+    consume(byteLength, context) {
+      if (byteLength === 0) return true;
+      if (exhausted) return false;
+      if (!Number.isSafeInteger(byteLength) || byteLength < 0 || byteLength > remaining) {
+        exhausted = true;
+        stopContext = context ?? 'PDB data';
+        return false;
+      }
+      remaining -= byteLength;
+      return true;
+    },
+    get exhausted() { return exhausted; },
+    get stopContext() { return stopContext; },
+    get remaining() { return remaining; },
+  };
+}
+
+function createPdbRecordBudget(maxRecords) {
+  let remaining = maxRecords;
+  let exhausted = false;
+  let stopContext = null;
+  return {
+    consume(context) {
+      if (exhausted) return false;
+      if (remaining <= 0) {
+        exhausted = true;
+        stopContext = context ?? 'PDB records';
+        return false;
+      }
+      remaining -= 1;
+      return true;
+    },
+    get exhausted() { return exhausted; },
+    get stopContext() { return stopContext; },
+    get remaining() { return remaining; },
+  };
+}
+
 /** Reads the MSF superblock and stream directory. */
-export function parseMsf(bytes) {
+export function parseMsf(bytes, byteBudget = null) {
   const data = bytesOf(bytes);
   if (!data || data.length < 56) return { streams: [], diagnostics: ['file too small for an MSF superblock'], complete: false };
+  if (byteBudget && !byteBudget.consume(56, 'MSF superblock')) {
+    return { streams: [], diagnostics: ['PDB byte budget exhausted while reading the MSF superblock'], complete: false };
+  }
   const magic = new TextDecoder('latin1').decode(data.subarray(0, MSF_MAGIC.length));
   if (magic !== MSF_MAGIC) return { streams: [], diagnostics: ['not an MSF 7.00 container'], complete: false };
 
@@ -167,7 +213,16 @@ export function parseMsf(bytes) {
   const directoryBlocks = [];
   for (let index = 0; index < directoryBlockCount; index += 1) {
     if ((index + 1) * 4 > mapBlock.length) break;
+    if (byteBudget && !byteBudget.consume(4, 'MSF directory block map')) {
+      return { streams: [], diagnostics: ['PDB byte budget exhausted while reading the MSF directory block map'], complete: false };
+    }
     directoryBlocks.push(mapView.getUint32(index * 4, true));
+  }
+  if (directoryBlocks.length * blockSize < numDirectoryBytes) {
+    return { streams: [], diagnostics: ['MSF stream directory is truncated'], complete: false };
+  }
+  if (byteBudget && !byteBudget.consume(numDirectoryBytes, 'MSF stream directory')) {
+    return { streams: [], diagnostics: ['PDB byte budget exhausted while reading the MSF stream directory'], complete: false };
   }
   const directory = concatBlocks(directoryBlocks, numDirectoryBytes);
   if (!directory) return { streams: [], diagnostics: ['MSF stream directory is truncated'], complete: false };
@@ -192,7 +247,16 @@ export function parseMsf(bytes) {
       blocks.push(directoryView.getUint32(cursor, true));
       cursor += 4;
     }
-    streams.push({ index, size: sizes[index], read: () => (sizes[index] === 0 ? new Uint8Array(0) : concatBlocks(blocks, sizes[index])) });
+    streams.push({
+      index,
+      size: sizes[index],
+      read: () => {
+        if (sizes[index] === 0) return new Uint8Array(0);
+        if (blocks.some((blockIndex) => blockIndex * blockSize + blockSize > data.length)) return null;
+        if (byteBudget && !byteBudget.consume(sizes[index], `MSF stream ${index}`)) return null;
+        return concatBlocks(blocks, sizes[index]);
+      },
+    });
   }
   return { streams, blockSize, diagnostics: [], complete: true };
 }
@@ -357,21 +421,19 @@ function sectionVirtualExtent(header) {
  * Records are length-prefixed, so an unrecognised kind can be skipped safely —
  * unlike DWARF forms, which have no self-describing length.
  */
-export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
-  const { maxRecords } = resolveDebugBudget(budget);
+function parseSymbolRecordsWithBudget(bytes, recordBudget, context) {
   const symbols = [];
   const unmodelled = new Set();
   if (!bytes) return { symbols, unmodelled, complete: false };
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let offset = 0;
-  let recordCount = 0;
-  while (offset + 4 <= bytes.length && recordCount < maxRecords) {
+  while (offset + 4 <= bytes.length) {
     const length = view.getUint16(offset, true);
     if (length < 2) break;
     const kind = view.getUint16(offset + 2, true);
     const end = offset + 2 + length;
     if (end > bytes.length) break;
-    recordCount += 1;
+    if (!recordBudget.consume(context)) break;
 
     // Fixed-field reads are confined to the record's own end (#1845): a short
     // known-kind record must fail closed instead of reading the next record's
@@ -425,9 +487,17 @@ export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   return { symbols, unmodelled, complete: offset >= bytes.length };
 }
 
-/** Walks the TPI stream's leaf records. */
-export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
+export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   const { maxRecords } = resolveDebugBudget(budget);
+  return parseSymbolRecordsWithBudget(
+    bytes,
+    createPdbRecordBudget(maxRecords),
+    'symbol record stream',
+  );
+}
+
+/** Walks the TPI stream's leaf records. */
+function parseTpiStreamWithBudget(bytes, recordBudget, context) {
   const types = new Map();
   const unmodelled = new Set();
   if (!bytes || bytes.length < 56) return { types, unmodelled, complete: false, firstIndex: 0x1000 };
@@ -457,12 +527,13 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   let index = firstIndex;
   let fieldListsComplete = true;
 
-  while (offset + 4 <= typeDataEnd && index - firstIndex < expectedCount && types.size < maxRecords) {
+  while (offset + 4 <= typeDataEnd && index - firstIndex < expectedCount) {
     const length = view.getUint16(offset, true);
     if (length < 2) break;
     const leaf = view.getUint16(offset + 2, true);
     const end = offset + 2 + length;
     if (end > typeDataEnd) break;
+    if (!recordBudget.consume(context)) break;
     const body = offset + 4;
 
     // Fixed-field reads are confined to the record's own end (#1845): a short
@@ -563,6 +634,15 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   };
 }
 
+export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
+  const { maxRecords } = resolveDebugBudget(budget);
+  return parseTpiStreamWithBudget(
+    bytes,
+    createPdbRecordBudget(maxRecords),
+    'TPI stream',
+  );
+}
+
 /**
  * CodeView numeric leaves: a value below 0x8000 is the value itself; otherwise
  * the value's width is encoded in the leaf.
@@ -649,8 +729,8 @@ function parseFieldList(view, bytes, start, end, unmodelled) {
 }
 
 /** Renders a TPI type index as a nominal name plus machine facts. */
-export function describeTypeIndex(index, types, depth = 0) {
-  if (depth > 16) return { name: 'unknown', complete: false };
+export function describeTypeIndex(index, types, depth = 0, maxDepth = DEBUG_DEFAULT_BUDGET.maxDepth) {
+  if (depth > maxDepth) return { name: 'unknown', complete: false };
   if (index < 0x1000) {
     const primitive = PRIMITIVE_TYPES[index];
     if (primitive) return { ...primitive, complete: true };
@@ -659,7 +739,7 @@ export function describeTypeIndex(index, types, depth = 0) {
     const mode = index & 0x0700;
     if (mode === 0x0400 || mode === 0x0500 || mode === 0x0600 || mode === 0x0700) {
       const widthBits = (mode === 0x0400 || mode === 0x0500) ? 32 : (mode === 0x0600) ? 64 : 128;
-      const target = describeTypeIndex(index & 0x00ff, types, depth + 1);
+      const target = describeTypeIndex(index & 0x00ff, types, depth + 1, maxDepth);
       const isKnown = target.name !== 'unknown' && target.complete;
       return {
         name: isKnown ? `${target.name} *` : 'unknown *',
@@ -681,7 +761,7 @@ export function describeTypeIndex(index, types, depth = 0) {
     };
   }
   if (record.kind === 'pointer') {
-    const target = describeTypeIndex(record.referent, types, depth + 1);
+    const target = describeTypeIndex(record.referent, types, depth + 1, maxDepth);
     const attrs = typeof record.attributes === 'number' ? record.attributes : 0;
     const sizeBytes = (attrs >> 13) & 0x3f;
     const pointerKind = attrs & 0x1f;
@@ -704,7 +784,7 @@ export function describeTypeIndex(index, types, depth = 0) {
     };
   }
   if (record.kind === 'modifier') {
-    const target = describeTypeIndex(record.underlying, types, depth + 1);
+    const target = describeTypeIndex(record.underlying, types, depth + 1, maxDepth);
     const modifiers = record.modifiers;
     const validModifiers = Number.isSafeInteger(modifiers) && modifiers >= 0 && modifiers <= 0xffff;
     const qualifiers = [];
@@ -719,7 +799,7 @@ export function describeTypeIndex(index, types, depth = 0) {
     return { ...target, name, complete: target.complete && !hasUnknownModifiers };
   }
   if (record.kind === 'procedure') {
-    const returns = describeTypeIndex(record.returnType, types, depth + 1);
+    const returns = describeTypeIndex(record.returnType, types, depth + 1, maxDepth);
     const argumentList = types.get(record.argumentList);
     const hasArgumentList = argumentList?.kind === 'arg-list'
       && argumentList.complete === true
@@ -737,7 +817,7 @@ export function describeTypeIndex(index, types, depth = 0) {
       }
     }
     const arguments_ = canonicalArgumentIndices
-      ? argumentList.arguments.map((argument) => describeTypeIndex(argument, types, depth + 1))
+      ? argumentList.arguments.map((argument) => describeTypeIndex(argument, types, depth + 1, maxDepth))
       : [];
     const validParameterCount = Number.isSafeInteger(record.parameterCount)
       && record.parameterCount >= 0 && record.parameterCount <= 0xffff;
@@ -757,7 +837,7 @@ export function describeTypeIndex(index, types, depth = 0) {
     };
   }
   if (record.kind === 'array') {
-    const element = describeTypeIndex(record.elementType, types, depth + 1);
+    const element = describeTypeIndex(record.elementType, types, depth + 1, maxDepth);
     return { name: `${element.name}[]`, sizeBytes: record.sizeBytes, class: 'array', complete: false };
   }
   return { name: 'unknown', complete: false };
@@ -812,6 +892,9 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     const expectedCodeView = image?.identity?.codeView ?? null;
     const pdbBytes = bytesOf(image?.pdbBytes);
     const diagnostics = [];
+    const resolvedBudget = resolveDebugBudget(budget);
+    const byteBudget = createPdbByteBudget(resolvedBudget.maxBytesScanned);
+    const recordBudget = createPdbRecordBudget(resolvedBudget.maxRecords);
 
     if (!pdbBytes) {
       return createDebugProviderResult({
@@ -830,17 +913,23 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       });
     }
 
-    const msf = parseMsf(pdbBytes);
+    const msf = parseMsf(pdbBytes, byteBudget);
     diagnostics.push(...msf.diagnostics);
     if (!msf.complete || msf.streams.length < 4) {
+      const budgetExhausted = byteBudget.exhausted;
+      const detail = budgetExhausted
+        ? `PDB byte budget exhausted while reading ${byteBudget.stopContext ?? 'the MSF container'}`
+        : 'the PDB container could not be read';
+      if (budgetExhausted && !diagnostics.includes(detail)) diagnostics.push(detail);
       return createDebugProviderResult({
         ecosystem: 'pdb',
         identity: {
-          verdict: 'unsupported', providerId: this.id, providerVersion: this.version,
-          method: 'codeview-guid-age', detail: 'the PDB container could not be read',
+          verdict: budgetExhausted ? 'identity-unavailable' : 'unsupported',
+          providerId: this.id, providerVersion: this.version,
+          method: 'codeview-guid-age', detail,
         },
         diagnostics,
-        status: status('unsupported', 'unsupported-input'),
+        status: budgetExhausted ? status('truncated', 'budget-exhausted') : status('unsupported', 'unsupported-input'),
       });
     }
 
@@ -869,7 +958,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     const symbolStream = dbi && dbi.symRecordStreamIndex < msf.streams.length
       ? msf.streams[dbi.symRecordStreamIndex].read()
       : null;
-    const symbols = parseSymbolRecords(symbolStream, budget);
+    const symbols = parseSymbolRecordsWithBudget(symbolStream, recordBudget, 'global symbol stream');
     // The DBI header is part of the identity/authority boundary: matching
     // CodeView and Info Stream data must not launder symbols from a missing or
     // truncated DBI into authoritative evidence (#6042).
@@ -927,7 +1016,11 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       // symbol range exactly [4, SymByteSize): SymByteSize == 4 is the valid
       // boundary meaning zero symbol bytes, not a cue to scan line info as
       // symbol records (#5276).
-      const moduleSymbols = parseSymbolRecords(moduleBytes.subarray(4, declaredSize), budget);
+      const moduleSymbols = parseSymbolRecordsWithBudget(
+        moduleBytes.subarray(4, declaredSize),
+        recordBudget,
+        `module symbol stream ${module.streamIndex}`,
+      );
       symbols.complete = symbols.complete && moduleSymbols.complete;
       for (const symbol of moduleSymbols.symbols) {
         if (symbol.kind !== 'procedure') continue;
@@ -936,9 +1029,25 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       for (const kind of moduleSymbols.unmodelled) symbols.unmodelled.add(kind);
     }
 
-    const tpi = parseTpiStream(msf.streams[2]?.read(), budget);
+    const tpi = parseTpiStreamWithBudget(msf.streams[2]?.read(), recordBudget, 'TPI stream');
     const sectionHeaders = parseSectionHeaders(findSectionHeaderStream(msf, dbi, dbiBytes));
     const imageBase = canonicalImageBase(image?.imageBase);
+
+    if (byteBudget.exhausted) {
+      const budgetDetail = `PDB byte budget exhausted while reading ${byteBudget.stopContext ?? 'PDB data'}`;
+      if (!diagnostics.includes(budgetDetail)) diagnostics.push(budgetDetail);
+      verdict = 'identity-unavailable';
+      detail = budgetDetail;
+      symbols.complete = false;
+      tpi.complete = false;
+    }
+
+    if (recordBudget.exhausted) {
+      const budgetDetail = `PDB record budget exhausted while reading ${recordBudget.stopContext ?? 'PDB records'}`;
+      if (!diagnostics.includes(budgetDetail)) diagnostics.push(budgetDetail);
+      symbols.complete = false;
+      tpi.complete = false;
+    }
 
     if (symbols.unmodelled.size) {
       diagnostics.push(`unmodelled CodeView symbol kinds: ${[...symbols.unmodelled].map((kind) => `0x${kind.toString(16)}`).slice(0, 8).join(', ')}`);
@@ -963,11 +1072,13 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       sections: ['pdb-info', 'dbi', 'tpi', 'symbol-records'],
       counts: { streams: msf.streams.length, symbols: symbols.symbols.length, types: tpi.types.size, modules: modules.length },
       diagnostics,
-      status: symbols.complete && tpi.complete && diagnostics.length === 0
-        ? status('complete', null)
-        : status('partial', 'evidence-missing'),
+      status: byteBudget.exhausted || recordBudget.exhausted
+        ? status('truncated', 'budget-exhausted')
+        : symbols.complete && tpi.complete && diagnostics.length === 0
+          ? status('complete', null)
+          : status('partial', 'evidence-missing'),
     });
-    return Object.freeze({ ...result, parsed: { info, dbi, symbols, tpi, sectionHeaders, imageBase } });
+    return Object.freeze({ ...result, parsed: { info, dbi, symbols, tpi, sectionHeaders, imageBase, maxDepth: resolvedBudget.maxDepth } });
   }
 
   symbols(result, { cursor = null, pageSize = DEBUG_DEFAULT_PAGE_SIZE } = {}) {
@@ -1024,7 +1135,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     // is the record the type graph can actually use.
     const typed = parsed.symbols.symbols.filter((symbol) => symbol.kind === 'procedure' && symbol.typeIndex);
     return page(typed, cursor, pageSize, (symbol) => {
-      const described = describeTypeIndex(symbol.typeIndex, parsed.tpi.types);
+      const described = describeTypeIndex(symbol.typeIndex, parsed.tpi.types, 0, parsed.maxDepth ?? DEBUG_DEFAULT_BUDGET.maxDepth);
       return createDebugRecord({
         kind: 'type',
         entityId: `pdb_sym_${symbol.recordOffset}`,
@@ -1059,7 +1170,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
         members: fields.members.map((member) => ({
           name: member.name,
           offset: member.offset,
-          type: describeTypeIndex(member.typeIndex, parsed.tpi.types),
+          type: describeTypeIndex(member.typeIndex, parsed.tpi.types, 0, parsed.maxDepth ?? DEBUG_DEFAULT_BUDGET.maxDepth),
         })),
       });
     }

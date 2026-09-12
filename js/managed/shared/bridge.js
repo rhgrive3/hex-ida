@@ -347,7 +347,7 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
           nodeKind = 'binary';
         } else if (managedMnemonicIsCompare(mn)) {
           nodeKind = 'compare';
-        } else if (mn.includes('const')) {
+        } else if (mn.includes('const') || (frontendId === 'jvm' && (mn === 'bipush' || mn === 'sipush'))) {
           nodeKind = 'const';
         } else {
           nodeKind = opOutputs.length > 0 ? 'unary' : 'barrier';

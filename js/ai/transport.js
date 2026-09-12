@@ -133,7 +133,7 @@ function readExternalAbortReason(signal) {
   }
 }
 
-async function readBoundedText(response, maxBytes, controller) {
+export async function readBoundedText(response, maxBytes, controller) {
   const body = response.body;
   if (body && typeof body.getReader === 'function') {
     const reader = body.getReader();
