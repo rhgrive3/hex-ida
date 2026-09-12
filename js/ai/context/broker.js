@@ -24,7 +24,9 @@ export class ContextBroker {
   }
 
   buildModelContext({ request, session, evidenceStore, hypotheses = [], observations = [], budgetBytes, snapshot = null, effectiveScope = null, includeHistory = true } = {}) {
-    const maxBytes = Math.min(this.maxBytes, boundedPositiveNumber(budgetBytes, this.maxBytes, 4096));
+    // Per-turn context budgets are hard ceilings and may be lower than the
+    // broker's 4 KiB configured-capacity floor (#5103).
+    const maxBytes = Math.min(this.maxBytes, boundedPositiveNumber(budgetBytes, this.maxBytes, 1));
     const scope = effectiveScope || request?.effectiveScope || request?.scope || 'auto';
     const context = {
       protocol: 'hex-ai-turn-v2',
