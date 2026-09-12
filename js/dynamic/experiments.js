@@ -34,6 +34,20 @@ function strictMachineInteger(value) {
   try { return BigInt(value.trim()); } catch { return null; }
 }
 
+export function validateCanonicalArguments(argumentsList) {
+  if (!Array.isArray(argumentsList)) throw new DebugAdapterError('invalid-experiment', 'experiment case arguments must be an array');
+  return argumentsList.map((value, index) => {
+    if (value == null) return 0n;
+    const canonical = strictMachineInteger(value);
+    if (canonical == null
+      || (typeof value === 'string' && value.trim() !== value)
+      || (typeof value === 'string' && !/^[+-]?(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(value))) {
+      throw new DebugAdapterError('invalid-experiment', `experiment case argument ${index} must be a bigint, safe integer, or strict integer string`);
+    }
+    return canonical;
+  });
+}
+
 function normalizeInteger(value, bits, signed) {
   const width = BigInt(bits);
   const mod = 1n << width;
@@ -219,13 +233,15 @@ export class HypothesisVerifier {
     if (maxCases < planned) reasons.push('max-cases');
     let cancelled = false, stoppedOnContradiction = false;
     for (const testCase of experiment.cases.slice(0,maxCases)) {
-      let observation;
+      let observation, launchCanonicalInput = null;
       if (options.signal && options.signal.aborted) {
         observation = { stop:{ kind:'cancelled', message:String(options.signal.reason || 'cancelled') }, memoryDelta:[], memoryAfter:[], returnValue:null };
       } else {
         const objectMemory = (testCase.initialState.fields || []).map((f) => ({ offset:f.offset, size:f.size, value:f.value }));
         try {
-          await this.adapter.launch({ address:experiment.functionAddress, arguments:testCase.input.arguments, objectBase:testCase.initialState.objectBase, objectMemory, watch:testCase.watch, memoryMappings:options.memoryMappings || [], globals:options.globals || [], maxObjectSize:options.maxObjectSize, traceMemoryReads:!!options.traceMemoryReads }, { signal:options.signal });
+          const canonicalArgs = validateCanonicalArguments(testCase.input?.arguments);
+          const launchResult = await this.adapter.launch({ address:experiment.functionAddress, arguments:canonicalArgs, objectBase:testCase.initialState.objectBase, objectMemory, watch:testCase.watch, memoryMappings:options.memoryMappings || [], globals:options.globals || [], maxObjectSize:options.maxObjectSize, traceMemoryReads:!!options.traceMemoryReads }, { signal:options.signal });
+          launchCanonicalInput = launchResult?.canonicalInput || null;
           observation = await this.adapter.resume({ maxSteps, timeoutMs, signal:options.signal });
         } catch (error) {
           const code = String(error && error.code || '');
@@ -236,7 +252,7 @@ export class HypothesisVerifier {
         }
       }
       const comparison = compareExpected(testCase, observation);
-      const evidence = this.evidenceFactory ? this.evidenceFactory({ experiment, testCase, observation, comparison }) : null;
+      const evidence = this.evidenceFactory ? this.evidenceFactory({ experiment, testCase, observation, comparison, launchCanonicalInput }) : null;
       results.push({ case:testCase, observation, comparison, evidence });
       if (comparison.status === 'unsupported' && observation.stop && observation.stop.kind === 'cancelled') { cancelled=true; reasons.push('cancelled'); break; }
       if (options.stopOnContradiction !== false && comparison.status === 'contradicted') { stoppedOnContradiction=true; reasons.push('stop-on-contradiction'); break; }
