@@ -79,9 +79,12 @@ export class EmulatorFault extends Error {
 }
 
 function normalizeMemorySize(size) {
-  const n = Number(size);
-  if (!Number.isSafeInteger(n) || n < 1 || n > 1024 * 1024) throw new EmulatorFault('invalid-memory-size', 'memory size must be an integer in 1..1048576', { size });
-  return n;
+  if (typeof size === 'bigint') {
+    if (size < 1n || size > 1048576n) throw new EmulatorFault('invalid-memory-size', 'memory size must be an integer in 1..1048576', { size });
+    return Number(size);
+  }
+  if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 1 || size > 1024 * 1024) throw new EmulatorFault('invalid-memory-size', 'memory size must be an integer in 1..1048576', { size });
+  return size;
 }
 
 export class Emulator {
