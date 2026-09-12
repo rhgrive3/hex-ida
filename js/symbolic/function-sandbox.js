@@ -224,7 +224,7 @@ export class FunctionSandbox {
     for (const item of o.stackMemory || []) {
       throwIfCancelled();
       if (!item) continue;
-      await this.emulator.store(this.emulator.sp + asBig(item.offset || 0), Number(item.size || 8), asBig(item.value));
+      await this.emulator.store(this.emulator.sp + asBig(item.offset || 0), memoryWriteSize(item.size, 'stackMemory size'), asBig(item.value));
     }
     throwIfCancelled();
     for (const bp of o.breakpoints || []) this.emulator.breakpoints.add(asBig(bp).toString());
