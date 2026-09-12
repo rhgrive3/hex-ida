@@ -172,6 +172,13 @@ function resolveJvmLdcConstant(jvmClass, cpIndex, isCategory2) {
   }
 }
 
+function resolveJvmReferenceOperand(jvmClass, cpIndex, expectedTags) {
+  const pool = jvmClass.constantPool;
+  if (!Array.isArray(pool) || !Number.isInteger(cpIndex) || cpIndex <= 0 || cpIndex >= pool.length) return false;
+  const entry = pool[cpIndex];
+  return !!entry && expectedTags.includes(entry.tag);
+}
+
 // JVM local opcodes already carry definitive float/double authority in the
 // bytecode grammar. Preserve that authority at the first VMEffect projection
 // so the shared bridge never has to guess from width alone (#7971).
@@ -611,10 +618,19 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           if (opcode === 0xb9) pc += 2; // skip count, 0
           const kinds = { 0xb6: 'virtual', 0xb7: 'special', 0xb8: 'static', 0xb9: 'interface' };
           mnemonic = `invoke${kinds[opcode]}`;
-          callEffects.push({
-            cpIndex: methIdx,
-            dispatchKind: kinds[opcode],
-          });
+          const methodRefTag = opcode === 0xb9 ? 11 : 10;
+          if (resolveJvmReferenceOperand(jvmClass, methIdx, [methodRefTag])) {
+            callEffects.push({
+              cpIndex: methIdx,
+              dispatchKind: kinds[opcode],
+            });
+          } else {
+            completeness = 'partial';
+            unknownEffects.push({
+              category: 'calls',
+              reason: `jvm-method-reference-unresolved:${methIdx}`,
+            });
+          }
         }
         break;
 
@@ -623,8 +639,16 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const classIdx = view.getUint16(pc, false);
           pc += 2;
           mnemonic = 'new';
-          producedValues.push({ bits: 64, cpClassIndex: classIdx });
-          currentStackHeight++;
+          if (resolveJvmReferenceOperand(jvmClass, classIdx, [7])) {
+            producedValues.push({ bits: 64, cpClassIndex: classIdx });
+            currentStackHeight++;
+          } else {
+            completeness = 'partial';
+            unknownEffects.push({
+              category: 'types',
+              reason: `jvm-class-reference-unresolved:${classIdx}`,
+            });
+          }
         }
         break;
 
@@ -648,7 +672,13 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           // is real control-affecting behaviour the bundle does not model as
           // control flow, so checkcast fails closed to partial.
           consumedValues.push({ id: 'obj' });
-          if (opcode === 0xc1) {
+          if (!resolveJvmReferenceOperand(jvmClass, classIdx, [7])) {
+            completeness = 'partial';
+            unknownEffects.push({
+              category: 'types',
+              reason: `jvm-class-reference-unresolved:${classIdx}`,
+            });
+          } else if (opcode === 0xc1) {
             producedValues.push({ bits: 32, cpClassIndex: classIdx });
           } else {
             producedValues.push({ id: 'obj-refined', bits: 64, cpClassIndex: classIdx });

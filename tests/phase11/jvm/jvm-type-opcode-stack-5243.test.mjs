@@ -54,9 +54,9 @@ function bundleOf(vmFn, opcode) {
   return vmFn.bundles.find((b) => b.opcode === opcode);
 }
 
-// aconst_null (0x01), instanceof #1 (0xc1), ireturn (0xac)
+// aconst_null (0x01), instanceof #2 Class (0xc1), ireturn (0xac)
 test('#5243 instanceof consumes the objectref and produces only the int result', () => {
-  const vmFn = liftJvmMethod(0, parseJvm(buildClass(1, [0x01, 0xc1, 0x00, 0x01, 0xac])));
+  const vmFn = liftJvmMethod(0, parseJvm(buildClass(1, [0x01, 0xc1, 0x00, 0x02, 0xac])));
   const instanceofBundle = bundleOf(vmFn, 0xc1);
 
   assert.equal(instanceofBundle.consumedValues.length, 1,
@@ -69,9 +69,9 @@ test('#5243 instanceof consumes the objectref and produces only the int result',
   assert.equal(vmFn.aggregateCompleteness, 'exact');
 });
 
-// aload_0 (0x2a), checkcast #1 (0xc0), areturn (0xb0)
+// aload_0 (0x2a), checkcast #2 Class (0xc0), areturn (0xb0)
 test('#5243 checkcast consumes and re-publishes the objectref with a def-use edge', () => {
-  const vmFn = liftJvmMethod(0, parseJvm(buildClass(1, [0x2a, 0xc0, 0x00, 0x01, 0xb0])));
+  const vmFn = liftJvmMethod(0, parseJvm(buildClass(1, [0x2a, 0xc0, 0x00, 0x02, 0xb0])));
   const checkcastBundle = bundleOf(vmFn, 0xc0);
 
   assert.equal(checkcastBundle.consumedValues.length, 1,
@@ -87,7 +87,7 @@ test('#5243 checkcast consumes and re-publishes the objectref with a def-use edg
 
 // Both opcodes are stack-neutral in the verifier sense: pop 1, push 1.
 test('#5243 both type opcodes are stack-neutral in the bridge model', () => {
-  const vmFn = liftJvmMethod(0, parseJvm(buildClass(1, [0x01, 0xc1, 0x00, 0x01, 0x57, 0xb1])));
+  const vmFn = liftJvmMethod(0, parseJvm(buildClass(1, [0x01, 0xc1, 0x00, 0x02, 0x57, 0xb1])));
   const front = new JvmFrontend();
   const lowerable = front.canLower?.(vmFn) ?? true;
   assert.ok(lowerable, 'the frontend must still accept the lifted function');
@@ -99,7 +99,7 @@ test('#5243 both type opcodes are stack-neutral in the bridge model', () => {
 // The stale-value regression from the issue: after instanceof the bridge must
 // see the same stack height the JVM verifier has (result replaced the ref).
 test('#5243 bridge stack height matches JVM verifier semantics after instanceof', () => {
-  const vmFn = liftJvmMethod(0, parseJvm(buildClass(1, [0x01, 0xc1, 0x00, 0x01, 0xac])));
+  const vmFn = liftJvmMethod(0, parseJvm(buildClass(1, [0x01, 0xc1, 0x00, 0x02, 0xac])));
   const front = new JvmFrontend();
   if (typeof front.lower !== 'function') return; // frontend wiring differs; bundle assertions above cover the contract
   const lowered = front.lower(vmFn);
