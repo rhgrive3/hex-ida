@@ -21,6 +21,11 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     try { return utf8.decode(bytes.subarray(start, pos)); }
     catch { fail('cil-invalid-strings-utf8'); }
   };
+  const requiredText = (value, code) => {
+    const valueText = text(value);
+    if (valueText == null || valueText.length === 0) fail(code);
+    return valueText;
+  };
   const readRows = (table, decode) => Array.from({ length: counts[table] }, (_, i) => {
     const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
     return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
@@ -65,6 +70,49 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
       rawSignature, signature,
     };
   }) : [];
+  const resolutionScopeSize = codedIndexSize(counts, [0x00, 0x1a, 0x23, 0x01], 2);
+  const resolutionScopeTables = [0x00, 0x1a, 0x23, 0x01];
+  const typeRefs = readRows(0x01, pos => {
+    const scope = index(pos, resolutionScopeSize);
+    let resolutionScope = null;
+    if (scope !== 0) {
+      const table = resolutionScopeTables[scope & 3], rid = Math.floor(scope / 4);
+      if (table == null || rid < 1 || rid > counts[table]) fail('cil-typeref-resolution-scope-invalid');
+      resolutionScope = { table, rid, token: cilMetadataToken(table, rid) };
+    }
+    return {
+      resolutionScope,
+      name: requiredText(index(pos + resolutionScopeSize, s), 'cil-typeref-name-required'),
+      namespace: text(index(pos + resolutionScopeSize + s, s)) ?? '',
+    };
+  });
+  const assemblyRefs = readRows(0x23, pos => {
+    const publicKeyOrTokenBlobIndex = index(pos + 12, b);
+    const hashValueBlobIndex = index(pos + 12 + b + s * 2, b);
+    let publicKeyOrToken = null;
+    if (publicKeyOrTokenBlobIndex !== 0) {
+      if (!blobHeap) fail('cil-assembly-ref-public-key-blob-missing');
+      publicKeyOrToken = readCilMetadataBlob(blobHeap, publicKeyOrTokenBlobIndex, 'cil-assembly-ref-public-key-blob-invalid');
+    }
+    let hashValue = null;
+    if (hashValueBlobIndex !== 0) {
+      if (!blobHeap) fail('cil-assembly-ref-hash-value-blob-missing');
+      hashValue = readCilMetadataBlob(blobHeap, hashValueBlobIndex, 'cil-assembly-ref-hash-value-blob-invalid');
+    }
+    return {
+      majorVersion: view.getUint16(pos, true),
+      minorVersion: view.getUint16(pos + 2, true),
+      buildNumber: view.getUint16(pos + 4, true),
+      revisionNumber: view.getUint16(pos + 6, true),
+      flags: view.getUint32(pos + 8, true),
+      publicKeyOrTokenBlobIndex,
+      publicKeyOrToken,
+      name: requiredText(index(pos + 12 + b, s), 'cil-assembly-ref-name-required'),
+      culture: text(index(pos + 12 + b + s, s)),
+      hashValueBlobIndex,
+      hashValue,
+    };
+  });
   const types = readRows(2, pos => {
     const base = index(pos + 4 + s * 2, extendsSize), table = [2, 1, 0x1b][base & 3], rid = Math.floor(base / 4);
     if (base !== 0 && (table == null || rid < 1 || rid > counts[table])) fail('cil-typedef-extends-invalid');
@@ -73,6 +121,7 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
       namespace: text(index(pos + 4 + s, s)) ?? '',
       extendsToken: base === 0 ? null : cilMetadataToken(table, rid),
       extendsTypeSpecRid: base !== 0 && table === 0x1b ? rid : null,
+      extendsTypeRefRid: base !== 0 && table === 0x01 ? rid : null,
       fieldList: index(pos + 4 + s * 2 + extendsSize, tableIndexSize(counts, 4)),
       methodList: index(pos + 4 + s * 2 + extendsSize + tableIndexSize(counts, 4), tableIndexSize(counts, 6)),
     };
@@ -83,6 +132,10 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     if (type.extendsTypeSpecRid != null) {
       type.extendsTypeSpec = typeSpecs[type.extendsTypeSpecRid - 1];
       delete type.extendsTypeSpecRid;
+    }
+    if (type.extendsTypeRefRid != null) {
+      type.extendsTypeRef = typeRefs[type.extendsTypeRefRid - 1];
+      delete type.extendsTypeRefRid;
     }
   }
   // Manifest assembly (0x20): this row is the defining assembly's identity
@@ -500,5 +553,5 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     field.rva = row.rva;
   }
 
-  return { types, methods, fields, manifestResources, typeSpecs, assembly, params, properties, events, methodSemantics, interfaceImpls, methodImpls, implMaps, moduleRefs, fieldRvas };
+  return { types, methods, fields, manifestResources, typeSpecs, typeRefs, assemblyRefs, assembly, params, properties, events, methodSemantics, interfaceImpls, methodImpls, implMaps, moduleRefs, fieldRvas };
 }
