@@ -69,6 +69,12 @@ function run() {
     () => createAssumption({ id: 'a', kind: 'k', statement: 's', originIds: new Array(1) }),
     TypeError,
   );
+  const forgedMap = [{ value: 'inst-1' }];
+  forgedMap.map = () => ['forged-by-map'];
+  assert.throws(
+    () => createAssumption({ id: 'a', kind: 'k', statement: 's', originIds: forgedMap }),
+    TypeError,
+  );
   assert.throws(
     () => createAssumption({ id: 'a', kind: 'k', statement: 's', originIds: [['inst-1']] }),
     TypeError,
