@@ -282,7 +282,7 @@ function plainNodeToExpr(plain, depth = 0, budget = { nodes: 0 }) {
       return createCompare(plain.op, plainNodeToExpr(plain.left, depth + 1, budget), plainNodeToExpr(plain.right, depth + 1, budget));
 
     case EXPR_KIND.CONNECTIVE:
-      return createConnective(plain.op, ...plain.args.map((arg) => plainNodeToExpr(arg, depth + 1, budget)));
+      return createConnective(plain.op, plain.args.map((arg) => plainNodeToExpr(arg, depth + 1, budget)));
 
     case EXPR_KIND.ITE:
       return createIte(plainNodeToExpr(plain.cond, depth + 1, budget), plainNodeToExpr(plain.thenExpr, depth + 1, budget), plainNodeToExpr(plain.elseExpr, depth + 1, budget));
