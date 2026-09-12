@@ -39,6 +39,18 @@ expectError(validatePatchRange(region, 0x1000n, '8', FILE, false), "numeric stri
 expectError(validatePatchRange(region, 0x1000n, [8], FILE, false), 'array [8] non-instruction patch');
 expectError(validatePatchRange(region, 0x1000n, true, FILE, false), 'boolean true non-instruction patch');
 
+// Reject typed and hostile objects without invoking coercion hooks.
+let coercions = 0;
+const hostile = { valueOf() { coercions++; throw new Error('length must not be coerced'); } };
+const boxed = new Number(4);
+boxed.valueOf = () => { coercions++; return 4; };
+for (const instruction of [true, false]) {
+  for (const [label, value] of [['symbol', Symbol('length')], ['hostile valueOf', hostile], ['boxed number', boxed]]) {
+    expectError(validatePatchRange(region, 0x1000n, value, FILE, instruction), `${label}, instruction=${instruction}`);
+  }
+}
+assert.equal(coercions, 0, 'invalid lengths must not invoke coercion hooks');
+
 // 4. Existing range/alignment/file-size checks stay intact.
 expectError(validatePatchRange(region, 0x1002n, 4, FILE, true), 'misaligned address');
 expectError(validatePatchRange(region, 0x1000n, 8, FILE, true), 'instruction length != 4');
