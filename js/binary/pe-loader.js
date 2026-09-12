@@ -1,4 +1,5 @@
 import { functionSeed } from './model.js';
+import { parseArmntExceptionFunctions } from './pe-armnt-exception.js';
 import {
   createPEMetadataBudget,
   mappedFileRangeForRva,
@@ -107,7 +108,7 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
   const directorySize = dir.size;
   const recordSize = machine === 0x8664
     ? 12
-    : (machine === 0xaa64 || machine === 0xa641 ? 8 : null);
+    : (machine === 0x01c4 || machine === 0xaa64 || machine === 0xa641 ? 8 : null);
   const validDirectorySize = typeof directorySize === 'number'
     && Number.isSafeInteger(directorySize)
     && directorySize >= 0;
@@ -122,7 +123,9 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
       `PE exception directory size ${directorySize} is not a multiple of ${recordSize}`,
     );
   }
-  const result = parseExceptionFunctionsCore(r, dir, image, machine, budget);
+  const result = machine === 0x01c4
+    ? parseArmntExceptionFunctions(r, dir, image, budget)
+    : parseExceptionFunctionsCore(r, dir, image, machine, budget);
   const invalidAfter = image.metadata?.exceptionDirectory?.invalidRecords || 0;
   if (invalidAfter > invalidBefore) {
     budget.partial(
