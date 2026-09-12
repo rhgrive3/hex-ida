@@ -132,8 +132,18 @@ export function createUnknownSemantic(sort, reason, detail = null) {
     kind: EXPR_KIND.UNKNOWN_SEMANTIC,
     sort,
     reason,
-    detail: detail ? Object.freeze(JSON.parse(JSON.stringify(detail))) : null,
+    detail: detail ? deepFreezeCanonical(detail) : null,
   });
+}
+
+function deepFreezeCanonical(detail) {
+  const canonical = JSON.parse(JSON.stringify(detail));
+  const freeze = (value) => {
+    if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+    for (const child of Object.values(value)) freeze(child);
+    return Object.freeze(value);
+  };
+  return freeze(canonical);
 }
 
 export function createUnary(op, arg) {
