@@ -120,3 +120,27 @@ test('v8 ownership is wired in both CircleCI and permanent exact-SHA fallbacks',
     assert.ok(fallback.includes(`node tools/validation/${phase}-ownership.mjs --files-json`));
   }
 });
+
+test('ME-01 matrix owns exact validation paths without claiming sibling semantic producers', () => {
+  const manifest = loadRoadmapManifest();
+  const assignments = validateRoadmapManifest(manifest);
+  const files = [
+    'tools/validation/machine-effects/ordering-undefined-matrix.mjs',
+    'tests/machine-effects/ordering-undefined-matrix.test.mjs',
+    'docs/analysis-improvement-finding-ledger.md',
+    ...['spec', 'tasks', 'plan', 'research', 'data-model', 'quickstart']
+      .map((name) => `specs/003-oracle-mask-matrix/${name}.md`),
+  ];
+  for (const file of files) {
+    assert.equal(assignments.get(file), 'integration');
+    const missing = structuredClone(manifest);
+    missing.owners.integration = missing.owners.integration.filter((path) => path !== file);
+    assert.throws(() => validateRoadmapInventory(BRANCH, 'phase8', [...assignments.keys()], missing), /undeclared roadmap path/);
+  }
+  for (const file of ['tools/validation/machine-effects/external-oracles.mjs',
+    'js/semantics/ir/from-machine-effects.js', 'specs/003-oracle-mask-matrix/unreviewed.md']) {
+    const widened = structuredClone(manifest);
+    widened.owners.integration.push(file);
+    assert.throws(() => validateRoadmapManifest(widened), /outside integration owner/);
+  }
+});
