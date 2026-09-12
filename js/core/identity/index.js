@@ -109,6 +109,10 @@ function compareCanonicalWitnessParts(left, right) {
     || compareCanonicalText(stableStringify(left.witness), stableStringify(right.witness));
 }
 
+export function sameCanonicalIdentityValue(left, right) {
+  return compareCanonicalWitnessParts(canonicalWitnessParts(left), canonicalWitnessParts(right)) === 0;
+}
+
 function canonicalMapEntries(value, seen = new WeakSet()) {
   const entries = [...value.entries()].map(([key, entryValue]) => ({
     key,
@@ -388,7 +392,7 @@ export function validateCanonicalIdentityNumbers(value, seen = new WeakSet()) {
   seen.delete(value);
 }
 
-function normalizeIdentity(value, code) {
+export function normalizeIdentity(value, code) {
   if (value == null) fail(code);
   validateCanonicalIdentityNumbers(value);
   if (typeof value === 'bigint' || typeof value === 'number') return String(value);
