@@ -13,7 +13,7 @@
  * `completeness: 'complete'` cannot coexist.
  */
 
-import { deepFreeze, stableDigest } from '../../core/identity/index.js';
+import { deepFreeze, lossyTypeWitness, stableDigest } from '../../core/identity/index.js';
 import { aliasMemoryRegions } from '../alias/legacy-safety-floor.js';
 import { deriveMemoryRegion, isPreciseMemoryRegion } from '../alias/regions-v2.js';
 import { createAnalysisStatus, isCompleteStatus } from '../status.js';
@@ -464,6 +464,8 @@ export function functionSummaryDigest(summary) {
   // The digest is the semantic dependency identity. Every consumer-visible
   // FunctionSummary field belongs here; otherwise a callee can change meaning
   // without invalidating callers or advancing a recursive fixed point.
+  const escapesTypes = lossyTypeWitness(summary.escapes);
+  const semanticFactsTypes = lossyTypeWitness(summary.semanticFacts);
   return stableDigest({
     schemaVersion: summary.schemaVersion,
     contractVersion: summary.contractVersion,
@@ -475,6 +477,7 @@ export function functionSummaryDigest(summary) {
     memoryReadRegions: summary.memoryReadRegions,
     memoryWriteRegions: summary.memoryWriteRegions,
     escapes: summary.escapes,
+    ...(escapesTypes ? { escapesTypes } : {}),
     allocations: summary.allocations,
     frees: summary.frees,
     directCalls: summary.directCalls,
@@ -484,6 +487,7 @@ export function functionSummaryDigest(summary) {
     mayThrow: summary.mayThrow,
     stackDelta: summary.stackDelta,
     semanticFacts: summary.semanticFacts,
+    ...(semanticFactsTypes ? { semanticFactsTypes } : {}),
     // Status provenance and identity are part of the published summary state.
     // Hash the canonical envelope as one unit so a future status field cannot
     // be silently omitted from dependency identity / fixed-point convergence.
