@@ -121,7 +121,8 @@ export class Emulator {
   }
 
   _normalizeReg(reg) {
-    const name = String(reg || '').toLowerCase();
+    if (typeof reg !== 'string') throw new EmulatorFault('invalid-register', 'register selector must be a string', { register: reg });
+    const name = reg.toLowerCase();
     if (name === 'fp') return 'x29';
     if (name === 'lr') return 'x30';
     return name;
