@@ -387,7 +387,7 @@ function signMaskExpression(bits, { logical = false, wrongCount = false, indepen
     before:E.createBinary('and',input,E.createUnary('not',shifted)) };
 }
 
-function assertSignMaskIdiomAudit(audit, queryHash) {
+function assertIdiomAudit(audit, queryHash, idiom = 'recognize-max') {
   assert.ok(audit,'the real recognizer-only candidate must retain its generator observation');
   assert.equal(audit.strategy,'representation-rules');
   assert.equal(audit.schemaVersion,'hex-phase8-generator-audit/v1');
@@ -396,8 +396,8 @@ function assertSignMaskIdiomAudit(audit, queryHash) {
   assert.deepEqual(audit.ruleTrace,[],'recognizer work is not a fabricated DEFAULT_RULES application');
   assert.deepEqual(audit.appliedRules,[]);
   assert.deepEqual(audit.ruleApplications,{});
-  assert.deepEqual(audit.idiomTrace,['recognize-max']);
-  assert.deepEqual(audit.idiomApplications,{'recognize-max':1});
+  assert.deepEqual(audit.idiomTrace,[idiom]);
+  assert.deepEqual(audit.idiomApplications,{[idiom]:1});
   assert.equal(audit.rewriteResources.applications,audit.ruleTrace.length + audit.idiomTrace.length);
   for (const item of [audit,audit.idiomTrace,audit.idiomApplications]) assert.ok(Object.isFrozen(item));
   assert.equal(readRepresentationGeneratorAudit({...audit}),null);
@@ -424,7 +424,7 @@ for (const bits of [4,8]) test(`C4-04 recognizer-only sign-mask BV${bits} reache
   assert.notEqual(E.computeStructuralHash(candidate.after),E.computeStructuralHash(f.before));
   assert.equal(candidate.eligible,true,candidate.verification.reason);
   assert.equal(isAdoptableCandidate(candidate.verification,{identity}),true);
-  assertSignMaskIdiomAudit(audit,candidate.verification.evidence.queryHash);
+  assertIdiomAudit(audit,candidate.verification.evidence.queryHash);
   assert.equal(audit.candidateId,candidate.candidateId);
   assert.equal(readRepresentationGeneratorAudit({...candidate}),null);
   for (let i=0;i<2**bits;i++) {
@@ -455,7 +455,7 @@ test('C4-04 idiom and ordinary rules retain separate phases, traces and one shar
   assert.equal(audit.rewriteResources.applications,audit.ruleTrace.length + audit.idiomTrace.length);
   assert.ok(audit.rewriteResources.applications <= audit.rewriteLimits.maxApplications);
   assert.equal(r.ruleCoverage.registered,64);
-  assert.equal(r.idiomCoverage.registered,1);
+  assert.equal(r.idiomCoverage.registered,REPRESENTATION_IDIOMS.length);
   for (const [coverage,applications] of [[r.ruleCoverage,audit.ruleApplications],[r.idiomCoverage,audit.idiomApplications]]) {
     for (const row of coverage.rows) assert.equal(row.candidateApplications,applications[row.name] ?? 0);
   }
@@ -500,7 +500,7 @@ test('C4-04 recognizer-only candidate requests preserve unknown and reject copie
   const r = await query(f.before,f.symbols,{generatorAudit:fake});
   assert.equal(r.status,'complete',r.reason); assert.equal(r.candidates.length,1);
   const audit = readRepresentationGeneratorAudit(r.candidates[0]);
-  assertSignMaskIdiomAudit(audit,r.candidates[0].verification.evidence.queryHash);
+  assertIdiomAudit(audit,r.candidates[0].verification.evidence.queryHash);
   assert.notEqual(audit,fake);
   assert.throws(() => { audit.idiomTrace.push('recognize-forged'); },TypeError);
   assert.throws(() => { audit.idiomApplications['recognize-max'] = 2; },TypeError);
@@ -552,7 +552,7 @@ for (const bits of [4,8]) test(`C4-04 sign-mask BV${bits} adopts only through th
   assert.ok(transform,'the eligible proposal must reach the real committed and rendered transform');
   assert.equal(transform.kind,'solver-scalar');
   assert.notEqual(transform.beforeHash,transform.afterHash);
-  assertSignMaskIdiomAudit(transform.generatorAudit,decision.queryHash);
+  assertIdiomAudit(transform.generatorAudit,decision.queryHash);
   assert.ok(r.renderProvenance.ledger.some(row => row.generatorAudit === transform.generatorAudit && row.producedRefs.length));
   const after = r.semanticAst.values.find(row => row.valueId === f.target.id).expression;
   assert.equal(after.bits,bits); assert.notEqual(after,original);
@@ -588,5 +588,229 @@ test('C4-04 unknown, exhausted and stale sign-mask requests retain the exact pre
   const r = await optimizeSemanticDecompilation(f.result,f.options);
   assert.equal(r.proofOptimization.status,'partial'); assert.equal(r.proofOptimization.adopted,0);
   assert.equal(r.proofOptimization.reason,'unissued-or-stale-projection');
+  assert.equal(r.cAst,f.result.cAst); assert.equal(r.pseudocode,f.result.pseudocode);
+});
+
+// Genuine generic targets; the smaller extraction field is an explicit
+// intermediate operation, never a narrowed substitute for the target's proof.
+function shiftMaskShape(bits) {
+  const offset = bits === 4 ? 1 : 2, fieldWidth = bits === 4 ? 2 : 3;
+  return {offset,fieldWidth,mask:(1n << BigInt(fieldWidth)) - 1n};
+}
+function shiftMaskExpression(bits, { operator = 'lshr', offset, mask, variableOffset = false } = {}) {
+  const shape = shiftMaskShape(bits), input = E.createFreshSymbol(E.bvSort(bits),'field_input');
+  const count = variableOffset ? E.createFreshSymbol(E.bvSort(bits),'field_offset')
+    : E.createBv(bits,BigInt(offset ?? shape.offset));
+  const selectedMask = mask ?? shape.mask;
+  return {input,offset:offset ?? shape.offset,mask:selectedMask,symbols:variableOffset ? [input,count] : [input],
+    before:E.createBinary('and',E.createBinary(operator,input,count),E.createBv(bits,selectedMask))};
+}
+
+for (const bits of [4,8]) test(`C4-04 shift-mask BV${bits} independent candidate preserves the complete target width`, async () => {
+  const f = shiftMaskExpression(bits), r = await query(f.before,f.symbols);
+  assert.equal(r.status,'complete',r.reason);
+  // Baseline v4 has no matching ordinary rule and declines bit_extract idioms.
+  // Keep the expected zero-to-one behavioral failure ahead of new audit checks.
+  assert.equal(r.candidates.length,1,`BV${bits}: a valid shift-mask recognizer result must become a candidate`);
+  assert.deepEqual(REPRESENTATION_IDIOMS.map(row => row.name).sort(),['recognize-bit_extract','recognize-max']);
+  assert.equal(r.ruleCoverage.registered,64);
+  assert.ok(r.ruleCoverage.rows.every(row => row.candidateApplications === 0));
+  const [candidate] = r.candidates, audit = readRepresentationGeneratorAudit(candidate);
+  assert.equal(candidate.before,f.before); assert.equal(candidate.after.sort.width,bits);
+  assert.notEqual(E.computeStructuralHash(candidate.after),E.computeStructuralHash(f.before));
+  assert.equal(candidate.eligible,true,candidate.verification.reason);
+  assert.equal(isAdoptableCandidate(candidate.verification,{identity}),true);
+  assert.deepEqual(candidate.idioms,['recognize-bit_extract']);
+  assertIdiomAudit(audit,candidate.verification.evidence.queryHash,'recognize-bit_extract');
+  assert.equal(audit.candidateId,candidate.candidateId);
+  const row = r.idiomCoverage.rows.find(row => row.name === 'recognize-bit_extract');
+  assert.equal(row.candidateApplications,1); assert.equal(row.disposition,'proved-candidate');
+  assert.equal(readRepresentationGeneratorAudit({...candidate}),null);
+  for (let i=0;i<2**bits;i++) {
+    const value = BigInt(i), expected = (value >> BigInt(f.offset)) & f.mask;
+    const environment = new Map([[f.input.symbolId,value]]);
+    for (const [label,expression] of [['before',f.before],['after',candidate.after]]) {
+      const actual = E.evaluateExpr(expression,environment);
+      assert.equal(actual.status,E.EVAL_STATUS.VALUE);
+      assert.equal(actual.value,expected,`BV${bits}: ${label} ${value}`);
+    }
+  }
+});
+
+test('C4-04 shift-mask extraction bounds preserve existing zero and full-mask rule candidates', async () => {
+  for (const bits of [4,8]) {
+    for (const [mask,rule] of [[0n,'and-zero-right'],[(1n << BigInt(bits)) - 1n,'and-full-mask']]) {
+      const f = shiftMaskExpression(bits,{mask}), r = await query(f.before,f.symbols);
+      assert.equal(r.status,'complete',`${bits}/${rule}:${r.reason}`);
+      assert.equal(r.candidates.length,1,'an unrepresentable extraction must not suppress the existing ordinary rule');
+      const [candidate] = r.candidates, audit = readRepresentationGeneratorAudit(candidate);
+      assert.equal(candidate.eligible,true,candidate.verification.reason);
+      assertGeneratorAudit(audit,candidate.verification.evidence.queryHash);
+      assert.deepEqual(audit.ruleTrace,[rule]); assert.deepEqual(audit.idiomTrace,[]);
+      assert.deepEqual(candidate.idioms,[]); assert.equal(candidate.after.sort.width,bits);
+      for (let i=0;i<2**bits;i++) {
+        const value = BigInt(i), actual = E.evaluateExpr(candidate.after,new Map([[f.input.symbolId,value]]));
+        assert.equal(actual.status,E.EVAL_STATUS.VALUE);
+        assert.equal(actual.value,(value >> BigInt(f.offset)) & mask);
+      }
+    }
+    // Both source expressions are legal BV. Their apparent extraction would
+    // cross or start beyond the input width, so leave the recognizer unselected.
+    for (const offset of [bits - 1,bits]) {
+      const f = shiftMaskExpression(bits,{offset}), r = await query(f.before,f.symbols);
+      assert.equal(r.status,'complete',`${bits}/${offset}:${r.reason}`);
+      assert.deepEqual(r.candidates,[]);
+      assert.ok(r.idiomCoverage.rows.every(row => row.candidateApplications === 0));
+    }
+  }
+});
+
+test('C4-04 shift-mask nonmatches and unknown candidate requests cannot issue extraction proof', async () => {
+  for (const options of [{operator:'shl'},{mask:5n},{variableOffset:true}]) {
+    const f = shiftMaskExpression(8,options), r = await query(f.before,f.symbols);
+    assert.equal(r.status,'complete',r.reason); assert.deepEqual(r.candidates,[]);
+    assert.ok(r.idiomCoverage.rows.every(row => row.candidateApplications === 0));
+  }
+  const f = shiftMaskExpression(4);
+  for (const options of [{limits:{candidates:0}},{timeoutMs:0},{isCancelled:() => true}]) {
+    const r = await query(f.before,f.symbols,options);
+    assert.equal(r.status,'partial'); assert.deepEqual(r.candidates,[]);
+    assert.equal(readRepresentationGeneratorAudit(r),null);
+    assert.ok(r.idiomCoverage.rows.every(row => row.disposition === 'unknown' && row.candidateApplications === 0));
+  }
+});
+
+test('C4-04 nested shift-mask proposals compose through existing ordinary rules and one proof', async () => {
+  const input = E.createFreshSymbol(E.bvSort(8),'nested_field');
+  const inner = E.createBinary('and',E.createBinary('lshr',input,E.createBv(8,1n)),E.createBv(8,15n));
+  const outer = E.createBinary('and',E.createBinary('lshr',inner,E.createBv(8,1n)),E.createBv(8,3n));
+  const before = E.createBinary('xor',outer,E.createBv(8,0n)), r = await query(before,[input]);
+  assert.equal(r.status,'complete',r.reason); assert.equal(r.candidates.length,1);
+  const [candidate] = r.candidates, audit = readRepresentationGeneratorAudit(candidate);
+  assert.equal(candidate.eligible,true,candidate.verification.reason); assert.equal(candidate.after.sort.width,8);
+  assert.equal(isAdoptableCandidate(candidate.verification,{identity}),true);
+  assert.deepEqual(audit.idiomTrace,['recognize-bit_extract','recognize-bit_extract']);
+  assert.deepEqual(audit.idiomApplications,{'recognize-bit_extract':2});
+  // Width-restoring extensions separate the slices, so direct nested-extract
+  // collapse is intentionally inapplicable. Record only the observed rule.
+  assert.deepEqual(audit.ruleTrace,['xor-zero-right']);
+  assert.deepEqual(audit.ruleApplications,{'xor-zero-right':1});
+  assert.equal(audit.rewriteResources.applications,audit.idiomTrace.length + audit.ruleTrace.length);
+  assert.equal(audit.proofQueryHash,candidate.verification.evidence.queryHash);
+  assert.ok(audit.rewriteResources.applications <= audit.rewriteLimits.maxApplications);
+  for (let i=0;i<256;i++) {
+    const environment = new Map([[input.symbolId,BigInt(i)]]), expected = (BigInt(i) >> 2n) & 3n;
+    for (const expression of [before,candidate.after]) {
+      const actual = E.evaluateExpr(expression,environment);
+      assert.equal(actual.status,E.EVAL_STATUS.VALUE); assert.equal(actual.value,expected);
+    }
+  }
+});
+
+test('C4-04 shift-mask comparison consumers preserve the original operand domain', async () => {
+  const f = shiftMaskExpression(4), y = E.createFreshSymbol(E.bvSort(4),'comparison_input');
+  const right = E.createBinary('add',y,y);
+  for (const op of ['eq','slt','ult']) {
+    const before = E.createCompare(op,f.before,right), r = await query(before,[f.input,y]);
+    assert.equal(r.status,'complete',`${op}: ${r.reason}`);
+    assert.equal(r.candidates.length,1,'an inner idiom must not suppress an existing ordinary-rule proposal');
+    const [candidate] = r.candidates;
+    assert.equal(candidate.eligible,true,`${op}: ${candidate.verification.reason}`);
+    assert.equal(isAdoptableCandidate(candidate.verification,{identity}),true);
+    assert.deepEqual(candidate.after.sort,before.sort);
+    for (let x=0;x<16;x++) for (let v=0;v<16;v++) {
+      const environment = new Map([[f.input.symbolId,BigInt(x)],[y.symbolId,BigInt(v)]]);
+      const original = E.evaluateExpr(before,environment), proposed = E.evaluateExpr(candidate.after,environment);
+      assert.equal(original.status,E.EVAL_STATUS.VALUE); assert.equal(proposed.status,E.EVAL_STATUS.VALUE);
+      assert.equal(proposed.value,original.value,`${op}: ${x}/${v}`);
+    }
+  }
+});
+
+test('C4-04 shift-mask sign extension observes the original value width', async () => {
+  const f = shiftMaskExpression(4);
+  const before = E.createBinary('xor',E.createCast('sext',f.before,8),E.createBv(8,0n));
+  const r = await query(before,f.symbols);
+  assert.equal(r.status,'complete',r.reason); assert.equal(r.candidates.length,1);
+  const [candidate] = r.candidates;
+  assert.equal(candidate.eligible,true,candidate.verification.reason);
+  assert.equal(isAdoptableCandidate(candidate.verification,{identity}),true);
+  assert.equal(candidate.after.sort.width,8);
+  for (let x=0;x<16;x++) {
+    const environment = new Map([[f.input.symbolId,BigInt(x)]]), expected = (BigInt(x) >> 1n) & 3n;
+    for (const expression of [before,candidate.after]) {
+      const actual = E.evaluateExpr(expression,environment);
+      assert.equal(actual.status,E.EVAL_STATUS.VALUE); assert.equal(actual.value,expected);
+    }
+  }
+});
+
+// Reuse the actual generic IR fixture and producer/private-input APIs, as in the
+// sign-mask integration case. Only the expression shape differs from that case.
+function shiftMaskProductionFixture(bits, { defer = true } = {}) {
+  const f = fixture(`recognizer_shift_mask_${bits}`); f.block(0);
+  const input = f.opaque(bits); input.index = 0; input.reg = 'x0'; input.signed = false;
+  const shape = shiftMaskShape(bits), count = f.constant(BigInt(shape.offset),bits);
+  const shifted = f.binary('lshr',input,count,bits), target = f.binary('and',shifted,f.constant(shape.mask,bits),bits);
+  f.ret(); const ir = f.build(); ir.instructions = ir.blocks.flatMap(block => [...block.phis,...block.insts]);
+  ir.instructions.forEach((inst,index) => {inst.id=`shift_mask_${index}`; inst.address=0x2000n+BigInt(index*4);});
+  const ret = ir.instructions.at(-1); ret.args = [{value:target}]; target.uses.push(ret);
+  const canonical = structuredClone(ir);
+  const result = enhanceSemanticDecompilation({semantic:true,ir,types:null,
+    lines:[{kind:'stmt',indent:0,text:'return pending;',row:ret.row,addr:ret.address}],metrics:{},ctx:{}},null,
+    {phase8PrepareProof:true,phase8ProofOnlyRewrites:defer,deterministicTransforms:true,decompilerTimeBudgetMs:1000});
+  return {ir,input,count,target,result,canonical,...shape,options:{identity,abiId:'generic-v1',memory:{addressBits:8},targets:[target],
+    timeoutMs:1000,backendTier:'tiered',candidateStrategy:'representation-rules',requireProofOnlyRewrites:true}};
+}
+
+for (const bits of [4,8]) test(`C4-04 shift-mask BV${bits} actual producer and private transaction adopt the proved full-width value`, async () => {
+  const ordinary = shiftMaskProductionFixture(bits,{defer:false}), f = shiftMaskProductionFixture(bits);
+  assert.ok(ordinary.result.rewriteProof.some(row => row.rule === 'recognize-bit_extract'));
+  assert.ok(!f.result.rewriteProof.some(row => row.rule === 'recognize-bit_extract'));
+  assert.equal(f.result.rewriteStats.deferred,'phase8-proof-projection');
+  const original = f.result.semanticAst.values.find(row => row.valueId === f.target.id).expression;
+  assert.equal(original.bits,bits);
+  const translated = await querySymbolicAnalysis(f.ir,{...f.options,models,candidateStrategy:'translate-only'});
+  assert.equal(translated.status,'complete',translated.reason);
+  const binding = readSymbolicTargetInputs(translated,f.target,identity), inputs = readProducerInputExpressions(f.result,[f.input]);
+  assert.ok(binding); assert.equal(binding.inputs.length,1); assert.equal(binding.inputs[0].value,f.input);
+  assert.equal(binding.expression.sort.width,bits); assert.ok(inputs); assert.equal(inputs[0].expression.bits,bits);
+  const beforeText = f.result.pseudocode, beforeAst = f.result.cAst;
+  const r = await optimizeSemanticDecompilation(f.result,f.options);
+  assert.equal(r.proofOptimization.status,'complete',r.proofOptimization.reason);
+  assert.equal(r.proofOptimization.adopted,1);
+  const [decision] = r.proofOptimization.targetDecisions;
+  assert.equal(decision.disposition,'adopted'); assert.equal(decision.candidateCount,1);
+  const transform = r.phase8Projection.transforms.find(row => row.valueId === decision.valueId && row.queryHash === decision.queryHash);
+  assert.ok(transform); assert.equal(transform.kind,'solver-scalar'); assert.notEqual(transform.beforeHash,transform.afterHash);
+  assertIdiomAudit(transform.generatorAudit,decision.queryHash,'recognize-bit_extract');
+  assert.ok(r.renderProvenance.ledger.some(row => row.generatorAudit === transform.generatorAudit && row.producedRefs.length));
+  const after = r.semanticAst.values.find(row => row.valueId === f.target.id).expression;
+  assert.equal(after.bits,bits); assert.notEqual(after,original); assert.notEqual(r.pseudocode,beforeText);
+  for (let i=0;i<2**bits;i++) {
+    const value = BigInt(i), expected = (value >> BigInt(f.offset)) & f.mask;
+    const before = E.evaluateExpr(binding.expression,new Map([[binding.inputs[0].symbol.symbolId,value]]));
+    assert.equal(before.status,E.EVAL_STATUS.VALUE); assert.equal(before.value,expected);
+    assert.equal(evaluateExpression(after,{[inputs[0].expression.name]:value}),expected,`BV${bits}: adopted ${value}`);
+  }
+  assert.equal(f.result.cAst,beforeAst); assert.equal(f.result.pseudocode,beforeText);
+  assert.equal(f.result.semanticAst.values.find(row => row.valueId === f.target.id).expression,original);
+  assert.deepEqual(structuredClone(f.ir),f.canonical);
+  const replay = await optimizeSemanticDecompilation(r,f.options);
+  assert.equal(replay.proofOptimization.status,'complete',replay.proofOptimization.reason);
+  assert.equal(replay.proofOptimization.adopted,0); assert.equal(replay.pseudocode,r.pseudocode);
+});
+
+test('C4-04 shift-mask publication and stale-input refusals retain the original prepared output', async () => {
+  for (const options of [{phase8WorkBudget:0},{timeoutMs:0},{isCancelled:() => true}]) {
+    const f = shiftMaskProductionFixture(4), r = await optimizeSemanticDecompilation(f.result,{...f.options,...options});
+    assert.equal(r.proofOptimization.status,'partial'); assert.equal(r.proofOptimization.adopted,0);
+    assert.equal(r.cAst,f.result.cAst); assert.equal(r.semanticAst,f.result.semanticAst); assert.equal(r.pseudocode,f.result.pseudocode);
+    assert.ok(!(r.phase8Projection?.transforms ?? []).some(row => ['solver-constant','solver-scalar'].includes(row.kind)));
+    assert.deepEqual(structuredClone(f.ir),f.canonical);
+  }
+  const f = shiftMaskProductionFixture(4); f.input.bits = 8;
+  const r = await optimizeSemanticDecompilation(f.result,f.options);
+  assert.equal(r.proofOptimization.reason,'unissued-or-stale-projection'); assert.equal(r.proofOptimization.adopted,0);
   assert.equal(r.cAst,f.result.cAst); assert.equal(r.pseudocode,f.result.pseudocode);
 });

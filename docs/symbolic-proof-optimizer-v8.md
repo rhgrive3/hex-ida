@@ -76,11 +76,11 @@ universal-input relation, obtained using its `translate-only` analysis mode.
 Each tree leaf keeps an object binding to the actual canonical input; equal
 display names never establish that relation.
 
-Version 4 also proposes the existing sign-mask idiom `x & ~(x >>s (bits-1))`
+Version 4 added proposals for the existing sign-mask idiom `x & ~(x >>s (bits-1))`
 through `recoverArm64ClangIdiom`. A distinct internal proposal phase runs before
 the unchanged 64-rule schedule, using the same engine and shared work/node/
-application limits. Phase/name collisions are rejected. Only this recognizer's
-signed `max(x,0)` family is currently admitted as an idiom proposal.
+application limits. Phase/name collisions are rejected. This recognizer's
+signed `max(x,0)` family is admitted as an idiom proposal.
 
 `idiomCoverage` and the captured `idiomTrace` / `idiomApplications` record that
 work separately from `ruleCoverage` and ordinary rule traces. Their combined
@@ -91,6 +91,18 @@ rendered through the existing safe recipe. Literal legacy `max(...)` spelling
 is not substituted as proof. Regressions cover actual generic BV4/BV8 production
 targets, exhaustive values, mixed ordinary-rule scheduling, stale input, replay
 and withheld publication; they do not certify native-width or other idiom families.
+
+Version 5 adds the existing logical-shift/contiguous-low-mask `bit_extract`
+recognizer in that same proposal phase. It selects only a positive constant-width
+slice contained within the source width. Invalid zero-width and out-of-input
+slices are declined before selection, keeping ordinary zero/full-mask rewrites
+available. Each extracted field is explicitly zero-extended back to the replaced
+expression width before enclosing comparisons or sign extensions observe it;
+restoring only the final root width would change intermediate domains. Proof
+never substitutes the smaller field domain for the original target.
+The added genuine BV4/BV8 cases cover exhaustive canonical and adopted values,
+nested extraction with ordinary rules, private API adoption/replay and conservative
+refusal. Default UI activation and native-width proof remain outside this evidence.
 
 The resulting proposal is compiled into the existing Expr DAG, then independently
 checked against the **original canonical target**, not against a rewritten view

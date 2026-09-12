@@ -15,7 +15,7 @@ import { RewriteEngine } from '../rewrite/engine.js';
 import { recoverArm64ClangIdiom } from '../idioms/arm64-clang.js';
 import { compileProofExpression } from './proof-expression.js';
 
-export const REPRESENTATION_CANDIDATE_VERSION = 'hex.representation-candidates/4';
+export const REPRESENTATION_CANDIDATE_VERSION = 'hex.representation-candidates/5';
 const RULES = Object.freeze(DEFAULT_RULES.map(rule => Object.freeze({...rule})));
 if (new Set(RULES.map(rule => rule.name)).size !== RULES.length) throw new TypeError('duplicate-representation-rule');
 export const REPRESENTATION_RULES = Object.freeze(RULES.map(rule => Object.freeze({name:rule.name,phase:rule.phase})));
@@ -32,6 +32,27 @@ const IDIOM_RULES = Object.freeze([Object.freeze({
   rewrite:(_node,match) => match.proposed,
   proof:Object.freeze({kind:'candidate-only-idiom-observation',
     detail:'existing sign-mask recognizer; independent whole-target proof required'}),
+}),Object.freeze({
+  name:'recognize-bit_extract', phase:'representation-idiom-proposal',
+  match(node) {
+    const proposed = recoverArm64ClangIdiom(node);
+    if (proposed === node || proposed.kind !== 'intrinsic' || proposed.name !== 'bit_extract'
+        || proposed.args.length !== 3) return null;
+    const [source,offset,width] = proposed.args;
+    // Decline unrepresentable slices before selecting a rewrite, so existing
+    // zero/full-mask rules remain available. These are syntax bounds only.
+    if (!Number.isInteger(source.bits) || source.bits < 1 || source.bits > 64
+        || !Number.isInteger(proposed.bits) || proposed.bits < 1 || proposed.bits > 64
+        || offset.kind !== 'const' || width.kind !== 'const' || typeof offset.value !== 'bigint'
+        || typeof width.value !== 'bigint' || width.value !== BigInt(proposed.bits)
+        || offset.value < 0n || offset.value + width.value > BigInt(source.bits)) return null;
+    // Restore this expression's width before any enclosing comparison or cast
+    // observes it. Resizing only the final root changes intermediate domains.
+    return {proposed:proposed.bits === node.bits ? proposed : expr.unary('zext',proposed,node.bits,false)};
+  },
+  rewrite:(_node,match) => match.proposed,
+  proof:Object.freeze({kind:'candidate-only-idiom-observation',
+    detail:'existing shift/low-mask recognizer; independent whole-target proof required'}),
 })]);
 export const REPRESENTATION_IDIOMS = Object.freeze(IDIOM_RULES.map(({name,phase}) => Object.freeze({name,phase})));
 const ALL_RULES = Object.freeze([...IDIOM_RULES,...RULES]);

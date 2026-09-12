@@ -5893,3 +5893,80 @@ patch are in `c4-next-20260912/shift-mask-extraction-*`. Guard invalid zero-widt
 or out-of-input slices before they suppress existing ordinary-rule proposals.
 Canonical BFX/BFI support is already implemented; do not duplicate it. C4 remains
 PARTIAL, integration CHECKPOINT-LOCKED, and the full analysis roadmap is unfinished.
+
+
+## 2026-09-12 C4 bounded shift-mask extraction proposal slice
+
+Continued from source/handoff `708f74e26542c7d428aa4399bcae03d26f77437a` in the
+same workspace/branch. Version5 adds only the existing logical-shift/contiguous
+low-mask `bit_extract` recognizer as a second internal idiom proposal. Source
+width, positive constant field width, output width and contained offset bounds
+are checked before selection. Otherwise DEFAULT_RULES continue, preserving the
+previously proved zero/full-mask simplifications. The original target retains
+its complete width through the existing canonical adapter, verifier, private
+transaction and safe projection. No new evaluator, solver or default UI wiring.
+
+- Baseline `c4-extract-baseline-red-ab5f8beb-4823-42c3-9b64-0dcb08ac2e3c.json`:
+  both genuine BV4/BV8 queries complete with zero candidates and fail the new
+  candidate-presence assertion before the implementation.
+- WIP `c4-extract-added-wip-356ff8ad-df1f-4b80-b9f6-2b4adedc50cd.json`:
+  eight added tests PASS. They cover direct/full-width API adoption with exhaustive
+  values and replay, zero/full-mask preservation, invalid/nonmatching slices,
+  unknown/stale/publication refusal, and nested extraction composed with the
+  existing xor-zero and collapse-extract rules under shared budgets.
+- The prior sign-mask audit helper now accepts the observed idiom name. The
+  ordinary64 denominator stays fixed; the idiom denominator explicitly contains
+  max and bit_extract. Canonical BFX/BFI implementation was not duplicated.
+
+This is another bounded source slice, not C4 completion. Existing canonical
+failures, broader observables, native-width evidence, default UI activation and
+user-owned environment/issues/SYM-01/X-03 limitations remain open. Independent
+review, exact-source and build/backup results are retained separately as completed.
+
+
+Independent review then found an intermediate-width composition defect in the
+initial extraction proposal: comparing a BV2 field against an original BV4
+operand suppressed an existing proved rewrite, and sign-extending the field
+instead of the original BV4 value changed semantics. Two added regression cases
+fail on the initial proposal (`c4-extract-intermediate-width-red-9a58b184-8967-4dc5-9191-3fecaab9e0b1.json`)
+and both pass using exact parent708 candidate source
+(`c4-extract-intermediate-width-parent-fe858831-e9cc-4471-bd48-3177a900df79.json`).
+
+The proposal now explicitly zero-extends each extracted field to its replaced
+expression width before enclosing consumers. The canonical comparison and cast
+adapter remains strict. These width restorations separate nested extracts, so
+the final nested audit contains two recognizer events and xor-zero only; the
+initial WIP collapse-extract observation above is historical, not the final
+schedule. Exhaustive nested semantics and the new comparison/sign-extension
+checks remain required. Final extraction denominator is ten cases.
+
+
+### User constraint: avoid overlapping open PR work
+
+Before publishing this slice, enumerated185 open PRs for rhgrive3/hex-ida and
+fetched complete changed-file inventories where the list API stopped at100.
+Pinned checks: PR8247 `877b0ec08a80c8f41e0edf25eab2f14fa94fd5ff` (274 paths),
+PR7097 `f8d127553914efe18e51ab86a60b9f05243c7b7b` (419 paths), and this PR7036
+`708f74e26542c7d428aa4399bcae03d26f77437a` (356 paths).
+
+The only shared candidate file was the global finding ledger in PR7097. Its
+23-row implementation-closure overlay belongs to that lane. Removed this slice's
+WIP ledger edits; do not duplicate its T029 generic pair-bound proof infrastructure
+or take over its broader closure work. Current slice is limited to four paths:
+representation-candidates.js, its existing test, symbolic-proof-optimizer-v8.md
+and this branch's integration checkpoint. No other PR changed those four paths
+in the complete captured inventories.
+
+Semantic review also separated nearby behavior: PR8247's scoped/native views
+publish read-only explanatory evidence and do not authorize these scalar idiom
+rewrites; its bit-mask task idiom and restricted expression checker are distinct.
+Nearby solver/Phase8 issue fixes remain excluded. The existing sign-mask and
+bounded extraction candidate additions have no equivalent implementation found
+in the reviewed open PRs. Full inventory and exact-head scope evidence is in
+`c4-pr-overlap-20260912/`; refresh relevant heads before later overlapping work.
+This is a scope check, not approval or integration admission of any other PR.
+
+Final WIP extraction ten-case run PASS:
+`c4-extract-added-final-wip-edcf9433-dc79-459a-b3e0-ea5b8d50f18d.json`.
+Independent source review `c4-extract-review-20260912/final-source-review.json`
+binds source/test hashes after width repair; no remaining own-diff defect found.
