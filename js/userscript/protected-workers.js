@@ -77,13 +77,16 @@ export function installProtectedWorkers() {
   Object.defineProperty(HexWorker, '__hexUserscriptWorker', { value: true });
   globalThis.Worker = HexWorker;
 
+  let cleaned = false;
   const runtime = {
     nativeWorker: NativeWorker,
     workers: urls,
     cleanup() {
+      if (cleaned) return;
+      cleaned = true;
       if (globalThis.Worker === HexWorker) globalThis.Worker = NativeWorker;
       for (const url of revoke) URL.revokeObjectURL(url);
-      delete globalThis.__HEX_WORKER_RUNTIME__;
+      if (globalThis.__HEX_WORKER_RUNTIME__ === runtime) delete globalThis.__HEX_WORKER_RUNTIME__;
     },
   };
   globalThis.__HEX_WORKER_RUNTIME__ = runtime;
