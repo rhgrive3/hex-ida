@@ -5,6 +5,7 @@ import {
   buildDeterministicPayload,
   filterDirtyFiles,
   isVerifierOwnedPath,
+  validateEvidence,
   SCHEMA_VERSION,
   VERIFIER_ID,
   VERIFIER_VERSION,
@@ -64,4 +65,43 @@ test('release evidence deterministic payload is stable and binds exact authority
   assert.equal(first.backend.capabilityFingerprint, 'cap-v1');
   assert.equal(first.browserRuntime.allPassed, true);
   assert.deepEqual(first.browserRuntime.engines, args.browserExecution.engines);
+  assert.equal(first.physicalDeviceEvidence.state, 'absent');
+
+  const readyWithoutDevice = {
+    ...first,
+    verdict: 'READY',
+    deterministicDigest: 'digest',
+    evidenceDigest: 'evidence',
+  };
+  assert.match(validateEvidence(readyWithoutDevice).join('\n'), /physical iPad evidence is not verified/);
+
+  const staleDevice = {
+    ...readyWithoutDevice,
+    physicalDeviceEvidence: {
+      state: 'verified',
+      verified: true,
+      deviceModel: 'iPad',
+      osVersion: 'test-os',
+      browserVersion: 'test-safari',
+      commitSha: 'c'.repeat(40),
+      treeSha: first.product.treeSha,
+      checks: {},
+    },
+  };
+  assert.match(validateEvidence(staleDevice).join('\n'), /physical iPad evidence identity mismatch/);
+
+  const matchingDevice = {
+    ...readyWithoutDevice,
+    physicalDeviceEvidence: {
+      state: 'verified',
+      verified: true,
+      deviceModel: 'iPad',
+      osVersion: 'test-os',
+      browserVersion: 'test-safari',
+      commitSha: first.product.commitSha,
+      treeSha: first.product.treeSha,
+      checks: {},
+    },
+  };
+  assert.doesNotMatch(validateEvidence(matchingDevice).join('\n'), /physical iPad/);
 });
