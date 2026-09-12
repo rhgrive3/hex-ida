@@ -59,7 +59,11 @@ export function createInvestigationSession(input = {}) {
 }
 
 export class InvestigationSessionStore {
-  constructor({ persistence } = {}) { this.persistence = persistence || null; this.sessions = new Map(); }
+  constructor({ persistence } = {}) {
+    this.persistence = persistence || null;
+    this.sessions = new Map();
+    this.memoryUpdateTails = new Map();
+  }
 
   register(session) {
     if (!session || !isValidSessionId(session.id)) return null;
@@ -141,14 +145,35 @@ export class InvestigationSessionStore {
   }
 
   async updateMemory(id, patch = {}) {
-    const current = await this.get(id);
-    if (!current) return null;
-    const next = { ...current.investigationMemory };
-    for (const key of MEMORY_KEYS) {
-      if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;
-      next[key] = ['goal','anchor'].includes(key) ? patch[key] : mergeUnique(next[key], patch[key]);
+    if (!isValidSessionId(id)) return null;
+    const key = id;
+    // updateMemory is a read-modify-write operation. Serialize that whole
+    // transaction per session so concurrent callers cannot both merge from
+    // the same stale memory snapshot and let the later commit erase the first
+    // one (#4586). Keep independent session IDs fully concurrent.
+    const ownedPatch = cloneOwned(patch);
+    const previous = this.memoryUpdateTails.get(key) || Promise.resolve();
+    const operation = previous.catch(() => {}).then(async () => {
+      const current = await this.get(key);
+      if (!current) return null;
+      const next = { ...current.investigationMemory };
+      for (const memoryKey of MEMORY_KEYS) {
+        if (!Object.prototype.hasOwnProperty.call(ownedPatch, memoryKey)) continue;
+        next[memoryKey] = ['goal','anchor'].includes(memoryKey)
+          ? ownedPatch[memoryKey]
+          : mergeUnique(next[memoryKey], ownedPatch[memoryKey]);
+      }
+      return this.update(key, { investigationMemory: next });
+    });
+    // A failed write must not poison the queue for the next update. The
+    // caller still observes the original rejection via `operation`.
+    const tail = operation.catch(() => {});
+    this.memoryUpdateTails.set(key, tail);
+    try {
+      return await operation;
+    } finally {
+      if (this.memoryUpdateTails.get(key) === tail) this.memoryUpdateTails.delete(key);
     }
-    return this.update(id, { investigationMemory: next });
   }
 
   async appendMessage(id, message) {
