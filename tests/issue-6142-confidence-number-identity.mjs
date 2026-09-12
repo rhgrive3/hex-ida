@@ -80,6 +80,6 @@ import { normalizeAIInteraction, finiteConfidence } from '../js/ai/provider/work
   }, []);
   assert.deepEqual(decision, {
     type: 'final', answer: 'done', confidence: 0.9, evidenceIds: ['ev1'],
-    hypothesisIds: [], hypotheses: [], suggestedActions: [], followups: ['next'],
+    hypothesisIds: [], hypotheses: [], suggestedActions: [], proposals: [], followups: ['next'],
   }, 'normal final-result parsing must retain valid confidence and metadata');
 }
