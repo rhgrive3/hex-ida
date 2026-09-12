@@ -592,7 +592,8 @@ function pointerAt(bytes) {
   for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(bytes[i]);
   if (v === 0n) return null;
   if (v < 0x0001000000000000n) return v;
-  return v & 0x0000000fffffffffn;
+  const va = v & 0x0000ffffffffffffn;
+  return va === 0n ? null : va;
 }
 
 const HINTS = [
