@@ -7,8 +7,12 @@ import { bindRuntimeProviderPlatformForApp, existingRuntimeProviderPlatformForAp
 import { queryAsyncEventOrder } from '../../js/analysis/apple/scoped-async.js';
 import { CAPTURED_ASYNC_EVENT_SCHEMA } from '../../js/runtime/captured-async.js';
 
-const verifyOwnedTraceModule = (module, context) => module.binaryId === context.binaryId
-  && module.sliceId === context.sliceId;
+// This identity is owned by the fixture world, not copied from the imported
+// recording. Keeping it out-of-band prevents a recording/module pair that is
+// jointly rewritten from authenticating itself.
+const OWNED_TRACE_IDENTITY = Object.freeze({ binaryId: 'binary-scpa-test', sliceId: 'slice-arm64' });
+const verifyOwnedTraceModule = module => module.binaryId === OWNED_TRACE_IDENTITY.binaryId
+  && module.sliceId === OWNED_TRACE_IDENTITY.sliceId;
 
 async function setup(t, mutate = () => {}) {
   const f = fixture(), object = { objectId: 'objc-block:allocation-site', objectGeneration: 'allocation:2' };
@@ -59,6 +63,22 @@ test('actual retained TraceProvider records automatically feed captured ObjC obj
   const native = f.provider.getRuntimeEvidenceContext(f.session.runtimeSessionId, f.scope);
   assert.equal(native.modules, f.session.modules);
   assert.equal(native.getObservation('captured:0', { role: 'instruction' }), null);
+});
+
+test('jointly changed recording and module identities remain unqualified', async t => {
+  const f = await setup(t, recording => {
+    recording.binaryId = 'binary-attacker';
+    recording.sliceId = 'slice-attacker';
+    recording.modules[0].binaryId = 'binary-attacker';
+    recording.modules[0].sliceId = 'slice-attacker';
+  });
+  const module = f.session.modules.active()[0];
+  assert.equal(module.identityState, 'unresolved');
+  assert.equal(module.binaryId, null);
+  assert.equal(module.sliceId, null);
+  const result = await f.run();
+  assert.equal(result.status, 'unsupported');
+  assert.equal(result.reason, 'native-runtime-target-scope-mismatch');
 });
 
 test('retained Swift continuation contract is checked with concrete token generation', async t => {
