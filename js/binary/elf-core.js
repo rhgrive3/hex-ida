@@ -73,7 +73,12 @@ export function parseELF(input, options = {}) {
         image.warnings.push('RISC-V attributes section is outside the bounded file span');
       } else {
         riscvFileIsa = parseRiscvAttributes(r.bytes.subarray(start, start + size), { littleEndian });
-        if (!riscvFileIsa) image.warnings.push('RISC-V Tag_RISCV_arch is missing or malformed');
+        if (riscvFileIsa && riscvFileIsa.xlen !== bits) {
+          image.warnings.push(`RISC-V Tag_RISCV_arch XLEN ${riscvFileIsa.xlen} disagrees with ELFCLASS${bits}`);
+          riscvFileIsa = null;
+        } else if (!riscvFileIsa) {
+          image.warnings.push('RISC-V Tag_RISCV_arch is missing or malformed');
+        }
       }
     }
   }
@@ -133,7 +138,12 @@ export function parseELF(input, options = {}) {
       .filter((symbol) => symbol?.defined === true && typeof symbol.name === 'string')
       .map((symbol) => {
         const parsed = parseRiscvMappingSymbol(symbol.name);
-        return parsed ? { address:symbol.address, sectionIndex:symbol.sectionIndex, ...parsed } : null;
+        if (!parsed) return null;
+        if (parsed.isa && parsed.isa.xlen !== bits) {
+          image.warnings.push(`RISC-V mapping symbol ISA XLEN ${parsed.isa.xlen} disagrees with ELFCLASS${bits}`);
+          return { address:symbol.address, sectionIndex:symbol.sectionIndex, kind:parsed.kind, isa:null };
+        }
+        return { address:symbol.address, sectionIndex:symbol.sectionIndex, ...parsed };
       })
       .filter(Boolean)
       .sort((left, right) => left.address < right.address ? -1 : left.address > right.address ? 1 : 0);
