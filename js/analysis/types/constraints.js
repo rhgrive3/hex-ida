@@ -205,12 +205,36 @@ function canonicalDescriptorString(layer, descriptor) {
   return stableStringify(canonicalDescriptorMaterial(layer, descriptor));
 }
 
+export function canonicalDependencyIdentity(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text.length > 0 ? text : null;
+}
+
+const STRUCTURAL_IDENTITY_FIELDS = Object.freeze(['targetEntityId', 'elementEntityId']);
+
+function validateStructuralIdentityFields(node) {
+  if (node == null || typeof node !== 'object') return;
+  for (const field of STRUCTURAL_IDENTITY_FIELDS) {
+    const value = node[field];
+    if (value != null && canonicalDependencyIdentity(value) == null) fail('structural-identity-invalid');
+  }
+}
+
 const NESTED_STRUCTURAL_TYPE_KEYS = Object.freeze(['memberType', 'elementType', 'pointeeType']);
 
 function validateStructuralDescriptorValue(value, seen = new WeakSet()) {
   if (value == null || typeof value !== 'object' || seen.has(value)) return;
   seen.add(value);
 
+  if (Array.isArray(value)) {
+    for (const child of value) validateStructuralDescriptorValue(child, seen);
+    return;
+  }
+
+  // Preserve the stricter identity validation added on main after #7636 was
+  // opened while extending the same traversal to nested numeric layout facts.
+  validateStructuralIdentityFields(value);
   if (value.offset != null) {
     const offset = toBigInt(value.offset, null);
     if (offset == null || offset < 0n) fail('structural-offset-invalid');
@@ -232,21 +256,12 @@ function validateStructuralDescriptorValue(value, seen = new WeakSet()) {
     if (len == null || len < 0n) fail('structural-length-invalid');
   }
 
-  if (Array.isArray(value)) {
-    for (const child of value) validateStructuralDescriptorValue(child, seen);
-    return;
-  }
-
-  // Structural type descriptors can nest through fields, arrays, pointers,
-  // and inline aggregates. Validate only those semantic edges so unrelated
-  // metadata objects with a property named `length` are not misclassified as
-  // type layout facts.
+  // Traverse only semantic type edges. Unrelated metadata objects that happen
+  // to contain numeric-looking fields are deliberately outside this contract.
   for (const key of NESTED_STRUCTURAL_TYPE_KEYS) {
     validateStructuralDescriptorValue(value[key], seen);
   }
-  if (Array.isArray(value.members)) {
-    validateStructuralDescriptorValue(value.members, seen);
-  }
+  if (Array.isArray(value.members)) validateStructuralDescriptorValue(value.members, seen);
 }
 
 function validateDescriptor(layer, descriptor) {
@@ -334,8 +349,11 @@ export function createSoftEvidence(input = {}) {
   if (!SOFT_SET.has(kind)) fail('soft-evidence-invalid-kind');
   const origin = strictNonEmpty(input.origin ?? 'heuristic', 'soft-evidence-origin-required');
   if (!ORIGIN_SET.has(origin)) fail('soft-evidence-invalid-origin');
-  const weight = Number(input.weight ?? 0.5);
-  if (!Number.isFinite(weight) || weight < 0 || weight > 1) fail('soft-evidence-invalid-weight');
+  const rawWeight = input.weight ?? 0.5;
+  if (typeof rawWeight !== 'number' || !Number.isFinite(rawWeight) || rawWeight < 0 || rawWeight > 1) {
+    fail('soft-evidence-invalid-weight');
+  }
+  const weight = rawWeight;
   return deepFreeze({
     kind,
     origin,

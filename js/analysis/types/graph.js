@@ -31,6 +31,7 @@ import { deepFreeze, stableDigest, stableStringify } from '../../core/identity/i
 import { ANALYSIS_STATUS_SCHEMA_VERSION, createAnalysisStatus, isCompleteStatus, weakestCompleteness } from '../status.js';
 import {
   TYPE_LAYERS,
+  canonicalDependencyIdentity,
   claimsConflict,
   createContradiction,
   createHardConstraint,
@@ -185,36 +186,31 @@ function softIdentity(evidence) {
   });
 }
 
+function addDependencyIdentity(deps, value) {
+  const identity = canonicalDependencyIdentity(value);
+  if (identity != null) deps.add(identity);
+}
+
 function extractDependencies(claim) {
   const deps = new Set();
   const d = claim?.descriptor;
   if (!d || typeof d !== 'object') return deps;
 
-  if (typeof d.targetEntityId === 'string' && d.targetEntityId.trim()) {
-    deps.add(d.targetEntityId.trim());
-  }
-  if (typeof d.elementEntityId === 'string' && d.elementEntityId.trim()) {
-    deps.add(d.elementEntityId.trim());
-  }
+  addDependencyIdentity(deps, d.targetEntityId);
+  addDependencyIdentity(deps, d.elementEntityId);
   if (typeof d.entityId === 'string' && d.entityId.trim() && d.entityId !== claim.entityId) {
     deps.add(d.entityId.trim());
   }
   if (d.memberType && typeof d.memberType === 'object') {
-    if (typeof d.memberType.targetEntityId === 'string' && d.memberType.targetEntityId.trim()) {
-      deps.add(d.memberType.targetEntityId.trim());
-    }
-    if (typeof d.memberType.elementEntityId === 'string' && d.memberType.elementEntityId.trim()) {
-      deps.add(d.memberType.elementEntityId.trim());
-    }
-    if (d.memberType.elementType?.targetEntityId) {
-      deps.add(String(d.memberType.elementType.targetEntityId).trim());
-    }
+    addDependencyIdentity(deps, d.memberType.targetEntityId);
+    addDependencyIdentity(deps, d.memberType.elementEntityId);
+    addDependencyIdentity(deps, d.memberType.elementType?.targetEntityId);
   }
   if (Array.isArray(d.members)) {
     for (const member of d.members) {
-      if (member?.memberType?.targetEntityId) deps.add(String(member.memberType.targetEntityId).trim());
-      if (member?.memberType?.elementEntityId) deps.add(String(member.memberType.elementEntityId).trim());
-      if (member?.memberType?.elementType?.targetEntityId) deps.add(String(member.memberType.elementType.targetEntityId).trim());
+      addDependencyIdentity(deps, member?.memberType?.targetEntityId);
+      addDependencyIdentity(deps, member?.memberType?.elementEntityId);
+      addDependencyIdentity(deps, member?.memberType?.elementType?.targetEntityId);
     }
   }
   return deps;

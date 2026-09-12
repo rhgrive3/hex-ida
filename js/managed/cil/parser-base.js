@@ -37,6 +37,7 @@ export function align4(offset) {
 
 function parseStringsHeap(bytes, offset, size) {
   checkedRange(bytes, offset, size, 'cil-metadata-strings-out-of-bounds');
+  if (size < 1 || bytes[offset] !== 0) fail('cil-invalid-strings-heap-zero-entry');
   const strings = [];
   let position = offset;
   const end = offset + size;
@@ -599,6 +600,7 @@ function parseMethodBody(bytes, view, offset, metadataInfo = null) {
 
   const flags = readU16(view, offset, 'cil-fat-method-header-truncated');
   if ((flags & 0x03) !== 0x03) fail('cil-invalid-method-header');
+  if (offset % 4 !== 0) fail('cil-fat-method-header-unaligned');
   const headerSize = (flags >> 12) * 4;
   if (headerSize < 12 || headerSize % 4 !== 0) fail('cil-invalid-fat-method-header');
   checkedRange(bytes, offset, headerSize, 'cil-fat-method-header-truncated');

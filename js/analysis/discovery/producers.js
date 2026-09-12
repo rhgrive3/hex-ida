@@ -41,6 +41,7 @@ function loaderStartArray(value, code) {
 const VALIDATED_LOADER_SEED_SOURCES = new Set([
   'function_starts',
   'exception',
+  'dt-init',
   'tls-callback',
   'guard-cf',
   'unwind',
