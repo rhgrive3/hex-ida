@@ -12,16 +12,15 @@ async function reference(f) {
     projectionId: record.reference.projectionId, referenceIds: [record.id], includeBytes: true, maxDepth: 2 } });
   assert.equal(r.status, 'completed', r.reason); return r.bundle;
 }
-test('native canonical reference explanation replays full byte content without claiming a semantic proof', async t => {
+test('native canonical reference explanation reuses compatible partial work without claiming a semantic proof', async t => {
   const f = await nativeWorkerFixture(t), bundle = await reference(f);
   assert.ok(bundle.records.length > 0); assert.ok(bundle.sources.length > 0);
   assert.equal(bundle.exact, false); assert.equal(bundle.semanticProof, false);
   assert.ok(bundle.sources.every(s => s.bytes !== null));
   const replay = await f.invoke('replayReferenceSlice', { functionId: '0x1000', bundle });
   assert.equal(replay.status, 'matched-current-source'); assert.equal(replay.contentMatches, true); assert.equal(replay.semanticProof, false);
-  // Existing scheduler intentionally recomputes partial artifacts. Do not
-  // promote their completeness just to claim a warm cache hit.
-  assert.equal(f.counters.workers, 3);
+  // Compatible partial artifacts are reusable, but remain non-exact.
+  assert.equal(f.counters.workers, 1);
 });
 test('native explanation mutations cannot be admitted by retaining the old content ID', async t => {
   const f = await nativeWorkerFixture(t), bundle = await reference(f);
