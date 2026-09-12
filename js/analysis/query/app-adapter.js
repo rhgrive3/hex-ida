@@ -861,7 +861,7 @@ export function createAppAnalysisQueryAdapter(app) {
       // "the backend cannot run this search" is not a complete empty result
       // (#5840, #5833).
       if (value?.unsupported === true) return unsupportedPage(null, page, value?.unsupportedReason ?? 'search-kind-unsupported');
-      return paged(value?.results || [], page, value?.capped || value?.cancelled ? 'partial' : 'complete', { reason:value?.cancelled ? 'cancelled' : value?.capped ? 'search-result-cap' : null });
+      return paged(value?.results || [], page, value?.cancelled ? 'partial' : value?.capped ? 'truncated' : 'complete', { reason:value?.cancelled ? 'cancelled' : value?.capped ? 'search-result-cap' : null });
     },
 
     async causalPath(_snapshot, source, sink, options = {}) {
