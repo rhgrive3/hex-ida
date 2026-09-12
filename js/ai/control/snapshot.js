@@ -1,3 +1,4 @@
+import { AIError } from '../schema.js';
 import { addressText } from '../validation.js';
 
 let turnSequence = 1;
@@ -49,7 +50,9 @@ export function createTurnSnapshot(local = {}, request = {}) {
     cursor,
   );
   const selection = snapshotSelection(local.selection);
-  const identity = resolveBinaryIdentity(local, request);
+  const binding = resolveBinaryBinding(local, request);
+  if (binding.conflict) throw new AIError('scope_violation', 'The requested binary identity does not match the live workbench binary.');
+  const identity = binding.identity;
   const projectId = firstBinding(request.projectId, local.projectId, local.project?.id, local.project?.binaryHash);
   const runtimeId = firstBinding(local.runtimeSession?.id, local.runtime?.sessionId, local.runtimeSessionId);
   const runtimeKnown = local.runtimeSessionKnown === true || runtimeId != null;
@@ -60,6 +63,8 @@ export function createTurnSnapshot(local = {}, request = {}) {
     binaryIdentity: identity,
     binaryId: identity.id,
     legacyBinaryId: identity.legacyId,
+    binaryIdentitySource: binding.source,
+    liveBinaryIdentity: binding.live,
     projectIdentity: projectId,
     architecture: copyScalar(first(local.architecture, local.binary?.architecture, local.capability?.architecture)),
     slice: copyScalar(first(local.slice, local.sliceIndex, local.binary?.sliceIndex)),
@@ -109,17 +114,52 @@ export function createSnapshotContext(local = {}, snapshot, scopeController = nu
 }
 
 export function resolveBinaryIdentity(local = {}, request = {}) {
-  const explicit = normalizeIdentity(request.binaryIdentity ?? local.binaryIdentity);
-  if (explicit) return explicit;
+  return resolveBinaryBinding(local, request).identity;
+}
+
+export function resolveBinaryBinding(local = {}, request = {}) {
+  const live = resolveLiveBinaryIdentity(local);
+  const requestBinding = resolveRequestedBinaryBinding(local, request);
+  const requested = requestBinding.identity;
+  const conflict = requestBinding.conflict || (!!requested && strongIdentity(live) && strongIdentity(requested)
+    && !sameStrongIdentity(live, requested, local));
+  if (strongIdentity(live)) return { identity:live, source:'live', live, requested, conflict };
+  if (requested) return { identity:requested, source:'request-fallback', live, requested, conflict };
+  return { identity:live, source:'live', live, requested:null, conflict };
+}
+
+function resolveLiveBinaryIdentity(local = {}) {
+  const explicit = normalizeIdentity(local.binaryIdentity);
   const contentHash = firstBinding(
-    request.binaryHash,
     local.binaryHash,
     local.binaryFingerprint?.hash,
     local.fingerprint?.hash,
     local.binary?.fingerprint?.hash,
     local.project?.binaryHash,
   );
-  const legacyId = firstBinding(request.binaryId, local.binaryId);
+  const legacyId = firstBinding(local.binaryId);
+  const derived = derivedIdentity(local, { contentHash, legacyId, allowNameFallback:true });
+  if (strongIdentity(explicit)) return explicit;
+  if (strongIdentity(derived)) return derived;
+  return explicit || derived;
+}
+
+function resolveRequestedBinaryBinding(local = {}, request = {}) {
+  const explicit = normalizeIdentity(request.binaryIdentity);
+  const contentHash = firstBinding(request.binaryHash);
+  const legacyId = firstBinding(request.binaryId);
+  if (!explicit && contentHash == null && legacyId == null) return { identity:null, conflict:false };
+  const derived = derivedIdentity(local, { contentHash, legacyId, allowNameFallback:false });
+  const explicitStrong = strongIdentity(explicit);
+  const derivedStrong = strongIdentity(derived);
+  const conflict = (explicitStrong && !requestIdentityConsistent(explicit, local))
+    || (explicitStrong && derivedStrong && !sameStrongIdentity(explicit, derived, local));
+  if (explicitStrong) return { identity:explicit, conflict };
+  if (derivedStrong) return { identity:derived, conflict };
+  return { identity:explicit || derived, conflict };
+}
+
+function derivedIdentity(local, { contentHash = null, legacyId = null, allowNameFallback = false } = {}) {
   const slice = selectedSlice(local);
   if (contentHash != null && !slice.invalid) {
     const suffix = slice.value == null ? '' : `:${slice.value}`;
@@ -133,13 +173,77 @@ export function resolveBinaryIdentity(local = {}, request = {}) {
       legacyId,
     };
   }
-  const name = typeof local.fileInfo?.name === 'string' ? local.fileInfo.name : typeof local.binary?.name === 'string' ? local.binary.name : null;
+  const name = allowNameFallback
+    ? (typeof local.fileInfo?.name === 'string' ? local.fileInfo.name : typeof local.binary?.name === 'string' ? local.binary.name : null)
+    : null;
   const fallback = legacyId != null ? legacyId : (!slice.invalid && name ? `${name}:${slice.value ?? '0'}` : null);
   return {
     id: fallback ? `fallback:${fallback}` : 'fallback:unbound',
     kind: 'fallback', confidence: fallback ? 'weak' : 'none', state: 'hash-unavailable',
     algorithm: null, hash: null, legacyId: fallback,
   };
+}
+
+function strongIdentity(identity) {
+  const id = canonicalBindingId(identity?.id);
+  if (canonicalBindingId(identity?.hash) != null) return true;
+  if (typeof id === 'string' && id.startsWith('content:')) return true;
+  return identity?.confidence === 'strong' && identity?.state === 'ready' && typeof id === 'string' && !id.startsWith('fallback:');
+}
+
+export function sameStrongIdentity(left, right) {
+  const leftBinding = assertedContentBinding(left);
+  const rightBinding = assertedContentBinding(right);
+  if (leftBinding.invalid || rightBinding.invalid) return false;
+  if (leftBinding.hash != null && rightBinding.hash != null) {
+    if (leftBinding.hash !== rightBinding.hash) return false;
+    if (leftBinding.slice != null || rightBinding.slice != null) {
+      return leftBinding.slice != null && rightBinding.slice != null && leftBinding.slice === rightBinding.slice;
+    }
+    return true;
+  }
+  return canonicalBindingId(left?.id) === canonicalBindingId(right?.id);
+}
+
+function assertedContentBinding(identity) {
+  const hash = canonicalBindingId(identity?.hash);
+  const id = canonicalBindingId(identity?.id);
+  if (typeof id !== 'string' || !id.startsWith('content:')) {
+    return { hash, slice:null, invalid:false };
+  }
+
+  if (hash != null) {
+    const prefix = `content:${hash}`;
+    if (id === prefix) return { hash, slice:null, invalid:false };
+    if (id.startsWith(`${prefix}:`)) {
+      const suffix = id.slice(prefix.length + 1);
+      const slice = canonicalSlice(suffix);
+      if (slice != null && slice === suffix) return { hash, slice, invalid:false };
+    }
+    return { hash, slice:null, invalid:true };
+  }
+
+  const payload = id.slice('content:'.length);
+  if (!payload) return { hash:null, slice:null, invalid:true };
+  const separator = payload.lastIndexOf(':');
+  if (separator > 0) {
+    const suffix = payload.slice(separator + 1);
+    const slice = canonicalSlice(suffix);
+    if (slice != null && slice === suffix) {
+      const inferredHash = payload.slice(0, separator);
+      return { hash:inferredHash || null, slice, invalid:!inferredHash };
+    }
+  }
+  return { hash:payload, slice:null, invalid:false };
+}
+
+function requestIdentityConsistent(identity, local) {
+  const binding = assertedContentBinding(identity);
+  if (binding.invalid) return false;
+  const liveSlice = selectedSlice(local);
+  if (liveSlice.invalid) return false;
+  if (liveSlice.value == null || binding.slice == null) return true;
+  return binding.slice === liveSlice.value;
 }
 
 function normalizeIdentity(value) {

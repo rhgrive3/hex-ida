@@ -115,6 +115,36 @@ function safeIdent(s, fallback = 'value') {
   return x || fallback;
 }
 
+function managedStateKey(variable) {
+  if (!variable || typeof variable !== 'object') return null;
+  if (typeof variable.key !== 'string' || !variable.key.trim()) return null;
+  return variable.key.trim();
+}
+
+function isManagedOperandStackState(variable, frontendId) {
+  const key = managedStateKey(variable);
+  const frontend = typeof frontendId === 'string' ? frontendId.trim() : '';
+  return key != null && frontend !== '' && key.startsWith(`vm:${frontend}:stack:`);
+}
+
+function managedStateIdent(variable, frontendId) {
+  const key = managedStateKey(variable);
+  if (!key) return null;
+  const frontend = typeof frontendId === 'string' ? frontendId.trim() : '';
+  const prefix = frontend ? `vm:${frontend}:` : '';
+  const displayKey = prefix && key.startsWith(prefix) ? key.slice(prefix.length) : key;
+  const indexed = /^([A-Za-z][A-Za-z0-9_]*):([0-9]+)$/.exec(displayKey);
+  if (indexed) return `${indexed[1]}_${indexed[2]}`;
+  // Keep arbitrary canonical state keys injective after turning them into a C
+  // identifier. Escaping every non-alphanumeric code point (including '$'
+  // and '_') prevents distinct keys from collapsing through sanitization.
+  let encoded = '';
+  for (const ch of displayKey) {
+    encoded += /^[A-Za-z0-9]$/.test(ch) ? ch : `$${ch.codePointAt(0).toString(16)}$`;
+  }
+  return encoded ? `state_${encoded}` : null;
+}
+
 function normalizeMachineType(t) {
   if (!t) return { kind: 'bitvector', widthBits: 32 };
   const kind = t.kind || 'bitvector';
@@ -1023,8 +1053,15 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
     } else if (n.kind === 'intrinsic' || n.kind === 'barrier') {
       const args = (n.inputs || []).map(buildValueExpr);
       res = expr.intrinsic(n.metadata?.mnemonic || 'unsupported_intrinsic', args, bits);
+    } else if (n.kind === 'copy') {
+      res = n.completeness === 'complete' && n.inputs?.length === 1
+        ? buildValueExpr(n.inputs[0])
+        : expr.intrinsic('unsupported_copy', (n.inputs || []).map(buildValueExpr), bits);
     } else if (n.kind === 'state-read') {
-      res = expr.variable(safeIdent(val.id || `v_${valId}`));
+      const stateName = n.completeness === 'complete' ? managedStateIdent(n.variable, frontendId) : null;
+      res = stateName
+        ? expr.variable(stateName, bits)
+        : expr.intrinsic('unsupported_state_read', [], bits);
     } else {
       res = expr.variable(safeIdent(val.id || `v_${valId}`));
     }
@@ -1074,6 +1111,20 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
           body.push({ kind: 'call_assign', indent: isLoop ? 2 : 1, text: `${safeIdent(outVal)} = ${callee}(${args});` });
         } else {
           body.push({ kind: 'call_stmt', indent: isLoop ? 2 : 1, text: `${callee}(${args});` });
+        }
+      } else if (n.kind === 'state-write') {
+        // Stack snapshots are bridge-internal checkpoints for stack VMs, not
+        // source-level assignments. Rendering them can place a synthetic write
+        // after a terminal return; handle them explicitly without exposing that
+        // implementation state in pseudocode.
+        if (isManagedOperandStackState(n.variable, frontendId)) continue;
+        const stateName = n.completeness === 'complete' ? managedStateIdent(n.variable, frontendId) : null;
+        if (stateName && n.inputs?.length === 1) {
+          const value = printExpression(buildValueExpr(n.inputs[0]));
+          body.push({ kind: 'state-write', indent: isLoop ? 2 : 1, text: `${stateName} = ${value};`, source: n.origin });
+        } else {
+          const args = (n.inputs || []).map((i) => printExpression(buildValueExpr(i))).join(', ');
+          body.push({ kind: 'unsupported', indent: isLoop ? 2 : 1, text: `unsupported_state_write(${args});`, source: n.origin });
         }
       } else if (n.kind === 'store') {
         const base = n.inputs[0] ? printExpression(buildValueExpr(n.inputs[0])) : 'base';
