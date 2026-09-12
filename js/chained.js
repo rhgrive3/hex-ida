@@ -546,4 +546,4 @@ export async function augmentAnalysisResultWithChainedImports(file, sliceIndex, 
   return Object.assign({}, result, { addrs, kinds, flags, names });
 }
 
-export const __chainedInternalsForTests = Object.freeze({ validMachOVmRange, rangeWithin, stubSectionWithinSegment, segmentFor });
+export const __chainedInternalsForTests = Object.freeze({ validMachOVmRange, rangeWithin, stubSectionWithinSegment, segmentFor, sliceOffset });
