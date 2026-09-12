@@ -51,3 +51,4 @@ jobs:
           git rm .github/workflows/tmp-owner7-reconcile.yml
           git commit -m 'batch(owner-7): reconcile #8295 multi-call lowering'
           git push origin HEAD:batch-20260912-owner7
+# trigger reconciliation
