@@ -125,9 +125,8 @@ function bindConditionalRegionHistory(result, ctx) {
   const history = Object.freeze({ version:1, scope:'initial-emitter-spans-only-not-cfg-proof',
     completeness:pending.reasons.size ? 'incomplete' : 'complete', transformAuthorization:false,
     reasons:Object.freeze([...pending.reasons]), regions:Object.freeze(pending.reasons.size ? [] : [...pending.events]) });
-  const isCurrent = () => result.ir === ctx.ir && result.lines === lines
-    && (history.completeness === 'incomplete' || canonical?.isCurrent()) && (!observation || observation.matches())
-    && !ctx.opts.shouldAbort?.();
+  const isCurrent = () => !ctx.opts.shouldAbort?.() && result.ir === ctx.ir && result.lines === lines
+    && (history.completeness === 'incomplete' || canonical?.isCurrent()) && (!observation || observation.matches());
   const binding = Object.freeze({ history, isCurrent });
   conditionalRegionHistories.set(result, binding);
   try {

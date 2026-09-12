@@ -7,7 +7,8 @@
 下の過去ログより、この節の状態を優先してください。
 
 追加の進捗: ME の RV64 命令列反例縮小に続き、C4 の条件領域の発行記録を実装しました。
-C4 は元の出力範囲を取得できる段階です。コピー先との対応付け、領域証明、PHI を含む変換受入は残っています。
+C4 は元の出力範囲の取得に加え、腕の全ブロック・辺・合流 PHI の構造照合まで実装しました。
+コピー先との対応付け、領域の意味的な証明、PHI を含む変換受入は残っています。
 
 結合した入力:
 
@@ -58,7 +59,7 @@ SYM-01/X-03 の再実装は割り当てません。C3 metadata と X-02 の広�
 - 以前の `714bbc56` に対する `npm run check` は MachineEffects の 13 テストファイルで失敗。WebKit の `libxslt.so.1` 不足も含み、すべてを環境原因とは分類していません。
 - 結合後の full check、Phase 8/9、独立 shadow の確定結果が揃うまで CHECKPOINT-LOCKED を解除しません。実機・環境整備・別 issue 修正は今回の担当外です。
 
-生成物は結合ソースから canonical build で再生成済みです（serial `2322242245`、build ID `66bed42360265c3ecf857fc5`）。公開前に再 build の差分を確認し、公開 SHA と生成 ID の記録を保持します。
+生成物は結合ソースから canonical build で再生成済みです（serial `2322242246`、build ID `767489ce6a2bc4c9ed973887`）。公開前に再 build の差分を確認し、公開 SHA と生成 ID の記録を保持します。
 
 追加修正後の lint と module-boundaries 検査、結合ファイル全体の所有範囲検査は通過しました。
 
@@ -6321,3 +6322,54 @@ C1/C3 のユーザー担当、実機・環境整備・他 issue 修正を除外�
 Luna/max の独立レビューで空の履歴の指摘を反映し、発行記録の範囲に限定して再確認しました。
 canonical userscript build も通過し、生成物を同じソース変更とともに保存します。
 これらは追加分の検証です。全体 gate・独立 shadow・実機の完了を主張しません。
+
+## C4 条件領域の構造照合 — 2026-09-12
+
+発行記録 `52e1ff782` の次の入力として、`phase8/conditional-region-structure.js` を追加しました。
+`prepareConditionalRegionStructure(headerRecord, ir, { identity, ...queryOptions })` は実際に発行された
+領域だけを受け取り、既存 CFG の全 successor/edge label/predecessor を再集計します。
+辺の正規化は既存 `successorEdgesOf` を再利用し、欠損をその helper の fallback で補わないよう先に照合します。
+新しい CFG、支配木、意味評価器、変換 runner は作っていません。
+
+- 既存 join まで yes/no の腕をたどり、直接の successor だけでなく全メンバーを発行側の参照と照合します。
+- 外部から腕への流入、function entry、循環、腕の重複、途中の出口を拒否します。
+  領域の出辺と合流点への流入にある不明・例外辺も拒否します。
+- header の CBR と true/false ラベルを発行時の yes/no に結び付けます。false/fallthrough の重複は一辺として全ラベルを保持します。
+- 各ブロックと合流点の PHI は全 predecessor と一対一に照合し、incoming の元オブジェクトと値を保持します。
+  合流 PHI は発行記録との同一性と順序も確認します。
+- header・両腕・合流点の全命令と `memPhis` を、意味的な検査が必要な入力として列挙します。
+  命令の短いリストから「副作用なし」と判定する処理ではありません。
+- truncated IR、欠損ラベル・predecessor・PHI・命令一覧、命令の所属ブロックの不一致、予算不足、キャンセルでは発行しません。
+
+`readConditionalRegionStructure(result, ir, identity)` は private 発行記録、query identity、元の IR/出力の
+現在性を再確認します。コピーした結果や別 query/IR では読めません。キャンセル確認コールバックが
+入力を書き換える場合も、コールバックの後で canonical 入力・出力を検査するよう発行側 reader を直しました。
+
+この処理の `complete` は **構造照合だけ**です。`transformAuthorization:false`、
+`semanticValidation:'required'` を明示し、memory PHI も未検証の入力として保持します。
+腕の末尾が明示的な BR/CBR の形を対象にしており、switch、末尾 metadata、循環・例外領域は
+別途対応が必要です。意味的な等価性、枝の実行不能性、PHI の値の等価性、コピー先の範囲変更を証明しません。
+
+公開中の 214 PR を照合し、新しい module/test、発行側 reader、文書、ownership のソース変更は
+他 PR と重なっていません。#7097 所有の pipeline-core/index/structuring 本体は変更していません。
+一覧: `c4-region-adoption-20260912/structure-open-pr-files.json`。
+
+新しい 23 件の検査で、実際の emitter が発行した diamond・入れ子・片側空の領域と、
+未出力の外部 predecessor、循環、欠損 PHI、逆の分岐ラベル、合流点の store/memory PHI、
+コピー・変更・キャンセル・資源上限を確認しました。canonical Phase 8 runner からの発見も確認しています。
+初回レビュー後の証拠: `c4-region-structure-review-fixes-be91244b-bd14-43fa-823f-96d48b852c40.json`（追加前の 20 件）。
+
+次は、この照合済みの全辺・PHI・命令を **別の領域証明**に接続します。共有コピー先 carrier と
+既存 atomic transaction への接続も引き続き必要です。局所 edge infeasibility のみで領域全体を削除したり、
+scalar `provedRewrites` を流用したりしません。FR-C4-02A/04B と全体 checkpoint は未完了です。
+
+既存の辺 accounting・発行記録・制御履歴・所有範囲を合わせた 77 件が通過しました。
+最終境界検査では、PHI がない合流点への外部 unwind と、誤った instruction/PHI.block も追加しました。
+lint、module-boundaries、canonical userscript build も通過しています。
+Luna/max の独立レビューで header polarity、join PHI identity、join effects/memory PHI の
+扱いを確認・補強しました。生成物と同じコミットを公開し、公開前に再 build の差分ゼロを確認します。
+これは構造照合の追加分の検証であり、全体 gate や統合受入の完了ではありません。
+
+最終ソースの 77 件通過記録: `c4-region-structure-boundary-final-604662f8-d04f-481f-b6eb-04249011447d.json`。
+新しい構造照合 API は後続の領域証明から呼ぶための入力処理です。通常の Phase 8 runner には
+まだ登録しておらず、既定の変換動作や意味的な受入を追加したとは扱いません。
