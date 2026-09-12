@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { TypeConstraintGraph } from '../../../js/analysis/types/graph.js';
+import { TypeConstraintGraph, reconstructStructuralType } from '../../../js/analysis/types/graph.js';
 
 function addHard(graph, entityId, kind, descriptor, evidenceId = `${entityId}:${kind}`) {
   graph.addHardConstraint({
@@ -94,4 +94,50 @@ test('issue #5190: concrete field evidence still synthesizes a bounded struct la
   assert.equal(result.selected.descriptor.sizeBytes, 4);
   assert.equal(result.selected.descriptor.totalSizeBytes, 4);
   assert.equal(result.selected.descriptor.alignBytes, 4);
+});
+
+for (const offset of [0, 8]) {
+  test(`issue #5190: member with unknown extent at ${offset} preserves unknown aggregate size`, () => {
+    const graph = new TypeConstraintGraph();
+    addHard(graph, 'Unknown', 'nested-aggregate', { kind: 'struct', members: [
+      { offset, fieldName: 'x', memberType: { kind: 'integer', widthBits: 32 } },
+    ] });
+    const result = structural(graph, 'Unknown');
+    assert.equal(result.confidence, 'certain');
+    assert.equal(Object.hasOwn(result.selected.descriptor, 'sizeBytes'), false);
+    assert.equal(Object.hasOwn(result.selected.descriptor, 'totalSizeBytes'), false);
+    const projected = reconstructStructuralType(graph, 'Unknown');
+    assert.equal(projected.sizeBytes, null);
+    assert.equal(projected.members[0].sizeBytes, null);
+  });
+}
+
+for (const sizeBytes of [undefined, 24, 4]) {
+  test(`issue #5190: mixed member extents respect explicit size ${sizeBytes}`, () => {
+    const graph = new TypeConstraintGraph();
+    addHard(graph, 'Mixed', 'nested-aggregate', { kind: 'struct',
+      ...(sizeBytes === undefined ? {} : { sizeBytes }),
+      members: [
+        { offset: 0, sizeBytes: 8, fieldName: 'known' },
+        { offset: 8, fieldName: 'unknown' },
+      ],
+    });
+    const result = structural(graph, 'Mixed');
+    if (sizeBytes === 4) {
+      assert.equal(result.selected, null, 'proven member extent exceeds the explicit bound');
+      assert.notEqual(result.confidence, 'certain');
+    } else {
+      assert.equal(result.confidence, 'certain');
+      assert.equal(result.selected.descriptor.sizeBytes, sizeBytes);
+      assert.equal(reconstructStructuralType(graph, 'Mixed').sizeBytes, sizeBytes ?? null);
+    }
+  });
+}
+
+test('issue #5190: an unknown extent cannot hide a member start beyond the explicit bound', () => {
+  const graph = new TypeConstraintGraph();
+  addHard(graph, 'Outside', 'nested-aggregate', {
+    kind: 'struct', sizeBytes: 4, members: [{ offset: 8, fieldName: 'x' }],
+  });
+  assert.equal(structural(graph, 'Outside').selected, null);
 });
