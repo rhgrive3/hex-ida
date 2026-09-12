@@ -382,6 +382,7 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
         if (alignment > 1n && decoded.initial % alignment !== 0n) throw new Error('FDE initial location violates target instruction alignment');
         candidates.push({ address:decoded.initial, fdeAddress:row.fde, domainKind:domain.kind });
       } catch (entryError) {
+        if (entryError?.code === 'BINARY_SOURCE_RANGE_MISSING') throw entryError;
         invalidEntries++;
         recordUnverifiedKnownUnwind(image, row.initial, entryError.message, unverifiedSeen);
         warn(image, `entry ${row.index} rejected: ${entryError.message}`);
