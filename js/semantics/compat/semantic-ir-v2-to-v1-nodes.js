@@ -268,14 +268,14 @@ function deterministicIntrinsicProjection(node, context, inst, setBasic, primary
   }
   if (inputValues.length >= 1) {
     const metadata = operationMetadata(node);
-    const alias = String(metadata.alias ?? '').toLowerCase();
+    const alias = typeof metadata.alias === 'string' ? metadata.alias.toLowerCase() : null;
     if (alias === 'ubfx' || alias === 'sbfx') {
-      const lsb = Number(metadata.immr);
-      const imms = Number(metadata.imms);
-      const fieldWidth = Number.isInteger(lsb) && Number.isInteger(imms) && imms >= lsb ? imms - lsb + 1 : null;
-      const outputBits = Number(primaryOutput?.bits ?? 0);
-      if (!Number.isInteger(lsb) || lsb < 0 || !Number.isInteger(fieldWidth) || fieldWidth <= 0
-          || !Number.isInteger(outputBits) || outputBits <= 0 || lsb + fieldWidth > outputBits) return false;
+      const lsb = metadata.immr;
+      const imms = metadata.imms;
+      const fieldWidth = Number.isSafeInteger(lsb) && Number.isSafeInteger(imms) && imms >= lsb ? imms - lsb + 1 : null;
+      const outputBits = primaryOutput?.bits;
+      if (!Number.isSafeInteger(lsb) || lsb < 0 || !Number.isSafeInteger(imms) || !Number.isSafeInteger(fieldWidth) || fieldWidth <= 0
+          || !Number.isSafeInteger(outputBits) || outputBits <= 0 || lsb + fieldWidth > outputBits) return false;
       setBasic(V1_OP.BFX, 'extract');
       inst.extra.lsb = lsb;
       inst.extra.width = fieldWidth;
