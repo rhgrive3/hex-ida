@@ -72,36 +72,36 @@ test('#5163 11-node chain exceeds maxExprNodes:10 with node-budget RESOURCE_LIMI
 test('#5163 50k-node wide DAG with maxExprNodes:10 rejects without traversing the whole graph', async () => {
   resetSymbolCounterForTesting(0);
   const leafSort = boolSort();
-  let constNodeReads = 0;
-  const leaves = [];
-  for (let i = 0; i < 50000; i++) {
-    leaves.push(Object.freeze({
-      kind: EXPR_KIND.CONST,
-      sort: leafSort,
-      get value() {
-        constNodeReads += 1;
-        return true;
-      },
-    }));
-  }
+  let childArrayReads = 0;
+  const leaves = Array.from({ length: 50000 }, () => Object.freeze({
+    kind: EXPR_KIND.CONST,
+    sort: leafSort,
+    value: true,
+  }));
+  const args = new Proxy(leaves, {
+    get(target, property, receiver) {
+      if (typeof property === 'string' && /^(0|[1-9]\d*)$/.test(property)) childArrayReads += 1;
+      return Reflect.get(target, property, receiver);
+    },
+  });
   const assertion = Object.freeze({
     kind: EXPR_KIND.CONNECTIVE,
     sort: leafSort,
     op: BOOL_CONNECTIVE_OP.AND,
-    args: Object.freeze(leaves),
+    args,
   });
   const query = queryFor(assertion);
-  const readsAfterQueryConstruction = constNodeReads;
+  const readsAfterQueryConstruction = childArrayReads;
 
   const backend = new ExhaustiveBvBackend();
   const result = await backend.createSession().check(query, { maxExprNodes: 10 });
 
   assert.equal(result.status, SOLVER_STATUS.RESOURCE_LIMIT);
   assert.equal(result.reason, BUDGET_REASON);
-  const traversedLeafReads = constNodeReads - readsAfterQueryConstruction;
+  const traversedChildReads = childArrayReads - readsAfterQueryConstruction;
   assert.ok(
-    traversedLeafReads < 100,
-    `budget-exceeded admission must stop at node 11, but ${traversedLeafReads} leaf nodes were still processed`,
+    traversedChildReads < 100,
+    `budget-exceeded admission must stop at node 11, but ${traversedChildReads} child-array elements were still read`,
   );
 });
 
