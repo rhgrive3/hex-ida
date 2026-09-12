@@ -93,31 +93,31 @@ export function createChatGPTSandboxHost(options = {}) {
     state = 'sandbox-loading';
     setStatus(status, 'Loading Hex…', false);
 
-    try { documentRef.getElementById?.(IFRAME_ID)?.remove(); } catch {}
-    iframe = createSandboxIframe(documentRef, {
-      hostHtml,
-      cspNonce,
-      generation: currentGeneration,
-      sandboxToken: createEmbedNonce(),
-      apiOrigin,
-      virtualSrc: withEmbedGeneration(virtualSrc, currentGeneration),
-      loaderVersion,
-      buildId,
-      runtimeContentHash,
-    });
-    const token = normalizeSandboxToken(iframe.dataset.hexSandboxToken);
-
-    sandboxMonitor = createSandboxMonitor({
-      windowRef,
-      iframe,
-      generation: currentGeneration,
-      sandboxToken: token,
-      timeoutMs: bootstrapTimeoutMs,
-      signal: generationAbort.signal,
-    });
-    wrapper.insertBefore(iframe, status);
-
     try {
+      documentRef.getElementById?.(IFRAME_ID)?.remove();
+      iframe = createSandboxIframe(documentRef, {
+        hostHtml,
+        cspNonce,
+        generation: currentGeneration,
+        sandboxToken: createEmbedNonce(),
+        apiOrigin,
+        virtualSrc: withEmbedGeneration(virtualSrc, currentGeneration),
+        loaderVersion,
+        buildId,
+        runtimeContentHash,
+      });
+      const token = normalizeSandboxToken(iframe.dataset.hexSandboxToken);
+
+      sandboxMonitor = createSandboxMonitor({
+        windowRef,
+        iframe,
+        generation: currentGeneration,
+        sandboxToken: token,
+        timeoutMs: bootstrapTimeoutMs,
+        signal: generationAbort.signal,
+      });
+      wrapper.insertBefore(iframe, status);
+
       await sandboxMonitor.ready;
       if (!isCurrent(currentGeneration)) return;
 
@@ -426,9 +426,10 @@ function ensureClose(documentRef) {
   return button;
 }
 function ensureStatus(documentRef, wrapper) {
-  let node = documentRef.getElementById?.(STATUS_ID);
-  if (node) return node;
-  node = documentRef.createElement('div');
+  for (const child of wrapper.children) {
+    if (child.id === STATUS_ID) return child;
+  }
+  const node = documentRef.createElement('div');
   node.id = STATUS_ID;
   node.setAttribute('role', 'status');
   node.style.cssText = 'position:absolute;left:16px;bottom:max(16px,env(safe-area-inset-bottom));z-index:2;max-width:min(88vw,620px);padding:10px 14px;border-radius:12px;background:#111827;color:#fff;font:600 13px/1.35 system-ui;white-space:pre-wrap;box-shadow:0 4px 18px rgba(0,0,0,.22);cursor:default;';
