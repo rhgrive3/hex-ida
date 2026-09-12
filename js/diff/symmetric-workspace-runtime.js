@@ -231,7 +231,12 @@ export function installSymmetricWorkspaceDiff(app) {
     const signal = options.signal ?? null;
     throwIfAborted(signal);
     const running = workspace.busy;
-    if (running && typeof running.then === 'function') return joinSharedDiff(sharedDiffSession(running), signal);
+    if (running && typeof running.then === 'function') {
+      const entry = sharedDiffSession(running);
+      // An abandoned producer may still be unwinding; fresh consumers need a
+      // live producer, even before the abandoned task's finalizer runs.
+      if (!entry.controller?.signal.aborted) return joinSharedDiff(entry, signal);
+    }
     const controller = new AbortController();
     const sharedSignal = controller.signal;
     const revision = workspace.bindingRevision;
@@ -274,6 +279,7 @@ export function installSymmetricWorkspaceDiff(app) {
         threshold:options.threshold ?? 0.62,
         matchBudget:options.matchBudget || DEFAULT_SYMMETRIC_MATCH_BUDGET,
       });
+      throwIfAborted(sharedSignal);
       assertCurrent();
       const inputsComplete = before.complete === true && current.complete === true;
       result = demoteIncompleteAbsenceClaims(result, inputsComplete ? null : 'incomplete-symmetric-code-evidence');

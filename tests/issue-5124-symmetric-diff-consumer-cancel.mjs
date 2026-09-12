@@ -10,7 +10,7 @@ class Storage { constructor() { this.m = new Map(); } getItem(k) { return this.m
 
 const region = { id: 'text', exec: true, vmAddr: 0x1000n, size: 0x1000n };
 
-function makeWorkspace() {
+function makeWorkspace({ honourAbort = true } = {}) {
   const app = {
     backend: { readAt: () => Promise.resolve({ found: true, bytes: new Uint8Array([0]) }) },
     symbols: { funcs: [0n], functionStartsComplete: true, nameAt() { return null; } },
@@ -20,9 +20,10 @@ function makeWorkspace() {
   app.store = { values: {}, get(k) { return this.values[k] ?? null; } };
   const calls = { ensure: 0 };
   const producer = { signal: null };
-  let release;
-  const gate = new Promise((resolve) => { release = resolve; });
+  const releases = [];
+  const release = () => { for (const resolve of releases) resolve(); };
   app.ensureFunctions = (_region, options) => {
+    const gate = new Promise((resolve) => { releases.push(resolve); });
     calls.ensure++;
     producer.signal = options.signal ?? null;
     const signal = options.signal ?? null;
@@ -36,7 +37,7 @@ function makeWorkspace() {
         reject(error);
       };
       if (signal?.aborted) { onAbort(); return; }
-      signal?.addEventListener?.('abort', onAbort, { once: true });
+      if (honourAbort) signal?.addEventListener?.('abort', onAbort, { once: true });
       gate.then(() => {
         signal?.removeEventListener?.('abort', onAbort, { once: true });
         resolve();
@@ -54,7 +55,7 @@ function makeWorkspace() {
     functions: { evidenceProfile: 'legacy-profile', fingerprintVersion: 1 },
   };
   installSymmetricWorkspaceDiff(app);
-  return { workspace, calls, producer, release };
+  return { workspace, calls, producer, release, releases };
 }
 
 function track(promise) {
@@ -141,6 +142,36 @@ function fakeSignal() {
   assert.ok(isAbort(first.error), 'the first consumer must fail with its own abort');
   assert.ok(isAbort(second.error), 'the last consumer must fail with its own abort');
   assert.equal(workspace.busy, null, 'a cancelled producer must release the busy slot');
+}
+
+// Immediate retries must bypass an abandoned producer, including one whose
+// underlying discovery ignores cancellation and settles after its replacement.
+for (const honourAbort of [true, false]) {
+  const { workspace, calls, producer, releases } = makeWorkspace({ honourAbort });
+  const controller = new AbortController();
+  const first = track(workspace.diff({ signal: controller.signal }));
+  const abandonedTask = workspace.busy;
+  const abandonedSignal = producer.signal;
+  controller.abort();
+  const fresh = track(workspace.diff());
+  const replacementTask = workspace.busy;
+  assert.equal(calls.ensure, 2, 'an immediate retry must start a fresh producer');
+  assert.notEqual(replacementTask, abandonedTask);
+  assert.equal(abandonedSignal.aborted, true);
+  assert.equal(producer.signal.aborted, false);
+  releases[0]();
+  await drain(8);
+  assert.ok(isAbort(first.error));
+  assert.equal(fresh.outcome, 'pending', 'old settlement must not settle the new consumer');
+  assert.equal(workspace.busy, replacementTask, 'old finalizer must not clear the replacement busy slot');
+  assert.equal(workspace.diffState, null, 'an abandoned producer must not publish a result');
+  const joiner = track(workspace.diff());
+  assert.equal(calls.ensure, 2, 'a live replacement must still share its producer');
+  releases[1]();
+  await drain(8);
+  assert.equal(fresh.error?.code, 'DIFF_FINGERPRINT_PROFILE_MISMATCH');
+  assert.equal(joiner.error, fresh.error);
+  assert.equal(workspace.busy, null);
 }
 
 // Consumers that never abort still share exactly one producer outcome.
