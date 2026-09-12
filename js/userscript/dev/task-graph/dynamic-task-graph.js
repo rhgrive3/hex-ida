@@ -463,12 +463,31 @@ export class DynamicTaskGraph {
   }
 
   async awaitSupervisorPhase(operation, task, supervisorDeadline, phase) {
-    if (supervisorDeadline == null) return operation();
-    const remaining = Math.max(0, supervisorDeadline - Date.now());
-    const settled = await settleWithin(operation, remaining);
-    if (!settled.settled) throw supervisorWatchdogError(task, this.supervisorWatchdogTimeoutMs, phase);
-    if (settled.error) throw settled.error;
-    return settled.value;
+    const signal = this.abortController.signal;
+    if (signal.aborted) throw graphError('cancelled', this.cancelReason || 'cancelled');
+    const pending = Promise.resolve().then(operation);
+    void pending.catch(() => {});
+    let onGraphCancel = null;
+    let watchdog = null;
+    const cancellation = new Promise((_, reject) => {
+      onGraphCancel = () => reject(graphError('cancelled', this.cancelReason || 'cancelled'));
+      signal.addEventListener('abort', onGraphCancel, { once: true });
+    });
+    try {
+      if (supervisorDeadline == null) return await Promise.race([pending, cancellation]);
+      const remaining = Math.max(0, supervisorDeadline - Date.now());
+      if (remaining === 0) throw supervisorWatchdogError(task, this.supervisorWatchdogTimeoutMs, phase);
+      const expiry = new Promise((_, reject) => {
+        watchdog = setTimeout(() => reject(supervisorWatchdogError(task, this.supervisorWatchdogTimeoutMs, phase)), remaining);
+      });
+      return await Promise.race([pending, cancellation, expiry]);
+    } catch (error) {
+      if (signal.aborted && error?.code !== 'supervisor-watchdog-timeout') throw graphError('cancelled', this.cancelReason || 'cancelled');
+      throw error;
+    } finally {
+      if (watchdog) clearTimeout(watchdog);
+      if (onGraphCancel) signal.removeEventListener('abort', onGraphCancel);
+    }
   }
 
   async waitForWorkerResult(task, leaseId, supervisorDeadline = null) {

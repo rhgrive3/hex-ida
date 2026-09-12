@@ -95,7 +95,7 @@ assert.equal(relocationFailure.reason, 'required-validator-unavailable');
 
 const validation = await validateRebuildTransaction(transaction, materialized, {
   original: source,
-  loaderReparse: ({ output }) => ({ ok: output.length === 5 }),
+  loaderReparse: ({ output }) => ({ ok: output.length === 5, format: transaction.format, architecture: transaction.architecture, loaderVersion: transaction.loaderVersion, sourceHash: transaction.sourceHash, outputHash: materialized.outputHash }),
   independentOracle: ({ output }) => independentEvidence(output, output[1] === 9 && output[2] === 8),
   validators: external,
 });
@@ -108,7 +108,7 @@ assert.equal(validation.outputIdentity, `rebuild-output:${transaction.transactio
 let independentCalls = 0;
 const countedValidation = await validateRebuildTransaction(transaction, materialized, {
   original: source,
-  loaderReparse: () => ({ ok: true }),
+  loaderReparse: () => ({ ok: true, format: transaction.format, architecture: transaction.architecture, loaderVersion: transaction.loaderVersion, sourceHash: transaction.sourceHash, outputHash: materialized.outputHash }),
   independentOracle: ({ output }) => { independentCalls += 1; return independentEvidence(output); },
   validators: external,
 });
@@ -157,7 +157,7 @@ const boundTransaction = createRebuildTransaction({
 const boundMaterialized = await materializeRebuildTransaction(boundTransaction, source, { maxOutputBytes: 1024 });
 const boundExternal = { ...external, relocations: () => ({ ok: true, checked: 1 }) };
 assert.equal((await validateRebuildTransaction(boundTransaction, boundMaterialized, {
-  original: source, loaderReparse: () => ({ ok: true }), independentOracle: ({ output }) => independentEvidence(output, true, { format: 'elf' }), validators: boundExternal,
+  original: source, loaderReparse: () => ({ ok: true, format: boundTransaction.format, architecture: boundTransaction.architecture, loaderVersion: boundTransaction.loaderVersion, sourceHash: boundTransaction.sourceHash, outputHash: boundMaterialized.outputHash }), independentOracle: ({ output }) => independentEvidence(output, true, { format: 'elf' }), validators: boundExternal,
 })).status, 'valid');
 const badBindingTransaction = createRebuildTransaction({
   ...transactionFor('elf'),

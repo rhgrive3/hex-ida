@@ -30,18 +30,42 @@ import { positiveFiniteBudget } from './budget.js';
 export const EXHAUSTIVE_BACKEND_ID = 'hex-exhaustive-bv';
 export const EXHAUSTIVE_BACKEND_VERSION = '1.0.0';
 
-function childExpressions(expr) {
-  if (!expr || typeof expr !== 'object') return [];
+function childExpressionCount(expr) {
+  if (!expr || typeof expr !== 'object') return 0;
   switch (expr.kind) {
-    case EXPR_KIND.UNARY: return [expr.arg];
-    case EXPR_KIND.BINARY:
-    case EXPR_KIND.COMPARE: return [expr.left, expr.right];
-    case EXPR_KIND.CONNECTIVE: return Array.isArray(expr.args) ? expr.args : [];
-    case EXPR_KIND.ITE: return [expr.cond, expr.thenExpr, expr.elseExpr];
+    case EXPR_KIND.UNARY:
     case EXPR_KIND.EXTRACT:
-    case EXPR_KIND.CAST: return [expr.arg];
-    case EXPR_KIND.CONCAT: return [expr.left, expr.right];
-    default: return [];
+    case EXPR_KIND.CAST:
+      return 1;
+    case EXPR_KIND.BINARY:
+    case EXPR_KIND.COMPARE:
+    case EXPR_KIND.CONCAT:
+      return 2;
+    case EXPR_KIND.CONNECTIVE:
+      return Array.isArray(expr.args) ? expr.args.length : 0;
+    case EXPR_KIND.ITE:
+      return 3;
+    default:
+      return 0;
+  }
+}
+
+function childExpressionAt(expr, index) {
+  switch (expr.kind) {
+    case EXPR_KIND.UNARY:
+    case EXPR_KIND.EXTRACT:
+    case EXPR_KIND.CAST:
+      return index === 0 ? expr.arg : undefined;
+    case EXPR_KIND.BINARY:
+    case EXPR_KIND.COMPARE:
+    case EXPR_KIND.CONCAT:
+      return index === 0 ? expr.left : expr.right;
+    case EXPR_KIND.CONNECTIVE:
+      return expr.args[index];
+    case EXPR_KIND.ITE:
+      return index === 0 ? expr.cond : index === 1 ? expr.thenExpr : expr.elseExpr;
+    default:
+      return undefined;
   }
 }
 
@@ -70,7 +94,7 @@ function validateExprNode(expr) {
       return Object.values(BV_COMPARE_OP).includes(expr.op) && isBoolSort(expr.sort) && sameBvSort(expr.left, expr.right)
         ? null : 'invalid-compare-expression';
     case EXPR_KIND.CONNECTIVE: {
-      if (!Object.values(BOOL_CONNECTIVE_OP).includes(expr.op) || !isBoolSort(expr.sort) || !Array.isArray(expr.args) || !expr.args.every((arg) => isBoolSort(arg?.sort))) return 'invalid-connective-expression';
+      if (!Object.values(BOOL_CONNECTIVE_OP).includes(expr.op) || !isBoolSort(expr.sort) || !Array.isArray(expr.args)) return 'invalid-connective-expression';
       if (expr.args.length === 0 || (expr.op === BOOL_CONNECTIVE_OP.NOT && expr.args.length !== 1) ||
           ([BOOL_CONNECTIVE_OP.IMPLIES, BOOL_CONNECTIVE_OP.EQ, BOOL_CONNECTIVE_OP.NE].includes(expr.op) && expr.args.length !== 2)) return 'invalid-connective-arity';
       return null;
@@ -98,13 +122,16 @@ function validateExprNode(expr) {
   }
 }
 
-function collectSymbols(expressions) {
+function collectSymbols(expressions, maxExprNodes) {
   const symbols = new Map();
   const visited = new Set();
   let nodeCount = 0;
   let unsupportedReason = null;
+  let budgetExceeded = false;
+  let rootIndex = 0;
+  const frames = [];
 
-  function visit(expr) {
+  const admit = (expr) => {
     if (!expr || typeof expr !== 'object') {
       unsupportedReason ||= 'malformed-expression-node';
       return;
@@ -112,6 +139,10 @@ function collectSymbols(expressions) {
     if (visited.has(expr)) return;
     visited.add(expr);
     nodeCount++;
+    if (nodeCount > maxExprNodes) {
+      budgetExceeded = true;
+      return;
+    }
     unsupportedReason ||= validateExprNode(expr);
     if (expr.kind === EXPR_KIND.FRESH_SYMBOL) {
       const key = String(expr.symbolId || expr.name || '');
@@ -122,11 +153,30 @@ function collectSymbols(expressions) {
         symbols.set(key, { key, name: String(expr.name), symbolId: String(expr.symbolId || key), sort: expr.sort });
       }
     }
-    for (const child of childExpressions(expr)) visit(child);
+    const childCount = childExpressionCount(expr);
+    if (childCount > 0) frames.push({ expr, childIndex: 0, childCount });
+  };
+
+  while (!budgetExceeded && (frames.length > 0 || rootIndex < expressions.length)) {
+    if (frames.length === 0) {
+      admit(expressions[rootIndex++]);
+      continue;
+    }
+
+    const frame = frames[frames.length - 1];
+    if (frame.childIndex >= frame.childCount) {
+      frames.pop();
+      continue;
+    }
+
+    const child = childExpressionAt(frame.expr, frame.childIndex++);
+    if (frame.expr.kind === EXPR_KIND.CONNECTIVE && !isBoolSort(child?.sort)) {
+      unsupportedReason ||= 'invalid-connective-expression';
+    }
+    admit(child);
   }
 
-  for (const expr of expressions) visit(expr);
-  return { symbols: [...symbols.values()].sort((a, b) => a.key.localeCompare(b.key)), nodeCount, unsupportedReason };
+  return { symbols: [...symbols.values()].sort((a, b) => a.key.localeCompare(b.key)), nodeCount, unsupportedReason, budgetExceeded };
 }
 
 function symbolConstantPair(left, right) {
@@ -203,8 +253,8 @@ class ExhaustiveSolverSession extends SolverSession {
       return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'constraint-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
     }
 
-    const collected = collectSymbols(expressions);
-    if (collected.nodeCount > maxExprNodes) {
+    const collected = collectSymbols(expressions, maxExprNodes);
+    if (collected.budgetExceeded) {
       return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-node-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
     }
     if (collected.unsupportedReason) {
