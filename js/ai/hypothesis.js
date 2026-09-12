@@ -31,9 +31,17 @@ export class HypothesisStore {
       return previous;
     }
 
-    const supportEvidenceIds = knownIds(input.supportEvidenceIds, this.evidenceStore);
-    const contradictionEvidenceIds = knownIds(input.contradictionEvidenceIds, this.evidenceStore);
-    let status = HYPOTHESIS_STATUSES.includes(input.status) ? input.status : 'open';
+    const supportEvidenceIds = Object.hasOwn(input, 'supportEvidenceIds')
+      ? knownIds(input.supportEvidenceIds, this.evidenceStore)
+      : previous?.supportEvidenceIds || [];
+    const contradictionEvidenceIds = Object.hasOwn(input, 'contradictionEvidenceIds')
+      ? knownIds(input.contradictionEvidenceIds, this.evidenceStore)
+      : previous?.contradictionEvidenceIds || [];
+    const hasStatusUpdate = Object.hasOwn(input, 'status');
+    const requestedStatus = hasStatusUpdate ? input.status : null;
+    let status = hasStatusUpdate
+      ? (HYPOTHESIS_STATUSES.includes(requestedStatus) ? requestedStatus : 'open')
+      : previous?.status || 'open';
 
     /* `verified` and `rejected` are application verdicts, not model vocabulary.
        Even a real verified evidence ID cannot prove that an arbitrary new claim

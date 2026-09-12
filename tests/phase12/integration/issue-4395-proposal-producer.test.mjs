@@ -95,3 +95,56 @@ test('#4395 worker final normalization carries bounded typed proposal drafts', (
   assert.equal(normalized.proposals[0].kind, 'comment');
   assert.deepEqual(normalized.proposals[0].evidenceIds, ['evidence-1']);
 });
+
+for (const changedBinding of ['binaryId', 'projectId', 'runtimeSessionId', null]) {
+  test(`#4395 deferred address validation ${changedBinding ? `rejects ${changedBinding} drift before proposal creation` : 'preserves stable pending proposals'}`, async () => {
+    const { evidenceStore, proof } = deterministicProofs();
+    let enteredValidation;
+    const entered = new Promise((resolve) => { enteredValidation = resolve; });
+    let completeValidation;
+    const validation = new Promise((resolve) => { completeValidation = resolve; });
+    const context = {
+      binaryId: 'binary-A', projectId: 'project-A', runtimeSessionId: 'runtime-A',
+      async addressExists() { enteredValidation(); return validation; },
+    };
+    const runtime = new AIRuntime({
+      context, evidenceStore, planner: false,
+      provider: {
+        async nextTurn() {
+          return {
+            type: 'final', answer: 'Review a supported name.', evidenceIds: [proof.id],
+            suggestedActions: [{ kind: 'open-function', target: '0x1000', evidenceId: proof.id }],
+            proposals: [{
+              kind: 'rename', target: { address: '0x1000' },
+              before: 'sub_1000', after: 'reviewedName', evidenceIds: [proof.id],
+            }],
+            followups: [],
+          };
+        },
+      },
+    });
+    const settled = runtime.turn({ mode: 'agent', scope: 'function', goal: 'Propose a name', budget: { maxModelCalls: 1 } })
+      .then((value) => ({ value }), (error) => ({ error }));
+    try {
+      await Promise.race([
+        entered,
+        settled.then(({ error }) => { throw error || new Error('turn completed before address validation'); }),
+      ]);
+      assert.deepEqual(runtime.proposalStore.all(), [], 'validation precedes proposal creation');
+      if (changedBinding) context[changedBinding] = `${changedBinding}-B`;
+      completeValidation(true);
+      const outcome = await settled;
+      if (changedBinding) {
+        assert.equal(outcome.error?.type, 'scope_violation');
+        assert.deepEqual(runtime.proposalStore.all(), [], 'a rejected turn must leave no proposal bound to the replacement context');
+      } else {
+        assert.equal(outcome.error, undefined);
+        assert.equal(outcome.value.proposals.length, 1);
+        assert.equal(outcome.value.proposals[0].status, 'pending');
+      }
+      assert.equal(runtime.proposalStore.approvals.size, 0, 'neither completion path issues approval');
+    } finally {
+      completeValidation(true);
+    }
+  });
+}

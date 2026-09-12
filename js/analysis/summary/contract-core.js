@@ -174,6 +174,7 @@ export function createMemoryEffect(input = {}) {
   const regionId = input.regionId == null ? null : nonEmpty(input.regionId, 'function-summary-invalid-region-id');
   const regionKind = nonEmpty(input.regionKind ?? 'unknown', 'function-summary-invalid-region-kind');
   const broad = input.broad === true;
+  if (!broad && regionId == null) fail('function-summary-unresolved-memory-region');
   if (broad && input.region != null) fail('function-summary-broad-effect-cannot-carry-region-proof');
   const region = input.region == null ? null : canonicalSummaryRegion(input.region, regionId, regionKind);
   if (input.region != null && region == null) fail('function-summary-invalid-region-proof');
@@ -483,10 +484,10 @@ export function functionSummaryDigest(summary) {
     mayThrow: summary.mayThrow,
     stackDelta: summary.stackDelta,
     semanticFacts: summary.semanticFacts,
-    completeness: summary.status.completeness,
-    stopReason: summary.status.stopReason,
-    analyzerId: summary.status.analyzerId,
-    analyzerVersion: summary.status.analyzerVersion,
+    // Status provenance and identity are part of the published summary state.
+    // Hash the canonical envelope as one unit so a future status field cannot
+    // be silently omitted from dependency identity / fixed-point convergence.
+    status: summary.status,
   });
 }
 

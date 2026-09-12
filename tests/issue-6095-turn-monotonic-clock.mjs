@@ -188,3 +188,7 @@ assert.doesNotMatch(runtime, /Date\.now\(\) - started/,
 }
 
 console.log('issue #6095 executeTurn monotonic clock regressions PASS');
+
+// Keep the late-provider await-boundary regression in the required ai:test
+// denominator without weakening or replacing any existing suite entry.
+await import('./issue-5815-late-provider-resolution.mjs');
