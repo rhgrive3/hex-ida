@@ -1,11 +1,30 @@
-import { parseMachO as parseMachOCore } from './macho-core.js';
+import {
+  parseMachO as parseMachOCore,
+  DICE_KIND_DATA,
+  DICE_KIND_JUMP_TABLE8,
+  DICE_KIND_JUMP_TABLE16,
+  DICE_KIND_JUMP_TABLE32,
+  DICE_KIND_ABS_JUMP_TABLE32,
+  DICE_KIND_NAMES,
+} from './macho-core.js';
 import { functionSeed, mergeFunctionSeeds } from './model.js';
 import { ByteView } from './reader.js';
 import { markMachOMetadataPartial } from './macho-budget.js';
+import { applyMachOIndirectSymbols } from './macho-indirect-symbols.js';
+
+export {
+  DICE_KIND_DATA,
+  DICE_KIND_JUMP_TABLE8,
+  DICE_KIND_JUMP_TABLE16,
+  DICE_KIND_JUMP_TABLE32,
+  DICE_KIND_ABS_JUMP_TABLE32,
+  DICE_KIND_NAMES,
+};
 
 const KNOWN_LOAD_COMMAND_MIN_SIZE = new Map([
   [0x80000028, 24], // LC_MAIN
   [0x26, 16],       // LC_FUNCTION_STARTS
+  [0x29, 16],       // LC_DATA_IN_CODE
   [0x80000034, 16], // LC_DYLD_CHAINED_FIXUPS
   [0x80000033, 16], // LC_DYLD_EXPORTS_TRIE
   [0x22, 48],       // LC_DYLD_INFO
@@ -80,5 +99,7 @@ export function repairMachOZeroEntrypoint(image) {
 export function parseMachO(input, opts = {}) {
   const image = parseMachOCore(input, opts);
   validateKnownLoadCommandSizes(input, image);
+  const thin = selectedThinBytes(input, image);
+  if (thin) applyMachOIndirectSymbols(thin, image, opts);
   return repairMachOZeroEntrypoint(image);
 }

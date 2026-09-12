@@ -210,9 +210,9 @@ export class ObservationStore {
     try { return this.get(id, requestedScope, requestedBoundary); } catch { this.cache.delete(key); return null; }
   }
 
-  put({ tool, arguments: args = {}, fullResult, functionIdentity = null, deterministic = true, extraBinding = {}, effectiveScope = null, scopeBoundary = null } = {}) {
+  put({ tool, arguments: args = {}, fullResult, functionIdentity = null, deterministic = true, cacheable = deterministic, extraBinding = {}, effectiveScope = null, scopeBoundary = null } = {}) {
     const binding = this.binding(extraBinding);
-    const cacheKey = deterministic ? this.cacheKey(tool, args, extraBinding) : null;
+    const cacheKey = deterministic && cacheable ? this.cacheKey(tool, args, extraBinding) : null;
     if (cacheKey) {
       const existing = this.cache.get(cacheKey);
       if (existing) {
