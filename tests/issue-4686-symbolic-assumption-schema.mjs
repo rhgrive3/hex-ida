@@ -66,6 +66,10 @@ function run() {
     TypeError,
   );
   assert.throws(
+    () => createAssumption({ id: 'a', kind: 'k', statement: 's', originIds: new Array(1) }),
+    TypeError,
+  );
+  assert.throws(
     () => createAssumption({ id: 'a', kind: 'k', statement: 's', originIds: [['inst-1']] }),
     TypeError,
   );

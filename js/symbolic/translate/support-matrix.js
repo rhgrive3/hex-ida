@@ -50,7 +50,10 @@ export function createAssumption({ id, kind, statement, source, originIds = [], 
   if (!Array.isArray(originIds)) {
     throw new TypeError('createAssumption: originIds must be an array of non-empty strings');
   }
-  const normalizedOriginIds = originIds.map((originId) => requireAssumptionString(originId, 'originIds entry'));
+  const normalizedOriginIds = Array.from(
+    { length: originIds.length },
+    (_, index) => requireAssumptionString(originIds[index], 'originIds entry'),
+  );
   return Object.freeze({
     id,
     kind,
