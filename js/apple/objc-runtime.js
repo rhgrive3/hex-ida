@@ -291,11 +291,13 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
   };
 }
 
-function hierarchy(index, receiverType, budget = 64) {
+function hierarchy(index, receiverType) {
   const out = [];
   let name = cleanClassName(receiverType);
   const seen = new Set();
-  while (name && !seen.has(name) && out.length < budget) {
+  const classCount = Number.isSafeInteger(index.classes?.size) && index.classes.size >= 0 ? index.classes.size : 0;
+  const maxDepth = classCount + 1;
+  while (name && !seen.has(name) && out.length < maxDepth) {
     seen.add(name);
     out.push(name);
     const c = index.classes.get(name);
@@ -434,12 +436,14 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
   const topImpKey = top ? canonicalAddressKey(top.imp) : null;
   const sameImplementation = topImpKey != null && candidates.every((m) => canonicalAddressKey(m.imp) === topImpKey);
   const uniqueByEvidence = !!top && topImpKey != null && (!second || sameImplementation || (!cleanReceiver && top.score - second.score >= 0.16));
+  const classComplete = index.completeness?.classes?.complete === true
+    || (index.completeness?.classes == null && index.completeness?.complete === true);
   const categoryComplete = index.completeness?.categories?.complete === true;
   // A complete scan of the current Mach-O image is not proof that every
   // Objective-C implementation available to the runtime has been indexed.
   // Without a proven receiver type, keep current-image hits as candidates
   // rather than turning local uniqueness into a process-wide exact target.
-  const partialBlocksVerification = cleanReceiver ? !categoryComplete : true;
+  const partialBlocksVerification = cleanReceiver ? !(classComplete && categoryComplete) : true;
   const unambiguous = uniqueByEvidence && !partialBlocksVerification;
   return {
     resolved: unambiguous ? top : null,
