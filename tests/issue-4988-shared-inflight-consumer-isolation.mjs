@@ -14,13 +14,13 @@ function decodeResponse(address, length) {
   return { supported: true, instructions, bytesRead: length };
 }
 
-function harness() {
+function harness({ ignoreAbort = false } = {}) {
   const gates = [];
   const index = new VariableInstructionIndex({
     pageBytes: 32, overlapBytes: 0, maxPrefetchPages: 0,
     disassembleAt: (address, { length, signal }) => new Promise((resolve, reject) => {
       const onAbort = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
-      if (signal) {
+      if (signal && !ignoreAbort) {
         if (signal.aborted) onAbort();
         else signal.addEventListener('abort', onAbort, { once: true });
       }
@@ -201,3 +201,40 @@ test('#4988 same-page single-flight is preserved for surviving consumers', async
   assert.equal(pages[0], pages[1]);
   assert.equal(index.metrics().decodeRequestCount, 1);
 });
+
+for (const mode of ['cooperative', 'old-first', 'replacement-first']) {
+  test(`#4988 same-turn retry replaces an aborted producer (${mode})`, async () => {
+    const { index, gates } = harness({ ignoreAbort: mode !== 'cooperative' });
+    const controller = new AbortController();
+    const abandoned = index.ensurePage(BASE, { signal: controller.signal });
+    const abandonedCheck = assert.rejects(abandoned, isAbortError);
+    controller.abort();
+    const replacement = index.ensurePage(BASE);
+    assert.equal(gates.length, 2, 'same-turn retry must start a live producer');
+    assert.equal(gates[0].signal.aborted, true);
+    assert.equal(gates[1].signal.aborted, false);
+    assert.equal(index.metrics().cancelledRequests, 1);
+    await abandonedCheck;
+
+    const settleOld = async () => {
+      gates[0].resolve(decodeResponse(BASE, 1));
+      await new Promise((resolve) => setImmediate(resolve));
+    };
+    if (mode !== 'replacement-first') {
+      await settleOld();
+      assert.equal(index.metrics().retainedPages, 0, 'aborted producer cannot publish');
+      assert.equal(index.inflight.size, 1, 'old finalizer cannot remove replacement');
+    }
+    const joined = index.ensurePage(BASE);
+    assert.equal(gates.length, 2, 'new consumers join the replacement');
+    gates[1].resolve(decodeResponse(BASE, 32));
+    const page = await replacement;
+    assert.equal(await joined, page);
+    assert.equal(page.entries.length, 32);
+    if (mode === 'replacement-first') await settleOld();
+    assert.equal(await index.ensurePage(BASE), page, 'late aborted output cannot replace the page');
+    assert.equal(index.inflight.size, 0);
+    assert.equal(index.metrics().decodeRequestCount, 2);
+    assert.equal(index.metrics().cancelledRequests, 1, 'cancellation counted exactly once');
+  });
+}

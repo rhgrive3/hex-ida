@@ -200,7 +200,7 @@ export class VariableInstructionIndex {
     const key=pageKey(this.generation,start),cached=this.pages.get(key);
     if(cached){this._metrics.cacheHits++;cached.lastUsed=++this._clock;if(protect)this.currentPageKey=key;return cached;}
     const shared=this.inflight.get(key);
-    if(shared){
+    if(shared&&!shared.controller.signal.aborted){
       this._metrics.cacheHits++;
       // Navigation can join a prefetch producer. Protection belongs to all
       // consumers, not just the caller that started decoding (#6094).
