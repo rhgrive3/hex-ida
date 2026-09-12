@@ -83,13 +83,16 @@ export function installProtectedWorkers() {
     globalThis.Worker = HexWorker;
     installedWorker = HexWorker;
 
+    let cleaned = false;
     runtime = {
       nativeWorker: NativeWorker,
       workers: urls,
       cleanup() {
+        if (cleaned) return;
+        cleaned = true;
         if (globalThis.Worker === HexWorker) globalThis.Worker = NativeWorker;
-        for (const url of revoke) URL.revokeObjectURL(url);
-        delete globalThis.__HEX_WORKER_RUNTIME__;
+        revokeBlobURLs(revoke);
+        if (globalThis.__HEX_WORKER_RUNTIME__ === runtime) delete globalThis.__HEX_WORKER_RUNTIME__;
       },
     };
     globalThis.__HEX_WORKER_RUNTIME__ = runtime;
