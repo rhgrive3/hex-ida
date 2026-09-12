@@ -49,6 +49,38 @@ function pathExpression(path) {
   return null;
 }
 
+function findBlock(ir, blockId) {
+  if (!ir || !Array.isArray(ir.blocks)) return null;
+  for (let i = 0; i < ir.blocks.length; i += 1) {
+    const b = ir.blocks[i];
+    if (b && (b.index === blockId || b.id === blockId || i === blockId)) return b;
+  }
+  return null;
+}
+
+function edgeSource(entry) {
+  if (entry && typeof entry === 'object') {
+    const from = entry.from ?? entry.block ?? entry.fromBlock ?? entry.id;
+    return Number.isInteger(from) && from >= 0 ? from : null;
+  }
+  return Number.isInteger(entry) && entry >= 0 ? entry : null;
+}
+
+function cfgIncomingSources(ir, targetBlock) {
+  const target = findBlock(ir, targetBlock);
+  if (!target || !Array.isArray(target.pred)) return null;
+  const sources = new Set();
+  for (const entry of target.pred) {
+    const from = edgeSource(entry);
+    if (from != null) sources.add(from);
+  }
+  return sources;
+}
+
+function canonicalPathId(path) {
+  return String(path.pathId ?? path.id);
+}
+
 export async function verifyGlobalEdgeReachability({
   ir = null,
   entryBlock = 0,
@@ -88,6 +120,42 @@ export async function verifyGlobalEdgeReachability({
   if (globalScope.pathCoverageEvidence.coveredPaths !== globalScope.incomingPaths.length ||
       (globalScope.pathCoverageEvidence.totalPaths != null && globalScope.pathCoverageEvidence.totalPaths !== globalScope.incomingPaths.length)) {
     return unknown('path-coverage-count-mismatch', 'Global path coverage count does not match the enumerated incoming CFG paths');
+  }
+  const pathIdentities = globalScope.incomingPaths.map(canonicalPathId);
+  if (new Set(pathIdentities).size !== pathIdentities.length) {
+    return unknown('duplicate-incoming-cfg-path', 'Global unreachability requires distinct identities for every incoming CFG path');
+  }
+  const derivedSources = cfgIncomingSources(ir, targetBlock);
+  if (derivedSources) {
+    const suppliedSources = globalScope.incomingPaths.map((path) => path.fromBlock);
+    if (new Set(suppliedSources).size !== suppliedSources.length) {
+      return unknown('duplicate-incoming-cfg-path', 'Global unreachability requires distinct identities for every incoming CFG path');
+    }
+    const suppliedSet = new Set(suppliedSources);
+    if (suppliedSources.some((from) => !derivedSources.has(from))) {
+      return unknown('unknown-incoming-cfg-path', 'Global unreachability requires every enumerated path to be a real CFG incoming edge');
+    }
+    for (const source of derivedSources) {
+      if (!suppliedSet.has(source)) {
+        return unknown('missing-incoming-cfg-path', 'Global unreachability requires every CFG incoming path to be enumerated');
+      }
+    }
+    if (globalScope.pathCoverageEvidence.coveredPaths !== derivedSources.size ||
+        (globalScope.pathCoverageEvidence.totalPaths != null && globalScope.pathCoverageEvidence.totalPaths !== derivedSources.size)) {
+      return unknown('path-coverage-count-mismatch', 'Global path coverage count does not match the CFG incoming path set');
+    }
+    if (Array.isArray(globalScope.loopBounds?.bounds)) {
+      const identitySet = new Set(pathIdentities);
+      const validBound = (bound) => {
+        const ref = bound && typeof bound === 'object' ? (bound.pathId ?? bound.id) : null;
+        if (typeof ref === 'string' && identitySet.has(ref)) return true;
+        const block = Number.isInteger(bound) ? bound : edgeSource(bound);
+        return block != null && (derivedSources.has(block) || identitySet.has(canonicalPathId(bound)));
+      };
+      if (globalScope.loopBounds.bounds.some((bound) => !validBound(bound))) {
+        return unknown('loop-bound-path-identity-mismatch', 'Global unreachability requires loop-bound evidence to reference enumerated incoming CFG paths');
+      }
+    }
   }
   if (!Array.isArray(globalScope.phiChoices)) {
     return unknown('incomplete-phi-choices', 'Global unreachability requires explicit PHI predecessor choices');
