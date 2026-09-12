@@ -33,6 +33,7 @@ const options = { identity, addressBits:8, backendTier:'exhaustive', timeoutMs:5
 
 test('production text-row PHIs and BV1 predicates execute before the remaining public proof boundary', async () => {
   const f = textRowConditionalRegionFixture();
+  const identity = f.identity;
   const preparedOptions = { ...f.options, ir:f.ir, deterministicTransforms:true,
     phase8PrepareRegionProof:true, phase8PrepareProof:true, renderProvenance:true };
   const { decompileSemantic, readSemanticConditionalRegions } = await import('../../../js/decompiler/semantic-core.js');
@@ -62,14 +63,14 @@ test('production text-row PHIs and BV1 predicates execute before the remaining p
   }
   // Use the production solver tier for actual 64-bit inputs; the exhaustive
   // floor used by the small synthetic fixtures has a finite assignment budget.
-  const output = await optimizeSemanticDecompilation(projection, { ...options, backendTier:'tiered', conditionalBranch:branch });
-  // Scalar execution does not prove architectural state effects. Keep that
-  // independent full-region obligation explicit at the public boundary.
+  const output = await optimizeSemanticDecompilation(projection, { ...options, identity, backendTier:'tiered', conditionalBranch:branch });
+  // Register assignments are now bound to canonical SSA. Possible machine
+  // faults remain a separate full-region obligation at the public boundary.
   assert.ok(f.ir.blocks.some(block => block.phis.some(phi => phi.args.length > 0)));
   assert.equal(output.proofOptimization.status, 'partial');
   // A finite public query may exhaust its deadline before reaching that node;
   // either refusal must retain the exact original view and IR.
-  assert.ok(['unproved-state-effects', 'deadline-exceeded'].includes(output.proofOptimization.reason),
+  assert.ok(['unproved-machine-effects', 'deadline-exceeded'].includes(output.proofOptimization.reason),
     output.proofOptimization.reason);
   assert.equal(output.proofOptimization.adopted, 0);
   assert.equal(output.cAst, projection.cAst);

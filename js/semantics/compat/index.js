@@ -33,7 +33,8 @@ import {
   buildMemorySsa,
   validateMemorySsa,
 } from '../memoryssa/index.js';
-import { projectSemanticIrV2ToLegacyV1 } from './semantic-ir-v2-to-v1.js';
+import { projectSemanticIrV2ToLegacyV1, observeProjectedOperationData } from './semantic-ir-v2-to-v1.js';
+import { buildStateProjectionIndex, legacyPublicStateIdentity } from './semantic-ir-v2-to-v1-core.js';
 
 export {
   MACHINE_EFFECTS_V1_COMPAT,
@@ -62,6 +63,67 @@ export const SEMANTIC_V2_COMPAT_PATH = Object.freeze([
 
 const COMPLETENESS_RANK = Object.freeze({ complete: 0, partial: 1, unknown: 2 });
 const UNKNOWN_CATEGORIES = Object.freeze(['registers', 'flags', 'memory', 'control', 'faults', 'other']);
+
+// Only this pipeline computes and validates the canonical SSA before issuing
+// these local assignment bindings. A public projector given copied SSA cannot
+// acquire them by copying proof descriptions or matching semantic IDs.
+const registerStateBindings = new WeakMap();
+const registerStateContexts = new WeakMap();
+export function projectedRegisterStateContext(projected) {
+  return registerStateContexts.get(projected) ?? null;
+}
+export function projectedRegisterStateBindingCandidate(projected, instruction) {
+  return registerStateBindings.get(projected)?.get(instruction) ?? null;
+}
+function sealRegisterStateBindings(projected, ir, ssa, context) {
+  try {
+    if (ir.completeness !== 'complete' || projected.functionId !== ir.functionId) return;
+    const nodes = new Map(ir.nodes.map(node => [node.id, node]));
+    const index = buildStateProjectionIndex(ssa), records = [];
+    for (const source of projected.instructions) {
+      const node = nodes.get(source.semanticNodeId), extra = source.extra;
+      if (!node || !['state-read','state-write'].includes(node.kind)
+          || node.variable?.kind !== 'physical-state' || node.variable.physicalIdentity?.kind !== 'register'
+          || source.op !== 'mov' || source.sub != null || source.args?.length !== 1
+          || extra?.completeness !== 'complete' || !source.dst || source.dst.def !== source) continue;
+      const read = node.kind === 'state-read', key = read ? 'stateRead' : 'stateWrite';
+      const fact = read ? index.readUseByNodeId.get(node.id) : index.writeDefinitionByNodeId.get(node.id);
+      const input = source.args[0]?.value, output = source.dst;
+      const proofKey = read ? 'stateReadProof' : 'stateWriteProof';
+      const identity = legacyPublicStateIdentity(node.variable);
+      const machine = node.attributes?.machineEffects;
+      if (!fact || !input || !Number.isSafeInteger(input.bits) || input.bits < 1 || input.bits > 64
+          || output.bits !== input.bits || fact.proof?.machineType?.widthBits !== input.bits
+          || source.args[0].bits != null && source.args[0].bits !== input.bits
+          || extra.publicStateIdentity !== identity || extra.semanticNodeId !== node.id
+          || stableStringify(extra[key]) !== stableStringify(node.variable)
+          || stableStringify(extra[proofKey]) !== stableStringify(fact.proof)
+          || stableStringify(extra.attributes) !== stableStringify(node.attributes)
+          || machine?.bundleCompleteness !== 'exact'
+          || machine.operationKind !== (read ? 'register-read' : 'register-write')) continue;
+      if (read ? input.semanticSsaValueId !== fact.valueId || output.semanticValueId !== node.outputs[0]
+          || extra.reachingStateSsaValueId !== fact.valueId || extra.localPhysicalViewProjection === true
+        : fact.kind !== 'definition' || input.semanticValueId !== node.inputs[0]
+          || output.semanticSsaValueId !== fact.valueId || extra.stateSsaDefinitionId !== fact.definitionId) continue;
+      const state = extra[key], proof = extra[proofKey], attributes = extra.attributes, bits = input.bits;
+      // Actual facade writes may change unrelated presentation or ABI fields;
+      // they cannot replace the state assignment's original operands or facts.
+      const bindingCurrent = () => source.op === 'mov' && source.sub == null && source.dst === output
+        && output.def === source && source.args?.length === 1 && source.args[0]?.value === input
+        && input.bits === bits && output.bits === bits && source.extra?.[key] === state
+        && source.extra?.[proofKey] === proof && source.extra?.attributes === attributes
+        && source.extra?.publicStateIdentity === identity && source.extra?.completeness === 'complete';
+      records.push({ schemaVersion:'hex-projected-register-state/v1', context,
+        source, input, output, beforeInputs:[input, output], kind:node.kind,
+        state, canonicalNode:node, ssaFact:fact, bindingCurrent });
+    }
+    if (!records.length) return;
+    const isCurrent = observeProjectedOperationData(projected, records);
+    registerStateBindings.set(projected, new Map(records.map(record => [record.source,
+      Object.freeze({ ...record, beforeInputs:Object.freeze(record.beforeInputs), isCurrent })])));
+    registerStateContexts.set(projected, context);
+  } catch { /* Missing bounded producer observation never authorizes state effects. */ }
+}
 
 function fail(code) { throw new TypeError(code); }
 function object(value, code) {
@@ -844,6 +906,8 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     memorySsa,
     abiAdapter: input.abiAdapter ?? options.abiAdapter ?? options.compatOptions?.abiAdapter,
   });
+  sealRegisterStateBindings(legacyV1, ir, ssa, Object.freeze({ binaryId, functionId, snapshotId,
+    architecture:architectureId, semanticsVersion:architectureSemanticVersion }));
 
   // The wrapper object is immutable, and every canonical v2 artifact is already
   // frozen by its contract constructor. The legacy v1 compatibility projection

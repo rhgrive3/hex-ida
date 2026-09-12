@@ -1,5 +1,6 @@
 import { buildSemanticModel } from '../../../js/blocks.js';
 import { buildIR } from '../../../js/ir-core.js';
+import { projectedRegisterStateContext } from '../../../js/semantics/compat/index.js';
 import { fixture } from './ir-fixtures.mjs';
 import { identity } from './proof-fixtures.mjs';
 import { decompileSemantic, readSemanticConditionalRegions } from '../../../js/decompiler/semantic-core.js';
@@ -54,5 +55,5 @@ export function textRowConditionalRegionFixture() {
     rowOfAddress:address => rows.find(row => row.address === BigInt(address))?.row ?? null,
     addrOfRow:row => rows[row]?.address ?? null };
   const model = buildSemanticModel(rows, options), ir = buildIR(model, options);
-  return { model, ir, options };
+  return { model, ir, options, identity:{ ...identity, ...projectedRegisterStateContext(ir) } };
 }

@@ -7159,3 +7159,49 @@ ownership and independent source/PR review are retained under persistent
 `agent-work/evidence/analysis-roadmap-20260909/c4-bool-predicate-20260913` and sibling
 `c4-predicate-*` receipts. The user C1 recursive-return lane remains reserved;
 full production state/flags/region proof and **CHECKPOINT-LOCKED** remain open.
+
+## C4 canonical register assignment binding (2026-09-13)
+
+Starting source is `0b8e65d122340a0bcba6175b15aa61cd5fc85587` on PR #7036.
+The compatibility pipeline already builds and validates canonical scalar SSA.
+Its private finalization now binds the original register state-read/state-write
+MOVs to that SSA's actual uses/definitions and immutable Semantic IR nodes. The
+binding checks the original input/output objects, width, reaching definition,
+physical register identity, canonical machine operation and exact bundle status.
+It also retains the binary, function, snapshot, architecture and semantics context.
+Publicly projecting identical or copied SSA does not issue this authority.
+
+The existing facade write recorder carries these bindings through its actual
+normalization writes. The reader checks both the retained graph observation and
+the original assignment facts. C4 reachability consumes only these issued local
+register bindings and rechecks them alongside execution currentness. Unknown
+state, flags, state-preservation claims and possible faults remain independent
+obligations. No state metadata is deleted, and presentation normalization is not
+treated as an architectural proof. This adds no serialized contract or alternate
+SSA/ISA evaluator; the authority is private and local to the produced objects.
+
+All 13 register state MOVs in the actual parsed ARM64-row fixture now have live
+bindings. The x1 read consumes the exact SSA destination of its preceding x1
+write. Regressions reject copied IR/instructions/operands/proofs, foreign context,
+changed widths and upstream values, replaced graph members, injected machine
+fault metadata and accessors. They also prove the real facade write handoff and
+refuse authority from a public reprojection of genuine or copied canonical SSA.
+The synthetic issuer fixture isolates authenticity only; the separate ARM64-row
+fixture remains parsed-row evidence, not a compiler/binary or formal ISA oracle.
+
+The retained public API probe now reaches `unproved-machine-effects` at the
+remaining possible-fault obligation, keeps the exact original IR/view, and
+adopts nothing. RET's canonical bundle includes `pc-alignment-fault`; this change
+does not prove that fault impossible. Full state/flags, normal/exceptional exit,
+condition/PHI/render correspondence and actual arm removal remain unfinished.
+
+A diagnostic run of the existing Semantic v2 integration test stopped at its
+unchanged MemorySSA version expectation (`1.0.1` versus current `1.0.2`). That
+unrelated issue is retained as evidence and its source was not changed. The new
+issuer regression runs independently in the owned Phase 8 reachability test.
+Exact candidate tests, generated rebuild/zero diff, lint, module boundaries,
+ownership and independent source/PR reviews are retained under persistent
+`agent-work/evidence/analysis-roadmap-20260909/c4-state-handoff-20260913` and sibling
+`c4-state-*` receipts. The reuploaded user ZIP is byte-identical to the imported
+archive. User C1 recursive-return work stays reserved; full roadmap acceptance
+and **CHECKPOINT-LOCKED** remain open.

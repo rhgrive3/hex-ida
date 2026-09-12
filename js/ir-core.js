@@ -19,6 +19,7 @@ import { stableDigest } from './core/identity/index.js';
 import {
   SEMANTIC_V2_MIGRATION_MODES,
   buildSemanticV2CompatibilityPipeline,
+  projectedRegisterStateBindingCandidate,
 } from './semantics/compat/index.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -44,6 +45,18 @@ const facadeStackEscapeHistories = new WeakMap();
 const expectedFacadeStackEscapes = new WeakMap();
 const facadeProjectedConstants = new WeakMap();
 const facadeProjectedMemoryOperands = new WeakMap();
+const facadeRegisterStateBindings = new WeakMap();
+
+/** Local canonical register assignment only; not a fault or region proof. */
+export function readCanonicalRegisterStateBinding(projected, instruction, identity) {
+  const record = facadeRegisterStateBindings.get(projected)?.get(instruction)
+    ?? projectedRegisterStateBindingCandidate(projected, instruction);
+  try {
+    if (!record || identity !== undefined && (!identity || !Object.keys(record.context).every(key => identity[key] === record.context[key]))) return null;
+    return record.isCurrent() && record.bindingCurrent() ? record : null;
+  }
+  catch { return null; }
+}
 const facadeAbiBindings = new WeakMap();
 const expectedFacadeAbiBindings = new WeakMap();
 
@@ -1422,6 +1435,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
   const operationGroups = [
     { read:projectedConstantTransitionCandidate, candidates:new Map(), target:facadeProjectedConstants },
     { read:projectedMemoryOperandTransitionCandidate, candidates:new Map(), target:facadeProjectedMemoryOperands },
+    { read:projectedRegisterStateBindingCandidate, candidates:new Map(), target:facadeRegisterStateBindings },
   ];
   const operationChecks = new Map();
   for (const source of result.legacyV1.instructions) {

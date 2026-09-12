@@ -1,9 +1,118 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { conditionalRegionFixture as example } from '../helpers/conditional-region-fixture.mjs';
+import { conditionalRegionFixture as example, textRowConditionalRegionFixture } from '../helpers/conditional-region-fixture.mjs';
+import { readCanonicalRegisterStateBinding } from '../../../js/ir-core.js';
+import { buildSemanticV2CompatibilityPipeline, projectedRegisterStateContext, projectedRegisterStateBindingCandidate } from '../../../js/semantics/compat/index.js';
+import { createMachineEffectBundle } from '../../../js/semantics/effects/index.js';
+import { projectSemanticIrV2ToLegacyV1 } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 import { identity } from '../helpers/proof-fixtures.mjs';
 import { prepareConditionalRegionReachability, readConditionalRegionReachability } from '../../../js/decompiler/phase8/conditional-region-reachability.js';
 import { discoverPhase8Tests } from '../run.mjs';
+
+test('actual production state reads and writes bind the original canonical SSA assignments', () => {
+  const { ir, identity:context } = textRowConditionalRegionFixture();
+  assert.ok(projectedRegisterStateContext(ir));
+  const states = ir.instructions.filter(inst => inst.extra?.stateRead || inst.extra?.stateWrite);
+  assert.equal(states.length, 13);
+  for (const source of states) {
+    const binding = readCanonicalRegisterStateBinding(ir, source, context);
+    assert.ok(binding, `${source.id}: ${source.extra.publicStateIdentity}`);
+    assert.equal(binding.source, source);
+    assert.equal(binding.input, source.args[0].value);
+    assert.equal(binding.output, source.dst);
+    assert.equal(binding.input.bits, binding.output.bits);
+    assert.equal(binding.canonicalNode.kind, binding.kind);
+    assert.equal(binding.state.physicalIdentity.kind, 'register');
+    assert.equal(readCanonicalRegisterStateBinding({ ...ir }, source), null);
+    assert.equal(readCanonicalRegisterStateBinding(ir, { ...source }), null);
+    for (const key of ['binaryId','functionId','snapshotId','architecture','semanticsVersion']) {
+      assert.equal(readCanonicalRegisterStateBinding(ir, source, { ...context, [key]:'foreign' }), null);
+    }
+    assert.equal(readCanonicalRegisterStateBinding(ir, source, null), null);
+  }
+});
+
+test('state assignment authority is revoked by changed operands, upstream values, metadata and accessors', () => {
+  for (const mutate of [
+    source => { source.args[0].value = { ...source.args[0].value }; },
+    source => { source.args[0].value.bits = 32; },
+    source => { source.dst.def = { ...source }; },
+    source => { source.extra.stateRead = { ...source.extra.stateRead }; },
+    source => { source.extra.stateReadProof = { ...source.extra.stateReadProof }; },
+    source => { source.extra.unknownEffects = true; },
+    source => { Object.defineProperty(source, 'args', { get() { assert.fail('must not invoke accessor'); } }); },
+  ]) {
+    const { ir } = textRowConditionalRegionFixture();
+    const source = ir.instructions.find(inst => inst.extra?.stateRead);
+    assert.ok(readCanonicalRegisterStateBinding(ir, source));
+    mutate(source);
+    assert.equal(readCanonicalRegisterStateBinding(ir, source), null);
+  }
+});
+
+test('state bindings retain actual reaching definitions and graph membership after facade writes', () => {
+  for (const mutate of [
+    (ir, write) => { write.args[0].value.def.sub = 'foreign'; },
+    (ir, write) => { write.args[0].value.const = 123n; },
+    (ir, write) => { ir.instructions[ir.instructions.indexOf(write)] = { ...write }; },
+    (ir, write) => { const block = ir.blocks.find(block => block.index === write.block);
+      block.insts[block.insts.indexOf(write)] = { ...write }; },
+    (ir, write) => { write.extra.attributes = { ...write.extra.attributes, machineEffects:{
+      ...write.extra.attributes.machineEffects, possibleFaults:['injected-fault'],
+    } }; },
+  ]) {
+    const { ir, identity:context } = textRowConditionalRegionFixture();
+    const write = ir.instructions.find(inst => inst.extra?.stateWrite && inst.extra.publicStateIdentity === 'x1');
+    const read = ir.instructions.find(inst => inst.extra?.stateRead && inst.extra.publicStateIdentity === 'x1');
+    assert.ok(write && read);
+    const binding = readCanonicalRegisterStateBinding(ir, read, context);
+    assert.ok(binding);
+    assert.equal(binding.input, write.dst, 'canonical reaching definition supplies the real register read');
+    assert.ok(readCanonicalRegisterStateBinding(ir, write, context));
+    // This fixture's facade issues a new observer through its actual write log.
+    assert.notEqual(binding, projectedRegisterStateBindingCandidate(ir, read));
+    mutate(ir, write);
+    assert.equal(readCanonicalRegisterStateBinding(ir, read, context), null);
+    assert.equal(readCanonicalRegisterStateBinding(ir, write, context), null);
+  }
+});
+
+test('public projection of identical canonical or copied SSA cannot mint state assignment authority', () => {
+  // A synthetic plugin isolates the issuer boundary; the ARM64 fixture above
+  // separately verifies the real producer. Both use the canonical SSA builder.
+  const plugin = { id:'state-binding-test', semanticVersion:'1', fixedInstructionSize:4,
+    liftExact(decoded) {
+      const register = { kind:'register', registerId:'state0', widthBits:32 };
+      return createMachineEffectBundle({ instructionId:decoded.instructionId,
+        architectureId:this.id, mode:decoded.mode, origin:decoded.origin,
+        operations:[
+          { id:`${decoded.instructionId}:write`, kind:'register-write', register,
+            value:{ kind:'bitvector', widthBits:32, value:'7' } },
+          { id:`${decoded.instructionId}:read`, kind:'register-read', register,
+            value:{ kind:'bitvector', widthBits:32 } },
+        ], controlEffect:{ kind:'return' }, possibleFaults:[], completeness:'exact' });
+    } };
+  const result = buildSemanticV2CompatibilityPipeline({ architecturePlugin:plugin,
+    decoderSemanticVersion:'test-1', binaryId:'state-binding-binary', sliceId:'state-binding-slice',
+    addressWidthBits:64, entryBlockKey:'entry', blocks:[{ key:'entry', startAddress:0x1000n,
+      instructions:[{ decoded:{ address:0x1000n, mode:'test' } }], successors:[] }] });
+  const context = projectedRegisterStateContext(result.legacyV1);
+  assert.ok(context);
+  const states = result.legacyV1.instructions.filter(inst => inst.extra?.stateRead || inst.extra?.stateWrite);
+  assert.equal(states.length, 2);
+  for (const inst of states) assert.ok(readCanonicalRegisterStateBinding(result.legacyV1, inst, context));
+  for (const ssa of [result.ssa, structuredClone(result.ssa)]) {
+    const projected = projectSemanticIrV2ToLegacyV1(result.semanticIr, { cfg:result.cfg, ssa, memorySsa:result.memorySsa });
+    const copies = projected.instructions.filter(inst => inst.extra?.stateRead || inst.extra?.stateWrite);
+    assert.equal(copies.length, states.length);
+    assert.equal(projectedRegisterStateContext(projected), null);
+    for (const inst of copies) {
+      const proofKey = inst.extra.stateRead ? 'stateReadProof' : 'stateWriteProof';
+      assert.deepEqual(inst.extra[proofKey], states.find(source => source.semanticNodeId === inst.semanticNodeId).extra[proofKey]);
+      assert.equal(readCanonicalRegisterStateBinding(projected, inst, context), null);
+    }
+  }
+});
 
 
 for (const kind of ['cbz', 'cbnz']) test(`real ${kind} branch proof binds actual emitted arms and independent solver verdicts`, async () => {

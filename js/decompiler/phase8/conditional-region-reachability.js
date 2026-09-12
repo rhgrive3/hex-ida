@@ -62,11 +62,13 @@ export async function prepareConditionalRegionReachability(structure, ir, option
     }
     if (visited !== structure.blocks.length) return reject('loop-reachability-proof-required');
     const [{ symbolicExecute }, { isExecutionResult, isExecutionSnapshot }, { validateExecutionContract },
-      { verifyConditionalEdgeFeasibility }, { createProductionSolverRegistry }, expr, { scalarOperation }] = await Promise.all([
+      { verifyConditionalEdgeFeasibility }, { createProductionSolverRegistry }, expr, { scalarOperation },
+      { readCanonicalRegisterStateBinding }] = await Promise.all([
       import('../../symbolic/executor.js'), import('../../symbolic/memory/execution-snapshot.js'),
       import('../../symbolic/memory/execution-contract.js'), import('../../symbolic/verify/edge-feasibility.js'),
       import('../../symbolic/solver/registry.js'), import('../../symbolic/expr/index.js'),
       import('../../symbolic/translate/scalar.js'),
+      import('../../ir-core.js'),
     ]);
     guard.check();
     if (!readConditionalRegionStructure(structure, ir, guard.identity)) return reject('stale-structure');
@@ -81,14 +83,24 @@ export async function prepareConditionalRegionReachability(structure, ir, option
     if (addressMap.get(addressKey(targetAddress)) !== structure.region.selection.yes) return reject('executor-producer-target-mismatch');
     // The executor trace carries row/address, not a rendered predicate or C AST
     // index. Require their unique exact canonical CBR identity before matching.
-    const branchIndex = [];
+    const branchIndex = [], stateBindings = new Map();
     for (const block of structure.blocks) for (const inst of queryArray(queryRecord(block, guard, 128).insts, guard)) {
       const current = queryRecord(inst, guard, 128);
       const extra = queryRecord(current.extra ?? {}, guard), attributes = queryRecord(extra.attributes ?? {}, guard);
       const machine = attributes.machineEffects == null ? null : queryRecord(attributes.machineEffects, guard);
       for (const source of [current, extra, attributes, machine].filter(Boolean)) {
-        if (['stateRead', 'stateWrite', 'unknownEffects', 'publicStateIdentity', 'statePreservation']
-          .some(key => source[key] != null && source[key] !== false)) return reject('unproved-state-effects');
+        const stateKeys = ['stateRead', 'stateWrite', 'unknownEffects', 'publicStateIdentity', 'statePreservation']
+          .filter(key => source[key] != null && source[key] !== false);
+        if (stateKeys.length) {
+          // Only the actual pipeline's SSA-to-MOV binding establishes an
+          // ordinary register assignment. Other/hidden state remains unknown.
+          if (source !== extra || stateKeys.some(key => ['unknownEffects','statePreservation'].includes(key))) return reject('unproved-state-effects');
+          const binding = readCanonicalRegisterStateBinding(ir, inst, guard.identity);
+          if (!binding || (binding.kind === 'state-read'
+            ? extra.stateRead !== binding.state || extra.stateWrite != null
+            : extra.stateWrite !== binding.state || extra.stateRead != null)) return reject('unproved-state-effects');
+          stateBindings.set(inst, binding);
+        }
         if (['possibleFaults', 'faults'].some(key => source[key] != null && queryArray(source[key], guard).length)) {
           return reject('unproved-machine-effects');
         }
@@ -150,7 +162,8 @@ export async function prepareConditionalRegionReachability(structure, ir, option
       ...Object.fromEntries(['maxPaths', 'maxSteps', 'maxBranches', 'maxBlockVisits']
         .filter(key => Object.hasOwn(submitted, key)).map(key => [key, submitted[key]])),
     });
-    const executionCurrent = () => isExecutionResult(execution, guard.identity, ir);
+    const executionCurrent = () => isExecutionResult(execution, guard.identity, ir)
+      && [...stateBindings].every(([source, binding]) => readCanonicalRegisterStateBinding(ir, source, guard.identity) === binding);
     guard.check();
     if (!executionCurrent() || execution.status !== 'complete' || execution.truncated || !execution.paths.length) {
       return reject(execution.reason ?? 'incomplete-execution');
