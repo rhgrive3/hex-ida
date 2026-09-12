@@ -22,10 +22,15 @@ export async function handleAITurn(request, env) {
 
   let incoming;
   try { incoming = JSON.parse(await readLimitedText(request, MAX_REQUEST_BYTES)); }
-  catch (error) { return error instanceof HttpError ? jsonError(error.status, error.code, error.message) : jsonError(400, 'invalid_json', 'The request body must contain valid JSON.'); }
+  catch (error) { return error instanceof HttpError ? jsonError(error.status, error.code, error.message) : jsonError(400, 'invalid_json', 'The AI turn request is invalid.'); }
   let payload;
   try { payload = normalizeAITurnRequest(incoming); }
   catch (error) { return error instanceof HttpError ? jsonError(error.status, error.code, error.message) : jsonError(400, 'invalid_request', 'The AI turn request is invalid.'); }
+
+  const safeCapabilities = clientSafeCapabilities(adapter.capabilities);
+  if (payload.tools.length > safeCapabilities.maxTools) {
+    return jsonError(422, 'tool_limit_exceeded', 'The request exposes more read tools than the configured provider can accept.');
+  }
 
   const quota = await acquireDistributedQuota(request, env, payload.sessionId);
   if (quota.response) return quota.response;
