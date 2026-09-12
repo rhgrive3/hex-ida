@@ -5970,3 +5970,28 @@ Final WIP extraction ten-case run PASS:
 `c4-extract-added-final-wip-edcf9433-dc79-459a-b3e0-ea5b8d50f18d.json`.
 Independent source review `c4-extract-review-20260912/final-source-review.json`
 binds source/test hashes after width repair; no remaining own-diff defect found.
+
+
+### Extraction exact-source result and scope refresh
+
+Source `3a87d9658853474604976a6bd2f17d87edea8372` changes only the four dedicated
+paths above. `c4-extract-source-checkpoint.json` retains their hashes and verified
+receipt/log hashes. On that clean source: own18 tests PASS (sign-mask8 plus
+extraction10), full representation/history40/41 with the unchanged public-machine
+reason assertion, lint and ownership inventory PASS. Exact own-test receipt:
+`c4-extract-added-exact-8c814783-48db-4b1f-99f2-785916835872.json`.
+
+Canonical rebuild PASS in
+`c4-extract-build-exact-a51bf76a-7eea-492f-9ad4-d09190db47f2.json`; generated
+hashes and buildId stay unchanged, zero tracked diff and no generated commit
+needed. The documented opt-in/default-UI and esbuild-version limitations remain.
+This does not replace the earlier incomplete/red full-product evidence.
+
+Before source backup, refreshed all open PR heads:182 open, seven non-own PRs
+changed since initial inventory. Their full file lists show no direct conflict
+or changed nearby semantic surface; `c4-pr-overlap-20260912/prepush-refresh.json`
+retains the comparison. Independent exact-head semantic scope audit is in
+`c4-next-20260912/pr-overlap-exact-head-audit.md`. No new PR is created; the
+existing7036 branch remains the only publication target for this source slice.
+Further analysis work must first exclude behavior already owned by open PRs,
+including7097's broader23-row closure and8247's scoped/native analysis work.
