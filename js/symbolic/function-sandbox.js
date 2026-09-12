@@ -216,7 +216,14 @@ export class FunctionSandbox {
     for (const item of o.stackMemory || []) {
       throwIfCancelled();
       if (!item) continue;
-      await this.emulator.store(this.emulator.sp + asBig(item.offset || 0), Number(item.size || 8), asBig(item.value));
+      let itemSize = 8;
+      if (item.size !== undefined && item.size !== null) {
+        if (typeof item.size !== 'number' || !Number.isSafeInteger(item.size) || item.size <= 0) {
+          throw new TypeError(`stackMemory size must be a positive safe integer, got ${String(item.size)}`);
+        }
+        itemSize = item.size;
+      }
+      await this.emulator.store(this.emulator.sp + asBig(item.offset || 0), itemSize, asBig(item.value));
     }
     throwIfCancelled();
     for (const bp of o.breakpoints || []) this.emulator.breakpoints.add(asBig(bp).toString());
