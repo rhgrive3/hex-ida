@@ -6,6 +6,9 @@
 この更新は並行開発用のソース結合です。統合受入・release は **CHECKPOINT-LOCKED** のままです。
 下の過去ログより、この節の状態を優先してください。
 
+追加の進捗: ME の RV64 命令列反例縮小に続き、C4 の条件領域の発行記録を実装しました。
+C4 は元の出力範囲を取得できる段階です。コピー先との対応付け、領域証明、PHI を含む変換受入は残っています。
+
 結合した入力:
 
 - リモート #7036: `be11407297fe06eebd6b62539eb59019328c872e` と追加修正 `4d1963e939d1e04b68fd1f5e1d6c1340592231fa`、`74b9aac2c26085b62fb08051375cd60c93529991`。
@@ -55,7 +58,7 @@ SYM-01/X-03 の再実装は割り当てません。C3 metadata と X-02 の広�
 - 以前の `714bbc56` に対する `npm run check` は MachineEffects の 13 テストファイルで失敗。WebKit の `libxslt.so.1` 不足も含み、すべてを環境原因とは分類していません。
 - 結合後の full check、Phase 8/9、独立 shadow の確定結果が揃うまで CHECKPOINT-LOCKED を解除しません。実機・環境整備・別 issue 修正は今回の担当外です。
 
-生成物は結合ソースから canonical build で再生成済みです（serial `2322242244`、build ID `2dd80f28e14376f46aef5b0d`）。公開前に再 build の差分を確認し、公開 SHA と生成 ID の記録を保持します。
+生成物は結合ソースから canonical build で再生成済みです（serial `2322242245`、build ID `66bed42360265c3ecf857fc5`）。公開前に再 build の差分を確認し、公開 SHA と生成 ID の記録を保持します。
 
 追加修正後の lint と module-boundaries 検査、結合ファイル全体の所有範囲検査は通過しました。
 
@@ -6261,3 +6264,60 @@ subject version・scope・命令数・書込み先の順序も確認します。
 並行して保持していた DCE / proof admission は 40/40 通過し、全 135 関数検査も完走しました。
 記録: `integration-74b-dce-admission-5d2b42d6-99f7-43d9-93d8-5d53157da4cf.json`。
 全体 gate、native provenance の既知 2 件、実機証拠を完了扱いにはしません。
+
+
+## C4 条件領域の発行側記録 — 2026-09-12
+
+FR-C4-02A / FR-C4-04B の接続作業を、ME 命令列縮小の公開 head `fb86424dc` から再開しました。
+公開中の 212 PR を再照合し、#7097 (`f8d127553914efe18e51ab86a60b9f05243c7b7b`) が
+`pipeline-core.js`、`pipeline.js`、`phase8/index.js`、`phase8/structuring.js` を変更中であることを確認しました。
+#7702 も Phase 8 の公開入口を変更しています。これらの変更や代替の領域変換実装は重ねていません。
+公開前に 213 PR へ再照合し、今回のソース・テスト・文書・所有範囲の 4 パスに他 PR との重複はありません。
+最終一覧は `c4-region-adoption-20260912/open-pr-files-final.json`、照合結果は `overlap-final.json` に保持しています。
+
+今回追加したのは、既存 PR と重ならない `semantic-core.js` の発行側記録です。
+`decompileSemantic(..., { phase8PrepareRegionProof:true })` の明示的な要求時だけ、実際に出力した
+条件領域の header・yes/no 両腕・else 境界・close のノード同一性と順序を保持します。
+片側が空の場合も両腕を明示し、入れ子では子領域と親の腕の包含関係を同じ出力ノードで表します。
+分岐命令と発行時の yes/no/join/invert、実際に訪問・出力したブロック、合流ブロックの PHI を参照できます。
+`emittedBlocks` は発行器が訪問したブロックであり、CFG 領域の全メンバーを独立に証明したものではありません。
+
+- `readSemanticConditionalRegions(result)`: その実際の発行結果に属する記録を読む。
+- `readSemanticConditionalRegion(headerRecord, ir)`: 既存の制御履歴レコードと IR のオブジェクト同一性で個別記録を読む。
+
+これらは private WeakMap の発行記録です。同じ文字列のノードへの置換、配列の複製・並べ替え、
+CFG/PHI/出力の変更、キャンセルで現在性を失います。faithful CFG fallback と予算不足では
+領域を一部だけ使用可能にせず、記録を withheld にします。入れ子の作業中の visited snapshot も
+割当て前に予算を予約し、同じ残額を複数の open region が使うことを防ぎます。
+最終出力の観測は全領域で共有し、領域ごとに全出力を再帰的に複製しません。
+分岐を持たない関数の空の complete 記録も、既存の入力観測と最終出力観測へ結び付け、
+入力・出力の変更後は読めなくなります。観測不能な incomplete 記録は診断だけを残し、領域を発行しません。
+
+記録の scope は `initial-emitter-spans-only-not-cfg-proof`、`transformAuthorization:false` です。
+既存 C AST コピーで header のレコード同一性が残ることは実測していますが、本文や閉じ括弧の
+コピー先との対応は未接続です。コピー後の result を上の全領域 reader に渡しても記録は得られません。
+この区別を回帰検査に固定し、text/indent/行番号/コピー後の配列位置から範囲を推測する経路を追加していません。
+
+### 残る接続と担当
+
+PR #7097 側の `cAstFromLines` 受け渡しで、上の original node identity を全コピー先ノードへ対応付ける
+private carrier が必要です。その後、canonical CFG の全辺・外部流入・副作用・例外・PHI を照合し、
+別の領域証明と既存の atomic transaction に接続してから projection が範囲を変更できます。
+既存 scalar `provedRewrites` を領域削除の権限として流用してはいけません。
+コード変更前の設計レビューは `c4-region-adoption-20260912/region-adoption-design-review-20260912.json`。
+今回の発行側 API を使えば、元の分岐に属する出力範囲の収集を再実装する必要はありません。
+
+C4 の実際の領域変換、PHI の変換受入、全 CFG の証明は未完了です。今回の記録はその必要な入力を
+発行するソース変更であり、FR-C4-02A/04B や統合 checkpoint の完了を意味しません。
+C1/C3 のユーザー担当、実機・環境整備・他 issue 修正を除外する方針は維持しています。
+
+### この追加分の検証
+
+新しい発行記録 8 件、既存の制御履歴と所有範囲検査を合わせた 35 件が通過しました。
+この 8 件には既定出力との同一性、入れ子・片側空の腕、CFG/PHI/メモリ属性の変更、
+空の履歴の失効、予算・キャンセル、コピー後に権限を発行しないことを含みます。
+初回のメモリ属性テストの参照先誤りと、空の履歴で観測が初期化されない不備を修正して再実行しています。
+証拠: `c4-region-producer-empty-snapshot-c946fd1e-bdd7-423c-8169-95aac9bb12af.json`。
+Luna/max の独立レビューで空の履歴の指摘を反映し、発行記録の範囲に限定して再確認しました。
+canonical userscript build も通過し、生成物を同じソース変更とともに保存します。
+これらは追加分の検証です。全体 gate・独立 shadow・実機の完了を主張しません。

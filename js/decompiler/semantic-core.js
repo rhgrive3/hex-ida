@@ -30,6 +30,113 @@ const MAX_BLOCKS = 6000;
 const storeRenderLines = new WeakMap(), storeRenderHistories = new WeakMap();
 const statementRenderLines = new WeakMap(), statementRenderHistories = new WeakMap();
 const controlRenderLines = new WeakMap(), controlRenderHistories = new WeakMap();
+const conditionalRegionHistories = new WeakMap(), conditionalRegionsByRecord = new WeakMap();
+
+/** Initial-emitter identity only. This never authorizes a CFG transform or a
+ * copied C AST span. A later carrier must bind every copied node explicitly. */
+export function readSemanticConditionalRegions(result) {
+  const binding = conditionalRegionHistories.get(result);
+  try { return binding?.isCurrent() ? binding.history : null; } catch { return null; }
+}
+
+export function readSemanticConditionalRegion(record, ir) {
+  const binding = conditionalRegionsByRecord.get(record);
+  try { return binding?.ir === ir && binding.isCurrent() ? binding.region : null; } catch { return null; }
+}
+
+function beginConditionalRegion(ctx, out, state) {
+  const history = ctx.conditionalRegionHistory;
+  if (!history) return null;
+  if (history.events.length >= history.limit || state.visited.size > history.remaining || history.remaining <= 0) {
+    history.reasons.add('conditional-region-budget'); return null;
+  }
+  // Reserve before allocation: nested open regions must not each retain a
+  // fresh full visited set against the same still-unspent budget.
+  history.remaining -= state.visited.size;
+  return { start:out.length, visited:new Set(state.visited), armStart:null, arms:[] };
+}
+
+function startConditionalArm(marker, out) {
+  if (marker) marker.armStart = out.length;
+}
+
+function finishConditionalArm(marker, out, state, role, ctx) {
+  if (!marker) return;
+  const history = ctx.conditionalRegionHistory;
+  const work = state.visited.size * 4;
+  if (work > history.remaining || out.length - marker.start > history.remaining) {
+    history.reasons.add('conditional-region-budget'); marker.failed = true; return;
+  }
+  history.remaining -= work;
+  const blocks = [...state.visited].filter(index => !marker.visited.has(index)).map(index => ctx.ir.blocks[index]);
+  marker.arms.push({ role, start:marker.armStart, end:out.length, blocks });
+  marker.visited = new Set(state.visited);
+}
+
+function finishConditionalRegion(marker, out, ctx, branch, selection, separator, close) {
+  if (!marker || marker.failed) return;
+  const history = ctx.conditionalRegionHistory, size = out.length - marker.start;
+  const joinBlock = ctx.ir.blocks[selection.join], phis = joinBlock?.phis ?? [];
+  const cost = size * 2 + phis.length + marker.arms.reduce((sum, arm) => sum + arm.blocks.length, 0);
+  if (history.events.length >= history.limit || cost > history.remaining) {
+    history.reasons.add('conditional-region-budget'); return;
+  }
+  const header = out[marker.start], binding = readSemanticControlLineHistory(header, ctx.ir);
+  if (!binding || binding.instruction !== branch || !joinBlock || !Array.isArray(phis)) {
+    history.reasons.add('conditional-region-producer-unavailable'); return;
+  }
+  history.remaining -= cost;
+  history.events.push(Object.freeze({ record:binding.records[0], branch,
+    selection:Object.freeze({ ...selection }), header, separator, close,
+    nodes:Object.freeze(out.slice(marker.start)), joinBlock, joinPhis:Object.freeze([...phis]),
+    arms:Object.freeze(['yes', 'no'].map(role => {
+      const arm = marker.arms.find(item => item.role === role);
+      return Object.freeze({ role, entryBlock:ctx.ir.blocks[selection[role]],
+        nodes:Object.freeze(arm ? out.slice(arm.start, arm.end) : []), emittedBlocks:Object.freeze(arm?.blocks ?? []) });
+    })),
+  }));
+}
+
+function bindConditionalRegionHistory(result, ctx) {
+  const pending = ctx.conditionalRegionHistory;
+  if (!pending) return result;
+  const lines = result.lines, canonical = ctx.controlRenderHistory.canonical;
+  let observation = null;
+  try {
+    if (result.coverage.mode !== 'structured') pending.reasons.add('conditional-region-cfg-fallback');
+    if (ctx.opts.shouldAbort?.()) pending.reasons.add('conditional-region-cancelled');
+    if (!canonical?.isCurrent()) pending.reasons.add('conditional-region-stale-input');
+    if (!pending.reasons.size) {
+      // One final output observation for all nested regions, rather than a
+      // recursive full-line scan per region. Node identity, order and contents
+      // are certified before any downstream copying or representation pass.
+      // Empty complete histories also observe their input and output: absence
+      // of emitted regions cannot outlive the program it describes.
+      observation = captureProjectionIrData([lines], ctx.opts.shouldAbort);
+      if (observation.metrics.edges > pending.maxEdges) pending.reasons.add('conditional-region-budget');
+      const positions = new Map(lines.map((node, index) => [node, index]));
+      if (positions.size !== lines.length || pending.events.some(region => {
+        const start = positions.get(region.header);
+        return start == null || region.nodes.some((node, index) => lines[start + index] !== node)
+          || region.nodes.at(-1) !== region.close;
+      })) pending.reasons.add('conditional-region-output-identity');
+    }
+  } catch { pending.reasons.add('conditional-region-observation-unavailable'); }
+  const history = Object.freeze({ version:1, scope:'initial-emitter-spans-only-not-cfg-proof',
+    completeness:pending.reasons.size ? 'incomplete' : 'complete', transformAuthorization:false,
+    reasons:Object.freeze([...pending.reasons]), regions:Object.freeze(pending.reasons.size ? [] : [...pending.events]) });
+  const isCurrent = () => result.ir === ctx.ir && result.lines === lines
+    && (history.completeness === 'incomplete' || canonical?.isCurrent()) && (!observation || observation.matches())
+    && !ctx.opts.shouldAbort?.();
+  const binding = Object.freeze({ history, isCurrent });
+  conditionalRegionHistories.set(result, binding);
+  try {
+    if (isCurrent()) for (const region of history.regions) {
+      conditionalRegionsByRecord.set(region.record, Object.freeze({ ir:ctx.ir, region, isCurrent }));
+    }
+  } catch { /* A throwing cancellation observer cannot issue a record binding. */ }
+  return result;
+}
 // Issued only by the real initial function renderer. Primitive string returns
 // stay unchanged; invocation tickets never become semantic identities.
 const initialValueTraces = new WeakMap();
@@ -137,7 +244,7 @@ export function readSemanticControlRenderHistory(result) {
 
 function beginControlRenderHistory(ctx) {
   const history = ctx.controlRenderHistory;
-  if (!ctx.ir.instructions.some(inst => [OP.BR, OP.CBR, OP.UNKNOWN].includes(inst.op))) return;
+  if (!ctx.conditionalRegionHistory && !ctx.ir.instructions.some(inst => [OP.BR, OP.CBR, OP.UNKNOWN].includes(inst.op))) return;
   try {
     if (history.limit <= 0 || history.edges <= 0 || !ctx.statementRenderHistory.canonical) throw new Error('initial-control-budget');
     // Structural facts are the existing graph producer's data, not a second
@@ -1328,6 +1435,8 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
       const join = ctx.graph.immediatePostDominators?.[bi];
       const structural = join != null && join !== bi && yes != null && no != null && (!allowed || (allowed.has(yes) && allowed.has(no)));
       if (structural) {
+        const region = beginConditionalRegion(ctx, out, state);
+        let separator = null, close;
         const yesEmpty = yes === join;
         const noEmpty = no === join;
         if (yesEmpty !== noEmpty) {
@@ -1336,17 +1445,25 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
           const cond = renderBranchCondition(term2, ctx, invert);
           out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
             term2, 'one-sided-if', { yes, no, join, invert, bodyStart }, ctx));
+          startConditionalArm(region, out);
           emitRegion(bodyStart, join, out, ctx, state, indent + 1, allowed);
-          out.push(line('ctrl', indent, '}'));
+          finishConditionalArm(region, out, state, yesEmpty ? 'no' : 'yes', ctx);
+          close = line('ctrl', indent, '}'); out.push(close);
         } else {
           const cond = renderBranchCondition(term2, ctx);
           out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
             term2, 'if-else', { yes, no, join }, ctx));
+          startConditionalArm(region, out);
           emitRegion(yes, join, out, ctx, state, indent + 1, allowed);
-          out.push(line('ctrl', indent, '} else {'));
+          finishConditionalArm(region, out, state, 'yes', ctx);
+          separator = line('ctrl', indent, '} else {'); out.push(separator);
+          startConditionalArm(region, out);
           emitRegion(no, join, out, ctx, state, indent + 1, allowed);
-          out.push(line('ctrl', indent, '}'));
+          finishConditionalArm(region, out, state, 'no', ctx);
+          close = line('ctrl', indent, '}'); out.push(close);
         }
+        finishConditionalRegion(region, out, ctx, term2,
+          { header:bi, yes, no, join, invert:yesEmpty !== noEmpty && yesEmpty, form:yesEmpty !== noEmpty ? 'one-sided-if' : 'if-else' }, separator, close);
         bi = join; continue;
       }
       const cond = renderBranchCondition(term2, ctx);
@@ -1449,6 +1566,10 @@ export function decompileSemantic(model, opts = {}) {
     controlRenderHistory: { events:[], reasons:new Set(), limit:historyCap(opts.renderProvenanceBudget?.maxTransformRecords, 1024),
       consumers:historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096),
       edges:historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges), canonical:null },
+    conditionalRegionHistory: opts.phase8PrepareRegionProof === true ? { events:[], reasons:new Set(),
+      limit:historyCap(opts.renderProvenanceBudget?.maxTransformRecords, 1024),
+      remaining:historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096),
+      maxEdges:historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges) } : null,
     materialNames: new Map(), switchByRow: new Map((opts.switches || model.switches || []).map((s) => [s.row, s])),
     blockAddress: (bi) => model.instructions?.find((x) => x.row === ir.blocks[bi]?.startRow)?.address ?? firstAddr + BigInt(ir.blocks[bi]?.startRow || 0) * 4n,
   };
@@ -1475,6 +1596,7 @@ export function decompileSemantic(model, opts = {}) {
     ctx.storeRenderHistory.events.length = 0; ctx.storeRenderHistory.reasons.clear();
     ctx.statementRenderHistory.events.length = 0; ctx.statementRenderHistory.reasons.clear();
     ctx.controlRenderHistory.events.length = 0; ctx.controlRenderHistory.reasons.clear();
+    if (ctx.conditionalRegionHistory) ctx.conditionalRegionHistory.events.length = 0;
     body.push(...faithfulCfg(ctx, 1));
     coverage = { mode: 'linear', reachable: reachable.size, emitted: reachable.size, missing: 0, recovered: missing.length, structuredMissing: missing.length };
   }
@@ -1494,10 +1616,10 @@ export function decompileSemantic(model, opts = {}) {
   if (ir.truncated) warnings.push('Semantic IR budget truncated this function; the result is partial.');
 
   const summary = summarize(body, ctx);
-  return bindStatementRenderHistory(bindStatementRenderHistory(bindStoreRenderHistory(bindSuppressionHistory({
+  return bindConditionalRegionHistory(bindStatementRenderHistory(bindStatementRenderHistory(bindStoreRenderHistory(bindSuppressionHistory({
     lines, signature, types, summary, pseudocode: pseudocode(lines),
     evidence: ctx.evidence, warnings, labels: new Set(body.filter((l) => l.kind === 'label').map((l) => l.text.replace(/:$/, ''))),
     coverage, ir, ctx: { runtime, suppressed: ctx.suppressed, inductions: ctx.inductions, irPrimary: true, unknownInstructions: ctx.unknown },
     semantic: true,
-  }, ctx), ctx), ctx), ctx, true);
+  }, ctx), ctx), ctx), ctx, true), ctx);
 }
