@@ -527,7 +527,7 @@ function checkpointOperationPlaceholders(checkpoint) {
   }));
 }
 
-export function replayOperations({ projectIdentity, binaryIdentity = null, operations = [], checkpoint = null } = {}) {
+export function replayOperations({ projectIdentity, binaryIdentity = null, operations = [], checkpoint = null, allowRemote = false, authorizedAuthors = [] } = {}) {
   const normalizedCheckpoint = checkpoint ? normalizeCheckpoint(checkpoint, { projectIdentity, binaryIdentity }) : null;
   const appliedIds = new Set(normalizedCheckpoint?.operationIds ?? []);
   const log = new ChangeLog({
@@ -536,6 +536,8 @@ export function replayOperations({ projectIdentity, binaryIdentity = null, opera
     state: normalizedCheckpoint?.state,
     operations: normalizedCheckpoint ? checkpointOperationPlaceholders(normalizedCheckpoint) : [],
     pending: normalizedCheckpoint?.pendingOperations.map((operation) => [operation.operationId, operation]) ?? [],
+    allowRemote,
+    authorizedAuthors,
   });
   const filtered = normalizedCheckpoint ? operations.filter((operation) => !appliedIds.has(operation.operationId)) : operations;
   const result = log.applyBatch(filtered);
@@ -553,6 +555,8 @@ export function restoreCheckpoint(checkpoint, options = {}) {
     state: normalizedCheckpoint.state,
     operations: checkpointOperations,
     pending: normalizedCheckpoint.pendingOperations.map((operation) => [operation.operationId, operation]),
+    allowRemote: options.allowRemote,
+    authorizedAuthors: options.authorizedAuthors,
   });
   const appliedIds = new Set(normalizedCheckpoint.operationIds);
   const restoreResults = [];
