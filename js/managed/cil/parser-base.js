@@ -37,6 +37,7 @@ export function align4(offset) {
 
 function parseStringsHeap(bytes, offset, size) {
   checkedRange(bytes, offset, size, 'cil-metadata-strings-out-of-bounds');
+  if (size < 1 || bytes[offset] !== 0) fail('cil-invalid-strings-heap-zero-entry');
   const strings = [];
   let position = offset;
   const end = offset + size;
