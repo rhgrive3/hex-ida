@@ -266,3 +266,34 @@ test('an empty copied history remains bound to the whole original and copied pro
   input.output.cAst.body.push({ kind:'raw', text:'injected();' });
   assert.equal(readCopiedConditionalRegions(input.output.cAst, input.ir), null);
 });
+
+test('canonical entry and region metadata mutations revoke originals before or after copying', () => {
+  for (const [key, value] of [['entry', 1], ['architecture', 'other'], ['addressBits', 16],
+    ['origin', { changed:true }], ['extra', { changed:true }], ['truncated', true]]) {
+    const input = copiedRegion(); assert.ok(input.history);
+    input.ir[key] = value;
+    assert.equal(readSemanticConditionalRegions(input.seed), null, key);
+    assert.equal(readCopiedConditionalRegions(input.output.cAst, input.ir), null, key);
+    const recopy = enhanceSemanticDecompilation(input.seed, input.model, input.opts);
+    assert.equal(readCopiedConditionalRegions(recopy.cAst, input.ir), null, key);
+  }
+});
+
+test('nested canonical metadata cannot mutate through an unchanged envelope', () => {
+  const input = render(); input.ir.extra = { nested:{ value:1 } };
+  input.seed = decompileSemantic(input.model, input.opts);
+  const output = enhanceSemanticDecompilation(input.seed, input.model, input.opts);
+  assert.ok(readCopiedConditionalRegions(output.cAst, input.ir));
+  input.ir.extra.nested.value = 2;
+  assert.equal(readSemanticConditionalRegions(input.seed), null);
+  assert.equal(readCopiedConditionalRegions(output.cAst, input.ir), null);
+});
+
+test('throwing carrier budget access withholds optional observation and preserves rendering', () => {
+  const input = render();
+  const options = { ...input.opts, phase8RegionCarrierBudget:{ get maxNodes() { throw new Error('budget getter'); } } };
+  const output = enhanceSemanticDecompilation(input.seed, input.model, options);
+  assert.equal(readCopiedConditionalRegions(output.cAst, input.ir), null);
+  const ordinary = enhanceSemanticDecompilation(input.seed, input.model, input.opts);
+  assert.equal(output.pseudocode, ordinary.pseudocode);
+});

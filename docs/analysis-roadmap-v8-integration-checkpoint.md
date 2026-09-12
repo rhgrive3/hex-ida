@@ -6495,3 +6495,9 @@ build ID `696a5b34a5d8077192ea90c9` です。これを全体受入完了とは�
 `c4-region-carrier-lint-9d954453-4c58-4e40-bd8d-706b1fa5b520.json`、
 `c4-region-carrier-boundaries-f9514dce-5e0b-43c7-9b36-1fad3d5aaca1.json`。
 canonical build も通過しました。コミット後の同じ検査と再生成差分の結果は、永続保存する publication 記録に exact SHA とともに記録します。
+
+Luna/max の独立レビューで、元の記録が関数入口等の IR envelope 属性を観測していないことを確認しました。
+元の条件領域 producer で `entry/architecture/addressBits/origin/extra/truncated` の descriptor と内容を追加観測し、
+コピー前の変更も再発行できないように修正しました。予算 accessor が例外を投げる場合も表示処理を継続して記録を保留します。
+この修正の回帰 3 件を加え、producer/carrier 検査は 17 件通過しました
+（`c4-region-carrier-freshness-90ae1dea-df4d-4796-a263-894bc08f3c11.json`）。

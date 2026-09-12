@@ -258,11 +258,16 @@ function beginControlRenderHistory(ctx) {
       }
       return { key, loop, fields };
     });
+    // Conditional-region identity also depends on the function envelope. Keep
+    // this observation at the original producer, before any later AST copy.
+    const regionInputKeys = ctx.conditionalRegionHistory
+      ? ['entry', 'architecture', 'addressBits', 'origin', 'extra', 'truncated'] : [];
     const roots = [[ctx.ir, 'loops'], [ctx.ir, 'ipdom'], [ctx.ir, 'postDominators'], [ctx.model, 'instructions'],
+      ...regionInputKeys.map(key => [ctx.ir, key]),
       [ctx.opts, 'switches'], [ctx.model, 'switches']].map(([object, key]) => {
       const descriptor = Object.getOwnPropertyDescriptor(object, key);
       if (descriptor && (!Object.hasOwn(descriptor, 'value') || !descriptor.enumerable)) throw new Error('initial-control-data-required');
-      if (key === 'switches') plain.push(descriptor?.value);
+      if (key === 'switches' || regionInputKeys.includes(key)) plain.push(descriptor?.value);
       return { object, key, descriptor };
     });
     const switches = [...Map.prototype.entries.call(ctx.switchByRow)];

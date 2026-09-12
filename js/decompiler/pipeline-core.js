@@ -1646,14 +1646,16 @@ function knownStatementForLine(line, state, lineIndex, initialStore = null, init
 }
 
 function beginConditionalRegionCopy(result, state) {
-  const original = readSemanticConditionalRegions(result);
-  if (original?.completeness !== 'complete' || result.ir !== state.ir) return null;
-  const requested = state.opts?.phase8RegionCarrierBudget;
-  const cap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
-  const limits = { regions:cap(requested?.maxRegions, 256), nodes:cap(requested?.maxNodes, 10000),
-    references:cap(requested?.maxReferences, 40000), edges:cap(requested?.maxEdges, PROJECTION_LIMITS.edges) };
-  if (original.regions.length > limits.regions || result.lines.length > limits.nodes || !limits.edges) return null;
-  return { original, limits, copies:new Map(), failed:false };
+  try {
+    const original = readSemanticConditionalRegions(result);
+    if (original?.completeness !== 'complete' || result.ir !== state.ir) return null;
+    const requested = state.opts?.phase8RegionCarrierBudget;
+    const cap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
+    const limits = { regions:cap(requested?.maxRegions, 256), nodes:cap(requested?.maxNodes, 10000),
+      references:cap(requested?.maxReferences, 40000), edges:cap(requested?.maxEdges, PROJECTION_LIMITS.edges) };
+    if (original.regions.length > limits.regions || result.lines.length > limits.nodes || !limits.edges) return null;
+    return { original, limits, copies:new Map(), failed:false };
+  } catch { return null; }
 }
 
 function finishConditionalRegionCopy(copy, result, program, state) {
