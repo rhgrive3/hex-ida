@@ -308,6 +308,52 @@ export function parseCilPropertySignature(blob, typeDefOrRefRowCounts = null) {
   return Object.freeze({ callConvention, hasThis, propertyType:property.value, parameters:Object.freeze(parameters) });
 }
 
+// Exact ELEMENT_TYPE lead byte of a Type production: CustomMod* are consumed
+// and the raw element-type byte is returned without consuming the rest of the
+// production. STRING (0x0e) and OBJECT (0x1c) decode to the same identity-less
+// object-ref stack shape, so a binding boundary that needs their exact
+// identity re-derives the raw byte here (#7552 R2).
+function leadElementTypeByte(bytes, offset, code, typeDefOrRefRowCounts = null) {
+  const lead = readCustomMods(bytes, offset, code, typeDefOrRefRowCounts);
+  if (lead.next >= bytes.length) fail(code);
+  return bytes[lead.next];
+}
+
+export function cilPropertyTypeElementByte(blob, typeDefOrRefRowCounts = null) {
+  const code = 'cil-property-signature-invalid';
+  if (!(blob instanceof Uint8Array) || blob.length < 3) fail(code);
+  const callConvention = blob[0];
+  if ((callConvention & 0x0f) !== 0x08 || (callConvention & ~0x28) !== 0) fail(code);
+  const count = readCompressed(blob, 1, code);
+  return leadElementTypeByte(blob, count.next, code, typeDefOrRefRowCounts);
+}
+
+export function cilMethodSlotElementByte(blob, sequence, typeDefOrRefRowCounts = null) {
+  const code = 'cil-call-signature-invalid';
+  if (!(blob instanceof Uint8Array) || blob.length < 2) fail(code);
+  if (!Number.isInteger(sequence) || sequence < 0) fail(code);
+  const callConvention = blob[0];
+  const kind = callConvention & 0x0f;
+  if (![0x00, 0x01, 0x02, 0x03, 0x04, 0x05].includes(kind) || (callConvention & 0x80) !== 0) fail(code);
+  let pos = 1;
+  let methodGenericArity = 0;
+  if ((callConvention & 0x10) !== 0) {
+    const generic = readCompressed(blob, pos, code);
+    methodGenericArity = generic.value;
+    pos = generic.next;
+  }
+  const count = readCompressed(blob, pos, code);
+  pos = count.next;
+  if (sequence === 0) return leadElementTypeByte(blob, pos, code, typeDefOrRefRowCounts);
+  let cursor = parseReturn(blob, pos, code, 1, methodGenericArity, typeDefOrRefRowCounts).next;
+  for (let i = 1; i <= count.value; i++) {
+    if (blob[cursor] === 0x41) cursor += 1;
+    if (i === sequence) return leadElementTypeByte(blob, cursor, code, typeDefOrRefRowCounts);
+    cursor = parseParam(blob, cursor, code, 1, methodGenericArity, typeDefOrRefRowCounts).next;
+  }
+  fail(code);
+}
+
 // ECMA-335 II.23.2.6 LocalVarSig: 0x07 Count T* where each T may carry
 // custom modifiers, the PINNED modifier, and a BYREF pair. The lifter needs
 // the typed locals as a stack-type array so ldloc/stloc stop publishing a
