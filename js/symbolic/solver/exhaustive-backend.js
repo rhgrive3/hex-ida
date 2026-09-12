@@ -98,20 +98,28 @@ function validateExprNode(expr) {
   }
 }
 
-function collectSymbols(expressions) {
+function collectSymbols(expressions, maxExprNodes) {
   const symbols = new Map();
   const visited = new Set();
   let nodeCount = 0;
   let unsupportedReason = null;
+  let budgetExceeded = false;
+  const worklist = [];
+  for (let i = expressions.length - 1; i >= 0; i--) worklist.push(expressions[i]);
 
-  function visit(expr) {
+  while (worklist.length > 0) {
+    const expr = worklist.pop();
     if (!expr || typeof expr !== 'object') {
       unsupportedReason ||= 'malformed-expression-node';
-      return;
+      continue;
     }
-    if (visited.has(expr)) return;
+    if (visited.has(expr)) continue;
     visited.add(expr);
     nodeCount++;
+    if (nodeCount > maxExprNodes) {
+      budgetExceeded = true;
+      break;
+    }
     unsupportedReason ||= validateExprNode(expr);
     if (expr.kind === EXPR_KIND.FRESH_SYMBOL) {
       const key = String(expr.symbolId || expr.name || '');
@@ -122,11 +130,11 @@ function collectSymbols(expressions) {
         symbols.set(key, { key, name: String(expr.name), symbolId: String(expr.symbolId || key), sort: expr.sort });
       }
     }
-    for (const child of childExpressions(expr)) visit(child);
+    const children = childExpressions(expr);
+    for (let i = children.length - 1; i >= 0; i--) worklist.push(children[i]);
   }
 
-  for (const expr of expressions) visit(expr);
-  return { symbols: [...symbols.values()].sort((a, b) => a.key.localeCompare(b.key)), nodeCount, unsupportedReason };
+  return { symbols: [...symbols.values()].sort((a, b) => a.key.localeCompare(b.key)), nodeCount, unsupportedReason, budgetExceeded };
 }
 
 function symbolConstantPair(left, right) {
@@ -203,8 +211,8 @@ class ExhaustiveSolverSession extends SolverSession {
       return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'constraint-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
     }
 
-    const collected = collectSymbols(expressions);
-    if (collected.nodeCount > maxExprNodes) {
+    const collected = collectSymbols(expressions, maxExprNodes);
+    if (collected.budgetExceeded) {
       return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-node-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
     }
     if (collected.unsupportedReason) {
