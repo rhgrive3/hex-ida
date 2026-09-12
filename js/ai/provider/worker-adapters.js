@@ -20,6 +20,7 @@ export function resolveInferenceAdapter(env = {}) {
 
 export function clientSafeCapabilities(capabilities = {}) {
   const upstreamMax = positiveNumber(capabilities.maxRequestBytes, 160000);
+  const upstreamMaxTools = positiveInteger(capabilities.maxTools, 32);
   const reservedBudget = upstreamMax - PROVIDER_ENVELOPE_RESERVE_BYTES;
   const derived = reservedBudget > 0
     ? Math.floor(reservedBudget / PROVIDER_WIRE_EXPANSION_FACTOR)
@@ -27,6 +28,9 @@ export function clientSafeCapabilities(capabilities = {}) {
   const safeClientMax = Math.max(1, Math.min(upstreamMax, derived));
   return {
     ...capabilities,
+    // submit_hex_result is Worker-owned and always occupies one provider slot.
+    // Advertise only the slots the browser may fill with read tools (#4591).
+    maxTools: Math.max(0, upstreamMaxTools - 1),
     maxRequestBytes: safeClientMax,
     upstreamMaxRequestBytes: upstreamMax,
     requestEnvelopeReserveBytes: PROVIDER_ENVELOPE_RESERVE_BYTES,
@@ -91,5 +95,6 @@ function modelInput(payload) {
 function toGeminiTool(tool) { return { type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema }; }
 function toOpenAITool(tool) { return { type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } }; }
 function positiveNumber(value, fallback) { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : fallback; }
+function positiveInteger(value, fallback) { return Math.max(1, Math.floor(positiveNumber(value, fallback))); }
 function numberOr(value, fallback) { return positiveNumber(value, fallback); }
 function nullableNumber(value) { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : null; }
