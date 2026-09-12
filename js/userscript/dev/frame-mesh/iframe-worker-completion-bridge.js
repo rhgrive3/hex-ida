@@ -19,8 +19,10 @@ export class IframeWorkerCompletionBridge {
     this.graphCompletions = new Map();
     this.originalStart = workerPool.start.bind(workerPool);
     this.originalFollowup = workerPool.followup.bind(workerPool);
-    workerPool.start = (args) => this.start(args);
-    workerPool.followup = (args) => this.followup(args);
+    this.startWrapper = (args) => this.start(args);
+    this.followupWrapper = (args) => this.followup(args);
+    workerPool.start = this.startWrapper;
+    workerPool.followup = this.followupWrapper;
   }
 
   async claim(args = {}, options = {}) {
@@ -271,8 +273,8 @@ export class IframeWorkerCompletionBridge {
   }
 
   close() {
-    if (this.workerPool.start !== this.originalStart) this.workerPool.start = this.originalStart;
-    if (this.workerPool.followup !== this.originalFollowup) this.workerPool.followup = this.originalFollowup;
+    if (this.workerPool.start === this.startWrapper) this.workerPool.start = this.originalStart;
+    if (this.workerPool.followup === this.followupWrapper) this.workerPool.followup = this.originalFollowup;
     this.runByLease.clear();
     this.currentBySlot.clear();
     this.graphCompletions.clear();
