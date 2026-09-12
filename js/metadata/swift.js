@@ -143,9 +143,17 @@ export class SwiftMetadataProvider extends LanguageMetadataProvider {
       detail: `Swift 5 ABI (${model.types?.length || 0} types, ${model.protocols?.length || 0} protocols)`,
       coverage: isComplete ? null : {
         recordKinds: ['type', 'vtable', 'conformance'],
-        addresses: (model.types || [])
-          .filter((t) => t.address != null)
-          .map((t) => `0x${t.address.toString(16)}`),
+        entityIds: [
+          ...(model.types || [])
+            .filter((t) => t.address != null)
+            .map((t) => `type@0x${t.address.toString(16)}`),
+          ...(model.vtables || [])
+            .filter((v) => v.address != null)
+            .map((v) => `vtable@0x${v.address.toString(16)}`),
+          ...(model.conformances || [])
+            .filter((c) => c.address != null)
+            .map((c) => `conf@0x${c.address.toString(16)}`),
+        ],
       },
     });
 
