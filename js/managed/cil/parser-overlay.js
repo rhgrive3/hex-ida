@@ -1,7 +1,7 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import { metadataRowSize, validateMetadataTableValidMask } from './metadata-layout.js';
 import { readCilMetadataStreams } from './metadata-streams.js';
-import { readCilDefinitions } from './metadata-definitions.js';
+import { readCilDefinitions, bindCilMetadataTables } from './metadata-definitions.js';
 import { readCilGenericMetadata } from './metadata-generics.js';
 import { parseCilMethodSignature, parseCilPropertySignature } from './call-signature-types.js';
 import { CLI_HEADER_SIZE, validateCliHeaderSize } from './cli-header.js';
@@ -114,6 +114,7 @@ function validateManagedEntryAuthority(bytes,parsed,defs,layout,meta){
 export function overlayCilMetadata(bytes,parsed){
  const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes),view=new DataView(u8.buffer,u8.byteOffset,u8.byteLength),pe=peLayout(u8,view);if(!pe?.cliPresent)return parsed;
  const meta=readCilMetadataStreams(u8,pe.metadataOffset,pe.metadataSize),tablesStream=meta.streams.find(s=>s.name==='#~'||s.name==='#-'),stringsStream=meta.streams.find(s=>s.name==='#Strings'),blobStream=meta.streams.find(s=>s.name==='#Blob');if(!tablesStream)fail('cil-metadata-tables-missing');
+ const blobHeap=blobStream?u8.subarray(blobStream.offset,blobStream.offset+blobStream.size):null;
  const usStream=meta.streams.find(s=>s.name==='#US');
  const userStrings=new Map();
  if(usStream){
@@ -129,7 +130,7 @@ export function overlayCilMetadata(bytes,parsed){
  offset=length.next+length.value;
  }
 }
- const layout=tableLayout(u8,view,tablesStream),defs=readCilDefinitions(u8,view,layout,stringsStream,blobStream),genericMetadata=readCilGenericMetadata(u8,view,layout,stringsStream,defs);validateParamAuthority(u8,defs,layout,blobStream);const properties=decodePropertyAuthority(u8,defs,layout,blobStream);validateManagedEntryAuthority(u8,parsed,defs,layout,meta);const byOffset=new Map((parsed.methodBodies??[]).map(b=>[b.headerOffset,b])),methodBodies=[],methods=[];
+ const layout=tableLayout(u8,view,tablesStream),defs=bindCilMetadataTables(readCilDefinitions(u8,view,layout,stringsStream,blobStream),blobHeap),genericMetadata=readCilGenericMetadata(u8,view,layout,stringsStream,defs);validateParamAuthority(u8,defs,layout,blobStream);const properties=decodePropertyAuthority(u8,defs,layout,blobStream);validateManagedEntryAuthority(u8,parsed,defs,layout,meta);const byOffset=new Map((parsed.methodBodies??[]).map(b=>[b.headerOffset,b])),methodBodies=[],methods=[];
  for(const method of defs.methods){const out={...method,bodyIndex:null};if(method.rva!==0){const off=pe.mapRva(method.rva,1,'cil-method-rva-unmapped'),body=byOffset.get(off);if(!body)fail('cil-method-rva-unmapped');out.bodyIndex=methodBodies.length;methodBodies.push({...body,token:method.token,rid:method.rid})}methods.push(out)}
  // ECMA-335 II.22.28: Implementation == null resources live inside the CLI
  // Resources directory at the recorded Offset. Each blob is a 4-byte length
@@ -155,5 +156,5 @@ export function overlayCilMetadata(bytes,parsed){
   row.fileOffset=off;
  }
 
- return deepFreeze({...parsed,runtimeVersion:meta.runtimeVersion,vmSpecEdition:meta.runtimeVersion,types:defs.types,fields:defs.fields,params:defs.params,properties,events:defs.events,methodSemantics:defs.methodSemantics,methods,methodBodies,manifestResources,typeSpecs:defs.typeSpecs,assembly:defs.assembly,typeRefs:defs.typeRefs,assemblyRefs:defs.assemblyRefs,userStrings,...(genericMetadata.genericParams.length?{genericParams:genericMetadata.genericParams}:{}),...(genericMetadata.genericParamConstraints.length?{genericParamConstraints:genericMetadata.genericParamConstraints}:{})});
+ return deepFreeze({...parsed,runtimeVersion:meta.runtimeVersion,vmSpecEdition:meta.runtimeVersion,types:defs.types,fields:defs.fields,params:defs.params,properties,events:defs.events,methodSemantics:defs.methodSemantics,constants:defs.constants,methods,methodBodies,manifestResources,typeSpecs:defs.typeSpecs,assembly:defs.assembly,typeRefs:defs.typeRefs,assemblyRefs:defs.assemblyRefs,userStrings,...(genericMetadata.genericParams.length?{genericParams:genericMetadata.genericParams}:{}),...(genericMetadata.genericParamConstraints.length?{genericParamConstraints:genericMetadata.genericParamConstraints}:{})});
 }
