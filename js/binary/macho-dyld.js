@@ -469,13 +469,46 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     if(!budget.take({objects:2,operations:1,stringBytes:symbol.length*2,estimatedHeapBytes:320+symbol.length*2},'classic-bind-output')){fail('shared metadata budget exhausted while recording bind');return;}
     image.imports.push(imp); status.decodedBinds++;
   };
+  const threadedPointerFileOffset = (address) => {
+    const width = 8n;
+    if (typeof image.resolveVirtualMapping === 'function') {
+      const first = image.resolveVirtualMapping(address);
+      if (!first || first.kind !== 'file' || first.offset == null || first.available < width) return null;
+      const last = image.resolveVirtualMapping(address + width - 1n);
+      if (!last || last.kind !== 'file' || last.mapping !== first.mapping || last.offset !== first.offset + width - 1n) return null;
+
+      // A narrower canonical mapping can begin in the middle of the word even
+      // when both endpoints belong to the parent mapping. Do not stitch bytes
+      // across that ownership boundary merely because their file offsets are
+      // contiguous (#4296).
+      const owner = first.mapping;
+      const end = address + width;
+      const crossesNarrowerMapping = (mappings) => {
+        for (const mapping of mappings || []) {
+          if (mapping === owner || mapping.size <= 0n || mapping.size >= owner.size) continue;
+          if (mapping.address > address && mapping.address < end) return true;
+        }
+        return false;
+      };
+      if (crossesNarrowerMapping(image.sections) || crossesNarrowerMapping(image.segments)) return null;
+      return first.offset;
+    }
+
+    // Lightweight parser test doubles predate resolveVirtualMapping(). Still
+    // require the complete word to map to one contiguous file span rather than
+    // preserving the old first-byte-only proof.
+    const first = image.addressToOffset(address);
+    const last = image.addressToOffset(address + width - 1n);
+    if (first == null || last == null || last !== first + width - 1n) return null;
+    return first;
+  };
   const applyThreaded = () => {
     if (!threadedTable) { fail('threaded APPLY encountered before ordinal table'); return; }
     if (!validLocation()) { fail('threaded APPLY starts outside its segment'); return; }
     const seg = segments[segIndex];
     let address = seg.address + segOffset;
     for (let guard = 0; guard < 100000; guard++) {
-      const off = image.addressToOffset(address);
+      const off = threadedPointerFileOffset(address);
       if (off == null || off + 8n > BigInt(r.length)) { fail('threaded binding chain leaves mapped file data'); return; }
       const raw = r.u64(Number(off));
       const isBind = !!((raw >> 62n) & 1n);
