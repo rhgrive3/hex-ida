@@ -60,7 +60,7 @@ test('P10.5 trace gaps survive replay and downgrade completeness', async () => {
 });
 
 test('P10.5 same runtime address on a different binary does not attach by filename or VA', async () => {
-  const provider = new TraceProvider(recording(), { id: 'trace-identity-provider' });
+  const provider = new TraceProvider(recording(), { id: 'trace-identity-provider', verifyModuleIdentity: () => true });
   const session = await provider.openSession();
   const exact = session.facets.trace.resolveAddress(0x7010n, { binaryId: binaryA, sliceId: 'slice:arm64' });
   assert.equal(exact.state, 'exact');

@@ -98,11 +98,14 @@ const DW_FORM = Object.freeze({
 const ADDRX_FORMS = Object.freeze([DW_FORM.addrx, DW_FORM.addrx1, DW_FORM.addrx2, DW_FORM.addrx3, DW_FORM.addrx4]);
 /** Forms whose resolved value is an absolute address (direct or addrx-resolved). */
 const ADDRESS_CLASS_FORMS = Object.freeze([DW_FORM.addr, ...ADDRX_FORMS]);
-// Supplementary-object references live in a distinct debug object namespace.
-// Until that object is loaded and identity-validated, they must never fall
-// back to offsets in the current `.debug_info` / `.debug_str` (#4206).
-const SUPPLEMENTARY_REFERENCE_FORMS = Object.freeze([DW_FORM.ref_sup4, DW_FORM.ref_sup8]);
+// References that must never be interpreted as numeric DIE offsets in the
+// current `.debug_info` object. Supplementary references need a separately
+// identity-validated debug object (#4206), while ref_sig8 belongs to the
+// type-signature namespace rather than the section-offset namespace (#4240).
+// Until those resolvers exist, both classes fail closed on numeric collisions.
+const NON_CURRENT_DIE_OFFSET_REFERENCE_FORMS = Object.freeze([DW_FORM.ref_sup4, DW_FORM.ref_sup8, DW_FORM.ref_sig8]);
 const DEFAULT_MAX_ADDR_CONTRIBUTION_SCANS = 4096;
+const DEFAULT_MAX_STR_OFFSETS_CONTRIBUTION_SCANS = 4096;
 
 const DW_UT = Object.freeze({
   compile: 0x01,
@@ -356,8 +359,9 @@ function readForm(cursor, form, unit, sections, implicitConst, byteBudget = null
     case DW_FORM.ref_sup4:
       cursor.u32();
       return { value: null, unsupported: true };
-    case DW_FORM.data8: case DW_FORM.ref8: case DW_FORM.ref_sig8:
+    case DW_FORM.data8: case DW_FORM.ref8:
       return { value: cursor.u64() };
+    case DW_FORM.ref_sig8:
     case DW_FORM.ref_sup8:
       cursor.u64();
       return { value: null, unsupported: true };
@@ -418,18 +422,97 @@ function readForm(cursor, form, unit, sections, implicitConst, byteBudget = null
   }
 }
 
+/** Parses one validated DWARF5 `.debug_str_offsets` contribution. */
+function strOffsetsContributionAt(table, start) {
+  if (!table || !Number.isSafeInteger(start) || start < 0 || start + 4 > table.length) return null;
+  const view = new DataView(table.buffer, table.byteOffset, table.byteLength);
+  const initialLength = view.getUint32(start, true);
+  let length;
+  let lengthFieldSize;
+  let entrySize;
+  if (initialLength === 0xffffffff) {
+    if (start + 12 > table.length) return null;
+    const wideLength = view.getBigUint64(start + 4, true);
+    if (wideLength > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    length = Number(wideLength);
+    lengthFieldSize = 12;
+    entrySize = 8;
+  } else {
+    if (initialLength >= 0xfffffff0) return null;
+    length = initialLength;
+    lengthFieldSize = 4;
+    entrySize = 4;
+  }
+  // version(2) + padding(2); the padding field is reserved and must be zero.
+  if (length < 4) return null;
+  const bodyStart = start + lengthFieldSize;
+  const end = bodyStart + length;
+  if (!Number.isSafeInteger(end) || end > table.length) return null;
+  const entriesStart = bodyStart + 4;
+  if (view.getUint16(bodyStart, true) !== 5 || view.getUint16(bodyStart + 2, true) !== 0) return null;
+  if ((end - entriesStart) % entrySize !== 0) return null;
+  return { start, entriesStart, end, entrySize };
+}
+
+/** Finds the contribution whose zeroth string-offset entry is `base`. */
+function strOffsetsContributionAtBase(table, base, expectedOffsetSize, state = null) {
+  if (!table || !Number.isSafeInteger(base) || base < 0 || base > table.length) return null;
+  const cacheKey = `${base}:${expectedOffsetSize}`;
+  if (state?.cache?.has(cacheKey)) return state.cache.get(cacheKey);
+  let start = 0;
+  let resolved = null;
+  while (start < table.length) {
+    if (state && state.scans >= state.maxScans) {
+      state.exhausted = true;
+      break;
+    }
+    if (state) state.scans += 1;
+    const contribution = strOffsetsContributionAt(table, start);
+    if (!contribution) break;
+    if (base === contribution.entriesStart) {
+      resolved = contribution.entrySize === expectedOffsetSize ? contribution : null;
+      break;
+    }
+    // A base inside a contribution but not at its zeroth entry is not the
+    // authority described by that contribution header. Scanning from the
+    // section start prevents embedded entry bytes from impersonating a header.
+    if (base >= contribution.start && base < contribution.end) break;
+    start = contribution.end;
+  }
+  if (state?.cache) state.cache.set(cacheKey, resolved);
+  return resolved;
+}
+
 /** Resolves the string for a DW_FORM_strx index through `.debug_str_offsets`. */
-function strxString(index, unit, sections, byteBudget = null) {
+function strxString(index, unit, sections, contributionState = null, byteBudget = null) {
   const table = sections.debug_str_offsets;
   if (!table || !sections.debug_str) return null;
-  const base = unit.strOffsetsBase ?? 8;
   const entrySize = unit.offsetSize;
-  const at = base + Number(index) * entrySize;
-  if (at + entrySize > table.length) return null;
+  let contribution;
+  let base = unit.strOffsetsBase;
+  if (base == null) {
+    // Split DWARF object files may omit the base because their contribution is
+    // not link-concatenated. Without package-index context, only a single
+    // section-wide contribution can be bound safely (#4237).
+    if (unit.version !== 5 || (unit.unitType !== DW_UT.split_compile && unit.unitType !== DW_UT.split_type)) return null;
+    contribution = strOffsetsContributionAt(table, 0);
+    if (!contribution || contribution.entrySize !== entrySize || contribution.end !== table.length) return null;
+    base = contribution.entriesStart;
+  } else {
+    contribution = strOffsetsContributionAtBase(table, base, entrySize, contributionState);
+    if (!contribution) return null;
+  }
+  const indexNumber = Number(index);
+  if (!Number.isSafeInteger(indexNumber) || indexNumber < 0) return null;
+  const relative = indexNumber * entrySize;
+  if (!Number.isSafeInteger(relative)) return null;
+  const at = base + relative;
+  if (!Number.isSafeInteger(at) || !Number.isSafeInteger(at + entrySize) || at + entrySize > contribution.end) return null;
   byteBudget?.charge(entrySize);
   const view = new DataView(table.buffer, table.byteOffset, table.byteLength);
-  const offset = entrySize === 8 ? Number(view.getBigUint64(at, true)) : view.getUint32(at, true);
-  return cstring(sections.debug_str, offset, byteBudget);
+  const rawOffset = entrySize === 8 ? view.getBigUint64(at, true) : BigInt(view.getUint32(at, true));
+  if (rawOffset > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return cstring(sections.debug_str, Number(rawOffset), byteBudget);
 }
 
 /**
@@ -570,6 +653,12 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
     scans: 0,
     exhausted: false,
   };
+  const strOffsetsContributionState = {
+    cache: new Map(),
+    maxScans: Math.max(1, Math.min(DEFAULT_MAX_STR_OFFSETS_CONTRIBUTION_SCANS, maxRecords)),
+    scans: 0,
+    exhausted: false,
+  };
   const abbrevState = {
     declarations: 0,
     attributes: 0,
@@ -615,7 +704,25 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       }
       unitEnd = cursor.offset + length;
       cursor.limit = unitEnd;   // attribute reads are unit-local (#1860)
+      // The declared unit length must contain the complete common header.
+      // Section-level availability does not authorize reads across this unit's
+      // own declared boundary (#4038).
+      if (cursor.offset + 2 > unitEnd) {
+        diagnostics.push(`truncated compilation unit at 0x${unitStart.toString(16)}`);
+        complete = false;
+        cursor.offset = unitEnd;
+        cursor.limit = info.length;
+        continue;
+      }
       version = cursor.u16();
+      const commonHeaderRemainder = version >= 5 ? 2 + offsetSize : offsetSize + 1;
+      if (cursor.offset + commonHeaderRemainder > unitEnd) {
+        diagnostics.push(`truncated compilation unit at 0x${unitStart.toString(16)}`);
+        complete = false;
+        cursor.offset = unitEnd;
+        cursor.limit = info.length;
+        continue;
+      }
       if (version >= 5) {
         unitType = cursor.u8();
         addressSize = cursor.u8();
@@ -864,9 +971,21 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       try {
         for (const [attribute, entry] of attributes) {
           if ([DW_FORM.strx, DW_FORM.strx1, DW_FORM.strx2, DW_FORM.strx3, DW_FORM.strx4].includes(entry.form)) {
-            const resolved = strxString(entry.value, unit, sections, byteBudget);
+            const resolved = strxString(entry.value, unit, sections, strOffsetsContributionState, byteBudget);
             attributes.set(attribute, { form: entry.form, value: resolved });
-            if (resolved == null) dieComplete = false;
+            if (resolved == null) {
+              // A string-table index that cannot be bound to a validated
+              // contribution is unknown evidence, not merely a nameless DIE.
+              // Fail the parse closed so provider-level status cannot remain
+              // complete while an indexed string was unresolved (#4237).
+              dieComplete = false;
+              complete = false;
+              diagnostics.push(`unresolved DW_FORM_strx index ${entry.value} at 0x${dieOffset.toString(16)}`);
+              if (strOffsetsContributionState.exhausted) {
+                const diagnostic = 'debug_str_offsets contribution scan budget exhausted';
+                if (!diagnostics.includes(diagnostic)) diagnostics.push(diagnostic);
+              }
+            }
           } else if (ADDRX_FORMS.includes(entry.form)) {
             // addrx forms are indices into `.debug_addr`, not addresses (#6184).
             // An unresolvable index stays unknown (null) and marks the DIE
@@ -997,9 +1116,9 @@ function attributeName(die, dies) {
   return inherited && typeof inherited.entry.value === 'string' ? inherited.entry.value : null;
 }
 
-/** Preserves existing reference dispatch while blocking supplementary-object fallback. */
-function nonSupplementaryReferenceTarget(entry, owner, dies) {
-  if (!entry || entry.value == null || SUPPLEMENTARY_REFERENCE_FORMS.includes(entry.form)) return null;
+/** Preserves current-object reference dispatch while blocking external namespaces. */
+function currentDebugInfoReferenceTarget(entry, owner, dies) {
+  if (!entry || entry.value == null || NON_CURRENT_DIE_OFFSET_REFERENCE_FORMS.includes(entry.form)) return null;
   const raw = Number(entry.value);
   const isUnitRelative = [DW_FORM.ref1, DW_FORM.ref2, DW_FORM.ref4, DW_FORM.ref8, DW_FORM.ref_udata].includes(entry.form);
   const target = isUnitRelative && owner.unit ? owner.unit.start + raw : raw;
@@ -1008,7 +1127,7 @@ function nonSupplementaryReferenceTarget(entry, owner, dies) {
 
 /** Resolves one DW_AT_specification target, honoring reference namespaces. */
 function specificationTarget(die, dies) {
-  return nonSupplementaryReferenceTarget(die.attributes.get(DW_AT.specification), die, dies);
+  return currentDebugInfoReferenceTarget(die.attributes.get(DW_AT.specification), die, dies);
 }
 
 /**
@@ -1062,7 +1181,7 @@ function specificationResolved(die, dies) {
 function referencedType(die, dies) {
   const effective = effectiveAttribute(die, DW_AT.type, dies);
   if (!effective) return null;
-  return nonSupplementaryReferenceTarget(effective.entry, effective.owner, dies);
+  return currentDebugInfoReferenceTarget(effective.entry, effective.owner, dies);
 }
 
 /**
