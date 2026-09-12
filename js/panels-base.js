@@ -209,7 +209,7 @@ export function showFunctionSummary(app, row) {
   sheet.body.append(bar, status);
 
   analyzeFunctionCached(app.backend, region, startRow, endRow, sym,
-    (p) => { fill.style.width = Math.round(p * 100) + '%'; })
+    (p) => { fill.style.width = Math.round(p * 100) + '%'; }, { architecture })
     .then((res) => {
       status.remove();
       bar.remove();
@@ -3923,6 +3923,7 @@ export function showFunctionReport(app, addr, goal) {
     return;
   }
   const { region, start, startRow, endRow } = window;
+  const architecture = app?.store?.get?.('architecture') ?? app?.store?.get?.('capability')?.architecture ?? null;
   const sym = app.symbols;
   const name = sym.nameAt(start);
   const controller = new AbortController();
@@ -3933,7 +3934,7 @@ export function showFunctionReport(app, addr, goal) {
   const later = el('div');
   body.append(later);
 
-  analyzeFunctionCached(app.backend, region, startRow, endRow, sym, (p) => box.set({ done:p, all:1 }))
+  analyzeFunctionCached(app.backend, region, startRow, endRow, sym, (p) => box.set({ done:p, all:1 }), { architecture })
   .then((res) => {
     box.done();
     if (controller.signal.aborted || !sheet.root.isConnected) return;

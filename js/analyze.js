@@ -20,9 +20,21 @@ const MAX_MODEL_ROWS = 6000;
 const MODEL_TEXTS = 96;
 const MODEL_TEXT_READ_CONCURRENCY = 6;
 const ARM64_SEMANTIC_ARCHES = new Set(['arm64', 'arm64e', 'arm64_32']);
+const ARM64_SEMANTIC_POINTER_WIDTH_BYTES = new Map([['arm64', 8], ['arm64e', 8], ['arm64_32', 4]]);
 
 export function supportsArm64SemanticAnalysis(architecture) {
   return typeof architecture === 'string' && ARM64_SEMANTIC_ARCHES.has(architecture.toLowerCase());
+}
+
+function modelPointerWidth(opts = {}) {
+  const width = opts?.pointerWidth;
+  if (width === 4 || width === 8) return width;
+  const architecture = opts?.architecture;
+  if (typeof architecture === 'string' && architecture) {
+    const mapped = ARM64_SEMANTIC_POINTER_WIDTH_BYTES.get(architecture.toLowerCase());
+    return mapped === undefined ? null : mapped;
+  }
+  return 8;
 }
 function rowBudget(opts = {}) {
   const raw = opts?.maxRows;
@@ -463,12 +475,16 @@ export function clearAnalysisCache() {
   cancelShared(textInflight, 'analysis-cache-cleared');
 }
 
-async function ensureTextsForKey(key, backend, res, signal) {
+async function ensureTextsForKey(key, backend, res, signal, opts = {}) {
   if (res.textsResolved) return res;
   let entry = textInflight.get(key);
   if (!entry) {
     entry = makeShared(textInflight, key, async (producerSignal) => {
-      await resolveModelTexts(backend, res.model, MODEL_TEXTS, { signal: producerSignal });
+      await resolveModelTexts(backend, res.model, MODEL_TEXTS, {
+        signal: producerSignal,
+        architecture: opts?.architecture,
+        pointerWidth: opts?.pointerWidth,
+      });
       res.textsResolved = true;
       return res;
     });
@@ -503,7 +519,7 @@ export async function analyzeFunctionCached(backend, region, startRow, endRow, s
   }
   if (wantTexts && !res.textsResolved) {
     try {
-      await ensureTextsForKey(key, backend, res, signal);
+      await ensureTextsForKey(key, backend, res, signal, opts);
     } catch (error) {
       if (isAbort(error, signal)) throw error;
       /* keep analysis */
@@ -534,6 +550,7 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
   const signal = opts?.signal || null;
   throwIfAborted(signal);
   if (!model || !backend || !model.addressRefs.length) return model;
+  const pointerWidth = modelPointerWidth(opts);
   const wanted = [];
   const seen = new Set();
   for (const r of model.addressRefs) {
@@ -558,10 +575,10 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
   const deref = [];
   got.forEach((g, i) => {
     if (looksLikeText(g)) { texts.set(wanted[i].toString(), g.text); return; }
-    if (g && g.found && g.bytes && g.bytes.length >= 8) deref.push({ i, bytes: g.bytes });
+    if (pointerWidth != null && g && g.found && g.bytes && g.bytes.length >= pointerWidth) deref.push({ i, bytes: g.bytes });
   });
   if (deref.length) {
-    const ptrs = deref.map((d) => pointerAt(d.bytes));
+    const ptrs = deref.map((d) => pointerAt(d.bytes, pointerWidth));
     const got2 = await mapBounded(
       ptrs,
       MODEL_TEXT_READ_CONCURRENCY,
@@ -587,10 +604,12 @@ function looksLikeText(g) {
   return /[\p{L}\p{N}]/u.test(g.text);
 }
 
-function pointerAt(bytes) {
+function pointerAt(bytes, width) {
+  if (width !== 4 && width !== 8) return null;
   let v = 0n;
-  for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(bytes[i]);
+  for (let i = width - 1; i >= 0; i--) v = (v << 8n) | BigInt(bytes[i]);
   if (v === 0n) return null;
+  if (width === 4) return v;
   if (v < 0x0001000000000000n) return v;
   return v & 0x0000000fffffffffn;
 }
