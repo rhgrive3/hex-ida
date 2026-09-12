@@ -11,6 +11,7 @@ import { parseELF } from '../../../js/binary/elf.js';
 function buildELF({ secOffset, secSize }) {
   const shstrtab = new TextEncoder().encode('\0.badsec\0.shstrtab\0');
   const shoff = 0x80;
+  const shstrOffset = 0x300;
   const bytes = new Uint8Array(0x400);
   const b = new DataView(bytes.buffer);
   bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0], 0);
@@ -28,7 +29,7 @@ function buildELF({ secOffset, secSize }) {
   b.setUint16(60, 4, true);            // e_shnum
   b.setUint16(62, 3, true);            // e_shstrndx
 
-  // PT_LOAD: offset 0x100, vaddr 0x400000, filesz/memsz 0x100, R|X
+  // PT_LOAD: offset 0x100, vaddr 0x400000, filesz/memsz 0x100, R|X; p_align=0x100 keeps the pair congruent
   b.setUint32(0x40, 1, true);
   b.setUint32(0x44, 5, true);
   b.setBigUint64(0x48, 0x100n, true);
@@ -36,9 +37,9 @@ function buildELF({ secOffset, secSize }) {
   b.setBigUint64(0x58, 0x400000n, true);
   b.setBigUint64(0x60, 0x100n, true);
   b.setBigUint64(0x68, 0x100n, true);
-  b.setBigUint64(0x70, 0x1000n, true);
+  b.setBigUint64(0x70, 0x100n, true);
 
-  bytes.set(shstrtab, 0x70);
+  bytes.set(shstrtab, shstrOffset);
   const sh = (i, name, type, flags, addr, off, size, align = 1n) => {
     const p = shoff + i * 64;
     b.setUint32(p, name, true); b.setUint32(p + 4, type, true);
@@ -48,8 +49,8 @@ function buildELF({ secOffset, secSize }) {
   };
   sh(0, 0, 0, 0n, 0n, 0n, 0n, 0n);
   sh(1, 1, 1, 0x2n, 0x400020n, secOffset, secSize); // .badsec SHF_ALLOC PROGBITS
-  sh(2, 8, 3, 0n, 0n, 0x70, 22n);                   // .shstrtab
-  sh(3, 0, 3, 0n, 0n, 0x70, BigInt(shstrtab.length));
+  sh(2, 8, 3, 0n, 0n, shstrOffset, 22n);             // .shstrtab
+  sh(3, 0, 3, 0n, 0n, shstrOffset, BigInt(shstrtab.length));
   return bytes;
 }
 

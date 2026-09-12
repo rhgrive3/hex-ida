@@ -56,7 +56,7 @@ function buildElf({ bits = 64, xindexEntsize = 4, xindexSize = 8, resolved = 1 }
     setU64(bytes, 0x58, 0x400000);
     setU64(bytes, 0x60, 4);
     setU64(bytes, 0x68, 4);
-    setU64(bytes, 0x70, 0x1000);
+    setU64(bytes, 0x70, 0x80); // p_offset/vaddr are congruent modulo p_align
   } else {
     setU32(bytes, 24, 0);
     setU32(bytes, 28, 52);
@@ -75,7 +75,7 @@ function buildElf({ bits = 64, xindexEntsize = 4, xindexSize = 8, resolved = 1 }
     setU32(bytes, 0x44, 4);
     setU32(bytes, 0x48, 4);
     setU32(bytes, 0x4c, 5); // PF_R | PF_X
-    setU32(bytes, 0x50, 0x1000);
+    setU32(bytes, 0x50, 0x80); // p_offset/vaddr are congruent modulo p_align
   }
 
   const section = (index, { type = 0, flags = 0, address = 0, offset = 0, size = 0, link = 0, info = 0, align = 1, entsize = 0 } = {}) => {
