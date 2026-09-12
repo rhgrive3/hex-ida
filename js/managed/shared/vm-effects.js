@@ -295,18 +295,18 @@ export function validateVMEffectBundle(bundle) {
   nonEmpty(bundle.operationId, 'vm-effect-bundle-missing-identity');
   nonEmpty(bundle.methodId, 'vm-effect-bundle-missing-identity');
   nonEmpty(bundle.frontendId, 'vm-effect-bundle-missing-identity');
-  nonNegativeInteger(bundle.bytecodeOffset ?? 0, 'vm-effect-offset-required');
-  if (bundle.opcode != null) nonNegativeInteger(bundle.opcode, 'vm-effect-invalid-opcode');
-  if (bundle.frontendSemanticVersion != null) {
-    nonEmpty(bundle.frontendSemanticVersion, 'vm-effect-invalid-frontend-semantic-version');
-  }
-  if (bundle.profileId != null && typeof bundle.profileId !== 'string') {
-    fail('vm-effect-invalid-profile-id');
-  }
-  if (bundle.mnemonic != null && typeof bundle.mnemonic !== 'string') {
-    fail('vm-effect-invalid-mnemonic');
-  }
   if (!SETS.completeness.has(bundle.completeness)) fail('vm-effect-bundle-invalid-completeness');
+  if (typeof bundle.schemaVersion !== 'number' || bundle.schemaVersion !== VM_EFFECTS_SCHEMA_VERSION) {
+    fail('vm-effect-schema-version-mismatch');
+  }
+  if (typeof bundle.contractVersion !== 'string' || bundle.contractVersion !== VM_EFFECTS_CONTRACT_VERSION) {
+    fail('vm-effect-contract-version-mismatch');
+  }
+  nonNegativeInteger(bundle.bytecodeOffset, 'vm-effect-invalid-bytecode-offset');
+  if (bundle.opcode != null) nonNegativeInteger(bundle.opcode, 'vm-effect-invalid-opcode');
+  nonEmpty(bundle.frontendSemanticVersion, 'vm-effect-invalid-frontend-semantic-version');
+  if (bundle.profileId != null && typeof bundle.profileId !== 'string') fail('vm-effect-invalid-profile-id');
+  if (bundle.mnemonic != null && typeof bundle.mnemonic !== 'string') fail('vm-effect-invalid-mnemonic');
   array(bundle.consumedValues ?? [], 'vm-effect-invalid-consumed-values');
   array(bundle.producedValues ?? [], 'vm-effect-invalid-produced-values');
   array(bundle.locationReads ?? [], 'vm-effect-invalid-location-reads');
@@ -319,14 +319,6 @@ export function validateVMEffectBundle(bundle) {
   for (const effect of unknownEffects) validateUnknownEffect(effect);
   if ((bundle.completeness === 'partial' || bundle.completeness === 'unknown') && unknownEffects.length === 0) {
     fail('vm-effect-partial-must-specify-unknown-effects');
-  }
-  const schemaVersion = bundle.schemaVersion ?? VM_EFFECTS_SCHEMA_VERSION;
-  if (typeof schemaVersion !== 'number' || schemaVersion !== VM_EFFECTS_SCHEMA_VERSION) {
-    fail('vm-effect-schema-version-mismatch');
-  }
-  const contractVersion = bundle.contractVersion ?? VM_EFFECTS_CONTRACT_VERSION;
-  if (typeof contractVersion !== 'string' || contractVersion !== VM_EFFECTS_CONTRACT_VERSION) {
-    fail('vm-effect-contract-version-mismatch');
   }
   return true;
 }
@@ -427,6 +419,8 @@ export function createVMEffectFunction(input, options = {}) {
 
 export function validateVMEffectFunction(fn) {
   fn = object(fn, 'vm-effect-function-invalid');
+  if (fn.methodId != null && typeof fn.methodId !== 'string') fail('vm-effect-function-invalid-structure');
+  if (fn.frontendId != null && typeof fn.frontendId !== 'string') fail('vm-effect-function-invalid-structure');
   nonEmpty(fn.methodId, 'vm-effect-function-missing-identity');
   nonEmpty(fn.frontendId, 'vm-effect-function-missing-identity');
   array(fn.bundles, 'vm-effect-function-invalid-structure');

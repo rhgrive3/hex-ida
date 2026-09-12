@@ -52,7 +52,7 @@ assert.equal(canonicalBundle.schemaVersion, VM_EFFECTS_SCHEMA_VERSION);
 assert.equal(canonicalBundle.contractVersion, VM_EFFECTS_CONTRACT_VERSION);
 
 assert.throws(
-  () => validateVMEffectBundle({ ...creatorInput, completeness: 'partial' }),
+  () => validateVMEffectBundle({ ...canonicalBundle, completeness: 'partial' }),
   /vm-effect-partial-must-specify-unknown-effects/,
   '#4801 acceptance 1: a partial bundle without unknownEffects must not validate',
 );
@@ -88,7 +88,7 @@ for (const [field, code] of effectArrays) {
 
 for (const offset of [-5, 1.5, 'abc', 'NaN']) {
   assertValidatorRejectsBundle({ bytecodeOffset: offset }, /vm-effect-offset-required/,
-    /vm-effect-offset-required/, `an invalid bytecode offset ${String(offset)}`);
+    /vm-effect-invalid-bytecode-offset/, `an invalid bytecode offset ${String(offset)}`);
 }
 
 assertValidatorRejectsBundle({ methodId: '   ' }, /vm-effect-method-id-required/,
@@ -115,7 +115,7 @@ const functionBundleCases = [
   [{ schemaVersion: 999 }, /vm-effect-schema-version-mismatch/],
   [{ contractVersion: 'other' }, /vm-effect-contract-version-mismatch/],
   [{ consumedValues: 'not-an-array' }, /vm-effect-invalid-consumed-values/],
-  [{ bytecodeOffset: -1 }, /vm-effect-offset-required/],
+  [{ bytecodeOffset: -1 }, /vm-effect-invalid-bytecode-offset/],
   [{ completeness: 'partial', unknownEffects: [] }, /vm-effect-partial-must-specify-unknown-effects/],
 ];
 for (const [patch, code] of functionBundleCases) {
