@@ -174,7 +174,16 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
     }
     return positions;
   };
-  let stackIndex = 0;
+  /* x64 outgoing-argument layout (#6003): every argument position occupies
+   * one fixed 8-byte slot at 8·p relative to the caller stack before the
+   * call — positions 0-3 as the 32-byte home space, register consumers of
+   * positions 4/5 as 8-byte shadow slots, and stack arguments continuing
+   * from the fifth position's slot at 32. The layout never compacts around
+   * register consumers. Source: Learn "__vectorcall" x64 — shadow stack
+   * space for vector arguments is fixed at 8 bytes; integer/stack arguments
+   * after the fourth position continue the positional layout (clang 17
+   * -target x86_64-pc-windows-msvc emits the seventh argument at rsp+48). */
+  const stackSlotOffset = (index) => index * 8;
   let stackArgsMayContainPointers = false;
   let aggregatePartial = false;
   let vectorAllocationUnknown = false;
@@ -294,7 +303,7 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
         appendSource(srcs, integerRegister, 64, { purpose:'vectorcall-hva-indirect' });
         return;
       }
-      const offset = 32 + stackIndex++ * 8;
+      const offset = stackSlotOffset(index);
       const entry = {
         index, location:'stack', offset, offsetBase:'caller-stack-before-call', calleeEntryOffset:offset + 8,
         bytes:8, abiClass:hva.hva?'hva-indirect':'vector-indirect', pointer:true,
@@ -335,7 +344,7 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
             partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown',
           });
         } else {
-          const offset = 32 + stackIndex++ * 8;
+          const offset = stackSlotOffset(index);
           const entry = {
             index, location:'stack', offset, offsetBase:'caller-stack-before-call', calleeEntryOffset:offset + 8,
             bytes:8, abiClass:'aggregate-unclassified-partial', pointer:true, bits:classified.bits,
@@ -360,7 +369,7 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
             bits:indirect ? 64 : classified.bits, bytes:indirect ? 8 : Math.max(8, Math.ceil(classified.bits / 8)), byteOffset:0 }],
           possible:false, mustUse:true });
       } else {
-        const offset = 32 + stackIndex++ * 8;
+        const offset = stackSlotOffset(index);
         const entry = { index, location:'stack', offset, offsetBase:'caller-stack-before-call', calleeEntryOffset:offset + 8,
           aggregate:true, bytes:8, abiClass:indirect ? 'aggregate-indirect' : 'integer-aggregate',
           pointer:indirect, bits:indirect ? 64 : classified.bits,
@@ -388,7 +397,7 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
       // Vectorcall passes vector/FP arguments in positions six and later by
       // reference to caller-allocated memory, so the stack slot contains a
       // pointer even for a scalar floating-point value (#5586).
-      const offset = 32 + stackIndex++ * 8;
+      const offset = stackSlotOffset(index);
       const entry = {
         index, location:'stack', offset, offsetBase:'caller-stack-before-call', calleeEntryOffset:offset + 8,
         bytes:8, abiClass:'fp-indirect', pointer:true, indirectReference:true,
@@ -409,7 +418,7 @@ export function classifyMicrosoftVectorcallArguments(instruction, options = {}) 
       return;
     }
 
-    const offset = 32 + stackIndex++ * 8;
+    const offset = stackSlotOffset(index);
     const entry = { index, location:'stack', offset, offsetBase:'caller-stack-before-call', calleeEntryOffset:offset + 8, bytes:8, abiClass:classified.floating?'fp':classified.pointer?'pointer':'integer', pointer:classified.pointer, bits:classified.bits, possible:false, mustUse:true };
     arguments_.push(entry); stackArguments.push(entry); stackArgsMayContainPointers ||= classified.pointer;
   });

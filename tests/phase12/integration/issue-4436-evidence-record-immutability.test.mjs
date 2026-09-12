@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { EvidenceStore } from '../js/ai/evidence.js';
+import { EvidenceStore } from '../../../js/ai/evidence.js';
 
 const sourceData = {
   verified: false,

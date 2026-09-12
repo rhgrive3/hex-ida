@@ -1,3 +1,5 @@
+import { isCanonicalArtifactId } from '../core/identity/index.js';
+
 export const PROJECT_ARTIFACT_REF_VERSION = 1;
 export const PROJECT_ARTIFACT_INDEX_VERSION = 'hex-project-artifact-index-v1';
 export const MAX_PROJECT_ARTIFACT_REFS = 50_000;
@@ -11,16 +13,15 @@ function required(value, code) {
 
 function artifactId(value, missingCode = 'artifact-ref-id-required') {
   const text = required(value, missingCode);
-  if (!text.startsWith('artifact_')) throw new TypeError('artifact-ref-id-invalid');
+  if (!isCanonicalArtifactId(text)) throw new TypeError('artifact-ref-id-invalid');
   return text;
 }
 
 function normalizeMaxEntries(value = MAX_PROJECT_ARTIFACT_REFS) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 1 || number > MAX_PROJECT_ARTIFACT_REFS) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > MAX_PROJECT_ARTIFACT_REFS) {
     throw new RangeError('artifact-index-max-entries-invalid');
   }
-  return number;
+  return value;
 }
 
 function expectedArtifactId(options = {}) {
@@ -50,7 +51,7 @@ export function isArtifactRef(value) {
     && value.version === PROJECT_ARTIFACT_REF_VERSION
     && typeof value.scope === 'string' && value.scope.trim().length > 0
     && typeof value.kind === 'string' && value.kind.trim().length > 0
-    && typeof value.artifactId === 'string' && value.artifactId.startsWith('artifact_')
+    && isCanonicalArtifactId(value.artifactId)
     && !Object.hasOwn(value, 'payload') && !Object.hasOwn(value, 'record');
 }
 

@@ -17,13 +17,6 @@ const auto = (reviewerId, verdict, at) => ({
 const greenEvidence = {
   statuses: [
     { context: REQUIRED, state: 'success', updated_at: '2026-09-07T00:03:00Z' },
-    {
-      context: 'CodeRabbit',
-      state: 'success',
-      description: 'Review completed',
-      updated_at: '2026-09-07T00:03:00Z',
-      creator: { login: 'coderabbitai[bot]' },
-    },
   ],
   checkRuns: [{ name: 'PR fast gate', status: 'completed', conclusion: 'success', app: { slug: 'github-actions' } }],
 };

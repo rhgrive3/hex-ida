@@ -48,9 +48,35 @@
       if (typeof value[Symbol.iterator] !== 'function') throw new TypeError('address-provenance-boundary-collection-required');
       return [...value];
     };
+    // Entry-kill register lists are registers, not addresses, but they are an
+    // external boundary shape too: a truthy non-iterable must fail with the
+    // named contract error instead of leaking a raw for...of TypeError.
+    const registerCollection = (value) => {
+      if (value == null) return [];
+      if (typeof value === 'string' || typeof value[Symbol.iterator] !== 'function') {
+        throw new TypeError('address-provenance-entry-kill-registers-required');
+      }
+      return [...value];
+    };
+    const entryKillCollection = (value) => {
+      if (value == null) return [];
+      if (typeof value === 'string' || typeof value[Symbol.iterator] !== 'function') {
+        throw new TypeError('address-provenance-entry-kills-required');
+      }
+      return [...value];
+    };
+    // Boundary elements are the exactness contract: a structured/malformed
+    // element (non-numeric, structured, non-canonical string) must fail
+    // closed with a named error instead of being silently filtered, which
+    // deleted the function boundary itself and let ADR/ADRP provenance leak
+    // past it (#5084).
+    const canonicalBoundary = (value) => {
+      const boundary = asBigInt(value);
+      if (boundary == null) throw new TypeError('address-provenance-boundary-address-invalid');
+      return boundary;
+    };
     const functionStarts = addressCollection(opts.functionStarts)
-      .map(asBigInt)
-      .filter((start) => start != null)
+      .map(canonicalBoundary)
       .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     const startCount = functionStarts.length;
     let startIndex = 0;
@@ -65,10 +91,12 @@
     }
 
     // Full branch entries are retained for the existing forward-target contract.
+    // Non-canonical elements fail closed; only the semantic out-of-range
+    // filter remains after the boundary contract is enforced.
     const branchEntries = new Set(
       addressCollection(opts.branchEntries)
-        .map(asBigInt)
-        .filter((target) => target != null && inRange(target)),
+        .map(canonicalBoundary)
+        .filter((target) => inRange(target)),
     );
 
     // A backward edge is discovered after its target was already visited by a
@@ -77,12 +105,15 @@
     // clearing every register at every back-edge target: unchanged bases remain
     // valid, while loop-carried clobbers fail closed on the first visit.
     const entryKills = new Map();
-    for (const item of opts.entryKills || []) {
+    for (const item of entryKillCollection(opts.entryKills)) {
       if (!Array.isArray(item) || item.length < 2) continue;
+      // Validate the register-collection shape before the range filter: the
+      // shape is the boundary contract, the range is semantic filtering.
+      const registers = registerCollection(item[1]);
       const target = asBigInt(item[0]);
       if (target == null || !inRange(target)) continue;
       const regs = new Set();
-      for (const value of item[1] || []) {
+      for (const value of registers) {
         const reg = value;
         if (Number.isInteger(reg) && reg >= 0 && reg < 32) regs.add(reg);
       }

@@ -33,11 +33,15 @@ function boundedMemoryLimit(value, fallback, maximum) {
 
 export function memoryOrigins(node, opts = {}) {
   const maxNodes=boundedMemoryLimit(opts.maxNodes,1024,10000);
-  const maxEdges=boundedMemoryLimit(opts.maxEdges,2048,20000);
+  // Keep the established explicit zero-edge contract while allowing positive
+  // budgets to drain destinations admitted by their final permitted edge.
+  const maxEdges=opts.maxEdges===0?0:boundedMemoryLimit(opts.maxEdges,2048,20000);
   const seen=new Set(), stack=node?[node]:[], stores=[], clobbers=[];
   let edges=0,truncated=false,phiCount=0;
   while(stack.length){
-    if(seen.size>=maxNodes||edges>=maxEdges){truncated=true;break;}
+    // maxEdges is enforced while queueing incoming edges. A destination that
+    // was admitted by the last permitted edge must still be processed.
+    if(seen.size>=maxNodes){truncated=true;break;}
     const cur=stack.pop(); if(!cur||seen.has(cur))continue; seen.add(cur);
     if(cur.kind==='store'){if(cur.inst)stores.push(cur.inst);continue;}
     if(cur.kind==='clobber'||cur.kind==='unknown'){if(cur.inst)clobbers.push(cur.inst);continue;}

@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 
 import { createProductSurfaceQueries } from '../../../js/analysis/query/product-surface.js';
+import { createAnalysisSnapshot } from '../../../js/analysis/query/snapshot.js';
 
-const SNAPSHOT = Object.freeze({ snapshotId: 'issue-4506', analysisEpoch: 1 });
+const SNAPSHOT = createAnalysisSnapshot({ binaryId: 'issue-4506', analysisEpoch: 1 });
 
 function makeApp(regions) {
   const calls = [];
