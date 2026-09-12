@@ -607,7 +607,9 @@ export class RemoteDebugAdapter extends DebugAdapter {
     });
   }
   async connect(options = {}) {
-    const hello = await this.protocol.request('connect', { client:'hex', requestedVersion:1, options }, { epoch:this.epoch });
+    const epoch = this.epoch;
+    const hello = await this.protocol.request('connect', { client:'hex', requestedVersion:1, options }, { epoch });
+    if (epoch !== this.epoch) throw new DebugAdapterError('stale-request', 'connect was invalidated before it completed');
     const advertised = normalizeCapabilities(hello && hello.capabilities || {});
     const negotiated = {};
     for (const [key, allowed] of Object.entries(this.allowedCapabilities)) negotiated[key] = key === 'connect' || key === 'disconnect' ? !!allowed : !!allowed && !!advertised[key];
@@ -618,7 +620,7 @@ export class RemoteDebugAdapter extends DebugAdapter {
     if (wasConnected) { try { await this.protocol.request('disconnect',{}, { epoch:this.epoch, timeoutMs:1000 }); } catch {} }
     this.connected = false;
     this.eventListeners.clear();
-    if (wasConnected) this.nextEpoch();
+    this.nextEpoch();
     return { disconnected:true };
   }
   setEpoch(epoch) {
