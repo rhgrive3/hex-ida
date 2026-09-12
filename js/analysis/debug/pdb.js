@@ -388,9 +388,9 @@ export function parseModuleInfo(bytes, dbi) {
 }
 
 /** PE section headers, as stored in the PDB's section-header stream. */
-export function parseSectionHeaders(bytes) {
+function parseSectionHeaderStream(bytes) {
   const headers = [];
-  if (!bytes) return headers;
+  if (!bytes) return { headers, complete: false, trailingBytes: 0 };
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   for (let offset = 0; offset + 40 <= bytes.length; offset += 40) {
     headers.push({
@@ -400,7 +400,12 @@ export function parseSectionHeaders(bytes) {
       sizeOfRawData: view.getUint32(offset + 16, true),
     });
   }
-  return headers;
+  const trailingBytes = bytes.length % 40;
+  return { headers, complete: trailingBytes === 0, trailingBytes };
+}
+
+export function parseSectionHeaders(bytes) {
+  return parseSectionHeaderStream(bytes).headers;
 }
 
 /**
@@ -1031,7 +1036,8 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     }
 
     const tpi = parseTpiStreamWithBudget(msf.streams[2]?.read(), recordBudget, 'TPI stream');
-    const sectionHeaders = parseSectionHeaders(findSectionHeaderStream(msf, dbi, dbiBytes));
+    const sectionHeaderStream = parseSectionHeaderStream(findSectionHeaderStream(msf, dbi, dbiBytes));
+    const sectionHeaders = sectionHeaderStream.headers;
     const imageBase = canonicalImageBase(image?.imageBase);
 
     if (byteBudget.exhausted) {
@@ -1057,6 +1063,9 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       diagnostics.push(`unmodelled TPI leaf kinds: ${[...tpi.unmodelled].map((leaf) => `0x${leaf.toString(16)}`).slice(0, 8).join(', ')}`);
     }
     if (!sectionHeaders.length) diagnostics.push('no section header stream: symbol addresses stay unresolved');
+    if (!sectionHeaderStream.complete && sectionHeaderStream.trailingBytes > 0) {
+      diagnostics.push(`section header stream is truncated: ${sectionHeaderStream.trailingBytes} trailing bytes`);
+    }
     if (imageBase == null) diagnostics.push('PE image base unavailable or invalid: PDB symbol addresses stay unresolved');
 
     const result = createDebugProviderResult({
