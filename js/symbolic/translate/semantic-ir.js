@@ -75,7 +75,15 @@ export function translateSemanticIR(target, options = {}) {
       return unk;
     }
 
-    const valId = val.id != null ? String(val.id) : null;
+    let valId = null;
+    if (val.id != null) {
+      if (typeof val.id === 'string' && val.id.trim() !== '') valId = val.id.trim();
+      else {
+        semanticUnknowns++;
+        unsupportedEntities.push({ id: null, op: 'value-id', reason: `invalid-ssa-value-id:${typeof val.id}` });
+        return createUnknownSemantic(bvSort(width), 'invalid-ssa-value-id', { valueIdType: typeof val.id });
+      }
+    }
     const memoKey = `${valId || 'anon'}@${fromBlock}@${width}`;
     if (memo.has(memoKey)) return memo.get(memoKey);
 
