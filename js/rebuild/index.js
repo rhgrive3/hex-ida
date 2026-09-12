@@ -3,11 +3,25 @@ import { PatchSet } from '../patch.js';
 
 export const REBUILD_PLAN_VERSION = 'hex-rebuild-plan-v1';
 export const REBUILD_LEVELS = Object.freeze(['R0', 'R1', 'R2', 'R3', 'R4', 'R5']);
+// Publication accepts only validation artifacts emitted by this module. A
+// caller-controlled status plus matching identity strings are not evidence
+// that the output ever passed the validator.
+const CANONICAL_REBUILD_VALIDATIONS = new WeakSet();
+
+function canonicalValidation(value) {
+  const frozen = deepFreeze(value);
+  CANONICAL_REBUILD_VALIDATIONS.add(frozen);
+  return frozen;
+}
+
+function isCanonicalValidation(value) {
+  return !!value && typeof value === 'object' && CANONICAL_REBUILD_VALIDATIONS.has(value);
+}
 const BASELINE_REBUILD_VALIDATORS = Object.freeze([
   'source-precondition', 'structure', 'loader-reparse', 'unchanged-regions', 'evidence',
 ]);
 
-function required(value, code) { const text = String(value ?? '').trim(); if (!text) throw new TypeError(code); return text; }
+function identity(value, code) { if (typeof value !== 'string') throw new TypeError(code); const text = value.trim(); if (!text) throw new TypeError(code); return text; }
 function explicitBigInt(value, code) {
   if (typeof value === 'number') { if (!Number.isSafeInteger(value)) throw new TypeError(code); return BigInt(value); }
   if (typeof value === 'bigint') return value;
@@ -50,15 +64,15 @@ function assertRebuildPlanIntegrity(plan) {
 }
 
 export function createRebuildPlan(input = {}) {
-  const binaryId = required(input.binaryId, 'rebuild-binary-id-required');
-  const sourceHash = required(input.sourceHash, 'rebuild-source-hash-required');
-  const loaderVersion = required(input.loaderVersion || 'n/a', 'rebuild-loader-version-required');
+  const binaryId = identity(input.binaryId, 'rebuild-binary-id-required');
+  const sourceHash = identity(input.sourceHash, 'rebuild-source-hash-required');
+  const loaderVersion = identity(input.loaderVersion || 'n/a', 'rebuild-loader-version-required');
   if (!Array.isArray(input.operations)) throw new TypeError('rebuild-operations-required');
   const operations = input.operations.map((operation) => {
     const offset = explicitBigInt(operation.offset ?? operation.fileOffset, 'rebuild-operation-offset-invalid');
     const before = bytes(operation.before || []), after = bytes(operation.after || []);
     if (offset < 0n || !before.length || before.length !== after.length) throw new TypeError('rebuild-operation-same-size-precondition-required');
-    return { id: String(operation.id || `operation:${stableDigest({ offset: offset.toString(), before: Array.from(before), after: Array.from(after) })}`), offset: offset.toString(), before: Array.from(before), after: Array.from(after), address: operation.address == null ? null : String(operation.address), provenance: clone(operation.provenance || { source: 'local-patch' }) };
+    return { id: operation.id == null ? `operation:${stableDigest({ offset: offset.toString(), before: Array.from(before), after: Array.from(after) })}` : identity(operation.id, 'rebuild-operation-id-invalid'), offset: offset.toString(), before: Array.from(before), after: Array.from(after), address: operation.address == null ? null : String(operation.address), provenance: clone(operation.provenance || { source: 'local-patch' }) };
   }).sort((a, b) => BigInt(a.offset) < BigInt(b.offset) ? -1 : BigInt(a.offset) > BigInt(b.offset) ? 1 : a.id.localeCompare(b.id));
   for (let i = 1; i < operations.length; i++) { const previous = operations[i - 1], current = operations[i]; if (BigInt(current.offset) < BigInt(previous.offset) + BigInt(previous.before.length)) throw new TypeError('rebuild-overlapping-operations'); }
   const impact = { sourceRanges: clone(input.impact?.sourceRanges || operations.map((operation) => ({ offset: operation.offset, length: operation.before.length }))), sections: clone(input.impact?.sections || []), layoutMoving: input.impact?.layoutMoving === true, relocations: input.impact?.relocations === true, branchRanges: input.impact?.branchRanges === true, unwind: input.impact?.unwind === true, importsExports: input.impact?.importsExports === true, signature: input.impact?.signature === true };
@@ -127,15 +141,15 @@ export async function validateRebuildOutput(plan, materialized, options = {}) {
   try {
     required = assertRebuildPlanIntegrity(plan);
   } catch (error) {
-    return {
+    return canonicalValidation({
       status: 'invalid',
       reason: error?.message || 'rebuild-plan-integrity-invalid',
       planId: plan?.planId || null,
       validators: [],
       failures: [{ validator: 'plan-integrity', reason: error?.message || 'rebuild-plan-integrity-invalid' }],
-    };
+    });
   }
-  if (!materialized || materialized.status !== 'materialized') return { status: 'invalid', reason: 'materialization-not-complete', planId: plan?.planId || null };
+  if (!materialized || materialized.status !== 'materialized') return canonicalValidation({ status: 'invalid', reason: 'materialization-not-complete', planId: plan?.planId || null });
   const output = materialized.bytes;
   const results = new Map();
 
@@ -197,7 +211,7 @@ export async function validateRebuildOutput(plan, materialized, options = {}) {
   const validators = required.map((validator) => results.get(validator) || validatorResult(validator, 'unavailable', 'validator-not-run'));
   const failures = validators.filter((entry) => entry.status !== 'passed').map((entry) => ({ validator: entry.validator, reason: entry.reason || `validator-${entry.status}` }));
   const valid = validators.length === required.length && validators.every((entry) => entry.status === 'passed');
-  return {
+  return canonicalValidation({
     status: valid ? 'valid' : 'invalid',
     planId: plan.planId,
     outputHash: materialized.outputHash,
@@ -205,15 +219,25 @@ export async function validateRebuildOutput(plan, materialized, options = {}) {
     failures,
     signatureConsequences: { status: plan.impact.signature ? 'changed-or-unknown' : 'unchanged-by-declared-operation' },
     independentDifferential,
-  };
+  });
 }
 
 export async function publishRebuildOutput(materialized, validation, options = {}) {
   if (!materialized || materialized.status !== 'materialized') return { status: 'rejected', reason: 'materialization-not-complete' };
   if (!validation || validation.status !== 'valid') return { status: 'rejected', reason: 'validation-not-green' };
-  if (typeof options.promote !== 'function') return { status: 'not-published', reason: 'explicit-promotion-required', outputHash: materialized.outputHash };
-  const promoted = await options.promote(materialized.bytes, validation);
-  return { status: 'published', outputHash: materialized.outputHash, result: promoted };
+  if (!isCanonicalValidation(validation)) return { status: 'rejected', reason: 'validation-artifact-untrusted' };
+  if (validation.planId !== materialized.planId || validation.outputHash !== materialized.outputHash) {
+    return { status: 'rejected', reason: 'validation-target-mismatch' };
+  }
+  let publicationBytes, observedOutputHash;
+  try {
+    publicationBytes = bytes(materialized.bytes).slice();
+    observedOutputHash = hashBytes(publicationBytes);
+  } catch (error) { return { status: 'rejected', reason: 'materialized-output-invalid', detail: String(error?.message || error) }; }
+  if (observedOutputHash !== validation.outputHash) return { status: 'rejected', reason: 'materialized-output-tampered' };
+  if (typeof options.promote !== 'function') return { status: 'not-published', reason: 'explicit-promotion-required', outputHash: observedOutputHash };
+  const promoted = await options.promote(publicationBytes, validation);
+  return { status: 'published', outputHash: observedOutputHash, result: promoted };
 }
 
 export function rebuildSupportTruth({ format, operation, architecture, relocationClass, validatorCoverage, proof } = {}) {

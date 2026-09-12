@@ -45,11 +45,45 @@ export function isTerminalDevToolError(error) {
   return TERMINAL_CODE_PREFIXES.some((prefix) => code.startsWith(prefix));
 }
 
+/* Provider-bound history must not carry tool-controlled free-form text
+   (#5137): the issue's exact counterexample (`Authorization failed: <secret>`)
+   proves key-name/value patterns cannot certify an arbitrary message
+   secret-free, so the boundary withholds raw diagnostic text entirely and
+   carries only the failure class (code/name) plus fixed guidance. Free-form
+   text stays in local diagnostics (describeDevToolError). */
+export const DEV_TOOL_ERROR_SAFE_MESSAGE
+  = 'Dev tool failed. Raw diagnostic text is withheld from provider-bound history; the failure class is in code.';
+
 export function describeDevToolError(error) {
   const name = String(error?.name || '').trim();
   const code = String(error?.code || '').trim() || name || 'dev-tool-error';
-  const message = String(error?.message || error || 'Dev tool failed.').slice(0, MAX_MESSAGE_CHARS);
+  /* Local diagnostic representation: error text is tool/transport-controlled
+     untrusted input, so credential-shaped values are removed before the text
+     reaches even local consumers, and the result stays bounded by
+     MAX_MESSAGE_CHARS. Provider-bound history never uses this message. */
+  const rawMessage = String(error?.message || error || 'Dev tool failed.');
+  const message = redactSensitiveText(rawMessage).slice(0, MAX_MESSAGE_CHARS);
   return Object.freeze({ code, name: name || null, message });
+}
+
+/* Redact secret-bearing values from free-form error text. Key-name patterns
+   alone cannot identify a secret inside a sentence, so redaction pairs the
+   key pattern with its value assignment (`key=value`, `key: value`) and
+   credential-shaped `bearer/basic/token <value>` forms. Everything else is
+   preserved so normal diagnostics stay readable. */
+const SECRET_VALUE_PATTERNS = Object.freeze([
+  // Credential scheme forms first, so `authorization=Bearer <token>` loses the
+  // token before the key=value pass redacts the remaining assignment.
+  /\b(?:bearer|basic|token)\s+([A-Za-z0-9._~+/=-]{8,})/gi,
+  new RegExp(`(?:${SENSITIVE_KEY.source})\\s*[=:]\\s*("[^"]*"|'[^']*'|\\S+)`, 'gi'),
+]);
+
+function redactSensitiveText(text) {
+  let redacted = text;
+  for (const pattern of SECRET_VALUE_PATTERNS) {
+    redacted = redacted.replace(pattern, () => REDACTED);
+  }
+  return redacted;
 }
 
 export function sanitizeDevToolArguments(value) {
@@ -63,7 +97,7 @@ export function createDevToolErrorHistoryEntry({ tool, purpose = null, error, at
     tool: String(tool || ''),
     purpose: purpose == null ? null : String(purpose),
     code: described.code,
-    message: described.message,
+    message: DEV_TOOL_ERROR_SAFE_MESSAGE,
     recoverable: true,
     attempt,
     remainingRecoveries: remaining,

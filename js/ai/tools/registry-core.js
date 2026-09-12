@@ -7,6 +7,12 @@ export const COST_WEIGHT = Object.freeze({ cheap: 1, medium: 4, expensive: 12 })
 export const TOOL_TIMEOUT_MS = Object.freeze({ cheap: 20_000, medium: 45_000, expensive: 60_000 });
 export const ADDRESS_KEYS = new Set(["address", "functionAddress", "from", "to", "start", "end", "target"]);
 
+// These zero-argument tools are deterministic for one immutable turn snapshot,
+// but their result depends on UI state that is not part of ObservationStore's
+// analysis binding. Keep them observable/evidence-producing without allowing
+// cross-turn cache reuse (#4065).
+const SNAPSHOT_DEPENDENT_UNKEYED_TOOLS = new Set(["get_current_function", "get_selection_context"]);
+
 function boundaryIdentity(value) {
   if (value == null || value === '') return null;
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return String(value);
@@ -53,8 +59,11 @@ export class ToolRegistry {
       description: "", inputSchema: { type: "object" }, outputSchema: null, cost: "cheap",
       scopeSupport: ["auto", "binary", "project"], mutability: "read-only", needsApproval: false,
       category: "discovery", preferredPrerequisites: [], resultKind: "observation",
-      deterministic: true, storeResult: true, modelProjection: projectBounded,
+      deterministic: true, cacheable: true, storeResult: true, modelProjection: projectBounded,
       ...definition,
+      // Reserved snapshot-dependent reads must never be made reusable by a
+      // custom definition; their UI snapshot is absent from the cache key.
+      cacheable: SNAPSHOT_DEPENDENT_UNKEYED_TOOLS.has(definition.name) ? false : (definition.cacheable ?? true),
     }));
     return this;
   }
@@ -96,7 +105,7 @@ export class ToolRegistry {
       let record = null;
       let raw;
       let cached = false;
-      if (tool.storeResult !== false && tool.deterministic !== false) {
+      if (tool.storeResult !== false && tool.deterministic !== false && tool.cacheable !== false) {
         record = this.observationStore.getCached(name, args, {}, scope, scopeBoundary);
         if (record) { raw = record.fullResult; cached = true; this.accounting.cacheHits++; }
       }
@@ -110,6 +119,7 @@ export class ToolRegistry {
             tool: name, arguments: jsonSafe(args), fullResult: raw,
             functionIdentity: args.functionAddress ?? args.address ?? null,
             deterministic: tool.deterministic !== false,
+            cacheable: tool.cacheable !== false,
             // Record the turn scope that acquired this data (#5641): detail
             // retrieval must not re-expose it inside a narrower explicit turn.
             effectiveScope: scope,
