@@ -3,6 +3,7 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 const router = resolve('scripts/ci/circleci-impact.sh');
 const root = mkdtempSync(join(tmpdir(), 'hex-circleci-impact-'));
@@ -139,6 +140,17 @@ try {
   }
   assert.equal(route(commitB, 'main', 'main-and-branch', agentPattern), 'false',
     'unrelated docs-only main delta must keep skipping the resilience lane');
+
+  // Importing coverage must not terminate the caller before CI policy assertions.
+  const policyEntry = resolve('tests/ci-development-mode.mjs');
+  const policy = spawnSync(process.execPath, [policyEntry], { encoding: 'utf8', env: process.env });
+  assert.equal(policy.status, 0, policy.stderr || policy.stdout);
+  assert.match(policy.stdout, /CI development mode contract: PASS/, 'all existing CI assertions must execute');
+  const continuation = spawnSync(process.execPath, ['--input-type=module', '-e',
+    `await import(${JSON.stringify(pathToFileURL(policyEntry).href)}); throw new Error('ci-policy-continuation-sentinel');`,
+  ], { encoding: 'utf8', env: process.env });
+  assert.equal(continuation.status, 1, 'coverage import must not exit its caller with success');
+  assert.match(continuation.stderr, /ci-policy-continuation-sentinel/);
 
   console.log('circleci-impact routing: PASS');
 } finally {
