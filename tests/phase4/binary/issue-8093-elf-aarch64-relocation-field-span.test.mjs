@@ -132,6 +132,7 @@ for (const [type, width] of [
 ]) {
   assert.equal(relocationFieldWidth(EM_AARCH64, type, 64), width, `AArch64 relocation ${type}`);
 }
+assert.equal(relocationFieldWidth(EM_AARCH64, 1024, 64), null, 'COPY has no type-fixed width authority');
 assert.equal(relocationFieldWidth(EM_AARCH64, 0xffffffff, 64), null);
 assert.equal(relocationFieldWidth(EM_AARCH64, 1, 32), undefined, 'P32 code space is not claimed by the ELF64 width table');
 
@@ -190,5 +191,13 @@ assertDynamicRejected({ type: 0xffffffff, address: 0x4004f0n }, 'no supported ta
 // 16-byte descriptor must fit, not only its first 8-byte word.
 assertDynamicAccepted({ type: 1031, address: 0x4004f0n });
 assertDynamicRejected({ type: 1031, address: 0x4004f8n }, 'target field crosses');
+
+// R_AARCH64_COPY is symbol-sized rather than type-fixed. Until the dynamic
+// consumer proves st_size, both exact-fit and crossing candidates fail closed
+// instead of treating COPY as a zero-storage relocation.
+for (const address of [0x4004f8n, 0x4004f9n]) {
+  const image = assertDynamicRejected({ type: 1024, address, symbolIndex: 1 }, 'no supported target-field width');
+  assert.equal(image.imports.some((entry) => entry.sites?.some((site) => site.type === 1024)), false, 'COPY without variable-width proof must not publish canonical import evidence');
+}
 
 console.log('issue-8093 AArch64 ELF relocation field-span regression: PASS');

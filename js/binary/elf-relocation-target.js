@@ -56,9 +56,9 @@ const X86_64_RELOCATION_FIELD_BYTES = new Map([
 
 // AArch64 AAELF64 relocation storage widths in bytes. Instruction relocations
 // occupy one 32-bit A64 instruction. Null/relaxation-only relocations have no
-// storage field. COPY is size-dependent, so this helper deliberately records
-// zero rather than inventing a fixed width. Unallocated/reserved codes are not
-// present and therefore fail closed for this recognized machine.
+// storage field. COPY is size-dependent, so it has no type-fixed width authority
+// here; dynamic consumers prove it from symbol st_size. Unallocated/reserved codes
+// are not present and therefore fail closed for this recognized machine.
 const AARCH64_RELOCATION_FIELD_BYTES = new Map([
   [0, 0n], [256, 0n], // R_AARCH64_NONE (both encodings are specified)
   [257, 8n], [258, 4n], [259, 2n], // ABS64/32/16
@@ -77,7 +77,6 @@ const AARCH64_RELOCATION_FIELD_BYTES = new Map([
   [580, 8n], // AUTH_ABS64
   ...Array.from({ length: 17 }, (_, i) => [581 + i, 4n]),
   [598, 0n], // AUTH_TLSDESC_CALL relaxation marker
-  [1024, 0n], // COPY: width is symbol st_size, not a type-fixed field
   [1025, 8n], [1026, 8n], [1027, 8n], [1028, 8n], [1029, 8n], [1030, 8n],
   [1031, 16n], // TLSDESC is a consecutive pair of pointer-sized values
   [1032, 8n],
