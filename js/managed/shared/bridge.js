@@ -1008,6 +1008,11 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
       res = operator
         ? expr.unary(operator, arg, bits)
         : expr.intrinsic(mnemonic || 'unsupported_unary', [arg], bits);
+    } else if (n.kind === 'select') {
+      const condition = n.inputs[0] ? buildValueExpr(n.inputs[0]) : expr.constant(0n, bits);
+      const whenTrue = n.inputs[1] ? buildValueExpr(n.inputs[1]) : expr.constant(0n, bits);
+      const whenFalse = n.inputs[2] ? buildValueExpr(n.inputs[2]) : expr.constant(0n, bits);
+      res = expr.select(condition, whenTrue, whenFalse, bits);
     } else if (n.kind === 'call') {
       const callee = n.call?.targetEntityIds?.[0] || 'callee';
       const args = (n.inputs || []).map(buildValueExpr);
@@ -1130,7 +1135,7 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
       } else if (n.kind === 'intrinsic' || n.kind === 'barrier') {
         const args = (n.inputs || []).map((i) => printExpression(buildValueExpr(i))).join(', ');
         body.push({ kind: 'intrinsic', indent: isLoop ? 2 : 1, text: `${n.metadata?.mnemonic || 'unsupported_intrinsic'}(${args});` });
-      } else if (n.outputs && n.outputs.length > 0 && (n.kind === 'binary' || n.kind === 'unary' || n.kind === 'compare' || n.kind === 'const')) {
+      } else if (n.outputs && n.outputs.length > 0 && (n.kind === 'binary' || n.kind === 'unary' || n.kind === 'compare' || n.kind === 'select' || n.kind === 'const')) {
         const outVal = n.outputs[0];
         const valExpr = printExpression(buildValueExpr(outVal));
         body.push({ kind: 'assign', indent: isLoop ? 2 : 1, text: `${safeIdent(outVal)} = ${valExpr};` });
