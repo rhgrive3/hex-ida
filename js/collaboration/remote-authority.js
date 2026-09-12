@@ -9,6 +9,7 @@ export const REMOTE_SECURITY_PROFILE_ID = 'collaboration:remote-security-v1';
 const VALID_REMOTE_COLLABORATION_SUPPORT = new WeakSet();
 const VERIFIED_TRANSPORT_PROOFS = new WeakMap();
 const VALIDATED_REMOTE_SNAPSHOTS = new WeakMap();
+const TRUSTED_TRANSPORT_VERIFIER_IDENTITIES = new WeakMap();
 const MAX_MESSAGE_ID_LENGTH = 512;
 
 function validMessageId(value) {
@@ -228,6 +229,21 @@ export function createRemoteCollaborationEnvelope(input = {}) {
   return deepFreeze({ ...envelope, envelopeId: envelopeIdentity(envelope) });
 }
 
+export function createRemoteTransportVerifier({ oracleIdentity, verifyTransportProof } = {}) {
+  const identity = required(oracleIdentity, 'remote-gate-transport-verifier-identity-invalid');
+  if (typeof verifyTransportProof !== 'function') throw new TypeError('remote-gate-transport-verifier-required');
+  if (TRUSTED_TRANSPORT_VERIFIER_IDENTITIES.has(verifyTransportProof)
+    && TRUSTED_TRANSPORT_VERIFIER_IDENTITIES.get(verifyTransportProof) !== identity) {
+    throw new TypeError('remote-gate-transport-verifier-identity-conflict');
+  }
+  TRUSTED_TRANSPORT_VERIFIER_IDENTITIES.set(verifyTransportProof, identity);
+  return Object.freeze({ verifyTransportProof, transportVerifierIdentity: identity });
+}
+
+function remoteTransportVerifierIdentity(verifier) {
+  return typeof verifier === 'function' ? TRUSTED_TRANSPORT_VERIFIER_IDENTITIES.get(verifier) ?? null : null;
+}
+
 export class RemoteCollaborationGate {
   constructor(input = {}) {
     this.schemaVersion = REMOTE_GATE_SCHEMA;
@@ -394,6 +410,10 @@ export function remoteCollaborationSupport({
     profileIds: [REMOTE_SECURITY_PROFILE_ID],
   });
   const transportVerifierIdentity = gate instanceof RemoteCollaborationGate ? gate.transportVerifierIdentity : null;
+  const gateVerifier = gate instanceof RemoteCollaborationGate ? gate.verifyTransportProof : null;
+  const verifierProvenanceIdentity = remoteTransportVerifierIdentity(gateVerifier);
+  const verifierProvenanceBound = typeof verifierProvenanceIdentity === 'string'
+    && verifierProvenanceIdentity === transportVerifierIdentity;
   const transportVerifierBound = typeof transportVerifierIdentity === 'string'
     && Array.isArray(profileProof?.independentOracleIdentities)
     && profileProof.independentOracleIdentities.includes(transportVerifierIdentity);
@@ -403,6 +423,7 @@ export function remoteCollaborationSupport({
     && activeTransportProof.verifierIdentity === transportVerifierIdentity;
   const ready = gate instanceof RemoteCollaborationGate
     && typeof gate.verifyTransportProof === 'function'
+    && verifierProvenanceBound
     && transportVerifierBound
     && activeVerificationBound
     && exactIdentity
