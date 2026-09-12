@@ -34,11 +34,12 @@ import {
 } from './range.js';
 import { createPassDescriptor, createPassResult } from './contract.js';
 import { stableDigest } from '../../core/identity/index.js';
+import { conditionalSccpInput } from './context-inputs.js';
 import { canonicalAnalysisIdentity } from './analysis-identity.js';
 
 export const SCCP_PASS = createPassDescriptor({
   id: 'phase8.sccp',
-  version: '2.0.1',
+  version: '2.1.0',
   stage: 'scalar-optimization',
   budgetClass: 'standard',
   consumes: ['cfg', 'ssa'],
@@ -288,6 +289,8 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
       }],
     });
   }
+  const conditionalInputs = conditionalSccpInput(context.scopedInputConditions, analysis, resolvedIdentity.identity);
+  const inputFact = value => conditionalSccpInput(conditionalInputs, analysis, resolvedIdentity.identity, value.id);
   const normalizedLimits = normalizeLimits(context.sccpLimits);
   const limits = normalizedLimits.limits;
 
@@ -535,6 +538,8 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
     }
     if (value.kind === 'phi' || definition?.op === 'phi') return evaluatePhi(value);
     if (value.kind === 'arg' || value.kind === 'undef' || definition == null) {
+      const assumed = inputFact(value);
+      if (assumed) return { cell: assumed.constant ? constantCell(assumed.constant) : overdefined('conditional input'), range: assumed.range, fact: assumed };
       return { cell: overdefined(value.kind === 'arg' ? 'function argument' : 'value has no definition'), range: fullRange(bits) };
     }
 
@@ -1021,12 +1026,13 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
   for (const value of values) {
     if (value.def != null || value.kind === 'phi') continue;
     const bits = widthOf(value);
-    const known = constantOfValue(value);
+    const assumed = inputFact(value);
+    const known = assumed?.constant ?? constantOfValue(value);
     cells.set(value.id, known != null ? constantCell(known) : overdefined(value.kind === 'arg' ? 'function argument' : 'value has no definition'));
     if (bits != null) {
-      const range = known != null ? singleton(known) : fullRange(bits);
+      const range = assumed?.range ?? (known != null ? singleton(known) : fullRange(bits));
       ranges.set(value.id, range);
-      facts.set(value.id, factFromRange(range, {
+      facts.set(value.id, assumed ?? factFromRange(range, {
         valueId: value.id,
         reason: known == null ? 'function argument' : null,
         provenance: valueProvenance(value),
@@ -1258,6 +1264,7 @@ export function runSccpPass(context = {}, budget = {}, area = null) {
   const result = {
     contractVersion: SCCP_PASS.contractVersion,
     passVersion: SCCP_PASS.version,
+    ...(conditionalInputs ? { conditionalInputsId: conditionalInputs.id, conditionalOn: conditionalInputs.conditionalOn } : {}),
     identity: inputIdentity,
     provenance: Object.freeze({
       producer: SCCP_PASS.id,

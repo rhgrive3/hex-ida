@@ -59,6 +59,13 @@ export class AIRuntime {
   }
 
   async turn(input = {}, options = {}) { return executeTurn.call(this, input, options); }
+  // Optional first-party setup only. Does not create/load a job, bind a fresh
+  // evidence namespace, enable SCPA or perform an investigation action.
+  async createScopedInvestigationProvider(options = {}) {
+    const { createScopedJobContextProvider } = await import('./investigation/scoped-job-context.js');
+    return createScopedJobContextProvider(this, options);
+  }
+
   async createJob(input = {}) { return this.jobs.create(input); }
   async runJobSlice(jobOrId, options = {}) { return this.jobs.runSlice(jobOrId, options); }
   async resumeJob(id, options = {}) { return this.jobs.resume(id, options); }
