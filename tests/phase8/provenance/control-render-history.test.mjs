@@ -108,6 +108,19 @@ test('core/public consumers and actual condition replacement retain initial hist
   assert.ok(replacements > 0, 'at least one actual owned condition spelling transition must run');
 });
 
+test('render-only projection preserves structured conditions rather than substituting raw taken-branch predicates', () => {
+  for (const kind of ['one-sided', 'if-else', 'loop', 'conditional-loop', 'counted', 'cfg-conditional', 'faithful']) {
+    const f = fixture(kind), canonical = structuredClone(f.ir);
+    const enhanced = enhancePublic(f.seed, f.model, f.opts);
+    const text = enhanced.pseudocode;
+    const result = applyPhase8Projection(enhanced, analysis(), { preserveInitialSpelling:true });
+    assert.equal(result.pseudocode, text, kind);
+    assert.equal(enhanced.pseudocode, text, 'the input presentation stays unchanged');
+    assert.ok(!rules(result.renderProvenance).some(record => record.rule === 'replace-initial-control-condition'), kind);
+    assert.deepEqual(structuredClone(f.ir), canonical, kind);
+  }
+});
+
 test('copies and canonical graph mutations cannot reissue initial control ownership', () => {
   for (const mutate of [f=>{f.ir.blocks[0].succ.reverse();}, f=>{f.ir.ipdom[0]=-1;},
     f=>{f.ir.postDominators[0].index.tin[0]++;}, f=>{f.line.text+=' changed';}]) {

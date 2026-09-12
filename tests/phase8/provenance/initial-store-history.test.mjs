@@ -87,6 +87,51 @@ test('render-only spelling retention refuses copied and changed store emitters',
   }
 });
 
+test('deadline fallback retains the actual cached builder history without running an optional rewrite', () => {
+  const f = fixture({ one:true });
+  const clock = Object.getOwnPropertyDescriptor(globalThis, 'performance');
+  let now = 0;
+  Object.defineProperty(globalThis, 'performance', { configurable:true, value:{ now:() => now } });
+  try {
+    const original = enhanceSemanticDecompilation(f.seed, f.model, {
+      ...f.opts, deterministicTransforms:false, decompilerTimeBudgetMs:10,
+      // Model a slow symbol callback in the mandatory expression builder,
+      // not a fabricated pass result or a machine-speed-dependent timeout.
+      symbolFor() { now = 100; return null; },
+    });
+    assert.equal(now, 100, 'the real canonical builder called the resolver');
+    assert.ok(original.passMetrics.some(pass => pass.name === 'canonical-expression-build' && !pass.skipped));
+    assert.ok(original.passMetrics.some(pass => pass.name === 'semantic-rewrite' && pass.skipped));
+    assert.match(original.pseudocode, /global_8000\+\+;/);
+    const result = applyPhase8Projection(original, analysis(), { preserveInitialSpelling:true });
+    assert.equal(result.pseudocode, original.pseudocode);
+    assert.equal(result.renderProvenance.completeness, 'complete', JSON.stringify(result.renderProvenance.reasons));
+    assert.ok(records(result.renderProvenance).every(record => record.renderedBinding === 'producer-bound'));
+    assertCanonical(f);
+  } finally {
+    if (clock) Object.defineProperty(globalThis, 'performance', clock);
+    else delete globalThis.performance;
+  }
+});
+
+test('render-only replay retains owned store spelling but cannot refresh a copied producer', () => {
+  const f = fixture({ one:true });
+  const original = enhanceSemanticDecompilation(f.seed, f.model, f.opts);
+  let result = original;
+  for (let index = 0; index < 3; index++) {
+    result = applyPhase8Projection(result, analysis(), { preserveInitialSpelling:true });
+    assert.equal(result.pseudocode, original.pseudocode);
+    assert.equal(result.renderProvenance.completeness, 'complete', JSON.stringify(result.renderProvenance.reasons));
+    assert.ok(!result.renderProvenance.ledger.some(record => record.rule === 'expand-projected-store-spelling'));
+  }
+  const store = result.cAst.body.find(node => /\+\+;$/.test(node.text));
+  assert.ok(store);
+  result.cAst.body = result.cAst.body.map(node => node === store ? { ...node } : node);
+  const copied = applyPhase8Projection(result, analysis(), { preserveInitialSpelling:true });
+  assert.equal(copied.renderProvenance.completeness, 'incomplete');
+  assertCanonical(f);
+});
+
 test('seven actual initial RMW spellings retain canonical inputs across eight widths and the public pipeline', () => {
   let cells = 0;
   for (const bits of [1, 2, 3, 4, 8, 16, 32, 64]) for (const [op, one, form, spelling] of [

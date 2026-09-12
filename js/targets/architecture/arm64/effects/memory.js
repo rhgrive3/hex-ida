@@ -384,9 +384,6 @@ function simpleMemory(decoded, context, mnemonic, isLoad) {
   const reg = dataRegisters(decoded)[0];
   if (!reg) return partial(decoded, context, 'memory instruction data register is missing');
   if (!validSingleDataRegister(mnemonic, reg)) return partial(decoded, context, `${mnemonic} data register class or width is invalid`);
-  if (reg.zero && isLegacyAssemblyMemoryRecord(decoded)) {
-    return partial(decoded, context, 'legacy assembly zero-register memory access preserves the compatibility decompiler denominator');
-  }
   const widthBits = memoryWidthBits(mnemonic, reg);
   if (![8,16,32,64,128].includes(widthBits)) return partial(decoded, context, 'unsupported memory transfer width');
   if ((mnemonic === 'ldrsw' || mnemonic === 'ldursw') && (!isGp(reg, 64))) return partial(decoded, context, `${mnemonic} requires an X/XZR destination register`);

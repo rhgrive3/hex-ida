@@ -7,8 +7,9 @@ import { loadManifest as loadPhase8, validateFiles as validatePhase8 } from '../
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 export const BRANCH = 'feat/analysis-roadmap-v8-current-main-20260907';
 const SPECIAL_PATHS = Object.freeze({
-  semanticCompat: ['js/core/identity/live-data.js', 'js/core/identity/origin.js', 'tests/core-origin-canonical-reuse.test.mjs', 'js/ir-core.js', 'js/ir-base.js', 'js/decompiler/semantic.js', 'js/decompiler/semantic-views.js', 'js/semantics/compat/index.js', 'js/semantics/compat/legacy-value-ranges.js', 'js/semantics/compat/semantic-ir-v2-to-v1.js', 'js/semantics/compat/semantic-ir-v2-to-v1-finalize.js', 'js/semantics/compat/semantic-ir-v2-to-v1-memory.js'],
-  integration: ['.circleci/config.yml', '.github/workflows/phase7-ownership.yml', '.github/workflows/phase8-ownership.yml',
+  semanticCompat: ['js/core/identity/live-data.js', 'js/core/identity/origin.js', 'tests/core-origin-canonical-reuse.test.mjs', 'js/ir-core.js', 'js/ir-base.js', 'js/decompiler/semantic.js', 'js/decompiler/semantic-views.js', 'js/semantics/compat/index.js', 'js/semantics/compat/legacy-value-ranges.js', 'js/semantics/compat/semantic-ir-v2-to-v1.js', 'js/semantics/compat/semantic-ir-v2-to-v1-finalize.js', 'js/semantics/compat/semantic-ir-v2-to-v1-memory.js', 'js/semantics/compat/semantic-ir-v2-to-v1-nodes.js'],
+  integration: ['js/backend.js', 'js/analysis/semantic-function-presentation-contract.js',
+    'js/targets/architecture/x86_64/semantic-function-contract.js', '.circleci/config.yml', '.github/workflows/phase7-ownership.yml', '.github/workflows/phase8-ownership.yml',
     'scripts/build-userscript.mjs', 'scripts/userscript-publication.mjs',
     'tests/userscript-publication.mjs', 'tests/userscript-release-version.mjs',
     'docs/symbolic-proof-optimizer-v8.md', 'docs/analysis-roadmap-v8-integration-checkpoint.md', 'js/decompile.js', 'js/decompile-base.js', 'js/controlflow.js',
@@ -18,6 +19,15 @@ const SPECIAL_PATHS = Object.freeze({
     'tests/objc-metadata.mjs', 'tests/issue-529-objc-integration.mjs',
     'js/targets/architecture/arm64e/effects.js', 'tests/machine-effects/arm64e-retained-provider-union.test.mjs',
     'js/targets/architecture/arm64/effects/memory.js', 'tests/machine-effects/arm64-literal-target-coherence.test.mjs',
+    'js/targets/architecture/arm64/effects/control.js', 'js/targets/architecture/arm64/effects/dispatcher.js',
+    'tests/machine-effects/a2-denominator-inventory.json',
+    'tests/machine-effects/arm64-a64-decoder-denominator.test.mjs',
+    'tests/machine-effects/arm64-control-flow.test.mjs',
+    'tests/machine-effects/arm64-direct-branch-operand-shape.test.mjs',
+    'tests/machine-effects/arm64-memory-addressing.test.mjs',
+    'tests/machine-effects/issue-957-bti-guarded-page.test.mjs',
+    'tests/machine-effects/phase2-release-gate.test.mjs',
+    'tools/validation/machine-effects/arm64-a64-decoder-denominator.mjs',
     'tests/machine-effects/arm64-direct-branch-coherence.test.mjs',
     'tests/machine-effects/issue-5553-x86-move-extend-widths.test.mjs',
     'tests/machine-effects/issue-5566-x86-setssbsy-routing.test.mjs',

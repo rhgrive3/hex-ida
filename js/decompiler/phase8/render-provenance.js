@@ -443,7 +443,16 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
   const initialControls = readSemanticControlRenderHistory(result);
   if (result.semanticControlRenderHistory?.completeness === 'incomplete') reasons.add('incomplete-initial-control-history');
   if (result.semanticControlRenderHistory && !initialControls && !result.cAst) reasons.add('unavailable-initial-control-history');
-  if (result.phase8Projection?.history?.completeness === 'incomplete') reasons.add('incomplete-projection-history');
+  if (result.phase8Projection?.history?.completeness === 'incomplete') {
+    reasons.add('incomplete-projection-history');
+    // Preserve bounded diagnostics at the public map boundary. Reasons can
+    // only explain an already-incomplete result; they never authorize a bind.
+    const details = result.phase8Projection.history.reasons;
+    if (Array.isArray(details)) for (let index = 0; index < Math.min(details.length, 32); index++) {
+      const reason = Object.getOwnPropertyDescriptor(details, index)?.value;
+      if (typeof reason === 'string' && /^[a-z][a-z0-9-]{0,95}$/.test(reason)) reasons.add(reason);
+    }
+  }
   const truncatedScopes = [];
   let entitiesTruncated = 0;
   let ledgerTruncated = 0;

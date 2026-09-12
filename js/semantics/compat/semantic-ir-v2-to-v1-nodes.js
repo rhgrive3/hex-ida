@@ -566,13 +566,19 @@ export function projectNode(node, context) {
       const targetValues = node.call.targetValueIds.map((id) => valuesById.get(id)).filter(Boolean);
       const directValue = targetValues.find((value) => value.const != null);
       const directTarget = directValue?.const ?? null;
+      const machineTarget = machineControl(node)?.target;
+      const symbolicTarget = machineTarget?.kind === 'symbolic-code-reference'
+        && typeof machineTarget.name === 'string'
+        && /^[A-Za-z_.$][A-Za-z0-9_.$@]{0,255}$/.test(machineTarget.name)
+        ? machineTarget.name : null;
       const abi = classifyCallWithAbi(node, ir, valuesById, options);
       inst.extra = {
         semanticNodeId: node.id,
         target: directTarget,
+        ...(symbolicTarget ? { name:symbolicTarget, symbolicTarget } : {}),
         targetValueIds: node.call.targetValueIds.slice(),
         targetEntityIds: node.call.targetEntityIds.slice(),
-        indirect: directTarget == null,
+        indirect: directTarget == null && symbolicTarget == null,
         callArguments: abi.callArguments,
         stackArguments: abi.stackArguments,
         stackArgsUnknown: abi.stackArgsUnknown,

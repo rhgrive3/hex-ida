@@ -132,7 +132,9 @@
       "tests/phase8/provenance/expression-history.test.mjs",
       "tests/phase8/provenance/consumer-binding.test.mjs",
       "tests/phase8/provenance/safety-counter.test.mjs",
-      "tests/phase8/provenance/validation.test.mjs"
+      "tests/phase8/provenance/validation.test.mjs",
+      "tests/phase8/provenance/presentation-cache.test.mjs",
+      "tests/phase8/provenance/arm64-expanded-semantic-denominator.test.mjs"
     ],
     "symbolic": [
       "js/symbolic/egraph/graph.js",
@@ -269,7 +271,8 @@
       "js/semantics/compat/legacy-value-ranges.js",
       "js/semantics/compat/semantic-ir-v2-to-v1.js",
       "js/semantics/compat/semantic-ir-v2-to-v1-finalize.js",
-      "js/semantics/compat/semantic-ir-v2-to-v1-memory.js"
+      "js/semantics/compat/semantic-ir-v2-to-v1-memory.js",
+      "js/semantics/compat/semantic-ir-v2-to-v1-nodes.js"
     ],
     "integration": [
       "scripts/build-userscript.mjs",
@@ -283,6 +286,16 @@
       "docs/symbolic-proof-optimizer-v8.md",
       "js/decompile.js",
       "js/targets/architecture/arm64/effects/memory.js",
+      "js/targets/architecture/arm64/effects/control.js",
+      "js/targets/architecture/arm64/effects/dispatcher.js",
+      "tests/machine-effects/a2-denominator-inventory.json",
+      "tests/machine-effects/arm64-a64-decoder-denominator.test.mjs",
+      "tests/machine-effects/arm64-control-flow.test.mjs",
+      "tests/machine-effects/arm64-direct-branch-operand-shape.test.mjs",
+      "tests/machine-effects/arm64-memory-addressing.test.mjs",
+      "tests/machine-effects/issue-957-bti-guarded-page.test.mjs",
+      "tests/machine-effects/phase2-release-gate.test.mjs",
+      "tools/validation/machine-effects/arm64-a64-decoder-denominator.mjs",
       "js/targets/architecture/arm64e/effects.js",
       "js/targets/architecture/riscv64/decoded-instruction.js",
       "js/targets/architecture/index.js",
@@ -345,7 +358,10 @@
       "js/ui/decompiler-provenance-sheet.js",
       "js/tools-base.js",
       "js/ui/product-base.js",
-      "css/components.css"
+      "css/components.css",
+      "js/backend.js",
+      "js/analysis/semantic-function-presentation-contract.js",
+      "js/targets/architecture/x86_64/semantic-function-contract.js"
     ]
   }
 }

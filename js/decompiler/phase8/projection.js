@@ -715,8 +715,8 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
         // Ordinary presentation may retain the actual initial emitter only
         // when projection did not replace its expression object. Equal text,
         // copied descriptors and merely equivalent expressions are not enough.
-        const retainSpelling = opts.preserveInitialSpelling === true && spellingCurrent
-          && node.semantic.expression === consumer.expression;
+        const retainSpelling = renderOnly && (spellingCurrent && node.semantic.expression === consumer.expression
+          || inherited && node.semantic.expression === original.cAst.body[index]?.semantic?.expression);
         if (spellingCurrent && node.text !== text && !retainSpelling) {
           if (existingHistoryRecords + spellingRecords.length >= spellingLimit) historyReasons.add('store-spelling-history-budget');
           else {
@@ -736,7 +736,10 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     }
     const rows = sourceOf(node.source).rows.map(Number);
     const candidates = [...new Set(rows.map((row) => conditions.get(row)).filter(Boolean))];
-    if (candidates.length === 1) {
+    // The structured emitter may invert a branch or reuse a post-store load.
+    // Render-only mapping must not replace that expression with the raw taken
+    // branch predicate. Condition rewrites remain on the explicit rewrite path.
+    if (!renderOnly && candidates.length === 1) {
       const expression = printExpression(candidates[0]);
       const keyword = String(node.text || '').includes('if (') ? 'if' : String(node.text || '').includes('while (') ? 'while' : null;
       if (keyword) {
@@ -805,6 +808,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
       ? sourceOf(node.semantic.expression.source)
       : null;
     const conditionSource = (() => {
+      if (renderOnly) return null;
       const rows = sourceOf(node.source).rows.map(Number);
       const candidates = [...new Set(rows.map((row) => conditions.get(row)).filter(Boolean))];
       return candidates.length === 1 ? sourceOf(candidates[0].source) : null;

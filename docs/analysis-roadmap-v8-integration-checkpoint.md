@@ -5332,7 +5332,7 @@ Resume on this worktree and the same PR. Inspect Git status, HEAD/MERGE_HEAD,
 live PR/main and current test handles before acting. Do not restart tests from
 an old log alone. Update this checkpoint at the next integration transition.
 
-## 2026-09-12 停止・別ローカルへの引き継ぎ（最新）
+## 2026-09-12 停止・別ローカルへの引き継ぎ（停止時点・履歴）
 
 ユーザー指示: 「リモート反映して一回止まってくれ。残作業もかけ。そっちでやる」。
 この節が以前の継続指示・実行中表示より優先する。追加実装・追加テストは停止。
@@ -5427,3 +5427,228 @@ private producer と同一 expression object。proof/明示 rewrite 経路の契
 旧 `validate-c4-certified-data.mjs` は古い head 前提なのでそのまま実行しない。
 必要ならスクリプトと依存 receipt を別途取得・点検するか、repo の canonical runners で
 検証を構成する。scratch の存在を完了証拠にはしない。
+
+## 2026-09-12 ローカル再開・引き継ぎ（最新）
+
+この節は上の「停止・別ローカルへの引き継ぎ」の停止指示を、今回のユーザー指示により更新する。
+ユーザー依頼は「添付ブランチZIPのdocsを読んで再開。main統合不要。ローカル内で完結」。
+**WIP / CHECKPOINT-LOCKEDを維持。main取得・統合・push・PR操作・deploy・remote CIは行っていない。**
+SYM-01、X-03の救出、およびC1/C3の別ブランチには触れていない。
+
+### 今回の入力と復元可能な履歴
+
+- 入力: `hex-ida-feat-analysis-roadmap-v8-current-main-20260907 (1).zip`
+- 入力SHA-256: `3fd8debc1110355b27c121e1f3b68e5c5454e2bde2ee8b1809b441c177634522`
+- 入力ZIPに元の`.git`は無い。元ブランチのcommit/merge-base/mainを推測して復元していない。
+- 比較用のローカル初期commit: `1e62ac3ddaf9bd3d1cb9efec68616cd55a6e55b7`
+- ローカル作業branch: `local/roadmap-resume-20260912`。remoteは未設定。
+- runtime/cache修正commit: `219ca217c9d85c648b0ccfa946e313d0e3e4d9cf`
+- native計測経路修正commit: `459ba3e2b457e2a9f5b8afa7ae0b003ac68fc5f4`
+- 同梱`local-history.bundle`は今回のローカル履歴だけを保存する。元のGit履歴や現在のmainを含むとは主張しない。
+- 最終snapshotのHEAD、tree、各実行のstart/end statusは、同梱`local-evidence/`のJSON receiptを参照。
+  この文書を含むcommitを自分の本文へ埋め込む循環参照は行わない。
+
+### 実装済みの範囲
+
+1. **`apply_damage`の通常表示回帰を修正。** 任意のsemantic rewriteが期限で省略されても、
+   必須expression builderが実際に作ったmemoの同一expressionから既存historyを保持する。
+   既に実行済みのrewrite proofは上書きせず、文字列一致からproducer authorityを作らない。
+   `-=`/`+=`/`++`等の通常表示を維持。`tests/decompiler-semantic.mjs`全体を通過。
+2. **render-onlyの条件式とreplayを修正。** 構造化済みif/loop条件をraw taken-branch predicateへ
+   戻さない。再表示は現在のprivate producer/historyに限定。コピー・変更したemitterは拒否を維持。
+   明示rewrite/optimizerの経路を通常表示の保持条件と混同しない。
+3. **公開mapの拒否理由を修正。** `unavailable-store-spelling-producer`等の既存history診断を
+   `renderProvenance.reasons`へ伝える。最大32件・96文字まで、index accessorを呼ばず、
+   generic incomplete理由も維持する。診断はcompleteへの格上げ根拠にならない。
+4. **共有presentation cache schema更新。** `semantic-ir-v2-compat-function-v2`をarchitecture中立の
+   `js/analysis/semantic-function-presentation-contract.js`へ定義。Backendのx86/RISC-Vで共有し、
+   旧x86定数名は互換aliasとして残す。旧mapなしpayloadは別ArtifactIdとなる。
+   新しいBackend/store/schedulerで旧・新の保存データを読み直し、旧cache miss、新cache reuse、
+   Query cloneとstale refusalを両architectureで確認。これはMemoryArtifactBackend上の試験であり、
+   実ブラウザーIndexedDBの検証ではない。
+5. **native計測アダプターの通常表示要求を修正。** `renderProvenance:true`を明示し、実際の表示
+   ドライバーと同じ最終map要求を行う。修正前の`phase8Optimize:false`計測ではnative 90件すべてが
+   intermediate APIのままでmap欠落だった。これは製品のdefault driverの欠落ではなく計測境界の抜け。
+   optimizer自動有効化、frozen corpus/baseline/threshold/分母の変更はしていない。
+6. 新規回帰テストを追加。期限切れの決定的再現、replay後のcopy拒否、構造化条件式の保持、
+   bounded診断、旧/new cache、native計測のdefaultルートを覆う。既存テストの削除・弱体化はない。
+   ownershipは変更した正確なパスだけを追加。
+
+### 測定と証拠の読み方
+
+`local-evidence`は配布ZIPのsourceディレクトリーの隣にある。旧ローカルscratchのreceiptを借用していない。
+各receiptの対象HEADが異なることを混同せず、最終実行は`final-*`を参照する。
+135件censusの対象は`459ba3e2b457...`。そこから最終snapshotへの変更は本チェックポイントと
+canonical generated filesのみで、解析runtime・測定コード・frozen inputsは同一。
+その差分をもって最終HEADでcensusを再実行したとは主張しない。
+
+- `219ca217c9d8...`のclean head: provenance canonical **44/142 discovered test files PASS**。
+  `decompiler:test`（14本のcatalogと追加2コマンド）PASS、semantic単独PASS、lint/modules/core/ownership PASS。
+- 追加回帰テスト3件を未変更の入力コードに載せた試験は3件ともFAIL、修正後はPASS。
+  cache schemaとnative計測についても変更前FAIL/変更後PASSを別receiptで保持。
+- `459ba3e2b457...`のfrozen corpus通常表示計測: **総数135、semantic 125、complete map 125、
+  navigation 125、stale refusal 125、1,804行、43,174逆引きキー**。非semanticの10件は分母から除かない。
+  `semanticMismatchCount`、`provenanceLossCount`、`unknownSafetyRegressionCount`、
+  `renderProvenanceLossCount`、`renderProvenanceUnboundCount`はすべて0。
+- このcensusは既存の製品・計測関数を使う表示/Query/navigation診断であり、**独立semantic verifierではない**。
+  明示最適化経路も総数135、semantic/complete map/navigation/stale refusal各125、
+  1,804行・43,175逆引きキー、安全性カウンター5種すべて0。10件は同様に非semantic。
+  全件結果は`census-current-optimized.report.json`を参照。
+- 初回の並行最適化censusはSIGKILL（exit -9）で未完了。4GiB containerにはOOM kill記録がある。
+  成功として数えない。再実行は直列、case間GC、Node heap上限を使う。製品の予算や判定は変えない。
+- repository `npm run check`はmachine-effects契約でFAIL。失敗19ファイルを未変更の入力ZIPの
+  ローカルbaselineでも同じ環境で再実行し、**19/19再現**。LLVM MC 18不足、元Gitのnormative
+  baseline参照不能、およびx86等の既存assertion失敗を含む。全体PASSや新規失敗ゼロのrelease判定へ
+  読み替えない。canonical checkはこの地点で止まるため、後続全gateの完走も主張しない。
+
+### ビルド環境
+
+- Node `v22.16.0`、提供された`esbuild-0.25.9-linux-x64.zip`をofflineで使用。
+- esbuild ZIP SHA-256: `c4735b8a7203b2070492136d4ecebc287021ceb52ac54fe51f8a31abdb5b0d83`
+- lockのesbuildは`0.28.2`。lockfile・package.jsonを0.25.9に書き換えて合わせたふりはしていない。
+- canonical `npm run userscript:build`の二重ビルドで、generated source、release identity、loader、
+  runtime content hashの一致を確認。暗号化payloadとIVは意図的に乱数を含むためbyte一致対象ではない。
+- canonical builderで配布sourceの`userscript/hex.user.template.js`と`userscript/release-version.json`も同期。
+  ローカルserial `2322242241`、release identity `b84183bfe461450757f55deade9a0124aca033365a64c00be462309e335f8e7e`。
+  同期後のcommitで再buildし、tracked generated-output diffが0かを`final-generated-sync`に記録する。
+- **0.25.9でのローカルビルドであり、lock-exact build/release承認ではない。**
+  deployment identityはローカルbuildの契約通り`null`。本番更新・インストール・deployは行っていない。
+- 同梱`tooling/`と`local-evidence/bootstrap-esbuild.py`で同じoffline環境を復元できる。
+
+### 次の再開地点 / 未完了
+
+- 同梱の最終receiptとmanifestで現sourceの一致を確認し、別環境では必要gateを新しいHEADで再実行する。
+- 最終コード検証HEAD `1926907223757a13617e7659234b25d5d3503742` でprovenance 44ファイル、
+  integration 8ファイル、decompiler回帰、lint/modules/core/ownership、生成後diff 0はPASS。
+  この追記後のHEADとは区別する。この追記はdocsのみで、コード・生成物は変更していない。
+- 追加canonical substrate groupは**FAIL（3ファイル）**。`invalidation.test.mjs`と
+  `proof-target-decisions.test.mjs`は循環importにより`PROOF_REWRITE_PASS`が初期化前に参照される。
+  `representation-candidates.test.mjs`は`unsupported-instruction`の期待に対して
+  `unknown-semantic:scalar-input-width-mismatch`を返す。3件とも未変更の入力baselineで再現した。
+  `final-phase8-integration-substrate.json`と`baseline-substrate-failures.report.json`を参照。
+  **次はこの3件のcold-import/拒否理由契約を担当範囲と照合する。今回の修正には含めていない。**
+- `npm run check`の19失敗は解消していない。LLVM MC 18と**実在する**元Git履歴を用意し、
+  各assertionの既存issue/担当と照合する。架空のbaseline、空のoracle、skip-greenは不可。
+- lock指定esbuild 0.28.2でのcanonical rebuild、必要なブラウザー/IndexedDB/target-device検証、
+  独立semantic verifier、全canonical/repository gates、external CIは未完了。
+- 最新mainの再確認、C1/C3統合、SYM-01/X-03救出、typed BigInt ledger addressesとの整合は今回の対象外。
+  **ユーザーが依頼するまではmain統合・pushをしない。**
+- Completion audit / integration exit / release readinessは引き続き未達。チェックリストの完了印を増やしていない。
+
+## 2026-09-12 ローカル135-case対応（今回の継続）
+
+ユーザー追加指示「135ケースに対応させろ」に対し、前節で非semanticだった10件を分母から除外せず、
+**frozen 135/135をsemantic経路・complete provenanceまで通す**ところまでローカルで拡張した。
+main統合、push、PR操作、deploy、remote CIは引き続き行っていない。
+
+### 修正した未対応10件と原因
+
+前節の通常表示censusで非semanticだったのは次のARM64 10件のみだった。
+
+- `quality.aggregate_array_stride.O0`
+- `quality.dce_volatile_read.O1`, `quality.dce_volatile_read.O2`
+- `quality.gvn_call_barrier.O0`, `.O1`, `.O2`
+- `quality.loop_counted_sum.O0`
+- `quality.loop_decrement_step.O0`
+- `quality.loop_early_exit.O0`
+- `quality.loop_nested.O0`
+
+共通原因は二つ。7件はlegacy assemblyの`wzr/xzr` memory accessを互換分母維持のためpartialへ落としていた
+ガードで、既存MachineEffects自体はzero-registerのloadを「memory readは残し、destination writeは捨てる」、
+storeを「bitvector zeroを書き込む」と正確に表現できていた。残る3件はfrozen fixtureの`bl opaque`のような
+未解決symbol direct callを数値targetしか受理していなかったこと。
+
+- zero-register memoryの旧partialガードを除去し、既存のexact semanticsを使用。
+- `bl <symbol>`は**legacy assembly textだけ**でbounded identifierをsymbolic direct callとして扱う。
+  decoder/raw-byte由来はencoding wordがあるためこの経路を拒否し、presentation textをcontrol-flow authorityにしない。
+  `b <symbol>`、演算を含むtoken、空白を含むtoken等も拒否を維持。
+- Semantic IR v2 -> v1 compatibility loweringでsymbolic direct call名を保持し、indirect callへ誤分類しない。
+- semantic挙動変更に伴いARM64 MachineEffects semantic versionを`7`から`8`へ更新し、関連lock/inventory/testも同期。
+- O0の深いcompound-store式3件はsemantic化後に`incomplete-expression-binding`となった。
+  generic nested-data depth 96を緩めず、実際のexpression AST各頂点をbounded graph observerのrootとして観測し、
+  canonical instruction/valueは既存construction observationを再利用。nodes/edges/deadline等の既存上限は維持する。
+
+### 最終135-case結果
+
+`local-evidence/semantic-135-final.report.json`はfrozen corpus digest
+`94094f7e9487f640e871e46b19c86c69`、総数135を変更せず実行したローカル診断。
+独立semantic oracleやrelease approvalではない。
+
+- semantic: **135/135**
+- expression history binding complete: **135/135**
+- Phase 8 projection history complete: **135/135**
+- render provenance complete + validator complete: **135/135**
+- decompile failure: **0**
+- safety counters:
+  `semanticMismatchCount=0`, `provenanceLossCount=0`, `unknownSafetyRegressionCount=0`,
+  `renderProvenanceLossCount=0`, `renderProvenanceUnboundCount=0`
+- elapsed: 312.882s。各caseは20sのdecompiler budgetを維持。
+
+新規10件はQuery clone後にも全件でnavigation availableを確認し、各caseについて代表line selection、
+代表reverse-origin lookup、analysis epoch更新後の`stale-query-snapshot`拒否まで **10/10 PASS**。
+全reverse keyの総当たりcensusは、新規semantic化した`gvn_call_barrier.O2`で各selectionの整合検証を
+何百回も繰り返すためローカル診断として過剰に重く、14/135時点で停止した。製品decompile自体は同caseで
+約3.1s・complete map。成功証拠としてその未完了runを数えていない。
+
+### 回帰・build
+
+- MachineEffects memory/control/direct-branch、Phase2 integration/release gate、BTI、v2 call compatibility、
+  expanded-denominator代表3件のfocused regressionはPASS。
+- 新規恒久test `tests/phase8/provenance/arm64-expanded-semantic-denominator.test.mjs`は、旧frozen baselineで
+  nonsemanticだった10件を固定し、三つの原因代表についてsemantic + binding/projection/map completeを検証。
+  10件全部を毎回decompileする重いtestにはせず、全件保証は上記frozen censusで行う。
+- lint 3721 files PASS、module boundaries PASS。
+- `compiler-truth`は実行済みC/C++/Objective-C系でhard failure 0。GhidraとSwiftのskipは環境制約。
+- `decompiler:test`一括は外側timeoutで13/14表示後に終了したため成功扱いしない。残った
+  `compiler-truth`は単独PASSし、後続`issue-5936`/`issue-5676`も単独PASS。
+- ARM64 A64 decoder denominatorのfull auditは60s timeoutで未完了。再実行せずstructural validatorのみ確認し、
+  semantic version `8`、scope/corpus shrink guardを確認。full denominator PASSとは主張しない。
+- 提供esbuild 0.25.9で`npm run userscript:build`を二回実行。tracked generated outputのSHA-256は二回で一致。
+  release serial `2322242242`、release identity
+  `8dc4e23253a4e20ceba9cbabf6ce66a9be9b3ca15e670e2356773f4b27b897d7`、buildId
+  `ae75a7b8ba0663567afc9767`。lock指定0.28.2との差は前節同様未解消。
+
+### 既知の未完了を引き継ぐ
+
+前節でbaseline再現済みのPhase8 substrate 3件、repository `npm run check`の19件、LLVM MC 18不足、
+lock-exact esbuild 0.28.2、browser/IndexedDB/device、独立semantic verifier、external CI、main/C1/C3/SYM-01/X-03は
+今回触れていない。**135-case semantic denominatorを埋めたことをrelease/integration完了へ読み替えない。**
+
+## 2026-09-12 ZIP成果物の統合作業ブランチへの取り込み（最新）
+
+ユーザーの明示的な「はい」により停止を解除し、ZIPの確認・取り込みを再開した。
+この節が以前の停止指示およびZIP内のlocal-only作業状態より新しい。
+
+- 入力: `hex-ida-135-supported-local-20260912.zip`
+- ZIP SHA-256: `45c770445ba4525aedd14e899f44af61377a1ca501fe45853393501389e5fee8`
+- bundle baseline: `1e62ac3ddaf9bd3d1cb9efec68616cd55a6e55b7`
+- bundle final: `a8a9c0fc02b6c6ec2c93834213b9ab7c1cfc0b5b`
+- 受け入れ元: PR #7036 / `feat/analysis-roadmap-v8-current-main-20260907` の `db8a36f7fec69e4a484dc2d17073f03238f8ea31`。
+- 比較時 main: `de6178154884813d90c6437146a99b1155f0c68d`。
+
+変更対象31パスすべてについて、ZIPのsynthetic baselineと前回push済みHEADのblob一致を確認した。
+差分のみを再利用し、29ソースパスを取り込んだ。ZIP全体の上書き、synthetic Git履歴のmerge、
+実行権限の消失、既存binary/placeholderの削除はしていない。配布済み生成物2パスはコピーせず、
+この環境でのcanonical build対象として残した。ARM64 dispatcher末尾の改行以外、取り込んだruntimeはZIPと一致。
+現在mainに同じ完成版blobはなく、schema v1 / ARM64 semantic version 7を確認。
+mainの別修正（typed ledger、memory literal evidence等）はこのZIP差分で上書きせず、後続の中央統合対象とする。
+
+ZIPの最終追加分12パスがownership台帳に未登録だったため、semanticCompat / phase8 / integrationへ
+正確なパスだけを追加した。全31入力パスの登録を確認（台帳349パス）。既存のownership testに
+各パスの登録・欠落拒否・隣接未承認パスの拒否を追加し、allowlistの包括緩和はしていない。
+
+取り込み後WIPの確認:
+
+- focused 65 tests: 64 PASS / 1 deadline FAIL（proof spelling、既存1000ms予算）。
+  receipt: `zip-135-import-focused-04327cfe-45a1-4109-be11-9617669282fe.json`
+- 同じproof spellingを単独再実行: PASS、1.0秒。予算・assertionは未変更。
+  receipt: `zip-135-proof-spelling-isolated-61f8956f-d199-4792-819a-b78472524887.json`
+- `tests/decompiler-semantic.mjs`: PASS、43.3秒。前回停止時のcoins `+=` / apply_damage `-=` regressionは解消。
+  receipt: `zip-135-semantic-compatibility-8d068c9f-0ed1-4012-bc2a-c7c28465191d.json`
+
+これらのreceiptは `/mnt/workspace/.dev-state/agent-work/evidence/analysis-roadmap-20260909/` に保持。
+ZIP・同梱証拠は `evidence/zip-135-resume-20260912/hex-ida-135-supported-local-20260912/` に保持。
+ZIPの135/135は配布環境のWIP計測であり、この統合HEADでの再計測結果とは区別する。
+次はexact committed headのcanonical provenance、変更したARM64/ownership/ABI契約、lint/modules、
+135-case census、canonical生成物を確認する。環境修復、実機、他担当issue、SYM-01/X-03は進めない。
+CHECKPOINT-LOCKEDは維持し、main merge / release完了を主張しない。

@@ -1339,7 +1339,19 @@ function reachingRegisterValue(ir, atInst, reg) {
 
 function expressionFor(v, state) {
   const existing = state.expressions?.get(v?.id);
-  if (existing) return existing;
+  if (existing) {
+    // Mandatory finalization can reuse the actual raw builder cache after the
+    // optional rewrite pass hit its deadline. Carry that builder's observed
+    // history too; a cached expression alone is not a rewrite/consumer proof.
+    // Never replace a proof from an executed pass or admit a lookalike root.
+    if (!state.expressionProofs?.has(v?.id) && state.expressionMemo.get(`${v?.id}:v`) === existing) {
+      const built = state.buildHistories?.get(`${v?.id}:v`) || [];
+      const records = Object.freeze(built.map(record => valueHistoryRecord(record, v?.id ?? null)));
+      (state.expressionProofs ??= new Map()).set(v?.id, { expression:existing, records });
+      (state.rewriteProof ??= []).push(...records);
+    }
+    return existing;
+  }
   // The mandatory representation fallback also executes the recognizer when
   // optional passes did not run. Retain those actual events and their current
   // consumer instead of treating a degraded pipeline as history-free.
@@ -1482,6 +1494,27 @@ function isElidableReturnSpillStore(store, state) {
   return false;
 }
 
+function compoundStoreObservationRoots(expression, location) {
+  // Expression trees can legitimately exceed the generic nested-data depth
+  // limit even though their total graph is small and already printable. Seed
+  // every actual AST vertex as a graph root so the bounded observer measures
+  // root distance instead of an arbitrary recursive path through the tree.
+  // Canonical instruction/value inputs are covered by the construction graph
+  // observation when available; node/edge/expanded-work/deadline limits remain
+  // enforced for these producer-owned render objects.
+  const roots = [location];
+  const pending = [expression], seen = new Set();
+  while (pending.length) {
+    const current = pending.pop();
+    if (!current || typeof current !== 'object' || seen.has(current)) continue;
+    if (roots.length >= PROJECTION_LIMITS.nodes) throw new TypeError('compound-store-expression-node-budget');
+    seen.add(current);
+    roots.push(current);
+    pending.push(...children(current));
+  }
+  return roots;
+}
+
 function compoundStoreHistory(instruction, value, expression, location, form, state) {
   const budget = consumerObservationBudget(state);
   const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
@@ -1508,9 +1541,15 @@ function compoundStoreHistory(instruction, value, expression, location, form, st
     if (budget.edges <= 0 || position < 0) throw new Error('store-render-observation-budget');
     // Observe the selected inputs before invoking a caller's abort hook. A
     // callback must not bind yesterday's spelling to today's changed operands.
-    observation = captureProjectionIrData([instruction, value, expression, location]);
-    budget.edges -= observation.metrics.edges;
-    if (budget.edges < 0 || state.opts?.shouldAbort?.() || !observation.matches()) throw new Error('store-render-observation-unavailable');
+    const shared = state.constructionInputObservation?.contains(value, instruction) ? state.constructionInputObservation : null;
+    const roots = compoundStoreObservationRoots(expression, location);
+    if (!shared) roots.unshift(instruction, value);
+    const captured = captureConsumerIrData(roots, state, true);
+    budget.edges -= captured.metrics.edges;
+    if (budget.edges < 0 || state.opts?.shouldAbort?.() || !captured.matches() || shared && !shared.matches()) {
+      throw new Error('store-render-observation-unavailable');
+    }
+    observation = Object.freeze({ matches:() => captured.matches() && (!shared || shared.matches()) });
   } catch {
     observation = null; budget.edges = 0; budget.reasons.add('compound-store-observation-unavailable');
   }

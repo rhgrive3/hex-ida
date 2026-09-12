@@ -212,10 +212,12 @@ const opsOf = (bundle, kind) => bundle.operations.filter((op) => op.kind === kin
     operands:'wzr, [x1]',
     memory:{ base:'x1' },
   });
-  for (const current of [legacyZeroLoad, legacyZeroStore]) {
-    assert.equal(current.completeness, 'partial', 'legacy assembly zero-register memory access keeps the historical decompiler denominator');
-    assert.equal(opsOf(current, 'memory-read').length + opsOf(current, 'memory-write').length, 0);
-  }
+  assert.equal(legacyZeroLoad.completeness, 'exact', 'legacy assembly WZR load retains the memory read and discards the destination');
+  assert.equal(opsOf(legacyZeroLoad, 'memory-read').length, 1);
+  assert.equal(opsOf(legacyZeroLoad, 'register-write').length, 0, 'legacy load to WZR discards the loaded value');
+  assert.equal(legacyZeroStore.completeness, 'exact', 'legacy assembly WZR store writes architectural zero');
+  assert.equal(opsOf(legacyZeroStore, 'memory-write').length, 1);
+  assert.equal(opsOf(legacyZeroStore, 'memory-write')[0].value.value, '0');
 }
 
 {

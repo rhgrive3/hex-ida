@@ -43,3 +43,19 @@ test('missing, conflicting, mismatched and unsupported compiler ABI evidence rem
     assert.equal(outcome.result, undefined);
   }
 });
+
+
+test('native corpus presentation requests provenance without silently opting into optimizer stages', () => {
+  for (const architecture of ['x86_64', 'riscv64']) {
+    const selected = corpus.functions.filter(row => row.architectureId === architecture)
+      .sort((left, right) => left.bytes.length - right.bytes.length)[0];
+    assert.ok(selected);
+    const outcome = decompileEntry(selected, { toolchain:corpus.toolchain, phase8Optimize:false });
+    assert.equal(outcome.failure, undefined, outcome.failure);
+    assert.equal(outcome.result.semantic, true);
+    assert.deepEqual(outcome.result.phase8.enabledStages, ['canonical-facts']);
+    assert.equal(outcome.result.phase8.transformCount, 0);
+    assert.equal(outcome.result.renderProvenance?.completeness, 'complete', architecture);
+    assert.deepEqual(outcome.result.renderProvenance.reasons, []);
+  }
+});
