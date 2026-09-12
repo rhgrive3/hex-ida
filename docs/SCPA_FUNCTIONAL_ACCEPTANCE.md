@@ -1,4 +1,4 @@
-# SCPA functional acceptance — session14
+# SCPA functional acceptance — session14 / session15 integration
 
 基準mainを `e60c6a591664447e858a64c80f9ddf5999d0ac68` まで取り込み、既存Draft PR #8247を更新する。**100%の受入は未認定。** 元のMDのMUST・分母・外部検証条件を維持する。設計の最新実装対応は `HEX_ARM64_POST_ROADMAP_COMPETITIVE_SUPREMACY_ARCHITECTURE.md` 第44章、全20ユニットの対応は `reports/scpa/session14-requirements.json`。前回記録は `archive/scpa/functional-acceptance-session13.md`。
 
@@ -50,3 +50,18 @@ Node `v24.19.0`、package-lock指定のesbuild **0.28.2**で生成した。添�
 未対応のexception、unknown call、dynamic loading、PAC、Swift packs/resilience、runtime substitutions、generic capture object layoutはUNKNOWNとして保持する。既存Baseline B PRが所有する一般memory/taint/solver実装を、この限定adapterの完了へ換算しない。P0–P5、M3既定有効化、M5競合勝利の受入は未認定。
 
 再検証には有限timeoutを付けて `npm run scpa:test`、`npm run userscript:build`、必要なowner gateを実行する。全体checkを再開する際は、固定版compilerと必要なGit履歴を備えた環境でmain比較を行う。
+
+
+## Session15 — 既存PRの統合と19件の追跡（2026-09-12）
+
+ユーザーのmain反映指示に従い、#8247を正規のsource統合候補として継続する。今回の基準mainは `c5ae8f993f5585ae19e61cddc1fc9f59a0173183`。ここでのsource統合は、前節の外部受入条件や100%達成の宣言ではない。
+
+- #8086 `d864be09fd53405b3a89b04d5e0cc43bd0e7e5fa` の全11ファイルを照合し、既採用Swift部分に残りのUTF-8検証・文字列切り詰め情報・semantic-function入力検証を統合した。両scannerが最初の切り捨て後にASCIIだけを再追加する不具合も修復し、2/3/4-byte文字境界と次のrunへのリセットを検証した。
+- mainの追加16 commits /12 pathsと54 commits /30 pathsを取り込んだ。非packageファイルのblobとmain treeを照合し、packageは双方のscript変更を保持した。新たなGhidra trigger回帰が検出したSCPAの2依存を、workflowの実行対象へ追加した。
+- SCPAの正確な変更ファイルと所有者を宣言し、全体inventoryを確認してから既存Phase7/8 validatorへ各対象を渡す。既存の禁止条件・負例検証・最新HEAD承認は維持する。renameの元パスもinventoryへ含め、未登録ファイルの移動を検出する回帰を追加した。
+- 19件の対応表を [Issue #8299](https://github.com/rhgrive3/hex-ida/issues/8299) に公開した。11件はLLVM/Git履歴の環境前提として新規追跡。残る8件は既存#7036の作業範囲で、重複実装しない。
+- #7036全体は保留。現在headのchanged closure試験は137 partialの記録があり、MOVZX/MOVSX幅契約・native binding性能回帰・生成toolchain整合も未完了。ここでは既採用ABI sliceのみ保持する。
+
+最終main取り込み後のSCPA全70ファイルは **1,403/1,403 PASS**。#8086変更6ファイル、関連consumer7ファイル、metadata、取り込みmain回帰、lint、module boundaries、evidence writersを確認した。最初のSCPA実行は60秒上限で未完了だったため、canonical runnerの180秒上限に合わせて再実行し65.942秒で完了した。main回帰のGhidra trigger 2ファイルは修復前FAIL、修復後PASSであり、既知main失敗とは扱わない。
+
+Node v24.19.0 / lock指定esbuild0.28.2でcanonical build・再buildを実行し、生成差分0。release serial2322242197。詳細な検証記録・統合source identityは `reports/scpa/session15-integration.json`。GitHubの最新HEADとBASEに対する正規admission、および実際のmain到達は別途readbackで確認する。

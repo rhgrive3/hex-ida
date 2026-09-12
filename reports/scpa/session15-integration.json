@@ -1,0 +1,747 @@
+{
+  "schema": "scpa-integration-checkpoint/v1",
+  "observedDate": "2026-09-12",
+  "integrationPR": 8247,
+  "previousPRHead": "c671c55bf9e8e749ad9bb765c4b93a1da3b141d5",
+  "reconciledMain": "c5ae8f993f5585ae19e61cddc1fc9f59a0173183",
+  "mainTree": "a2bfa97ccd761ed592ee1142dd7b26bae43ccd09",
+  "mainReconciliation": [
+    {
+      "base": "e60c6a591664447e858a64c80f9ddf5999d0ac68",
+      "head": "9985eb26f0f38ee584c50afed5e07efdf743f0b3",
+      "commits": 16,
+      "changedPaths": 12,
+      "nonPackageBlobsVerified": 11,
+      "treeVerified": true
+    },
+    {
+      "base": "9985eb26f0f38ee584c50afed5e07efdf743f0b3",
+      "head": "c5ae8f993f5585ae19e61cddc1fc9f59a0173183",
+      "commits": 54,
+      "changedPaths": 30,
+      "nonPackageBlobsVerified": 29,
+      "treeVerified": true,
+      "packageMerge": "JSON three-way merge; main test command list plus the exact three PR8086 test additions; no command dropped from current main"
+    }
+  ],
+  "pr8086": {
+    "upstreamPr": 8086,
+    "upstreamHead": "d864be09fd53405b3a89b04d5e0cc43bd0e7e5fa",
+    "sourceTestPatchInventory": [
+      {
+        "path": "js/backend.js",
+        "status": "modified",
+        "sha256": "d69b4fde16475352e3a7b313b44dc3fa1466d6935f82a9d2362464c2d54dcf0d"
+      },
+      {
+        "path": "js/platform/worker.js",
+        "status": "modified",
+        "sha256": "bd479f4acb59efa198135aac5179af4846eb32fdf684858b7936dae5e3341d70"
+      },
+      {
+        "path": "js/worker-legacy.js",
+        "status": "modified",
+        "sha256": "9c0fd032a98f9b5632d478423d6ccff5a4be088439930f03d6b942ae69ea3707"
+      },
+      {
+        "path": "tests/issue-5381-5376-string-scan-truncation-utf8.mjs",
+        "status": "added",
+        "sha256": "b59d3bdf7f85164834d26ab98cda0208df55de99997d8ce584c570cecd318da8"
+      },
+      {
+        "path": "tests/issue-5668-backend-semantic-function-typed-inputs.mjs",
+        "status": "added",
+        "sha256": "896088525b2b13c16061e2d827df080a556cde195cbe460f3c67b307e69c6165"
+      },
+      {
+        "path": "tests/phase5/vertical/issue-5381-platform-string-truncation.test.mjs",
+        "status": "added",
+        "sha256": "6fff137c8d98430ae081c14fb2c1089211e5290494a9e9e1c810a6db267d75b0"
+      }
+    ],
+    "originalPrFileCoverage": [
+      {
+        "path": "js/backend.js",
+        "normalizedCandidateBlobSha": "4f98395b8821db3bd011c6f2889472edee56a626",
+        "originalPrReverseHunksPresent": true,
+        "error": null,
+        "coverage": "original PR reverse hunks pass after undoing only the dedicated prefix repair",
+        "originalPrBlobSha": "a3890438efd4dbaf6c34ace4ab07fd66458a1749",
+        "normalizedBlobEqualsOriginalPr": false
+      },
+      {
+        "path": "js/platform/worker.js",
+        "normalizedCandidateBlobSha": "e07540ea665e8a6774217aa8dec347a74bd81d03",
+        "originalPrReverseHunksPresent": true,
+        "error": null,
+        "coverage": "original PR reverse hunks pass after undoing only the dedicated prefix repair",
+        "originalPrBlobSha": "5b977d2c0cbfccdcf99d39ac590dd22d3e81d719",
+        "normalizedBlobEqualsOriginalPr": false
+      },
+      {
+        "path": "js/swift.js",
+        "normalizedCandidateBlobSha": "dca7309e801727fdb9b77cbd0872c226feef7f07",
+        "originalPrReverseHunksPresent": false,
+        "error": "error: patch failed: js/swift.js:435\nerror: js/swift.js: patch does not apply",
+        "coverage": "exact changed-line match with SCPA context extension",
+        "changedLineCheck": {
+          "allAddedLinesPresentExactlyOnce": true,
+          "allReplacedOldLinesAbsent": true,
+          "addedLines": [
+            "const SWIFT_WITNESS_TABLE_FIRST_REQUIREMENT_OFFSET=1n;",
+            "    const seed={address:c.witnessTable,count:requirements.length,entriesAddress:c.witnessTable+SWIFT_WITNESS_TABLE_FIRST_REQUIREMENT_OFFSET*8n,typeAddress:type.address,typeName:type.name,protocolAddress:protocol.address,protocolName:protocol.name,source:'conformance'};",
+            "    const entries=await parseSwiftWitnessTable(get,w.entriesAddress??w.address,w.count,budget,opts),expected=Math.min(normalizeBudget(w.count,0,100000),budget);if(entries.length!==expected||Number(w.count)>budget||entries.some((x)=>x.resolved!==true))witnessTablesComplete=false;witnessTables.push({...w,entries});"
+          ],
+          "contextDifference": "8247 adds genericContexts and captures completeness fields to neighboring unchanged context; original Swift ABI constant, seed entriesAddress and parser address lines are exact."
+        },
+        "originalPrBlobSha": "a91add2d180fc6e22405032799cba65ec333f140",
+        "normalizedBlobEqualsOriginalPr": false
+      },
+      {
+        "path": "js/worker-legacy.js",
+        "normalizedCandidateBlobSha": "72aa8fb28f3a110a2299be54c439b07a18af06d5",
+        "originalPrReverseHunksPresent": true,
+        "error": null,
+        "coverage": "original PR reverse hunks pass after undoing only the dedicated prefix repair",
+        "originalPrBlobSha": "72aa8fb28f3a110a2299be54c439b07a18af06d5",
+        "normalizedBlobEqualsOriginalPr": true
+      },
+      {
+        "path": "tests/issue-2378-swift-witness-autoproject.mjs",
+        "normalizedCandidateBlobSha": "e05eed3329bd001dcb1782e37be5261031ad6b9d",
+        "originalPrReverseHunksPresent": true,
+        "error": null,
+        "coverage": "original PR reverse hunks pass after undoing only the dedicated prefix repair",
+        "originalPrBlobSha": "e05eed3329bd001dcb1782e37be5261031ad6b9d",
+        "normalizedBlobEqualsOriginalPr": true
+      },
+      {
+        "path": "tests/issue-5341-swift-witness-table-abi-offset.mjs",
+        "normalizedCandidateBlobSha": "1bd04dde6b8c90795859e2c4d112254bab1e7236",
+        "originalPrReverseHunksPresent": true,
+        "error": null,
+        "coverage": "original PR reverse hunks pass after undoing only the dedicated prefix repair",
+        "originalPrBlobSha": "1bd04dde6b8c90795859e2c4d112254bab1e7236",
+        "normalizedBlobEqualsOriginalPr": true
+      },
+      {
+        "path": "tests/issue-5374-swift-protocol-requirement-kinds.mjs",
+        "normalizedCandidateBlobSha": "cb6406115c3c2e0e8a018da2b5c35f9e9c14710f",
+        "originalPrReverseHunksPresent": true,
+        "error": null,
+        "coverage": "original PR reverse hunks pass after undoing only the dedicated prefix repair",
+        "originalPrBlobSha": "cb6406115c3c2e0e8a018da2b5c35f9e9c14710f",
+        "normalizedBlobEqualsOriginalPr": true
+      },
+      {
+        "path": "tests/issue-5381-5376-string-scan-truncation-utf8.mjs",
+        "normalizedCandidateBlobSha": "360538673ca9ba5942f1c5c6b6158a97ccb4e982",
+        "originalPrReverseHunksPresent": true,
+        "error": null,
+        "coverage": "original PR reverse hunks pass after undoing only the dedicated prefix repair",
+        "originalPrBlobSha": "360538673ca9ba5942f1c5c6b6158a97ccb4e982",
+        "normalizedBlobEqualsOriginalPr": true
+      },
+      {
+        "path": "tests/issue-5668-backend-semantic-function-typed-inputs.mjs",
+        "normalizedCandidateBlobSha": "2a7e7ea52643586460c7e2597c432783f3547e04",
+        "originalPrReverseHunksPresent": true,
+        "error": null,
+        "coverage": "original PR reverse hunks pass after undoing only the dedicated prefix repair",
+        "originalPrBlobSha": "2a7e7ea52643586460c7e2597c432783f3547e04",
+        "normalizedBlobEqualsOriginalPr": true
+      },
+      {
+        "path": "tests/phase5/vertical/issue-5381-platform-string-truncation.test.mjs",
+        "normalizedCandidateBlobSha": "7510aee42ee8520bcc3df3b7ce611fd16862c6b1",
+        "originalPrReverseHunksPresent": true,
+        "error": null,
+        "coverage": "original PR reverse hunks pass after undoing only the dedicated prefix repair",
+        "originalPrBlobSha": "7510aee42ee8520bcc3df3b7ce611fd16862c6b1",
+        "normalizedBlobEqualsOriginalPr": true
+      },
+      {
+        "path": "package.json",
+        "coverage": "script union instruction supplied separately; intentionally excluded from source/test patch",
+        "originalPrAddedCommands": [
+          "node tests/issue-5341-swift-witness-table-abi-offset.mjs",
+          "node tests/issue-5381-5376-string-scan-truncation-utf8.mjs",
+          "node tests/issue-5668-backend-semantic-function-typed-inputs.mjs"
+        ],
+        "originalPrDroppedCommands": [],
+        "alreadyPresentIn8247": [],
+        "appendToScriptsTest": [
+          "node tests/issue-5341-swift-witness-table-abi-offset.mjs",
+          "node tests/issue-5381-5376-string-scan-truncation-utf8.mjs",
+          "node tests/issue-5668-backend-semantic-function-typed-inputs.mjs"
+        ],
+        "phase5Test": "tests/phase5/vertical/issue-5381-platform-string-truncation.test.mjs is discovered by the existing recursive phase5 runner",
+        "originalPrBlobSha": "16c93592dfeda8e1dbf30539de504eee336fc7e0"
+      }
+    ],
+    "packageJsonInstructions": {
+      "path": "package.json",
+      "coverage": "script union instruction supplied separately; intentionally excluded from source/test patch",
+      "originalPrAddedCommands": [
+        "node tests/issue-5341-swift-witness-table-abi-offset.mjs",
+        "node tests/issue-5381-5376-string-scan-truncation-utf8.mjs",
+        "node tests/issue-5668-backend-semantic-function-typed-inputs.mjs"
+      ],
+      "originalPrDroppedCommands": [],
+      "alreadyPresentIn8247": [],
+      "appendToScriptsTest": [
+        "node tests/issue-5341-swift-witness-table-abi-offset.mjs",
+        "node tests/issue-5381-5376-string-scan-truncation-utf8.mjs",
+        "node tests/issue-5668-backend-semantic-function-typed-inputs.mjs"
+      ],
+      "phase5Test": "tests/phase5/vertical/issue-5381-platform-string-truncation.test.mjs is discovered by the existing recursive phase5 runner"
+    },
+    "validations": [
+      {
+        "label": "review8086-fixed-all-owned-tests",
+        "command": [
+          "node",
+          "--test",
+          "tests/issue-2378-swift-witness-autoproject.mjs",
+          "tests/issue-5341-swift-witness-table-abi-offset.mjs",
+          "tests/issue-5374-swift-protocol-requirement-kinds.mjs",
+          "tests/issue-5381-5376-string-scan-truncation-utf8.mjs",
+          "tests/issue-5668-backend-semantic-function-typed-inputs.mjs",
+          "tests/phase5/vertical/issue-5381-platform-string-truncation.test.mjs"
+        ],
+        "cwd": "/workspace/scratch/7f4aea44c0fb/review-8086",
+        "startedUtc": "2026-09-12T07:02:49.680301+00:00",
+        "timeoutSeconds": 40.0,
+        "durationSeconds": 1.372,
+        "exitCode": 0,
+        "timedOut": false,
+        "logSha256": "90889e953d955f202133a38a6516b813c4a726f2bf6ed16d24884a515ef03695"
+      },
+      {
+        "label": "review8086-fixed-consumer-suites",
+        "command": [
+          "node",
+          "--test",
+          "tests/issue-5698-string-xref-byte-extent.mjs",
+          "tests/phase10/integration/issue-5698-string-xref-byte-extent.test.mjs",
+          "tests/worker-classic-harness.mjs",
+          "tests/issues-550-559.mjs",
+          "tests/issues-521-527.mjs",
+          "tests/backend-disposal.mjs",
+          "tests/phase4/integration/backend-open-race-current-oracle.test.mjs"
+        ],
+        "cwd": "/workspace/scratch/7f4aea44c0fb/review-8086",
+        "startedUtc": "2026-09-12T07:04:04.346984+00:00",
+        "timeoutSeconds": 40.0,
+        "durationSeconds": 0.568,
+        "exitCode": 0,
+        "timedOut": false,
+        "logSha256": "ba3737ba6588d03f664d551365dc335b650a40c93d70336baa09941860c4fe97"
+      },
+      {
+        "label": "review8086-fixed-metadata",
+        "command": [
+          "npm",
+          "run",
+          "metadata:test"
+        ],
+        "cwd": "/workspace/scratch/7f4aea44c0fb/review-8086",
+        "startedUtc": "2026-09-12T07:04:40.262689+00:00",
+        "timeoutSeconds": 40.0,
+        "durationSeconds": 2.334,
+        "exitCode": 0,
+        "timedOut": false,
+        "logSha256": "3739f6e43049448b5293257b7bb1f7f1d6daaad3e0b2d5715288004141e5caf3"
+      },
+      {
+        "label": "review8086-new-regressions-red-proof",
+        "command": [
+          "node",
+          "--test",
+          "tests/issue-5381-5376-string-scan-truncation-utf8.mjs",
+          "tests/phase5/vertical/issue-5381-platform-string-truncation.test.mjs"
+        ],
+        "cwd": "/workspace/scratch/7f4aea44c0fb/review-8086",
+        "startedUtc": "2026-09-12T07:04:05.300613+00:00",
+        "timeoutSeconds": 40.0,
+        "durationSeconds": 0.466,
+        "exitCode": 1,
+        "timedOut": false,
+        "logSha256": "58048cf0587231ef098ee0885d0478d2109f8634451f472e7466323ca35c7fc3"
+      }
+    ],
+    "originalPrCoverageSummary": {
+      "totalPaths": 11,
+      "alreadyReusedPaths": 4,
+      "uniqueSourceTestPatchPaths": 6,
+      "packageUnionPaths": 1,
+      "normalizedBlobsIdenticalToOriginalPr": 7,
+      "reverseHunksPass": 9,
+      "swiftChangedLinesExactlyPresent": true
+    }
+  },
+  "baselineFailures": {
+    "originalMain": "de6178154884813d90c6437146a99b1155f0c68d",
+    "auditedMain": "9985eb26f0f38ee584c50afed5e07efdf743f0b3",
+    "testFiles": 19,
+    "environmentFiles": 11,
+    "environmentTracking": "https://github.com/rhgrive3/hex-ida/issues/8299",
+    "existingPRFiles": 8,
+    "existingPR": 7036,
+    "existingPRHead": "4c855b38c0a147be18edb8d086a68cfcb578d20e",
+    "currentHeadPassClaim": false,
+    "note": "PR7036 contains current work for all eight; changed closure remains red and MOVZX/MOVSX production-width inconsistency remains. It is not merged."
+  },
+  "validations": [
+    {
+      "label": "session15-main-regressions",
+      "command": [
+        "node",
+        "--test",
+        "tests/issue-4988-shared-inflight-consumer-isolation.mjs",
+        "tests/issue-5068-memoize-options-identity.mjs",
+        "tests/issue-5124-symmetric-diff-consumer-cancel.mjs",
+        "tests/issue-5155-hexproj-bounded-utf8-size-guard.mjs",
+        "tests/phase5/viewer/issue-4988-required-regression.test.mjs",
+        "tests/phase7/types/issue-5190-structural-unknown-size.test.mjs"
+      ],
+      "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+      "startedUtc": "2026-09-12T07:14:00.418036+00:00",
+      "timeoutSeconds": 40.0,
+      "durationSeconds": 0.928,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "427dae2c9eafcc40cba9f558a69716fceafb550aa4d11b7e3f60d0b61d448623"
+    },
+    {
+      "label": "session15-8086-owned",
+      "command": [
+        "node",
+        "--test",
+        "tests/issue-2378-swift-witness-autoproject.mjs",
+        "tests/issue-5341-swift-witness-table-abi-offset.mjs",
+        "tests/issue-5374-swift-protocol-requirement-kinds.mjs",
+        "tests/issue-5381-5376-string-scan-truncation-utf8.mjs",
+        "tests/issue-5668-backend-semantic-function-typed-inputs.mjs",
+        "tests/phase5/vertical/issue-5381-platform-string-truncation.test.mjs"
+      ],
+      "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+      "startedUtc": "2026-09-12T07:14:00.416826+00:00",
+      "timeoutSeconds": 40.0,
+      "durationSeconds": 0.669,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "bdd44b78fdf37683b43366ccf2c6773218edd64d5e74825774ce62b47fd7f7fd"
+    },
+    {
+      "label": "session15-8086-consumers",
+      "command": [
+        "node",
+        "--test",
+        "tests/issue-5698-string-xref-byte-extent.mjs",
+        "tests/phase10/integration/issue-5698-string-xref-byte-extent.test.mjs",
+        "tests/worker-classic-harness.mjs",
+        "tests/issues-550-559.mjs",
+        "tests/issues-521-527.mjs",
+        "tests/backend-disposal.mjs",
+        "tests/phase4/integration/backend-open-race-current-oracle.test.mjs"
+      ],
+      "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+      "startedUtc": "2026-09-12T07:14:40.329458+00:00",
+      "timeoutSeconds": 40.0,
+      "durationSeconds": 0.775,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "1ca1cfe4a38c29aa3cbe9dd7c696fba963dd5fc323ed2927341aa21b29ac995c"
+    },
+    {
+      "label": "session15-metadata",
+      "command": [
+        "npm",
+        "run",
+        "metadata:test"
+      ],
+      "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+      "startedUtc": "2026-09-12T07:14:40.330166+00:00",
+      "timeoutSeconds": 40.0,
+      "durationSeconds": 3.056,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "073474096fbca771982aef21958439f589de5eeed03bc164e8c59df82bdf3394"
+    },
+    {
+      "label": "session15-final-scpa",
+      "command": [
+        "npm",
+        "run",
+        "scpa:test"
+      ],
+      "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+      "startedUtc": "2026-09-12T07:17:31.800319+00:00",
+      "timeoutSeconds": 180.0,
+      "durationSeconds": 65.942,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "249cec2ee1e91bd2cedd6e8a31d607060b4db3d3eddc00cd0290953cdec814f2"
+    },
+    {
+      "label": "session15-final-main-regressions",
+      "command": [
+        "node",
+        "--test",
+        "tests/ci-development-mode.mjs",
+        "tests/issue-458-ghidra-trigger.mjs",
+        "tests/issue-4968-array-key-precision.mjs",
+        "tests/issue-5009-elf-unknown-symbol-address.mjs",
+        "tests/issue-5016-protected-workers-origin-guard.mjs",
+        "tests/issue-5017-protected-worker-cleanup-ownership.mjs",
+        "tests/issue-5034-worker-blob-url-cleanup.mjs",
+        "tests/phase11/jvm/issue-8037-jvm-bipush-sipush-immediate.test.mjs",
+        "tests/phase12/rebuild/issue-4516-publication-binding.test.mjs",
+        "tests/phase4/binary/issue-5009-elf-unknown-symbol-address.test.mjs",
+        "tests/phase7/alias/issue-5215-stale-escape-cache.test.mjs",
+        "tests/phase7/alias/issue-5218-binary-identity-mismatch.test.mjs",
+        "tests/phase7/issue-4513-memoryssa-access-provider-routing.test.mjs",
+        "tests/semantic-v2/issue-4513-memoryssa-access-provider-authority.test.mjs",
+        "tests/semantic-v2/issue-4513-memoryssa-access-provider-completeness.test.mjs"
+      ],
+      "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+      "startedUtc": "2026-09-12T07:17:31.800106+00:00",
+      "timeoutSeconds": 60.0,
+      "durationSeconds": 1.237,
+      "exitCode": 1,
+      "timedOut": false,
+      "logSha256": "de88313d8e224fa341808e61ef6675b3377e2ba1d749f504bc6e89fded83fa03"
+    },
+    {
+      "label": "session15-trigger-contract",
+      "command": [
+        "node",
+        "--test",
+        "tests/ci-development-mode.mjs",
+        "tests/issue-458-ghidra-trigger.mjs"
+      ],
+      "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+      "startedUtc": "2026-09-12T07:20:15.774300+00:00",
+      "timeoutSeconds": 40.0,
+      "durationSeconds": 1.938,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "cb87d50671fddc16509aab6bb5fe7265555e3d1b6b75711b065bfc890058ad93"
+    },
+    {
+      "label": "session15-lint",
+      "command": [
+        "npm",
+        "run",
+        "lint"
+      ],
+      "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+      "startedUtc": "2026-09-12T07:17:31.800108+00:00",
+      "timeoutSeconds": 40.0,
+      "durationSeconds": 2.867,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "be63ac9b231d9f7e584f61c74307c9d39633833fa881356fffb8b4f109ca3a79"
+    },
+    {
+      "label": "session15-boundaries",
+      "command": [
+        "npm",
+        "run",
+        "module-boundaries:test"
+      ],
+      "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+      "startedUtc": "2026-09-12T07:20:15.801736+00:00",
+      "timeoutSeconds": 40.0,
+      "durationSeconds": 0.618,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "a7dd19fe35f5103c96dc162ed63aa349d7ad61b630f892287a80315335091ebb"
+    },
+    {
+      "label": "session15-evidence-writers",
+      "command": [
+        "npm",
+        "run",
+        "evidence-writers:test"
+      ],
+      "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+      "startedUtc": "2026-09-12T07:20:16.024748+00:00",
+      "timeoutSeconds": 40.0,
+      "durationSeconds": 1.619,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "4417034d3a1384b6c04233764ace018e3bf4e5e97bd1d4349fbea17656196eec"
+    },
+    {
+      "label": "session15-final-build",
+      "command": [
+        "npm",
+        "run",
+        "userscript:build"
+      ],
+      "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+      "startedUtc": "2026-09-12T07:17:31.800147+00:00",
+      "timeoutSeconds": 60.0,
+      "durationSeconds": 4.285,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "1d6ec3425a755931ab628152e56ce8c49627b8a76a2695bee57aa0c2dcafec06"
+    },
+    {
+      "label": "session15-build-repeat",
+      "command": [
+        "npm",
+        "run",
+        "userscript:build"
+      ],
+      "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+      "startedUtc": "2026-09-12T07:20:00.056319+00:00",
+      "timeoutSeconds": 60.0,
+      "durationSeconds": 4.851,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "13a279ca7d04ba8f7bcdc558cbcd147afffb7331adb72460e289a16ca16ade45"
+    },
+    {
+      "label": "session15-frozen-ownership",
+      "command": [
+        "node",
+        "--test",
+        "tests/ci/scpa-integration-ownership.test.mjs"
+      ],
+      "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+      "startedUtc": "2026-09-12T07:25:13.190856+00:00",
+      "timeoutSeconds": 40.0,
+      "durationSeconds": 1.218,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "c4b3679f9dc83f6917f49c752993625a9161c197ba0250bd1d1735565035b5d8"
+    },
+    {
+      "label": "session15-source-freeze-lint",
+      "command": [
+        "npm",
+        "run",
+        "lint"
+      ],
+      "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+      "startedUtc": "2026-09-12T07:23:34.169830+00:00",
+      "timeoutSeconds": 40.0,
+      "durationSeconds": 1.534,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "be63ac9b231d9f7e584f61c74307c9d39633833fa881356fffb8b4f109ca3a79"
+    }
+  ],
+  "generatedStability": {
+    "identical": true,
+    "changed": [],
+    "files": {
+      "userscript/hex.user.template.js": "fd0d8793cf33d372bb7914dbbc8de3c5dba3ddbc81909855880ab6db0b561c99",
+      "userscript/release-version.json": "ee91831d39af9ac32d61247acf23ff5e8303035d7a02b108cd6bb06ee7a8af8d"
+    }
+  },
+  "release": {
+    "serial": 2322242197,
+    "releaseIdentity": "4369013934984d7abaac6a2913688aed5fb4419b0b89acc08467ac968edfe1f5",
+    "buildId": "fd11ed4f1e1073917fde0c13"
+  },
+  "toolchain": {
+    "node": "v24.19.0",
+    "esbuild": "0.28.2",
+    "lockVersionMatched": true
+  },
+  "initialScpaTimeout": {
+    "label": "session15-scpa",
+    "command": [
+      "npm",
+      "run",
+      "scpa:test"
+    ],
+    "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+    "startedUtc": "2026-09-12T07:14:40.335429+00:00",
+    "timeoutSeconds": 60.0,
+    "durationSeconds": 60.012,
+    "exitCode": -15,
+    "timedOut": true,
+    "logSha256": "1a77675a164a886a34af6c40ec8fdd18750239cadfc5bad13019f5e804a14ca3"
+  },
+  "triggerRepair": {
+    "firstDivergence": "Ghidra dependency-closure trigger missed SCPA dependencies js/core/artifacts/dependencies.js and js/swift-context.js",
+    "newMainRegressionFiles": [
+      "tests/ci-development-mode.mjs",
+      "tests/issue-458-ghidra-trigger.mjs"
+    ],
+    "before": "FAIL",
+    "after": "PASS",
+    "testAssertionChanges": false
+  },
+  "claims": {
+    "architecture100Percent": false,
+    "fullRepositoryCheckReexecuted": false,
+    "realDeviceEvidence": false,
+    "sourceMergeIsRuntimeActivation": false,
+    "remoteExactHeadAdmission": "pending external readback after publication",
+    "mainMerged": "not claimed by this pre-publication checkpoint"
+  },
+  "ownership": {
+    "registeredPaths": 274,
+    "actualPathsAgainstMainTree": 274,
+    "unregisteredPaths": [],
+    "unusedRegistrations": [],
+    "phase7SubsetPaths": 63,
+    "phase8SubsetPaths": 13,
+    "scpaOwnershipTests": "8 PASS",
+    "existingOwnershipRegressionTests": {
+      "pass": 35,
+      "fail": 1,
+      "firstFailure": "missing historical Git commit 852fcc559711eac680f6853644d390fdb5c1b7f8 for unchanged C1-01 historical-inventory test; not classified as PASS"
+    },
+    "reviewRepair": "Inventory uses --no-renames to include both source deletion and destination addition; dedicated real-Git negative regression added",
+    "existingPhase7Phase8ManifestOrValidatorWeakened": false
+  },
+  "independentOwnershipReview": {
+    "reviewer": "merge_8086_review",
+    "reviewedAt": "2026-09-12T07:24:53.996303+00:00",
+    "scope": [
+      "tools/validation/scpa-integration-ownership.mjs",
+      "tools/validation/phase-ownership/scpa-integration.json",
+      "tests/ci/scpa-integration-ownership.test.mjs",
+      "tools/validation/phase5-ownership.mjs",
+      ".circleci/config.yml",
+      ".github/workflows/phase7-ownership.yml",
+      ".github/workflows/phase8-ownership.yml"
+    ],
+    "fileSha256": {
+      "tools/validation/scpa-integration-ownership.mjs": "3f62bbbe907672ec3c1a22b63912f2791dd16be10fc2ecc4efdd5c223fbd270d",
+      "tools/validation/phase-ownership/scpa-integration.json": "b665a5fa85101d1350d42df29990eed3fe7ad649c099126f9ce0ac6f575dc95f",
+      "tests/ci/scpa-integration-ownership.test.mjs": "2491f7354ad03a9a751a1b3bb00f192ed3cab09f9016c3df7aaf19ce45c46ccd",
+      "tools/validation/phase5-ownership.mjs": "db82217a0e9884472e2490753705ea8a7ceedc0da9219eaa4475ca7127763f0b",
+      ".circleci/config.yml": "3e933f6767c8b1d5d9c553117c3ceca038982e3cd63f5e11ede0bc86321925ff",
+      ".github/workflows/phase7-ownership.yml": "29cac2a8177a2059c4935b6533945fdebda20c0062c189a3d000119f6d0009f4",
+      ".github/workflows/phase8-ownership.yml": "f779a34e32b787a5846e0451d58585f60fb530819247ffd0a7c2e61576f1bc7c"
+    },
+    "phaseContractsUnchanged": {
+      "tools/validation/phase7-ownership.mjs": true,
+      "tools/validation/phase8-ownership.mjs": true,
+      "tools/validation/phase-ownership/phase7.json": true,
+      "tools/validation/phase-ownership/phase8.json": true
+    },
+    "findings": [
+      {
+        "id": "rename-source-ownership",
+        "initialState": "confirmed blocking issue",
+        "resolution": "canonical inventoryFromGit uses --no-renames, preserving source deletion and destination addition",
+        "independentReproductionBefore": "unregistered-owner.js renamed to js/core/identity/world.js with phase7+phase8 paths; both phase subsets incorrectly admitted",
+        "independentReproductionAfter": "unregistered-owner.js appears in inventory and both phase7 and phase8 reject it",
+        "regression": "tests/ci/scpa-integration-ownership.test.mjs CLI test confirms R100 fixture, rejects both phases, and emits no subset"
+      }
+    ],
+    "remainingBlockingFindings": [],
+    "checks": {
+      "sourceAndManifestExactAllowlist": true,
+      "fullInventoryValidationBeforePhaseProjection": true,
+      "existingPhase7AndPhase8ValidatorsAndNegativeControlsRetained": true,
+      "knownBranchCircleciForceRunTest": true,
+      "ownerRoleMisclassificationGuards": true,
+      "noAutoApprovalOrAdmissionMarkerGeneration": true,
+      "noOtherCiGateDeletionInReviewedDelta": true,
+      "ghidraWorkflowDelta": "only adds trigger paths for core/artifacts/dependencies.js and swift-context.js",
+      "registeredPaths": 274,
+      "scopeBaseTree": "a2bfa97ccd761ed592ee1142dd7b26bae43ccd09",
+      "unregisteredContentDifferencesToBaseTree": 0,
+      "unstagedMainFilesExcludedOnlyAfterByteComparison": 18
+    },
+    "validationLabels": [
+      "session15-independent-scpa-ownership-review",
+      "session15-independent-ownership-compatibility",
+      "session15-independent-phase7-phase8-ownership"
+    ],
+    "limitations": [
+      "Working-tree file hashes identify this review; final committed candidate merge tree and exact-head CI/admission still require root verification.",
+      "No external review or approval markers posted."
+    ],
+    "validations": [
+      {
+        "label": "session15-independent-scpa-ownership-review",
+        "command": [
+          "node",
+          "--test",
+          "tests/ci/scpa-integration-ownership.test.mjs"
+        ],
+        "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+        "startedUtc": "2026-09-12T07:23:48.664361+00:00",
+        "timeoutSeconds": 40.0,
+        "durationSeconds": 1.272,
+        "exitCode": 0,
+        "timedOut": false,
+        "logSha256": "2cd9401fef79fd824e18059d6b36587173536ba7eeb33a770dc6c49cee7c0149",
+        "testSummary": {
+          "tests": 8,
+          "pass": 8,
+          "fail": 0,
+          "skipped": 0
+        }
+      },
+      {
+        "label": "session15-independent-ownership-compatibility",
+        "command": [
+          "node",
+          "--test",
+          "tests/phase5/ownership/governance.test.mjs",
+          "tests/phase5/ownership/userscript-policy.test.mjs"
+        ],
+        "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+        "startedUtc": "2026-09-12T07:24:52.860590+00:00",
+        "timeoutSeconds": 40.0,
+        "durationSeconds": 0.77,
+        "exitCode": 0,
+        "timedOut": false,
+        "logSha256": "5ed46be1b4e30fbe6243ecae0a51fa7d47718cd890361fd20b53b2e894031d89",
+        "testSummary": {
+          "tests": 14,
+          "pass": 14,
+          "fail": 0,
+          "skipped": 0
+        }
+      },
+      {
+        "label": "session15-independent-phase7-phase8-ownership",
+        "command": [
+          "node",
+          "--test",
+          "tests/phase7/ownership/manifest.test.mjs",
+          "tests/phase7/ownership/c1-01-inventory.test.mjs",
+          "tests/phase7/ownership/cross-lane-routing.test.mjs",
+          "tests/phase8/ownership/manifest.test.mjs"
+        ],
+        "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+        "startedUtc": "2026-09-12T07:25:32.671980+00:00",
+        "timeoutSeconds": 40.0,
+        "durationSeconds": 0.315,
+        "exitCode": 1,
+        "timedOut": false,
+        "logSha256": "3b756ea4ba36625735b34074ddf8d780520679fff70edd5bc85af80af8136aa8",
+        "testSummary": {
+          "tests": 20,
+          "pass": 19,
+          "fail": 1,
+          "skipped": 0
+        }
+      }
+    ],
+    "reviewedFilesUnchangedAfterValidation": true,
+    "validationLimitations": [
+      {
+        "label": "session15-independent-phase7-phase8-ownership",
+        "failingTest": "tests/phase7/ownership/c1-01-inventory.test.mjs: the actual HEX-C1-01 branch inventory stays inside its exact allowlist",
+        "error": "fatal: bad object 852fcc559711eac680f6853644d390fdb5c1b7f8",
+        "cause": "Required historical commit is absent from the local reconstructed Git history.",
+        "changeAttribution": "Test file is byte-identical to frozen main tree a2bfa97ccd761ed592ee1142dd7b26bae43ccd09 and invokes git directly, not the modified phase5 inventory helper.",
+        "status": "environment-blocked; not represented as passing and no override supplied"
+      }
+    ]
+  }
+}

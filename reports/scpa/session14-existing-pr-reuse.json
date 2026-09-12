@@ -73,5 +73,19 @@
     }
   ],
   "notExhaustiveRepositoryPRClaim": true,
-  "retrieval": "Related open-PR search and actual diff/patch inspection. GitHub >300-file diff rejection handled with paginated file patches; not treated as an empty diff."
+  "retrieval": "Related open-PR search and actual diff/patch inspection. GitHub >300-file diff rejection handled with paginated file patches; not treated as an empty diff.",
+  "session15Integration": {
+    "integrationPR": 8247,
+    "main": "c5ae8f993f5585ae19e61cddc1fc9f59a0173183",
+    "pr8086": {
+      "head": "d864be09fd53405b3a89b04d5e0cc43bd0e7e5fa",
+      "scope": "Full 11-path change; 4 already reused, 6 additional source/test paths, package test union; both scanner prefix repairs added",
+      "evidence": "session15-integration.json"
+    },
+    "pr7036": {
+      "head": "4c855b38c0a147be18edb8d086a68cfcb578d20e",
+      "scope": "Existing ABI slice retained; full branch held for its documented changed-test and integration failures"
+    },
+    "baselineTrackingIssue": 8299
+  }
 }

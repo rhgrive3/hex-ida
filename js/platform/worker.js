@@ -262,7 +262,6 @@ async function openFile(msg, signal) {
   }
 }
 
-
 async function pointerImageForSlice(sliceIndex, signal) {
   if (!image || image.format !== 'macho' || !image.metadata?.fat?.slices?.length || sliceIndex == null) return image;
   const index = Number(sliceIndex);
@@ -368,15 +367,21 @@ async function scanStrings(msg, signal) {
   const regionBytes = regionSize(region.size);
   const total = msg.maxBytes == null ? regionBytes : boundedOffset(msg.maxBytes, regionBytes, 'maxBytes');
   const out = [];
-  let pos = 0n, runStart = null, runBytes = [], runChars = 0;
+  let pos = 0n, runStart = null, runBytes = [], runChars = 0, runDropped = 0;
   const flush = () => {
     if (runStart != null && runBytes.length) {
+      const byteLength = runBytes.length + runDropped;
       const text = decoder.decode(new Uint8Array(runBytes)).replace(/\t/g, '\\t').replace(/\n/g, '\\n');
-      if (runChars >= minLength) out.push({ addr: BigInt(region.vmAddr) + runStart, offset: exactExternalInteger(runStart), text });
+      if (runChars >= minLength) {
+        const entry = { addr: BigInt(region.vmAddr) + runStart, offset: exactExternalInteger(runStart), text, byteLength };
+        if (runDropped > 0) entry.truncated = true;
+        out.push(entry);
+      }
     }
     runStart = null;
     runBytes = [];
     runChars = 0;
+    runDropped = 0;
   };
   let carry = new Uint8Array(0), carryAt = 0n;
   while (pos < total && out.length < cap) {
@@ -397,9 +402,13 @@ async function scanStrings(msg, signal) {
       const n = utf8Len(buffer, i);
       if (n === -1 && !last) break;
       if (n <= 0) { flush(); if (out.length >= cap) break; continue; }
-      if (runStart == null) { runStart = base + BigInt(i); runBytes = []; }
+      if (runStart == null) { runStart = base + BigInt(i); runBytes = []; runDropped = 0; }
       runChars++;
-      if (runBytes.length < MAX_STRING_CHARS * 4) for (let k = 0; k < n; k++) runBytes.push(buffer[i + k]);
+      if (runDropped === 0 && runBytes.length + n <= MAX_STRING_CHARS * 4) {
+        for (let k = 0; k < n; k++) runBytes.push(buffer[i + k]);
+      } else {
+        runDropped += n;
+      }
       i += n - 1;
     }
     carry = i < buffer.length ? buffer.slice(i) : new Uint8Array(0);
