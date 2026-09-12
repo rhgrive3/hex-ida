@@ -238,7 +238,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         consume(calleeType.params.length, 'wasm-stack-underflow-call');
         for (let i = 0; i < calleeType.results.length; i++) producedValues.push({ id: `result_${i}`, bits: typeBits(calleeType.results[i]), type: calleeType.results[i] });
         produce(calleeType.results.length);
-        callEffects.push({ targetIndex: r.value, target: `func_${r.value}`, dispatchKind: 'direct', signature: { params: calleeType.params, results: calleeType.results } });
+        callEffects.push({ targetIndex: r.value, target: `func_${r.value}`, targetMethodId: r.value < importedFuncs.length ? null : createManagedMethodId(wasmModule.moduleId, r.value), dispatchKind: 'direct', signature: { params: calleeType.params, results: calleeType.results } });
         break;
       }
       case 0x11: {

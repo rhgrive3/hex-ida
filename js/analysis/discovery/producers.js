@@ -41,6 +41,7 @@ function loaderStartArray(value, code) {
 const VALIDATED_LOADER_SEED_SOURCES = new Set([
   'function_starts',
   'exception',
+  'dt-init',
   'tls-callback',
   'guard-cf',
   'unwind',
@@ -308,11 +309,20 @@ export function createDebugEvidenceProducer(debugEvidence) {
             if (region != null) regions.push(region);
           }
         }
-        return evidence('debug-symbol', {
+        // `debugFunctionEvidence()` has already applied the provider identity
+        // and partial-coverage gate. Only its canonical `exact` token may keep
+        // the authoritative debug-symbol kind; every other representation is
+        // a weak fact. Select the authority-bearing kind before canonical
+        // evidence construction so `String()` coercion cannot turn a boxed or
+        // structured value into an authority token (#4050).
+        const rawConfidence = item?.confidence;
+        const exact = rawConfidence === 'exact';
+        const confidence = typeof rawConfidence === 'string' ? rawConfidence : null;
+        return evidence(exact ? 'debug-symbol' : 'debug-symbol-heuristic', {
           start,
           name: item.name ?? null,
           regions,
-          confidence: item.confidence,
+          confidence,
           evidenceIds: item.evidenceIds ?? [],
         });
       }).filter((item) => item.start != null);
@@ -391,8 +401,10 @@ export function createPatternProducer({ id, architectureId, patterns, alignment 
       const canonicalBase = toAddress(base);
       if (canonicalBase == null) return [];
       const baseAddress = BigInt(canonicalBase);
+      const alignmentWidth = BigInt(alignment);
+      const firstOffset = Number((alignmentWidth - (baseAddress % alignmentWidth)) % alignmentWidth);
       const out = [];
-      for (let offset = 0; offset + 1 <= bytes.length; offset += alignment) {
+      for (let offset = firstOffset; offset + 1 <= bytes.length; offset += alignment) {
         for (const pattern of compiled) {
           if (offset + pattern.bytes.length > bytes.length) continue;
           let matched = true;

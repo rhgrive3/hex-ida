@@ -442,11 +442,17 @@ export function createRuntimeEventBatch(input = {}) {
   }
 
   const hasLoss = dropped > 0 || events.some((event) => event.kind === 'gap' || event.kind === 'dropped-events' || event.completeness === 'truncated');
-  const requested = normalizeCompleteness(input.completeness, hasLoss ? 'truncated' : 'partial');
   let strongestAllowed = hasLoss ? 'truncated' : 'complete';
   for (const event of events) {
     if (COMPLETENESS_RANK[event.completeness] < COMPLETENESS_RANK[strongestAllowed]) strongestAllowed = event.completeness;
   }
+  // An omitted batch completeness must inherit the source ceiling. Choosing
+  // partial before computing that ceiling turns an unsupported source into a
+  // self-inflicted upgrade rejection (#4373). Preserve the established empty
+  // batch defaults while deriving non-empty batches from their events.
+  const requested = input.completeness == null
+    ? (events.length > 0 || hasLoss ? strongestAllowed : 'partial')
+    : normalizeCompleteness(input.completeness);
   if (COMPLETENESS_RANK[requested] > COMPLETENESS_RANK[strongestAllowed]) {
     throw new DebugAdapterError('runtime-completeness-upgrade', `event batch cannot upgrade ${strongestAllowed} source evidence to ${requested}`);
   }
