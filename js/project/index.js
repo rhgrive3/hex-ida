@@ -26,7 +26,34 @@ const list = (value, name) => {
   return [...value];
 };
 
-function encodedByteLength(text) { return new TextEncoder().encode(text).byteLength; }
+const UTF8_COUNT_CHUNK_UNITS = 8 * 1024;
+const UTF8_COUNT_CHUNK_BYTES = (UTF8_COUNT_CHUNK_UNITS * 3) + 3;
+
+function encodedByteLength(text) {
+  if (text.length > MAX_PROJECT_BYTES) return text.length;
+  const encoder = new TextEncoder();
+  const scratch = new Uint8Array(UTF8_COUNT_CHUNK_BYTES);
+  let bytes = 0;
+  let offset = 0;
+  while (offset < text.length) {
+    let end = Math.min(offset + UTF8_COUNT_CHUNK_UNITS, text.length);
+    if (end < text.length) {
+      const lead = text.charCodeAt(end - 1);
+      if (lead >= 0xd800 && lead <= 0xdbff) end -= 1;
+    }
+    let cursor = offset;
+    while (cursor < end) {
+      const chunk = text.slice(cursor, end);
+      const { read, written } = encoder.encodeInto(chunk, scratch);
+      if (read === 0) throw new ProjectFormatError('project text cannot be measured as UTF-8', 'HEX_PROJECT_INVALID_UTF8');
+      bytes += written;
+      if (bytes > MAX_PROJECT_BYTES) return bytes;
+      cursor += read;
+    }
+    offset = end;
+  }
+  return bytes;
+}
 function assertProjectSize(bytes) {
   if (bytes > MAX_PROJECT_BYTES) throw new ProjectFormatError('project exceeds the 16 MiB safety limit', 'HEX_PROJECT_TOO_LARGE');
 }
