@@ -1,5 +1,25 @@
 # Analysis roadmap v8 integration checkpoint
 
+## 2026-09-13: 条件証明を既存の非同期最適化入口へ接続
+
+`optimizeSemanticDecompilation(result, { identity, conditionalBranch, ... })` から、
+発行済みの構造・条件式・到達可能性・領域計画を既存の順序で準備し、
+既存 Phase 8 の rendering transaction と実際のヘッダー projection へ接続しました。
+`conditionalBranch` は準備済み result が保持する実際の CBR オブジェクトです。
+元の準備には `phase8PrepareProof:true` と `phase8PrepareRegionProof:true` が必要です。
+
+- 一つの外側の期限の下で各既存 query の上限を保持します。scalar targets・外部 plan・backend の注入との混在は拒否します。
+- 成功は実ヘッダーへの書込みと完全な provenance を確認してから報告します。同一要求の再実行は内部の現在有効な表示記録を使い、履歴・式を増やしません。
+- 取消し、stale identity、未準備・偽造・予算超過・最終 callback の変更は、元の表示と `adopted:0` を返します。
+- 現在の領域計画に合わせ、片腕の到達不能性を証明でき、削除候補の表示ノードが存在する条件領域が対象です。枝本体・PHI・CFG 辺の削除はまだ許可しません。
+
+flags/NZCV の調査では、実際の v2 compatibility IR が表示用 comparison carrier と本来の
+`conditionValue` SSA を分けていることを確認しました。MachineEffects の N/Z/C/V の DAG と
+その現在の定義を既存 canonical Expr へ接続する必要があり、表示用の flags 復元を証明の根拠にはしません。
+decoded CFG の境界・recovery・PHI/provenance の残件も維持します。公開 API の接続は
+全 decoded 入力の受入や C4 全体の完了ではありません。検査・レビューの exact SHA は永続 evidence に記録します。
+ユーザーの C1 担当と開始点 `9f2a4e104` は変更せず、統合受入は **CHECKPOINT-LOCKED** を維持します。
+
 ## 2026-09-13: C4 の条件式を検証して実際の表示へ接続
 
 最新の C4 作業記録です。統合ブランチは引き続き PR **#7036**。

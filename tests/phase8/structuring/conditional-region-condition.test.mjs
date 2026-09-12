@@ -5,7 +5,7 @@ import { join, isAbsolute } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { conditionalRegionFixture } from '../helpers/conditional-region-fixture.mjs';
 import { identity } from '../helpers/proof-fixtures.mjs';
-import { enhanceSemanticDecompilation } from '../../../js/decompiler/pipeline.js';
+import { enhanceSemanticDecompilation, optimizeSemanticDecompilation, isProducerProjection } from '../../../js/decompiler/pipeline.js';
 import { prepareConditionalRegionCondition, readConditionalRegionCondition } from '../../../js/decompiler/phase8/conditional-region-condition.js';
 import { prepareConditionalRegionErasure } from '../../../js/decompiler/phase8/conditional-region-erasure.js';
 import { readProvedRegionErasure } from '../../../js/decompiler/phase8/region-erasure-pass.js';
@@ -44,6 +44,109 @@ async function committed(input = {}, extra = {}) {
   assert.equal(stage.ledger.published, true, JSON.stringify(stage.ledger));
   return { ...f, plan, opts, stage };
 }
+
+test('public optimizer proves and commits an actual conditional header through its existing transaction', async () => {
+  const f = fixture({ kind:'cbnz' }), before = f.projection.pseudocode;
+  const output = await optimizeSemanticDecompilation(f.projection, { ...options, conditionalBranch:f.region.branch });
+  assert.equal(output.proofOptimization.status, 'complete', output.proofOptimization.reason);
+  assert.equal(output.proofOptimization.adopted, 1);
+  assert.equal(output.proofOptimization.scope, 'conditional-predicate-only');
+  assert.equal(output.proofOptimization.armErasureAuthorized, false);
+  assert.equal(output.proofOptimization.decisionCoverage.complete, true);
+  assert.ok(isProducerProjection(output));
+  assert.notEqual(output.pseudocode, before);
+  assert.equal(f.projection.pseudocode, before);
+  assert.equal(output.cAst.body.length, f.projection.cAst.body.length);
+  assert.equal(output.rewriteProof.filter(r => r.rule === 'project-proved-conditional-predicate').length, 1);
+  assert.ok(readProjectedConditionalRegions(output.cAst, f.ir));
+  let replay = output;
+  for (let i = 0; i < 3; i++) {
+    replay = await optimizeSemanticDecompilation(replay, { ...options, conditionalBranch:f.region.branch });
+    assert.equal(replay.proofOptimization.status, 'complete', replay.proofOptimization.reason);
+    assert.equal(replay.proofOptimization.adopted, 0);
+    assert.equal(replay.proofOptimization.targetDecisions[0].disposition, 'already-adopted');
+    assert.equal(replay.cAst, output.cAst);
+    assert.equal(replay.rewriteProof, output.rewriteProof);
+  }
+  for (const invalid of [{ addressBits:'8' }, { endian:'native' }, { backendTier:'injected' }]) {
+    const refused = await optimizeSemanticDecompilation(replay, { ...options, conditionalBranch:f.region.branch, ...invalid });
+    assert.equal(refused.proofOptimization.status, 'partial');
+    assert.equal(refused.cAst, output.cAst);
+  }
+  f.region.branch.extra.kind = 'cbz';
+  const stale = await optimizeSemanticDecompilation(replay, { ...options, conditionalBranch:f.region.branch });
+  assert.equal(stale.proofOptimization.status, 'partial');
+});
+
+test('public conditional publication rejects a final lifecycle callback mutation and cannot reuse forged report fields', async () => {
+  const baseline = fixture({ kind:'cbnz' });
+  let calls = 0;
+  const accepted = await optimizeSemanticDecompilation(baseline.projection,
+    { ...options, conditionalBranch:baseline.region.branch, isCancelled:()=>{ calls++; return false; } });
+  assert.equal(accepted.proofOptimization.status, 'complete', accepted.proofOptimization.reason);
+  assert.ok(calls > 0);
+  const f = fixture({ kind:'cbnz' });
+  let count = 0;
+  const refused = await optimizeSemanticDecompilation(f.projection, { ...options, conditionalBranch:f.region.branch,
+    isCancelled:()=>{ if (++count === calls) f.region.branch.extra.kind = 'cbz'; return false; } });
+  assert.equal(count, calls);
+  assert.equal(refused.proofOptimization.status, 'partial');
+  assert.equal(refused.proofOptimization.adopted, 0);
+  assert.equal(refused.cAst, f.projection.cAst);
+  const fresh = fixture({ kind:'cbnz' });
+  fresh.projection.proofOptimization = accepted.proofOptimization;
+  const actual = await optimizeSemanticDecompilation(fresh.projection, { ...options, conditionalBranch:fresh.region.branch });
+  assert.equal(actual.proofOptimization.status, 'complete', actual.proofOptimization.reason);
+  assert.equal(actual.proofOptimization.adopted, 1);
+});
+
+test('public conditional requests reject copied branches, missing preparation and mixed scalar authority', async () => {
+  for (const alter of [f=>({ conditionalBranch:{ ...f.region.branch } }),
+    () => ({ conditionalBranch:null }), () => ({ targets:[] }), () => ({ phase8RegionErasurePlan:{} }),
+    () => ({ backend:{} }), () => ({ requireProofOnlyRewrites:true })]) {
+    const f = fixture({ kind:'cbnz' });
+    const output = await optimizeSemanticDecompilation(f.projection,
+      { ...options, conditionalBranch:f.region.branch, ...alter(f) });
+    assert.equal(output.proofOptimization.status, 'partial');
+    assert.equal(output.proofOptimization.adopted, 0);
+    assert.equal(output.cAst, f.projection.cAst);
+  }
+  const f = fixture({ kind:'cbnz' });
+  const unprepared = enhanceSemanticDecompilation(f.seed, { name:'reachability', calls:[] }, {});
+  const refused = await optimizeSemanticDecompilation(unprepared, { ...options, conditionalBranch:f.region.branch });
+  assert.equal(refused.proofOptimization.reason, 'unissued-or-stale-projection');
+});
+
+test('public conditional requests retain the original view on cancellation, stale identity, budget and unconstrained arms', async () => {
+  for (const extra of [{ timeoutMs:0 }, { isCancelled:()=>true },
+    { getCurrentIdentity:()=>({ ...identity, snapshotId:'changed' }) }, { phase8WorkBudget:0 },
+    { phase8TimeBudgetMs:'5000' }, { phase8TimeBudgetMs:NaN }, { phase8WorkBudget:'1000000' }]) {
+    const f = fixture({ kind:'cbnz' });
+    const output = await optimizeSemanticDecompilation(f.projection, { ...options, conditionalBranch:f.region.branch, ...extra });
+    assert.equal(output.proofOptimization.status, 'partial');
+    assert.equal(output.proofOptimization.adopted, 0);
+    assert.equal(output.cAst, f.projection.cAst);
+  }
+  const f = fixture({ kind:'cbnz', predicate:'input', armEffect:()=>{} });
+  const output = await optimizeSemanticDecompilation(f.projection, { ...options, conditionalBranch:f.region.branch });
+  assert.equal(output.proofOptimization.reason, 'no-single-unreachable-arm');
+  assert.equal(output.cAst, f.projection.cAst);
+});
+
+test('public conditional request preserves the prepared proof-only policy and snapshots async request options', async () => {
+  const f = conditionalRegionFixture({ kind:'cbnz', armEffect:storeArm });
+  const projection = enhanceSemanticDecompilation(f.seed, { name:'reachability', calls:[] }, {
+    phase8PrepareProof:true, phase8PrepareRegionProof:true, phase8ProofOnlyRewrites:true,
+    deterministicTransforms:true, renderProvenance:true,
+  });
+  const request = { ...options, conditionalBranch:f.region.branch, requireProofOnlyRewrites:true };
+  const pending = optimizeSemanticDecompilation(projection, request);
+  request.conditionalBranch = { ...f.region.branch }; request.timeoutMs = 0;
+  const output = await pending;
+  assert.equal(output.proofOptimization.status, 'complete', output.proofOptimization.reason);
+  assert.equal(output.proofOptimization.rewritePolicy, 'deferred-optional-scalar-rewrites');
+  assert.ok(isProducerProjection(output));
+});
 
 for (const kind of ['cbz','cbnz','tbz','tbnz']) {
   for (const bit of (kind.startsWith('tb') ? [0,3,7] : [null])) {

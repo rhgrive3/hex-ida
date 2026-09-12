@@ -22,6 +22,7 @@ import { normalizeCompatibilityLine } from '../switch.js';
 import { beginScopedTransformCapture, finishScopedTransformCapture } from './scoped-transform-capture.js';
 import { readProvedRegionErasure } from './region-erasure-pass.js';
 import { readRegionErasureCondition } from './conditional-region-erasure.js';
+import { sameMemoryIdentity } from '../../symbolic/memory/query-state.js';
 
 export const PHASE8_PROJECTION_VERSION = 4;
 
@@ -163,6 +164,22 @@ export function readProjectedConditionConsumer(result, branch) {
     const matches = consumers.flatMap((consumer, index) => consumer?.instruction === branch
       ? [{ consumer, condition:result.semanticAst.conditions[index] }] : []);
     return matches.length === 1 ? Object.freeze(matches[0]) : null;
+  } catch { return null; }
+}
+
+/** Read an already committed predicate's actual header binding for idempotent
+ * optimizer requests. Public report fields or copied ASTs cannot issue it. */
+export function readProjectedProvedCondition(result, branch, identity) {
+  try {
+    const history = readProjectionHistory(result);
+    if (!history) return null;
+    const matches = history.expressions.flatMap((consumer, index) => {
+      const proof = provedConditionConsumers.get(consumer), control = controlConsumerSources.get(consumer);
+      const node = result.cAst.body[index];
+      return proof && control?.instruction === branch && sameMemoryIdentity(proof.identity, identity)
+        && node.text === proof.text && node.semantic?.expression === proof.expression ? [proof] : [];
+    });
+    return matches.length === 1 ? matches[0] : null;
   } catch { return null; }
 }
 
@@ -850,7 +867,8 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
         records:Object.freeze([...new Set([...consumer.records, ...conditionProof.consumer.records, record])]),
         isCurrent:() => control.isCurrent() && conditionProof.sourceCurrent() });
       expressionConsumers[index] = next;
-      provedConditionConsumers.set(next, Object.freeze({ expression:conditionProof.expression, text:conditionProof.text }));
+      provedConditionConsumers.set(next, Object.freeze({ expression:conditionProof.expression, text:conditionProof.text,
+        identity:conditionProof.plan.identity, planId:conditionProof.plan.planId, queryHash:conditionProof.plan.queryHash }));
       controlConsumerSources.set(next, control);
       controlRecords.push(record); conditionWrites++;
       continue;

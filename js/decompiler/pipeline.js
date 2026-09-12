@@ -1,14 +1,15 @@
-import { enhanceSemanticDecompilation as enhanceCore, readRepresentationStage } from './pipeline-core.js';
+import { enhanceSemanticDecompilation as enhanceCore, readRepresentationStage, readCopiedConditionalRegions } from './pipeline-core.js';
 import { recoverExactStackPhiExpressions } from './passes/stack-phi-recovery.js';
 import { recoverExactStackReturn } from './passes/stack-return-recovery.js';
 import { recoverLegacySameBlockStackSpills } from './passes/legacy-stack-recovery.js';
 import { expr, sourceOf } from './ast/nodes.js';
 import { printExpression, printProgram } from './pretty/c.js';
 import { PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
-import { applyPhase8Projection } from './phase8/projection.js';
+import { applyPhase8Projection, readProjectedConditionalRegions, readProjectedProvedCondition } from './phase8/projection.js';
 import { captureProjectionData, captureProjectionIrData } from './phase8/projection-origin.js';
 import { preparePhase8RewritePlan, isPhase8RewritePlan } from './phase8/pass-validation.js';
 import { queryRecord, queryArray } from '../symbolic/memory/data-input.js';
+import { createQueryGuard } from '../symbolic/memory/query-state.js';
 import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
@@ -333,7 +334,7 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
   const stage = runPhase8Stage(
     { ir:result.ir, types:result.types, opts },
     {
-      stages:PHASE8_ALL_STAGES,
+      stages:opts.phase8RegionErasurePlan ? ['rendering'] : PHASE8_ALL_STAGES,
       ...(opts.phase8TimeBudgetMs != null ? { timeBudgetMs:opts.phase8TimeBudgetMs } : {}),
       ...(opts.phase8WorkBudget != null ? { maxWorkItems:opts.phase8WorkBudget } : {}),
       shouldAbort:opts.shouldAbort,
@@ -358,6 +359,12 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
     },
   };
   if (stage.ledger?.published !== true || stage.ledger?.completeness !== 'complete' || !stage.analysis) return updated;
+  // The region plan binds the actual prepared producer object. Adding stage
+  // metadata must not replace that endpoint before its owned projection runs.
+  if (opts.phase8RegionErasurePlan) {
+    const projected = applyPhase8Projection(result, stage.analysis, opts);
+    return { ...projected, phase8:stage.ledger, ctx:updated.ctx };
+  }
   updated = applyPhase8Projection(updated, stage.analysis, opts);
   return updated;
 }
@@ -388,6 +395,96 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
   const recovered = recoverExactStackReturn(reanchorExactStackReturn(stackPhiRecovered, opts), opts);
   const prepared = {...opts,phase8ProofOnlyRewrites:proofOnlyRewrites};
   return rememberProducerProjection(fullPhase8Projection(reanchorRecoveredReturnSource(recovered, opts), model, prepared, interactiveStage),prepared);
+}
+
+const CONDITION_OPTIMIZATION_OPTIONS = new Set(['conditionalBranch','identity','timeoutMs','signal','isCancelled',
+  'getCurrentIdentity','now','addressBits','endian','backendTier','phase8TimeBudgetMs','phase8WorkBudget',
+  'requireProofOnlyRewrites']);
+
+// Compose the existing region issuers through the same public optimizer. The
+// request selects one actual branch; it cannot supply a proof or a replacement
+// AST. Each child retains its own bounded resources under one outer deadline.
+async function optimizeConditionalPredicate(result, submitted, proofOnlyRewrites, fail, started) {
+  let guard;
+  try {
+    if (Object.keys(submitted).some(key => !CONDITION_OPTIMIZATION_OPTIONS.has(key))) return fail('unsupported-condition-optimization-option');
+    guard = createQueryGuard(submitted, {}); guard.check();
+    if (submitted.phase8TimeBudgetMs != null && (typeof submitted.phase8TimeBudgetMs !== 'number'
+      || !Number.isFinite(submitted.phase8TimeBudgetMs) || submitted.phase8TimeBudgetMs < 0)
+      || submitted.phase8WorkBudget != null && (!Number.isSafeInteger(submitted.phase8WorkBudget)
+        || submitted.phase8WorkBudget < 0 || submitted.phase8WorkBudget > 1000000)) return fail('invalid-condition-stage-budget');
+    const semantic = { addressBits:submitted.addressBits ?? 64, endian:submitted.endian ?? 'little', backendTier:submitted.backendTier ?? 'tiered' };
+    if (!Number.isSafeInteger(semantic.addressBits) || semantic.addressBits < 1 || semantic.addressBits > 64
+      || !['little','big'].includes(semantic.endian) || !['tiered','exhaustive'].includes(semantic.backendTier)) return fail('invalid-condition-semantic-options');
+    const prior = readProjectedProvedCondition(result, submitted.conditionalBranch, guard.identity);
+    if (prior) {
+      const reused = { ...result, proofOptimization:Object.freeze({ status:'complete', reason:null, adopted:0,
+        rewritePolicy:proofOnlyRewrites ? 'deferred-optional-scalar-rewrites' : 'existing-projection',
+        scope:'conditional-predicate-only', armErasureAuthorized:false, conditionPlanId:prior.planId,
+        targetDecisions:Object.freeze([Object.freeze({ branchId:submitted.conditionalBranch.id,
+          disposition:'already-adopted', reason:'current-committed-conditional-predicate', queryHash:prior.queryHash })]),
+        decisionCoverage:Object.freeze({ requested:1, complete:true }), phase8OptimizeStage:null,
+        elapsedMs:(globalThis.performance?.now?.() ?? Date.now())-started }) };
+      guard.check();
+      if (!isProducerProjection(result) || readProjectedProvedCondition(result, submitted.conditionalBranch, guard.identity) !== prior) {
+        return fail('stale-condition-projection');
+      }
+      return reused;
+    }
+    const [{ prepareConditionalRegionStructure }, { prepareConditionalRegionCondition },
+      { prepareConditionalRegionReachability }, { prepareConditionalRegionErasure, readConditionalRegionErasure }] = await Promise.all([
+      import('./phase8/conditional-region-structure.js'), import('./phase8/conditional-region-condition.js'),
+      import('./phase8/conditional-region-reachability.js'), import('./phase8/conditional-region-erasure.js'),
+    ]);
+    guard.check();
+    const carrier = readProjectedConditionalRegions(result.cAst, result.ir)
+      || (result.phase8Projection == null ? readCopiedConditionalRegions(result.cAst, result.ir) : null);
+    const matches = carrier?.regions.filter(item => item.original.branch === submitted.conditionalBranch) ?? [];
+    if (matches.length !== 1) return fail('unbound-conditional-branch');
+    const lifecycle = () => ({ identity:guard.identity, timeoutMs:Math.max(0,Math.floor(guard.remainingMilliseconds())),
+      signal:submitted.signal, isCancelled:submitted.isCancelled, getCurrentIdentity:submitted.getCurrentIdentity, now:submitted.now });
+    const structure = prepareConditionalRegionStructure(matches[0].original.record, result.ir, lifecycle());
+    if (structure.status !== 'complete') return fail(structure.reason ?? 'condition-structure-unavailable');
+    const conditionPlan = await prepareConditionalRegionCondition(structure, result, { ...lifecycle(), ...semantic });
+    guard.check();
+    if (conditionPlan.status !== 'complete') return fail(conditionPlan.reason ?? 'condition-proof-unavailable');
+    const reachability = await prepareConditionalRegionReachability(structure, result.ir, { ...lifecycle(), ...semantic });
+    guard.check();
+    if (reachability.status !== 'complete') return fail(reachability.reason ?? 'condition-reachability-unavailable');
+    const plan = prepareConditionalRegionErasure(structure, reachability, result.ir,
+      { ...lifecycle(), conditionPlan, projection:result });
+    if (plan.status !== 'complete') return fail(plan.reason ?? 'condition-plan-unavailable');
+    const current = () => {
+      guard.check();
+      return isProducerProjection(result) && readConditionalRegionErasure(plan, result.ir, guard.identity) === plan;
+    };
+    // Persistent display bindings must not retain this preparation deadline.
+    // The issued plan and final boundary separately enforce query freshness.
+    const aborted = () => { try { return submitted.signal?.aborted === true || submitted.isCancelled?.() === true
+      || submitted.signal?.aborted === true; } catch { return true; } };
+    if (!current()) return fail('stale-condition-plan');
+    const projected = fullPhase8Projection(result, null, { phase8Optimize:true, phase8RegionErasurePlan:plan,
+      phase8ProofIdentity:guard.identity, phase8ProofOnlyRewrites:proofOnlyRewrites,
+      phase8TimeBudgetMs:Math.min(submitted.phase8TimeBudgetMs ?? 120, guard.remainingMilliseconds()),
+      phase8WorkBudget:submitted.phase8WorkBudget ?? 1000000, shouldAbort:aborted });
+    if (!current() || projected.phase8?.published !== true || projected.phase8?.completeness !== 'complete'
+      || projected.cAst === result.cAst || projected.renderProvenance?.completeness !== 'complete') return fail('condition-projection-withheld');
+    const applied = projected.rewriteProof?.filter(record => record.rule === 'project-proved-conditional-predicate'
+      && record.evidence?.planId === conditionPlan.planId) ?? [];
+    if (applied.length !== 1) return fail('condition-projection-not-rendered');
+    const decision = Object.freeze({ branchId:submitted.conditionalBranch.id, disposition:'adopted',
+      reason:'committed-and-rendered-conditional-predicate', queryHash:conditionPlan.queryHash });
+    const proofOptimization = Object.freeze({ status:'complete', reason:null, adopted:1,
+      rewritePolicy:proofOnlyRewrites ? 'deferred-optional-scalar-rewrites' : 'existing-projection',
+      scope:'conditional-predicate-only', armErasureAuthorized:false, planId:plan.planId, conditionPlanId:conditionPlan.planId,
+      targetDecisions:Object.freeze([decision]), decisionCoverage:Object.freeze({ requested:1, complete:true }),
+      phase8OptimizeStage:projected.ctx?.decompilerPipeline?.phase8ElapsedMs ?? null,
+      elapsedMs:(globalThis.performance?.now?.() ?? Date.now())-started });
+    const final = rememberProducerProjection({ ...projected, proofOptimization },
+      { phase8PrepareProof:true, phase8ProofOnlyRewrites:proofOnlyRewrites, shouldAbort:aborted });
+    if (!current() || aborted() || !isProducerProjection(final) || !current()) return fail('cancelled-or-stale-at-final-publication');
+    return final;
+  } catch (error) { return fail(guard?.reason() ?? error.reason ?? 'invalid-or-unsupported-condition-optimization'); }
 }
 
 /** Demand-driven asynchronous proof path. The representation result comes from
@@ -422,6 +519,11 @@ export async function optimizeSemanticDecompilation(result, options = {}) {
     const proofOnlyRewrites = producerUsesProofOnlyRewrites(result);
     rewritePolicy = proofOnlyRewrites ? 'deferred-optional-scalar-rewrites' : 'existing-projection';
     if (submitted.requireProofOnlyRewrites === true && !proofOnlyRewrites) return fail('proof-only-preparation-required');
+    if (Object.hasOwn(submitted, 'conditionalBranch')) {
+      preparedPlan = { targetDecisions:[{ branchId:queryRecord(submitted.conditionalBranch).id ?? null }],
+        decisionCoverage:{ requested:1 } };
+      return await optimizeConditionalPredicate(result, submitted, proofOnlyRewrites, fail, started);
+    }
     // Snapshot request scope before any asynchronous work. The prepared plan
     // will separately bind the exact execution-relevant IR graph.
     const identity = queryRecord(submitted.identity);
