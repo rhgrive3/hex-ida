@@ -335,6 +335,9 @@ export function fuseFunctionCandidates(evidence, options = {}) {
   const canonical = [];
   const candidateStarts = new Set();
   for (let index = 0; index < evidence.length; index += 1) {
+    if (options.signal?.aborted) {
+      return { candidates: [], status: status('partial', 'cancelled') };
+    }
     const item = canonicalEvidence(evidence[index]);
     canonical.push(item);
     if (item.start == null) continue;
@@ -346,7 +349,13 @@ export function fuseFunctionCandidates(evidence, options = {}) {
 
   const byStart = new Map();
   const orderedEvidence = canonical.sort(compareEvidence);
+  if (options.signal?.aborted) {
+    return { candidates: [], status: status('partial', 'cancelled') };
+  }
   for (const item of orderedEvidence) {
+    if (options.signal?.aborted) {
+      return { candidates: [], status: status('partial', 'cancelled') };
+    }
     if (item.start == null) continue;
     const key = primitiveInteger(item.start, 'discovery-fusion-invalid-start').toString();
     if (!byStart.has(key)) byStart.set(key, { items: [], overflow: false });
@@ -363,6 +372,9 @@ export function fuseFunctionCandidates(evidence, options = {}) {
   let evidenceOverflow = false;
   const starts = [...byStart.keys()].sort((left, right) => (BigInt(left) < BigInt(right) ? -1 : 1));
   for (const start of starts) {
+    if (options.signal?.aborted) {
+      return { candidates: [], status: status('partial', 'cancelled') };
+    }
     const entry = byStart.get(start);
     const fullBucket = entry.items;
     evidenceOverflow ||= entry.overflow;
