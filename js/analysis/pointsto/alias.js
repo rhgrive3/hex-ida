@@ -24,12 +24,12 @@ function widthBytes(widthBits) {
   return BigInt(Math.ceil(bits / 8));
 }
 
-function absoluteInterval(target, accessWidth) {
+function absoluteInterval(target, accessWidth, fallbackWidthBits = null) {
   const range = target?.offsetRange;
   if (target?.address == null || range?.min == null || range?.max == null) {
     return { interval: null, reason: null };
   }
-  const pointerWidth = target.widthBits;
+  const pointerWidth = target.widthBits ?? (fallbackWidthBits != null ? Number(fallbackWidthBits) : null);
   if (typeof pointerWidth !== 'number'
       || !Number.isSafeInteger(pointerWidth) || pointerWidth <= 0 || pointerWidth > 512) {
     return { interval: null, reason: 'provenance-lost' };
@@ -74,6 +74,40 @@ function setNonEscaping(value) {
     throw new TypeError('phase7-alias-nonescaping-roots-set-required');
   }
   return value;
+}
+
+function targetStorageClass(target) {
+  const value = typeof target?.canonicalRootStorageClass === 'string'
+    ? target.canonicalRootStorageClass
+    : typeof target?.rootIdentity?.storageClass === 'string'
+      ? target.rootIdentity.storageClass
+      : typeof target?.metadata?.canonicalRootStorageClass === 'string'
+        ? target.metadata.canonicalRootStorageClass
+        : typeof target?.storageClass === 'string'
+          ? target.storageClass
+          : null;
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text || null;
+}
+
+function isProvenGlobal(target) {
+  const sc = targetStorageClass(target);
+  return sc === 'image-global-static' || sc === 'image-global';
+}
+
+function provenStackGlobalSeparation(a, b) {
+  const classA = targetStorageClass(a);
+  const classB = targetStorageClass(b);
+  const stack = classA === 'function-local-stack' ? a : classB === 'function-local-stack' ? b : null;
+  const global = isProvenGlobal(a) ? a : isProvenGlobal(b) ? b : null;
+  if (!stack || !global) return false;
+  return targetStorageClass(stack) === 'function-local-stack' && isProvenGlobal(global);
+}
+
+function isBareAbsolute(target) {
+  const isGlobal = isProvenGlobal(target);
+  return !isGlobal && (target?.rootKind === 'absolute' || canonicalPointsToAddress(target?.address) != null);
 }
 
 /**
@@ -135,8 +169,8 @@ export function pointsToAlias(left, right, options = {}) {
 
         if (hasCanonicalAddressA && hasCanonicalAddressB) {
           try {
-            const absoluteA = absoluteInterval(a, widthA);
-            const absoluteB = absoluteInterval(b, widthB);
+            const absoluteA = absoluteInterval(a, widthA, options.widthBitsLeft);
+            const absoluteB = absoluteInterval(b, widthB, options.widthBitsRight);
             if (absoluteA.reason) reasonCodes.add(absoluteA.reason);
             if (absoluteB.reason) reasonCodes.add(absoluteB.reason);
             if (absoluteA.interval && absoluteB.interval) {
@@ -158,16 +192,24 @@ export function pointsToAlias(left, right, options = {}) {
           } catch {}
         }
 
-        const pair = new Set([a.rootKind, b.rootKind]);
-        if ((pair.has('stack-fixed') || pair.has('stack-like')) && (pair.has('global-absolute') || pair.has('absolute') || hasCanonicalAddressA || hasCanonicalAddressB)) {
+        // Stack-vs-global separation requires explicit storage class proof (#4214).
+        // Without proof that the global is image-static and the stack is local,
+        // an absolute pointer may coincide with runtime SP.
+        if (provenStackGlobalSeparation(a, b)) {
           relations.push('no');
           reasonCodes.add('distinct-proven-root');
           continue;
         }
 
+        // Non-escaping allocation separation (#4214):
+        // When paired with a bare absolute, one-sided non-escape cannot prove
+        // separation because a numeric address may denote the live stack.
+        // Separation is preserved for pairs of allocations with proven storage
+        // or non-bare roots.
+        const hasBareAbsolute = isBareAbsolute(a) || isBareAbsolute(b);
         const aNonEscaping = nonEscaping.has(a.rootKey) || (a.rootEntityId && nonEscaping.has(a.rootEntityId));
         const bNonEscaping = nonEscaping.has(b.rootKey) || (b.rootEntityId && nonEscaping.has(b.rootEntityId));
-        if (aNonEscaping || bNonEscaping) {
+        if (!hasBareAbsolute && (aNonEscaping || bNonEscaping)) {
           relations.push('no');
           reasonCodes.add('distinct-non-escaping-allocation');
           continue;

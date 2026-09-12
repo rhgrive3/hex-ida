@@ -151,6 +151,11 @@ export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
     pointsToRun = candidate.recovery == null
       ? baseline
       : { ...baseline, recovery: { ...candidate.recovery, publicationAllowed: false } };
+    // Escape facts belong to the points-to map that is actually published. A
+    // rejected refinement restores the baseline map, so proofs cached against
+    // the rejected candidate must not survive into baseline alias answers
+    // (#5215).
+    escapeRun = null;
     return pointsToRun;
   }
 
@@ -172,7 +177,18 @@ export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
       memorySsa,
     };
     if (options.snapshotId == null && memoryBinding.snapshotId != null) {
-      effectiveSnapshotId = strictSnapshotId(memoryBinding.snapshotId);
+      const rebound = strictSnapshotId(memoryBinding.snapshotId);
+      if (rebound !== effectiveSnapshotId) {
+        // A late rebind changes the solver's snapshot identity. The cached
+        // baseline was computed under the previous identity, so keeping it
+        // would make the fallback status disagree with the rebound solver
+        // status and deterministically fail the snapshot-mixing guard
+        // (#4600). Recompute it under the new identity; escape evidence is
+        // invalidated for the same reason.
+        effectiveSnapshotId = rebound;
+        baselineRun = null;
+        escapeRun = null;
+      }
     }
     refinedRun = null;
     // Preserve demand-driven construction when the solver has not been asked

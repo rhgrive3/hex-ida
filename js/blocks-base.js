@@ -1268,7 +1268,7 @@ export function buildSemanticModel(raw, opts) {
     }
   }
 
-  markTailCalls(insns, o);
+  markTailCalls(insns, o, truncated);
   const bbInfo = buildBasicBlocks(insns, o);
   const flow = analyzeDataFlow(insns, Object.assign({ joinRows: bbInfo.joinRows }, o));
   const semantic = buildSemanticBlocks(insns, bbInfo, flow, o);
@@ -1308,16 +1308,32 @@ export function buildSemanticModel(raw, opts) {
  *
  * 行き先が自分の中（ループや if の合流）なら、もちろん呼び出しではない。
  */
-function markTailCalls(insns, o) {
+function markTailCalls(insns, o, truncated = false) {
   if (!insns.length) return;
   const lo = insns[0].address;
   const hi = insns[insns.length - 1].address;
   if (lo == null || hi == null) return;
-  void o;
+  const rowOfAddress = typeof o?.rowOfAddress === 'function' ? o.rowOfAddress : null;
+  const startRow = insns[0].row;
+  const endRow = Number.isInteger(o?.endRow) ? o.endRow : null;
   for (const insn of insns) {
     if (insn.isCall || insn.isConditional) continue;
     if (insn.mnemonic.toLowerCase() !== 'b' || insn.branchTarget == null) continue;
     if (insn.branchTarget >= lo && insn.branchTarget <= hi) continue;   // 自分の中へ跳んでいる
+    if (truncated && insn.branchTarget > hi) {
+      // 切り詰め境界の外は「観測範囲の外」であって関数の外ではない。同じ関数
+      // の後半への正当な内部 `b` がここで外部tail callへ化けていた（#5450）。
+      // 元の関数境界（o.endRow + rowOfAddress）で行き先が確定できるときだけ
+      // 内部/外部を判定し、確定できないときはtail callを断定せずunknownの
+      // まま残す。
+      let targetRow = null;
+      if (rowOfAddress) { try { targetRow = rowOfAddress(insn.branchTarget); } catch { /* hostile getter */ } }
+      const provenInternal = Number.isInteger(targetRow) && Number.isInteger(endRow)
+        && targetRow >= startRow && targetRow <= endRow;
+      const provenExternal = Number.isInteger(targetRow) && Number.isInteger(endRow)
+        && targetRow > endRow;
+      if (!provenExternal) continue;
+    }
     insn.isCall = true;
     insn.isTailCall = true;
     insn.callTarget = insn.branchTarget;
