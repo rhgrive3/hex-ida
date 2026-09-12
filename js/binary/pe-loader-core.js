@@ -181,6 +181,15 @@ function markImportPartial(image, message) {
   markPEPartial(image, 'imports-partial', message);
 }
 
+const PE64_IMPORT_ORDINAL_FLAG = 0x8000000000000000n;
+const PE64_IMPORT_NAME_RESERVED_MASK = 0x7fffffff80000000n;
+const PE64_IMPORT_ORDINAL_RESERVED_MASK = 0x7fffffffffff0000n;
+
+function pe64ImportThunkHasReservedBits(raw, { nameIsRva = true } = {}) {
+  if ((raw & PE64_IMPORT_ORDINAL_FLAG) !== 0n) return (raw & PE64_IMPORT_ORDINAL_RESERVED_MASK) !== 0n;
+  return nameIsRva && (raw & PE64_IMPORT_NAME_RESERVED_MASK) !== 0n;
+}
+
 export function parseImports(r, dir, image, sharedBudget = null) {
   if (!dir || !dir.rva || !dir.size) return;
   const budget = ensureBudget(image, sharedBudget);
@@ -208,12 +217,12 @@ export function parseImports(r, dir, image, sharedBudget = null) {
       if (!budget.take({inputBytes:ptrSize*2,records:1,objects:1,operations:2,estimatedHeapBytes:192},'import-thunk')) break;
       const raw=image.bits===64?r.u64(thunkOff):BigInt(r.u32(thunkOff));
       if(raw===0n){terminated=true;break;}
-      const ordinalMask=image.bits===64?0x8000000000000000n:0x80000000n;
+      const ordinalMask=image.bits===64?PE64_IMPORT_ORDINAL_FLAG:0x80000000n;
       let name=null,ordinal=null,hint=null;
+      if(image.bits===64&&pe64ImportThunkHasReservedBits(raw)){markImportPartial(image,`Ignored PE32+ import thunk with nonzero reserved bits for ${library||'<unknown>'}`);continue;}
       if(raw&ordinalMask) ordinal=Number(raw&0xffffn);
       else {
-        const ibnRaw=raw&(image.bits===64?0x7fffffffffffffffn:0x7fffffffn);
-        if(ibnRaw>0xffffffffn){markImportPartial(image,`Ignored PE import thunk with out-of-range name RVA for ${library||'<unknown>'}`);continue;}
+        const ibnRaw=raw&(image.bits===64?0x7fffffffn:0x7fffffffn);
         const ibnRva=Number(ibnRaw), ibnRange=mappedFileRangeForRva(image,ibnRva);
         if(ibnRange && ibnRange.start+2<ibnRange.end){hint=r.u16(ibnRange.start);name=mappedCStringAtOffset(r,ibnRange.start+2,ibnRange.end,budget,'PE import name');}
         if(!name){markImportPartial(image,`Ignored malformed PE import thunk for ${library||'<unknown>'}`);continue;}
@@ -545,8 +554,9 @@ export function parseDelayImports(r, dir, image, sharedBudget = null) {
     for(let index=0;index<100000;index++){
       const thunkOff=thunkRange.start+index*ptrSize,iatOff=iatRange.start+index*ptrSize;if(thunkOff+ptrSize>thunkRange.end||iatOff+ptrSize>iatRange.end||thunkOff+ptrSize>r.length||iatOff+ptrSize>r.length)break;
       if(!budget.take({inputBytes:ptrSize*2,records:1,objects:1,operations:2,estimatedHeapBytes:192},'delay-import-thunk'))break;
-      const raw=image.bits===64?r.u64(thunkOff):BigInt(r.u32(thunkOff));if(raw===0n){terminated=true;break;}const ordinalMask=image.bits===64?0x8000000000000000n:0x80000000n;let name=null,ordinal=null,hint=null;
-      if(raw&ordinalMask)ordinal=Number(raw&0xffffn);else{let ibnRva;if(attrs&1){const masked=raw&(image.bits===64?0x7fffffffffffffffn:0x7fffffffn);if(masked>0xffffffffn)continue;ibnRva=Number(masked);}else{const va=raw&(image.bits===64?0x7fffffffffffffffn:0x7fffffffn);ibnRva=va>=image.imageBase&&va-image.imageBase<=0xffffffffn?Number(va-image.imageBase):0;}const ibnRange=mappedFileRangeForRva(image,ibnRva);if(ibnRange&&ibnRange.start+2<ibnRange.end){hint=r.u16(ibnRange.start);name=mappedCStringAtOffset(r,ibnRange.start+2,ibnRange.end,budget,'PE delay import name');}if(!name){image.warnings.push(`Ignored malformed PE delay-import thunk for ${library||'<unknown>'}`);continue;}}
+      const raw=image.bits===64?r.u64(thunkOff):BigInt(r.u32(thunkOff));if(raw===0n){terminated=true;break;}const ordinalMask=image.bits===64?PE64_IMPORT_ORDINAL_FLAG:0x80000000n;let name=null,ordinal=null,hint=null;
+      if(image.bits===64&&pe64ImportThunkHasReservedBits(raw,{nameIsRva:!!(attrs&1)})){budget.partial('delay-imports:malformed-thunk',`Ignored malformed PE32+ delay-import thunk with nonzero reserved bits for ${library||'<unknown>'}`);continue;}
+      if(raw&ordinalMask)ordinal=Number(raw&0xffffn);else{let ibnRva;if(attrs&1){const masked=raw&(image.bits===64?0x7fffffffn:0x7fffffffn);ibnRva=Number(masked);}else{const va=raw&(image.bits===64?0x7fffffffffffffffn:0x7fffffffn);ibnRva=va>=image.imageBase&&va-image.imageBase<=0xffffffffn?Number(va-image.imageBase):0;}const ibnRange=mappedFileRangeForRva(image,ibnRva);if(ibnRange&&ibnRange.start+2<ibnRange.end){hint=r.u16(ibnRange.start);name=mappedCStringAtOffset(r,ibnRange.start+2,ibnRange.end,budget,'PE delay import name');}if(!name){image.warnings.push(`Ignored malformed PE delay-import thunk for ${library||'<unknown>'}`);continue;}}
       const iatAddress=image.imageBase+BigInt(iatRva+index*ptrSize);image.imports.push({name:name||`#${ordinal}`,library,ordinal,hint,source:'PE-delay-import',sites:[{address:iatAddress,offset:BigInt(iatOff),kind:'delay-iat'}]});
     }
     if(!terminated)budget.partial('delay-imports:unterminated-thunk',`PE delay-import thunk table for ${library} reached its mapped boundary`);
