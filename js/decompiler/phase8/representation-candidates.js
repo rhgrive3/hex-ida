@@ -12,13 +12,36 @@ import { verifyDeobfuscationCandidate } from '../../symbolic/taint/proof-consume
 import { expr } from '../ast/nodes.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { RewriteEngine } from '../rewrite/engine.js';
+import { recoverArm64ClangIdiom } from '../idioms/arm64-clang.js';
 import { compileProofExpression } from './proof-expression.js';
 
-export const REPRESENTATION_CANDIDATE_VERSION = 'hex.representation-candidates/3';
+export const REPRESENTATION_CANDIDATE_VERSION = 'hex.representation-candidates/4';
 const RULES = Object.freeze(DEFAULT_RULES.map(rule => Object.freeze({...rule})));
 if (new Set(RULES.map(rule => rule.name)).size !== RULES.length) throw new TypeError('duplicate-representation-rule');
 export const REPRESENTATION_RULES = Object.freeze(RULES.map(rule => Object.freeze({name:rule.name,phase:rule.phase})));
-const RULESET_DIGEST = stableDigest({version:REPRESENTATION_CANDIDATE_VERSION,rules:REPRESENTATION_RULES});
+// Reuse the ordinary recognizer through the same bounded engine. Its local
+// evidence only records a proposed shape; the original canonical target still
+// faces independent equivalence verification before any adoption. Other idiom
+// families retain their current unsupported handoff until separately admitted.
+const IDIOM_RULES = Object.freeze([Object.freeze({
+  name:'recognize-max', phase:'representation-idiom-proposal',
+  match(node) {
+    const proposed = recoverArm64ClangIdiom(node);
+    return proposed !== node && proposed.kind === 'intrinsic' && proposed.name === 'max' ? {proposed} : null;
+  },
+  rewrite:(_node,match) => match.proposed,
+  proof:Object.freeze({kind:'candidate-only-idiom-observation',
+    detail:'existing sign-mask recognizer; independent whole-target proof required'}),
+})]);
+export const REPRESENTATION_IDIOMS = Object.freeze(IDIOM_RULES.map(({name,phase}) => Object.freeze({name,phase})));
+const ALL_RULES = Object.freeze([...IDIOM_RULES,...RULES]);
+if (new Set(ALL_RULES.map(({name}) => name)).size !== ALL_RULES.length
+    || IDIOM_RULES.some(idiom => RULES.some(rule => rule.phase === idiom.phase))) {
+  throw new TypeError('representation-idiom-registry-collision');
+}
+const RULE_NAMES = new Set(REPRESENTATION_RULES.map(({name}) => name));
+const RULESET_DIGEST = stableDigest({version:REPRESENTATION_CANDIDATE_VERSION,
+  rules:REPRESENTATION_RULES,idioms:REPRESENTATION_IDIOMS});
 const LIMITS = Object.freeze({workItems:100000,allocationUnits:100000,candidates:1});
 export const REPRESENTATION_REWRITE_LIMITS = Object.freeze({nodeBudget:512,maxIterations:12,maxApplications:128,maxHistoryOrigins:0});
 const candidateAudits = new WeakMap();
@@ -150,15 +173,16 @@ export function compileRepresentationProposal(root, inputs, guard) {
 
 export async function queryRepresentationCandidates(options = {}) {
   let guard, submitted, applications = null;
-  const coverage = (disposition,reason) => Object.freeze({version:REPRESENTATION_CANDIDATE_VERSION,
-    rulesetDigest:RULESET_DIGEST,registered:RULES.length,scope:'candidate-generation-not-rule-theorems-or-render-adoption',
-    rows:Object.freeze(REPRESENTATION_RULES.map(rule => Object.freeze({...rule,
+  const coverage = (registry,disposition,reason) => Object.freeze({version:REPRESENTATION_CANDIDATE_VERSION,
+    rulesetDigest:RULESET_DIGEST,registered:registry.length,scope:'candidate-generation-not-rule-theorems-or-render-adoption',
+    rows:Object.freeze(registry.map(rule => Object.freeze({...rule,
       candidateApplications:applications?.[rule.name] ?? 0,
       disposition:applications && !applications[rule.name] ? 'not-selected' : disposition,reason}))) });
   const result = (status,reason,candidates = EMPTY,disposition = 'unknown') => {
     if (status !== 'complete') applications = null;
     const report = Object.freeze({version:REPRESENTATION_CANDIDATE_VERSION,status,reason,candidates,
-      ruleCoverage:coverage(disposition,reason),metrics:guard?.metrics() ?? null});
+      ruleCoverage:coverage(REPRESENTATION_RULES,disposition,reason),
+      idiomCoverage:coverage(REPRESENTATION_IDIOMS,disposition,reason),metrics:guard?.metrics() ?? null});
     if (status === 'complete') guard.check();
     return report;
   };
@@ -175,7 +199,7 @@ export async function queryRepresentationCandidates(options = {}) {
     if (queryArray(correspondence.inputs ?? EMPTY,guard).length) throw new QueryFailure('conditional-or-effect-representation-handoff');
     if (Object.hasOwn(submitted,'executionSnapshot')) throw new QueryFailure('execution-path-proof-handoff');
     if (typeof submitted.valueId !== 'string' || !submitted.valueId || submitted.valueId.length > 512) throw new QueryFailure('invalid-representation-value-id');
-    guard.take('allocationUnits',RULES.length * 2);
+    guard.take('allocationUnits',ALL_RULES.length * 2);
     const expression = submitted.expression, binding = queryRecord(submitted.inputBinding);
     if (binding.expression !== expression) throw new QueryFailure('representation-input-binding-mismatch');
     const sourceInputs = queryArray(binding.inputs,guard,128).map(input => queryRecord(input,guard));
@@ -186,7 +210,7 @@ export async function queryRepresentationCandidates(options = {}) {
     const variables = sourceInputs.map((input,index) => expr.variable(`proof_input_${index}`,input.bits,false));
     const inputMap = new Map(variables.map((variable,index) => [variable,sourceInputs[index].symbol]));
     const root = proposalView(recipe,variables,inputMap,guard);
-    const engine = new RewriteEngine(RULES,REPRESENTATION_REWRITE_LIMITS);
+    const engine = new RewriteEngine(ALL_RULES,REPRESENTATION_REWRITE_LIMITS);
     const rewritten = engine.rewrite(root,{deterministicTransforms:true,shouldAbort() {
       guard.take('workItems'); return false;
     }});
@@ -220,22 +244,25 @@ export async function queryRepresentationCandidates(options = {}) {
     if (!verification.eligible && /budget|timeout|deadline|cancel|stale/.test(verification.reason ?? '')) {
       throw new QueryFailure(verification.reason);
     }
-    const rules = Object.freeze([...new Set(rewritten.proof.map(record => record.rule))]);
-    const candidate = Object.freeze({rule:'representation-rules',rules,rulesetVersion:REPRESENTATION_CANDIDATE_VERSION,
+    const ruleTrace = Object.freeze(rewritten.proof.filter(record => RULE_NAMES.has(record.rule)).map(record => record.rule));
+    const idiomTrace = Object.freeze(rewritten.proof.filter(record => !RULE_NAMES.has(record.rule)).map(record => record.rule));
+    const rules = Object.freeze([...new Set(ruleTrace)]), idioms = Object.freeze([...new Set(idiomTrace)]);
+    const candidate = Object.freeze({rule:'representation-rules',rules,idioms,rulesetVersion:REPRESENTATION_CANDIDATE_VERSION,
       candidateId,before:expression,after,eligible:verification.eligible,verification});
     // Preserve the real engine's selected schedule, not the registry union or
     // caller-supplied audit fields. A proof covers the final canonical proposal;
     // it does not turn each intermediate display rule into a theorem.
-    guard.take('allocationUnits',rewritten.proof.length + rules.length * 2 + 20);
+    guard.take('allocationUnits',rewritten.proof.length + (rules.length + idioms.length) * 2 + 20);
     const measured = guard.metrics();
     const audit = Object.freeze({schemaVersion:'hex-phase8-generator-audit/v1',strategy:'representation-rules',
       scope:'whole-target-rewrite-run-not-per-rule-equivalence-or-render-adoption',
       candidateId,rulesetVersion:REPRESENTATION_CANDIDATE_VERSION,rulesetDigest:RULESET_DIGEST,
-      appliedRules:rules,ruleTrace:Object.freeze(rewritten.proof.map(record => record.rule)),
+      appliedRules:rules,ruleTrace,idiomTrace,
+      idiomApplications:Object.freeze(Object.fromEntries(idioms.map(rule => [rule,rewritten.stats.byRule[rule]]))),
       ruleApplications:Object.freeze(Object.fromEntries(rules.map(rule => [rule,rewritten.stats.byRule[rule]]))),
       rewriteLimits:REPRESENTATION_REWRITE_LIMITS,
       rewriteResources:Object.freeze({iterations:rewritten.stats.iterations,applications:rewritten.stats.applications,
-        phases:new Set(RULES.map(rule => rule.phase)).size,budgetExceeded:rewritten.stats.budgetExceeded}),
+        phases:new Set(ALL_RULES.map(rule => rule.phase)).size,budgetExceeded:rewritten.stats.budgetExceeded}),
       limits:guard.limits,resources:Object.freeze(Object.fromEntries(Object.keys(guard.limits).map(key => [key,measured[key]]))),
       proofQueryHash:verification.evidence?.queryHash ?? null});
     const complete = result('complete',null,Object.freeze([candidate]),verification.eligible ? 'proved-candidate'

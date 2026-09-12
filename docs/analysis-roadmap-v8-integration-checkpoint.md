@@ -5794,3 +5794,52 @@ independent verifier/private plan/transaction/safe projection for adoption.
 The retained audit and unapplied regression patch are in
 `c4-next-20260912/`. This is not permission to treat legacy spelling as proof or
 to shrink the remaining ordinary-view and memory/CFG/exception requirements.
+
+
+## 2026-09-12 C4 ordinary sign-mask proposal source slice
+
+Continued in the same workspace/branch/PR #7036, starting from
+`497c18684e2a9ffd2e175c2b2228a427d68b4854`. The next-gap paragraph above is now
+implemented: candidate version4 wraps the existing sign-mask max recognizer in
+the same bounded engine before the unchanged 64-rule schedule. Separate idiom
+coverage/trace/counts and the combined ruleset digest describe proposals only.
+The original canonical expression, independent verifier, private pass plan and
+safe scalar rendering still determine adoption. Generic BV4/BV8 regressions use
+the actual canonical production path and exhaustive values, not reduced native
+instruction substitutes. Other idioms and wider observables remain open.
+
+Independent review found that reusing the ordinary `idiom` phase moved strength
+reduction before algebra. A dedicated `representation-idiom-proposal` phase,
+phase/name collision guards and a mixed sign-mask-over-addition regression now
+preserve both schedules and shared accounting. The existing ordering assertion
+failed before repair and passes after it; no assertion was weakened.
+
+WIP evidence under the persistent analysis-roadmap-20260909 evidence directory:
+
+- `c4-idiom-baseline-red-2d09e72b-453c-4b3a-84e4-d89cff4128fa.json`:
+  the two direct idiom cases failed with zero candidates before implementation.
+- `c4-idiom-schedule-regression-008d776c-bd83-465c-a621-5ece66b5f40e.json`
+  and `c4-idiom-schedule-repaired-657f110d-90d9-41a1-a5ec-bdb0a1ece84f.json`:
+  scheduling regression then repair; final representation/history 30/31 PASS,
+  including all eight added tests. The unchanged public-machine assertion still
+  expects unsupported-instruction but receives scalar-input-width-mismatch.
+- `c4-idiom-prior-public-negative-9d93798e-e9a7-4167-96e3-3daf1485233d.json`:
+  that same public-machine failure reproduced using exact parent497 source/test
+  bytes, with relative module resolution preserved by the retained loader.
+- `c4-idiom-proof-boundaries-wip-fd4d4d56-8b29-47a1-89bc-657a528df3fc.json`:
+  45 assertions PASS; proof-target-decisions fails during module initialization
+  with PROOF_REWRITE_PASS before initialization. Exact parent source reproduces
+  this in `c4-idiom-prior-target-decisions-53944920-2e9e-4c17-bfcf-09ad4706444b.json`.
+- `c4-idiom-review-20260912/final-source-review.json`: independent read-only
+  review binds the three source/test hashes and finds no remaining own-diff
+  defect. It is not the named Sol review or a full-product verifier result.
+- The obsolete pre-repair canonical substrate attempt was canceled after the
+  scheduling defect was found; `c4-idiom-pre-fix-substrate-stop.json` records the
+  stopped own process tree. It is not latest-source canonical completion proof.
+
+This remains a PARTIAL source slice. The two parent failures are retained for
+user-owned issue work. Integration remains CHECKPOINT-LOCKED; no full gate,
+current-main reconciliation, release/runtime activation or physical-device proof
+is claimed. Canonical generation must follow this runtime source change; exact
+source/build/backup receipts are recorded separately when completed. Installed
+esbuild0.28.1 differs from lock0.28.2; environment repair remains excluded.

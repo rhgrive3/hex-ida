@@ -72,6 +72,22 @@ universal-input relation, obtained using its `translate-only` analysis mode.
 Each tree leaf keeps an object binding to the actual canonical input; equal
 display names never establish that relation.
 
+Version 4 also proposes the existing sign-mask idiom `x & ~(x >>s (bits-1))`
+through `recoverArm64ClangIdiom`. A distinct internal proposal phase runs before
+the unchanged 64-rule schedule, using the same engine and shared work/node/
+application limits. Phase/name collisions are rejected. Only this recognizer's
+signed `max(x,0)` family is currently admitted as an idiom proposal.
+
+`idiomCoverage` and the captured `idiomTrace` / `idiomApplications` record that
+work separately from `ruleCoverage` and ordinary rule traces. Their combined
+application count is the actual shared engine count. The version and digest
+bind both registries. Recognition alone never authorizes adoption: the proposed
+max is compiled to canonical signed compare/ITE, independently proved, and
+rendered through the existing safe recipe. Literal legacy `max(...)` spelling
+is not substituted as proof. Regressions cover actual generic BV4/BV8 production
+targets, exhaustive values, mixed ordinary-rule scheduling, stale input, replay
+and withheld publication; they do not certify native-width or other idiom families.
+
 The resulting proposal is compiled into the existing Expr DAG, then independently
 checked against the **original canonical target**, not against a rewritten view
 or the rule's own `proof` text. Only the existing private receipt/plan/transaction

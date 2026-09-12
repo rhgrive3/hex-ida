@@ -210,7 +210,7 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
         guard.take('allocationUnits',generated.metrics.allocationUnits);
       }
       const candidates = generated?.candidates ?? item.candidates;
-      const generatorDecision = generated ? {ruleCoverage:generated.ruleCoverage}
+      const generatorDecision = generated ? {ruleCoverage:generated.ruleCoverage,idiomCoverage:generated.idiomCoverage}
         : item.ruleOrder ? {ruleOrder:item.ruleOrder} : {};
       let candidate, projection;
       for (const option of candidates) {

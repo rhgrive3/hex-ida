@@ -4,13 +4,13 @@ import * as E from '../../../js/symbolic/expr/index.js';
 import { querySymbolicAnalysis, isSymbolicAnalysisResult, readSymbolicTargetInputs } from '../../../js/symbolic/query/analysis.js';
 import { createTaintModels } from '../../../js/symbolic/taint/models.js';
 import { isAdoptableCandidate } from '../../../js/symbolic/taint/proof-consumer.js';
-import { compileRepresentationProposal, queryRepresentationCandidates, REPRESENTATION_RULES,
+import { compileRepresentationProposal, queryRepresentationCandidates, REPRESENTATION_RULES, REPRESENTATION_IDIOMS,
   REPRESENTATION_CANDIDATE_VERSION, REPRESENTATION_REWRITE_LIMITS, readRepresentationGeneratorAudit } from '../../../js/decompiler/phase8/representation-candidates.js';
 import { DEFAULT_RULES } from '../../../js/decompiler/rewrite/rules.js';
 import { expr } from '../../../js/decompiler/ast/nodes.js';
 import { evaluateExpression } from '../../../js/decompiler/verify/equivalence.js';
 import { preparePhase8RewritePlan, isPhase8RewritePlan, readProvedRewrites } from '../../../js/decompiler/phase8/pass-validation.js';
-import { enhanceSemanticDecompilation, optimizeSemanticDecompilation } from '../../../js/decompiler/pipeline.js';
+import { enhanceSemanticDecompilation, optimizeSemanticDecompilation, readProducerInputExpressions } from '../../../js/decompiler/pipeline.js';
 import { proofFixture, identity } from '../helpers/proof-fixtures.mjs';
 import { fixture } from '../helpers/ir-fixtures.mjs';
 import { buildSemanticModel } from '../../../js/blocks.js';
@@ -373,4 +373,220 @@ test('C4-04 the public machine entry defers ordinary simplification until proof 
   assert.equal(unsupported.proofOptimization.adopted,0);
   assert.ok(unsupported.ir.instructions.some(inst => inst.op === 'bfx'));
   assert.match(unsupported.pseudocode,/\+/);
+});
+
+// This extends candidate mining through the existing recognizer. The 64 actual
+// RewriteEngine rules retain their separate registry and application accounting.
+// Idiom observations describe a proposed normalization, never proof authority.
+function signMaskExpression(bits, { logical = false, wrongCount = false, independent = false } = {}) {
+  const input = E.createFreshSymbol(E.bvSort(bits),'sign_mask_input');
+  const other = independent ? E.createFreshSymbol(E.bvSort(bits),'sign_mask_input') : input;
+  const count = E.createBv(bits,BigInt(bits - (wrongCount ? 2 : 1)));
+  const shifted = E.createBinary(logical ? 'lshr' : 'ashr',other,count);
+  return { input, symbols:independent ? [input,other] : [input],
+    before:E.createBinary('and',input,E.createUnary('not',shifted)) };
+}
+
+function assertSignMaskIdiomAudit(audit, queryHash) {
+  assert.ok(audit,'the real recognizer-only candidate must retain its generator observation');
+  assert.equal(audit.strategy,'representation-rules');
+  assert.equal(audit.schemaVersion,'hex-phase8-generator-audit/v1');
+  assert.equal(audit.rulesetVersion,REPRESENTATION_CANDIDATE_VERSION);
+  assert.equal(audit.proofQueryHash,queryHash);
+  assert.deepEqual(audit.ruleTrace,[],'recognizer work is not a fabricated DEFAULT_RULES application');
+  assert.deepEqual(audit.appliedRules,[]);
+  assert.deepEqual(audit.ruleApplications,{});
+  assert.deepEqual(audit.idiomTrace,['recognize-max']);
+  assert.deepEqual(audit.idiomApplications,{'recognize-max':1});
+  assert.equal(audit.rewriteResources.applications,audit.ruleTrace.length + audit.idiomTrace.length);
+  for (const item of [audit,audit.idiomTrace,audit.idiomApplications]) assert.ok(Object.isFrozen(item));
+  assert.equal(readRepresentationGeneratorAudit({...audit}),null);
+  assert.equal(isAdoptableCandidate(audit,{identity}),false);
+  assert.equal(isPhase8RewritePlan(audit),false);
+  assert.deepEqual(JSON.parse(JSON.stringify(audit)),audit);
+}
+
+for (const bits of [4,8]) test(`C4-04 recognizer-only sign-mask BV${bits} reaches independent candidate proof`, async () => {
+  const f = signMaskExpression(bits), r = await query(f.before,f.symbols);
+  assert.equal(r.status,'complete',r.reason);
+  // Keep this assertion before new audit fields: the current producer stops at
+  // zero candidates because no DEFAULT_RULES entry recognizes this sign mask.
+  assert.equal(r.candidates.length,1,`BV${bits}: an observed recognizer-only change must become a candidate`);
+  assert.equal(r.ruleCoverage.registered,64);
+  assert.deepEqual(REPRESENTATION_RULES,DEFAULT_RULES.map(({name,phase}) => ({name,phase})));
+  assert.ok(r.ruleCoverage.rows.every(row => row.candidateApplications === 0 && row.disposition === 'not-selected'));
+  const idiom = r.idiomCoverage.rows.find(row => row.name === 'recognize-max');
+  assert.ok(idiom); assert.equal(idiom.candidateApplications,1);
+  assert.equal(idiom.disposition,'proved-candidate');
+  const candidate = r.candidates[0], audit = readRepresentationGeneratorAudit(candidate);
+  assert.equal(candidate.before,f.before);
+  assert.equal(candidate.after.sort.width,bits,'the actual target retains its complete width');
+  assert.notEqual(E.computeStructuralHash(candidate.after),E.computeStructuralHash(f.before));
+  assert.equal(candidate.eligible,true,candidate.verification.reason);
+  assert.equal(isAdoptableCandidate(candidate.verification,{identity}),true);
+  assertSignMaskIdiomAudit(audit,candidate.verification.evidence.queryHash);
+  assert.equal(audit.candidateId,candidate.candidateId);
+  assert.equal(readRepresentationGeneratorAudit({...candidate}),null);
+  for (let i=0;i<2**bits;i++) {
+    const value = BigInt(i), expected = BigInt.asIntN(bits,value) < 0n ? 0n : value;
+    const environment = new Map([[f.input.symbolId,value]]);
+    const before = E.evaluateExpr(f.before,environment), after = E.evaluateExpr(candidate.after,environment);
+    assert.equal(before.status,E.EVAL_STATUS.VALUE); assert.equal(after.status,E.EVAL_STATUS.VALUE);
+    assert.equal(before.value,expected,`BV${bits}: canonical before ${value}`);
+    assert.equal(after.value,expected,`BV${bits}: canonical proposal ${value}`);
+  }
+});
+
+test('C4-04 idiom and ordinary rules retain separate phases, traces and one shared budget', async () => {
+  assert.ok(REPRESENTATION_IDIOMS.every(idiom => !DEFAULT_RULES.some(rule => rule.phase === idiom.phase)));
+  assert.ok(Object.isFrozen(REPRESENTATION_IDIOMS) && REPRESENTATION_IDIOMS.every(Object.isFrozen));
+  const input = E.createFreshSymbol(E.bvSort(4),'mixed_idiom');
+  const doubled = E.createBinary('add',input,input);
+  const before = E.createBinary('and',doubled,E.createUnary('not',E.createBinary('ashr',doubled,E.createBv(4,3n))));
+  const r = await query(before,[input]);
+  assert.equal(r.status,'complete',r.reason);
+  assert.equal(r.candidates.length,1);
+  const candidate = r.candidates[0], audit = readRepresentationGeneratorAudit(candidate);
+  assert.equal(candidate.eligible,true,candidate.verification.reason);
+  assert.equal(isAdoptableCandidate(candidate.verification,{identity}),true);
+  assert.deepEqual(audit.idiomTrace,['recognize-max']);
+  assert.deepEqual(audit.idiomApplications,{'recognize-max':1});
+  assert.deepEqual(audit.ruleTrace,['double-term','strength-mul-power-two']);
+  assert.equal(audit.rewriteResources.applications,audit.ruleTrace.length + audit.idiomTrace.length);
+  assert.ok(audit.rewriteResources.applications <= audit.rewriteLimits.maxApplications);
+  assert.equal(r.ruleCoverage.registered,64);
+  assert.equal(r.idiomCoverage.registered,1);
+  for (const [coverage,applications] of [[r.ruleCoverage,audit.ruleApplications],[r.idiomCoverage,audit.idiomApplications]]) {
+    for (const row of coverage.rows) assert.equal(row.candidateApplications,applications[row.name] ?? 0);
+  }
+  assert.deepEqual(audit.appliedRules,candidate.rules);
+  assert.deepEqual(candidate.idioms,['recognize-max']);
+  for (const [key,limit] of Object.entries(audit.limits)) assert.ok(audit.resources[key] <= limit);
+  for (let i=0;i<16;i++) {
+    const environment = new Map([[input.symbolId,BigInt(i)]]);
+    const original = E.evaluateExpr(before,environment), proposed = E.evaluateExpr(candidate.after,environment);
+    const doubledValue = BigInt.asUintN(4,BigInt(i)*2n);
+    const expected = BigInt.asIntN(4,doubledValue) < 0n ? 0n : doubledValue;
+    assert.equal(original.status,E.EVAL_STATUS.VALUE); assert.equal(original.value,expected);
+    assert.equal(proposed.status,E.EVAL_STATUS.VALUE); assert.equal(proposed.value,expected);
+  }
+});
+
+test('C4-04 sign-mask recognition does not invent proposals for wrong operators, counts or independent inputs', async () => {
+  for (const bits of [4,8]) for (const options of [{logical:true},{wrongCount:true},{independent:true}]) {
+    const f = signMaskExpression(bits,options), r = await query(f.before,f.symbols);
+    assert.equal(r.status,'complete',`${bits}/${JSON.stringify(options)}:${r.reason}`);
+    assert.deepEqual(r.candidates,[]);
+    assert.equal(r.ruleCoverage.registered,64);
+    assert.ok(r.ruleCoverage.rows.every(row => row.candidateApplications === 0));
+    assert.ok(r.idiomCoverage.rows.every(row => row.candidateApplications === 0 && row.disposition === 'not-selected'));
+  }
+});
+
+test('C4-04 recognizer-only candidate requests preserve unknown and reject copied observation authority', async () => {
+  const f = signMaskExpression(4);
+  for (const overrides of [{limits:{workItems:0}},{limits:{candidates:0}},{timeoutMs:0},
+    {isCancelled:() => true},{getCurrentIdentity:() => ({...identity,snapshotId:'stale-idiom'})}]) {
+    const r = await query(f.before,f.symbols,overrides);
+    assert.equal(r.status,'partial');
+    assert.deepEqual(r.candidates,[]);
+    assert.equal(readRepresentationGeneratorAudit(r),null);
+    assert.equal(r.ruleCoverage.registered,64);
+    assert.ok(r.ruleCoverage.rows.every(row => row.disposition === 'unknown' && row.candidateApplications === 0));
+    assert.ok(r.idiomCoverage.rows.every(row => row.disposition === 'unknown' && row.candidateApplications === 0));
+  }
+  const fake = {strategy:'representation-rules',idiomTrace:['recognize-forged'],
+    idiomApplications:{'recognize-forged':1},proofQueryHash:'forged'};
+  const r = await query(f.before,f.symbols,{generatorAudit:fake});
+  assert.equal(r.status,'complete',r.reason); assert.equal(r.candidates.length,1);
+  const audit = readRepresentationGeneratorAudit(r.candidates[0]);
+  assertSignMaskIdiomAudit(audit,r.candidates[0].verification.evidence.queryHash);
+  assert.notEqual(audit,fake);
+  assert.throws(() => { audit.idiomTrace.push('recognize-forged'); },TypeError);
+  assert.throws(() => { audit.idiomApplications['recognize-max'] = 2; },TypeError);
+});
+
+// The same canonical sign-mask shape as provenance/idiom-history.test.mjs,
+// passed through the actual wrapper that privately issues proof-only producers.
+// BV4 and BV8 are genuine generic targets, not reduced-width ARM64 stand-ins.
+function signMaskProductionFixture(bits, { defer = true } = {}) {
+  const f = fixture(`recognizer_sign_mask_${bits}`); f.block(0);
+  const input = f.opaque(bits); input.index = 0; input.reg = 'x0'; input.signed = true;
+  const shifted = f.binary('ashr',input,f.constant(BigInt(bits - 1),bits),bits);
+  const target = f.binary('and',input,f.unary('not',shifted,bits),bits); f.ret();
+  const ir = f.build(); ir.instructions = ir.blocks.flatMap(block => [...block.phis,...block.insts]);
+  ir.instructions.forEach((inst,index) => {inst.id=`idiom_${index}`; inst.address=0x1000n+BigInt(index*4);});
+  const ret = ir.instructions.at(-1); ret.args = [{value:target}]; target.uses.push(ret);
+  const canonical = structuredClone(ir);
+  const result = enhanceSemanticDecompilation({semantic:true,ir,types:null,
+    lines:[{kind:'stmt',indent:0,text:'return pending;',row:ret.row,addr:ret.address}],metrics:{},ctx:{}},null,
+    {phase8PrepareProof:true,phase8ProofOnlyRewrites:defer,deterministicTransforms:true,decompilerTimeBudgetMs:1000});
+  return {ir,input,target,result,canonical,options:{identity,abiId:'generic-v1',memory:{addressBits:8},targets:[target],
+    timeoutMs:1000,backendTier:'tiered',candidateStrategy:'representation-rules',requireProofOnlyRewrites:true}};
+}
+
+for (const bits of [4,8]) test(`C4-04 sign-mask BV${bits} adopts only through the real prepared producer and proof transaction`, async () => {
+  const ordinary = signMaskProductionFixture(bits,{defer:false}), f = signMaskProductionFixture(bits);
+  assert.ok(ordinary.result.rewriteProof.some(row => row.rule === 'recognize-max'));
+  assert.ok(!f.result.rewriteProof.some(row => row.rule === 'recognize-max'));
+  assert.equal(f.result.rewriteStats.deferred,'phase8-proof-projection');
+  const originalText = f.result.pseudocode, originalAst = f.result.cAst;
+  const original = f.result.semanticAst.values.find(row => row.valueId === f.target.id).expression;
+  const translated = await querySymbolicAnalysis(f.ir,{...f.options,models,candidateStrategy:'translate-only'});
+  assert.equal(translated.status,'complete',translated.reason);
+  const binding = readSymbolicTargetInputs(translated,f.target,identity);
+  assert.ok(binding); assert.equal(binding.inputs.length,1);
+  assert.equal(binding.inputs[0].value,f.input);
+  assert.equal(binding.expression.sort.width,bits);
+  const inputs = readProducerInputExpressions(f.result,[f.input]);
+  assert.ok(inputs); assert.equal(inputs[0].expression.bits,bits);
+  const inputName = inputs[0].expression.name;
+  const r = await optimizeSemanticDecompilation(f.result,f.options);
+  assert.equal(r.proofOptimization.status,'complete',r.proofOptimization.reason);
+  assert.equal(r.proofOptimization.adopted,1);
+  assert.equal(r.proofOptimization.rewritePolicy,'deferred-optional-scalar-rewrites');
+  const [decision] = r.proofOptimization.targetDecisions;
+  assert.equal(decision.disposition,'adopted'); assert.equal(decision.candidateCount,1);
+  assert.equal(decision.ruleCoverage.registered,64);
+  const transform = r.phase8Projection.transforms.find(row => row.valueId === decision.valueId && row.queryHash === decision.queryHash);
+  assert.ok(transform,'the eligible proposal must reach the real committed and rendered transform');
+  assert.equal(transform.kind,'solver-scalar');
+  assert.notEqual(transform.beforeHash,transform.afterHash);
+  assertSignMaskIdiomAudit(transform.generatorAudit,decision.queryHash);
+  assert.ok(r.renderProvenance.ledger.some(row => row.generatorAudit === transform.generatorAudit && row.producedRefs.length));
+  const after = r.semanticAst.values.find(row => row.valueId === f.target.id).expression;
+  assert.equal(after.bits,bits); assert.notEqual(after,original);
+  assert.notEqual(r.pseudocode,originalText);
+  // The existing safe recipe may print an ITE. Literal legacy max(...) text is
+  // not evidence of equivalence and is not required for this scalar adoption.
+  for (let i=0;i<2**bits;i++) {
+    const value = BigInt(i), expected = BigInt.asIntN(bits,value) < 0n ? 0n : value;
+    const before = E.evaluateExpr(binding.expression,new Map([[binding.inputs[0].symbol.symbolId,value]]));
+    assert.equal(before.status,E.EVAL_STATUS.VALUE);
+    assert.equal(before.value,expected,`BV${bits}: actual translated before ${value}`);
+    assert.equal(evaluateExpression(after,{[inputName]:value}),expected,`BV${bits}: actually adopted output ${value}`);
+  }
+  assert.equal(f.result.cAst,originalAst); assert.equal(f.result.pseudocode,originalText);
+  assert.equal(f.result.semanticAst.values.find(row => row.valueId === f.target.id).expression,original);
+  assert.deepEqual(structuredClone(f.ir),f.canonical);
+  const replay = await optimizeSemanticDecompilation(r,f.options);
+  assert.equal(replay.proofOptimization.status,'complete',replay.proofOptimization.reason);
+  assert.equal(replay.proofOptimization.adopted,0); assert.equal(replay.pseudocode,r.pseudocode);
+  assert.ok(replay.renderProvenance.ledger.some(row => row.generatorAudit === transform.generatorAudit));
+});
+
+test('C4-04 unknown, exhausted and stale sign-mask requests retain the exact prepared production output', async () => {
+  for (const options of [{timeoutMs:0},{phase8WorkBudget:0},{isCancelled:() => true}]) {
+    const f = signMaskProductionFixture(4), r = await optimizeSemanticDecompilation(f.result,{...f.options,...options});
+    assert.equal(r.proofOptimization.status,'partial'); assert.equal(r.proofOptimization.adopted,0);
+    assert.equal(r.cAst,f.result.cAst); assert.equal(r.semanticAst,f.result.semanticAst);
+    assert.equal(r.pseudocode,f.result.pseudocode);
+    assert.ok(!(r.phase8Projection?.transforms ?? []).some(row => ['solver-constant','solver-scalar'].includes(row.kind)));
+    assert.deepEqual(structuredClone(f.ir),f.canonical);
+  }
+  const f = signMaskProductionFixture(4); f.target.def.sub = 'or';
+  const r = await optimizeSemanticDecompilation(f.result,f.options);
+  assert.equal(r.proofOptimization.status,'partial'); assert.equal(r.proofOptimization.adopted,0);
+  assert.equal(r.proofOptimization.reason,'unissued-or-stale-projection');
+  assert.equal(r.cAst,f.result.cAst); assert.equal(r.pseudocode,f.result.pseudocode);
 });
