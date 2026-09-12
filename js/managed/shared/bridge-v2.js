@@ -6,6 +6,7 @@ import * as legacy from './bridge.js';
 import { lowerVMEffectsToSemanticIr as lowerCore } from './bridge-lowering-v2.js';
 import { overlayDexLowering } from './bridge-dex-overlay-v2.js';
 import { overlayJvmControlLowering } from './bridge-jvm-control-overlay-v2.js';
+import { overlayWasmNarrowLoadExtensions } from './bridge-wasm-narrow-load-overlay-v2.js';
 import { assertVMEffectFunctionBundleOwnership } from './vm-effects.js';
 
 export const MANAGED_BRIDGE_VERSION = legacy.MANAGED_BRIDGE_VERSION;
@@ -15,7 +16,8 @@ export const buildManagedTypeConstraintGraph = legacy.buildManagedTypeConstraint
 export function lowerVMEffectsToSemanticIr(value, options = {}) {
   assertVMEffectFunctionBundleOwnership(value);
   const lowered = overlayJvmControlLowering(value, lowerCore(value, options), options);
-  return overlayDexLowering(value, lowered);
+  const wasmLowered = overlayWasmNarrowLoadExtensions(value, lowered, options);
+  return overlayDexLowering(value, wasmLowered);
 }
 
 function ensureLowered(value, options) { return value && Array.isArray(value.bundles) ? lowerVMEffectsToSemanticIr(value, options) : value; }
