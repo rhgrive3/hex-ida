@@ -7223,3 +7223,10 @@ concurrent workspace load. This test now supplies the same explicit 5 s bounded
 allowance as the surrounding query, retaining its exact completion/value checks.
 Later exact-head results supersede that candidate receipt only for their own
 tested source. Existing broader product failures and full acceptance remain open.
+
+A final independent-review regression reproduced a stale region read when an
+execution lifecycle callback changed the closing rendered node after its earlier
+structural check. Structure consumption now runs related execution/state checks
+before its final pure region observation. The mutation test fails on the earlier
+candidate and rejects the stale capability after this ordering fix. This keeps
+both IR/state and rendered-region observations after the relevant callbacks.

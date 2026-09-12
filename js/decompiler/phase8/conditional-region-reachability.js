@@ -17,8 +17,8 @@ export function readConditionalRegionReachability(result, ir, identity) {
   try {
     if (!binding || binding.ir !== ir || !sameMemoryIdentity(binding.guard.identity, identity)) return null;
     binding.guard.check(identity);
-    return readConditionalRegionStructure(binding.structure, ir, identity)
-      && sameMemoryIdentity(binding.guard.identity, identity) && binding.executionCurrent() ? result : null;
+    return readConditionalRegionStructure(binding.structure, ir, identity, binding.executionCurrent)
+      && sameMemoryIdentity(binding.guard.identity, identity) ? result : null;
   } catch { return null; }
 }
 
@@ -223,7 +223,7 @@ export async function prepareConditionalRegionReachability(structure, ir, option
             branchId:data.id, terminalPaths:execution.paths.length, assumptions:[] } },
       });
       guard.check();
-      if (!readConditionalRegionStructure(structure, ir, guard.identity) || !checkedExecutionCurrent()) guard.fail('stale-proof-input');
+      if (!readConditionalRegionStructure(structure, ir, guard.identity, checkedExecutionCurrent)) guard.fail('stale-proof-input');
       return result;
     };
     // A complete-looking but empty feasible domain must not mint two vacuous
@@ -241,7 +241,7 @@ export async function prepareConditionalRegionReachability(structure, ir, option
     }
     await session.dispose(); session = null;
     guard.check();
-    if (!readConditionalRegionStructure(structure, ir, guard.identity) || !checkedExecutionCurrent()) return reject('stale-proof-input');
+    if (!readConditionalRegionStructure(structure, ir, guard.identity, checkedExecutionCurrent)) return reject('stale-proof-input');
     const complete = arms.every(arm => arm.verdict === 'proved' || arm.verdict === 'refuted' && arm.counterexampleValidated);
     const result = freeze({ version:1, status:complete ? 'complete' : 'partial',
       scope:'acyclic-canonical-executor-entry-path-feasibility', transformAuthorization:false,

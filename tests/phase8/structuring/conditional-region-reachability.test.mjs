@@ -222,6 +222,19 @@ test('cancelled and stale source results lose authority before and after asynchr
   assert.equal(readConditionalRegionReachability(proof, h.ir, identity), null);
 });
 
+test('a final execution lifecycle callback cannot return a stale rendered region capability', async () => {
+  const f = example();
+  let armed = false, reads = 0;
+  const result = await f.run({ getCurrentIdentity() {
+    if (armed && ++reads === 2) f.region.close.text = '// changed during final execution check';
+    return identity;
+  } });
+  assert.equal(result.status, 'complete', result.reason);
+  armed = true;
+  assert.equal(readConditionalRegionReachability(result, f.ir, identity), null);
+  assert.equal(reads, 2, 'mutation occurs after the outer lifecycle check');
+});
+
 test('canonical Phase 8 discovery includes the reachability regressions', () => {
   assert.equal(discoverPhase8Tests().filter(path => path.endsWith('/structuring/conditional-region-reachability.test.mjs')).length, 1);
 });

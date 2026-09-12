@@ -20,12 +20,15 @@ const freeze = values => Object.freeze(values);
 const sameSet = (array, set) => array.length === set.size && new Set(array).size === array.length
   && array.every(value => set.has(value));
 
-/** Consume only in the original query/IR, with producer freshness still live. */
-export function readConditionalRegionStructure(result, ir, identity) {
+/** Consume only in the original query/IR, with producer freshness still live.
+ * Related checks run before the final data observation: their lifecycle
+ * callbacks must not mutate a region that has already been accepted. */
+export function readConditionalRegionStructure(result, ir, identity, checkRelated = null) {
   const binding = issued.get(result);
   try {
     if (!binding || binding.ir !== ir || !sameMemoryIdentity(binding.identity, identity)) return null;
     binding.guard.check(identity);
+    if (checkRelated != null && checkRelated() !== true) return null;
     return readSemanticConditionalRegion(binding.record, ir) === binding.region
       && sameMemoryIdentity(binding.identity, identity) ? result : null;
   } catch { return null; }
