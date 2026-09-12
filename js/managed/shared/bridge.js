@@ -866,6 +866,21 @@ export function analyzeManagedInterprocedural(methods, options = {}) {
   });
 }
 
+function jvmReferenceConstantExpr(metadata, bits) {
+  if (typeof metadata?.constant !== 'string') return null;
+  if (metadata.valueType === 'string') {
+    return expr.variable(JSON.stringify(metadata.constant), bits);
+  }
+  const intrinsic = {
+    class: 'jvm_class_ref',
+    'method-handle': 'jvm_method_handle_ref',
+    'method-type': 'jvm_method_type_ref',
+  }[metadata.valueType];
+  return intrinsic
+    ? expr.intrinsic(intrinsic, [expr.variable(JSON.stringify(metadata.constant), bits)], bits)
+    : null;
+}
+
 /**
  * M5 — Shared Managed Decompiler.
  * Uses shared decompiler AST and printProgram to produce clean, semantically structured pseudo-C.
@@ -903,10 +918,10 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
       exprMemo.set(valId, s);
       return s;
     }
-    if (val.metadata?.valueType === 'string' && val.metadata?.constant != null) {
-      const s = expr.variable(JSON.stringify(val.metadata.constant), val.machineType?.widthBits || 32);
-      exprMemo.set(valId, s);
-      return s;
+    const jvmReference = jvmReferenceConstantExpr(val.metadata, val.machineType?.widthBits || 32);
+    if (jvmReference) {
+      exprMemo.set(valId, jvmReference);
+      return jvmReference;
     }
     if (val.metadata?.isNull === true) {
       const z = expr.variable('null', val.machineType?.widthBits || 32);
@@ -938,8 +953,9 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
         exprMemo.set(valId, res);
         return res;
       }
-      if (val.metadata?.valueType === 'string' && val.metadata?.constant != null) {
-        res = expr.variable(JSON.stringify(val.metadata.constant), bits);
+      const jvmReference = jvmReferenceConstantExpr(val.metadata, bits);
+      if (jvmReference) {
+        res = jvmReference;
         exprMemo.set(valId, res);
         return res;
       }
