@@ -11,6 +11,7 @@ const IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10;
 const IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT = 13;
 const WINDOWS_IMAGE_RAW_ALIGNMENT = 0x200;
 const WINDOWS_IMAGE_BASE_ALIGNMENT = 0x10000n;
+const WINDOWS_IMAGE_MAX_SECTIONS = 96;
 
 // Width is architectural authority only for machine values whose image class
 // this parser understands. Keep UNKNOWN/unsupported machines format-neutral,
@@ -194,7 +195,10 @@ export function parsePE(input, options = {}) {
 
   image.addSegment({ name: 'headers', address: imageBase, size: BigInt(sizeOfHeaders), fileOffset: 0n, fileSize: BigInt(Math.min(sizeOfHeaders, bytes.length)), perms: { read: true, write: false, execute: false }, source: 'PE-headers' });
   const secBase = opt + sizeOptional;
-  if (numberOfSections > 4096 || secBase + numberOfSections * 40 > r.length) throw new Error('PE section table is invalid');
+  if (numberOfSections > WINDOWS_IMAGE_MAX_SECTIONS) {
+    throw new Error(`PE NumberOfSections ${numberOfSections} exceeds Windows image loader limit ${WINDOWS_IMAGE_MAX_SECTIONS}`);
+  }
+  if (secBase + numberOfSections * 40 > r.length) throw new Error('PE section table is invalid');
   for (let i = 0; i < numberOfSections; i++) {
     const p = secBase + i * 40;
     // Executable-image section-table names are literal 8-byte fields. The
