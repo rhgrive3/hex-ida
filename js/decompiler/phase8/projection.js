@@ -20,8 +20,10 @@ import { buildRenderProvenance, DEFAULT_RENDER_TRANSFORM_RECORDS } from './rende
 import { readDceResultProof } from './dce.js';
 import { normalizeCompatibilityLine } from '../switch.js';
 import { beginScopedTransformCapture, finishScopedTransformCapture } from './scoped-transform-capture.js';
+import { readProvedRegionErasure } from './region-erasure-pass.js';
+import { readRegionErasureCondition } from './conditional-region-erasure.js';
 
-export const PHASE8_PROJECTION_VERSION = 3;
+export const PHASE8_PROJECTION_VERSION = 4;
 
 const lineExpressionHistories = new WeakMap();
 const controlConsumerSources = new WeakMap();
@@ -30,6 +32,7 @@ const controlConsumerSources = new WeakMap();
 // manufacture the private transition that carries the original consumers.
 const projectionHistories = new WeakMap();
 const projectedConditionalRegions = new WeakMap();
+const provedConditionConsumers = new WeakMap();
 
 /** Actual projection handoff only; neither condition equivalence nor erasure. */
 export function readProjectedConditionalRegions(program, ir) {
@@ -148,6 +151,34 @@ function readProjectionHistory(result) {
       || entry.producerDisposition !== result.expressionHistoryBinding
       || !entry.observation.matches() || !entry.consumers.every(consumer => consumer.isCurrent())) return null;
   return entry;
+}
+
+/** Actual condition descriptor copy history, paired with its original CBR.
+ * This is proposal lineage only; it does not certify the emitted predicate. */
+export function readProjectedConditionConsumer(result, branch) {
+  try {
+    const history = readProjectionHistory(result);
+    if (!history && (projectionHistories.has(result.cAst) || result.phase8Projection != null)) return null;
+    const consumers = history?.conditionConsumers ?? result.semanticAst.conditions.map(condition => readExpressionHistoryConsumer(condition, result.ir));
+    const matches = consumers.flatMap((consumer, index) => consumer?.instruction === branch
+      ? [{ consumer, condition:result.semanticAst.conditions[index] }] : []);
+    return matches.length === 1 ? Object.freeze(matches[0]) : null;
+  } catch { return null; }
+}
+
+/** Exact initial control writer carried through this projection's real copies. */
+export function readProjectedRegionControl(result, branch, header, originalHeader) {
+  try {
+    const history = readProjectionHistory(result);
+    if (!history && (projectionHistories.has(result.cAst) || result.phase8Projection != null)) return null;
+    const indices = result.cAst.body.flatMap((node, index) => node === header ? [index] : []);
+    if (indices.length !== 1) return null;
+    const consumer = history ? history.expressions[indices[0]] : readExpressionHistoryConsumer(header.semantic, result.ir);
+    const control = controlConsumerSources.get(consumer) || readInitialControlConsumer(consumer);
+    if (!history && control?.node !== header) return null;
+    return control?.instruction === branch && control.line === originalHeader && consumer.isCurrent() && control.isCurrent()
+      ? control : null;
+  } catch { return null; }
 }
 
 function prepareProjectionHistory(result, expressions, conditions, records, opts, reasons, proofExpressions) {
@@ -607,8 +638,16 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   if (!result?.semantic || !result.semanticAst || !result.cAst || !analysis) return result;
   const original = result;
   const regionCopy = beginRegionProjection(result, opts);
+  const regionContext = { ir:result.ir, opts };
+  const regionPlan = opts.phase8RegionErasurePlan != null ? readProvedRegionErasure(analysis, regionContext) : null;
+  if (opts.phase8RegionErasurePlan != null && !regionPlan) return original;
+  const conditionRequested = opts.phase8RegionErasurePlan?.conditionPlanId != null;
+  const conditionProof = regionPlan ? readRegionErasureCondition(regionPlan, original, result.ir, opts.phase8ProofIdentity) : null;
+  const currentCondition = () => !opts.shouldAbort?.() && readProvedRegionErasure(analysis, regionContext) === regionPlan
+    && readRegionErasureCondition(regionPlan, original, original.ir, opts.phase8ProofIdentity) === conditionProof;
+  if (conditionRequested && (!regionCopy || !conditionProof || opts.phase8RewritePlan != null || !currentCondition())) return original;
   const scopedCapture = beginScopedTransformCapture(result, opts.scopedTransformEvidence);
-  const renderOnly = opts.preserveInitialSpelling === true && opts.phase8RewritePlan == null;
+  const renderOnly = regionPlan != null || opts.preserveInitialSpelling === true && opts.phase8RewritePlan == null;
   const proofOnly = opts.phase8ProofOnlyRewrites === true || producerUsesProofOnlyRewrites(original);
   const inherited = readProjectionHistory(original);
   const historyReasons = new Set();
@@ -792,7 +831,36 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   let controlHandoffEdges = Number.isSafeInteger(opts.renderProvenanceBindingBudget?.maxEdges)
     ? Math.max(0, Math.min(PROJECTION_LIMITS.edges, opts.renderProvenanceBindingBudget.maxEdges)) : PROJECTION_LIMITS.edges;
   const dceByIndex = new Map(dcePlans.map(plan => [plan.index, plan]));
+  let conditionWrites = 0;
   for (const [index, node] of (result.cAst.body || []).entries()) {
+    const priorCondition = provedConditionConsumers.get(expressionConsumers[index]);
+    if (conditionProof && regionCopy.copies.get(conditionProof.header) === node) {
+      const control = controlSources[index], consumer = expressionConsumers[index];
+      if (!consumer || control !== conditionProof.control || !control.isCurrent() || !currentCondition()
+          || existingHistoryRecords + controlRecords.length >= spellingLimit) return original;
+      const source = mergeSource(node.source, conditionProof.expression.source);
+      const record = Object.freeze({ rule:'project-proved-conditional-predicate', phase:'phase8-render',
+        before:'control:initial-predicate', after:'control:proved-predicate',
+        evidence:Object.freeze({ kind:'canonical-predicate-equivalence', queryHash:conditionProof.plan.queryHash,
+          planId:conditionProof.plan.planId, detail:'independently proved predicate re-lowered by the canonical proof expression printer; no arm erasure' }),
+        originHistory:expressionOriginHistory({ source }, { source }) });
+      node.text = conditionProof.text;
+      node.semantic = { ...node.semantic, expression:conditionProof.expression };
+      const next = Object.freeze({ ...consumer, expression:conditionProof.expression,
+        records:Object.freeze([...new Set([...consumer.records, ...conditionProof.consumer.records, record])]),
+        isCurrent:() => control.isCurrent() && conditionProof.sourceCurrent() });
+      expressionConsumers[index] = next;
+      provedConditionConsumers.set(next, Object.freeze({ expression:conditionProof.expression, text:conditionProof.text }));
+      controlConsumerSources.set(next, control);
+      controlRecords.push(record); conditionWrites++;
+      continue;
+    }
+    if (priorCondition) {
+      if (node.semantic?.expression !== priorCondition.expression || node.text !== priorCondition.text) return original;
+      // Replays retain the original proof consumer, never chain older copies or
+      // replace this predicate using the generic row-based spelling path.
+      continue;
+    }
     const dce = dceByIndex.get(index);
     if (dce) {
       // Whole-batch observations are rechecked before publication. Do not
@@ -911,6 +979,8 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     }
   }
 
+  if (conditionRequested && (conditionWrites !== 1 || !currentCondition())) return original;
+
   if (spellingRecords.length || controlRecords.length || dceRecords.length) result = { ...result, rewriteProof:[...(result.rewriteProof || []), ...spellingRecords, ...controlRecords, ...dceRecords] };
 
   if (proved && (!hasPriorHistory || inherited)) shareProvedScalars(result, proofExpressions, expressionConsumers, records, opts.shouldAbort, regionCopy);
@@ -961,7 +1031,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   const pendingHistory = prepareProjectionHistory(result, expressionConsumers, conditionBindings,
     retainedRecords, opts, historyReasons, proofExpressions);
   const adoptedCse = records.some(record => record.kind === 'proved-scalar-cse');
-  const requiresCompleteHistory = adoptedCse || dceRecords.length > 0;
+  const requiresCompleteHistory = adoptedCse || dceRecords.length > 0 || conditionWrites > 0;
   if (requiresCompleteHistory && (!pendingHistory || historyReasons.size)) return original;
   const withLines = {
     ...result,
@@ -1017,12 +1087,16 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   // All external cancellation callbacks and the complete projection run before
   // publication. A changed predecessor cannot be refreshed by copying it.
   try {
+    if (conditionRequested && (!currentCondition() || !regionHistory || !pendingHistory
+        || !pendingHistory.consumers.every(consumer => consumer.isCurrent())
+        || !pendingHistory.observation.matches() || !regionCopy.ownerCurrent()
+        || !regionCopy.inputObservation.matches() || !regionHistory.observation.matches())) return original;
     if (regionHistory && regionHistory.isCurrent() && regionCopy.predecessorCurrent()
         && regionCopy.ownerCurrent() && regionCopy.inputObservation.matches() && regionHistory.observation.matches()) {
       projectedConditionalRegions.set(result.cAst, Object.freeze({ ...regionHistory,
         projection:withLines.phase8Projection, semanticAst:withLines.semanticAst, rewriteProof:withLines.rewriteProof }));
-    }
-  } catch { /* Optional observation never changes the ordinary output. */ }
+    } else if (conditionRequested) return original;
+  } catch { if (conditionRequested) return original; }
   return {
     ...withLines,
     renderProvenance,

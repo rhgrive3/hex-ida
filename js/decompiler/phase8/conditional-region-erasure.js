@@ -7,10 +7,11 @@ import { readConditionalRegionStructure } from './conditional-region-structure.j
 import { readConditionalRegionReachabilityStructure } from './conditional-region-reachability.js';
 import { queryRecord } from '../../symbolic/memory/data-input.js';
 import { createQueryGuard, sameMemoryIdentity } from '../../symbolic/memory/query-state.js';
+import { readConditionalRegionCondition } from './conditional-region-condition.js';
 
 const issued = new WeakMap();
 const LIMITS = Object.freeze({ workItems:32768, allocationUnits:32768 });
-const OPTION_KEYS = new Set(['identity','timeoutMs','limits','signal','isCancelled','getCurrentIdentity','now']);
+const OPTION_KEYS = new Set(['identity','timeoutMs','limits','signal','isCancelled','getCurrentIdentity','now','conditionPlan','projection']);
 const freeze = Object.freeze;
 
 export function readConditionalRegionErasure(plan, ir, identity) {
@@ -20,13 +21,21 @@ export function readConditionalRegionErasure(plan, ir, identity) {
     binding.guard.check(identity);
     return readConditionalRegionReachabilityStructure(binding.reachability, ir, identity) === binding.structure
       && readConditionalRegionStructure(binding.structure, ir, identity)
+      && (!binding.conditionPlan || readConditionalRegionCondition(binding.conditionPlan, binding.projection, binding.structure, identity))
       && sameMemoryIdentity(binding.guard.identity, identity) ? plan : null;
   } catch { return null; }
 }
 
+export function readRegionErasureCondition(plan, projection, ir, identity) {
+  if (!readConditionalRegionErasure(plan, ir, identity)) return null;
+  const binding = issued.get(plan);
+  return binding.projection === projection
+    ? readConditionalRegionCondition(binding.conditionPlan, projection, binding.structure, identity) : null;
+}
+
 export function prepareConditionalRegionErasure(structure, reachability, ir, options = {}) {
   let guard;
-  const reject = reason => freeze({ version:1, status:'partial', reason, transformAuthorization:false });
+  const reject = reason => freeze({ version:2, status:'partial', reason, transformAuthorization:false });
   try {
     const submitted = queryRecord(options);
     if (Object.keys(submitted).some(key => !OPTION_KEYS.has(key))) return reject('unsupported-region-erasure-option');
@@ -39,6 +48,9 @@ export function prepareConditionalRegionErasure(structure, reachability, ir, opt
     const live = reachability.arms.filter(arm => arm.verdict === 'refuted' && arm.counterexampleValidated);
     if (dead.length !== 1 || live.length !== 1 || dead[0].role === live[0].role) return reject('no-single-unreachable-arm');
     const region = structure.region;
+    const condition = submitted.conditionPlan == null && submitted.projection == null ? null
+      : readConditionalRegionCondition(submitted.conditionPlan, submitted.projection, structure, guard.identity);
+    if ((submitted.conditionPlan != null || submitted.projection != null) && !condition) return reject('unbound-region-condition');
     const erased = region.arms.find(arm => arm.role === dead[0].role);
     const retained = region.arms.find(arm => arm.role === live[0].role);
     guard.take('workItems', region.nodes.length + structure.instructions.length + structure.phis.length + structure.memoryPhis.length);
@@ -56,11 +68,12 @@ export function prepareConditionalRegionErasure(structure, reachability, ir, opt
     const beforeHash = spanDigest(region.nodes), afterHash = spanDigest(candidateNodes);
     const planId = stableDigest({ kind:'unreachable-arm-body', identity:guard.identity, beforeHash, afterHash,
       branchId:region.branch.id, role:erased.role, queryHash:dead[0].queryHash,
-      domainQueryHash:reachability.domainQueryHash, liveQueryHash:live[0].queryHash });
-    const plan = freeze({ version:1, status:'complete', planId, beforeHash, afterHash, identity:guard.identity,
+      domainQueryHash:reachability.domainQueryHash, liveQueryHash:live[0].queryHash, conditionPlanId:condition?.plan.planId ?? null });
+    const plan = freeze({ version:2, status:'complete', planId, beforeHash, afterHash, identity:guard.identity,
       scope:'canonical-unreachable-arm-erasure-candidate',
       transformAuthorization:false, renderValidation:'required',
-      pendingValidation:freeze(['rendered-condition-equivalence','copied-region-carrier',
+      conditionValidation:condition ? 'proved' : 'required', conditionPlanId:condition?.plan.planId ?? null,
+      pendingValidation:freeze([...(condition ? [] : ['rendered-condition-equivalence','copied-region-carrier']),
         'live-phi-render-correspondence','removed-entity-provenance']), region,
       removedRole:erased.role, liveRole:retained.role, removedNodes:erased.nodes,
       candidateNodes:freeze(candidateNodes), retainedHeader:region.header,
@@ -71,7 +84,8 @@ export function prepareConditionalRegionErasure(structure, reachability, ir, opt
     guard.check();
     if (readConditionalRegionReachabilityStructure(reachability, ir, guard.identity) !== structure
       || !readConditionalRegionStructure(structure, ir, guard.identity)) return reject('stale-region-erasure');
-    issued.set(plan, { ir, guard, structure, reachability });
+    if (condition && !condition.isCurrent()) return reject('stale-region-condition');
+    issued.set(plan, { ir, guard, structure, reachability, conditionPlan:submitted.conditionPlan, projection:submitted.projection });
     return plan;
   } catch (error) { return reject(guard?.reason() ?? error.reason ?? 'region-erasure-unavailable'); }
 }

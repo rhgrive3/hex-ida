@@ -11,7 +11,8 @@ import { valueBefore } from '../dataflow-semantic.js';
 import { createByteMemory, forkByteMemoryForExecution } from './memory/byte-memory.js';
 import { QueryFailure, monotonicNow, boundedLimit } from './memory/query-state.js';
 import { translateExecutionValue, translateMemoryAccess, translateMemoryScalar } from './translate/memory.js';
-import { createBv, createExtract, createConnective, computeStructuralHash } from './expr/index.js';
+import { createBv, createConnective, computeStructuralHash } from './expr/index.js';
+import { lowerDirectBranchCondition } from './translate/scalar.js';
 
 import { createExecutionCapture } from './memory/execution-snapshot.js';
 import { semanticValueIdentity, registerExecutionValue } from './memory/value-identity.js';
@@ -324,16 +325,16 @@ function conditionFromFlags(inst, state, ir, opts, memo, active) {
 function branchCondition(inst, state, ir, opts, memo) {
   if (state.byteMemory && inst.args?.length !== 1) throw new QueryFailure('branch-operand-arity');
   const kind = inst.extra && inst.extra.kind;
+  if (state.byteMemory && ['cbz','cbnz','tbz','tbnz'].includes(kind)) {
+    const value = inst.args[0]?.value;
+    const expression = value ? evalValue(value, state, ir, opts, memo, new Set()) : null;
+    const condition = lowerDirectBranchCondition(inst, expression);
+    if (condition.kind === 'unknown_semantic') throw new QueryFailure(condition.reason);
+    return condition;
+  }
   if ((kind === 'cbz' || kind === 'cbnz') && inst.args[0]) {
     const a = evalValue(inst.args[0].value, state, ir, opts, memo, new Set());
     return cmp(kind === 'cbz' ? '==' : '!=', a, c(0n));
-  }
-  if (state.byteMemory && (kind === 'tbz' || kind === 'tbnz')) {
-    const value=inst.args[0]?.value;
-    const a=value?evalValue(value,state,ir,opts,memo,new Set()):null;
-    const bit=inst.extra.bit;
-    if(!a || a.sort?.kind!=='bv' || typeof bit!=='number' || !Number.isSafeInteger(bit) || bit<0 || bit>=a.sort.width) throw new QueryFailure('invalid-bit-test');
-    return cmp(kind==='tbz'?'==':'!=',createExtract(a,bit,bit),createBv(1,0n));
   }
   if (kind === 'tbz' || kind === 'tbnz') {
     const a = inst.args[0] ? evalValue(inst.args[0].value, state, ir, opts, memo, new Set()) : unknown('missing-test-value');

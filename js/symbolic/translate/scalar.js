@@ -4,8 +4,24 @@
  */
 import { OP } from '../../ir-base.js';
 import { createBv, createBool, createCast, createIte, createCompare, createBinary, createExtract, createConcat,
-  createUnary, createUnknownSemantic, bvSort } from '../expr/index.js';
+  createUnary, createUnknownSemantic, bvSort, boolSort } from '../expr/index.js';
 const undef = (bits, reason) => createUnknownSemantic(bvSort(bits), reason);
+
+/** One canonical predicate for direct zero/bit-test branches. Execution and
+ * display proof preparation must not maintain different branch semantics.
+ * The caller supplies the value lowered in its own authenticated scope.
+ */
+export function lowerDirectBranchCondition(inst, value) {
+  const reject = reason => createUnknownSemantic(boolSort(), reason);
+  const kind = inst?.extra?.kind;
+  if (inst?.op !== OP.CBR || !['cbz','cbnz','tbz','tbnz'].includes(kind)) return reject('unsupported-direct-branch');
+  if (inst.args?.length !== 1) return reject('branch-operand-arity');
+  if (value?.sort?.kind !== 'bv' || value.kind === 'unknown_semantic') return reject('invalid-branch-value');
+  if (kind === 'cbz' || kind === 'cbnz') return createCompare(kind === 'cbz' ? 'eq' : 'ne', value, createBv(value.sort.width, 0n));
+  const bit = inst.extra.bit;
+  if (typeof bit !== 'number' || !Number.isSafeInteger(bit) || bit < 0 || bit >= value.sort.width) return reject('invalid-bit-test');
+  return createCompare(kind === 'tbz' ? 'eq' : 'ne', createExtract(value, bit, bit), createBv(1, 0n));
+}
 export function floatingSemantics(value) {
   return [value?.float, value?.floatConst, value?.extra?.float, value?.extra?.attributes?.float]
     .some(marker => marker != null && marker !== false)

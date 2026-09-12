@@ -6,10 +6,10 @@ import { readConditionalRegionErasure } from './conditional-region-erasure.js';
 
 const artifacts = new WeakMap(), results = new WeakMap();
 export const REGION_ERASURE_PASS = createPassDescriptor({
-  id:'phase8.proved-regions', version:'1.0.0', stage:'rendering',
+  id:'phase8.proved-regions', version:'1.1.0', stage:'rendering',
   consumes:['ssa','origins'], produces:['provedRegions'],
   preserves:ANALYSIS_KEYS.filter(key => key !== 'provedRegions'),
-  description:'Admit canonical unreachable-arm candidates; rendered condition/PHI/provenance validation remains required.',
+  description:'Admit canonical unreachable-arm candidates and optional proved predicate projection; PHI/removal validation remains required.',
 });
 const identityOf = context => context.proofIdentity ?? context.opts?.phase8ProofIdentity;
 const planOf = context => context.regionErasurePlan ?? context.opts?.phase8RegionErasurePlan;
@@ -22,9 +22,10 @@ export function isRegionErasurePlan(plan, context) {
 export function runRegionErasurePass(context, budget, area) {
   const plan = planOf(context);
   if (budget.shouldAbort?.() || !current(plan, context)) throw new TypeError('stale-or-forged-region-plan');
-  const artifact = Object.freeze({ version:1, completeness:'complete', planId:plan.planId,
+  const artifact = Object.freeze({ version:2, completeness:'complete', planId:plan.planId,
     identity:plan.identity, scope:plan.scope, removedRole:plan.removedRole, queryHash:plan.queryHash,
-    transformAuthorization:false, renderValidation:'required', pendingValidation:plan.pendingValidation });
+    transformAuthorization:false, renderValidation:'required', pendingValidation:plan.pendingValidation,
+    conditionValidation:plan.conditionValidation, conditionPlanId:plan.conditionPlanId });
   artifacts.set(artifact, plan);
   const transform = { kind:'proved-unreachable-arm-candidate', targets:[plan.planId],
     proof:plan.proofRule, originRefs:[String(plan.region.branch.id)],

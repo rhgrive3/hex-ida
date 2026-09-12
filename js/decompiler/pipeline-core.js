@@ -200,7 +200,7 @@ function semanticExpressionConsumer(semantic, value, instruction, state, nested 
 }
 
 function bindObservedExpressionConsumer(semantic, value, instruction, state, records, rendered = null) {
-  if (!records?.length) return semantic;
+  if (!Array.isArray(records)) return semantic;
   // Bound cumulative observation work for the function, not just each
   // individual graph: many consumers may share a large definition graph.
   const budget = consumerObservationBudget(state);
@@ -230,7 +230,7 @@ function bindObservedExpressionConsumer(semantic, value, instruction, state, rec
     }
     const inputsCurrent = () => (!shared || shared.matches()) && observation.matches() && currentBuildHistory(records);
     const consumer = Object.freeze({
-      ir:state.ir, expression:semantic.expression, op:semantic.op, instructionId:semantic.ir,
+      ir:state.ir, expression:semantic.expression, op:semantic.op, instructionId:semantic.ir, instruction,
       location:semantic.location, records,
       isCurrent:() => inputsCurrent() && (!rendered || rendered.isCurrent()),
     });
@@ -509,8 +509,12 @@ function semanticBranchCondition(inst, state) {
   const direct = ['cbz', 'cbnz', 'tbz', 'tbnz'].includes(kind);
   if (direct) {
     const e = branchCondition(inst, state);
-    return semanticExpressionConsumer({ expression:e, text:printExpression(e), row:inst.row, address:inst.address, ir:inst.id },
+    const semantic = semanticExpressionConsumer({ expression:e, text:printExpression(e), row:inst.row, address:inst.address, ir:inst.id },
       valueOf(inst.args?.[0]), inst, state, true);
+    // A branch proposal exists even when no display rewrite fired. Observe its
+    // actual construction without inventing a rewrite or equivalence record.
+    return state.opts?.phase8PrepareRegionProof === true && !readExpressionHistoryConsumer(semantic, state.ir)
+      ? bindObservedExpressionConsumer(semantic, valueOf(inst.args?.[0]), inst, state, Object.freeze([])) : semantic;
   }
   // Flag reconstruction consumes buildArg rather than expressionFor. Keep its
   // actual visited frame, never borrow/overwrite an unrelated SSA value proof.
@@ -1754,6 +1758,7 @@ function cAstFromLines(result, state) {
             // output-node observation. This retained check never forgets the
             // original emitter, canonical inputs or semantic descriptor.
             initialControlConsumers.set(consumer, Object.freeze({
+              instruction, line, node,
               isCurrent:() => initial.isCurrent() && inputsCurrent(),
             }));
           }

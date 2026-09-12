@@ -1,8 +1,22 @@
 # Analysis roadmap v8 integration checkpoint
 
+## 2026-09-13: C4 の条件式を検証して実際の表示へ接続
+
+最新の C4 作業記録です。統合ブランチは引き続き PR **#7036**。
+ユーザーの C1 再帰解析の開始点は公開済み **`9f2a4e104ca0c446721ddf0a4ede0dbc3164f132`** に固定し、下の担当範囲を維持します。
+
+- `cbz/cbnz/tbz/tbnz` は既存の実行器と同じ分岐条件の生成処理を使います。元の SSA 入力、条件式の生成記録、実際の表示ノードを内部の対応記録で結び付けます。
+- 表示 AST は候補として既存の検証器へ渡し、証明できた式を既存の安全な C 出力処理で再生成します。行番号・文字列・入力名の一致を証明には使いません。
+- 既存の領域用トランザクションへ条件式の証明を接続し、受入済みの記録だけが実際の if ヘッダーを書き換えます。`if (a1 ^ a1 != 0)` の演算子優先順位による反例をこの実経路で修正します。
+- 反転した片側の if、再 projection、32/64-bit の既存 tiered 検証、全 256 入力の C コンパイラ比較、偽造・変更・キャンセル・最終 callback の拒否を検査します。正確な公開 SHA と検査結果は永続 evidence に記録します。
+
+**未完了**: flags/NZCV の条件式、recovery 各処理の引継ぎ、合流 PHI の表示との対応、削除元の provenance、より広い CFG・例外・ループ・メモリの意味検証。
+今回も枝本体・命令・PHI・CFG 辺は削除せず、領域全体の `transformAuthorization` は false のままです。
+条件式検証の成功は C4 全体や解析 md 全体の完了を意味しません。統合受入・release は **CHECKPOINT-LOCKED** を維持します。
+
 ## 2026-09-13: ユーザー ZIP の結合と次の並行担当
 
-この節が最新です。下の 2026-09-12 の C1/C3 受入作業の割当は過去の記録です。
+この節はユーザー ZIP の結合と現在の担当割当です。下の 2026-09-12 の C1/C3 受入作業の割当は過去の記録です。
 PR **#7036**、ブランチ **`feat/analysis-roadmap-v8-current-main-20260907`** を引き続き開始元にします。
 この更新も並行開発用のソース結合で、解析 md 全体・統合受入・release は **CHECKPOINT-LOCKED** のままです。
 
@@ -23,7 +37,7 @@ PR **#7036**、ブランチ **`feat/analysis-roadmap-v8-current-main-20260907`**
 
 ```sh
 git fetch origin
-git switch -c work/c1-recursive-return-20260913 origin/feat/analysis-roadmap-v8-current-main-20260907
+git switch -c work/c1-recursive-return-20260913 9f2a4e104ca0c446721ddf0a4ede0dbc3164f132
 git rev-parse HEAD
 ```
 

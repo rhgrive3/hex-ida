@@ -1,5 +1,12 @@
 # Analysis Improvement Finding Closure Ledger
 
+> Current campaign checkpoint (2026-09-13): PR #7036,
+> `feat/analysis-roadmap-v8-current-main-20260907`, worktree `/mnt/workspace/hex-roadmap-v8-integration`.
+> The table and campaign authority below retain historical acceptance scopes; they are not a current completion percentage.
+> In particular, the historical C1-02 completion does not cover recursive returned-value discovery.
+> Current integration, C1 ownership and outstanding C4 obligations are recorded in
+> [the integration checkpoint](analysis-roadmap-v8-integration-checkpoint.md). Full roadmap acceptance remains **CHECKPOINT-LOCKED**.
+
 ## Campaign authority
 
 - Scope: close findings from `docs/解析ツール改善.md.txt`; unrelated Issue work is excluded.
