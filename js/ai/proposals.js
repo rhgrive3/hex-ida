@@ -54,7 +54,16 @@ export class ProposalStore {
          rejected before any approval is possible. */
       throw new AIError('invalid_tool_call', 'A project-annotation proposal requires a non-empty string target id.');
     }
-    const evidenceIds = Array.from(new Set((input.evidenceIds || []).filter((id) => typeof id === 'string' && this.evidenceStore?.has(id))));
+    // The product EvidenceStore's has() is existence-only, while verified
+    // status is protected by deterministic-verifier authority. When the store
+    // exposes records, require that authority-bearing status and retain only
+    // verified IDs. Minimal injected authority adapters that intentionally
+    // expose only has() keep their existing predicate contract.
+    const evidenceIds = Array.from(new Set((input.evidenceIds || []).filter((id) => {
+      if (typeof id !== 'string') return false;
+      if (typeof this.evidenceStore?.get === 'function') return this.evidenceStore.get(id)?.status === 'verified';
+      return this.evidenceStore?.has?.(id) === true;
+    })));
     if (!evidenceIds.length) throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
     let id;
     if (Object.prototype.hasOwnProperty.call(input, 'id')) {
