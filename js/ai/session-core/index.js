@@ -145,12 +145,14 @@ export class InvestigationSessionStore {
     if (this.sessions.has(key)) return this.sessions.get(key);
     // A persistence adapter may stage a record before its save resolves.
     // The creating operation owns publication of that ID until durability.
-    // A queued delete may release its reservation, but not this active writer.
-    if (this.creating.has(key) || this.publishing.has(key)) return null;
+    // Only an active create can have staged an uncommitted record. A later
+    // queued reservation must not hide reads for earlier queued mutations.
+    // A queued delete may release a reservation, but not this active writer.
+    if (this.publishing.has(key)) return null;
     if (this.persistence && typeof this.persistence.load === 'function') {
       const loaded = await this.persistence.load(key);
       if (this.sessions.has(key)) return this.sessions.get(key);
-      if (this.creating.has(key) || this.publishing.has(key)) return null;
+      if (this.publishing.has(key)) return null;
       if (loaded) {
         // The lookup key is the session identity, not a search hint: a record
         // whose own id differs is corrupt/stale state from an adapter or

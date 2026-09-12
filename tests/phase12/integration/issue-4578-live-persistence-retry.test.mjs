@@ -104,6 +104,51 @@ async function staged(project) {
   assert.equal(project.findings.investigationSessions.length, 1, 'reach the actual staging boundary');
 }
 
+for (const method of ['update', 'appendMessage', 'updateMemory']) {
+  for (const delayedLoad of [false, true]) {
+    await test(`#4578/#5556 later create reservation preserves earlier cold ${method} (delayed load: ${delayedLoad})`, async () => {
+      const f = fixture([{ id: 'cold', goal: 'original', messages: [] }]);
+      f.recover();
+      const entered = deferred(), release = deferred();
+      let firstLoad = true;
+      const persistence = {
+        ...f.persistence,
+        async load(id) {
+          const record = await f.persistence.load(id);
+          if (firstLoad && delayedLoad) {
+            firstLoad = false;
+            entered.resolve();
+            await release.promise;
+          }
+          return record;
+        },
+      };
+      const store = new InvestigationSessionStore({ persistence });
+      const patch = method === 'appendMessage' ? { content: 'earlier message' }
+        : method === 'updateMemory' ? { confirmedFacts: ['earlier fact'] }
+          : { goal: 'earlier update' };
+      const mutation = store[method]('cold', patch);
+      if (delayedLoad) await entered.promise;
+      const duplicate = outcome(store.create({ id: 'cold', goal: 'must not overwrite' }));
+      release.resolve();
+      const updated = await mutation;
+      const collision = await duplicate;
+      assert.notEqual(updated, null, 'a later reservation cannot hide the earlier queued mutation');
+      assert.equal(collision.status, 'rejected');
+      assert.match(collision.error.message, /already exists/);
+      assert.equal(f.saves(), 1, 'only the earlier mutation writes');
+      const restored = await new InvestigationSessionStore({ persistence: f.persistence }).get('cold');
+      if (method === 'appendMessage') assert.equal(restored.messages[0].content, 'earlier message');
+      else if (method === 'updateMemory') assert.deepEqual(restored.investigationMemory.confirmedFacts, ['earlier fact']);
+      else assert.equal(restored.goal, 'earlier update');
+      assert.strictEqual(await store.get('cold'), updated);
+      assert.equal(store.creating.size, 0);
+      assert.equal(store.publishing.size, 0);
+      assert.equal(store.saveQueues.size, 0);
+    });
+  }
+}
+
 for (const mode of ['same-store', 'shared-adapter-store', 'delayed-preexisting-load']) {
   await test(`#4578 ${mode} cannot hydrate a failed create into a ghost`, async () => {
     const f = fixture();
