@@ -52,6 +52,10 @@ export function dexFieldEffects({ opcode, formatByte, fieldIndex, image }) {
   const fieldIdentity = createManagedFieldId(createManagedTypeId(image.moduleId,field.classType),fieldIndex);
   return {
     mnemonic:`${isStatic ? 's' : 'i'}${isWrite ? 'put' : 'get'}${SUFFIXES[variant]}`,
+    // ART throws NullPointerException for instance field access on a null
+    // receiver (ThrowNullPointerExceptionForFieldAccess). Static ops have no
+    // receiver and must not inherit the condition (#7981).
+    possibleExceptions:isStatic ? [] : ['java/lang/NullPointerException'],
     locationReads:reads, locationWrites:isWrite ? [] : [valueLocation],
     producedValues:isWrite ? [] : [{ bits:info.byteWidth*8,
       type:info.extension ? {kind:'bitvector',widthBits:info.byteWidth*8} : info.type }],
@@ -62,6 +66,7 @@ export function dexFieldEffects({ opcode, formatByte, fieldIndex, image }) {
       addressKind:isStatic ? 'static-field' : 'instance-field',
       declarationResolved:true, declarationAccessFlags:accessFlags,
       volatility:isVolatile, atomic:isVolatile,
-      ordering:isVolatile ? (isWrite ? 'release' : 'acquire') : 'unknown' }],
+      ordering:isVolatile ? (isWrite ? 'release' : 'acquire') : 'unknown',
+      ...(isStatic ? {} : { receiverNullException:true }) }],
   };
 }
