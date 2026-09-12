@@ -3,7 +3,8 @@ import { BinaryImage, functionSeed } from './model.js';
 import { parseEhFrameHeader } from './elf-unwind.js';
 import { parseProgramDynamic } from './elf-dynamic.js';
 import { createELFMetadataBudget, markELFMetadataPartial } from './elf-budget.js';
-import { executableELFRange, mappedELFFileSpanForVa } from './elf-mapping.js';
+import { elfInstructionStartAlignmentRejection, elfSectionFileSpanConsistentWithLoads, executableELFRange, mappedELFFileSpanForVa } from './elf-mapping.js';
+import { relocationFieldWidth } from './elf-relocation-target.js';
 import { parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
 
 const ET_REL = 1;
@@ -29,6 +30,7 @@ const SHF_ALLOC = 0x2n;
 const SHF_EXECINSTR = 0x4n;
 const EM_RISCV = 243;
 export const STO_RISCV_VARIANT_CC = 0x80;
+
 const SHT_RISCV_ATTRIBUTES = 0x70000003;
 const R_RISCV_JUMP_SLOT = 5;
 const DT_RISCV_VARIANT_CC = 0x70000001n;
@@ -71,7 +73,12 @@ export function parseELF(input, options = {}) {
         image.warnings.push('RISC-V attributes section is outside the bounded file span');
       } else {
         riscvFileIsa = parseRiscvAttributes(r.bytes.subarray(start, start + size), { littleEndian });
-        if (!riscvFileIsa) image.warnings.push('RISC-V Tag_RISCV_arch is missing or malformed');
+        if (riscvFileIsa && riscvFileIsa.xlen !== bits) {
+          image.warnings.push(`RISC-V Tag_RISCV_arch XLEN ${riscvFileIsa.xlen} disagrees with ELFCLASS${bits}`);
+          riscvFileIsa = null;
+        } else if (!riscvFileIsa) {
+          image.warnings.push('RISC-V Tag_RISCV_arch is missing or malformed');
+        }
       }
     }
   }
@@ -86,16 +93,23 @@ export function parseELF(input, options = {}) {
     // ('unmapped-section').
     const fileSpanInvalid = h.type !== ET_REL && s.type !== 8 && (s.flags & SHF_ALLOC) !== 0n
       && (s.offset > BigInt(r.length) || s.size > BigInt(r.length) - s.offset);
+    const noBits = s.type === 8;
+    const mappingInconsistent = !fileSpanInvalid && h.type !== ET_REL
+      && (s.flags & SHF_ALLOC) !== 0n && s.size > 0n
+      && !elfSectionFileSpanConsistentWithLoads(image, s.addr, s.size, s.offset, noBits);
+    if (mappingInconsistent) {
+      image.warnings.push(`ELF section ${s.index} (${s.name || 'unnamed'}) has a sh_addr/sh_offset relation inconsistent with the runtime PT_LOAD mapping and is excluded from virtual mapping authority`);
+    }
     if (fileSpanInvalid) {
       image.warnings.push(`ELF section ${s.index} (${s.name || 'unnamed'}) has a file span beyond EOF and is excluded from virtual mapping authority`);
     }
     image.addSection({
       name: s.name || `section_${s.index}`, segment: null,
       address: h.type === ET_REL ? (s.syntheticAddr ?? 0n) : s.addr, size: s.size, fileOffset: s.offset,
-      fileSize: s.type === 8 ? 0n : s.size,
+      fileSize: noBits ? 0n : s.size,
       perms: { read: !!(s.flags & SHF_ALLOC), write: !!(s.flags & SHF_WRITE), execute: !!(s.flags & SHF_EXECINSTR) },
       flags: s.flags, type: s.type, index: s.index,
-      source: h.type === ET_REL ? 'ET_REL-synthetic-section' : fileSpanInvalid ? 'unmapped-section' : 'section-header',
+      source: h.type === ET_REL ? 'ET_REL-synthetic-section' : fileSpanInvalid || mappingInconsistent ? 'unmapped-section' : 'section-header',
     });
   }
 
@@ -124,7 +138,12 @@ export function parseELF(input, options = {}) {
       .filter((symbol) => symbol?.defined === true && typeof symbol.name === 'string')
       .map((symbol) => {
         const parsed = parseRiscvMappingSymbol(symbol.name);
-        return parsed ? { address:symbol.address, sectionIndex:symbol.sectionIndex, ...parsed } : null;
+        if (!parsed) return null;
+        if (parsed.isa && parsed.isa.xlen !== bits) {
+          image.warnings.push(`RISC-V mapping symbol ISA XLEN ${parsed.isa.xlen} disagrees with ELFCLASS${bits}`);
+          return { address:symbol.address, sectionIndex:symbol.sectionIndex, kind:parsed.kind, isa:null };
+        }
+        return { address:symbol.address, sectionIndex:symbol.sectionIndex, ...parsed };
       })
       .filter(Boolean)
       .sort((left, right) => left.address < right.address ? -1 : left.address > right.address ? 1 : 0);
@@ -170,7 +189,8 @@ export function parseELF(input, options = {}) {
 function elfEntrypointRejection(image, address) {
   const instructionBytes = image.arch === 'arm64' ? 4n : 1n;
   if (!executableELFRange(image, address, 0n)) return 'outside a canonical executable mapping';
-  if (image.arch === 'arm64' && address % 4n !== 0n) return 'does not satisfy arm64 4-byte alignment';
+  const alignmentRejection = elfInstructionStartAlignmentRejection(image, address);
+  if (alignmentRejection) return alignmentRejection;
   if (!executableELFRange(image, address, instructionBytes)) return 'instruction bytes cross the canonical executable extent';
   if (!mappedELFFileSpanForVa(image, address, instructionBytes)) return 'instruction bytes are not fully file-backed';
   return null;
@@ -502,7 +522,7 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     const ifunc=type===STT_GNU_IFUNC&&defined===true&&!common;
     const riscvVariantCcFlag=image.metadata.machine===EM_RISCV&&(other&STO_RISCV_VARIANT_CC)!==0;
     const riscvVariantCc=riscvVariantCcFlag&&type===2;
-    const sym={name,address:tls?null:(address??0n),originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??value,resolution:'runtime-resolver'}:{}),
+    const sym={name,address:tls?null:(sectionIdentityKnown?(address??0n):null),originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??value,resolution:'runtime-resolver'}:{}),
       ...(tls?{tlsOffset:value}:{}),...(common?{commonAlignment:value,commonSize:size,allocation:'common-unallocated'}:{}),sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:value}:null,addressDomain:tls?'tls-offset':common?'common-unallocated':elfType===ET_REL&&normal?'section-relative-synthetic':'virtual'};
     image.symbols.push(sym);
     const externallyVisible=bind===1||bind===2||bind===STB_GNU_UNIQUE;
@@ -515,7 +535,10 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     }
     if(defined===true&&(type===2||type===STT_GNU_IFUNC)&&address!=null&&address!==0n){
       const owner=executableELFRange(image,address,size||0n,normal?resolvedShndx:null);
-      if(owner){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'symbol-function'))break;image.functions.push(functionSeed(address,{size:size||null,name:type===STT_GNU_IFUNC?`${name}$resolver`:name,source:type===STT_GNU_IFUNC?'ifunc-resolver':'symbol',confidence:0.995,exactFunctionStart:true,functionStartEvidence:type===STT_GNU_IFUNC?'ELF STT_GNU_IFUNC resolver with validated executable section extent':elfType===ET_REL?'ELF ET_REL STT_FUNC with validated executable section-relative extent':'ELF STT_FUNC with validated executable section extent',callingConvention:riscvVariantCc?'riscv-vector-variant':null,abiMetadata:riscvVariantCc?{riscvVariantCc:true,stOther:other}:null}));if(riscvVariantCc){if(!Array.isArray(image.metadata.riscvVariantCcFunctions))image.metadata.riscvVariantCcFunctions=[];image.metadata.riscvVariantCcFunctions.push({name,address,symbolIndex:i,tableIndex:table.index,stOther:other,callingConvention:'riscv-vector-variant'});}}
+      if(owner){
+        const alignmentRejection=elfInstructionStartAlignmentRejection(image,address);
+        if(alignmentRejection){budget.partial(`symbols:${table.index}:function-alignment`,`Ignored ELF ${type===STT_GNU_IFUNC?'STT_GNU_IFUNC resolver':'STT_FUNC'} ${name}: ${alignmentRejection}`);continue;}
+        if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'symbol-function'))break;image.functions.push(functionSeed(address,{size:size||null,name:type===STT_GNU_IFUNC?`${name}$resolver`:name,source:type===STT_GNU_IFUNC?'ifunc-resolver':'symbol',confidence:0.995,exactFunctionStart:true,functionStartEvidence:type===STT_GNU_IFUNC?'ELF STT_GNU_IFUNC resolver with validated executable section extent':elfType===ET_REL?'ELF ET_REL STT_FUNC with validated executable section-relative extent':'ELF STT_FUNC with validated executable section extent',callingConvention:riscvVariantCc?'riscv-vector-variant':null,abiMetadata:riscvVariantCc?{riscvVariantCc:true,stOther:other}:null}));if(riscvVariantCc){if(!Array.isArray(image.metadata.riscvVariantCcFunctions))image.metadata.riscvVariantCcFunctions=[];image.metadata.riscvVariantCcFunctions.push({name,address,symbolIndex:i,tableIndex:table.index,stOther:other,callingConvention:'riscv-vector-variant'});}}
       else image.warnings.push(`Ignored ELF ${type===STT_GNU_IFUNC?'STT_GNU_IFUNC resolver':'STT_FUNC'} ${name} outside its canonical executable extent`);
     }
   }
@@ -559,6 +582,7 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
   const symbolTable=sections[sec.link];
   const symbolMinEnt=BigInt(bits===64?24:16);
   const linkedSymbolTable=symbolTable&&(symbolTable.type===SHT_SYMTAB||symbolTable.type===SHT_DYNSYM);
+  if(!linkedSymbolTable){budget.partial(`relocations:${sec.index}:symbol-table-link`,`ELF relocation section ${sec.index} has invalid sh_link ${sec.link}; expected SHT_SYMTAB or SHT_DYNSYM`);return;}
   let symbolEntryCount=null;
   if(linkedSymbolTable){
     if(symbolTable.entsize<symbolMinEnt){
@@ -582,7 +606,15 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
     let address=offset,fileOffset=image.addressToOffset(offset),addressDomain='virtual';
     if(elfType===ET_REL){
       if(offset>=target.size){budget.partial(`relocations:${sec.index}:offset-range`,`ELF ET_REL relocation offset ${offset} is outside target section ${target.index}`);continue;}
-      address=(target.syntheticAddr??0n)+offset;addressDomain='section-relative-synthetic';fileOffset=target.type===8||offset>=target.size?null:target.offset+offset;
+      const fieldWidth=relocationFieldWidth(Number(image.metadata.machine),type,bits);
+      if(fieldWidth===null){budget.partial(`relocations:${sec.index}:field-width-unknown`,`ELF ET_REL relocation type ${type} has no supported target-field width for machine ${image.metadata.machine}`);continue;}
+      if(fieldWidth!==undefined&&fieldWidth>0n&&fieldWidth>target.size-offset){budget.partial(`relocations:${sec.index}:target-span`,`ELF ET_REL relocation type ${type} has a ${fieldWidth}-byte target field crossing target section ${target.index}`);continue;}
+      address=(target.syntheticAddr??0n)+offset;addressDomain='section-relative-synthetic';fileOffset=target.type===8?null:target.offset+offset;
+    }else{
+      const owner=image.segmentAt(offset);
+      if(!owner){budget.partial(`relocations:${sec.index}:unmapped-target`,`ELF relocation section ${sec.index} has a relocation target outside every loaded PT_LOAD memory span`);continue;}
+      const fieldWidth=relocationFieldWidth(Number(image.metadata.machine),type,bits);
+      if(typeof fieldWidth==='bigint'&&fieldWidth>0n&&offset+fieldWidth>owner.address+owner.size){budget.partial(`relocations:${sec.index}:target-span`,`ELF relocation section ${sec.index} has a relocation target field crossing the end of its loaded PT_LOAD memory span`);continue;}
     }
     if(symIndex!==0&&linkedSymbolTable&&symbolEntryCount==null)continue;
     if(symIndex!==0&&symbolEntryCount!=null&&BigInt(symIndex)>=symbolEntryCount){budget.partial(`relocations:${sec.index}:symbol-index-range`,`ELF relocation section ${sec.index} references symbol index ${symIndex} outside its associated table count ${symbolEntryCount}`);continue;}
@@ -623,6 +655,12 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
   }
 
   const str = sections[sec.link];
+  if (!str || str.type !== SHT_STRTAB) {
+    budget.partial(
+      `dynamic-section:${sec.index}:string-table-link`,
+      `ELF SHT_DYNAMIC ${sec.index} has invalid sh_link ${sec.link}`,
+    );
+  }
   const strStart = str?.type === SHT_STRTAB ? safeOffset(str.offset) : null;
   const strSize = str?.type === SHT_STRTAB ? safeOffset(str.size) : null;
   const stringTableValid = str?.type === SHT_STRTAB

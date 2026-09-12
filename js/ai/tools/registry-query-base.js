@@ -1,3 +1,4 @@
+import { installScopedAnalysisTools } from './scoped-analysis.js';
 import { createHexToolRegistry as createBaseHexToolRegistry, ToolRegistry } from './registry-base.js';
 import { shortHash, stableSerialize } from './paging/cursor.js';
 import { addressText } from '../validation.js';
@@ -67,6 +68,10 @@ function markQueryAuthority(value) {
   return value && typeof value === 'object'
     ? { ...value, analysisAuthority:'AnalysisQueryAPI' }
     : value;
+}
+
+function exactPageTotal(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function installQueryOverrides(registry, context) {
@@ -155,7 +160,7 @@ function installQueryOverrides(registry, context) {
       results:rows,
       offset,
       returned:rows.length,
-      total:Number.isFinite(Number(page?.total)) ? Number(page.total) : null,
+      total:exactPageTotal(page?.total),
       complete,
       truncated:!complete,
       reason:complete ? null : (page?.reason || 'result-limit'),
@@ -218,7 +223,7 @@ function installQueryOverrides(registry, context) {
 }
 
 export function createHexToolRegistry(context = {}, options = {}) {
-  return installQueryOverrides(createBaseHexToolRegistry(context, options), context);
+  return installScopedAnalysisTools(installQueryOverrides(createBaseHexToolRegistry(context, options), context), context);
 }
 
 export default createHexToolRegistry;

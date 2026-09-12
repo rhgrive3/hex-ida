@@ -393,6 +393,6 @@ function createPclntab12Header({ little = true, minLC = 1, pad1 = 0, pad2 = 0 } 
 assert.equal(GO_PCLNTAB_MAGICS[0xfffffff1].version, '1.20+');
 console.log('Go Metadata Provider tests passed.');
 
-// Keep the focused Go section-evidence regression in the required metadata:test
-// denominator.
+// Keep focused Go regressions in the required metadata:test denominator.
+await import('./issue-5373-go-name-uvarint-overflow.mjs');
 await import('./issue-5877-go-pclntab-section-without-buffer.test.mjs');

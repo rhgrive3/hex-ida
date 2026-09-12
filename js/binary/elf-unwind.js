@@ -152,6 +152,21 @@ function readCStringBounded(r, p0, end) {
   throw new Error('unterminated CIE augmentation string');
 }
 
+// AArch64 CIE augmentation markers produced by current GNU toolchains:
+// `B` selects the PAC B-key for the frame's return address (GAS
+// `.cfi_b_key_frame`), `G` marks an MTE-tagged frame (GAS
+// `.cfi_mte_tagged_frame`). Neither adds augmentation data. Unknown chars
+// keep failing closed (#4255).
+const AARCH64_CIE_AUGMENTATIONS = new Set(['B', 'G']);
+
+function targetSpecificCieAugmentations(image) {
+  const arch = String(image?.architecture || image?.arch || '').toLowerCase();
+  if (arch === 'arm64' || arch === 'aarch64' || arch.startsWith('arm64_32') || arch === 'aarch64_32') {
+    return AARCH64_CIE_AUGMENTATIONS;
+  }
+  return null;
+}
+
 function parseCie(r, image, domain, address, bits) {
   const header = recordHeader(r, domain, address);
   let p = header.payload;
@@ -190,6 +205,7 @@ function parseCie(r, image, domain, address, bits) {
     const augEnd = p + Number(augLength.value);
     if (augEnd > header.end) throw new Error('CIE augmentation data crosses record boundary');
     const ctx = domainContext(domain, image, bits);
+    const targetAugmentations = targetSpecificCieAugmentations(image);
     for (const ch of augmentation.slice(1)) {
       if (ch === 'L') {
         if (p >= augEnd) throw new Error('truncated CIE LSDA encoding');
@@ -203,6 +219,12 @@ function parseCie(r, image, domain, address, bits) {
         const enc = r.u8(p++);
         const personality = decodeEhValue(r, p, enc, ctx, augEnd);
         p = personality.next;
+      } else if (ch === 'B' || ch === 'G') {
+        // AArch64 target-specific markers: `B` = PAC B-key frame
+        // (.cfi_b_key_frame), `G` = MTE tagged frame (.cfi_mte_tagged_frame).
+        // Neither contributes augmentation data; on any other target they
+        // stay unsupported so records keep failing closed (#4255).
+        if (!targetAugmentations?.has(ch)) throw new Error(`unsupported CIE augmentation '${ch}'`);
       } else if (ch !== 'S') {
         throw new Error(`unsupported CIE augmentation '${ch}'`);
       }

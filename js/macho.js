@@ -334,6 +334,7 @@
         case LC.SYMTAB: info.symtab={symoff:dv.getUint32(off+8,true),nsyms:dv.getUint32(off+12,true),stroff:dv.getUint32(off+16,true),strsize:dv.getUint32(off+20,true)}; break;
         case LC.DYSYMTAB: info.dysymtab={indirectsymoff:dv.getUint32(off+56,true),nindirectsyms:dv.getUint32(off+60,true)}; break;
         case LC.FUNCTION_STARTS: info.functionStarts={dataoff:dv.getUint32(off+8,true),datasize:dv.getUint32(off+12,true)}; break;
+        case LC.DATA_IN_CODE: info.dataInCode={dataoff:dv.getUint32(off+8,true),datasize:dv.getUint32(off+12,true)}; break;
         case LC.CODE_SIGNATURE: info.hasCodeSignature=true; break;
         case LC.ENCRYPTION_INFO_64:
         case LC.ENCRYPTION_INFO: {

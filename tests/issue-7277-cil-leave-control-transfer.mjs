@@ -91,9 +91,9 @@ test('#7277 leave inside a protected region still lowers its target edge', () =>
   // interception keeps the overall Semantic IR explicitly partial.
   // 00: leave.s +3 => target 0x05      (inside try)
   // 02: ldc.i4.1; 03: ret              (rest of the protected region)
-  // 04: pop                            (finally handler, consumes the slot)
+  // 04: endfinally                   (finally handler, legal on the empty entry)
   // 05: ldc.i4.2; 06: ret              (leave target, outside the try)
-  const bytecode = Uint8Array.from([0xde, 0x03, 0x17, 0x2a, 0x26, 0x18, 0x2a]);
+  const bytecode = Uint8Array.from([0xde, 0x03, 0x17, 0x2a, 0xdc, 0x18, 0x2a]);
   const region = { kind: 'finally', tryOffset: 0, tryLength: 4, handlerOffset: 4, handlerLength: 1, classTokenOrFilter: 0 };
   const lowered = lowerVMEffectsToSemanticIr(liftCilMethod(0, cilImage(bytecode, [region])));
   const entry = lowered.cfg.blocks.find((b) => b.id === 'bb_0x0');

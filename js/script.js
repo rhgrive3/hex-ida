@@ -90,6 +90,7 @@ function awaitRequest(request, signal) {
     const finish = (fn, value) => { if (settled) return; settled = true; signal.removeEventListener('abort', onAbort); fn(value); };
     const onAbort = () => { try { request.cancel?.(); } catch {} finish(reject, abortError(signal)); };
     signal.addEventListener('abort', onAbort, { once:true });
+    if (signal.aborted) onAbort();
     Promise.resolve(request).then((value) => finish(resolve, value), (error) => finish(reject, error));
   });
 }
