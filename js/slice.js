@@ -26,9 +26,9 @@ function positiveLimit(value, fallback, minimum = 1) {
 }
 
 function boundedMemoryLimit(value, fallback, maximum) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || (n === 0 && typeof value !== 'number')) return fallback;
-  return Math.max(1, Math.min(maximum, n));
+  if (value == null || value === '' || value === false) return fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.floor(Math.max(1, Math.min(maximum, value)));
 }
 
 export function memoryOrigins(node, opts = {}) {
