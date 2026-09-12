@@ -205,6 +205,20 @@ export async function parseSwiftNominalDescriptor(read, address) {
   if (kind === 'class') {
     const tail = await exact(read, addr + 20n, 24); if (!tail) return null;
     out.superclassType = rel(addr + 20n, i32(tail, 0)); out.metadataNegativeSizeInWords = u32(tail,4); out.metadataPositiveSizeInWords=u32(tail,8); out.numImmediateMembers=u32(tail,12); out.numFields=u32(tail,16); out.fieldOffsetVectorOffset=u32(tail,20);
+  } else if (kind === 'enum') {
+    // EnumDescriptor tail layout differs from StructDescriptor (Swift runtime
+    // Metadata.h): NumPayloadCasesAndPayloadSizeOffset packs the payload case
+    // count in the low 24 bits and the payload-size offset word in the high 8
+    // bits, followed by NumEmptyCases. Reading this as struct NumFields /
+    // FieldOffsetVectorOffset deterministically misdecoded every valid enum
+    // descriptor (#5209), so enums keep their own ABI fields and never grow
+    // struct semantics.
+    const tail = await exact(read, addr + 20n, 8); if (!tail) return null;
+    const numPayloadCasesAndPayloadSizeOffset = u32(tail, 0);
+    out.numPayloadCases = numPayloadCasesAndPayloadSizeOffset & 0x00ffffff;
+    out.payloadSizeOffset = numPayloadCasesAndPayloadSizeOffset >>> 24;
+    out.numEmptyCases = u32(tail, 4);
+    out.numCases = out.numPayloadCases + out.numEmptyCases;
   } else {
     const tail = await exact(read, addr + 20n, 8); if (!tail) return null;
     out.numFields=u32(tail,0); out.fieldOffsetVectorOffset=u32(tail,4);
@@ -276,7 +290,13 @@ export async function parseSwiftProtocolDescriptor(read,address){const addr=BigI
 
 const SWIFT_GENERIC_REQUIREMENT_BYTES=12;
 const SWIFT_PROTOCOL_REQUIREMENT_BYTES=8;
-function swiftProtocolRequirementKind(flags){const kind=Number(flags)&0x0f;return{kind,callable:kind>=1&&kind<=6};}
+/* ProtocolRequirementFlags::Kind (swiftlang/swift include/swift/ABI/MetadataValues.h):
+   kinds 1..8 are function requirements invoked through the witness table —
+   7 = AssociatedTypeAccessFunction, 8 = AssociatedConformanceAccessFunction.
+   Kind 0 (BaseProtocol) is a non-callable pointer entry and 9..15 are
+   reserved/unmodeled, so they must stay fail-closed (#5374). */
+const SWIFT_CALLABLE_PROTOCOL_REQUIREMENT_KINDS=new Set([1,2,3,4,5,6,7,8]);
+function swiftProtocolRequirementKind(flags){const kind=Number(flags)&0x0f;return{kind,callable:SWIFT_CALLABLE_PROTOCOL_REQUIREMENT_KINDS.has(kind)};}
 async function parseSwiftProtocolRequirements(read,protocol,budget=4096){
   const declared=Number(protocol?.numRequirements||0),signature=Number(protocol?.numRequirementsInSignature||0),limit=normalizeBudget(budget,4096,100000);
   if(!Number.isInteger(declared)||declared<0||!Number.isInteger(signature)||signature<0||declared>limit)return{requirements:[],complete:false,reason:'protocol-requirement-budget'};

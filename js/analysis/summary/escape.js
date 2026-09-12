@@ -18,6 +18,7 @@
  */
 
 import { deepFreeze, stableStringify } from '../../core/identity/index.js';
+import { createSemanticMachineType } from '../../semantics/ir/types.js';
 import { createAnalysisStatus } from '../status.js';
 import { provenSeparationAuthority } from '../pointsto/lattice.js';
 
@@ -55,6 +56,9 @@ export const ROOT_ORIGINS = Object.freeze(['local-frame', 'local-allocation', 'i
 const REASON_SET = new Set(ESCAPE_REASONS);
 const BOUNDARY_SET = new Set(ESCAPE_BOUNDARIES);
 const LOCALLY_CREATED = new Set(['local-frame', 'local-allocation']);
+// Only canonical Semantic IR scalar kinds are proof that a value cannot carry
+// a pointer. Missing, malformed, or future kinds remain unknown/fail-closed.
+const NON_POINTER_MACHINE_TYPES = new Set(['bitvector', 'float', 'vector', 'predicate']);
 
 function fail(code) { throw new TypeError(code); }
 
@@ -98,9 +102,59 @@ export function createEscapeRecord(input = {}) {
  * The classification is derived from the canonical root kind supplied by the
  * address service, never from register names or mnemonics.
  */
+
+/**
+ * Published escape results are proof authority. `nonEscapingRoots` feeds the
+ * strong `distinct-non-escaping-allocation` alias proof and `rootOrigins`
+ * feeds every separation decision, so a consumer must never be able to forge
+ * or revoke a proof by mutating the returned collection (#5274). The facades
+ * expose the read-only view; every mutating operation fails closed.
+ */
+class PublishedRootSet {
+  constructor(source) {
+    this.#entries = new Set(source);
+    Object.freeze(this);
+  }
+  #entries;
+  get size() { return this.#entries.size; }
+  has(value) { return this.#entries.has(value); }
+  keys() { return this.#entries.keys(); }
+  values() { return this.#entries.values(); }
+  entries() { return this.#entries.entries(); }
+  forEach(callback, thisArg) {
+    return this.#entries.forEach((value) => Reflect.apply(callback, thisArg, [value, value, this]));
+  }
+  [Symbol.iterator]() { return this.#entries[Symbol.iterator](); }
+  add() { fail('escape-result-immutable'); }
+  delete() { fail('escape-result-immutable'); }
+  clear() { fail('escape-result-immutable'); }
+}
+
+class PublishedRootOrigins {
+  constructor(source) {
+    this.#entries = new Map(source);
+    Object.freeze(this);
+  }
+  #entries;
+  get size() { return this.#entries.size; }
+  has(key) { return this.#entries.has(key); }
+  get(key) { return this.#entries.get(key); }
+  keys() { return this.#entries.keys(); }
+  values() { return this.#entries.values(); }
+  entries() { return this.#entries.entries(); }
+  forEach(callback, thisArg) {
+    return this.#entries.forEach((value, key) => Reflect.apply(callback, thisArg, [value, key, this]));
+  }
+  [Symbol.iterator]() { return this.#entries[Symbol.iterator](); }
+  set() { fail('escape-result-immutable'); }
+  delete() { fail('escape-result-immutable'); }
+  clear() { fail('escape-result-immutable'); }
+}
+
 export function classifyRootOrigin(target, { allocationRootKeys = new Set() } = {}) {
   if (!target) return 'unknown';
   if (allocationRootKeys.has(target.rootKey)) return 'local-allocation';
+  if (target.rootKind === 'allocation') return 'local-allocation';
   if (target.rootKind === 'stack-like') return 'local-frame';
   if (target.rootKind === 'absolute') return 'global';
   /* The canonical root descriptor's storage class is producer-held evidence
@@ -149,23 +203,45 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
   });
 
   const cancelledResult = () => ({
-    escapes: [], nonEscapingRoots: new Set(), rootOrigins: new Map(),
+    escapes: [], nonEscapingRoots: new PublishedRootSet([]), rootOrigins: new PublishedRootOrigins([]),
     status: analyzerStatus('partial', 'cancelled'),
   });
   if (options.signal?.aborted) return cancelledResult();
   if (!pointsToRun || pointsToRun.status.completeness === 'unsupported') {
     // Without points-to there is no root vocabulary to reason about. The only
     // sound report is "nothing is proven non-escaping".
-    return { escapes: [], nonEscapingRoots: new Set(), rootOrigins: new Map(), status: analyzerStatus('unsupported', 'dependency-missing') };
+    return { escapes: [], nonEscapingRoots: new PublishedRootSet([]), rootOrigins: new PublishedRootOrigins([]), status: analyzerStatus('unsupported', 'dependency-missing') };
   }
 
   const nodes = new Map((ir.nodes ?? []).map((node) => [String(node.id), node]));
+  const values = new Map();
+  const duplicateValueIds = new Set();
+  for (const value of ir.values ?? []) {
+    if (typeof value?.id !== 'string' || !value.id.trim() || value.id !== value.id.trim()) continue;
+    if (values.has(value.id)) duplicateValueIds.add(value.id);
+    else values.set(value.id, value);
+  }
   const allocationRootKeys = new Set(options.allocationRootKeys ?? []);
   const escapes = [];
   const rootOrigins = new Map();
   const escapedRoots = new Set();
   const containment = new Map();
   let sawUnresolvedFlow = false;
+
+  const valueFlowKinds = new Map();
+  const valueFlowKind = (valueId) => {
+    if (typeof valueId !== 'string' || duplicateValueIds.has(valueId)) return 'unknown';
+    if (valueFlowKinds.has(valueId)) return valueFlowKinds.get(valueId);
+    const value = values.get(valueId);
+    if (!value) return 'unknown';
+    let kind = null;
+    try { kind = createSemanticMachineType(value.machineType).kind; } catch { /* malformed type stays unknown */ }
+    const flowKind = kind === 'address'
+      ? 'pointer'
+      : NON_POINTER_MACHINE_TYPES.has(kind) ? 'non-pointer' : 'unknown';
+    valueFlowKinds.set(valueId, flowKind);
+    return flowKind;
+  };
 
   const setsFor = (valueId) => {
     // Points-to map keys are canonical value ID strings. A non-string
@@ -195,6 +271,11 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
     }
   };
 
+  const recordValue = (valueId, details) => {
+    if (valueFlowKind(valueId) === 'non-pointer') return;
+    record(setsFor(valueId), details);
+  };
+
   const observe = (set) => {
     if (!set || set.top) return;
     for (const target of set.targets) {
@@ -204,13 +285,18 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
     }
   };
 
+  const observeValue = (valueId) => {
+    if (valueFlowKind(valueId) === 'non-pointer') return;
+    observe(setsFor(valueId));
+  };
+
   for (const node of nodes.values()) {
     if (options.signal?.aborted) return cancelledResult();
-    for (const input of node.inputs ?? []) observe(setsFor(input));
+    for (const input of node.inputs ?? []) observeValue(input);
 
     if (node.kind === 'return') {
       for (const input of node.inputs ?? []) {
-        record(setsFor(input), { reason: 'returned', boundary: 'return', siteId: node.id, evidenceIds: evidenceOf(node) });
+        recordValue(input, { reason: 'returned', boundary: 'return', siteId: node.id, evidenceIds: evidenceOf(node) });
       }
       continue;
     }
@@ -220,6 +306,7 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
       // points. The address decides the boundary.
       const storedValueId = (node.inputs ?? [])[1];
       if (storedValueId == null) continue;
+      if (valueFlowKind(storedValueId) === 'non-pointer') continue;
       const storedSet = setsFor(storedValueId);
       if (!storedSet || storedSet.top || !storedSet.targets.length) { sawUnresolvedFlow = true; continue; }
       const addressSet = setsFor(node.memory?.addressExpr?.valueId);
@@ -245,7 +332,7 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
           if (!containment.has(destTarget.rootKey)) containment.set(destTarget.rootKey, new Set());
           for (const storedTarget of storedSet.targets) {
             containment.get(destTarget.rootKey).add(storedTarget.rootKey);
-            observe(setsFor(storedValueId));
+            observeValue(storedValueId);
           }
         }
       }
@@ -275,7 +362,7 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
           ? argument.valueId : argument,
       ))];
       for (const valueId of argumentValueIds) {
-        record(setsFor(valueId), { reason, boundary, siteId: node.id, evidenceIds: evidenceOf(node) });
+        recordValue(valueId, { reason, boundary, siteId: node.id, evidenceIds: evidenceOf(node) });
       }
       if (!complete) sawUnresolvedFlow = true;
       continue;
@@ -358,8 +445,8 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
   const completeness = pointsToComplete && !sawUnresolvedFlow ? 'complete' : 'partial';
   return {
     escapes: deepFreeze(canonicalEscapes),
-    nonEscapingRoots,
-    rootOrigins,
+    nonEscapingRoots: new PublishedRootSet(nonEscapingRoots),
+    rootOrigins: new PublishedRootOrigins(rootOrigins),
     sawUnresolvedFlow,
     status: analyzerStatus(completeness, completeness === 'complete' ? null : 'evidence-missing'),
   };
@@ -369,7 +456,15 @@ export function analyzeEscape(ir, cfg, ssa, pointsToRun, options = {}) {
  * Escape reasons that invalidate a separation proof which relied on a root not
  * being visible outside the function. Used by artifact invalidation so exactly
  * the affected proofs are dropped, and no more (§9.4).
+ *
+ * Full recompute treats every observed escape fact as revoking the root's
+ * non-escape proof (`analyzeEscape()` adds every record's root to
+ * `escapedRoots`, and `passed-to-known-call` is one of those records), so the
+ * incremental policy must agree — a policy that spared the known-call reason
+ * would let invalidation keep a proof a fresh analysis would withdraw (#5362).
+ * If a proof-preserving known-call contract is ever introduced, both sides
+ * must change together; until then every escape fact invalidates.
  */
 export function invalidatesNonEscapeProof(record) {
-  return record.reason !== 'passed-to-known-call';
+  return record != null;
 }

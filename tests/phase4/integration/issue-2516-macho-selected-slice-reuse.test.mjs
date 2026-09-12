@@ -9,6 +9,7 @@ assert.match(worker,/async function analyzeImage[\s\S]*selected = await pointerI
 const analyze=worker.slice(worker.indexOf('async function analyzeImage'),worker.indexOf('function genericFunctionSeeds'));
 assert.doesNotMatch(analyze,/parseMachOSource\(/,'first analysis must not independently reparse the selected slice');
 assert.match(worker,/async function resolvePointer[\s\S]*pointerImageForSlice\(msg\.sliceIndex, signal\)/,'pointer resolution must use the same slice image cache');
+assert.match(worker,/async function metadataPage[\s\S]*pointerImageForSlice\(msg\.sliceIndex, signal\)/,'metadata must use the same slice image cache');
 assert.match(backend,/platformSelectedSliceReparseAvoided:normalized\?\.platform\?\.selectedSliceParseReused === true/);
 assert.match(backend,/legacyCompatibilityParseRequired:true/,'remaining legacy compatibility parser work must remain measurable and explicit');
 assert.match(backend,/duplicateUniversalParseAvoided:false/,'legacy\/normalized differential work must not be falsely claimed eliminated');

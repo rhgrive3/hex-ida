@@ -32,6 +32,56 @@ function jsonByteSize(value) {
   return utf8ByteLength(json);
 }
 
+// Snapshot untrusted wire data through own data descriptors before any
+// validation, accounting, or decode pass. This prevents accessor/proxy-backed
+// input from presenting different payloads to those authority boundaries.
+function snapshotWireData(value, depth = 0) {
+  if (depth > 20) throw new DebugAdapterError('malformed-packet', 'remote packet nesting is too deep');
+  if (!value || typeof value !== 'object') return value;
+
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Array.isArray(value)) {
+    const lengthDescriptor = descriptors.length;
+    if (
+      !lengthDescriptor ||
+      !Object.prototype.hasOwnProperty.call(lengthDescriptor, 'value') ||
+      !Number.isSafeInteger(lengthDescriptor.value) ||
+      lengthDescriptor.value < 0 ||
+      lengthDescriptor.value > MAX_ARRAY
+    ) {
+      throw new DebugAdapterError('malformed-packet', 'remote array exceeds limit');
+    }
+    const length = lengthDescriptor.value;
+    const out = new Array(length);
+    for (let i = 0; i < length; i += 1) {
+      const descriptor = descriptors[String(i)];
+      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+        throw new DebugAdapterError('malformed-packet', 'remote arrays must contain own data values');
+      }
+      out[i] = snapshotWireData(descriptor.value, depth + 1);
+    }
+    return out;
+  }
+
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) throw new DebugAdapterError('malformed-packet', 'remote packet objects must be plain data');
+  const entries = Object.entries(descriptors).filter(([, descriptor]) => descriptor.enumerable);
+  if (entries.length > 1024) throw new DebugAdapterError('malformed-packet', 'remote object has too many fields');
+  const out = proto === null ? Object.create(null) : {};
+  for (const [key, descriptor] of entries) {
+    if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      throw new DebugAdapterError('malformed-packet', 'remote packet fields must be own data properties');
+    }
+    Object.defineProperty(out, key, {
+      value: snapshotWireData(descriptor.value, depth + 1),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return out;
+}
+
 function bytesToBase64(bytes) {
   if (typeof Buffer !== 'undefined') return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
   if (typeof btoa !== 'function') throw new DebugAdapterError('encoding-unavailable', 'base64 encoder is unavailable');
@@ -205,6 +255,14 @@ export function validateRemotePacket(packet) {
     if (typeof packet.method !== 'string' || !packet.method || packet.method.length > 128) throw new DebugAdapterError('malformed-packet', 'request method must be a 1..128 character string');
     if (BLOCKED_METHODS.test(packet.method)) throw new DebugAdapterError('blocked-method', 'host command execution is prohibited');
   }
+  /* #5471: an event packet without a valid event identifier would still be
+     dispatched to listeners; the event name carries the same string grammar
+     as a request method. */
+  if (packet.type === 'event') {
+    if (typeof packet.event !== 'string' || !packet.event || packet.event.length > 128) {
+      throw new DebugAdapterError('malformed-packet', 'event name must be a 1..128 character string');
+    }
+  }
   validateResponse(packet);
   return packet;
 }
@@ -341,7 +399,7 @@ export class RemoteProtocolClient {
   }
   receive(raw) {
     let wire;
-    try { wire = validateRemotePacket(raw); } catch { return false; }
+    try { wire = validateRemotePacket(snapshotWireData(raw)); } catch { return false; }
     if (wire.type !== 'hello' && wire.epoch !== this.epoch) {
       // A request opened with an explicit epoch legally receives its response
       // carrying that request's own epoch (#5726). Keep such a response only
@@ -351,8 +409,43 @@ export class RemoteProtocolClient {
         ? this.pending.get(wire.id) : null;
       if (!pendingForWire || pendingForWire.epoch !== wire.epoch) return false;
     }
+
+    // Apply event admission to the encoded packet before materializing tagged
+    // BigInt/byte payloads. A saturated window must not spend decode/allocation
+    // work on an event that is guaranteed to be dropped (#5245). Keep the
+    // prospective window state local until decode succeeds so malformed events
+    // that fit the quota still do not consume it.
+    let eventAdmission = null;
+    if (wire.type === 'event') {
+      const now = this._monotonicNow();
+      const reset = now - this.eventWindowStart >= 1000;
+      const count = reset ? 0 : this.eventWindowCount;
+      const usedBytes = reset ? 0 : this.eventWindowBytes;
+      const dropped = reset ? 0 : this.droppedEvents;
+      const bytes = jsonByteSize(wire);
+      if (count + 1 > this.maxEventsPerSecond || usedBytes + bytes > this.maxEventBytesPerSecond) {
+        if (reset) {
+          this.eventWindowStart = now;
+          this.eventWindowCount = 0;
+          this.eventWindowBytes = 0;
+          this.droppedEvents = 0;
+        }
+        this.droppedEvents++;
+        if (dropped === 0) {
+          const notice={version:DEBUG_PROTOCOL_VERSION,type:'event',epoch:this.epoch,event:'stream-truncated',data:{reason:'event-backpressure'}};
+          for (const fn of this.listeners) { invokeListener(fn, notice); }
+        }
+        return false;
+      }
+      eventAdmission = { now, reset, bytes };
+    }
+
     let packet;
     try { packet = decodeWireValue(wire); } catch { return false; }
+    // Accessor-backed input must not be able to change packet class across the
+    // admission/decode boundary and thereby bypass event quotas (or trip a
+    // missing admission record).
+    if ((packet.type === 'event') !== (eventAdmission !== null)) return false;
     if (packet.type === 'response') {
       const pending = this.pending.get(packet.id);
       // The request's own epoch is the settle authority: a pending opened at
@@ -365,18 +458,17 @@ export class RemoteProtocolClient {
       return true;
     }
     if (packet.type === 'event') {
-      const now=this._monotonicNow();
-      if (now-this.eventWindowStart >= 1000) { this.eventWindowStart=now; this.eventWindowCount=0; this.eventWindowBytes=0; this.droppedEvents=0; }
-      const bytes=jsonByteSize(wire);
-      if (this.eventWindowCount + 1 > this.maxEventsPerSecond || this.eventWindowBytes + bytes > this.maxEventBytesPerSecond) {
-        this.droppedEvents++;
-        if (this.droppedEvents === 1) {
-          const notice={version:DEBUG_PROTOCOL_VERSION,type:'event',epoch:this.epoch,event:'stream-truncated',data:{reason:'event-backpressure'}};
-          for (const fn of this.listeners) { invokeListener(fn, notice); }
-        }
-        return false;
+      // `wire.type` was validated before decode, so every decoded event has a
+      // matching admission record. Commit its window accounting only now that
+      // decode succeeded.
+      if (eventAdmission.reset) {
+        this.eventWindowStart = eventAdmission.now;
+        this.eventWindowCount = 0;
+        this.eventWindowBytes = 0;
+        this.droppedEvents = 0;
       }
-      this.eventWindowCount++; this.eventWindowBytes+=bytes;
+      this.eventWindowCount++;
+      this.eventWindowBytes += eventAdmission.bytes;
       for (const fn of this.listeners) { invokeListener(fn, packet); }
       return true;
     }

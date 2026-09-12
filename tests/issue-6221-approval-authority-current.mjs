@@ -5,7 +5,14 @@ import { ProposalStore } from '../js/ai/proposals.js';
 
 const evidenceStore = { has: () => true };
 const writes = [];
-const app = { notes: { setComment(address, value) { writes.push([address, value]); } } };
+const comments = new Map();
+const app = { notes: {
+  comment(address) { return comments.get(String(address)) ?? null; },
+  setComment(address, value) {
+    writes.push([address, value]);
+    comments.set(String(address), value);
+  },
+} };
 const store = new ProposalStore({ evidenceStore });
 const executor = new CapabilityExecutor({ catalog: createCapabilityCatalog(), app });
 const proposal = store.create({
@@ -36,5 +43,6 @@ await store.apply(proposal.id, {
     );
   },
 });
-assert.deepEqual(writes, [['4096', 'approved']]);
+assert.deepEqual(writes, [[4096n, 'approved']]);
+assert.equal(app.notes.comment('4096'), 'approved');
 console.log('#6221 current branded ProposalStore authorization: PASS');
