@@ -5,7 +5,9 @@ import { InvestigationSessionStore } from '../../../js/ai/session-core/index.js'
 
 const clone = (value) => structuredClone(value);
 
-test('#4578 create rejects an in-memory duplicate without touching persistence', async () => {
+// The canonical runner awaits imports; settle these cases before it imports
+// another module that may instrument shared globals such as timers.
+await test('#4578 create rejects an in-memory duplicate without touching persistence', async () => {
   let saves = 0;
   const persistence = {
     async save() { saves++; },
@@ -23,7 +25,7 @@ test('#4578 create rejects an in-memory duplicate without touching persistence',
   assert.equal(saves, 0, 'duplicate rejection must happen before persistence.save');
 });
 
-test('#4578 create rejects an existing persistence-only session without overwriting it', async () => {
+await test('#4578 create rejects an existing persistence-only session without overwriting it', async () => {
   const persisted = new Map([
     ['dup-cold', { id: 'dup-cold', goal: 'persisted-original' }],
   ]);
@@ -43,7 +45,7 @@ test('#4578 create rejects an existing persistence-only session without overwrit
   assert.equal(store.sessions.has('dup-cold'), false, 'duplicate probe must not publish a replacement');
 });
 
-test('#4578 concurrent create calls reserve an explicit ID before the first await', async () => {
+await test('#4578 concurrent create calls reserve an explicit ID before the first await', async () => {
   let releaseSave;
   let saveStartedResolve;
   const saveStarted = new Promise((resolve) => { saveStartedResolve = resolve; });
@@ -76,7 +78,7 @@ test('#4578 concurrent create calls reserve an explicit ID before the first awai
   assert.equal((await store.get('same-id')).goal, 'first');
 });
 
-test('#4578 failed create releases its reservation and normal create/update semantics remain intact', async () => {
+await test('#4578 failed create releases its reservation and normal create/update semantics remain intact', async () => {
   let fail = true;
   const persisted = new Map();
   const persistence = {
