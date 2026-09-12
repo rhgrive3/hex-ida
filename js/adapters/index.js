@@ -402,7 +402,13 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       const after = cloneRegisters(sandbox.emulator); const event = { type:'instruction', address:before.pc, addr:before.pc, text:raw.text, ok:raw.ok, reason:raw.reason };
       this.traceBuffer.push(event);
       if (isConditionalBranch(raw.text)) {
-        this.traceBuffer.push({ type:'branch', address:before.pc, text:raw.text, next:after.pc, taken:after.pc !== before.pc + 4n });
+        const recorded = (sandbox.emulator.trace || []).slice(this.traceCursor).find((e) => e && e.addr === before.pc && e.branch && e.branch.conditional === true && typeof e.branch.taken === 'boolean');
+        let taken = null;
+        if (recorded) taken = recorded.branch.taken;
+        else if (after.pc !== before.pc + 4n) taken = true;
+        const branchEvent = { type:'branch', address:before.pc, text:raw.text, next:after.pc, taken };
+        if (taken === null) branchEvent.ambiguous = true;
+        this.traceBuffer.push(branchEvent);
         this.branchCursor++;
       }
       const freshTrace = (sandbox.emulator.trace || []).slice(this.traceCursor);

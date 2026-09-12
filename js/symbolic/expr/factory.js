@@ -200,29 +200,30 @@ export function createCompare(op, left, right) {
 }
 
 export function createConnective(op, ...args) {
+  const actualArgs = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
   if (!Object.values(BOOL_CONNECTIVE_OP).includes(op)) {
     throw new TypeError(`createConnective: unknown boolean connective op '${op}'`);
   }
-  if (args.length === 0) {
+  if (actualArgs.length === 0) {
     throw new TypeError(`createConnective (${op}): requires at least one argument`);
   }
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
+  for (let i = 0; i < actualArgs.length; i++) {
+    const a = actualArgs[i];
     if (!a || !isBoolSort(a.sort)) {
       throw new TypeError(`createConnective (${op}): arg[${i}] must have Bool sort, got ${sortToString(a?.sort)}`);
     }
   }
-  if (op === BOOL_CONNECTIVE_OP.NOT && args.length !== 1) {
-    throw new TypeError(`createConnective (not): exactly one argument required, got ${args.length}`);
+  if (op === BOOL_CONNECTIVE_OP.NOT && actualArgs.length !== 1) {
+    throw new TypeError(`createConnective (not): exactly one argument required, got ${actualArgs.length}`);
   }
-  if ((op === BOOL_CONNECTIVE_OP.IMPLIES || op === BOOL_CONNECTIVE_OP.EQ || op === BOOL_CONNECTIVE_OP.NE) && args.length !== 2) {
-    throw new TypeError(`createConnective (${op}): exactly two arguments required, got ${args.length}`);
+  if ((op === BOOL_CONNECTIVE_OP.IMPLIES || op === BOOL_CONNECTIVE_OP.EQ || op === BOOL_CONNECTIVE_OP.NE) && actualArgs.length !== 2) {
+    throw new TypeError(`createConnective (${op}): exactly two arguments required, got ${actualArgs.length}`);
   }
   return Object.freeze({
     kind: EXPR_KIND.CONNECTIVE,
     sort: boolSort(),
     op,
-    args: Object.freeze([...args]),
+    args: Object.freeze(Array.isArray(actualArgs) ? actualArgs.slice() : Array.from(actualArgs)),
   });
 }
 
