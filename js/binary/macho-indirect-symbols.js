@@ -57,6 +57,7 @@ function scanLoadCommands(r, kind, image, budget) {
     if (p+8 > end) return null;
     const cmd=r.u32(p), cmdsize=r.u32(p+4);
     if (cmdsize < 8 || p+cmdsize > end) return null;
+    if (!budget.take({ inputBytes:8, records:1, operations:1, estimatedHeapBytes:16 }, 'indirect-symbol-command-scan')) return null;
     if (cmd===LC_SYMTAB && cmdsize===24) {
       symtabs.push({ symoff:r.u32(p+8), nsyms:r.u32(p+12), stroff:r.u32(p+16), strsize:r.u32(p+20) });
     } else if (cmd===LC_DYSYMTAB) {
@@ -69,6 +70,7 @@ function scanLoadCommands(r, kind, image, budget) {
       const nsects=r.u32(p+64);
       if (72+nsects*80 > cmdsize) return null;
       for (let s=0,q=p+72; s<nsects; s++,q+=80) {
+        if (!budget.take({ inputBytes:80, records:1, objects:1, operations:1, estimatedHeapBytes:96 }, 'indirect-symbol-section-scan')) return null;
         rawSections.push({
           name:readName(r,q), segment:readName(r,q+16), address:r.u64(q+32), size:r.u64(q+40),
           fileOffset:BigInt(r.u32(q+48)), flags:r.u32(q+64),
@@ -79,6 +81,7 @@ function scanLoadCommands(r, kind, image, budget) {
       const nsects=r.u32(p+48);
       if (56+nsects*68 > cmdsize) return null;
       for (let s=0,q=p+56; s<nsects; s++,q+=68) {
+        if (!budget.take({ inputBytes:68, records:1, objects:1, operations:1, estimatedHeapBytes:80 }, 'indirect-symbol-section-scan')) return null;
         rawSections.push({
           name:readName(r,q), segment:readName(r,q+16), address:BigInt(r.u32(q+32)), size:BigInt(r.u32(q+36)),
           fileOffset:BigInt(r.u32(q+40)), flags:r.u32(q+56),
@@ -91,9 +94,10 @@ function scanLoadCommands(r, kind, image, budget) {
   return { symtabs, dysymtabs, rawSections };
 }
 
-function attachReservedFields(image, rawSections) {
+function attachReservedFields(image, rawSections, budget) {
   const queues=new Map();
   for (const section of image.sections || []) {
+    if (!budget.take({ objects:1, operations:1, estimatedHeapBytes:48 }, 'indirect-symbol-section-index')) return false;
     const key=sectionKey(section);
     const queue=queues.get(key) || [];
     queue.push(section);
@@ -103,10 +107,12 @@ function attachReservedFields(image, rawSections) {
     const queue=queues.get(sectionKey(raw));
     const section=queue?.shift();
     if (!section) continue;
+    if (!budget.take({ objects:1, operations:1, estimatedHeapBytes:16 }, 'indirect-symbol-section-attachment')) return false;
     section.reserved1=raw.reserved1;
     section.reserved2=raw.reserved2;
     if (raw.reserved3 != null) section.reserved3=raw.reserved3;
   }
+  return true;
 }
 
 function readIndexedSymbol(r, st, bits, index, budget) {
@@ -138,9 +144,10 @@ export function applyMachOIndirectSymbols(thinInput, image, opts={}) {
   if (!kind) return image;
   r.littleEndian=kind.littleEndian;
   const budget=ensureMachOMetadataBudget(image);
+  if (budget.stopped) return image;
   const scanned=scanLoadCommands(r, kind, image, budget);
-  if (!scanned) return image;
-  attachReservedFields(image, scanned.rawSections);
+  if (!scanned || budget.stopped) return image;
+  if (!attachReservedFields(image, scanned.rawSections, budget)) return image;
   if (scanned.dysymtabs.length===0) return image;
 
   const status=image.metadata.indirectSymbols={ complete:true, records:0, sites:0, partialReason:null };
