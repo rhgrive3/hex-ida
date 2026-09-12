@@ -68,6 +68,18 @@ export function translateSemanticIR(target, options = {}) {
     }
   }
 
+  function canonicalConstantValue(value) {
+    if (typeof value === 'bigint') return value;
+    if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+    return null;
+  }
+
+  function nonCanonicalConstant(width, entityId, opLabel, meta) {
+    semanticUnknowns++;
+    unsupportedEntities.push({ id: entityId, op: opLabel, reason: 'non-canonical-constant-value' });
+    return createUnknownSemantic(bvSort(width), 'non-canonical-constant-value', meta);
+  }
+
   function translateValue(val, width = defaultWidth) {
     if (!val) {
       semanticUnknowns++;
@@ -99,8 +111,13 @@ export function translateSemanticIR(target, options = {}) {
     let res = null;
 
     if (val.const != null) {
-      res = createBv(width, val.const);
-      recordOrigin(res, val.origin, `const:${val.const}`);
+      const canonical = canonicalConstantValue(val.const);
+      if (canonical === null) {
+        res = nonCanonicalConstant(width, valId, 'const', { valueId: valId });
+      } else {
+        res = createBv(width, canonical);
+        recordOrigin(res, val.origin, `const:${val.const}`);
+      }
     } else if (val.kind === VK.ARG || val.kind === 'arg') {
       const reg = String(val.reg || val.id || 'arg');
       const argIndex = val.index != null ? val.index : (reg.startsWith('x') ? Number(reg.slice(1)) : null);
@@ -179,7 +196,11 @@ export function translateSemanticIR(target, options = {}) {
           unsupportedEntities.push({ id: inst.id, op: inst.op, reason: 'missing-constant-value' });
           return createUnknownSemantic(bvSort(width), 'missing-constant-value', { instructionId: inst.id });
         }
-        return createBv(width, value);
+        const canonical = canonicalConstantValue(value);
+        if (canonical === null) {
+          return nonCanonicalConstant(width, inst.id, inst.op, { instructionId: inst.id });
+        }
+        return createBv(width, canonical);
       }
 
       case OP.MOV:

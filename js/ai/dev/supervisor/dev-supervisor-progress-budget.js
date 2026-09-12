@@ -4,19 +4,28 @@ import { DevSupervisorEngineV0 as BaseDevSupervisorEngineV0 } from './dev-superv
  * The base engine's maxDecisions loop is a safety budget for decisions that do
  * not make progress. A successful tool call is positive progress and must not
  * consume that budget forever. This production wrapper keeps the existing
- * fail-closed base loop, but moves its upper bound forward after each
- * successful tool execution so the Supervisor always gets a fresh
- * maxDecisions window after progress.
+ * fail-closed base loop, but moves its upper bound forward after a tool
+ * execution that makes verifiable progress so the Supervisor gets a fresh
+ * maxDecisions window.
  *
  * Invalid decisions, unavailable tools, activation rejections and failed tool
  * calls do not mark progress, so they remain bounded by the original window.
+ * Repeated identical read-only observations (runtime identity) and control
+ * re-declarations (requireActivation) succeed without advancing state, so they
+ * only mark progress when their (args, result) fingerprint changes. Every
+ * replenished window is additionally capped by an absolute decision ceiling so
+ * that no successful-tool loop can extend maxDecisions without a stopping point.
  */
+
+const PROGRESS_ABSOLUTE_DECISION_CEILING = 256;
+
 export class ProgressBudgetDevSupervisorEngineV0 extends BaseDevSupervisorEngineV0 {
   constructor(options = {}) {
     super(options);
     this.progressDecisionWindow = this.maxDecisions;
     this.progressDecisionCount = 0;
     this.progressRunActive = false;
+    this.progressObservationFingerprints = Object.create(null);
 
     /* Never Proxy the production bridge: request may be a non-configurable,
        non-writable own property. A Proxy get trap returning a wrapper function
@@ -38,7 +47,7 @@ export class ProgressBudgetDevSupervisorEngineV0 extends BaseDevSupervisorEngine
       const requireActivation = gate.requireActivation.bind(gate);
       gate.requireActivation = (...args) => {
         const result = requireActivation(...args);
-        this.markToolProgress();
+        this.markControlProgress(args, result);
         return result;
       };
     }
@@ -46,7 +55,25 @@ export class ProgressBudgetDevSupervisorEngineV0 extends BaseDevSupervisorEngine
 
   markToolProgress() {
     if (!this.progressRunActive) return;
-    this.maxDecisions = this.progressDecisionCount + this.progressDecisionWindow;
+    this.maxDecisions = Math.min(
+      this.progressDecisionCount + this.progressDecisionWindow,
+      PROGRESS_ABSOLUTE_DECISION_CEILING,
+    );
+  }
+
+  progressFingerprint(payload) {
+    try { return JSON.stringify(payload); } catch { return null; }
+  }
+
+  markObservationProgress(key, fingerprint) {
+    if (!this.progressRunActive) return;
+    if (fingerprint === null || fingerprint === this.progressObservationFingerprints[key]) return;
+    this.progressObservationFingerprints[key] = fingerprint;
+    this.markToolProgress();
+  }
+
+  markControlProgress(args, result) {
+    this.markObservationProgress('requireActivation', this.progressFingerprint({ args, result }));
   }
 
   async executeWithinToolBoundary(operation) {
@@ -57,7 +84,7 @@ export class ProgressBudgetDevSupervisorEngineV0 extends BaseDevSupervisorEngine
 
   async readActiveRuntimeIdentity(args = {}) {
     const result = await super.readActiveRuntimeIdentity(args);
-    this.markToolProgress();
+    this.markObservationProgress('runtimeIdentity', this.progressFingerprint({ args, result }));
     return result;
   }
 
@@ -66,6 +93,7 @@ export class ProgressBudgetDevSupervisorEngineV0 extends BaseDevSupervisorEngine
       throw new Error('DevSupervisorEngine run is already in progress');
     }
     this.progressDecisionCount = 0;
+    this.progressObservationFingerprints = Object.create(null);
     this.maxDecisions = this.progressDecisionWindow;
     this.progressRunActive = true;
     try {
@@ -73,6 +101,7 @@ export class ProgressBudgetDevSupervisorEngineV0 extends BaseDevSupervisorEngine
     } finally {
       this.progressRunActive = false;
       this.progressDecisionCount = 0;
+      this.progressObservationFingerprints = Object.create(null);
       this.maxDecisions = this.progressDecisionWindow;
     }
   }

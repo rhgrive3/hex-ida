@@ -580,7 +580,7 @@ export class App {
     this.dom.addrCur.textContent = addrHex(addr);
     const total = this.viewer.totalRows;
     this.dom.stRight.textContent = total
-      ? t('status.rowOf', { cur: (row + 1).toLocaleString(), total: total.toLocaleString() })
+      ? t('status.rowOf', { cur: (typeof row === 'bigint' ? row + 1n : row + 1).toLocaleString(), total: total.toLocaleString() })
       : '';
     this.store.set({ currentAddress: addr });
   }
@@ -598,7 +598,8 @@ export class App {
     if (row == null) {
       const sel = this.viewer.selectedRow;
       const top = this.viewer.topRow();
-      const visible = sel >= top && sel < top + this.viewer.visibleRows();
+      const bottom = typeof top === 'bigint' ? top + BigInt(this.viewer.visibleRows()) : top + this.viewer.visibleRows();
+      const visible = sel >= top && sel < bottom;
       row = visible ? sel : top;
     }
     this.viewer.beginRange(row);
