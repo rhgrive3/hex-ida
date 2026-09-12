@@ -130,6 +130,38 @@ function optionalString(value, code) {
   if (typeof value !== 'string') fail(code);
   return value;
 }
+
+const SEMANTIC_COLLECTION_FIELDS = Object.freeze([
+  'consumedValues',
+  'producedValues',
+  'locationReads',
+  'locationWrites',
+  'memoryEffects',
+  'callEffects',
+  'controlEffects',
+  'possibleExceptions',
+]);
+
+function hasSemanticCollectionEntry(value) {
+  if (!Array.isArray(value)) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value') && descriptor.value != null) return true;
+  }
+  return false;
+}
+
+function hasOperationSemantics(bundle) {
+  if (bundle.opcode != null) return true;
+  if (typeof bundle.mnemonic === 'string' && bundle.mnemonic.trim()) return true;
+  return SEMANTIC_COLLECTION_FIELDS.some((field) => hasSemanticCollectionEntry(bundle[field]));
+}
+
+function requireExactOperationSemantics(bundle, completeness) {
+  if ((completeness === 'exact' || completeness === 'exact-with-intrinsic') && !hasOperationSemantics(bundle)) {
+    fail('vm-effect-exact-semantics-required');
+  }
+}
 function nonNegativeInteger(value, code) {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) fail(code);
   return value;
@@ -233,7 +265,7 @@ export function createVMEffectBundle(input, options = {}) {
   const methodId = nonEmpty(input.methodId, 'vm-effect-method-id-required');
   const operationId = nonEmpty(input.operationId, 'vm-effect-operation-id-required');
   const bytecodeOffset = nonNegativeInteger(input.bytecodeOffset ?? 0, 'vm-effect-offset-required');
-  const completeness = nonEmpty(input.completeness ?? 'exact', 'vm-effect-completeness-required');
+  const completeness = nonEmpty(input.completeness, 'vm-effect-completeness-required');
   if (!SETS.completeness.has(completeness)) fail('vm-effect-invalid-completeness');
 
   const consumedValues = array(input.consumedValues ?? [], 'vm-effect-invalid-consumed-values');
@@ -261,6 +293,19 @@ export function createVMEffectBundle(input, options = {}) {
   const profileId = optionalString(input.profileId, 'vm-effect-invalid-profile-id');
   const mnemonic = optionalString(input.mnemonic, 'vm-effect-invalid-mnemonic');
   const opcode = input.opcode != null ? nonNegativeInteger(input.opcode, 'vm-effect-invalid-opcode') : null;
+
+  requireExactOperationSemantics({
+    opcode,
+    mnemonic,
+    consumedValues,
+    producedValues,
+    locationReads,
+    locationWrites,
+    memoryEffects,
+    callEffects,
+    controlEffects,
+    possibleExceptions,
+  }, completeness);
 
   const out = {
     schemaVersion,
@@ -320,6 +365,7 @@ export function validateVMEffectBundle(bundle) {
   if ((bundle.completeness === 'partial' || bundle.completeness === 'unknown') && unknownEffects.length === 0) {
     fail('vm-effect-partial-must-specify-unknown-effects');
   }
+  requireExactOperationSemantics(bundle, bundle.completeness);
   return true;
 }
 
@@ -394,7 +440,10 @@ export function createVMEffectFunction(input, options = {}) {
     if (!VM_EFFECT_RESOLUTION_COMPLETENESS.includes(declared)) fail('vm-effect-resolution-completeness-invalid');
     resolutionCompleteness = declared;
   } else {
-    resolutionCompleteness = 'complete';
+    // Absence of explicit target-resolution evidence is conservative. A
+    // caller may promote this axis only by supplying a canonical taxonomy
+    // value; omission must never mint complete authority (#4048).
+    resolutionCompleteness = 'partial';
   }
 
   const functionIdentity = { methodId, frontendId, profileId };
@@ -409,7 +458,7 @@ export function createVMEffectFunction(input, options = {}) {
     exceptionRegions: deepFreeze(exceptionRegions.map((r) => jsonSafe(r))),
     validationReportId: optionalString(input.validationReportId, 'vm-effect-invalid-validation-report-id'),
     aggregateCompleteness,
-    resolutionCompleteness: input.resolutionCompleteness != null ? resolutionCompleteness : 'complete',
+    resolutionCompleteness,
     origin: createOriginSet(input.origin ?? { parentEntityIds: [methodId] }),
     metadata: input.metadata ? deepFreeze(jsonSafe(input.metadata)) : Object.freeze({}),
   };
