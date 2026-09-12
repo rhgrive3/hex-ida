@@ -35,6 +35,18 @@ test('#4373 normalizer flush does not upgrade an unsupported source event', () =
   assert.equal(normalizer.flush().completeness, 'unsupported');
 });
 
+test('#4373 internal drops preserve weaker unsupported source authority', () => {
+  const normalizer = new RuntimeEventNormalizer(base, { maxEvents: 2 });
+  assert.ok(normalizer.push(event('unsupported')));
+  assert.ok(normalizer.push(event('partial')));
+  assert.equal(normalizer.push(event('partial')), null);
+  const batch = normalizer.flush();
+  assert.ok(batch.dropped > 0);
+  assert.ok(batch.events.some((item) => item.kind === 'dropped-events'));
+  assert.ok(batch.events.some((item) => item.completeness === 'unsupported'));
+  assert.equal(batch.completeness, 'unsupported');
+});
+
 test('#4373 loss markers remain truncated and empty batches keep their defaults', () => {
   for (const lossEvent of [
     event('truncated', 'gap'),

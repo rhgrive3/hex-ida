@@ -4,6 +4,16 @@ import { createSymmetricCodeFunctionSet, SYMMETRIC_CODE_PROFILE } from './symmet
 const INSTALL_VERSION = 'symmetric-workspace-diff/v2';
 const MAX_DIFF_FUNCTIONS = 350000;
 const DISCOVERY_GLOBAL_CAP = 400000;
+// #5452: full symmetric diffs widen the matcher budget. The key must be
+// `maxCandidateEdges` — that is the authority `createMatchBudget()` honors
+// (100k default); a `maxEdges` key is silently dropped and the widened
+// budget never applies.
+export const DEFAULT_SYMMETRIC_MATCH_BUDGET = Object.freeze({
+  maxCandidateEvaluations: 1500000,
+  maxCandidateEdges: 300000,
+  maxComponentNodes: 4096,
+  maxComponentEdges: 65536,
+});
 
 function abortError(signal) {
   const error = signal?.reason instanceof Error ? signal.reason : new Error('Binary diff aborted');
@@ -23,12 +33,46 @@ function requestWithSignal(request, signal) {
       fn(value);
     };
     const onAbort = () => {
+      if (settled) return;
       try { request?.cancel?.(); } catch { /* best effort */ }
       finish(reject, abortError(signal));
     };
     if (signal?.aborted) { onAbort(); return; }
     signal?.addEventListener?.('abort', onAbort, { once:true });
     Promise.resolve(request).then((value) => finish(resolve, value), (error) => finish(reject, error));
+    if (signal?.aborted) { onAbort(); return; }
+  });
+}
+const sharedDiffSessions = new WeakMap();
+function sharedDiffSession(task) {
+  let entry = sharedDiffSessions.get(task);
+  if (!entry) {
+    entry = { task, controller:null, waiters:0, settled:false };
+    sharedDiffSessions.set(task, entry);
+    const settle = () => { entry.settled = true; };
+    task.then(settle, settle);
+  }
+  return entry;
+}
+function joinSharedDiff(entry, signal) {
+  entry.waiters++;
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = (fn, value, cancelled = false) => {
+      if (done) return;
+      done = true;
+      signal?.removeEventListener?.('abort', onAbort);
+      entry.waiters = Math.max(0, entry.waiters - 1);
+      if (cancelled && entry.waiters === 0 && !entry.settled && entry.controller && !entry.controller.signal.aborted) {
+        entry.controller.abort(signal?.reason ?? 'no-active-consumers');
+      }
+      fn(value);
+    };
+    const onAbort = () => finish(reject, abortError(signal), true);
+    if (signal?.aborted) { onAbort(); return; }
+    signal?.addEventListener?.('abort', onAbort, { once:true });
+    if (signal?.aborted) { onAbort(); return; }
+    entry.task.then((value) => finish(resolve, value), (error) => finish(reject, error));
   });
 }
 function executableRegions(regions) {
@@ -64,9 +108,13 @@ async function discoverBaselineFunctions(baseline, { signal = null, onProgress =
     try {
       const result = await requestWithSignal(request, signal);
       if (result?.starts?.length) {
-        symbols.addFunctions(result.starts, { source:'heuristic', confidence:0.55, confirmed:false });
+        // #5558: addFunctions() deduplicates known starts and returns the
+        // number actually added. The global discovery budget must be debited
+        // by that count — duplicate re-discovery from independent region
+        // scans must never exhaust the budget ahead of unscanned regions.
+        const added = symbols.addFunctions(result.starts, { source:'heuristic', confidence:0.55, confirmed:false });
         symbols.guessed = true;
-        remaining = Math.max(0, remaining - result.starts.length);
+        remaining = Math.max(0, remaining - added);
       }
       const complete = result?.discoveryComplete === true || result?.completeness?.complete === true || result?.complete === true;
       results.push({ regionId:region.id, complete, capped:!!result?.capped, discovered:result?.starts?.length || 0 });
@@ -180,7 +228,17 @@ export function installSymmetricWorkspaceDiff(app) {
   };
 
   workspace.diff = async function symmetricDiff(options = {}) {
-    if (workspace.busy) return workspace.busy;
+    const signal = options.signal ?? null;
+    throwIfAborted(signal);
+    const running = workspace.busy;
+    if (running && typeof running.then === 'function') {
+      const entry = sharedDiffSession(running);
+      // An abandoned producer may still be unwinding; fresh consumers need a
+      // live producer, even before the abandoned task's finalizer runs.
+      if (!entry.controller?.signal.aborted) return joinSharedDiff(entry, signal);
+    }
+    const controller = new AbortController();
+    const sharedSignal = controller.signal;
     const revision = workspace.bindingRevision;
     const baseline = workspace.baseline;
     let task;
@@ -194,10 +252,10 @@ export function installSymmetricWorkspaceDiff(app) {
           throw error;
         }
       };
-      throwIfAborted(options.signal);
+      throwIfAborted(sharedSignal);
       const currentRegion = app.codeRegion?.() || currentRegions(app)[0] || null;
-      await app.ensureFunctions?.(currentRegion, { signal:options.signal ?? null, onProgress:options.onProgress, priority:'user-visible' });
-      throwIfAborted(options.signal);
+      await app.ensureFunctions?.(currentRegion, { signal:sharedSignal, onProgress:options.onProgress, priority:'user-visible' });
+      throwIfAborted(sharedSignal);
       assertCurrent();
       const current = await createSymmetricCodeFunctionSet({
         backend:app.backend,
@@ -205,7 +263,7 @@ export function installSymmetricWorkspaceDiff(app) {
         regions:currentRegions(app),
         architecture:workspace.identity?.metadata?.architecture,
         limit:MAX_DIFF_FUNCTIONS,
-        signal:options.signal ?? null,
+        signal:sharedSignal,
         onProgress:options.onProgress,
       });
       const before = baseline.functions;
@@ -217,10 +275,11 @@ export function installSymmetricWorkspaceDiff(app) {
       }
       let result = await runDiffInWorker(before, current, {
         mode:'full',
-        signal:options.signal,
+        signal:sharedSignal,
         threshold:options.threshold ?? 0.62,
-        matchBudget:options.matchBudget || { maxCandidateEvaluations:1500000, maxEdges:300000, maxComponentNodes:4096, maxComponentEdges:65536 },
+        matchBudget:options.matchBudget || DEFAULT_SYMMETRIC_MATCH_BUDGET,
       });
+      throwIfAborted(sharedSignal);
       assertCurrent();
       const inputsComplete = before.complete === true && current.complete === true;
       result = demoteIncompleteAbsenceClaims(result, inputsComplete ? null : 'incomplete-symmetric-code-evidence');
@@ -241,8 +300,12 @@ export function installSymmetricWorkspaceDiff(app) {
       workspace.diffState = result;
       return result;
     })().finally(() => { if (workspace.busy === task) workspace.busy = null; });
+    const entry = { task, controller, waiters:0, settled:false };
+    sharedDiffSessions.set(task, entry);
+    const settle = () => { entry.settled = true; };
+    task.then(settle, settle);
     workspace.busy = task;
-    return task;
+    return joinSharedDiff(entry, signal);
   };
 
   Object.defineProperty(workspace, '__symmetricWorkspaceDiffVersion', { value:INSTALL_VERSION, configurable:true });

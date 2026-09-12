@@ -17,7 +17,11 @@ export const REQUIRED_IPAD_CHECKS = Object.freeze([
 const ARTIFACT_IDENTITY = /^artifact:[^@]+@sha256:[0-9a-f]{64}$/;
 
 function required(value, code) {
-  const text = String(value ?? '').trim();
+  // Identity-authority fields enter the evidence digest. Structured values
+  // (arrays, {toString} holders, booleans, numbers) must not launder into the
+  // canonical text via String() coercion — fail closed instead (#5385).
+  if (typeof value !== 'string') throw new TypeError(code);
+  const text = value.trim();
   if (!text) throw new TypeError(code);
   return text;
 }
@@ -125,6 +129,10 @@ export function validatePhysicalIPadScenarioOutput(record, expected = {}) {
   for (const field of ['buildIdentity', 'runtimeIdentity', 'deviceModel', 'iPadOSVersion', 'webKitVersion', 'fixtureIdentity']) {
     if (typeof record[field] !== 'string' || !record[field].trim()) return { ok: false, reason: `ipad-scenario-${field}-invalid` };
   }
+  if (typeof record.startedAt !== 'string' || !record.startedAt.trim()
+      || typeof record.completedAt !== 'string' || !record.completedAt.trim()) {
+    return { ok: false, reason: 'ipad-scenario-time-invalid' };
+  }
   const startedAt = Date.parse(record.startedAt);
   const completedAt = Date.parse(record.completedAt);
   if (!Number.isFinite(startedAt) || !Number.isFinite(completedAt) || completedAt < startedAt) return { ok: false, reason: 'ipad-scenario-time-invalid' };
@@ -140,7 +148,12 @@ export function validatePhysicalIPadScenarioOutput(record, expected = {}) {
   for (const key of REQUIRED_IPAD_CHECKS) {
     const check = record.checks[key];
     if (!check || check.status !== 'passed') return { ok: false, reason: 'ipad-scenario-required-check-failed', check: key };
-    if (!Number.isFinite(Date.parse(check.observedAt || ''))) return { ok: false, reason: 'ipad-scenario-check-time-invalid', check: key };
+    if (typeof check.observedAt !== 'string' || !check.observedAt.trim()) {
+      return { ok: false, reason: 'ipad-scenario-check-time-invalid', check: key };
+    }
+    const observedAt = Date.parse(check.observedAt);
+    if (!Number.isFinite(observedAt)) return { ok: false, reason: 'ipad-scenario-check-time-invalid', check: key };
+    if (observedAt < startedAt || observedAt > completedAt) return { ok: false, reason: 'ipad-scenario-check-time-outside-run', check: key };
     if (typeof check.observationIdentity !== 'string' || !check.observationIdentity.trim() || observations.has(check.observationIdentity)) {
       return { ok: false, reason: 'ipad-scenario-check-identity-invalid', check: key };
     }

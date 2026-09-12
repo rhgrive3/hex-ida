@@ -66,6 +66,7 @@ export class DevSupervisorEngineV0 {
     }
     this.supervisor = supervisor;
     this.settings = settings;
+    this.waitingHumanRuns = new Map();
     this.bridge = bridge || null;
     this.maxDecisions = assertValidBudget(maxDecisions, {
       name: 'maxDecisions',
@@ -266,7 +267,7 @@ export class DevSupervisorEngineV0 {
       this.rememberSupervisorSession(run);
     }
 
-    this.settings.setLastRun(run);
+    this.#persistRun(run);
     input.onActivity?.({ label: 'Dev Supervisor', detail: run.status });
     if (!this.bridge || typeof this.bridge.request !== 'function') {
       return uiResponse(`Dev Supervisor run ${run.runId} created.`, run, []);
@@ -403,7 +404,7 @@ export class DevSupervisorEngineV0 {
               workerClaimAttempted = false;
             }
             if (decision.tool === DEV_WORKER_TOOL.RELEASE) workerClaimed = false;
-            this.settings.setLastRun(run);
+            this.#persistRun(run);
             history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(executed.result) });
             continue;
           } catch (toolError) {
@@ -437,7 +438,7 @@ export class DevSupervisorEngineV0 {
         if (decision.type === 'wait') {
           const waited = await eventHost.waitForWorkerDecision(run, decision, { signal: input.signal });
           run = waited.run;
-          this.settings.setLastRun(run);
+          this.#persistRun(run);
           history.push({ kind: 'event', event: sanitize(waited.event) });
           continue;
         }
@@ -446,21 +447,21 @@ export class DevSupervisorEngineV0 {
           await settleWorkerOwnership();
           const applied = eventHost.yieldDecision(run, decision);
           run = applied.run;
-          this.settings.setLastRun(run);
+          this.#persistRun(run);
           return uiResponse(decision.question, run, [decision.question]);
         }
 
         await settleWorkerOwnership();
         const applied = this.supervisor.applyDecision(run, decision);
         run = applied.run;
-        this.settings.setLastRun(run);
+        this.#persistRun(run);
         return uiResponse(decision.answer, run, []);
       }
 
       await settleWorkerOwnership();
       if (run.status === DEV_RUN_STATUS.ACTIVE) {
         run = transitionDevRun(run, DEV_RUN_STATUS.PAUSED, { now: this.supervisor.now() });
-        this.settings.setLastRun(run);
+        this.#persistRun(run);
       }
       throw new Error('Dev Supervisor decision budget exhausted.');
     } catch (error) {
@@ -479,17 +480,42 @@ export class DevSupervisorEngineV0 {
       if (![DEV_RUN_STATUS.COMPLETED, DEV_RUN_STATUS.FAILED, DEV_RUN_STATUS.CANCELLED].includes(run.status)) {
         try { run = transitionDevRun(run, terminal, { now: this.supervisor.now() }); } catch {}
       }
-      this.settings.setLastRun(run);
+      this.#persistRun(run);
       throw error;
     }
   }
 
   resumableHumanRun(input) {
-    const run = this.settings.lastRun;
-    if (!run || run.status !== DEV_RUN_STATUS.WAITING_HUMAN) return null;
-    const currentHexConversationId = normalizeConversationId(input.conversationId);
-    const waitingHexConversationId = normalizeConversationId(run.hexConversationId);
-    return currentHexConversationId === waitingHexConversationId ? run : null;
+    /* #5162: human-resumable runs are tracked per conversation, so answering
+       conversation A must find A's WAITING_HUMAN run even after another
+       conversation's run overwrote the single settings.lastRun slot. The
+       lastRun fallback keeps reconstruction-only continuity working. */
+    const currentHexConversationId = normalizeConversationId(input?.conversationId);
+    if (!currentHexConversationId) return null;
+    const candidates = [];
+    const remembered = this.waitingHumanRuns.get(currentHexConversationId);
+    if (remembered) candidates.push(remembered);
+    const lastRun = this.settings.lastRun;
+    if (lastRun) candidates.push(lastRun);
+    for (const run of candidates) {
+      if (!run || run.status !== DEV_RUN_STATUS.WAITING_HUMAN) continue;
+      if (normalizeConversationId(run.hexConversationId) === currentHexConversationId) return run;
+    }
+    return null;
+  }
+
+  /* Every run-state persistence flows through here: WAITING_HUMAN runs are
+     remembered per conversation and forgotten as soon as that run leaves the
+     waiting state. */
+  #persistRun(run) {
+    this.settings.setLastRun(run);
+    const conversationId = normalizeConversationId(run?.hexConversationId);
+    if (!conversationId) return;
+    if (run.status === DEV_RUN_STATUS.WAITING_HUMAN) {
+      this.waitingHumanRuns.set(conversationId, run);
+    } else if (this.waitingHumanRuns.get(conversationId)?.runId === run.runId) {
+      this.waitingHumanRuns.delete(conversationId);
+    }
   }
 
   /* Deterministic host-side selection. No model call, no summarizer: it removes
