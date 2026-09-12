@@ -80,12 +80,21 @@ function normalizedOrigin(...origins) {
 
 function uniqueBinaryId(origin, explicit) {
   const direct = optionalIdentityString(explicit, 'binary-id');
-  if (direct) return direct;
   const ids = new Set();
   for (const range of origin?.byteRanges ?? []) {
     if (range?.binaryId == null) continue;
     ids.add(optionalIdentityString(range.binaryId, 'binary-id'));
   }
+  // Explicit identity and byte provenance are co-authorities. A direct claim
+  // may not contradict provenance, and it may not collapse provenance that
+  // spans multiple binaries into one precise binary scope (#5218). Without an
+  // explicit claim, however, multi-binary provenance keeps the historical
+  // conservative path: no unique binary authority is available, so callers
+  // can fall back to an unknown/non-binary-scoped region instead of throwing.
+  if (direct && (ids.size > 1 || (ids.size === 1 && !ids.has(direct)))) {
+    throw new TypeError('alias-region-binary-identity-mismatch');
+  }
+  if (direct) return direct;
   return ids.size === 1 ? [...ids][0] : null;
 }
 
