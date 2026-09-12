@@ -1,0 +1,46 @@
+name: Fixer3 4020 transport
+
+on:
+  push:
+    branches:
+      - fixer3/transport-4020-demand-identity
+    paths:
+      - .github/workflows/fixer3-4020-transport.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply validated patch to canonical branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_BASE=c90d8b38833ae664defb512be58538e397967f72
+          CANONICAL=fixer3/issue-4020-demand-identity
+          cp .github/patches/fixer3-4020.patch /tmp/fixer3-4020.patch
+          git fetch --no-tags origin \
+            main:refs/remotes/origin/main \
+            "$CANONICAL:refs/remotes/origin/$CANONICAL"
+          test "$(git rev-parse refs/remotes/origin/main)" = "$EXPECTED_BASE"
+          test "$(git rev-parse refs/remotes/origin/$CANONICAL)" = "$EXPECTED_BASE"
+          git switch -C "$CANONICAL" "refs/remotes/origin/$CANONICAL"
+          git apply --check /tmp/fixer3-4020.patch
+          git apply /tmp/fixer3-4020.patch
+          echo 'fbeed2d57040302e5caed1f0adca4819360e103a94771c69538055077ccbba41  js/analysis/demand-driven-runtime.js' | sha256sum -c -
+          echo '6614c890f639e5e04d1c8b068b732ae4fc5785ac0700394ef0f822826b97dae8  tests/phase7/analysis/issue-4020-demand-identity-type.test.mjs' | sha256sum -c -
+          node --check js/analysis/demand-driven-runtime.js
+          node --check tests/phase7/analysis/issue-4020-demand-identity-type.test.mjs
+          node --test tests/phase7/analysis/issue-4020-demand-identity-type.test.mjs
+          git add js/analysis/demand-driven-runtime.js tests/phase7/analysis/issue-4020-demand-identity-type.test.mjs
+          test "$(git diff --cached --name-only | wc -l)" -eq 2
+          git config user.name 'rhgrive3'
+          git config user.email 'rhgrive@gmail.com'
+          git commit -m 'fix(analysis): reject coercible demand identities (#4020)'
+          git push origin "HEAD:refs/heads/$CANONICAL"
