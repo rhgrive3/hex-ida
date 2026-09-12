@@ -9,6 +9,7 @@ import {
 } from '../targets/abi/evidence.js';
 import { buildSemanticV2CompatibilityPipeline } from '../semantics/compat/index.js';
 import { decompileSemantic } from '../decompiler/semantic.js';
+import { enhanceSemanticDecompilation } from '../decompiler/pipeline.js';
 
 /**
  * Architecture-neutral function-level semantic analysis driver.
@@ -1181,7 +1182,7 @@ function pipelineSnapshot(pipeline) {
   };
 }
 
-function decompilerSnapshot(result) {
+export function decompilerSnapshot(result) {
   return {
     semantic:result.semantic === true,
     signature:result.signature,
@@ -1192,8 +1193,23 @@ function decompilerSnapshot(result) {
     warnings:result.warnings,
     labels:[...(result.labels || [])],
     coverage:result.coverage,
+    ...(result.renderProvenance ? { renderProvenance:result.renderProvenance } : {}),
     unknownInstructions:result.ctx?.unknownInstructions ?? 0,
   };
+}
+
+/**
+ * Build the shared presentation projection from the canonical semantic result.
+ * The decompiler pipeline remains the sole producer of render provenance; this
+ * facade only enables its bounded consumer projection before snapshotting.
+ */
+export function decompileSemanticProjection(model, options = {}) {
+  const result = decompileSemantic(model, options);
+  if (!result) return result;
+  return enhanceSemanticDecompilation(result, model, {
+    ...options,
+    renderProvenance: options.renderProvenance ?? true,
+  });
 }
 
 function addressWidthBitsFor(architecturePlugin) {
@@ -1279,7 +1295,7 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     }),
     switches:[],
   };
-  const decompiler = decompileSemantic(model, {
+  const decompiler = decompileSemanticProjection(model, {
     ir:pipeline.legacyV1,
     abiAdapter,
     decoderSemanticVersion,
@@ -1288,6 +1304,7 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     addr:addressOf(orderedInstructions[0]),
     name:model.name,
     functionPrototype:input.functionPrototype ?? null,
+    shouldAbort:() => options.signal?.aborted === true,
   });
   if (!decompiler) throw new Error('semantic-function-shared-decompiler-produced-no-result');
   return Object.freeze({

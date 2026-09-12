@@ -9,6 +9,8 @@ import {
   SEMANTIC_FUNCTION_ROUTE,
   canonicalDecodedInstructions,
   createSemanticCallPrototypeAuthority,
+  decompilerSnapshot,
+  decompileSemanticProjection,
   isSemanticCallPrototypeAuthority,
   normalizeSemanticEndianness,
   semanticMachineEffectsContext,
@@ -233,21 +235,6 @@ function pipelineSnapshot(pipeline) {
   };
 }
 
-function decompilerSnapshot(result) {
-  return {
-    semantic:result.semantic === true,
-    signature:result.signature,
-    summary:result.summary,
-    pseudocode:result.pseudocode,
-    lines:result.lines,
-    evidence:result.evidence,
-    warnings:result.warnings,
-    labels:[...(result.labels || [])],
-    coverage:result.coverage,
-    unknownInstructions:result.ctx?.unknownInstructions ?? 0,
-  };
-}
-
 function addressWidthBitsFor(architecturePlugin) {
   let descriptors = [];
   try { descriptors = architecturePlugin.registerFile() || []; } catch { descriptors = []; }
@@ -406,7 +393,19 @@ function decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAda
     }),
     switches:[],
   };
-  const decompiler = decompileSemantic(model, {
+  const decompiler = projectionOptions.scopedTransformEvidence === true
+    ? decompileSemantic(model, {
+      ir:pipeline.legacyV1,
+      abiAdapter,
+      decoderSemanticVersion,
+      binaryId,
+      sliceId,
+      addr:addressOf(orderedInstructions[0]),
+      name:model.name,
+      functionPrototype:input.functionPrototype ?? null,
+      ...projectionOptions,
+    })
+    : decompileSemanticProjection(model, {
     ir:pipeline.legacyV1,
     abiAdapter,
     decoderSemanticVersion,
@@ -416,6 +415,7 @@ function decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAda
     name:model.name,
     functionPrototype:input.functionPrototype ?? null,
     ...projectionOptions,
+    renderProvenance:true,
   });
   if (!decompiler) throw new Error('semantic-function-shared-decompiler-produced-no-result');
   return projectionOptions.scopedTransformEvidence === true

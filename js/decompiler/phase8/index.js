@@ -74,8 +74,18 @@ const REGISTERED = Object.freeze([
   Object.freeze({ descriptor: STRUCTURING_PASS, run: runStructuringPass }),
   Object.freeze({ descriptor: PROVIDER_PASS, run: runProviderPass }),
 ]);
-const REWRITE_REGISTRY = buildRewriteRegistry([...REGISTERED,{descriptor:PROOF_REWRITE_PASS}]);
-export function phase8RewriteRegistry() { return REWRITE_REGISTRY; }
+// `pass-validation.js` re-exports the solver-backed proof plan, while the
+// proof plan imports transaction helpers from this module family. Constructing
+// the registry at module evaluation time therefore reads the proof descriptor
+// through a temporal dead zone when this entry point is imported directly.
+// Keep the registry deterministic, but initialize it on first use after the
+// dependency cycle has completed.
+let rewriteRegistryCache = null;
+function rewriteRegistry() {
+  rewriteRegistryCache ??= buildRewriteRegistry([...REGISTERED, { descriptor:PROOF_REWRITE_PASS }]);
+  return rewriteRegistryCache;
+}
+export function phase8RewriteRegistry() { return rewriteRegistry(); }
 
 /**
  * Stages that run on the default interactive decompile.
@@ -293,7 +303,7 @@ export function runPhase8Vertical(context = {}, budget = {}) {
   const passes = phase8Passes({ stages: enabledStages, proofRewritePlan });
   const withheldLedger = (status, reason, diagnostics, digest, versions = null) =>
     withheldLedgerBase(status,reason,diagnostics,digest,versions,
-      rewriteCoverage(REWRITE_REGISTRY,passes,[],false,reason));
+      rewriteCoverage(rewriteRegistry(),passes,[],false,reason));
   // The digest covers the passes and refinement providers that actually ran.
   // Disabled/custom provider sets therefore cannot reuse a provider artifact
   // produced under a different refinement registry. Provider-free stage sets
@@ -458,7 +468,7 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     degraded: results.some((result) => result.status === 'degraded'),
     passes: Object.freeze(results),
     transformCount: results.reduce((total, result) => total + result.transforms.length, 0),
-    rewriteCoverage: rewriteCoverage(REWRITE_REGISTRY,passes,results,true),
+    rewriteCoverage: rewriteCoverage(rewriteRegistry(),passes,results,true),
     // Analyses this run produced, so a consumer can tell "the optimizer ran and
     // found nothing" apart from "the optimizer never ran".
     produced: Object.freeze([...new Set(results.flatMap((result) => result.produced))].sort()),

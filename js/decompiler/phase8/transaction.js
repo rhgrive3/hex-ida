@@ -10,6 +10,7 @@ import { rewritePolicyFailure } from './rewrite-registry.js';
 const COMMITTED_PROOF_OVERLAYS = new WeakMap();
 const COMMITTED_DCE_ARTIFACTS = new WeakMap();
 let proofTransactionAdapter = null;
+let canonicalDceRunner = null;
 
 /** Register the private proof hooks without importing proof-plan here.  The
  * latter imports this transaction module for the overlay reader, so a direct
@@ -21,6 +22,18 @@ export function registerProofTransactionAdapter(adapter) {
     throw new TypeError('phase8-proof-transaction-adapter-already-registered');
   }
   proofTransactionAdapter = adapter;
+}
+
+/** Register the one effect-aware DCE runner whose committed facts may be used
+ * as provenance authority. A pass descriptor alone is not sufficient: a
+ * caller can reuse the descriptor with an impersonating function, and that
+ * must remain analysis-only. */
+export function registerDcePassRunner(runner) {
+  if (typeof runner !== 'function') throw new TypeError('phase8-dce-runner-invalid');
+  if (canonicalDceRunner != null && canonicalDceRunner !== runner) {
+    throw new TypeError('phase8-dce-runner-already-registered');
+  }
+  canonicalDceRunner = runner;
 }
 
 export function createAnalysisState(...args) {
@@ -191,7 +204,8 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
   } else if (proofPass && (!outcome.committed || outcome.invalidated.includes('provedRewrites'))) {
     COMMITTED_PROOF_OVERLAYS.delete(state);
   }
-  if (outcome.committed && pass?.descriptor?.id === 'phase8.dce' && outcome.staged.includes('deadCode')) {
+  if (outcome.committed && pass?.descriptor?.id === 'phase8.dce' && pass?.run === canonicalDceRunner
+      && outcome.staged.includes('deadCode')) {
     const facts = state.get('deadCode');
     if (facts != null) COMMITTED_DCE_ARTIFACTS.set(state, facts);
   } else if (!outcome.committed || outcome.invalidated.includes('deadCode')) {
