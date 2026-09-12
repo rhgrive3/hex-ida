@@ -72,14 +72,20 @@ function groqAdapter(env) {
           { role: 'system', content: `${systemInstruction}\n\n${TURN_PROTOCOL_INSTRUCTION}` },
           { role: 'user', content: JSON.stringify(modelInput(payload)) },
         ],
-        tools: tools.map(toOpenAITool), tool_choice: 'required', stream: false,
+        tools: tools.map(toOpenAITool), tool_choice: 'required', parallel_tool_calls: false, stream: false,
         max_tokens: Math.min(numberOr(env.GROQ_MAX_OUTPUT_TOKENS, 8192), payload.mode === 'agent' ? 8192 : 4096),
       };
     },
     normalize(value) {
-      const call = value?.choices?.[0]?.message?.tool_calls?.[0];
-      if (!call) return value;
-      return { steps: [{ type: 'function_call', name: call.function?.name, arguments: call.function?.arguments || '{}' }] };
+      const calls = value?.choices?.[0]?.message?.tool_calls;
+      if (!Array.isArray(calls) || calls.length === 0) return value;
+      return {
+        steps: calls.map((call) => ({
+          type: 'function_call',
+          name: call?.function?.name,
+          arguments: call?.function?.arguments || '{}',
+        })),
+      };
     },
   };
 }
