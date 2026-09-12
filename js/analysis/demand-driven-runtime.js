@@ -21,6 +21,14 @@ function storeValue(app, key) {
   try { return typeof app?.store?.get === 'function' ? app.store.get(key) : app?.store?.[key]; }
   catch { return null; }
 }
+function architectureOf(app) {
+  const value = storeValue(app, 'architecture')
+    || app?.currentSlice?.()?.capability?.architecture
+    || 'unknown';
+  if (typeof value !== 'string') return 'unknown';
+  const architecture = value.trim().toLowerCase();
+  return architecture || 'unknown';
+}
 function abortError(signal, message = 'Analysis query aborted') {
   if (signal?.reason instanceof Error) return signal.reason;
   const error = new Error(message); error.name = 'AbortError'; return error;
@@ -566,11 +574,16 @@ function installDemandQueryAPI(app, recognitionVersion) {
     const epoch = demandAnalysisEpoch(app);
     const limits = regionScanLimits(localCount);
     const profile = `${limits.callLimit}:${limits.refLimit}:${limits.kindLimit}`;
-    const key = `${epoch}:${region.id}:${profile}`;
+    const architecture = architectureOf(app);
+    const key = JSON.stringify([epoch, region.id, architecture, profile]);
     let entry = regionScans.get(key);
     if (entry?.cancelled) entry = null;
     if (!entry) {
-      const request = app.backend.scanProgram(region.id, options.onProgress, { ...limits, analysisPriority:options.priority || 'interactive' });
+      const request = app.backend.scanProgram(region.id, options.onProgress, {
+        ...limits,
+        architecture,
+        analysisPriority:options.priority || 'interactive',
+      });
       entry = { request, promise:null, settled:false, waiters:0 };
       entry.promise = Promise.resolve(request)
         .then((scan) => {
