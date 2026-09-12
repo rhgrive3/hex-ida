@@ -166,4 +166,22 @@ test('plan-integrity failures remain immutable and cannot authorize publication 
   }), { status: 'rejected', reason: 'validation-not-green' });
 });
 
+test('publication receipt keeps the validated byte identity across async promotion (#4516)', async () => {
+  const source = Uint8Array.from([0x11]);
+  const rebuildPlan = plan('binary-A', source);
+  const materialized = await materializeRebuildPlan(rebuildPlan, source);
+  const validation = await validValidation(rebuildPlan, materialized);
+
+  const result = await publishRebuildOutput(materialized, validation, {
+    promote: async (output) => {
+      await Promise.resolve();
+      materialized.outputHash = sourceHash(Uint8Array.from([0x22]));
+      assert.deepEqual([...output], [0x11]);
+      return 'ok';
+    },
+  });
+
+  assert.deepEqual(result, { status: 'published', outputHash: validation.outputHash, result: 'ok' });
+});
+
 console.log('issue #4516 rebuild publication binding regressions: PASS');

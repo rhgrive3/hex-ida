@@ -235,9 +235,9 @@ export async function publishRebuildOutput(materialized, validation, options = {
     observedOutputHash = hashBytes(publicationBytes);
   } catch (error) { return { status: 'rejected', reason: 'materialized-output-invalid', detail: String(error?.message || error) }; }
   if (observedOutputHash !== validation.outputHash) return { status: 'rejected', reason: 'materialized-output-tampered' };
-  if (typeof options.promote !== 'function') return { status: 'not-published', reason: 'explicit-promotion-required', outputHash: materialized.outputHash };
+  if (typeof options.promote !== 'function') return { status: 'not-published', reason: 'explicit-promotion-required', outputHash: observedOutputHash };
   const promoted = await options.promote(publicationBytes, validation);
-  return { status: 'published', outputHash: materialized.outputHash, result: promoted };
+  return { status: 'published', outputHash: observedOutputHash, result: promoted };
 }
 
 export function rebuildSupportTruth({ format, operation, architecture, relocationClass, validatorCoverage, proof } = {}) {
