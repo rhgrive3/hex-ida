@@ -94,12 +94,14 @@ function delayFixture(nonzeroDescriptors, includeZeroDescriptor) {
   const bytes = new Uint8Array(support + 0x80);
   const nameRva = DIRECTORY_RVA + support;
   const thunkRva = nameRva + 0x20;
+  const hmodRva = nameRva + 0x10;
   const iatRva = nameRva + 0x30;
   bytes.set([0x78, 0x2e, 0x64, 0x6c, 0x6c, 0], support); // x.dll\0
   for (let i = 0; i < nonzeroDescriptors; i++) {
     const off = i * descriptorSize;
     writeU32(bytes, off, 1); // dlattrRva: descriptor pointer fields are RVAs
     writeU32(bytes, off + 4, nameRva);
+    writeU32(bytes, off + 8, hmodRva);
     writeU32(bytes, off + 12, iatRva);
     writeU32(bytes, off + 16, thunkRva);
   }
@@ -129,7 +131,7 @@ function delayFixture(nonzeroDescriptors, includeZeroDescriptor) {
   writeU32(fixture.reader.bytes, 8, 1); // nonzero ModuleHandleRVA: not an all-zero terminator
   parseDelayImports(fixture.reader, fixture.directory, fixture.image, makeBudget(fixture.image));
   assert.equal(fixture.image.metadata.peMetadata.complete, false);
-  assert.ok(fixture.image.metadata.peMetadata.reasons.includes('delay-imports:malformed-descriptor'));
+  assert.ok(fixture.image.metadata.peMetadata.reasons.includes('delay-imports:module-handle-span'));
   assert.ok(fixture.image.metadata.peMetadata.reasons.includes('delay-imports:unterminated-descriptor'));
 }
 

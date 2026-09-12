@@ -91,7 +91,6 @@ function relationExpected(hypothesis, initial, input, bits, signed) {
   else if (op === 'or') result = x | v;
   else if (op === 'set' || op === 'assign') result = v;
   else return null;
-  result = normalizeInteger(result, bits, signed);
   if (hypothesis.clampMin != null && result < machineIntegerOrThrow(hypothesis.clampMin, 'clampMin')) result = machineIntegerOrThrow(hypothesis.clampMin, 'clampMin');
   if (hypothesis.clampMax != null && result > machineIntegerOrThrow(hypothesis.clampMax, 'clampMax')) result = machineIntegerOrThrow(hypothesis.clampMax, 'clampMax');
   return normalizeInteger(result, bits, signed);
@@ -230,7 +229,8 @@ export class HypothesisVerifier {
           observation = await this.adapter.resume({ maxSteps, timeoutMs, signal:options.signal });
         } catch (error) {
           const code = String(error && error.code || '');
-          const kind = code === 'unsupported' ? 'unsupported' : code === 'timeout' ? 'timeout' : code === 'cancelled' || code === 'stale-request' ? 'cancelled' :
+          const kind = options.signal && options.signal.aborted ? 'cancelled' :
+            code === 'unsupported' ? 'unsupported' : code === 'timeout' ? 'timeout' : code === 'cancelled' || code === 'stale-request' ? 'cancelled' :
             (code === 'oob' || code === 'permission' || code === 'fault' || code === 'mmio-unknown') ? 'fault' : 'exception';
           observation = { stop:{ kind, message:(error && error.message) || String(error) }, memoryDelta:[], memoryAfter:[], returnValue:null };
         }

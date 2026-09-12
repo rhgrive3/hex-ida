@@ -31,6 +31,83 @@ export function mappedELFFileRangeForVa(image, va) {
   return null;
 }
 
+/**
+ * Decide whether a runtime SHF_ALLOC section can safely participate in virtual
+ * mapping authority. PT_LOAD is the runtime byte authority (#7611). A
+ * file-backed section therefore has to be covered for its entire VA span by
+ * PT_LOAD file bytes, and every PT_LOAD intersecting that span must reproduce
+ * the section's VA→file relation. SHT_NOBITS has no file bytes and is accepted
+ * only when its entire span belongs to one unambiguous PT_LOAD zero-fill tail.
+ */
+export function elfSectionFileSpanConsistentWithLoads(image, address, size, fileOffset, noBits = false) {
+  const start = strictELFInteger(address, 'address');
+  const length = strictELFInteger(size ?? 0n, 'size');
+  const off = strictELFInteger(fileOffset ?? 0n, 'fileOffset');
+  if (length < 0n || off < 0n) return false;
+  if (length === 0n) return true;
+  const end = start + length;
+  const loads = image?.segments || [];
+
+  if (noBits) {
+    let owner = null;
+    for (const segment of loads) {
+      const segStart = BigInt(segment.address ?? 0);
+      const segSize = BigInt(segment.size ?? 0);
+      const segFileSize = BigInt(segment.fileSize ?? 0);
+      if (segSize <= 0n || segFileSize < 0n || segFileSize > segSize) return false;
+      const segEnd = segStart + segSize;
+      const overlapStart = start > segStart ? start : segStart;
+      const overlapEnd = end < segEnd ? end : segEnd;
+      if (overlapStart >= overlapEnd) continue;
+
+      // Any intersecting PT_LOAD must see these bytes as zero-fill. Partial
+      // owners are rejected too: NOBITS authority is intentionally bound to a
+      // single complete PT_LOAD tail rather than stitched across loaders.
+      const zeroStart = segStart + segFileSize;
+      if (overlapStart < zeroStart || start < segStart || end > segEnd) return false;
+      if (owner != null) return false;
+      owner = segment;
+    }
+    return owner != null;
+  }
+
+  const coverage = [];
+  for (const segment of loads) {
+    const segStart = BigInt(segment.address ?? 0);
+    const segSize = BigInt(segment.size ?? 0);
+    const segFileSize = BigInt(segment.fileSize ?? 0);
+    const segOffset = BigInt(segment.fileOffset ?? 0);
+    if (segSize <= 0n || segFileSize < 0n || segFileSize > segSize || segOffset < 0n) return false;
+    const segEnd = segStart + segSize;
+    const overlapStart = start > segStart ? start : segStart;
+    const overlapEnd = end < segEnd ? end : segEnd;
+    if (overlapStart >= overlapEnd) continue;
+
+    // A file-backed section must never provide bytes where an intersecting
+    // loader segment provides zero-fill. This also closes file→zero straddles.
+    const fileEnd = segStart + segFileSize;
+    if (overlapEnd > fileEnd) return false;
+
+    const expectedOffset = off + (overlapStart - start);
+    const actualOffset = segOffset + (overlapStart - segStart);
+    if (actualOffset !== expectedOffset) return false;
+    coverage.push({ begin: overlapStart, end: overlapEnd });
+  }
+
+  // Validate provenance above against every overlapping PT_LOAD first; only
+  // then prove that their union covers the whole section. This makes the
+  // decision independent of segment order and rejects a later conflicting
+  // owner even when an earlier one already covers the complete span.
+  coverage.sort((a, b) => a.begin < b.begin ? -1 : a.begin > b.begin ? 1 : a.end < b.end ? -1 : a.end > b.end ? 1 : 0);
+  let cursor = start;
+  for (const region of coverage) {
+    if (region.end <= cursor) continue;
+    if (region.begin > cursor) return false;
+    if (region.end > cursor) cursor = region.end;
+  }
+  return cursor >= end;
+}
+
 /** Require the entire VA span to remain in one file-backed PT_LOAD mapping. */
 export function mappedELFFileSpanForVa(image, va, size) {
   const n = strictELFInteger(size, 'size');
@@ -40,6 +117,12 @@ export function mappedELFFileSpanForVa(image, va, size) {
   const bytes = Number(n);
   if (bytes > range.end - range.start) return null;
   return { ...range, spanEnd:range.start + bytes, size:bytes };
+}
+
+/** Architecture-specific alignment gate for exact ELF instruction starts. */
+export function elfInstructionStartAlignmentRejection(image, address) {
+  if (image?.arch === 'arm64' && address % 4n !== 0n) return 'does not satisfy arm64 4-byte alignment';
+  return null;
 }
 
 /**

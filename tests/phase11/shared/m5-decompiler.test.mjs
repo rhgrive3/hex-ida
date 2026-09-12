@@ -355,7 +355,7 @@ const unkBundles = [
     opcode: 0xfe,
     mnemonic: 'unsupported_custom_simd_op',
     completeness: 'unknown',
-    unknownEffects: [{ reason: 'unsupported-simd-variant', categories: ['other'] }],
+    unknownEffects: [{ category: 'other', reason: 'unsupported-simd-variant' }],
   }),
   createVMEffectBundle({
     frontendId: 'wasm',
