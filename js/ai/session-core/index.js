@@ -59,7 +59,27 @@ export function createInvestigationSession(input = {}) {
 }
 
 export class InvestigationSessionStore {
-  constructor({ persistence } = {}) { this.persistence = persistence || null; this.sessions = new Map(); }
+  constructor({ persistence } = {}) {
+    this.persistence = persistence || null;
+    this.sessions = new Map();
+    this.creating = new Map();
+    this.publishing = new Set();
+    /* Per-session persistence write ordering (#5556): the read-modify-write,
+       durable save, and visibility swap of one session are serialized behind a
+       per-id queue, so a slow older save can never commit (or swap) after a
+       newer one. Sessions with different ids stay concurrent. The queue tail
+       never rejects: one failed save must not stall later updates. */
+    this.saveQueues = new Map();
+  }
+
+  enqueueSessionWrite(key, operation) {
+    const previous = this.saveQueues.get(key) || Promise.resolve();
+    const run = previous.then(operation, operation);
+    const tail = run.catch(() => {});
+    this.saveQueues.set(key, tail);
+    tail.then(() => { if (this.saveQueues.get(key) === tail) this.saveQueues.delete(key); });
+    return run;
+  }
 
   register(session) {
     if (!session || !isValidSessionId(session.id)) return null;
@@ -73,32 +93,64 @@ export class InvestigationSessionStore {
   async delete(id) {
     if (!isValidSessionId(id)) return false;
     const key = id;
-    if (this.persistence && typeof this.persistence.delete === 'function') {
-      // Keep the in-memory record visible until the durable delete succeeds.
-      // A rejected persistence operation must not make a still-persisted
-      // session disappear from this process (#4450).
-      await this.persistence.delete(key);
-    }
-    this.sessions.delete(key);
+    // A queued delete ends this identity generation. Later creates may reserve
+    // a new generation, but still wait for this durable deletion in saveQueues.
+    this.creating.delete(key);
+    return this.enqueueSessionWrite(key, async () => {
+      // Delete follows earlier saves in the same queue. Preserve the visible
+      // record until durable deletion succeeds, including a failed delete
+      // immediately after an in-flight update (#4450, #5556).
+      if (this.persistence && typeof this.persistence.delete === 'function') {
+        await this.persistence.delete(key);
+      }
+      this.sessions.delete(key);
+    });
   }
 
   async create(input) {
     // Persistence and visibility both receive the same detached immutable
     // record; a caller cannot mutate either side between the two steps.
     const session = freezeOwned(createInvestigationSession(input));
-    // Durability before visibility: a failed save must not leave the session
-    // in memory presenting a write that never landed (#5434).
-    await this.persist(session);
-    this.sessions.set(session.id, session);
-    return session;
+    const id = session.id;
+    if (this.creating.has(id)) throw new Error(`AI session id already exists: ${id}`);
+    // Reserve synchronously, before the queue or persistence yields. A delete
+    // can release this generation while its queued write is still pending.
+    const reservation = {};
+    this.creating.set(id, reservation);
+    return this.enqueueSessionWrite(id, async () => {
+      this.publishing.add(id);
+      try {
+        if (this.sessions.has(id)) throw new Error(`AI session id already exists: ${id}`);
+        // Probe inside the canonical write queue so an earlier delete completes
+        // before claiming its slot. Even malformed non-null state owns the ID.
+        if (this.persistence && typeof this.persistence.load === 'function') {
+          const existing = await this.persistence.load(id);
+          if (existing != null) throw new Error(`AI session id already exists: ${id}`);
+        }
+        if (this.sessions.has(id)) throw new Error(`AI session id already exists: ${id}`);
+        // Durability before visibility (#5434), ordered with every update/delete.
+        await this.persist(session);
+        this.sessions.set(id, session);
+        return session;
+      } finally {
+        this.publishing.delete(id);
+        if (this.creating.get(id) === reservation) this.creating.delete(id);
+      }
+    });
   }
 
   async get(id) {
     if (!isValidSessionId(id)) return null;
     const key = id;
     if (this.sessions.has(key)) return this.sessions.get(key);
+    // A persistence adapter may stage a record before its save resolves.
+    // The creating operation owns publication of that ID until durability.
+    // A queued delete may release its reservation, but not this active writer.
+    if (this.creating.has(key) || this.publishing.has(key)) return null;
     if (this.persistence && typeof this.persistence.load === 'function') {
       const loaded = await this.persistence.load(key);
+      if (this.sessions.has(key)) return this.sessions.get(key);
+      if (this.creating.has(key) || this.publishing.has(key)) return null;
       if (loaded) {
         // The lookup key is the session identity, not a search hint: a record
         // whose own id differs is corrupt/stale state from an adapter or
@@ -117,6 +169,48 @@ export class InvestigationSessionStore {
   }
 
   async update(id, patch = {}) {
+    if (!isValidSessionId(id)) return null;
+    const key = id;
+    return this.enqueueSessionWrite(key, () => this.applyUpdate(key, patch));
+  }
+
+  async updateMemory(id, patch = {}) {
+    if (!isValidSessionId(id)) return null;
+    const key = id;
+    return this.enqueueSessionWrite(key, async () => {
+      const current = await this.get(key);
+      if (!current) return null;
+      const next = { ...current.investigationMemory };
+      for (const memoryKey of MEMORY_KEYS) {
+        if (!Object.prototype.hasOwnProperty.call(patch, memoryKey)) continue;
+        next[memoryKey] = ['goal','anchor'].includes(memoryKey) ? patch[memoryKey] : mergeUnique(next[memoryKey], patch[memoryKey]);
+      }
+      return this.applyUpdate(key, { investigationMemory: next });
+    });
+  }
+
+  async appendMessage(id, message) {
+    if (!isValidSessionId(id)) return null;
+    const key = id;
+    return this.enqueueSessionWrite(key, async () => {
+      const current = await this.get(key);
+      if (!current) return null;
+      // Build the candidate without mutating the currently visible session. If
+      // persistence rejects the write, the old message list must remain the
+      // canonical in-memory state (#5434).
+      const messages = [
+        ...(Array.isArray(current.messages) ? current.messages : []),
+        {
+          role: message.role === 'assistant' ? 'assistant' : 'user',
+          content: String(message.content || '').slice(0, 20000),
+          timestamp: message.timestamp || new Date().toISOString(),
+        },
+      ].slice(-100);
+      return this.applyUpdate(key, { messages });
+    });
+  }
+
+  async applyUpdate(id, patch = {}) {
     const current = await this.get(id);
     if (!current) return null;
     const allowed = ['binaryId','binaryIdentity','projectId','conversationId','mode','style','scope','effectiveScope','goal','messages','summary','investigationMemory','pinnedEvidence','hypotheses','confirmedFindings','rejectedHypotheses','proposedActions','lastActivity'];
@@ -133,39 +227,15 @@ export class InvestigationSessionStore {
     // rejected on the next turn because binaryId still contains filename:slice.
     if (!Object.prototype.hasOwnProperty.call(patch, 'binaryId') && patch.binaryIdentity?.id) candidate.binaryId = String(patch.binaryIdentity.id);
     if (candidate.binaryId != null) candidate.binaryId = String(candidate.binaryId);
-    candidate.updatedAt = new Date().toISOString();
-    const ownedCandidate = freezeOwned(candidate);
+    // update() is a second session-construction boundary, not a raw object
+    // patcher. Re-run the same canonicalizer used by create/register/load so
+    // enum and collection invariants cannot be bypassed by a later patch
+    // (#4584). createInvestigationSession preserves candidate.createdAt and
+    // refreshes updatedAt while normalizing every persisted field.
+    const ownedCandidate = freezeOwned(createInvestigationSession(candidate));
     await this.persist(ownedCandidate);
     this.sessions.set(id, ownedCandidate);
     return ownedCandidate;
-  }
-
-  async updateMemory(id, patch = {}) {
-    const current = await this.get(id);
-    if (!current) return null;
-    const next = { ...current.investigationMemory };
-    for (const key of MEMORY_KEYS) {
-      if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;
-      next[key] = ['goal','anchor'].includes(key) ? patch[key] : mergeUnique(next[key], patch[key]);
-    }
-    return this.update(id, { investigationMemory: next });
-  }
-
-  async appendMessage(id, message) {
-    const current = await this.get(id);
-    if (!current) return null;
-    // Build the candidate without mutating the currently visible session. If
-    // persistence rejects the write, the old message list must remain the
-    // canonical in-memory state (#5434).
-    const messages = [
-      ...(Array.isArray(current.messages) ? current.messages : []),
-      {
-        role: message.role === 'assistant' ? 'assistant' : 'user',
-        content: String(message.content || '').slice(0, 20000),
-        timestamp: message.timestamp || new Date().toISOString(),
-      },
-    ].slice(-100);
-    return this.update(id, { messages });
   }
 
   async persist(session) { if (this.persistence && typeof this.persistence.save === 'function') await this.persistence.save(stripSecrets(session)); }
