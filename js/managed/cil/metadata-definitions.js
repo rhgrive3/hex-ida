@@ -21,6 +21,11 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     try { return utf8.decode(bytes.subarray(start, pos)); }
     catch { fail('cil-invalid-strings-utf8'); }
   };
+  const requiredText = (value, code) => {
+    const valueText = text(value);
+    if (valueText == null || valueText.length === 0) fail(code);
+    return valueText;
+  };
   const readRows = (table, decode) => Array.from({ length: counts[table] }, (_, i) => {
     const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
     return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
@@ -65,6 +70,49 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
       rawSignature, signature,
     };
   }) : [];
+  const resolutionScopeSize = codedIndexSize(counts, [0x00, 0x1a, 0x23, 0x01], 2);
+  const resolutionScopeTables = [0x00, 0x1a, 0x23, 0x01];
+  const typeRefs = readRows(0x01, pos => {
+    const scope = index(pos, resolutionScopeSize);
+    let resolutionScope = null;
+    if (scope !== 0) {
+      const table = resolutionScopeTables[scope & 3], rid = Math.floor(scope / 4);
+      if (table == null || rid < 1 || rid > counts[table]) fail('cil-typeref-resolution-scope-invalid');
+      resolutionScope = { table, rid, token: cilMetadataToken(table, rid) };
+    }
+    return {
+      resolutionScope,
+      name: requiredText(index(pos + resolutionScopeSize, s), 'cil-typeref-name-required'),
+      namespace: text(index(pos + resolutionScopeSize + s, s)) ?? '',
+    };
+  });
+  const assemblyRefs = readRows(0x23, pos => {
+    const publicKeyOrTokenBlobIndex = index(pos + 12, b);
+    const hashValueBlobIndex = index(pos + 12 + b + s * 2, b);
+    let publicKeyOrToken = null;
+    if (publicKeyOrTokenBlobIndex !== 0) {
+      if (!blobHeap) fail('cil-assembly-ref-public-key-blob-missing');
+      publicKeyOrToken = readCilMetadataBlob(blobHeap, publicKeyOrTokenBlobIndex, 'cil-assembly-ref-public-key-blob-invalid');
+    }
+    let hashValue = null;
+    if (hashValueBlobIndex !== 0) {
+      if (!blobHeap) fail('cil-assembly-ref-hash-value-blob-missing');
+      hashValue = readCilMetadataBlob(blobHeap, hashValueBlobIndex, 'cil-assembly-ref-hash-value-blob-invalid');
+    }
+    return {
+      majorVersion: view.getUint16(pos, true),
+      minorVersion: view.getUint16(pos + 2, true),
+      buildNumber: view.getUint16(pos + 4, true),
+      revisionNumber: view.getUint16(pos + 6, true),
+      flags: view.getUint32(pos + 8, true),
+      publicKeyOrTokenBlobIndex,
+      publicKeyOrToken,
+      name: requiredText(index(pos + 12 + b, s), 'cil-assembly-ref-name-required'),
+      culture: text(index(pos + 12 + b + s, s)),
+      hashValueBlobIndex,
+      hashValue,
+    };
+  });
   const types = readRows(2, pos => {
     const base = index(pos + 4 + s * 2, extendsSize), table = [2, 1, 0x1b][base & 3], rid = Math.floor(base / 4);
     if (base !== 0 && (table == null || rid < 1 || rid > counts[table])) fail('cil-typedef-extends-invalid');
@@ -73,6 +121,7 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
       namespace: text(index(pos + 4 + s, s)) ?? '',
       extendsToken: base === 0 ? null : cilMetadataToken(table, rid),
       extendsTypeSpecRid: base !== 0 && table === 0x1b ? rid : null,
+      extendsTypeRefRid: base !== 0 && table === 0x01 ? rid : null,
       fieldList: index(pos + 4 + s * 2 + extendsSize, tableIndexSize(counts, 4)),
       methodList: index(pos + 4 + s * 2 + extendsSize + tableIndexSize(counts, 4), tableIndexSize(counts, 6)),
     };
@@ -83,6 +132,10 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     if (type.extendsTypeSpecRid != null) {
       type.extendsTypeSpec = typeSpecs[type.extendsTypeSpecRid - 1];
       delete type.extendsTypeSpecRid;
+    }
+    if (type.extendsTypeRefRid != null) {
+      type.extendsTypeRef = typeRefs[type.extendsTypeRefRid - 1];
+      delete type.extendsTypeRefRid;
     }
   }
   // Manifest assembly (0x20): this row is the defining assembly's identity
@@ -500,77 +553,5 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     field.rva = row.rva;
   }
 
-  // II.22.20 GenericParam (0x2A) + II.22.21 GenericParamConstraint (0x2C):
-  // generic parameter ownership, flags and type constraints are type-system
-  // authority. Leaving them undecoded collapsed `where T : A` and `where T : B`
-  // into the identical canonical image — irreversible semantic data loss
-  // (#7555).
-  const genericOwnerSize = codedIndexSize(counts, [0x02, 0x06], 1);
-  const genericParams = readRows(0x2a, pos => {
-    const number = view.getUint16(pos, true);
-    const flags = view.getUint16(pos + 2, true);
-    const ownerBase = index(pos + 4, genericOwnerSize);
-    const ownerTable = [0x02, 0x06][ownerBase & 1];
-    const ownerRid = Math.floor(ownerBase / 2);
-    if (ownerBase === 0 || ownerTable == null || ownerRid < 1 || ownerRid > counts[ownerTable]) {
-      fail('cil-generic-param-owner-invalid');
-    }
-    const name = text(index(pos + 4 + genericOwnerSize, s));
-    if (name == null || !name.length) fail('cil-generic-param-name-required');
-    if ((flags & ~0x001f) !== 0 || (flags & 0x0003) === 0x0003) {
-      // II.23.1.5 GenericParamAttributes: variance mask 0x0003 (0x3 is not a
-      // variance) and special-constraint mask 0x001c; the rest is reserved.
-      fail('cil-generic-param-flags-invalid');
-    }
-    return { number, flags, ownerToken: cilMetadataToken(ownerTable, ownerRid), name, constraintTokens: [] };
-  });
-  const genericParamNumbers = new Map();
-  for (const row of genericParams) {
-    const numbers = genericParamNumbers.get(row.ownerToken) ?? [];
-    if (numbers.includes(row.number)) fail('cil-generic-param-number-duplicate');
-    numbers.push(row.number);
-    genericParamNumbers.set(row.ownerToken, numbers);
-  }
-  for (const numbers of genericParamNumbers.values()) {
-    // II.22.20: one owner's parameters are the ordinals 0..n-1; gaps and
-    // non-zero starts are invalid metadata.
-    const ordered = [...numbers].sort((a, b) => a - b);
-    if (ordered.some((value, i) => value !== i)) fail('cil-generic-param-number-invalid');
-  }
-  const genericParamConstraintTargetSize = codedIndexSize(counts, [0x02, 0x01, 0x1b], 2);
-  const genericParamConstraintOwnerSize = tableIndexSize(counts, 0x2a);
-  const genericParamConstraints = readRows(0x2c, pos => {
-    const ownerRid = index(pos, genericParamConstraintOwnerSize);
-    if (ownerRid < 1 || ownerRid > counts[0x2a]) fail('cil-generic-param-constraint-owner-invalid');
-    const targetBase = index(pos + genericParamConstraintOwnerSize, genericParamConstraintTargetSize);
-    const targetTable = [0x02, 0x01, 0x1b][targetBase & 3];
-    const targetRid = Math.floor(targetBase / 4);
-    if (targetBase === 0 || targetTable == null || targetRid < 1 || targetRid > counts[targetTable]) {
-      fail('cil-generic-param-constraint-target-invalid');
-    }
-    return { ownerToken: cilMetadataToken(0x2a, ownerRid), constraintToken: cilMetadataToken(targetTable, targetRid) };
-  });
-  const genericParamByToken = new Map(genericParams.map(row => [row.token, row]));
-  const seenGenericConstraint = new Set();
-  for (const row of genericParamConstraints) {
-    const param = genericParamByToken.get(row.ownerToken);
-    if (param == null) fail('cil-generic-param-constraint-owner-invalid');
-    const edge = `${row.ownerToken}\u0000${row.constraintToken}`;
-    if (seenGenericConstraint.has(edge)) fail('cil-generic-param-constraint-duplicate');
-    seenGenericConstraint.add(edge);
-    param.constraintTokens.push(row.constraintToken);
-  }
-  const genericParamsByOwner = new Map();
-  for (const row of genericParams) {
-    const list = genericParamsByOwner.get(row.ownerToken) ?? [];
-    list.push(row);
-    genericParamsByOwner.set(row.ownerToken, list);
-  }
-  for (const [ownerToken, list] of genericParamsByOwner) {
-    const owner = parseInt(ownerToken, 16);
-    const ownerRow = (owner >>> 24) === 2 ? types[(owner & 0xffffff) - 1] : methods[(owner & 0xffffff) - 1];
-    ownerRow.genericParams = Object.freeze(list);
-  }
-
-  return { types, methods, fields, manifestResources, typeSpecs, assembly, params, properties, events, methodSemantics, interfaceImpls, methodImpls, implMaps, moduleRefs, fieldRvas, genericParams, genericParamConstraints };
+  return { types, methods, fields, manifestResources, typeSpecs, typeRefs, assemblyRefs, assembly, params, properties, events, methodSemantics, interfaceImpls, methodImpls, implMaps, moduleRefs, fieldRvas };
 }
