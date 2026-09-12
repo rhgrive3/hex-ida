@@ -32,6 +32,7 @@ import { ANALYSIS_STATUS_SCHEMA_VERSION, createAnalysisStatus, isCompleteStatus,
 import {
   TYPE_LAYERS,
   canonicalDependencyIdentity,
+  canonicalizeStructuralMembers,
   claimsConflict,
   createContradiction,
   createHardConstraint,
@@ -41,7 +42,7 @@ import {
 import { condenseTypeGraph } from './scc.js';
 
 export const TYPE_GRAPH_ANALYZER_ID = 'phase7.types.constraint-graph';
-export const TYPE_GRAPH_ANALYZER_VERSION = '1.1.0';
+export const TYPE_GRAPH_ANALYZER_VERSION = '1.1.1';
 export const TYPE_RESULT_SCHEMA_VERSION = 1;
 export const TYPE_GRAPH_RESULT_SCHEMA_VERSION = 1;
 
@@ -312,13 +313,9 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       }
     }
 
-    const members = [...membersByOffset.values()]
-      .sort((left, right) => {
-        if (left.offset < right.offset) return -1;
-        if (left.offset > right.offset) return 1;
-        return stableStringify(left.member).localeCompare(stableStringify(right.member));
-      })
-      .map((entry) => entry.member);
+    const members = canonicalizeStructuralMembers(
+      [...membersByOffset.values()].map((entry) => entry.member),
+    );
 
     const sccMembers = sccContext?.sccMembers ?? [entityId];
     const isRecursive = sccContext?.isRecursive === true
