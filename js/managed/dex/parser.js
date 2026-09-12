@@ -162,7 +162,10 @@ export function parseDex(bytes, options = {}) {
   const classDefsSize = view.getUint32(96, true), classDefsOff = view.getUint32(100, true);
 
   const validateTable = (size, off, width, code) => {
-    if (size === 0) return;
+    if (size === 0) {
+      if (off !== 0) fail(code);
+      return;
+    }
     if (off === 0) fail(code);
     if (!Number.isSafeInteger(size) || size > Math.floor(fileSize / width)) fail(code);
     checkedRange(fileSize, off, size * width, code);
