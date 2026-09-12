@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { conditionalRegionFixture as example, textRowConditionalRegionFixture } from '../helpers/conditional-region-fixture.mjs';
-import { readCanonicalRegisterStateBinding } from '../../../js/ir-core.js';
+import { readCanonicalRegisterStateBinding, prepareCanonicalRegisterStateBindings } from '../../../js/ir-core.js';
 import { buildSemanticV2CompatibilityPipeline, projectedRegisterStateContext, projectedRegisterStateBindingCandidate } from '../../../js/semantics/compat/index.js';
 import { createMachineEffectBundle } from '../../../js/semantics/effects/index.js';
 import { projectSemanticIrV2ToLegacyV1 } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
+import { decompileSemantic, readSemanticConditionalRegions } from '../../../js/decompiler/semantic-core.js';
+import { prepareConditionalRegionStructure } from '../../../js/decompiler/phase8/conditional-region-structure.js';
 import { identity } from '../helpers/proof-fixtures.mjs';
 import { prepareConditionalRegionReachability, readConditionalRegionReachability } from '../../../js/decompiler/phase8/conditional-region-reachability.js';
 import { discoverPhase8Tests } from '../run.mjs';
@@ -39,6 +41,8 @@ test('state assignment authority is revoked by changed operands, upstream values
     source => { source.dst.def = { ...source }; },
     source => { source.extra.stateRead = { ...source.extra.stateRead }; },
     source => { source.extra.stateReadProof = { ...source.extra.stateReadProof }; },
+    source => { delete source.extra.stateRead; delete source.extra.publicStateIdentity; },
+    source => { source.extra.stateRead = false; source.extra.publicStateIdentity = false; },
     source => { source.extra.unknownEffects = true; },
     source => { Object.defineProperty(source, 'args', { get() { assert.fail('must not invoke accessor'); } }); },
   ]) {
@@ -47,6 +51,55 @@ test('state assignment authority is revoked by changed operands, upstream values
     assert.ok(readCanonicalRegisterStateBinding(ir, source));
     mutate(source);
     assert.equal(readCanonicalRegisterStateBinding(ir, source), null);
+  }
+});
+
+test('batch state currentness observes the shared graph once and retains hidden state obligations', () => {
+  const { ir, identity:context } = textRowConditionalRegionFixture();
+  const batch = prepareCanonicalRegisterStateBindings(ir, context);
+  assert.equal(batch.size, 13);
+  assert.equal(batch.observationCount, 1);
+  assert.ok(Number.isSafeInteger(batch.workItems) && batch.workItems > batch.size);
+  const source = ir.instructions.find(inst => inst.extra?.stateRead);
+  const descriptor = Object.getOwnPropertyDescriptor;
+  const count = check => {
+    let visits = 0;
+    Object.getOwnPropertyDescriptor = (object, key) => {
+      if (object === source) visits++;
+      return descriptor(object, key);
+    };
+    try { assert.ok(check()); return visits; }
+    finally { Object.getOwnPropertyDescriptor = descriptor; }
+  };
+  const singleVisits = count(() => readCanonicalRegisterStateBinding(ir, source, context));
+  assert.ok(singleVisits > 0);
+  assert.equal(count(() => batch.isCurrent()), singleVisits,
+    'all assignments must share one graph observation per lifecycle check');
+  delete source.extra.stateRead;
+  delete source.extra.publicStateIdentity;
+  assert.equal(batch.isCurrent(), false);
+  assert.equal(prepareCanonicalRegisterStateBindings(ir, { ...context, snapshotId:'foreign' }).status, 'unavailable');
+});
+
+test('reachability refuses hidden canonical state markers and unavailable state context', async () => {
+  for (const change of ['delete', 'false', 'proof', 'context']) {
+    const f = textRowConditionalRegionFixture();
+    const source = f.ir.instructions.find(inst => inst.extra?.stateRead);
+    if (change === 'delete') { delete source.extra.stateRead; delete source.extra.publicStateIdentity; }
+    if (change === 'false') { source.extra.stateRead = false; source.extra.publicStateIdentity = false; }
+    if (change === 'proof') delete source.extra.stateReadProof;
+    const context = change === 'context' ? { ...f.identity, snapshotId:'foreign' } : f.identity;
+    const seed = decompileSemantic(f.model, { ...f.options, ir:f.ir,
+      deterministicTransforms:true, phase8PrepareRegionProof:true });
+    const region = readSemanticConditionalRegions(seed)?.regions.find(item => item.selection.header === 0);
+    const structure = prepareConditionalRegionStructure(region?.record, f.ir, { identity:context, timeoutMs:5000 });
+    assert.equal(structure.status, 'complete', `${change}: ${structure.reason}`);
+    const result = await prepareConditionalRegionReachability(structure, f.ir, {
+      identity:context, timeoutMs:5000, backendTier:'tiered',
+    });
+    assert.equal(result.reason, 'unproved-state-effects', change);
+    assert.equal(result.status, 'partial');
+    assert.equal(readConditionalRegionReachability(result, f.ir, context), null);
   }
 });
 

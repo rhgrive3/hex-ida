@@ -75,6 +75,9 @@ export function projectedRegisterStateContext(projected) {
 export function projectedRegisterStateBindingCandidate(projected, instruction) {
   return registerStateBindings.get(projected)?.get(instruction) ?? null;
 }
+export function projectedRegisterStateBindingCandidates(projected) {
+  return Object.freeze([...(registerStateBindings.get(projected)?.values() ?? [])]);
+}
 function sealRegisterStateBindings(projected, ir, ssa, context) {
   try {
     if (ir.completeness !== 'complete' || projected.functionId !== ir.functionId) return;
@@ -87,6 +90,7 @@ function sealRegisterStateBindings(projected, ir, ssa, context) {
           || source.op !== 'mov' || source.sub != null || source.args?.length !== 1
           || extra?.completeness !== 'complete' || !source.dst || source.dst.def !== source) continue;
       const read = node.kind === 'state-read', key = read ? 'stateRead' : 'stateWrite';
+      if (node.inputs.length !== (read ? 0 : 1) || node.outputs.length !== (read ? 1 : 0)) continue;
       const fact = read ? index.readUseByNodeId.get(node.id) : index.writeDefinitionByNodeId.get(node.id);
       const input = source.args[0]?.value, output = source.dst;
       const proofKey = read ? 'stateReadProof' : 'stateWriteProof';

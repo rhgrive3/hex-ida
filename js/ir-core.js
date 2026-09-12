@@ -20,6 +20,7 @@ import {
   SEMANTIC_V2_MIGRATION_MODES,
   buildSemanticV2CompatibilityPipeline,
   projectedRegisterStateBindingCandidate,
+  projectedRegisterStateBindingCandidates,
 } from './semantics/compat/index.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -56,6 +57,29 @@ export function readCanonicalRegisterStateBinding(projected, instruction, identi
     return record.isCurrent() && record.bindingCurrent() ? record : null;
   }
   catch { return null; }
+}
+
+/** Issued assignment snapshot. Consumers must check isCurrent at each use
+ * boundary; fetching a record is not a fresh graph/identity check. */
+export function prepareCanonicalRegisterStateBindings(projected, identity) {
+  const unavailable = Object.freeze({ status:'unavailable' });
+  const records = new Map(projectedRegisterStateBindingCandidates(projected).map(record => [record.source, record]));
+  for (const [source, record] of facadeRegisterStateBindings.get(projected) ?? []) records.set(source, record);
+  if (!records.size) return null;
+  const contexts = [...new Set([...records.values()].map(record => record.context))];
+  const contextCurrent = () => identity && contexts.every(context => Object.keys(context).every(key => identity[key] === context[key]));
+  try { if (!contextCurrent()) return unavailable; }
+  catch { return unavailable; }
+  const checks = [...new Set([...records.values()].map(record => record.isCurrent))];
+  const workItems = records.size * 16 + checks.reduce((sum, check) => sum + check.workItems, 0);
+  if (!Number.isSafeInteger(workItems)) return unavailable;
+  return Object.freeze({ status:'prepared', size:records.size, observationCount:checks.length, workItems,
+    get:source => records.get(source) ?? null,
+    isCurrent() {
+      try { return contextCurrent() && checks.every(check => check())
+        && [...records.values()].every(record => record.bindingCurrent()); }
+      catch { return false; }
+    } });
 }
 const facadeAbiBindings = new WeakMap();
 const expectedFacadeAbiBindings = new WeakMap();
@@ -211,6 +235,7 @@ function sealFacadeProjectedOperations(projected, history, groups) {
       for (const [source, candidate] of candidates) {
         if (!checks.has(candidate.isCurrent)) {
           const current = Object.freeze(Object.assign(() => candidate.isCurrent.matchesThroughWrites(writes) && output(), {
+            workItems:candidate.isCurrent.workItems + output.workItems + writes.length * 2,
             matchesThroughWrites:following => Array.isArray(following) && following.length + writes.length <= PROJECTION_LIMITS.nodes
               && candidate.isCurrent.matchesThroughWrites([...writes, ...following]) && output.matchesThroughWrites(following),
           }));

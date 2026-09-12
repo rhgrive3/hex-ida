@@ -50,7 +50,7 @@ test('production text-row PHIs and BV1 predicates execute before the remaining p
   assert.equal(translateSemanticIR(predicate).status, 'exact');
   for (const x0 of [0n, 0x80000000n, 0xffffffffffffffffn]) {
     const executed = symbolicExecute(f.ir, { symbolicArgs:{ 0:x0, 30:0x100n },
-      captureValues:true, byteMemory:{ identity, addressBits:8 } });
+      captureValues:true, timeoutMs:5000, byteMemory:{ identity, addressBits:8, timeoutMs:5000 } });
     assert.equal(executed.status, 'complete', executed.reason);
     assert.equal(executed.paths.length, 1);
     const snapshot = executed.paths[0].snapshot;

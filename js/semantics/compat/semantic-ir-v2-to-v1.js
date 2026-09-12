@@ -69,7 +69,10 @@ export function observeProjectedOperationData(projected, transitions) {
         { matchesThroughWrites:ranges => captured.matchesThroughWrites([...writes, ...ranges]) }));
   // The ordinary predicate remains strict even if a caller passes arguments.
   // The separate method is only a pure-data comparison, never write authority.
-  return Object.freeze(Object.assign(() => matches(), { matchesThroughWrites:writes => matches(writes) }));
+  const workItems = captured.metrics.nodes + captured.metrics.edges + roots.length
+    + values.length + locations.length * 8 + (captured.originCertification?.envelopes ?? 0)
+    + (captured.dataCertification?.envelopes ?? 0);
+  return Object.freeze(Object.assign(() => matches(), { workItems, matchesThroughWrites:writes => matches(writes) }));
 }
 
 // Private finalization is the issuer. Calling attachMemorySsa separately or

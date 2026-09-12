@@ -7205,3 +7205,21 @@ ownership and independent source/PR reviews are retained under persistent
 `c4-state-*` receipts. The reuploaded user ZIP is byte-identical to the imported
 archive. User C1 recursive-return work stays reserved; full roadmap acceptance
 and **CHECKPOINT-LOCKED** remain open.
+
+Independent review identified repeated full-graph checks per state instruction.
+The consumer now prepares all privately issued assignments as one snapshot,
+checks each distinct graph observer once per lifecycle boundary, and separately
+rechecks every original assignment. Observation work is charged from retained
+graph metrics; the child execution leaves room for the five following checks.
+A descriptor-visit regression verifies that checking all 13 assignments visits
+the shared graph only as often as checking one. Preparation distinguishes absent
+records from an unavailable identity/accounting context. Deleted/false state
+markers and deleted proofs remain obligations even when current public metadata
+no longer advertises them; direct reachability regressions reject those cases.
+
+The first 16-file candidate run retained 253/254 passing tests; its only failure
+was the actual-row direct executor reaching its default 250 ms deadline under
+concurrent workspace load. This test now supplies the same explicit 5 s bounded
+allowance as the surrounding query, retaining its exact completion/value checks.
+Later exact-head results supersede that candidate receipt only for their own
+tested source. Existing broader product failures and full acceptance remain open.

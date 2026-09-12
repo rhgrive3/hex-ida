@@ -17,8 +17,8 @@ export function readConditionalRegionReachability(result, ir, identity) {
   try {
     if (!binding || binding.ir !== ir || !sameMemoryIdentity(binding.guard.identity, identity)) return null;
     binding.guard.check(identity);
-    return binding.executionCurrent() && readConditionalRegionStructure(binding.structure, ir, identity)
-      && sameMemoryIdentity(binding.guard.identity, identity) ? result : null;
+    return readConditionalRegionStructure(binding.structure, ir, identity)
+      && sameMemoryIdentity(binding.guard.identity, identity) && binding.executionCurrent() ? result : null;
   } catch { return null; }
 }
 
@@ -63,7 +63,7 @@ export async function prepareConditionalRegionReachability(structure, ir, option
     if (visited !== structure.blocks.length) return reject('loop-reachability-proof-required');
     const [{ symbolicExecute }, { isExecutionResult, isExecutionSnapshot }, { validateExecutionContract },
       { verifyConditionalEdgeFeasibility }, { createProductionSolverRegistry }, expr, { scalarOperation },
-      { readCanonicalRegisterStateBinding }] = await Promise.all([
+      { prepareCanonicalRegisterStateBindings }] = await Promise.all([
       import('../../symbolic/executor.js'), import('../../symbolic/memory/execution-snapshot.js'),
       import('../../symbolic/memory/execution-contract.js'), import('../../symbolic/verify/edge-feasibility.js'),
       import('../../symbolic/solver/registry.js'), import('../../symbolic/expr/index.js'),
@@ -83,11 +83,21 @@ export async function prepareConditionalRegionReachability(structure, ir, option
     if (addressMap.get(addressKey(targetAddress)) !== structure.region.selection.yes) return reject('executor-producer-target-mismatch');
     // The executor trace carries row/address, not a rendered predicate or C AST
     // index. Require their unique exact canonical CBR identity before matching.
-    const branchIndex = [], stateBindings = new Map();
+    const branchIndex = [], stateBindings = prepareCanonicalRegisterStateBindings(ir, guard.identity);
+    if (stateBindings?.status === 'unavailable') return reject('unproved-state-effects');
+    if (stateBindings) guard.take('allocationUnits', stateBindings.size + stateBindings.observationCount);
+    const stateCurrent = () => {
+      if (!stateBindings) return true;
+      guard.take('workItems', stateBindings.workItems);
+      return stateBindings.isCurrent();
+    };
+    if (!stateCurrent()) return reject('unproved-state-effects');
     for (const block of structure.blocks) for (const inst of queryArray(queryRecord(block, guard, 128).insts, guard)) {
       const current = queryRecord(inst, guard, 128);
       const extra = queryRecord(current.extra ?? {}, guard), attributes = queryRecord(extra.attributes ?? {}, guard);
       const machine = attributes.machineEffects == null ? null : queryRecord(attributes.machineEffects, guard);
+      if (current.op === 'mov' && ['register-read', 'register-write'].includes(machine?.operationKind)
+          && !stateBindings?.get(inst)) return reject('unproved-state-effects');
       for (const source of [current, extra, attributes, machine].filter(Boolean)) {
         const stateKeys = ['stateRead', 'stateWrite', 'unknownEffects', 'publicStateIdentity', 'statePreservation']
           .filter(key => source[key] != null && source[key] !== false);
@@ -95,11 +105,10 @@ export async function prepareConditionalRegionReachability(structure, ir, option
           // Only the actual pipeline's SSA-to-MOV binding establishes an
           // ordinary register assignment. Other/hidden state remains unknown.
           if (source !== extra || stateKeys.some(key => ['unknownEffects','statePreservation'].includes(key))) return reject('unproved-state-effects');
-          const binding = readCanonicalRegisterStateBinding(ir, inst, guard.identity);
+          const binding = stateBindings?.get(inst);
           if (!binding || (binding.kind === 'state-read'
             ? extra.stateRead !== binding.state || extra.stateWrite != null
             : extra.stateWrite !== binding.state || extra.stateRead != null)) return reject('unproved-state-effects');
-          stateBindings.set(inst, binding);
         }
         if (['possibleFaults', 'faults'].some(key => source[key] != null && queryArray(source[key], guard).length)) {
           return reject('unproved-machine-effects');
@@ -146,11 +155,13 @@ export async function prepareConditionalRegionReachability(structure, ir, option
       guard.take('allocationUnits'); branchIndex.push({ instruction:inst, row:current.row, address:addressKey(current.address) });
     }
     const timeout = () => Math.max(0, Math.floor(guard.remainingMilliseconds()));
+    if (!stateCurrent()) return reject('unproved-state-effects');
     const used = guard.metrics();
     // Reserve the whole child allowance before execution. Its published metrics
     // precede final capture publication and cannot refund that unseen work.
     const executionLimits = {
-      workItems:Math.min(250000, Math.max(0, guard.limits.workItems - used.workItems - 4096)),
+      workItems:Math.min(250000, Math.max(0, guard.limits.workItems - used.workItems
+        - Math.max(4096, (stateBindings?.workItems ?? 0) * 5))),
       allocationUnits:Math.max(0, guard.limits.allocationUnits - used.allocationUnits - 4096),
     };
     guard.take('workItems', executionLimits.workItems); guard.take('allocationUnits', executionLimits.allocationUnits);
@@ -162,10 +173,16 @@ export async function prepareConditionalRegionReachability(structure, ir, option
       ...Object.fromEntries(['maxPaths', 'maxSteps', 'maxBranches', 'maxBlockVisits']
         .filter(key => Object.hasOwn(submitted, key)).map(key => [key, submitted[key]])),
     });
+    // Charge/check caller lifecycle first, then validate both observations so
+    // callbacks cannot mutate an already-checked execution behind this read.
     const executionCurrent = () => isExecutionResult(execution, guard.identity, ir)
-      && [...stateBindings].every(([source, binding]) => readCanonicalRegisterStateBinding(ir, source, guard.identity) === binding);
+      && (!stateBindings || stateBindings.isCurrent());
+    const checkedExecutionCurrent = () => {
+      if (stateBindings) guard.take('workItems', stateBindings.workItems);
+      return executionCurrent();
+    };
     guard.check();
-    if (!executionCurrent() || execution.status !== 'complete' || execution.truncated || !execution.paths.length) {
+    if (!checkedExecutionCurrent() || execution.status !== 'complete' || execution.truncated || !execution.paths.length) {
       return reject(execution.reason ?? 'incomplete-execution');
     }
     if (execution.assumptions.length || execution.memoryObservationRequests.length) return reject('conditional-execution-assumptions');
@@ -206,7 +223,7 @@ export async function prepareConditionalRegionReachability(structure, ir, option
             branchId:data.id, terminalPaths:execution.paths.length, assumptions:[] } },
       });
       guard.check();
-      if (!executionCurrent() || !readConditionalRegionStructure(structure, ir, guard.identity)) guard.fail('stale-proof-input');
+      if (!readConditionalRegionStructure(structure, ir, guard.identity) || !checkedExecutionCurrent()) guard.fail('stale-proof-input');
       return result;
     };
     // A complete-looking but empty feasible domain must not mint two vacuous
@@ -224,7 +241,7 @@ export async function prepareConditionalRegionReachability(structure, ir, option
     }
     await session.dispose(); session = null;
     guard.check();
-    if (!executionCurrent() || !readConditionalRegionStructure(structure, ir, guard.identity)) return reject('stale-proof-input');
+    if (!readConditionalRegionStructure(structure, ir, guard.identity) || !checkedExecutionCurrent()) return reject('stale-proof-input');
     const complete = arms.every(arm => arm.verdict === 'proved' || arm.verdict === 'refuted' && arm.counterexampleValidated);
     const result = freeze({ version:1, status:complete ? 'complete' : 'partial',
       scope:'acyclic-canonical-executor-entry-path-feasibility', transformAuthorization:false,
