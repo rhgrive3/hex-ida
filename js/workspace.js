@@ -347,6 +347,7 @@ export class ProductWorkspace{
     const onAbort=()=>{if(ownedBackend)other?.dispose?.();};
     if(signal?.aborted)throwIfAborted(signal);
     signal?.addEventListener('abort',onAbort,{once:true});
+    if(signal?.aborted){signal.removeEventListener('abort',onAbort);onAbort();throwIfAborted(signal);}
     try{
       const info=await other.open(file);throwIfAborted(signal);assertCurrent();
       const currentArch=this.identity?.metadata?.architecture||null;const sliceIndex=chooseSlice(info,currentArch);
