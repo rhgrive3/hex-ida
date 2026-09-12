@@ -88,4 +88,27 @@ function elapsed(fn) {
   assert.equal(ringNodes.push({ type: 'heavy', heavy }), false, 'node-heavy events remain rejected');
 }
 
+// 8. Accepted binary payloads must remain charged after admission so repeated
+//    sub-budget events cannot accumulate outside the retained-byte budget.
+{
+  const ring = new TraceRingBuffer({ maxEvents: 16, maxBytes: BUDGET });
+  assert.equal(ring.push({ type: 'first', payload: new ArrayBuffer(2400) }), true);
+  assert.ok(ring.snapshot().bytes >= 2400, 'retained accounting must include real binary bytes');
+  assert.equal(ring.push({ type: 'second', payload: new ArrayBuffer(2400) }), true);
+  const snap = ring.snapshot();
+  assert.ok(snap.bytes <= BUDGET, 'multiple admitted binary events must still obey the retained-byte ceiling');
+  assert.equal(snap.events.length, 1, 'byte pressure must evict the older binary event rather than retain both uncharged');
+}
+
+// 9. A repeated reference is charged once only because the clone also preserves
+//    that identity; accounting must never charge one copy while materializing two.
+{
+  const shared = new ArrayBuffer(3000);
+  const ring = new TraceRingBuffer({ maxEvents: 16, maxBytes: BUDGET });
+  assert.equal(ring.push({ type: 'shared', first: shared, second: shared }), true);
+  assert.equal(ring.events[0].first, ring.events[0].second,
+    'shared binary references must remain one owned retained copy');
+  assert.ok(ring.snapshot().bytes >= 3000, 'the shared retained binary copy must be charged');
+}
+
 console.log('issue-5129 trace ring-buffer bounded admission: PASS');
