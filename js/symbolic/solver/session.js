@@ -165,10 +165,14 @@ export class SolverSession {
           }
         );
       } else {
-        result = createSolverResult({
-          ...result,
-          lifecycle: { ...(result.lifecycle || {}), publishable: result.lifecycle?.publishable !== false },
-        });
+        try {
+          result = createSolverResult({
+            ...result,
+            lifecycle: { ...(result.lifecycle || {}), publishable: result.lifecycle?.publishable !== false },
+          });
+        } catch {
+          result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'provider-returned-invalid-result');
+        }
       }
       record.resolve(result);
     };
