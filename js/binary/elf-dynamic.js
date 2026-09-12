@@ -91,8 +91,8 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   const needsStringTable = (tags.get(DT_NEEDED)?.length || 0) > 0 || one(DT_SONAME) != null || symtab != null;
   const defaultSyment = BigInt(bits === 64 ? 24 : 16);
   const syment = one(DT_SYMENT) ?? defaultSyment;
-  const symentValid = syment >= defaultSyment;
-  if (!symentValid) markDynamicPartial(image, `DT_SYMENT ${syment} is smaller than ${defaultSyment}`);
+  const symentValid = syment === defaultSyment;
+  if (!symentValid) markDynamicPartial(image, `DT_SYMENT ${syment} does not match ${defaultSyment}`);
   if (needsStringTable && (strtab == null || strsz == null)) markDynamicPartial(image, 'dynamic string table address/size is missing');
   const strSizeRaw = strsz == null ? null : toSafeNumber(strsz);
   if (strsz != null && strSizeRaw == null) {
@@ -362,9 +362,9 @@ function collectDynamicRelocations(r, tags, image, bits, budget) {
   const addTable = (va, size, ent, rela, source) => {
     if (budget.stopped || va == null || size == null || size <= 0n) return;
     const n = toSafeNumber(size);
-    const minimum = BigInt(bits === 64 ? (rela ? 24 : 16) : (rela ? 12 : 8));
-    const requested = ent ?? minimum;
-    if (requested < minimum) { markDynamicPartial(image, `${source} entry size ${requested} is smaller than ${minimum}`); return; }
+    const standard = BigInt(bits === 64 ? (rela ? 24 : 16) : (rela ? 12 : 8));
+    const requested = ent ?? standard;
+    if (requested !== standard) { markDynamicPartial(image, `${source} entry size ${requested} does not match the supported ${standard}-byte ${rela ? 'Rela' : 'Rel'} layout`); return; }
     const e = toSafeNumber(requested);
     const span = n == null ? null : mappedELFFileSpanForVa(image, va, n);
     if (!span || e == null || e <= 0) { markDynamicPartial(image, `${source} table crosses a file-backed PT_LOAD boundary`); return; }
