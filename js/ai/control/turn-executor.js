@@ -299,7 +299,7 @@ export async function executeTurn(input = {}, options = {}) {
           while (modelCalls < budget.maxModelCalls) {
             ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
             request.effectiveScope = scopeController.effectiveScope;
-            const caps = providerCapabilities(this.provider);
+            const caps = providerCapabilities(this.provider, request);
             const maxTools = Math.max(1, Math.min(10, typeof caps.maxTools === 'number' && Number.isFinite(caps.maxTools) && caps.maxTools > 0 ? Math.floor(caps.maxTools) : 10));
             const window = selectToolWindow(registry, { mode: request.mode, requestedScope: request.scope, effectiveScope: scopeController.effectiveScope, intent, observations, hypotheses: hypothesisStore.all(), maxTools });
             const tools = window.tools;

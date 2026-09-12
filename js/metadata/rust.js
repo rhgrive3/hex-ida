@@ -721,8 +721,11 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     this.cachedParsed = { rustSymbols, vtables };
 
     const complete = unreadable === 0 && invalidEntries === 0 && rustSymbols.length > 0;
+    const hasIdentityBinding = this.binaryIdentity != null;
     const identity = createLanguageMetadataIdentity({
-      verdict: complete ? 'matched-authoritative' : 'matched-partial',
+      verdict: complete
+        ? (hasIdentityBinding ? 'matched-authoritative' : 'identity-unavailable')
+        : 'matched-partial',
       providerId: this.id,
       providerVersion: this.version,
       ecosystem: 'rust',
@@ -733,7 +736,9 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
       architecture: this.architecture,
       platform: this.platform,
       method: 'rust-symbol-demangle',
-      detail: `Rust ${toolchainVersion || 'unknown'} (${rustSymbols.length} symbols)`,
+      detail: hasIdentityBinding
+        ? `Rust ${toolchainVersion || 'unknown'} (${rustSymbols.length} symbols)`
+        : `Rust ${toolchainVersion || 'unknown'} without binary identity binding (${rustSymbols.length} symbols)`,
       coverage: complete ? null : {
         recordKinds: ['symbol', 'type'],
         addresses: rustSymbols.map((s) => s.address).filter((value) => value != null),

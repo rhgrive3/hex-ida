@@ -33,6 +33,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
       { name: '_RC3foo', address: 0x1000n },
       { name: 'someCFunc', address: 0x2000n },
     ],
+    binaryIdentity: 'sha256:batch-3269',
   }).probe();
   assert.equal(nonRust.identity.verdict, 'matched-authoritative');
   assert.equal(nonRust.completeness.complete, true);

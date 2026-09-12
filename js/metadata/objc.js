@@ -163,8 +163,11 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
     this.cachedIndex = buildObjcRuntimeIndex(model);
 
     const isComplete = model.runtimeCompleteness?.complete === true;
+    const hasIdentityBinding = this.binaryIdentity != null;
     const identity = createLanguageMetadataIdentity({
-      verdict: isComplete ? 'matched-authoritative' : 'matched-partial',
+      verdict: isComplete
+        ? (hasIdentityBinding ? 'matched-authoritative' : 'identity-unavailable')
+        : 'matched-partial',
       providerId: this.id,
       providerVersion: this.version,
       ecosystem: 'objc',
@@ -175,7 +178,9 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
       architecture: this.architecture,
       platform: this.platform,
       method: 'objc-2.0-runtime',
-      detail: `Objective-C 2.0 (${model.classes?.length || 0} classes, ${model.protocols?.length || 0} protocols)`,
+      detail: hasIdentityBinding
+        ? `Objective-C 2.0 (${model.classes?.length || 0} classes, ${model.protocols?.length || 0} protocols)`
+        : `Objective-C 2.0 without binary identity binding (${model.classes?.length || 0} classes, ${model.protocols?.length || 0} protocols)`,
       coverage: isComplete ? null : {
         recordKinds: ['type', 'method'],
         addresses: (model.classes || [])
