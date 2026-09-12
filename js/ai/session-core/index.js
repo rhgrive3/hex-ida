@@ -3,10 +3,19 @@ import { AI_MODES, AI_SCOPES, AI_STYLES } from '../schema.js';
 let sessionSequence = 1;
 const MEMORY_KEYS = ['goal','anchor','confirmedFacts','activeHypotheses','rejectedHypotheses','unresolvedQuestions','userConstraints','importantPriorActions'];
 
+export function isValidSessionId(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function requireSessionId(value) {
+  if (!isValidSessionId(value)) throw new TypeError('AI session id must be a non-empty string');
+  return value;
+}
+
 export function createInvestigationMemory(input = {}) {
   return {
     goal: String(input.goal || ''),
-    anchor: input.anchor && typeof input.anchor === 'object' ? { ...input.anchor } : null,
+    anchor: input.anchor && typeof input.anchor === 'object' ? cloneOwned(input.anchor) : null,
     confirmedFacts: bounded(input.confirmedFacts, 64),
     activeHypotheses: bounded(input.activeHypotheses, 48),
     rejectedHypotheses: bounded(input.rejectedHypotheses, 48),
@@ -18,10 +27,11 @@ export function createInvestigationMemory(input = {}) {
 
 export function createInvestigationSession(input = {}) {
   const now = new Date().toISOString();
+  const hasExplicitId = input.id != null;
   return {
-    id: String(input.id || `ai_${Date.now().toString(36)}_${sessionSequence++}`),
+    id: hasExplicitId ? requireSessionId(input.id) : `ai_${Date.now().toString(36)}_${sessionSequence++}`,
     binaryId: input.binaryId == null ? null : String(input.binaryId),
-    binaryIdentity: input.binaryIdentity && typeof input.binaryIdentity === 'object' ? { ...input.binaryIdentity } : null,
+    binaryIdentity: input.binaryIdentity && typeof input.binaryIdentity === 'object' ? cloneOwned(input.binaryIdentity) : null,
     projectId: input.projectId == null ? null : String(input.projectId),
     conversationId: input.conversationId == null ? null : String(input.conversationId),
     mode: AI_MODES.includes(input.mode) ? input.mode : 'chat',
@@ -42,8 +52,8 @@ export function createInvestigationSession(input = {}) {
     confirmedFindings: Array.isArray(input.confirmedFindings) ? input.confirmedFindings.map(cloneRecord) : [],
     rejectedHypotheses: Array.isArray(input.rejectedHypotheses) ? input.rejectedHypotheses.map(cloneRecord) : [],
     proposedActions: Array.isArray(input.proposedActions) ? input.proposedActions.map(cloneRecord) : [],
-    lastActivity: input.lastActivity || null,
-    createdAt: input.createdAt || now,
+    lastActivity: cloneOwned(input.lastActivity || null),
+    createdAt: cloneOwned(input.createdAt || now),
     updatedAt: now,
   };
 }
@@ -52,22 +62,30 @@ export class InvestigationSessionStore {
   constructor({ persistence } = {}) { this.persistence = persistence || null; this.sessions = new Map(); }
 
   register(session) {
-    if (!session || !session.id) return null;
-    const validated = createInvestigationSession(session);
+    if (!session || !isValidSessionId(session.id)) return null;
+    // Preserve the historical map/value identity contract while ensuring the
+    // published record cannot mutate the store behind the controlled APIs.
+    const validated = freezeOwned(createInvestigationSession(session));
     this.sessions.set(validated.id, validated);
     return validated;
   }
 
   async delete(id) {
-    const key = String(id);
-    this.sessions.delete(key);
+    if (!isValidSessionId(id)) return false;
+    const key = id;
     if (this.persistence && typeof this.persistence.delete === 'function') {
+      // Keep the in-memory record visible until the durable delete succeeds.
+      // A rejected persistence operation must not make a still-persisted
+      // session disappear from this process (#4450).
       await this.persistence.delete(key);
     }
+    this.sessions.delete(key);
   }
 
   async create(input) {
-    const session = createInvestigationSession(input);
+    // Persistence and visibility both receive the same detached immutable
+    // record; a caller cannot mutate either side between the two steps.
+    const session = freezeOwned(createInvestigationSession(input));
     // Durability before visibility: a failed save must not leave the session
     // in memory presenting a write that never landed (#5434).
     await this.persist(session);
@@ -76,11 +94,24 @@ export class InvestigationSessionStore {
   }
 
   async get(id) {
-    const key = String(id);
+    if (!isValidSessionId(id)) return null;
+    const key = id;
     if (this.sessions.has(key)) return this.sessions.get(key);
     if (this.persistence && typeof this.persistence.load === 'function') {
       const loaded = await this.persistence.load(key);
-      if (loaded) { const session = createInvestigationSession(loaded); this.sessions.set(key, session); return session; }
+      if (loaded) {
+        // The lookup key is the session identity, not a search hint: a record
+        // whose own id differs is corrupt/stale state from an adapter or
+        // migration. Adopting it would alias another session's binary,
+        // project, and conversation bindings onto the requested id and let
+        // later updates persist against the wrong session (#4413).
+        if (typeof loaded.id !== 'string' || loaded.id !== key) return null;
+        const session = createInvestigationSession(loaded);
+        if (session.id !== key) return null;
+        const owned = freezeOwned(session);
+        this.sessions.set(key, owned);
+        return owned;
+      }
     }
     return null;
   }
@@ -92,17 +123,21 @@ export class InvestigationSessionStore {
     // Work on a detached candidate and swap it in only after the durable save
     // succeeded: a rejected write must leave the previous canonical state
     // visible instead of a partially applied patch (#5434).
-    const candidate = { ...current };
-    for (const key of allowed) if (Object.prototype.hasOwnProperty.call(patch, key)) candidate[key] = key === 'investigationMemory' ? createInvestigationMemory(patch[key]) : patch[key];
+    const candidate = cloneOwned(current);
+    for (const key of allowed) {
+      if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;
+      candidate[key] = key === 'investigationMemory' ? createInvestigationMemory(patch[key]) : cloneOwned(patch[key]);
+    }
     // Identity upgrades must update both representations atomically. Otherwise
     // a legacy/weak session can accept a strong hash on this turn but be
     // rejected on the next turn because binaryId still contains filename:slice.
     if (!Object.prototype.hasOwnProperty.call(patch, 'binaryId') && patch.binaryIdentity?.id) candidate.binaryId = String(patch.binaryIdentity.id);
     if (candidate.binaryId != null) candidate.binaryId = String(candidate.binaryId);
     candidate.updatedAt = new Date().toISOString();
-    await this.persist(candidate);
-    this.sessions.set(String(id), candidate);
-    return candidate;
+    const ownedCandidate = freezeOwned(candidate);
+    await this.persist(ownedCandidate);
+    this.sessions.set(id, ownedCandidate);
+    return ownedCandidate;
   }
 
   async updateMemory(id, patch = {}) {
@@ -173,10 +208,14 @@ export function createProjectSessionPersistence(project, { onChange } = {}) {
   project.findings ||= {}; project.findings.investigationSessions ||= [];
   return {
     list() { return project.findings.investigationSessions.slice(); },
-    async load(id) { return project.findings.investigationSessions.find((session) => session && session.id === String(id)) || null; },
+    async load(id) {
+      if (!isValidSessionId(id)) return null;
+      return project.findings.investigationSessions.find((session) => session && session.id === id) || null;
+    },
     async save(session) {
+      const id = requireSessionId(session?.id);
       const safe = stripSecrets(session);
-      const index = project.findings.investigationSessions.findIndex((item) => item && item.id === safe.id);
+      const index = project.findings.investigationSessions.findIndex((item) => item && item.id === id);
       if (index >= 0) project.findings.investigationSessions[index] = safe; else project.findings.investigationSessions.push(safe);
       // AI session bookkeeping must not advance the semantic revision that
       // ObservationStore binds tool results to; only meaningful project
@@ -186,8 +225,9 @@ export function createProjectSessionPersistence(project, { onChange } = {}) {
       if (typeof onChange === 'function') onChange(project, safe);
     },
     async delete(id) {
-      const key = String(id);
-      const index = project.findings.investigationSessions.findIndex((item) => item && String(item.id) === key);
+      if (!isValidSessionId(id)) return false;
+      const key = id;
+      const index = project.findings.investigationSessions.findIndex((item) => item && item.id === key);
       if (index >= 0) {
         project.findings.investigationSessions.splice(index, 1);
         project.updatedAt = new Date().toISOString();
@@ -198,13 +238,42 @@ export function createProjectSessionPersistence(project, { onChange } = {}) {
   };
 }
 
-function bounded(value, limit) { return Array.isArray(value) ? value.slice(-limit) : []; }
+function bounded(value, limit) { return Array.isArray(value) ? value.slice(-limit).map((item) => cloneOwned(item)) : []; }
 
-// A shallow element copy is enough to detach store-owned session arrays from
-// the caller's objects: the session contract treats these records as plain
-// JSON-safe data (see normalize/persist paths), never as live class instances.
 function cloneRecord(value) {
-  return value && typeof value === 'object' ? { ...value } : value;
+  return cloneOwned(value);
+}
+
+function cloneOwned(value, seen = new WeakMap()) {
+  if (!value || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+  if (Array.isArray(value)) {
+    const out = [];
+    seen.set(value, out);
+    for (const item of value) out.push(cloneOwned(item, seen));
+    return out;
+  }
+  const out = {};
+  seen.set(value, out);
+  for (const key of Object.keys(value)) {
+    Object.defineProperty(out, key, {
+      value: cloneOwned(value[key], seen),
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  return out;
+}
+
+function freezeOwned(value, seen = new WeakSet()) {
+  if (!value || typeof value !== 'object' || seen.has(value)) return value;
+  seen.add(value);
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor && Object.hasOwn(descriptor, 'value')) freezeOwned(descriptor.value, seen);
+  }
+  return Object.freeze(value);
 }
 
 function mergeUnique(current, incoming) {

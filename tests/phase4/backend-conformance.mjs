@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { loadPlaywright, servePhase4Root } from "./browser-support.mjs";
 
 const playwright = await loadPlaywright();
@@ -9,11 +8,7 @@ if (!playwright) {
   process.exit(0);
 }
 
-const server = await servePhase4Root();
-const browser = await playwright.chromium.launch({ args: ["--no-sandbox"] });
-const page = await browser.newPage();
-try {
-  await page.goto(`http://127.0.0.1:${server.address().port}/index.html`, { waitUntil: "domcontentloaded" });
+async function runBackendConformance(page) {
   const result = await page.evaluate(async () => {
     const { MemoryArtifactBackend, IndexedDbArtifactBackend } = await import("/js/core/artifacts/index.js");
     const { runArtifactBackendContract } = await import("/tests/phase4/store/backend-contract.js");
@@ -45,11 +40,29 @@ try {
 
     return { memory: "pass", indexeddb: "pass" };
   });
+  if (result?.memory !== "pass" || result?.indexeddb !== "pass") {
+    throw new Error(`phase4 backend conformance returned an invalid result: ${JSON.stringify(result)}`);
+  }
+  return result;
+}
 
-  assert.equal(result.memory, "pass");
-  assert.equal(result.indexeddb, "pass");
-  console.log("phase4 backend conformance: PASS");
+const server = await servePhase4Root();
+const engines = [
+  { name: "chromium", launcher: playwright.chromium, launchOptions: { args: ["--no-sandbox"] } },
+  { name: "webkit", launcher: playwright.webkit, launchOptions: {} },
+];
+try {
+  for (const { name, launcher, launchOptions } of engines) {
+    const browser = await launcher.launch(launchOptions);
+    const page = await browser.newPage();
+    try {
+      await page.goto(`http://127.0.0.1:${server.address().port}/index.html`, { waitUntil: "domcontentloaded" });
+      const result = await runBackendConformance(page);
+      console.log(`phase4 backend conformance (${name}): PASS ${JSON.stringify(result)}`);
+    } finally {
+      await browser.close();
+    }
+  }
 } finally {
-  await browser.close();
   server.close();
 }

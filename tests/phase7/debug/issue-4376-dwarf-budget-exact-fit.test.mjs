@@ -31,10 +31,11 @@ const flatAbbrev = Uint8Array.from([
   0x00,
 ]);
 
-const simpleUnit = dwarf4Unit(Uint8Array.from([1, 0]));
-// One simple CU consumes 13 .debug_info bytes plus 6 bytes to decode the
+// A childless CU has no terminating null child entry (#5244).
+const simpleUnit = dwarf4Unit(Uint8Array.from([1]));
+// One simple CU consumes 12 .debug_info bytes plus 6 bytes to decode the
 // shared abbreviation table. This intentionally exercises an exact budget hit.
-const exactOneUnitBudget = 19;
+const exactOneUnitBudget = 18;
 
 test('#4376 exact byte-budget hit with remaining CU reports budget exhaustion', () => {
   const debugInfo = concat(simpleUnit, simpleUnit);

@@ -78,7 +78,7 @@ test('#4376 maxDepth rejects a child DIE beyond the configured stack depth', () 
 
 test('#4376 normal input remains complete within byte and depth budgets', () => {
   const parsed = parseDebugInfo(
-    { debug_info: concat(dwarf4Unit(Uint8Array.from([1, 0]))), debug_abbrev: flatAbbrev },
+    { debug_info: concat(dwarf4Unit(Uint8Array.from([1]))), debug_abbrev: flatAbbrev },
     { maxBytesScanned: 4096, maxRecords: 10, maxDepth: 1 },
   );
 

@@ -26,12 +26,12 @@ function concat(...arrays) {
 }
 
 const oneAttributeTable = Uint8Array.from([
-  0x01, 0x11, 0x00,       // abbrev 1: compile_unit, no children
+  0x01, 0x11, 0x01,       // abbrev 1: compile_unit, has children
   0x3c, 0x19,             // DW_AT_declaration / DW_FORM_flag_present
   0x00, 0x00,             // attribute terminator
   0x00,                   // table terminator
 ]);
-const oneDie = Uint8Array.from([0x01, 0x00]);
+const oneDie = Uint8Array.from([0x01, 0x00]); // root + sibling-chain terminator
 
 test('#3932 128 repeated CUs reuse one bounded abbreviation parse', () => {
   const info = concat(...Array.from({ length: 128 }, () => dwarf4Unit(oneDie)));

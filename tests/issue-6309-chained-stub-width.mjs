@@ -58,6 +58,8 @@ function fixture({ reserved2 = 12, sectionSize = reserved2, fat = false } = {}) 
   dv.setUint16(fixups + 40, 0x1000, true);
   dv.setUint16(fixups + 42, 2, true);
   dv.setUint16(fixups + 56, 1, true);
+  // page_start[0]: the bind chain starts at the stub-referenced GOT slot (#5388).
+  dv.setUint16(fixups + 58, 0x300, true);
   new TextEncoder().encodeInto('_target\0', thin.subarray(fixups + 68, fixups + 80));
 
   if (!fat) return { file: new Blob([thin]), stub, slot };

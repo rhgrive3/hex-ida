@@ -24,7 +24,15 @@ const VARIADIC_MIN = new Map([
 export function normalizeExternalSymbol(name) {
   if (typeof name !== 'string') return '';
   let s = name.trim();
-  s = s.replace(/^_+/, '').replace(/^(?:imp_|j_)/, '');
+  // Decoration stacks: `j__puts` / `imp__printf` carry a calling-side thunk or
+  // import prefix over the usual C underscore decoration. Strip prefixes and
+  // leading underscores repeatedly until neither applies, so the inner
+  // decoration left behind by one removal is still normalized (#4143).
+  for (;;) {
+    const next = s.replace(/^_+/, '').replace(/^(?:imp_|j_)/, '');
+    if (next === s) break;
+    s = next;
+  }
   const suffix = s.search(/(?:\$|@@?)/);
   if (suffix >= 0) s = s.slice(0, suffix);
   return s;

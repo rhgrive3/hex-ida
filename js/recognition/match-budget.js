@@ -15,9 +15,12 @@ export const DEFAULT_MATCH_BUDGET = Object.freeze({
   maxWallMs: 2_000,
 });
 
+function isPositiveSafeInteger(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
 function limit(value, fallback) {
-  const n = Number(value);
-  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+  return isPositiveSafeInteger(value) ? value : fallback;
 }
 
 function arrayLength(value) { return Array.isArray(value) ? value.length : 0; }

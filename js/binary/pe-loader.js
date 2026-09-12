@@ -38,7 +38,7 @@ function ensureBudget(image, budget) {
 }
 
 export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget = null) {
-  if (!dir || !dir.rva || dir.size < 8) return;
+  if (!dir || !dir.rva || dir.size === 0) return;
   const budget = ensureBudget(image, sharedBudget);
   const warningStart = image.warnings.length;
   parseBaseRelocationsCore(r, dir, image, machine, budget);
@@ -133,6 +133,29 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
   return result;
 }
 
+function loadedImageSpanForAddress(image, address, size, { writable = false } = {}) {
+  if (!Number.isSafeInteger(size) || size <= 0) return false;
+  const start = BigInt(address);
+  const finish = start + BigInt(size);
+  if (start < image.imageBase) return false;
+  const sizeOfImage = image.metadata?.sizeOfImage;
+  if (Number.isSafeInteger(sizeOfImage) && sizeOfImage >= 0 && finish > image.imageBase + BigInt(sizeOfImage)) return false;
+  const owners = [...(image.sections || []), ...(image.segments || [])];
+  let cursor = start;
+  while (cursor < finish) {
+    let coveredTo = cursor;
+    for (const owner of owners) {
+      if (!owner || typeof owner.address !== 'bigint' || typeof owner.size !== 'bigint' || owner.size <= 0n) continue;
+      if (writable && !owner.perms?.write) continue;
+      const ownerEnd = owner.address + owner.size;
+      if (owner.address <= cursor && cursor < ownerEnd && ownerEnd > coveredTo) coveredTo = ownerEnd;
+    }
+    if (coveredTo === cursor) return false;
+    cursor = coveredTo;
+  }
+  return true;
+}
+
 export function parseTlsDirectory(r, dir, image, sharedBudget = null) {
   const need = image.bits === 64 ? 40 : 24;
   if (!dir || !dir.rva || dir.size < need) {
@@ -140,9 +163,66 @@ export function parseTlsDirectory(r, dir, image, sharedBudget = null) {
   }
 
   const budget = ensureBudget(image, sharedBudget);
+  const header = mappedFileSpanForRva(image, dir.rva, need);
+  const rawDataStart = header
+    ? (image.bits === 64 ? r.u64(header.start) : BigInt(r.u32(header.start)))
+    : 0n;
+  const rawDataEnd = header
+    ? (image.bits === 64 ? r.u64(header.start + 8) : BigInt(r.u32(header.start + 4)))
+    : 0n;
+  const addressOfIndex = header
+    ? (image.bits === 64 ? r.u64(header.start + 16) : BigInt(r.u32(header.start + 8)))
+    : 0n;
+
+  if (rawDataStart || rawDataEnd) {
+    if (!rawDataStart || !rawDataEnd || rawDataEnd < rawDataStart) {
+      budget.partial(
+        'tls:template-range-invalid',
+        `PE TLS raw-data template range 0x${rawDataStart.toString(16)}..0x${rawDataEnd.toString(16)} is invalid`,
+      );
+    } else if (rawDataEnd > rawDataStart) {
+      const span = rawDataEnd - rawDataStart;
+      if (span > BigInt(Number.MAX_SAFE_INTEGER)
+          || !loadedImageSpanForAddress(image, rawDataStart, Number(span))) {
+        budget.partial(
+          'tls:template-range-unmapped',
+          `PE TLS raw-data template 0x${rawDataStart.toString(16)}..0x${rawDataEnd.toString(16)} is not fully mapped in the loaded image`,
+        );
+      }
+    }
+  }
+
+  if (addressOfIndex) {
+    if (!loadedImageSpanForAddress(image, addressOfIndex, 1)) {
+      budget.partial(
+        'tls:index-target-unmapped',
+        `PE TLS AddressOfIndex 0x${addressOfIndex.toString(16)} is outside the loaded image`,
+      );
+    } else if (!loadedImageSpanForAddress(image, addressOfIndex, 4)) {
+      budget.partial(
+        'tls:index-target-span',
+        `PE TLS AddressOfIndex storage at 0x${addressOfIndex.toString(16)} crosses the loaded image`,
+      );
+    } else if (!loadedImageSpanForAddress(image, addressOfIndex, 4, { writable: true })) {
+      budget.partial(
+        'tls:index-target-non-writable',
+        `PE TLS AddressOfIndex storage at 0x${addressOfIndex.toString(16)} is not writable`,
+      );
+    }
+  }
+
+  const publishTlsAddresses = (result) => {
+    if (image.metadata?.tls) {
+      image.metadata.tls.startAddressOfRawData = rawDataStart || null;
+      image.metadata.tls.endAddressOfRawData = rawDataEnd || null;
+      image.metadata.tls.addressOfIndex = addressOfIndex || null;
+    }
+    return result;
+  };
+
   const sectionAt = image.sectionAt;
   if (typeof sectionAt !== 'function') {
-    return parseTlsDirectoryCore(r, dir, image, budget);
+    return publishTlsAddresses(parseTlsDirectoryCore(r, dir, image, budget));
   }
 
   // The core already decides whether a callback is publishable by asking
@@ -174,7 +254,7 @@ export function parseTlsDirectory(r, dir, image, sharedBudget = null) {
     return sec;
   };
 
-  return parseTlsDirectoryCore(r, dir, tlsImage, budget);
+  return publishTlsAddresses(parseTlsDirectoryCore(r, dir, tlsImage, budget));
 }
 
 function mappedCStringAtRva(r, image, rva, budget, label) {
