@@ -1,4 +1,4 @@
-import { DEV_EVENT_TYPES } from '../events/dev-events.js';
+import { DEV_WORKER_EVENT_TYPES } from '../events/dev-events.js';
 
 export const DEV_SUPERVISOR_PROTOCOL = 'hex-dev-supervisor-v1';
 export const DEV_SUPERVISOR_DECISION_TYPES = Object.freeze(['tool', 'human', 'wait', 'final']);
@@ -48,7 +48,7 @@ export function validateDevSupervisorDecision(value, { availableTools = null } =
     if (!events || events.length === 0 || events.some((event) => typeof event !== 'string' || !event.trim())) {
       throw new TypeError('wait.events must be a non-empty array of non-empty strings.');
     }
-    if (events.some((event) => !DEV_EVENT_TYPES.includes(event))) {
+    if (events.some((event) => !DEV_WORKER_EVENT_TYPES.includes(event))) {
       throw new TypeError('wait.events contains an unsupported Dev event.');
     }
     return freezeDecision({ type, events, reason: nonEmpty(value.reason, 'reason') });

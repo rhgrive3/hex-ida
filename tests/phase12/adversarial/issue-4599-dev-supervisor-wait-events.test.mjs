@@ -4,7 +4,7 @@ import {
   parseDevSupervisorDecision,
   validateDevSupervisorDecision,
 } from '../../../js/ai/dev/protocol/hex-dev-supervisor-v1.js';
-import { DEV_EVENT_TYPES } from '../../../js/ai/dev/events/dev-events.js';
+import { DEV_EVENT_TYPE, DEV_WORKER_EVENT_TYPES } from '../../../js/ai/dev/events/dev-events.js';
 import { DevSupervisorEngineV0 } from '../../../js/ai/dev/supervisor/dev-supervisor-engine-v0.js';
 import { DevSupervisorV0 } from '../../../js/ai/dev/supervisor/dev-supervisor-v0.js';
 import { DevAgentUiSettings } from '../../../js/ai/dev/ui/settings.js';
@@ -23,9 +23,19 @@ assert.throws(
   '#4599: parsed model output must enforce the same non-empty wait contract',
 );
 
-for (const event of DEV_EVENT_TYPES) {
+for (const event of DEV_WORKER_EVENT_TYPES) {
   assert.deepEqual(validateDevSupervisorDecision(waitDecision([event])).events, [event]);
 }
+assert.throws(
+  () => validateDevSupervisorDecision(waitDecision([DEV_EVENT_TYPE.HUMAN_RESPONDED])),
+  /unsupported Dev event/,
+  '#4599: human responses use the human/resumeHuman path and must never enter Worker wait transport',
+);
+assert.throws(
+  () => parseDevSupervisorDecision(JSON.stringify(waitDecision([DEV_EVENT_TYPE.HUMAN_RESPONDED]))),
+  /unsupported Dev event/,
+  '#4599: parsed model output must reject human.responded as a Worker wait event',
+);
 for (const events of [new Array(1), ['worker.typo'], [' worker.completed '], [''], ['   '], [null], [1]]) {
   assert.throws(() => validateDevSupervisorDecision(waitDecision(events)), TypeError);
 }
@@ -47,7 +57,7 @@ const workerClient = {
   release: noop,
   waitEvent: async () => {
     waitEventCalls += 1;
-    throw new Error('empty wait reached worker transport');
+    throw new Error('invalid wait reached worker transport');
   },
 };
 const supervisor = new DevSupervisorV0({
@@ -60,7 +70,7 @@ settings.setAgentProfile(AGENT_PROFILE.DEV);
 const bridge = Object.freeze({
   request: async () => {
     modelCalls += 1;
-    if (modelCalls === 1) return { text: JSON.stringify(waitDecision([])) };
+    if (modelCalls === 1) return { text: JSON.stringify(waitDecision([DEV_EVENT_TYPE.HUMAN_RESPONDED])) };
     return {
       text: JSON.stringify({
         type: 'final',
@@ -74,7 +84,7 @@ const bridge = Object.freeze({
 const engine = new DevSupervisorEngineV0({ supervisor, settings, bridge, maxDecisions: 2 });
 const result = await engine.run({ goal: 'verify wait validation', conversationId: 'issue-4599' });
 assert.equal(modelCalls, 2, '#4599: invalid wait should consume a decision and recover through re-plan');
-assert.equal(waitEventCalls, 0, '#4599: invalid empty wait must never reach the worker event transport');
+assert.equal(waitEventCalls, 0, '#4599: human.responded wait must fail before the worker event transport');
 assert.match(result.text ?? result.answer ?? '', /recovered after invalid wait/);
 assert.notEqual(settings.lastRun?.status, 'FAILED');
 
