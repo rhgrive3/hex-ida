@@ -747,6 +747,66 @@ test('canonical query identity rejects reused hashes after content and identity 
   assert.deepEqual(posted, []);
 });
 
+test('tiered worker ignores noncanonical response request IDs without consuming the pending query', async () => {
+  class ManualWorker {
+    constructor() {
+      this.listeners = new Map();
+      this.messages = [];
+    }
+
+    addEventListener(type, listener) {
+      if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+      this.listeners.get(type).add(listener);
+    }
+
+    removeEventListener(type, listener) {
+      this.listeners.get(type)?.delete(listener);
+    }
+
+    dispatch(data) {
+      for (const listener of this.listeners.get('message') || []) listener({ data });
+    }
+
+    postMessage(message) {
+      this.messages.push(message);
+    }
+
+    terminate() {}
+  }
+
+  const worker = new ManualWorker();
+  const backend = new WorkerSolverBackend({ workerFactory: () => worker });
+  const session = backend.createSession();
+  const candidate = query(createBool(true));
+  const pending = session.check(candidate);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const request = worker.messages.find((message) => message.type === 'solver-check');
+  assert.equal(request?.requestId, '1');
+
+  const result = createSolverResult({
+    status: SOLVER_STATUS.UNSAT,
+    backend: backend.id,
+    backendVersion: backend.version,
+    queryHash: candidate.queryHash,
+  });
+  worker.dispatch({
+    type: 'solver-result',
+    requestId: [request.requestId],
+    token: request.token,
+    result,
+  });
+  assert.equal(session.pending.has(request.requestId), true);
+
+  worker.dispatch({
+    type: 'solver-result',
+    requestId: request.requestId,
+    token: request.token,
+    result,
+  });
+  assert.equal((await pending).status, SOLVER_STATUS.UNSAT);
+  await session.dispose();
+});
+
 test('expression traversal is iterative, call-local, and stops at node authority', async () => {
   let deep = createBool(true);
   for (let index = 0; index < 512; index++) deep = createConnective(BOOL_CONNECTIVE_OP.NOT, deep);

@@ -23,7 +23,20 @@ import { stableDigest } from '../../core/identity/index.js';
 
 import { ANALYSIS_KEYS, PHASE8_CONTRACT_VERSION, snapshotCanonicalPassResult, createPassResult } from './contract.js';
 import { rewritePolicyFailure } from './rewrite-registry.js';
-import { DCE_PASS, runDcePass } from './dce.js';
+// DCE registers after module initialization, avoiding a transaction/DCE import
+// cycle while preserving the exact descriptor and runner identities.
+let canonicalDceRunner = null;
+let canonicalDceDescriptor = null;
+export function registerDcePassRunner(runner, descriptor) {
+  if (typeof runner !== 'function' || descriptor?.id !== 'phase8.dce') {
+    throw new TypeError('phase8-dce-runner-invalid');
+  }
+  if (canonicalDceRunner != null && (canonicalDceRunner !== runner || canonicalDceDescriptor !== descriptor)) {
+    throw new TypeError('phase8-dce-runner-already-registered');
+  }
+  canonicalDceRunner = runner;
+  canonicalDceDescriptor = descriptor;
+}
 
 // The proof producer binds its private capabilities after this dependency-free
 // transaction module has initialized. Keeping this API injectable avoids a
@@ -342,7 +355,7 @@ function runPassTransactionCore(state, pass, context = {}, budget = {}) {
   for (const key of invalidated) if (mutators.drop(key)) actuallyInvalidated.push(key);
   for (const [key, value] of stagedWrites) mutators.write(key, value);
   if (stagedWrites.has('deadCode')) {
-    if (descriptor === DCE_PASS && (pass.originalRun ?? pass.run) === runDcePass) COMMITTED_DCE_ARTIFACTS.set(state, stagedWrites.get('deadCode'));
+    if (descriptor === canonicalDceDescriptor && (pass.originalRun ?? pass.run) === canonicalDceRunner) COMMITTED_DCE_ARTIFACTS.set(state, stagedWrites.get('deadCode'));
     else COMMITTED_DCE_ARTIFACTS.delete(state);
   } else if (actuallyInvalidated.includes('deadCode')) COMMITTED_DCE_ARTIFACTS.delete(state);
   if (stagedWrites.has('provedRewrites')) {

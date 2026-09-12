@@ -23,7 +23,7 @@
 
 import { createPassDescriptor, createPassResult } from './contract.js';
 import { captureProjectionIrData, captureRecoveryIrData, PROJECTION_LIMITS } from './projection-origin.js';
-import { committedDceArtifact } from './transaction.js';
+import { committedDceArtifact, registerDcePassRunner } from './transaction.js';
 
 const DCE_OBSERVATIONS = new WeakMap();
 
@@ -257,3 +257,5 @@ export function runDcePass(context = {}, budget = {}, area = null) {
     invalidated: [],
   });
 }
+
+registerDcePassRunner(runDcePass, DCE_PASS);

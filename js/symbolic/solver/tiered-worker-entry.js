@@ -7,6 +7,7 @@
 import { TieredBvBackend } from './tiered-backend.js';
 import { TIERED_WORKER_BACKEND_ID, TIERED_WORKER_BACKEND_VERSION } from './tiered-worker-backend.js';
 import { solverResultToTransport } from './result.js';
+import { isCanonicalRequestId } from './worker-protocol.js';
 
 const backend = new TieredBvBackend({
   id: TIERED_WORKER_BACKEND_ID,
@@ -20,7 +21,7 @@ self.onmessage = async (event) => {
     await session.cancel();
     return;
   }
-  if (message.type !== 'solver-check') return;
+  if (message.type !== 'solver-check' || !isCanonicalRequestId(message.requestId)) return;
   const result = await session.check(message.query, { ...(message.options || {}), timeoutMs: 0 });
-  self.postMessage({ type: 'solver-result', requestId: String(message.requestId), token: message.token, result: solverResultToTransport(result) });
+  self.postMessage({ type: 'solver-result', requestId: message.requestId, token: message.token, result: solverResultToTransport(result) });
 };

@@ -699,15 +699,17 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     reverseObject[key] = Object.freeze([...reverse.get(key)].sort((left, right) => left.localeCompare(right, 'en')));
   }
 
-  const publishRecord = (record, recordIndex, entityRefs) => Object.freeze({
+  const publishRecord = (record, recordIndex, entityRefs) => {
+    const typedOrigin = sourceOf(record.origin);
+    return Object.freeze({
     ...record,
     ...(record.originHistory ? { renderedBinding:entityRefs.size ? 'producer-bound' : 'unresolved' } : {}),
     origin:Object.freeze({
-      addresses:Object.freeze(canonicalLedgerAddresses(sourceOf(record.origin).addresses)),
-      rows:Object.freeze(canonicalList(record.origin.rows, true)),
-      ir:Object.freeze(canonicalList(record.origin.ir, false)),
-      ssaDefs:Object.freeze(canonicalList(record.origin.ssaDefs, false)),
-      ssaUses:Object.freeze(canonicalList(record.origin.ssaUses, false)),
+      addresses:Object.freeze(canonicalLedgerAddresses(typedOrigin.addresses)),
+      rows:Object.freeze(canonicalList(typedOrigin.rows, true)),
+      ir:Object.freeze(canonicalList(typedOrigin.ir, false)),
+      ssaDefs:Object.freeze(canonicalList(typedOrigin.ssaDefs, false)),
+      ssaUses:Object.freeze(canonicalList(typedOrigin.ssaUses, false)),
     }),
     producedRefs:Object.freeze([...entityRefs].sort((left, right) => left.localeCompare(right, 'en'))),
     // Transform-local render tombstones never identify a current line or a
@@ -715,7 +717,8 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     removedRefs:Object.freeze(record.renderedRemoval && entityRefs.size
       ? [`before:${recordIndex}:L${record.renderedRemoval.lineIndex}:${record.renderedRemoval.kind}`] : []),
     version:RENDER_PROVENANCE_VERSION,
-  });
+    });
+  };
   const ledger = ledgerRecords.map((record, recordIndex) => publishRecord(record.kind === 'state-consumer-group'
     ? { ...record, consumerWitnesses:Object.freeze(record.consumerWitnesses.map(witness =>
       publishRecord(witness, recordIndex, entityRefsByWitness.get(witness)))) } : record,

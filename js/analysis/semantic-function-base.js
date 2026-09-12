@@ -1200,9 +1200,9 @@ export function decompilerSnapshot(result) {
   };
 }
 
-export function decompileSemanticProjection(model, options) {
+export function decompileSemanticProjection(model, options = {}) {
   const result = decompileSemantic(model, options);
-  return result ? enhanceSemanticDecompilation(result, model, { ...options, renderProvenance:true }) : result;
+  return result ? enhanceSemanticDecompilation(result, model, { ...options, renderProvenance:options.renderProvenance ?? true }) : result;
 }
 
 function addressWidthBitsFor(architecturePlugin) {

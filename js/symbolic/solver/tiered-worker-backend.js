@@ -12,6 +12,7 @@ import { validateExactModelBindings } from './model-boundary.js';
 import { SOLVER_STATUS, createSolverResult, isValidSolverResult } from './result.js';
 import { SolverSession } from './session.js';
 import { TieredBvBackend, classifyTieredQuery } from './tiered-backend.js';
+import { isCanonicalRequestId } from './worker-protocol.js';
 
 export const TIERED_WORKER_BACKEND_ID = 'hex-tiered-qfbv-worker';
 export const TIERED_WORKER_BACKEND_VERSION = '1.0.0';
@@ -45,9 +46,10 @@ class WorkerSolverSession extends SolverSession {
     const onMessage = (event) => {
       const message = event?.data ?? event;
       if (!message || message.type !== 'solver-result') return;
-      const pending = this.pending.get(String(message.requestId));
+      if (!isCanonicalRequestId(message.requestId)) return;
+      const pending = this.pending.get(message.requestId);
       if (!pending) return;
-      this.pending.delete(String(message.requestId));
+      this.pending.delete(message.requestId);
       if (message.token !== pending.token || !isValidSolverResult(message.result, {
         query: { queryHash: pending.queryHash },
         backend: this.backend,

@@ -1,5 +1,63 @@
 # Analysis roadmap v8 integration checkpoint
 
+## 2026-09-12: 結合状況と並行作業の開始点
+
+**作業ブランチは PR #7036 の `feat/analysis-roadmap-v8-current-main-20260907`。解析 md 全体は未完了です。**
+この更新は並行開発用のソース結合です。統合受入・release は **CHECKPOINT-LOCKED** のままです。
+下の過去ログより、この節の状態を優先してください。
+
+結合した入力:
+
+- リモート #7036: `be11407297fe06eebd6b62539eb59019328c872e` と追加修正 `4d1963e939d1e04b68fd1f5e1d6c1340592231fa`。
+- SYM-01: `rescue/sym01-current-main-20260912` / `6fd7af50e7f12789ce11d975665c334716c4a110`。
+- X-03: `rescue/x03-current-main-20260912` / `d31e54024c9d8a6aa22b77b638f0c309e97dac0c`。
+- main の結合基点: `784ae9b9ca2fc47d56f13d0561c49daf30a9fa11`。以後の moving-main 照合は統合担当が継続します。
+
+SYM は既定を bounded 32/64-bit tiered solver にし、明示的な exhaustive 選択と既存の専用 worker を保持しました。
+X-03 は既存 discovery layout を保持し、曖昧さを持つ artifact を再構成・再 parse 検証へ接続しました。
+#7097 の X-03 は同名 schema でも別実装です。今回の入力に重ねて取り込まないでください。
+
+### ユーザー側で始める作業
+
+それぞれの作業ディレクトリで `git fetch origin` を行い、下記の同じ開始ブランチから分岐してください。
+開始時の `git rev-parse HEAD` を各作業の記録に残してください。
+
+```sh
+# C1 用
+ git switch -c work/c1-acceptance-20260912 origin/feat/analysis-roadmap-v8-current-main-20260907
+# C3 用（別の作業ディレクトリ）
+ git switch -c work/c3-acceptance-20260912 origin/feat/analysis-roadmap-v8-current-main-20260907
+```
+
+| 担当 | 最初に進めること | 変更を分ける場所 |
+|---|---|---|
+| ユーザー C1 | C1-01/02/03 の受入行列を、既存 loaded-pointer・return-summary・root identity 実装で埋める。完全な store/summary の成功と、不完全・stale・alias 不明・副作用ありの unknown を対にして記録する | `tests/phase7/pointsto/c1-combined-acceptance.test.mjs`、`tests/phase7/summary/c1-combined-acceptance.test.mjs`、`docs/analysis-c1-acceptance.md` |
+| ユーザー C3 | まず C3-02 の ABI profile × aggregate/varargs 行列を閉じる。HFA/HVA、small struct、split return、sret、可変引数を既存 profile 実装で検証し、未対応行を明示する。C3-01 の再帰型も既存 graph の成功/矛盾/unknown を照合する | `tests/phase8/abi/c3-combined-acceptance.test.mjs`、`tests/phase7/types/c3-combined-acceptance.test.mjs`、`docs/analysis-c3-acceptance.md` |
+| こちら | ME の独立参照比較・入力縮小と C4 の証明付き変換、共有コードの結合、生成物・CI・統合検証 | `tools/validation/machine-effects/`、`js/decompiler/`、`js/symbolic/`、共有 semantic/compat と統合用ファイル |
+
+C1/C3 は基盤の新規作成から始める状態ではありません。受入行列の各行に、入力・期待結果・既存テスト・実測結果・不足を残してください。
+既存 issue 修正と衝突しないよう、最初の作業は上記の新しい検証ファイルに分けます。
+不足が既存 PR の修正対象なら、その PR の結果を再利用し、同じ修正を別実装しないでください。
+共有の alias/MemorySSA、semantic-function、compat、runner/ownership/CI/generated は統合担当が扱います。
+
+照合が必要な既存 PR の例（確認時点）: C1 は #8073/#8321/#8323、summary digest は #8355/#8361。
+C3 は #7636/#8147/#8136/#8319、ABI は #7880/#7892。タイトルだけで完了扱いせず、着手する行の実差分を確認してください。
+SYM-01/X-03 の再実装は割り当てません。C3 metadata と X-02 の広い追加実装は、上の ABI/type 作業とは別に既存 PR の担当を照合してから進めます。
+
+### 検証状況
+
+- SYM 結合選択テスト: 66 件中 64 件通過。残り 2 件の入力形式・診断分類を現契約に合わせ、該当再検査は通過。全体の再実行は受入前に必要です。
+- ワーカー個別検証: 52 件通過。既定 tiered worker の要求 ID 確認を追加し、その回帰検査も通過。
+- X-03 の追加 2 ファイルと既存 layout 復元テスト: 結合状態で通過。
+- 所有範囲・CI route、共有 scoped-owner/ABI、proof admission の選択検査: 通過した記録あり。これを全体 gate の代わりにはしません。
+- 追加リモート修正後の Phase 8 検査を継続中。DCE の全 135 関数検査と native provenance の結果は未確定です。
+- 以前の `714bbc56` に対する `npm run check` は MachineEffects の 13 テストファイルで失敗。WebKit の `libxslt.so.1` 不足も含み、すべてを環境原因とは分類していません。
+- 結合後の full check、Phase 8/9、独立 shadow の確定結果が揃うまで CHECKPOINT-LOCKED を解除しません。実機・環境整備・別 issue 修正は今回の担当外です。
+
+生成物は結合ソースから canonical build で再生成し、再 build の差分を確認します。最終 push の SHA と生成 ID は後続の記録で固定します。
+
+---
+
 Status: IN PROGRESS. This checkpoint does not close the research roadmap or
 claim superiority over IDA/Ghidra. The original 23 findings and all acceptance
 requirements in `docs/解析ツール改善.md.txt` remain the objective.
