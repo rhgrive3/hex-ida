@@ -14,7 +14,25 @@ export const MAX_SANDBOX_STEPS = 1000000;
 // backing limit (see setup below) and the adapter-layer maximum.
 export const MAX_SANDBOX_OBJECT_SIZE = 16 * 1024 * 1024;
 
-function asBig(v) { return typeof v === 'bigint' ? v : BigInt(v || 0); }
+const STRICT_INTEGER_TEXT = /^[+-]?(?:0[xX][0-9a-fA-F]+|[0-9]+)$/;
+function asBig(v, label = 'sandbox integer') {
+  if (typeof v === 'bigint') return v;
+  if (typeof v === 'number' && Number.isSafeInteger(v)) return BigInt(v);
+  if (typeof v === 'string' && STRICT_INTEGER_TEXT.test(v)) return BigInt(v);
+  throw new TypeError(`${label} must be a bigint, safe integer, or strict integer string`);
+}
+function asBigOrZero(v, label) { return v == null ? 0n : asBig(v, label); }
+function asMachineWord64(v, label = 'sandbox integer') { return BigInt.asUintN(64, asBig(v, label)); }
+function asMachineValue(v, size, label = 'sandbox memory value') {
+  return BigInt.asUintN(Number(BigInt(size)) * 8, asBig(v, label));
+}
+function strictByteSize(v, label = 'sandbox size') {
+  const size = v == null ? 8 : v;
+  if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 1) {
+    throw new TypeError(`${label} must be a positive safe integer`);
+  }
+  return size;
+}
 
 function boundedStepBudget(value) {
   if (value == null) return DEFAULT_SANDBOX_STEPS;
@@ -38,22 +56,31 @@ function normalizeWatch(watch, objectBase) {
   const list = Array.isArray(watch) ? watch : [];
   for (const w of list) {
     if (!w) continue;
-    const size = Math.max(1, Number(w.size || 8));
-    const addr = w.address != null ? asBig(w.address) : objectBase + asBig(w.offset || 0);
+    const size = strictByteSize(w.size, 'watch size');
+    const addr = w.address != null ? asBig(w.address, 'watch address') : objectBase + asBigOrZero(w.offset, 'watch offset');
     out.push({ name: w.name || null, address: addr, offset: addr - objectBase, size });
   }
   return out;
 }
 
-function watchesFromOptions(o, objectBase) {
+function watchesFromOptions(o, objectBase, canonicalObjectMemory = null) {
   if (Array.isArray(o.watch)) return normalizeWatch(o.watch, objectBase);
-  if (Array.isArray(o.objectMemory)) return normalizeWatch(o.objectMemory, objectBase);
+  if (Array.isArray(o.objectMemory)) {
+    if (canonicalObjectMemory && canonicalObjectMemory.length > 0) {
+      return canonicalObjectMemory.map((m) => ({
+        name:null, address:objectBase + BigInt(m.offset), offset:BigInt(m.offset), size:m.size,
+      }));
+    }
+    return normalizeWatch(o.objectMemory, objectBase);
+  }
   if (o.objectMemory && typeof o.objectMemory === 'object') {
+    if (canonicalObjectMemory && canonicalObjectMemory.length > 0) {
+      return canonicalObjectMemory.map((m) => ({
+        name:null, address:objectBase + BigInt(m.offset), offset:BigInt(m.offset), size:m.size,
+      }));
+    }
     return Object.keys(o.objectMemory).map((offset) => ({
-      name: null,
-      address: objectBase + BigInt(offset),
-      offset: BigInt(offset),
-      size: 8,
+      name:null, address:objectBase + BigInt(offset), offset:BigInt(offset), size:8,
     }));
   }
   return [];
@@ -145,7 +172,7 @@ export class FunctionSandbox {
       }
     };
     throwIfCancelled();
-    const args = (o.args || []).map(asBig);
+    const args = (o.args || []).map((v) => v == null ? 0n : asBig(v, 'argument'));
     const objectBase = o.objectBase != null ? asBig(o.objectBase) : this.objectBase;
     this.objectBase = objectBase;
     if (o.objectAsArg0 !== false && args.length === 0) args.push(objectBase);
@@ -170,59 +197,68 @@ export class FunctionSandbox {
       remaining -= chunkSize;
     }
     throwIfCancelled();
-    this.emulator.setup(asBig(address), args);
+    const machineAddress = asMachineWord64(address, 'address');
+    const machineArgs = args.map((v) => BigInt.asUintN(64, v));
+    this.emulator.setup(machineAddress, machineArgs);
 
-    for (const [reg, value] of Object.entries(o.registers || {})) this.emulator.set(reg, asBig(value));
+    this.canonicalInput = {
+      address:machineAddress.toString(),
+      objectBase:objectBase.toString(),
+      args:machineArgs.map((v) => v.toString()),
+      registers:{}, objectMemory:[], stackMemory:[], watch:[], breakpoints:[],
+    };
+    for (const [reg, value] of Object.entries(o.registers || {})) {
+      const canonicalRegister = asMachineWord64(value, 'register value');
+      this.emulator.set(reg, canonicalRegister);
+      this.canonicalInput.registers[reg] = canonicalRegister.toString();
+    }
 
     if (Array.isArray(o.objectMemory)) {
       for (const item of o.objectMemory) {
         throwIfCancelled();
         if (!item) continue;
-        const itemOffset = asBig(item.offset || 0);
-        // itemSize authority (#5318): only an omitted size defaults to 8; an
-        // explicit size must be a primitive positive safe integer, otherwise
-        // numeric-string/fractional coercion or a 0/negative value could
-        // rewrite or bypass the object-region bounds arithmetic.
-        let itemSize = 8;
-        if (item.size !== undefined && item.size !== null) {
-          if (typeof item.size !== 'number' || !Number.isSafeInteger(item.size) || item.size <= 0) {
-            throw new TypeError(`objectMemory size must be a positive safe integer, got ${String(item.size)}`);
-          }
-          itemSize = item.size;
+        const canonicalOffset = asBigOrZero(item.offset, 'objectMemory offset');
+        const canonicalSize = strictByteSize(item.size, 'objectMemory size');
+        if (canonicalOffset < 0n || canonicalOffset + BigInt(canonicalSize) > BigInt(this.maxObjectSize)) {
+          throw new RangeError(`objectMemory offset ${canonicalOffset} (+${canonicalSize}) is outside the sandbox object region (maxObjectSize=${this.maxObjectSize})`);
         }
-        // objectMemory initializers are bounded by the same object region that
-        // mapZero/modifiedRanges use: an offset beyond maxObjectSize must not
-        // fall through into the synthetic heap backing (#5318).
-        if (itemOffset < 0n || itemOffset + BigInt(itemSize) > BigInt(this.maxObjectSize)) {
-          throw new RangeError(`objectMemory offset ${itemOffset} (+${itemSize}) is outside the sandbox object region (maxObjectSize=${this.maxObjectSize})`);
-        }
-        await this.emulator.store(objectBase + itemOffset, itemSize, asBig(item.value));
+        const canonicalValue = asMachineValue(item.value, canonicalSize, 'objectMemory value');
+        await this.emulator.store(objectBase + canonicalOffset, canonicalSize, canonicalValue);
+        this.canonicalInput.objectMemory.push({ offset:canonicalOffset.toString(), size:canonicalSize, value:canonicalValue.toString() });
       }
     } else if (o.objectMemory && typeof o.objectMemory === 'object') {
       for (const [offset, value] of Object.entries(o.objectMemory)) {
         throwIfCancelled();
-        // objectMemory initializers are bounded by the same object region that
-        // mapZero/modifiedRanges use: an offset beyond maxObjectSize must not
-        // fall through into the synthetic heap backing (#5318).
-        const itemOffset = asBig(offset);
-        const itemSize = 8;
-        if (itemOffset < 0n || itemOffset + BigInt(itemSize) > BigInt(this.maxObjectSize)) {
-          throw new RangeError(`objectMemory offset ${itemOffset} (+${itemSize}) is outside the sandbox object region (maxObjectSize=${this.maxObjectSize})`);
+        if (typeof offset !== 'string' || !STRICT_INTEGER_TEXT.test(offset)) {
+          throw new TypeError('objectMemory offset key must be a strict integer string');
         }
-        await this.emulator.store(objectBase + itemOffset, itemSize, asBig(value));
+        const canonicalOffset = BigInt(offset);
+        if (canonicalOffset < 0n || canonicalOffset + 8n > BigInt(this.maxObjectSize)) {
+          throw new RangeError(`objectMemory offset ${canonicalOffset} (+8) is outside the sandbox object region (maxObjectSize=${this.maxObjectSize})`);
+        }
+        const canonicalValue = asMachineValue(value, 8, 'objectMemory value');
+        await this.emulator.store(objectBase + canonicalOffset, 8, canonicalValue);
+        this.canonicalInput.objectMemory.push({ offset:canonicalOffset.toString(), size:8, value:canonicalValue.toString() });
       }
     }
 
     for (const item of o.stackMemory || []) {
       throwIfCancelled();
       if (!item) continue;
-      await this.emulator.store(this.emulator.sp + asBig(item.offset || 0), Number(item.size || 8), asBig(item.value));
+      const canonicalOffset = asBigOrZero(item.offset, 'stackMemory offset');
+      const canonicalSize = strictByteSize(item.size, 'stackMemory size');
+      const canonicalValue = asMachineValue(item.value, canonicalSize, 'stackMemory value');
+      await this.emulator.store(this.emulator.sp + canonicalOffset, canonicalSize, canonicalValue);
+      this.canonicalInput.stackMemory.push({ offset:canonicalOffset.toString(), size:canonicalSize, value:canonicalValue.toString() });
+    }
+    for (const bp of o.breakpoints || []) {
+      const canonicalBreakpoint = asBig(bp, 'breakpoint address').toString();
+      this.emulator.breakpoints.add(canonicalBreakpoint);
+      this.canonicalInput.breakpoints.push(canonicalBreakpoint);
     }
     throwIfCancelled();
-    for (const bp of o.breakpoints || []) this.emulator.breakpoints.add(asBig(bp).toString());
-
-    throwIfCancelled();
-    this.watch = watchesFromOptions(o, objectBase);
+    this.watch = watchesFromOptions(o, objectBase, this.canonicalInput.objectMemory);
+    this.canonicalInput.watch = this.watch.map((w) => ({ name:w.name || null, address:w.address.toString(), offset:w.offset.toString(), size:w.size }));
     this.before = await snapshot(this.emulator, this.watch);
     this.beforeObjectBytes = sparseObjectBytes(this.emulator, objectBase, this.maxObjectSize);
     return this.state();
@@ -238,10 +274,10 @@ export class FunctionSandbox {
     };
   }
 
-  setRegister(reg, value) { this.emulator.set(reg, asBig(value)); }
+  setRegister(reg, value) { this.emulator.set(reg, asBig(value, 'register value')); }
   getRegister(reg) { return this.emulator.get(reg); }
-  addBreakpoint(address) { this.emulator.breakpoints.add(asBig(address).toString()); }
-  removeBreakpoint(address) { this.emulator.breakpoints.delete(asBig(address).toString()); }
+  addBreakpoint(address) { this.emulator.breakpoints.add(asBig(address, 'breakpoint address').toString()); }
+  removeBreakpoint(address) { this.emulator.breakpoints.delete(asBig(address, 'breakpoint address').toString()); }
 
   async step() { return this.emulator.step(); }
 
