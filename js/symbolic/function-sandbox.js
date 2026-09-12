@@ -248,7 +248,8 @@ export class FunctionSandbox {
   async run(opts) {
     const o = opts || {};
     const maxSteps = boundedStepBudget(o.maxSteps);
-    const result = await this.emulator.run(maxSteps, o.onProgress);
+    const signal = o.signal == null ? null : o.signal;
+    const result = await this.emulator.run(maxSteps, o.onProgress, { signal });
     const after = await snapshot(this.emulator, this.watch);
     const beforeBy = new Map(this.before.map((x) => [x.address.toString() + ':' + x.size, x]));
     const touchedFields = [];
