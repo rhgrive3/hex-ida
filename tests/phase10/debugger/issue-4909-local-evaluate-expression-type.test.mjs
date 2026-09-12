@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { LocalFunctionSandboxAdapter } from '../js/adapters/index.js';
-import { DebugAdapterError } from '../js/debug/adapter.js';
+import { LocalFunctionSandboxAdapter } from '../../../js/adapters/index.js';
+import { DebugAdapterError } from '../../../js/debug/adapter.js';
 
 function localHarness() {
   const registers = new Map([
