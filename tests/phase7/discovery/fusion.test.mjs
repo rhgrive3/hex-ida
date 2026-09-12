@@ -63,7 +63,8 @@ test('a non-contiguous function stays one function with two ranges', () => {
   assert.deepEqual(starts, [0x5000n], 'a continuation range must not become a second function');
   const candidate = at(candidates, 0x5000);
   assert.equal(candidate.regions.length, 2);
-  assert.equal(candidate.extentState, 'exact');
+  assert.equal(candidate.extentState, 'unknown', 'an authoritative partial union has no complete claim, so the whole extent stays unknown (#5138)');
+  assert.equal(hasKnownExtent(candidate), false);
 });
 
 test('a tail-call target is not swallowed by its caller extent', () => {
