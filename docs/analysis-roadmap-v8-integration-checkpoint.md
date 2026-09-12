@@ -7074,3 +7074,43 @@ independent review and remote publication receipts are retained under persistent
 `agent-work/evidence/analysis-roadmap-20260909/c4-decoded-cfg-20260913` and sibling gate logs.
 This is a structural handoff increment. FR-C4-02A/04B, the complete production proof route,
 full analysis-roadmap acceptance and **CHECKPOINT-LOCKED** remain open.
+
+## C4 canonical PHI use-list execution handoff (2026-09-13)
+
+Starting source is `6890e700b6b474c6d2c37b21a3d4dbeafc4cac24` on PR #7036.
+The actual canonical SSA producer already emits `args` as an ordered echo of
+`incoming` values and records their uses. The byte execution contract now accepts
+that shape while preserving legacy PHIs with no operand list. Populated operands
+must reference the exact incoming value objects, in order, with matching optional
+widths and no modifiers or extra fields. Dense ordinary arrays are required.
+Predecessor coverage, definition identity and existing value-width checks remain
+mandatory. Execution still selects only the actual predecessor and commits loop
+PHI destinations together; no unselected definition is evaluated eagerly.
+
+Regression tests exercise both branches, loop entry/backedges and memory/taint
+results, as well as contradictory identities, widths, modifiers and sparse lists.
+Two additional regressions reproduced stale execution authority after an operand
+key was added, including from the final lifecycle callback. Execution capture now
+observes argument/array own-key inventories (including symbols and non-enumerable
+keys) and checks the captured contract after the final budget callback. Active
+comparison work is reserved up front. JavaScript's intrinsic `Reflect.ownKeys`
+allocation itself cannot be capped before enumeration; the retained key inventory
+is charged, and changed cardinality is refused before element comparison. This is
+an explicit resource limitation, not a hard bound on hostile object enumeration.
+No serialized snapshot schema, canonical producer or alternate PHI engine changes.
+
+The existing production parsed-row test now passes direct execution-contract
+validation with its original populated PHIs. Its next observed refusal is
+`unknown-semantic:scalar-input-width-mismatch` at `UN is-zero`, whose input is
+BV32 and destination is Bool1; truncation/zero-extension casts are already valid.
+The public query still retains the original IR/view and adopts nothing. Canonical
+Bool predicate lowering, subsequent state/flags bindings and complete production
+region proof remain pending; the new refusal is not feature completion.
+
+Before publication, the 16-file execution/snapshot/lifecycle/conditional-region
+regression command passed. Failing pre-fix receipts remain retained. Exact-head
+rerun, generated rebuild, ownership, lint, module boundaries and independent review
+are recorded under persistent `agent-work/evidence/analysis-roadmap-20260909`, in
+the `c4-phi-handoff-20260913` inventory and sibling `c4-phi-*` gate receipts.
+The ZIP recheck again found no new user delta. The user C1 recursive-return lane
+remains reserved. Full roadmap acceptance and **CHECKPOINT-LOCKED** remain open.

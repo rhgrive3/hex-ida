@@ -50,6 +50,10 @@ function captureContract(ir,memory) {
     const keys=arrayMode ? null : Object.keys(SHAPES[mode]);
     const size=arrayMode?object.length:keys.length;
     memory.chargeExecution(size+1,size+1);
+    // PHI operands have a closed use-list contract. Remember additions too,
+    // including non-enumerable and symbol keys, without evaluating accessors.
+    const ownKeys=mode==='argument' || mode==='args' ? Reflect.ownKeys(object) : null;
+    if(ownKeys) memory.chargeExecution(ownKeys.length,ownKeys.length);
     if(!seen.has(object)) seen.set(object,new Set());seen.get(object).add(mode);
     const entries=[];
     for(let i=0;i<size;i++) {
@@ -59,14 +63,18 @@ function captureContract(ir,memory) {
       const childMode=arrayMode?ARRAYS[mode]:SHAPES[mode][key];
       if(childMode && value.value!=null && typeof value.value==='object') pending.push([value.value,childMode]);
     }
-    records.push({object,proto,entries,length:arrayMode?size:null});
+    records.push({object,proto,entries,ownKeys,length:arrayMode?size:null});
   }
   // The number of comparisons is fixed and was charged before capture. Accesses
   // cannot become an unbounded traversal when a caller replaces a subtree.
-  const work=records.reduce((sum,record)=>sum+record.entries.length+1,0);
+  const work=records.reduce((sum,record)=>sum+record.entries.length+(record.ownKeys?.length ?? 0)+1,0);
   return {work,check:() => {
     for(const record of records) {
       if(Object.getPrototypeOf(record.object)!==record.proto || record.length!=null && record.object.length!==record.length) throw new QueryFailure('stale-ir');
+      if(record.ownKeys) {
+        const current=Reflect.ownKeys(record.object);
+        if(current.length!==record.ownKeys.length || current.some((key,index)=>key!==record.ownKeys[index])) throw new QueryFailure('stale-ir');
+      }
       for(const [key,before] of record.entries) {
         const after=property(record.object,key);
         if(before.present!==after.present || !Object.is(before.value,after.value)) throw new QueryFailure('stale-ir');
@@ -90,7 +98,14 @@ export function createExecutionCapture(ir,memory,options={}) {
     contract.check();
     if(signal?.aborted) throw new QueryFailure('cancelled');
   };
-  const checkActive=()=>{memory.chargeExecution(contract.work);check();memory.chargeExecution(0);};
+  const checkActive=()=>{
+    memory.chargeExecution(contract.work*2);
+    check();
+    memory.chargeExecution(0);
+    // The final budget check also invokes lifecycle callbacks. Nothing may
+    // change execution inputs between their last invocation and publication.
+    contract.check();
+  };
   return Object.freeze({
     check:checkActive,
     publish(result) { checkActive();executions.set(result,{ir,check});return result; },

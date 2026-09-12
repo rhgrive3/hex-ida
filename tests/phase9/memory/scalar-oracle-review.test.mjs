@@ -74,9 +74,10 @@ test('independent casts and unary oracle covers all small values plus 32/64-bit 
   assert.equal(count,622);
 });
 test('loop-carried PHIs execute every iteration and final memory/taint retain the correct path',()=>{
-  for(const start of [0n,1n,2n]) {
+  for(const echoArgs of [false,true]) for(const start of [0n,1n,2n]) {
     const input={id:'driver',kind:'arg',index:0,reg:'x0',bits:8},n={id:'n',bits:8},next={id:'next',bits:8};
     const phi={id:'phi',op:OP.PHI,args:[],incoming:[{from:-1,value:input},{from:1,value:next}],dst:n};n.def=phi;
+    if(echoArgs) phi.args=phi.incoming.map(({value})=>({value,bits:value.bits}));
     const store={id:'store',op:OP.STORE,args:[{value:n}],loc:{kind:MK.GLOBAL,address:0n,size:1},row:0,address:0n};
     const branch={id:'test',op:OP.CBR,args:[{value:n}],extra:{kind:'cbnz',target:8n},row:1,address:4n};
     const sub={id:'decrement',op:OP.BIN,sub:'sub',args:[{value:n},{value:{id:'one',bits:8,const:1n}}],dst:next,row:2,address:8n};next.def=sub;

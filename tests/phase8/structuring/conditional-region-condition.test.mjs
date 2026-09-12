@@ -29,7 +29,7 @@ function fixture(options = {}) {
 }
 const options = { identity, addressBits:8, backendTier:'exhaustive', timeoutMs:5000 };
 
-test('production text-row PHI handoff remains explicitly partial and preserves the original view', async () => {
+test('production text-row PHI uses pass the execution contract before the remaining public proof boundary', async () => {
   const f = textRowConditionalRegionFixture();
   const preparedOptions = { ...f.options, ir:f.ir, deterministicTransforms:true,
     phase8PrepareRegionProof:true, phase8PrepareProof:true, renderProvenance:true };
@@ -39,19 +39,18 @@ test('production text-row PHI handoff remains explicitly partial and preserves t
   assert.ok(branch);
   const projection = enhanceSemanticDecompilation(seed, f.model, preparedOptions);
   const before = structuredClone(f.ir.instructions);
-  // Pin the deterministic PHI mismatch independently of the public query's
+  // Pin the real canonical PHI handoff independently of the public query's
   // wall-clock deadline. This validation does not execute or prove the region.
-  assert.throws(() => validateExecutionContract(f.ir, { chargeExecution() {} }),
-    error => error.reason === 'invalid-phi-instruction');
+  assert.doesNotThrow(() => validateExecutionContract(f.ir, { chargeExecution() {} }));
   const output = await optimizeSemanticDecompilation(projection, { ...options, conditionalBranch:branch });
-  // Next production boundary: canonical PHIs expose args as their use list;
-  // the byte executor currently accepts only args:[]. This is pending C4 work,
-  // not a completed production proof or a permanent restriction on PHIs.
+  // The canonical PHI use list now passes. The next production boundary is
+  // the is-zero predicate's BV input and Bool destination in scalar lowering;
+  // full production proof remains pending until that handoff is implemented.
   assert.ok(f.ir.blocks.some(block => block.phis.some(phi => phi.args.length > 0)));
   assert.equal(output.proofOptimization.status, 'partial');
-  // A finite public query may exhaust its deadline before reaching that PHI;
+  // A finite public query may exhaust its deadline before reaching that node;
   // either refusal must retain the exact original view and IR.
-  assert.ok(['invalid-phi-instruction', 'deadline-exceeded'].includes(output.proofOptimization.reason),
+  assert.ok(['unknown-semantic:scalar-input-width-mismatch', 'deadline-exceeded'].includes(output.proofOptimization.reason),
     output.proofOptimization.reason);
   assert.equal(output.proofOptimization.adopted, 0);
   assert.equal(output.cAst, projection.cAst);

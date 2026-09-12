@@ -14,6 +14,34 @@ function addressKey(value) {
   fail('invalid-instruction-address');
 }
 
+function validatePhiUses(phi, memory) {
+  const args = phi.args ?? [], incoming = phi.incoming ?? [];
+  if (!Array.isArray(args) || !Array.isArray(incoming)) fail('invalid-phi-instruction');
+  memory.chargeExecution(args.length, args.length);
+  const arrayKeys = Reflect.ownKeys(args);
+  memory.chargeExecution(arrayKeys.length, arrayKeys.length);
+  if (Object.getPrototypeOf(args) !== Array.prototype || arrayKeys.length !== args.length + 1
+      || arrayKeys.some((key, index) => key !== (index < args.length ? String(index) : 'length'))) fail('invalid-phi-use-list');
+  // Legacy PHIs keep only incoming; canonical SSA also publishes an operand
+  // use list. It must echo incoming exactly, not introduce another computation
+  // or cause an unselected predecessor's definition to execute eagerly.
+  if (!args.length) return;
+  if (args.length !== incoming.length) fail('invalid-phi-use-list');
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index], value = incoming[index]?.value;
+    if (!arg || typeof arg !== 'object' || Array.isArray(arg)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(arg))) fail('invalid-phi-use-list');
+    const keys = Reflect.ownKeys(arg);
+    memory.chargeExecution(keys.length, keys.length);
+    if (keys.some(key => key !== 'value' && key !== 'bits')) fail('invalid-phi-use-list');
+    const operand = Object.getOwnPropertyDescriptor(arg, 'value');
+    const width = Object.getOwnPropertyDescriptor(arg, 'bits');
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || !operand || !Object.hasOwn(operand, 'value') || operand.value !== value
+        || width && (!Object.hasOwn(width, 'value') || width.value !== value.bits)) fail('invalid-phi-use-list');
+  }
+}
+
 export function validateExecutionContract(ir, memory) {
   if (ir.truncated != null && ir.truncated !== false) fail('incomplete-ir');
   const entry = ir.entry ?? 0;
@@ -51,7 +79,8 @@ export function validateExecutionContract(ir, memory) {
     }
     for (const phi of block.phis ?? []) {
       instruction(phi);
-      if (phi.op !== OP.PHI || !phi.dst || (phi.args?.length ?? 0) !== 0) fail('invalid-phi-instruction');
+      if (phi.op !== OP.PHI || !phi.dst) fail('invalid-phi-instruction');
+      validatePhiUses(phi, memory);
     }
     let first = null, terminated = false;
     for (const inst of block.insts) {
