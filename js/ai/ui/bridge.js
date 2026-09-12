@@ -138,7 +138,10 @@ export function createAiEngine(app, options = {}) {
     async aiCapabilities(options = {}) {
       const engine = await runtime();
       const provider = engine?.provider;
-      return typeof provider?.capabilities === 'function' ? provider.capabilities(options) : { providers: [] };
+      if (typeof provider?.capabilities === 'function') return provider.capabilities(options);
+      if (typeof provider?.prepareCapabilities === 'function') return provider.prepareCapabilities(options);
+      if (typeof provider?.getCapabilities === 'function') return provider.getCapabilities();
+      return { providers: [] };
     },
     async aiStatus() {
       const engine = await runtime();
