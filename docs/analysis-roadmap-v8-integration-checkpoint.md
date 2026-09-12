@@ -5843,3 +5843,53 @@ current-main reconciliation, release/runtime activation or physical-device proof
 is claimed. Canonical generation must follow this runtime source change; exact
 source/build/backup receipts are recorded separately when completed. Installed
 esbuild0.28.1 differs from lock0.28.2; environment repair remains excluded.
+
+
+### C4 source backup and exact-source evidence
+
+Source commit `56f90d964fade123f4eb3a35f1501dcc0fb9ab40` was normal-pushed to
+the existing branch and exact remote HEAD verified. Receipt:
+`c4-idiom-source-backup-9aa17a0b-c61c-4738-967f-bb40be03be2a.json`.
+`c4-idiom-source-checkpoint.json` binds its six paths and verified receipt/log hashes.
+
+- Added eight tests, lint, module boundaries and actual branch ownership inventory
+  PASS at that source SHA. Receipts use `c4-idiom-{added,lint,boundaries,inventory}-exact`.
+- Full representation/history file pair remains 30/31. Exact proof-boundaries
+  attempt is **43/46**, superseding WIP45/46 as the latest aggregate. In addition
+  to the known TDZ failure, replay returned partial and the MBA width matrix
+  returned the deadline reason not accepted by its existing assertion.
+- `c4-idiom-timing-isolated-exact-2fb19cc3-7116-48a2-96f6-09cd874f9298.json`:
+  replay passes in isolation; the MBA deadline assertion remains red.
+  `c4-idiom-timing-prior-44e0f7d8-4d7c-41ba-951d-9928d89821a1.json` reproduces
+  both timing-sensitive failures with exact parent497 source. Together with the
+  prior public-machine and TDZ receipts, all four observed failure types/assertions
+  are reproduced on the parent. No expectations or resource ceilings were weakened.
+- Canonical `npm run userscript:build` passed twice on the clean committed source:
+  `c4-idiom-build-first-660705fa-e08d-4033-8505-a06d69ddb277.json` and
+  `c4-idiom-build-committed-recheck-7ca45221-fe49-425d-9091-16be922a102d.json`.
+  Both left zero tracked generated diff. BuildId remains
+  `1ff45a375944855ab24b2721`, release serial2322242241 and identity
+  `dd616f7093ff1c43a5bedc8d1fb3d40fc8117bc7171d5e2165488363a16f37f2`.
+  `c4-idiom-build-state.json` preserves before/after hashes. An initial assumption
+  that these source edits must change the bundle was false; the generated commit
+  attempt reported nothing to commit. No generated commit or release increment
+  was manufactured. The second receipt's label refers to rebuilding committed
+  source56f90d964, not to a nonexistent generated-artifact commit.
+
+The unchanged build is consistent with the documented opt-in entry boundary:
+`decompileWithProof` / `optimizeSemanticDecompilation` invoke the actual exported
+producer/private transaction, while the default UI/query adapter still call
+synchronous `decompile`. The asynchronous proof entry has no default production
+caller; unused exports can be removed from the protected bundle. Canonical dist
+does not separately serve these source modules. Thus API-path semantics are tested,
+but the userscript build does not establish default application activation.
+The static review records this as an integration limitation, not a new runtime
+repair in the user-excluded environment/issue scope. Installed esbuild mismatch
+and complete-product verification limitations remain unchanged.
+
+Next bounded source proposal: existing logical-shift/contiguous-low-mask
+`bit_extract` recognizer handoff. Audit and an unapplied eight-case regression
+patch are in `c4-next-20260912/shift-mask-extraction-*`. Guard invalid zero-width
+or out-of-input slices before they suppress existing ordinary-rule proposals.
+Canonical BFX/BFI support is already implemented; do not duplicate it. C4 remains
+PARTIAL, integration CHECKPOINT-LOCKED, and the full analysis roadmap is unfinished.

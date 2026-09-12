@@ -2,6 +2,10 @@
 
 Ordinary `decompile()` stays synchronous. Optional solver/e-graph code is loaded
 on demand by the asynchronous proof entry, not by the Phase 8 pass registry.
+The default UI and query adapter currently call synchronous `decompile()`.
+Proof-API regressions exercise the exported producer/transaction path; they do
+not establish default application activation. The protected userscript build may
+omit unused asynchronous exports, so unchanged build output is not activation evidence.
 
 ```js
 import { decompileWithProof } from './js/decompile.js';
