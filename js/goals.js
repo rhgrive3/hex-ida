@@ -527,9 +527,17 @@ export function parseGoal(text) {
   // プリセットの語が入っていれば、その目的として扱う（期待する命令の形まで使える）
   let best = null;
   for (const g of GOALS) {
+    const blocked = avoidSpans(g, raw);
     let hit = 0;
-    for (const re of g.strong) if (re.test(raw)) hit += 2;
-    for (const re of g.weak) if (re.test(raw)) hit += 1;
+    const score = (rules, pts) => {
+      for (const re of rules) {
+        for (const m of allMatches(re, raw, blocked.length)) {
+          if (!overlaps(blocked, m.at, m.text.length)) { hit += pts; break; }
+        }
+      }
+    };
+    score(g.strong, 2);
+    score(g.weak, 1);
     if (hit > 0 && (!best || hit > best.hit)) best = { goal: g, hit };
   }
   const terms = expandTerms(raw);
