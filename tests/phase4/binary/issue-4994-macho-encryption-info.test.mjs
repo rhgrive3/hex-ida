@@ -13,7 +13,7 @@ function u64(b,o,v){new DataView(b.buffer).setBigUint64(o,BigInt(v),true)}
 const enc = new TextEncoder();
 
 function thin({ cmds, size }) {
-  const b = new Uint8Array(size);
+  const b = new Uint8Array(Math.max(size, 0x6000));
   u32(b,0,0xfeedfacf); u32(b,4,0x0100000c); u32(b,8,0); u32(b,12,2); u32(b,16,cmds.length); u32(b,20,cmds.reduce((t,c)=>t+c.bytes.length,0)); u32(b,24,0); u32(b,28,0);
   let p = 32;
   for (const c of cmds) { b.set(c.bytes, p); p += c.bytes.length; }
@@ -48,7 +48,7 @@ function segmentCmd() {
 
 // --- 32-bit LC_ENCRYPTION_INFO (20-byte command) on a thin 32-bit image ---
 {
-  const b = new Uint8Array(28 + 56 + 20);
+  const b = new Uint8Array(0x4000);
   u32(b,0,0xfeedface); u32(b,4,7); u32(b,8,0); u32(b,12,2); u32(b,16,2); u32(b,20,76); u32(b,24,0);
   const seg = new Uint8Array(56);
   u32(seg,0,0x19); u32(seg,4,56); seg.set(enc.encode('__TEXT\0'), 8);

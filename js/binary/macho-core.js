@@ -172,9 +172,13 @@ function parseThin(bytes, opts) {
         // image: the evidence must reach the descriptor instead of the
         // hardcoded encrypted:false (#4994).
         requireExactCommandSize(cmdsize, bits === 64 ? 24 : 20, 'LC_ENCRYPTION_INFO');
-        const encryption = { cryptoff: r.u32(p + 8), cryptsize: r.u32(p + 12), cryptid: r.u32(p + 16) };
-        if (linkeditData.encryption) markMachOMetadataPartial(image, 'duplicate-encryption-info-command');
-        else linkeditData.encryption = encryption;
+        const cryptoff = r.u32(p + 8), cryptsize = r.u32(p + 12), cryptid = r.u32(p + 16);
+        const cryptEnd = BigInt(cryptoff) + BigInt(cryptsize);
+        if (cryptEnd > r.lengthBigInt) {
+          markMachOMetadataPartial(image, 'encryption-crypt-range-out-of-file');
+          image.warnings.push(`LC_ENCRYPTION_INFO crypt range ${cryptoff}+${cryptsize} exceeds ${r.lengthBigInt}-byte image`);
+        } else if (linkeditData.encryption) markMachOMetadataPartial(image, 'duplicate-encryption-info-command');
+        else linkeditData.encryption = { cryptoff, cryptsize, cryptid };
       }
     } catch (e) {
       if (e?.code === 'BINARY_SOURCE_RANGE_MISSING' || e?.code === 'MACHO_SEGMENT_VM_OVERLAP') throw e;
