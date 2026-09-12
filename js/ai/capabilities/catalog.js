@@ -223,6 +223,35 @@ function runtimeMutation(risk, reversible = false, inputSchema = RUNTIME_SESSION
   return { mutability: 'runtime-dangerous', risk, reversible, requiresApproval: true, scopeSupport: ['function', 'binary'], runtimeBound: true, inputSchema };
 }
 
+// Runtime operations advertise themselves from a platform object alone, but the
+// executor additionally requires an active session (verifyBinding /
+// runtimeAdapter) and, per operation, that the current adapter actually
+// implements the DebugAdapter capability its executor path calls. Without this
+// contract discovery reports operations that would fail at execution time as
+// "No runtime session is available." or "unsupported" (#5104).
+const RUNTIME_ADAPTER_CAPABILITIES = Object.freeze({
+  'runtime.attach': Object.freeze(['attach']),
+  'runtime.breakpoint-remove': Object.freeze(['removeBreakpoint']),
+  'runtime.watchpoint-create': Object.freeze(['watchpointMemory']),
+  'runtime.watchpoint-remove': Object.freeze(['removeBreakpoint']),
+  'runtime.continue': Object.freeze(['resume']),
+  'runtime.pause': Object.freeze(['pause']),
+  'runtime.step-in': Object.freeze(['stepInto']),
+  'runtime.step-over': Object.freeze(['stepOver']),
+  'runtime.step-out': Object.freeze(['stepOut']),
+  'runtime.registers': Object.freeze(['readRegisters']),
+  'runtime.memory-read': Object.freeze(['readMemory']),
+  'runtime.memory-write': Object.freeze(['readMemory', 'writeMemory']),
+});
+const RUNTIME_ADAPTER_ANY_CAPABILITIES = Object.freeze({
+  'runtime.breakpoint-create': Object.freeze(['breakpointAddress', 'breakpointFunction', 'breakpointConditional', 'watchpointMemory']),
+});
+const ADAPTER_METHOD_BY_CAPABILITY = Object.freeze({
+  attach: 'attach', resume: 'resume', pause: 'pause', stepInto: 'stepInto', stepOver: 'stepOver', stepOut: 'stepOut',
+  removeBreakpoint: 'removeBreakpoint', readRegisters: 'readRegisters', readMemory: 'readMemory', writeMemory: 'writeMemory',
+  watchpointMemory: 'watchMemory',
+});
+
 function normalizeCapabilityId(value) {
   if (typeof value !== 'string') return null;
   const id = value.trim();
@@ -270,8 +299,43 @@ export function availability(entry, context) {
   if (!entry.agentExposed) return { ok: false, reason: entry.humanOnlyReason };
   if (typeof entry.available === 'function') return normalizeAvailability(entry.available(context));
   if (entry.agentTool && !context?.toolRegistry?.has?.(entry.agentTool)) return { ok: false, reason: `analysis-tool-unavailable:${entry.agentTool}` };
-  if (entry.category === 'runtime' && entry.id !== 'runtime.status' && !context?.runtimePlatform) return { ok: false, reason: 'runtime-adapter-unavailable' };
+  if (entry.category === 'runtime') return runtimeAvailability(entry, context?.runtimePlatform);
   return { ok: true };
+}
+
+function runtimeAvailability(entry, runtimePlatform) {
+  if (entry.id === 'runtime.status') return { ok: true };
+  if (!runtimePlatform) return { ok: false, reason: 'runtime-adapter-unavailable' };
+  if (typeof runtimePlatform !== 'object') return { ok: true };
+  const session = typeof runtimePlatform.currentSession === 'function' ? runtimePlatform.currentSession(false) || null : null;
+  if (entry.id === 'runtime.connect') {
+    const adapter = session?.adapter || (typeof runtimePlatform.adapter === 'function' ? runtimePlatform.adapter() : null);
+    return adapter ? { ok: true } : { ok: false, reason: 'runtime-adapter-unavailable' };
+  }
+  if (entry.runtimeBound && !session) return { ok: false, reason: 'runtime-session-unavailable' };
+  const required = RUNTIME_ADAPTER_CAPABILITIES[entry.id];
+  const anyRequired = RUNTIME_ADAPTER_ANY_CAPABILITIES[entry.id];
+  if (!required && !anyRequired) return { ok: true };
+  const adapter = session?.adapter;
+  if (!adapter) return { ok: false, reason: 'runtime-adapter-unavailable' };
+  if (required) {
+    const missing = required.filter((capability) => !adapterSupports(adapter, capability));
+    if (missing.length) return { ok: false, reason: `runtime-capability-unsupported:${missing.join(',')}` };
+  }
+  if (anyRequired && !anyRequired.some((capability) => adapterSupports(adapter, capability))) {
+    return { ok: false, reason: `runtime-capability-unsupported:${entry.id}` };
+  }
+  return { ok: true };
+}
+
+function adapterSupports(adapter, capability) {
+  if (typeof adapter.negotiate === 'function') {
+    const negotiated = adapter.negotiate();
+    if (negotiated && Object.prototype.hasOwnProperty.call(negotiated, capability)) return negotiated[capability] === true;
+  }
+  if (adapter.capabilities && Object.prototype.hasOwnProperty.call(adapter.capabilities, capability)) return adapter.capabilities[capability] === true;
+  const method = ADAPTER_METHOD_BY_CAPABILITY[capability];
+  return method ? typeof adapter[method] === 'function' : false;
 }
 function normalizeAvailability(value) { return value === true ? { ok: true } : value === false ? { ok: false, reason: 'capability-unavailable' } : value || { ok: true }; }
 
