@@ -22,6 +22,20 @@ import {
 const MEMORY_NODE_KINDS = new Set(['load', 'store']);
 const VARIABLE_NODE_KINDS = new Set(['state-read', 'state-write']);
 const CONTROL_NODE_KINDS = new Set(['branch', 'conditional-branch', 'switch']);
+const NODE_INPUT_ARITY = Object.freeze({
+  const: 0,
+  copy: 1,
+  unary: 1,
+  binary: 2,
+  compare: 2,
+  select: 3,
+  zext: 1,
+  sext: 1,
+  trunc: 1,
+  bitcast: 1,
+  'state-read': 0,
+  'state-write': 1,
+});
 
 export function createSemanticValue(input) {
   input = object(input, 'semantic-ir-invalid-value');
@@ -91,6 +105,9 @@ export function createSemanticNode(input) {
     origin: requiredOrigin(input, 'semantic-ir-node-origin-required'),
   };
 
+  if (Object.hasOwn(NODE_INPUT_ARITY, kind) && out.inputs.length !== NODE_INPUT_ARITY[kind]) {
+    fail('semantic-ir-node-arity-invalid');
+  }
   if (MEMORY_NODE_KINDS.has(kind) && out.memory == null) fail('semantic-ir-memory-node-requires-access');
   if (!MEMORY_NODE_KINDS.has(kind) && out.memory != null && kind !== 'intrinsic') fail('semantic-ir-memory-access-not-allowed');
   if (VARIABLE_NODE_KINDS.has(kind) && out.variable == null) fail('semantic-ir-state-node-requires-variable');

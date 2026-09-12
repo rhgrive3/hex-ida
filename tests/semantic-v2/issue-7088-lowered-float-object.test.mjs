@@ -11,14 +11,15 @@ import { lowerMachineEffectBundleToSemanticIr } from '../../js/semantics/ir/from
 import { projectSemanticIrV2ToLegacyV1 } from '../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 
 function projectLoweredConstants(values) {
+  const probeOpcode = values.length === 1 ? 'fneg' : values.length === 2 ? 'fadd' : 'float-const-probe';
   const bundle = createMachineEffectBundle({
     instructionId: 'issue-7088-float-object',
     architectureId: 'synthetic',
     mode: 'test',
     operations: [createMachineOperation({
       kind: 'value',
-      id: 'fadd',
-      opcode: 'fadd',
+      id: probeOpcode,
+      opcode: probeOpcode,
       inputs: values,
       outputs: [createTemporaryValue('result', values[0])],
     })],
