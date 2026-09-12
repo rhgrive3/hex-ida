@@ -138,6 +138,7 @@ function parseXdataDescriptor(r, image, xdataRva, budget) {
 
 export function parseArmntExceptionFunctions(r, dir, image, budget) {
   if (!dir || !dir.rva || !dir.size) return;
+  if (Number.isSafeInteger(dir.size) && dir.size % 8 !== 0) return;
   const span = mappedFileSpanForRva(image, dir.rva, dir.size);
   if (!span) {
     budget.partial('exception:directory-span', 'PE exception directory crosses a mapped boundary');
