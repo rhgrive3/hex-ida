@@ -59,7 +59,7 @@ import {
 } from './lattice.js';
 
 export const A2_ANALYZER_ID = 'phase7.pointsto.a2-local';
-export const A2_ANALYZER_VERSION = '1.3.2';
+export const A2_ANALYZER_VERSION = '1.3.3';
 
 function configuredSummaryArtifactIds(options, calleeId) {
   const ids = [];
@@ -1003,7 +1003,22 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
             let offset;
             try { offset = BigInt(prov.offset ?? 0n); }
             catch { return topPointsTo('unresolved-call'); }
-            candidate = offset !== 0n ? shiftSet(argSet, offset, width ?? 64) : argSet;
+            const shifted = offset !== 0n ? shiftSet(argSet, offset, width ?? 64) : argSet;
+            const argumentWidth = widthOf(values.get(String(argumentIds[prov.argIndex])));
+            candidate = createPointsToSet({
+              targets: shifted.targets.map((target) => createPointsToTarget({
+                ...target,
+                // A finite returns-arg fact binds this call result to the
+                // incoming root. Complete width only from matching machine
+                // types, never from the spill width or an ABI/name guess.
+                widthBits: width != null && argumentWidth === width
+                  && (target.widthBits == null || target.widthBits === width)
+                  ? width : target.widthBits,
+                evidenceIds: [...target.evidenceIds, ...evidenceIds],
+              })),
+              lossReasons: shifted.lossReasons,
+              top: shifted.top,
+            });
           } else {
             const target = targetFromReturnProvenance(prov, width ?? 64, evidenceIds);
             if (!target) return topPointsTo('unresolved-call');

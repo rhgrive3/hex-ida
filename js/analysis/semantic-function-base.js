@@ -538,13 +538,10 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
       }) === true;
     } catch { return false; }
   })();
-  const appleArm64ePlatforms = new Set([
-    'apple', 'darwin', 'macos', 'macosx', 'ios', 'ios-simulator', 'ipados',
-    'tvos', 'watchos', 'visionos',
-  ]);
+  // Share the registry's platform-qualified arm64e mapping, including its
+  // supported simulator profiles; a second platform list drifts independently.
   const arm64eProfileMatches = targetArchitectureText !== 'arm64e'
-    || (pluginId === 'darwin-arm64' && platformId != null
-      && appleArm64ePlatforms.has(String(platformId).trim().toLowerCase()));
+    || resolveABIPlugin({ architecture:targetArchitectureText, platform:platformId }) === plugin;
   const supported = !!plugin && registryRegistered && !!registryDigest
     && plugin.supported !== false && pluginId !== 'unknown'
     && !!semanticVersion && !!semanticIdentity && !!architectureId

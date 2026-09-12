@@ -11,7 +11,7 @@ const base = {
   purpose: 'memoryssa',
 };
 
-function proofFor({ relation = 'no', analyzerId = 'phase7.alias.solver', analyzerVersion = '1.1.0' } = {}) {
+function proofFor({ relation = 'no', analyzerId = 'phase7.alias.solver', analyzerVersion = '1.1.1' } = {}) {
   return canonicalAliasProof({
     ...base,
     result: {
@@ -30,7 +30,7 @@ test('#5862 structured analyzer id cannot launder into canonical issuer authorit
 });
 
 test('#5862 structured analyzer version cannot launder into canonical issuer authority', () => {
-  assert.equal(proofFor({ analyzerVersion: ['1.1.0'] }), null);
+  assert.equal(proofFor({ analyzerVersion: ['1.1.1'] }), null);
 });
 
 test('#5862 caller-owned coercion hooks are never consulted for proof authority', () => {
@@ -56,6 +56,12 @@ test('#5862 canonical primitive issuer and relation still produce proofs', () =>
   assert.ok(proof);
   assert.equal(proof.relation, 'no');
   assert.equal(proof.issuer.id, 'phase7.alias.solver');
-  assert.equal(proof.issuer.version, '1.1.0');
+  assert.equal(proof.issuer.version, '1.1.1');
   assert.ok(proof.proofDigest);
+});
+
+// Older solver facts predate the #4515 pointer-width contract and are stale.
+test('#4515 pre-width-fix alias issuer is not accepted as current authority', () => {
+  assert.equal(proofFor({ analyzerVersion:'1.1.0' }), null);
+  assert.ok(proofFor({ analyzerVersion:'1.1.1' }));
 });

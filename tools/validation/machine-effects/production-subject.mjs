@@ -7,12 +7,14 @@ import { createRiscv64DecodedInstruction, RISCV64_DECODER_SEMANTIC_VERSION } fro
 import { buildSemanticV2CompatibilityPipeline } from '../../../js/semantics/compat/index.js';
 import { translateSemanticIR } from '../../../js/symbolic/translate/semantic-ir.js';
 import { evaluateExpr } from '../../../js/symbolic/expr/evaluate.js';
+import { boundedExpressionEvaluationCost } from '../../../js/symbolic/memory/expression-contract.js';
+import { QueryFailure } from '../../../js/symbolic/memory/query-state.js';
 import { canonicalStringify } from './oracle-schema.mjs';
 import { productionSubjectObservation } from './oracle-runner.mjs';
 import { PRODUCTION_SUBJECT_IDENTITY } from './oracle-policy.mjs';
 import { assessArchitecturalEvidence, createArchitecturalEvidenceFromArtifactRecord } from './oracle-evidence-v2.mjs';
 
-export const PRODUCTION_SUBJECT_VERSION = 'machine-effects-production-register-subject/v1';
+export const PRODUCTION_SUBJECT_VERSION = 'machine-effects-production-register-subject/v2';
 
 // Inputs only. Neither oracle register values nor trace assignments enter the
 // production decoder, lifter, SSA projection or canonical Expr evaluator.
@@ -80,7 +82,10 @@ function pinnedTraceReference(record) {
 /** Observe final written GPRs in a straight-line RV64 prefix.
  * This is an offline subject adapter, not an ISA oracle or function executor.
  * Explicit entry registers are inputs, never expected outputs. Memory, control
- * transfers, faults, unknowns and unbound entry state decline.
+ * transfers, faults, unknowns and unbound entry state decline. maxWorkItems is
+ * one prefix-wide scalar budget: translation, DAG-cost inspection and the
+ * recursive evaluator's conservative visit bound share it. Decoding/lifting
+ * remains separately bounded by maxInstructions; this is not a wall-time bound.
  */
 export function observeRv64RegisterPrefix(instructions, { signal, maxInstructions = 32, maxWorkItems = 10000, initialRegisters = null } = {}) {
   if (signal?.aborted) return declined('cancelled', 'subject-cancelled');
@@ -90,6 +95,20 @@ export function observeRv64RegisterPrefix(instructions, { signal, maxInstruction
   }
   if (!Array.isArray(instructions) || instructions.length === 0) return declined('malformed', 'subject-empty-prefix');
   if (instructions.length > maxInstructions) return declined('budget', 'subject-instruction-budget');
+  const resources = { translationWorkItems: 0, evaluationPreflightWorkItems: 0,
+    evaluationUpperBound: 0, accountedWorkItems: 0 };
+  const resourceSnapshot = () => Object.freeze({ ...resources });
+  const charge = (stage, amount) => {
+    if (signal?.aborted) throw new QueryFailure('subject-cancelled');
+    if (!Number.isSafeInteger(amount) || amount < 1) throw new QueryFailure('subject-invalid-work-accounting');
+    if (amount > maxWorkItems - resources.accountedWorkItems) throw new QueryFailure('subject-work-budget');
+    resources[stage] += amount;
+    resources.accountedWorkItems += amount;
+  };
+  const evaluationGuard = Object.freeze({ take(key, amount = 1) {
+    if (key !== 'workItems') throw new QueryFailure('subject-invalid-work-accounting');
+    charge('evaluationPreflightWorkItems', amount);
+  } });
   try {
     const symbolicArgs = {};
     if (initialRegisters !== null) {
@@ -149,10 +168,24 @@ export function observeRv64RegisterPrefix(instructions, { signal, maxInstruction
           || instruction.extra.stateWriteProof?.broadUnknown !== false || physical?.kind !== 'register'
           || !/^x(?:[1-9]|[12][0-9]|3[01])$/.test(physical.registerId)
           || expectedWrites.get(effectId) !== physical.registerId) return declined('partial', 'subject-unproved-state-write');
-      const translated = translateSemanticIR(instruction.dst, { signal, maxWorkItems, maxDepth: 64, symbolicArgs });
+      const remainingWork = maxWorkItems - resources.accountedWorkItems;
+      if (remainingWork === 0) throw new QueryFailure('subject-work-budget');
+      const translated = translateSemanticIR(instruction.dst, { signal,
+        maxWorkItems: remainingWork, maxDepth: 64, symbolicArgs });
+      charge('translationWorkItems', translated.metrics?.workItems);
+      if (translated.unsupportedEntities.some(entity => entity.reason === 'budget:translation-work')) {
+        throw new QueryFailure('subject-work-budget');
+      }
       if (translated.status !== 'exact' || translated.semanticUnknowns || translated.assumptions.length) {
         return declined(signal?.aborted ? 'cancelled' : 'partial', 'subject-inexact-scalar-translation');
       }
+      // Translation emits canonical immutable Expr DAGs. The existing evaluator
+      // recursively revisits shared children: a small DAG can have exponential
+      // tree cost. Reuse the existing cost bound and reserve it before execution;
+      // neither counting nor evaluation creates alternative ISA semantics.
+      const evaluationCost = boundedExpressionEvaluationCost([translated.expression], evaluationGuard,
+        maxWorkItems - resources.accountedWorkItems);
+      charge('evaluationUpperBound', evaluationCost);
       const evaluated = evaluateExpr(translated.expression);
       if (evaluated.status !== 'value' || evaluated.sort?.kind !== 'bv' || evaluated.sort.width !== 64
           || typeof evaluated.value !== 'bigint') return declined('partial', 'subject-unbound-or-unsupported-value');
@@ -167,10 +200,15 @@ export function observeRv64RegisterPrefix(instructions, { signal, maxInstruction
     return Object.freeze({ status: 'observed', reason: null, observables: Object.freeze(observables),
       subjectVersion: PRODUCTION_SUBJECT_VERSION,
       scope: initialRegisters === null ? 'self-contained-rv64-register-prefix' : 'rv64-register-prefix-with-entry-state', inputDigest,
-      instructionCount: decoded.length, assignments: Object.freeze(assignments),
+      instructionCount: decoded.length, assignments: Object.freeze(assignments), resources: resourceSnapshot(),
       architectureSemanticVersion: pipeline.architectureSemanticVersion,
       decoderSemanticVersion: pipeline.decoderSemanticVersion, pipelineVersion: pipeline.pipelineVersion });
   } catch (error) {
+    if (error instanceof QueryFailure) {
+      const status = signal?.aborted || error.reason === 'subject-cancelled' ? 'cancelled'
+        : error.reason === 'subject-work-budget' ? 'budget' : 'partial';
+      return Object.freeze({ ...declined(status, error.reason), resources: resourceSnapshot() });
+    }
     return declined(signal?.aborted ? 'cancelled' : 'unsupported', `subject-rejected:${String(error.message).slice(0, 160)}`);
   }
 }

@@ -1,3 +1,4 @@
+import { findABIPlugin, abiPluginRegistryDigest } from './registry.js';
 import { normalizeX86RegisterName, x86RegisterDescriptor } from '../architecture/x86_64/registers.js';
 
 /*
@@ -128,13 +129,24 @@ export function canonicalAbiEvidence(raw) {
   ];
   if (identityRequired.some((field) => typeof identity[field] !== 'string' || !identity[field].trim())) return false;
 
+  // The target profile and the implementing ABI can have different architecture
+  // identities (Darwin arm64e uses the arm64 ABI). Only the canonical registry
+  // may authorize that mapping; preserve both identities and every mirror.
+  if (!sameScalar(identity.architectureId, profile.architectureId)) {
+    const registered = findABIPlugin({ architecture:profile.architecture, platform:profile.platform });
+    if (!registered?.supported || registered.id !== raw.abiId
+      || registered.architectureId !== identity.architectureId
+      || registered.semanticVersion !== raw.abiSemanticVersion
+      || registered.semanticIdentity !== raw.abiSemanticIdentity
+      || abiPluginRegistryDigest(registered) !== raw.registryDigest) return false;
+  }
+
   const identityFields = [
     ['id', raw.abiId],
     ['semanticVersion', raw.abiSemanticVersion],
     ['semanticIdentity', raw.abiSemanticIdentity],
     ['profileIdentity', profile.profileIdentity],
     ['abiId', raw.abiId],
-    ['architectureId', profile.architectureId],
     ['targetArchitecture', profile.architecture],
   ];
   if (identityFields.some(([field, expected]) => !sameScalar(identity[field], expected))) return false;
@@ -145,6 +157,7 @@ export function canonicalAbiEvidence(raw) {
     ['semanticIdentity', raw.abiSemanticIdentity],
     ['registryDigest', raw.registryDigest],
     ['profileIdentity', profile.profileIdentity],
+    ['architectureId', identity.architectureId],
     ['targetArchitecture', identity.targetArchitecture],
     ['platformId', identity.platform],
     ['architectureProfile', profile],
@@ -160,6 +173,7 @@ export function canonicalAbiEvidence(raw) {
     ['abiSemanticIdentity', raw.abiSemanticIdentity],
     ['registryDigest', raw.registryDigest],
     ['profileIdentity', profile.profileIdentity],
+    ['architectureId', identity.architectureId],
     ['targetArchitecture', identity.targetArchitecture],
     ['platformId', identity.platform],
     ['architectureProfile', profile],
@@ -200,6 +214,8 @@ export function canonicalAbiHiddenResult(raw, hidden) {
     || hidden.canonicalInput !== input
     || hidden.location !== 'register'
     || positiveInteger(hidden.pointerBits) == null
+    || (raw.pointerBits != null && (positiveInteger(raw.pointerBits) == null
+      || !sameScalar(hidden.pointerBits, raw.pointerBits)))
     || !sameScalar(hidden.profileIdentity, profile.profileIdentity)
     || !sameScalar(hidden.abiId, raw.abiId)
     || !sameScalar(hidden.abiSemanticIdentity, raw.abiSemanticIdentity)

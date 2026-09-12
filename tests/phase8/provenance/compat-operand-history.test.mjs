@@ -51,7 +51,7 @@ function fixture({ bits = 32, endian = 'little', atomic = false } = {}) {
   const irIdentity = { functionId, semanticIrId:'ir', semanticIrContractVersion:'2.0.0', semanticIrDigest:stableDigest(canonical) };
   const memorySsa = buildMemorySsa(canonical, cfg, { regions:[region], resolveRegion:() => region,
     queryAlias:() => ({ relation:'must', reasonCodes:['same-fixture-region'], evidenceIds:['fixture-region'],
-      proof:{ analyzerId:'phase7.alias.solver', analyzerVersion:'1.1.0', completeness:'complete', stopReason:null } }),
+      proof:{ analyzerId:'phase7.alias.solver', analyzerVersion:'1.1.1', completeness:'complete', stopReason:null } }),
     identity:{ ...irIdentity, binaryId:'operand-history', sliceId:'slice', snapshotId:'snapshot',
       scalarSsaId:'ssa', scalarSsaBuildVersion:'1.0.0', scalarSsaDigest:'ssa-digest',
       memorySsaId:'mssa', memorySsaBuildVersion:MEMORY_SSA_BUILD_VERSION, analyzerVersion:'fixture' },

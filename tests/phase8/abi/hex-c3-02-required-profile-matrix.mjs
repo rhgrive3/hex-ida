@@ -102,7 +102,7 @@ const sysvIntegerPair = { type:'struct Pair', aggregate:true, bits:128, eightbyt
 const sysvSsePair = { type:'struct FPair', aggregate:true, bits:128, eightbyteClasses:['SSE','SSE'] };
 
 row('Darwin aggregate and HFA arguments', () => {
-  let result = classifyArguments(DARWIN_ARM64_ABI, [aggregate16]);
+  let result = classifyArguments(DARWIN_ARM64_ABI, [{ ...aggregate16, alignmentBytes:8 }]);
   assert.deepEqual(registers(result.arguments[0]), ['x0','x1']);
   result = classifyArguments(DARWIN_ARM64_ABI, [hfa4]);
   assert.deepEqual(registers(result.arguments[0]), ['v0','v1','v2','v3']);

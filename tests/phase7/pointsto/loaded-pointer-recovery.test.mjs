@@ -365,7 +365,7 @@ test('canonical store-pointer/load-pointer fixture recovers the stored pointer e
   assert.deepEqual(loaded.targets.map((target) => target.offsetRange), [{ min: 32n, max: 32n, exact: true }]);
   assert.equal(loaded.targets[0].widthBits, 64);
   assert.equal(result.status.completeness, 'complete');
-  assert.equal(A2_ANALYZER_VERSION, '1.3.2');
+  assert.equal(A2_ANALYZER_VERSION, '1.3.3');
   assert.equal(result.status.analyzerVersion, A2_ANALYZER_VERSION);
   assert.equal(result.recovery?.proofs?.loaded?.storeNodeId, 'node_store');
 });
@@ -631,7 +631,7 @@ test('the solver stages a refinement atomically and invalidates escape evidence'
     ssa: built.ssa,
     options: { snapshotId: 'snapshot-loaded-pointer-fixture' },
   });
-  assert.equal(PHASE7_ALIAS_SOLVER_VERSION, '1.1.0');
+  assert.equal(PHASE7_ALIAS_SOLVER_VERSION, '1.1.1');
   assert.equal(solver.analyzerVersion, PHASE7_ALIAS_SOLVER_VERSION);
   const baseline = solver.pointsToRun();
   assertUnresolved(baseline, 'unresolved-load');

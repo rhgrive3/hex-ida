@@ -71,7 +71,7 @@ function fixture(kind = 'comparison', bits = 32, barrier = false) {
     // Every access in this synthetic fixture is the same declared address and
     // byte interval. The native test below supplies the real compiler corpus.
     queryAlias:() => ({ relation:'must', reasonCodes:['same-fixture-field'], evidenceIds:['fixture-field'],
-      proof:{ analyzerId:'phase7.alias.solver', analyzerVersion:'1.1.0', completeness:'complete', stopReason:null } }),
+      proof:{ analyzerId:'phase7.alias.solver', analyzerVersion:'1.1.1', completeness:'complete', stopReason:null } }),
     ...(ssa ? { ssa } : {}) });
   const ir = projectSemanticIrV2ToLegacyV1(canonical, { cfg, memorySsa, ...(ssa ? { ssa } : {}) });
   return { ir, options:kind === 'return' ? { returnBits:bits } : {} };

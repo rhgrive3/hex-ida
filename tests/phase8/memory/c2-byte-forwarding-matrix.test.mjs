@@ -71,7 +71,7 @@ function makeFixture(bits,endian,scenario) {
  const artifact=buildMemorySsa(ir,cfg,{regions:[region],resolveRegion:()=>region,queryAlias:(_left,_right,context)=>{
   const may=scenario==='may-store'&&[context.left,context.right].some(item=>item.descriptor?.node?.id==='store_override');
   return {relation:may?'may':'must',reasonCodes:[may?'overlapping-possible-store':'identical-region-identity'],evidenceIds:['c2-canonical-alias'],
-   proof:{analyzerId:'phase7.alias.solver',analyzerVersion:'1.1.0',completeness:'complete',stopReason:null}};
+   proof:{analyzerId:'phase7.alias.solver',analyzerVersion:'1.1.1',completeness:'complete',stopReason:null}};
  },identity,snapshotId:'snapshot',
   canonicalIrIdentity:{functionId:name,semanticIrId:'ir',semanticIrContractVersion:'2.0.0',semanticIrDigest:digest}});
  return {name,ir,cfg,artifact,expected};

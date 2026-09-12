@@ -71,10 +71,13 @@ function normalizeAAPCS64StackLayout(result, params) {
     cursor = Math.ceil(cursor / alignment) * alignment;
     argument.offset = cursor;
     argument.alignment = alignment;
-    if (argument.abiClass === 'aggregate' && Array.isArray(argument.pieces)) {
+    if (Array.isArray(argument.pieces)) {
       argument.pieces = argument.pieces.map((piece) => ({
         ...piece,
         stackOffset: argument.offset + Number(piece.byteOffset || 0),
+        // The aggregate's stack-slot alignment is not each member's
+        // alignment. Reuse the core's proven homogeneous element layout.
+        ...(argument.homogeneousLayoutProven === true ? { stackAlignment:argument.elementBytes } : {}),
       }));
     }
     stackArguments.push(argument);

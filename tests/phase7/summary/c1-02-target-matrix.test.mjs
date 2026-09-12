@@ -497,7 +497,12 @@ test('HEX-C1-02 matrix axis 13a: self-recursive callee summary bounded by fixed 
   const pointsTo = result.pointsTo.get('call_ret');
   if (!pointsTo.top) {
     const argSet = result.pointsTo.get('arg0');
-    assert.deepEqual([...pointsTo.targets].sort(), [...argSet.targets].sort());
+    const resultOrigin = fixture.ir.values.find((value) => value.id === 'call_ret').origin.instructionIds;
+    // Root and offset are preserved, but the call-result representation and
+    // provenance are additional facts needed by a subsequent pointer spill.
+    assert.deepEqual([...pointsTo.targets].sort(), argSet.targets.map((target) => ({
+      ...target, widthBits:64, evidenceIds:[...new Set([...target.evidenceIds, ...resultOrigin])].sort(),
+    })).sort());
   } else {
     assert.ok(pointsTo.lossReasons.includes('unresolved-call'));
   }

@@ -54,8 +54,13 @@ function providerResult(symbols) {
             kind: 'aggregate', keyword: 'struct', name: 'Wrong',
             sizeBytes: 8, forwardReference: false,
           }],
+          // The regular TPI positive needs the complete #4210 procedure
+          // contract; the colliding, unresolved IPI record remains unchanged.
+          [0x1004, { kind: 'arg-list', arguments: [], complete: true }],
           [0x1005, {
             kind: 'procedure', returnType: 0x0074,
+            callingConvention: 0, functionOptions: 0,
+            parameterCount: 0, argumentList: 0x1004,
           }],
         ]),
       },

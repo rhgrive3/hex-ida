@@ -350,7 +350,7 @@ function canonicalFixture({ bits = 32, calls = 1, passStack = true, memoryWrite 
   const identity = { functionId, semanticIrId:'ir', semanticIrContractVersion:'2.0.0', semanticIrDigest:stableDigest(canonical) };
   const memorySsa = buildMemorySsa(canonical, cfg, { regions:[region], resolveRegion:() => region,
     queryAlias:() => ({ relation:'must', reasonCodes:['same-fixture-stack-slot'], evidenceIds:['fixture-region'],
-      proof:{ analyzerId:'phase7.alias.solver', analyzerVersion:'1.1.0', completeness:'complete', stopReason:null } }),
+      proof:{ analyzerId:'phase7.alias.solver', analyzerVersion:'1.1.1', completeness:'complete', stopReason:null } }),
     identity:{ ...identity, binaryId:'escape-history', sliceId:'slice', snapshotId:'snapshot', scalarSsaId:'ssa', scalarSsaBuildVersion:'1.0.0',
       scalarSsaDigest:'ssa-digest', memorySsaId:'mssa', memorySsaBuildVersion:MEMORY_SSA_BUILD_VERSION, analyzerVersion:'fixture' },
     snapshotId:'snapshot', canonicalIrIdentity:identity });

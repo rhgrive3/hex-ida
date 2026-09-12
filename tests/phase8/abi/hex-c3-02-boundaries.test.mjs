@@ -870,7 +870,8 @@ test('C3-02 forced-stack homogeneous aggregates use canonical physical element s
     const entry = classified.arguments[16];
     const next = classified.arguments[17];
     assert.equal(entry.location, 'stack', `${name} must be forced to stack`);
-    const physicalElementBytes = Math.max(8, elementBytes);
+    // #5598 rounds the aggregate once; it does not widen each HFA member.
+    const physicalElementBytes = elementBytes;
     assert.equal(entry.bytes, physicalElementBytes * aggregate.members.length, `${name} physical size`);
     assert.deepEqual(entry.pieces.map(({ pieceIndex, byteOffset, stackOffset, bytes }) => ({
       pieceIndex, byteOffset, stackOffset, bytes,
@@ -893,9 +894,9 @@ test('C3-02 forced-stack homogeneous aggregates use canonical physical element s
     hfa32,
     { type:'int64', bits:64 },
   ];
-  const instructions = [0, 8, 16].map((disp, index) => ({
+  const instructions = [[0, 32], [4, 32], [8, 64]].map(([disp, bits], index) => ({
     op:'load', loc:{ kind:'stack', baseReg:'sp', frameEpoch:99, disp:BigInt(disp), key:`c3-02:hfa:${index}` },
-    memUse:{ kind:'entry' }, dst:{ id:300 + index, bits:64 },
+    memUse:{ kind:'entry' }, dst:{ id:300 + index, bits },
   }));
   const registers = ['sp', ...Array.from({ length:8 }, (_unused, index) => `x${index}`),
     ...Array.from({ length:8 }, (_unused, index) => `v${index}`)];
@@ -910,10 +911,10 @@ test('C3-02 forced-stack homogeneous aggregates use canonical physical element s
   assert.equal(aggregate.aggregate, true);
   assert.equal(aggregate.canonicalLocation, 'stack');
   assert.deepEqual(aggregate.pieces.map(({ pieceIndex, stackOffset, bytes }) => ({ pieceIndex, stackOffset, bytes })), [
-    { pieceIndex:0, stackOffset:0, bytes:8 }, { pieceIndex:1, stackOffset:8, bytes:8 },
+    { pieceIndex:0, stackOffset:0, bytes:4 }, { pieceIndex:1, stackOffset:4, bytes:4 },
   ]);
   assert.equal(prototype.arguments.filter((argument) => argument.canonicalParameterIndex === 16).length, 1);
-  assert.equal(prototype.arguments.find((argument) => argument.canonicalParameterIndex === 17)?.stackOffset, 16n);
+  assert.equal(prototype.arguments.find((argument) => argument.canonicalParameterIndex === 17)?.stackOffset, 8n);
 });
 
 test('C3-02 aggregate layouts require fully located deterministic padding coverage', () => {
@@ -1265,13 +1266,14 @@ test('C3-02 aggregate proof matrix rejects sibling malformed descriptors and pre
       returnType:nested.type, aggregate:true, returnsValue:true,
       layout:{ ...nested.layout, members:returnMembers },
     } });
-    if (abi === RISCV_LP64F_ABI) {
-      assert.deepEqual(returnLocations, [], 'lp64f must reject double aggregate returns beyond FLEN32');
-    } else {
-      assert.equal(returnLocations.length, 2, `${abi.id} nested return lanes`);
-      assert.deepEqual(returnLocations.map(({ bits, bytes, byteOffset }) => ({ bits, bytes, byteOffset })), [
-        { bits:64, bytes:8, byteOffset:0 }, { bits:64, bytes:8, byteOffset:8 },
-      ]);
+    assert.equal(returnLocations.length, 2, `${abi.id} nested return lanes`);
+    assert.deepEqual(returnLocations.map(({ bits, bytes, byteOffset }) => ({ bits, bytes, byteOffset })), [
+      { bits:64, bytes:8, byteOffset:0 }, { bits:64, bytes:8, byteOffset:8 },
+    ]);
+    if (abi === RISCV_LP64F_ABI || abi === RISCV_LP64D_ABI) {
+      assert.deepEqual(returnLocations.map(location => location.reg),
+        abi === RISCV_LP64F_ABI ? ['x10','x11'] : ['f10','f11'],
+        'double pair uses integer fallback at FLEN32, FP registers at FLEN64');
     }
   }
 });
@@ -1431,8 +1433,8 @@ test('C3-02 nested return descriptors remain one canonical source across profile
     [MICROSOFT_X64_ABI, { architecture:'x86_64', platform:'windows' }, 'indirect'],
     [MICROSOFT_VECTORCALL_ABI, { architecture:'x86_64', platform:'windows', callingConvention:'vectorcall' }, 'unknown'],
     [RISCV_LP64_ABI, { architecture:'riscv64', platform:'linux' }, 'lanes'],
-    [RISCV_LP64F_ABI, { architecture:'riscv64', platform:'linux' }, 'unknown'],
-    [RISCV_LP64D_ABI, { architecture:'riscv64', platform:'linux' }, 'unknown'],
+    [RISCV_LP64F_ABI, { architecture:'riscv64', platform:'linux' }, 'lanes'],
+    [RISCV_LP64D_ABI, { architecture:'riscv64', platform:'linux' }, 'lanes'],
   ];
   for (const [abi, options, expected] of integerCases) {
     const adapter = semanticAbiAdapter(abi, options);

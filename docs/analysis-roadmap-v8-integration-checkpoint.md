@@ -1,5 +1,57 @@
 # Analysis roadmap v8 integration checkpoint
 
+## 2026-09-13: ユーザー ZIP の結合と次の並行担当
+
+この節が最新です。下の 2026-09-12 の C1/C3 受入作業の割当は過去の記録です。
+PR **#7036**、ブランチ **`feat/analysis-roadmap-v8-current-main-20260907`** を引き続き開始元にします。
+この更新も並行開発用のソース結合で、解析 md 全体・統合受入・release は **CHECKPOINT-LOCKED** のままです。
+
+- ユーザー ZIP `hex-ida-roadmap-v8-user-c1-c3-final-20260913.zip`（SHA-256 `57c5347fbf20f3fbe8d6d54fa3dbdf3c63e1163323338dce95ad325ffebad6f9`）の ME・初回 C1/C3・最終 C1/C3 の累積 **39 ファイル**を結合しました。
+- 30 ファイルは累積開始版と一致、7 ファイルは追加。ME の 1 ファイルは既存の入力 digest を保持して三者結合。解析 md は既存 C4 の記録を保持し、ZIP の履歴 393 行を末尾へ追記しました。
+- C1-01/03 と C3 の今回担当した有限受入は完了。新しい C1/C3 受入 **358 件**が結合状態で通過しました。C1-02 の再帰呼出し経由の返り値発見は残っています。
+- C4 の表示 AST へのコピー・共通式挿入の対応記録は `8628d681006af2f0befb4896797ce848341985d9` で公開済み。意味的な条件式の一致、recovery、PHI、削除元の対応は残っています。
+- 結合前後の厳密な SHA、実行ログ、生成物・レビューの記録は統合担当が保持します。下の ZIP 内の過去の成功件数を、現在のブランチ全体の成功とは扱いません。
+
+### 次にユーザーが進める重い作業: C1-02 の再帰的な返り値解析の接続と受入
+
+新しい名前の解析エンジンを作らず、既存リモートブランチ **`analysis-c1-recursive-cea67c63f`** の
+**`12b873ca095922c826b2062f2dcf032f65f3ef5c`** を再利用してください。
+その成果は `df98376ae`（既存 SCC へ return-equations を接続）と `12b873ca0`（受入追加）です。
+古いブランチ全体の merge や古いファイルの丸ごと上書きは行わず、現在の summary 契約・ZIP 修正・既存 PR と差分を照合して移植します。
+
+開始元はこの節を含む #7036 の公開コミットです。開始 SHA を固定し、別ディレクトリで次を行います。
+
+```sh
+git fetch origin
+git switch -c work/c1-recursive-return-20260913 origin/feat/analysis-roadmap-v8-current-main-20260907
+git rev-parse HEAD
+```
+
+担当は以下の 8 パスと `docs/analysis-c1-acceptance.md` です。
+
+- `js/analysis/summary/contract-core.js`
+- `js/analysis/summary/contract.js`
+- `js/analysis/summary/interprocedural.js`
+- `js/analysis/summary/local-core.js`
+- `js/analysis/summary/local.js`
+- `js/analysis/summary/return-equations.js`
+- `tests/phase7/summary/c1-02-recursive-return-discovery.test.mjs`
+- `tests/phase7/summary/issue-5242-contract-version-source-of-truth.test.mjs`
+
+仕上げる内容:
+
+1. 既存の C1 1.4 の式の生成・契約・SCC 解決を現行 summary へ接続し、単なる local.returnProvenance の再公開と、呼出しを経由して発見した返り値を区別する。
+2. 自己再帰・相互再帰・wrapper、arg/root/allocation、direct/完全な有限間接候補を、実際の解析入口から検証する。可能な範囲で decode → IR → summary → caller points-to → store/load の実経路まで通す。fixture に期待 summary を直接注入した結果は、その実経路の証明と区別する。
+3. 不完全な候補、未知・矛盾・stale digest、無根拠な循環、打切り・cancel で強い返り値を公開しないことを対で確認する。有限の間接候補をプログラム全体の完全な候補集合とは呼ばない。
+4. 既存 C1 combined と summary の検査を維持し、変更ファイル・開始/完了 SHA・実行結果・未対応行を C1 の受入 md に記録する。
+
+共有 points-to/alias/MemorySSA、ABI、semantic/compat、C4、生成物、ownership/CI、統合 checkpoint と finding ledger は統合担当が扱います。
+その境界に不足があれば必要な入力・期待結果・最初の失敗を C1 受入 md に残してください。
+現在の C4 作業は引き続きこちらで進めます。成果はこの開始ブランチ向けの source commit/patch として渡してください。
+実機確認・環境整備・他 issue の修正は今回の担当に含めません。
+
+---
+
 ## 2026-09-12: 結合状況と並行作業の開始点
 
 **作業ブランチは PR #7036 の `feat/analysis-roadmap-v8-current-main-20260907`。解析 md 全体は未完了です。**
@@ -6542,3 +6594,398 @@ Luna/max の独立レビューで、元の記録が関数入口等の IR envelop
 （`c4-region-projection-related-4c02330a-d75f-4f16-a53f-f3a5e9bc7f2a.json`）。
 この選択には既存の4幅MBA/CSE・対照・再実行と、分岐/呼出し/store/領域証明の回帰を含みます。
 コミット後の正確なSHAでの検査、生成物の再ビルド差分、独立レビューと公開結果は永続 publication 記録に保存します。
+
+<!-- User ZIP history: local evidence below is not current integration acceptance. -->
+
+
+## 2026-09-12 ローカル再開: ME-01 prefix-wide scalar work budget
+
+### 入力・作業範囲
+
+ユーザー指定の本 checkpoint を読み、添付 ZIP の実装を正本としてローカルのみで再開した。
+C1/C3 のユーザー担当範囲、既に含まれる SYM/X-03、C4 sign-mask/extraction と
+ME の production subject/input minimizer は重複実装していない。
+
+- 入力: `hex-ida-feat-analysis-roadmap-v8-current-main-20260907 (2).zip`
+- 入力 ZIP SHA-256: `a52eb5c3d34cf23f6fb90046dad43fbb2f4aca00cedbdab97836fbc6be50497f`
+- ZIP は `.git` と `node_modules` を含まない。差分・実測の紐付けのためだけに
+  ローカル snapshot commit `3127c107bb62bd4fc978e779d8e790f6cf981800` を作成した。
+  **これは upstream/main の commit ではない。**
+- 実装・テストのローカル source commit:
+  `d7e5484a8f688166449191c1ac188fc112fc38fe`。
+- GitHub へのアクセス、fetch、push、PR 作成、merge は行っていない。過去の open-PR
+  inventory は今回の差分の最新重複確認には使えない。将来の取り込み前に担当者が再確認する。
+- 最終 source archive は `.git` を含まない。ローカル commit は検査 receipt の識別子であり、
+  配布ファイルは別添 `MANIFEST.json` の SHA-256 と入力 ZIP に対する patch で照合する。
+
+実装は次の既存 integration-owned 2 ファイルに限定し、記録として本 MD を更新した。
+
+1. `tools/validation/machine-effects/production-subject.mjs`
+2. `tests/machine-effects/production-formal-subject.test.mjs`
+
+共通 translator/evaluator、production runtime、C4、ownership manifest、package/lock、
+formal reference artifact、入力 corpus と denominator、生成物は変更していない。
+
+### 再現した不具合と実装
+
+旧 subject は各 state write の変換に同じ `maxWorkItems` を再度渡していた。そのため、
+8 個の実際の `c.li x1, 1` を予算 300 で観測すると、1 回 253 work の変換を
+各々許可して prefix 全体を `observed` としていた。宣言した予算が命令列全体に効いていない。
+また、既存 Expr evaluator は共有 DAG の子を再帰的に再評価するため、変換できた小さな
+DAG が安価に評価できるとは限らなかった。
+
+今回の adapter v2 は、命令列全体で次の計数を共有する。
+
+- `translationWorkItems`: canonical translator が実際に報告した work。
+- `evaluationPreflightWorkItems`: 既存 `boundedExpressionEvaluationCost` の DAG 検査 work。
+- `evaluationUpperBound`: 既存再帰 evaluator の訪問回数の保守的上限。実行前に予約する。
+- `accountedWorkItems`: 上記の和。宣言した `maxWorkItems` を超える結果を公開しない。
+
+毎回の変換には残り予算だけを渡す。独自 ISA evaluator や代替評価器は作らず、
+`js/symbolic/memory/expression-contract.js` の既存コスト検査を再利用する。
+共有式の評価上限が残りを超えると evaluator を呼ばず `budget` にする。
+正常観測には frozen かつ決定的な `resources` を付け、入力 identity と比較値は保持する。
+
+予算超過、不正な work 計測値、キャンセルから、途中まで計算した register の値は
+公開しない。翻訳後のキャンセルも予算判断より優先する。自己レビューで発見した
+「欠落した work 値を default 1 で受理する」途中版の不具合も修正し、
+undefined/NaN/Infinity/負数/0/小数/文字列の回帰を追加した。
+
+この上限は **scalar work の計数** であり、prefix 全体の厳密な CPU 時間やメモリ量ではない。
+デコードと V2/SSA/legacy 構築は従来の最大 32 命令による別の制限を維持する。
+同期処理を強制中断できるという主張もしない。
+
+### 追加回帰と因果検証
+
+既存 runner に発見される test file 内へ 5 テストを追加した。
+
+1. 8 write の aggregate budget と、途中観測の非公開。
+2. 実測した予算 N に対する N-1/N/N+1、resources の不変性、input digest の維持、
+   予算不足を formal comparison の exact/pass contribution にしないこと。
+3. canonical Expr の 20 段共有 ADD DAG を隔離 hook で構成し、予約できない
+   recursive evaluation に到達しないこと。評価器の sentinel が到達の有無を検出する。
+4. 欠落・不正な translation metrics、過大計数、翻訳直後のキャンセル。
+5. 実命令による安価な 32 write の成功、33 命令の拒否、依存 ADD を重ねる
+   prefix の予算切れと途中結果の非公開。
+
+32 write の実測は translation 8096 / preflight 192 / evaluation bound 96、合計 8384。
+実 ADD 依存列の予算切れでは合計 10000 以下で観測を空に保つ。
+
+最終の追加 5 テストをそのまま使い、subject だけを入力 ZIP の旧 bytes に戻す
+isolated import-hook calibration では **5/5 が期待どおり失敗**した。
+実装済みの source では既存比較・縮小テストと合わせて **29/29 PASS**。
+テストの expected 値、reference artifact、既存 denominator は弱めていない。
+
+別添 `../local-validation-20260912/validation-calibration.json` と
+`me-final-tests-original-source-red.log` がこの負例を保持する。
+初回 3 テストの赤、途中版の work-default 不具合の赤も別ログで残した。
+
+### 実行結果と切り分け
+
+以下は source commit `d7e5484a8f688166449191c1ac188fc112fc38fe` 上で、
+clean worktree を確認して実行した結果。詳細な引数、所要時間、exit code、log hash は
+別添 `../local-validation-20260912/validation-source.json` を参照する。
+後続の本 MD のみの commit 上での再検査は `validation-final.json` に分けて記録する。
+
+| 検査 | 結果 | 判定範囲・停止点 |
+|---|---|---|
+| subject / mismatch minimization / generated formal evidence | 29/29 PASS | 今回の source と既存の実 production 比較・縮小 |
+| ME 独立 oracle 関連 11 files | 58 PASS / 1 FAIL | `independent-oracle-denominator-preservation` の baseline-unresolved |
+| syntax lint | PASS | 4173 files |
+| module boundaries | PASS | 既存 canonical command |
+| roadmap ownership regression | 22/22 PASS | 既存 Phase 7/8 ownership tests |
+| C4 関連 4 files | 105 PASS / 2 FAIL | constant Boolean / bitfield proof-origin lineage |
+| canonical `npm run check` | FAIL | invariants の architecture-boundaries で esbuild 不足 |
+| canonical `npm run phase9:test` | FAIL | release evidence の browser import で playwright 不足 |
+| canonical `npm run userscript:build` | FAIL | esbuild 不足 |
+
+元 ZIP を変更なしで別ディレクトリへ再展開して、次を再現した。
+
+- ME: `a2-denominator-arm64e-malformed-exclusion-baseline-unresolved`。
+  必要な baseline identity がこの ZIP-only 環境では解決できない。
+- C4: `C4-03 constant Boolean proof output retains the elided canonical operand definitions`
+  と `C4-04 bitfield automatic discovery and actual consumers retain field lineage without claiming an independent store`。
+  どちらも `proof.origin.addresses.includes(...)` の assertion failure。
+
+これらは **入力 ZIP でも再現する**という判定であり、最新 main の既知不具合だと
+確認したわけではない。再現 receipt は `validation-baseline.json`、詳細は
+`baseline-denominator.log` / `baseline-c4-lineage.log`。修正対象と混ぜて green と扱わない。
+この session では外部 dependency の取得や他 lane の修正は行っていない。
+共有 canonical command、既存 timeout、期待値、gate semantics を変更していない。
+
+### 再開方法・残件
+
+配布 source directory の中で、依存不要の今回の回帰は次で再実行できる。
+
+```sh
+node --test tests/machine-effects/production-formal-subject.test.mjs \
+  tests/machine-effects/mismatch-minimization.test.mjs \
+  tests/machine-effects/generated-formal-evidence.test.mjs
+npm run lint
+npm run module-boundaries:test
+node --test tests/phase7/ownership/roadmap-v8-integration.test.mjs \
+  tests/phase8/ownership/roadmap-v8-integration.test.mjs
+```
+
+Node v22.16.0 / npm 10.9.2 で実測。入力には esbuild/playwright package がなく、
+今回の環境でも解決しなかった。依存が正しく供給された環境で canonical check、
+Phase 9、userscript build を再実行し、実際の Git history で denominator baseline を
+照合する必要がある。C4 の上記 lineage failure は別途 owner/PR overlap を確認して扱う。
+
+今回で ME-01 全体、Sail/Isla の追加 ISA coverage、instruction-sequence reduction、
+relaxed-memory outcomes、C4 memory/CFG adoption、全 23 finding、生成物の同期、
+moving-main reconciliation、candidate merge tree、target-device/release の受入が
+完了したとはしない。**Goal ACTIVE / integration CHECKPOINT-LOCKED を維持する。**
+
+
+---
+
+## 2026-09-12: ユーザー側 C1/C3 combined acceptance（ローカル継続）
+
+本節は前回ME budget完成ZIPをそのまま開始点にしたユーザー側担当の追記。
+開始時の本MD全6,356行を読み、上部2026-09-12の役割分担を優先して4分類を完了してから実装した。
+Git fetch/branch操作、push、PR、merge、current-main確認は行っていない。
+本節の結果は今回のローカルbytesだけに対するもの。過去のremote SHA・成功ログは今回の証拠ではない。
+**Goal ACTIVE / integration CHECKPOINT-LOCKED を維持する。**
+
+### 開始identityと担当境界
+
+- 開始ZIP: `hex-ida-roadmap-v8-local-me-budget-20260912.zip`。SHA-256: `c14d543960aeb2bdb4dd3382dc8dec395af89eddb21144c3dd851ecfaee1b3eb`。
+- 開始content-tree SHA-256（path順）: `f3a5e26c1b007dd91ebe901b6811a0ce22d4c790f2617d3263a26f4b26ce8637`。
+  4,699ファイルをrelative-path順に並べた `<sha256>  <relative-path>\n` に対するSHA-256。
+  初回列挙順の記録は `21390f8a4bdba32e5a7c5682e9344bf99a8b22d0cbd528218d736490914fa8ab`。
+  両者は同じファイル集合で順序だけが異なる。Git HEADを推定しない。
+- 事前分類: 配布ルート `../user-c1-c3-evidence/preflight-classification.md`。
+- C1/C3の既存実装を使用。ME/C4、shared alias/MemorySSA、type graph、semantic adapter/compat、
+  runner/ownership/CI/generated/lockfileは変更しない。ME budgetと前回証拠を保持する。
+
+### 完了したローカル項目 / PARTIAL
+
+| Item | 今回の受入 | 状態と残件 |
+|---|---|---|
+| C1-01 | 完全store/loadとsummary、width/endian、stale/copy/alias不明/unknown-call/atomic/volatileの対 | 明示したbounded acceptance完了。共有MemorySSAを第二実装しない |
+| C1-02 | finite arg/root/allocation、direct/exhaustive、wrapper offset合成、digest変更、キャンセル | 明示したbounded acceptance完了。再帰returned-value discovery全域・native indirect universeはPARTIAL |
+| C1-03 | 既存30-query corpusと240-cell root-rename、左右反転・unknown拒否 | ローカルmatrix受入済み。ただし共有#4515 width反例2件が残り全体PARTIAL |
+| C3-01 | recursive struct/union/array、矛盾、soft、budget/cancel/stale、SCC・unknown extent | 明示した48件と既存158件完了。metadata・native全域の型発見は対象外 |
+| C3-02 | 9 profiles×5 aggregates、varargs、strict physical proof、prototype、stack HFA/HVA | 行列と拒否条件を記録。return成功35/45、RISC-V未対応5/45、arm64e共有gap5/45。全profile対応はPARTIAL |
+
+詳細の入力・期待結果・既存test・実測・不足は `analysis-c1-acceptance.md` と `analysis-c3-acceptance.md`。
+新規acceptanceは4ファイル、C1 170件 / C3 185件、合計355件。内部セルとtest件数を二重加算しない。
+
+### 最小の実装修正
+
+1. `pointsto/local.js`: 既存returns-argにcall-result originを保持し、一致するmachine widthからのみtarget幅を補完。
+   arg root/rangeを維持し、MemorySSAのstored-pointer validatorは緩めない。A2 1.3.2→1.3.3。
+2. `darwin-arm64.js`: 既存large aggregate間接引数のregister/stackに1個の64-bit pointer physical pieceを追加。
+3. `aapcs64.js`: 既存stack normalizationでpiece座標を合わせ、proven homogeneous element幅をpiece alignmentに渡す。
+   aggregate-slot alignmentをHFA memberへ誤適用しない。shared validator/core配置規則は変更しない。
+
+既存fixtureはcanonical bitvector kindとextension幅、Darwin alignment、#5598 HFA member packingへ整合。
+既存型testは#5190 unknown-size保持と#5271一度だけのbounded列挙へ整合し、型productionは変更なし。
+新規assertionはunknown extent・初回provider failureを明示的に検査する。
+別コピーで最終testのまま3 productionだけを開始bytesへ戻すと12件中9件が失敗。修正後同じ12件はPASS。
+
+### focused / subsystem / broader実測
+
+| 検査 | 結果 | 主なログ（配布ルート `../user-c1-c3-evidence/logs/`） |
+|---|---|---|
+| 新規focused 4ファイル | 355/355 PASS | `focused-final-355.log` |
+| 既存points-to | 153 PASS / 2 FAIL | `regression-pointsto-final.log` |
+| 既存summary / alias / types | 413/413、95/95、158/158 PASS | `regression-summary-final.log` / `regression-alias.log` / `regression-types-final.log` |
+| 既存Phase6 ABI / Phase8 ABI | 211/211、68/68 PASS | `regression-abi-phase6-final.log` / `regression-abi-phase8-final-fixed.log` |
+| 既存required-profile行列 | 66/66行PASS | `regression-abi-required-matrix-final.log` |
+| integration / crossarch / negative / foundation / analysis / analysis-query / C1境界 / scoped ABI | 合計243件PASS（19+6+19+75+36+42+21+25） | `broader-*.log` |
+| Phase7 ownership | 26 PASS / 1 FAIL（Git履歴不足） | `broader-ownership.log` |
+| lint / module-boundaries | PASS | `lint.log` / `module-boundaries.log` |
+| 保持したME production-formal-subject | 17/17 PASS | `preserved-me-regression.log` |
+| full Phase7 | 外側tool timeoutで未完走、groupに分割して継続 | `broader-phase7.log`、`test-results.jsonl` |
+| esbuild / playwright import確認 | ERR_MODULE_NOT_FOUND | `dependency-gate.log` |
+
+full Phase7のbuffered runnerは発見一覧だけを出した段階で外側呼出しがtimeoutし、
+残存process groupを特定して終了した。first failing testや完走件数を捏造せず、
+以後は独立timeoutつき小groupへ切替えた。同じ巨大処理の再試行はしていない。
+各実行のcommand・timeout・exit code・ログはJSONL。初期の赤/fixture修正途中のログも歴史として残す。
+
+### pre-existing failureと未実行gate
+
+- 共有#4515の2件は元ZIPで同じNoAlias assertionを再現。不正/不明widthからの強すぎる`no`であり環境原因ではない。
+  `baseline-pointsto-failures.log`。既存testを緩めず、共有alias/lattice ownerへ引継ぎ。
+- 元ZIPで型3件の契約不整合を再現し、#5190/#5271の現行契約にtestを合わせた。
+  `baseline-type-failures.log` → `corrected-type-contracts.log`。
+- 元ZIPのHFA旧16-byte期待、Darwin alignment不足も再現。現在はfixture整合と上記局所proof修正でPASS。
+  `baseline-abi-boundary.log` / `baseline-required-matrix.log`。
+- ownershipの1件は元ZIPにもGit objectがなく失敗。`baseline-ownership.log`。履歴を捏造せず残す。
+- arm64eは元ZIPでもraw classifierがx0を返す一方adapter.returnLocationsは空。
+  `abi-return-handoff.mjs` とbaseline/currentログ。これは受入PASS行内に記録した**未実装gap**であり成功placementではない。
+- esbuild/playwrightは現在未解決。別版binaryへの置換、lockfile更新、外部installはしない。
+  canonical full check / full Phase8/9 / build/generated同期 / 独立shadow / moving-main / 実機releaseは未実行・未完了。
+  前回ME/C4既存FAILの歴史も保持するが、今回全ME/C4を再検査したとはしない。
+
+### 次回統合と変更ファイル
+
+今回の開始→終了だけの `analysis-roadmap-v8-user-c1-c3.patch`、manifest、files.txtを配布ルートに同梱。
+前回ME budget差分を二重適用しない。checkpointは本節のappendだけを移植し、既存6,356行を保持する。
+競合候補はcheckpoint、pointsto/local、ABI profile2ファイル、共有test fixture、変更した既存assertion。
+shared semantic adapterがarm64eを直した時は、combined testのKNOWN SHARED-OWNER GAP 5行を成功受入へ更新する。
+ABI/version/registry/generated identityは統合ownerがcurrent-main差分と合わせて最終確認する。
+全履歴の自動mergeや古いbranchの自動統合は行っていない。
+
+今回のrepo差分は18ファイル（既存11変更・新規7追加）、削除・renameなし:
+
+```text
+docs/analysis-c1-acceptance.md
+docs/analysis-c3-acceptance.md
+docs/analysis-roadmap-v8-integration-checkpoint.md
+js/analysis/pointsto/local.js
+js/targets/abi/aapcs64.js
+js/targets/abi/darwin-arm64.js
+tests/phase7/helpers/c1-acceptance.mjs
+tests/phase7/helpers/fixtures.mjs
+tests/phase7/pointsto/c1-combined-acceptance.test.mjs
+tests/phase7/pointsto/loaded-pointer-recovery.test.mjs
+tests/phase7/summary/c1-02-target-matrix.test.mjs
+tests/phase7/summary/c1-combined-acceptance.test.mjs
+tests/phase7/types/c3-combined-acceptance.test.mjs
+tests/phase7/types/c3-layout-review-v6.test.mjs
+tests/phase7/types/consolidated-source-regressions.test.mjs
+tests/phase8/abi/c3-combined-acceptance.test.mjs
+tests/phase8/abi/hex-c3-02-boundaries.test.mjs
+tests/phase8/abi/hex-c3-02-required-profile-matrix.mjs
+```
+
+上記以外の開始時ファイルの保持、patch適用一致、配布ZIP再展開でのfocused再実行は、
+配布ルートのmanifestと `user-c1-c3-evidence/packaging-verification.json` に最終receiptを記録する。
+**C1/C3の今回のbounded local acceptance以外を完了扱いしない。CHECKPOINT-LOCKEDは解除しない。**
+
+
+---
+
+## 2026-09-13: ユーザー側 C1/C3 最終ローカル仕上げ（sole-start ZIP）
+
+この節は今回の唯一の開始 `hex-ida-roadmap-v8-user-c1-c3-20260912.zip` に対する最終実測。
+ZIP SHA-256: `ab230a50d1ea9ce269e10b63ffb207a3192c6572f84ca7024d44126030c1d83d`。
+開始repo content tree SHA-256: `ab4da3a3dd798036cb12a305bf2c364eba25e3a111884a3a628cfc82b3e62b04`。
+Git commit/treeを捏造せずcontent hashで識別。開始checkpoint全6,476行・manifest・C1/C3文書・旧証拠を全文照合し、
+実装前に5分類した。過去記録の「残件」は本節と更新済みacceptance文書の現況で解釈する。上の履歴は削除していない。
+
+### Item statusとknown gapのbefore / after
+
+| Item | 最終status | 今回の証拠・閉じた残件 | 残る境界 |
+|---|---|---|---|
+| C1-01 | COMPLETE（割当の有限ユーザー側受入） | 既存loaded-pointer/summary・成功とstale/unknown/effects/width/endian拒否を保持。points-to270/270 | native全プログラムの精度保証ではない |
+| C1-02 | PARTIAL（有限ユーザー側受入は完了） | combined56/56、summary469/469、既存lifetime9/9を再利用 | 別C1 1.4 recursive-equation schemaの統合・真の再帰戻り値発見は未達 |
+| C1-03 | COMPLETE（割当の有限ユーザー側受入） | #4515既存2FAILを修正。10/10反例検査とalias95/95。root/名前非依存matrix保持 | runtime singleton/TLSの未証明identityを作らない |
+| C3-01 | COMPLETE（割当の有限ユーザー側受入） | recursive graph既存owner無変更。combined48/48、types206/206。PDB positive fixture整合後debug268/268 | native型発見全体・metadata統合は別 |
+| C3-02 | COMPLETE（割当の有限ユーザー側受入） | arm64e5 gapとLP64F/D5 partialを正常placementへ移行。return45/45成功、combined140/140、required66/66行 | 全ABI・全native corpus・実機/独立shadowの完了ではない |
+
+**C1全体PARTIAL。C3は今回割当のローカル受入COMPLETE。研究ロードマップ全体のCOMPLETEではない。CHECKPOINT-LOCKED維持。**
+真のrecursive returned-value discoveryは全体要件のnon-goalではなく、開始本文5074–5090 / 5205–5222にある別component境界。
+現行interprocedural ownerは収束後もlocal.returnProvenanceを公開する。別equation schemaの第二実装を作らず、
+既存C1 1.4成果物との統合時にそのownerで閉じる。有限明示candidateをnative indirect universeの完全探索とは呼ばない。
+
+### Production変更と共有境界
+
+- `pointsto/alias.js`: absolute pointer幅にaccess値幅を代用しない。不明/不正widthはmay/provenance-lost。
+- alias solver1.1.0→1.1.1、MemorySSA proof-coreのexact issuer entryも1.1.1へ。旧強証拠は拒否する。
+- semantic ABI adapterとABI evidence: arm64 owner/arm64e targetの対応を既存registryで検証。二重platform一覧を廃し、mirror identityとphysical proofを維持。
+- hidden-result proof: 明示producer pointer64とhidden pointer32の不一致を拒否。
+- RISC-V: 既存argument flatteningをreturnで共有。proven-ineligible→integer、unknown→拒否、eligible→既存FP/integer pieces。unionと名前Unionのstructを区別。LP64F/D version1.1.0。
+
+productionは6ファイルだけ。ME budget・C4 symbolic/proof/decompiler production・type graph・summary engineは無変更。
+ただしalias移行のfirst failureにより、C2/C4のvalid issuer fixtureを1.1.1へ局所同期した。
+接触はC4 provenance4testと共通load helper1ファイル。単に「ME/C4と完全非接触」とは記録しない。
+package lock・generated・CI・runner・ownership実装は変更していない。
+
+### Focused / subsystem / broader実測
+
+証拠root: `user-c1-c3-final-evidence/`。exact command/timeout/exit/countは `test-results.jsonl`。
+下記groupにはcombinedが含まれ、件数を重複加算しない。
+
+| 検査 | 結果 | results/ log |
+|---|---|---|
+| C1/C3 combined4ファイル | 358/358 PASS（114+56+48+140） | `combined-final-initial.log` |
+| #4515 minimal | 10/10 PASS、開始ZIP9件は7PASS/2FAIL | `fixed-4515.log` / `baseline-4515.log` |
+| arm64e / RISC-V focused | 6/6、12/12 PASS | `arm64e-boundary-fixed.log` / `riscv-expanded-fixed.log` |
+| alias / points-to / summary | 95/95、270/270、469/469 PASS | `alias-regression-fixed.log` / `pointsto-regression-synced.log` / `summary-regression.log` |
+| types / Phase6 ABI / Phase8 ABI | 206/206、211/211、208/208 PASS | `types-regression.log` / `phase6-abi-regression-initial.log` / `phase8-abi-exact-count.log` |
+| required-profile / lifetime | 66/66行、9/9 tests PASS | `phase8-required-matrix.log` / `lifetime-existing-acceptance.log` |
+| Phase7 root / discovery / selected | 428/428、130/130、155/155 PASS | `broader-phase7-root-final.log` / `broader-phase7-discovery.log` / `broader-phase7-selected.log` |
+| shared semantic-v2 selected / debug | 32/32、268/268 PASS | `broader-semantic-alias-memory-abi.log` / `debug-regression-final.log` |
+| Phase8 aggregates / integration / foundation | 30/30、41/41、154/154 PASS | `phase8-aggregates-final.log` / `phase8-integration-final.log` / `phase8-foundation-final.log` |
+| ME production-formal-subject保持検査 | 17/17 PASS | `me-preservation.log` |
+| counterfactual150 | 旧productionだけへ戻すと134PASS/16FAIL。修正後150/150PASS | `counterfactual-production-revert.log` / `counterfactual-fixed-production.log` |
+| lint / module-boundaries | PASS。配布再展開後も再実行しfinal receiptへ記録 | `lint-initial.log` / `module-boundaries-initial.log` |
+
+ローカル既存Clang17.0.0で6C関数×LP64F/LP64D/arm64eをコンパイルし、register/sretの代表例をassemblyで照合。
+18関数のcorroborationであって45行全体のnative oracle/hardware実行ではない。source・assembly・compiler identityを証拠に同梱。
+
+### Full gate / pre-existing / environmentの区別
+
+- full Phase7初回完走は2124PASS/5FAIL。開始clean copyの該当13件でも8PASS/同じ5FAIL。
+  #4630のpositive fixtureを既存#4210契約へ整合後、debug268PASS、該当13件は9PASS/4FAIL。
+  修正後のfull再検査は75秒deadlineで未完走。**2125/4などの未実測全体件数は報告しない。**
+- 残る4件: ownership1件は本物のGit object不足。exact-head3件はgit失敗時にzero-SHA/empty-statusへfallbackする既存verifier境界。
+  環境不足だけで安全性を断定しない。統合ownerで実Git履歴とidentity-unavailable拒否を確認する。verifierは今回無変更。
+- C4由来/navigationの9FAILは開始ZIPでも同じassertionを再現。compat operand9/11、numeric load/history33/40。
+  version fixture同期後も同じ2+7が残る。alias widthを弱めて消さず、C4 ownerへ引継ぎ。
+- 今回解消したpre-existing: #4515の2件、Phase7 call/cache/Mach-O fixture4件、PDB PROC32 positive fixture1件。
+  これらを環境原因に分類せず、production不足とfixture契約ずれを分離した。
+- full Phase8は75秒、full Phase9は10秒でdeadline。full semantic-v2は外側tool timeout後に残存processを終了しselected32へ切替え。
+  同じ巨大commandをtimeout後そのまま再実行せず、関連groupの検証を継続した。
+- `npm run check`とcanonical userscript buildはesbuild未解決でFAIL。Phase9 browserはplaywright未解決。
+  正規local packageを確認したが存在せず、ネット取得・別version偽装・lock改変・skip化はしない。
+
+### CHECKPOINT-LOCKED 最終照合
+
+| 正本にある解除・統合条件 | 今回の証拠 | 判定 / 次の必要操作 |
+|---|---|---|
+| C1/C3の成功/拒否受入と不足の明示 | 上記358件、各acceptance MD、残件owner | 有限ローカル受入完了。C1 recursive component全体は未達 |
+| 別入力の既存寄与を保持しmoving-mainと照合 | sole-start全ファイルのhash保持・局所patch | 保持検証のみ。current main/他成果物照合は未実行 |
+| 結合後full checkとPhase7/8/9の確定結果 | dependency failures、timeouts、focused baseline分類 | 未達。正規依存・Git履歴で最終統合treeを再検証 |
+| canonical build・generated同期・公開SHA/generated ID | buildはesbuild不足、generated無変更 | 未達。統合ownerが実sourceから正規build |
+| exact-head verifier/corpus/toolchain証拠 | content hashと代表compiler corroborationのみ | 未達。実Git identity/全frozen corpus証拠が必要 |
+| 独立shadow/CI・実機/環境受入 | このローカル作業では未実行 | 未達。対応担当・環境で実行 |
+| 本物のmerge tree・main公開/remote統合 | ユーザー禁止に従いwriteなし | 未達。今回のZIPをrelease承認と扱わない |
+
+一つ以上未達のため **CHECKPOINT-LOCKEDは解除しない**。過去のPASS・大部分green・known failureだけという理由では解除しない。
+
+### 次回統合 / 今回だけの変更一覧
+
+`analysis-roadmap-v8-user-c1-c3-final.patch` はこの開始ZIP→最終repoのみ。前回patch/ME patchを再包含しない。
+conflict候補: checkpoint末尾、両acceptance文書、alias/proof issuer version、semantic-function/ABI evidence、RISC-V、既存tests/fixture。
+特にalias versionとproof map、arm64e mappingとmirror validation、RISC-V versionと正常placement期待を分断しない。
+C4 provenance実装をmergeする際は今回のfixture version literalだけを保持し、旧1.1.0を復活させない。
+
+25既存repoファイルを変更。repo新規ファイル0、削除0、rename0。新規証拠/manifest/patchは配布rootの別sidecar。
+
+```text
+docs/analysis-c1-acceptance.md
+docs/analysis-c3-acceptance.md
+docs/analysis-roadmap-v8-integration-checkpoint.md
+js/analysis/alias/solver.js
+js/analysis/pointsto/alias.js
+js/analysis/semantic-function-base.js
+js/semantics/memoryssa/proof-core.js
+js/targets/abi/evidence.js
+js/targets/abi/riscv-lp64.js
+tests/phase7/debug/issue-4630-pdb-proc32-id-namespace.test.mjs
+tests/phase7/issue-3749-semantic-cfg-callsite-noreturn.test.mjs
+tests/phase7/issue-4062-investigation-cache-lifetime.test.mjs
+tests/phase7/legacy-issues-2369-2370.test.mjs
+tests/phase7/pointsto/issue-4165-concrete-address-canonical.test.mjs
+tests/phase7/pointsto/issue-4515-absolute-wrap.test.mjs
+tests/phase7/pointsto/loaded-pointer-recovery.test.mjs
+tests/phase8/abi/c3-combined-acceptance.test.mjs
+tests/phase8/abi/hex-c3-02-boundaries.test.mjs
+tests/phase8/helpers/canonical-load-fixture.mjs
+tests/phase8/memory/c2-byte-forwarding-matrix.test.mjs
+tests/phase8/provenance/committed-view-history.test.mjs
+tests/phase8/provenance/compat-operand-history.test.mjs
+tests/phase8/provenance/public-location-history.test.mjs
+tests/phase8/provenance/stack-escape-history.test.mjs
+tests/semantic-v2/issue-5862-alias-proof-issuer-relation-strict.test.mjs
+```
+
+開始clean copyへの`git apply --check`→適用後全repo byte一致、最終ZIP再展開で358件/lint/module-boundaries再実行の
+実測receiptはfinal evidenceと外部final manifestへ記録する。sealed ZIP自身のSHAは自己参照を避け外部manifest/SHA256SUMSに記載。
+**本節はC1/C3 user laneの局所仕上げであり、統合releaseや研究全体の完了宣言ではない。**

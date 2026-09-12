@@ -17,6 +17,7 @@ import { aggregateLayoutDescriptorPresent, canonicalAggregateLayout } from './ag
  */
 
 const XLEN = 64;
+const UNION_TYPE = /^(?:(?:const|volatile|restrict)\s+)*union\b/i;
 
 /* Integer Calling Convention: a0-a7 are x10-x17. */
 const INTEGER_ARGUMENT_REGISTERS = Object.freeze(['x10','x11','x12','x13','x14','x15','x16','x17']);
@@ -341,6 +342,76 @@ function createClassifier(profile) {
   const hardFloat = profile.floatAbi !== 'soft';
   const abiFlen = profile.floatAbi === 'double' ? 64 : profile.floatAbi === 'single' ? 32 : 0;
 
+  /*
+   * psABI hardware floating-point flattening recurses through the full
+   * struct/array hierarchy: `struct { struct { float f[1]; } a[2]; }` is
+   * classified exactly like `struct { float f0; float f1; }`. Leaves carry
+   * their proven absolute byte span so register placement can be validated
+   * against the physical layout. A nested aggregate without a proven layout,
+   * or an undecidable nested leaf, remains unknown. Only a proven ineligible
+   * layout may use the integer convention (#5619).
+   */
+  function collectFlattenLeaves(member, offset) {
+    const classifiedMember = parameterClass(member);
+    if (classifiedMember.vector || (!classifiedMember.floating && classifiedMember.bits > XLEN)) return null;
+    if (!classifiedMember.aggregate) {
+      return [{ member:classifiedMember, byteOffset:offset, bytes:Math.ceil(classifiedMember.bits / 8) }];
+    }
+    if (UNION_TYPE.test(classifiedMember.type)) return null;
+    const nestedCanonical = canonicalAggregateLayout(member);
+    if (!nestedCanonical) return null;
+    const leaves = [];
+    for (const nested of nestedCanonical.members) {
+      const nestedLeaves = collectFlattenLeaves(nested, offset + nested.byteOffset);
+      if (!nestedLeaves) return null;
+      leaves.push(...nestedLeaves);
+    }
+    return leaves;
+  }
+
+  function flattenAggregate(parameter) {
+    const canonical = canonicalAggregateLayout(parameter);
+    const members = canonical?.members ?? aggregateMembers(parameter);
+    if (!members) return null;
+    if (members.length < 1 || members.length > 2) return { eligible:false, known:true };
+    const classifiedMembers = members.map((member) => parameterClass(member));
+    const layout = canonical
+      ? { bytes:canonical.bytes, members:canonical.members }
+      : aggregateMemberLayout(members, classifiedMembers);
+    if (!layout) return null;
+    // The psABI never flattens unions into FP registers, even a one-member union.
+    if (UNION_TYPE.test(parameter.type ?? parameter.returnType ?? parameter.returnAggregate?.type ?? '')) {
+      return { eligible:false, known:true };
+    }
+    const leaves = [];
+    for (const [memberIndex, member] of members.entries()) {
+      if (!classifiedMembers[memberIndex].aggregate) {
+        const classifiedMember = classifiedMembers[memberIndex];
+        if (classifiedMember.vector || classifiedMember.bits > XLEN) return { eligible:false, known:true };
+        leaves.push({ member:classifiedMember,
+          byteOffset:layout.members?.[memberIndex]?.byteOffset ?? 0,
+          bytes:layout.members?.[memberIndex]?.bytes ?? Math.ceil(classifiedMember.bits / 8) });
+        continue;
+      }
+      const nestedLeaves = collectFlattenLeaves(member, layout.members?.[memberIndex]?.byteOffset ?? 0);
+      // An unproven nested layout leaves FP-eligibility undecidable: fail
+      // closed to unknown instead of minting an exact integer slot (#5619).
+      if (!nestedLeaves) return null;
+      leaves.push(...nestedLeaves);
+    }
+    if (!leaves.length || leaves.length > 2) return { eligible:false, known:true };
+    const flattenMembers = leaves.map((leaf) => leaf.member);
+    const floatMembers = flattenMembers.filter((member) => member.floating && member.bits <= abiFlen);
+    if (!floatMembers.length || flattenMembers.some((member) => member.floating && member.bits > abiFlen)) return { eligible:false, known:true };
+    if (flattenMembers.some((member) => !member.floating && member.bits > XLEN)) return { eligible:false, known:true };
+    return {
+      eligible:true,
+      known:true,
+      members:flattenMembers,
+      layout:{ bytes:canonical?.bytes ?? layout.bytes, members:leaves.map((leaf) => ({ byteOffset:leaf.byteOffset, bytes:leaf.bytes })) },
+    };
+  }
+
   function classifyArguments(instruction, options = {}) {
     const prototype = callPrototypeOf(instruction, options);
     const parameters = parameterList(prototype);
@@ -399,71 +470,6 @@ function createClassifier(profile) {
       vectorCursor = Math.max(vectorCursor, start + group);
       return Array.from({ length:group }, (_unused, index) => `v${start + index}`);
     }
-    /*
-     * psABI hardware floating-point flattening recurses through the full
-     * struct/array hierarchy: `struct { struct { float f[1]; } a[2]; }` is
-     * classified exactly like `struct { float f0; float f1; }`. Leaves carry
-     * their proven absolute byte span so register placement can be validated
-     * against the physical layout. A nested aggregate without a proven layout,
-     * or a leaf that is neither a FP real nor an integer, keeps the previous
-     * fail-closed ineligibility (integer convention, still exact) (#5619).
-     */
-    function collectFlattenLeaves(member, offset) {
-      const classifiedMember = parameterClass(member);
-      if (classifiedMember.vector || (!classifiedMember.floating && classifiedMember.bits > XLEN)) return null;
-      if (!classifiedMember.aggregate) {
-        return [{ member:classifiedMember, byteOffset:offset, bytes:Math.ceil(classifiedMember.bits / 8) }];
-      }
-      const nestedCanonical = canonicalAggregateLayout(member);
-      if (!nestedCanonical) return null;
-      const leaves = [];
-      for (const nested of nestedCanonical.members) {
-        const nestedLeaves = collectFlattenLeaves(nested, offset + nested.byteOffset);
-        if (!nestedLeaves) return null;
-        leaves.push(...nestedLeaves);
-      }
-      return leaves;
-    }
-
-    function flattenAggregate(parameter) {
-      const canonical = canonicalAggregateLayout(parameter);
-      const members = canonical?.members ?? aggregateMembers(parameter);
-      if (!members) return null;
-      if (members.length < 1 || members.length > 2) return { eligible:false, known:true };
-      const classifiedMembers = members.map((member) => parameterClass(member));
-      const layout = canonical
-        ? { bytes:canonical.bytes, members:canonical.members }
-        : aggregateMemberLayout(members, classifiedMembers);
-      if (!layout) return null;
-      const leaves = [];
-      for (const [memberIndex, member] of members.entries()) {
-        if (!classifiedMembers[memberIndex].aggregate) {
-          const classifiedMember = classifiedMembers[memberIndex];
-          if (classifiedMember.vector || classifiedMember.bits > XLEN) return { eligible:false, known:true };
-          leaves.push({ member:classifiedMember,
-            byteOffset:layout.members?.[memberIndex]?.byteOffset ?? 0,
-            bytes:layout.members?.[memberIndex]?.bytes ?? Math.ceil(classifiedMember.bits / 8) });
-          continue;
-        }
-        const nestedLeaves = collectFlattenLeaves(member, layout.members?.[memberIndex]?.byteOffset ?? 0);
-        // An unproven nested layout leaves FP-eligibility undecidable: fail
-        // closed to unknown instead of minting an exact integer slot (#5619).
-        if (!nestedLeaves) return null;
-        leaves.push(...nestedLeaves);
-      }
-      if (!leaves.length || leaves.length > 2) return { eligible:false, known:true };
-      const flattenMembers = leaves.map((leaf) => leaf.member);
-      const floatMembers = flattenMembers.filter((member) => member.floating && member.bits <= abiFlen);
-      if (!floatMembers.length || flattenMembers.some((member) => member.floating && member.bits > abiFlen)) return { eligible:false, known:true };
-      if (flattenMembers.some((member) => !member.floating && member.bits > XLEN)) return { eligible:false, known:true };
-      return {
-        eligible:true,
-        known:true,
-        members:flattenMembers,
-        layout:{ bytes:canonical?.bytes ?? layout.bytes, members:leaves.map((leaf) => ({ byteOffset:leaf.byteOffset, bytes:leaf.bytes })) },
-      };
-    }
-
     /*
      * psABI: a return value larger than 2*XLEN is returned in memory, and the
      * caller passes the destination pointer as an implicit first integer
@@ -1021,44 +1027,38 @@ function createClassifier(profile) {
     }
     if (aggregate) {
       if (bits > 2 * XLEN) return indirectResult();
-      const members = aggregateLayout?.members
-        ?? aggregateMembers(prototype.returnAggregate || prototype);
-      if (hardFloat && members) {
-        const classifiedMembers = members.map((member) => parameterClass(member));
-        const memberLayout = aggregateLayout
-          ? { bytes:aggregateLayout.bytes, members:aggregateLayout.members }
-          : aggregateMemberLayout(members, classifiedMembers);
-        if (!memberLayout) {
-          return { reg:null, partial:true, location:'unknown', reason:`${profile.id}-small-aggregate-return-member-layout-unproven` };
-        }
-        const eligible = classifiedMembers.length >= 1 && classifiedMembers.length <= 2
-          && classifiedMembers.some((member) => member.floating && member.bits <= abiFlen)
-          && classifiedMembers.every((member) => !member.aggregate && !member.vector && member.bits <= XLEN && (!member.floating || member.bits <= abiFlen));
-        if (eligible) {
-          const memberBits = classifiedMembers.reduce((sum, member) => sum + member.bits, 0);
-          const memberBytes = memberLayout.members.reduce((sum, member) => sum + member.bytes, 0);
-          if (memberBits !== bits || memberBytes !== Math.ceil(bits / 8)
-            || memberLayout.bytes !== Math.ceil(bits / 8)) {
-            return { reg:null, partial:true, location:'unknown', reason:`${profile.id}-small-aggregate-return-layout-incomplete` };
-          }
-          let fp=0, integer=0;
-          const parts=classifiedMembers.map((member, memberIndex) => {
-            const bytes = memberLayout.members[memberIndex].bytes;
-            const part = aggregatePiece({
-              memberIndex,
-              pieceIndex:memberIndex,
-              reg:member.floating ? FLOAT_ARGUMENT_REGISTERS[fp++] : INTEGER_RETURN_REGISTERS[integer++],
-              bits:member.bits,
-              bytes,
-              byteOffset:memberLayout.members[memberIndex].byteOffset,
-              abiClass:member.floating ? 'float' : 'integer',
-            });
-            return part;
-          });
-          return { reg:parts[0].reg, regs:parts.map((part)=>part.reg), parts, pieces:parts, bits, bytes:memberLayout.bytes, aggregate:true, abiClass:'aggregate-hard-float-flattened' };
-        }
+      // Return values use the first named argument's canonical flattening rule.
+      // Known ineligible layouts use integer registers; missing nested proof
+      // must stay unknown rather than being promoted to that exact fallback.
+      const flattening = hardFloat ? flattenAggregate(aggregateLayoutParameter) : null;
+      if (hardFloat && flattening == null) {
+        return { reg:null, partial:true, location:'unknown', reason:`${profile.id}-small-aggregate-return-flattening-not-proven` };
       }
-      if (hardFloat) return { reg:null, partial:true, location:'unknown', reason:`${profile.id}-small-aggregate-return-flattening-not-proven` };
+      if (flattening?.eligible) {
+        const classifiedMembers = flattening.members;
+        const memberLayout = flattening.layout;
+        const memberBits = classifiedMembers.reduce((sum, member) => sum + member.bits, 0);
+        const memberBytes = memberLayout.members.reduce((sum, member) => sum + member.bytes, 0);
+        if (memberBits !== bits || memberBytes !== Math.ceil(bits / 8)
+          || memberLayout.bytes !== Math.ceil(bits / 8)) {
+          return { reg:null, partial:true, location:'unknown', reason:`${profile.id}-small-aggregate-return-layout-incomplete` };
+        }
+        let fp=0, integer=0;
+        const parts=classifiedMembers.map((member, memberIndex) => {
+          const bytes = memberLayout.members[memberIndex].bytes;
+          const part = aggregatePiece({
+            memberIndex,
+            pieceIndex:memberIndex,
+            reg:member.floating ? FLOAT_ARGUMENT_REGISTERS[fp++] : INTEGER_RETURN_REGISTERS[integer++],
+            bits:member.bits,
+            bytes,
+            byteOffset:memberLayout.members[memberIndex].byteOffset,
+            abiClass:member.floating ? 'float' : 'integer',
+          });
+          return part;
+        });
+        return { reg:parts[0].reg, regs:parts.map((part)=>part.reg), parts, pieces:parts, bits, bytes:memberLayout.bytes, aggregate:true, abiClass:'aggregate-hard-float-flattened' };
+      }
       const regs = bits > XLEN ? INTEGER_RETURN_REGISTERS.slice(0, 2) : INTEGER_RETURN_REGISTERS.slice(0, 1);
       const pieces = regs.map((reg, pieceIndex) => aggregatePiece({
         pieceIndex,
@@ -1147,7 +1147,7 @@ function createRiscvAbi(profile) {
   };
   return new ABIPlugin({
     id:profile.id,
-    semanticVersion:'1',
+    semanticVersion:profile.floatAbi === 'soft' ? '1' : '1.1.0',
     architectureId:'riscv64',
     platformPredicate:({ platform }) => !platform || ['linux','freebsd','netbsd','openbsd','unix','bare-metal','unknown'].includes(platform),
     // The classifier's vectorVariantRequested() accepts both the canonical

@@ -39,7 +39,27 @@
       "tests/phase7/types/issue-4503-structural-array-claims.test.mjs",
       "js/analysis/discovery/artifact.js",
       "js/analysis/discovery/producers.js",
-      "tests/phase7/discovery/x03-ambiguity-artifact.test.mjs"
+      "tests/phase7/discovery/x03-ambiguity-artifact.test.mjs",
+      "tests/phase7/helpers/c1-acceptance.mjs",
+      "tests/phase7/helpers/fixtures.mjs",
+      "tests/phase7/pointsto/c1-combined-acceptance.test.mjs",
+      "tests/phase7/summary/c1-02-target-matrix.test.mjs",
+      "tests/phase7/summary/c1-combined-acceptance.test.mjs",
+      "tests/phase7/types/c3-combined-acceptance.test.mjs",
+      "tests/phase7/types/consolidated-source-regressions.test.mjs",
+      "js/analysis/alias/solver.js",
+      "js/analysis/pointsto/alias.js",
+      "tests/phase7/debug/issue-4630-pdb-proc32-id-namespace.test.mjs",
+      "tests/phase7/issue-3749-semantic-cfg-callsite-noreturn.test.mjs",
+      "tests/phase7/issue-4062-investigation-cache-lifetime.test.mjs",
+      "tests/phase7/legacy-issues-2369-2370.test.mjs",
+      "tests/phase7/pointsto/issue-4165-concrete-address-canonical.test.mjs",
+      "tests/phase7/pointsto/issue-4515-absolute-wrap.test.mjs",
+      "js/analysis/summary/contract-core.js",
+      "js/analysis/summary/interprocedural.js",
+      "js/analysis/summary/return-equations.js",
+      "tests/phase7/summary/c1-02-recursive-return-discovery.test.mjs",
+      "tests/phase7/summary/issue-5242-contract-version-source-of-truth.test.mjs"
     ],
     "phase8": [
       "tools/validation/phase8/decoded-function-adapter.mjs",
@@ -149,7 +169,10 @@
       "tests/phase8/provenance/arm64-expanded-semantic-denominator.test.mjs",
       "js/decompiler/phase8/transaction-core.js",
       "js/decompiler/phase8/pass-validation-core.js",
-      "js/decompiler/phase8/proof-plan.js"
+      "js/decompiler/phase8/proof-plan.js",
+      "tests/phase8/abi/c3-combined-acceptance.test.mjs",
+      "tests/phase8/abi/hex-c3-02-boundaries.test.mjs",
+      "tests/phase8/abi/hex-c3-02-required-profile-matrix.mjs"
     ],
     "symbolic": [
       "js/symbolic/egraph/graph.js",
@@ -406,7 +429,15 @@
       "js/rebuild/format-safe.js",
       "js/rebuild/transaction-v2.js",
       "tests/stage2/x03-rebuild-discovery.test.mjs",
-      "tests/scpa/transform-native.test.mjs"
+      "tests/scpa/transform-native.test.mjs",
+      "docs/analysis-c1-acceptance.md",
+      "docs/analysis-c3-acceptance.md",
+      "js/targets/abi/aapcs64.js",
+      "js/targets/abi/darwin-arm64.js",
+      "js/semantics/memoryssa/proof-core.js",
+      "js/targets/abi/evidence.js",
+      "js/targets/abi/riscv-lp64.js",
+      "tests/semantic-v2/issue-5862-alias-proof-issuer-relation-strict.test.mjs"
     ]
   }
 }

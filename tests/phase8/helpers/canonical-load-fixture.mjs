@@ -32,7 +32,7 @@ export function canonicalLoad(bits = 32) {
   const irIdentity = { functionId:canonicalIr.functionId, semanticIrId:'ir', semanticIrContractVersion:'2.0.0', semanticIrDigest:stableDigest(canonicalIr) };
   const memorySsa = buildMemorySsa(canonicalIr, cfg, { regions:[region], resolveRegion:() => region,
     queryAlias:() => ({ relation:'must', reasonCodes:['identical-region-identity'], evidenceIds:['canonical-fixture-alias'],
-      proof:{ analyzerId:'phase7.alias.solver', analyzerVersion:'1.1.0', completeness:'complete', stopReason:null } }),
+      proof:{ analyzerId:'phase7.alias.solver', analyzerVersion:'1.1.1', completeness:'complete', stopReason:null } }),
     identity:{ ...irIdentity, binaryId:'constant-history', sliceId:'slice', snapshotId:'snapshot',
       scalarSsaId:'ssa', scalarSsaBuildVersion:'1.0.0', scalarSsaDigest:'ssa-digest',
       memorySsaId:'mssa', memorySsaBuildVersion:MEMORY_SSA_BUILD_VERSION, analyzerVersion:'memoryssa-fixture' },

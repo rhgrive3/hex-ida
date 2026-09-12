@@ -88,9 +88,9 @@ export class FunctionFixture {
     const nodeId = `node_${id}`;
     this.#push({
       id: nodeId, kind: 'const', blockId, inputs: [], outputs: [id],
-      attributes: { constant: { value: String(value), widthBits } }, origin: origin(nodeId),
+      attributes: { constant: { kind: 'bitvector', value: String(value), widthBits } }, origin: origin(nodeId),
     });
-    return this.#value(id, nodeId, { kind: 'bitvector', widthBits }, { constant: { value: String(value), widthBits } });
+    return this.#value(id, nodeId, { kind: 'bitvector', widthBits }, { constant: { kind: 'bitvector', value: String(value), widthBits } });
   }
 
   /** Reads architectural/logical state (a register), producing a pointer value. */
@@ -122,7 +122,10 @@ export class FunctionFixture {
 
   cast(id, kind, input, { blockId = this.current, widthBits = 64 } = {}) {
     const nodeId = `node_${id}`;
-    this.#push({ id: nodeId, kind, blockId, inputs: [input], outputs: [id], origin: origin(nodeId) });
+    const attributes = kind === 'zext' || kind === 'sext'
+      ? { fromBits: this.values.find((value) => value.id === input)?.machineType?.widthBits, toBits: widthBits }
+      : {};
+    this.#push({ id: nodeId, kind, blockId, inputs: [input], outputs: [id], attributes, origin: origin(nodeId) });
     return this.#value(id, nodeId, { kind: 'bitvector', widthBits }, null);
   }
 

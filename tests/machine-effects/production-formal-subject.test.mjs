@@ -205,3 +205,151 @@ test('source bytes are checked during assessment without modifying the source fi
   } finally { fs.readFileSync = read; }
   assert.deepEqual(read(sourceUrl), original);
 });
+
+test('subject scalar work is shared across every write in the prefix', () => {
+  const instructions = Array.from({ length: 8 }, (_, index) => ({
+    address: String(0x1000 + index * 2), rawBytes: [0x85, 0x40], // c.li x1, 1
+  }));
+  const result = observeRv64RegisterPrefix(instructions, { maxWorkItems: 300 });
+  assert.equal(result.status, 'budget', 'eight separately affordable translations must not reset one prefix budget');
+  assert.equal(result.reason, 'subject-work-budget');
+  assert.deepEqual(result.observables, {}, 'earlier completed writes cannot leak from an incomplete prefix');
+  assert.ok(result.resources.accountedWorkItems <= 300);
+});
+
+test('subject work receipts support exact N-1/N/N+1 replay without changing input identity', () => {
+  const baseline = observeRv64RegisterPrefix(prefix());
+  assert.equal(baseline.status, 'observed');
+  const resources = baseline.resources;
+  assert.ok(resources.translationWorkItems > 0);
+  assert.ok(resources.evaluationPreflightWorkItems > 0);
+  assert.ok(resources.evaluationUpperBound > 0);
+  assert.equal(resources.accountedWorkItems, resources.translationWorkItems
+    + resources.evaluationPreflightWorkItems + resources.evaluationUpperBound);
+  assert.ok(Object.isFrozen(resources));
+  const required = resources.accountedWorkItems;
+  const short = observeRv64RegisterPrefix(prefix(), { maxWorkItems: required - 1 });
+  assert.equal(short.status, 'budget');
+  assert.equal(short.reason, 'subject-work-budget');
+  assert.deepEqual(short.observables, {});
+  for (const maxWorkItems of [required, required + 1]) {
+    const result = observeRv64RegisterPrefix(prefix(), { maxWorkItems });
+    assert.equal(result.status, 'observed');
+    assert.deepEqual(result.resources, resources);
+    assert.deepEqual(result.observables, baseline.observables);
+    assert.equal(result.inputDigest, baseline.inputDigest);
+  }
+  const refused = assessProductionFormalEvidence(record, { maxWorkItems: required - 1 });
+  assert.equal(refused.assessment.exactAuthorized, false);
+  assert.equal(refused.assessment.passContribution, 0);
+});
+
+test('shared Expr DAGs are costed before the recursive evaluator can expand them', () => {
+  const translator = new URL('../../js/symbolic/translate/semantic-ir.js', import.meta.url).href;
+  const evaluator = new URL('../../js/symbolic/expr/evaluate.js', import.meta.url).href;
+  const subject = new URL('../../tools/validation/machine-effects/production-subject.mjs', import.meta.url).href;
+  const program = `
+    import assert from 'node:assert/strict';
+    import { registerHooks } from 'node:module';
+    globalThis.__expandedSubjectDag = false;
+    globalThis.__unbudgetedSubjectEvaluations = 0;
+    registerHooks({ load(url, context, nextLoad) {
+      const loaded = nextLoad(url, context);
+      let source = String(loaded.source);
+      if (url === ${JSON.stringify(translator)}) {
+        const marker = 'export function translateSemanticIR(target, options = {}) {';
+        assert.equal(source.split(marker).length, 2);
+        source = "import { createBinary as stressBinary } from '../expr/index.js';\\n" + source.replace(marker,
+          'export function translateSemanticIR(target, options = {}) {' +
+          ' const result = originalTranslate(target, options);' +
+          ' let expression = createBv(64, 1n);' +
+          ' for (let i = 0; i < 20; i++) expression = stressBinary("add", expression, expression);' +
+          ' globalThis.__expandedSubjectDag = true;' +
+          ' return { ...result, expression }; }\\nfunction originalTranslate(target, options = {}) {');
+      } else if (url === ${JSON.stringify(evaluator)}) {
+        const marker = 'export function evaluateExpr(expr, env = null) {';
+        assert.equal(source.split(marker).length, 2);
+        source = source.replace(marker, marker +
+          ' if (globalThis.__expandedSubjectDag) { globalThis.__unbudgetedSubjectEvaluations++;' +
+          ' throw new Error("recursive-evaluation-without-budget"); }');
+      }
+      return { ...loaded, source };
+    } });
+    const { observeRv64RegisterPrefix } = await import(${JSON.stringify(subject)});
+    const result = observeRv64RegisterPrefix([{ address: '0x1000', rawBytes: [0x85, 0x40] }]);
+    assert.equal(globalThis.__expandedSubjectDag, true);
+    assert.equal(result.status, 'budget');
+    assert.equal(result.reason, 'subject-work-budget');
+    assert.equal(globalThis.__unbudgetedSubjectEvaluations, 0, 'the evaluator must never expand an unaffordable DAG');
+    assert.deepEqual(result.observables, {});
+  `;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', program], {
+    encoding: 'utf8', timeout: 15000, maxBuffer: 1024 * 1024,
+  });
+  assert.equal(child.status, 0, child.stderr || String(child.error));
+});
+
+test('missing or malformed translation work cannot bypass the subject budget', () => {
+  const translator = new URL('../../js/symbolic/translate/semantic-ir.js', import.meta.url).href;
+  const subject = new URL('../../tools/validation/machine-effects/production-subject.mjs', import.meta.url).href;
+  const program = `
+    import assert from 'node:assert/strict';
+    import { registerHooks } from 'node:module';
+    registerHooks({ load(url, context, nextLoad) {
+      const loaded = nextLoad(url, context);
+      if (url !== ${JSON.stringify(translator)}) return loaded;
+      const source = String(loaded.source);
+      const marker = 'export function translateSemanticIR(target, options = {}) {';
+      assert.equal(source.split(marker).length, 2);
+      return { ...loaded, source: source.replace(marker,
+        'export function translateSemanticIR(target, options = {}) {' +
+        ' const result = originalTranslate(target, options);' +
+        ' globalThis.__subjectCancel?.abort();' +
+        ' return { ...result, metrics: { ...result.metrics, workItems: globalThis.__subjectWork } };' +
+        ' }\\nfunction originalTranslate(target, options = {}) {') };
+    } });
+    const { observeRv64RegisterPrefix } = await import(${JSON.stringify(subject)});
+    const prefix = [{ address: '0x1000', rawBytes: [0x85, 0x40] }];
+    for (const work of [undefined, NaN, Infinity, -1, 0, 0.5, '1']) {
+      globalThis.__subjectWork = work;
+      const result = observeRv64RegisterPrefix(prefix);
+      assert.equal(result.status, 'partial', 'invalid work=' + String(work));
+      assert.equal(result.reason, 'subject-invalid-work-accounting');
+      assert.deepEqual(result.observables, {});
+    }
+    globalThis.__subjectWork = 10001;
+    assert.equal(observeRv64RegisterPrefix(prefix).status, 'budget');
+    globalThis.__subjectCancel = new AbortController();
+    const cancelled = observeRv64RegisterPrefix(prefix, { signal: globalThis.__subjectCancel.signal });
+    assert.equal(cancelled.status, 'cancelled', 'late cancellation wins over exhausted work');
+    assert.deepEqual(cancelled.observables, {});
+  `;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', program], {
+    encoding: 'utf8', timeout: 15000, maxBuffer: 1024 * 1024,
+  });
+  assert.equal(child.status, 0, child.stderr || String(child.error));
+});
+
+test('native prefix limits keep affordable 32-write inputs and withhold dependent partial results', () => {
+  const independent = Array.from({ length: 32 }, (_, index) => ({
+    address: String(0x1000 + index * 2), rawBytes: [0x85, 0x40], // c.li x1, 1
+  }));
+  const accepted = observeRv64RegisterPrefix(independent);
+  assert.equal(accepted.status, 'observed');
+  assert.equal(accepted.instructionCount, 32);
+  assert.equal(accepted.assignments.length, 32);
+  assert.equal(accepted.observables['register:x1'], '0x0000000000000001');
+  assert.ok(accepted.resources.accountedWorkItems <= 10000);
+  const tooLong = [...independent, { address: String(0x1040), rawBytes: [0x85, 0x40] }];
+  assert.equal(observeRv64RegisterPrefix(tooLong).reason, 'subject-instruction-budget');
+
+  // Real native ADDs build shared SSA dependencies, without injected expressions.
+  const dependent = [independent[0], ...Array.from({ length: 12 }, (_, index) => ({
+    address: String(0x1002 + index * 4), rawBytes: [0xb3, 0x80, 0x10, 0x00], // add x1, x1, x1
+  }))];
+  const limited = observeRv64RegisterPrefix(dependent);
+  assert.equal(limited.status, 'budget');
+  assert.equal(limited.reason, 'subject-work-budget');
+  assert.deepEqual(limited.observables, {});
+  assert.ok(limited.resources.accountedWorkItems <= 10000);
+});

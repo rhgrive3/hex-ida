@@ -16,7 +16,7 @@ export const CANONICAL_ALIAS_ISSUERS = Object.freeze(new Set([
 // incompatible provider answer as canonical merely by recomputing its digest.
 export const CANONICAL_ALIAS_ISSUER_VERSIONS = Object.freeze({
   'phase7.alias.a1-region': '1.0.0',
-  'phase7.alias.solver': '1.1.0',
+  'phase7.alias.solver': '1.1.1',
 });
 export const CANONICAL_ACCESS_ISSUER = 'semantic-memoryssa.access';
 export const CANONICAL_STORE_VALUE_ISSUER = 'semantic-memoryssa.store-operand';

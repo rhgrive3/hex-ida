@@ -12,11 +12,13 @@ test('C3 review: overlapping struct members withhold a certain layout instead of
 });
 test('C3 review: unknown field width cannot be laundered into a zero-byte member',()=>{
  const g=new TypeConstraintGraph({snapshotId:'field-hole'});hard(g,'S',{kind:'struct',sizeBytes:8,members:[{offset:0,memberType:{kind:'unknown'}}]});
- assert.equal(reconstructStructuralType(g,'S').kind,'unknown');
+ // #5190 preserves the declared struct and its bound without inventing a member extent.
+ const r=reconstructStructuralType(g,'S');assert.equal(r.kind,'struct');assert.equal(r.sizeBytes,8);
+ assert.equal(r.members.length,1);assert.equal(r.members[0].sizeBytes,null);assert.equal(r.members[0].type.kind,'unknown');
 });
 test('C3 review: an incomplete aggregate declaration retains unknown extent without throwing',()=>{
  const g=new TypeConstraintGraph({snapshotId:'incomplete'});hard(g,'S',{kind:'struct'});
- const r=reconstructStructuralType(g,'S');assert.equal(r.kind,'struct');assert.equal(r.sizeBytes,null);assert.equal(r.alignBytes,null);
+ const r=reconstructStructuralType(g,'S');assert.equal(r.kind,'struct');assert.equal(r.sizeBytes,null);assert.equal(r.alignBytes,1); // #5190 canonical minimum alignment; not external ABI evidence.
 });
 test('C3 review: nested array/union pointer references participate in the existing recursive SCC',()=>{
  const g=new TypeConstraintGraph({snapshotId:'nested-cycle'});

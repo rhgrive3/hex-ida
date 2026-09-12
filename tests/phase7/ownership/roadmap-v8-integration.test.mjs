@@ -181,3 +181,92 @@ test('combined SYM-01 and X-03 declare exact worker, rebuild and verifier paths'
     assert.throws(() => validateRoadmapManifest(widened), /outside integration owner/);
   }
 });
+
+test('user C1 C3 and ME ZIP declares its cumulative 39-file union with exact shared ownership', () => {
+  const manifest = loadRoadmapManifest(), assignments = validateRoadmapManifest(manifest);
+  const expected = {
+    "integration": [
+        "docs/analysis-roadmap-v8-integration-checkpoint.md",
+        "tests/machine-effects/production-formal-subject.test.mjs",
+        "tools/validation/machine-effects/production-subject.mjs",
+        "docs/analysis-c1-acceptance.md",
+        "docs/analysis-c3-acceptance.md",
+        "js/targets/abi/aapcs64.js",
+        "js/targets/abi/darwin-arm64.js",
+        "js/semantics/memoryssa/proof-core.js",
+        "js/targets/abi/evidence.js",
+        "js/targets/abi/riscv-lp64.js",
+        "tests/semantic-v2/issue-5862-alias-proof-issuer-relation-strict.test.mjs"
+    ],
+    "phase7": [
+        "js/analysis/pointsto/local.js",
+        "tests/phase7/helpers/c1-acceptance.mjs",
+        "tests/phase7/helpers/fixtures.mjs",
+        "tests/phase7/pointsto/c1-combined-acceptance.test.mjs",
+        "tests/phase7/pointsto/loaded-pointer-recovery.test.mjs",
+        "tests/phase7/summary/c1-02-target-matrix.test.mjs",
+        "tests/phase7/summary/c1-combined-acceptance.test.mjs",
+        "tests/phase7/types/c3-combined-acceptance.test.mjs",
+        "tests/phase7/types/c3-layout-review-v6.test.mjs",
+        "tests/phase7/types/consolidated-source-regressions.test.mjs",
+        "js/analysis/alias/solver.js",
+        "js/analysis/pointsto/alias.js",
+        "js/analysis/semantic-function-base.js",
+        "tests/phase7/debug/issue-4630-pdb-proc32-id-namespace.test.mjs",
+        "tests/phase7/issue-3749-semantic-cfg-callsite-noreturn.test.mjs",
+        "tests/phase7/issue-4062-investigation-cache-lifetime.test.mjs",
+        "tests/phase7/legacy-issues-2369-2370.test.mjs",
+        "tests/phase7/pointsto/issue-4165-concrete-address-canonical.test.mjs",
+        "tests/phase7/pointsto/issue-4515-absolute-wrap.test.mjs"
+    ],
+    "phase8": [
+        "tests/phase8/abi/c3-combined-acceptance.test.mjs",
+        "tests/phase8/abi/hex-c3-02-boundaries.test.mjs",
+        "tests/phase8/abi/hex-c3-02-required-profile-matrix.mjs",
+        "tests/phase8/helpers/canonical-load-fixture.mjs",
+        "tests/phase8/memory/c2-byte-forwarding-matrix.test.mjs",
+        "tests/phase8/provenance/committed-view-history.test.mjs",
+        "tests/phase8/provenance/compat-operand-history.test.mjs",
+        "tests/phase8/provenance/public-location-history.test.mjs",
+        "tests/phase8/provenance/stack-escape-history.test.mjs"
+    ]
+};
+  const union = Object.values(expected).flat();
+  assert.equal(union.length, 39);
+  for (const phase of ['phase7', 'phase8']) {
+    validateRoadmapInventory(BRANCH, phase, union);
+    for (const [owner, files] of Object.entries(expected)) for (const file of files) {
+      assert.equal(assignments.get(file), owner, file);
+      const missing = structuredClone(manifest);
+      missing.owners[owner] = missing.owners[owner].filter(path => path !== file);
+      assert.throws(() => validateRoadmapInventory(BRANCH, phase, union, missing), /undeclared roadmap path/);
+    }
+  }
+  for (const file of ['js/targets/abi/registry.js', 'js/semantics/memoryssa/contract.js',
+    'docs/analysis-unreviewed.md']) {
+    const widened = structuredClone(manifest); widened.owners.integration.push(file);
+    assert.throws(() => validateRoadmapManifest(widened), /outside integration owner/);
+  }
+});
+
+test('next C1 recursive lane uses the existing canonical summary inventory', () => {
+  const manifest = loadRoadmapManifest(), assignments = validateRoadmapManifest(manifest);
+  const files = [
+    "js/analysis/summary/contract-core.js",
+    "js/analysis/summary/contract.js",
+    "js/analysis/summary/interprocedural.js",
+    "js/analysis/summary/local-core.js",
+    "js/analysis/summary/local.js",
+    "js/analysis/summary/return-equations.js",
+    "tests/phase7/summary/c1-02-recursive-return-discovery.test.mjs",
+    "tests/phase7/summary/issue-5242-contract-version-source-of-truth.test.mjs"
+];
+  assert.deepEqual(validateRoadmapInventory(BRANCH, 'phase7', files), [...files].sort());
+  for (const file of files) {
+    assert.equal(assignments.get(file), 'phase7');
+    const missing = structuredClone(manifest);
+    missing.owners.phase7 = missing.owners.phase7.filter(path => path !== file);
+    assert.throws(() => validateRoadmapInventory(BRANCH, 'phase7', files, missing), /undeclared roadmap path/);
+  }
+  assert.throws(() => validateRoadmapInventory(BRANCH, 'phase7', [...files, 'js/analysis/summary/alternate-equations.js']), /undeclared roadmap path/);
+});

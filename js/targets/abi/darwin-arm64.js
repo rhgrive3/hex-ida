@@ -268,6 +268,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
         ? {
           index, location:'register', reg, abiClass:'aggregate-indirect-copy', pointer:true, bits:64, bytes:8,
           pointeeBits:c.bits, aggregate:true, callerCopy:true,
+          pieces:[{ pieceIndex:0, order:0, reg, bits:64, bytes:8, byteOffset:0, abiClass:'aggregate-indirect-copy' }],
           mayContainPointers:param?.mayContainPointers === true || param?.containsPointers === true,
           possible:false, mustUse:true,
         }
@@ -275,6 +276,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
           index, location:'stack', offset:stackPointerOffset, bytes:8,
           abiClass:'aggregate-indirect-copy', pointer:true, bits:64,
           pointeeBits:c.bits, aggregate:true, callerCopy:true,
+          pieces:[{ pieceIndex:0, order:0, stackOffset:stackPointerOffset, bits:64, bytes:8, byteOffset:0, abiClass:'aggregate-indirect-copy' }],
           mayContainPointers:param?.mayContainPointers === true || param?.containsPointers === true,
           possible:false, mustUse:true,
           ...(forceStack ? { variadicAnonymous:true } : {}),

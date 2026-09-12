@@ -15,6 +15,7 @@ const complete = createAnalysisStatus({
 const target = (rootEntityId, address) => createPointsToTarget({
   addressSpace:'memory',
   rootKind:'absolute',
+  widthBits:64,
   rootEntityId,
   address,
   offsetRange:exactRange(0n),

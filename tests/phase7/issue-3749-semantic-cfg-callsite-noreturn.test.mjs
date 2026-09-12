@@ -342,7 +342,9 @@ test('issue 3749 integration: CFG and ABI consume one cached callsite prototype 
   }, { abiAdapter });
 
   assert.equal(resolverCalls, 2, 'ABI projection must consume the exact cached resolver results');
-  assert.deepEqual(abiSeenPrototypes, [returningPrototype, fatalPrototype]);
+  // Canonical call construction and compatibility projection both classify;
+  // neither is allowed to re-enter the external resolver or change its facts.
+  assert.deepEqual(abiSeenPrototypes, [returningPrototype, fatalPrototype, returningPrototype, fatalPrototype]);
   assert.ok(pipeline.ssa.definitions.length > 0, 'focused route must execute scalar SSA');
   assert.ok(pipeline.memorySsa.definitions.length > 0, 'focused route must execute MemorySSA');
   assert.equal(pipeline.cfg.blocks[0].successors.length, 0, 'noreturn topology must survive canonical CFG construction');

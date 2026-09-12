@@ -81,7 +81,7 @@ function fieldProjection({ copiedProof = false, store = false } = {}) {
     // one region; an unknown or disjoint relation is never relabelled must.
     queryAlias:() => ({ relation:'must',
       reasonCodes:['canonical-fixture-region'], evidenceIds:['canonical-fixture-alias'],
-      proof:{ analyzerId:'phase7.alias.solver', analyzerVersion:'1.1.0', completeness:'complete', stopReason:null } }),
+      proof:{ analyzerId:'phase7.alias.solver', analyzerVersion:'1.1.1', completeness:'complete', stopReason:null } }),
     identity:{ ...identity, binaryId:'location', sliceId:'slice', snapshotId:'snapshot', scalarSsaId:'ssa', scalarSsaBuildVersion:'1.0.0',
       scalarSsaDigest:'ssa-digest', memorySsaId:'mssa', memorySsaBuildVersion:MEMORY_SSA_BUILD_VERSION, analyzerVersion:'memoryssa-fixture' },
     snapshotId:'snapshot', canonicalIrIdentity:identity });
