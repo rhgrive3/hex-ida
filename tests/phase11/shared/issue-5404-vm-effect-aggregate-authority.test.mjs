@@ -21,7 +21,7 @@ const partialBundle = createVMEffectBundle({
   completeness: 'partial',
   unknownEffects: [{ category: 'other', reason: 'unsupported-op' }],
 });
-const exactBundle = createVMEffectBundle({ frontendId: 'wasm', methodId: 'method:1', operationId: 'op:1' });
+const exactBundle = createVMEffectBundle({ frontendId: 'wasm', methodId: 'method:1', operationId: 'op:1', opcode: 0x01, mnemonic: 'nop', completeness: 'exact' });
 
 // 1. The issue's decisive scenario: 'exact' over a partial bundle is rejected,
 //    not demoted and not adopted.
@@ -46,7 +46,7 @@ const exactBundle = createVMEffectBundle({ frontendId: 'wasm', methodId: 'method
   });
   const intrinsicBundle = createVMEffectBundle({
     frontendId: 'wasm', methodId: 'method:1', operationId: 'op:3',
-    completeness: 'exact-with-intrinsic',
+    opcode: 0x01, mnemonic: 'intrinsic.nop', completeness: 'exact-with-intrinsic',
   });
   assert.throws(
     () => createVMEffectFunction({ frontendId: 'wasm', methodId: 'method:1', bundles: [unknownBundle], aggregateCompleteness: 'partial' }),
@@ -126,7 +126,7 @@ assert.throws(
   const bounded = createVMEffectFunction({ frontendId: 'wasm', methodId: 'm', bundles: [], resolutionCompleteness: 'bounded' });
   assert.equal(bounded.resolutionCompleteness, 'bounded');
   const defaultResolution = createVMEffectFunction({ frontendId: 'wasm', methodId: 'm', bundles: [] });
-  assert.equal(defaultResolution.resolutionCompleteness, 'complete');
+  assert.equal(defaultResolution.resolutionCompleteness, 'partial');
 }
 
 // 8. A canonical object whose aggregate was tampered to claim stronger
