@@ -22,7 +22,7 @@ export async function handleAITurn(request, env) {
 
   let incoming;
   try { incoming = JSON.parse(await readLimitedText(request, MAX_REQUEST_BYTES)); }
-  catch (error) { return error instanceof HttpError ? jsonError(error.status, error.code, error.message) : jsonError(400, 'invalid_json', 'The AI turn request is invalid.'); }
+  catch (error) { return error instanceof HttpError ? jsonError(error.status, error.code, error.message) : jsonError(400, 'invalid_json', 'The request body must contain valid JSON.'); }
   let payload;
   try { payload = normalizeAITurnRequest(incoming); }
   catch (error) { return error instanceof HttpError ? jsonError(error.status, error.code, error.message) : jsonError(400, 'invalid_request', 'The AI turn request is invalid.'); }
