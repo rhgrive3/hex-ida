@@ -15,6 +15,32 @@ function estimateBytes(event) {
   catch { return Number.POSITIVE_INFINITY; }
 }
 
+function addAdmissionBytes(state, amount) {
+  state.bytes += amount;
+  return state.bytes > state.limit;
+}
+
+function exhaustsAdmissionBudget(value, depth, state) {
+  if (typeof value === 'string') return addAdmissionBytes(state, value.length * 2);
+  if (value == null || typeof value !== 'object') return addAdmissionBytes(state, 2);
+  if (depth > 48 || ++state.nodes > 20000) return false;
+  if (state.seen.has(value)) return false;
+  state.seen.add(value);
+  if (addAdmissionBytes(state, 2)) return true;
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return addAdmissionBytes(state, value.byteLength);
+  if (value instanceof Date) return addAdmissionBytes(state, 2);
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i += 1) if (exhaustsAdmissionBudget(value[i], depth + 1, state)) return true;
+    return false;
+  }
+  for (const key of Object.keys(value)) if (exhaustsAdmissionBudget(value[key], depth + 1, state)) return true;
+  return false;
+}
+
+function exceedsAdmissionBudget(event, limit) {
+  return exhaustsAdmissionBudget(event, 0, { seen: new WeakSet(), bytes: 0, nodes: 0, limit });
+}
+
 function cloneTraceValue(value, state = null, depth = 0) {
   const s = state || { seen: new WeakMap(), nodes: 0 };
   if (value == null || typeof value !== 'object') return value;
@@ -72,6 +98,7 @@ export class TraceRingBuffer {
     let safe;
     try {
       if (this.filter && !this.filter(event)) { this.dropped++; return false; }
+      if (event && typeof event === 'object' && exceedsAdmissionBudget(event, this.maxBytes)) { this.dropped++; return false; }
       safe = event && typeof event === 'object' ? cloneTraceValue(event) : { type:'event', value:event };
     }
     catch { this.dropped++; return false; }
