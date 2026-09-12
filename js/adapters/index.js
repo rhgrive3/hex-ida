@@ -77,6 +77,32 @@ function classifyStop(result) {
   if (/最初の呼び出し元まで戻ってきました/.test(reason)) return { kind:'return', message:reason };
   return { kind:'exception', message:reason };
 }
+function cancelledRunResult(emulator) {
+  const meta = typeof emulator.traceSnapshot === 'function'
+    ? emulator.traceSnapshot()
+    : { events:[], truncated:false, dropped:0, limit:0 };
+  let returnValue = null;
+  try { returnValue = emulator.get('x0'); } catch { returnValue = null; }
+  return {
+    hitBreakpoint:false,
+    steps:emulator.steps || 0,
+    finalPc:emulator.pc,
+    traceTruncated:meta.truncated,
+    traceDropped:meta.dropped,
+    stopped:'cancelled',
+    faultCode:emulator.faultCode || null,
+    returnValue,
+    before:[],
+    after:[],
+    touchedFields:[],
+    modifiedObjectRanges:[],
+    takenBranches:[],
+    trace:meta.events,
+    traceMeta:{ truncated:meta.truncated, dropped:meta.dropped, limit:meta.limit },
+    log:(emulator.log || []).slice(),
+    engine:'function-sandbox',
+  };
+}
 function callsFromTrace(trace) {
   const out = [];
   for (const e of trace || []) {
@@ -329,7 +355,11 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     this.require('cancel');
     const run = this.activeRun;
     this.cancelled = true;
-    if (run) { run.cancelled = true; run.sandbox.emulator.stopped = 'cancelled'; }
+    if (run) {
+      run.cancelled = true;
+      run.sandbox.emulator.stopped = 'cancelled';
+      run.controller?.abort();
+    }
     return { cancelled:!!run };
   }
   async resume(options = {}) {
@@ -350,7 +380,8 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     // runtime without a monotonic clock implementation.
     const started = timeoutMs == null ? null : monotonicNow();
     const initiallyCancelled = !!(signal && signal.aborted);
-    const run = { sandbox, epoch:this.epoch, cancelled:initiallyCancelled, paused:false, kind:'resume', memoryEvents:[] };
+    const controller = new AbortController();
+    const run = { sandbox, epoch:this.epoch, cancelled:initiallyCancelled, paused:false, kind:'resume', memoryEvents:[], controller };
     let onAbort = null;
     this.activeRun = run;
     try {
@@ -361,19 +392,29 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
         run.cancelled = true;
         run.sandbox.emulator.stopped = 'cancelled';
         if (this.activeRun === run) this.cancelled = true;
+        controller.abort();
       };
       if (signal && !run.cancelled) {
         signal.addEventListener('abort', onAbort, { once:true });
         if (signal.aborted) onAbort();
       }
-      if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
+      if (run.cancelled) {
+        sandbox.emulator.stopped = 'cancelled';
+        controller.abort();
+      }
       this.running = true;
-      const result = await sandbox.run({ maxSteps, onProgress:(n) => {
-        if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
-        else if (run.paused) sandbox.emulator.stopped = 'paused';
-        else if (timeoutMs != null && monotonicNow() - started >= timeoutMs) sandbox.emulator.stopped = 'timeout';
-        if (onProgress) onProgress(n);
-      } });
+      let result;
+      try {
+        result = await sandbox.run({ maxSteps, signal:controller.signal, onProgress:(n) => {
+          if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
+          else if (run.paused) sandbox.emulator.stopped = 'paused';
+          else if (timeoutMs != null && monotonicNow() - started >= timeoutMs) sandbox.emulator.stopped = 'timeout';
+          if (onProgress) onProgress(n);
+        } });
+      } catch (error) {
+        if (!(run.cancelled && controller.signal.aborted && error && error.name === 'AbortError')) throw error;
+        result = cancelledRunResult(sandbox.emulator);
+      }
       if (this.activeRun !== run || sandbox !== this.sandbox || run.epoch !== this.epoch) {
         throw new DebugAdapterError('stale-run', 'local sandbox run was invalidated by a newer launch or session change', { runEpoch:run.epoch, currentEpoch:this.epoch });
       }
