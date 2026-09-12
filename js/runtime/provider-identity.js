@@ -226,6 +226,18 @@ export class RuntimeModuleBindingTable {
           evidenceIds: binding.identityEvidenceIds,
         });
       }
+      const matchSliceId = targetSliceId && match.targetSliceId != null
+        ? optionalIdentity(match.targetSliceId, 'sliceId')
+        : null;
+      if (targetSliceId && (binding.sliceId !== targetSliceId || (matchSliceId != null && matchSliceId !== targetSliceId))) {
+        return createRuntimeAddressResolution({
+          ...binding,
+          runtimeAddress: address,
+          state: binding.sliceId == null ? 'unresolved' : 'mismatch',
+          method: binding.sliceId == null ? 'slice-identity-unresolved' : 'slice-id-mismatch',
+          evidenceIds: binding.identityEvidenceIds,
+        });
+      }
       const matchedStaticAddress = match.staticAddress == null ? null : asAddress(match.staticAddress, 'crossVersionMatch.staticAddress');
       return createRuntimeAddressResolution({
         ...binding,
