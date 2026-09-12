@@ -131,7 +131,12 @@ export function parseELF(input, options = {}) {
         image.warnings.push('RISC-V attributes section is outside the bounded file span');
       } else {
         riscvFileIsa = parseRiscvAttributes(r.bytes.subarray(start, start + size), { littleEndian });
-        if (!riscvFileIsa) image.warnings.push('RISC-V Tag_RISCV_arch is missing or malformed');
+        if (riscvFileIsa && riscvFileIsa.xlen !== bits) {
+          image.warnings.push(`RISC-V Tag_RISCV_arch XLEN ${riscvFileIsa.xlen} disagrees with ELFCLASS${bits}`);
+          riscvFileIsa = null;
+        } else if (!riscvFileIsa) {
+          image.warnings.push('RISC-V Tag_RISCV_arch is missing or malformed');
+        }
       }
     }
   }
@@ -191,7 +196,12 @@ export function parseELF(input, options = {}) {
       .filter((symbol) => symbol?.defined === true && typeof symbol.name === 'string')
       .map((symbol) => {
         const parsed = parseRiscvMappingSymbol(symbol.name);
-        return parsed ? { address:symbol.address, sectionIndex:symbol.sectionIndex, ...parsed } : null;
+        if (!parsed) return null;
+        if (parsed.isa && parsed.isa.xlen !== bits) {
+          image.warnings.push(`RISC-V mapping symbol ISA XLEN ${parsed.isa.xlen} disagrees with ELFCLASS${bits}`);
+          return { address:symbol.address, sectionIndex:symbol.sectionIndex, kind:parsed.kind, isa:null };
+        }
+        return { address:symbol.address, sectionIndex:symbol.sectionIndex, ...parsed };
       })
       .filter(Boolean)
       .sort((left, right) => left.address < right.address ? -1 : left.address > right.address ? 1 : 0);
@@ -570,7 +580,7 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     const ifunc=type===STT_GNU_IFUNC&&defined===true&&!common;
     const riscvVariantCcFlag=image.metadata.machine===EM_RISCV&&(other&STO_RISCV_VARIANT_CC)!==0;
     const riscvVariantCc=riscvVariantCcFlag&&type===2;
-    const sym={name,address:tls?null:(address??0n),originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??value,resolution:'runtime-resolver'}:{}),
+    const sym={name,address:tls?null:(sectionIdentityKnown?(address??0n):null),originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??value,resolution:'runtime-resolver'}:{}),
       ...(tls?{tlsOffset:value}:{}),...(common?{commonAlignment:value,commonSize:size,allocation:'common-unallocated'}:{}),sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:value}:null,addressDomain:tls?'tls-offset':common?'common-unallocated':elfType===ET_REL&&normal?'section-relative-synthetic':'virtual'};
     image.symbols.push(sym);
     const externallyVisible=bind===1||bind===2||bind===STB_GNU_UNIQUE;

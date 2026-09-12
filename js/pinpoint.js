@@ -244,6 +244,7 @@ function batchedScanAccess(scanAccess, opts) {
       try {
         operation = scanAccess(all, { signal: controller.signal });
       } catch (error) {
+        if (timer != null) clearTimeout(timer);
         unlinkParent();
         throw error;
       }

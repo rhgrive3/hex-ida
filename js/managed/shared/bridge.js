@@ -336,7 +336,7 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
           nodeKind = 'binary';
         } else if (mn.includes('cmp') || mn.includes('eq') || mn.includes('ne') || mn.includes('lt') || mn.includes('gt') || mn.includes('le') || mn.includes('ge')) {
           nodeKind = 'compare';
-        } else if (mn.includes('const')) {
+        } else if (mn.includes('const') || (frontendId === 'jvm' && (mn === 'bipush' || mn === 'sipush'))) {
           nodeKind = 'const';
         } else {
           nodeKind = opOutputs.length > 0 ? 'unary' : 'barrier';
