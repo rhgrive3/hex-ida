@@ -23,11 +23,16 @@ function addAdmissionBytes(state, amount) {
 function exhaustsAdmissionBudget(value, depth, state) {
   if (typeof value === 'string') return addAdmissionBytes(state, value.length * 2);
   if (value == null || typeof value !== 'object') return addAdmissionBytes(state, 2);
-  if (depth > 48 || ++state.nodes > 20000) return false;
+  if (depth > 48 || ++state.nodes > 20000) return true;
   if (state.seen.has(value)) return false;
   state.seen.add(value);
   if (addAdmissionBytes(state, 2)) return true;
-  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return addAdmissionBytes(state, value.byteLength);
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+    const byteLength = value.byteLength;
+    if (!Number.isSafeInteger(byteLength) || byteLength < 0) return true;
+    state.binaryBytes += byteLength;
+    return addAdmissionBytes(state, byteLength);
+  }
   if (value instanceof Date) return addAdmissionBytes(state, 2);
   if (Array.isArray(value)) {
     for (let i = 0; i < value.length; i += 1) if (exhaustsAdmissionBudget(value[i], depth + 1, state)) return true;
@@ -37,8 +42,9 @@ function exhaustsAdmissionBudget(value, depth, state) {
   return false;
 }
 
-function exceedsAdmissionBudget(event, limit) {
-  return exhaustsAdmissionBudget(event, 0, { seen: new WeakSet(), bytes: 0, nodes: 0, limit });
+function admissionInfo(event, limit) {
+  const state = { seen: new WeakSet(), bytes: 0, binaryBytes: 0, nodes: 0, limit };
+  return { rejected: exhaustsAdmissionBudget(event, 0, state), binaryBytes: state.binaryBytes };
 }
 
 function cloneTraceValue(value, state = null, depth = 0) {
@@ -47,11 +53,22 @@ function cloneTraceValue(value, state = null, depth = 0) {
   if (depth > 48 || ++s.nodes > 20000) throw new RangeError('trace event is too deeply nested');
   if (s.seen.has(value)) return s.seen.get(value);
   if (ArrayBuffer.isView(value)) {
-    if (value instanceof DataView) return new DataView(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
-    return new value.constructor(value);
+    const out = value instanceof DataView
+      ? new DataView(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength))
+      : new value.constructor(value);
+    s.seen.set(value, out);
+    return out;
   }
-  if (value instanceof ArrayBuffer) return value.slice(0);
-  if (value instanceof Date) return new Date(value.getTime());
+  if (value instanceof ArrayBuffer) {
+    const out = value.slice(0);
+    s.seen.set(value, out);
+    return out;
+  }
+  if (value instanceof Date) {
+    const out = new Date(value.getTime());
+    s.seen.set(value, out);
+    return out;
+  }
   const out = Array.isArray(value) ? [] : Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype);
   s.seen.set(value, out);
   if (Array.isArray(value)) {
@@ -96,13 +113,18 @@ export class TraceRingBuffer {
     this.seen++;
     if (this.sampleRate > 1 && ((this.seen - 1) % this.sampleRate)) { this.dropped++; return false; }
     let safe;
+    let binaryBytes = 0;
     try {
       if (this.filter && !this.filter(event)) { this.dropped++; return false; }
-      if (event && typeof event === 'object' && exceedsAdmissionBudget(event, this.maxBytes)) { this.dropped++; return false; }
+      if (event && typeof event === 'object') {
+        const admission = admissionInfo(event, this.maxBytes);
+        if (admission.rejected) { this.dropped++; return false; }
+        binaryBytes = admission.binaryBytes;
+      }
       safe = event && typeof event === 'object' ? cloneTraceValue(event) : { type:'event', value:event };
     }
     catch { this.dropped++; return false; }
-    const size = estimateBytes(safe);
+    const size = estimateBytes(safe) + binaryBytes;
     if (size > this.maxBytes) { this.dropped++; return false; }
     const aggregateKey = String(safe.type || 'event').slice(0,128);
     safe.__bytes = size;
