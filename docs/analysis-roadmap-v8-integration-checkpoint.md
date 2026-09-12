@@ -51,7 +51,7 @@ SYM-01/X-03 の再実装は割り当てません。C3 metadata と X-02 の広�
 - X-03 の追加 2 ファイルと既存 layout 復元テスト: 結合状態で通過。
 - 所有範囲・CI route、共有 scoped-owner/ABI、proof admission の選択検査: 通過した記録あり。これを全体 gate の代わりにはしません。
 - Phase 8 の旧 `4d1963e9` 結合版の選択検査は、55 件通過・2 件失敗・1 件中断でした。失敗は native provenance の `x86_64.quality.loop_nested.O2` の binding completeness と、counted loop の 525-origin entity が見つからない検査です。原因の切り分けは未完了で、環境原因とは扱いません。
-- 実行中にリモート `74b9aac2` が DCE 登録処理を更新したため、旧版の検査を中断しました。全 135 関数検査、上記 2 件の失敗、および中断した SCPA 検査は最新版での確認が必要です。
+- リモート `74b9aac2` 結合後の DCE / proof admission 検査は 40/40 通過しました。全 135 関数の use-list 検査も実行され、skip は 0 件です（約 18 分）。実行中の HEAD 更新は生成物と文書だけで、DCE 対象ソースの変更はありません。上記 native provenance の 2 件と中断した SCPA 検査、Phase 8 全体の検証は残っています。
 - 以前の `714bbc56` に対する `npm run check` は MachineEffects の 13 テストファイルで失敗。WebKit の `libxslt.so.1` 不足も含み、すべてを環境原因とは分類していません。
 - 結合後の full check、Phase 8/9、独立 shadow の確定結果が揃うまで CHECKPOINT-LOCKED を解除しません。実機・環境整備・別 issue 修正は今回の担当外です。
 
@@ -6209,3 +6209,55 @@ Synchronous work cannot be preempted, but an over-deadline result cannot publish
 a minimum. The clock regression runs the actual producer path with four30ms
 observations against a100ms aggregate budget and requires resource-limited
 termination with no minimum claim.
+
+
+## ME-01 命令列の反例縮小 — 2026-09-12
+
+FR-ME-01A の mismatch minimization に、入力値の bit clearing に続いて命令列の削除を追加しました。
+`tools/validation/machine-effects/minimize-sequence-mismatch.mjs` は、既存 corpus case の命令 bytes・参照 operation と
+共通の初期状態・比較 mask・model/provenance を固定し、削除候補ごとに既存の独立参照モデルを順次再実行します。
+実測側は既存 `observeRv64RegisterPrefix` の decoder → MachineEffects → SSA → Expr 経路を再実行します。
+参照 operation や期待値は実測側へ渡しません。別の MachineEffects evaluator は追加していません。
+
+現在受け付ける命令は RV64 の 64-bit register ADD、最大 32 命令です。独立した encoding identity 確認で
+bytes と参照 operation の一致を検証し、PC に依存しないこの命令だけを固定アドレスから詰め直します。
+大きな連続区間の削除から始め、最後は 1 命令ずつの削除を変更がなくなるまで試します。
+同じ observable の defined-bit mismatch を保つ候補だけを残し、最終列を再実行できた場合にのみ
+`single-instruction-deletion-fixed-point` を記録します。大域最小とは主張しません。
+unknown・欠けた書き込み・例外・キャンセル・回数/時間超過・最終再現失敗では最小化を確定せず、
+最後に確認できた反例を残します。全結果は診断専用で `passContribution: 0` です。
+
+実際の ADD producer をテストの隔離 import hook 内だけで SUB に置き換える検査で、
+4 命令から無関係な 3 命令を除去するケースと、値の伝播に 2 命令とも必要なケースを確認しました。
+後者はどちらか一方だけでは mismatch が消えることも実測します。
+model/bytes/初期状態の drift、再実行の失敗、明示的な予算終了も回帰検査に含めています。
+初回の選択検査は 21/22 通過で、残りは empty 列を実行しない仕様とテストの呼出回数の数え方の不一致でした。
+実際の subject 呼出回数で最終再実行を狙うよう修正した新規ファイルの検査は通過しています。
+記録: `me-sequence-minimization-replay-3f98eaaf-cfc0-4e68-9c5d-aeec41fcc120.json`。
+
+変更前に公開中の 212 PR を照合し、長い 2 件のファイル一覧もページ末尾まで取得しました。
+今回の追加 2 ファイルと既存の変更箇所は、当 PR #7036 以外の PR と重複していません。
+一覧は `me-sequence-minimization-20260912/open-pr-files.json` に保持しています。
+所有定義には追加ファイル 2 つだけを明示し、既存の所有範囲の負例検査にも追加しました。
+MachineEffects の canonical runner は既存の top-level `.test.mjs` 発見規則で新規テストを拾います。
+
+これは FR-ME-01A 全体の完了ではありません。Sail/Isla による全命令 family の再評価、ARM64/arm64e、
+memory/control/exception を含む列の縮小、FR-ME-01B の relaxed-memory outcome 比較は残っています。
+実機・環境整備・他の issue 修正はユーザー指定により担当外です。C1/C3 の並行担当は変更していません。
+ソースの公開と統合受入は別で、全体 gate と独立 shadow が揃うまで CHECKPOINT-LOCKED を維持します。
+
+
+Luna/max の独立したコードレビュー後、次の照合を追加しました。
+個別 case の期待 artifact を既存参照モデルと再照合し、期待値と caseId の同時書換えを拒否します。
+実測結果の bytes/PC/entry-state digest は `production-subject.mjs` の既存計算を共通関数へ切り出して照合し、
+subject version・scope・命令数・書込み先の順序も確認します。generator と outcome の metadata も固定します。
+同じ observable と mask を保ちながら、命令の削除により期待値・実測値が変わることは許容します。
+`maxComparisons` は候補列の比較回数で、最大 32 行の artifact 事前照合も同じ全体時間制限に入ります。
+追跡レビュー: `me-sequence-minimization-20260912/sequence-minimization-review-followup-20260912.json`。
+これはコードレビューであり、統合 product の独立 shadow verifier の代替ではありません。
+
+最終の ME 関連 4 ファイル＋所有範囲検査は 41/41 通過しました。
+記録: `me-sequence-review-binding-45ab72f8-70f6-4e3b-99b2-5a07d900c866.json`。
+並行して保持していた DCE / proof admission は 40/40 通過し、全 135 関数検査も完走しました。
+記録: `integration-74b-dce-admission-5d2b42d6-99f7-43d9-93d8-5d53157da4cf.json`。
+全体 gate、native provenance の既知 2 件、実機証拠を完了扱いにはしません。

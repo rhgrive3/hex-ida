@@ -45,6 +45,16 @@ function prefixDigest(instructions) {
   }))));
 }
 
+// Shared input identity for the producer observation and offline diagnostics.
+// This hashes inputs only; it does not issue observation or oracle authority.
+export function rv64RegisterPrefixInputDigest(instructions, initialRegisters = null) {
+  if (initialRegisters === null) return prefixDigest(instructions);
+  return digest(canonicalStringify({ scope: 'rv64-register-prefix-with-entry-state/v1',
+    prefix: prefixDigest(instructions), registers: Object.fromEntries(Object.keys(initialRegisters).sort()
+      .map(key => [key, String(BigInt(initialRegisters[key]))])),
+  }));
+}
+
 // Read the retained trace as data, without interpreting ISA operations. Its
 // bytes/PCs bind the subject input; its assignments independently bind the
 // comparison values. The artifact's ELF/model digest has a different domain.
@@ -108,10 +118,7 @@ export function observeRv64RegisterPrefix(instructions, { signal, maxInstruction
         return declined('unsupported', 'subject-noncontiguous-prefix');
       }
     }
-    const inputDigest = initialRegisters === null ? prefixDigest(decoded) : digest(canonicalStringify({
-      scope: 'rv64-register-prefix-with-entry-state/v1', prefix: prefixDigest(decoded),
-      registers: Object.fromEntries(Object.entries(symbolicArgs).map(([key, value]) => [key, String(value)])),
-    }));
+    const inputDigest = rv64RegisterPrefixInputDigest(decoded, initialRegisters === null ? null : symbolicArgs);
     const pipeline = buildSemanticV2CompatibilityPipeline({
       architecturePlugin: architecturePluginV2('riscv64'),
       decoderSemanticVersion: RISCV64_DECODER_SEMANTIC_VERSION,

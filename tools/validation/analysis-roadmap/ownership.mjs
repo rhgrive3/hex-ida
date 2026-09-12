@@ -32,6 +32,7 @@ const SPECIAL_PATHS = Object.freeze({
     'tests/machine-effects/ordering-undefined-matrix.test.mjs',
     'tools/validation/machine-effects/production-subject.mjs',
     'tools/validation/machine-effects/minimize-mismatch.mjs',
+    'tools/validation/machine-effects/minimize-sequence-mismatch.mjs', 'tests/machine-effects/sequence-mismatch-minimization.test.mjs',
     'tests/machine-effects/mismatch-minimization.test.mjs',
     'tests/machine-effects/production-formal-subject.test.mjs',
     'tests/machine-effects/generated-formal-evidence.test.mjs',
