@@ -154,5 +154,5 @@ export function overlayCilMetadata(bytes,parsed){
   row.fileOffset=off;
  }
 
- return deepFreeze({...parsed,runtimeVersion:meta.runtimeVersion,vmSpecEdition:meta.runtimeVersion,types:defs.types,fields:defs.fields,params:defs.params,properties,events:defs.events,methodSemantics:defs.methodSemantics,methods,methodBodies,manifestResources,typeSpecs:defs.typeSpecs,assembly:defs.assembly,userStrings});
+ return deepFreeze({...parsed,runtimeVersion:meta.runtimeVersion,vmSpecEdition:meta.runtimeVersion,types:defs.types,fields:defs.fields,params:defs.params,properties,events:defs.events,methodSemantics:defs.methodSemantics,methods,methodBodies,manifestResources,typeSpecs:defs.typeSpecs,assembly:defs.assembly,typeRefs:defs.typeRefs,assemblyRefs:defs.assemblyRefs,userStrings});
 }
