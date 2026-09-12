@@ -196,7 +196,7 @@ export class ProposalStore {
          "failed = state unchanged". Record the partial outcome on the
          proposal and in the audit trail so consumers can tell a failed
          mutation from an applied-but-unverifiable one (#5133). */
-      if (error?.details?.verification === 'indeterminate') {
+      if (error?.details?.verification === 'indeterminate' || error?.details?.residualMutation === true) {
         proposal.partial = true;
         this.audit.push({ type: 'proposal-partial', proposalId: authority.id, timestamp: new Date().toISOString(), reason: String(error?.details?.cause || error?.message || 'postcondition unverifiable').slice(0, 2000) });
       }
