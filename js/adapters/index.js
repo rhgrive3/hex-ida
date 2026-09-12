@@ -515,7 +515,8 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   async getModules() { return [{ id:'sandbox', name:'local function sandbox', base:null, synthetic:true }]; }
   async getBacktrace() { return (this.ensureSandbox().emulator.callStack || []).slice(-256).reverse().map((f,i) => ({ index:i, address:f.addr, returnAddress:f.ret })); }
   async evaluate(expression) {
-    const text = String(expression || '').trim(); if (/^(x([0-9]|[12][0-9]|30)|sp|pc)$/.test(text)) return this.ensureSandbox().getRegister(text);
+    if (typeof expression !== 'string') throw new DebugAdapterError('unsupported-expression','local evaluate only accepts register names');
+    const text = expression.trim(); if (/^(x([0-9]|[12][0-9]|30)|sp|pc)$/.test(text)) return this.ensureSandbox().getRegister(text);
     throw new DebugAdapterError('unsupported-expression','local evaluate only accepts register names');
   }
   async trace(options = {}) {
