@@ -110,12 +110,11 @@ async function discoverBaselineFunctions(baseline, { signal = null, onProgress =
       let exceedsBudget = false;
       if (result?.starts?.length) {
         // #5105: `share` is the requested limit, not an enforced one — a
-        // backend that over-return must never ingest past the global budget.
-        // The consumer bounds ingestion; a wholly-new capped prefix means the
-        // dropped tail was plausibly new discoveries, so record the excess
-        // fail-closed instead of trusting the backend's self-restraint.
-        // Duplicate-only over-return stays tolerated: #5558 proved heuristic
-        // region scans legitimately re-report known starts.
+        // backend that over-returns must never ingest past the global budget.
+        // Bound ingestion to the requested share. Completeness may survive an
+        // over-return only when the canonical symbol index proves every
+        // dropped start was already known; a deduplicated admitted prefix
+        // alone cannot prove anything about the unseen tail.
         const overReturned = result.starts.length > share;
         const ingested = overReturned ? result.starts.slice(0, share) : result.starts;
         // #5558: addFunctions() deduplicates known starts and returns the
@@ -125,7 +124,10 @@ async function discoverBaselineFunctions(baseline, { signal = null, onProgress =
         const added = symbols.addFunctions(ingested, { source:'heuristic', confidence:0.55, confirmed:false });
         symbols.guessed = true;
         remaining = Math.max(0, remaining - added);
-        exceedsBudget = overReturned && added === ingested.length;
+        const droppedTailProvenKnown = overReturned &&
+          typeof symbols.functionEvidence === 'function' &&
+          result.starts.slice(share).every((start) => symbols.functionEvidence(start) != null);
+        exceedsBudget = overReturned && !droppedTailProvenKnown;
       }
       const complete = !exceedsBudget && (result?.discoveryComplete === true || result?.completeness?.complete === true || result?.complete === true);
       results.push({ regionId:region.id, complete, capped:exceedsBudget || !!result?.capped, discovered:result?.starts?.length || 0 });
