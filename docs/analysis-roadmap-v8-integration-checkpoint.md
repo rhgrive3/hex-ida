@@ -5730,3 +5730,67 @@ build receipts:
 
 この同期だけではcanonicalの赤、独立verifier、lock-exact build、main reconciliation、
 必要な実機/runtimeの未完了を解消しない。ソースと生成物のbackupとして同じPRへ反映する。
+
+
+## 2026-09-12 ME-01 fixed transport matrix source checkpoint
+
+Resumed in the same `/mnt/workspace/hex-roadmap-v8-integration` workspace and
+existing branch/PR #7036. Source `4c855b38c0a147be18edb8d086a68cfcb578d20e`
+was normal-pushed and exact remote HEAD verified. Twelve changed paths are
+validation/data/spec/ownership/ledger only; no runtime input or generated artifact
+changed. This is a source backup, not integration admission or ME-01 completion.
+
+Implemented `specs/003-oracle-mask-matrix` T001–T006: ten frozen transport cases
+cover six orderings and four undefined-mask classes. Existing registered offline
+litmus records remain separate claim-local evidence. Actual V2/SSA/MemorySSA/V1
+stages compare memory ordering/atomicity, MemorySSA sequencing and masks through
+legacy output. Mutation negatives cover loss, wrong values, concrete masked
+outputs and altered conditional predicates. Unmodified-copy controls exposed a
+DataCloneError false-positive in the proposed test helper; cloning only observed
+projection descriptors now proves semantic mismatches without that exception.
+No new semantic engine, hardware claim or production repair was introduced.
+
+Exact-source evidence retained under
+`/mnt/workspace/.dev-state/agent-work/evidence/analysis-roadmap-20260909/`:
+
+- `me01-focused-exact-b957d900-d4bd-469c-af3c-c82b9438f797.json`: 33/33 PASS.
+- `me01-lint-exact-100b93c8-a6b7-492d-b254-ab4921d6a510.json`: PASS.
+- `me01-inventory-exact-corrected-ab1d7a24-7596-471a-9f57-a2653c218b52.json`:
+  actual branch inventory against frozen base
+  `de6178154884813d90c6437146a99b1155f0c68d` PASS. Initial abbreviated SHA
+  invocation was rejected as intended; its retained error is not a source failure.
+- `me01-canonical-exact-a6cd08ac-e764-4fcd-a226-2dd957077f33.json`:
+  canonical 220-file run FAIL after 713.2 seconds, 13 failed files. The prior WIP
+  run also failed the same 13 filenames; this is not proof of identical causes.
+  Compiler/WebKit/prior-artifact and unrelated instruction failures remain open.
+  At final stop only `x86-random` remained; its own browser subtree was terminated
+  under the user's excluded environment/issue scope. Full-suite green and complete
+  browser execution are unproven. Stop receipt:
+  `me01-canonical-excluded-browser-stop.json`.
+- `me01-review-20260912/independent-review.json` and
+  `final-documentation-review.json`: read-only review, no remaining own-diff
+  defect found. These are not the named Sol review; T008 remains open.
+- `me01-source-checkpoint.json`: exact-source receipt/log hashes and inventory.
+
+T007 records a completed exact-source command attempt and its failing status; it
+must not be read as passing release evidence. Architecture-wide undefined-state,
+formal/hardware breadth and original roadmap completion remain unproved.
+Integration stays CHECKPOINT-LOCKED. Live main was separately observed at
+`4c0fc8f22c94f3753baa7e1a7c8058e3582268fa`; no reconciliation, merge, deployment
+or physical-device check was performed. C1/C3 branches are preserved; SYM-01/X-03
+and issue/environment/performance work remain user-owned.
+
+Latest command preference: do not prepend per-command `export`. The environment
+already provides persistent TMPDIR, and the existing retained gate wrapper also
+propagates TMPDIR/TMP/TEMP/cache settings. Use `login:false` to retain the requested
+workspace; a login shell changes back to the unrelated issue checkout.
+
+Next actual implementation gap is C4 ordinary sign-mask idiom proposals:
+`walkIdiom` already recognizes signed `max(x,0)`, while
+`queryRepresentationCandidates` only invokes DEFAULT_RULES and returns zero
+candidates at BV4/BV8. Reuse the existing recognizer as a bounded proposal stage;
+keep the 64-rule registry, add separate observed idiom audit, and use the current
+independent verifier/private plan/transaction/safe projection for adoption.
+The retained audit and unapplied regression patch are in
+`c4-next-20260912/`. This is not permission to treat legacy spelling as proof or
+to shrink the remaining ordinary-view and memory/CFG/exception requirements.

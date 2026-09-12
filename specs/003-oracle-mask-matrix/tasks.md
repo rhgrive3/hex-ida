@@ -30,7 +30,7 @@
 
 ## 4. Evidence (T007–T008)
 
-- [ ] T007 Exact-head run of `tests/machine-effects/` quiet; record results and SHA
+- [x] T007 Exact-head run of `tests/machine-effects/` quiet; record results and SHA
       in the ME-01 ledger row.
 - [ ] T008 Small commits; no PR; Sol review first.
 
@@ -59,7 +59,16 @@ Focused repaired receipt:
 `me01-downstream-repaired-ee16f832-d22a-4cf8-b4ca-43d1c2cd232a.json`.
 Both are under persistent evidence/analysis-roadmap-20260909.
 
-T007 exact-head evidence is pending. T008 stays open until the named Sol review
+T007 executed on clean source `4c855b38c0a147be18edb8d086a68cfcb578d20e`:
+focused 33/33 and lint passed; actual branch inventory passed. Canonical execution
+terminated FAIL after 713.2 seconds (13/220 files failed); the still-running
+`x86-random` browser subtree was explicitly stopped under the user's excluded
+environment/issue scope. This records execution, not a passing full gate.
+Exact canonical receipt:
+`me01-canonical-exact-a6cd08ac-e764-4fcd-a226-2dd957077f33.json`.
+Exact focused receipt:
+`me01-focused-exact-b957d900-d4bd-469c-af3c-c82b9438f797.json`.
+Independent review is retained under `me01-review-20260912/`. T008 stays open until the named Sol review
 exists; an independent read-only review does not claim that model-specific gate.
 No new PR is being created; authorized source backup uses the existing integration
 branch/PR #7036. The whole ME-01 finding remains PARTIAL.
