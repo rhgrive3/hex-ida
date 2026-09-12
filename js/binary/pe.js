@@ -82,6 +82,24 @@ function windowsImageSectionRawSize(sizeOfRawData, fileAlignment, sectionAlignme
   return { effectiveRawSize, alignmentValid: true, roundedUp: effectiveRawSize !== sizeOfRawData };
 }
 
+function validatePESizeOfImage(sizeOfImage, sizeOfHeaders, sectionAlignment) {
+  if (sizeOfImage < sizeOfHeaders) {
+    throw new Error(`PE SizeOfImage 0x${sizeOfImage.toString(16)} is smaller than SizeOfHeaders 0x${sizeOfHeaders.toString(16)}`);
+  }
+  // SectionAlignment itself has independent validity rules (#4118). When it
+  // is usable, however, SizeOfImage is a loader-level aligned image extent.
+  if (sectionAlignment > 0 && sizeOfImage % sectionAlignment !== 0) {
+    throw new Error(`PE SizeOfImage 0x${sizeOfImage.toString(16)} is not aligned to SectionAlignment 0x${sectionAlignment.toString(16)}`);
+  }
+}
+
+function peImageRvaRangeFits(sizeOfImage, startRva, extent = 1n) {
+  const limit = BigInt(sizeOfImage);
+  const start = BigInt(startRva);
+  const size = BigInt(extent);
+  return start >= 0n && size >= 0n && start < limit && size <= limit - start;
+}
+
 function seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine) {
   const address = image.imageBase + BigInt(entryRva);
   const reject = (reason) => {
@@ -89,7 +107,7 @@ function seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine) {
     image.metadata.entrypointValid = false;
     image.metadata.entrypointDiagnostic = reason;
   };
-  if (entryRva >= sizeOfImage) { reject('RVA is outside SizeOfImage'); return; }
+  if (!peImageRvaRangeFits(sizeOfImage, entryRva)) { reject('RVA is outside SizeOfImage'); return; }
   const segment = image.segments.find((s) => s.source === 'PE-section' &&
     address >= s.address && address < s.address + s.size);
   if (!segment) { reject('RVA is not mapped by a section'); return; }
@@ -169,6 +187,10 @@ export function parsePE(input, options = {}) {
   const fileAlignment = r.u32(opt + 36);
   const sizeOfImage = r.u32(opt + 56);
   const sizeOfHeaders = r.u32(opt + 60);
+  if (numberOfSections > WINDOWS_IMAGE_MAX_SECTIONS) {
+    throw new Error(`PE NumberOfSections ${numberOfSections} exceeds Windows image loader limit ${WINDOWS_IMAGE_MAX_SECTIONS}`);
+  }
+  validatePESizeOfImage(sizeOfImage, sizeOfHeaders, sectionAlignment);
   const subsystem = r.u16(opt + 68);
   const numberOfRvaAndSizes = r.u32(opt + (bits === 64 ? 108 : 92));
   const dirBase = opt + (bits === 64 ? 112 : 96);
@@ -195,9 +217,6 @@ export function parsePE(input, options = {}) {
 
   image.addSegment({ name: 'headers', address: imageBase, size: BigInt(sizeOfHeaders), fileOffset: 0n, fileSize: BigInt(Math.min(sizeOfHeaders, bytes.length)), perms: { read: true, write: false, execute: false }, source: 'PE-headers' });
   const secBase = opt + sizeOptional;
-  if (numberOfSections > WINDOWS_IMAGE_MAX_SECTIONS) {
-    throw new Error(`PE NumberOfSections ${numberOfSections} exceeds Windows image loader limit ${WINDOWS_IMAGE_MAX_SECTIONS}`);
-  }
   if (secBase + numberOfSections * 40 > r.length) throw new Error('PE section table is invalid');
   for (let i = 0; i < numberOfSections; i++) {
     const p = secBase + i * 40;
@@ -220,7 +239,7 @@ export function parsePE(input, options = {}) {
     const endRva = startRva + virtualExtent;
     const rvaLimit = 1n << 32n;
     const beyondRvaDomain = endRva > rvaLimit;
-    const beyondSizeOfImage = endRva > BigInt(sizeOfImage);
+    const beyondSizeOfImage = !peImageRvaRangeFits(sizeOfImage, startRva, virtualExtent);
     const virtualRangeInvalid = beyondRvaDomain || beyondSizeOfImage;
     const rawMapping = windowsImageSectionRawMapping(ptrRaw, { sectionAlignment });
     const rawSize = windowsImageSectionRawSize(sizeRaw, fileAlignment, sectionAlignment);
