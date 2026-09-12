@@ -1,5 +1,5 @@
 import { composePrompt } from '../prompts/compose.js';
-import { clientSafeCapabilities, resolveInferenceAdapter } from './worker-adapters.js';
+import { clientSafeCapabilities, providerToolBudget, resolveInferenceAdapter } from './worker-adapters.js';
 import { finalResultTool, normalizeAIInteraction, normalizeAITurnRequest, promptWorkbench } from './worker-protocol.js';
 import {
   acquireDistributedQuota, byteLength, HttpError, isJsonRequest, isRetryableUpstreamFailure,
@@ -11,7 +11,8 @@ import {
 export function handleAICapabilities(request, env) {
   if (request.method !== 'GET') return jsonError(405, 'method_not_allowed', 'Only GET is allowed.', { Allow: 'GET' });
   const adapter = resolveInferenceAdapter(env);
-  return jsonResponse({ configured: adapter.configured, capabilities: clientSafeCapabilities(adapter.capabilities) });
+  const toolBudget = providerToolBudget(adapter.capabilities);
+  return jsonResponse({ configured: adapter.configured && toolBudget.supported, capabilities: clientSafeCapabilities(adapter.capabilities) });
 }
 
 export async function handleAITurn(request, env) {
@@ -19,6 +20,10 @@ export async function handleAITurn(request, env) {
   if (!isJsonRequest(request)) return jsonError(415, 'unsupported_media_type', 'Content-Type must be application/json.');
   const adapter = resolveInferenceAdapter(env);
   if (!adapter.configured) return jsonError(503, 'service_not_configured', `The ${adapter.id} analysis service is not configured.`);
+  const toolBudget = providerToolBudget(adapter.capabilities);
+  if (!toolBudget.supported) {
+    return jsonError(503, 'provider_tool_limit_too_small', 'The provider tool limit cannot reserve the required final-result tool and a model read tool.');
+  }
 
   let incoming;
   try { incoming = JSON.parse(await readLimitedText(request, MAX_REQUEST_BYTES)); }
@@ -26,6 +31,10 @@ export async function handleAITurn(request, env) {
   let payload;
   try { payload = normalizeAITurnRequest(incoming); }
   catch (error) { return error instanceof HttpError ? jsonError(error.status, error.code, error.message) : jsonError(400, 'invalid_request', 'The AI turn request is invalid.'); }
+
+  if (payload.tools.length > toolBudget.clientMaxTools) {
+    return jsonError(422, 'tool_limit_exceeded', `At most ${toolBudget.clientMaxTools} model read tools are allowed for this provider.`);
+  }
 
   const quota = await acquireDistributedQuota(request, env, payload.sessionId);
   if (quota.response) return quota.response;
@@ -48,6 +57,10 @@ export async function handleAITurn(request, env) {
     context: promptWorkbench(payload.context),
   });
   const tools = [...payload.tools, finalResultTool()];
+  if (tools.length > toolBudget.upstreamMaxTools) {
+    await cleanup();
+    return jsonError(422, 'tool_limit_exceeded', 'The provider tool budget cannot include the required final-result tool.');
+  }
   const upstreamRequest = adapter.build({ payload, systemInstruction: prompt.system, tools });
   const upstreamBody = JSON.stringify(upstreamRequest);
   const upstreamLimit = positiveLimit(adapter.capabilities.maxRequestBytes, MAX_CONTEXT_CHARS);

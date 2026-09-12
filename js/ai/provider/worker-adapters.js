@@ -18,6 +18,16 @@ export function resolveInferenceAdapter(env = {}) {
   return geminiAdapter(env);
 }
 
+export function providerToolBudget(capabilities = {}) {
+  const upstreamMaxTools = positiveInteger(capabilities.maxTools, 32);
+  return Object.freeze({
+    upstreamMaxTools,
+    clientMaxTools: Math.max(0, upstreamMaxTools - 1),
+    reservedToolSlots: 1,
+    supported: upstreamMaxTools >= 2,
+  });
+}
+
 export function clientSafeCapabilities(capabilities = {}) {
   const upstreamMax = positiveNumber(capabilities.maxRequestBytes, 160000);
   const reservedBudget = upstreamMax - PROVIDER_ENVELOPE_RESERVE_BYTES;
@@ -25,8 +35,13 @@ export function clientSafeCapabilities(capabilities = {}) {
     ? Math.floor(reservedBudget / PROVIDER_WIRE_EXPANSION_FACTOR)
     : Math.floor(upstreamMax / PROVIDER_WIRE_EXPANSION_FACTOR);
   const safeClientMax = Math.max(1, Math.min(upstreamMax, derived));
+  const toolBudget = providerToolBudget(capabilities);
   return {
     ...capabilities,
+    maxTools: toolBudget.clientMaxTools,
+    upstreamMaxTools: toolBudget.upstreamMaxTools,
+    reservedToolSlots: toolBudget.reservedToolSlots,
+    toolBudgetSupported: toolBudget.supported,
     maxRequestBytes: safeClientMax,
     upstreamMaxRequestBytes: upstreamMax,
     requestEnvelopeReserveBytes: PROVIDER_ENVELOPE_RESERVE_BYTES,
@@ -92,4 +107,5 @@ function toGeminiTool(tool) { return { type: 'function', name: tool.name, descri
 function toOpenAITool(tool) { return { type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } }; }
 function positiveNumber(value, fallback) { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : fallback; }
 function numberOr(value, fallback) { return positiveNumber(value, fallback); }
+function positiveInteger(value, fallback) { return typeof value === 'number' && Number.isFinite(value) && value >= 1 ? Math.floor(value) : fallback; }
 function nullableNumber(value) { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : null; }
