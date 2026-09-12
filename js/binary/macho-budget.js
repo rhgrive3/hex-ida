@@ -26,8 +26,8 @@ export function markMachOMetadataPartial(image, reason) {
  * ceiling entirely, while `stringBytes: NaN` leaked a non-finite value out
  * through `remainingStringBytes` and `remaining()` into bounded decode paths
  * (#1376). Preserve explicit numeric zero as a zero budget (#4299), without
- * turning omitted or coercive values into resource limits. Only primitive safe
- * integer numbers are valid at this boundary (#5134).
+ * turning omitted or coercive zero values (null/false/blank) into zero limits.
+ * Other values retain the positive-integer compatibility policy.
  */
 function metadataLimit(value, fallback) {
   if (value === 0) return 0;
@@ -39,7 +39,7 @@ function metadataCost(value) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
-function resolveMetadataLimits(overrides = {}) {
+export function resolveMachOMetadataLimits(overrides = {}) {
   const out = {};
   for (const [key, fallback] of Object.entries(MACHO_METADATA_LIMITS)) {
     out[key] = metadataLimit(overrides[key], fallback);
@@ -48,7 +48,7 @@ function resolveMetadataLimits(overrides = {}) {
 }
 
 export function createMachOMetadataBudget(image, options = {}) {
-  const limits = resolveMetadataLimits(options.limits || options.metadataLimits || {});
+  const limits = resolveMachOMetadataLimits(options.limits || options.metadataLimits || {});
   const signal = options.signal || null;
   const started = Date.now();
   const used = {
@@ -107,7 +107,11 @@ export function createMachOMetadataBudget(image, options = {}) {
 }
 
 export function ensureMachOMetadataBudget(image, budget = null) {
-  if (budget) return budget;
+  if (budget) {
+    if (!image.__machoMetadataBudget)
+      Object.defineProperty(image, '__machoMetadataBudget', { value:budget, configurable:true, enumerable:false, writable:false });
+    return budget;
+  }
   if (image.__machoMetadataBudget) return image.__machoMetadataBudget;
   const created = createMachOMetadataBudget(image);
   Object.defineProperty(image, '__machoMetadataBudget', { value:created, configurable:true, enumerable:false, writable:false });

@@ -317,22 +317,25 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
     const slots=Math.max(1,Math.ceil(c.bits/64));
     if (c.homogeneous && fp + regsNeeded > 8) fp = 8;
     const homogeneousElementBytes = c.homogeneous ? c.elementBytes : null;
-    // AAPCS64 spills each homogeneous element into its own ABI stack slot.
-    // The slot is at least one 8-byte slot even when the logical element is a
-    // 32-bit HFA member; wider HVA members retain their canonical physical
-    // element span and alignment. Derive all offsets from this one layout.
-    const homogeneousStackElementBytes = c.homogeneous ? Math.max(8, homogeneousElementBytes) : null;
-    const stackBytes=c.homogeneous ? homogeneousStackElementBytes * c.members : slots * 8;
+    // AAPCS64 Stage C for a spilled HFA/HVA: C.3 rounds the argument's WHOLE
+    // size up to a multiple of 8 bytes exactly once; C.4 aligns the NSAA to
+    // the argument's natural alignment; C.6 copies the aggregate contiguously
+    // in its canonical member packing, so members keep their logical element
+    // span and offsets instead of being widened to one 8-byte slot per member
+    // (stack HFAs have "exactly the same layout" as any other composite).
+    const stackAlignmentBytes = c.homogeneous ? Math.max(8, Math.min(16, c.alignment ?? homogeneousElementBytes ?? 8)) : null;
+    if (c.homogeneous) stackOffset = Math.ceil(stackOffset / stackAlignmentBytes) * stackAlignmentBytes;
+    const stackBytes=c.homogeneous ? Math.ceil((homogeneousElementBytes * c.members) / 8) * 8 : slots * 8;
     const entry={index,location:'stack',offset:stackOffset,bytes:stackBytes,abiClass:c.hfa?'hfa':c.hva?'hva':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits,possible:false,mustUse:true,
       ...(c.homogeneous ? {
         aggregate:true, members:c.members, memberCount:c.members, elementBits:c.elementBits,
-        elementBytes:homogeneousElementBytes, stackElementBytes:homogeneousStackElementBytes,
-        homogeneousLayoutProven:true,
+        elementBytes:homogeneousElementBytes, stackElementBytes:homogeneousElementBytes,
+        alignment:stackAlignmentBytes, homogeneousLayoutProven:true,
         pieces:Array.from({length:c.members}, (_unused,piece) => ({
           pieceIndex:piece, order:piece,
-          stackOffset:stackOffset + piece * homogeneousStackElementBytes,
-          bits:c.elementBits, bytes:homogeneousStackElementBytes,
-          byteOffset:piece * homogeneousStackElementBytes, abiClass:c.hfa?'hfa':'hva',
+          stackOffset:stackOffset + piece * homogeneousElementBytes,
+          bits:c.elementBits, bytes:homogeneousElementBytes,
+          byteOffset:piece * homogeneousElementBytes, abiClass:c.hfa?'hfa':'hva',
         })),
       } : {}),
     };

@@ -304,6 +304,13 @@ export function createMemorySsaContract(input, options = {}) {
   for (const region of regions) {
     work();
     if (regionById.has(region.id)) fail('memory-ssa-duplicate-region-id');
+    // A function-local region owned by a different function must never enter
+    // this contract (#5359): stack-fixed regions are function-scoped, so a
+    // foreign functionId would break the function-local stack invariant.
+    // Function-unscoped regions (global/tls/io/unknown) carry functionId null.
+    if (region.functionId != null && region.functionId !== functionId) {
+      fail('memory-ssa-region-function-mismatch');
+    }
     regionById.set(region.id, region);
   }
   const definitionById = new Map();

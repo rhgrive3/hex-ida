@@ -2,7 +2,8 @@ import { deepFreeze, lossyTypeWitness, stableDigest } from '../core/identity/ind
 import { createOperationIdentity, assertIdentityMatch } from '../phase12/identity.js';
 
 export const CHANGELOG_SCHEMA_VERSION = 'hex-project-operation-v1';
-export const CHECKPOINT_SCHEMA_VERSION = 'hex-project-checkpoint-v1';
+export const CHECKPOINT_SCHEMA_VERSION = 'hex-project-checkpoint-v2';
+const LEGACY_CHECKPOINT_SCHEMA_VERSION = 'hex-project-checkpoint-v1';
 const MEANINGFUL_FACTS = new Set(['name', 'type', 'struct', 'confirmation', 'patch']);
 const OPERATION_ACTIONS = new Set(['set', 'remove', 'resolve', 'resurrect']);
 // Factory provenance is not a transport grant or a payload-integrity proof.
@@ -89,16 +90,28 @@ export function createProjectOperation(input = {}) {
   const beforeFingerprintInput = input.beforeFingerprint;
   const beforeFingerprint = beforeFingerprintInput == null ? null : beforeFingerprintInput;
   if (beforeFingerprint !== null && (typeof beforeFingerprint !== 'string' || !beforeFingerprint.trim())) throw new TypeError('operation-before-fingerprint-invalid');
-  const operationId = required(input.operationId ?? `op:${collaborationDigest({ projectIdentity, binaryIdentity: input.binaryIdentity || null, targetEntityId, factKind, action, payload, beforeFingerprint, causalParents: list(input.causalParents) })}`, 'operation-id-required');
+  const operationIdInput = input.operationId;
+  let operationId = operationIdInput == null ? null : required(operationIdInput, 'operation-id-required');
+  const binaryIdentityInput = input.binaryIdentity;
+  const binaryIdentity = binaryIdentityInput == null ? null : required(binaryIdentityInput, 'operation-binary-identity-invalid');
+  let causalParents = null;
+  if (operationId === null) {
+    causalParents = list(input.causalParents);
+    operationId = required(`op:${collaborationDigest({ projectIdentity, binaryIdentity, targetEntityId, factKind, action, payload, beforeFingerprint, causalParents })}`, 'operation-id-required');
+  }
+  const authorIdentity = input.authorIdentity == null ? null : required(input.authorIdentity, 'operation-author-identity-invalid');
+  const deviceIdentity = input.deviceIdentity == null ? null : required(input.deviceIdentity, 'operation-device-identity-invalid');
+  const timestampHint = input.timestampHint == null ? null : String(input.timestampHint);
+  if (causalParents === null) causalParents = list(input.causalParents);
   const operation = {
     schemaVersion: CHANGELOG_SCHEMA_VERSION,
     operationId,
     projectIdentity,
-    binaryIdentity: input.binaryIdentity == null ? null : required(input.binaryIdentity, 'operation-binary-identity-invalid'),
-    authorIdentity: input.authorIdentity == null ? null : required(input.authorIdentity, 'operation-author-identity-invalid'),
-    deviceIdentity: input.deviceIdentity == null ? null : required(input.deviceIdentity, 'operation-device-identity-invalid'),
-    timestampHint: input.timestampHint == null ? null : String(input.timestampHint),
-    causalParents: list(input.causalParents),
+    binaryIdentity,
+    authorIdentity,
+    deviceIdentity,
+    timestampHint,
+    causalParents,
     targetEntityId,
     factKind,
     action,
@@ -404,17 +417,129 @@ export class ChangeLog {
   }
 
   checkpoint() {
-    return deepFreeze({ schemaVersion: CHECKPOINT_SCHEMA_VERSION, projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: cloneState(this.state), operationIds: [...this.operations.keys()].sort(), digest: this.digest() });
+    const pendingOperations = [...this.pending.values()].sort(compareOperations).map((operation) => clone(operation));
+    return deepFreeze({
+      schemaVersion: CHECKPOINT_SCHEMA_VERSION,
+      projectIdentity: this.projectIdentity,
+      binaryIdentity: this.binaryIdentity,
+      state: cloneState(this.state),
+      operationIds: [...this.operations.keys()].sort(),
+      pendingOperations,
+      digest: this.digest(),
+    });
   }
 
-  digest() { return payloadDigest({ state: this.state, operationIds: [...this.operations.keys()].sort() }); }
+  digest() {
+    return payloadDigest({
+      state: this.state,
+      operationIds: [...this.operations.keys()].sort(),
+      pendingOperations: [...this.pending.values()].sort(compareOperations),
+    });
+  }
   snapshot() { return deepFreeze(cloneState(this.state)); }
   appliedOperationIds() { return Object.freeze([...this.operations.keys()].sort()); }
 }
 
-export function replayOperations({ projectIdentity, binaryIdentity = null, operations = [], checkpoint = null } = {}) {
-  const log = new ChangeLog({ projectIdentity, binaryIdentity, state: checkpoint?.state, operations: checkpoint ? checkpoint.operationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity, binaryIdentity, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } })) : [] });
-  const filtered = checkpoint ? operations.filter((operation) => !checkpoint.operationIds.includes(operation.operationId)) : operations;
+function normalizeCheckpointOperationIds(value) {
+  if (!Array.isArray(value)) throw new TypeError('checkpoint-operation-ids-invalid');
+  const seen = new Set();
+  const operationIds = [];
+  for (const input of value) {
+    const operationId = required(input, 'checkpoint-operation-id-invalid');
+    if (operationId !== input || seen.has(operationId)) throw new TypeError('checkpoint-operation-id-invalid');
+    seen.add(operationId);
+    operationIds.push(operationId);
+  }
+  return operationIds.sort(compareOperationId);
+}
+
+function normalizeCheckpointPendingOperations(value, { projectIdentity, binaryIdentity, appliedOperationIds }) {
+  if (!Array.isArray(value)) throw new TypeError('checkpoint-pending-operations-invalid');
+  const pending = new Map();
+  for (const input of value) {
+    const operation = requireCanonicalProjectOperation(input);
+    if (operation.projectIdentity !== projectIdentity) throw new TypeError('checkpoint-pending-project-identity-mismatch');
+    if (operation.binaryIdentity !== binaryIdentity) throw new TypeError('checkpoint-pending-binary-identity-mismatch');
+    if (appliedOperationIds.has(operation.operationId)) throw new TypeError('checkpoint-pending-operation-already-applied');
+    if (pending.has(operation.operationId)) throw new TypeError('checkpoint-pending-operation-id-invalid');
+    rememberRestoredOperation(pending, operation);
+  }
+  return [...pending.values()].sort(compareOperations);
+}
+
+function normalizeCheckpoint(checkpoint, { projectIdentity, binaryIdentity = null } = {}) {
+  if (!checkpoint || typeof checkpoint !== 'object' || Array.isArray(checkpoint)) throw new TypeError('checkpoint-schema-invalid');
+  const schemaVersion = checkpoint.schemaVersion;
+  if (schemaVersion === LEGACY_CHECKPOINT_SCHEMA_VERSION) throw new TypeError('checkpoint-legacy-pending-operations-unavailable');
+  if (schemaVersion !== CHECKPOINT_SCHEMA_VERSION) throw new TypeError('checkpoint-schema-invalid');
+
+  // Capture every authority-bearing field once before validation. Besides
+  // avoiding getter/TOCTOU drift, this guarantees the bytes whose digest is
+  // checked are the exact snapshot used to reconstruct the log (#4177).
+  const checkpointProjectIdentity = checkpoint.projectIdentity;
+  const checkpointBinaryIdentity = checkpoint.binaryIdentity ?? null;
+  const state = cloneState(checkpoint.state);
+  const operationIds = normalizeCheckpointOperationIds(checkpoint.operationIds);
+  const pendingInput = checkpoint.pendingOperations;
+  const digest = checkpoint.digest;
+
+  assertIdentityMatch(checkpointProjectIdentity, projectIdentity, 'checkpoint-project-identity-mismatch');
+  assertIdentityMatch(checkpointBinaryIdentity || '', binaryIdentity || '', 'checkpoint-binary-identity-mismatch');
+  assertIdentityMatch(state?.projectIdentity ?? '', projectIdentity, 'checkpoint-state-project-identity-mismatch');
+  assertIdentityMatch(state?.binaryIdentity || '', binaryIdentity || '', 'checkpoint-state-binary-identity-mismatch');
+  // Validate the captured state before its integrity check so malformed state
+  // is rejected at the structural boundary instead of being hidden behind a
+  // generic digest mismatch. The same validated snapshot is then hashed and
+  // passed into ChangeLog, preserving validation/use identity (#4528).
+  validateRestoredStateFactKeys(state, projectIdentity, binaryIdentity || null);
+
+  const pendingOperations = normalizeCheckpointPendingOperations(pendingInput, {
+    projectIdentity,
+    binaryIdentity: binaryIdentity || null,
+    appliedOperationIds: new Set(operationIds),
+  });
+  const expectedDigest = payloadDigest({ state, operationIds, pendingOperations });
+  if (typeof digest !== 'string' || digest !== expectedDigest) throw new TypeError('checkpoint-digest-mismatch');
+
+  return Object.freeze({
+    schemaVersion,
+    projectIdentity,
+    binaryIdentity: binaryIdentity || null,
+    state,
+    operationIds: Object.freeze(operationIds),
+    pendingOperations: Object.freeze(pendingOperations),
+    digest,
+  });
+}
+
+function checkpointOperationPlaceholders(checkpoint) {
+  return checkpoint.operationIds.map((operationId) => ({
+    operationId,
+    schemaVersion: CHANGELOG_SCHEMA_VERSION,
+    projectIdentity: checkpoint.projectIdentity,
+    binaryIdentity: checkpoint.binaryIdentity,
+    targetEntityId: 'checkpoint',
+    factKind: 'checkpoint',
+    action: 'set',
+    payload: null,
+    causalParents: [],
+    provenance: { source: 'checkpoint' },
+  }));
+}
+
+export function replayOperations({ projectIdentity, binaryIdentity = null, operations = [], checkpoint = null, allowRemote = false, authorizedAuthors = [] } = {}) {
+  const normalizedCheckpoint = checkpoint ? normalizeCheckpoint(checkpoint, { projectIdentity, binaryIdentity }) : null;
+  const appliedIds = new Set(normalizedCheckpoint?.operationIds ?? []);
+  const log = new ChangeLog({
+    projectIdentity,
+    binaryIdentity,
+    state: normalizedCheckpoint?.state,
+    operations: normalizedCheckpoint ? checkpointOperationPlaceholders(normalizedCheckpoint) : [],
+    pending: normalizedCheckpoint?.pendingOperations.map((operation) => [operation.operationId, operation]) ?? [],
+    allowRemote,
+    authorizedAuthors,
+  });
+  const filtered = normalizedCheckpoint ? operations.filter((operation) => !appliedIds.has(operation.operationId)) : operations;
   const result = log.applyBatch(filtered);
   return Object.freeze({ ...result, state: log.snapshot(), digest: log.digest(), unresolved: result.status === 'unresolved' ? result.operationIds : result.unresolvedOperationIds || [] });
 }
@@ -422,18 +547,21 @@ export function replayOperations({ projectIdentity, binaryIdentity = null, opera
 export function createCheckpoint(log) { if (!(log instanceof ChangeLog)) throw new TypeError('ChangeLog required'); return log.checkpoint(); }
 
 export function restoreCheckpoint(checkpoint, options = {}) {
-  if (!checkpoint || checkpoint.schemaVersion !== CHECKPOINT_SCHEMA_VERSION) throw new TypeError('checkpoint-schema-invalid');
-  assertIdentityMatch(checkpoint.projectIdentity, options.projectIdentity, 'checkpoint-project-identity-mismatch');
-  assertIdentityMatch(checkpoint.binaryIdentity || '', options.binaryIdentity || '', 'checkpoint-binary-identity-mismatch');
-  // The restored state itself must carry the same identity: a digest over a
-  // foreign state stays valid, so the digest alone cannot catch the swap (#5497).
-  assertIdentityMatch(checkpoint.state?.projectIdentity ?? '', options.projectIdentity, 'checkpoint-state-project-identity-mismatch');
-  assertIdentityMatch(checkpoint.state?.binaryIdentity || '', options.binaryIdentity || '', 'checkpoint-state-binary-identity-mismatch');
-  const checkpointOperations = checkpoint.operationIds.map((operationId) => ({ operationId, schemaVersion: CHANGELOG_SCHEMA_VERSION, projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, targetEntityId: 'checkpoint', factKind: 'checkpoint', action: 'set', payload: null, causalParents: [], provenance: { source: 'checkpoint' } }));
-  const log = new ChangeLog({ projectIdentity: options.projectIdentity, binaryIdentity: options.binaryIdentity || null, state: checkpoint.state, operations: checkpointOperations });
+  const normalizedCheckpoint = normalizeCheckpoint(checkpoint, options);
+  const checkpointOperations = checkpointOperationPlaceholders(normalizedCheckpoint);
+  const log = new ChangeLog({
+    projectIdentity: normalizedCheckpoint.projectIdentity,
+    binaryIdentity: normalizedCheckpoint.binaryIdentity,
+    state: normalizedCheckpoint.state,
+    operations: checkpointOperations,
+    pending: normalizedCheckpoint.pendingOperations.map((operation) => [operation.operationId, operation]),
+    allowRemote: options.allowRemote,
+    authorizedAuthors: options.authorizedAuthors,
+  });
+  const appliedIds = new Set(normalizedCheckpoint.operationIds);
   const restoreResults = [];
   for (const operation of options.operations || []) {
-    if (checkpoint.operationIds.includes(operation.operationId)) continue;
+    if (appliedIds.has(operation.operationId)) continue;
     const result = log.applyOperation(operation);
     restoreResults.push(result);
     // A rejected incremental operation must reach the caller: returning the

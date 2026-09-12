@@ -248,6 +248,7 @@ function beats(next, current) {
   return Number(next.top?.fusion?.probability || 0) > Number(current.top?.fusion?.probability || 0);
 }
 
+function sameBoundArtifact(captured, current) { return (captured ?? null) === (current ?? null); }
 function captureAnalysisBinding(app, resolved = {}) {
   const symbols = app?.symbols ?? null;
   const region = app?.codeRegion?.() || execRegions(app)[0] || null;
@@ -278,8 +279,10 @@ function analysisBindingCurrent(app, binding) {
   if (app?.symbols !== binding.symbols) return false;
   const currentSymbolsGen = strictInteger(app?.symbols?.gen, 0);
   if (currentSymbolsGen == null || currentSymbolsGen !== binding.symbolsGen) return false;
-  if ((binding.fields != null || app?.fields != null) && app?.fields !== binding.fields) return false;
-  if (binding.program != null) {
+  if (!sameBoundArtifact(binding.fields, app?.fields)) return false;
+  if (binding.program == null) {
+    if (!sameBoundArtifact(binding.program, app?.program)) return false;
+  } else {
     if (binding.programPublished) {
       if (app?.program !== binding.program) return false;
     } else {
@@ -289,7 +292,7 @@ function analysisBindingCurrent(app, binding) {
       if (execRegions(app).map((item) => item.id).join('|') !== binding.programRegionKey) return false;
     }
   }
-  if (binding.shapes != null && app?.shapes !== binding.shapes) return false;
+  if (!sameBoundArtifact(binding.shapes, app?.shapes)) return false;
   const region = app?.codeRegion?.() || execRegions(app)[0] || null;
   return (region?.id ?? null) === binding.regionId;
 }

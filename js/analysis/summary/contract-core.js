@@ -13,13 +13,13 @@
  * `completeness: 'complete'` cannot coexist.
  */
 
-import { deepFreeze, stableDigest } from '../../core/identity/index.js';
+import { deepFreeze, lossyTypeWitness, stableDigest } from '../../core/identity/index.js';
 import { aliasMemoryRegions } from '../alias/legacy-safety-floor.js';
 import { deriveMemoryRegion, isPreciseMemoryRegion } from '../alias/regions-v2.js';
 import { createAnalysisStatus, isCompleteStatus } from '../status.js';
 
 export const FUNCTION_SUMMARY_SCHEMA_VERSION = 3;
-export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.2.0';
+export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.3.0';
 
 /**
  * Where an effect's authority comes from, in the priority order P7-INV-004
@@ -174,6 +174,7 @@ export function createMemoryEffect(input = {}) {
   const regionId = input.regionId == null ? null : nonEmpty(input.regionId, 'function-summary-invalid-region-id');
   const regionKind = nonEmpty(input.regionKind ?? 'unknown', 'function-summary-invalid-region-kind');
   const broad = input.broad === true;
+  if (!broad && regionId == null) fail('function-summary-unresolved-memory-region');
   if (broad && input.region != null) fail('function-summary-broad-effect-cannot-carry-region-proof');
   const region = input.region == null ? null : canonicalSummaryRegion(input.region, regionId, regionKind);
   if (input.region != null && region == null) fail('function-summary-invalid-region-proof');
@@ -204,9 +205,15 @@ export function createUnknownCallEffect(input = {}) {
 }
 
 export function createDirectCall(input = {}) {
+  // A direct call record with zero resolved targets is an unresolved call,
+  // not a call that contributes nothing: publishing it lets the summary pass
+  // the fail-closed consistency checks while its callee resolves to nothing
+  // (#5328, P7-INV-004). Unresolved calls belong in `unknownCallEffects`.
+  const targetEntityIds = sortedIds(input.targetEntityIds, 'function-summary-invalid-target-ids');
+  if (targetEntityIds.length === 0) fail('function-summary-direct-call-target-required');
   return deepFreeze({
     callSiteId: nonEmpty(input.callSiteId, 'function-summary-call-site-required'),
-    targetEntityIds: sortedIds(input.targetEntityIds, 'function-summary-invalid-target-ids'),
+    targetEntityIds,
     summaryId: input.summaryId == null ? null : nonEmpty(input.summaryId, 'function-summary-invalid-summary-id'),
     effectSource: canonicalEffectSource(input.effectSource, 'unknown-call-fallback'),
   });
@@ -238,12 +245,21 @@ function createReturnProvenance(input = {}) {
   if (input.returnIndex != null && (!Number.isSafeInteger(returnIndex) || returnIndex < 0)) {
     fail('function-summary-invalid-return-provenance-return-index');
   }
+  // Storage identity of a returned pointer is part of the canonical fact:
+  // root/allocation provenance must name its address space explicitly. An
+  // omitted space is not 'memory' by assumption — the caller's points-to root
+  // would silently fork from the callee's storage semantics (#5242).
+  const addressSpace = input.addressSpace == null ? null : nonEmpty(input.addressSpace, 'function-summary-invalid-return-provenance-address-space');
+  if ((kind === 'root' || kind === 'allocation') && addressSpace == null) {
+    fail('function-summary-invalid-return-provenance-address-space');
+  }
   const out = {
     kind,
     argIndex: Number.isSafeInteger(argIndex) && argIndex >= 0 ? argIndex : null,
     offset: offset == null ? null : offset.toString(10),
     rootEntityId,
   };
+  if (addressSpace != null) out.addressSpace = addressSpace;
   if (input.allocationSiteId != null) out.allocationSiteId = allocationSiteId;
   // Keep old summaries wire-compatible: an omitted returnIndex still means the
   // primary return position. New producers set it explicitly for multi-return
@@ -267,12 +283,15 @@ function canonicalReturnProvenance(values) {
       value.offset ?? '',
       value.rootEntityId ?? '',
       value.allocationSiteId ?? '',
+      // Storage space participates in dedupe identity: a memory-rooted and an
+      // io-rooted return with the same root id are different facts (#5242).
+      value.addressSpace ?? '',
     ].join('\u0000');
     if (!byKey.has(key)) byKey.set(key, value);
   }
   return [...byKey.values()].sort((left, right) => {
-    const leftKey = [left.returnIndex ?? 0, left.kind, left.argIndex ?? -1, left.offset ?? '', left.rootEntityId ?? '', left.allocationSiteId ?? ''].join('\u0000');
-    const rightKey = [right.returnIndex ?? 0, right.kind, right.argIndex ?? -1, right.offset ?? '', right.rootEntityId ?? '', right.allocationSiteId ?? ''].join('\u0000');
+    const leftKey = [left.returnIndex ?? 0, left.kind, left.argIndex ?? -1, left.offset ?? '', left.rootEntityId ?? '', left.allocationSiteId ?? '', left.addressSpace ?? ''].join('\u0000');
+    const rightKey = [right.returnIndex ?? 0, right.kind, right.argIndex ?? -1, right.offset ?? '', right.rootEntityId ?? '', right.allocationSiteId ?? '', right.addressSpace ?? ''].join('\u0000');
     return codeUnitCompare(leftKey, rightKey);
   });
 }
@@ -284,13 +303,20 @@ function canonicalReturnProvenance(values) {
  * `createReturnProvenance()` stores exactly these fields with exactly these
  * types; anything else on the wire is not part of the FunctionSummary
  * contract. A serialized lookalike must not smuggle extra fields (in
- * particular `addressSpace`/`separationClass`/`separationAuthority`) past the
- * consumer boundary, where a points-to consumer would otherwise read them as
- * proof authority the canonical producer never emits.
+ * particular `separationClass`/`separationAuthority`) past the consumer
+ * boundary, where a points-to consumer would otherwise read them as proof
+ * authority the canonical producer never emits.
+ *
+ * `addressSpace` IS canonical storage identity for `root`/`allocation` facts
+ * and is required there (#5242): without it a non-memory pointer return
+ * degrades to an ordinary memory root at the caller. It is deliberately NOT
+ * proof authority — separation classes/authorities stay at the mint boundary
+ * (#6066) and are never transported through a serializable summary.
  */
 const RETURN_PROVENANCE_KINDS = Object.freeze(['unknown', 'arg', 'root', 'allocation']);
 const RETURN_PROVENANCE_FIELDS = Object.freeze([
   'kind', 'argIndex', 'returnIndex', 'offset', 'rootEntityId', 'allocationSiteId',
+  'addressSpace',
 ]);
 
 export function isCanonicalReturnProvenance(value) {
@@ -308,9 +334,13 @@ export function isCanonicalReturnProvenance(value) {
     const identity = value[field];
     if (identity != null && (typeof identity !== 'string' || !identity.trim())) return false;
   }
+  if (value.addressSpace != null && (typeof value.addressSpace !== 'string' || !value.addressSpace.trim())) return false;
   if (value.kind === 'root' || value.kind === 'allocation') {
     const identity = value.rootEntityId ?? value.allocationSiteId ?? null;
     if (typeof identity !== 'string' || !identity.trim()) return false;
+    // Storage space is required canonical identity on root/allocation facts
+    // (#5242): a space-less root cannot be distinguished from flat memory.
+    if (typeof value.addressSpace !== 'string' || !value.addressSpace.trim()) return false;
   }
   return true;
 }
@@ -434,7 +464,7 @@ export function functionSummaryDigest(summary) {
   // The digest is the semantic dependency identity. Every consumer-visible
   // FunctionSummary field belongs here; otherwise a callee can change meaning
   // without invalidating callers or advancing a recursive fixed point.
-  return stableDigest({
+  const payload = {
     schemaVersion: summary.schemaVersion,
     contractVersion: summary.contractVersion,
     functionId: summary.functionId,
@@ -454,11 +484,23 @@ export function functionSummaryDigest(summary) {
     mayThrow: summary.mayThrow,
     stackDelta: summary.stackDelta,
     semanticFacts: summary.semanticFacts,
-    completeness: summary.status.completeness,
-    stopReason: summary.status.stopReason,
-    analyzerId: summary.status.analyzerId,
-    analyzerVersion: summary.status.analyzerVersion,
+    // Status provenance and identity are part of the published summary state.
+    // Hash the canonical envelope as one unit so a future status field cannot
+    // be silently omitted from dependency identity / fixed-point convergence.
+    status: summary.status,
+  };
+  // #4654: `escapes`/`semanticFacts` carry producer-shaped structured values
+  // through the canonical constructor, and `jsonSafe` silently drops an object
+  // property whose value is undefined/function/symbol/non-finite (and folds
+  // -0 to 0, bigint to string). Two consumer-visible summaries could digest
+  // identically through that lossy normalization. Fold the same type witness
+  // `createEntityId()`/`createEvidenceId()` use into the dependency identity,
+  // only when lossy values are present so JSON-safe digests stay stable.
+  const semanticWitness = lossyTypeWitness({
+    escapes: summary.escapes,
+    semanticFacts: summary.semanticFacts,
   });
+  return stableDigest(semanticWitness ? { ...payload, semanticValueTypes: semanticWitness } : payload);
 }
 
 /**

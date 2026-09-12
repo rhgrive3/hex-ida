@@ -29,10 +29,16 @@ function x86ArchitectureIdentityOf(input) {
 // and 0x67-prefixed 32-bit addressing only; 16-bit addresses are unsupported.
 const ADDRESS_SIZE_BITS_BY_MODE = Object.freeze({ 'long-64': Object.freeze([32, 64]) });
 
+// Numeric fields at the decoder trust boundary accept only exact primitive
+// numeric evidence. `Number()`/`BigInt()` coercion would let booleans, arrays
+// and arbitrary objects mint canonical length/address/width authority
+// (`Number(true)===1`, `BigInt(['16'])===16n`) and promote malformed provider
+// records into valid structured instructions (#5040).
 function integer(value, code, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < min || number > max) throw new TypeError(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {
+    throw new TypeError(code);
+  }
+  return value;
 }
 
 function skipdataInstructionCode(value) {
@@ -42,8 +48,18 @@ function skipdataInstructionCode(value) {
   return value;
 }
 
+const NUMERIC_TEXT = /^-?(?:0x[0-9a-f]+|\d+)$/i;
+
 function bigint(value, code) {
-  try { return BigInt(value); } catch { throw new TypeError(code); }
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string') {
+    const textValue = value.trim();
+    if (NUMERIC_TEXT.test(textValue)) {
+      try { return BigInt(textValue); } catch { /* fall through to reject */ }
+    }
+  }
+  throw new TypeError(code);
 }
 
 function text(value, code, { empty = false } = {}) {
