@@ -1,0 +1,64 @@
+name: Fixer2 issue 8093 remote write
+
+on:
+  push:
+    branches:
+      - fix/issue-8093-aarch64-relocation-span
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fixer2-issue8093-remote-write
+  cancel-in-progress: false
+
+jobs:
+  apply-validated-patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/issue-8093-aarch64-relocation-span
+          fetch-depth: 1
+      - name: Apply, verify, and publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch=.fixer2/issue8093.patch
+          if [[ ! -f "$patch" ]]; then
+            echo 'Patch already consumed; nothing to do.'
+            exit 0
+          fi
+
+          test "$(git hash-object js/binary/elf-relocation-target.js)" = 46878cfb22aacd4c58b9edf7af7d5656592f0000
+          test "$(git hash-object js/binary/elf-core.js)" = 9647068c1701d8a8dcf63fe16656375b3ac9fd12
+          test "$(git hash-object js/binary/elf-dynamic.js)" = a38d7727a99d8e141a721e4be17e281ae575bbc3
+          test "$(git hash-object tests/phase4/binary/issue-8114-elf-aarch64-symbol-alignment.test.mjs)" = e41f03e01876ad475cb59cc3c13d91ba7e9d487f
+          echo 'f7808d79dd66d0e942b0ad02aa4c4070ca9aa360e8567c73d3eb28e9ee7edcaa  .fixer2/issue8093.patch' | sha256sum -c -
+
+          git apply --check "$patch"
+          git apply "$patch"
+
+          test "$(git hash-object js/binary/elf-relocation-target.js)" = 263a97f29988a0f6ea3595875d625413916307d2
+          test "$(git hash-object js/binary/elf-core.js)" = 0edff5a1342fe1e6395dacd1b8dca27d2abb01ef
+          test "$(git hash-object js/binary/elf-dynamic.js)" = acab559c54af70b5cd2394b973545436a01e2eb9
+          test "$(git hash-object tests/phase4/binary/issue-8114-elf-aarch64-symbol-alignment.test.mjs)" = 8e394e463a960a5ce2aab7bebe19a45f1799e2c4
+          test "$(git hash-object tests/phase4/binary/issue-8093-elf-aarch64-relocation-field-span.test.mjs)" = 9dbd76444709aa873df81beae13addf977367061
+
+          node --check js/binary/elf-relocation-target.js
+          node --check js/binary/elf-core.js
+          node --check js/binary/elf-dynamic.js
+          node --check tests/phase4/binary/issue-8093-elf-aarch64-relocation-field-span.test.mjs
+          node tests/phase4/binary/issue-8093-elf-aarch64-relocation-field-span.test.mjs
+          node tests/phase4/binary/issue-8114-elf-aarch64-symbol-alignment.test.mjs
+          npm run binary:test
+
+          rm -f "$patch" .github/workflows/fixer2-issue8093-remote-write.yml
+          rmdir .fixer2 2>/dev/null || true
+          git config user.name 'Fixer 2 Binary'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix(elf): validate AArch64 relocation field spans (#8093)'
+          git push origin HEAD:fix/issue-8093-aarch64-relocation-span
