@@ -176,6 +176,25 @@ function relocationResultFailure(result) {
   return null;
 }
 
+function loaderReparseResultFailure(result, context) {
+  const transaction = context.transaction;
+  const format = result.format ?? result.image?.format;
+  if (format == null || !String(format).trim()) return 'validator-format-identity-required';
+  if (String(format).toLowerCase() !== transaction.format) return 'validator-format-mismatch';
+  const architecture = result.architecture ?? result.arch ?? result.image?.arch;
+  if (architecture == null || !String(architecture).trim()) return 'validator-architecture-identity-required';
+  if (String(architecture).toLowerCase() !== transaction.architecture) return 'validator-architecture-mismatch';
+  const loaderVersion = result.loaderVersion ?? result.parserVersion ?? result.image?.loaderVersion;
+  if (loaderVersion == null || !String(loaderVersion).trim()) return 'validator-loader-identity-required';
+  if (String(loaderVersion) !== transaction.loaderVersion) return 'validator-loader-identity-mismatch';
+  const outputHash = result.outputHash ?? result.bytesHash ?? result.image?.outputHash;
+  if (outputHash == null || !String(outputHash).trim()) return 'validator-output-identity-required';
+  if (String(outputHash).toLowerCase() !== context.expectedOutputHash) return 'validator-output-identity-mismatch';
+  const sourceHash = result.sourceHash ?? result.inputHash ?? result.image?.sourceHash;
+  if (sourceHash != null && String(sourceHash).toLowerCase() !== transaction.sourceHash) return 'validator-source-identity-mismatch';
+  return null;
+}
+
 function independentOracleResultFailure(result, context) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return 'independent-oracle-result-invalid';
   if (result.schemaVersion !== INDEPENDENT_ORACLE_RESULT_SCHEMA) return 'independent-oracle-contract-invalid';
@@ -867,6 +886,10 @@ async function executeExternal(name, fn, context) {
     if (result.ok !== true && result.status !== 'passed' && result.status !== 'valid') return validatorResult(name, true, false, result?.reason || 'validator-rejected', result || null);
     if (name === 'independent-differential') {
       const contractFailure = independentOracleResultFailure(result, context);
+      if (contractFailure) return validatorResult(name, true, false, contractFailure, result);
+    }
+    if (name === 'loader-reparse') {
+      const contractFailure = loaderReparseResultFailure(result, context);
       if (contractFailure) return validatorResult(name, true, false, contractFailure, result);
     }
     const identityFailure = formatIdentityMismatch(result, context.transaction, context.expectedOutputHash);

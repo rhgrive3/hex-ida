@@ -28,9 +28,16 @@ async function transactionWithValidator(validatorFn) {
   });
   const materialized = await materializeRebuildTransaction(transaction, source, { maxOutputBytes: 1024 });
   assert.equal(materialized.status, 'materialized');
+  const loaderIdentity = {
+    format: transaction.format,
+    architecture: transaction.architecture,
+    loaderVersion: transaction.loaderVersion,
+    sourceHash: transaction.sourceHash,
+    outputHash: materialized.outputHash,
+  };
   const validation = await validateRebuildTransaction(transaction, materialized, {
     original: source,
-    loaderReparse: validatorFn,
+    loaderReparse: async (context) => ({ ...loaderIdentity, ...await validatorFn(context) }),
     validators: Object.fromEntries(
       ['layout', 'relocations', 'branch-ranges', 'unwind', 'imports-exports', 'signature-consequence']
         .map((name) => [name, () => ({ ok: true })]),
