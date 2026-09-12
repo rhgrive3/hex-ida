@@ -15,6 +15,8 @@ const CHECKOUT_JOBS = [
   'ai-eval-contract',
   'phase7-ownership',
   'phase8-ownership',
+  'universal-platform-verify',
+  'universal-platform-benchmark',
 ];
 const CHECKOUT_COMMAND = 'configure-public-repository-checkout';
 const EXPECTED_REWRITE = 'git config --global url."https://github.com/rhgrive3/hex-ida.git".insteadOf "git@github.com:rhgrive3/hex-ida.git"';
