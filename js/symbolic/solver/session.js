@@ -38,6 +38,19 @@ function safeReason(value, fallback) {
   return value == null || value === '' ? fallback : String(value);
 }
 
+const DEFAULT_SESSION_TIMEOUT_MS = 5000;
+
+function isValidTimeoutMs(value) {
+  // Zero is reserved as the explicit no-host-timeout sentinel used by the
+  // worker's internal session. Every other accepted duration must be a
+  // non-negative safe integer so caller input cannot disable the host timer
+  // with a negative or otherwise non-duration value (#4432).
+  return typeof value === 'number'
+    && Number.isFinite(value)
+    && Number.isSafeInteger(value)
+    && value >= 0;
+}
+
 export class SolverSession {
   constructor(backend, options = {}) {
     this.backend = backend;
@@ -95,13 +108,13 @@ export class SolverSession {
     this._invalidatePreviousQueries();
     const token = ++this.currentQueryToken;
     const controller = makeAbortController();
-    const sessionTimeoutMs = typeof this.options.timeoutMs === 'number' && Number.isFinite(this.options.timeoutMs)
+    const sessionTimeoutMs = isValidTimeoutMs(this.options.timeoutMs)
       ? this.options.timeoutMs
-      : 5000;
+      : DEFAULT_SESSION_TIMEOUT_MS;
     const requestedTimeoutMs = options.timeoutMs;
     const timeoutMs = requestedTimeoutMs == null
       ? sessionTimeoutMs
-      : typeof requestedTimeoutMs === 'number' && Number.isFinite(requestedTimeoutMs)
+      : isValidTimeoutMs(requestedTimeoutMs)
         ? requestedTimeoutMs
         : sessionTimeoutMs;
     const record = {

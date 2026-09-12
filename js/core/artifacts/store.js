@@ -1,6 +1,7 @@
 import {
   ARTIFACT_STORE_VERSION,
   ArtifactCorruptionError,
+  ArtifactStorageError,
   assertCanonicalArtifactDescriptor,
   createArtifactRecord,
   decodeArtifactPayload,
@@ -148,6 +149,17 @@ export class ArtifactStore {
 
   async get(descriptorOrId, options = {}) {
     const descriptor = typeof descriptorOrId === 'string' ? null : descriptorOrId;
+    // A caller-supplied descriptor object is read authority. Any object that
+    // carries its own artifactId must be a canonical mint product (the same
+    // boundary publish() enforces) before it is compared against stored
+    // records: a forged lookalike with a valid artifactId must not drive
+    // validateDescriptorRecord() into artifact-record-identity-mismatch and
+    // the delete-on-mismatch path, which would destroy a healthy artifact
+    // because of caller input alone. Objects without an artifactId are not
+    // descriptor attempts and keep the requireArtifactId() boundary below.
+    if (descriptor !== null && typeof descriptor === 'object' && Object.hasOwn(descriptor, 'artifactId')) {
+      assertCanonicalArtifactDescriptor(descriptor);
+    }
     const artifactId = requireArtifactId(descriptor?.artifactId ?? descriptorOrId);
     aborted(options.signal);
     this.metrics.requests++;
@@ -391,8 +403,18 @@ export class ArtifactStore {
     }
 
     if (typeof options.validate === 'function') {
-      try { await options.validate(stagedPayload, record, { signal:options.signal }); }
+      // Positive-acknowledgement contract: production callers pass boolean
+      // predicates, so anything but an explicit `true` is a validation
+      // failure. Relying on the validator to throw would let a `false`
+      // return publish a payload that violates its own postconditions
+      // (route/instrumentation/ABI) as a canonical CAS artifact (#5298).
+      let verdict = null;
+      try { verdict = await options.validate(stagedPayload, record, { signal: options.signal }); }
       catch (error) { this.metrics.validationFailures++; throw error; }
+      if (verdict !== true) {
+        this.metrics.validationFailures++;
+        throw new ArtifactStorageError('artifact-validation-not-passed', 'artifact-validation-not-passed', { verdict: String(verdict) });
+      }
     }
     aborted(options.signal);
 

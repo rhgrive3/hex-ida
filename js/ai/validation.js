@@ -2,6 +2,7 @@ import {
   AI_ACTION_KINDS, AI_MODES, AI_RESULT_SCHEMA, AI_SCOPES, AI_STYLES, AIError,
   MODEL_DECISION_SCHEMA,
 } from './schema.js';
+import { isValidSessionId } from './session-core/index.js';
 
 export function validateSchema(value, schema, path = '$') {
   const errors = [];
@@ -80,6 +81,9 @@ export function assertSchema(value, schema, type = 'invalid_model_output') {
 }
 
 export function normalizeTurnRequest(input = {}) {
+  if (input.sessionId != null && !isValidSessionId(input.sessionId)) {
+    throw new AIError('invalid_model_output', 'AI session id must be a non-empty string.');
+  }
   const mode = AI_MODES.includes(input.mode) ? input.mode : 'chat';
   const style = AI_STYLES.includes(input.style) ? input.style : 'analyst';
   const scope = AI_SCOPES.includes(input.scope) ? input.scope : 'auto';

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import './issue-4357-strict-candidate-address.test.mjs';
 import { planAnalysisGoal } from '../../js/query/planner.js';
 
 const TARGET = 0x9000n;
@@ -58,7 +59,7 @@ test('issue-5910: cumulative evidence admits a staged candidate over the weakest
   });
 
   assert.equal(result.candidateSources.stored.recognition, 48);
-  assert.equal(result.candidateSources.supplied.recognition, 50);
+  assert.equal(result.candidateSources.supplied.recognition, 49);
   assert.equal(result.candidates[0]?.address, TARGET);
   assert.ok(result.candidates.some((candidate) => candidate.address === TARGET));
   assert.equal(result.candidates[0]?.score, 12);

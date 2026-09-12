@@ -130,12 +130,12 @@ export function createHexAIContext(app) {
         }
         anySupported = true;
         const rawRegionTotal = result?.page?.total;
-        const regionTotal = Number.isFinite(Number(rawRegionTotal)) ? Number(rawRegionTotal) : null;
         const exactRegionTotal = typeof rawRegionTotal === 'number'
           && Number.isSafeInteger(rawRegionTotal)
           && rawRegionTotal >= 0
           ? rawRegionTotal
           : null;
+        const regionTotal = exactRegionTotal;
         if (regionCompleteness === 'complete' && exactRegionTotal != null) {
           const nextExactTotal = exactTotal + exactRegionTotal;
           if (Number.isSafeInteger(nextExactTotal)) exactTotal = nextExactTotal;
