@@ -106,3 +106,107 @@ await test('#4578 failed create releases its reservation and normal create/updat
 });
 
 console.log('issue #4578 session create duplicate authority: PASS');
+
+await test('#4578/#5556 create/delete/create uses one ordered queue and protects the new reservation', async () => {
+  const persisted = new Map();
+  const events = [];
+  let release;
+  let started;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const saving = new Promise((resolve) => { started = resolve; });
+  const store = new InvestigationSessionStore({ persistence: {
+    async load(id) { events.push('load'); return persisted.get(id) ?? null; },
+    async save(session) {
+      events.push(`save:${session.goal}`);
+      if (session.goal === 'first') { started(); await gate; }
+      persisted.set(session.id, clone(session));
+    },
+    async delete(id) { events.push('delete'); persisted.delete(id); },
+  } });
+  const first = store.create({ id: 'ordered', goal: 'first' });
+  await saving;
+  assert.equal(store.sessions.has('ordered'), false, 'pending save must remain invisible');
+  const deletion = store.delete('ordered');
+  const second = store.create({ id: 'ordered', goal: 'second' });
+  await assert.rejects(store.create({ id: 'ordered', goal: 'duplicate' }), /already exists/);
+  release();
+  await first;
+  await assert.rejects(store.create({ id: 'ordered', goal: 'late duplicate' }), /already exists/);
+  await Promise.all([deletion, second]);
+  assert.deepEqual(events, ['load', 'save:first', 'delete', 'load', 'save:second']);
+  assert.equal((await store.get('ordered')).goal, 'second');
+  assert.equal(persisted.get('ordered').goal, 'second');
+});
+
+await test('#4578/#5556 update submitted during the create probe follows the durable creation', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const writes = [];
+  const store = new InvestigationSessionStore({ persistence: {
+    async load() { await gate; return null; },
+    async save(session) { writes.push(session.goal); },
+  } });
+  const creation = store.create({ id: 'ordered-update', goal: 'created' });
+  const update = store.update('ordered-update', { goal: 'updated' });
+  await assert.rejects(store.create({ id: 'ordered-update' }), /already exists/);
+  release();
+  await Promise.all([creation, update]);
+  assert.deepEqual(writes, ['created', 'updated']);
+  assert.equal((await store.get('ordered-update')).goal, 'updated');
+});
+
+await test('#4578 malformed occupied slots fail closed and probe errors release reservations', async () => {
+  for (const existing of [false, 0, '', {}, { id: 'other' }]) {
+    let saves = 0;
+    const store = new InvestigationSessionStore({ persistence: {
+      async load() { return existing; }, async save() { saves++; },
+    } });
+    await assert.rejects(store.create({ id: 'occupied' }), /already exists/);
+    assert.equal(saves, 0);
+    assert.equal(store.sessions.size, 0);
+  }
+  let fail = true;
+  const store = new InvestigationSessionStore({ persistence: {
+    async load() { if (fail) throw new Error('probe failed'); return null; },
+  } });
+  await assert.rejects(store.create({ id: 'probe-retry' }), /probe failed/);
+  fail = false;
+  assert.equal((await store.create({ id: 'probe-retry' })).id, 'probe-retry');
+});
+
+await test('#4578/#5556 a failed queued delete cannot make an existing ID reusable', async () => {
+  const store = new InvestigationSessionStore({ persistence: {
+    async delete() { throw new Error('delete failed'); },
+  } });
+  const original = await store.create({ id: 'keep', goal: 'original' });
+  const deletion = store.delete('keep');
+  const replacement = store.create({ id: 'keep', goal: 'replacement' });
+  await assert.rejects(deletion, /delete failed/);
+  await assert.rejects(replacement, /already exists/);
+  assert.strictEqual(await store.get('keep'), original);
+});
+
+await test('#4578/#5556 queued deletion releases the reservation without exposing a staged create', async () => {
+  let staged = null;
+  let release;
+  let started;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const saving = new Promise((resolve) => { started = resolve; });
+  const store = new InvestigationSessionStore({ persistence: {
+    async load() { return staged; },
+    async save(session) { staged = session; started(); await gate; },
+    async delete() { staged = null; },
+  } });
+  const creation = store.create({ id: 'staged', goal: 'pending' });
+  await saving;
+  const deletion = store.delete('staged');
+  assert.equal(await store.get('staged'), null, 'delete must not expose the earlier undurable save');
+  assert.equal(store.sessions.size, 0);
+  release();
+  await Promise.all([creation, deletion]);
+  assert.equal(await store.get('staged'), null);
+  assert.equal(store.publishing.size, 0);
+  const retry = await store.create({ id: 'staged', goal: 'retry' });
+  assert.equal((await store.update('staged', { goal: 'updated' })).goal, 'updated');
+  assert.equal(retry.goal, 'retry');
+});
