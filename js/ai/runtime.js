@@ -41,7 +41,9 @@ export class AIRuntime {
     const key = `${binaryId == null ? '<none>' : String(binaryId)}::${String(session.id)}`;
     let stores = this.storeNamespaces.get(key);
     if (stores) return stores;
-    const hasPersistedState = (session.confirmedFindings?.length || 0) > 0 || (session.hypotheses?.length || 0) > 0;
+    const hasPersistedState = (session.confirmedFindings?.length || 0) > 0
+      || (session.hypotheses?.length || 0) > 0
+      || (session.proposedActions?.length || 0) > 0;
     // Initial stores belong to one namespace for their entire lifetime (#6004).
     // Releasing the last session does not make its contents safe to reuse.
     if (!this.initialStoresClaimed && (this.initialStoresExplicit || !hasPersistedState)) {
@@ -51,7 +53,9 @@ export class AIRuntime {
       const evidenceStore = new EvidenceStore(session.confirmedFindings || []);
       evidenceStore.restorePersistedConfirmed(session.confirmedFindings || []);
       const hypothesisStore = new HypothesisStore(evidenceStore, session.hypotheses || []);
-      stores = { evidenceStore, hypothesisStore, proposalStore: new ProposalStore({ evidenceStore, binding: () => proposalBinding(this.localContext) }) };
+      const proposalStore = new ProposalStore({ evidenceStore, binding: () => proposalBinding(this.localContext) });
+      proposalStore.restorePersistedPending(session.proposedActions || []);
+      stores = { evidenceStore, hypothesisStore, proposalStore };
     }
     this.storeNamespaces.set(key, stores);
     this.storeNamespaceOwners.set(key, String(session.id));
