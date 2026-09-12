@@ -26,6 +26,32 @@ function abortError(signal, message = 'Analysis query aborted') {
   const error = new Error(message); error.name = 'AbortError'; return error;
 }
 function abortIfNeeded(signal) { if (signal?.aborted) throw abortError(signal); }
+function waitForSearchRequest(request, signal) {
+  const task = Promise.resolve(request);
+  if (signal?.aborted) {
+    try { request?.cancel?.(); } catch { /* cancellation is best-effort */ }
+    void task.catch(() => {});
+    return Promise.reject(abortError(signal, 'Search aborted'));
+  }
+  if (!signal?.addEventListener) return task;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener?.('abort', onAbort);
+      fn(value);
+    };
+    const onAbort = () => {
+      if (settled) return;
+      try { request?.cancel?.(); } catch { /* cancellation is best-effort */ }
+      finish(reject, abortError(signal, 'Search aborted'));
+    };
+    signal.addEventListener('abort', onAbort, { once:true });
+    task.then((value) => finish(resolve, value), (error) => finish(reject, error));
+    if (signal.aborted && !settled) onAbort();
+  });
+}
 function optionalCallback(value) { return typeof value === 'function' ? value : null; }
 function addressOf(value) {
   // Same canonical address-domain contract as the query adapter: an address
@@ -43,12 +69,15 @@ function addressOf(value) {
   return null;
 }
 function pageOf(page = {}) {
-  const rawOffset = Number(page.offset ?? page.start ?? 0);
-  const rawLimit = Number(page.limit ?? page.size ?? 200);
+  const rawOffset = page.offset ?? page.start ?? 0;
+  const rawLimit = page.limit ?? page.size ?? 200;
   return {
-    offset: Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0,
-    limit: Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(MAX_PAGE, rawLimit) : 200,
+    offset: typeof rawOffset === 'number' && Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0,
+    limit: typeof rawLimit === 'number' && Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(MAX_PAGE, rawLimit) : 200,
   };
+}
+function cumulativePageLimit(offset, limit) {
+  return offset > Number.MAX_SAFE_INTEGER - limit ? null : offset + limit;
 }
 function paged(values, page, completeness = 'complete', status = {}) {
   const source = Array.from(values || []);
@@ -115,6 +144,9 @@ function pruneSettledCache(cache) {
     cache.delete(cacheKey);
   }
 }
+// Discovery producers are registered per app so tests can observe the bounded
+// retention contract (#5267) without reaching into the closure.
+const discoveryProducersByApp = new WeakMap();
 function waitForShared(entry, signal, onDetach = null) {
   abortIfNeeded(signal); entry.waiters++;
   return new Promise((resolve, reject) => {
@@ -204,6 +236,9 @@ function installWorkerBackedIdentity(app) {
     if (this.binaryId) return Promise.resolve(this.binaryId);
     if (!this.file) return Promise.reject(new Error('binary-id-file-unavailable'));
     let entry = this._binaryIdEntry;
+    // #4611: a single-flight entry whose last waiter aborted is cancelled but
+    // may not have settled yet; the owner must not hand it to a new caller.
+    if (entry?.cancelled) entry = null;
     if (!entry) {
       const file = this.file; const epoch = this.gen;
       const controller = new AbortController();
@@ -246,7 +281,9 @@ function installDemandRecognition(app) {
   const originalApplySlice = typeof app.applySlice === 'function' ? app.applySlice.bind(app) : null;
   const originalObjc = typeof app.ensureObjc === 'function' ? app.ensureObjc.bind(app) : null;
   const originalSwift = typeof app.ensureSwift === 'function' ? app.ensureSwift.bind(app) : null;
-  const bootstrapEpochs = new Set(); let acceptedKey = null;
+  const bootstrapEpochs = new Map(); let acceptedKey = null;
+  const beginBootstrap = (epoch) => bootstrapEpochs.set(epoch, (bootstrapEpochs.get(epoch) ?? 0) + 1);
+  const endBootstrap = (epoch) => { const owners = bootstrapEpochs.get(epoch) ?? 0; if (owners <= 1) bootstrapEpochs.delete(epoch); else bootstrapEpochs.set(epoch, owners - 1); };
   const invalidate = (before) => { const after = recognitionInputKey(app); if (before !== after && app.recognition) app.recognition = null; if (before !== after) acceptedKey = null; };
   if (originalObjc) app.ensureObjc = async function (...args) { const before = recognitionInputKey(app); try { return await originalObjc(...args); } finally { invalidate(before); } };
   if (originalSwift) app.ensureSwift = async function (...args) { const before = recognitionInputKey(app); try { return await originalSwift(...args); } finally { invalidate(before); } };
@@ -279,8 +316,13 @@ function installDemandRecognition(app) {
   throw error;
 };
 if (originalApplySlice) app.applySlice = function demandApplySlice(...args) {
-    const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0); bootstrapEpochs.add(epoch);
-    const result = originalApplySlice(...args); const clearBootstrap = () => bootstrapEpochs.delete(epoch); void Promise.resolve(app.symbolsReady).then(clearBootstrap, clearBootstrap); return result;
+    const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0); beginBootstrap(epoch);
+    try {
+      const result = originalApplySlice(...args); const clearBootstrap = () => endBootstrap(epoch); void Promise.resolve(app.symbolsReady).then(clearBootstrap, clearBootstrap); return result;
+    } catch (error) {
+      endBootstrap(epoch);
+      throw error;
+    }
   };
   return () => `${RUNTIME_VERSION}:${acceptedKey ?? recognitionInputKey(app)}`;
 }
@@ -343,6 +385,7 @@ function installMultiRegionShapes(app) {
 function installCancellableFunctionDiscovery(app) {
   if (!app?.backend || typeof app.backend.guessFunctions !== 'function') return;
   const producers = new Map();
+  discoveryProducersByApp.set(app, producers);
   app.ensureFunctions = function demandFunctionDiscovery(region, rawOptions = {}) {
     const options = typeof rawOptions === 'function' ? { onProgress:rawOptions, signal:null } : (rawOptions || {});
     abortIfNeeded(options.signal);
@@ -361,6 +404,7 @@ function installCancellableFunctionDiscovery(app) {
       const key = `${epoch}:${unique.map((item) => item.id).join('|')}`;
       if (symbols.functionDiscovery?.attempted === true && symbols.functionDiscovery?.regionSetKey === unique.map((item) => item.id).join('|')) return symbols;
       let entry = producers.get(key);
+      if (entry?.cancelled) entry = null;
       if (!entry) {
         const producerController = new AbortController();
         entry = {
@@ -427,11 +471,21 @@ function installCancellableFunctionDiscovery(app) {
           symbols.functionStartsCapped = symbols.functionDiscovery.capped || reasons.some((reason) => reason.includes('budget'));
           app.viewer?.setSymbols?.(symbols);
           return symbols;
-        })().then((value) => { entry.settled = true; return value; }).catch((error) => {
+        })().then((value) => {
+          entry.settled = true;
+          // A settled success keeps its entry only while the bounded cache has
+          // room. Same-key re-entry short-circuits on symbols.functionDiscovery
+          // before consulting this map, so eviction cannot re-run discovery;
+          // leaving entries in forever would retain every past epoch's symbols
+          // closure for the lifetime of the app (#5267).
+          pruneSettledCache(producers);
+          return value;
+        }).catch((error) => {
           producers.delete(key);
           throw error;
         });
         producers.set(key, entry);
+        pruneSettledCache(producers);
       }
       // Register every consumer's observer on the shared entry, whether it
       // created the producer or attached to an existing one (#5860).
@@ -459,6 +513,7 @@ function installDemandQueryAPI(app, recognitionVersion) {
     const profile = `${limits.callLimit}:${limits.refLimit}:${limits.kindLimit}`;
     const key = `${epoch}:${region.id}:${profile}`;
     let entry = regionScans.get(key);
+    if (entry?.cancelled) entry = null;
     if (!entry) {
       const request = app.backend.scanProgram(region.id, options.onProgress, { ...limits, analysisPriority:options.priority || 'interactive' });
       entry = { request, promise:null, settled:false, waiters:0 };
@@ -514,7 +569,10 @@ function installDemandQueryAPI(app, recognitionVersion) {
       const { program, reason, scannedRegionIds, unscannedRegionIds } = await localProgram(id, 'callers', options);
       if (!program?.callersOf) return unsupported(reason || 'program-index-unavailable');
       if (graphUnsupported(program)) return unsupported(program.queryIncompleteReason || reason || 'unsupported-program-analysis');
-      const { offset, limit } = pageOf(page); const source = program.callersOf(addressOf(id), Math.min(MAX_PAGE, offset + limit));
+      const { offset, limit } = pageOf(page);
+      const cumulativeLimit = cumulativePageLimit(offset, limit);
+      if (cumulativeLimit == null) return paged([], page, 'unsupported', { reason:'page-range-overflow', scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
+      const source = program.callersOf(addressOf(id), cumulativeLimit);
       const relationReason=source?.incompleteReason ?? reason ?? null;
       const result = paged(Array.from(source || []), page, source?.complete === false || reason ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
       if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned; return result;
@@ -525,15 +583,25 @@ function installDemandQueryAPI(app, recognitionVersion) {
       const { program, reason, scannedRegionIds, unscannedRegionIds } = await localProgram(address, 'callees', options);
       if (!program?.calleesOf) return unsupported(reason || 'program-index-unavailable');
       if (graphUnsupported(program)) return unsupported(program.queryIncompleteReason || reason || 'unsupported-program-analysis');
-      const { offset, limit } = pageOf(page); const source = program.calleesOf(range.start, range.end, Math.min(MAX_PAGE, offset + limit));
+      const { offset, limit } = pageOf(page);
+      const cumulativeLimit = offset > Number.MAX_SAFE_INTEGER - limit ? null : offset + limit;
+      if (cumulativeLimit == null) {
+        return { value:[], page:{ offset, limit, returned:0, total:0, next:null }, status:{ completeness:'unsupported', reason:'page-range-overflow', paged:true } };
+      }
+      const source = program.calleesOf(range.start, range.end, cumulativeLimit);
       // The scan only covers the validated range. When the function extent
       // itself is unproven (analysis window or region clip), the scan cannot
       // be complete no matter how the local scan ended (#5991).
       const rangeIncomplete = range.complete === false;
-      const relationReason = source?.incompleteReason ?? (rangeIncomplete ? (range.reason ?? 'function-extent-unproven') : null) ?? reason ?? null;
-      const incomplete = source?.complete === false || !!reason || rangeIncomplete;
-      const result = paged(Array.from(source || []), page, incomplete ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-function', scannedRegionIds, unscannedRegionIds });
-      if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned; return result;
+      const queryLimited = source?.queryLimited === true;
+      const relationReason = source?.incompleteReason ?? (queryLimited ? 'query-limit' : (rangeIncomplete ? (range.reason ?? 'function-extent-unproven') : null)) ?? reason ?? null;
+      const incomplete = source?.complete === false || queryLimited || !!reason || rangeIncomplete;
+      const sourceRows = Array.from(source || []);
+      const result = paged(sourceRows, page, incomplete ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-function', scannedRegionIds, unscannedRegionIds });
+      if (queryLimited && result.page.next == null && sourceRows.length >= result.page.offset) {
+        result.page.next = result.page.offset + (result.page.returned > 0 ? result.page.returned : result.page.limit);
+      }
+      return result;
     },
     async xrefs(_snapshot, id, page = {}, options = {}) {
       const address = addressOf(id); if (address == null) return unsupported('function-address-invalid');
@@ -548,11 +616,7 @@ function installDemandQueryAPI(app, recognitionVersion) {
     async search(_snapshot, query, page = {}, options = {}) {
       if (!query || typeof query !== 'object' || typeof app?.backend?.search !== 'function') return unsupported('typed-search-producer-unavailable');
       abortIfNeeded(options.signal); const request = app.backend.search(query, options.onProgress);
-      const value = await new Promise((resolve, reject) => {
-        const onAbort = () => { request.cancel?.(); reject(abortError(options.signal, 'Search aborted')); };
-        options.signal?.addEventListener('abort', onAbort, { once:true });
-        Promise.resolve(request).then(resolve, reject).finally(() => options.signal?.removeEventListener('abort', onAbort));
-      });
+      const value = await waitForSearchRequest(request, options.signal);
       abortIfNeeded(options.signal);
       // An explicit backend `unsupported` must survive the query boundary:
       // "the backend cannot run this search" is not a complete empty result
@@ -577,4 +641,4 @@ export function installDemandDrivenAnalysis(app) {
   Object.defineProperty(app, '__demandDrivenAnalysisVersion', { value:RUNTIME_VERSION, configurable:true });
   return app.analysisQueries;
 }
-export const __demandDrivenInternalsForTests = Object.freeze({ addressOf, mergeShapeMaps, recognitionInputKey, localRegionPlan, regionScanLimits, installWorkerBackedIdentity });
+export const __demandDrivenInternalsForTests = Object.freeze({ addressOf, mergeShapeMaps, recognitionInputKey, localRegionPlan, regionScanLimits, installWorkerBackedIdentity, discoveryProducersByApp });

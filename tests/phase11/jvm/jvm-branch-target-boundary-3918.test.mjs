@@ -62,7 +62,18 @@ assertInvalidTarget([0x9f, 0x00, 0x02, 0xb1]);
   const bundle = fn.bundles[1];
   assert.equal(bundle.mnemonic, 'ifeq');
   assert.equal(bundle.completeness, 'exact');
-  assert.deepEqual(bundle.controlEffects, [{ kind: 'conditional-branch', targetOffset: 0 }]);
+  assert.deepEqual(bundle.controlEffects, [{
+    kind: 'conditional-branch',
+    targetOffset: 0,
+    condition: {
+      kind: 'integer-comparison',
+      predicate: 'eq',
+      signed: true,
+      arity: 1,
+      compareToZero: true,
+      widthBits: 32,
+    },
+  }]);
 }
 
 // A branch may target an instruction whose semantics are unsupported when its boundary is proven.

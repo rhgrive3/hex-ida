@@ -394,8 +394,12 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
      * offsets 0/4/8/12) and the next argument starts right after it, so the
      * per-member slot width is the element's own size, never a widened 8. */
     const homogeneousStackElementBytes = c.homogeneous ? (c.elementBytes ?? 0) : null;
+    /* Darwin aggregates occupy their natural layout size on the stack; only
+     * the next argument's own alignment moves the cursor. The former
+     * Math.max(8, …) widening padded every aggregate to a full slot, pushing
+     * later arguments past bytes the callee never reserved (#5607). */
     const stackBytes = c.homogeneous ? Math.max(c.bytes ?? 0, homogeneousStackElementBytes * c.members)
-      : c.aggregate ? Math.max(8, Math.ceil((c.aggregateBytes ?? c.bytes) / 8) * 8)
+      : c.aggregate ? Math.max(1, c.aggregateBytes ?? c.bytes)
         : c.bits > 64 ? Math.max(8, Math.ceil(c.bits / 64) * 8) : c.bytes;
     const entry = {
       index,

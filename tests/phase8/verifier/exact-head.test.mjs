@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { collectPhase8Metrics } from '../../../tools/validation/phase8/metrics.mjs';
+import { collectPhase8MetricsParallel } from '../../../tools/validation/phase8/parallel-metrics.mjs';
 import {
   PROFILE, SCHEMA_VERSION, VERIFIER_VERSION, mandatoryArchitectureLanes,
   publish, renderMarkdown, validateEvidence, verifyPhase8,
@@ -21,8 +21,9 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
  */
 
 // Collected once. Verifier-correctness cases reuse it; they are testing verdict
-// logic, not re-measuring the product.
-const metrics = collectPhase8Metrics({ repetitions: 1 });
+// logic, not re-measuring the product. Independent whole-corpus proof passes are
+// worker-parallel, but the production performance sample remains exclusive.
+const metrics = await collectPhase8MetricsParallel({ repetitions: 1 });
 const report = verifyPhase8({ shadow: true, metrics });
 
 test('the verifier reports the truth at an early checkpoint, never READY by absence', () => {

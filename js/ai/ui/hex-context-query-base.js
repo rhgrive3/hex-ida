@@ -110,22 +110,27 @@ export async function analyzeModelAt(app, address, end = null, options = {}) {
   return model;
 }
 
+function exactPageTotal(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
 function copyWithMetadata(result, key = 'results') {
   const rows = Array.isArray(result?.value) ? result.value : [];
   const completeness = queryCompleteness(result);
   const page = result?.page || {};
+  const total = exactPageTotal(page.total);
   return {
     [key]:rows,
     offset:Number(page.offset ?? 0),
     returned:Number(page.returned ?? rows.length),
-    total:Number.isFinite(Number(page.total)) ? Number(page.total) : null,
+    total,
     complete:completeness === 'complete' && page.next == null,
     truncated:completeness !== 'complete' || page.next != null,
     reason:queryReason(result),
     completeness:{
       complete:completeness === 'complete' && page.next == null,
       returned:Number(page.returned ?? rows.length),
-      total:Number.isFinite(Number(page.total)) ? Number(page.total) : null,
+      total,
       reason:queryReason(result),
     },
   };
@@ -249,7 +254,7 @@ export function createHexAIContext(app) {
             continue;
           }
           anySupported = true;
-          const regionTotal = Number.isFinite(Number(result?.page?.total)) ? Number(result.page.total) : null;
+          const regionTotal = exactPageTotal(result?.page?.total);
           if (queryCompleteness(result) !== 'complete') {
             complete = false;
             reason ||= queryReason(result) || 'search-incomplete';

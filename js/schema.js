@@ -323,8 +323,19 @@ export function looksLikeDataFile(text) { return /\.(csv|tsv|json|plist|dat|txt)
 export async function recoverSchemas(opts) {
   const o = opts || {};
   const { strings, program, read, architecture } = o;
-  const arch = String(architecture || program?.architecture || '').toLowerCase();
-  const unsupported = !!arch && arch !== 'arm64' && arch !== 'aarch64';
+  // Architecture support判定は canonical architecture boundary と一致させる:
+  // 実 string だけを identity として受理する（js/targets/architecture/registry.js
+  // ::canonicalArchitectureId と同じ規約）。String() coercion は
+  // `String(['arm64']) === 'arm64'` のように structured 値を supported
+  // architecture へ昇格させてしまう (#5810)。identity が提供されながら
+  // canonical 化できない場合（array/object/boolean/number/空文字）は
+  // fail-closed で unsupported —— 「architecture 未指定」の既定へ黙って
+  // 落とさない。identity 未指定の既存 default は不変。
+  const rawArch = architecture ?? program?.architecture;
+  const arch = typeof rawArch === 'string' ? rawArch.trim().toLowerCase() : '';
+  const unsupported = rawArch != null
+    ? (arch !== 'arm64' && arch !== 'aarch64')
+    : false;
   const canonicalProgramComplete = program?.completeness?.complete;
   const programComplete = canonicalProgramComplete == null
     ? program?.complete !== false

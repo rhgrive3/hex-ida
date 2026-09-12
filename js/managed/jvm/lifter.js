@@ -20,6 +20,79 @@ function firstMalformedBoundary(bytecode) {
   return null;
 }
 
+const SYNCHRONIZED_MONITOR_REASON = 'jvm-synchronized-method-monitor-unrepresented';
+
+const JVM_INT_BRANCH_CONDITIONS = Object.freeze({
+  0x99: Object.freeze({ kind: 'integer-comparison', predicate: 'eq', signed: true, arity: 1, compareToZero: true, widthBits: 32 }),
+  0x9a: Object.freeze({ kind: 'integer-comparison', predicate: 'ne', signed: true, arity: 1, compareToZero: true, widthBits: 32 }),
+  0x9b: Object.freeze({ kind: 'integer-comparison', predicate: 'lt', signed: true, arity: 1, compareToZero: true, widthBits: 32 }),
+  0x9c: Object.freeze({ kind: 'integer-comparison', predicate: 'ge', signed: true, arity: 1, compareToZero: true, widthBits: 32 }),
+  0x9d: Object.freeze({ kind: 'integer-comparison', predicate: 'gt', signed: true, arity: 1, compareToZero: true, widthBits: 32 }),
+  0x9e: Object.freeze({ kind: 'integer-comparison', predicate: 'le', signed: true, arity: 1, compareToZero: true, widthBits: 32 }),
+  0x9f: Object.freeze({ kind: 'integer-comparison', predicate: 'eq', signed: true, arity: 2, compareToZero: false, widthBits: 32 }),
+  0xa0: Object.freeze({ kind: 'integer-comparison', predicate: 'ne', signed: true, arity: 2, compareToZero: false, widthBits: 32 }),
+  0xa1: Object.freeze({ kind: 'integer-comparison', predicate: 'lt', signed: true, arity: 2, compareToZero: false, widthBits: 32 }),
+  0xa2: Object.freeze({ kind: 'integer-comparison', predicate: 'ge', signed: true, arity: 2, compareToZero: false, widthBits: 32 }),
+  0xa3: Object.freeze({ kind: 'integer-comparison', predicate: 'gt', signed: true, arity: 2, compareToZero: false, widthBits: 32 }),
+  0xa4: Object.freeze({ kind: 'integer-comparison', predicate: 'le', signed: true, arity: 2, compareToZero: false, widthBits: 32 }),
+});
+
+function applyBranchPredicateSemantics(lifted, options = {}) {
+  let changed = false;
+  const bundles = lifted.bundles.map((bundle) => {
+    const condition = JVM_INT_BRANCH_CONDITIONS[bundle.opcode];
+    if (!condition) return bundle;
+    let bundleChanged = false;
+    const controlEffects = bundle.controlEffects.map((effect) => {
+      if (effect?.kind !== 'conditional-branch') return effect;
+      bundleChanged = true;
+      changed = true;
+      return { ...effect, condition };
+    });
+    return bundleChanged ? createVMEffectBundle({ ...bundle, controlEffects }, options) : bundle;
+  });
+  return changed ? createVMEffectFunction({ ...lifted, bundles }, options) : lifted;
+}
+
+function finalizeJvmSemantics(lifted, method, options = {}) {
+  return applySynchronizedMethodSemantics(applyBranchPredicateSemantics(lifted, options), method, options);
+}
+
+function applySynchronizedMethodSemantics(lifted, method, options = {}) {
+  if ((method?.accessFlags & 0x0020) === 0) return lifted; // ACC_SYNCHRONIZED
+
+  const firstBundle = lifted.bundles[0] ?? null;
+  const alreadyMarked = firstBundle?.unknownEffects?.some((effect) =>
+    effect?.reason === SYNCHRONIZED_MONITOR_REASON) === true;
+  const bundles = firstBundle ? [{
+    ...firstBundle,
+    completeness: firstBundle.completeness === 'unknown' ? 'unknown' : 'partial',
+    unknownEffects: alreadyMarked
+      ? firstBundle.unknownEffects
+      : [...firstBundle.unknownEffects, {
+        category: 'other',
+        reason: SYNCHRONIZED_MONITOR_REASON,
+      }],
+  }, ...lifted.bundles.slice(1)] : lifted.bundles;
+
+  return createVMEffectFunction({
+    ...lifted,
+    bundles,
+    aggregateCompleteness: lifted.aggregateCompleteness === 'unknown' ? 'unknown' : 'partial',
+    metadata: {
+      ...lifted.metadata,
+      synchronization: {
+        kind: 'implicit-jvm-monitor',
+        monitor: (method.accessFlags & 0x0008) !== 0 ? 'declaring-class' : 'receiver', // ACC_STATIC
+        acquire: 'method-entry',
+        release: 'normal-or-abrupt-exit',
+        reentrant: true,
+        completeness: 'unrepresented',
+      },
+    },
+  }, options);
+}
+
 function cloneWithBytecodePrefix(jvmClass, methodIdx, method, bytecode) {
   const methods = jvmClass.methods.slice();
   methods[methodIdx] = {
@@ -34,11 +107,15 @@ function cloneWithBytecodePrefix(jvmClass, methodIdx, method, bytecode) {
 
 export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
   const method = jvmClass?.methods?.[methodIdx];
-  if (!method?.code) return liftJvmMethodCore(methodIdx, jvmClass, options);
+  if (!method?.code) {
+    return finalizeJvmSemantics(liftJvmMethodCore(methodIdx, jvmClass, options), method, options);
+  }
 
   const bytecode = method.code.bytecode;
   const malformed = firstMalformedBoundary(bytecode);
-  if (!malformed) return liftJvmMethodCore(methodIdx, jvmClass, options);
+  if (!malformed) {
+    return finalizeJvmSemantics(liftJvmMethodCore(methodIdx, jvmClass, options), method, options);
+  }
 
   const methodId = createManagedMethodId(jvmClass.moduleId, methodIdx, method.name);
   let prefixBundles = [];
@@ -92,7 +169,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
     catchType: exc.catchType,
   }));
 
-  return createVMEffectFunction({
+  const lifted = createVMEffectFunction({
     methodId,
     profileId: jvmClass.vmSpecEdition,
     frontendId: 'jvm',
@@ -104,4 +181,5 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
     exceptionRegions,
     aggregateCompleteness: 'partial',
   }, options);
+  return finalizeJvmSemantics(lifted, method, options);
 }

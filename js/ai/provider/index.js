@@ -1,7 +1,9 @@
 import { AIError } from '../schema.js';
-import { requestJSON } from '../transport.js';
+import { readBoundedText, requestJSON } from '../transport.js';
 import { validateModelDecision } from '../validation.js';
 import { SAFE_PROVIDER_CAPABILITIES } from '../budget/wire.js';
+
+const CAPABILITIES_MAX_RESPONSE_BYTES = 64 * 1024;
 
 export class AIProvider {
   constructor({ capabilities } = {}) {
@@ -54,6 +56,16 @@ export class WorkerAIProvider extends AIProvider {
   }
 
   #waitForCapabilities(promise, signal) {
+    /* #5144: the waiter is accounted only after the signal contract is proven
+       usable. A malformed truthy signal used to increment capabilitiesWaiters
+       and then throw synchronously inside the executor below, leaking a ghost
+       waiter that permanently disabled shared-preflight cancellation. */
+    if (signal
+      && (typeof signal.addEventListener !== 'function'
+        || typeof signal.removeEventListener !== 'function'
+        || typeof signal.aborted !== 'boolean')) {
+      throw new TypeError('signal must be an AbortSignal.');
+    }
     this.capabilitiesWaiters += 1;
     let released = false;
     const release = (cancelled = false) => {
@@ -66,28 +78,35 @@ export class WorkerAIProvider extends AIProvider {
     };
     if (!signal) return promise.finally(() => release(false));
     return new Promise((resolve, reject) => {
-      const onAbort = () => {
-        signal.removeEventListener('abort', onAbort);
-        release(true);
-        reject(interruptionError(signal));
-      };
-      signal.addEventListener('abort', onAbort, { once: true });
-      if (signal.aborted) {
-        onAbort();
-        return;
+      try {
+        const onAbort = () => {
+          signal.removeEventListener('abort', onAbort);
+          release(true);
+          reject(interruptionError(signal));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        promise.then(
+          (value) => {
+            signal.removeEventListener('abort', onAbort);
+            release(false);
+            resolve(value);
+          },
+          (error) => {
+            signal.removeEventListener('abort', onAbort);
+            release(false);
+            reject(error);
+          },
+        );
+      } catch (error) {
+        /* The waiter count must be reusable no matter what the wiring throws:
+           release before rejecting so cancellation accounting cannot leak. */
+        release(false);
+        reject(error);
       }
-      promise.then(
-        (value) => {
-          signal.removeEventListener('abort', onAbort);
-          release(false);
-          resolve(value);
-        },
-        (error) => {
-          signal.removeEventListener('abort', onAbort);
-          release(false);
-          reject(error);
-        },
-      );
     });
   }
 
@@ -102,15 +121,32 @@ export class WorkerAIProvider extends AIProvider {
     try {
       const response = await this.fetchImpl(this.capabilitiesEndpoint, { method: 'GET', headers: { accept: 'application/json' }, signal: controller.signal });
       if (!response?.ok) { this.capabilitiesPrepared = true; return this.getCapabilities(); }
-      const text = await response.text();
-      if (new TextEncoder().encode(text).byteLength > 64 * 1024) { this.capabilitiesPrepared = true; return this.getCapabilities(); }
+      // Capability discovery is optional, but its 64 KiB budget is a hard
+      // transport bound: reject a declared oversize before materializing any body.
+      const contentLength = Number(response.headers?.get?.('content-length'));
+      if (contentLength > CAPABILITIES_MAX_RESPONSE_BYTES) {
+        controller.abort('response-too-large');
+        try { await response.body?.cancel?.('response-too-large'); } catch { /* best effort */ }
+        this.capabilitiesPrepared = true;
+        return this.getCapabilities();
+      }
+      // Missing/untrusted Content-Length still stays bounded by the shared
+      // streaming reader, which cancels on the first chunk crossing the cap.
+      const text = await readBoundedText(response, CAPABILITIES_MAX_RESPONSE_BYTES, controller);
       let payload = null;
       try { payload = JSON.parse(text); } catch { /* conservative fallback below */ }
       if (payload?.capabilities && typeof payload.capabilities === 'object') this.providerCapabilities = { ...this.providerCapabilities, ...payload.capabilities };
       this.capabilitiesPrepared = true;
       return this.getCapabilities();
     } catch (error) {
-      if (options.signal?.aborted || (controller.signal.aborted && controller.signal.reason !== 'timeout')) throw interruptionError(options.signal);
+      // response-too-large is our own conservative-fallback sentinel, not a
+      // caller cancellation. Explicit/shared cancellation must still reject.
+      if (options.signal?.aborted
+          || (controller.signal.aborted
+            && controller.signal.reason !== 'timeout'
+            && controller.signal.reason !== 'response-too-large')) {
+        throw interruptionError(options.signal || controller.signal);
+      }
       // Capability discovery must not make the provider unavailable. A failed or
       // timed-out preflight falls back to the conservative built-in budget.
       this.capabilitiesPrepared = true;
