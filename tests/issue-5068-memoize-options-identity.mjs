@@ -50,3 +50,20 @@ test('AbortSignal-bearing calls stay unshared and forward the caller signal (#50
   assert.equal(lastOptions.signal, controller.signal);
   assert.equal(lastOptions.maxInstructions, 7);
 });
+
+for (const nullFirst of [false, true]) {
+  test(`explicit null options stay separate from undefined (null first: ${nullFirst}) (#5068)`, async () => {
+    let calls = 0;
+    const memo = memoizeAnalysis(async (_addr, _end, options) => ({ options, call: ++calls }));
+    const order = nullFirst ? [null, undefined] : [undefined, null];
+    const results = [];
+    for (const options of order) results.push(await memo(1, 2, options));
+    assert.equal(results[0].options, order[0]);
+    assert.equal(results[1].options, order[1]);
+    const plain = results[nullFirst ? 1 : 0];
+    assert.equal(await memo(1, 2), plain, 'undefined options remain cached');
+    const explicitNull = await memo(1, 2, null);
+    assert.equal(explicitNull.options, null);
+    assert.equal(explicitNull.call, 3, 'each explicit null call bypasses the cache');
+  });
+}

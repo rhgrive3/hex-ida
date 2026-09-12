@@ -515,7 +515,7 @@ function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
 export function memoizeAnalysis(analyze) {
   const cache = new Map();
   return (addr, end, options = undefined) => {
-    if (options != null) return Promise.resolve().then(() => analyze(addr, end, options));
+    if (options !== undefined) return Promise.resolve().then(() => analyze(addr, end, options));
     // Cache identity is analysis authority (#3309): structured values must
     // not collide with their primitive lookalikes through toString(), or a
     // malformed address would reuse another address's cached analysis.
