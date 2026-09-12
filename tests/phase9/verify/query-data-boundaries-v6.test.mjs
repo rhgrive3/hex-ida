@@ -54,3 +54,24 @@ test('ignored expression metadata is not traversed by the query freezer',()=>{
   let calls=0;const x={...E.createFreshSymbol(E.bvSort(32),'metadata'),meta:{get ignored(){calls++;return {};}}};
   createVerificationQuery({...fields,assertion:E.createCompare('eq',x,x)});assert.equal(calls,0);
 });
+
+test('combined SYM query identity binds cast width and model symbol names after cloning',()=>{
+  const x=E.createFreshSymbol(E.bvSort(8),'identity-input');
+  const cast=E.createCast('zext',x,32);
+  const query=createVerificationQuery({...fields,assertion:E.createCompare('eq',cast,E.createBv(32,1n))});
+  for (const mutate of [q=>{q.assertion.left.targetWidth=64;},q=>{q.assertion.left.arg.name='foreign-model-name';}]) {
+    const clone=structuredClone(query);mutate(clone);
+    const checked=validateVerificationQuery(clone);
+    assert.equal(checked.valid,false);
+    assert.equal(checked.reason,'query-hash-content-mismatch');
+  }
+  assert.equal(validateVerificationQuery(structuredClone(query)).valid,true);
+});
+test('combined SYM rejects malformed cloned target identities at the shape boundary',()=>{
+  const query=createVerificationQuery(fields);
+  for (const targetEntity of [[],1,true,new Date(0)]) {
+    const checked=validateVerificationQuery({...structuredClone(query),targetEntity});
+    assert.equal(checked.valid,false);
+    assert.equal(checked.reason,'invalid-verification-query-shape');
+  }
+});

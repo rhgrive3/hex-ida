@@ -14,8 +14,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { stableDigest } from '../../../js/core/identity/index.js';
-import { bvSort, BV_COMPARE_OP } from '../../../js/symbolic/expr/kinds.js';
-import { createBool, createBv, createCompare, createFreshSymbol } from '../../../js/symbolic/expr/factory.js';
+import { bvSort, BV_BINARY_OP, BV_COMPARE_OP } from '../../../js/symbolic/expr/kinds.js';
+import { createBinary, createBool, createBv, createCompare, createFreshSymbol } from '../../../js/symbolic/expr/factory.js';
 import { evaluateExpr, EVAL_STATUS } from '../../../js/symbolic/expr/evaluate.js';
 import { translateSemanticIR } from '../../../js/symbolic/translate/semantic-ir.js';
 import { TRANSLATION_STATUS } from '../../../js/symbolic/translate/support-matrix.js';
@@ -40,8 +40,52 @@ const CHECKPOINT_RELATIVE_PATH = 'reports/phase9/checkpoints.json';
 const VERIFIER_OWNED_PATHS = Object.freeze(new Set([REPORT_RELATIVE_PATH, CHECKPOINT_RELATIVE_PATH]));
 
 export const VERIFIER_ID = 'phase9.verifier';
-export const VERIFIER_VERSION = '2.0.0';
-export const SCHEMA_VERSION = 'phase9-release-evidence/v2';
+export const VERIFIER_VERSION = '2.1.0';
+export const SCHEMA_VERSION = 'phase9-release-evidence/v3';
+
+const ABSENT_DEVICE_EVIDENCE = Object.freeze({
+  state: 'absent',
+  verified: false,
+  deviceModel: null,
+  osVersion: null,
+  browserVersion: null,
+  commitSha: null,
+  treeSha: null,
+  checks: {},
+  reason: 'physical-ipad-evidence-not-supplied',
+});
+
+function loadPhysicalDeviceEvidence(product) {
+  const evidencePath = process.env.HEX_PHASE9_PHYSICAL_IPAD_EVIDENCE;
+  if (!evidencePath) return ABSENT_DEVICE_EVIDENCE;
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.resolve(evidencePath), 'utf8'));
+    const checks = raw?.checks || {};
+    const identityMatches = raw?.commitSha === product.commitSha && raw?.treeSha === product.treeSha;
+    const completeChecks = ['sat32', 'unsat32', 'sat64', 'unsat64', 'cancellation', 'timeout', 'memoryPressure']
+      .every((key) => checks[key] === true);
+    const identified = [raw?.deviceModel, raw?.osVersion, raw?.browserVersion]
+      .every((value) => typeof value === 'string' && value.trim());
+    const verified = raw?.state === 'verified' && identityMatches && completeChecks && identified;
+    return Object.freeze({
+      state: verified ? 'verified' : 'invalid',
+      verified,
+      deviceModel: raw?.deviceModel || null,
+      osVersion: raw?.osVersion || null,
+      browserVersion: raw?.browserVersion || null,
+      commitSha: raw?.commitSha || null,
+      treeSha: raw?.treeSha || null,
+      checks,
+      reason: verified ? null : 'physical-ipad-evidence-invalid-or-identity-mismatched',
+    });
+  } catch (error) {
+    return Object.freeze({
+      ...ABSENT_DEVICE_EVIDENCE,
+      state: 'invalid',
+      reason: `physical-ipad-evidence-read-failed:${error?.message || 'invalid'}`,
+    });
+  }
+}
 
 function git(args) {
   const result = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
@@ -109,9 +153,34 @@ async function runLiveBackendGate() {
     createCompare(BV_COMPARE_OP.EQ, x, createBv(3, 2n)),
   ]);
   const unsatResult = await backend.createSession().check(unsatQuery);
+  const wideChecks = [];
+  for (const width of [32, 64]) {
+    const wide = createFreshSymbol(bvSort(width), `release_wide_${width}`);
+    const wideSatQuery = query(
+      createCompare(
+        BV_COMPARE_OP.EQ,
+        createBinary(BV_BINARY_OP.ADD, wide, createBv(width, 1n)),
+        createBv(width, 0n),
+      ),
+    );
+    const wideSat = await backend.createSession().check(wideSatQuery);
+    const wideUnsat = await backend.createSession().check(query(null, [
+      createCompare(BV_COMPARE_OP.EQ, wide, createBv(width, 1n)),
+      createCompare(BV_COMPARE_OP.EQ, wide, createBv(width, 2n)),
+    ]));
+    wideChecks.push({
+      width,
+      satStatus: wideSat.status,
+      satModelValid: wideSat.status === SOLVER_STATUS.SAT && validateSatModel(wideSatQuery, wideSat.model).valid,
+      unsatStatus: wideUnsat.status,
+      route: wideSat.stats?.routingTier || null,
+    });
+  }
   const exact = backend.proofAuthority === PROOF_AUTHORITY.EXACT && backend.capabilities().exactProofs === true;
+  const wideExact = wideChecks.every((item) => item.satStatus === SOLVER_STATUS.SAT && item.satModelValid &&
+    item.unsatStatus === SOLVER_STATUS.UNSAT && item.route === 'bitblast-qfbv');
   return {
-    ok: exact && satModelValid && unsatResult.status === SOLVER_STATUS.UNSAT,
+    ok: exact && satModelValid && unsatResult.status === SOLVER_STATUS.UNSAT && wideExact,
     backend: {
       id: backend.id,
       version: backend.version,
@@ -124,8 +193,10 @@ async function runLiveBackendGate() {
       satModelValid,
       unsatStatus: unsatResult.status,
       exact,
+      wideExact,
+      wideChecks,
     },
-    reason: exact && satModelValid && unsatResult.status === SOLVER_STATUS.UNSAT
+    reason: exact && satModelValid && unsatResult.status === SOLVER_STATUS.UNSAT && wideExact
       ? null
       : 'live-production-backend-contract-failed',
   };
@@ -201,6 +272,8 @@ function capabilityStatuses(backendGate, implementationGate, testsOk, browserGat
     symbolicEvidenceSchema: testsOk ? 'verified' : 'blocked',
     versionSafeCachePolicy: testsOk ? 'verified' : 'blocked',
     browserWorkerRuntime: browserGate.ok ? 'verified' : 'blocked',
+    tieredExactQfbv3264: backendGate.checks?.wideExact && testsOk ? 'verified' : 'blocked',
+    explicitCapabilityRouting: backendGate.checks?.wideExact && testsOk ? 'verified' : 'blocked',
   };
 }
 
@@ -209,6 +282,7 @@ export function buildDeterministicPayload({
   backend,
   testExecution,
   browserExecution = { selected: 0, total: 0, allPassed: false, engines: [] },
+  physicalDeviceEvidence = ABSENT_DEVICE_EVIDENCE,
   capabilities,
   gates,
 }) {
@@ -234,6 +308,7 @@ export function buildDeterministicPayload({
       allPassed: browserExecution.allPassed === true,
       engines: Array.isArray(browserExecution.engines) ? browserExecution.engines : [],
     },
+    physicalDeviceEvidence,
     capabilities,
     gates: gates.map((item) => ({
       id: item.id,
@@ -255,6 +330,15 @@ export function validateEvidence(report) {
   if (!Array.isArray(report.gates) || report.gates.some((item) => !['PASSED', 'FAILED'].includes(item.status))) errors.push('invalid gates');
   if (!report.browserRuntime) errors.push('missing browser runtime evidence');
   else if (report.verdict === 'READY' && report.browserRuntime.allPassed !== true) errors.push('browser runtime evidence is not green');
+  if (!report.physicalDeviceEvidence || !['absent', 'invalid', 'verified'].includes(report.physicalDeviceEvidence.state)) {
+    errors.push('missing or invalid physical device evidence state');
+  } else if (report.verdict === 'READY' && report.physicalDeviceEvidence.verified !== true) {
+    errors.push('physical iPad evidence is not verified');
+  } else if (report.verdict === 'READY' &&
+      (report.physicalDeviceEvidence.commitSha !== report.product?.commitSha ||
+       report.physicalDeviceEvidence.treeSha !== report.product?.treeSha)) {
+    errors.push('physical iPad evidence identity mismatch');
+  }
   return errors;
 }
 
@@ -272,6 +356,7 @@ function publishJson(relativePath, value) {
 
 export async function verifyPhase9() {
   const product = getProductIdentity();
+  const physicalDeviceEvidence = loadPhysicalDeviceEvidence(product);
   const discovered = discoverPhase9Tests(path.join(ROOT, 'tests/phase9'));
   let testExecution = { selected: 0, total: discovered.length, allPassed: false, error: null };
   try {
@@ -302,7 +387,7 @@ export async function verifyPhase9() {
   });
   const capabilities = capabilityStatuses(backendGate, implementationGate, testsOk, { ok: browserExecution.allPassed });
   const allGatesPass = gates.every((item) => item.ok);
-  const ready = product.clean && testsOk && allGatesPass;
+  const ready = product.clean && testsOk && allGatesPass && physicalDeviceEvidence.verified === true;
   const verdict = ready ? 'READY' : 'BLOCKING';
   const backend = backendGate.backend;
   const payload = buildDeterministicPayload({
@@ -310,6 +395,7 @@ export async function verifyPhase9() {
     backend,
     testExecution,
     browserExecution,
+    physicalDeviceEvidence,
     capabilities,
     gates,
   });
@@ -328,6 +414,11 @@ export async function verifyPhase9() {
       ok: browserExecution.allPassed,
       engines: browserExecution.engines,
       error: browserExecution.error,
+    },
+    physicalDeviceGate: {
+      ok: physicalDeviceEvidence.verified,
+      state: physicalDeviceEvidence.state,
+      reason: physicalDeviceEvidence.reason,
     },
     implementationGate,
   };
@@ -351,6 +442,7 @@ export async function verifyPhase9() {
     gatesPassed: gates.filter((item) => item.ok).length,
     testFiles: testExecution.total,
     browserEngines: browserExecution.engines.map((item) => item.name),
+    physicalDeviceEvidenceState: physicalDeviceEvidence.state,
   };
   let ledger = { phase: 9, checkpoints: [] };
   const ledgerPath = path.join(ROOT, CHECKPOINT_RELATIVE_PATH);
@@ -364,6 +456,7 @@ export async function verifyPhase9() {
   console.log(`[phase9-verifier] Commit: ${product.commitSha}, Tree: ${product.treeSha}, Clean: ${product.clean}`);
   console.log(`[phase9-verifier] Backend: ${backend?.id || 'none'} ${backend?.version || ''} (${backend?.proofAuthority || 'none'})`);
   console.log(`[phase9-verifier] Browser runtime: ${browserExecution.allPassed ? 'PASS' : 'BLOCKING'} (${browserExecution.engines.map((item) => item.name).join(', ') || 'none'})`);
+  console.log(`[phase9-verifier] Physical iPad: ${physicalDeviceEvidence.verified ? 'VERIFIED' : 'NOT_VERIFIED'} (${physicalDeviceEvidence.reason || physicalDeviceEvidence.state})`);
   console.log(`[phase9-verifier] Deterministic digest: ${deterministicDigest}`);
   return Object.freeze(finalReport);
 }

@@ -129,10 +129,11 @@ export function createSolverResult({
     throw new TypeError(`createSolverResult: invalid solver status '${status}'`);
   }
 
-  // Model is only permitted when status is SAT
+  // Model is only permitted when status is SAT. Snapshot it deeply so
+  // independent validation cannot be invalidated by post-publication mutation.
   let normalizedModel = null;
-  if (status === SOLVER_STATUS.SAT && model) {
-    if (model instanceof Map || typeof model === 'object') normalizedModel = immutableSnapshot(model);
+  if (status === SOLVER_STATUS.SAT && model && (model instanceof Map || typeof model === 'object')) {
+    normalizedModel = immutableSnapshot(model);
   }
 
   const normalizedLifecycle = Object.freeze({

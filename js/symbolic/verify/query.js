@@ -122,6 +122,13 @@ function freezeExpressionDag(expressions) {
   }
 }
 
+function validTargetEntityShape(value) {
+  if (value == null || typeof value === 'string') return true;
+  if (typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
 function requireIdentityString(value, name) {
   if (typeof value !== 'string' || value.trim().length === 0) {
     throw new TypeError(`createVerificationQuery: ${name} must be a non-empty string`);
@@ -181,6 +188,7 @@ function validateVerificationQueryData(query, options = {}) {
       typeof query.semanticIrVersion !== 'string' || !query.semanticIrVersion.trim() ||
       typeof query.translatorVersion !== 'string' || !query.translatorVersion.trim() ||
       typeof query.architecture !== 'string' || !query.architecture.trim() ||
+      !validTargetEntityShape(query.targetEntity) ||
       !(query.bitWidth == null || (typeof query.bitWidth === 'number' && Number.isSafeInteger(query.bitWidth) && query.bitWidth > 0)) ||
       typeof query.queryHash !== 'string' || !query.queryHash.trim()) {
     return Object.freeze({ valid: false, reason: 'invalid-verification-query-shape' });

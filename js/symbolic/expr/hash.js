@@ -83,7 +83,7 @@ export function computeStructuralHash(node) {
       break;
 
     case EXPR_KIND.CAST:
-      canonicalRep = `CAST:${node.op}:${sortStr}(${computeStructuralHash(node.arg)})`;
+      canonicalRep = `CAST:${node.op}:${sortStr}:${node.targetWidth}(${computeStructuralHash(node.arg)})`;
       break;
 
     default:
@@ -207,7 +207,7 @@ function computeStructuralHashesData(roots, { maxNodes = 100000 } = {}) {
         case EXPR_KIND.ITE: canonicalRep = `ITE:${sortStr}(${childHashes.join(',')})`; break;
         case EXPR_KIND.EXTRACT: canonicalRep = `EXTRACT:${sortStr}[${node.high}:${node.low}](${childHashes[0]})`; break;
         case EXPR_KIND.CONCAT: canonicalRep = `CONCAT:${sortStr}(${childHashes.join(',')})`; break;
-        case EXPR_KIND.CAST: canonicalRep = `CAST:${node.op}:${sortStr}(${childHashes[0]})`; break;
+        case EXPR_KIND.CAST: canonicalRep = `CAST:${node.op}:${sortStr}:${node.targetWidth}(${childHashes[0]})`; break;
         default: canonicalRep = `GENERIC:${node.kind}:${sortStr}`;
       }
       hashes.set(node, sha256Hex(canonicalRep));

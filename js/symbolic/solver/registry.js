@@ -84,11 +84,12 @@ export class SolverRegistry {
   }
 }
 
-export function createProductionSolverRegistry({ workerFactory = null, preferWorker = true, backendTier = 'exhaustive' } = {}) {
+export function createProductionSolverRegistry({ workerFactory = null, preferWorker = true, backendTier = 'tiered' } = {}) {
   if (!['exhaustive', 'tiered'].includes(backendTier)) throw new TypeError('unsupported-solver-tier');
   const registry = new SolverRegistry({ allowNonExactDefault: false });
   const canUseWorker = preferWorker && (workerFactory || typeof globalThis.Worker === 'function');
-  // Wide solving is opt-in; keep the existing lightweight production floor.
+  // Tiered exact solving is the production default; callers can explicitly
+  // select the legacy exhaustive floor with backendTier:'exhaustive'.
   const WorkerBackend = backendTier === 'tiered' ? TieredWorkerSolverBackend : WorkerSolverBackend;
   const backend = canUseWorker
     ? new WorkerBackend({ workerFactory: workerFactory || undefined })

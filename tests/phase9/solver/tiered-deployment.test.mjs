@@ -66,7 +66,8 @@ async function checkConcreteBinary(backend, width, op, leftValue, rightValue, ex
 }
 
 test('production registry routes exact <=8-bit and 32/64-bit QF_BV capabilities explicitly', async () => {
-  assert.equal(defaultSolverRegistry.getDefaultBackend().id, 'hex-exhaustive-bv', 'legacy default stays lightweight');
+  assert.equal(defaultSolverRegistry.getDefaultBackend().id, 'hex-tiered-qfbv', 'SYM-01 production default supports bounded wide queries');
+  assert.equal(createProductionSolverRegistry({ preferWorker:false, backendTier:'exhaustive' }).getDefaultBackend().id, 'hex-exhaustive-bv', 'explicit exhaustive floor stays available');
   const backend = createProductionSolverRegistry({ preferWorker:false, backendTier:'tiered' }).getDefaultBackend();
   assert.equal(backend.id, 'hex-tiered-qfbv');
   assert.equal(backend.proofAuthority, PROOF_AUTHORITY.EXACT);
@@ -858,7 +859,8 @@ test('identity data is canonical plain immutable data with bounded edges and lon
   assert.equal(depth.reason, 'query-identity-depth-exceeded');
 
   const repeated = structuredClone(query(createBool(true)));
-  repeated.targetEntity = Array(10000).fill(Object.freeze({ edge: 'same' }));
+  // Keep the target shape valid so this case reaches the shared-edge budget.
+  repeated.targetEntity = { edges: Array(10000).fill(Object.freeze({ edge: 'same' })) };
   const edges = validateVerificationQuery(repeated, { maxIdentityNodes: 5 });
   assert.equal(edges.valid, false);
   assert.equal(edges.reason, 'query-identity-edge-budget-exceeded');

@@ -8,7 +8,10 @@ import { createSolverResult, SOLVER_STATUS, isValidSolverResult } from '../js/sy
 import { TRANSLATION_STATUS, COMPLETENESS_STATUS } from '../js/symbolic/translate/support-matrix.js';
 import { createVerificationQuery } from '../js/symbolic/verify/query.js';
 
-const backend = new ExhaustiveBvBackend();
+// HEX-SYM-01 exact authority is branded at SolverBackend construction time;
+// use a real exact provider for the positive eligibility fixture rather than a
+// self-reported plain object.
+const backend = new ExhaustiveBvBackend({ id: 'eligibility-exact', version: '1.0.0' });
 const capabilities = backend.capabilities();
 
 const COMPLETE_SCOPE = Object.freeze({

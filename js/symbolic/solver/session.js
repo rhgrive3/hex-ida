@@ -86,6 +86,18 @@ export class SolverSession {
   }
 
   async check(query, options = {}) {
+    const externalSignal = options.signal;
+    // Abort-signal compatibility is input validation. Require both listener
+    // methods before any query lifecycle side effect so malformed shapes never
+    // publish an in-flight record (#5395).
+    if (externalSignal != null && (
+      typeof externalSignal !== 'object' ||
+      typeof externalSignal.addEventListener !== 'function' ||
+      typeof externalSignal.removeEventListener !== 'function'
+    )) {
+      throw new TypeError('external signal must be AbortSignal-compatible');
+    }
+
     let trustedQueryHash = query?.queryHash || null;
     if (this.backend?.requiresCanonicalQueryIdentity) {
       const identity = validateVerificationQuery(query, { maxExprNodes: this.backend.maxExprNodes || 100000 });
@@ -103,17 +115,6 @@ export class SolverSession {
     if (this.isDisposed()) return this._result(SOLVER_STATUS.INVALID_QUERY, 'session-already-disposed', { disposed: true }, trustedQueryHash);
     if (this.isCancelled()) return this._result(SOLVER_STATUS.CANCELLED, 'session-was-cancelled', { cancelled: true }, trustedQueryHash);
     if (this.isTerminated()) return this._result(SOLVER_STATUS.INVALID_QUERY, `session-terminated:${this._terminationReason || 'provider'}`, { disposed: true }, trustedQueryHash);
-    const externalSignal = options.signal;
-    // Abort-signal compatibility is input validation. Require both listener
-    // methods before any query lifecycle side effect so malformed shapes never
-    // publish an in-flight record (#5395).
-    if (externalSignal != null && (
-      typeof externalSignal !== 'object' ||
-      typeof externalSignal.addEventListener !== 'function' ||
-      typeof externalSignal.removeEventListener !== 'function'
-    )) {
-      throw new TypeError('external signal must be AbortSignal-compatible');
-    }
     if (externalSignal?.aborted) return this._result(SOLVER_STATUS.CANCELLED, 'query-signal-already-aborted', { cancelled: true }, trustedQueryHash);
 
     this._invalidatePreviousQueries();
@@ -184,6 +185,10 @@ export class SolverSession {
             { budgetExceeded: finalIdentity.limitExceeded === true },
             null,
           );
+        } else if (this.backend?.requiresCanonicalQueryIdentity &&
+            (result.status === SOLVER_STATUS.SAT || result.status === SOLVER_STATUS.UNSAT) &&
+            result.queryHash !== record.queryHash) {
+          result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'provider-result-query-identity-mismatch', {}, record.queryHash);
         } else {
           result = createSolverResult({
             ...result,
