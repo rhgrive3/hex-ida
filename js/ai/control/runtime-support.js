@@ -91,6 +91,7 @@ export function assertLiveBindingsUnchanged(local, snapshot) {
 }
 export function compactCandidate(candidate) { return { address: addressString(candidate.address), name: candidate.name, lexicalScore: candidate.lexicalScore, semanticScore: candidate.semanticScore, graphScore: candidate.graphScore, evidenceScore: candidate.evidenceScore, runtimeScore: candidate.runtimeScore, totalScore: candidate.totalScore, reasons: candidate.reasons }; }
 export function deterministicDecision(plan, request, error = null) {
+  if (error?.type === 'cancelled') return { type: 'final', answer: humanError(error), confidence: 0, evidenceIds: [], hypothesisIds: [], suggestedActions: [], followups: [] };
   const best = plan?.best;
   if (best) { const address = addressString(best.address); return { type: 'final', answer: `最も強い候補は ${best.name || address} です。Hex の決定論的 planner が候補を順位付けし、${best.verification?.verified ? '更新経路を検証しました。' : '追加検証が必要です。'}`, confidence: deterministicConfidence(plan), evidenceIds: plan.evidence || [], hypothesisIds: [], suggestedActions: address ? [{ kind: 'open-function', target: address, label: '候補関数を開く' }] : [], followups: plan.missingEvidence || [] }; }
   return { type: 'final', answer: error ? humanError(error) : (request.mode === 'chat' ? '利用できるローカル根拠だけでは回答を確定できませんでした。' : '有力な候補を特定できませんでした。'), confidence: 0, evidenceIds: [], suggestedActions: [], followups: plan?.missingEvidence || [] };
