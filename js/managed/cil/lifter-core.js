@@ -75,6 +75,10 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
   let opSeq = 0;
   let currentStackHeight = 0;
   const bundles = [];
+  // ECMA-335 §II.25.1.2: prefix modifiers bind to the instruction that follows
+  // them. They are accumulated here and merged into that instruction's bundle
+  // instead of being lifted as standalone exact operations (#5096).
+  const pendingModifiers = [];
 
   // Slot-typing authorities (#5353): arguments come from the enclosing
   // MethodDef signature (resolved by the caller into methodAuthority), locals
@@ -665,12 +669,40 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
           controlEffects.push({ kind: 'rethrow' });
           break;
 
-        case 0x16: // volatile.
+        case 0x12: // unaligned. <alignment 1|2|4>
+          {
+            need(1);
+            const alignment = bytecode[pc++];
+            // ECMA-335 §II.25.5: the alignment operand is byte-count 1, 2, or
+            // 4 only; any other value is invalid CIL and must not decode
+            // into a fabricated instruction (#5096).
+            if (alignment !== 1 && alignment !== 2 && alignment !== 4) {
+              fail('cil-invalid-unaligned-alignment');
+            }
+            pendingModifiers.push({ kind: 'unaligned', opcode: 0xfe12, mnemonic: 'unaligned.', bytecodeOffset: opOffset, alignment });
+          }
+          continue;
+
+        case 0x13: // volatile.
+          pendingModifiers.push({ kind: 'volatile', opcode: 0xfe13, mnemonic: 'volatile.', bytecodeOffset: opOffset });
+          continue;
+
         case 0x14: // tail.
-        case 0x12: // unaligned.
+          pendingModifiers.push({ kind: 'tail', opcode: 0xfe14, mnemonic: 'tail.', bytecodeOffset: opOffset });
+          continue;
+
+        case 0x16: // constrained. <4-byte type token>
+          {
+            need(4);
+            const typeToken = view.getUint32(pc, true);
+            pc += 4;
+            pendingModifiers.push({ kind: 'constrained', opcode: 0xfe16, mnemonic: 'constrained.', bytecodeOffset: opOffset, typeToken });
+          }
+          continue;
+
         case 0x1e: // readonly.
-          mnemonic = `prefix_${subOp.toString(16)}`;
-          break;
+          pendingModifiers.push({ kind: 'readonly', opcode: 0xfe1e, mnemonic: 'readonly.', bytecodeOffset: opOffset });
+          continue;
 
         default:
           mnemonic = `cil_fe_0x${subOp.toString(16)}`;
@@ -680,9 +712,61 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
       }
     }
 
+    // Merge any pending prefix modifiers into the instruction they govern
+    // (#5096). The modifier semantics are not represented exactly yet, so the
+    // aggregate completeness of a prefixed bundle is downgraded to partial
+    // and the unmodeled semantics are propagated as unknown effects.
+    const modifiers = pendingModifiers.splice(0, pendingModifiers.length);
+    const metadata = {};
+    let bundleStart = opOffset;
+    if (modifiers.length > 0) {
+      bundleStart = modifiers[0].bytecodeOffset;
+      completeness = 'partial';
+      for (let index = 0; index < modifiers.length; index += 1) {
+        const modifier = modifiers[index];
+        const end = index + 1 < modifiers.length
+          ? modifiers[index + 1].bytecodeOffset
+          : opOffset;
+        metadata[modifier.kind] = {
+          opcode: modifier.opcode,
+          mnemonic: modifier.mnemonic,
+          bytecodeOffset: modifier.bytecodeOffset,
+          provenance: { start: modifier.bytecodeOffset, end },
+          ...(modifier.typeToken == null ? {} : { typeToken: modifier.typeToken }),
+          ...(modifier.alignment == null ? {} : { alignment: modifier.alignment }),
+        };
+        unknownEffects.push({
+          category: 'other',
+          reason: `cil-prefix-modifier-unmodeled:${modifier.kind}`,
+          bytecodeOffset: modifier.bytecodeOffset,
+        });
+      }
+      const constrained = [...modifiers].reverse().find((m) => m.kind === 'constrained');
+      const hasTail = modifiers.some((m) => m.kind === 'tail');
+      if (constrained || hasTail) {
+        callEffects = callEffects.map((effect, index) => index !== 0 ? effect : ({
+          ...effect,
+          ...(hasTail ? { tailCall: true } : {}),
+          ...(constrained ? { constrainedTypeToken: constrained.typeToken } : {}),
+        }));
+      }
+      const lastOf = (kind) => [...modifiers].reverse().find((m) => m.kind === kind);
+      const volatileMod = lastOf('volatile');
+      const readonlyMod = lastOf('readonly');
+      const unalignedMod = lastOf('unaligned');
+      if (volatileMod || readonlyMod || unalignedMod) {
+        memoryEffects = memoryEffects.map((effect, index) => index !== 0 ? effect : ({
+          ...effect,
+          ...(volatileMod ? { volatile: true } : {}),
+          ...(readonlyMod ? { readonly: true } : {}),
+          ...(unalignedMod ? { alignment: unalignedMod.alignment } : {}),
+        }));
+      }
+    }
+
     const origin = createOriginSet({
       operationIds: [opId],
-      byteRanges: [{ start: codeBase + opOffset, end: codeBase + pc }],
+      byteRanges: [{ start: codeBase + bundleStart, end: codeBase + pc }],
     });
 
     bundles.push(createVMEffectBundle({
@@ -707,8 +791,14 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
       origin,
       completeness,
       unknownEffects,
+      metadata,
     }, options));
   }
+
+  // A modifier prefix with no following instruction is an incomplete
+  // encoding: fail closed rather than dropping the bytes or minting an
+  // exact operation from them (#5096).
+  if (pendingModifiers.length > 0) fail('cil-prefix-without-instruction');
 
   return createVMEffectFunction({
     methodId,

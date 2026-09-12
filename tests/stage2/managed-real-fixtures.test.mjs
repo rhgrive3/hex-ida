@@ -42,7 +42,7 @@ for (const fixture of manifest.fixtures) {
   const probe = await frontend.probe(bytes);
   assert.equal(probe.supported, true, `${fixture.id}: parser probe`);
   const image = await frontend.open(bytes, { binaryId: `sha256:${fixture.sha256}` });
-  assert.equal(image.imageId, `managed-image:sha256:${fixture.sha256}`, `${fixture.id}: parser identity uses fixture digest`);
+  assert.equal(image.imageId, `managed-image:sha256%3A${fixture.sha256}`, `${fixture.id}: parser identity uses fixture digest`);
   assert.equal(image.rawBytes.length, fixture.size, `${fixture.id}: parser retained exact bytes`);
 
   const modules = [];

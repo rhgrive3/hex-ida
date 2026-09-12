@@ -31,6 +31,10 @@ const MACHO64_MAGIC = 0xfeedfacf;
 const MACHO_X86_64_CPU = 0x01000007;
 const MACHO_ARM64_CPU = 0x0100000c;
 const MACHO_LC_SEGMENT_64 = 0x19;
+const MACHO_SECTION_TYPE = 0xff;
+const MACHO_S_ZEROFILL = 0x1;
+const MACHO_S_GB_ZEROFILL = 0xc;
+const MACHO_S_THREAD_LOCAL_ZEROFILL = 0x12;
 const MACHO64_HEADER_SIZE = 32;
 const LC_VERSION_MIN_MACOSX = 0x24;
 const LC_CODE_SIGNATURE = 0x1d;
@@ -333,7 +337,9 @@ function parseMacho(bytes) {
         const reserved1 = u32(bytes, sectionOffset + 68);
         const reserved2 = u32(bytes, sectionOffset + 72);
         const reserved3 = u32(bytes, sectionOffset + 76);
-        if (sectionSize > 0) ensureRange(bytes, dataOffset, sectionSize, 'format-safe-macho-section-range-invalid');
+        const sectionType = flags & MACHO_SECTION_TYPE;
+        const zeroFill = sectionType === MACHO_S_ZEROFILL || sectionType === MACHO_S_GB_ZEROFILL || sectionType === MACHO_S_THREAD_LOCAL_ZEROFILL;
+        if (!zeroFill && sectionSize > 0) ensureRange(bytes, dataOffset, sectionSize, 'format-safe-macho-section-range-invalid');
         sections.push({
           index: sections.length,
           commandIndex: index,
@@ -350,7 +356,7 @@ function parseMacho(bytes) {
           reserved1,
           reserved2,
           reserved3,
-          data: bytes.slice(dataOffset, dataOffset + sectionSize),
+          data: zeroFill ? new Uint8Array() : bytes.slice(dataOffset, dataOffset + sectionSize),
           headerOffset: sectionOffset,
         });
       }
