@@ -40,6 +40,67 @@ function methodTokenText(bodyIndex, methodAuthority) {
   return `0x06${(bodyIndex + 1).toString(16).padStart(6, '0')}`;
 }
 
+const CIL_FIELD_DEF_TABLE = 0x04;
+const CIL_MEMBER_REF_TABLE = 0x0a;
+const CIL_ACCESS_STATIC = 0x0010;
+const CIL_TYPE_BEFORE_FIELD_INIT = 0x00100000;
+
+// Static-field access carries the declaring type's initializer authority
+// (#8048, ECMA-335 I.8.9.5): a non-`beforefieldinit` type triggers its
+// `.cctor` at first static-field access, a `beforefieldinit` type may run it
+// at any point up to the first access. The one-time initialization state is
+// not provable per-instruction, so an access that may trigger a declared
+// initializer fails closed to partial instead of publishing an unconditional
+// pure load/store. An access from inside the declaring type's own `.cctor` is
+// already on the initializing path and must not invent a recursive trigger. A
+// type with no `.cctor` runs no declaring-type initializer code (base-type
+// chain authority is a separate slice).
+function resolveCilStaticFieldInitialization(cilImage, token, currentMethod) {
+  const table = token >>> 24;
+  const rid = token & 0x00ffffff;
+  if (!Number.isSafeInteger(rid) || rid < 1) {
+    return { resolved:false, reason:'cil-static-field-token-unresolved' };
+  }
+  if (table === CIL_MEMBER_REF_TABLE) {
+    return { resolved:false, reason:'cil-static-field-owner-external' };
+  }
+  if (table !== CIL_FIELD_DEF_TABLE) {
+    return { resolved:false, reason:'cil-static-field-token-unresolved' };
+  }
+  if (!Array.isArray(cilImage.methods)) {
+    return { resolved:false, reason:'cil-method-definitions-unavailable' };
+  }
+  const field = (cilImage.fields ?? []).find(
+    (row) => row?.token === `0x${token.toString(16).padStart(8, '0')}`,
+  );
+  if (!field) return { resolved:false, reason:'cil-static-field-row-missing' };
+  const ownerType = (cilImage.types ?? []).find(
+    (row) => row?.token === field.declaringTypeToken,
+  );
+  if (!ownerType) return { resolved:false, reason:'cil-static-field-owner-type-missing' };
+  const initializers = cilImage.methods.filter(
+    (row) => row?.declaringTypeToken === ownerType.token && row?.name === '.cctor',
+  );
+  if (initializers.length > 1) {
+    return { resolved:false, reason:'cil-type-initializer-ambiguous' };
+  }
+  const initializer = initializers[0] ?? null;
+  if (initializer && (initializer.accessFlags & CIL_ACCESS_STATIC) === 0) {
+    return { resolved:false, reason:'cil-type-initializer-not-static' };
+  }
+  const selfInitializing = currentMethod?.name === '.cctor'
+    && currentMethod?.declaringTypeToken === ownerType.token;
+  return {
+    resolved:true,
+    reason:null,
+    declaringTypeToken:ownerType.token,
+    declaringType:`${ownerType.namespace ? `${ownerType.namespace}.` : ''}${ownerType.name}`,
+    initializerPresent:initializer != null,
+    beforeFieldInit:(ownerType.accessFlags & CIL_TYPE_BEFORE_FIELD_INIT) !== 0,
+    selfInitializing,
+  };
+}
+
 export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority = null) {
   const methodBody = cilImage.methodBodies[bodyIndex];
   if (!methodBody) fail('cil-invalid-method-body-index');
@@ -55,6 +116,11 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
       : null;
 
   const methodId = createManagedMethodId(cilImage.moduleId, methodTokenText(bodyIndex, methodAuthority));
+  // Enclosing MethodDef identity for initializer self-access discharge (#8048).
+  const currentMethodToken = methodTokenText(bodyIndex, methodAuthority);
+  const currentMethod = (cilImage.methods ?? []).find(
+    (row) => row?.token === currentMethodToken,
+  ) ?? null;
   const returnSignature = methodAuthority?.complete ? methodAuthority?.signature : null;
   const returnStackSlots = returnSignature ? (returnSignature.returnValue === null ? 0 : 1) : null;
   const bytecode = methodBody.bytecode;
@@ -549,11 +615,39 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
               producedValues.push({ bits: 32 });
               currentStackHeight++;
             }
+            // Type-initializer authority rides on the static-field effect
+            // (#8048); an access that may trigger a declared `.cctor` is not
+            // an unconditional pure load/store and fails closed to partial.
+            const initialization = resolveCilStaticFieldInitialization(cilImage, token, currentMethod);
+            const typeInitialization = initialization.resolved ? {
+              declaringTypeToken: initialization.declaringTypeToken,
+              declaringType: initialization.declaringType,
+              initializerPresent: initialization.initializerPresent,
+              beforeFieldInit: initialization.beforeFieldInit,
+              initializationRequired: initialization.initializerPresent && !initialization.selfInitializing,
+              initializationProven: false,
+              ...(initialization.initializerPresent && initialization.selfInitializing
+                ? { discharged: 'declaring-type-initializer' }
+                : {}),
+              ...(initialization.initializerPresent && !initialization.selfInitializing
+                ? { triggerTiming: initialization.beforeFieldInit ? 'allowed-before-access' : 'required-at-access' }
+                : {}),
+            } : {
+              declaringTypeResolved: false,
+            };
             memoryEffects.push({
               space: 'static-field',
               token,
               isWrite,
+              typeInitialization,
             });
+            if (!initialization.resolved) {
+              completeness = 'partial';
+              unknownEffects.push({ category: 'calls', reason: initialization.reason });
+            } else if (initialization.initializerPresent && !initialization.selfInitializing) {
+              completeness = 'partial';
+              unknownEffects.push({ category: 'calls', reason: 'cil-type-initialization-unverified' });
+            }
           }
           break;
 
