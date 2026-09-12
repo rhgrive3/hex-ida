@@ -9,8 +9,8 @@ export const SAFE_PROVIDER_CAPABILITIES = Object.freeze({
   provider: 'unknown',
 });
 
-export function providerCapabilities(provider) {
-  const supplied = typeof provider?.getCapabilities === 'function' ? provider.getCapabilities() : provider?.capabilities;
+export function providerCapabilities(provider, request) {
+  const supplied = typeof provider?.getCapabilities === 'function' ? provider.getCapabilities(request) : provider?.capabilities;
   return { ...SAFE_PROVIDER_CAPABILITIES, ...(supplied || {}) };
 }
 
