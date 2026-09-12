@@ -1,3 +1,4 @@
+import { deepFreeze, stableDigest } from '../core/identity/index.js';
 import { architectureMaturity, formatMaturity, managedMaturity, phase12Maturity } from './capability-maturity.js';
 import { isValidatedStage2CapabilityProof } from './stage2-profile-evidence.js';
 import { isValidatedRemoteCollaborationSupport } from '../collaboration/remote-authority.js';
@@ -17,6 +18,8 @@ const FORMAT_PROFILES = Object.freeze({
   pe: Object.freeze(['pe:pe32', 'pe:pe32+']),
 });
 const FORMAT_STATIC_LEVEL = Object.freeze({ macho: 'F5', elf: 'F4', pe: 'F4' });
+const STAGE1_PROOF_AUTHORITY = 'validated-stage1-profile-proof';
+const VALID_STAGE1_PROFILE_PROOFS = new WeakSet();
 
 function freeze(value) { return Object.freeze(value); }
 function profileValue(table, id) { return Object.prototype.hasOwnProperty.call(table, id) ? table[id] : null; }
@@ -24,11 +27,58 @@ function includesAll(values, expected) {
   const set = new Set(Array.isArray(values) ? values.map(String) : values == null ? [] : [String(values)]);
   return expected.every((item) => set.has(item));
 }
+function strictStage1ProfileIds(value) {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || item.length === 0 || item.trim() !== item)) {
+    throw new TypeError('stage1-profile-proof-profile-ids-invalid');
+  }
+  const unique = [...new Set(value)];
+  if (unique.length === 0) throw new TypeError('stage1-profile-proof-profile-ids-empty');
+  return Object.freeze(unique.sort());
+}
+function strictStage1HeadSha(value, code) {
+  const sha = typeof value === 'string' ? value.toLowerCase() : '';
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new TypeError(code);
+  return sha;
+}
+function strictStage1Identity(value, code) {
+  if (typeof value !== 'string' || value.length === 0 || value.trim() !== value) throw new TypeError(code);
+  return value;
+}
+export function createStage1ProfileProof(input = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('stage1-profile-proof-input-required');
+  if (input.status !== 'stage1-proven') throw new TypeError('stage1-profile-proof-status-invalid');
+  if (input.exactHead !== true) throw new TypeError('stage1-profile-proof-exact-head-required');
+  const fullySatisfiedLevel = strictStage1Identity(input.fullySatisfiedLevel, 'stage1-profile-proof-level-invalid');
+  const profileIds = strictStage1ProfileIds(input.profileIds);
+  const commitSha = strictStage1HeadSha(input.commitSha, 'stage1-profile-proof-commit-invalid');
+  const treeSha = strictStage1HeadSha(input.treeSha, 'stage1-profile-proof-tree-invalid');
+  const artifactIdentity = strictStage1Identity(input.artifactIdentity, 'stage1-profile-proof-artifact-identity-invalid');
+  const proof = deepFreeze({
+    authority: STAGE1_PROOF_AUTHORITY,
+    status: 'stage1-proven',
+    exactHead: true,
+    fullySatisfiedLevel,
+    profileIds,
+    commitSha,
+    treeSha,
+    artifactIdentity,
+    proofId: `stage1-profile-proof:${stableDigest({ authority: STAGE1_PROOF_AUTHORITY, status: 'stage1-proven', exactHead: true, fullySatisfiedLevel, profileIds, commitSha, treeSha, artifactIdentity })}`,
+  });
+  VALID_STAGE1_PROFILE_PROOFS.add(proof);
+  return proof;
+}
+export function isValidatedStage1ProfileProof(proof, expected = {}) {
+  if (!proof || !VALID_STAGE1_PROFILE_PROOFS.has(proof) || proof.authority !== STAGE1_PROOF_AUTHORITY) return false;
+  if (proof.status !== 'stage1-proven' || proof.exactHead !== true) return false;
+  if (expected.exactHead !== undefined && proof.exactHead !== expected.exactHead) return false;
+  if (expected.fullySatisfiedLevel != null && proof.fullySatisfiedLevel !== expected.fullySatisfiedLevel) return false;
+  if (Array.isArray(expected.profileIds) && !includesAll(proof.profileIds, expected.profileIds)) return false;
+  if (expected.commitSha != null && proof.commitSha !== strictStage1HeadSha(expected.commitSha, 'stage1-profile-proof-expected-commit-invalid')) return false;
+  if (expected.treeSha != null && proof.treeSha !== strictStage1HeadSha(expected.treeSha, 'stage1-profile-proof-expected-tree-invalid')) return false;
+  return true;
+}
 function exactStage1ProfileProof(proof, expectedProfiles, level) {
-  return proof?.status === 'stage1-proven'
-    && proof?.exactHead === true
-    && proof?.fullySatisfiedLevel === level
-    && includesAll(proof?.profileIds, expectedProfiles);
+  return isValidatedStage1ProfileProof(proof, { profileIds: expectedProfiles, fullySatisfiedLevel: level, exactHead: true });
 }
 function profileEvidenceProof(proof, itemId, profileIds) {
   return isValidatedStage2CapabilityProof(proof, { itemId, profileIds });
