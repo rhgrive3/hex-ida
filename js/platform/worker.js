@@ -7,6 +7,7 @@ import { compileBytePattern } from './byte-search.js';
 import { boundedOffset, checkedChunkIndex, chunkLength, exactExternalInteger, regionSize, utf8Len, isExactFunctionSeed } from './worker-validation.js';
 import { analysisFromBinaryImage, emptyAnalysis } from './analysis-result.js';
 import { analyzeDecodedSemanticFunction } from '../targets/architecture/x86_64/semantic-function.js';
+import { analyzeSemanticFunction } from '../analysis/semantic-function.js';
 import { resolveMachOPointer } from '../binary/macho-dyld.js';
 
 const ROW_BYTES = 4;
@@ -117,11 +118,64 @@ async function handle(msg, signal) {
     case 'setRegions': return setRegions(msg.regions);
     case 'chunk': return getChunk(msg, signal);
     case 'analyze': return analyzeImage(msg, signal);
-    case 'semanticFunction': return analyzeDecodedSemanticFunction(msg.input, { signal });
+    case 'semanticFunction': {
+      const scoped = msg.scopedCanonicalProjection === true || msg.scopedLocalProjection != null;
+      if (msg.scopedCanonicalProjection != null && typeof msg.scopedCanonicalProjection !== 'boolean') {
+        throw new TypeError('scoped-canonical-projection-flag');
+      }
+      // Other architectures preserve their original route and defaults.
+      if (scoped && msg.input?.architecture !== 'arm64') throw new TypeError('scoped-local-arm64-required');
+      const rangeRequest = ['ranges', 'range-values'].includes(msg.scopedLocalProjection?.kind);
+      const flowRequest = msg.scopedLocalProjection?.kind === 'flow-inputs';
+      const demandRequest = msg.scopedLocalProjection?.kind === 'demand';
+      const transformRequest = msg.scopedLocalProjection?.kind === 'transforms';
+      let canonicalOwner = null;
+      const pending = scoped
+        ? analyzeSemanticFunction(msg.input, { signal, canonicalProjectionOnly: true,
+          ...(rangeRequest || flowRequest || demandRequest || transformRequest ? { captureCanonicalOwner: (owner) => { canonicalOwner = owner; } } : {}) })
+        : analyzeDecodedSemanticFunction(msg.input, { signal });
+      if (msg.scopedLocalProjection == null) return pending;
+      const result = await pending;
+      if (flowRequest || rangeRequest || demandRequest || transformRequest) {
+        try {
+          if (transformRequest) {
+            const { projectScopedTransformOwners } = await import('../analysis/scoped-transform-projection.js');
+            return { ...result, scopedLocal: await projectScopedTransformOwners(canonicalOwner, result,
+              msg.scopedLocalProjection, { signal, limits: msg.scopedWorkLimits }) };
+          }
+          if (demandRequest) {
+            const { projectScopedDemandOwners } = await import('../analysis/scoped-demand-projection.js');
+            return { ...result, scopedLocal: await projectScopedDemandOwners(canonicalOwner, result,
+              msg.scopedLocalProjection, { signal, limits: msg.scopedWorkLimits }) };
+          }
+          if (flowRequest) {
+            const { projectScopedFlowInputs } = await import('../analysis/scoped-flow-projection.js');
+            return { ...result, scopedLocal: await projectScopedFlowInputs(canonicalOwner, result,
+              msg.scopedLocalProjection, { signal, limits: msg.scopedWorkLimits }) };
+          }
+          const { projectScopedRangeOwner } = await import('../analysis/scoped-range-projection.js');
+          return { ...result, scopedLocal: await projectScopedRangeOwner(canonicalOwner, result,
+            msg.scopedLocalProjection, { signal, limits: msg.scopedWorkLimits }) };
+        } catch (error) {
+          const { serializeScopedWorkerStop } = await import('../core/budgets/scoped-worker.js');
+          const scopedStop = serializeScopedWorkerStop(error, { kind: msg.scopedLocalProjection.kind,
+            worldId: msg.scopedLocalProjection.worldId, snapshotId: msg.scopedLocalProjection.snapshotId,
+            binaryId: msg.input.binaryId });
+          if (!scopedStop) throw error;
+          return { scopedStop }; // no partial pipeline can be cached as success
+        }
+      }
+      // Optional work stays on this existing isolated worker, not Safari's UI
+      // thread. Only the result just produced here enters the local owners.
+      const { projectScopedLocalOwners } = await import('../analysis/scoped-local-projection.js');
+      if (signal.aborted) throw signal.reason ?? new Error('Scoped local projection cancelled.');
+      return { ...result, scopedLocal: projectScopedLocalOwners(result, msg.scopedLocalProjection, { signal }) };
+    }
     case 'strings': return scanStrings(msg, signal);
     case 'search': return runSearch(msg, signal);
     case 'readAt': return readAtAddress(msg, signal);
     case 'resolvePointer': return resolvePointer(msg, signal);
+    case 'scopedApplePointer': return scopedApplePointer(msg, signal);
     case 'guessFunctions': return genericFunctionSeeds();
     case 'xrefs': return { results: [], cancelled: false, capped: false, unsupported: true };
     case 'scanProgram': return emptyProgramScan(msg.regionId);
@@ -209,7 +263,6 @@ async function openFile(msg, signal) {
   }
 }
 
-
 async function pointerImageForSlice(sliceIndex, signal) {
   if (!image || image.format !== 'macho' || !image.metadata?.fat?.slices?.length || sliceIndex == null) return image;
   const index = Number(sliceIndex);
@@ -223,6 +276,20 @@ async function pointerImageForSlice(sliceIndex, signal) {
   if (signal.aborted) throw new Error('Pointer resolution cancelled');
   pointerImages.set(index, selected);
   return selected;
+}
+
+async function scopedApplePointer(msg, signal) {
+  const index = msg.sliceIndex;
+  if (!Number.isSafeInteger(index) || index < 0) throw new TypeError('scoped-pointer-slice-index');
+  const ownerImage = image, ownerSource = source, ownerFile = file, epoch = currentEpoch;
+  const fatIndex = selectedFatSliceIndex(ownerImage);
+  // Never hide a full metadata reparse in an eight-byte query.
+  const selected = fatIndex < 0 ? (index === 0 ? ownerImage : null) : pointerImages.get(index) ?? null;
+  const { projectScopedWorkerPointer } = await import('../analysis/apple/scoped-worker-pointer.js');
+  return projectScopedWorkerPointer(msg.request, { image: selected, source: ownerSource,
+    signal, limits: msg.scopedWorkLimits,
+    isCurrent: () => !signal.aborted && currentEpoch === epoch && image === ownerImage && file === ownerFile && source === ownerSource,
+  });
 }
 
 async function resolvePointer(msg, signal) {
@@ -301,15 +368,21 @@ async function scanStrings(msg, signal) {
   const regionBytes = regionSize(region.size);
   const total = msg.maxBytes == null ? regionBytes : boundedOffset(msg.maxBytes, regionBytes, 'maxBytes');
   const out = [];
-  let pos = 0n, runStart = null, runBytes = [], runChars = 0;
+  let pos = 0n, runStart = null, runBytes = [], runChars = 0, runDropped = 0;
   const flush = () => {
     if (runStart != null && runBytes.length) {
+      const byteLength = runBytes.length + runDropped;
       const text = decoder.decode(new Uint8Array(runBytes)).replace(/\t/g, '\\t').replace(/\n/g, '\\n');
-      if (runChars >= minLength) out.push({ addr: BigInt(region.vmAddr) + runStart, offset: exactExternalInteger(runStart), text });
+      if (runChars >= minLength) {
+        const entry = { addr: BigInt(region.vmAddr) + runStart, offset: exactExternalInteger(runStart), text, byteLength };
+        if (runDropped > 0) entry.truncated = true;
+        out.push(entry);
+      }
     }
     runStart = null;
     runBytes = [];
     runChars = 0;
+    runDropped = 0;
   };
   let carry = new Uint8Array(0), carryAt = 0n;
   while (pos < total && out.length < cap) {
@@ -330,9 +403,13 @@ async function scanStrings(msg, signal) {
       const n = utf8Len(buffer, i);
       if (n === -1 && !last) break;
       if (n <= 0) { flush(); if (out.length >= cap) break; continue; }
-      if (runStart == null) { runStart = base + BigInt(i); runBytes = []; }
+      if (runStart == null) { runStart = base + BigInt(i); runBytes = []; runDropped = 0; }
       runChars++;
-      if (runBytes.length < MAX_STRING_CHARS * 4) for (let k = 0; k < n; k++) runBytes.push(buffer[i + k]);
+      if (runDropped === 0 && runBytes.length + n <= MAX_STRING_CHARS * 4) {
+        for (let k = 0; k < n; k++) runBytes.push(buffer[i + k]);
+      } else {
+        runDropped += n;
+      }
       i += n - 1;
     }
     carry = i < buffer.length ? buffer.slice(i) : new Uint8Array(0);
