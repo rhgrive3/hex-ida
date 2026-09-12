@@ -14,6 +14,18 @@ function typeBits(type) {
   return 32;
 }
 
+const I32_COMPARE_OPS = new Map([
+  [0x45, { mnemonic: 'i32.eqz', predicate: 'eq', signedness: null, arity: 1 }],
+  [0x46, { mnemonic: 'i32.eq', predicate: 'eq', signedness: null, arity: 2 }],
+  [0x47, { mnemonic: 'i32.ne', predicate: 'ne', signedness: null, arity: 2 }],
+  [0x48, { mnemonic: 'i32.lt_s', predicate: 'lt', signedness: 'signed', arity: 2 }],
+  [0x49, { mnemonic: 'i32.lt_u', predicate: 'lt', signedness: 'unsigned', arity: 2 }],
+  [0x4a, { mnemonic: 'i32.gt_s', predicate: 'gt', signedness: 'signed', arity: 2 }],
+  [0x4b, { mnemonic: 'i32.gt_u', predicate: 'gt', signedness: 'unsigned', arity: 2 }],
+  [0x4c, { mnemonic: 'i32.le_s', predicate: 'le', signedness: 'signed', arity: 2 }],
+  [0x4d, { mnemonic: 'i32.le_u', predicate: 'le', signedness: 'unsigned', arity: 2 }],
+]);
+
 function decodeBlockType(bytecode, pos, wasmModule) {
   if (pos >= bytecode.length) fail('wasm-truncated-blocktype');
   const first = bytecode[pos];
@@ -132,6 +144,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
     const consumedValues = [];
     const possibleExceptions = [];
     const unknownEffects = [];
+    let compare = null;
 
     switch (opcode) {
       case 0x00:
@@ -306,7 +319,9 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
       case 0x41: { const r = decodeSleb128(bytecode, pos); pos = r.nextOffset; mnemonic = 'i32.const'; producedValues.push({ bits: 32, constant: r.value }); produce(1); break; }
       case 0x42: { const r = decodeSleb128_64(bytecode, pos); pos = r.nextOffset; mnemonic = 'i64.const'; producedValues.push({ bits: 64, constant: r.value }); produce(1); break; }
       case 0x45: case 0x46: case 0x47: case 0x48: case 0x49: case 0x4a: case 0x4b: case 0x4c: case 0x4d: {
-        mnemonic = opcode === 0x45 ? 'i32.eqz' : 'i32.cmp'; const n = opcode === 0x45 ? 1 : 2; for (let i = 0; i < n; i++) consumedValues.push({ id: `arg_${i}`, bits: 32 }); consume(n); producedValues.push({ bits: 32 }); produce(1); break;
+        const cmp = I32_COMPARE_OPS.get(opcode); if (!cmp) fail('wasm-compare-descriptor-missing');
+        mnemonic = cmp.mnemonic; compare = { predicate: cmp.predicate, signedness: cmp.signedness, operandBits: 32, arity: cmp.arity };
+        for (let i = 0; i < cmp.arity; i++) consumedValues.push({ id: `arg_${i}`, bits: 32 }); consume(cmp.arity); producedValues.push({ bits: 32 }); produce(1); break;
       }
       case 0x6a: case 0x6b: case 0x6c: case 0x6d: case 0x6e: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x76: {
         const names = { 0x6a:'i32.add',0x6b:'i32.sub',0x6c:'i32.mul',0x6d:'i32.div_s',0x6e:'i32.div_u',0x71:'i32.and',0x72:'i32.or',0x73:'i32.xor',0x74:'i32.shl',0x75:'i32.shr_s',0x76:'i32.shr_u' };
@@ -337,7 +352,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
     if (stoppedOnUnsupported) drafts.length = 0;
     budget.chargeValues(consumedValues.length + producedValues.length);
     const origin = createOriginSet({ operationIds: [opId], byteRanges: [{ start: codeBody.bodyOffset + opOffset, end: codeBody.bodyOffset + pos }] });
-    drafts.push({ frontendId:'wasm', frontendSemanticVersion:'1.0.0', profileId:wasmModule.vmSpecEdition, methodId, operationId:opId, bytecodeOffset:opOffset, opcode, mnemonic, consumedValues, producedValues, locationReads, locationWrites, memoryEffects, callEffects, controlEffects, possibleExceptions, origin, completeness, unknownEffects });
+    drafts.push({ frontendId:'wasm', frontendSemanticVersion:'1.0.0', profileId:wasmModule.vmSpecEdition, methodId, operationId:opId, bytecodeOffset:opOffset, opcode, mnemonic, consumedValues, producedValues, locationReads, locationWrites, memoryEffects, callEffects, controlEffects, possibleExceptions, origin, completeness, unknownEffects, compare });
     if (stoppedOnUnsupported) break;
   }
 
