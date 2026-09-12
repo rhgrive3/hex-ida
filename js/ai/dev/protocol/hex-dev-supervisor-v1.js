@@ -33,7 +33,14 @@ export function validateDevSupervisorDecision(value, { availableTools = null } =
     return freezeDecision({ type, tool, arguments: cloneJson(value.arguments), purpose: nonEmpty(value.purpose, 'purpose') });
   }
   if (type === 'human') {
-    if (typeof value.blocking !== 'boolean') throw new TypeError('human.blocking must be boolean.');
+    /* The exact decision shape published in the Supervisor prompt is
+       {"type":"human","question":"<question>","blocking":true}. The runtime
+       always transitions human decisions to WAITING_HUMAN, so blocking:false is
+       a contract violation, not an alternative mode: fail closed at the
+       protocol boundary so the model re-plans through decision-invalid
+       recovery instead of producing a decision whose advertised meaning is
+       ignored. */
+    if (value.blocking !== true) throw new TypeError('human.blocking must be true.');
     return freezeDecision({ type, question: nonEmpty(value.question, 'question'), blocking: value.blocking });
   }
   if (type === 'wait') {
