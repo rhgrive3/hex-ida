@@ -12,7 +12,7 @@ const ir = {
   ],
   nodes: [
     { id: 'c0', kind: 'const', inputs: [], outputs: ['zero'], attributes: { constant: 0 } },
-    { id: 'adc', kind: 'intrinsic', operator: 'add-with-carry', inputs: ['a', 'b', 'zero'], outputs: ['sum'] },
+    { id: 'adc', kind: 'intrinsic', operator: 'add-with-carry', inputs: ['a', 'b', 'zero'], outputs: ['sum'], attributes: { machineEffects: { operationMetadata: { subtract: false } } } },
     { id: 'adc:canonical-address-result', kind: 'const', inputs: [], outputs: ['other'], attributes: { constant: 123 } },
   ],
 };

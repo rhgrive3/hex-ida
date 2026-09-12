@@ -13,7 +13,7 @@ function validIr() {
       { id: 'lhs-const', kind: 'const', attributes: { constant: 1 } },
       { id: 'rhs-const', kind: 'const', attributes: { constant: 2 } },
       { id: 'carry-const', kind: 'const', attributes: { constant: 0 } },
-      { id: 'adc', kind: 'intrinsic', operator: 'add-with-carry', inputs: ['lhs', 'rhs', 'carry'], outputs: ['result'] },
+      { id: 'adc', kind: 'intrinsic', operator: 'add-with-carry', inputs: ['lhs', 'rhs', 'carry'], outputs: ['result'], attributes: { machineEffects: { operationMetadata: { subtract: false } } } },
     ],
   };
 }

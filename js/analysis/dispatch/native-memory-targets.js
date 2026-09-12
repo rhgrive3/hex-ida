@@ -57,10 +57,14 @@ function scalarOperation(projection, node, valueId, work) {
   if (!node || node.completeness !== 'complete' || node.unknown) return null;
   if (['binary', 'address'].includes(node.kind) && ['add', 'sub', 'shl'].includes(node.operator)
     && node.inputs.length === 2) return { operator: node.operator, inputs: node.inputs };
-  // The canonical owner emits A64 ADD as AddWithCarry(x, y, 0). Only its
-  // integer result is addition; carry and overflow outputs are not addresses.
+  // The canonical owner emits A64 ADD as AddWithCarry(x, y, 0) with an
+  // explicit subtract=false marker. Only that integer result is addition;
+  // carry/overflow outputs and unknown/subtract forms are not addresses.
+  const operationMetadata = node.attributes?.machineEffects?.operationMetadata;
   if (node.kind === 'intrinsic' && node.operator === 'add-with-carry' && node.inputs.length === 3
-    && node.outputs[0] === valueId && constantValue(projection, node.inputs[2], work) === 0n) {
+    && node.outputs[0] === valueId && operationMetadata && typeof operationMetadata === 'object'
+    && !Array.isArray(operationMetadata) && Object.hasOwn(operationMetadata, 'subtract')
+    && operationMetadata.subtract === false && constantValue(projection, node.inputs[2], work) === 0n) {
     return { operator: 'add', inputs: node.inputs.slice(0, 2) };
   }
   return null;

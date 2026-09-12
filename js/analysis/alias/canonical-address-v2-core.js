@@ -825,7 +825,11 @@ function operationMetadata(node) {
 function deriveAddWithCarry(ctx, value, node, expectedAddressSpace, state) {
   if (!Array.isArray(node.inputs) || node.inputs.length < 3) return unknown('canonical-address-add-with-carry-arity');
   const metadata = operationMetadata(node);
-  const subtract = metadata.subtract === true;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)
+    || !Object.hasOwn(metadata, 'subtract') || typeof metadata.subtract !== 'boolean') {
+    return unknown('canonical-address-add-with-carry-operation-metadata-unknown');
+  }
+  const subtract = metadata.subtract;
   const carry = deriveValue(ctx, node.inputs[2], expectedAddressSpace, state);
   const expectedCarry = subtract ? 1n : 0n;
   if (constantValue(carry) !== expectedCarry) return unknown('canonical-address-add-with-carry-noncanonical-carry');

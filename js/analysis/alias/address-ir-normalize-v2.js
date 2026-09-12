@@ -71,8 +71,9 @@ function exactIntegerConstant(valuesById, nodesById, valueId) {
  *
  * This does not inspect target mnemonics or architecture identifiers. The only
  * normalization currently accepted is the architecture-neutral semantic
- * operation add-with-carry when the selected value is the arithmetic result
- * output and the carry-in is a proven constant zero. Carry/overflow outputs,
+ * operation add-with-carry when the selected value is the arithmetic result,
+ * operation metadata explicitly proves the addition form, and the carry-in is
+ * a proven constant zero. Carry/overflow outputs, subtract/unknown forms,
  * non-zero carry, and unknown carry remain untouched and therefore unknown to
  * canonical address derivation.
  */
@@ -99,6 +100,9 @@ export function normalizeAddressProofIr(ir) {
 
   for (const node of nodes) {
     if (node?.kind !== 'intrinsic' || typeof node.operator !== 'string' || node.operator.toLowerCase() !== 'add-with-carry') continue;
+    const operationMetadata = node.attributes?.machineEffects?.operationMetadata;
+    if (!operationMetadata || typeof operationMetadata !== 'object' || Array.isArray(operationMetadata)
+      || !Object.hasOwn(operationMetadata, 'subtract') || operationMetadata.subtract !== false) continue;
     if (!Array.isArray(node.inputs) || node.inputs.length !== 3) continue;
     if (!Array.isArray(node.outputs) || node.outputs.length < 1) continue;
     if (node.inputs.some((id) => canonicalId(id) == null) || node.outputs.some((id) => canonicalId(id) == null)) continue;

@@ -73,7 +73,7 @@ function fixture(carryIn) {
       determinism: 'deterministic',
       symbolicDetail: 'summary-only',
     },
-    attributes: {},
+    attributes: { machineEffects: { operationMetadata: { subtract: false } } },
     completeness: 'complete',
     origin: origin('add.with.carry'),
   };

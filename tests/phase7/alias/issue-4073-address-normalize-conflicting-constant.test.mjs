@@ -15,7 +15,7 @@ function makeIr({ valueConstant, attributeConstant, nodeConstant }) {
     ],
     nodes: [
       { id: 'c0', kind: 'const', inputs: [], outputs: ['carry'], attributes: nodeAttributes, metadata: nodeMetadata },
-      { id: 'adc', kind: 'intrinsic', operator: 'add-with-carry', inputs: ['a', 'b', 'carry'], outputs: ['sum'] },
+      { id: 'adc', kind: 'intrinsic', operator: 'add-with-carry', inputs: ['a', 'b', 'carry'], outputs: ['sum'], attributes: { machineEffects: { operationMetadata: { subtract: false } } } },
     ],
   };
 }

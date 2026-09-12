@@ -31,6 +31,7 @@ function irFor(constant, machineKind = constant.kind === 'float' ? 'float' : con
         operator: 'add-with-carry',
         inputs: ['a', 'b', 'cin'],
         outputs: ['sum'],
+        attributes: { machineEffects: { operationMetadata: { subtract: false } } },
         origin: origin('adc'),
       },
     ],
