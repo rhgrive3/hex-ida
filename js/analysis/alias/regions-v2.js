@@ -234,10 +234,8 @@ function genuineRenamedDefinitionRow(ir, definition, stateUse, addressRead, load
 }
 
 function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
-  const debug = process.env.HEX_DEBUG_C2_POINTER === '1';
   const memorySsa = options.canonicalMemorySsa;
   const ssa = options.ssa;
-  if (debug) process.stderr.write(`pointer-hint inputs ${String(node?.id)} brand=${isCanonicalMemorySsaProducerArtifact(memorySsa)} fn=${String(memorySsa?.functionId)} irfn=${String(ir?.functionId)} md=${String(memorySsa?.identity?.semanticIrDigest)} id=${stableDigest(ir)} uses=${Array.isArray(memorySsa?.uses)} defs=${Array.isArray(memorySsa?.definitions)} meta=${Array.isArray(memorySsa?.accessMetadata)} ssa=${Boolean(ssa)}\n`);
   if (!isCanonicalMemorySsaProducerArtifact(memorySsa)
       || String(memorySsa.functionId ?? '') !== String(ir?.functionId ?? '')
       || String(memorySsa.identity?.semanticIrDigest ?? '') !== stableDigest(ir)
@@ -245,7 +243,6 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
       || !Array.isArray(memorySsa.definitions)
       || !Array.isArray(memorySsa.accessMetadata)
       || !ssa || !Array.isArray(ssa.uses) || !Array.isArray(ssa.definitions)) {
-    if (debug) process.stderr.write(`pointer-hint precondition failed ${String(node?.id)}\n`);
     return null;
   }
   const addressValueId = node?.memory?.addressExpr?.valueId;
@@ -279,7 +276,6 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
     }
   }
   if (!addressRead || addressRead.kind !== 'state-read') {
-    if (debug) process.stderr.write(`pointer-hint address read failed ${String(node?.id)} ${String(addressRead?.kind)}\n`);
     return null;
   }
 
@@ -288,7 +284,6 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
     && String(use.proof?.sourceSemanticValueId ?? addressReadValueId) === String(addressReadValueId)
     && genuineRenamedUseRow(ir, use, addressRead, addressReadValueId, blockIdByNode));
   const candidates = [];
-  if (debug) process.stderr.write(`pointer-hint state uses ${String(node?.id)} ${stateUses.length}\n`);
   for (const stateUse of stateUses) {
     const scalarDefinition = ssa.definitions.find((definition) =>
       String(definition.valueId ?? '') === String(stateUse.valueId ?? '')
@@ -363,7 +358,6 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
       });
     }
   }
-  if (debug) process.stderr.write(`pointer-hint candidates ${String(node?.id)} ${candidates.length}\n`);
   if (candidates.length !== 1) return null;
   return candidates[0];
 }
