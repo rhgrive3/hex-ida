@@ -3,9 +3,9 @@ import { ResourceBudget } from '../../../core/budgets/index.js';
 import { ScopedAnalysisWork, normalizeQueryLimits, workStopStatus } from '../../../core/budgets/scoped-work.js';
 import { createEntityId, deepFreeze, stableStringify } from '../../../core/identity/index.js';
 import { assertWorldScope, assertAssumptionSet } from '../../../core/identity/world.js';
-import { snapshotContractData, recordFields, exactInteger, exactString, stringSet, contractFail } from '../../../core/identity/structured.js';
+import { snapshotContractData, recordFields, exactInteger, exactString, stringSet, unsignedAddress, contractFail } from '../../../core/identity/structured.js';
 import { assertCanonicalQueryProjection } from './projection.js';
-import { indexScopedFunctionEntries, scopedCallTargetRows } from './call-targets.js';
+import { indexScopedFunctionEntries, scopedCallTargetRows, canonicalDispatchSite } from './call-targets.js';
 
 export const SCOPED_CALL_GRAPH_SCHEMA = 'scoped-call-graph/v1';
 export const SCOPED_CALL_GRAPH_LIMITS = Object.freeze({ functions: 16, results: 512, targets: 64,
@@ -20,15 +20,18 @@ export function normalizeScopedCallGraph(value) {
     targetLimit: exactInteger(input.targetLimit ?? 16, 'scoped-call-graph-target-limit', { min: 1, max: SCOPED_CALL_GRAPH_LIMITS.targets }) });
 }
 export class ScopedCallGraphSession {
-  #query; #world; #assumptions; #snapshotId; #load; #current; #id; #ledger;
+  #query; #world; #assumptions; #snapshotId; #load; #current; #id; #ledger; #resolveDispatch;
+  #nativeMembers = [];
   #controller = new AbortController(); #projections = []; #members = []; #frontier = []; #omitted = 0;
   #next = 0; #scanFunction = 0; #scanRecord = 0; #index = null; #phase = 'load';
   #busy = false; #closed = false; #steps = 0; #total = 0; #terminal = null; #retained = 0;
-  constructor({ query, world, assumptions, snapshotId, loadProjection, isCurrent } = {}) {
+  constructor({ query, world, assumptions, snapshotId, loadProjection, isCurrent, resolveDispatch = null } = {}) {
     this.#query = normalizeScopedCallGraph(query); this.#world = assertWorldScope(world);
     this.#assumptions = assertAssumptionSet(assumptions, world); this.#snapshotId = exactString(snapshotId, 'scoped-call-graph-snapshot');
     if (typeof loadProjection !== 'function' || typeof isCurrent !== 'function') contractFail('scoped-call-graph-host');
     this.#load = loadProjection; this.#current = isCurrent;
+    if (resolveDispatch !== null && typeof resolveDispatch !== 'function') contractFail('scoped-call-graph-dispatch-host');
+    this.#resolveDispatch = resolveDispatch;
     this.#id = createEntityId({ binaryId: world.binarySet[0].binaryId, kind: SCOPED_CALL_GRAPH_SCHEMA,
       identity: { worldId: world.id, assumptionsId: assumptions.id, snapshotId, query: this.#query } });
     const limits = normalizeQueryLimits({ workUnits: 1000000, residentBytes: 64 * 1024 * 1024,
@@ -45,7 +48,7 @@ export class ScopedCallGraphSession {
   #gap(value) { if (this.#frontier.length < 256) this.#frontier.push(value); else this.#omitted++; }
   #release() {
     for (const projection of this.#projections) projection.release();
-    this.#projections = []; this.#index = null; this.#retained = 0;
+    this.#projections = []; this.#nativeMembers = []; this.#index = null; this.#retained = 0;
   }
   #finish(reason = null) { this.#terminal = reason; this.#phase = 'done'; this.#release(); }
   async step({ signal = null, limits = {}, maximumCallsites = SCOPED_CALL_GRAPH_LIMITS.defaultPageCallsites } = {}) {
@@ -70,7 +73,9 @@ export class ScopedCallGraphSession {
             if (projection.inputIdentity.snapshotId !== this.#snapshotId || this.#members.some((member) => member.functionId === projection.functionId)) contractFail('scoped-call-graph-member-binding');
             this.#members.push({ locator, functionId: projection.functionId, projectionId: projection.id, inputIdentity: projection.inputIdentity });
             this.#projections.push(projection); retained = true;
+            this.#nativeMembers.push({ projection, demand: loaded.demand ?? null, functionId: projection.functionId, inputIdentity: projection.inputIdentity });
             this.#retained += projection.size * 192 + projection.edgeCount * 96;
+            if (loaded.demand) this.#retained += stableStringify(loaded.demand).length * 2;
             for (const gap of projection.frontier) this.#gap({ functionId: projection.functionId, ...gap });
           }
           this.#next++;
@@ -84,15 +89,36 @@ export class ScopedCallGraphSession {
           if (this.#scanRecord >= projection.size) { this.#scanRecord = 0; this.#scanFunction++; continue; }
           work.charge('workUnits');
           const record = projection.recordAt(this.#scanRecord);
-          if (record.owner === 'semantic-ir' && projection.source(record.id)?.call) {
-            const node = projection.source(record.id), targets = []; let truncated = false;
-            for (const target of scopedCallTargetRows(projection, node, this.#index)) {
+          if (record.owner === 'semantic-ir' && canonicalDispatchSite(projection.source(record.id))) {
+            const node = projection.source(record.id), targets = [], member = this.#nativeMembers[this.#scanFunction]; let truncated = false;
+            for (const target of scopedCallTargetRows(projection, node, this.#index, member.demand)) {
               work.charge('workUnits');
               if (targets.length >= this.#query.targetLimit) { truncated = true; break; }
               targets.push(target);
             }
+            let dispatchBound = null;
+            if (this.#resolveDispatch && member.demand) {
+              dispatchBound = await this.#resolveDispatch(projection, node.id, work,
+                { member, members: this.#nativeMembers, maxTargets: this.#query.targetLimit, maxHops: 8 });
+              this.#check(work);
+              if (dispatchBound?.worldId !== this.#world.id || dispatchBound.projectionId !== projection.id
+                || dispatchBound.callSite?.entityId !== node.id) contractFail('scoped-call-graph-dispatch-binding');
+              for (const candidate of dispatchBound.candidates ?? []) {
+                const item = candidate.item?.value;
+                if (!item || targets.some(target => target.targetFunctionId === item.targetEntityId
+                  && (target.address === null || item.address === null ? target.address === item.address
+                    : unsignedAddress(target.address) === unsignedAddress(item.address)))) continue;
+                if (targets.length >= this.#query.targetLimit) { truncated = true; break; }
+                const selected = this.#index.functions.get(item.targetEntityId);
+                targets.push({ callerFunctionId: projection.functionId, callSiteId: node.id,
+                  targetFunctionId: selected?.functionId ?? null, targetEntityId: item.targetEntityId, address: item.address,
+                  inSelectedScope: Boolean(selected), exact: false, closed: false, source: candidate.family,
+                  sourceBinding: candidate.provenance ?? null, reason: selected ? null : 'target-outside-selected-canonical-entries' });
+              }
+            }
             const row = snapshotContractData({ callerFunctionId: projection.functionId, callSiteId: node.id,
-              reference: record.reference, targets, targetsTruncated: truncated, exact: false,
+              mode: canonicalDispatchSite(node).mode, reference: record.reference, targets, targetsTruncated: truncated, exact: false,
+              ...(dispatchBound ? { dispatchBound } : {}),
               remaining: ['target-execution-feasibility', 'call-target-set-closure', 'abi-port-and-memory-effects',
                 ...(truncated ? ['per-call-target-limit'] : [])] }, { allowBigInt: true, maxBytes: 1024 * 1024, maxNodes: 32768 });
             // A stopped step retries the current site, not earlier delivered rows.

@@ -2,10 +2,11 @@
 import { createEntityId, deepFreeze, stableStringify, lossyTypeWitness } from '../../../core/identity/index.js';
 import { assertWorldScope, assertAssumptionSet } from '../../../core/identity/world.js';
 import { snapshotContractData, recordFields, exactString, exactInteger, exactEnum, stringSet, unsignedAddress, contractFail } from '../../../core/identity/structured.js';
+import { SCOPED_FLOW_KINDS } from './balanced-flow.js';
 
 export const SEMANTIC_QUERY_SCHEMA = 'semantic-query/v1';
 export const SEMANTIC_PLAN_SCHEMA = 'semantic-query-plan/v1';
-export const SEMANTIC_QUERY_COMPILER_VERSION = '1.2.0';
+export const SEMANTIC_QUERY_COMPILER_VERSION = '1.3.0';
 export const QUERY_EDGE_KINDS = Object.freeze([
   'ssa-use-def', 'ssa-phi', 'operation-input', 'operation-output',
   'memory-reaching', 'memory-merge', 'memory-input', 'memory-output', 'call-summary',
@@ -124,14 +125,20 @@ export function normalizeSemanticQuery(value) {
   const select = predicate(input.select ?? { op: 'all' }, budget);
   let flow = null;
   if (input.flow !== null && input.flow !== undefined) {
-    recordFields(input.flow, ['to', 'via', 'avoid', 'direction', 'edgeKinds', 'maxDepth', 'maxPaths', 'maxCallDepth', 'pathMode'], 'semantic-query-flow-fields');
+    recordFields(input.flow, ['to', 'via', 'avoid', 'direction', 'edgeKinds', 'flowKinds', 'maxDepth', 'maxPaths', 'maxCallDepth', 'pathMode'], 'semantic-query-flow-fields');
     const edgeKinds = stringSet(input.flow.edgeKinds ?? QUERY_EDGE_KINDS, 'semantic-query-edge-kinds', QUERY_EDGE_KINDS.length);
     if (!edgeKinds.length || edgeKinds.some((kind) => !QUERY_EDGE_KINDS.includes(kind))) contractFail('semantic-query-edge-kind');
+    // Omission preserves ordinary mixed-role dependence navigation (a stored
+    // value can later be consumed as an address). An explicit selector asks
+    // for paths preserving one of the selected homogeneous dependence kinds.
+    const flowKinds = input.flow.flowKinds == null ? null
+      : stringSet(input.flow.flowKinds, 'semantic-query-flow-kinds', SCOPED_FLOW_KINDS.length);
+    if (flowKinds && (!flowKinds.length || flowKinds.some(kind => !SCOPED_FLOW_KINDS.includes(kind)))) contractFail('semantic-query-flow-kind');
     const via = input.flow.via ?? [];
     if (!Array.isArray(via) || via.length > 8) contractFail('semantic-query-waypoint-budget');
     flow = { to: predicate(input.flow.to, budget), via: via.map((item) => predicate(item, budget)),
       avoid: input.flow.avoid == null ? null : predicate(input.flow.avoid, budget),
-      direction: exactEnum(input.flow.direction ?? 'forward', ['forward', 'backward'], 'semantic-query-direction'), edgeKinds,
+      direction: exactEnum(input.flow.direction ?? 'forward', ['forward', 'backward'], 'semantic-query-direction'), edgeKinds, flowKinds,
       maxDepth: exactInteger(input.flow.maxDepth ?? 64, 'semantic-query-depth', { min: 1, max: 512 }),
       maxPaths: exactInteger(input.flow.maxPaths ?? 16, 'semantic-query-paths', { min: 1, max: 256 }),
       maxCallDepth: exactInteger(input.flow.maxCallDepth ?? 2, 'semantic-query-call-depth', { max: 8 }),

@@ -315,6 +315,7 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
     blocks,
     completeness: controlUnknowns.length ? 'partial' : 'complete',
     unknowns: controlUnknowns,
+    functionPrototype:input.functionPrototype ?? null,
     abiAdapter,
     machineEffectsContext:input.machineEffectsContext ?? {
       dataEndianness:input.dataEndianness,
@@ -384,6 +385,10 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
 
 // Owners are in-process capabilities, never deserialized protocol data.
 const SCOPED_DECOMPILER_OWNERS = new WeakMap();
+export function assertScopedCanonicalOwner(owner) {
+  if (!SCOPED_DECOMPILER_OWNERS.has(owner)) throw new TypeError('scoped-canonical-issued-owner-required');
+  return owner;
+}
 function decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAdapter, projectionOptions = {}) {
   const { decoderSemanticVersion, binaryId, sliceId } = input;
   const decodedByInstructionId = new Map(pipeline.machineEffects.map((bundle, index) => [bundle.instructionId, orderedInstructions[index]]));

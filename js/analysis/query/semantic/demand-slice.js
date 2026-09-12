@@ -13,11 +13,12 @@ import { bindScopedSummaryCallCandidates } from '../../summary/scoped-call-candi
 import { specializeDemandSummary, demandContextRangeRequest, attachDemandContextRanges } from '../../summary/specialization.js';
 import { compileSemanticQuery } from './plan.js';
 import { assertDemandInvestigationIntent } from './investigation-templates.js';
-import { indexScopedFunctionEntries, scopedCallTargetRows } from './call-targets.js';
+import { indexScopedFunctionEntries, scopedCallTargetRows, canonicalDispatchSite } from './call-targets.js';
 import { ScopedInterproceduralProjectionBuilder } from './interprocedural.js';
 import { SemanticQueryExecution } from './execute.js';
 import { explainCanonicalReferenceSlice } from './reference-slice.js';
 import { collectDemandIntegerCandidates } from './demand-integer.js';
+import { collectDemandAliasCandidates } from './demand-alias.js';
 import { assembleFlowAnswer, publishFlowAnswer } from '../../../core/evidence/flow-answer.js';
 
 export const DEMAND_SLICE_LIMITS = Object.freeze({ functions: 8, contexts: 32, dispatchSites: 128,
@@ -84,7 +85,9 @@ export class ScopedDemandSliceSession {
         }
         for (const id of refs) member.factReferences.push({ record: projection.present(id, { includeOrigins: true }), source: projection.source(id) });
         member.integerProofCandidates = collectDemandIntegerCandidates(member, { world: this.#world, assumptions: this.#assumptions, work });
-        this.#retain({ demand, factReferences: member.factReferences, inputIdentity: member.inputIdentity, integerProofCandidates: member.integerProofCandidates }, work);
+        member.aliasProofCandidates = collectDemandAliasCandidates(member, { work });
+        this.#retain({ demand, factReferences: member.factReferences, inputIdentity: member.inputIdentity,
+          integerProofCandidates: member.integerProofCandidates, aliasProofCandidates: member.aliasProofCandidates }, work);
         this.#check(work); this.#members.push(member); this.#locals.set(member.functionId, demand.summary); keep = true;
         for (const row of demand.frontier) this.#gap({ ...row, functionId: member.functionId });
       }
@@ -100,10 +103,12 @@ export class ScopedDemandSliceSession {
     for (let i = 0; i < member.projection.size; i++) {
       work.charge('workUnits'); const row = member.projection.recordAt(i);
       if (row.owner !== 'semantic-ir') continue;
-      const node = member.projection.source(row.id); if (!node.call) continue;
+      const node = member.projection.source(row.id), site = canonicalDispatchSite(node); if (!site) continue;
       if (sites.length + this.#sites.length < DEMAND_SLICE_LIMITS.dispatchSites) sites.push({ member, callSiteId: node.id });
       else this.#gap({ functionId: member.functionId, callSiteId: node.id, reason: 'demand-dispatch-site-cut' });
-      work.charge('workUnits', Math.min(64, node.call.targetValueIds?.length ?? 0) * 512);
+      // Jumps contribute dispatch bounds, but never call/ABI specializations.
+      if (site.mode !== 'call') continue;
+      work.charge('workUnits', Math.min(64, site.targetValueIds?.length ?? 0) * 512);
       for (const binding of scopedCallTargetRows(member.projection, node, index, member.demand)) {
         work.charge('workUnits');
         if (binding.inSelectedScope && !binding.reason && targets.length + this.#targets.length < this.#maximumContexts) targets.push(binding);

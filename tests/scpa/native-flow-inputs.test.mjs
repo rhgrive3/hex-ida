@@ -86,6 +86,6 @@ test('two real canonical functions expose a source-bound possible argument flow 
   const answer = await execution.step({ limits: { deadlineMs: 10000 } });
   assert.equal(answer.results.length, 1, JSON.stringify(answer));
   assert.equal(answer.results[0].executablePathProven, false);
-  assert.match(JSON.stringify(answer), /native-abi-inputs-only-return-and-memory-ports-open/);
+  assert.match(JSON.stringify(answer), /native-abi-return-memory-exception-closure-open/);
   assert.equal(answer.results[0].edges[0].witness.owner, 'existing-abi-and-compat-register-inputs');
 });

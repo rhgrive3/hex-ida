@@ -441,6 +441,10 @@ export class AnalysisQueryAPI {
     return this.#query("applePointerView", snapshot, [request], { ...options, scopedSourceIdentity: true });
   }
 
+  async appleMetadataView(snapshot, request = {}, options = {}) {
+    return this.#query("appleMetadataView", snapshot, [request], { ...options, scopedSourceIdentity: true });
+  }
+
   async scopedCapabilities(snapshot, request = {}, options = {}) {
     return this.#query("scopedCapabilities", snapshot, [request], { ...options, scopedSourceIdentity: true });
   }

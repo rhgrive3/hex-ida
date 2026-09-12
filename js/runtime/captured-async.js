@@ -10,6 +10,24 @@ import { snapshotContractData, recordFields, exactString, exactInteger, contract
 export const CAPTURED_ASYNC_SOURCE_SCHEMA = 'scpa-runtime-async-source/v1';
 export const CAPTURED_ASYNC_EVENT_SCHEMA = 'scpa-async-event-capture/v1';
 const same = (a,b) => stableStringify([a,lossyTypeWitness(a)]) === stableStringify([b,lossyTypeWitness(b)]);
+/** Compare only declared complete-content SHA-256 identities. A module UUID,
+ * a nonempty build object, or an evidence label is not a content-hash proof. */
+export function capturedAsyncBuildIdentity(module, world) {
+  const member = world.binarySet.find(row => row.binaryId === module.binaryId && row.sliceId === module.sliceId);
+  if (!member) return { status: 'unknown', reason: 'captured-async-build-world-unbound' };
+  const expected = new Set();
+  if (member.sourceIdentity.kind === 'complete-content') expected.add(member.sourceIdentity.sha256);
+  const binaryHash = /^bin_sha256_([0-9a-f]{64})$/.exec(member.binaryId);
+  if (binaryHash) expected.add(binaryHash[1]);
+  if (expected.size > 1) return { status: 'unknown', reason: 'captured-async-build-identity-mismatch' };
+  const build = snapshotContractData(module.buildIdentity, { maxBytes: 4096, maxNodes: 32 });
+  if (!expected.size || build?.kind !== 'sha256') return { status: 'unsupported', reason: 'captured-async-build-identity-incomparable' };
+  recordFields(build, ['kind', 'hash'], 'captured-async-build-fields');
+  if (typeof build.hash !== 'string' || !/^[0-9a-f]{64}$/.test(build.hash)) return { status: 'unsupported', reason: 'captured-async-build-identity-incomparable' };
+  const hash = [...expected][0];
+  return build.hash === hash ? { status: 'matched', algorithm: 'sha256', sha256: hash }
+    : { status: 'unknown', reason: 'captured-async-build-identity-mismatch' };
+}
 export async function bindCapturedAsyncEvents(captureInput, sourceInput, sourceBinding, { world, assumptions, snapshotId, work, getContext, isCurrent } = {}) {
   assertWorldScope(world); assertAssumptionSet(assumptions,world); assertScopedAnalysisWork(work); work.checkpoint();
   const capture=snapshotContractData(captureInput,{maxBytes:8192,maxNodes:128});
@@ -46,6 +64,8 @@ export async function bindCapturedAsyncEvents(captureInput, sourceInput, sourceB
     ||!module.identityEvidenceIds.length||!world.binarySet.some(b=>b.binaryId===module.binaryId&&b.sliceId===module.sliceId)) {
     return {...base,status:'unknown',reason:'captured-async-current-image-unqualified'};
   }
+  const buildIdentity = capturedAsyncBuildIdentity(module, world);
+  if (buildIdentity.status !== 'matched') return { ...base, ...buildIdentity };
   const observations=[],missing=[];
   for(const proposed of source.events){
     current();const raw=await work.await(signal=>context.getObservation(proposed.id,{role:'async-event',signal,work}));current();
@@ -69,7 +89,7 @@ export async function bindCapturedAsyncEvents(captureInput, sourceInput, sourceB
       moduleBindingKey:module.bindingKey,moduleGeneration:module.generation});
     await work.yieldIfNeeded();
   }
-  current();return deepFreeze({...base,status:missing.length?'unknown':'bound',binding,
+  current();return deepFreeze({...base,status:missing.length?'unknown':'bound',binding,buildIdentity,
     counts:{declared:source.events.length,bound:observations.length,missing:missing.length},observations,missing,
     sourceBinding:'current-source-owned-records; event-mapping-and-capture-adequacy-unproved',
     remaining:['runtime-payload-mapping-is-a-provider-premise','capture-completeness-and-natural-reachability-unproved',

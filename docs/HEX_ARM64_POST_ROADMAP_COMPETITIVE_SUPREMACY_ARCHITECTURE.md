@@ -1,6 +1,6 @@
 # HEX ARM64 POST-ROADMAP COMPETITIVE SUPREMACY ARCHITECTURE
 
-> **2026-09-12 implementation update:** 最新main `de6178154884813d90c6437146a99b1155f0c68d` 上へSession12の累積実装を移植し、機能受入を追加検証した。**目標100%は NOT ADMITTED。完成率を数値で認定しない。** 現在の実装・検証・未達条件は第43章と `docs/SCPA_FUNCTIONAL_ACCEPTANCE.md` を参照。以下の第1–42章は2026-09-10の研究・設計記録であり、当時のsource identityや未実施という記述を現在の実行結果に読み替えない。
+> **2026-09-12 implementation update / session14:** 既存PRの実装を再利用し、ARM64のnative解析・証明・Apple metadata・保持traceの不足部分を追加した。main `d7da0f5777ca38ca6b40d9fb16c132d7e1e56ff5` まで整合。**目標100%の受入は未認定。** 現在の実装・検証・残条件は第44章と `docs/SCPA_FUNCTIONAL_ACCEPTANCE.md`。第1–42章は設計時の記録、第43章はsession13の履歴として保持する。
 
 **Research + Architecture Design only · 2026-09-10 JST · v1.0**\
 Repository: `rhgrive3/hex-ida`\
@@ -2099,3 +2099,57 @@ Post-Bの**実競合2,304セルは全てUNMEASURED**。Session12の2,304セル�
 今回の実行結果は `docs/SCPA_FUNCTIONAL_ACCEPTANCE.md` と `reports/scpa/session13-functional-acceptance.json` に記録する。過去のSession12テスト結果は履歴としてのみ保持する。ブラウザー本体が未配置で、Chromiumの起動preflightは実行ファイル不足により失敗した。実ブラウザー・WebKit・物理iPadの検証は未実行。Node Worker、模擬IndexedDB、有限modelの結果で代用しない。
 
 次の受入は、未実装の各owner境界を小さく実装・回帰検証し、要求された独立oracle/toolchain/device/competitorの実証拠を揃えて、同じcandidate treeで再判定する。第31.2章・第33章・第38章のgateを弱めず、required cellの欠測を勝利に変換しない。PR作成はこの作業のレビュー入口であって、100%やmerge/default rolloutを意味しない。
+
+## 44. Native implementation and PR reconciliation — 2026-09-12 / session14
+
+第43章はsession13時点の履歴とし、現在の実装・検証状態は本章で更新する。**100%の受入は未認定。** MUST、Post-Bの分母、UNKNOWN、独立oracle、実機・競合条件を変更して達成率を上げることはしない。実装の存在、対応する限定契約の検証、phase全体の受入は別の判定である。
+
+### 44.1 既存PRとmainの再利用
+
+既存Draft PR **#8247** を継続する。関連する既存PRの実際の差分を先に読み、次を再利用・分担した。詳細は `reports/scpa/session14-existing-pr-reuse.json`。
+
+| source | decision |
+|---|---|
+| #7036 / `a0f47590783eb356208c7d833b9264a4f4c69c5f` | canonical ABIのdeclared entry/call/return binderを最小移植。AAPCS64の既存宣言形式へ適合。general symbolic memory・taint lattice・solver・summary authorityは既存ownerを維持 |
+| #7097 / `f8d127553914efe18e51ab86a60b9f05243c7b7b` | #7036と重なる広い解析実装を確認。同じエンジンの追加コピーをしない |
+| #8086 / `d864be09fd53405b3a89b04d5e0cc43bd0e7e5fa` | Swift witness tableのheader 1 pointer分のoffset修正と3回帰テスト、計4パスの既存差分を再利用 |
+| #6611・#8203・#8197・#8205・#8213 | 関連変更との境界を確認。今回の限定adapterで重複実装しない |
+| main reconciliation | `de6178154884813d90c6437146a99b1155f0c68d` → `d7da0f5777ca38ca6b40d9fb16c132d7e1e56ff5`、46 commits / 39 paths。38非packageパスのblobはremoteと完全一致。packageはJSON値の3-way mergeで双方のscriptを保持 |
+
+取り込んだmainのtreeは `13327e52ffd36579eb74e5f0fd55e2cbaa777d06`。署名付きcommit objectとtreeを再構成し、GitHubのSHAと一致した。取得後に動くmainへのrelease admissionを意味しない。関連PRの監査であり、repository内の全PRを網羅したと主張しない。
+
+### 44.2 今回の実装
+
+| units / contract | producer → consumer / behavior |
+|---|---|
+| U04 / proof DAG・range・alias | prerequisite順の反復DAG検証、cycle/missing premiseの失効伝播、独立integer結果からのtyped range合成。aliasは同一source境界の検証済みsingleton addressと既存points-to ownerを必要とする1-byte cell関係に限定 |
+| U05 / object lifetime | 現在のpoints-to・escape・summary ownerを使用。stack/heap/TLS、同一allocation siteのsummary-many、局所frame境界、field extentを返す。allocation siteをruntime singletonにしない |
+| U06–U07 / demandとcontext | index/shift/addressの依存値を上限付きで収集し、既存Phase8 known-bits/rangeへ接続。summary/adaptive context keyにABI・dispatch・memory partition/lifetime・SCC・worldの依存を含める |
+| U08 / native dispatch | 実binaryの64-bit table、signed32 relative table、BR/BLR、import site、限定thunkを既存range/known-bitsと現在のVM→file mappingで読む。cycle・範囲上限・mapping変更を拒否し、runtime/auth/feasibilityの未確定は保持 |
+| U09 / typed flow | canonical ABIとMemorySSAのentry/call/exit portsを有限callsite contextへ接続。call/returnを対応付ける。デフォルトの混合依存経路を保持し、指定されたflowKindsだけを同種経路に制限 |
+| U10 / 公開経路 | AnalysisQueryAPI → app adapter → ScopedAnalysisService → Worker / Capstone / IR / MemorySSA / ArtifactStoreの実経路で検証。missing owner、取消、世代変更後の結果公開を拒否 |
+| U12 / Apple metadata | 実ObjC/Swift parserのselector・IMP・witness・vtable・nonpack generic descriptor・capture descriptorをscope付きで参照。runtime generic substitutions、capture object layout、resilience/packsは未確定 |
+| U14 / counted loop | 実24-byte A64 entry fragment（MOVZ/CMP/条件exit/ADDまたはSUB/backedge/RET）を独立に照合し、induction・termination・postconditionとportable capsuleを検証。任意loopや外部incoming edgeの閉包は主張しない |
+| U15 / memory composition | branded MemorySSAのforwardingと最終statement mappingを使用。event sequence・footprint・reaching definition・effectsを保つ変換で、byte valuesとfault prefixを独立に照合。1/2/4/8/16-byte、LE/BE、volatile/atomicを含む有限契約。general load/store eliminationは既存PRのowner領域 |
+| U17 / retained async | 既に開かれた実TraceProvider sessionの保持済みrecordsを読み、明示されたversioned contractsとObjC capture / Swift continuationを接続。完全content SHA・module・epoch・source membershipを照合。session作成・trace消費・target実行は要求しない |
+
+native flow producerは1.1.0 / input schema v2、query compilerは1.3.0、projectionは1.4.0、interprocedural builderは1.3.0、ARM64 pipeline producerは1.8.0へ更新した。古いartifactを新しい契約として再使用しない。context dependencyの保持はcanonical row digestへ集約し、既存256 KiB node budgetを引き上げて解決していない。
+
+### 44.3 統合レビューで修正した問題
+
+- 非定数indexed addressをMOVとして扱い、baseを誤ってexactにしていたcompat変換を、既存のadd/sub入力を保持する形へ修正。
+- native memory mappingの重複、部分重複、zero-fill、file offset不一致、in-place更新を検出。
+- Apple resolverの選択関数上限を公開native scopeの16へ合わせ、9関数のcall graphで確認。
+- explicit transform step IDのresolverへbooleanを渡していた経路を修正。所有者がないID lookupはunsupported、通常のnative receipt再生成・検証は維持。
+- retained asyncのdeclared SHAが現在のbinaryと矛盾してもboundになった問題を修正。比較できないidentityは未対応として残す。
+- async-event専用のcontextを汎用address observation機能として公開しないよう、能力表示と経路を限定。
+
+### 44.4 受入結果と残条件
+
+確定したコマンド・結果・source hashは `reports/scpa/session14-functional-acceptance.json` と `docs/SCPA_FUNCTIONAL_ACCEPTANCE.md`、U01–U20の対応表は `reports/scpa/session14-requirements.json` に記録する。
+
+mainでも再現した19件は、ユーザーの指示により今回の修正対象から保留した。前回の同条件38プロセス比較を `reports/scpa/session13-baseline-failures.json` に保持する。この記録は今回吸収したmainの全suiteをPASSとする根拠ではなく、全体 `npm run check` の合格宣言もしない。
+
+依然として外部受入には、要求された複数compiler/toolchainのbinary twins、独立ISA/ABI/relaxed-memory oracle、正規Apple runtime capture、物理iPad/WebKitの性能・取消・memory、competitorの同一Astra T1–T3とT0 model-free、統計・blind human studyが必要。保持traceのfixtureは実機のcapture adequacyを証明しない。LLVM assembler fixtureはcompiler-twinやCPU oracleではない。
+
+Post-Bの実競合 **2,304セルはUNMEASURED**。合成runnerの保存/再開セルとは区別する。一般のexception/unknown-call/動的loading/PAC・Swift resilienceの未対応領域、既存Baseline B ownerで進行中の広いmemory/taint/solver機能を、限定adapterの成功から全面受入へ昇格させない。P0–P5のphase exit、default rollout、競合勝利は引き続き未認定。

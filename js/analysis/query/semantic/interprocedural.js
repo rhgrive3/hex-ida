@@ -16,7 +16,7 @@ import { classifyCallTargetProof } from '../../summary/contract.js';
 import { indexScopedFunctionEntries, scopedCallTargetRows, assertNativeTargetDemand } from './call-targets.js';
 
 export const SCOPED_FLOW_INTERFACE_SCHEMA = 'canonical-function-flow-interface/v1';
-export const SCOPED_INTERPROCEDURAL_VERSION = '1.2.0';
+export const SCOPED_INTERPROCEDURAL_VERSION = '1.3.0';
 const MAX_FUNCTIONS = 16, MAX_BRIDGES = 4096, MAX_GAPS = 4096;
 const sameData = (a, b) => stableStringify(a) === stableStringify(b)
   && stableStringify(lossyTypeWitness(a)) === stableStringify(lossyTypeWitness(b));
@@ -105,6 +105,13 @@ export class ScopedInterproceduralProjectionBuilder {
     for (const entry of this.#entries.values()) if (entry.isCurrent && entry.isCurrent() !== true) return false;
     return true;
   }
+  captureInputFreshness() {
+    if (!this.isCurrent()) contractFail('interprocedural-scope-stale');
+    // Completed reports outlive the navigation Maps. Preserve the captured
+    // input dependencies, without treating container release as an edge change.
+    const current = this.#current, owners = [...this.#entries.values()].map(entry => entry.isCurrent).filter(Boolean);
+    return () => current() === true && owners.every(check => check() === true);
+  }
   #check(work) { work.checkpoint(); if (!this.isCurrent()) contractFail('interprocedural-scope-stale'); }
   get seen() { return this.#seen.map((entry) => ({ ...entry })); }
   #bridge(caller, callee, node, from, to, direction, index, port, proof) {
@@ -147,6 +154,44 @@ export class ScopedInterproceduralProjectionBuilder {
           kind: 'scoped-native-input-reference', identity: { version: SCOPED_INTERPROCEDURAL_VERSION, body } }) }) };
       }
     }
+    // Return ports are supplied by the existing ABI -> canonical IR -> SSA
+    // owner chain. A register spelling or an unprototyped call is never enough.
+    for (const returned of callee.nativeInputs.returns ?? []) for (const actual of call.returns ?? []) {
+      yield { kind: 'tick' };
+      if (returned.register !== actual.register || returned.widthBits !== actual.widthBits) continue;
+      for (const from of returned.references) for (const to of actual.references) yield { kind: 'bridge',
+        value: this.#nativePortBridge(caller, callee, node, from, to, 'return', 'return', { returned, actual, binding }) };
+    }
+    const memoryCall = caller.nativeInputs.memory?.calls.find(row => row.callSiteId === node.id);
+    if (memoryCall) {
+      // These are broad may-memory ports. Region/alias/byte semantics remain
+      // with MemorySSA; no same-spelling region becomes an exact cross-frame alias.
+      for (const actual of memoryCall.inputs) for (const parameter of callee.nativeInputs.memory?.entries ?? []) {
+        yield { kind: 'tick' };
+        for (const from of actual.references) for (const to of parameter.references) yield { kind: 'bridge',
+          value: this.#nativePortBridge(caller, callee, node, from, to, 'enter', 'memory', { actual, parameter, binding }) };
+      }
+      for (const returned of callee.nativeInputs.memory?.exits ?? []) for (const actual of memoryCall.outputs) {
+        yield { kind: 'tick' };
+        for (const from of returned.references) for (const to of actual.references) yield { kind: 'bridge',
+          value: this.#nativePortBridge(caller, callee, node, from, to, 'return', 'memory', { returned, actual, binding }) };
+      }
+    }
+  }
+  #nativePortBridge(caller, callee, node, from, to, direction, portKind, ports) {
+    const callSite = createEntityId({ binaryId: caller.projection.inputIdentity.binaryId, kind: 'scoped-call-context',
+      identity: { callerProjectionId: caller.projection.id, callSiteId: node.id, calleeProjectionId: callee.projection.id } });
+    const body = { from, to, kind: 'call-summary', relation: 'possible-dependence', executablePathProven: false,
+      ...(portKind === 'memory' ? { flowKinds: ['data', 'address', 'memory', 'capture', 'return'] } : {}),
+      boundary: { direction, callSite, callerFunctionId: caller.projection.functionId, calleeFunctionId: callee.projection.functionId },
+      witness: { owner: portKind === 'memory' ? 'existing-canonical-memoryssa-ports' : 'existing-canonical-abi-return-ports',
+        callSiteId: node.id, portKind, callerInput: caller.projection.inputIdentity, calleeInput: callee.projection.inputIdentity,
+        callerInterfaceDigest: caller.nativeInputs.digest, calleeInterfaceDigest: callee.nativeInputs.digest, ...ports },
+      obligations: ['call-target-feasibility', 'return-path-feasibility',
+        ...(portKind === 'memory' ? ['cross-frame-memory-alias-and-byte-coverage-unqualified'] : ['native-abi-return-meaning-not-independently-replayed']),
+        ...caller.nativeInputs.remaining, ...callee.nativeInputs.remaining] };
+    return deepFreeze({ ...body, id: createEntityId({ binaryId: this.#world.binarySet[0].binaryId,
+      kind: 'scoped-native-boundary-reference', identity: { version: SCOPED_INTERPROCEDURAL_VERSION, body } }) });
   }
   *#joinRows() {
     const targetIndex = indexScopedFunctionEntries([...this.#entries.values()].map((entry) => entry.projection));
@@ -181,7 +226,7 @@ export class ScopedInterproceduralProjectionBuilder {
           if (!callee.interface) {
             if (caller.nativeInputs && callee.nativeInputs) {
               yield* this.#nativeInputRows(caller, callee, node, bindings.get(target));
-              yield { kind: 'gap', value: { functionId: target, entityId: node.id, reason: 'native-abi-inputs-only-return-and-memory-ports-open' } };
+              yield { kind: 'gap', value: { functionId: target, entityId: node.id, reason: 'native-abi-return-memory-exception-closure-open' } };
             } else yield { kind: 'gap', value: { functionId: target, entityId: node.id, reason: 'canonical-function-abi-ports-unavailable' } };
             continue;
           }
@@ -212,7 +257,7 @@ export class ScopedInterproceduralProjectionBuilder {
   }
   async advance({ work } = {}) {
     assertScopedAnalysisWork(work); this.#check(work);
-    if (this.#product) return { projection: this.#product, members: this.seen, composite: true };
+    if (this.#product) return { projection: this.#product, members: this.seen, composite: true, isCurrent: this.captureInputFreshness() };
     if (this.#next < this.#locators.length) {
       const locator = this.#locators[this.#next];
       work.charge('artifactsMaterialized');
@@ -223,7 +268,9 @@ export class ScopedInterproceduralProjectionBuilder {
         let retained = false;
         try {
           if (this.#entries.has(projection.functionId)) contractFail('interprocedural-duplicate-function-identity');
-          const entry = { locator, projection, interface: null, nativeInputs: null, nativeDemand: null, specializations: [], isCurrent: null };
+          if (loaded.isCurrent !== undefined && typeof loaded.isCurrent !== 'function') contractFail('flow-projection-current-owner-hook');
+          const entry = { locator, projection, interface: null, nativeInputs: null, nativeDemand: null, specializations: [], isCurrent: loaded.isCurrent ?? null };
+          if (entry.isCurrent && entry.isCurrent() !== true) contractFail('interprocedural-scope-stale');
           if (loaded.nativeDemand) entry.nativeDemand = assertNativeTargetDemand(loaded.nativeDemand, projection);
           if (loaded.specializations) {
             if (!Array.isArray(loaded.specializations) || loaded.specializations.length > 32) contractFail('flow-specialization-limit');
@@ -238,7 +285,8 @@ export class ScopedInterproceduralProjectionBuilder {
             if (context) {
               if (typeof context.isCurrent !== 'function' || context.isCurrent() !== true) contractFail('flow-interface-current-owner-required');
               entry.interface = captureInterface(context.data, projection, { world: this.#world, assumptions: this.#assumptions, snapshotId: this.#snapshotId });
-              entry.isCurrent = context.isCurrent;
+              const projectionCurrent = entry.isCurrent;
+              entry.isCurrent = () => context.isCurrent() === true && (!projectionCurrent || projectionCurrent() === true);
               if (entry.isCurrent() !== true) contractFail('flow-interface-changed-during-capture');
             }
           }
@@ -283,7 +331,7 @@ export class ScopedInterproceduralProjectionBuilder {
     // The composite holds frozen owner rows, not the source Map containers.
     for (const entry of this.#entries.values()) entry.projection.release();
     this.#bridges = []; this.#iterator = null;
-    return { projection: product, members: this.seen, composite: true };
+    return { projection: product, members: this.seen, composite: true, isCurrent: this.captureInputFreshness() };
   }
   close() {
     if (this.#closed) return;

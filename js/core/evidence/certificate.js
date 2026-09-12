@@ -4,6 +4,7 @@ import { createEntityId, deepFreeze, stableStringify } from '../identity/index.j
 import { assertWorldScope, assertAssumptionSet, worldContains } from '../identity/world.js';
 import { snapshotContractData, exactString, exactInteger, stringSet, recordFields, compareIdentity, unsignedAddress, sha256Text, contractFail } from '../identity/structured.js';
 import { assertScopedAnalysisWork, workStopStatus } from '../budgets/scoped-work.js';
+import { scheduleProofDag } from './proof-dag.js';
 
 export const CERTIFICATE_SLICE_SCHEMA = 'evidence-certificate-slice/v1';
 export const CERTIFICATE_REPLAY_SCHEMA = 'evidence-certificate-replay/v1';
@@ -261,15 +262,17 @@ export async function replayEvidenceCertificate(input, { world, assumptions, wor
     if (stopOnRejection === true && rejected.length) return deepFreeze({ schema: CERTIFICATE_REPLAY_SCHEMA,
       worldId: world.id, assumptionsId: assumptions.id, certificateId: cert.id, status: 'completed',
       integrity, byteBinding, semantic: 'rejected', nodeResults, rejected, unknown, cost: work.cost() });
-    // Check small semantic propositions before decorative owner references;
-    // a finite replay can report useful partial derivations without promotion.
-    const proofNodes = [], otherNodes = [];
-    for (const node of nodes.values()) {
-      work.charge('workUnits');
-      const strong = ['derivation-checked', 'independent-proof-checked'].includes(checkers?.descriptor(node.semanticKind)?.level);
-      (strong ? proofNodes : otherNodes).push(node);
+    const topology = scheduleProofDag(nodes, cert.edges, { work }), checkedResults = new Map();
+    // A cyclic SCC and every dependent are blocked before any checker runs.
+    // Loop induction is an acyclic rule with independently checked initiation
+    // and preservation, never an exception permitting evidence self-reference.
+    for (const nodeId of topology.blocked) {
+      const result = { nodeId, binding: 'unknown', status: 'rejected', reason: 'cyclic-derivation-dependency',
+        checker: checkers?.descriptor(nodes.get(nodeId).semanticKind) ?? null };
+      nodeResults.push(result); checkedResults.set(nodeId, result);
+      rejected.push({ id: nodeId, reason: result.reason });
     }
-    const orderedNodes = [...proofNodes, ...otherNodes];
+    const orderedNodes = topology.order.map(id => nodes.get(id));
     for (const node of orderedNodes) {
       work.charge('workUnits');
       let binding = 'unknown';
@@ -278,9 +281,17 @@ export async function replayEvidenceCertificate(input, { world, assumptions, wor
         if (original?.worldId === world.id && stableStringify(original.node) === stableStringify(node)) binding = 'verified';
         else if (original?.worldId === world.id && original.node) binding = 'rejected';
       }
-      const result = checkers instanceof CertificateCheckerRegistry
+      const result = topology.missing.has(node.id)
+        ? { status: 'unknown', reason: 'derivation-premise-not-exported', checker: checkers?.descriptor(node.semanticKind) ?? null }
+        : checkers instanceof CertificateCheckerRegistry
         ? await checkers.check(node, { world, assumptions, certificate: cert, getNode: (id) => nodes.get(id) ?? null,
           hasPremise: (from, to) => premiseEdges.has(stableStringify([from, to])),
+          getCheckedPremise: (from, to) => {
+            work.charge('workUnits');
+            if (!premiseEdges.has(stableStringify([from, to]))) return null;
+            const checked = checkedResults.get(to);
+            return checked?.binding === 'verified' && checked.status === 'verified' ? checked : null;
+          },
           // A checker receives only exact ranges whose current bytes were read,
           // world-bound and hashed above. Embedded JSON bytes confer no authority.
           getVerifiedBytes: (evidenceId, binaryId, start, length) => {
@@ -297,7 +308,8 @@ export async function replayEvidenceCertificate(input, { world, assumptions, wor
           } }, work)
         : { status: 'unsupported', reason: 'proposition-checker-unavailable' };
       assertCheckerMembership();
-      nodeResults.push({ nodeId: node.id, binding, ...result });
+      const checked = { nodeId: node.id, binding, ...result };
+      nodeResults.push(checked); checkedResults.set(node.id, checked);
       if (binding === 'rejected' || result.status === 'rejected') rejected.push({ id: node.id, reason: 'canonical-node-or-proposition-mismatch' });
       if (binding !== 'verified' || result.status !== 'verified') unknown.push({ id: node.id, reason: 'node-not-fully-replayed' });
       await work.yieldIfNeeded();

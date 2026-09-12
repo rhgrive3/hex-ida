@@ -1,0 +1,77 @@
+{
+  "schema": "scpa-existing-pr-reuse/v1",
+  "observedDate": "2026-09-12",
+  "policy": "Keep existing owner engines; reuse minimal reviewed slices; no duplicate symbolic-memory, taint, solver, or summary implementation.",
+  "integrationPR": 8247,
+  "relatedPRs": [
+    {
+      "number": 7036,
+      "head": "a0f47590783eb356208c7d833b9264a4f4c69c5f",
+      "filesInspected": 347,
+      "reused": [
+        {
+          "path": "js/semantics/compat/index.js",
+          "scope": "declaredValuesObservable, bindDeclaredScalarReturns, bindDeclaredEntryArguments, bindDeclaredCallValues; required imports and pre-SSA invocation points",
+          "adaptation": "Canonical AAPCS64 possible:false/mustUse:true declaration accepted when legacy exact flag is absent; contradictory or optional declarations refused. Full upstream version/other passes not copied.",
+          "baseSha256": "70a6593646104021c0baf7715a4d09135041892a373ddaabcb94bdb6c5445f6a",
+          "resultSha256": "98d05685b180153ab9b6846718c4241e0d23d3e91b58ae9ef48d60ab0a646c33"
+        }
+      ],
+      "retainedUpstreamOwnership": [
+        "general symbolic-memory transformations",
+        "taint lattice and sanitizer semantics",
+        "solver",
+        "general alias and summary authority"
+      ]
+    },
+    {
+      "number": 7097,
+      "head": "f8d127553914efe18e51ab86a60b9f05243c7b7b",
+      "filesInspected": 419,
+      "reused": [],
+      "decision": "Broad recovery/analysis branch overlaps PR7036 owner engines; no second engine copied."
+    },
+    {
+      "number": 8086,
+      "head": "d864be09fd53405b3a89b04d5e0cc43bd0e7e5fa",
+      "base": "ddb0c3d646f1c1f534eb3a5c08717c9cda5258a2",
+      "reused": [
+        {
+          "paths": [
+            "js/swift.js",
+            "tests/issue-2378-swift-witness-autoproject.mjs",
+            "tests/issue-5374-swift-protocol-requirement-kinds.mjs",
+            "tests/issue-5341-swift-witness-table-abi-offset.mjs"
+          ],
+          "scope": "Exact witness-table first requirement offset slice; header occupies one pointer; preimage blobs verified before application."
+        }
+      ]
+    },
+    {
+      "number": 6611,
+      "decision": "Read actual diff; foundation/release policy changes have no SCPA overlap; no copy."
+    },
+    {
+      "number": 8203,
+      "headPrefix": "a172bb1e",
+      "decision": "Swift provider partial-coverage fix; not duplicated."
+    },
+    {
+      "number": 8197,
+      "headPrefix": "024e4aad",
+      "decision": "ObjC category-provider fix; not duplicated."
+    },
+    {
+      "number": 8205,
+      "headPrefix": "c766e46e",
+      "decision": "ObjC provider coverage fix; not duplicated."
+    },
+    {
+      "number": 8213,
+      "headPrefix": "204420ed",
+      "decision": "ObjC class completeness fix; not duplicated."
+    }
+  ],
+  "notExhaustiveRepositoryPRClaim": true,
+  "retrieval": "Related open-PR search and actual diff/patch inspection. GitHub >300-file diff rejection handled with paginated file patches; not treated as an empty diff."
+}

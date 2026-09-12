@@ -872,7 +872,7 @@ export function createAppAnalysisQueryAdapter(app) {
   // This opt-in branch is deliberately lazy. Existing query methods and the
   // default decoder/decompiler path retain their prior owners and behavior.
   const scopedMethods = ['taskIdiomView', 'inspectConditionalModel', 'checkLoopInvariant', 'asyncEventOrder', 'portableIntegerChecks', 'demandQuery', 'investigateDemand', 'demandInvestigationFrontier', 'resumeDemandQuery', 'explainDemandResult', 'replayDemandResult', 'blockCaptures', 'investigationFrontier', 'typeEvidence', 'interproceduralQuery', 'abiInputBindings', 'abiPlacementEvidence', 'explainTransformChain', 'runtimeObservations', 'scopedCapabilities', 'semanticQuery', 'resumeSemanticQuery', 'dispatchTargets',
-    'applePointerView', 'knowledgeMatches', 'objectMemory', 'rangeValueCatalog', 'callGraphSlice', 'resumeCallGraphSlice', 'referenceSlice', 'replayReferenceSlice', 'refineValueFacts', 'summarySlice', 'resumeSummarySlice', 'proofSlice', 'replayProof', 'cancelScopedQuery'];
+    'applePointerView', 'appleMetadataView', 'knowledgeMatches', 'objectMemory', 'rangeValueCatalog', 'callGraphSlice', 'resumeCallGraphSlice', 'referenceSlice', 'replayReferenceSlice', 'refineValueFacts', 'summarySlice', 'resumeSummarySlice', 'proofSlice', 'replayProof', 'cancelScopedQuery'];
   for (const method of scopedMethods) adapter[method] = async (snapshot, request = {}, options = {}) => {
     if (!scopedAnalysisHost(app)?.configuration.enabled) return unsupported(null, 'scoped-analysis-disabled');
     const { dispatchScopedAppQuery } = await import('./scoped-app.js');
@@ -880,6 +880,7 @@ export function createAppAnalysisQueryAdapter(app) {
       file: () => storeValue(app, 'file'), architecture: () => architectureOf(app), format: () => formatOf(app),
       sliceIndex: () => validSliceIndex(storeValue(app, 'sliceIndex')),
       artifactVersions: () => artifactVersions(app), metadata: () => descriptorMetadata(app),
+      regions: () => storeValue(app, 'regions'),
       capability: () => storeValue(app, 'capability') ?? currentSlice(app)?.capability ?? currentInfo(app)?.capability,
       projectRevision: () => identityGeneration((storeValue(app, 'project') ?? app?.workspace?.project ?? app?.project)?.revision
         ?? app?.projectRevision ?? app?.workspace?.bindingRevision ?? 0, 'analysis-query-project-revision-invalid'),

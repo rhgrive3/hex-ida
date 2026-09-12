@@ -8,6 +8,7 @@ import { deepFreeze, stableStringify } from '../core/identity/index.js';
 import { snapshotContractData, recordFields, exactString, contractFail } from '../core/identity/structured.js';
 import { ScopedAnalysisWork, assertScopedAnalysisWork } from '../core/budgets/scoped-work.js';
 import { MEMORY_VIEW_FRAME_SCHEMA } from '../core/evidence/memory-transform-frame.js';
+import { captureCanonicalMemoryTransforms } from './scoped-memory-transform-projection.js';
 
 export const SCOPED_TRANSFORM_PROJECTION_VERSION = '1.0.0';
 const copy = value => snapshotContractData(value, { allowBigInt: true, maxNodes: 65536, maxBytes: 4194304 });
@@ -73,7 +74,9 @@ export async function projectScopedTransformOwners(owner, semanticResult, reques
     const capture = decompiler.scopedTransforms ?? null;
     const frame = { schema: MEMORY_VIEW_FRAME_SCHEMA, worldId: world.id, snapshotId: input.snapshotId,
       functionId: pipeline.functionId, scope: 'phase8-expression-view-only', before, after, unknowns };
-    const body = copy({ capture, memoryFrame: frame,
+    const memoryTransforms = captureCanonicalMemoryTransforms(pipeline, decompiler, {
+      worldId: world.id, snapshotId: input.snapshotId, concurrency: world.environment.concurrency, work });
+    const body = copy({ capture, memoryFrame: frame, memoryTransforms,
       finalStatements: (decompiler.cAst?.body ?? []).slice(0, 128).map((node, index) => ({ index, kind: node.kind,
         text: node.text, source: node.source, statementKind: node.semantic?.op ?? node.kind,
         location: node.semantic?.location ?? null })),

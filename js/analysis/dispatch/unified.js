@@ -6,6 +6,7 @@ import { assertScopedAnalysisWork, workStopStatus } from '../../core/budgets/sco
 import { createSetEnvelope, qualifySetEnvelope, setExistenceVerdict } from '../../core/evidence/set-envelope.js';
 import { assertCanonicalQueryProjection } from '../query/semantic/projection.js';
 import { classifyCallTargetProof } from '../summary/contract.js';
+import { canonicalDispatchSite } from '../query/semantic/call-targets.js';
 
 export const DISPATCH_QUERY_SCHEMA = 'unified-dispatch-query/v1';
 export const DISPATCH_RESULT_SCHEMA = 'unified-dispatch-result/v1';
@@ -131,8 +132,9 @@ export async function resolveUnifiedDispatch(projection, input, { world, assumpt
     }
     await work.yieldIfNeeded();
   }
-  if (!node?.call) return deepFreeze({ schema: DISPATCH_RESULT_SCHEMA, status: 'unsupported', reason: 'canonical-call-site-not-found', candidates: [], exact: false, cost: work.cost() });
-  const proof = classifyCallTargetProof(node.call), candidates = [], requirements = [], chains = [], conflicts = [];
+  const site = canonicalDispatchSite(node);
+  if (!site) return deepFreeze({ schema: DISPATCH_RESULT_SCHEMA, status: 'unsupported', reason: 'canonical-call-site-not-found', candidates: [], exact: false, cost: work.cost() });
+  const proof = classifyCallTargetProof(site), candidates = [], requirements = [], chains = [], conflicts = [];
   const revision = registry?.revision ?? 0;
   let status = 'completed';
   try {
@@ -202,7 +204,7 @@ export async function resolveUnifiedDispatch(projection, input, { world, assumpt
     }
   }
   const body = { schema: DISPATCH_RESULT_SCHEMA, status, worldId: world.id, assumptionsId: assumptions.id,
-    projectionId: projection.id, callSite: nodeReference, query, candidates, chains, conflicts: stringSet(conflicts),
+    projectionId: projection.id, callSite: nodeReference, mode: site.mode, query, candidates, chains, conflicts: stringSet(conflicts),
     envelope: admitted, existence: setExistenceVerdict(admitted), exact: admitted.exact,
     producerClassification: { ...proof, authority: 'existing-owner-classification; not-world-closure-proof' },
     unsupportedFamilies: query.families.filter((kind) => !['direct', 'register'].includes(kind)

@@ -6,7 +6,7 @@ import { captureNativeFingerprint } from '../recognition/native-context.js';
 import { createAnalysisSurface } from './index.js';
 import { createWorldScope, createAssumptionSet, worldContains } from '../core/identity/world.js';
 import { deepFreeze, stableStringify, stableDigest, createEntityId } from '../core/identity/index.js';
-import { recordFields, snapshotContractData, stringSet, exactInteger, contractFail } from '../core/identity/structured.js';
+import { recordFields, snapshotContractData, stringSet, exactInteger, exactString, contractFail } from '../core/identity/structured.js';
 import { ScopedAnalysisWork, AnalysisWorkStopped } from '../core/budgets/scoped-work.js';
 import { seedAnalysisState } from '../decompiler/phase8/transaction.js';
 import { canonicalAnalysisIdentity } from '../decompiler/phase8/analysis-identity.js';
@@ -14,6 +14,7 @@ import { requestDemandRanges } from '../decompiler/phase8/demand-range.js';
 import { createObjectContext, partitionPointsToObjects, compareSubobjectGeometry } from './pointsto/objects.js';
 import { projectCanonicalPhysicalTypes } from './types/scoped-physical.js';
 import { ESCAPE_ANALYZER_VERSION } from './summary/escape.js';
+import { createCanonicalObjectLifetimeOwner } from './pointsto/object-lifetime.js';
 import { queryScopedAbiPlacement } from './types/scoped-abi.js';
 import { projectScopedFlowInputs } from './scoped-flow-projection.js';
 
@@ -74,13 +75,13 @@ function memoryOwnerView(pipeline, work) {
     return rows?.length ? [...new Map(rows.map(row => [row.region.id, row.region])).values()] : null;
   } };
 }
-async function projectMemoryObjects(memory, points, world, assumptions, work) {
+async function projectMemoryObjects(memory, points, world, assumptions, work, lifetimeOwner) {
   const accesses = [], comparisons = [], frontier = [...memory.frontier];
   for (const access of memory.accesses) {
     work.charge('workUnits');
     const set = points?.pointsTo?.get(access.addressValueId) ?? points?.ssaPointsTo?.get(access.addressValueId);
     let view = { partitions: [], unknowns: [{ reason: 'address-points-to-unavailable' }] };
-    if (set) view = await partitionPointsToObjects(set, { world, assumptions, work, context: createObjectContext(),
+    if (set) view = await partitionPointsToObjects(set, { world, assumptions, work, context: createObjectContext(), lifetimeOwner,
       describeTarget: target => ({ ...objectDescription(target, access), subobject: { ...objectDescription(target, access).subobject,
         size: Number.isSafeInteger(access.widthBits) && access.widthBits > 0 && access.widthBits % 8 === 0
           ? String(access.widthBits / 8) : null }, evidenceIds: [...new Set([...(target.evidenceIds ?? []), ...access.evidenceIds])] }) });
@@ -193,6 +194,31 @@ export async function projectScopedDemandOwners(owner, semanticResult, request, 
       }
       if (!selected.size) frontier.push({ reason: 'no-interesting-canonical-values' });
       if (selected.size === precision.maximumValues) frontier.push({ reason: 'automatic-demand-may-be-truncated' });
+      // Request existing owner facts for the dependencies of the chosen cut.
+      // In particular an indexed address needs its masked/extended index,
+      // even when the final address interval is conservatively full.
+      const nodesById = new Map(ir.nodes.map(node => [node.id, node]));
+      const producers = new Map(), definitions = new Map(), uses = new Map();
+      for (const node of ir.nodes) {
+        work.charge('workUnits'); for (const id of node.outputs) producers.set(id, node);
+      }
+      for (const definition of pipeline.ssa.definitions) { work.charge('workUnits'); definitions.set(definition.valueId, definition); }
+      for (const use of pipeline.ssa.uses) {
+        work.charge('workUnits'); const list = uses.get(use.sourceEntityId) ?? []; list.push(use.valueId); uses.set(use.sourceEntityId, list);
+      }
+      let cut = false;
+      for (const id of selected) {
+        work.charge('workUnits');
+        const definition = definitions.get(id), node = producers.get(id) ?? nodesById.get(definition?.sourceEntityId);
+        const dependencies = [...(node?.inputs ?? []), ...(uses.get(node?.id) ?? []),
+          ...(definition ? [definition.sourceEntityId, ...(definition.incoming ?? []).map(row => row.valueId)] : [])];
+        for (const dependency of dependencies) {
+          work.charge('workUnits');
+          if (available.has(dependency) && !selected.has(dependency) && selected.size >= precision.maximumValues) cut = true;
+          add(dependency);
+        }
+      }
+      if (cut) frontier.push({ reason: 'demand-dependency-value-limit' });
     }
     // Synchronous owners have real fixed caps. Reserve a deterministic upper
     // work estimate BEFORE invoking them; no uncharged child CPU after abort.
@@ -213,12 +239,15 @@ export async function projectScopedDemandOwners(owner, semanticResult, request, 
       omittedRecords: Math.max(0, (escaped?.escapes?.length ?? 0) - 256),
       authority: 'existing-summary-escape-owner; no-new-lifetime-or-separation-proof' };
     const summaryOwner = surface.functionSummary(); work.checkpoint();
+    const lifetimeOwner = createCanonicalObjectLifetimeOwner({ binaryId: pipeline.binaryId, ir, cfg: pipeline.cfg,
+      pointsToRun: points, escapeResult: escaped, summary: summaryOwner?.summary ?? summaryOwner,
+      world, assumptions, snapshotId: input.snapshotId, work });
     const objects = [];
     for (const valueId of [...selected].sort()) {
       work.charge('workUnits');
       const set = points?.pointsTo?.get(valueId) ?? points?.ssaPointsTo?.get(valueId);
       if (!set) { frontier.push({ valueId, reason: 'points-to-unavailable' }); continue; }
-      const view = await partitionPointsToObjects(set, { world, assumptions, work, context: createObjectContext(),
+      const view = await partitionPointsToObjects(set, { world, assumptions, work, context: createObjectContext(), lifetimeOwner,
         describeTarget: objectDescription });
       objects.push({ valueId, pointsTo: set, partitions: view.partitions, unknowns: view.unknowns,
         ownerStatus: points.status, aliasAuthority: false });
@@ -244,7 +273,8 @@ export async function projectScopedDemandOwners(owner, semanticResult, request, 
     if (input.context != null) {
       const request = input.context;
       recordFields(request, ['schema', 'contextId', 'functionId', 'callerFunctionId', 'callSiteId', 'worldId',
-        'assumptionsId', 'snapshotId', 'sourceArtifactIds', 'bindings', 'authority'], 'demand-context-fields');
+        'assumptionsId', 'snapshotId', 'sourceArtifactIds', 'bindings', 'authority', 'contextDependencyKey'], 'demand-context-fields');
+      exactString(request.contextDependencyKey, 'demand-context-dependency-key');
       if (request.schema !== 'scpa-conditional-input-request/v1' || request.worldId !== world.id
         || request.assumptionsId !== assumptions.id || request.snapshotId !== input.snapshotId
         || request.functionId !== pipeline.functionId || !Array.isArray(request.bindings) || request.bindings.length > 32) contractFail('demand-context-owner-binding');
@@ -277,7 +307,8 @@ export async function projectScopedDemandOwners(owner, semanticResult, request, 
           resolveConstraint: constraint => ({ worldId: world.id, assumptionsId: conditionalAssumptions.id,
             constraintDigest: stableDigest(constraint), propositionBound: true }) })
         : { status: 'unsupported', reason: 'no-bound-context-entry-values', values: [] };
-      conditionalRanges = { ...refined, contextId: request.contextId, worldId: world.id, snapshotId: input.snapshotId,
+      conditionalRanges = { ...refined, contextId: request.contextId, contextDependencyKey: request.contextDependencyKey,
+        parentAssumptionsId: assumptions.id, worldId: world.id, snapshotId: input.snapshotId,
         assumptions: conditionalAssumptions, inputConditions: conditionRows, exact: false,
         authority: 'conditional-existing-sccp-propagation; no-global-publication',
         bindings: legacy.values.filter(value => ids.includes(value.id) || constraints.some(row => row.valueId === value.id))
@@ -285,9 +316,10 @@ export async function projectScopedDemandOwners(owner, semanticResult, request, 
       if (refined.status !== 'completed') frontier.push({ reason: refined.reason ?? 'conditional-range-incomplete', contextId: request.contextId });
     }
     const abiPlacements = await projectNativeAbiPlacements(owner, input, world, assumptions, work);
-    const memoryObjects = await projectMemoryObjects(memoryView, points, world, assumptions, work);
+    const memoryObjects = await projectMemoryObjects(memoryView, points, world, assumptions, work, lifetimeOwner);
     frontier.push(...memoryObjects.frontier, ...abiPlacements.frontier);
-    const types = projectCanonicalPhysicalTypes(pipeline, [...selected], { worldId: world.id, snapshotId: input.snapshotId, signal: work.signal });
+    const types = selected.size ? projectCanonicalPhysicalTypes(pipeline, [...selected], { worldId: world.id, snapshotId: input.snapshotId, signal: work.signal })
+      : { status: 'unsupported', reason: 'no-selected-canonical-values', types: [], exact: false };
     work.checkpoint();
     const result = { status: 'completed', selectedValues: [...selected].sort(), objects, memoryObjects, abiPlacements, escape,
       ranges: { ...ranges, bindings, ownerIdentity: identity.valid ? identity.identity : null }, conditionalRanges, types,

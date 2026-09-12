@@ -30,8 +30,9 @@ test('detached pure replay checks listed integer derivations without granting cu
 test('native service exports actual owner proposals and bytes to the same pure checker, then rebinds them',async t=>{
   const f=await nativeWorkerFixture(t,{rowsByLocator:rows()}),r=await f.invoke('portableIntegerChecks',{functionId:'0x1000'});
   assert.equal(r.status,'completed'); assert.equal(r.sourceBinding,'current-native-owner-and-source-bytes');
-  assert.equal(r.capsule.checks.length,1); assert.equal(r.capsule.checks[0].bytesHex,'09fe83d229410091');
-  assert.equal(r.capsule.checks[0].fragment.conclusion.constant,'8192'); assert.equal(r.replay.counts.verified,1);
+  const checks=[...r.capsule.checks].sort((a,b)=>a.fragment.conclusion.constant.localeCompare(b.fragment.conclusion.constant));
+  assert.deepEqual(checks.map(row=>[row.fragment.conclusion.constant,row.bytesHex]),[['8176','09fe83d2'],['8192','09fe83d229410091']]);
+  assert.equal(new Set(checks.map(row=>row.fragment.semanticValueId)).size,2); assert.equal(r.replay.counts.verified,2);
   assert.equal(r.semanticProof,false); assert.equal(r.capsuleRebound,false);
   const rebound=await f.invoke('portableIntegerChecks',{functionId:'0x1000',capsule:r.capsule});
   assert.equal(rebound.status,'completed'); assert.equal(rebound.capsuleRebound,true); assert.equal(rebound.releaseQualified,false);

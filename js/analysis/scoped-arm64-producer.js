@@ -13,7 +13,7 @@ import { remainingScopedWorkerLimits, chargeScopedWorkerCost, throwIfScopedWorke
 import { normalizeDependencyScope } from '../core/artifacts/dependencies.js';
 import { assertWorldScope, worldContains } from '../core/identity/world.js';
 
-export const SCOPED_ARM64_PRODUCER_VERSION = '1.7.0';
+export const SCOPED_ARM64_PRODUCER_VERSION = '1.8.0';
 export const SCOPED_ARM64_MAX_BYTES = 16384;
 const CHUNK_INSTRUCTIONS = 1024;
 
@@ -100,7 +100,7 @@ export async function produceScopedArm64Pipeline(backend, { region, address, len
       if (pipeline?.instrumentation?.v2Executed !== true || payload?.projection !== 'canonical-only' || payload?.abiId !== abi.id
         || pipeline.binaryId !== binaryId || pipeline.sliceId !== descriptor.sliceId) return false;
       if (!scopedLocalProjection) return local == null;
-      return local?.schema === 'scoped-local-owner-projection/v1' && local.version === (['flow-inputs', 'demand', 'transforms'].includes(scopedLocalProjection.kind) ? '1.0.0' : ['ranges', 'range-values'].includes(scopedLocalProjection.kind) ? '1.2.0' : '1.1.0')
+      return local?.schema === 'scoped-local-owner-projection/v1' && local.version === (['demand', 'transforms'].includes(scopedLocalProjection.kind) ? '1.0.0' : ['ranges', 'range-values'].includes(scopedLocalProjection.kind) ? '1.2.0' : '1.1.0')
         && local.kind === scopedLocalProjection.kind && local.worldId === world.id
         && local.snapshotId === snapshotId && local.binaryId === binaryId
         && local.functionId === pipeline.functionId
@@ -157,6 +157,7 @@ export async function produceScopedArm64Pipeline(backend, { region, address, len
   }));
   check();
   return { status: 'completed', pipeline: result.payload.pipeline, artifactId: descriptor.artifactId,
+    nativeSource: { binaryId, offset: byteStart.toString(), virtualStart: start.toString(), length },
     localProjection: result.payload.scopedLocal ?? null, reused: result.reused === true, completeness: 'partial', scope: { start, end: start + BigInt(length), snapshotId },
     remaining: ['bounded-function-extent', 'current-isa-coverage', 'ambient-state', 'interprocedural-world-closure'] };
 }

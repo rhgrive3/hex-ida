@@ -4,15 +4,17 @@
  */
 import { contractFail, unsignedAddress } from '../../core/identity/structured.js';
 import { createEntityId } from '../../core/identity/index.js';
-import { indexScopedFunctionEntries, scopedCallTargetRows, assertNativeTargetDemand } from '../query/semantic/call-targets.js';
+import { indexScopedFunctionEntries, scopedCallTargetRows, assertNativeTargetDemand, canonicalDispatchSite } from '../query/semantic/call-targets.js';
+import { nativeMemoryDispatchCandidates } from './native-memory-targets.js';
+import { nativeThunkCandidates } from './native-thunks.js';
 
-export const NATIVE_DEMAND_DISPATCH_VERSION = '1.1.0';
+export const NATIVE_DEMAND_DISPATCH_VERSION = '1.2.0';
 /** Backward navigation is only a possible dependency cut. It is deliberately
  * not a pointer evaluator, a new MemorySSA walker, or an executable witness.
  */
-async function nativeLoadCut(projection, node, work, maxHops) {
+export async function nativeLoadCut(projection, node, work, maxHops) {
   const pending = [];
-  for (const id of (node.call.targetValueIds ?? []).slice(0, 64)) {
+  for (const id of (canonicalDispatchSite(node)?.targetValueIds ?? []).slice(0, 64)) {
     work.charge('workUnits');
     for (const reference of projection.valueReferenceIds(id)) {
       work.charge('workUnits');
@@ -38,23 +40,27 @@ async function nativeLoadCut(projection, node, work, maxHops) {
   }
   return { loads, cut };
 }
-export function createNativeDemandDispatchResolver({ queryPointer = null } = {}) {
+export function createNativeDemandDispatchResolver({ queryPointer = null, readMemory = null } = {}) {
   if (queryPointer !== null && typeof queryPointer !== 'function') contractFail('native-pointer-query-owner');
+  if (readMemory !== null && typeof readMemory !== 'function') contractFail('native-dispatch-memory-owner');
   return { id: 'native-demand-dispatch', version: NATIVE_DEMAND_DISPATCH_VERSION,
-    families: ['direct', 'register', 'tail-call', ...(queryPointer ? ['chained-fixup', 'authenticated-pointer', 'import-stub'] : [])],
+    families: ['direct', 'register', 'tail-call', 'thunk-chain', ...(readMemory ? ['jump-table', 'import-stub'] : []),
+      ...(queryPointer ? ['chained-fixup', 'authenticated-pointer'] : [])],
     async resolve(request, { world, assumptions, projection, nativeContext = null, work }) {
       const result = { status: 'completed', worldId: world.id, assumptionsId: assumptions.id,
         projectionId: projection.id, callSiteId: request.callSiteId, candidates: [], chains: [],
         requirements: ['selected-entries-not-world-closure', 'target-feasibility-not-proven'] };
-      if (!nativeContext?.member || !Array.isArray(nativeContext.members) || nativeContext.members.length > 8
+      if (!nativeContext?.member || !Array.isArray(nativeContext.members) || nativeContext.members.length > 16
         || nativeContext.member.projection !== projection) return { ...result, status: 'unsupported',
         reason: 'native-demand-context-required' };
       const demand = assertNativeTargetDemand(nativeContext.member.demand, projection);
+      if (!demand) return { ...result, status: 'unsupported', reason: 'native-demand-owner-required' };
       const reference = projection.entityReference('semantic-ir', request.callSiteId);
       const node = reference && projection.source(reference);
-      if (!node?.call) return { ...result, status: 'unsupported', reason: 'native-call-site-unbound' };
+      const site = canonicalDispatchSite(node);
+      if (!site) return { ...result, status: 'unsupported', reason: 'native-call-site-unbound' };
       const index = indexScopedFunctionEntries(nativeContext.members.map(member => member.projection));
-      work.charge('workUnits', Math.min(64, node.call.targetValueIds?.length ?? 0) * 512 + nativeContext.members.length);
+      work.charge('workUnits', Math.min(64, site.targetValueIds?.length ?? 0) * 512 + nativeContext.members.length);
       for (const row of scopedCallTargetRows(projection, node, index, demand)) {
         work.charge('workUnits');
         if (!row.inSelectedScope || row.reason || !row.targetFunctionId) {
@@ -72,6 +78,12 @@ export function createNativeDemandDispatchResolver({ queryPointer = null } = {})
             artifactId: source.producerArtifactId, ownerRevision: NATIVE_DEMAND_DISPATCH_VERSION,
             id: createEntityId({ binaryId: source.binaryId, kind: 'native-demand-target', identity: declaration }), declaration } });
         await work.yieldIfNeeded();
+      }
+      if (readMemory && result.candidates.length < request.maxTargets) {
+        const memory = await nativeMemoryDispatchCandidates(projection, node, demand,
+          { ...request, maxTargets: request.maxTargets - result.candidates.length },
+          { world, assumptions, work, readMemory, members: nativeContext.members });
+        result.candidates.push(...memory.candidates); result.requirements.push(...memory.requirements);
       }
       if (queryPointer && result.candidates.length < request.maxTargets) {
         const cut = await nativeLoadCut(projection, node, work, request.maxHops);
@@ -125,6 +137,11 @@ export function createNativeDemandDispatchResolver({ queryPointer = null } = {})
           if (slots > 4) break;
           await work.yieldIfNeeded();
         }
+      }
+      if (result.candidates.length < request.maxTargets) {
+        const thunks = await nativeThunkCandidates(result.candidates, index,
+          { ...request, maxTargets: request.maxTargets - result.candidates.length }, { world, projection, work });
+        result.candidates.push(...thunks.candidates); result.chains.push(...thunks.chains); result.requirements.push(...thunks.requirements);
       }
       return result;
     } };

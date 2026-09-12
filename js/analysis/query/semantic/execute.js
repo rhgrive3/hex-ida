@@ -7,6 +7,7 @@ import { assertWorldScope, assertAssumptionSet } from '../../../core/identity/wo
 import { assertSemanticQueryPlan, evaluateSemanticQueryPlan } from './plan.js';
 import { assertCanonicalQueryProjection } from './projection.js';
 import { ScopedInterproceduralProjectionBuilder } from './interprocedural.js';
+import { flowKindMask, flowKindsFromMask, flowStateKey, transferBalancedFlow, createScopedFlowClosure } from './balanced-flow.js';
 
 export const SEMANTIC_QUERY_RESULT_SCHEMA = 'semantic-query-result/v1';
 const TOTAL_DEFAULTS = Object.freeze({ workUnits: 1000000, bytesRead: 64 * 1024 * 1024, residentBytes: 64 * 1024 * 1024,
@@ -45,6 +46,7 @@ export class SemanticQueryExecution {
   #busy = false; #closed = false; #steps = 0; #totalResults = 0; #totalPaths = 0;
   #maximumSteps; #seenFunctions = []; #terminalReason = null; #retainedBytes = 0;
   #scopeBuilder; #sinkMatches = new Map(); #onResult; #parentBudget;
+  #flowScopes = []; #flowSearches = []; #flowCuts = new Set(); #ownerCurrents = [];
 
   constructor({ plan, world, assumptions, loadProjection, isCurrent, totalLimits = {}, maximumSteps = 128, scopeBuilder = null, parentBudget = null, onResult = null } = {}) {
     assertWorldScope(world); assertAssumptionSet(assumptions, world); assertSemanticQueryPlan(plan, world, assumptions);
@@ -62,7 +64,9 @@ export class SemanticQueryExecution {
     const nonce = [...globalThis.crypto.getRandomValues(new Uint32Array(4))].map((n) => n.toString(16).padStart(8, '0')).join('');
     this.#id = createEntityId({ binaryId: world.binarySet[0].binaryId, kind: 'semantic-query-execution', identity: { planId: plan.id, nonce } });
     for (const requirement of plan.requirements) {
-      if (requirement === 'bound-interprocedural-flow-summaries' && !scopeBuilder) this.#frontier.add('interprocedural-flow-owner-not-bound');
+      if (requirement === 'bound-interprocedural-flow-summaries' && !scopeBuilder) {
+        this.#frontier.add('interprocedural-flow-owner-not-bound'); this.#flowCuts.add('interprocedural-flow-owner-not-bound');
+      }
     }
     SESSIONS.add(this);
   }
@@ -71,9 +75,13 @@ export class SemanticQueryExecution {
   get worldId() { return this.#world.id; }
   get assumptionsId() { return this.#assumptions.id; }
   get done() { return this.#phase === 'done' || this.#closed; }
+  #ownersCurrent() {
+    return this.#current() === true && (!this.#scopeBuilder || this.#scopeBuilder.isCurrent())
+      && this.#ownerCurrents.every(current => current() === true);
+  }
   #assertCurrent() {
     if (this.#closed) contractFail('semantic-query-session-closed');
-    if (this.#current() !== true || this.#scopeBuilder && !this.#scopeBuilder.isCurrent()) { this.close('stale'); contractFail('semantic-query-world-stale'); }
+    if (!this.#ownersCurrent()) { this.close('stale'); contractFail('semantic-query-world-stale'); }
   }
   #releaseProjection() {
     this.#projection?.release(); this.#projection = null; this.#retainedBytes = 0;
@@ -86,6 +94,7 @@ export class SemanticQueryExecution {
   }
   #finishLimited(reason) {
     this.#frontier.add(reason); this.#terminalReason = reason;
+    this.#flowCuts.add(reason);
     this.#releaseProjection(); this.#phase = 'done';
   }
   async #emitRecord(record, results, work) {
@@ -102,6 +111,7 @@ export class SemanticQueryExecution {
     if (flow.avoid) {
       const excluded = evaluateSemanticQueryPlan(this.#plan, 'avoid', record, { work, origin });
       if (excluded === null) this.#frontier.add('path-exclusion-selector-unknown', { functionId: record.functionId, entityId: record.entityId });
+      if (excluded === null) this.#flowCuts.add('path-exclusion-selector-unknown');
       if (excluded !== false) return null;
     }
     let waypoint = startWaypoint;
@@ -109,19 +119,20 @@ export class SemanticQueryExecution {
       const matches = evaluateSemanticQueryPlan(this.#plan, 'waypoint', record, { work, waypoint, origin });
       if (matches === null) this.#frontier.add('path-waypoint-selector-unknown', { functionId: record.functionId,
         entityId: record.entityId, detail: `waypoint:${waypoint}` });
+      if (matches === null) this.#flowCuts.add('path-waypoint-selector-unknown');
       if (matches !== true) break;
       waypoint++;
     }
     return waypoint;
   }
-  #visitKey(nodeId, context, waypoint) { return JSON.stringify([nodeId, context, waypoint]); }
   #startSearch(work) {
     const root = this.#sources[this.#sourceIndex], waypoint = this.#pathFilter(this.#projection.record(root), 0, work);
-    const initial = { nodeId: root, parent: -1, edgeId: null, depth: 0, context: [], waypoint };
+    const kindMask = flowKindMask(this.#plan.query.flow.flowKinds ?? undefined);
+    const initial = { nodeId: root, parent: -1, edgeId: null, depth: 0, context: [], waypoint, kindMask };
     this.#search = { root, queue: waypoint === null ? [] : [initial], cursor: 0,
-      visited: new Set(waypoint === null ? [] : [this.#visitKey(root, [], waypoint)]), emittedSinks: new Set() };
+      visited: new Set(waypoint === null ? [] : [flowStateKey(root, [], waypoint, kindMask)]), emittedSinks: new Map(), examinedEdges: 0 };
   }
-  async #emitPath(index, results, work) {
+  async #emitPath(index, results, work, kindMask) {
     const chain = [], edgeIds = [], waypointStates = [];
     let position = index;
     while (position >= 0) {
@@ -135,7 +146,12 @@ export class SemanticQueryExecution {
     const edges = edgeIds.map((id) => this.#projection.edge(id));
     const vertices = chain.map((id) => this.#projection.present(id, this.#plan.query.projection));
     const value = { kind: 'possible-flow', direction: this.#plan.query.flow.direction, projectionId: this.#projection.id, source: chain[0], sink: chain.at(-1),
-      vertices, edges: this.#plan.query.projection.includeWitnesses ? edges : edges.map(({ id, from, to, kind }) => ({ id, from, to, kind })),
+      flowKinds: this.#plan.query.flow.flowKinds === null ? null : flowKindsFromMask(kindMask),
+      flowKindPolicy: this.#plan.query.flow.flowKinds === null ? 'mixed-dependence-navigation' : 'homogeneous-kind-selection',
+      callContext: { policy: 'balanced-callsite-prefix',
+        pendingCalls: [...this.#search.queue[index].context], everyReturnMatched: true },
+      vertices, edges: this.#plan.query.projection.includeWitnesses ? edges
+        : edges.map(({ id, from, to, kind, flowKinds }) => ({ id, from, to, kind, ...(flowKinds ? { flowKinds } : {}) })),
       remaining: [...new Set(['path-feasibility', ...edges.flatMap((edge) => edge.obligations)])].sort(compareIdentity),
       certainty: 'possible-dependence', executablePathProven: false, exact: false,
       ...((this.#plan.query.flow.via.length || this.#plan.query.flow.avoid) ? { pathFilter: {
@@ -150,28 +166,14 @@ export class SemanticQueryExecution {
     work.checkpoint(); this.#assertCurrent(); results.push(enriched);
     this.#totalPaths++; this.#totalResults++;
   }
-  #transitionContext(context, edge, record) {
-    if (!edge.boundary) return context;
-    const direction = this.#plan.query.flow.direction;
-    const entering = direction === 'forward' ? edge.boundary.direction === 'enter' : edge.boundary.direction === 'return';
-    if (entering) {
-      if (context.length >= this.#plan.query.flow.maxCallDepth) {
-        this.#frontier.add('call-context-depth-cut', { functionId: record.functionId, entityId: record.entityId }); return null;
-      }
-      return [...context, edge.boundary.callSite];
-    }
-    if (!context.length) {
-      // A source inside a callee has no known caller context. Never invent one
-      // and accidentally return into every callsite that happens to share it.
-      this.#frontier.add('unmatched-initial-caller-context', { functionId: record.functionId, entityId: record.entityId }); return null;
-    }
-    if (context.at(-1) !== edge.boundary.callSite) return null;
-    return context.slice(0, -1);
-  }
   async #searchOne(work, results) {
     if (!this.#search) this.#startSearch(work);
     const search = this.#search, flow = this.#plan.query.flow;
     if (search.cursor >= search.queue.length) {
+      if (this.#flowSearches.length < 1024) this.#flowSearches.push({ projectionId: this.#projection.id,
+        source: search.root, visitedStates: search.visited.size, examinedEdges: search.examinedEdges,
+        reachedSinks: [...search.emittedSinks].map(([sink, mask]) => ({ sink, flowKinds: flow.flowKinds === null ? null : flowKindsFromMask(mask) })) });
+      else this.#flowCuts.add('flow-closure-source-report-budget');
       this.#sourceIndex++; this.#search = null;
       if (this.#sourceIndex >= this.#sources.length) this.#nextFunction();
       return;
@@ -182,13 +184,31 @@ export class SemanticQueryExecution {
       evaluateSemanticQueryPlan(this.#plan, 'sink', record, { work, origin: this.#projection.origin(record.id) }));
     const isSink = this.#sinkMatches.get(record.id);
     if (isSink === null) this.#frontier.add('sink-selector-unknown', { functionId: record.functionId, entityId: record.entityId });
-    if (isSink === true && state.waypoint === flow.via.length && !search.emittedSinks.has(record.id)) {
-      await this.#emitPath(position, results, work); search.emittedSinks.add(record.id);
+    if (isSink === null) this.#flowCuts.add('sink-selector-unknown');
+    const newKinds = state.kindMask & ~(search.emittedSinks.get(record.id) ?? 0);
+    if (isSink === true && state.waypoint === flow.via.length && newKinds) {
+      await this.#emitPath(position, results, work, newKinds);
+      search.emittedSinks.set(record.id, (search.emittedSinks.get(record.id) ?? 0) | newKinds);
       if (this.#totalPaths >= flow.maxPaths || this.#totalResults >= this.#plan.query.resultLimit) { this.#finishLimited('path-result-limit'); return; }
     }
     const adjacent = this.#projection.adjacent(record.id, flow.direction);
     if (state.depth >= flow.maxDepth) {
-      if (adjacent.some((id) => flow.edgeKinds.includes(this.#projection.edge(id).kind))) this.#frontier.add('flow-depth-cut', { functionId: record.functionId, entityId: record.entityId });
+      // A simultaneous path-depth and context-depth boundary is still a cut.
+      // Keep the edge cursor here as well, so a small page can resume a large
+      // excluded adjacency instead of rescanning it indefinitely.
+      state.edgePosition ??= 0;
+      while (state.edgePosition < adjacent.length) {
+        work.charge('workUnits');
+        const edge = this.#projection.edge(adjacent[state.edgePosition]);
+        const transition = flow.edgeKinds.includes(edge.kind) ? transferBalancedFlow(state, edge, flow) : null;
+        search.examinedEdges++; state.edgePosition++;
+        if (transition?.cut || transition?.state) {
+          const reason = transition.cut ?? 'flow-depth-cut';
+          this.#frontier.add(reason, { functionId: record.functionId, entityId: record.entityId }); this.#flowCuts.add(reason);
+          break;
+        }
+        await work.yieldIfNeeded();
+      }
       search.cursor++; return;
     }
     // Keep a per-node edge position so a deadline never drops the unvisited
@@ -199,17 +219,23 @@ export class SemanticQueryExecution {
       const edge = this.#projection.edge(adjacent[state.edgePosition]);
       if (flow.edgeKinds.includes(edge.kind)) {
         const target = flow.direction === 'forward' ? edge.to : edge.from;
-        const context = this.#transitionContext(state.context, edge, record);
-        if (context !== null) {
+        const transition = transferBalancedFlow(state, edge, flow);
+        if (transition.cut) {
+          this.#frontier.add(transition.cut, { functionId: record.functionId, entityId: record.entityId });
+          this.#flowCuts.add(transition.cut);
+        }
+        if (transition.state !== null) {
+          const { context, kindMask } = transition.state;
           const waypoint = this.#pathFilter(this.#projection.record(target), state.waypoint, work);
-          const visitKey = this.#visitKey(target, context, waypoint);
+          const visitKey = flowStateKey(target, context, waypoint, kindMask);
           if (waypoint !== null && !search.visited.has(visitKey)) {
             work.charge('queueOperations'); work.charge('residentBytes', 176 + context.length * 128);
             search.visited.add(visitKey); search.queue.push({ nodeId: target, parent: position, edgeId: edge.id,
-              depth: state.depth + 1, context, waypoint });
+              depth: state.depth + 1, context, waypoint, kindMask });
           }
         }
       }
+      search.examinedEdges++;
       state.edgePosition++;
       await work.yieldIfNeeded();
     }
@@ -241,14 +267,25 @@ export class SemanticQueryExecution {
           if (loaded?.pending === true) break;
           if (!loaded?.projection) {
             this.#frontier.add(loaded?.reason ?? 'function-projection-unavailable', { functionId: locator });
+            this.#flowCuts.add(loaded?.reason ?? 'function-projection-unavailable');
             this.#nextFunction(); continue;
           }
           this.#projection = assertCanonicalQueryProjection(loaded.projection, { world: this.#world, assumptions: this.#assumptions });
+          if (loaded.isCurrent !== undefined && typeof loaded.isCurrent !== 'function') contractFail('semantic-query-owner-current-hook');
+          if (loaded.isCurrent) this.#ownerCurrents.push(loaded.isCurrent);
+          this.#assertCurrent();
           this.#retainedBytes = this.#projection.size * 512 + this.#projection.edgeCount * 384;
+          if (this.#plan.query.flow) this.#flowScopes.push({ projectionId: this.#projection.id, inputIdentity: this.#projection.inputIdentity });
           if (loaded.composite) this.#seenFunctions.push(...loaded.members);
           else this.#seenFunctions.push({ locator, functionId: this.#projection.functionId, projectionId: this.#projection.id,
             producerArtifactId: this.#projection.inputIdentity.producerArtifactId, ownerContentDigests: this.#projection.inputIdentity.ownerDigests });
-          for (const gap of this.#projection.frontier) this.#frontier.add(gap.reason, { functionId: gap.functionId ?? this.#projection.functionId, entityId: gap.entityId ?? null });
+          for (const gap of this.#projection.frontier) {
+            this.#frontier.add(gap.reason, { functionId: gap.functionId ?? this.#projection.functionId, entityId: gap.entityId ?? null });
+            // A relation-level negative remains distinct from whole-world or
+            // semantic admission, but missing owner rows/cuts still veto it.
+            if (!['whole-world-closure-not-qualified', 'canonical-producer-artifact-unbound',
+              'interprocedural-context-and-boundary-qualification-pending'].includes(gap.reason)) this.#flowCuts.add(gap.reason);
+          }
           this.#phase = 'scan';
         } else if (this.#phase === 'scan') {
           if (this.#scan >= this.#projection.size) {
@@ -260,10 +297,11 @@ export class SemanticQueryExecution {
           const record = this.#projection.recordAt(this.#scan);
           const match = evaluateSemanticQueryPlan(this.#plan, 'select', record, { work, origin: this.#projection.origin(record.id) });
           if (match === null) this.#frontier.add('source-selector-unknown', { functionId: record.functionId, entityId: record.entityId });
+          if (match === null) this.#flowCuts.add('source-selector-unknown');
           if (match === true) {
             if (this.#plan.query.flow) {
               if (this.#sources.length < 256) this.#sources.push(record.id);
-              else this.#frontier.add('flow-source-budget', { functionId: record.functionId });
+              else { this.#frontier.add('flow-source-budget', { functionId: record.functionId }); this.#flowCuts.add('flow-source-budget'); }
             } else {
               await this.#emitRecord(record, results, work);
               if (this.#totalResults >= this.#plan.query.resultLimit) { this.#finishLimited('record-result-limit'); break; }
@@ -292,11 +330,16 @@ export class SemanticQueryExecution {
       this.#totalPaths -= results.filter((row) => row.kind === 'possible-flow').length;
       results.length = 0; this.close(executionStatus);
     }
+    const flowClosure = this.#plan.query.flow && !this.#closed ? createScopedFlowClosure({ plan: this.#plan,
+      scopes: this.#flowScopes, searches: this.#flowSearches, cuts: [...this.#flowCuts].sort(),
+      enumerationComplete: this.done && !this.#terminalReason, possiblePaths: this.#totalPaths,
+      isCurrent: () => this.#current() === true && this.#ownerCurrents.every(current => current() === true) }) : null;
     return deepFreeze({ schema: SEMANTIC_QUERY_RESULT_SCHEMA, sessionId: this.#id, planId: this.#plan.id,
       worldId: this.#world.id, assumptionsId: this.#assumptions.id, executionStatus,
       scopeMode: this.#scopeBuilder ? 'explicit-interprocedural' : 'function-local',
       completeness: this.#terminalReason ? 'truncated' : 'partial', enumerationComplete: this.done && !this.#terminalReason,
       semanticClosure: 'unknown', existence: this.#totalResults ? 'POSSIBLE' : 'UNKNOWN', exact: false,
+      ...(flowClosure ? { flowClosure } : {}),
       results, returned: results.length, totalResults: this.#totalResults, totalPaths: this.#totalPaths,
       frontier: this.#frontier.view(), functions: { completed: this.#functionIndex, requested: this.#plan.query.scope.functionIds.length, seen: (this.#scopeBuilder ? this.#scopeBuilder.seen : this.#seenFunctions).map((row) => ({ ...row })) },
       resumable, restartHint: { nextFunction: this.#functionIndex, phase: this.#phase, canonicalAuthority: false },

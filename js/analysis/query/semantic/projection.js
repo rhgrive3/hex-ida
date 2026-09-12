@@ -12,7 +12,7 @@ import { MEMORY_SSA_CONTRACT_VERSION } from '../../../semantics/memoryssa/contra
 import { MEMORY_SSA_BUILD_VERSION } from '../../../semantics/memoryssa/build.js';
 import { classifyCallTargetProof } from '../../summary/contract.js';
 
-export const SEMANTIC_PROJECTION_VERSION = '1.3.0';
+export const SEMANTIC_PROJECTION_VERSION = '1.4.0';
 const CONSTRUCTOR = Symbol('canonical-query-projection');
 const PROJECTIONS = new WeakSet();
 const boundArrays = (value, fields, work) => {
@@ -60,7 +60,7 @@ async function fingerprintCollections(owner, capture, work) {
 export class CanonicalQueryProjection {
   #records; #order; #edges; #outgoing; #incoming; #origin; #sources; #closed = false;
   #world; #assumptions; #inputIdentity; #frontier; #id; #functionId;
-  #edgeOrder; #valueReferences; #ownerReferences; #semanticValues;
+  #edgeOrder; #valueReferences; #ownerReferences; #semanticValues; #blocks; #memoryRegions; #memoryBlockStates;
   constructor(token, state) {
     if (token !== CONSTRUCTOR) contractFail('query-projection-use-builder');
     this.#records = state.records; this.#order = state.order; this.#edges = state.edges;
@@ -72,6 +72,9 @@ export class CanonicalQueryProjection {
     this.#semanticValues = state.semanticValues ?? new Map();
     this.#valueReferences = state.valueReferences ?? new Map();
     this.#ownerReferences = state.ownerReferences ?? new Map();
+    this.#blocks = state.blocks ?? new Map();
+    this.#memoryRegions = state.memoryRegions ?? new Map();
+    this.#memoryBlockStates = state.memoryBlockStates ?? new Map();
     PROJECTIONS.add(this);
   }
   get id() { return this.#id; }
@@ -98,6 +101,9 @@ export class CanonicalQueryProjection {
     this.#check(); return this.#ownerReferences.get(`${owner}\u0000${entityId}`) ?? null;
   }
   canonicalValue(valueId) { this.#check(); return this.#semanticValues.get(valueId) ?? null; }
+  canonicalBlock(blockId) { this.#check(); return this.#blocks.get(blockId) ?? null; }
+  canonicalMemoryRegion(regionId) { this.#check(); return this.#memoryRegions.get(regionId) ?? null; }
+  canonicalMemoryBlockState(blockId) { this.#check(); return this.#memoryBlockStates.get(blockId) ?? null; }
   valueReferenceIds(valueId) {
     this.#check(); return this.#valueReferences.get(valueId) ?? EMPTY;
   }
@@ -117,6 +123,7 @@ export class CanonicalQueryProjection {
     this.#records.clear(); this.#edges.clear(); this.#outgoing.clear(); this.#incoming.clear();
     this.#origin.clear(); this.#sources.clear(); this.#order.length = 0;
     this.#edgeOrder.length = 0; this.#valueReferences.clear(); this.#ownerReferences.clear(); this.#semanticValues.clear();
+    this.#blocks.clear(); this.#memoryRegions.clear(); this.#memoryBlockStates.clear();
   }
 }
 const EMPTY = Object.freeze([]);
@@ -155,7 +162,8 @@ export async function buildCanonicalQueryProjection(pipeline, { world, assumptio
       entryBlockId: ir.entryBlockId ?? null, completeness: ir.completeness ?? 'unknown', unknowns: ir.unknowns ?? [] }, work);
   const ssaCapture = hasSsa ? captureCollections([['definitions', ssa.definitions], ['uses', ssa.uses], ['useDefLinks', ssa.useDefLinks]],
     { contractVersion: ssa.contractVersion, functionId }, work) : null;
-  const memoryCapture = hasMemory ? captureCollections([['definitions', mssa.definitions], ['uses', mssa.uses]],
+  const memoryCapture = hasMemory ? captureCollections([['definitions', mssa.definitions], ['uses', mssa.uses],
+    ['regions', mssa.regions ?? []], ['blockStates', mssa.blockStates ?? []]],
     { contractVersion: mssa.contractVersion, buildVersion: mssa.buildVersion, functionId }, work) : null;
   ir = { ...irCapture.metadata, ...irCapture.captured };
   if (hasSsa) ssa = { ...ssaCapture.metadata, ...ssaCapture.captured };
@@ -182,6 +190,19 @@ export async function buildCanonicalQueryProjection(pipeline, { world, assumptio
   const operationIds = new Map(), definitionIds = new Map(), useIds = new Map(), valueDefinitions = new Map(), memoryDefinitions = new Map(), memoryUses = new Map();
   const sourceNodes = new Map(ir.nodes.map((node) => [node.id, node]));
   const ownerReferences = new Map(), valueReferences = new Map(), semanticValues = new Map();
+  const indexOwnerRows = (rows, field, code) => {
+    const index = new Map();
+    for (const row of rows) {
+      work.charge('workUnits'); work.charge('residentBytes', 64);
+      const key = exactString(row[field], code);
+      if (index.has(key)) contractFail(code);
+      index.set(key, row);
+    }
+    return index;
+  };
+  const blocks = indexOwnerRows(ir.blocks, 'id', 'query-block-identity');
+  const memoryRegions = indexOwnerRows(hasMemory ? mssa.regions : [], 'id', 'query-memory-region-identity');
+  const memoryBlockStates = indexOwnerRows(hasMemory ? mssa.blockStates : [], 'blockId', 'query-memory-block-state-identity');
   for (const value of ir.values) {
     exactString(value.id, 'query-semantic-value-id');
     if (semanticValues.has(value.id)) contractFail('query-semantic-value-duplicate');
@@ -201,12 +222,13 @@ export async function buildCanonicalQueryProjection(pipeline, { world, assumptio
     ownerReferences.set(`${owner}\u0000${entityId}`, id);
     return id;
   };
-  const addEdge = (from, to, kind, witness, obligations = []) => {
+  const addEdge = (from, to, kind, witness, obligations = [], flowKinds = null) => {
     work.charge('workUnits'); work.charge('edges'); work.charge('residentBytes', 384);
     if (!from || !to || !records.has(from) || !records.has(to)) {
       frontier.push({ reason: 'canonical-link-endpoint-missing', kind, source: witness }); return;
     }
-    const body = { from, to, kind, witness, obligations, relation: 'possible-dependence', executablePathProven: false };
+    const body = { from, to, kind, witness, obligations, ...(flowKinds ? { flowKinds } : {}),
+      relation: 'possible-dependence', executablePathProven: false };
     const id = createEntityId({ binaryId, kind: 'query-dependence-reference', identity: { projectionId, ...body } });
     if (edges.has(id)) return;
     const edge = deepFreeze({ ...body, id }); edges.set(id, edge);
@@ -241,9 +263,16 @@ export async function buildCanonicalQueryProjection(pipeline, { world, assumptio
         variableKey: use.proof?.variableIdentity?.key ?? null, roles: use.proof?.roles ?? ['state-use'] });
       useIds.set(use.useId, id);
       const operation = operationIds.get(use.sourceEntityId);
+      const sourceNode = sourceNodes.get(use.sourceEntityId), roles = use.proof?.roles ?? [];
+      // Only role-bearing owner inputs narrow facts. SSA links and arithmetic
+      // remain neutral: an address may be copied/computed before its typed use.
+      const flowKinds = roles.includes('memory-address') || sourceNode?.kind === 'address' ? ['address']
+        : roles.some(role => ['control-condition', 'branch-condition', 'branch-target', 'call-target'].includes(role))
+          || ['branch', 'conditional-branch', 'switch'].includes(sourceNode?.kind) ? ['control']
+          : sourceNode?.kind === 'store' ? ['data', 'memory', 'capture', 'return'] : null;
       if (operation) addEdge(id, operation, 'operation-input', { owner: 'ssa', artifactId: producerArtifactId, ownerDigest: ssaDigest,
         useId: use.useId, sourceEntityId: use.sourceEntityId, roles: use.proof?.roles ?? [], proof: use.proof?.transform ?? null },
-        ['operation-input-role-and-path-feasibility']);
+        ['operation-input-role-and-path-feasibility'], flowKinds);
       else frontier.push({ entityId: use.useId, reason: 'ssa-use-operation-binding-missing' });
       await work.yieldIfNeeded();
     }
@@ -307,7 +336,8 @@ export async function buildCanonicalQueryProjection(pipeline, { world, assumptio
   for (const rows of valueReferences.values()) { rows.sort(compareIdentity); Object.freeze(rows); }
   work.checkpoint();
   return new CanonicalQueryProjection(CONSTRUCTOR, { records, order, edges, outgoing, incoming, origins, sources,
-    world, assumptions, inputIdentity, frontier, id: projectionId, functionId, valueReferences, ownerReferences, semanticValues });
+    world, assumptions, inputIdentity, frontier, id: projectionId, functionId, valueReferences, ownerReferences, semanticValues,
+    blocks, memoryRegions, memoryBlockStates });
 }
 
 

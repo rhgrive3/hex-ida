@@ -168,7 +168,13 @@ export async function queryAsyncEventOrder(request, { world, assumptions, snapsh
   recordFields(input, ['runtimeSessionId', 'fromEventId', 'toEventId', 'maximumDepth', 'lifetime'], 'async-query-fields');
   exactRef(input.runtimeSessionId, 'async-runtime-session');
   if (typeof getContext !== 'function') return { status: 'unsupported', reason: 'current-async-event-owner-required', exact: false };
-  const context = await work.await(signal => getContext(input.runtimeSessionId, { world, assumptions, snapshotId, signal }));
+  const context = await work.await(signal => getContext(input.runtimeSessionId, { world, assumptions, snapshotId, signal, work }));
+  if (context == null || context.status === 'unsupported') {
+    work.checkpoint(); if (isCurrent?.() !== true) contractFail('async-owner-stale');
+    return deepFreeze({ status: 'unsupported', reason: context == null ? 'current-async-event-owner-unavailable'
+      : exactRef(context.reason, 'async-owner-unavailable-reason'), relation: 'unknown', exact: false,
+      runtimeExecutionRequested: false, semanticProof: false, staticHappensBeforeProven: false, canonicalTruthChanged: false });
+  }
   const current = () => isCurrent?.() === true && context?.isCurrent?.() === true;
   work.checkpoint(); if (!current()) contractFail('async-owner-stale');
   const binding = snapshotContractData(context.binding, { maxBytes: 8192, maxNodes: 128 });

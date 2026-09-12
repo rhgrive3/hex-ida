@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { threadedNativeFixture } from './threaded-native-fixture.mjs';
 import { INTEGER_FRAGMENT_KIND } from '../../js/core/evidence/arm64-integer-fragment.js';
+import { RANGE_PROOF_KIND, RANGE_PROOF_SCHEMA, integerFragmentProofScope } from '../../js/core/evidence/range-proof-kernel.js';
 async function publish(f) {
  let result=await f.invoke('demandQuery',{query:{scope:{functionIds:['0x1000']},select:{op:'all'},resultLimit:32},precision:{maximumValues:64}});
  for(let n=0;result.continuation&&n<32;n++)result=await f.invoke('resumeDemandQuery',{cursor:result.continuation.cursor});
@@ -14,14 +15,31 @@ test('test-owned assembled ELF > deployed decoder > actual thread > public query
  assert.equal(result.answer.exact,false);assert.ok(f.counters.decodes>0);assert.ok(f.counters.semantic>0);
  const graph=await f.invoke('explainDemandResult',{artifactId,view:'graph'});
  const proofs=graph.graph.nodes.filter(n=>n.semanticKind===INTEGER_FRAGMENT_KIND);
- assert.ok(proofs.some(n=>n.payload.fragment.conclusion.constant==='8192'));
+ assert.deepEqual(proofs.map(n=>n.payload.fragment.conclusion.constant).sort(),['8176','8192']);
+ const ranges=graph.graph.nodes.filter(n=>n.semanticKind===RANGE_PROOF_KIND);
+ assert.equal(ranges.length,proofs.length);
+ for(const range of ranges){
+  const rule=range.payload.rule,primitive=proofs.find(p=>rule.premises.length===1&&rule.premises[0]===p.id);
+  assert.ok(primitive);assert.equal(rule.schema,RANGE_PROOF_SCHEMA);assert.equal(rule.rule,'integer-range-projection');
+  assert.deepEqual(rule.scope,integerFragmentProofScope(primitive.payload.fragment));
+  assert.equal(rule.conclusion.subject,primitive.payload.fragment.semanticValueId);
+  assert.equal(rule.conclusion.lower,primitive.payload.fragment.conclusion.constant);
+  assert.equal(rule.conclusion.upper,primitive.payload.fragment.conclusion.constant);
+ }
  const replay=await f.invoke('replayDemandResult',{artifactId});
  assert.equal(replay.integrity,'verified');assert.equal(replay.byteBinding,'verified');
- assert.equal(replay.derivation.status,'partially-checked');assert.equal(replay.ownerReplay.counters.integerDerivations,1);
+ assert.equal(replay.derivation.status,'partially-checked');assert.equal(replay.ownerReplay.counters.integerDerivations,2);
+ assert.deepEqual([...replay.derivation.checkedNodeIds].sort(),[...proofs,...ranges].map(n=>n.id).sort());
+ for(const range of ranges){
+  const checked=replay.nodeResults.find(n=>n.nodeId===range.id);
+  assert.equal(checked.status,'verified');assert.deepEqual(checked.detail.scope,range.payload.rule.scope);
+  assert.deepEqual(checked.detail.proposition,range.payload.rule.conclusion);
+ }
  assert.equal(replay.semantic,'unknown');assert.equal(replay.exact,false);assert.equal(replay.quarantine,null);
  const portable=await f.invoke('portableIntegerChecks',{functionId:'0x1000'});
  assert.doesNotThrow(()=>structuredClone(portable.replay));
- assert.equal(portable.replay.counts.verified,1);assert.equal(portable.semanticProof,false);
+ assert.deepEqual(portable.capsule.checks.map(row=>row.fragment.conclusion.constant).sort(),['8176','8192']);
+ assert.equal(portable.replay.counts.verified,2);assert.equal(portable.semanticProof,false);
  assert.equal(portable.sourceBinding,'current-native-owner-and-source-bytes');
  const rebound=await f.invoke('portableIntegerChecks',{functionId:'0x1000',capsule:portable.capsule});
  assert.equal(rebound.capsuleRebound,true);assert.equal(rebound.releaseQualified,false);

@@ -3,6 +3,9 @@
  * cannot satisfy these rules. ISA/oracle and path-feasibility proof stay open.
  */
 import { registerIntegerFragmentChecker } from '../../../core/evidence/arm64-integer-fragment.js';
+import { registerRangeProofKernel } from '../../../core/evidence/range-proof-kernel.js';
+import { registerAliasProofKernel } from '../../../core/evidence/alias-proof-kernel.js';
+import { compareCanonicalAliasCells } from './demand-alias.js';
 import { CertificateCheckerRegistry } from '../../../core/evidence/certificate.js';
 import { jsonSafe, stableStringify, lossyTypeWitness } from '../../../core/identity/index.js';
 import { contractFail } from '../../../core/identity/structured.js';
@@ -71,6 +74,8 @@ export async function prepareDemandOwnerReplay(bundle, graph, { world, assumptio
       else if (result.status === 'rejected') counters.integerRejected++;
       else counters.integerUnknown++;
     } });
+    registerRangeProofKernel(checkers, { work });
+    registerAliasProofKernel(checkers, { work, compareCanonicalCells: compareCanonicalAliasCells });
     return { checkers, counters, unavailable, mismatches,
       resolveCanonicalNode: async id => {
         work.checkpoint(); if (isCurrent() !== true) contractFail('demand-owner-replay-stale');

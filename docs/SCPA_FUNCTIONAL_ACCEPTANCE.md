@@ -1,63 +1,52 @@
-# SCPA functional acceptance — session13
+# SCPA functional acceptance — session14
 
-基準main: `de6178154884813d90c6437146a99b1155f0c68d`。目標: 情報源architecture MDの100%とPR作成。**100%は NOT ADMITTED。機能完成率は未認定。** Session12の履歴は `archive/scpa/functional-acceptance-session12.md`、更新した設計・未達条件は `HEX_ARM64_POST_ROADMAP_COMPETITIVE_SUPREMACY_ARCHITECTURE.md` 第43章を参照。
+基準mainを `d7da0f5777ca38ca6b40d9fb16c132d7e1e56ff5` まで取り込み、既存Draft PR #8247を更新する。**100%の受入は未認定。** 元のMDのMUST・分母・外部検証条件を維持する。設計の最新実装対応は `HEX_ARM64_POST_ROADMAP_COMPETITIVE_SUPREMACY_ARCHITECTURE.md` 第44章、全20ユニットの対応は `reports/scpa/session14-requirements.json`。前回記録は `archive/scpa/functional-acceptance-session13.md`。
 
-## 1. 今回の実装
+## 今回の変更
 
-Session12累積198パスは、変更前hashが最新mainと全件一致したため、mainの無関係な変更を保持して移植した。Git treeと署名付きcommit objectもGitHubから取得したidentityに完全一致した。古いソース一式によるmainの上書きは行っていない。
+- 既存PR #8086のSwift witness header offset修正をそのまま再利用。#7036からcanonical ABIのentry/call/return binderだけを移植・適合し、#7097と重なるmemory/taint/solver/summaryエンジンを追加コピーしていない。
+- 実binaryのjump table・relative table・import site・thunk候補を、既存range ownerと現在のsource mappingへ接続。
+- canonical ABIとMemorySSA portsをcallsite対応付きの有限flow queryへ接続。混合依存経路、resume、owner欠損・世代更新時のopen判定を維持。
+- proof DAGの依存順replay、typed range合成、同一source点にある1-byte整数アドレスcellの限定alias証明を追加。aliasはpointer validity・実storage・より広いmemory accessの証明ではない。
+- object lifetime/partition、summary/adaptive contextの依存identity、実24-byte counted-loop fragmentとportable capsuleを接続。
+- event sequence・geometry・reaching definition・effectsを保持するmemory transformのbyte値/fault-prefix合成検証を追加。一般のload/store除去は既存ownerの領域。
+- 実ObjC/Swift parserのselector・IMP・witness・vtable・generic/capture descriptorを公開APIへ接続。
+- 開いている実TraceProviderの保持eventsを、明示されたasync契約・ObjC capture・Swift continuationのmodelへ接続。SHA・module・epoch・membershipを照合し、queryによるsession作成や実行は行わない。
+- indexed addressの誤exact化、mappingの部分重複/更新、Appleの関数上限不一致、boolean receipt resolver、trace SHA矛盾を修正し、回帰テストを追加。
 
-評価runnerを2点修正した。
+## 既存PR・mainとの整合
 
-- hostの空・空白・改行・制御文字・過大なエラー文字列、非Error拒否で、runner自身が出力したチェックポイントを再開できなくなる問題を修正。512文字以下の診断コードだけを保持し、不適合は固定の `astra-trial-host-failed` にする。
-- cancel/closeが `null` / `undefined` / `false` / `0` / 空文字でrejectすると清掃失敗を見落としていた問題を修正。失敗の有無を拒否値と独立に保持し、該当セルをFAILEDへ落として測定候補を撤回する。
+`reports/scpa/session14-existing-pr-reuse.json` に再利用元のhead・範囲・適合理由を記録した。関連open PRの実差分を監査しており、全PR網羅を主張しない。
 
-回帰22件でpack→validate→resume、失敗セルの非再実行、残セル・分母の保持を確認した。最大8 MiBの記録上限は変更していない。4,096セルの任意の計画・測定量の保存完走は保証しない。
+mainの46 commits / 39 pathsを取り込んだ。非package 38パスはremote blobと完全一致。packageはJSONの3-way mergeで既存SCPA scriptsとmainの追加回帰を保持した。取り込みmainの署名付きcommit SHAとtree `13327e52ffd36579eb74e5f0fd55e2cbaa777d06` を再構成・照合した。履歴のmerge-baseは旧main `de6178154884813d90c6437146a99b1155f0c68d` と一致。詳細は `reports/scpa/session14-main-reconciliation.json`。
 
-## 2. 実ELF・本番解析owner・公開API
+## 検証
 
-新しい `tests/scpa/threaded-call-memory.test.mjs` は、LLVM 20.1.2のAArch64 assemblerが生成した3関数16命令を、明示的な最小ELF containerへ格納したfixtureを用いる。実Capstone WASM、実Node Worker、Semantic IR、MemorySSA、summary、ArtifactStore、アプリ用adapter、公開AnalysisQueryAPIを通す。
-
-追加5件は、直接callとx0のABI flow、実load/storeの証拠と現在bytesの再照合、異なる関数への証拠再利用拒否、summaryの単回cursor・再開・残入力破棄、transport epoch変更後の継続拒否を検査する。既存5件と合わせて10/10 PASS。fixtureの再生成は二度一致し、SHA-256は `4c76a22d4443d553eb907d9703692256839e5a41ff7dcb77b8ac4cc71dff8e9f`。
-
-**実CPU上での実行、compiler-twin、全ISA/ABI、ブラウザー、実機iPadの証明ではない。** unknown-call fallback、広いmemory region、未知の例外を保持し、結果の `exact:false` / closure UNKNOWN / `releaseQualified:false` は維持する。メモリのsource replayは機械意味論の合成証明ではない。
-
-## 3. 今回の検証結果
-
-| command / scope | result |
+| scope | result |
 |---|---|
-| 再帰discovery全53ファイルのSCPA | 1,190/1,190 PASS、fail/cancel/skip/todo 0 |
-| trial関連focused | 83/83 PASS（追加回帰22件を含む） |
-| 実threaded ELF関連 | 10/10 PASS（追加5件を含む） |
-| `npm run lint` | PASS |
-| `npm run userscript:build` | PASS。再build後のtracked生成物差分0 |
-| module boundaries / evidence writers / runtime / migration | 全てPASS |
-| Phase8 scalar / memory / integration | 全てPASS。memoryのDCEコーパスも削減なし |
-| `npm run scpa:manifest` | source/分母検査PASS。実競合2,304セルはUNMEASURED |
-| `npm run check` | FAIL。machine-effects-contractの19ファイルで停止。後続suiteを全PASSとは扱わない |
-| browser launch preflight | Chromium executable不足。ブラウザーテストは未実行 |
-| CodeRabbit | 導入時のproxy timeoutにより未実行。独立ローカルレビューを実施 |
+| canonical `npm run scpa:test`、再帰discovery全70ファイル | **1,403/1,403 PASS**、fail/cancel/skip/todo 0 |
+| 既存PR #8086から再利用した回帰 | 3/3ファイル PASS |
+| 取り込みmainの追加回帰 | 15/15ファイル PASS |
+| lint / module boundaries / evidence writers | PASS |
+| runtime / metadata / migration | PASS |
+| Phase8 scalar / memory / integration | 全てPASS、既存コーパスの削減なし |
+| canonical userscript build・再build | PASS、再生成差分0 |
+| `scpa:manifest` | 分母・source検査PASS。実競合2,304セルはUNMEASURED |
+| `invariants:test` | machine-effects-contract到達後、90秒上限で未完了。PASS扱いしない |
+| 全体 `npm run check` | 今回は再実行せず。前回main一致の19件はユーザー指示で保留 |
 
-Nodeは `v24.19.0`。buildはpackage-lockのintegrityと一致したesbuild **0.28.2**を使用した。添付0.25.9を指定版の代用品として合格認定していない。buildはlocal sourceの生成検証であり、runtimeのdeployment/activationはしていない。
+Node `v24.19.0`、package-lock指定のesbuild **0.28.2**で生成した。添付0.25.9へ置き換えていない。release serialは `2322242192 → 2322242193`、build IDは `f5801aacfa5fe7fad2d60419`。runtimeのdeployment/activationは未実施。
 
-全体checkの19件を、変更後と未変更mainの両方で実際に再実行した（各30秒上限、計38プロセス）。19/19でexit code・最初のassertion・位置・失敗subtestが一致。この19件に今回の差分による新規failureは検出されなかった。内訳はLLVM MC/Clang不足8、歴史Git object不足3、同環境のmainでも起きるx86/RISC-V assertion不整合8。ZIP由来のmainにも同じ読み取りGit metadataを指定して条件を揃えた。これは全体checkをPASSへ変更する根拠ではない。
+各検証のcommand・有限timeout・開始時刻・exit code・ログSHAとソースinventoryは `reports/scpa/session14-functional-acceptance.json`。独立ローカルレビューを実施した。CodeRabbitは前回proxy timeoutで利用できず、今回も実行済みとは扱わない。
 
-要約と機械可読のfirst-failure比較: `reports/scpa/session13-functional-acceptance.json`、`reports/scpa/session13-baseline-failures.json`。ローカルの全ログをPRへ転載せず、必要な失敗情報のみ保持する。
+前回の19件は、当時の変更後と未変更mainで各19本を実行し、first failureが一致した記録を保持する（LLVM MC/Clang不足8、歴史Git object不足3、x86/RISC-V assertion8）。今回の90秒timeoutを、その19件が再度一致した証拠に読み替えない。記録は `reports/scpa/session13-baseline-failures.json`。
 
-## 4. 未完了と再開条件
+## 未完了の条件
 
-P0–P5の完了、Baseline Bの全面受入、M3既定有効化、M5競合勝利は未認定。主要な実装不足は、native dispatch/import closure、balanced return/exception/memory flow、negative-query証明、Apple metadata自動抽出、memory/exception変換の合成証明。外部証拠として多言語×要求toolchainのcompiler twins、独立ISA/ABI/relaxed-memory oracle、実provider capture、物理iPad/WebKitの性能・取消、正規competitorの同一Astra T1–T3とT0 model-free、統計・人間評価が必要。
+要求された限定ローカルproducer/consumerは監査・接続したが、**U20の実際のIDA/Ghidra native-best adapter実装は、正規の固定版SDK/実行環境への接続が残る**。generic runnerだけで実adapter完成とは扱わない。
 
-実競合2,304セルと合成の保存再開2,304セルは別分母。欠測やUNKNOWNを達成済みに変換しない。PRはレビュー用であり、merge/default rollout/100%の承認を意味しない。
+複数toolchainのcompiler twins、独立ISA/ABI/relaxed-memory oracle、Apple runtime captureの妥当性、物理iPad/WebKitのcold/warm/cancel/memory、同一Astra T1–T3とT0、実competitor測定、統計・blind human studyは未受入。Node Worker・assembler ELF・保持trace fixtureはこれらの代替証拠ではない。
 
-再検証の主要コマンド（各コマンドに有限timeoutを付与）:
+未対応のexception、unknown call、dynamic loading、PAC、Swift packs/resilience、runtime substitutions、generic capture object layoutはUNKNOWNとして保持する。既存Baseline B PRが所有する一般memory/taint/solver実装を、この限定adapterの完了へ換算しない。P0–P5、M3既定有効化、M5競合勝利の受入は未認定。
 
-```sh
-timeout 180s npm run scpa:test
-timeout 120s npm run userscript:build
-timeout 600s node scripts/run-quiet-command.mjs --label check -- npm run check
-timeout 180s node tests/phase8/run.mjs --group scalar
-timeout 180s node tests/phase8/run.mjs --group memory
-timeout 180s node tests/phase8/run.mjs --group integration
-```
-
-全体checkの前に、要求されるLLVM MC/Clang・歴史Git objectを利用できる正規環境を用意する。ブラウザー検証は必要な固定版ブラウザーを備えた環境で行い、ChromiumでWebKit/iPadを代用しない。
+再検証には有限timeoutを付けて `npm run scpa:test`、`npm run userscript:build`、必要なowner gateを実行する。全体checkを再開する際は、固定版compilerと必要なGit履歴を備えた環境でmain比較を行う。

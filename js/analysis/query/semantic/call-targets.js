@@ -4,6 +4,19 @@ import { unsignedAddress, contractFail } from '../../../core/identity/structured
 import { assertCanonicalQueryProjection } from './projection.js';
 
 const keyFor = (binaryId, sliceId, address) => JSON.stringify([binaryId, sliceId, address]);
+/** Canonical jump sites stay jumps: BR does not acquire call/ABI semantics. */
+export function canonicalDispatchSite(node) {
+  if (node?.call) return { mode: 'call', ...node.call };
+  const effect = node?.attributes?.machineControlEffect;
+  if (node?.kind === 'unknown-control-effect' && effect?.kind === 'indirect'
+    && Array.isArray(node.attributes.indirectControl?.targetValueIds)
+    && node.attributes.indirectControl.targetValueIds.every(id => node.inputs.includes(id))) {
+    return { mode: 'jump', targetValueIds: node.attributes.indirectControl.targetValueIds, targetEntityIds: [] };
+  }
+  if (node?.kind === 'branch' && effect?.kind === 'branch' && effect.target?.kind === 'absolute-address'
+    && effect.target.widthBits === 64) return { mode: 'jump', targetValueIds: [], targetEntityIds: [], address: effect.target.value };
+  return null;
+}
 export function indexScopedFunctionEntries(projections) {
   if (!Array.isArray(projections) || projections.length > 32) contractFail('scoped-call-entry-budget');
   const functions = new Map(), addresses = new Map();
@@ -18,7 +31,7 @@ export function indexScopedFunctionEntries(projections) {
   }
   return { functions, addresses };
 }
-function literalTarget(projection, valueId) {
+export function literalTarget(projection, valueId) {
   const value = projection.canonicalValue(valueId);
   if (!value || !['bitvector', 'address'].includes(value.machineType?.kind) || value.machineType.widthBits !== 64) return null;
   const reference = projection.entityReference('semantic-ir', value.definitionNodeId);
@@ -45,7 +58,7 @@ export function assertNativeTargetDemand(demand, projection) {
     || !Array.isArray(demand.ranges?.values) || demand.ranges.values.length > 128) contractFail('native-target-demand-binding');
   return demand;
 }
-function rangedTarget(projection, valueId, demand) {
+export function rangedTarget(projection, valueId, demand) {
   if (!demand || demand.ranges.status !== 'completed') return null;
   const value = projection.canonicalValue(valueId);
   if (!value || !['bitvector', 'address'].includes(value.machineType?.kind) || value.machineType.widthBits !== 64) return null;
@@ -70,11 +83,12 @@ function rangedTarget(projection, valueId, demand) {
 export function* scopedCallTargetRows(projection, node, index, nativeDemand = null) {
   assertCanonicalQueryProjection(projection);
   if (!(index?.functions instanceof Map) || !(index.addresses instanceof Map)) contractFail('scoped-call-index');
-  if (!node?.call) return;
+  const site = canonicalDispatchSite(node);
+  if (!site) return;
   const demand = assertNativeTargetDemand(nativeDemand, projection);
   const recordId = projection.entityReference('semantic-ir', node.id);
   if (!recordId || projection.source(recordId) !== node) contractFail('scoped-call-node-not-owned');
-  const declared = node.call.targetEntityIds ?? [], values = node.call.targetValueIds ?? [];
+  const declared = site.targetEntityIds ?? [], values = site.targetValueIds ?? [];
   if (declared.length > 64 || values.length > 64) {
     yield { reason: 'call-target-fanout-cut', targetFunctionId: null, address: null, exact: false, closed: false, inSelectedScope: false }; return;
   }
@@ -88,8 +102,9 @@ export function* scopedCallTargetRows(projection, node, index, nativeDemand = nu
       inSelectedScope: Boolean(target), reason: target ? null : 'callee-outside-explicit-scope',
       source: 'canonical-call-target-entity', sourceBinding: { callerInput: caller, calleeInput: target?.inputIdentity ?? null } });
   }
-  for (const id of values) {
-    const literal = literalTarget(projection, id) ?? rangedTarget(projection, id, demand);
+  for (const id of site.address == null ? values : [null]) {
+    const literal = id === null ? { address: unsignedAddress(site.address), reference: recordId, definitionId: node.id }
+      : literalTarget(projection, id) ?? rangedTarget(projection, id, demand);
     const ranged = Boolean(literal?.rangeFactIds);
     if (!literal) {
       yield deepFreeze({ ...common, targetFunctionId: null, address: null, inSelectedScope: false,
@@ -108,6 +123,6 @@ export function* scopedCallTargetRows(projection, node, index, nativeDemand = nu
         sourceBinding: { callerInput: caller, calleeInput: target.inputIdentity, literal } });
     }
   }
-  if (!declared.length && !values.length) yield deepFreeze({ ...common, targetFunctionId: null,
+  if (!declared.length && !values.length && site.address == null) yield deepFreeze({ ...common, targetFunctionId: null,
     address: null, inSelectedScope: false, source: 'unresolved', reason: 'canonical-call-target-unavailable' });
 }

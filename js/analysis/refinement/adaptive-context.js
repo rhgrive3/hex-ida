@@ -40,7 +40,7 @@ export class AdaptiveContextPolicy {
     // share cost/benefit observations.
     const key = stableStringify([specialization.worldId, specialization.assumptionsId, specialization.snapshotId,
       specialization.functionId, specialization.sourceSummaryDigest, specialization.sccRevision,
-      specialization.dependencies.positiveArtifactIds]);
+      specialization.contextDependencyKey, specialization.dependencies.positiveArtifactIds]);
     let family = this.#families.get(key), reason = null;
     if (this.#issued >= this.#policy.maximumRefinements) reason = 'adaptive-refinement-count-limit';
     else if (this.#measuredWork >= this.#policy.maximumMeasuredWork) reason = 'adaptive-measured-work-limit';

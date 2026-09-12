@@ -4,6 +4,8 @@
 import { EvidenceGraph } from './index.js';
 import { createScopedJudgmentCandidate, qualifyScopedJudgment, scopedJudgmentClaim } from './scoped.js';
 import { INTEGER_FRAGMENT_KIND } from './arm64-integer-fragment.js';
+import { RANGE_PROOF_KIND, RANGE_PROOF_SCHEMA, RANGE_PROOF_VERSION, integerFragmentProofScope } from './range-proof-kernel.js';
+import { ALIAS_PROOF_KIND } from './alias-proof-kernel.js';
 import { exportEvidenceCertificate } from './certificate.js';
 import { createArtifactDescriptor } from '../artifacts/contracts.js';
 import { assertWorldScope, assertAssumptionSet } from '../identity/world.js';
@@ -33,7 +35,7 @@ export async function assembleFlowAnswer({ plan, result, members, specialization
     graph.addNode({ id, family: kind, binaryId, targetEntityIds: targetIds, semanticKind: payload.reference ? 'scpa-canonical-owner-reference'
         : payload.owner === 'decompiler/phase8/sccp' ? 'scpa-demand-range-fact'
           : payload.owner === 'analysis/pointsto' ? 'scpa-demand-object-view'
-            : payload.owner === INTEGER_FRAGMENT_KIND ? INTEGER_FRAGMENT_KIND : 'scoped-owner-reference',
+            : [INTEGER_FRAGMENT_KIND, RANGE_PROOF_KIND, ALIAS_PROOF_KIND].includes(payload.owner) ? payload.owner : 'scoped-owner-reference',
       completeness: 'partial', deterministic: false, origin, payload: { scope, ...payload } });
     return id;
   }
@@ -85,7 +87,7 @@ export async function assembleFlowAnswer({ plan, result, members, specialization
     if (!referenceNodes.has(link.to) || !referenceNodes.has(link.from)) { gap({ reason: 'result-edge-outside-explanation-cut', edgeId: link.id }); continue; }
     edge(referenceNodes.get(link.to), referenceNodes.get(link.from), 'derived-from', link.kind);
   }
-  const ownerRoots = [], integerDerivations = [];
+  const ownerRoots = [], integerDerivations = [], rangeDerivations = [], aliasDerivations = [];
   for (const member of members) {
     check();
     const demand = member.demand;
@@ -125,11 +127,13 @@ export async function assembleFlowAnswer({ plan, result, members, specialization
         for (const target of entityNodes.get(`${member.functionId}\u0000${sourceId}`) ?? []) edge(accessId, target);
       }
     }
+    const objectNodes = new Map(), integerNodes = new Map();
     for (const object of demand.objects ?? []) {
       const objectId = addNode('DataflowEvidence', { functionId: member.functionId, object },
         { owner: 'analysis/pointsto', functionId: member.functionId, projection: jsonSafe(object), originalTypes: lossyTypeWitness(object),
           aliasAuthority: false, lifetime: 'unknown' }, [object.valueId]);
       edge(id, objectId, 'derived-from', 'object-context-input');
+      objectNodes.set(object.valueId, objectId);
       for (const target of entityNodes.get(`${member.functionId}\u0000${object.valueId}`) ?? []) edge(objectId, target);
     }
     const rangeNodes = new Map();
@@ -155,10 +159,36 @@ export async function assembleFlowAnswer({ plan, result, members, specialization
       const fragment = { ...candidate.fragment, premises: { source: bytes, read, range } };
       const proof = addNode('DataflowEvidence', { integerFragment: fragment },
         { owner: INTEGER_FRAGMENT_KIND, fragment, proofStatus: 'not-checked', scopeLimited: true }, [fragment.semanticValueId]);
+      integerNodes.set(fragment.semanticValueId, proof);
       edge(id, proof, 'derived-from', 'scoped-integer-derivation-candidate');
       for (const premise of Object.values(fragment.premises)) edge(proof, premise, 'derived-from', 'integer-fragment-premise');
       integerDerivations.push({ nodeId: proof, ruleId: fragment.ruleId, ruleVersion: fragment.ruleVersion,
         functionId: member.functionId, localId: fragment.rangeLocalId, domain: fragment.domain, status: 'not-checked' });
+      if (['interval', 'full'].includes(fragment.conclusion.range.kind)) {
+        const rule = { schema: RANGE_PROOF_SCHEMA, version: RANGE_PROOF_VERSION, rule: 'integer-range-projection',
+          scope: integerFragmentProofScope(fragment), premises: [proof],
+          conclusion: { kind: 'unsigned-range', subject: fragment.semanticValueId, bits: fragment.conclusion.bits,
+            lower: fragment.conclusion.range.lower, upper: fragment.conclusion.range.upper } };
+        const projected = addNode('DataflowEvidence', { typedRangeRule: rule },
+          { owner: RANGE_PROOF_KIND, rule, rangeLocalId: fragment.rangeLocalId, proofStatus: 'not-checked', scopeLimited: true },
+          [fragment.semanticValueId]);
+        // The integer premise already consumes the canonical owner range.
+        // Reverse linkage from that range would create self-justification.
+        edge(id, projected, 'derived-from', 'typed-range-derivation-candidate');
+        edge(projected, proof, 'derived-from', 'independent-integer-range-premise');
+        rangeDerivations.push({ nodeId: projected, rule: rule.rule, ruleVersion: rule.version, integerPremiseId: proof,
+          functionId: member.functionId, localId: fragment.rangeLocalId, status: 'not-checked' });
+      }
+    }
+    for (const candidate of member.aliasProofCandidates ?? []) {
+      const c = candidate.conclusion, premises = { leftInteger: integerNodes.get(c.leftValueId), rightInteger: integerNodes.get(c.rightValueId),
+        leftObject: objectNodes.get(c.leftValueId), rightObject: objectNodes.get(c.rightValueId) };
+      if (Object.values(premises).some(value => !value)) { gap({ reason: 'alias-derivation-premise-outside-evidence-cut' }); continue; }
+      const rule = { ...candidate, premises }, proof = addNode('DataflowEvidence', { aliasRule: rule },
+        { owner: ALIAS_PROOF_KIND, rule, proofStatus: 'not-checked', scopeLimited: true }, [c.leftValueId, c.rightValueId]);
+      edge(id, proof, 'derived-from', 'single-byte-address-alias-candidate');
+      for (const premise of Object.values(premises)) edge(proof, premise, 'derived-from', 'alias-independent-integer-and-object-premise');
+      aliasDerivations.push({ nodeId: proof, functionId: member.functionId, relation: c.relation, widthBytes: 1, status: 'not-checked' });
     }
     await work.yieldIfNeeded();
   }
@@ -219,7 +249,7 @@ export async function assembleFlowAnswer({ plan, result, members, specialization
     readRange, includeBytes: true });
   check();
   const answer = deepFreeze({ ...rawAnswer, judgment, evidence: { rootId: claim.id, checkerLevel: 'integrity-only',
-    certificateStatus: certificate.status, semanticProof: false, integerDerivations } });
+    certificateStatus: certificate.status, semanticProof: false, integerDerivations, rangeDerivations, aliasDerivations } });
   const raw = { schema: FLOW_ANSWER_BUNDLE_SCHEMA, version: '1.1.0', worldId: world.id, assumptionsId: assumptions.id,
     snapshotId, answer, graph: graph.toJSON(), certificate, dependencies,
     ownerInputs: members.map(({ locator, inputIdentity, artifactId, demand }) => ({ locator, inputIdentity, artifactId, precision: demand.precision })),

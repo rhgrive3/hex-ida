@@ -13,7 +13,7 @@ import { ArtifactAnalysisOrchestrator } from '../../js/cache/artifact-orchestrat
 import { AnalysisQueryAPI, createAppAnalysisQueryAdapter } from '../../js/analysis/query/index.js';
 import { configureScopedAnalysisHost, disableScopedAnalysisHost } from '../../js/analysis/query/scoped-host.js';
 export async function threadedNativeFixture(t, { fixture = 'threaded-integer' } = {}) {
-  assert.ok(['threaded-integer', 'threaded-call-memory'].includes(fixture), 'owned fixture required');
+  assert.ok(['threaded-integer', 'threaded-call-memory', 'dispatch-table'].includes(fixture), 'owned fixture required');
   const worker=new Worker(new URL('./platform-thread.mjs',import.meta.url),{resourceLimits:{maxOldGenerationSizeMb:256}});
   const pending=new Map();let serial=0,readyResolve,readyReject;
   const ready=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});

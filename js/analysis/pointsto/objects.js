@@ -5,6 +5,7 @@ import { assertWorldScope, assertAssumptionSet } from '../../core/identity/world
 import { assertQualifiedJudgment } from '../../core/evidence/scoped.js';
 import { snapshotContractData, recordFields, exactString, exactInteger, exactEnum, stringSet, signedIntegerText, contractFail } from '../../core/identity/structured.js';
 import { assertScopedAnalysisWork } from '../../core/budgets/scoped-work.js';
+import { describeCanonicalObjectLifetime } from './object-lifetime.js';
 
 export const OBJECT_PARTITION_SCHEMA = 'object-memory-partition/v1';
 export const OBJECT_KINDS = Object.freeze(['stack', 'heap', 'global', 'tls', 'objc', 'swift', 'cpp', 'closure', 'block', 'dispatch', 'buffer', 'mapped', 'unknown']);
@@ -58,7 +59,7 @@ function subobject(value = {}) {
  * does not by itself prove disjoint storage. The canonical alias solver remains
  * the only producer of Must/May/NoAlias answers.
  */
-export function createObjectPartition(targetInput, { world, assumptions, context, description = {} } = {}) {
+export function createObjectPartition(targetInput, { world, assumptions, context, description = {}, lifetimeOwner = null } = {}) {
   assertWorldScope(world); assertAssumptionSet(assumptions, world);
   const target = createPointsToTarget(targetInput);
   const data = snapshotContractData(description, { allowBigInt: true, maxBytes: 262144 });
@@ -66,15 +67,18 @@ export function createObjectPartition(targetInput, { world, assumptions, context
   const root = snapshotContractData({ rootKey: target.rootKey, rootKind: target.rootKind, addressSpace: target.addressSpace,
     rootIdentity: target.rootIdentity, rootEntityId: target.rootEntityId, address: target.address,
     rootAuthority: provenSeparationAuthority(target), separationClass: target.separationClass }, { allowBigInt: true });
+  const normalizedContext = createObjectContext(context);
+  const lifetimeEvidence = lifetimeOwner ? describeCanonicalObjectLifetime(lifetimeOwner, target, normalizedContext, { world, assumptions }) : null;
   const body = {
     schema: OBJECT_PARTITION_SCHEMA, worldId: world.id, assumptionsId: assumptions.id, root,
-    context: createObjectContext(context), kind: exactEnum(data.kind ?? 'unknown', OBJECT_KINDS, 'object-kind'),
-    allocationSite: data.allocationSite == null ? null : exactString(data.allocationSite, 'object-allocation-site'),
-    lifetimeGeneration: data.lifetimeGeneration == null ? null : exactString(data.lifetimeGeneration, 'object-lifetime-generation'),
+    context: normalizedContext, kind: lifetimeEvidence?.kind !== undefined && lifetimeEvidence.kind !== 'unknown' ? lifetimeEvidence.kind : exactEnum(data.kind ?? 'unknown', OBJECT_KINDS, 'object-kind'),
+    allocationSite: lifetimeEvidence?.allocationSite ?? (data.allocationSite == null ? null : exactString(data.allocationSite, 'object-allocation-site')),
+    lifetimeGeneration: lifetimeEvidence?.lifetime.epoch ?? (data.lifetimeGeneration == null ? null : exactString(data.lifetimeGeneration, 'object-lifetime-generation')),
     extent: extent(data.extent), subobject: subobject(data.subobject),
     escape: exactEnum(data.escape ?? 'unknown', ['local', 'thread', 'global', 'unknown'], 'object-escape'),
     evidenceIds: stringSet([...target.evidenceIds, ...(data.evidenceIds ?? [])], 'object-evidence'),
-    cardinality: 'unknown', lifetime: 'unknown', layoutAuthority: 'unqualified',
+    cardinality: lifetimeEvidence?.cardinality ?? 'unknown', lifetime: lifetimeEvidence?.lifetime ?? 'unknown', layoutAuthority: 'unqualified',
+    ...(lifetimeEvidence ? { lifetimeEvidence } : {}),
   };
   const id = createEntityId({ binaryId: world.binarySet[0].binaryId, kind: OBJECT_PARTITION_SCHEMA, identity: body });
   const result = deepFreeze({ ...body, id });
@@ -145,7 +149,7 @@ export function isQualifiedStrongUpdateEligibility(value, { partitionId, accessI
 }
 
 /** Demand projection: never expand heap objects or synthesize absent pointees. */
-export async function partitionPointsToObjects(pointsTo, { world, assumptions, context, work, describeTarget = null } = {}) {
+export async function partitionPointsToObjects(pointsTo, { world, assumptions, context, work, describeTarget = null, lifetimeOwner = null } = {}) {
   assertWorldScope(world); assertAssumptionSet(assumptions, world); assertScopedAnalysisWork(work);
   if (!pointsTo || typeof pointsTo.top !== 'boolean' || !Array.isArray(pointsTo.targets)) contractFail('object-points-to-required');
   const partitions = [], unknowns = [];
@@ -154,7 +158,7 @@ export async function partitionPointsToObjects(pointsTo, { world, assumptions, c
   for (const target of pointsTo.targets) {
     work.charge('nodes'); work.charge('workUnits'); work.charge('residentBytes', 1024);
     const description = typeof describeTarget === 'function' ? await work.await((signal) => describeTarget(target, { world, assumptions, signal })) : {};
-    partitions.push(createObjectPartition(target, { world, assumptions, context, description }));
+    partitions.push(createObjectPartition(target, { world, assumptions, context, description, lifetimeOwner }));
     await work.yieldIfNeeded();
   }
   return deepFreeze({ schema: 'object-memory-view/v1', worldId: world.id, assumptionsId: assumptions.id,

@@ -2,7 +2,7 @@ import test from 'node:test';import assert from 'node:assert/strict';
 import {fixture,workFor} from './helpers.mjs';
 import {createRuntimeEvent} from '../../js/runtime/events.js';
 import {RuntimeModuleBindingTable} from '../../js/runtime/provider-identity.js';
-import {CAPTURED_ASYNC_SOURCE_SCHEMA,CAPTURED_ASYNC_EVENT_SCHEMA} from '../../js/runtime/captured-async.js';
+import {CAPTURED_ASYNC_SOURCE_SCHEMA,CAPTURED_ASYNC_EVENT_SCHEMA,capturedAsyncBuildIdentity} from '../../js/runtime/captured-async.js';
 import {queryAsyncEventOrder} from '../../js/analysis/apple/scoped-async.js';
 import {ScopedAnalysisService} from '../../js/analysis/query/scoped-service.js';
 function setup(t){
@@ -10,7 +10,7 @@ function setup(t){
  const source={schema:'scpa-async-events/v1',events:['allocate','use','dispose'].map((kind,sequence)=>({id:`ev-${sequence}`,kind,strandId:'strand',sequence,...scope,sourceReferences:[`capture-${sequence}`]})),
  contracts:[{id:'seq',version:'1',rule:'sequenced-before',sourceReferences:['library-v1']}],
  relations:[0,1].map(i=>({id:`edge-${i}`,from:`ev-${i}`,to:`ev-${i+1}`,contractId:'seq',contractVersion:'1',sourceReferences:[`edge-source-${i}`]})),remaining:[]};
- const modules=new RuntimeModuleBindingTable(runtimeSessionId),moduleInput={bindingKey:'image',runtimeBase:4096n,runtimeSize:1024n,staticBase:8192n,binaryId:'binary-scpa-test',sliceId:'slice-arm64',identityState:'exact',identityEvidenceIds:['build-id'],buildIdentity:{kind:'fixture',hash:'ab'.repeat(32)}};
+ const modules=new RuntimeModuleBindingTable(runtimeSessionId),moduleInput={bindingKey:'image',runtimeBase:4096n,runtimeSize:1024n,staticBase:8192n,binaryId:'binary-scpa-test',sliceId:'slice-arm64',identityState:'exact',identityEvidenceIds:['build-id'],buildIdentity:{kind:'sha256',hash:'ab'.repeat(32)}};
  modules.load(moduleInput);
  const events=new Map(source.events.map(e=>[e.id,createRuntimeEvent({eventId:e.id,runtimeSessionId,providerId:'fixture-capture',providerVersion:'1',sessionEpoch:1,
  kind:'trace-marker',moduleBindingKey:'image',moduleGeneration:1,observationMode:'observed',completeness:'complete',
@@ -45,6 +45,20 @@ for(const [name,change,reason] of [
 test('missing records and absent runtime owners preserve an explicit unknown',async t=>{
  const f=setup(t);f.events.delete('ev-2');assert.equal((await f.run()).captured.counts.missing,1);
  const r=await f.run({getRuntimeContext:null});assert.equal(r.relation,'unknown');assert.equal(r.captured.status,'unsupported');
+});
+test('captured source binding rejects a contradictory hash even through the explicit host owner',async t=>{
+ const f=setup(t),modules=new RuntimeModuleBindingTable('session');
+ modules.load({...f.moduleInput,buildIdentity:{kind:'sha256',hash:'cd'.repeat(32)}});f.runtime.modules=modules;
+ const r=await f.run();assert.equal(r.relation,'unknown');assert.equal(r.captured.reason,'captured-async-build-identity-mismatch');
+});
+test('only comparable content identities bind and canonical binary hashes must agree with world hashes',()=>{
+ const hash='ab'.repeat(32),module={binaryId:'bin_sha256_'+hash,sliceId:'slice-arm64',buildIdentity:{kind:'sha256',hash}};
+ const local=fixture(d=>{d.binarySet[0].binaryId=module.binaryId;d.binarySet[0].sourceIdentity={kind:'local-immutable',sourceInstance:'source',generation:'1'};});
+ assert.equal(capturedAsyncBuildIdentity(module,local.world).status,'matched');
+ const conflict=fixture(d=>{d.binarySet[0].binaryId=module.binaryId;d.binarySet[0].sourceIdentity.sha256='cd'.repeat(32);});
+ assert.equal(capturedAsyncBuildIdentity(module,conflict.world).reason,'captured-async-build-identity-mismatch');
+ const unbound=fixture(d=>{d.binarySet[0].sourceIdentity={kind:'local-immutable',sourceInstance:'source',generation:'1'};});
+ assert.equal(capturedAsyncBuildIdentity({...module,binaryId:'binary-scpa-test'},unbound.world).reason,'captured-async-build-identity-incomparable');
 });
 for(const key of ['providerId','providerVersion','runtimeSessionId','sessionEpoch','eventId'])test(`foreign captured ${key} is rejected`,async t=>{
  const f=setup(t),e=f.events.get('ev-1');f.events.set('ev-1',createRuntimeEvent({...e,[key]:key==='sessionEpoch'?2:'foreign'}));await assert.rejects(f.run(),/event-binding/);

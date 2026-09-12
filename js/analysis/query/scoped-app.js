@@ -1,6 +1,9 @@
 /** Lazy app integration: no new analysis work until explicitly enabled. */
 import { scopedAnalysisHost, scopedImmutableSourceIdentity } from './scoped-host.js';
 import { ScopedAnalysisService } from './scoped-service.js';
+import { createNativeDispatchMemoryReader } from '../dispatch/native-source.js';
+import { existingRuntimeProviderPlatformForApp } from '../../runtime/app-runtime.js';
+import { createNativeScopedRuntimeContextProvider } from '../../runtime/native-scoped-context.js';
 import { produceScopedArm64Pipeline, SCOPED_ARM64_MAX_BYTES } from '../scoped-arm64-producer.js';
 import { resolveABIPlugin } from '../../targets/abi/index.js';
 import { ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION } from '../../targets/architecture/arm64/effects/index.js';
@@ -25,9 +28,13 @@ export async function dispatchScopedAppQuery(app, snapshot, method, request, opt
   const initial = describe(), identity = stableDigest(initial), selectedSymbols = app.symbols;
   const knowledgeOwner = app.knowledge;
   const objcIndex = app.objcRuntime, swiftIndex = app.swiftRuntime, metadataSource = bindings.metadata();
+  const objcModel = app.objcModel, selectedRegions = bindings.regions?.() ?? null, regions = selectedRegions ?? [];
+  const runtimeProvider = existingRuntimeProviderPlatformForApp(app);
   const current = () => scopedAnalysisHost(app) === entry && entry.configuration.enabled
     && backend === app.backend && file === (app.backend?.file ?? bindings.file()) && selectedSymbols === app.symbols
     && knowledgeOwner === app.knowledge && objcIndex === app.objcRuntime && swiftIndex === app.swiftRuntime && metadataSource === bindings.metadata()
+    && objcModel === app.objcModel && selectedRegions === (bindings.regions?.() ?? null)
+    && runtimeProvider === existingRuntimeProviderPlatformForApp(app)
     && identity === stableDigest(describe());
   if (initial.analysisEpoch !== snapshot.analysisEpoch || initial.projectRevision !== snapshot.projectRevision
     || initial.binaryId !== snapshot.binaryId) return unsupported('scoped-snapshot-stale');
@@ -53,8 +60,24 @@ export async function dispatchScopedAppQuery(app, snapshot, method, request, opt
         addressBits: 64, exceptionModel: 'ambient-state-unqualified', memoryModel: 'current-owner-with-open-concurrency' },
       environment: { dynamicLoading: 'open', concurrency: 'unknown', interposition: 'possible', ambientState: 'unqualified' },
       coverage: 'explicit-bounded-function-scopes; no-negative-world-closure', generation: identity };
+    const runtimeContexts = runtimeProvider ? createNativeScopedRuntimeContextProvider(runtimeProvider, {
+      binaryId: snapshot.binaryId, sliceId: createSliceId({ binaryId: snapshot.binaryId, index: initial.sliceIndex, architecture: initial.architecture }),
+      isCurrent: current }) : null;
     const host = { configuration: entry.configuration, isCurrent: current, canonicalArchitecture: initial.architecture,
       knowledgeOwner,
+      getNativeAsyncEventContext: runtimeContexts?.getAsyncEventContext ?? null,
+      getNativeRuntimeEvidenceContext: runtimeContexts?.getRuntimeEvidenceContext ?? null,
+      readNativeDispatchMemory: typeof backend?.readAt !== 'function' ? null : createNativeDispatchMemoryReader({
+        backend, symbols: selectedSymbols, regions, binaryId: snapshot.binaryId, snapshotId: snapshot.snapshotId,
+        sliceId: createSliceId({ binaryId: snapshot.binaryId, index: initial.sliceIndex, architecture: initial.architecture }), isCurrent: current }),
+      getNativeAppleMetadataContext: initial.format !== 'macho' ? null : async ctx => {
+        if (!current()) contractFail('scoped-apple-metadata-host-stale');
+        return { objcIndex, swiftIndex, objcModel, isCurrent: current,
+          symbolFor: address => selectedSymbols?.exact?.(BigInt(address))?.name ?? null,
+          sourceIdentity: { binaryId: snapshot.binaryId,
+            sliceId: createSliceId({ binaryId: snapshot.binaryId, index: initial.sliceIndex, architecture: initial.architecture }),
+            sourceId, generation: ctx.world.generation } };
+      },
       artifactStore: typeof backend?._artifactRuntime === 'function' ? backend._artifactRuntime().store : null,
       loadPipeline: entry.configuration.loadPipeline ?? (async (locator, ctx) => {
         const range = bindings.rangeFor(locator);

@@ -20,8 +20,8 @@ async function owned(t) {
   };
   const a=await make(captured()),b=await make(captured(0x2000n,callee));
   const callSiteId=a.demand.nativeFlowInputs.calls[0].callSiteId;
-  const create=(sccRevision='revision-a')=>specializeDemandSummary({caller:a,callee:b,callSiteId,summary:b.demand.summary,
-    sccRevision,targetBinding:{callerFunctionId:a.projection.functionId,callSiteId,targetFunctionId:b.projection.functionId,inSelectedScope:true},
+  const create=(sccRevision='revision-a',reason=null)=>specializeDemandSummary({caller:a,callee:b,callSiteId,summary:b.demand.summary,
+    sccRevision,targetBinding:{callerFunctionId:a.projection.functionId,callSiteId,targetFunctionId:b.projection.functionId,inSelectedScope:true,reason},
     ...f,snapshotId:'snap',work});
   return {view:await create(),create,work,baseline:b.demand.ranges};
 }
@@ -55,6 +55,15 @@ test('measured zero gain stops that family after warmup, without pretending to p
 test('a new SCC revision cannot borrow favorable measurements from an older summary family',async t=>{
   const {view,create,work}=await owned(t),p=policy({warmupSamples:1,maximumFamilies:1});const d=p.begin(view,baseline,{work});p.finish(d.grant,result(view));
   const next=await create('revision-b');assert.equal(p.begin(next,baseline,{work}).reason,'adaptive-family-inventory-limit');
+});
+test('changed context dependencies cannot borrow measurements while the summary and source artifacts stay identical',async t=>{
+  const {view,create,work}=await owned(t),p=policy({warmupSamples:1,maximumFamilies:1});
+  const first=p.begin(view,baseline,{work});p.finish(first.grant,result(view));
+  const next=await create('revision-a','multiple-selected-functions-share-entry');
+  assert.equal(next.sourceSummaryDigest,view.sourceSummaryDigest);assert.equal(next.sccRevision,view.sccRevision);
+  assert.deepEqual(next.dependencies.positiveArtifactIds,view.dependencies.positiveArtifactIds);
+  assert.notEqual(next.contextDependencyKey,view.contextDependencyKey);
+  assert.equal(p.begin(next,baseline,{work}).reason,'adaptive-family-inventory-limit');
 });
 test('count, measured work and in-flight limits survive multiple admissions',async t=>{
   const {view,work}=await owned(t),p=policy({maximumRefinements:1});const d=p.begin(view,baseline,{work});

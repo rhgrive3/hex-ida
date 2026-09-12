@@ -33,6 +33,7 @@ import { ScopedSummarySliceSession, SCOPED_SUMMARY_SLICE_LIMITS } from './semant
 import { explainCanonicalReferenceSlice, replayCanonicalReferenceSlice } from './semantic/reference-slice.js';
 import { DispatchResolverRegistry, resolveUnifiedDispatch } from '../dispatch/unified.js';
 import { createNativeDemandDispatchResolver } from '../dispatch/native-demand.js';
+import { queryNativeAppleMetadata, createNativeAppleDispatchResolver } from '../apple/native-metadata.js';
 import { createObjectContext, partitionPointsToObjects } from '../pointsto/objects.js';
 
 const unsupported = (reason) => ({ value: { status: 'unsupported', reason, exact: false }, status: { completeness: 'unsupported', reason } });
@@ -54,7 +55,10 @@ export class ScopedAnalysisService {
     this.#dependencies = new DependencyEpochRegistry({ world: this.#world, maxSelectors: 8192, maxWatchers: 256 });
     this.#dispatch = new DispatchResolverRegistry({ onMembershipChange: () => this.#dependencies.reset('dispatch-provider-membership') });
     if (host.canonicalArchitecture === 'arm64') this.#dispatch.register(createNativeDemandDispatchResolver({ queryPointer: host.queryNativeApplePointer
-      ? (request, context) => host.queryNativeApplePointer(request, context) : null }));
+      ? (request, context) => host.queryNativeApplePointer(request, context) : null, readMemory: host.readNativeDispatchMemory ?? null }));
+    if (host.getNativeAppleMetadataContext) this.#dispatch.register(createNativeAppleDispatchResolver({
+      snapshotId: snapshot.snapshotId, getContext: host.getNativeAppleMetadataContext,
+      resolveFunctionIdentity: host.configuration.resolveFunctionIdentity ?? null }));
     if (host.configuration.getObjcDispatchContext && host.configuration.resolveFunctionIdentity) {
       this.#dispatch.register(createObjcScopedDispatchResolver({ getContext: host.configuration.getObjcDispatchContext,
         resolveFunctionIdentity: host.configuration.resolveFunctionIdentity, snapshotId: snapshot.snapshotId }));
@@ -120,7 +124,7 @@ export class ScopedAnalysisService {
   }
   #localView(loaded, kind) {
     const view = loaded.localProjection;
-    if (!view || view.schema !== 'scoped-local-owner-projection/v1' || view.version !== (['flow-inputs', 'demand', 'transforms'].includes(kind) ? '1.0.0' : ['ranges', 'range-values'].includes(kind) ? '1.2.0' : '1.1.0') || view.kind !== kind
+    if (!view || view.schema !== 'scoped-local-owner-projection/v1' || view.version !== (['demand', 'transforms'].includes(kind) ? '1.0.0' : ['ranges', 'range-values'].includes(kind) ? '1.2.0' : '1.1.0') || view.kind !== kind
       || view.worldId !== this.#world.id || view.snapshotId !== this.#snapshot.snapshotId
       || view.binaryId !== loaded.pipeline.binaryId || view.functionId !== loaded.pipeline.functionId) return null;
     return view;
@@ -188,6 +192,9 @@ export class ScopedAnalysisService {
       let value;
       if (['explainDemandResult', 'replayDemandResult', 'demandInvestigationFrontier'].includes(method)) value = await this.#demandEvidence(method, input, work);
       else if (method === 'scopedCapabilities') value = this.#capabilities();
+      else if (method === 'appleMetadataView') value = await queryNativeAppleMetadata(input, {
+        world: this.#world, assumptions: this.#assumptions, snapshotId: this.#snapshot.snapshotId, work,
+        getContext: this.#host.getNativeAppleMetadataContext ?? null });
       else if (method === 'applePointerView') value = !this.#host.configuration.getMachOPointerContext && this.#host.queryNativeApplePointer
         ? await this.#host.queryNativeApplePointer(input, { world: this.#world, assumptions: this.#assumptions, work })
         : await queryMachOPointerView(input, { world: this.#world, assumptions: this.#assumptions,
@@ -234,10 +241,12 @@ export class ScopedAnalysisService {
         getContext: this.#host.configuration.getConditionalModelContext ?? null, isCurrent: () => this.#current() });
       else if (method === 'checkLoopInvariant') value = await queryLoopInvariant(input, {
         world: this.#world, assumptions: this.#assumptions, snapshotId: this.#snapshot.snapshotId, work,
-        getContext: this.#host.configuration.getLoopModelContext ?? null, isCurrent: () => this.#current() });
+        getContext: this.#host.configuration.getLoopModelContext ?? (this.#host.canonicalArchitecture === 'arm64' && this.#host.readRange
+          ? (locator, loopId) => this.#nativeLoopContext(locator, loopId, work) : null), isCurrent: () => this.#current() });
       else if (method === 'asyncEventOrder') value = await queryAsyncEventOrder(input, {
         world: this.#world, assumptions: this.#assumptions, snapshotId: this.#snapshot.snapshotId, work,
-        getContext: this.#host.configuration.getAsyncEventContext ?? null, getRuntimeContext: this.#host.configuration.getRuntimeEvidenceContext ?? null, isCurrent: () => this.#current() });
+        getContext: this.#host.configuration.getAsyncEventContext ?? this.#host.getNativeAsyncEventContext ?? null,
+        getRuntimeContext: this.#host.configuration.getRuntimeEvidenceContext ?? this.#host.getNativeRuntimeEvidenceContext ?? null, isCurrent: () => this.#current() });
       else if (method === 'portableIntegerChecks') value = this.#host.canonicalArchitecture !== 'arm64'
         ? { status: 'unsupported', reason: 'portable-native-arm64-required', exact: false }
         : await queryPortableChecks(input, { world: this.#world, assumptions: this.#assumptions,
@@ -262,7 +271,7 @@ export class ScopedAnalysisService {
           ? await work.await((signal) => this.#host.configuration.getProofCheckers({ snapshot: this.#snapshot, world: this.#world, signal })) : null;
         this.#assertCurrent();
         value = await explainTransformChain(input, { world: this.#world, assumptions: this.#assumptions,
-          snapshotId: this.#snapshot.snapshotId, work, resolveReceipt: (this.#host.configuration.resolveTransformReceipt || this.#host.canonicalArchitecture === 'arm64') ?? null, checkers });
+          snapshotId: this.#snapshot.snapshotId, work, resolveReceipt: this.#host.configuration.resolveTransformReceipt ?? null, checkers });
       }
       else if (method === 'runtimeObservations') value = await queryRuntimeReconciliation(input, {
         world: this.#world, assumptions: this.#assumptions, snapshotId: this.#snapshot.snapshotId, work,
@@ -298,8 +307,8 @@ export class ScopedAnalysisService {
       producerQualification: custom ? 'custom-host-unverified' : native ? 'current-arm64-owner-unverified' : 'native-pair-unsupported', modes: {
       taskIdiomView: native ? 'source-bound-mask-condition-idioms; human-task-unmeasured; default-off' : 'unsupported',
       inspectConditionalModel: this.#host.configuration.getConditionalModelContext ? 'explicit-VL-SME-event-models; model-only-not-native-proof' : 'unsupported',
-      checkLoopInvariant: this.#host.configuration.getLoopModelContext ? 'current-host-model-induction; machine-correspondence-unproved' : 'unsupported',
-      asyncEventOrder: this.#host.configuration.getAsyncEventContext ? 'versioned-captured-event-contracts; no-static-universal-order' : 'unsupported',
+      checkLoopInvariant: this.#host.configuration.getLoopModelContext ? 'current-host-model-induction; machine-correspondence-unproved' : native && this.#host.readRange ? 'current-source-counted-loop-fragment; bounded-independent-induction' : 'unsupported',
+      asyncEventOrder: this.#host.configuration.getAsyncEventContext || this.#host.getNativeAsyncEventContext ? 'versioned-captured-event-contracts; no-static-universal-order' : 'unsupported',
       portableIntegerChecks: native ? 'current-integer-proposals-and-bounded-detached-replay; no-whole-query-proof' : 'unsupported',
       demandQuery: native ? 'query-scoped-native-owners; selected-context-scc; atomic-evidence-answer; not-release-qualified' : 'unsupported',
       explainDemandResult: this.#host.artifactStore ? 'published-source-bytes-and-current-owner-rule-replay; semantic-closure-unknown' : 'unsupported',
@@ -307,10 +316,11 @@ export class ScopedAnalysisService {
       demandInvestigationFrontier: this.#host.artifactStore ? 'published-answer-obligations; read-only-inspection' : 'unsupported',
       knowledgeMatches: this.#host.configuration.getKnowledgeContext || this.#host.knowledgeOwner ? 'native-fingerprint-and-bounded-knowledge-page; no-transfer-or-identity-proof' : 'unsupported',
       blockCaptures: this.#host.configuration.getObjcBlockContext || native ? 'native-memoryssa-field-and-escape-references; layout-and-lifetime-unqualified' : 'unsupported',
-      swiftDispatch: this.#host.configuration.getSwiftDispatchContext && this.#host.configuration.resolveFunctionIdentity ? 'bound-existing-swift-candidates; no-exact-targets' : 'unsupported',
+      swiftDispatch: this.#host.getNativeAppleMetadataContext || this.#host.configuration.getSwiftDispatchContext && this.#host.configuration.resolveFunctionIdentity ? 'bound-existing-swift-candidates; no-exact-targets' : 'unsupported',
       applePointerView: this.#host.configuration.getMachOPointerContext ? 'host-loader-required' : this.#host.queryNativeApplePointer ? 'isolated-current-loader-and-source-bytes; no-authentication-proof' : 'unsupported',
+      appleMetadataView: this.#host.getNativeAppleMetadataContext ? 'existing-current-apple-metadata-owners; runtime-closure-unknown' : 'unsupported',
       callGraphSlice: native || custom ? 'bounded-selected-callsite-graph; literal-entry-binding; no-closure' : 'unsupported',
-      semanticQuery: native || custom ? 'bounded-canonical-projection' : 'unsupported', interproceduralQuery: native || custom ? (this.#host.configuration.getFunctionFlowInterface ? 'explicit-scope-unqualified-value-ports' : native ? 'selected-native-scalar-register-inputs; no-return-port-or-closure' : 'local-projection-with-open-call-cuts') : 'unsupported', dispatch: 'candidate-envelope',
+      semanticQuery: native || custom ? 'bounded-canonical-projection' : 'unsupported', interproceduralQuery: native || custom ? (this.#host.configuration.getFunctionFlowInterface ? 'explicit-scope-unqualified-value-ports' : native ? 'selected-native-arguments-declared-returns-and-may-memory-ports; exception-and-semantic-closure-open' : 'local-projection-with-open-call-cuts') : 'unsupported', dispatch: 'candidate-envelope',
       investigationFrontier: this.#host.configuration.getInvestigationContext ? 'read-only-existing-job-inventory; no-automatic-actions' : this.#host.getNativeInvestigationContext ? 'already-loaded-idle-job; exact-namespace-world-identity-required; no-core-initialization' : 'unsupported',
       typeEvidence: native || custom ? 'isolated-worker-canonical-type-projection' : 'unsupported',
       abiInputBindings: native ? 'isolated-existing-abi-and-compat-64-bit-register-inputs; candidate-only' : 'unsupported',
@@ -497,7 +507,12 @@ export class ScopedAnalysisService {
       this.#prune();
       if (this.#sessions.size >= this.#host.configuration.maximumSessions) return unsupported('scoped-session-cap');
       session = new ScopedCallGraphSession({ query: input, world: this.#world, assumptions: this.#assumptions,
-        snapshotId: this.#snapshot.snapshotId, loadProjection: (locator, ctx) => this.#projection(locator, ctx.work),
+        snapshotId: this.#snapshot.snapshotId, loadProjection: (locator, ctx) => this.#host.canonicalArchitecture === 'arm64'
+          ? this.#loadDemandOwner(locator, ctx.work, { maximumValues: 64 }) : this.#projection(locator, ctx.work),
+        resolveDispatch: (projection, callSiteId, work, nativeContext) => resolveUnifiedDispatch(projection,
+          { functionId: projection.functionId, callSiteId, maxTargets: nativeContext.maxTargets, maxHops: nativeContext.maxHops },
+          { world: this.#world, assumptions: this.#assumptions, work, registry: this.#dispatch, nativeContext,
+            admit: this.#host.configuration.qualifyDispatch ?? null }),
         isCurrent: () => this.#current() && this.#dependencies.validate(dependency) });
     }
     try {
@@ -511,15 +526,42 @@ export class ScopedAnalysisService {
   }
   async #targets(input, work) {
     recordFields(input, ['functionId', 'callSiteId', 'families', 'maxTargets', 'maxHops'], 'scoped-dispatch-fields');
-    const loaded = await this.#projection(input.functionId, work);
+    const loaded = this.#host.canonicalArchitecture === 'arm64'
+      ? await this.#loadDemandOwner(input.functionId, work, { maximumValues: 64 }) : await this.#projection(input.functionId, work);
     if (!loaded.projection) return { status: 'unsupported', reason: loaded.reason };
     try {
       const value = await resolveUnifiedDispatch(loaded.projection, { ...input, functionId: loaded.projection.functionId },
         { world: this.#world, assumptions: this.#assumptions, work, registry: this.#dispatch,
-          admit: this.#host.configuration.qualifyDispatch ?? null });
+          admit: this.#host.configuration.qualifyDispatch ?? null,
+          nativeContext: loaded.demand ? { member: { projection: loaded.projection, demand: loaded.demand,
+            inputIdentity: loaded.projection.inputIdentity, functionId: loaded.projection.functionId },
+            members: [{ projection: loaded.projection, demand: loaded.demand,
+              inputIdentity: loaded.projection.inputIdentity, functionId: loaded.projection.functionId }] } : null });
       return { ...value, requestedFunctionLocator: input.functionId };
     }
     finally { loaded.projection.release(); }
+  }
+  async #nativeLoopContext(locator, loopId, work) {
+    if (loopId !== 'entry-counted-loop') return { reason: 'native-loop-id-unsupported' };
+    const loaded = await this.#load(locator, work);
+    if (!loaded.pipeline) return { reason: loaded.reason };
+    const source = loaded.nativeSource;
+    if (!source || source.length !== 24 || source.binaryId !== this.#snapshot.binaryId || !loaded.artifactId) {
+      return { reason: 'native-loop-entry-fragment-unavailable' };
+    }
+    const dependency = this.#dependencies.capture([], { snapshotOnly: true });
+    const current = () => this.#current() && this.#dependencies.validate(dependency);
+    return { isCurrent: current, nativeSource: source,
+      binding: { worldId: this.#world.id, assumptionsId: this.#assumptions.id, snapshotId: this.#snapshot.snapshotId,
+        functionLocator: locator, loopId, modelRevision: 'native-counted-loop/v1', artifactId: loaded.artifactId,
+        sourceReferences: [loaded.artifactId, loaded.pipeline.semanticIr.nodes[0]?.id].filter(Boolean) },
+      readNativeBytes: async ({ signal }) => {
+        if (!current()) contractFail('native-loop-source-stale');
+        const response = await this.#host.readRange({ worldId: this.#world.id, binaryId: source.binaryId,
+          offset: source.offset, length: source.length }, { signal });
+        if (!current()) contractFail('native-loop-source-stale');
+        return { ...response, snapshotId: this.#snapshot.snapshotId, virtualStart: source.virtualStart };
+      } };
   }
   async #abiPlacement(input, work) {
     recordFields(input, ['functionId', 'kind', 'callSiteId'], 'scoped-abi-query-fields');
@@ -569,6 +611,19 @@ export class ScopedAnalysisService {
   async #objects(input, work) {
     recordFields(input, ['functionId', 'valueId'], 'scoped-object-fields');
     exactString(input.valueId, 'scoped-object-value');
+    if (this.#host.canonicalArchitecture === 'arm64' && !this.#host.configuration.describeObjectTarget) {
+      const loaded = await this.#loadDemandOwner(input.functionId, work, { valueIds: [input.valueId], maximumValues: 1 });
+      try {
+        if (!loaded.projection) return { status: 'unsupported', reason: loaded.reason, exact: false };
+        const row = loaded.demand.objects.find(value => value.valueId === input.valueId);
+        if (!row) return { status: 'unsupported', reason: 'native-object-value-outside-owner', exact: false };
+        return { status: 'completed', schema: 'object-memory-view/v1', worldId: this.#world.id,
+          assumptionsId: this.#assumptions.id, functionId: loaded.projection.functionId, valueId: input.valueId,
+          partitions: row.partitions, unknowns: row.unknowns, pointsToStatus: row.ownerStatus,
+          producerArtifactId: loaded.projection.inputIdentity.producerArtifactId, exact: false,
+          authority: 'current-points-to-and-escape-owner; no-runtime-singleton-or-strong-update-proof' };
+      } finally { loaded.projection?.release(); }
+    }
     const loaded = await this.#load(input.functionId, work, { kind: 'points-to', valueId: input.valueId });
     if (!loaded.pipeline) return { status: 'unsupported', reason: loaded.reason };
     const owner = this.#localView(loaded, 'points-to');
