@@ -8,6 +8,29 @@ import { SemanticQueryExecution } from '../../js/analysis/query/semantic/execute
 import { captured, scope, request, callee } from './native-owner-fixture.mjs';
 import { fixture, workFor } from './helpers.mjs';
 
+test('canonical-only analysis context and native memory effects share normalized endianness', () => {
+  const rows = [['ldr', 'x0, [x1]', 0xf9400020], ['ret', '', 0xd65f03c0]];
+  for (const [selectors, expected] of [
+    [{ dataEndianness: undefined, memoryEndianness: 'big' }, 'big'],
+    [{ dataEndianness: undefined, instructionEndianness: undefined, endianness: 'little' }, 'little'],
+    [{ dataEndianness: undefined, instructionEndianness: undefined,
+      machineEffectsContext: { dataEndianness: 'big', instructionEndianness: 'little' } }, 'big'],
+    [{ dataEndianness: 'little', machineEffectsContext: { dataEndianness: 'big', instructionEndianness: 'little' } }, 'little'],
+  ]) {
+    const { owner, result } = captured(0x1000n, rows, selectors);
+    assert.equal(result.projection, 'canonical-only');
+    assert.equal(result.decompiler, null);
+    assert.equal(result.analysisContext.dataEndianness, expected);
+    assert.equal(result.analysisContext.instructionEndianness, 'little');
+    const reads = owner.pipeline.machineEffects.flatMap(bundle => bundle.operations).filter(effect => effect.kind === 'memory-read');
+    assert.equal(reads.length, 1);
+    assert.equal(reads[0].access.endian, expected);
+  }
+  assert.throws(() => captured(0x1000n, rows, {
+    machineEffectsContext: { instructionEndianness: 'big' },
+  }), /unsupported-instruction-endianness/);
+});
+
 async function load(t, f, input) {
   const raw = await projectScopedFlowInputs(input.owner, input.result, request(f), { limits: { deadlineMs: 10000 } });
   assert.equal(raw.status, 'completed', raw.reason);
