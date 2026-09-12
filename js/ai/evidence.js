@@ -93,12 +93,57 @@ function sameSemanticRecord(left, right) {
 // Evidence records are authority-bearing state. Public readers must receive
 // owned snapshots so a caller cannot rewrite status, provenance, or a nested
 // payload and thereby bypass the private verification/indexing paths.
+const TYPED_ARRAY_PROTOTYPE = Object.getPrototypeOf(Uint8Array.prototype);
+const TYPED_ARRAY_KIND = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, Symbol.toStringTag).get;
+const TYPED_ARRAY_TYPES = new Map([
+  Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array,
+  Int32Array, Uint32Array, Float32Array, Float64Array, BigInt64Array,
+  BigUint64Array, globalThis.Float16Array,
+].filter((type) => typeof type === 'function').map((type) => [type.name, type]));
+
 function cloneOwned(value, seen = new WeakMap()) {
   if (value == null || typeof value !== 'object') return value;
   const previous = seen.get(value);
   if (previous) return previous;
-  const copy = Array.isArray(value) ? new Array(value.length) : {};
+  const tag = Object.prototype.toString.call(value);
+  let copy;
+  if (ArrayBuffer.isView(value)) {
+    const kind = TYPED_ARRAY_KIND.call(value);
+    const prototype = kind ? TYPED_ARRAY_PROTOTYPE : DataView.prototype;
+    const field = (key) => Object.getOwnPropertyDescriptor(prototype, key).get.call(value);
+    const buffer = cloneOwned(field('buffer'), seen);
+    // A custom property on the buffer may already have cloned this view.
+    if (seen.has(value)) return seen.get(value);
+    copy = kind
+      ? new (TYPED_ARRAY_TYPES.get(kind))(buffer, field('byteOffset'), field('length'))
+      : new DataView(buffer, field('byteOffset'), field('byteLength'));
+  } else if (tag === '[object ArrayBuffer]') {
+    const length = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get.call(value);
+    copy = new ArrayBuffer(length);
+    new Uint8Array(copy).set(new Uint8Array(value));
+  } else if (typeof SharedArrayBuffer === 'function' && tag === '[object SharedArrayBuffer]') {
+    const length = Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength').get.call(value);
+    copy = new SharedArrayBuffer(length);
+    new Uint8Array(copy).set(new Uint8Array(value));
+  } else if (tag === '[object Date]') {
+    copy = new Date(Date.prototype.getTime.call(value));
+  } else if (tag === '[object Map]') {
+    copy = new Map();
+  } else if (tag === '[object Set]') {
+    copy = new Set();
+  } else if (tag === '[object RegExp]') {
+    copy = new RegExp(value.source, value.flags);
+    copy.lastIndex = value.lastIndex;
+  } else {
+    copy = Array.isArray(value) ? new Array(value.length)
+      : Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype);
+  }
   seen.set(value, copy);
+  if (copy instanceof Map) {
+    for (const [key, item] of Map.prototype.entries.call(value)) copy.set(cloneOwned(key, seen), cloneOwned(item, seen));
+  } else if (copy instanceof Set) {
+    for (const item of Set.prototype.values.call(value)) copy.add(cloneOwned(item, seen));
+  }
   for (const [key, item] of Object.entries(value)) {
     Object.defineProperty(copy, key, {
       value: cloneOwned(item, seen), enumerable: true, configurable: true, writable: true,
@@ -110,7 +155,16 @@ function cloneOwned(value, seen = new WeakMap()) {
 function freezeOwned(value, seen = new WeakSet()) {
   if (value == null || typeof value !== 'object' || seen.has(value)) return value;
   seen.add(value);
+  if (value instanceof Map) {
+    for (const [key, item] of value) { freezeOwned(key, seen); freezeOwned(item, seen); }
+  } else if (value instanceof Set) {
+    for (const item of value) freezeOwned(item, seen);
+  }
   for (const item of Object.values(value)) freezeOwned(item, seen);
+  // Nonempty typed arrays cannot be frozen, and RegExp execution writes
+  // lastIndex. Their native state stays usable on these detached copies;
+  // ingestion and every public read clone it again to protect stored data.
+  if (ArrayBuffer.isView(value) || value instanceof RegExp) return value;
   return Object.freeze(value);
 }
 
