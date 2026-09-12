@@ -36,7 +36,10 @@
       "tests/phase7/summary/issue-6069-provenance-strict-index.test.mjs",
       "tests/phase7/types/c3-aggregate-reconstruction-v6.test.mjs",
       "tests/phase7/types/c3-layout-review-v6.test.mjs",
-      "tests/phase7/types/issue-4503-structural-array-claims.test.mjs"
+      "tests/phase7/types/issue-4503-structural-array-claims.test.mjs",
+      "js/analysis/discovery/artifact.js",
+      "js/analysis/discovery/producers.js",
+      "tests/phase7/discovery/x03-ambiguity-artifact.test.mjs"
     ],
     "phase8": [
       "tools/validation/phase8/decoded-function-adapter.mjs",
@@ -134,7 +137,10 @@
       "tests/phase8/provenance/safety-counter.test.mjs",
       "tests/phase8/provenance/validation.test.mjs",
       "tests/phase8/provenance/presentation-cache.test.mjs",
-      "tests/phase8/provenance/arm64-expanded-semantic-denominator.test.mjs"
+      "tests/phase8/provenance/arm64-expanded-semantic-denominator.test.mjs",
+      "js/decompiler/phase8/transaction-core.js",
+      "js/decompiler/phase8/pass-validation-core.js",
+      "js/decompiler/phase8/proof-plan.js"
     ],
     "symbolic": [
       "js/symbolic/egraph/graph.js",
@@ -257,7 +263,15 @@
       "tests/phase9/verify/symbolic-footprint-fixtures.mjs",
       "tests/phase9/verify/symbolic-footprint-oracle.test.mjs",
       "tests/phase9/verify/symbolic-footprint.test.mjs",
-      "tests/phase9/verify/wide-memory-v6.test.mjs"
+      "tests/phase9/verify/wide-memory-v6.test.mjs",
+      "js/symbolic/solver/worker-backend.js",
+      "js/symbolic/solver/worker-entry.js",
+      "tests/phase9/browser/worker-runtime.mjs",
+      "tests/phase9/release/release-evidence.test.mjs",
+      "tests/phase9/solver/bitblast-sym01-differential.test.mjs",
+      "tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs",
+      "tests/phase9/solver/tiered-sym01-rescue.test.mjs",
+      "tests/phase9/solver/worker-lifecycle.test.mjs"
     ],
     "semanticCompat": [
       "js/core/identity/live-data.js",
@@ -375,7 +389,13 @@
       "css/components.css",
       "js/backend.js",
       "js/analysis/semantic-function-presentation-contract.js",
-      "js/targets/architecture/x86_64/semantic-function-contract.js"
+      "js/targets/architecture/x86_64/semantic-function-contract.js",
+      "tools/validation/phase9/release-evidence.schema.json",
+      "tools/validation/phase9/verify.mjs",
+      "js/rebuild/format-safe.js",
+      "js/rebuild/transaction-v2.js",
+      "tests/stage2/x03-rebuild-discovery.test.mjs",
+      "tests/scpa/transform-native.test.mjs"
     ]
   }
 }

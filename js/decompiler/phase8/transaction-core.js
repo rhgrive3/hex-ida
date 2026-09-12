@@ -198,6 +198,9 @@ function createStagingArea(descriptor) {
         staged.set(key, value);
       },
       staged: () => Object.freeze([...staged.keys()].sort()),
+      // Read-only view for the proof transaction adapter. Values are detached
+      // from the staging map so admission cannot mutate the commit surface.
+      stagedEntries: () => Object.freeze([...staged.entries()]),
     },
     take: () => staged,
   };

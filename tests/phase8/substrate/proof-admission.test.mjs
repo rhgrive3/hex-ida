@@ -60,3 +60,10 @@ test('v8 final transaction budget callback cannot mutate IR after proof admissio
  const result=runPassTransaction(state,{descriptor:PROOF_REWRITE_PASS,run:runProofRewritePass},context(f,plan),{shouldAbort(){if(++calls===4)f.target.def.sub='or';return false;}});
  assert.equal(calls,4);assert.equal(result.committed,false);assert.deepEqual(state.snapshot(),before);
 });
+
+
+test('proof-plan entry point shares the canonical descriptor and private authority', async () => {
+  const canonical = await import('../../../js/decompiler/phase8/pass-validation.js');
+  const compatibility = await import('../../../js/decompiler/phase8/proof-plan.js');
+  for (const name of Object.keys(compatibility)) assert.equal(compatibility[name], canonical[name], name);
+});

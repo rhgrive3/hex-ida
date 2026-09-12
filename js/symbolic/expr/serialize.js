@@ -21,6 +21,7 @@ import {
   createUnary,
   createBinary,
   createCompare,
+  createConnective,
   createConnectiveFromArray,
   createIte,
   createExtract,

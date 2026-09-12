@@ -2,7 +2,7 @@ import { publishFixtureAnalyses } from '../helpers/analysis-fixtures.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createAnalysisState, runPassTransaction, seedAnalysisState } from '../../../js/decompiler/phase8/transaction.js';
+import { runPassTransaction, seedAnalysisState } from '../../../js/decompiler/phase8/transaction.js';
 import { SCCP_PASS, runSccpPass } from '../../../js/decompiler/phase8/sccp.js';
 import { GVN_PASS, loadIsReusable, runGvnPass } from '../../../js/decompiler/phase8/valuenumber.js';
 import { fixture } from '../helpers/ir-fixtures.mjs';

@@ -158,3 +158,25 @@ test('ME-01 production subject owns only its adapter and comparison tests', () =
   manifest.owners.integration.push('js/targets/architecture/riscv64/effects/integer.js');
   assert.throws(() => validateRoadmapManifest(manifest), /outside integration owner/);
 });
+
+
+test('combined SYM-01 and X-03 declare exact worker, rebuild and verifier paths', () => {
+  const manifest = loadRoadmapManifest(), assignment = validateRoadmapManifest(manifest);
+  const expected = {
+    symbolic: ['js/symbolic/solver/worker-backend.js', 'tests/phase9/solver/tiered-sym01-rescue.test.mjs'],
+    phase7: ['js/analysis/discovery/artifact.js', 'tests/phase7/discovery/x03-ambiguity-artifact.test.mjs'],
+    phase8: ['js/decompiler/phase8/transaction-core.js', 'js/decompiler/phase8/pass-validation-core.js'],
+    integration: ['js/rebuild/format-safe.js', 'js/rebuild/transaction-v2.js',
+      'tests/stage2/x03-rebuild-discovery.test.mjs', 'tools/validation/phase9/verify.mjs'],
+  };
+  for (const [owner, files] of Object.entries(expected)) for (const file of files) {
+    assert.equal(assignment.get(file), owner);
+    const missing = structuredClone(manifest);
+    missing.owners[owner] = missing.owners[owner].filter(path => path !== file);
+    assert.throws(() => validateRoadmapInventory(BRANCH, 'phase8', [...assignment.keys()], missing), /undeclared roadmap path/);
+  }
+  for (const foreign of ['js/rebuild/unreviewed.js', 'tools/validation/phase9/unreviewed.mjs', 'tests/scpa/unreviewed.test.mjs']) {
+    const widened = structuredClone(manifest); widened.owners.integration.push(foreign);
+    assert.throws(() => validateRoadmapManifest(widened), /outside integration owner/);
+  }
+});

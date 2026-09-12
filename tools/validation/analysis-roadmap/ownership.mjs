@@ -8,7 +8,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 export const BRANCH = 'feat/analysis-roadmap-v8-current-main-20260907';
 const SPECIAL_PATHS = Object.freeze({
   semanticCompat: ['js/core/identity/live-data.js', 'js/core/identity/origin.js', 'tests/core-origin-canonical-reuse.test.mjs', 'js/ir-core.js', 'js/ir-base.js', 'js/decompiler/semantic.js', 'js/decompiler/semantic-views.js', 'js/semantics/compat/index.js', 'js/semantics/compat/legacy-value-ranges.js', 'js/semantics/compat/semantic-ir-v2-to-v1.js', 'js/semantics/compat/semantic-ir-v2-to-v1-finalize.js', 'js/semantics/compat/semantic-ir-v2-to-v1-memory.js', 'js/semantics/compat/semantic-ir-v2-to-v1-nodes.js'],
-  integration: ['js/backend.js', 'js/analysis/semantic-function-presentation-contract.js',
+  integration: ['tools/validation/phase9/release-evidence.schema.json', 'tools/validation/phase9/verify.mjs', 'js/rebuild/format-safe.js', 'js/rebuild/transaction-v2.js', 'tests/stage2/x03-rebuild-discovery.test.mjs', 'tests/scpa/transform-native.test.mjs', 'js/backend.js', 'js/analysis/semantic-function-presentation-contract.js',
     'js/targets/architecture/x86_64/semantic-function-contract.js', '.circleci/config.yml', '.github/workflows/phase7-ownership.yml', '.github/workflows/phase8-ownership.yml',
     'scripts/build-userscript.mjs', 'scripts/userscript-publication.mjs',
     'tests/userscript-publication.mjs', 'tests/userscript-release-version.mjs',
