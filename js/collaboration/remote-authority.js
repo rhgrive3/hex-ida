@@ -240,8 +240,10 @@ export class RemoteCollaborationGate {
     this.supportedOperationSchemas = new Set(list(input.supportedOperationSchemas || [CHANGELOG_SCHEMA_VERSION]));
     this.maxBatch = positive(input.maxBatch, 256, 4096, 'remote-gate-max-batch-invalid');
     this.maxMessageBytes = positive(input.maxMessageBytes, 1024 * 1024, 32 * 1024 * 1024, 'remote-gate-max-message-invalid');
+    this.replayWindow = positive(input.replayWindow, 4096, 65536, 'remote-gate-replay-window-invalid');
     this.seenMessages = new Set();
     this.seenEnvelopeIds = new Set();
+    this.replayWindowOrder = [];
     this.lastSequenceByActor = new Map();
     this.verifyTransportProof = typeof input.verifyTransportProof === 'function' ? input.verifyTransportProof : null;
     this.transportVerifierIdentity = input.transportVerifierIdentity == null
@@ -313,6 +315,12 @@ export class RemoteCollaborationGate {
     if (!snap) return Object.freeze({ status: 'rejected', reason: 'remote-ingress-snapshot-required' });
     this.seenMessages.add(snap.messageId);
     this.seenEnvelopeIds.add(snap.envelopeId);
+    this.replayWindowOrder.push(Object.freeze({ messageId: snap.messageId, envelopeId: snap.envelopeId }));
+    while (this.replayWindowOrder.length > this.replayWindow) {
+      const oldest = this.replayWindowOrder.shift();
+      this.seenMessages.delete(oldest.messageId);
+      this.seenEnvelopeIds.delete(oldest.envelopeId);
+    }
     this.lastSequenceByActor.set(snap.actorIdentity, snap.sequence);
     return Object.freeze({ status: 'accepted', envelopeId: snap.envelopeId, operationCount: snap.operations.length });
   }
@@ -330,6 +338,7 @@ export class RemoteCollaborationGate {
       actors: Object.keys(this.allowedActors).sort(),
       revokedActors: [...this.revokedActors].sort(),
       seenMessageCount: this.seenMessages.size,
+      replayWindow: this.replayWindow,
       transportVerifierIdentity: this.transportVerifierIdentity,
     });
   }
