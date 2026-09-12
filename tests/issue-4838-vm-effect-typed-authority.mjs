@@ -19,6 +19,8 @@ function canonical(overrides = {}) {
     methodId: 'method-4838',
     operationId: 'op-4838',
     bytecodeOffset: 0,
+    mnemonic: 'nop',
+    completeness: 'exact',
     ...overrides,
   });
 }
