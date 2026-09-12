@@ -189,6 +189,11 @@ export function createSymbolicEvidence({
   if (!targetEntities || !Array.isArray(targetEntities)) {
     throw new TypeError('createSymbolicEvidence: targetEntities must be an array');
   }
+  for (const entity of targetEntities) {
+    if (typeof entity !== 'string' || entity.trim() === '') {
+      throw new TypeError('createSymbolicEvidence: targetEntities must contain non-empty canonical entity ID strings');
+    }
+  }
   if (!queryHash || typeof queryHash !== 'string' || queryHash.trim() === '') {
     throw new TypeError('createSymbolicEvidence: queryHash must be a non-empty string');
   }
@@ -206,6 +211,12 @@ export function createSymbolicEvidence({
   }
   if (!backendVersion || typeof backendVersion !== 'string') {
     throw new TypeError('createSymbolicEvidence: backendVersion must be a string');
+  }
+  if (typeof architecture !== 'string' || architecture.trim() === '') {
+    throw new TypeError('createSymbolicEvidence: architecture must be a non-empty string');
+  }
+  if (bitWidth != null && (!Number.isSafeInteger(bitWidth) || bitWidth <= 0)) {
+    throw new TypeError('createSymbolicEvidence: bitWidth must be a positive safe integer or null');
   }
   if (!Object.values(PROOF_AUTHORITY).includes(proofAuthority)) {
     throw new TypeError(`createSymbolicEvidence: invalid proofAuthority '${proofAuthority}'`);
@@ -285,7 +296,7 @@ export function createSymbolicEvidence({
   }
 
   // Normalize targetEntities
-  const normalizedTargets = targetEntities.map((t) => (typeof t === 'string' ? t : JSON.stringify(canonicalize(t))));
+  const normalizedTargets = [...targetEntities];
 
   // Normalize assumptions
   const normalizedAssumptions = Array.isArray(assumptions)
@@ -369,8 +380,8 @@ export function createSymbolicEvidence({
     verdict,
     witnessModel: normalizedWitness,
     limits: limits ? canonicalize(limits) : null,
-    architecture: String(architecture),
-    bitWidth: bitWidth == null ? null : Number(bitWidth),
+    architecture,
+    bitWidth: bitWidth == null ? null : bitWidth,
     proofScope: proofScope ? canonicalize(proofScope) : null,
     assumptionsFingerprint: stableDigest(normalizedAssumptions),
     metadata: metadata ? canonicalize(metadata) : null,

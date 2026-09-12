@@ -20,26 +20,29 @@ const base = {
   capabilityFingerprint: exactBackend.capabilityFingerprint(),
 };
 
-test('#5903 own __proto__ data property yields a different Evidence ID than an empty target', () => {
+test('#5903/#4663 structured targets never reach the identity material and fail closed', () => {
   const targetA = {};
   const targetB = JSON.parse('{"__proto__":{"entity":"A"}}');
-  const a = createSymbolicEvidence({ ...base, targetEntities: [targetA] });
-  const b = createSymbolicEvidence({ ...base, targetEntities: [targetB] });
+  assert.throws(() => createSymbolicEvidence({ ...base, targetEntities: [targetA] }), TypeError);
+  assert.throws(() => createSymbolicEvidence({ ...base, targetEntities: [targetB] }), TypeError);
+  const a = createSymbolicEvidence({ ...base, targetEntities: ['entity:A'] });
+  const b = createSymbolicEvidence({ ...base, targetEntities: ['entity:B'] });
   assert.notEqual(a.id, b.id, 'distinct target entities must not share one Evidence ID');
   assert.notEqual(JSON.stringify(a.targetEntities), JSON.stringify(b.targetEntities));
 });
 
-test('#5903 Map key "__proto__" is preserved as data, not dropped', () => {
+test('#5903/#4663 Map-shaped targets are rejected instead of projected into an ID', () => {
   const mapTarget = new Map([['__proto__', { entity: 'A' }]]);
   const emptyTarget = new Map();
-  const a = createSymbolicEvidence({ ...base, targetEntities: [mapTarget] });
-  const b = createSymbolicEvidence({ ...base, targetEntities: [emptyTarget] });
-  assert.notEqual(a.id, b.id);
+  assert.throws(() => createSymbolicEvidence({ ...base, targetEntities: [mapTarget] }), TypeError);
+  assert.throws(() => createSymbolicEvidence({ ...base, targetEntities: [emptyTarget] }), TypeError);
 });
 
-test('#5903 normal key ordering keeps deterministic Evidence IDs', () => {
-  const a = createSymbolicEvidence({ ...base, targetEntities: [{ b: 2, a: 1 }] });
-  const b = createSymbolicEvidence({ ...base, targetEntities: [{ a: 1, b: 2 }] });
+test('#5903/#4663 object key ordering cannot produce order-dependent Evidence IDs', () => {
+  assert.throws(() => createSymbolicEvidence({ ...base, targetEntities: [{ b: 2, a: 1 }] }), TypeError);
+  assert.throws(() => createSymbolicEvidence({ ...base, targetEntities: [{ a: 1, b: 2 }] }), TypeError);
+  const a = createSymbolicEvidence({ ...base, targetEntities: ['entity:{"a":1,"b":2}'] });
+  const b = createSymbolicEvidence({ ...base, targetEntities: ['entity:{"a":1,"b":2}'] });
   assert.equal(a.id, b.id);
 });
 
