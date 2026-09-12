@@ -108,8 +108,9 @@ function workerStage(name, operation) {
 
 function logicalPath(value) {
   try {
-    const path = new URL(String(value), location.href).pathname;
-    return path.replace(/^\//, '');
+    const url = new URL(String(value), location.href);
+    if (url.origin !== location.origin) return null;
+    return url.pathname.replace(/^\//, '');
   } catch { return null; }
 }
 
