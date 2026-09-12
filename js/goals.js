@@ -528,8 +528,11 @@ export function parseGoal(text) {
   let best = null;
   for (const g of GOALS) {
     let hit = 0;
-    for (const re of g.strong) if (re.test(raw)) hit += 2;
-    for (const re of g.weak) if (re.test(raw)) hit += 1;
+    const blocked = avoidSpans(g, raw);
+    const validMatch = (re) =>
+      allMatches(re, raw, blocked.length).some((m) => !overlaps(blocked, m.at, m.text.length));
+    for (const re of g.strong) if (validMatch(re)) hit += 2;
+    for (const re of g.weak) if (validMatch(re)) hit += 1;
     if (hit > 0 && (!best || hit > best.hit)) best = { goal: g, hit };
   }
   const terms = expandTerms(raw);
