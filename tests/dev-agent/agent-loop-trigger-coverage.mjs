@@ -117,7 +117,13 @@ for (const parent of [entry, 'js/userscript/chatgpt-adapter.js']) {
 const coverageStep = job.indexOf(`command: node ${self}`);
 const impactStep = job.indexOf('name: Detect agent-loop impact');
 assert.ok(coverageStep >= 0 && coverageStep < impactStep, 'dependency coverage must run before impact filtering');
-assert.match(read('package.json'), /node tests\/dev-agent\/agent-loop-trigger-coverage\.mjs/, 'canonical regression chain must discover coverage');
+assert.match(read('tests/ci-development-mode.mjs'), /^import '\.\/dev-agent\/agent-loop-trigger-coverage\.mjs';$/m,
+  'canonical CI policy entry must discover coverage');
+const fastWorkflow = read('.github/workflows/pr-fast-gate.yml');
+const fastPullRequest = fastWorkflow.match(/^  pull_request:\n((?:^    .*\n|^\n)*)/m)?.[1];
+assert.ok(fastPullRequest, 'PR fast gate must retain automatic regression discovery');
+assert.doesNotMatch(fastPullRequest, /^    paths(?:-ignore)?:/m, 'coverage cannot share an impact filter');
+assert.match(fastWorkflow, /run: node tests\/ci-development-mode\.mjs/, 'unfiltered PR fast gate must execute coverage');
 assert.match(workflow, /^  workflow_dispatch:/m, 'manual GitHub fallback is retained');
 assert.match(workflow, /^    branches: \[main\]$/m, 'automatic GitHub pushes stay main-only');
 assert.match(workflow, /^    if: \$\{\{ github\.event_name == 'workflow_dispatch' \}\}$/m,
