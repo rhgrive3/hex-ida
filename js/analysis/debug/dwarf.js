@@ -98,10 +98,12 @@ const DW_FORM = Object.freeze({
 const ADDRX_FORMS = Object.freeze([DW_FORM.addrx, DW_FORM.addrx1, DW_FORM.addrx2, DW_FORM.addrx3, DW_FORM.addrx4]);
 /** Forms whose resolved value is an absolute address (direct or addrx-resolved). */
 const ADDRESS_CLASS_FORMS = Object.freeze([DW_FORM.addr, ...ADDRX_FORMS]);
-// Supplementary-object references live in a distinct debug object namespace.
-// Until that object is loaded and identity-validated, they must never fall
-// back to offsets in the current `.debug_info` / `.debug_str` (#4206).
-const SUPPLEMENTARY_REFERENCE_FORMS = Object.freeze([DW_FORM.ref_sup4, DW_FORM.ref_sup8]);
+// References that must never be interpreted as numeric DIE offsets in the
+// current `.debug_info` object. Supplementary references need a separately
+// identity-validated debug object (#4206), while ref_sig8 belongs to the
+// type-signature namespace rather than the section-offset namespace (#4240).
+// Until those resolvers exist, both classes fail closed on numeric collisions.
+const NON_CURRENT_DIE_OFFSET_REFERENCE_FORMS = Object.freeze([DW_FORM.ref_sup4, DW_FORM.ref_sup8, DW_FORM.ref_sig8]);
 const DEFAULT_MAX_ADDR_CONTRIBUTION_SCANS = 4096;
 
 const DW_UT = Object.freeze({
@@ -356,8 +358,9 @@ function readForm(cursor, form, unit, sections, implicitConst, byteBudget = null
     case DW_FORM.ref_sup4:
       cursor.u32();
       return { value: null, unsupported: true };
-    case DW_FORM.data8: case DW_FORM.ref8: case DW_FORM.ref_sig8:
+    case DW_FORM.data8: case DW_FORM.ref8:
       return { value: cursor.u64() };
+    case DW_FORM.ref_sig8:
     case DW_FORM.ref_sup8:
       cursor.u64();
       return { value: null, unsupported: true };
@@ -615,7 +618,25 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       }
       unitEnd = cursor.offset + length;
       cursor.limit = unitEnd;   // attribute reads are unit-local (#1860)
+      // The declared unit length must contain the complete common header.
+      // Section-level availability does not authorize reads across this unit's
+      // own declared boundary (#4038).
+      if (cursor.offset + 2 > unitEnd) {
+        diagnostics.push(`truncated compilation unit at 0x${unitStart.toString(16)}`);
+        complete = false;
+        cursor.offset = unitEnd;
+        cursor.limit = info.length;
+        continue;
+      }
       version = cursor.u16();
+      const commonHeaderRemainder = version >= 5 ? 2 + offsetSize : offsetSize + 1;
+      if (cursor.offset + commonHeaderRemainder > unitEnd) {
+        diagnostics.push(`truncated compilation unit at 0x${unitStart.toString(16)}`);
+        complete = false;
+        cursor.offset = unitEnd;
+        cursor.limit = info.length;
+        continue;
+      }
       if (version >= 5) {
         unitType = cursor.u8();
         addressSize = cursor.u8();
@@ -997,9 +1018,9 @@ function attributeName(die, dies) {
   return inherited && typeof inherited.entry.value === 'string' ? inherited.entry.value : null;
 }
 
-/** Preserves existing reference dispatch while blocking supplementary-object fallback. */
-function nonSupplementaryReferenceTarget(entry, owner, dies) {
-  if (!entry || entry.value == null || SUPPLEMENTARY_REFERENCE_FORMS.includes(entry.form)) return null;
+/** Preserves current-object reference dispatch while blocking external namespaces. */
+function currentDebugInfoReferenceTarget(entry, owner, dies) {
+  if (!entry || entry.value == null || NON_CURRENT_DIE_OFFSET_REFERENCE_FORMS.includes(entry.form)) return null;
   const raw = Number(entry.value);
   const isUnitRelative = [DW_FORM.ref1, DW_FORM.ref2, DW_FORM.ref4, DW_FORM.ref8, DW_FORM.ref_udata].includes(entry.form);
   const target = isUnitRelative && owner.unit ? owner.unit.start + raw : raw;
@@ -1008,7 +1029,7 @@ function nonSupplementaryReferenceTarget(entry, owner, dies) {
 
 /** Resolves one DW_AT_specification target, honoring reference namespaces. */
 function specificationTarget(die, dies) {
-  return nonSupplementaryReferenceTarget(die.attributes.get(DW_AT.specification), die, dies);
+  return currentDebugInfoReferenceTarget(die.attributes.get(DW_AT.specification), die, dies);
 }
 
 /**
@@ -1062,7 +1083,7 @@ function specificationResolved(die, dies) {
 function referencedType(die, dies) {
   const effective = effectiveAttribute(die, DW_AT.type, dies);
   if (!effective) return null;
-  return nonSupplementaryReferenceTarget(effective.entry, effective.owner, dies);
+  return currentDebugInfoReferenceTarget(effective.entry, effective.owner, dies);
 }
 
 /**

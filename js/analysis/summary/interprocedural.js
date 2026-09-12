@@ -41,7 +41,7 @@ import {
 } from './contract.js';
 
 export const INTERPROCEDURAL_ANALYZER_ID = 'phase7.summary.interprocedural';
-export const INTERPROCEDURAL_ANALYZER_VERSION = '1.3.1';
+export const INTERPROCEDURAL_ANALYZER_VERSION = '1.3.2';
 
 export const INTERPROCEDURAL_DEFAULT_BUDGET = Object.freeze({
   maxIterationsPerComponent: 16,
@@ -598,6 +598,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
   const writes = [replaceCallFallbacks ? local.memoryWriteRegions.filter(notCallFallback) : local.memoryWriteRegions];
   const unknowns = replaceCallFallbacks ? [] : [...local.unknownCallEffects];
   const calleeStatuses = [];
+  const registerEffects = new Set(local.registerEffects);
   const noreturn = [local.noreturn];
   const mayThrow = [local.mayThrow];
   const escapes = [...local.escapes];
@@ -606,6 +607,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     reads.push(callee.memoryReadRegions);
     writes.push(callee.memoryWriteRegions);
     escapes.push(...callee.escapes);
+    for (const effect of callee.registerEffects) registerEffects.add(effect);
     // Keep provenance-bearing unresolved effects and control-flow knowledge in
     // lockstep with the memory dimensions for every resolved call edge.
     unknowns.push(...callee.unknownCallEffects);
@@ -733,7 +735,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     // A3 summary becomes less informative than its local input. An unconverged
     // optimistic state is never allowed to publish exact provenance.
     returnProvenance: unconverged ? [] : local.returnProvenance,
-    registerEffects: local.registerEffects,
+    registerEffects: [...registerEffects],
     memoryReadRegions: mergeEffects(reads, limits.maxEffectsPerSummary),
     memoryWriteRegions: mergeEffects(writes, limits.maxEffectsPerSummary),
     escapes: mergeEscapes(escapes),

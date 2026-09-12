@@ -27,8 +27,8 @@ function validRawIdentity(value) {
 }
 
 function positive(value, fallback, max, code) {
-  const n = value == null ? fallback : Number(value);
-  if (!Number.isSafeInteger(n) || n < 1 || n > max) throw new TypeError(code);
+  const n = value == null ? fallback : value;
+  if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 1 || n > max) throw new TypeError(code);
   return n;
 }
 
