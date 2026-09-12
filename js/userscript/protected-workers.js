@@ -1,4 +1,5 @@
 import { PROTECTED_WORKER_ASSETS } from '../../.runtime-build/embedded-assets.js';
+import { runtimeHostSnapshotFromGlobals, runtimeLocationFromSnapshot } from './runtime-host-location.js';
 
 const CAPSTONE_WASM_BOOTSTRAP = '__hex_capstone_wasm__';
 const NESTED_WORKER_BOOTSTRAP = '__hex_nested_worker_runtime__';
@@ -16,6 +17,7 @@ export function installProtectedWorkers() {
   const NativeWorker = globalThis.Worker;
   if (!NativeWorker) throw new Error('Web Workers are unavailable in this browser.');
 
+  const hostLocation = runtimeLocationFromSnapshot(runtimeHostSnapshotFromGlobals());
   const urls = new Map();
   const revoke = [];
   let installedWorker = null;
@@ -46,7 +48,7 @@ export function installProtectedWorkers() {
     }
 
     function HexWorker(value, options) {
-      const path = logicalPath(value);
+      const path = logicalPath(value, hostLocation);
       const local = path && urls.get(path);
       const worker = new NativeWorker(local || value, options);
 
@@ -83,13 +85,16 @@ export function installProtectedWorkers() {
     globalThis.Worker = HexWorker;
     installedWorker = HexWorker;
 
+    let cleaned = false;
     runtime = {
       nativeWorker: NativeWorker,
       workers: urls,
       cleanup() {
+        if (cleaned) return;
+        cleaned = true;
         if (globalThis.Worker === HexWorker) globalThis.Worker = NativeWorker;
-        for (const url of revoke) URL.revokeObjectURL(url);
-        delete globalThis.__HEX_WORKER_RUNTIME__;
+        revokeBlobURLs(revoke);
+        if (globalThis.__HEX_WORKER_RUNTIME__ === runtime) delete globalThis.__HEX_WORKER_RUNTIME__;
       },
     };
     globalThis.__HEX_WORKER_RUNTIME__ = runtime;
@@ -126,10 +131,12 @@ function workerStage(name, operation) {
   catch (error) { throw new Error(`${name}: ${String(error?.message || error || 'failed')}`); }
 }
 
-function logicalPath(value) {
+function logicalPath(value, hostLocation) {
   try {
-    const path = new URL(String(value), location.href).pathname;
-    return path.replace(/^\//, '');
+    if (!hostLocation.origin) return null;
+    const url = new URL(String(value), hostLocation.href);
+    if (url.origin !== hostLocation.origin) return null;
+    return url.pathname.replace(/^\//, '');
   } catch { return null; }
 }
 
