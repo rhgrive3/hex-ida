@@ -15,6 +15,10 @@ const identityOf = context => context.proofIdentity ?? context.opts?.phase8Proof
 const planOf = context => context.regionErasurePlan ?? context.opts?.phase8RegionErasurePlan;
 const current = (plan, context) => readConditionalRegionErasure(plan, context.ir, identityOf(context));
 
+export function isRegionErasurePlan(plan, context) {
+  try { return !!plan && current(plan, context) === plan; } catch { return false; }
+}
+
 export function runRegionErasurePass(context, budget, area) {
   const plan = planOf(context);
   if (budget.shouldAbort?.() || !current(plan, context)) throw new TypeError('stale-or-forged-region-plan');

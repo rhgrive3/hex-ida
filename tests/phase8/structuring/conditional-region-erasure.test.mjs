@@ -147,3 +147,15 @@ test('a committed candidate cannot be read under a different requested plan', as
   assert.equal(other.status, 'complete');
   assert.equal(readProvedRegionErasure(state, { ...f.context, regionErasurePlan:other }), null);
 });
+
+test('mutation after the region pass but before vertical publication discards its private commit', async () => {
+  const f = await prepared(), state = seedAnalysisState(f.ir), before = state.snapshot(); let calls = 0;
+  const result = runPhase8Vertical({ ...f.context, analysis:state, enabledStages:['rendering'] }, {
+    shouldAbort() { if (++calls === 6) f.region.close.text = '// changed after pass'; return false; },
+  });
+  assert.equal(calls, 6);
+  assert.equal(result.ledger.published, false);
+  assert.equal(result.ledger.stopReason, 'cancelled-or-stale-before-publication');
+  assert.deepEqual(state.snapshot(), before);
+  assert.equal(readProvedRegionErasure(state, f.context), null);
+});

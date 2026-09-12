@@ -62,7 +62,7 @@ SYM-01/X-03 の再実装は割り当てません。C3 metadata と X-02 の広�
 - 以前の `714bbc56` に対する `npm run check` は MachineEffects の 13 テストファイルで失敗。WebKit の `libxslt.so.1` 不足も含み、すべてを環境原因とは分類していません。
 - 結合後の full check、Phase 8/9、独立 shadow の確定結果が揃うまで CHECKPOINT-LOCKED を解除しません。実機・環境整備・別 issue 修正は今回の担当外です。
 
-生成物は結合ソースから canonical build で再生成済みです（serial `2322242247`、build ID `696a5b34a5d8077192ea90c9`）。公開前に再 build の差分を確認し、公開 SHA と生成 ID の記録を保持します。
+生成物は結合ソースから canonical build で再生成済みです（serial `2322242248`、build ID `9904119bb391e9d7473ad180`）。公開前に再 build の差分を確認し、公開 SHA と生成 ID の記録を保持します。
 
 追加修正後の lint と module-boundaries 検査、結合ファイル全体の所有範囲検査は通過しました。
 
@@ -6453,3 +6453,12 @@ memory PHI の `validation:'required'` も保持します。これらが揃う�
 予算を緩めず対象を再検査します。契約・失効・vertical を含む corpus 検査もまだ実行中です。
 lint、module-boundaries、canonical build は通過。生成物は serial `2322242247`、
 build ID `696a5b34a5d8077192ea90c9` です。これを全体受入完了とは扱いません。
+
+
+最終受入直前の callback で入力が変わる場合も、private な候補 commit を公開しない検査を追加しました。
+候補関係 13 件が通過しています（`c4-region-candidate-publication-8bed426c-1b9f-44f4-9a7e-24dcd44f40b3.json`）。
+`c315eb355` のコミット後の選択検査は 96 件中 95 件通過し、残る scalar proof の `deadline` は
+予算を変えない個別再検査で通過しました（`c4-region-candidate-scalar-recheck-89ff81ef-ae56-4b24-accd-e94bf34b59cd.json`）。
+その後の最終公開時の失効検査の修正は、改めてコミット後の検査に含めます。
+再生成後は serial `2322242248`、build ID `9904119bb391e9d7473ad180` です。
+長い corpus/契約検査は引き続き実行中で、全体の通過結果には含めません。

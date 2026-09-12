@@ -18,7 +18,7 @@
  */
 
 import { stableDigest } from '../../core/identity/index.js';
-import { REGION_ERASURE_PASS, runRegionErasurePass } from './region-erasure-pass.js';
+import { REGION_ERASURE_PASS, runRegionErasurePass, isRegionErasurePlan } from './region-erasure-pass.js';
 import { PROOF_REWRITE_PASS, runProofRewritePass, isPhase8RewritePlan } from './pass-validation.js';
 import { buildRewriteRegistry, passRewritePolicy, rewriteCoverage, REWRITE_REGISTRY_VERSION } from './rewrite-registry.js';
 export { preparePhase8RewritePlan, isPhase8RewritePlan } from './pass-validation.js';
@@ -484,7 +484,8 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     stopReason: null,
   };
   ledger.publicationDigest = stableDigest({ ...ledger, publicationDigest: undefined });
-  if (aborted(budget) || (proofRewritePlan != null && !isPhase8RewritePlan(proofRewritePlan, context))) {
+  if (aborted(budget) || (proofRewritePlan != null && !isPhase8RewritePlan(proofRewritePlan, context))
+    || (regionErasurePlan != null && !isRegionErasurePlan(regionErasurePlan, context))) {
     return {
       ledger: withheldLedger('cancelled', 'cancelled-or-stale-before-publication', [], registryDigest, before),
       timings: Object.freeze(timings), analysis: authoritative,
