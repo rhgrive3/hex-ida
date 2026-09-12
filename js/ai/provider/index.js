@@ -37,6 +37,7 @@ export class WorkerAIProvider extends AIProvider {
     this.capabilitiesPromise = null;
     this.capabilitiesController = null;
     this.capabilitiesWaiters = 0;
+    this.configured = null;
   }
 
   async prepareCapabilities(options = {}) {
@@ -136,6 +137,7 @@ export class WorkerAIProvider extends AIProvider {
       let payload = null;
       try { payload = JSON.parse(text); } catch { /* conservative fallback below */ }
       if (payload?.capabilities && typeof payload.capabilities === 'object') this.providerCapabilities = { ...this.providerCapabilities, ...payload.capabilities };
+      if (typeof payload?.configured === 'boolean') this.configured = payload.configured;
       this.capabilitiesPrepared = true;
       return this.getCapabilities();
     } catch (error) {

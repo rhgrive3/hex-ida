@@ -7,6 +7,16 @@ function makeClass(bytes) {
     moduleId: 'managed-mod:test:jvm:4807',
     vmSpecEdition: 'java-se-17',
     thisClassName: 'T',
+    // #5083: the lifter fails closed when an invoke operand does not name an
+    // InterfaceMethodref; CP1 is the target #1 itself.
+    constantPool: [null,
+      { tag: 11, classIndex: 2, nameAndTypeIndex: 3 },
+      { tag: 7, nameIndex: 4 },
+      { tag: 12, nameIndex: 5, descriptorIndex: 6 },
+      { tag: 1, value: 'T' },
+      { tag: 1, value: 'm' },
+      { tag: 1, value: '()V' },
+    ],
     methods: [{
       accessFlags: 0x0008,
       name: 'm',

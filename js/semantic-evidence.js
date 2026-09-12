@@ -8,17 +8,23 @@
 import { GROUP, fuse, adapterEvidence } from './evidence.js';
 
 function boundedStrength(v) {
-  if (v == null || !Number.isFinite(Number(v))) return 0;
-  return Math.max(0, Math.min(1, Number(v)));
+  if (typeof v !== 'number' || !Number.isFinite(v)) return 0;
+  return Math.max(0, Math.min(1, v));
 }
 function boundedLikelihoodRatio(value, fallback) {
   if (value == null) return fallback;
   const n = Number(value);
   return Number.isFinite(n) ? Math.max(1, n) : fallback;
 }
+function isVerificationOrigin(owner) {
+  const raw = owner?.verificationOrigin;
+  return typeof raw === 'string' && raw.length > 0;
+}
 function isExplicitSemanticProof(f, e) {
-  const grade=String(f?.proofGrade || e?.proofGrade || f?.grade || e?.grade || '').toLowerCase();
-  return f?.verified === true || e?.verified === true || !!(f?.verificationOrigin || e?.verificationOrigin)
+  const raw = f?.proofGrade || e?.proofGrade || f?.grade || e?.grade || '';
+  const grade = typeof raw === 'string' ? raw.toLowerCase() : '';
+  return f?.verified === true || e?.verified === true
+    || isVerificationOrigin(f) || isVerificationOrigin(e)
     || ['verified','proof','proof-grade','deterministic'].includes(grade);
 }
 function runtimeCompleted(r) {

@@ -1,16 +1,34 @@
 import { boundedInteger } from '../debug/adapter.js';
 
-function estimateBytes(event) {
+function estimateBytes(value) {
   const seen = new WeakSet();
+  const stack = [value];
+  let total = 0;
   try {
-    return JSON.stringify(event, (_,v) => {
-      if (typeof v === 'bigint') return v.toString();
-      if (v && typeof v === 'object') {
-        if (seen.has(v)) return '[Circular]';
-        seen.add(v);
+    while (stack.length > 0) {
+      const v = stack.pop();
+      if (v === null || v === undefined) { total += 4; continue; }
+      const type = typeof v;
+      if (type === 'string') { total += v.length * 2 + 2; continue; }
+      if (type === 'bigint') { total += v.toString().length * 2 + 2; continue; }
+      if (type === 'number' || type === 'boolean') { total += 16; continue; }
+      if (type === 'function' || type === 'symbol') { total += 16; continue; }
+      if (type !== 'object') { total += 16; continue; }
+      if (seen.has(v)) { total += 10; continue; }
+      seen.add(v);
+      total += 16;
+      if (ArrayBuffer.isView(v)) { total += v.byteLength + 2; continue; }
+      if (v instanceof ArrayBuffer) { total += v.byteLength + 2; continue; }
+      if (v instanceof Date) { total += 24 * 2 + 2; continue; }
+      if (Array.isArray(v)) {
+        total += 2;
+        for (let i = 0; i < v.length; i += 1) stack.push(v[i]);
+        continue;
       }
-      return v;
-    }).length * 2;
+      total += 2;
+      for (const key of Object.keys(v)) { total += key.length * 2 + 4; stack.push(v[key]); }
+    }
+    return total;
   }
   catch { return Number.POSITIVE_INFINITY; }
 }
