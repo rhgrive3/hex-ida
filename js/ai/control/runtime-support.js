@@ -1,5 +1,5 @@
 import { AIError } from '../schema.js';
-import { canonicalBindingId, firstBinding, resolveBinaryIdentity } from './snapshot.js';
+import { canonicalBindingId, firstBinding, resolveBinaryIdentity, sameStrongIdentity } from './snapshot.js';
 
 export function requiredScopeForTool(tool) {
   if (['search_functions','search_strings','compare_functions','lookup_known_function'].includes(tool)) return 'binary';
@@ -66,10 +66,21 @@ export function sessionMatchesSnapshot(session, snapshot) {
 }
 export function assertLiveBindingsUnchanged(local, snapshot) {
   const live = resolveBinaryIdentity(local, {});
-  const snapshotIdentity = snapshot.binaryIdentity || null;
-  const sameId = live.id === snapshotIdentity?.id;
-  const bothWeak = !strongIdentity(live, live.id) && !strongIdentity(snapshotIdentity, snapshot.binaryId);
-  const same = sameId || (bothWeak && sameLegacy(live.legacyId, snapshot.legacyBinaryId));
+  const expectedLive = snapshot.binaryIdentitySource === 'request-fallback'
+    ? (snapshot.liveBinaryIdentity || null)
+    : (snapshot.binaryIdentity || null);
+  const expectedId = snapshot.binaryIdentitySource === 'request-fallback'
+    ? expectedLive?.id
+    : snapshot.binaryId;
+  const expectedLegacy = snapshot.binaryIdentitySource === 'request-fallback'
+    ? expectedLive?.legacyId
+    : snapshot.legacyBinaryId;
+  const sameId = live.id === expectedLive?.id;
+  const liveStrong = strongIdentity(live, live.id);
+  const expectedStrong = strongIdentity(expectedLive, expectedId);
+  const same = liveStrong && expectedStrong
+    ? sameStrongIdentity(live, expectedLive, local)
+    : !liveStrong && !expectedStrong && (sameId || sameLegacy(live.legacyId, expectedLegacy));
   if (!same) throw new AIError('scope_violation', 'The binary changed while this AI turn was running; refusing to mix workbench states.');
   const liveProject = firstBinding(local.projectId, local.project?.id, local.project?.binaryHash);
   if (!sameNullableBinding(liveProject, snapshot.projectIdentity)) {
