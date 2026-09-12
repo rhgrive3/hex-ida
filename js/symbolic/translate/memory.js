@@ -15,7 +15,12 @@ function validWidth(bits) {
 }
 export function translateMemoryScalar(inst, args, bits, condition = null) {
   validWidth(bits);
-  const expression = lowerScalarInstruction(inst, args, bits, condition);
+  return foldMemoryScalarExpression(lowerScalarInstruction(inst, args, bits, condition), bits);
+}
+/** Shared bounded canonical evaluation, including branch predicates. Execution
+ * must retain concrete Bool folding when a scalar lowerer is factored out. */
+export function foldMemoryScalarExpression(expression, bits) {
+  validWidth(bits);
   const shape = collectSymbols([expression], { maxExprNodes:4096, maxExprDepth:128 });
   if (shape.limitExceeded || shape.depthExceeded) throw new QueryFailure('scalar-expression-budget');
   if (shape.unsupportedReason) return undef(bits, shape.unsupportedReason);

@@ -10,7 +10,7 @@ import { OP, MK, COND, mayAliasProvenance } from '../ir.js';
 import { valueBefore } from '../dataflow-semantic.js';
 import { createByteMemory, forkByteMemoryForExecution } from './memory/byte-memory.js';
 import { QueryFailure, monotonicNow, boundedLimit } from './memory/query-state.js';
-import { translateExecutionValue, translateMemoryAccess, translateMemoryScalar } from './translate/memory.js';
+import { translateExecutionValue, translateMemoryAccess, translateMemoryScalar, foldMemoryScalarExpression } from './translate/memory.js';
 import { createBv, createConnective, computeStructuralHash } from './expr/index.js';
 import { lowerDirectBranchCondition } from './translate/scalar.js';
 
@@ -330,7 +330,7 @@ function branchCondition(inst, state, ir, opts, memo) {
     const expression = value ? evalValue(value, state, ir, opts, memo, new Set()) : null;
     const condition = lowerDirectBranchCondition(inst, expression);
     if (condition.kind === 'unknown_semantic') throw new QueryFailure(condition.reason);
-    return condition;
+    return foldMemoryScalarExpression(condition, expression.sort.width);
   }
   if ((kind === 'cbz' || kind === 'cbnz') && inst.args[0]) {
     const a = evalValue(inst.args[0].value, state, ir, opts, memo, new Set());
