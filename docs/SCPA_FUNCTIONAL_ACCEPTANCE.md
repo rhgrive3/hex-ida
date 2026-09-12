@@ -67,3 +67,11 @@ Node `v24.19.0`、package-lock指定のesbuild **0.28.2**で生成した。添�
 Node v24.19.0 / lock指定esbuild0.28.2でcanonical build・再buildを実行し、生成差分0。release serial2322242197。詳細な検証記録・統合source identityは `reports/scpa/session15-integration.json`。GitHubの最新HEADとBASEに対する正規admission、および実際のmain到達は別途readbackで確認する。
 
 公開前clean commitでの再実行では、2304セルの保存・復元試験にFAILED行が2つ発生した。旧assertionは理由を記録していなかったためCPU競合は推定に留める。このsynthetic試験のみ継承した100ms/25msの短いfixture期限を既存の有限production既定値へ合わせ、全2304セル・9batch・assertion・20秒総上限を維持した。独立したtimeout試験は変更せず、失敗先頭8行の診断を追加した。詳細と最終再検証はsession15記録と公開PR本文を参照。
+
+## Session16 — main競合解消とマージ候補の再検証
+
+#8247と統合済み#8086のmain反映に向け、main `83c8ac924109ca09700b4b1d5ee1c335c4c0abd0` までの追加50＋13 commitsを取り込んだ。取得した全blobとmain treeを照合し、重複するruntime・summary・session bridge・CircleCI設定は双方の変更を保持して独立レビューした。mainの全test commandと#8086の追加3本を保持している。
+
+最終sourceでSCPA **70ファイル・1,403/1,403 PASS**。追加main回帰は18ファイル48件と6ファイル34件がPASS。ownershipは実差分274パスと登録274パスが完全一致し、8件の負例を含むテストがPASS。lint、canonical build、再build差分0を確認した。release serial `2322242199`、build ID `145c5a799efd0f6b2557bff4`。
+
+旧HEAD `877b0ec` のCircleCI agent-loop失敗はステップログを取得できず、原因未確定。テストと依存16ファイルは取り込み済みmainと同一で、Node24の固定sourceでは25回すべてPASSだった。推測による修正はせず、main統合後の正規CI再実行で確認する。最新HEAD・BASEへの実レビュー、CI admission、main到達は公開PRの記録で確認する。このcheckpoint単独ではマージ済みや実機受入を主張しない。
