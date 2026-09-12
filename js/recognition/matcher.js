@@ -232,13 +232,14 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
   const matchingBudget = budget.snapshot();
   const truncatedComponents = solved.truncatedComponents.slice(0, 32);
   const truncated = matchingBudget.truncated || solved.truncatedComponents.length > 0;
+  const hasMatchAmbiguity = matches.some((match) => match.ambiguous);
   return {
     matches, deleted, new: added,
     candidatesEvaluated: all.length,
     candidateComparisons: matchingBudget.candidateEvaluations,
     indexBuckets: index.buckets.size,
     truncated,
-    ambiguous: truncated,
+    ambiguous: truncated || hasMatchAmbiguity,
     unresolvedBefore: truncated ? before.filter((_x, i) => solved.ambiguousLeft.has(i)) : [],
     unresolvedAfter: truncated ? after.filter((_x, i) => solved.ambiguousRight.has(i)) : [],
     matching: {
