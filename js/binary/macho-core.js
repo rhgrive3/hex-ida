@@ -47,6 +47,9 @@ const LC_ENCRYPTION_INFO = 0x21;
 const LC_ENCRYPTION_INFO_64 = 0x2c;
 const LC_DYLD_EXPORTS_TRIE = 0x80000033;
 const LC_DYLD_CHAINED_FIXUPS = 0x80000034;
+const ARM_THREAD_STATE = 1;
+const ARM_THREAD_STATE_COUNT = 17;
+const ARM_THREAD_STATE_PC_OFFSET = 60;
 const ARM_THREAD_STATE64 = 6;
 const ARM_THREAD_STATE64_COUNT = 68;
 const ARM_THREAD_STATE64_PC_OFFSET = 256;
@@ -442,7 +445,7 @@ function parseThreadEntrypoint(r, p, cmdsize, cpu, bits) {
     const arch = cpuName(cpu);
     if (arch === 'arm64' && flavor === ARM_THREAD_STATE64 && count === ARM_THREAD_STATE64_COUNT) return r.u64(state + ARM_THREAD_STATE64_PC_OFFSET);
     if (arch === 'x86_64' && flavor === X86_THREAD_STATE64 && count === X86_THREAD_STATE64_COUNT) return r.u64(state + X86_THREAD_STATE64_RIP_OFFSET);
-    if (arch === 'arm' && bits === 32 && flavor === 1 && stateBytes >= 64) return BigInt(r.u32(state + 60));
+    if (arch === 'arm' && bits === 32 && flavor === ARM_THREAD_STATE && count === ARM_THREAD_STATE_COUNT) return BigInt(r.u32(state + ARM_THREAD_STATE_PC_OFFSET));
     q = state + stateBytes;
   }
   return null;
