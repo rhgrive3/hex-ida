@@ -1,0 +1,90 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+  inventoryFromGit,
+  loadManifest,
+  regexFor,
+} from '../phase8-ownership.mjs';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const MAIN_GATE_BATCH_LANE = 'fix/main-gate-recovery-20260913';
+
+// This is an exact, short-lived integration route for the current gate-repair
+// candidate. Phase 8 validates only its own subset; every foreign path is
+// enumerated so this route cannot become a general ownership exemption.
+export const CROSS_LANE_ROUTES = Object.freeze({
+  [MAIN_GATE_BATCH_LANE]: Object.freeze([
+    '.circleci/config.yml',
+    'js/targets/abi/aapcs64-core.js',
+    'js/targets/architecture/riscv64/decoded-instruction.js',
+    'tests/machine-effects/issue-5566-x86-setssbsy-routing.test.mjs',
+    'tests/machine-effects/issue-5999-riscv64-compressed-capability-conflict.test.mjs',
+    'tests/machine-effects/issue-6133-x87-trusted-terminal-domain.test.mjs',
+    'tests/machine-effects/x86-long64-integer-denominator.test.mjs',
+    'tests/scpa/native-reference-navigation.test.mjs',
+    'tests/scpa/native-retained-async-integration.test.mjs',
+    'tests/scpa/native-retained-async.test.mjs',
+    'tests/scpa/store-producer.test.mjs',
+    'tests/scpa/transform-native.test.mjs',
+    'tools/validation/machine-effects/x86-long64-integer-denominator.mjs',
+  ]),
+});
+
+function phase8Owned(file, patterns) {
+  return patterns.some((pattern) => regexFor(pattern).test(file));
+}
+
+export function validateCrossLaneInventory(branch, files, { manifest = loadManifest() } = {}) {
+  if (typeof branch !== 'string' || !Object.hasOwn(CROSS_LANE_ROUTES, branch)) {
+    throw new TypeError(`no exact Phase 8 cross-lane route for branch ${JSON.stringify(branch)}`);
+  }
+  if (!Array.isArray(files) || files.some((file) => typeof file !== 'string' || file.length === 0)) {
+    throw new TypeError('cross-lane changed-file inventory must contain non-empty strings');
+  }
+
+  const unique = [...new Set(files)].sort((left, right) => Buffer.from(left).compare(Buffer.from(right)));
+  const owned = unique.filter((file) => phase8Owned(file, manifest.lanes.p8));
+  const foreign = unique.filter((file) => !phase8Owned(file, manifest.lanes.p8));
+  const allowedForeign = new Set(CROSS_LANE_ROUTES[branch]);
+  const unexpected = foreign.filter((file) => !allowedForeign.has(file));
+  if (unexpected.length) {
+    throw new TypeError(`cross-lane route has unexpected foreign paths: ${unexpected.join(', ')}`);
+  }
+  if (owned.length === 0) {
+    throw new TypeError('cross-lane route has no Phase 8-owned paths');
+  }
+  return Object.freeze(owned);
+}
+
+function parseArguments(argv) {
+  const values = new Map();
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (!['--branch', '--base-sha', '--head-sha'].includes(token) || values.has(token)) {
+      throw new TypeError(`invalid cross-lane argument: ${token}`);
+    }
+    const value = argv[index + 1];
+    if (value == null || value.startsWith('--')) throw new TypeError(`missing value for ${token}`);
+    values.set(token, value);
+    index += 1;
+  }
+  if (values.size !== 3) throw new TypeError('branch, base SHA, and head SHA are required');
+  return values;
+}
+
+export function runCli(argv = process.argv.slice(2), { root = ROOT, stdout = process.stdout, stderr = process.stderr } = {}) {
+  try {
+    const args = parseArguments(argv);
+    const inventory = inventoryFromGit(root, args.get('--base-sha'), args.get('--head-sha'));
+    const owned = validateCrossLaneInventory(args.get('--branch'), inventory.files);
+    stdout.write(`${JSON.stringify(owned)}\n`);
+    return 0;
+  } catch (error) {
+    stderr.write(`phase8 cross-lane inventory: ${error.message}\n`);
+    return 1;
+  }
+}
+
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) process.exitCode = runCli();
