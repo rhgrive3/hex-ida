@@ -51,6 +51,7 @@ export function overlayWasmSelect(fn, lowered, options = {}) {
 }
 
 export function projectWasmSelectView(lowered) {
+  if (lowered?.frontendId !== 'wasm') return lowered;
   const old = lowered?.semanticIr;
   if (!old?.nodes?.some((node) => node.kind === 'select')) return lowered;
   const nodes = old.nodes.map((node) => node.kind === 'select'

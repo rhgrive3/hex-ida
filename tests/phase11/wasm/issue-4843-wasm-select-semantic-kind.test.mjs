@@ -8,6 +8,7 @@ import {
   decompileManagedMethod,
   lowerVMEffectsToSemanticIr,
 } from '../../../js/managed/shared/bridge-v2.js';
+import { projectWasmSelectView } from '../../../js/managed/shared/bridge-wasm-select-overlay-v2.js';
 
 console.log('[phase11] running WASM select Semantic IR regression for #4843...');
 
@@ -113,6 +114,13 @@ assert.deepEqual(
 );
 assert.ok(!direct.semanticIr.nodes.some((node) =>
   node.sourceEffectIds?.includes('vm-op:select') && (node.kind === 'unary' || node.kind === 'compare')));
+
+const foreignSelect = { frontendId: 'jvm', semanticIr: { nodes: [{ kind: 'select' }] } };
+assert.equal(
+  projectWasmSelectView(foreignSelect),
+  foreignSelect,
+  'decompiler select projection must not rewrite non-WASM frontend semantics',
+);
 
 const malformedMethodId = 'managed-method:wasm-select-malformed';
 assert.throws(
