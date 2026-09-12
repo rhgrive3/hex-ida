@@ -25,6 +25,32 @@ function weakObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
 
+const deeplyFrozenObjects = new WeakSet();
+const memorySsaDigestCache = new WeakMap();
+const accessBindingCache = new WeakMap();
+
+function isDeeplyFrozenPlainData(value, active = new WeakSet()) {
+  if (value == null || typeof value !== 'object') return true;
+  if (deeplyFrozenObjects.has(value)) return true;
+  if (active.has(value)) return true;
+  const prototype = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) return false;
+  if (!Object.isFrozen(value)) return false;
+  active.add(value);
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    const descriptor = descriptors[key];
+    if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')
+        || !isDeeplyFrozenPlainData(descriptor.value, active)) {
+      active.delete(value);
+      return false;
+    }
+  }
+  active.delete(value);
+  deeplyFrozenObjects.add(value);
+  return true;
+}
+
 function withoutDigest(value, key = 'proofDigest') {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const { [key]: ignored, ...rest } = value;
@@ -78,6 +104,14 @@ export function canonicalMemorySsaPayload(artifact) {
 }
 
 export function canonicalMemorySsaDigest(artifact) {
+  if (artifact && typeof artifact === 'object' && !Array.isArray(artifact)
+      && isDeeplyFrozenPlainData(artifact)) {
+    const cached = memorySsaDigestCache.get(artifact);
+    if (cached !== undefined) return cached;
+    const digest = stableDigest(canonicalMemorySsaPayload(artifact));
+    memorySsaDigestCache.set(artifact, digest);
+    return digest;
+  }
   return stableDigest(canonicalMemorySsaPayload(artifact));
 }
 
@@ -90,27 +124,34 @@ export function canonicalMemorySsaDigest(artifact) {
  * so an IR-less serialized artifact cannot redirect one access merely by
  * re-signing the fields it is presenting.
  */
-export function canonicalAccessBinding({
-  memorySsaEntityId,
-  entityKind,
-  sourceEntityId,
-  nodeId,
-  regionId,
-  sourceKind,
-  role,
-  accessIndex,
-  order,
-  broad,
-  memory,
-  sequencing,
-  origin,
-  byteRange,
-  rangeProof,
-  accessProof,
-  aliasRelation,
-  aliasProof,
-  canonicalValue,
-}) {
+export function canonicalAccessBinding(access) {
+  const cacheable = access && typeof access === 'object' && !Array.isArray(access)
+    && isDeeplyFrozenPlainData(access);
+  if (cacheable) {
+    const cached = accessBindingCache.get(access);
+    if (cached !== undefined) return cached;
+  }
+  const {
+    memorySsaEntityId,
+    entityKind,
+    sourceEntityId,
+    nodeId,
+    regionId,
+    sourceKind,
+    role,
+    accessIndex,
+    order,
+    broad,
+    memory,
+    sequencing,
+    origin,
+    byteRange,
+    rangeProof,
+    accessProof,
+    aliasRelation,
+    aliasProof,
+    canonicalValue,
+  } = access ?? {};
   const base = {
     memorySsaEntityId: String(memorySsaEntityId ?? ''),
     entityKind: String(entityKind ?? ''),
@@ -132,10 +173,14 @@ export function canonicalAccessBinding({
     aliasProofDigest: stableDigest(aliasProof ?? null),
     canonicalValueDigest: stableDigest(canonicalValue ?? null),
   };
-  return {
+  const binding = {
     ...base,
     bindingDigest: stableDigest(base),
   };
+  if (!cacheable) return binding;
+  const frozen = Object.freeze(binding);
+  accessBindingCache.set(access, frozen);
+  return frozen;
 }
 
 export function canonicalAccessBindingDigest(binding) {

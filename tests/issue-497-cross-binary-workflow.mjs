@@ -3,6 +3,7 @@ import fs from 'node:fs';
 
 const workflow = fs.readFileSync('.github/workflows/cross-binary-accuracy.yml', 'utf8');
 const requirements = fs.readFileSync('tests/oracle-requirements.txt', 'utf8');
+const pseudocRunner = fs.readFileSync('tests/accuracy-pseudoc-parallel.mjs', 'utf8');
 const measure = workflow.slice(workflow.indexOf('\n  measure:'), workflow.indexOf('\n  accuracy:'));
 const aggregate = workflow.slice(workflow.indexOf('\n  accuracy:'));
 
@@ -13,7 +14,10 @@ const detect = measure.indexOf('name: Detect real fixture configuration');
 const requireAll = measure.indexOf('name: Require all real fixture URLs');
 assert.ok(detect >= 0, 'fixture detection step must exist in each target runner');
 assert.ok(requireAll > detect, 'fail-closed requirement must run after detection');
-const failClosedGate = measure.slice(requireAll, measure.indexOf('\n\n      - name: Build exact oracle cache key', requireAll));
+const failClosedGate = measure.slice(
+  requireAll,
+  measure.indexOf('\n\n      - name: Build exact oracle cache key', requireAll),
+);
 assert.match(failClosedGate, /if:\s*steps\.fixtures\.outputs\.enabled\s*!=\s*'true'/);
 assert.match(failClosedGate, /exit 1/);
 assert.doesNotMatch(failClosedGate, /continue-on-error:\s*true/);
@@ -64,6 +68,7 @@ const restore = measure.slice(
 );
 assert.match(restore, /actions\/cache\/restore@v4/);
 assert.match(restore, /steps\.oracle-key\.outputs\.key/);
+assert.doesNotMatch(restore, /restore-keys:/, 'oracle cache reuse must remain exact-only');
 
 const generate = measure.slice(
   measure.indexOf('name: Generate oracle on cache miss'),
@@ -95,20 +100,24 @@ for (const partition of ['core', 'pinpoint', 'pseudoc']) {
     const block = measure.slice(start, nextStep >= 0 ? nextStep : measure.length);
     const keyMatch = block.match(/\n\s+key:\s*([^\n]+)/);
     assert.ok(keyMatch, `${operation.toLowerCase()} ${partition} cache must declare an exact key`);
+    assert.doesNotMatch(block, /restore-keys:/,
+      `${operation.toLowerCase()} ${partition} result cache must remain exact-only`);
     resultCacheKeys.push({ operation, partition, key: keyMatch[1].trim() });
   }
 }
 assert.equal(resultCacheKeys.length, 6,
   'core, pinpoint, and pseudoc must each have restore and save result-cache keys');
 for (const { operation, partition, key } of resultCacheKeys) {
-  assert.match(key, /^accuracy-result-v8-/,
-    `${operation.toLowerCase()} ${partition} cache must use the v8 result generation`);
+  assert.match(key, /^accuracy-result-v9-/,
+    `${operation.toLowerCase()} ${partition} cache must use the v9 bounded-local generation`);
 }
-assert.doesNotMatch(measure, /accuracy-result-v7-/,
-  'stale result-cache generations must not remain in the active workflow');
+assert.doesNotMatch(measure, /accuracy-result-v8-/,
+  'stale single-world result-cache generations must not remain active');
 
-const measureStart = measure.indexOf('name: Measure missing accuracy partitions in one analysis world');
-assert.ok(measureStart >= 0, 'single-world measurement step must exist');
+const measureStart = measure.indexOf(
+  'name: Measure missing accuracy partitions with bounded local parallelism',
+);
+assert.ok(measureStart >= 0, 'bounded runner-local measurement step must exist');
 const measureScript = measure.slice(
   measureStart,
   measure.indexOf('name: Save exact core result cache', measureStart),
@@ -125,52 +134,77 @@ assert.ok(
   measureScript.includes("pinpoint_ids='pinpoint,pinpoint-partial'"),
   'pinpoint denominator must remain exact',
 );
-assert.ok(
-  measureScript.includes("pseudoc_ids='pseudoc'"),
-  'pseudoc denominator must remain exact',
-);
+assert.ok(measureScript.includes("pseudoc_ids='pseudoc'"),
+  'pseudoc denominator must remain exact');
 for (const conditional of [
-  'if [[ "$CORE_CACHE_HIT" != "true" ]]; then append_features "$core_ids"; fi',
-  'if [[ "$PINPOINT_CACHE_HIT" != "true" ]]; then append_features "$pinpoint_ids"; fi',
-  'if [[ "$PSEUDOC_CACHE_HIT" != "true" ]]; then append_features "$pseudoc_ids"; fi',
-]) assert.ok(measureScript.includes(conditional), 'every cache-missing partition must join the single analysis world');
-assert.match(measureScript, /if \[\[ -z "\$features" \]\][\s\S]*exit 1/,
-  'single-world measurement must fail closed if invoked without a missing partition');
-assert.equal(
-  (measureScript.match(/\btests\/accuracy\.mjs\b/g) || []).length,
-  1,
-  'all cache-missing features must share exactly one accuracy.mjs analysis world',
-);
-assert.ok(measureScript.includes('--only="$features"'),
-  'the single analysis world must receive the complete dynamic feature denominator');
-assert.ok(measureScript.includes('--json > "$combined_output"'),
-  'single-world results must be captured before partition publication');
-assert.ok(measureScript.includes('2> "$combined_log"'),
-  'single-world diagnostics must be preserved');
-assert.doesNotMatch(measureScript, /accuracy-pseudoc-parallel|LOCAL_PSEUDOC_WORKERS|accuracy-local-nonpseudoc-[01]|pids\+=\("\$!"\)/,
-  'the retired multi-process runner-local layout must not return');
+  'if [[ "$CORE_CACHE_HIT" != "true" ]]; then append_nonpseudoc_features "$core_ids"; fi',
+  'if [[ "$PINPOINT_CACHE_HIT" != "true" ]]; then append_nonpseudoc_features "$pinpoint_ids"; fi',
+]) assert.ok(measureScript.includes(conditional),
+  'every cache-missing non-pseudoc partition must join the exact non-pseudoc denominator');
+assert.match(measureScript,
+  /if \[\[ -z "\$nonpseudoc_features" && "\$PSEUDOC_CACHE_HIT" == "true" \]\][\s\S]*exit 1/,
+  'bounded measurement must fail closed if invoked without a missing partition');
 
-assert.ok(measureScript.includes("const rows = JSON.parse(fs.readFileSync('accuracy-local-missing.json', 'utf8'));"),
-  'single-world output must be parsed exactly once for deterministic partitioning');
-assert.ok(measureScript.includes("const coreIds = new Set(['sections','funcs','funcs-guess','disasm','kinds','calls','refs','imports','objc','selstub','strings','xrefs','funcname','selffield','role','apimeaning','summary','expr','formula']);"),
-  'core publication denominator must match the measured core denominator');
-assert.ok(measureScript.includes("const pinpointIds = new Set(['pinpoint', 'pinpoint-partial']);"),
-  'pinpoint publication denominator must match the measured pinpoint denominator');
-assert.ok(measureScript.includes("const pseudocIds = new Set(['pseudoc']);"),
-  'pseudoc publication denominator must match the measured pseudoc denominator');
-assert.ok(measureScript.includes("fs.writeFileSync(path + '.tmp', JSON.stringify(selected, null, 2) + '\\n');"),
-  'new partition results must stage through temporary files');
+assert.equal((measureScript.match(/\btests\/accuracy\.mjs\b/g) || []).length, 1,
+  'all cache-missing non-pseudoc features must share exactly one accuracy.mjs world');
+assert.equal((measureScript.match(/\btests\/accuracy-pseudoc-parallel\.mjs\b/g) || []).length, 1,
+  'the canonical pseudoc denominator must use exactly one runner-local scheduler');
+assert.ok(measureScript.includes('--only="$nonpseudoc_features"'),
+  'the non-pseudoc world must receive the complete dynamic denominator');
+assert.ok(measureScript.includes('--max-old-space-size=2600 tests/accuracy.mjs'),
+  'the concurrent non-pseudoc world must stay inside the proven 2600 MiB heap envelope');
+assert.ok(measureScript.includes('--workers=3'),
+  'pseudoc must start with exactly three worlds while non-pseudoc is active');
+assert.ok(measureScript.includes('--max-workers=4'),
+  'pseudoc may use the fourth CPU only after non-pseudoc exits');
+assert.ok(measureScript.includes('--scale-file="$nonpseudoc_done"'),
+  'pseudoc scaling must be gated by the exact non-pseudoc completion marker');
+
+const commandStatus = measureScript.indexOf('command_status=$?');
+const statusPublish = measureScript.indexOf(
+  'printf \'%s\\n\' "$command_status" > "$nonpseudoc_status"',
+);
+const donePublish = measureScript.indexOf('touch "$nonpseudoc_done"');
+assert.ok(commandStatus >= 0 && statusPublish > commandStatus && donePublish > statusPublish,
+  'the scale marker must publish only after the non-pseudoc command exits and its status is recorded');
+const pseudocStart = measureScript.indexOf('node tests/accuracy-pseudoc-parallel.mjs');
+const waitForNonpseudoc = measureScript.indexOf('wait "$nonpseudoc_pid"');
+assert.ok(pseudocStart >= 0 && waitForNonpseudoc > pseudocStart,
+  'pseudoc and non-pseudoc work must overlap before fail-closed aggregation');
+for (const statusEvidence of [
+  'nonpseudoc_wrapper_status=$?',
+  'nonpseudoc_status_value=$(<"$nonpseudoc_status")',
+  'pseudoc_status_value=$?',
+  'nonpseudoc=$nonpseudoc_status_value pseudoc=$pseudoc_status_value',
+]) assert.ok(measureScript.includes(statusEvidence),
+  'both local lanes must publish and aggregate explicit outcomes');
+assert.doesNotMatch(measureScript, /continue-on-error:\s*true/,
+  'no local lane failure may be converted into success');
+
+assert.ok(measureScript.includes(
+  'node tests/accuracy-result-validate.mjs "$nonpseudoc_output" \\\n              --expect="$nonpseudoc_features"',
+), 'the complete dynamic non-pseudoc union must be validated before partitioning');
+assert.ok(measureScript.includes(
+  "const rows = JSON.parse(fs.readFileSync('accuracy-local-nonpseudoc.json', 'utf8'));",
+), 'non-pseudoc output must be parsed exactly once for deterministic partition publication');
+assert.ok(measureScript.includes(
+  "const coreIds = new Set(['sections','funcs','funcs-guess','disasm','kinds','calls','refs','imports','objc','selstub','strings','xrefs','funcname','selffield','role','apimeaning','summary','expr','formula']);",
+), 'core publication denominator must match the measured core denominator');
+assert.ok(measureScript.includes(
+  "const pinpointIds = new Set(['pinpoint', 'pinpoint-partial']);",
+), 'pinpoint publication denominator must match the measured pinpoint denominator');
+assert.ok(measureScript.includes(
+  "fs.writeFileSync(path + '.tmp', JSON.stringify(selected, null, 2) + '\\n');",
+), 'new partition results must stage through temporary files');
 
 for (const [cacheEnv, partition] of [
   ['CORE_CACHE_HIT', 'core'],
   ['PINPOINT_CACHE_HIT', 'pinpoint'],
-  ['PSEUDOC_CACHE_HIT', 'pseudoc'],
 ]) {
   const expected = "if (process.env." + cacheEnv + " !== 'true') write('accuracy-part-${{ matrix.target.name }}-" + partition + ".json',";
   assert.ok(measureScript.includes(expected),
     `${partition} must be split only when its exact cache missed`);
 }
-
 for (const [variable, partition] of [
   ['core_output', 'core'],
   ['pinpoint_output', 'pinpoint'],
@@ -181,13 +215,30 @@ for (const [variable, partition] of [
   const publishCommand = 'mv ' + staged + ' "$' + variable + '"';
   const validationIndex = measureScript.indexOf(validateCommand);
   const publicationIndex = measureScript.indexOf(publishCommand);
-  assert.ok(validationIndex >= 0,
-    `${partition} output must be validated before publication`);
-  assert.ok(publicationIndex >= 0,
-    `${partition} output must publish atomically after validation`);
+  assert.ok(validationIndex >= 0, `${partition} output must be validated before publication`);
+  assert.ok(publicationIndex >= 0, `${partition} output must publish atomically after validation`);
   assert.ok(validationIndex < publicationIndex,
     `${partition} validation must precede atomic publication`);
 }
+
+assert.match(pseudocRunner, /value < 1 \|\| value > 4/,
+  'the runner-local pseudoc scheduler must hard-cap worker count at four');
+assert.match(pseudocRunner, /maxWorkers > initialWorkers && !scaleFile/,
+  'elastic scaling must require an explicit completion authority');
+assert.match(pseudocRunner, /!scaleFile \|\| !fs\.existsSync\(scaleFile\)/,
+  'the fourth pseudoc world must not start before the completion marker exists');
+assert.match(pseudocRunner, /while \(children\.size < maxWorkers && next < samples\.length\)/,
+  'elastic scaling must remain bounded by maxWorkers and remaining exact samples');
+assert.match(pseudocRunner, /execArgv:\s*\['--max-old-space-size=2600'\]/,
+  'each pseudoc world must retain the proven 2600 MiB heap envelope');
+assert.match(pseudocRunner, /expected the canonical 120 pseudoc samples/,
+  'the scheduler must retain the canonical 120-function denominator');
+assert.match(pseudocRunner, /out-of-range pseudoc result index/,
+  'unexpected pseudoc sample identities must fail closed');
+assert.match(pseudocRunner, /pseudoc sample identity mismatch/,
+  'each worker result must bind to its assigned canonical sample');
+assert.match(pseudocRunner, /pseudoc coverage missing sample/,
+  'the scheduler must prove every canonical sample completed exactly once');
 
 const targetUpload = measure.slice(measure.indexOf('name: Upload target accuracy partitions'));
 assert.match(targetUpload, /if:\s*success\(\)/,
@@ -201,13 +252,19 @@ assert.match(aggregate, /needs:\s*measure/,
   'the final required gate must wait for the three fixture runners');
 assert.match(aggregate, /MEASURE_RESULT:\s*\$\{\{ needs\.measure\.result \}\}/,
   'the final gate must inspect the complete fixture matrix result');
-assert.match(aggregate, /name:\s*Workflow contract regression[\s\S]*issue-497-cross-binary-workflow\.mjs/,
+assert.match(aggregate,
+  /name:\s*Workflow contract regression[\s\S]*issue-497-cross-binary-workflow\.mjs/,
   'workflow contract validation must still run in the required final job');
+assert.match(aggregate,
+  /name:\s*Accuracy merge regression[\s\S]*accuracy-pseudoc-parallel\.mjs --self-test/,
+  'the elastic worker configuration self-test must run in the final required job');
 assert.match(aggregate, /name:\s*Syntax lint[\s\S]*npm run lint/,
   'repository syntax lint must remain in the required final job');
-assert.match(aggregate, /name:\s*Core tests for standalone manual validation[\s\S]*github\.event_name == 'workflow_dispatch'[\s\S]*npm test/,
+assert.match(aggregate,
+  /name:\s*Core tests for standalone manual validation[\s\S]*github\.event_name == 'workflow_dispatch'[\s\S]*npm test/,
   'manual release validation must still include the broad core test suite');
-assert.match(aggregate, /name:\s*Validate downloaded accuracy partitions[\s\S]*accuracy-result-validate\.mjs/,
+assert.match(aggregate,
+  /name:\s*Validate downloaded accuracy partitions[\s\S]*accuracy-result-validate\.mjs/,
   'the final merge must validate every downloaded partition first');
 assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-BattleCats\.json/);
 assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-YWP\.json/);
@@ -220,6 +277,6 @@ assert.match(aggregate, /name:\s*accuracy\s*\n\s*if:\s*always\(\)/,
 assert.match(workflow, /push:\s*\n\s*branches:\s*\[[^\]]*\bmain\b[^\]]*\]/,
   'main must seed exact oracle/result caches for later pull requests');
 assert.match(workflow, /cancel-in-progress:\s*true/,
-  'stale accuracy runs should be cancelled when a newer revision supersedes them');
+  'the pre-existing workflow-local stale-run cancellation contract must remain unchanged');
 
-console.log('issue #497/#2484 cross-binary workflow gate regression passed');
+console.log('issue #497 bounded-local cross-binary workflow gate regression passed');
