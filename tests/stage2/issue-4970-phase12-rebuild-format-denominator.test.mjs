@@ -20,6 +20,7 @@ import {
   materializeRebuildTransaction,
   publishRebuildTransaction,
   rebuildProfileSupport,
+  registerCanonicalAtomicPublicationProvider,
   registerCanonicalIndependentOracleProvider,
   validateRebuildTransaction,
 } from '../../js/rebuild/transaction-v2.js';
@@ -124,7 +125,7 @@ async function validatedFormatSupport(format, profileProof) {
   assert.equal(validation.status, 'valid', `${format}: ${JSON.stringify(validation.failures)}`);
 
   const publication = await publishRebuildTransaction(materialized, validation, {
-    atomicPromote: async (_bytes, identity) => ({
+    atomicPromote: registerCanonicalAtomicPublicationProvider(async (_bytes, identity) => ({
       atomic: true,
       committed: true,
       protocol: 'temp-then-atomic-rename',
@@ -132,7 +133,7 @@ async function validatedFormatSupport(format, profileProof) {
       transactionId: identity.materialized.transactionId,
       outputHash: identity.materialized.outputHash,
       outputIdentity: identity.materialized.outputIdentity,
-    }),
+    })),
   });
   assert.equal(publication.status, 'published');
 

@@ -37,6 +37,26 @@ export function registerCanonicalIndependentOracleProvider(provider) {
 function isCanonicalIndependentOracleProvider(provider) {
   return typeof provider === 'function' && TRUSTED_INDEPENDENT_ORACLE_PROVIDERS.has(provider);
 }
+
+const TRUSTED_ATOMIC_PUBLICATION_PROVIDERS = new WeakSet();
+const TRUSTED_ATOMIC_PUBLICATION_RECEIPTS = new WeakSet();
+
+// Atomic publication is a proof boundary, so the promoter that reaches it must
+// be host-owned: only a registered trusted provider can mint a publication
+// receipt, and a receipt-shaped object copied by a caller carries no authority.
+export function registerCanonicalAtomicPublicationProvider(provider) {
+  if (typeof provider !== 'function') throw new TypeError('atomic-publication-provider-required');
+  TRUSTED_ATOMIC_PUBLICATION_PROVIDERS.add(provider);
+  return provider;
+}
+
+function isCanonicalAtomicPublicationProvider(provider) {
+  return typeof provider === 'function' && TRUSTED_ATOMIC_PUBLICATION_PROVIDERS.has(provider);
+}
+
+export function isValidatedAtomicPublicationReceipt(value) {
+  return !!value && value.status === 'published' && TRUSTED_ATOMIC_PUBLICATION_RECEIPTS.has(value);
+}
 export const F6_UNIMPLEMENTED_OPERATION_UNITS = Object.freeze([]);
 // These are evaluator-level bounded capabilities, not replacements for the
 // locked profile-wide F6 units above.  A capability can close only when its
@@ -396,6 +416,7 @@ export function evaluateF6RebuildDenominator({ transaction, validation, publicat
     && rebuildIdentityMatches(validation, transaction)
     && validationIdentityValid(validation);
   const publicationComplete = publication?.status === 'published'
+    && isValidatedAtomicPublicationReceipt(publication)
     && publication.atomic === true
     && publication.committed === true
     && publication.transactionId === transaction?.transactionId
@@ -982,7 +1003,23 @@ export async function publishRebuildTransaction(materialized, validation, option
         }
       }
     }
-    return deepFreeze({ status: 'published', atomic: true, committed: true, protocol, transactionId: materialized.transactionId, outputHash: materialized.outputHash, outputIdentity, publicationIdentity, result: clone(result) });
+    const authority = isCanonicalAtomicPublicationProvider(options.atomicPromote)
+      ? 'trusted-atomic-publication'
+      : 'untrusted-atomic-promotion';
+    const publication = deepFreeze({
+      status: 'published',
+      atomic: true,
+      committed: true,
+      protocol,
+      transactionId: materialized.transactionId,
+      outputHash: materialized.outputHash,
+      outputIdentity,
+      publicationIdentity,
+      authority,
+      result: clone(result),
+    });
+    if (authority === 'trusted-atomic-publication') TRUSTED_ATOMIC_PUBLICATION_RECEIPTS.add(publication);
+    return publication;
   } catch (error) {
     return { status: 'rejected', reason: 'rebuild-v2-publication-failed', detail: String(error?.message || error) };
   }
@@ -1018,6 +1055,7 @@ export function rebuildProfileSupport({ transaction, validation, publication, pr
     && JSON.stringify(validation.requiredValidators) === JSON.stringify(transaction.requiredValidators)
     && validation.outputIdentity === outputIdentity
     && publication?.status === 'published'
+    && isValidatedAtomicPublicationReceipt(publication)
     && publication.atomic === true
     && publication.committed === true
     && publication.transactionId === transaction.transactionId
