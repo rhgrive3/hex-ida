@@ -24,6 +24,11 @@ function safeCoverage(value) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
 }
 
+function defineOwn(target, key, value) {
+  Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
+  return target;
+}
+
 export function boundedProjection(value, { depth = 0, arrayLimit = DEFAULT_ARRAY_LIMIT, stringLimit = DEFAULT_STRING_LIMIT, objectLimit = 64 } = {}) {
   if (depth > 6) return '[detailRef]';
   if (typeof value === 'string') return value.length > stringLimit ? `${value.slice(0, stringLimit)}…` : value;
@@ -33,7 +38,7 @@ export function boundedProjection(value, { depth = 0, arrayLimit = DEFAULT_ARRAY
   if (typeof value === 'object') {
     const out = {};
     for (const [key, item] of Object.entries(value).slice(0, objectLimit)) {
-      out[key] = boundedProjection(item, { depth: depth + 1, arrayLimit, stringLimit, objectLimit });
+      defineOwn(out, key, boundedProjection(item, { depth: depth + 1, arrayLimit, stringLimit, objectLimit }));
     }
     return out;
   }
