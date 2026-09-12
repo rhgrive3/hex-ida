@@ -1,0 +1,43 @@
+name: fixer2-4323-one-shot
+
+on:
+  push:
+    branches:
+      - 'fixer2/issue-4323-coff-derived-type'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Apply exact COFF derived-type patch and self-delete
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object js/binary/pe-loader-core.js)" = "7cd7c362441a07b787e8eedc783d6ed8fb91a189"
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('js/binary/pe-loader-core.js')
+          s = p.read_text()
+          old = "const derivedFunction=!!(type&0x20),valueInSection="
+          new = "const derivedFunction=((type>>>4)&0x3)===2,valueInSection="
+          if s.count(old) != 1:
+              raise SystemExit(f'expected exactly one target, found {s.count(old)}')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          test "$(git hash-object js/binary/pe-loader-core.js)" = "e77c52abae2b1a9d319427d131a698c15d674b2b"
+          node tests/phase4/binary/issue-4323-pe-coff-derived-type.test.mjs
+          node tests/phase4/binary/issue-3705-pe-coff-derived-function-section.test.mjs
+          node --check js/binary/pe-loader-core.js
+          rm .github/workflows/fixer2-4323-one-shot.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/binary/pe-loader-core.js .github/workflows/fixer2-4323-one-shot.yml
+          git commit -m "fix(pe): decode COFF derived type field (#4323)"
+          git push origin HEAD:fixer2/issue-4323-coff-derived-type
