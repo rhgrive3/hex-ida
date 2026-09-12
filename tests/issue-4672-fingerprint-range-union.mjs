@@ -171,4 +171,39 @@ function segment(name, { address, fileOffset, fileSize, perms = EXEC }) {
   assert.equal(sourceShuffled.bytes, resident.bytes);
 }
 
+// 8. Complexity sentinel: many ordinary disjoint ranges must remain a single
+//    sort plus a linear sweep. Count Array iteration rather than wall time so
+//    the regression is stable on slow CI while still catching prefix rescans.
+{
+  const count = 4096;
+  const buffer = new Uint8Array(count * 2);
+  const sections = Array.from({ length: count }, (_, i) => section(`.d${i}`, {
+    address: 0x100000n + BigInt(i * 2),
+    fileOffset: BigInt(i * 2),
+    fileSize: 1n,
+  }));
+  const originalIterator = Array.prototype[Symbol.iterator];
+  let yielded = 0;
+  Array.prototype[Symbol.iterator] = function countedIterator() {
+    const iterator = Reflect.apply(originalIterator, this, []);
+    return {
+      next() {
+        const step = iterator.next();
+        if (!step.done) yielded += 1;
+        return step;
+      },
+      [Symbol.iterator]() { return this; },
+    };
+  };
+  let fp;
+  try {
+    fp = fingerprintImage(makeImage(buffer, { sections, segments: [] }));
+  } finally {
+    Array.prototype[Symbol.iterator] = originalIterator;
+  }
+  assert.equal(fp.bytes, count, 'all disjoint one-byte mappings must be hashed exactly once');
+  assert.ok(yielded <= count * 8,
+    `range union must not rescan accumulated prefixes (yielded ${yielded} array elements for ${count} ranges)`);
+}
+
 console.log('issue #4672 fingerprint mapped-range union tests: PASS');

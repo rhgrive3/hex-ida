@@ -123,45 +123,6 @@ function requireMappingChunk(bytes, expectedLength) {
   return bytes;
 }
 
-function mergeIntervals(intervals) {
-  if (intervals.length <= 1) return intervals;
-  intervals.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
-  const merged = [];
-  for (const iv of intervals) {
-    if (!merged.length) {
-      merged.push({ start: iv.start, end: iv.end });
-    } else {
-      const last = merged[merged.length - 1];
-      if (iv.start <= last.end) {
-        if (iv.end > last.end) last.end = iv.end;
-      } else {
-        merged.push({ start: iv.start, end: iv.end });
-      }
-    }
-  }
-  return merged;
-}
-
-function subtractIntervals(start, end, covered) {
-  const result = [];
-  let cursor = start;
-  for (const iv of covered) {
-    if (iv.end <= cursor) continue;
-    if (iv.start >= end) break;
-    if (iv.start > cursor) {
-      result.push({ start: cursor, end: iv.start < end ? iv.start : end });
-    }
-    if (iv.end > cursor) {
-      cursor = iv.end;
-    }
-    if (cursor >= end) break;
-  }
-  if (cursor < end) {
-    result.push({ start: cursor, end });
-  }
-  return result;
-}
-
 function compareFingerprintSpans(a, b) {
   if (a.start < b.start) return -1;
   if (a.start > b.start) return 1;
@@ -203,28 +164,24 @@ function fingerprintRanges(image, executableOnly) {
 
   spans.sort(compareFingerprintSpans);
 
-  const covered = [];
+  // `spans` is ordered by file offset, so one frontier is enough to build the
+  // canonical file-range union. Each span is visited once after the sort; no
+  // accumulated prefix is rescanned or re-sorted as the union grows.
   const ranges = [];
+  let coveredEnd = null;
   for (const span of spans) {
-    const uncovered = subtractIntervals(span.start, span.end, covered);
-    if (!uncovered.length) continue;
-    for (const piece of uncovered) covered.push(piece);
-    const merged = mergeIntervals([...covered]);
-    covered.length = 0;
-    covered.push(...merged);
-    for (const piece of uncovered) {
-      ranges.push({
-        name: span.name,
-        address: span.bias == null ? null : piece.start - span.bias,
-        fileOffset: piece.start,
-        fileSize: piece.end - piece.start,
-        perms: span.perms,
-      });
-    }
+    const start = coveredEnd != null && span.start < coveredEnd ? coveredEnd : span.start;
+    if (start >= span.end) continue;
+    ranges.push({
+      name: span.name,
+      address: span.bias == null ? null : start - span.bias,
+      fileOffset: start,
+      fileSize: span.end - start,
+      perms: span.perms,
+    });
+    coveredEnd = span.end;
   }
 
-  ranges.sort((a, b) => (a.fileOffset < b.fileOffset ? -1 : a.fileOffset > b.fileOffset ? 1
-    : a.fileSize < b.fileSize ? -1 : a.fileSize > b.fileSize ? 1 : 0));
   for (const mapping of unrepresentable) ranges.push(mapping);
   return ranges;
 }
