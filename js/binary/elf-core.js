@@ -580,7 +580,7 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     const ifunc=type===STT_GNU_IFUNC&&defined===true&&!common;
     const riscvVariantCcFlag=image.metadata.machine===EM_RISCV&&(other&STO_RISCV_VARIANT_CC)!==0;
     const riscvVariantCc=riscvVariantCcFlag&&type===2;
-    const sym={name,address:tls?null:(address??0n),originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??value,resolution:'runtime-resolver'}:{}),
+    const sym={name,address:tls?null:(sectionIdentityKnown?(address??0n):null),originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??value,resolution:'runtime-resolver'}:{}),
       ...(tls?{tlsOffset:value}:{}),...(common?{commonAlignment:value,commonSize:size,allocation:'common-unallocated'}:{}),sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:value}:null,addressDomain:tls?'tls-offset':common?'common-unallocated':elfType===ET_REL&&normal?'section-relative-synthetic':'virtual'};
     image.symbols.push(sym);
     const externallyVisible=bind===1||bind===2||bind===STB_GNU_UNIQUE;
