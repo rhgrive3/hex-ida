@@ -8,7 +8,7 @@
 
 結合した入力:
 
-- リモート #7036: `be11407297fe06eebd6b62539eb59019328c872e` と追加修正 `4d1963e939d1e04b68fd1f5e1d6c1340592231fa`。
+- リモート #7036: `be11407297fe06eebd6b62539eb59019328c872e` と追加修正 `4d1963e939d1e04b68fd1f5e1d6c1340592231fa`、`74b9aac2c26085b62fb08051375cd60c93529991`。
 - SYM-01: `rescue/sym01-current-main-20260912` / `6fd7af50e7f12789ce11d975665c334716c4a110`。
 - X-03: `rescue/x03-current-main-20260912` / `d31e54024c9d8a6aa22b77b638f0c309e97dac0c`。
 - main の結合基点: `784ae9b9ca2fc47d56f13d0561c49daf30a9fa11`。以後の moving-main 照合は統合担当が継続します。
@@ -50,7 +50,8 @@ SYM-01/X-03 の再実装は割り当てません。C3 metadata と X-02 の広�
 - ワーカー個別検証: 52 件通過。既定 tiered worker の要求 ID 確認を追加し、その回帰検査も通過。
 - X-03 の追加 2 ファイルと既存 layout 復元テスト: 結合状態で通過。
 - 所有範囲・CI route、共有 scoped-owner/ABI、proof admission の選択検査: 通過した記録あり。これを全体 gate の代わりにはしません。
-- 追加リモート修正後の Phase 8 検査を継続中。DCE の全 135 関数検査と native provenance の結果は未確定です。
+- Phase 8 の旧 `4d1963e9` 結合版の選択検査は、55 件通過・2 件失敗・1 件中断でした。失敗は native provenance の `x86_64.quality.loop_nested.O2` の binding completeness と、counted loop の 525-origin entity が見つからない検査です。原因の切り分けは未完了で、環境原因とは扱いません。
+- 実行中にリモート `74b9aac2` が DCE 登録処理を更新したため、旧版の検査を中断しました。全 135 関数検査、上記 2 件の失敗、および中断した SCPA 検査は最新版での確認が必要です。
 - 以前の `714bbc56` に対する `npm run check` は MachineEffects の 13 テストファイルで失敗。WebKit の `libxslt.so.1` 不足も含み、すべてを環境原因とは分類していません。
 - 結合後の full check、Phase 8/9、独立 shadow の確定結果が揃うまで CHECKPOINT-LOCKED を解除しません。実機・環境整備・別 issue 修正は今回の担当外です。
 
