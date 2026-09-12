@@ -144,3 +144,16 @@ test('ME-01 matrix owns exact validation paths without claiming sibling semantic
     assert.throws(() => validateRoadmapManifest(widened), /outside integration owner/);
   }
 });
+
+test('ME-01 production subject owns only its adapter and comparison tests', () => {
+  const manifest = loadRoadmapManifest(), assignments = validateRoadmapManifest(manifest);
+  for (const file of ['tools/validation/machine-effects/production-subject.mjs',
+    'tests/machine-effects/production-formal-subject.test.mjs', 'tests/machine-effects/generated-formal-evidence.test.mjs']) {
+    assert.equal(assignments.get(file), 'integration');
+    const missing = structuredClone(manifest);
+    missing.owners.integration = missing.owners.integration.filter(path => path !== file);
+    assert.throws(() => validateRoadmapInventory(BRANCH, 'phase8', [...assignments.keys()], missing), /undeclared roadmap path/);
+  }
+  manifest.owners.integration.push('js/targets/architecture/riscv64/effects/integer.js');
+  assert.throws(() => validateRoadmapManifest(manifest), /outside integration owner/);
+});

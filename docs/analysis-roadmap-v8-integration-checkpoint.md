@@ -5995,3 +5995,76 @@ retains the comparison. Independent exact-head semantic scope audit is in
 existing7036 branch remains the only publication target for this source slice.
 Further analysis work must first exclude behavior already owned by open PRs,
 including7097's broader23-row closure and8247's scoped/native analysis work.
+
+## ME-01 production subject comparison (2026-09-12)
+
+The original FR-ME-01A requirement includes a production-to-formal differential.
+The existing generated-artifact tests passed the artifact's expected values
+back as the subject. They validated evidence contracts but could not detect
+a production arithmetic error. The new offline `production-subject.mjs` adapter
+decodes the pinned RV64 three-instruction prefix, obtains the registered
+MachineEffects producer output, builds the existing V2/SSA compatibility
+pipeline, and evaluates proved physical-register assignments with the existing
+scalar translator and Expr evaluator. Expected values enter only the existing
+architectural-evidence comparator. There is no added ISA interpreter.
+
+The retained Sail prefix is `c.li x1, 5; c.li x2, 3; add x5, x1, x2`, at
+0x80000000/02/04. Its source, input and artifact identities are pinned. The
+declared comparison covers the final written x1/x2/x5 values for these three
+instructions. It does not claim function termination, whole-machine state,
+full RV64 coverage, or other architectures. ARM Isla formula comparison,
+production relaxed-memory outcome enumeration, mismatch minimization and the
+broader original ME-01 denominator remain unclosed. C4 memory/CFG adoption also
+remains distinct from this adapter and from read-only memory explanations.
+
+The adapter accepts at most32 contiguous, self-contained RV64 instructions.
+Incomplete semantics, unknown entry values, memory/fault/control effects,
+unproved state assignments, budgets and cancellation produce no observation.
+Scope shrinking and input identity drift cannot authorize a comparison. Its
+tests cover actual input changes, a native-width wrap, repeated register writes,
+expected-value independence, refusal cases and deterministic replay. The new
+comparison also runs in the existing generated-formal-evidence test file;
+both files are discovered by the canonical MachineEffects runner.
+
+The causal calibration changed only the actual RV64 producer's ADD operation
+to SUB through an isolated import hook. The same retained input then computed
+x5=2. The old generated-artifact suite still passed4/4, confirming its gap;
+the new live-subject comparison failed with
+`observable-disagreement:register:x5`, as required. Production files and the
+reference artifact were unchanged. This expected negative result is retained
+as `me-rv64-live-detects-production-mutation-be3a8c19-0146-4f69-9718-36026e868648.json`.
+The baseline is `me-rv64-generated-before-mutated-d414a850-4c6d-4e7b-8f8d-37478cb5060c.json`;
+the real mutation calibration is
+`me-rv64-subject-mutation-calibration-c6e9569e-8d67-478a-a61d-1e8f89e36429.json`.
+
+Before editing, refreshed183 open PRs and complete changed-file lists for
+12 new/moved/truncated inventories. None of the182 other open PRs changed this
+slice's seven paths: the adapter, its new test, the existing generated-evidence
+test, the two exact ownership files, the ownership regression, and this
+checkpoint. Retained inventory:
+`remaining-fr-preflight-20260912/me-live-subject-open-pr-files.resumed.json`.
+PR7097's broader closure remains outside this slice. PR8247 has since merged;
+that status change does not authorize reconciliation or a second memory-frame
+implementation. This offline adapter changes no production runtime or generated
+artifact, and does not admit a new integration checkpoint or close the roadmap.
+
+Luna/max review identified two missing bindings in the initial WIP. The
+assessment now reads the pinned Sail trace as data, independently extracting
+its three instruction byte/PC pairs and GPR assignments. The subject digest is
+computed in that byte/PC domain and must match both the pinned prefix and the
+actual observation; it is deliberately distinct from the artifact's ELF/model
+input digest. The current source fixture is hashed during each assessment.
+Declared expected values must also agree with the immutable trace assignments,
+so editing a manifest's expected values cannot bless a matching producer bug.
+RV64 compressed-mode instruction addresses must be aligned to two bytes.
+
+The new permanent regressions first failed on the WIP: an odd-address prefix
+was accepted, and a real ADD-to-SUB producer mutation was falsely authorized
+after changing the expected x5 to2 while the Sail trace still said8. Both
+failures are retained in
+`me-rv64-review-binding-red-6b10127b-939b-4566-ba81-c5dde86ebe5a.json`.
+The repaired27-test focused suite passes in
+`me-rv64-review-binding-green-fb11b1f9-f01a-461e-ad78-8efaeb915f8b.json`,
+including subject-only relocation and source-byte drift checks. These changes
+remain within the same seven paths and reuse the original oracle validator;
+no generic validator, producer, external artifact or runtime source was edited.
