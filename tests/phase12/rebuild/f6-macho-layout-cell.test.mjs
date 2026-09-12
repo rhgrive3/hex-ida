@@ -16,6 +16,7 @@ import {
   evaluateF6RebuildDenominator,
   materializeRebuildTransaction,
   publishRebuildTransaction,
+  registerCanonicalAtomicPublicationProvider,
   validateRebuildTransaction,
 } from '../../../js/rebuild/transaction-v2.js';
 import {
@@ -96,7 +97,7 @@ for (const validator of ['layout', 'format-invariants', 'independent-differentia
 const rejectedPublication = await publishRebuildTransaction(materialized, validation, { atomicPromote: async () => ({ atomic: true }) });
 assert.equal(rejectedPublication.reason, 'rebuild-v2-publication-not-atomic');
 const publication = await publishRebuildTransaction(materialized, validation, {
-  atomicPromote: async (_candidate, identity) => ({
+  atomicPromote: registerCanonicalAtomicPublicationProvider(async (_candidate, identity) => ({
     atomic: true,
     committed: true,
     protocol: 'temp-then-atomic-rename',
@@ -104,7 +105,7 @@ const publication = await publishRebuildTransaction(materialized, validation, {
     transactionId: identity.materialized.transactionId,
     outputHash: identity.materialized.outputHash,
     outputIdentity: identity.materialized.outputIdentity,
-  }),
+  })),
 });
 assert.equal(publication.status, 'published');
 const proof = { realFixture: true, realFixtureEvidence: true, negativeValidatorTest: true, staleIdentityTest: true, truncationTest: true, wrongIdentityTest: true };
