@@ -39,10 +39,27 @@ export function assertWireBudget(payload, capabilities = SAFE_PROVIDER_CAPABILIT
 
 export function semanticBudgetFor({ messages = [], tools = [], meta = {}, capabilities = SAFE_PROVIDER_CAPABILITIES, configuredBytes = 128 * 1024 } = {}) {
   const maxBytes = positiveLimit(capabilities.maxRequestBytes, SAFE_PROVIDER_CAPABILITIES.maxRequestBytes);
+  const contextTokens = positiveLimit(capabilities.contextTokens, SAFE_PROVIDER_CAPABILITIES.contextTokens);
+  const outputTokens = nonNegativeLimit(capabilities.maxOutputTokens, SAFE_PROVIDER_CAPABILITIES.maxOutputTokens);
+  const inputTokens = contextTokens - outputTokens;
+  if (inputTokens <= 0) {
+    throw new AIError('context_too_large', 'The provider token window leaves no input-token capacity.', {
+      maxBytes, contextTokens, outputTokens, maxTokens: 0,
+    });
+  }
+
+  // assertWireBudget() estimates input usage as ceil(wireBytes / 4).  Mirror
+  // that exact integer-token ceiling here so ContextBroker is never invited
+  // to build context that the next wire-budget check must reject (#4564).
+  const maxTokens = Math.max(1, inputTokens);
+  const tokenWireBytes = Math.floor(maxTokens) * 4;
+  const wireCeiling = Math.min(maxBytes, tokenWireBytes);
   const overhead = serializedByteLength({ ...meta, messages, context: {}, tools });
-  const available = maxBytes - overhead - 2048;
+  const available = wireCeiling - overhead - 2048;
   if (available < 4096) {
-    throw new AIError('context_too_large', 'Messages and tool schemas leave no safe semantic-context budget.', { maxBytes, overhead, available });
+    throw new AIError('context_too_large', 'Messages and tool schemas leave no safe semantic-context budget.', {
+      maxBytes, maxTokens, tokenWireBytes, wireCeiling, overhead, available,
+    });
   }
   return Math.min(positiveLimit(configuredBytes, 128 * 1024), available);
 }

@@ -43,38 +43,6 @@ function requestWithSignal(request, signal) {
     if (signal?.aborted) { onAbort(); return; }
   });
 }
-const sharedDiffSessions = new WeakMap();
-function sharedDiffSession(task) {
-  let entry = sharedDiffSessions.get(task);
-  if (!entry) {
-    entry = { task, controller:null, waiters:0, settled:false };
-    sharedDiffSessions.set(task, entry);
-    const settle = () => { entry.settled = true; };
-    task.then(settle, settle);
-  }
-  return entry;
-}
-function joinSharedDiff(entry, signal) {
-  entry.waiters++;
-  return new Promise((resolve, reject) => {
-    let done = false;
-    const finish = (fn, value, cancelled = false) => {
-      if (done) return;
-      done = true;
-      signal?.removeEventListener?.('abort', onAbort);
-      entry.waiters = Math.max(0, entry.waiters - 1);
-      if (cancelled && entry.waiters === 0 && !entry.settled && entry.controller && !entry.controller.signal.aborted) {
-        entry.controller.abort(signal?.reason ?? 'no-active-consumers');
-      }
-      fn(value);
-    };
-    const onAbort = () => finish(reject, abortError(signal), true);
-    if (signal?.aborted) { onAbort(); return; }
-    signal?.addEventListener?.('abort', onAbort, { once:true });
-    if (signal?.aborted) { onAbort(); return; }
-    entry.task.then((value) => finish(resolve, value), (error) => finish(reject, error));
-  });
-}
 function executableRegions(regions) {
   return Array.from(regions || []).filter((region) => {
     try { return region?.exec === true && BigInt(region.size ?? 0) > 0n && !region.zerofill; } catch { return false; }
@@ -107,18 +75,29 @@ async function discoverBaselineFunctions(baseline, { signal = null, onProgress =
     });
     try {
       const result = await requestWithSignal(request, signal);
-      if (result?.starts?.length) {
-        // #5558: addFunctions() deduplicates known starts and returns the
-        // number actually added. The global discovery budget must be debited
-        // by that count — duplicate re-discovery from independent region
-        // scans must never exhaust the budget ahead of unscanned regions.
-        const added = symbols.addFunctions(result.starts, { source:'heuristic', confidence:0.55, confirmed:false });
-        symbols.guessed = true;
-        remaining = Math.max(0, remaining - added);
+      const rawStarts = result?.starts;
+      if (rawStarts != null && !Array.isArray(rawStarts)) {
+        results.push({ regionId:region.id, complete:false, malformed:true, discovered:0 });
+        reasons.push(`${region.id}:backend-result-malformed`);
+      } else {
+        const starts = rawStarts || [];
+        const budget = Math.min(share, remaining);
+        const accepted = starts.length > budget ? starts.slice(0, budget) : starts;
+        let added = 0;
+        if (accepted.length) {
+          // #5558: addFunctions() deduplicates known starts and returns the
+          // number actually added. The global discovery budget must be debited
+          // by that count — duplicate re-discovery from independent region
+          // scans must never exhaust the budget ahead of unscanned regions.
+          added = symbols.addFunctions(accepted, { source:'heuristic', confidence:0.55, confirmed:false });
+          symbols.guessed = true;
+          remaining = Math.max(0, remaining - added);
+        }
+        const exceedsBudget = starts.length > budget && added >= budget;
+        const complete = !exceedsBudget && (result?.discoveryComplete === true || result?.completeness?.complete === true || result?.complete === true);
+        results.push({ regionId:region.id, complete, capped:!!result?.capped || exceedsBudget, discovered:accepted.length });
+        if (!complete) reasons.push(exceedsBudget ? `${region.id}:backend-result-exceeds-budget` : `${region.id}:${result?.completeness?.reason || result?.truncationReason || 'function-discovery-incomplete'}`);
       }
-      const complete = result?.discoveryComplete === true || result?.completeness?.complete === true || result?.complete === true;
-      results.push({ regionId:region.id, complete, capped:!!result?.capped, discovered:result?.starts?.length || 0 });
-      if (!complete) reasons.push(`${region.id}:${result?.completeness?.reason || result?.truncationReason || 'function-discovery-incomplete'}`);
     } catch (error) {
       if (signal?.aborted || error?.name === 'AbortError') throw error;
       results.push({ regionId:region.id, complete:false, error:true });
@@ -228,17 +207,7 @@ export function installSymmetricWorkspaceDiff(app) {
   };
 
   workspace.diff = async function symmetricDiff(options = {}) {
-    const signal = options.signal ?? null;
-    throwIfAborted(signal);
-    const running = workspace.busy;
-    if (running && typeof running.then === 'function') {
-      const entry = sharedDiffSession(running);
-      // An abandoned producer may still be unwinding; fresh consumers need a
-      // live producer, even before the abandoned task's finalizer runs.
-      if (!entry.controller?.signal.aborted) return joinSharedDiff(entry, signal);
-    }
-    const controller = new AbortController();
-    const sharedSignal = controller.signal;
+    if (workspace.busy) return workspace.busy;
     const revision = workspace.bindingRevision;
     const baseline = workspace.baseline;
     let task;
@@ -252,10 +221,10 @@ export function installSymmetricWorkspaceDiff(app) {
           throw error;
         }
       };
-      throwIfAborted(sharedSignal);
+      throwIfAborted(options.signal);
       const currentRegion = app.codeRegion?.() || currentRegions(app)[0] || null;
-      await app.ensureFunctions?.(currentRegion, { signal:sharedSignal, onProgress:options.onProgress, priority:'user-visible' });
-      throwIfAborted(sharedSignal);
+      await app.ensureFunctions?.(currentRegion, { signal:options.signal ?? null, onProgress:options.onProgress, priority:'user-visible' });
+      throwIfAborted(options.signal);
       assertCurrent();
       const current = await createSymmetricCodeFunctionSet({
         backend:app.backend,
@@ -263,7 +232,7 @@ export function installSymmetricWorkspaceDiff(app) {
         regions:currentRegions(app),
         architecture:workspace.identity?.metadata?.architecture,
         limit:MAX_DIFF_FUNCTIONS,
-        signal:sharedSignal,
+        signal:options.signal ?? null,
         onProgress:options.onProgress,
       });
       const before = baseline.functions;
@@ -275,11 +244,10 @@ export function installSymmetricWorkspaceDiff(app) {
       }
       let result = await runDiffInWorker(before, current, {
         mode:'full',
-        signal:sharedSignal,
+        signal:options.signal,
         threshold:options.threshold ?? 0.62,
         matchBudget:options.matchBudget || DEFAULT_SYMMETRIC_MATCH_BUDGET,
       });
-      throwIfAborted(sharedSignal);
       assertCurrent();
       const inputsComplete = before.complete === true && current.complete === true;
       result = demoteIncompleteAbsenceClaims(result, inputsComplete ? null : 'incomplete-symmetric-code-evidence');
@@ -300,12 +268,8 @@ export function installSymmetricWorkspaceDiff(app) {
       workspace.diffState = result;
       return result;
     })().finally(() => { if (workspace.busy === task) workspace.busy = null; });
-    const entry = { task, controller, waiters:0, settled:false };
-    sharedDiffSessions.set(task, entry);
-    const settle = () => { entry.settled = true; };
-    task.then(settle, settle);
     workspace.busy = task;
-    return joinSharedDiff(entry, signal);
+    return task;
   };
 
   Object.defineProperty(workspace, '__symmetricWorkspaceDiffVersion', { value:INSTALL_VERSION, configurable:true });

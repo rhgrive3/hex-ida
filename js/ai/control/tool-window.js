@@ -26,10 +26,12 @@ export function selectToolWindow(registry, { mode = 'agent', requestedScope = 'a
   const phase = choosePhase({ intent, observations, hypotheses, effectiveScope });
   const preferred = WINDOWS[phase] || WINDOWS.current;
   const byName = new Map(available.map((tool) => [tool.name, tool]));
-  // The model-visible tool limit adopts only primitive finite positive
-  // numbers; structured/boolean capability metadata falls back to 1 (#5423).
-  const limit = typeof maxTools === 'number' && Number.isFinite(maxTools) && maxTools > 0
-    ? Math.max(1, Math.floor(maxTools))
+  // The model-visible tool limit adopts only primitive finite non-negative
+  // numbers; zero is meaningful when the Worker reserves the provider's sole
+  // tool slot for submit_hex_result (#4591). Structured/boolean metadata still
+  // falls back to 1 (#5423).
+  const limit = typeof maxTools === 'number' && Number.isFinite(maxTools) && maxTools >= 0
+    ? Math.max(0, Math.floor(maxTools))
     : 1;
   const selected = [];
 

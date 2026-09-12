@@ -109,6 +109,42 @@ function isSharedMemory(value) {
   return isSharedArrayBuffer(value.buffer);
 }
 
+export function containsRawBinaryBytes(value, depth = 0, seen = new WeakSet()) {
+  if (value == null || typeof value !== 'object') return false;
+  try {
+    if (isSharedMemory(value) || ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return true;
+    if (value.__binaryByteBacking === true) return true;
+    if (depth > SNAPSHOT_SCAN_DEPTH_LIMIT) return true;
+    if (seen.has(value)) return false;
+    seen.add(value);
+    if (value instanceof Map) {
+      for (const [key, item] of value) {
+        if (containsRawBinaryBytes(key, depth + 1, seen)) return true;
+        if (containsRawBinaryBytes(item, depth + 1, seen)) return true;
+      }
+      return false;
+    }
+    if (value instanceof Set) {
+      for (const item of value) {
+        if (containsRawBinaryBytes(item, depth + 1, seen)) return true;
+      }
+      return false;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (containsRawBinaryBytes(item, depth + 1, seen)) return true;
+      }
+      return false;
+    }
+    for (const key of Object.keys(value)) {
+      if (containsRawBinaryBytes(value[key], depth + 1, seen)) return true;
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 function scanMapEntries(value, depth, seen) {
   let entries;
   try { entries = Map.prototype.entries.call(value); }
@@ -200,6 +236,11 @@ export function createRemoteCollaborationEnvelope(input = {}) {
     deviceIdentity,
     provenance: { ...(operation.provenance || {}), source: 'collaborator', transport: 'remote', actorIdentity, deviceIdentity },
   }));
+  if (input.egress?.rawBinaryBytes !== true && input.egress?.derivedDataOnly !== false) {
+    for (const operation of operations) {
+      if (containsRawBinaryBytes(operation)) throw new TypeError('remote-raw-binary-egress-forbidden');
+    }
+  }
   const envelope = {
     schemaVersion: REMOTE_COLLAB_SCHEMA,
     operationSchemaVersion: CHANGELOG_SCHEMA_VERSION,
@@ -287,6 +328,7 @@ export class RemoteCollaborationGate {
     if (snap.egress?.userAuthorized !== true) return { ok: false, reason: 'remote-egress-user-authorization-required' };
     if (snap.egress?.rawBinaryBytes === true || snap.egress?.derivedDataOnly !== true) return { ok: false, reason: 'remote-raw-binary-egress-forbidden' };
     for (const operation of snap.operations) {
+      if (containsRawBinaryBytes(operation)) return { ok: false, reason: 'remote-raw-binary-egress-forbidden' };
       if (!isCanonicalRemoteOperation(operation)) return { ok: false, reason: 'remote-operation-shape-invalid' };
       if (operation.projectIdentity !== this.projectIdentity || (operation.binaryIdentity ?? null) !== this.binaryIdentity) return { ok: false, reason: 'remote-operation-scope-mismatch' };
       if (operation.authorIdentity !== snap.actorIdentity || operation.deviceIdentity !== snap.deviceIdentity) return { ok: false, reason: 'remote-operation-actor-binding-mismatch' };

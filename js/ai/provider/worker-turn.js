@@ -27,6 +27,11 @@ export async function handleAITurn(request, env) {
   try { payload = normalizeAITurnRequest(incoming); }
   catch (error) { return error instanceof HttpError ? jsonError(error.status, error.code, error.message) : jsonError(400, 'invalid_request', 'The AI turn request is invalid.'); }
 
+  const safeCapabilities = clientSafeCapabilities(adapter.capabilities);
+  if (payload.tools.length > safeCapabilities.maxTools) {
+    return jsonError(422, 'tool_limit_exceeded', 'The request exposes more read tools than the configured provider can accept.');
+  }
+
   const quota = await acquireDistributedQuota(request, env, payload.sessionId);
   if (quota.response) return quota.response;
   let quotaReleased = false;

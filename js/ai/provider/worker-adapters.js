@@ -20,6 +20,7 @@ export function resolveInferenceAdapter(env = {}) {
 
 export function clientSafeCapabilities(capabilities = {}) {
   const upstreamMax = positiveNumber(capabilities.maxRequestBytes, 160000);
+  const upstreamMaxTools = positiveInteger(capabilities.maxTools, 32);
   const reservedBudget = upstreamMax - PROVIDER_ENVELOPE_RESERVE_BYTES;
   const derived = reservedBudget > 0
     ? Math.floor(reservedBudget / PROVIDER_WIRE_EXPANSION_FACTOR)
@@ -27,6 +28,9 @@ export function clientSafeCapabilities(capabilities = {}) {
   const safeClientMax = Math.max(1, Math.min(upstreamMax, derived));
   return {
     ...capabilities,
+    // submit_hex_result is Worker-owned and always occupies one provider slot.
+    // Advertise only the slots the browser may fill with read tools (#4591).
+    maxTools: Math.max(0, upstreamMaxTools - 1),
     maxRequestBytes: safeClientMax,
     upstreamMaxRequestBytes: upstreamMax,
     requestEnvelopeReserveBytes: PROVIDER_ENVELOPE_RESERVE_BYTES,
@@ -68,14 +72,20 @@ function groqAdapter(env) {
           { role: 'system', content: `${systemInstruction}\n\n${TURN_PROTOCOL_INSTRUCTION}` },
           { role: 'user', content: JSON.stringify(modelInput(payload)) },
         ],
-        tools: tools.map(toOpenAITool), tool_choice: 'required', stream: false,
+        tools: tools.map(toOpenAITool), tool_choice: 'required', parallel_tool_calls: false, stream: false,
         max_tokens: Math.min(numberOr(env.GROQ_MAX_OUTPUT_TOKENS, 8192), payload.mode === 'agent' ? 8192 : 4096),
       };
     },
     normalize(value) {
-      const call = value?.choices?.[0]?.message?.tool_calls?.[0];
-      if (!call) return value;
-      return { steps: [{ type: 'function_call', name: call.function?.name, arguments: call.function?.arguments || '{}' }] };
+      const calls = value?.choices?.[0]?.message?.tool_calls;
+      if (!Array.isArray(calls) || calls.length === 0) return value;
+      return {
+        steps: calls.map((call) => ({
+          type: 'function_call',
+          name: call?.function?.name,
+          arguments: call?.function?.arguments || '{}',
+        })),
+      };
     },
   };
 }
@@ -91,5 +101,6 @@ function modelInput(payload) {
 function toGeminiTool(tool) { return { type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema }; }
 function toOpenAITool(tool) { return { type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } }; }
 function positiveNumber(value, fallback) { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : fallback; }
+function positiveInteger(value, fallback) { return Math.max(1, Math.floor(positiveNumber(value, fallback))); }
 function numberOr(value, fallback) { return positiveNumber(value, fallback); }
 function nullableNumber(value) { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : null; }
