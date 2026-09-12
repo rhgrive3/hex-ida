@@ -227,7 +227,7 @@ function setNote(app, kind, args, after = null) {
     try {
       if (!rollbackNoteMutation(app.notes, method, address, snapshot)) throw new Error('in-memory rollback failed');
     } catch (rollbackError) {
-      throw new AIError('tool_failed', `${label} annotation could not be persisted and its in-memory mutation could not be rolled back: ${rollbackError?.message || rollbackError}`);
+      throw new AIError('tool_failed', `${label} annotation could not be persisted and its in-memory mutation could not be rolled back: ${rollbackError?.message || rollbackError}`, { cause: String(rollbackError?.message || rollbackError), residualMutation: true });
     }
     throw new AIError('tool_failed', `${label} annotation could not be persisted.`);
   }
@@ -276,7 +276,7 @@ function renameSymbol(app, args) {
         throw new Error('name annotation rollback could not be persisted');
       }
     } catch (rollbackError) {
-      throw new AIError('tool_failed', `Rename failed and the note mutation could not be rolled back: ${rollbackError?.message || rollbackError}`, { cause: String(error?.message || error) });
+      throw new AIError('tool_failed', `Rename failed and the note mutation could not be rolled back: ${rollbackError?.message || rollbackError}`, { cause: String(error?.message || error), residualMutation: true });
     }
     // Best effort only: a rollback-path refresh failure must never mask the
     // original rename failure.
