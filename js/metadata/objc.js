@@ -163,6 +163,9 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
     this.cachedIndex = buildObjcRuntimeIndex(model);
 
     const isComplete = model.runtimeCompleteness?.complete === true;
+    const coveredEntityIds = isComplete
+      ? []
+      : [...this.types().records, ...this.methods().records].map((record) => record.entityId);
     const identity = createLanguageMetadataIdentity({
       verdict: isComplete ? 'matched-authoritative' : 'matched-partial',
       providerId: this.id,
@@ -178,9 +181,7 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
       detail: `Objective-C 2.0 (${model.classes?.length || 0} classes, ${model.protocols?.length || 0} protocols)`,
       coverage: isComplete ? null : {
         recordKinds: ['type', 'method'],
-        addresses: (model.classes || [])
-          .filter((c) => c.address != null)
-          .map((c) => `0x${c.address.toString(16)}`),
+        entityIds: coveredEntityIds,
       },
     });
 
