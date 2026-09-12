@@ -444,3 +444,6 @@ await import('./issue-5679-sandbox-listbreakpoints-snapshot.mjs');
 
 // Keep clamp saturation coverage on the canonical runtime:test path.
 await import('./issue-5060-clamp-before-wrap.mjs');
+
+// Keep mid-await abort classification on the canonical runtime:test path.
+await import('./issue-4933-hypothesis-verifier-abort-cancel.mjs');
