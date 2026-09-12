@@ -123,11 +123,13 @@ function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
   port.onmessage = () => { baseCalls += 1; };
   const base = port.onmessage;
   const first = createDevWorkerParentRpcClient({ port });
-  createDevWorkerParentRpcClient({ port });
+  const second = createDevWorkerParentRpcClient({ port });
   first.close();
   assert.notEqual(port.onmessage, base, 'closing an inner listener must not restore over the outer one');
   port.onmessage({ data: null });
   assert.equal(baseCalls, 1, 'the surviving chain must call the base handler exactly once');
+  second.close();
+  assert.equal(port.onmessage, base, 'closing the newer client must not resurrect the closed older wrapper');
 }
 
 // 6. The addEventListener transport path keeps its detach behavior.
@@ -147,6 +149,36 @@ function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
   for (const { type, handler } of added) {
     assert.ok(removed.some((entry) => entry.type === type && entry.handler === handler));
   }
+}
+
+// Arbitrary removal order, including a middle wrapper, restores the exact base.
+for (const order of [[0, 1, 2], [2, 1, 0], [1, 0, 2], [1, 2, 0]]) {
+  const port = fallbackPort();
+  let calls = 0;
+  const base = function () { assert.equal(this, port); calls += 1; };
+  port.onmessage = base;
+  const clients = Array.from({ length: 3 }, () => createDevWorkerParentRpcClient({ port }));
+  for (const index of order) {
+    clients[index].close();
+    clients[index].close();
+    port.onmessage({ data: null });
+  }
+  assert.equal(calls, 3, 'base runs once per event with its original receiver');
+  assert.equal(port.onmessage, base);
+}
+
+// Neither a first nor a repeated close owns a subsequently installed handler.
+{
+  const port = fallbackPort();
+  const a = createDevWorkerParentRpcClient({ port });
+  const b = createDevWorkerParentRpcClient({ port });
+  const foreign = function () {};
+  port.onmessage = foreign;
+  a.close();
+  b.close();
+  a.close();
+  b.close();
+  assert.equal(port.onmessage, foreign);
 }
 
 console.log('issue #5037 fallback onmessage listener detach regressions PASS');

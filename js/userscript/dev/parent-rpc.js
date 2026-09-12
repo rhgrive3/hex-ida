@@ -346,19 +346,37 @@ function usablePort(port) {
 function post(port, value) {
   try { port.postMessage(value); } catch {}
 }
+const fallbackListeners = new WeakMap();
+function liveFallbackListener(listener) {
+  let record;
+  while ((record = fallbackListeners.get(listener)) && !record.active) {
+    listener = record.previous;
+  }
+  return listener;
+}
 function listen(port, handler) {
   if (typeof port.addEventListener === 'function') {
     port.addEventListener('message', handler);
     return () => unlisten(port, handler);
   }
-  const previous = port.onmessage;
-  const wrapper = (event) => {
-    previous?.(event);
-    handler(event);
+  const record = { previous: port.onmessage, active: true, handler };
+  handler = null;
+  const wrapper = function (event) {
+    // Detached predecessors must neither handle events nor be restored later.
+    record.previous = liveFallbackListener(record.previous);
+    record.previous?.call(this, event);
+    const currentHandler = record.handler;
+    if (record.active) currentHandler(event);
   };
+  fallbackListeners.set(wrapper, record);
   port.onmessage = wrapper;
   return () => {
-    if (port.onmessage === wrapper) port.onmessage = previous;
+    if (!record.active) return;
+    record.active = false;
+    // A newer wrapper may retain this record until its next event or detach.
+    // Release the RPC closure now, independently of that wrapper lifecycle.
+    record.handler = null;
+    if (port.onmessage === wrapper) port.onmessage = liveFallbackListener(record.previous);
   };
 }
 function unlisten(port, handler) {
