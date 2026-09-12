@@ -283,13 +283,30 @@ export function createVMEffectBundle(input, options = {}) {
 }
 
 export function validateVMEffectBundle(bundle) {
-  if (!bundle || typeof bundle !== 'object') fail('vm-effect-bundle-invalid');
-  if (!bundle.operationId || !bundle.methodId || !bundle.frontendId) fail('vm-effect-bundle-missing-identity');
+  bundle = object(bundle, 'vm-effect-bundle-invalid');
+  nonEmpty(bundle.operationId, 'vm-effect-bundle-missing-identity');
+  nonEmpty(bundle.methodId, 'vm-effect-bundle-missing-identity');
+  nonEmpty(bundle.frontendId, 'vm-effect-bundle-missing-identity');
+  nonNegativeInteger(bundle.bytecodeOffset ?? 0, 'vm-effect-offset-required');
   if (!SETS.completeness.has(bundle.completeness)) fail('vm-effect-bundle-invalid-completeness');
+  array(bundle.consumedValues ?? [], 'vm-effect-invalid-consumed-values');
+  array(bundle.producedValues ?? [], 'vm-effect-invalid-produced-values');
+  array(bundle.locationReads ?? [], 'vm-effect-invalid-location-reads');
+  array(bundle.locationWrites ?? [], 'vm-effect-invalid-location-writes');
+  array(bundle.memoryEffects ?? [], 'vm-effect-invalid-memory-effects');
+  array(bundle.callEffects ?? [], 'vm-effect-invalid-call-effects');
+  array(bundle.controlEffects ?? [], 'vm-effect-invalid-control-effects');
+  array(bundle.possibleExceptions ?? [], 'vm-effect-invalid-exceptions');
   const unknownEffects = unknownEffectsForValidation(bundle);
   for (const effect of unknownEffects) validateUnknownEffect(effect);
   if ((bundle.completeness === 'partial' || bundle.completeness === 'unknown') && unknownEffects.length === 0) {
     fail('vm-effect-partial-must-specify-unknown-effects');
+  }
+  if (Number(bundle.schemaVersion ?? VM_EFFECTS_SCHEMA_VERSION) !== VM_EFFECTS_SCHEMA_VERSION) {
+    fail('vm-effect-schema-version-mismatch');
+  }
+  if (String(bundle.contractVersion ?? VM_EFFECTS_CONTRACT_VERSION) !== VM_EFFECTS_CONTRACT_VERSION) {
+    fail('vm-effect-contract-version-mismatch');
   }
   return true;
 }
@@ -389,9 +406,12 @@ export function createVMEffectFunction(input, options = {}) {
 }
 
 export function validateVMEffectFunction(fn) {
-  if (!fn || typeof fn !== 'object') fail('vm-effect-function-invalid');
-  if (!fn.methodId || !fn.frontendId || !Array.isArray(fn.bundles)) fail('vm-effect-function-invalid-structure');
+  fn = object(fn, 'vm-effect-function-invalid');
+  nonEmpty(fn.methodId, 'vm-effect-function-missing-identity');
+  nonEmpty(fn.frontendId, 'vm-effect-function-missing-identity');
+  array(fn.bundles, 'vm-effect-function-invalid-structure');
   for (const b of fn.bundles) validateVMEffectBundle(b);
+  array(fn.exceptionRegions ?? [], 'vm-effect-function-exceptions-invalid');
   // #5404: the aggregate field is part of the validated contract, not free text.
   if (!VM_EFFECT_COMPLETENESS.includes(fn.aggregateCompleteness)) fail('vm-effect-aggregate-completeness-invalid');
   if (!VM_EFFECT_RESOLUTION_COMPLETENESS.includes(fn.resolutionCompleteness)) fail('vm-effect-resolution-completeness-invalid');
