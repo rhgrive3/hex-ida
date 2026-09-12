@@ -84,6 +84,15 @@ export async function gmFetch(input, init = {}, requestInput = null) {
   });
 }
 
+export async function fetchBinary(input, init = {}) {
+  const bridged = globalThis.fetch?.__hexUserscriptFetch === true;
+  const nativeFetch = globalThis.__HEX_NATIVE_FETCH__ || (bridged ? null : globalThis.fetch);
+  if (typeof nativeFetch !== 'function') {
+    throw new TypeError('Hex binary transport requires a native fetch binding.');
+  }
+  return nativeFetch(input, { ...init, method: init.method || 'GET', mode: 'cors', credentials: 'omit' });
+}
+
 function userscriptRequest() {
   const modern = globalThis.GM?.xmlHttpRequest;
   if (typeof modern === 'function') return modern.bind(globalThis.GM);
