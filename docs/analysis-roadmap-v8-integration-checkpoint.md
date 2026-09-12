@@ -54,7 +54,9 @@ SYM-01/X-03 の再実装は割り当てません。C3 metadata と X-02 の広�
 - 以前の `714bbc56` に対する `npm run check` は MachineEffects の 13 テストファイルで失敗。WebKit の `libxslt.so.1` 不足も含み、すべてを環境原因とは分類していません。
 - 結合後の full check、Phase 8/9、独立 shadow の確定結果が揃うまで CHECKPOINT-LOCKED を解除しません。実機・環境整備・別 issue 修正は今回の担当外です。
 
-生成物は結合ソースから canonical build で再生成し、再 build の差分を確認します。最終 push の SHA と生成 ID は後続の記録で固定します。
+生成物は結合ソースから canonical build で再生成済みです（serial `2322242243`、build ID `ae6a3f72c4f1e5b5e8c82a9a`）。公開前に再 build の差分を確認し、公開 SHA と生成 ID の記録を保持します。
+
+追加修正後の lint と module-boundaries 検査、結合ファイル全体の所有範囲検査は通過しました。
 
 ---
 
