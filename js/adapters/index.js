@@ -63,6 +63,17 @@ function registerDelta(before, after) {
 // whose identity must decide the stop taxonomy instead of the human-readable
 // message (issue #5838).
 const FAULT_CODES = new Set(['unmapped-memory', 'memory-read-failed', 'oob', 'permission', 'mmio-unknown']);
+const RESUMABLE_STOP_CODES = new Set(['max-steps', 'paused', 'cancelled']);
+function clearResumableStop(emulator) {
+  if (emulator.stopCode != null) {
+    if (RESUMABLE_STOP_CODES.has(emulator.stopCode)) {
+      emulator.stopped = null;
+      emulator.stopCode = null;
+    }
+    return;
+  }
+  if (emulator.stopped === 'paused' || emulator.stopped === 'cancelled') emulator.stopped = null;
+}
 function classifyStop(result) {
   const code = result && (result.faultCode != null ? result.faultCode : result.code);
   const structured = code != null ? String(code) : null;
@@ -327,6 +338,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     if (this.activeRun) {
       this.activeRun.cancelled = true;
       this.activeRun.sandbox.emulator.stopped = 'stale-request';
+      this.activeRun.sandbox.emulator.stopCode = 'stale-request';
       this.activeRun = null;
     }
     this.memoryMap = memoryMap;
@@ -344,6 +356,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     if (this.activeRun) {
       this.activeRun.cancelled = true;
       this.activeRun.sandbox.emulator.stopped = 'cancelled';
+      this.activeRun.sandbox.emulator.stopCode = 'cancelled';
       this.activeRun = null;
     }
     this.cancelled = true; this.running = false; this.sandbox = null; this.memoryMap = null; this.initialRegisters = null; this.lastResult = null;
@@ -352,7 +365,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   }
   async pause() {
     const run = this.activeRun;
-    if (run) { run.paused = true; run.sandbox.emulator.stopped = 'paused'; }
+    if (run) { run.paused = true; run.sandbox.emulator.stopped = 'paused'; run.sandbox.emulator.stopCode = 'paused'; }
     return { paused:true };
   }
   async cancel() {
@@ -362,6 +375,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     if (run) {
       run.cancelled = true;
       run.sandbox.emulator.stopped = 'cancelled';
+      run.sandbox.emulator.stopCode = 'cancelled';
       run.controller?.abort();
     }
     return { cancelled:!!run };
@@ -391,10 +405,11 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     try {
       traceState.runMemoryEvents = run.memoryEvents;
       this.cancelled = run.cancelled;
-      if (sandbox.emulator.stopped === 'paused' || sandbox.emulator.stopped === 'cancelled') sandbox.emulator.stopped = null;
+      clearResumableStop(sandbox.emulator);
       onAbort = () => {
         run.cancelled = true;
         run.sandbox.emulator.stopped = 'cancelled';
+        run.sandbox.emulator.stopCode = 'cancelled';
         if (this.activeRun === run) this.cancelled = true;
         controller.abort();
       };
@@ -404,15 +419,16 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       }
       if (run.cancelled) {
         sandbox.emulator.stopped = 'cancelled';
+        sandbox.emulator.stopCode = 'cancelled';
         controller.abort();
       }
       this.running = true;
       let result;
       try {
         result = await sandbox.run({ maxSteps, signal:controller.signal, onProgress:(n) => {
-          if (run.cancelled) sandbox.emulator.stopped = 'cancelled';
-          else if (run.paused) sandbox.emulator.stopped = 'paused';
-          else if (timeoutMs != null && monotonicNow() - started >= timeoutMs) sandbox.emulator.stopped = 'timeout';
+          if (run.cancelled) { sandbox.emulator.stopped = 'cancelled'; sandbox.emulator.stopCode = 'cancelled'; }
+          else if (run.paused) { sandbox.emulator.stopped = 'paused'; sandbox.emulator.stopCode = 'paused'; }
+          else if (timeoutMs != null && monotonicNow() - started >= timeoutMs) { sandbox.emulator.stopped = 'timeout'; sandbox.emulator.stopCode = 'timeout'; }
           if (onProgress) onProgress(n);
         } });
       } catch (error) {
