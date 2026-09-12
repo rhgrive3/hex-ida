@@ -417,15 +417,19 @@ function sanitizeDetails(value, depth = 0, seen = new WeakSet()) {
   if (typeof Error !== 'undefined' && value instanceof Error) return undefined;
   if (seen.has(value)) return undefined;
   seen.add(value);
-  if (Array.isArray(value)) return value.slice(0, 64).map((item) => sanitizeDetails(item, depth + 1, seen));
-  if (!isPlainRecord(value)) return undefined;
-  const out = Object.create(null);
-  for (const key of Object.keys(value).slice(0, 64)) {
-    if (/^(?:stack|cause)$/i.test(key)) continue;
-    const clean = sanitizeDetails(value[key], depth + 1, seen);
-    if (clean !== undefined) out[key] = clean;
+  try {
+    if (Array.isArray(value)) return value.slice(0, 64).map((item) => sanitizeDetails(item, depth + 1, seen));
+    if (!isPlainRecord(value)) return undefined;
+    const out = Object.create(null);
+    for (const key of Object.keys(value).slice(0, 64)) {
+      if (/^(?:stack|cause)$/i.test(key)) continue;
+      const clean = sanitizeDetails(value[key], depth + 1, seen);
+      if (clean !== undefined) out[key] = clean;
+    }
+    return out;
+  } finally {
+    seen.delete(value);
   }
-  return out;
 }
 
 function remoteError(payload) {
