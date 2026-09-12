@@ -12,6 +12,7 @@ export const SEMANTIC_SSA_BUILD_DEFAULT_BUDGET = Object.freeze({
 
 const PASS_ID = 'semantic-ssa';
 const SYNTHETIC_UNKNOWN_STATE_KEY = '@unknown-state';
+const FUNCTION_LEVEL_STATE_UNKNOWN_NODE_ID = '@function-level-state-unknown';
 
 function fail(code) { throw new TypeError(code); }
 function positiveInteger(value, code) {
@@ -158,6 +159,18 @@ function isStateUnknown(node) {
   if (node.kind === 'call' && node.call?.unknownEffects?.categories?.includes('state')) return true;
   return false;
 }
+function functionLevelStateEvidenceMissing(ir) {
+  if (ir.completeness === 'complete') return false;
+  const coveredReasons = new Set();
+  for (const node of ir.nodes) {
+    if (!isStateUnknown(node)) continue;
+    const reason = node.unknown?.reason ?? node.call?.unknownEffects?.reason;
+    if (reason != null) coveredReasons.add(reason);
+  }
+  return ir.unknowns.some((entry) =>
+    (entry.categories.length === 0 || entry.categories.includes('state'))
+    && !coveredReasons.has(entry.reason));
+}
 function scalarReferences(node, tick) {
   const roles = new Map();
   const add = (valueId, role) => {
@@ -262,6 +275,23 @@ function collectModel(ir, options, tick) {
       }
       if (isStateUnknown(node)) broadUnknownByBlock.get(block.id).push(base);
     }
+  }
+
+  if (functionLevelStateEvidenceMissing(ir)) {
+    broadUnknownByBlock.get(ir.entryBlockId).push({
+      blockId: ir.entryBlockId,
+      nodeOrdinal: -1,
+      node: deepFreeze({
+        id: FUNCTION_LEVEL_STATE_UNKNOWN_NODE_ID,
+        kind: 'unknown-state-write',
+        blockId: ir.entryBlockId,
+        inputs: [],
+        outputs: [],
+        unknown: { reason: 'function-level-unknowns-may-omit-state-effects', categories: ['state'] },
+        completeness: 'unknown',
+        origin: safeOrigin(ir.origin),
+      }),
+    });
   }
 
   const knownKeys = new Set([...refsByKey.keys(), ...typesByKey.keys(), ...seedCandidates.map((seed) => seed.key)]);
