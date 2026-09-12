@@ -5,6 +5,7 @@ import { createMachOMetadataBudget, ensureMachOMetadataBudget, markMachOMetadata
 import { validateFatSlice, validateFatContainer, probePastEndArm64SliceSync, parseInnerMachOHeader } from './macho-fat.js';
 
 const S_MOD_INIT_FUNC_POINTERS = 0x9;
+const S_MOD_TERM_FUNC_POINTERS = 0xa;
 
 export const DICE_KIND_DATA = 1;
 export const DICE_KIND_JUMP_TABLE8 = 2;
@@ -46,6 +47,9 @@ const LC_ENCRYPTION_INFO = 0x21;
 const LC_ENCRYPTION_INFO_64 = 0x2c;
 const LC_DYLD_EXPORTS_TRIE = 0x80000033;
 const LC_DYLD_CHAINED_FIXUPS = 0x80000034;
+const ARM_THREAD_STATE = 1;
+const ARM_THREAD_STATE_COUNT = 17;
+const ARM_THREAD_STATE_PC_OFFSET = 60;
 const ARM_THREAD_STATE64 = 6;
 const ARM_THREAD_STATE64_COUNT = 68;
 const ARM_THREAD_STATE64_PC_OFFSET = 256;
@@ -228,7 +232,7 @@ function parseThin(bytes, opts) {
     if (!linkeditData.exportsTrie && info.export.size) parseExportTrie(r, info.export, image, metadataBudget);
   }
   if (linkeditData.exportsTrie) parseExportTrie(r, linkeditData.exportsTrie, image, metadataBudget);
-  parseModInitFunctions(r, image, bits, metadataBudget);
+  parseModLifecycleFunctions(r, image, bits, metadataBudget);
 
   const namesByAddr = new Map();
   const nameIndexEntries = image.symbols.length + image.exports.length;
@@ -439,9 +443,9 @@ function parseThreadEntrypoint(r, p, cmdsize, cpu, bits) {
     const stateBytes = count * 4;
     if (!Number.isSafeInteger(stateBytes) || stateBytes < 0 || state + stateBytes > end) return null;
     const arch = cpuName(cpu);
-    if (arch === 'arm64' && flavor === ARM_THREAD_STATE64 && count === ARM_THREAD_STATE64_COUNT) return r.u64(state + ARM_THREAD_STATE64_PC_OFFSET);
+    if ((arch === 'arm64' || arch === 'arm64_32') && flavor === ARM_THREAD_STATE64 && count === ARM_THREAD_STATE64_COUNT) return r.u64(state + ARM_THREAD_STATE64_PC_OFFSET);
     if (arch === 'x86_64' && flavor === X86_THREAD_STATE64 && count === X86_THREAD_STATE64_COUNT) return r.u64(state + X86_THREAD_STATE64_RIP_OFFSET);
-    if (arch === 'arm' && bits === 32 && flavor === 1 && stateBytes >= 64) return BigInt(r.u32(state + 60));
+    if (arch === 'arm' && bits === 32 && flavor === ARM_THREAD_STATE && count === ARM_THREAD_STATE_COUNT) return BigInt(r.u32(state + ARM_THREAD_STATE_PC_OFFSET));
     q = state + stateBytes;
   }
   return null;
@@ -919,22 +923,36 @@ export function parseCompactUnwind(r, image, metadataBudget = null) {
   status.recovered = ranges.length;
 }
 
-function parseModInitFunctions(r, image, bits, metadataBudget) {
-  const modInitSections = image.sections.filter((s) => (s.flags & 0xff) === S_MOD_INIT_FUNC_POINTERS);
-  if (modInitSections.length === 0) return;
+function parseModLifecycleFunctions(r, image, bits, metadataBudget) {
+  const lifecycleSections = image.sections.filter((section) => {
+    const type = section.flags & 0xff;
+    return type === S_MOD_INIT_FUNC_POINTERS || type === S_MOD_TERM_FUNC_POINTERS;
+  });
+  if (lifecycleSections.length === 0) return;
 
-  image.metadata.initializers ||= [];
   const ptrSize = bits === 64 ? 8 : 4;
   const ptrSizeBig = BigInt(ptrSize);
   const arch = image.arch;
   const alignment = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
   const instructionBytes = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
-  const recoveredTargets = new Set();
+  const recoveredInitializers = new Set();
+  const recoveredTerminators = new Set();
 
-  for (const sec of modInitSections) {
+  for (const sec of lifecycleSections) {
+    const isTerminator = (sec.flags & 0xff) === S_MOD_TERM_FUNC_POINTERS;
+    const metadataKey = isTerminator ? 'terminators' : 'initializers';
+    const budgetLabel = isTerminator ? 'mod-term' : 'mod-init';
+    const source = isTerminator ? 'terminator' : 'constructor';
+    const noun = isTerminator ? 'terminator' : 'constructor';
+    const evidence = isTerminator
+      ? 'Mach-O S_MOD_TERM_FUNC_POINTERS loader-invoked terminator in validated executable mapping with file-backed instruction bytes'
+      : 'Mach-O S_MOD_INIT_FUNC_POINTERS loader-invoked constructor in validated executable mapping with file-backed instruction bytes';
+    const kindTargets = isTerminator ? recoveredTerminators : recoveredInitializers;
+    image.metadata[metadataKey] ||= [];
+
     if (sec.size % ptrSizeBig !== 0n) {
       metadataBudget.partial(
-        'mod-init:truncated-section',
+        `${budgetLabel}:truncated-section`,
         `Mach-O section ${sec.name} size ${sec.size} is not a multiple of pointer width ${ptrSize}`,
       );
     }
@@ -947,24 +965,24 @@ function parseModInitFunctions(r, image, bits, metadataBudget) {
     const safeCount = Math.min(count, Math.floor(fileAvailable / ptrSize));
     if (safeCount < count) {
       metadataBudget.partial(
-        'mod-init:file-truncated',
+        `${budgetLabel}:file-truncated`,
         `Mach-O section ${sec.name} file data is truncated or zero-fill`,
       );
     }
 
     for (let i = 0; i < safeCount; i++) {
-      if (!metadataBudget.take({ inputBytes: ptrSize, records: 1, objects: 1, operations: 1, estimatedHeapBytes: 64 }, 'mod-init')) {
+      if (!metadataBudget.take({ inputBytes: ptrSize, records: 1, objects: 1, operations: 1, estimatedHeapBytes: 64 }, budgetLabel)) {
         break;
       }
       const slotVa = sec.address + BigInt(i * ptrSize);
       const slotFileOff = secFileOffset + i * ptrSize;
       const raw = bits === 64 ? r.u64(slotFileOff) : BigInt(r.u32(slotFileOff));
 
-      // Resolve under Mach-O pointer/rebase/chained-fixup authority
+      // Resolve under Mach-O pointer/rebase/chained-fixup authority.
       const resolved = resolveMachOPointer(image, raw, { address: slotVa });
 
       let isValid = false;
-      let target = resolved;
+      const target = resolved;
       let failureReason = null;
 
       if (target == null) {
@@ -989,8 +1007,7 @@ function parseModInitFunctions(r, image, bits, metadataBudget) {
         }
       }
 
-      // Record in metadata
-      image.metadata.initializers.push({
+      image.metadata[metadataKey].push({
         address: target,
         raw,
         slotAddress: slotVa,
@@ -1000,19 +1017,19 @@ function parseModInitFunctions(r, image, bits, metadataBudget) {
 
       if (isValid) {
         const targetStr = target.toString();
-        if (!recoveredTargets.has(targetStr)) {
-          recoveredTargets.add(targetStr);
+        if (!kindTargets.has(targetStr)) {
+          kindTargets.add(targetStr);
           image.functions.push(functionSeed(target, {
-            source: 'constructor',
+            source,
             confidence: 0.95,
             exactFunctionStart: true,
-            functionStartEvidence: 'Mach-O S_MOD_INIT_FUNC_POINTERS loader-invoked constructor in validated executable mapping with file-backed instruction bytes',
+            functionStartEvidence: evidence,
           }));
         }
       } else {
         metadataBudget.partial(
-          `mod-init:${failureReason}`,
-          `Ignored Mach-O constructor pointer at 0x${slotVa.toString(16)} (raw 0x${raw.toString(16)}): ${failureReason}`,
+          `${budgetLabel}:${failureReason}`,
+          `Ignored Mach-O ${noun} pointer at 0x${slotVa.toString(16)} (raw 0x${raw.toString(16)}): ${failureReason}`,
         );
       }
     }
