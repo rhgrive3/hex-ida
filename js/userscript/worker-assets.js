@@ -1,4 +1,5 @@
-import { gmFetch } from './network.js';
+import { toExactArrayBuffer } from './array-buffer.js';
+import { fetchBinary, gmFetch } from './network.js';
 
 export async function prepareUserscriptWorkers({
   origin = globalThis.__HEX_API_BASE__,
@@ -20,9 +21,10 @@ export async function prepareUserscriptWorkers({
     }));
     const sources = new Map(sourceEntries);
 
-    const wasmResponse = await gmFetch(assetURL(base, manifest.wasm || 'capstone.wasm'));
+    const wasmResponse = await fetchBinary(assetURL(base, manifest.wasm || 'capstone.wasm'));
     if (!wasmResponse.ok) throw new Error(`Could not load capstone.wasm (${wasmResponse.status}).`);
-    const wasmBlobURL = URL.createObjectURL(new Blob([await wasmResponse.arrayBuffer()], { type: 'application/wasm' }));
+    const wasmBytes = toExactArrayBuffer(await wasmResponse.arrayBuffer());
+    const wasmBlobURL = URL.createObjectURL(new Blob([wasmBytes], { type: 'application/wasm' }));
     createdBlobURLs.push(wasmBlobURL);
 
     /* A blob Worker is explicitly allowed by ChatGPT's worker-src policy. Avoid
