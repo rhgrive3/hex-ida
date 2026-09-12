@@ -383,8 +383,14 @@ function parseProgramHeaders(r, h, image, bits) {
       const fileLength = BigInt(r.length);
       const invalidSize = ph.filesz > ph.memsz;
       const invalidRange = ph.offset > fileLength || ph.filesz > fileLength - ph.offset;
-      if (invalidSize || invalidRange) {
-        image.warnings.push(`invalid ELF PT_LOAD ${i}: ${invalidSize ? 'p_filesz > p_memsz' : 'file range exceeds input'}`);
+      const invalidAlign = ph.align > 1n && (ph.align & (ph.align - 1n)) !== 0n;
+      const invalidCongruence = !invalidAlign && ph.align > 1n && ph.vaddr % ph.align !== ph.offset % ph.align;
+      if (invalidSize || invalidRange || invalidAlign || invalidCongruence) {
+        const reason = invalidSize ? 'p_filesz > p_memsz'
+          : invalidRange ? 'file range exceeds input'
+            : invalidAlign ? 'p_align is not a power of two'
+              : 'p_vaddr/p_offset are not congruent modulo p_align';
+        image.warnings.push(`invalid ELF PT_LOAD ${i}: ${reason}`);
         continue;
       }
     }
