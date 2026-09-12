@@ -5,6 +5,7 @@ const BRIDGE_ERROR_CODE = 'CHATGPT_PARENT_RPC_ERROR';
 const INVALID_PARAMS_CODE = 'RPC_INVALID_PARAMS';
 const UNSAFE_RESULT_CODE = 'RPC_UNSAFE_RESULT';
 const MAX_WIRE_DEPTH = 64;
+const MAX_ARRAY_INDEX = 2 ** 32 - 2;
 const SENSITIVE_ERROR_TEXT = /(?:\bcookie\b|\blocalStorage\b|\bsessionStorage\b|\bindexedDB\b|\bGM\.|querySelector|querySelectorAll|\[data-|#prompt-textarea|\bdocument\.|\bwindow\.)/i;
 const URL_TEXT = /https?:\/\/[^\s]+/gi;
 const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
@@ -190,6 +191,7 @@ function sanitizeWireArray(value, depth, stack) {
     for (const key of Reflect.ownKeys(descriptors)) {
       if (key === 'length') continue;
       if (typeof key !== 'string' || !/^(?:0|[1-9]\d*)$/.test(key)) throw unsafeResult();
+      if (Number(key) > MAX_ARRAY_INDEX) throw unsafeResult();
       const descriptor = descriptors[key];
       if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) throw unsafeResult();
       out[Number(key)] = sanitizeWireValue(descriptor.value, depth + 1, stack);

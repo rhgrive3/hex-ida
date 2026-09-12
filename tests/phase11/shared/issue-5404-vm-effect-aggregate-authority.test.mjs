@@ -49,18 +49,18 @@ const exactBundle = createVMEffectBundle({ frontendId: 'wasm', methodId: 'method
     completeness: 'exact-with-intrinsic',
   });
   assert.throws(
-    () => createVMEffectFunction({ frontendId: 'wasm', methodId: 'm', bundles: [unknownBundle], aggregateCompleteness: 'partial' }),
+    () => createVMEffectFunction({ frontendId: 'wasm', methodId: 'method:1', bundles: [unknownBundle], aggregateCompleteness: 'partial' }),
     (error) => error.message === 'vm-effect-aggregate-completeness-overclaim',
   );
   assert.throws(
-    () => createVMEffectFunction({ frontendId: 'wasm', methodId: 'm', bundles: [unknownBundle], aggregateCompleteness: 'exact' }),
+    () => createVMEffectFunction({ frontendId: 'wasm', methodId: 'method:1', bundles: [unknownBundle], aggregateCompleteness: 'exact' }),
     (error) => error.message === 'vm-effect-aggregate-completeness-overclaim',
   );
   assert.throws(
-    () => createVMEffectFunction({ frontendId: 'wasm', methodId: 'm', bundles: [intrinsicBundle], aggregateCompleteness: 'exact' }),
+    () => createVMEffectFunction({ frontendId: 'wasm', methodId: 'method:1', bundles: [intrinsicBundle], aggregateCompleteness: 'exact' }),
     (error) => error.message === 'vm-effect-aggregate-completeness-overclaim',
   );
-  const downgraded = createVMEffectFunction({ frontendId: 'wasm', methodId: 'm', bundles: [exactBundle], aggregateCompleteness: 'exact-with-intrinsic' });
+  const downgraded = createVMEffectFunction({ frontendId: 'wasm', methodId: 'method:1', bundles: [exactBundle], aggregateCompleteness: 'exact-with-intrinsic' });
   assert.equal(downgraded.aggregateCompleteness, 'exact-with-intrinsic', 'a more conservative declaration stays honored');
 }
 
@@ -98,7 +98,7 @@ assert.throws(
 {
   const fn = createVMEffectFunction({ frontendId: 'wasm', methodId: 'method:1', bundles: [exactBundle, partialBundle] });
   assert.equal(fn.aggregateCompleteness, 'partial', 'derived aggregate comes from the weakest bundle');
-  const fnAllExact = createVMEffectFunction({ frontendId: 'wasm', methodId: 'method:2', bundles: [exactBundle] });
+  const fnAllExact = createVMEffectFunction({ frontendId: 'wasm', methodId: 'method:1', bundles: [exactBundle] });
   assert.equal(fnAllExact.aggregateCompleteness, 'exact');
 }
 

@@ -92,7 +92,10 @@ function callsFromTrace(trace) {
   return out;
 }
 function returnsFromTrace(trace) {
-  return (trace || []).filter((e) => /^ret\b/i.test(e.text || '')).map((e) => ({ type:'return', address:e.addr ?? e.address, text:e.text }));
+  // ARM64e authenticated returns `retaa`/`retab` are return instructions too
+  // (#5306): the bare `ret\b` boundary never held before the 'a'/'b' suffix,
+  // so the local sandbox's traceReturn surface dropped them.
+  return (trace || []).filter((e) => /^ret(aa|ab)?\b/i.test(e.text || '')).map((e) => ({ type:'return', address:e.addr ?? e.address, text:e.text }));
 }
 function isConditionalBranch(text) { return /^((b\.[a-z]+)|cbz|cbnz|tbz|tbnz)\b/i.test(text || ''); }
 function isRegisterName(reg) { return /^(x([0-9]|[12][0-9]|30)|w([0-9]|[12][0-9]|30)|sp|pc)$/.test(reg); }
@@ -399,7 +402,13 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       const after = cloneRegisters(sandbox.emulator); const event = { type:'instruction', address:before.pc, addr:before.pc, text:raw.text, ok:raw.ok, reason:raw.reason };
       this.traceBuffer.push(event);
       if (isConditionalBranch(raw.text)) {
-        this.traceBuffer.push({ type:'branch', address:before.pc, text:raw.text, next:after.pc, taken:after.pc !== before.pc + 4n });
+        const recorded = (sandbox.emulator.trace || []).slice(this.traceCursor).find((e) => e && e.addr === before.pc && e.branch && e.branch.conditional === true && typeof e.branch.taken === 'boolean');
+        let taken = null;
+        if (recorded) taken = recorded.branch.taken;
+        else if (after.pc !== before.pc + 4n) taken = true;
+        const branchEvent = { type:'branch', address:before.pc, text:raw.text, next:after.pc, taken };
+        if (taken === null) branchEvent.ambiguous = true;
+        this.traceBuffer.push(branchEvent);
         this.branchCursor++;
       }
       const freshTrace = (sandbox.emulator.trace || []).slice(this.traceCursor);

@@ -61,8 +61,8 @@ export function createDevWorkerParentRpc({ port, runtime } = {}) {
     active.get(message.id)?.abort('remote-cancel');
   };
 
-  listen(port, onMessage);
-  listen(port, onCancel);
+  const detachMessage = listen(port, onMessage);
+  const detachCancel = listen(port, onCancel);
   port.start?.();
 
   async function handle(message) {
@@ -103,8 +103,8 @@ export function createDevWorkerParentRpc({ port, runtime } = {}) {
     close() {
       if (closed) return;
       closed = true;
-      unlisten(port, onMessage);
-      unlisten(port, onCancel);
+      detachCancel();
+      detachMessage();
       for (const controller of active.values()) controller.abort('rpc-closed');
       active.clear();
     },
@@ -130,7 +130,7 @@ export function createDevWorkerParentRpcClient({ port, timeoutMs = 60000 } = {})
     else current.reject(remoteError(message.error));
   };
 
-  listen(port, onMessage);
+  const detachMessage = listen(port, onMessage);
   port.start?.();
 
   async function call(method, params = {}, options = {}) {
@@ -141,6 +141,7 @@ export function createDevWorkerParentRpcClient({ port, timeoutMs = 60000 } = {})
 
     const id = requestId();
     const signal = options.signal;
+    const requestParams = sanitize(params);
     const limit = options.timeoutMs === 0
       ? 0
       : normalizeTimeout(options.timeoutMs, timeoutMs);
@@ -175,13 +176,19 @@ export function createDevWorkerParentRpcClient({ port, timeoutMs = 60000 } = {})
         timer,
         detach: () => signal?.removeEventListener?.('abort', onAbort),
       });
-      post(port, {
+      if (!post(port, {
         protocol: DEV_PARENT_RPC_PROTOCOL,
         kind: 'request',
         id,
         method,
-        params: sanitize(params),
-      });
+        params: requestParams,
+      })) {
+        if (pending.delete(id)) {
+          if (timer) clearTimeout(timer);
+          signal?.removeEventListener?.('abort', onAbort);
+          reject(rpcError('transport-failure', `Dev Worker RPC request send failed: ${method}`));
+        }
+      }
     });
   }
 
@@ -229,7 +236,7 @@ export function createDevWorkerParentRpcClient({ port, timeoutMs = 60000 } = {})
     close() {
       if (closed) return;
       closed = true;
-      unlisten(port, onMessage);
+      detachMessage();
       for (const [id, current] of pending) {
         if (current.timer) clearTimeout(current.timer);
         current.detach?.();
@@ -344,17 +351,44 @@ function usablePort(port) {
 }
 
 function post(port, value) {
-  try { port.postMessage(value); } catch {}
+  try {
+    port.postMessage(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+const fallbackListeners = new WeakMap();
+function liveFallbackListener(listener) {
+  let record;
+  while ((record = fallbackListeners.get(listener)) && !record.active) {
+    listener = record.previous;
+  }
+  return listener;
 }
 function listen(port, handler) {
   if (typeof port.addEventListener === 'function') {
     port.addEventListener('message', handler);
-    return;
+    return () => unlisten(port, handler);
   }
-  const previous = port.onmessage;
-  port.onmessage = (event) => {
-    previous?.(event);
-    handler(event);
+  const record = { previous: port.onmessage, active: true, handler };
+  handler = null;
+  const wrapper = function (event) {
+    // Detached predecessors must neither handle events nor be restored later.
+    record.previous = liveFallbackListener(record.previous);
+    record.previous?.call(this, event);
+    const currentHandler = record.handler;
+    if (record.active) currentHandler(event);
+  };
+  fallbackListeners.set(wrapper, record);
+  port.onmessage = wrapper;
+  return () => {
+    if (!record.active) return;
+    record.active = false;
+    // A newer wrapper may retain this record until its next event or detach.
+    // Release the RPC closure now, independently of that wrapper lifecycle.
+    record.handler = null;
+    if (port.onmessage === wrapper) port.onmessage = liveFallbackListener(record.previous);
   };
 }
 function unlisten(port, handler) {
