@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { parseMachO } from '../../../js/binary/macho.js';
+import { parseMachOSource } from '../../../js/binary/source-loaders.js';
 
 function build64({
   pointers = [0x1180n],
@@ -112,6 +113,8 @@ test('multiple TLV initializer entries preserve order and deduplicate function s
   const image = parseMachO(bytes);
   assert.deepEqual(image.metadata.tlvInitializers.map((x) => x.address), [0x1180n, 0x1184n, 0x1180n]);
   assert.deepEqual(image.functions.map((x) => x.address), [0x1180n, 0x1184n]);
+  assert.equal(image.functions[0].abiMetadata?.machoLifecycle, 'tlv-initializer');
+  assert.equal(image.functions[1].abiMetadata?.machoLifecycle, 'tlv-initializer');
 });
 
 test('misaligned ARM64 TLV target is retained but not promoted', () => {
@@ -149,6 +152,31 @@ test('32-bit Mach-O TLV initializers use four-byte pointers', () => {
   assert.equal(image.metadata.tlvInitializers.length, 1);
   assert.equal(image.metadata.tlvInitializers[0].address, 0x1180n);
   assert.equal(image.functions.length, 1);
+});
+
+test('source-backed Mach-O fetches and decodes TLV initializer pointer bytes', async () => {
+  const bytes = build64();
+  const source = {
+    size: BigInt(bytes.length),
+    maxReadLength: 64,
+    reads: 0,
+    async read(offset, length) {
+      this.reads++;
+      const start = Number(offset);
+      return bytes.slice(start, start + length);
+    },
+  };
+  const image = await parseMachOSource(source, {}, null, {
+    pageSize: 32,
+    maxPageSize: 64,
+    maxCachedBytes: 0x2000,
+    maxReads: 128,
+  });
+  assert.equal(image.metadata.sourceBacked, true);
+  assert.equal(image.metadata.tlvInitializers?.length, 1);
+  assert.equal(image.metadata.tlvInitializers[0].address, 0x1180n);
+  assert.equal(image.functions.some((fn) => fn.address === 0x1180n && fn.abiMetadata?.machoLifecycle === 'tlv-initializer'), true);
+  assert.ok(source.reads > 1);
 });
 
 test('ordinary S_MOD_INIT_FUNC_POINTERS keeps existing initializer contract', () => {
