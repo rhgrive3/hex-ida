@@ -108,6 +108,7 @@ export class DexFrontend {
         structural: verifier.structuralErrors.length > 0 ? 'failed' : 'complete',
         specValidation: invalid ? 'failed' : verifierPartial || semanticPartial ? 'partial' : 'valid',
         semanticEffect: semanticPartial ? 'partial' : 'complete',
+        resolution: invalid || verifierPartial || semanticPartial ? 'partial' : 'complete',
       },
     });
   }
