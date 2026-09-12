@@ -5707,3 +5707,26 @@ ZIP固有の追加修正として、legacy symbolic BLの判定を強化した�
   `zip-135-control-fixed-6bb817c1-a190-4826-b08d-9eb7ed9cae10.json`
 
 SYM-01/X-03、C1/C3、他担当issue、実機、最新mainの統合は依然このZIP取り込みには含めない。
+
+### この環境での生成物同期
+
+追加修正コミット: `6821a397a`。ZIPの生成物をコピーせず、canonical
+`npm run userscript:build`を二回実行し、以下のtracked生成物hashが一致した。
+Node v24.20.0 / installed esbuild 0.28.1（lock 0.28.2とは異なる）。依存関係の修復はしていない。
+
+- `userscript/hex.user.template.js`: `aec3aa899e250546b913df7d1958043833d2876a6733d91d18571f5887e6c626`
+- `userscript/release-version.json`: `b119193fac8bec7f7d9f19d6e155bc2fc1aa55022d73ae26da236c167076f522`
+- `js/userscript/deployment-identity.generated.js`: `3887de01f4ab6c25d10339b6111a9c4d1b9b7be75f6b01fce5bdbed080d63252`（変更なし）
+
+branch-local serial `2322242241`、releaseIdentity
+`dd616f7093ff1c43a5bedc8d1fb3d40fc8117bc7171d5e2165488363a16f37f2`、
+buildId `1ff45a375944855ab24b2721`。deploy/public activationはしていない。
+最新mainと統合するときはそのrelease lineageから再生成し、このbranch-local serialを強制しない。
+
+build receipts:
+
+- `zip-135-build-first-78c87441-e768-4454-b459-d06a3b7d333b.json`
+- `zip-135-build-second-d17ae67a-43d7-4785-9b67-d0c9f82547f7.json`
+
+この同期だけではcanonicalの赤、独立verifier、lock-exact build、main reconciliation、
+必要な実機/runtimeの未完了を解消しない。ソースと生成物のbackupとして同じPRへ反映する。
