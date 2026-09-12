@@ -128,11 +128,16 @@ jobs:
           command: |
             set -euo pipefail
             case "${CIRCLE_BRANCH:-}" in
+              feat/scpa-functional-acceptance-20260912)
+                # The integration inventory includes other owners. Check it even
+                # when the changed files do not match a single phase's trigger.
+                run_it=true
+                ;;
               completion/stage1-integration|integration/all-open-prs-20260829)
                 run_it=false
                 ;;
               *)
-                run_it="$(bash scripts/ci/circleci-impact.sh pr-only '^(js/analysis/|js/semantics/compat/index\.js$|tests/phase7/|tools/validation/phase7/|tools/validation/phase7-ownership\.mjs$|tools/validation/phase-ownership/phase7\.json$|reports/phase7/|\.github/workflows/phase7-ownership\.yml$)')"
+                run_it="$(bash scripts/ci/circleci-impact.sh pr-only '^(js/analysis/|js/semantics/compat/index\.js$|tests/phase7/|tools/validation/phase7/|tools/validation/phase7-ownership\.mjs$|tools/validation/phase-ownership/phase7\.json$|reports/phase7/|\.github/workflows/phase7-ownership\.yml$|tools/validation/phase5-ownership\.mjs$|tools/validation/scpa-integration-ownership\.mjs$|tools/validation/phase-ownership/scpa-integration\.json$|tests/ci/scpa-integration-ownership\.test\.mjs$)')"
                 ;;
             esac
             echo "export RUN_PHASE7_OWNERSHIP=$run_it" >> "$BASH_ENV"
@@ -154,6 +159,15 @@ jobs:
             set -euo pipefail
             node tools/validation/phase7-ownership.mjs --check-manifest
             case "${CIRCLE_BRANCH:-}" in
+              feat/scpa-functional-acceptance-20260912)
+                # Validate the complete registered integration before projecting
+                # the Phase 7 slice; foreign owner paths are never filter-skipped.
+                node --test tests/ci/scpa-integration-ownership.test.mjs
+                FILES_JSON="$(node tools/validation/scpa-integration-ownership.mjs \
+                  --branch "$CIRCLE_BRANCH" --phase 7 \
+                  --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA")"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
               fix/unlinked-demand-analysis-2502-2518|fix/unlinked-top10-r3-20260830|fix/close-audit-2520-2545-20260830|fix/reopened-audit-final-20260830|fix/open-issues-final-20260830-r4|fix/unlinked-batch-20260901-r2)
                 FILES_JSON="$(git diff --name-only --diff-filter=ACMR "$OWNERSHIP_BASE_SHA...$OWNERSHIP_HEAD_SHA" | node -e '
                   const fs = require("node:fs");
@@ -236,7 +250,12 @@ jobs:
       - run:
           name: Detect Phase 8 ownership impact
           command: |
-            run_it="$(bash scripts/ci/circleci-impact.sh pr-only '^(js/decompiler/|tests/phase8/|tools/validation/phase8/|tools/validation/phase8-ownership\.mjs$|tools/validation/phase-ownership/phase8\.json$|reports/phase8/|docs/PHASE8_CHECKPOINT\.md$|docs/PHASE8_HANDOFF\.md$|\.github/workflows/phase8-ownership\.yml$|\.github/workflows/phase8-release-validation\.yml$)')"
+            set -euo pipefail
+            if [ "${CIRCLE_BRANCH:-}" = 'feat/scpa-functional-acceptance-20260912' ]; then
+              run_it=true
+            else
+              run_it="$(bash scripts/ci/circleci-impact.sh pr-only '^(js/decompiler/|tests/phase8/|tools/validation/phase8/|tools/validation/phase8-ownership\.mjs$|tools/validation/phase-ownership/phase8\.json$|reports/phase8/|docs/PHASE8_CHECKPOINT\.md$|docs/PHASE8_HANDOFF\.md$|\.github/workflows/phase8-ownership\.yml$|\.github/workflows/phase8-release-validation\.yml$|tools/validation/phase5-ownership\.mjs$|tools/validation/scpa-integration-ownership\.mjs$|tools/validation/phase-ownership/scpa-integration\.json$|tests/ci/scpa-integration-ownership\.test\.mjs$)')"
+            fi
             echo "export RUN_PHASE8_OWNERSHIP=$run_it" >> "$BASH_ENV"
       - run:
           name: Prepare exact ownership inventory
@@ -255,7 +274,15 @@ jobs:
             if [ "$RUN_PHASE8_OWNERSHIP" != 'true' ]; then exit 0; fi
             set -euo pipefail
             node tools/validation/phase8-ownership.mjs --check-manifest
-            node tools/validation/phase8-ownership.mjs --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA"
+            if [ "${CIRCLE_BRANCH:-}" = 'feat/scpa-functional-acceptance-20260912' ]; then
+              node --test tests/ci/scpa-integration-ownership.test.mjs
+              FILES_JSON="$(node tools/validation/scpa-integration-ownership.mjs \
+                --branch "$CIRCLE_BRANCH" --phase 8 \
+                --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA")"
+              node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"
+            else
+              node tools/validation/phase8-ownership.mjs --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA"
+            fi
             if node tools/validation/phase8-ownership.mjs --files-json '["js/semantics/ssa/build.js"]'; then
               echo 'Phase 8 ownership gate accepted a forbidden path' >&2
               exit 1
