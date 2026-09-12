@@ -15,6 +15,12 @@ const PHASE8_FILES = [
   'tests/phase8/corpus/explicit-compiler-abi.test.mjs',
   'tests/phase8/ownership/cross-lane-routing.test.mjs',
   'tools/validation/phase8/cross-lane-inventory.mjs',
+  'tools/validation/phase8/decoded-function-adapter.mjs',
+  'tools/validation/phase8/decompile-corpus.mjs',
+  'tools/validation/phase8/metrics.mjs',
+  'tools/validation/phase8/verify.mjs',
+  'userscript/hex.user.template.js',
+  'userscript/release-version.json',
 ];
 
 test('the gate-repair route admits only its Phase 8 subset', () => {
