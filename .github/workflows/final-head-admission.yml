@@ -1,6 +1,8 @@
 name: Final head admission
 
 on:
+  push:
+    branches: [main]
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   pull_request_review:
@@ -8,6 +10,8 @@ on:
   pull_request_review_comment:
     types: [created, edited, deleted]
   status:
+  check_run:
+    types: [created, rerequested, completed, requested_action]
   workflow_run:
     workflows:
       - PR fast gate
@@ -48,7 +52,7 @@ permissions:
   statuses: write
 
 concurrency:
-  group: final-head-admission-${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || github.event.sha || inputs.pr_number || github.run_id }}
+  group: final-head-admission-${{ github.event.pull_request.number || github.event.check_run.pull_requests[0].number || github.event.workflow_run.pull_requests[0].number || github.event.check_run.head_sha || github.event.sha || inputs.pr_number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -65,7 +69,9 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 1
           persist-credentials: false
-          sparse-checkout: tools/validation/final-head-admission.mjs
+          sparse-checkout: |
+            tools/validation/final-head-admission.mjs
+            tools/validation/final-head-admission-tuple.mjs
           sparse-checkout-cone-mode: false
 
       - name: Evaluate exact-head admission evidence
@@ -77,11 +83,46 @@ jobs:
             const { pathToFileURL } = require('node:url');
             const path = require('node:path');
             const evaluator = await import(pathToFileURL(
-              path.join(process.env.GITHUB_WORKSPACE, 'tools/validation/final-head-admission.mjs'),
+              path.join(process.env.GITHUB_WORKSPACE, 'tools/validation/final-head-admission-tuple.mjs'),
             ).href);
 
             const owner = context.repo.owner;
             const repo = context.repo.repo;
+            const targetUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+
+            // Advancing the default branch changes the review authority tuple
+            // even when every PR HEAD remains byte-for-byte unchanged. Invalidate
+            // every open PR immediately; the next fresh review/status event will
+            // recompute against the new live BASE.
+            if (context.eventName === 'push') {
+              const defaultBranch = context.payload.repository?.default_branch;
+              if (!defaultBranch || context.ref !== `refs/heads/${defaultBranch}`) {
+                core.info('Ignoring non-default-branch push.');
+                return;
+              }
+              const pulls = await github.paginate(github.rest.pulls.list, {
+                owner, repo, state: 'open', per_page: 100,
+              });
+              for (const candidate of pulls) {
+                const headSha = candidate.head?.sha;
+                if (!headSha) continue;
+                await github.rest.repos.createCommitStatus({
+                  owner,
+                  repo,
+                  sha: headSha,
+                  state: 'pending',
+                  context: evaluator.FINAL_HEAD_ADMISSION_CONTEXT,
+                  description: 'Base advanced; fresh (HEAD,BASE) AUTO review required',
+                  target_url: targetUrl,
+                });
+              }
+              core.summary
+                .addHeading('Final-head admission invalidated after base advance')
+                .addRaw(`Open PR heads invalidated: ${pulls.length}\n`)
+                .write();
+              return;
+            }
+
             let prNumber = null;
             let triggeringHead = null;
 
@@ -97,6 +138,9 @@ jobs:
               prNumber = context.payload.workflow_run?.pull_requests?.[0]?.number ?? null;
             } else if (context.eventName === 'status') {
               triggeringHead = context.payload.sha ?? null;
+            } else if (context.eventName === 'check_run') {
+              triggeringHead = context.payload.check_run?.head_sha ?? null;
+              prNumber = context.payload.check_run?.pull_requests?.[0]?.number ?? null;
             } else if (context.eventName === 'workflow_dispatch') {
               const parsed = Number(process.env.DISPATCH_PR_NUMBER);
               if (Number.isSafeInteger(parsed) && parsed > 0) prNumber = parsed;
@@ -127,44 +171,40 @@ jobs:
               return;
             }
 
-            const reviews = await github.paginate(github.rest.pulls.listReviews, {
-              owner, repo, pull_number: pr.number, per_page: 100,
-            });
+            async function readAdmissionEvidence(number, sha) {
+              const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                owner, repo, pull_number: number, per_page: 100,
+              });
+              const statuses = await github.paginate(github.rest.repos.listCommitStatusesForRef, {
+                owner, repo, ref: sha, per_page: 100,
+              });
+              const checkRuns = await github.paginate(
+                github.rest.checks.listForRef,
+                { owner, repo, ref: sha, per_page: 100, filter: 'latest' },
+                (response) => response.data.check_runs ?? [],
+              );
+              return { reviews, statuses, checkRuns };
+            }
+
+            // Review-thread resolution is enforced independently by the active
+            // main-branch ruleset (required_review_thread_resolution). GitHub
+            // Actions has no pull_request_review_thread resolve/unresolve trigger,
+            // so thread state is intentionally not controller admission authority.
+            // This keeps the mutable authority set closed over the events that can
+            // actually schedule this privileged controller.
+
             // Current-base review identity: the authoritative base is the live
             // head of the PR's target branch, not the PR's creation-time base.
             const { data: baseBranch } = await github.rest.repos.getBranch({
               owner, repo, branch: pr.base.ref,
             });
-            const statuses = await github.paginate(github.rest.repos.listCommitStatusesForRef, {
-              owner, repo, ref: headSha, per_page: 100,
+            const evaluatedBaseSha = baseBranch?.commit?.sha ?? null;
+            const evidence = await readAdmissionEvidence(pr.number, headSha);
+            const { reviews, statuses, checkRuns } = evidence;
+            const evaluatedEvidenceRevision = evaluator.admissionEvidenceRevision({
+              draft: pr.draft === true,
+              ...evidence,
             });
-            const checkRuns = await github.paginate(
-              github.rest.checks.listForRef,
-              { owner, repo, ref: headSha, per_page: 100, filter: 'latest' },
-              (response) => response.data.check_runs ?? [],
-            );
-
-            let unresolvedReviewThreads = 0;
-            let cursor = null;
-            for (;;) {
-              const page = await github.graphql(`
-                query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
-                  repository(owner: $owner, name: $repo) {
-                    pullRequest(number: $number) {
-                      reviewThreads(first: 100, after: $cursor) {
-                        nodes { isResolved }
-                        pageInfo { hasNextPage endCursor }
-                      }
-                    }
-                  }
-                }
-              `, { owner, repo, number: pr.number, cursor });
-              const threads = page.repository?.pullRequest?.reviewThreads;
-              if (!threads) throw new Error('final-head-admission-review-threads-unavailable');
-              unresolvedReviewThreads += threads.nodes.filter((thread) => !thread.isResolved).length;
-              if (!threads.pageInfo.hasNextPage) break;
-              cursor = threads.pageInfo.endCursor;
-            }
 
             const result = evaluator.evaluateFinalHeadAdmission({
               headSha,
@@ -172,13 +212,12 @@ jobs:
               reviews,
               statuses,
               checkRuns,
-              unresolvedReviewThreads,
               // AUTO markers are review evidence, not authentication. Only the
               // repository owner is trusted to mint them in this repository.
               trustedAutoReviewers: [owner],
               // Approvals must be bound to the live target-branch head so a
               // stale (HEAD, BASE_old) approval cannot survive a base advance.
-              currentBaseSha: baseBranch?.commit?.sha ?? null,
+              currentBaseSha: evaluatedBaseSha,
               // These contexts are emitted for every PR in the current CircleCI
               // admission surface. Requiring the full set prevents transient
               // success before a slower status context has even been created.
@@ -192,26 +231,73 @@ jobs:
               ],
             });
 
-            const targetUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
-            await github.rest.repos.createCommitStatus({
-              owner,
-              repo,
-              sha: headSha,
-              state: result.state,
-              context: evaluator.FINAL_HEAD_ADMISSION_CONTEXT,
-              description: result.description.slice(0, 140),
-              target_url: targetUrl,
+            async function readCurrentAdmissionTuple() {
+              const { data: currentPr } = await github.rest.pulls.get({
+                owner, repo, pull_number: pr.number,
+              });
+              if (!currentPr || currentPr.state !== 'open') {
+                return { open: false, headSha: null, baseSha: null, evidenceRevision: null };
+              }
+              const currentHeadSha = currentPr.head?.sha ?? null;
+              const { data: currentBaseBranch } = await github.rest.repos.getBranch({
+                owner, repo, branch: currentPr.base.ref,
+              });
+              const currentEvidence = await readAdmissionEvidence(currentPr.number, currentHeadSha);
+              return {
+                open: true,
+                headSha: currentHeadSha,
+                baseSha: currentBaseBranch?.commit?.sha ?? null,
+                evidenceRevision: evaluator.admissionEvidenceRevision({
+                  draft: currentPr.draft === true,
+                  ...currentEvidence,
+                }),
+              };
+            }
+
+            const publication = await evaluator.publishTupleBoundAdmissionStatus({
+              evaluatedHeadSha: headSha,
+              evaluatedBaseSha,
+              evaluatedEvidenceRevision,
+              readCurrentTuple: readCurrentAdmissionTuple,
+              publishEvaluatedStatus: () => github.rest.repos.createCommitStatus({
+                owner,
+                repo,
+                sha: headSha,
+                state: result.state,
+                context: evaluator.FINAL_HEAD_ADMISSION_CONTEXT,
+                description: result.description.slice(0, 140),
+                target_url: targetUrl,
+              }),
+              publishPendingStatus: () => github.rest.repos.createCommitStatus({
+                owner,
+                repo,
+                sha: headSha,
+                state: 'pending',
+                context: evaluator.FINAL_HEAD_ADMISSION_CONTEXT,
+                description: 'Admission authority changed during status publication; fresh evaluation required',
+                target_url: targetUrl,
+              }),
             });
+
+            if (!publication.published) {
+              core.info(`Admission authority changed before final status write; discarding evaluated ${result.state}.`);
+              return;
+            }
+            if (publication.corrected) {
+              core.notice('Admission authority changed during final status write; stale result corrected to pending.');
+              return;
+            }
 
             core.summary
               .addHeading(`Final-head admission: ${result.state}`)
               .addRaw(`PR: #${pr.number}\n`)
               .addRaw(`Head: ${headSha}\n`)
+              .addRaw(`Base: ${evaluatedBaseSha ?? '(unavailable)'}\n`)
               .addRaw(`Trusted AUTO reviewers: ${result.evidence.trustedAutoReviewerCount}\n`)
-              .addRaw(`AUTO approvals on head: ${result.evidence.exactAutoApprovalCount}\n`)
+              .addRaw(`AUTO approvals on head/base: ${result.evidence.exactAutoApprovalCount}\n`)
               .addRaw(`Required CI contexts: ${result.evidence.requiredStatusContextCount}\n`)
               .addRaw(`Missing required CI contexts: ${result.evidence.missingRequiredStatusCount}\n`)
-              .addRaw(`Unresolved review threads: ${result.evidence.unresolvedReviewThreads}\n`)
+              .addRaw(`Review threads: enforced by native required-thread-resolution ruleset\n`)
               .addRaw(`CodeRabbit evidence: ${result.evidence.codeRabbitEvidenceCount}\n`)
               .addRaw(`CI statuses/checks: ${result.evidence.ciStatusCount}/${result.evidence.ciCheckCount}\n`)
               .addRaw(`Blockers: ${result.blockers.join(' | ') || '(none)'}\n`)
