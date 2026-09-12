@@ -346,15 +346,34 @@ function cacheKey(region, startRow, endRow, symbols, maxRows = MAX_INSTRUCTIONS)
 
 function makeShared(map, key, producer) {
   const controller = new AbortController();
-  const entry = { controller, promise: null, waiters: 0, settled: false };
+  const entry = {
+    controller,
+    promise: null,
+    waiters: 0,
+    settled: false,
+    progressListeners: new Set(),
+    lastProgress: null,
+  };
+  const dispatchProgress = (progress) => {
+    entry.lastProgress = progress;
+    for (const listener of Array.from(entry.progressListeners)) {
+      try {
+        listener(progress);
+      } catch {
+        /* progress listener exceptions must not fail the shared producer */
+      }
+    }
+  };
   try {
-    entry.promise = Promise.resolve(producer(controller.signal))
+    entry.promise = Promise.resolve(producer(controller.signal, dispatchProgress))
       .finally(() => {
         entry.settled = true;
+        entry.progressListeners.clear();
         if (map.get(key) === entry) map.delete(key);
       });
   } catch (error) {
     entry.settled = true;
+    entry.progressListeners.clear();
     entry.promise = Promise.reject(error);
     if (map.get(key) === entry) map.delete(key);
   }
@@ -369,7 +388,7 @@ function abortSharedWithoutWaiters(map, key, entry) {
   entry.controller.abort('analysis-no-waiters');
 }
 
-function waitShared(map, key, entry, signal) {
+function waitShared(map, key, entry, signal, onProgress) {
   let subscription;
   try {
     subscription = analysisAbortSignalMethods(signal);
@@ -382,12 +401,26 @@ function waitShared(map, key, entry, signal) {
     return Promise.reject(abortError(subscription.signal));
   }
   entry.waiters++;
+  const hasProgressListener = typeof onProgress === 'function';
+  if (hasProgressListener) {
+    entry.progressListeners?.add(onProgress);
+    if (entry.lastProgress != null) {
+      try {
+        onProgress(entry.lastProgress);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
   let done = false;
   let onAbort = null;
   return new Promise((resolve, reject) => {
     const finish = (fn, value) => {
       if (done) return;
       done = true;
+      if (hasProgressListener) {
+        entry.progressListeners?.delete(onProgress);
+      }
       if (subscription && onAbort) {
         try { subscription.removeEventListener.call(subscription.signal, 'abort', onAbort); } catch { /* accounting is authoritative */ }
       }
@@ -456,9 +489,9 @@ export async function analyzeFunctionCached(backend, region, startRow, endRow, s
   } else {
     let entry = analysisInflight.get(key);
     if (!entry) {
-      entry = makeShared(analysisInflight, key, async (producerSignal) => {
+      entry = makeShared(analysisInflight, key, async (producerSignal, dispatchProgress) => {
         const value = await analyzeFunction(
-          backend, region, startRow, endRow, symbols, onProgress,
+          backend, region, startRow, endRow, symbols, dispatchProgress,
           { ...opts, maxRows: budget, signal: producerSignal },
         );
         value.textsResolved = false;
@@ -466,7 +499,7 @@ export async function analyzeFunctionCached(backend, region, startRow, endRow, s
         return value;
       });
     }
-    res = await waitShared(analysisInflight, key, entry, signal);
+    res = await waitShared(analysisInflight, key, entry, signal, onProgress);
   }
   if (wantTexts && !res.textsResolved) {
     try {

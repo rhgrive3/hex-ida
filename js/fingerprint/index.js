@@ -4,6 +4,8 @@ const MASK64 = 0xffffffffffffffffn;
 const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
 export const FUNCTION_FINGERPRINT_VERSION = 4;
+// Bump when comparison weights, floors, caps or identity labels change.
+export const FUNCTION_FINGERPRINT_COMPARISON_VERSION = '1.0.0';
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 const RELOCATION_INTEGER_PATTERN = /^[+-]?(?:0[xX][0-9a-fA-F]+|[0-9]+)$/;
 

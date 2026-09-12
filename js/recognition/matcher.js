@@ -4,27 +4,31 @@ import { createMatchBudget } from './match-budget.js';
 
 export class FunctionMatchIndex {
   constructor(functions = [], options = {}) {
-    const mode = options.mode || 'fast';
+    this.mode = options.mode || 'fast';
     this.budget = options.budget || createMatchBudget(options.matchBudget || {});
     this.items = [];
     this.buckets = new Map();
     this.complete = true;
-    indexBuild:
-    for (const raw of functions || []) {
-      if (!this.budget.preprocess(raw, 'after fingerprint preprocessing')) { this.complete = false; break; }
-      const fp = mode === 'full' ? fingerprintFunction(raw) : fingerprintFunctionFast(raw);
-      this.budget.fingerprinted();
-      const index = this.items.length;
-      this.items.push(fp);
-      for (const token of coarseTokens(fp)) {
-        if (!this.budget.indexEntry()) { this.complete = false; break indexBuild; }
-        let bucket = this.buckets.get(token);
-        if (!bucket) this.buckets.set(token, bucket = []);
-        bucket.push(index);
-      }
-      if (!this.budget.checkPreprocessWall('fingerprint index construction')) { this.complete = false; break; }
+    for (const raw of functions || []) if (!this.append(raw)) break;
+  }
+  /** Streaming construction uses the same fingerprint/bucket owner and budget
+   * as synchronous construction; an incomplete prefix is never healed by append.
+   */
+  append(raw) {
+    if (!this.complete) return false;
+    if (!this.budget.preprocess(raw, 'after fingerprint preprocessing')) { this.complete = false; return false; }
+    const fp = this.mode === 'full' ? fingerprintFunction(raw) : fingerprintFunctionFast(raw);
+    this.budget.fingerprinted();
+    const index = this.items.length;
+    this.items.push(fp);
+    for (const token of coarseTokens(fp)) {
+      if (!this.budget.indexEntry()) { this.complete = false; return false; }
+      let bucket = this.buckets.get(token);
+      if (!bucket) this.buckets.set(token, bucket = []);
+      bucket.push(index);
     }
-    if (this.budget.preprocessingIncomplete) this.complete = false;
+    if (!this.budget.checkPreprocessWall('fingerprint index construction') || this.budget.preprocessingIncomplete) this.complete = false;
+    return this.complete;
   }
   candidates(input, options = {}) {
     const fingerprinted = input?.schema === 'hex.function-fingerprint' || input?.schema === 'hex.function-fingerprint-fast';
