@@ -9,6 +9,7 @@ import { positiveFiniteBudget } from './budget.js';
 import { ExhaustiveBvBackend } from './exhaustive-backend.js';
 import { SOLVER_STATUS, createSolverResult } from './result.js';
 import { SolverSession } from './session.js';
+import { isCanonicalRequestId } from './worker-protocol.js';
 
 export const WORKER_BACKEND_ID = 'hex-exhaustive-bv-worker';
 export const WORKER_BACKEND_VERSION = '1.0.0';
@@ -42,9 +43,10 @@ class WorkerSolverSession extends SolverSession {
     const onMessage = (event) => {
       const message = event?.data ?? event;
       if (!message || message.type !== 'solver-result') return;
-      const pending = this.pending.get(String(message.requestId));
+      if (!isCanonicalRequestId(message.requestId)) return;
+      const pending = this.pending.get(message.requestId);
       if (!pending) return;
-      this.pending.delete(String(message.requestId));
+      this.pending.delete(message.requestId);
       pending.resolve(message.result);
     };
     const onError = (event) => {
