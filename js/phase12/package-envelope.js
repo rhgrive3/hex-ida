@@ -276,13 +276,14 @@ function countEntries(value, limits, depth = 0, state = { entries: 0 }) {
   if (depth > limits.maxDepth) throw new PackageValidationError('package-nesting-budget-exceeded');
   if (Array.isArray(value)) {
     state.entries += value.length;
+    if (state.entries > limits.maxEntries) throw new PackageValidationError('package-entry-budget-exceeded');
     for (const item of value) countEntries(item, limits, depth + 1, state);
   } else {
     const keys = Object.keys(value);
     state.entries += keys.length;
+    if (state.entries > limits.maxEntries) throw new PackageValidationError('package-entry-budget-exceeded');
     for (const key of keys) countEntries(value[key], limits, depth + 1, state);
   }
-  if (state.entries > limits.maxEntries) throw new PackageValidationError('package-entry-budget-exceeded');
   return state;
 }
 
