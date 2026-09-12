@@ -110,7 +110,8 @@ export function waitForEmbedReady(port, options = {}) {
     }
 
     signal?.addEventListener?.('abort', onAbort, { once: true });
-    if (timeoutMs > 0) timer = setTimeout(() => settle(rpcLocalError('RPC_READY_TIMEOUT', 'RPC ready handshake timed out.')), timeoutMs);
+    if (signal?.aborted) settle(abortError(signal?.reason));
+    if (!settled && timeoutMs > 0) timer = setTimeout(() => settle(rpcLocalError('RPC_READY_TIMEOUT', 'RPC ready handshake timed out.')), timeoutMs);
     safeStart(port);
   });
 }
@@ -176,8 +177,10 @@ export function createRpcClient(port, options = {}) {
       if (requestTimeout > 0) {
         timer = setTimeout(() => settleLocal(rpcLocalError('RPC_TIMEOUT', `RPC request timed out: ${method}`), true), requestTimeout);
       }
-      signal?.addEventListener?.('abort', onAbort, { once: true });
       pending.set(id, { method, resolve, reject, timer, detachAbort });
+      signal?.addEventListener?.('abort', onAbort, { once: true });
+      if (signal?.aborted) settleLocal(abortError(signal?.reason), false);
+      if (!pending.has(id)) return;
 
       if (!safePost(port, { ...envelope('request', id, method), params })) {
         settleLocal(rpcLocalError('RPC_CLOSED', 'RPC port is not available.'), false);

@@ -107,7 +107,8 @@ export function waitForEmbedChildBootstrap(options = {}) {
     }
     windowRef.addEventListener('message', onMessage);
     signal?.addEventListener?.('abort', onAbort, { once: true });
-    if (timeoutMs > 0) timer = setTimeout(() => settle(localError('EMBED_BOOTSTRAP_TIMEOUT', 'Hex iframe bootstrap timed out.')), timeoutMs);
+    if (signal?.aborted) settle(abortError(signal?.reason));
+    if (!settled && timeoutMs > 0) timer = setTimeout(() => settle(localError('EMBED_BOOTSTRAP_TIMEOUT', 'Hex iframe bootstrap timed out.')), timeoutMs);
   });
 }
 
