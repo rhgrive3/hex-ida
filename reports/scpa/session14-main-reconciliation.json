@@ -147,6 +147,32 @@
     "postApplicationNonPackageBlobMatches": 14,
     "packageMerge": "Disjoint recursive JSON3-way merge, both script branches retained."
   },
-  "acceptedMain": "a0cc692cffe63f4f3674876cd2d77e2bdd6d9a07",
-  "acceptedTree": "64399b151ed4919cdf58189839f98f52e76ce448"
+  "acceptedMain": "e60c6a591664447e858a64c80f9ddf5999d0ac68",
+  "acceptedTree": "78f54636a1f9b55a57136361681fdb7ef22e5e04",
+  "publicationFollowup": {
+    "base": "a0cc692cffe63f4f3674876cd2d77e2bdd6d9a07",
+    "head": "e60c6a591664447e858a64c80f9ddf5999d0ac68",
+    "tree": "78f54636a1f9b55a57136361681fdb7ef22e5e04",
+    "changedPathCount": 7,
+    "changedPaths": [
+      "js/plugins.js",
+      "js/symbolic/expr/factory.js",
+      "js/symbolic/expr/serialize.js",
+      "package.json",
+      "tests/issue-5077-plugin-load-entry-isolation.mjs",
+      "tests/issue-5149-deserialize-allocator-rollback.mjs",
+      "tests/phase9/expr/issue-5149-required-regression.test.mjs"
+    ],
+    "blobHashMatches": 7,
+    "signedCommitObjectHashVerified": true,
+    "githubSignatureVerification": true,
+    "PRIntersection": [
+      "package.json"
+    ],
+    "workingChangeIntersection": [],
+    "remoteCompareMergeBase": "a0cc692cffe63f4f3674876cd2d77e2bdd6d9a07",
+    "optionalHistoryHydrated": false,
+    "postApplicationNonPackageBlobMatches": 6,
+    "packageMerge": "Disjoint JSON3-way merge, both script branches retained."
+  }
 }

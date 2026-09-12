@@ -1,6 +1,6 @@
 # SCPA functional acceptance — session14
 
-基準mainを `a0cc692cffe63f4f3674876cd2d77e2bdd6d9a07` まで取り込み、既存Draft PR #8247を更新する。**100%の受入は未認定。** 元のMDのMUST・分母・外部検証条件を維持する。設計の最新実装対応は `HEX_ARM64_POST_ROADMAP_COMPETITIVE_SUPREMACY_ARCHITECTURE.md` 第44章、全20ユニットの対応は `reports/scpa/session14-requirements.json`。前回記録は `archive/scpa/functional-acceptance-session13.md`。
+基準mainを `e60c6a591664447e858a64c80f9ddf5999d0ac68` まで取り込み、既存Draft PR #8247を更新する。**100%の受入は未認定。** 元のMDのMUST・分母・外部検証条件を維持する。設計の最新実装対応は `HEX_ARM64_POST_ROADMAP_COMPETITIVE_SUPREMACY_ARCHITECTURE.md` 第44章、全20ユニットの対応は `reports/scpa/session14-requirements.json`。前回記録は `archive/scpa/functional-acceptance-session13.md`。
 
 ## 今回の変更
 
@@ -18,7 +18,7 @@
 
 `reports/scpa/session14-existing-pr-reuse.json` に再利用元のhead・範囲・適合理由を記録した。関連open PRの実差分を監査しており、全PR網羅を主張しない。
 
-初回にmainの46 commits / 39 pathsを取り込んだ。非package 38パスはremote blobと完全一致。packageはJSONの3-way mergeで既存SCPA scriptsとmainの追加回帰を保持した。取り込みmainの署名付きcommit SHAとtree `13327e52ffd36579eb74e5f0fd55e2cbaa777d06` を再構成・照合した。履歴のmerge-baseは旧main `de6178154884813d90c6437146a99b1155f0c68d` と一致。公開確認中の追加22 commits /15 pathsも取り込み、最新mainのtree `64399b151ed4919cdf58189839f98f52e76ce448` とblobを照合してpackageの競合を解消した。詳細は `reports/scpa/session14-main-reconciliation.json`。
+初回にmainの46 commits / 39 pathsを取り込んだ。非package 38パスはremote blobと完全一致。packageはJSONの3-way mergeで既存SCPA scriptsとmainの追加回帰を保持した。取り込みmainの署名付きcommit SHAとtree `13327e52ffd36579eb74e5f0fd55e2cbaa777d06` を再構成・照合した。履歴のmerge-baseは旧main `de6178154884813d90c6437146a99b1155f0c68d` と一致。公開確認中の追加22 commits /15 pathsも取り込み、最新mainのtree `64399b151ed4919cdf58189839f98f52e76ce448` とblobを照合してpackageの競合を解消した。続く最新mainの6 commits /7 pathsも統合・照合し、3回帰を検証した。詳細は `reports/scpa/session14-main-reconciliation.json`。
 
 ## 検証
 
@@ -26,7 +26,7 @@
 |---|---|
 | canonical `npm run scpa:test`、再帰discovery全70ファイル | **1,403/1,403 PASS**、fail/cancel/skip/todo 0 |
 | 既存PR #8086から再利用した回帰 | 3/3ファイル PASS |
-| 取り込みmainの追加回帰 | 初回15/15＋追加7/7ファイル PASS |
+| 取り込みmainの追加回帰 | 初回15/15＋追加7/7＋最終3/3ファイル PASS |
 | lint / module boundaries / evidence writers | PASS |
 | runtime / metadata / migration | PASS |
 | Phase8 scalar / memory / integration | 全てPASS、既存コーパスの削減なし |
@@ -35,7 +35,7 @@
 | `invariants:test` | machine-effects-contract到達後、90秒上限で未完了。PASS扱いしない |
 | 全体 `npm run check` | 今回は再実行せず。前回main一致の19件はユーザー指示で保留 |
 
-Node `v24.19.0`、package-lock指定のesbuild **0.28.2**で生成した。添付0.25.9へ置き換えていない。release serialは `2322242192 → 2322242194`、build IDは `5f469b755d414bdf05447a1c`。runtimeのdeployment/activationは未実施。
+Node `v24.19.0`、package-lock指定のesbuild **0.28.2**で生成した。添付0.25.9へ置き換えていない。release serialは `2322242192 → 2322242195`、build IDは `dd7bafbeb4c0280da04fd1e4`。runtimeのdeployment/activationは未実施。
 
 各検証のcommand・有限timeout・開始時刻・exit code・ログSHAとソースinventoryは `reports/scpa/session14-functional-acceptance.json`。独立ローカルレビューを実施した。CodeRabbitは前回proxy timeoutで利用できず、今回も実行済みとは扱わない。
 
