@@ -615,7 +615,25 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       }
       unitEnd = cursor.offset + length;
       cursor.limit = unitEnd;   // attribute reads are unit-local (#1860)
+      // The declared unit length must contain the complete common header.
+      // Section-level availability does not authorize reads across this unit's
+      // own declared boundary (#4038).
+      if (cursor.offset + 2 > unitEnd) {
+        diagnostics.push(`truncated compilation unit at 0x${unitStart.toString(16)}`);
+        complete = false;
+        cursor.offset = unitEnd;
+        cursor.limit = info.length;
+        continue;
+      }
       version = cursor.u16();
+      const commonHeaderRemainder = version >= 5 ? 2 + offsetSize : offsetSize + 1;
+      if (cursor.offset + commonHeaderRemainder > unitEnd) {
+        diagnostics.push(`truncated compilation unit at 0x${unitStart.toString(16)}`);
+        complete = false;
+        cursor.offset = unitEnd;
+        cursor.limit = info.length;
+        continue;
+      }
       if (version >= 5) {
         unitType = cursor.u8();
         addressSize = cursor.u8();
