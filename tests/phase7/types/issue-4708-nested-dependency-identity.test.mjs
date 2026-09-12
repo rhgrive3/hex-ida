@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createTypeClaim } from '../js/analysis/types/constraints.js';
-import { TypeConstraintGraph } from '../js/analysis/types/graph.js';
+import { createTypeClaim } from '../../../js/analysis/types/constraints.js';
+import { TypeConstraintGraph } from '../../../js/analysis/types/graph.js';
 
 function memberConstraint(entityId, memberType, evidenceId) {
   return {
