@@ -23,7 +23,8 @@ import { explainSemanticFacts } from './explain.js';
 import { readSwitchLineHistory, readSwitchRenderHistory } from './switch.js';
 import { readSemanticStoreLineHistory, readSemanticStoreRenderHistory,
   readSemanticStatementLineHistory, readSemanticStatementRenderHistory,
-  readSemanticControlLineHistory, readSemanticControlRenderHistory } from './semantic-core.js';
+  readSemanticControlLineHistory, readSemanticControlRenderHistory,
+  readSemanticConditionalRegions } from './semantic-core.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
 import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionExpected,
   projectedConstantTransitionCandidate, projectedConstantTransitionExpected,
@@ -51,6 +52,14 @@ function valueOf(a) { return a?.value || null; }
 const expressionHistoryConsumers = new WeakMap();
 const expressionHistoryInputs = new WeakMap();
 const initialControlConsumers = new WeakMap();
+const copiedConditionalRegions = new WeakMap();
+
+/** Exact original-to-copy handoff, not condition equivalence or erasure proof. */
+export function readCopiedConditionalRegions(program, ir) {
+  const binding = copiedConditionalRegions.get(program);
+  try { return binding?.ir === ir && binding.isCurrent() ? binding.history : null; }
+  catch { return null; }
+}
 
 export function readInitialControlConsumer(consumer) {
   return initialControlConsumers.get(consumer) || null;
@@ -1636,8 +1645,51 @@ function knownStatementForLine(line, state, lineIndex, initialStore = null, init
   return null;
 }
 
+function beginConditionalRegionCopy(result, state) {
+  const original = readSemanticConditionalRegions(result);
+  if (original?.completeness !== 'complete' || result.ir !== state.ir) return null;
+  const requested = state.opts?.phase8RegionCarrierBudget;
+  const cap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
+  const limits = { regions:cap(requested?.maxRegions, 256), nodes:cap(requested?.maxNodes, 10000),
+    references:cap(requested?.maxReferences, 40000), edges:cap(requested?.maxEdges, PROJECTION_LIMITS.edges) };
+  if (original.regions.length > limits.regions || result.lines.length > limits.nodes || !limits.edges) return null;
+  return { original, limits, copies:new Map(), failed:false };
+}
+
+function finishConditionalRegionCopy(copy, result, program, state) {
+  if (!copy || copy.failed) return;
+  try {
+    let remaining = copy.limits.references;
+    const copied = original => {
+      if (--remaining < 0) throw new Error('conditional-region-copy-budget');
+      if (!copy.copies.has(original)) throw new Error('conditional-region-copy-missing');
+      return copy.copies.get(original);
+    };
+    const regions = copy.original.regions.map(original => Object.freeze({
+      original, record:original.record,
+      header:copied(original.header), separator:original.separator === null ? null : copied(original.separator),
+      close:copied(original.close), nodes:Object.freeze(original.nodes.map(copied)),
+      arms:Object.freeze(original.arms.map(arm => Object.freeze({
+        original:arm, role:arm.role, nodes:Object.freeze(arm.nodes.map(copied)),
+      }))),
+    }));
+    // One observation covers the complete ordered body and every mutable node
+    // field, including source and semantic descriptors. Nested regions reuse
+    // the actual producer's copy map; no text/row matching can issue a carrier.
+    const output = captureConsumerIrData([program], state);
+    if (output.metrics.edges > copy.limits.edges) return;
+    const history = Object.freeze({ version:1, scope:'original-to-copied-conditional-regions',
+      completeness:'complete', transformAuthorization:false, conditionValidation:'required',
+      regions:Object.freeze(regions) });
+    const isCurrent = () => !state.opts?.shouldAbort?.()
+      && readSemanticConditionalRegions(result) === copy.original && output.matches();
+    if (isCurrent()) copiedConditionalRegions.set(program, Object.freeze({ ir:state.ir, history, isCurrent }));
+  } catch { /* Incomplete/cancelled observations cannot issue a copied carrier. */ }
+}
+
 function cAstFromLines(result, state) {
   const body = [];
+  const regionCopy = beginConditionalRegionCopy(result, state);
   const initialControls = readSemanticControlRenderHistory(result);
   if (initialControls) {
     state.rewriteProof.push(...initialControls.records);
@@ -1733,8 +1785,14 @@ function cAstFromLines(result, state) {
       } catch { budget.reasons.add('call-result-spelling-unavailable'); }
     }
     body.push(node);
+    if (regionCopy && !regionCopy.failed) {
+      if (regionCopy.copies.has(line) || regionCopy.copies.size >= regionCopy.limits.nodes) regionCopy.failed = true;
+      else regionCopy.copies.set(line, node);
+    }
   }
-  return { kind: 'CProgram', body, source: mergeSource(...body.map((x) => x.source)) };
+  const program = { kind: 'CProgram', body, source: mergeSource(...body.map((x) => x.source)) };
+  finishConditionalRegionCopy(regionCopy, result, program, state);
+  return program;
 }
 
 function semanticAstOf(state, facts) {

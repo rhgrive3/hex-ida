@@ -3,7 +3,8 @@ import test from 'node:test';
 import { fixture } from '../helpers/ir-fixtures.mjs';
 import { decompileSemantic, readSemanticConditionalRegions, readSemanticConditionalRegion,
   readSemanticControlLineHistory } from '../../../js/decompiler/semantic-core.js';
-import { enhanceSemanticDecompilation, readExpressionHistoryConsumer } from '../../../js/decompiler/pipeline-core.js';
+import { enhanceSemanticDecompilation, readExpressionHistoryConsumer,
+  readCopiedConditionalRegions } from '../../../js/decompiler/pipeline-core.js';
 
 function render(kind = 'diamond', options = {}) {
   const f = fixture('region'); f.block(0);
@@ -155,4 +156,113 @@ test('existing copied control header carries the record, but cannot authorize a 
   assert.equal(readSemanticConditionalRegion(region.record, ir), region);
   assert.equal(readSemanticConditionalRegions(output), null);
   assert.ok(region.nodes.every(node => !output.cAst.body.includes(node)));
+});
+
+function copiedRegion(kind = 'diamond', options = {}) {
+  const input = render(kind);
+  const output = enhanceSemanticDecompilation(input.seed, input.model, {
+    ...input.opts, decompilerTimeBudgetMs:5000, ...options,
+  });
+  return { ...input, output, history:readCopiedConditionalRegions(output.cAst, input.ir) };
+}
+
+test('the actual copy producer binds complete ordered spans, nested nodes and empty arms', () => {
+  for (const kind of ['plain', 'diamond', 'nested', 'one-sided']) {
+    const { seed, ir, output, history } = copiedRegion(kind);
+    assert.equal(history?.completeness, 'complete', kind);
+    assert.equal(history.transformAuthorization, false);
+    assert.equal(history.conditionValidation, 'required');
+    const original = readSemanticConditionalRegions(seed);
+    assert.equal(history.regions.length, original.regions.length);
+    const expected = line => output.cAst.body[seed.lines.indexOf(line)];
+    for (const region of history.regions) {
+      assert.ok(original.regions.includes(region.original));
+      assert.equal(region.record, region.original.record);
+      assert.equal(region.header, expected(region.original.header));
+      assert.equal(region.close, expected(region.original.close));
+      assert.equal(region.separator, region.original.separator === null ? null : expected(region.original.separator));
+      assert.deepEqual(region.nodes, region.original.nodes.map(expected));
+      for (const arm of region.arms) {
+        assert.ok(region.original.arms.includes(arm.original));
+        assert.deepEqual(arm.nodes, arm.original.nodes.map(expected));
+      }
+      assert.ok(Object.isFrozen(region) && Object.isFrozen(region.nodes) && Object.isFrozen(region.arms));
+    }
+    assert.equal(readCopiedConditionalRegions({ ...output.cAst }, ir), null);
+    assert.equal(readCopiedConditionalRegions(output.cAst, { ...ir }), null);
+    if (kind === 'nested') {
+      const parent = history.regions.find(region => region.original.selection.header === 0);
+      const child = history.regions.find(region => region.original.selection.header === 1);
+      assert.ok(child.nodes.every(node => parent.arms[0].nodes.includes(node)));
+    }
+  }
+});
+
+test('copied carrier observes all output fields, identities and ordering including outside the region', () => {
+  for (const mutate of [
+    program => { program.body = [...program.body]; },
+    program => { program.body.reverse(); },
+    program => { program.body[0] = { ...program.body[0] }; },
+    program => { program.body[0].text += ' '; },
+    program => { program.body.at(-1).indent++; },
+    program => { program.body.find(node => node.semantic).semantic.op = 'forged'; },
+    program => { program.body[0].source = { ...program.body[0].source }; },
+    program => { program.source = { ...program.source }; },
+    program => { program.kind = 'OtherProgram'; },
+  ]) {
+    const { ir, output, history } = copiedRegion();
+    assert.ok(history); mutate(output.cAst);
+    assert.equal(readCopiedConditionalRegions(output.cAst, ir), null);
+  }
+});
+
+test('original emitter and canonical mutations also revoke the actual copied carrier', () => {
+  for (const mutate of [
+    ({ seed }) => { seed.lines[0] = { ...seed.lines[0] }; },
+    ({ seed }) => { seed.lines.at(-1).text += ' '; },
+    ({ ir }) => { ir.blocks[0].succ.reverse(); },
+    ({ ir }) => { ir.blocks[3].phis[0].incoming.reverse(); },
+  ]) {
+    const input = copiedRegion(); assert.ok(input.history);
+    mutate(input);
+    assert.equal(readCopiedConditionalRegions(input.output.cAst, input.ir), null);
+  }
+});
+
+test('copy budgets withhold the whole carrier without changing ordinary output', () => {
+  for (const limits of [{ maxRegions:0 }, { maxNodes:0 }, { maxReferences:0 }, { maxReferences:8 }, { maxEdges:0 }, { maxEdges:1 }]) {
+    const input = copiedRegion('nested', { phase8RegionCarrierBudget:limits });
+    const ordinary = enhanceSemanticDecompilation(input.seed, input.model, { ...input.opts, decompilerTimeBudgetMs:5000 });
+    assert.equal(readCopiedConditionalRegions(input.output.cAst, input.ir), null);
+    assert.equal(input.output.pseudocode, ordinary.pseudocode);
+    assert.deepEqual(input.output.cAst, ordinary.cAst);
+  }
+  for (const options of [{ phase8PrepareRegionProof:false }, { renderProvenanceBindingBudget:{ maxEdges:0 } }]) {
+    const input = render('diamond', options);
+    const output = enhanceSemanticDecompilation(input.seed, input.model, input.opts);
+    assert.equal(readCopiedConditionalRegions(output.cAst, input.ir), null);
+  }
+  const fallback = copiedRegion('fallback');
+  assert.equal(fallback.history, null);
+});
+
+test('late cancellation or throwing callback revokes the copied carrier', () => {
+  for (const mode of ['cancel', 'throw', 'mutate']) {
+    let active = false, program;
+    const input = copiedRegion('diamond', { shouldAbort:() => {
+      if (!active) return false;
+      if (mode === 'throw') throw new Error('cancel observer');
+      if (mode === 'mutate') { program.body[0].text += ' '; return false; }
+      return true;
+    } });
+    assert.ok(input.history); program = input.output.cAst; active = true;
+    assert.equal(readCopiedConditionalRegions(program, input.ir), null);
+  }
+});
+
+test('an empty copied history remains bound to the whole original and copied program', () => {
+  const input = copiedRegion('plain');
+  assert.deepEqual(input.history.regions, []);
+  input.output.cAst.body.push({ kind:'raw', text:'injected();' });
+  assert.equal(readCopiedConditionalRegions(input.output.cAst, input.ir), null);
 });

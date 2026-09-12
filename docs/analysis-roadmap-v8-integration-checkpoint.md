@@ -10,8 +10,9 @@
 C4 は元の出力範囲の取得に加え、腕の全ブロック・辺・合流 PHI の構造照合まで実装しました。
 さらに、発行済みの構造記録を既存の実行器とソルバーへ接続し、非循環 CFG の入口から各腕への到達可能性を検証する準備処理を追加しました。
 到達不能な腕の候補は専用の `provedRegions` として既存 Phase 8 の一括受入処理へ接続しました。
-表示条件式との意味の対応、コピー先・PHI・削除元の provenance は未検証で、表示を削除する権限は発行していません。
-コピー先との対応付け、領域の意味的な証明、PHI を含む変換受入は残っています。
+元の条件領域から最初の C AST への全ノードの対応付けも実装しました。入れ子と空の腕を保持し、元の IR・出力・コピー先の変更で記録を失効させます。
+後段の projection/recovery への対応記録の引継ぎ、表示条件式との意味の対応、PHI・削除元の provenance は未検証で、表示を削除する権限は発行していません。
+領域の意味的な証明、PHI を含む変換受入は残っています。
 
 結合した入力:
 
@@ -6462,3 +6463,35 @@ build ID `696a5b34a5d8077192ea90c9` です。これを全体受入完了とは�
 その後の最終公開時の失効検査の修正は、改めてコミット後の検査に含めます。
 再生成後は serial `2322242248`、build ID `9904119bb391e9d7473ad180` です。
 長い corpus/契約検査は引き続き実行中で、全体の通過結果には含めません。
+
+
+## 2026-09-12: C4 の元領域から最初の C AST への対応付け
+
+`cAstFromLines` が実際に各行をコピーする時点で、元ノードとコピー先ノードの対応を記録します。
+`readCopiedConditionalRegions(program, ir)` は、その生成元が発行した現在の記録だけを返します。
+ヘッダ・両腕・区切り・閉じノード・範囲全体を同じ対応表から取得し、入れ子でも同一コピー先を共有します。
+全 CProgram を一度観測し、領域外も含むノード順序・テキスト・source・semantic の変更、
+元の emitter/IR の変更、取消し、予算超過で利用可能な記録を残しません。公開コピーからの再発行 API はありません。
+
+これはコピー対応の証拠です。条件同値・生存 PHI・削除 provenance の証拠ではなく、
+`transformAuthorization:false` / `conditionValidation:'required'` を維持します。
+後段の recovery と Phase 8 projection がさらにコピー・変更する場合、その実 producer での引継ぎが必要です。
+元の C 条件式の演算子優先順位に関する反例も未解決であり、canonical 到達不能だけで表示削除を許可しません。
+
+既存 producer 検査に、コピー対応・全出力変更・元データ変更・予算・取消し・空履歴の 6 件を追加し、14 件が通過しました。
+証拠: `c4-region-carrier-source-467b388c-7eac-4a92-92fb-f986f48995a4.json`。
+前回の最終コミット `de2d5394d` の選択検査は 97 件が通過しています。
+前回の長い契約/回帰検査も 1144.4 秒で正常終了しました
+（`c4-region-candidate-contracts-8cd8b37d-323b-45e4-a97d-db791ec7eecc.json`）。
+後者は実行中に HEAD が進んだ補助検査なので、今回の正確なコミットの証拠とは分けます。
+
+共有 PR #7097 は head `f8d127553914efe18e51ab86a60b9f05243c7b7b` の実差分を再確認しました。
+`pipeline-core.js` は共通ですが、同 PR は origin/minmax/rewrite/egraph 等を変更しており、
+今回の `cAstFromLines` の対応付けは再実装していません。共通ファイルである点は将来の結合時にも確認が必要です。
+この追加は既存 #7036 のソース進捗であり、FR-C4-02A/04B、解析 md 全体、統合受入の完了ではありません。
+
+関連する 7 ファイルの選択検査は 119 件通過、lint・module-boundaries も通過しました。
+証拠: `c4-region-carrier-related-4a076e0e-c6b7-456f-8b5e-9ff52bb22e40.json`、
+`c4-region-carrier-lint-9d954453-4c58-4e40-bd8d-706b1fa5b520.json`、
+`c4-region-carrier-boundaries-f9514dce-5e0b-43c7-9b36-1fad3d5aaca1.json`。
+canonical build も通過しました。コミット後の同じ検査と再生成差分の結果は、永続保存する publication 記録に exact SHA とともに記録します。
