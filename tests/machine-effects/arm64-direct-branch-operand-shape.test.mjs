@@ -62,6 +62,16 @@ for (const operands of ['opaque+4', 'opaque label', '@bad', '']) {
 }
 assertRejected('b', 'opaque');
 
+for (const evidence of [
+  { rawBytes:Uint8Array.of(0x94) }, { bytes:[0,0,0,256] },
+  { word:-1 }, { encodingWord:NaN },
+  { word:0x94000000, encodingWord:0x94000001 },
+]) {
+  const effects = lift('bl', 'opaque', 0x800n, evidence);
+  assert.equal(effects.completeness, 'partial', 'invalid present encoding is not absent legacy encoding');
+  assert.equal(effects.unknownEffects?.reason, 'arm64-bl-operand-shape-invalid');
+}
+
 for (const [mnemonic, operands] of [
   ['b', '#0x1000, x0'],
   ['bl', '#0x1000, x0'],

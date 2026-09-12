@@ -5652,3 +5652,58 @@ ZIPの135/135は配布環境のWIP計測であり、この統合HEADでの再計
 次はexact committed headのcanonical provenance、変更したARM64/ownership/ABI契約、lint/modules、
 135-case census、canonical生成物を確認する。環境修復、実機、他担当issue、SYM-01/X-03は進めない。
 CHECKPOINT-LOCKEDは維持し、main merge / release完了を主張しない。
+
+### 取り込み後の exact-head 検証と追加修正
+
+取り込みコミットは `bef2cb9a599f45be903b7b6b695bd7eed17824b1`。
+このclean headでlint、module boundaries、core、変更ARM64/ownership/ABI契約はPASS。
+receipt（共通のローカルevidenceディレクトリー）:
+
+- `zip-135-lint-exact-d55858c7-4832-4a05-9b27-dc8444a4cdcc.json`
+- `zip-135-modules-exact-ac7a3029-63eb-47c7-9b9e-584afc51746c.json`
+- `zip-135-core-exact-c2caf29b-4cbf-471e-bbdc-5dde92d1185d.json`
+- `zip-135-arm64-ownership-exact-7d96febb-62e0-4338-b383-2e7712d99e49.json`
+
+canonical provenance（45/143 discovered files）は704.4秒で終了し、**FAIL**。
+`zip-135-canonical-exact-a57239bf-1fd5-4de9-a5a1-db41f1fe328b.json` に以下を保持:
+
+- `cse-adoption.test.mjs:79`: proof deadline / partial。
+- `native-binding-budget.test.mjs:36`: ARM64 / x86_64 の `quality.loop_nested.O2` のexpression bindingがincomplete。
+
+終了前に中断・ソース変更・テストの除外はしていない。
+配布135-case censusは `phase8Optimize:false`、上記native契約は `phase8Optimize:true`。
+両者を同じ検証範囲と扱わない。
+
+baseline比較はGitの`db8a36f7f`からZIP変更runtime群をin-memory overlayした診断で実施。
+ARM64のincompleteとCSEのdeadlineはこの取り込み前runtimeでも再現した。
+x86は旧runtimeの比較ではcomplete（約101秒）、取り込み後はincomplete（約17秒）であり、
+この差を「既存失敗だから無視」で処理していない。
+`zip-135-capture-diagnostic-5555347d-226e-46b7-90c1-6560419bb6d6.json` の一時的な
+read-only instrumentationで、最初の失敗は未変更の`observeProjectedOperationData` →
+`captureCertifiedDataGraph`の**250ms capture deadline**（roots 7290 / nodes 4160 / edges 31269）に
+達したことを確認した。後段にも同じ上限での観測失敗がある。恒久ソースの上限・判定は未変更。
+性能・環境作業はユーザーが別担当へ割り当てたため、この原因の最適化やfull census再実行へは拡大しない。
+したがって、この環境での135/135 complete、canonical全通過、release readinessは未証明のまま。
+
+比較receipt:
+
+- `zip-135-nested-diagnostic-fdc2063b-44f5-4ec8-82f1-080aaa5661ce.json`
+- `zip-135-nested-prior-baseline-8349086c-d9a8-4121-9a19-8f41c75813ba.json`
+- `zip-135-cse-prior-baseline-49b090ca-d634-4c2e-84ac-e4d52606068f.json`
+
+診断コマンドのexit 0は「診断完走」であってmap completeではない。JSON内の各completenessを確認すること。
+
+ZIP固有の追加修正として、legacy symbolic BLの判定を強化した。
+`arm64DecodedEncodingWord(...) === null` はencoding不在だけでなく不正・矛盾も表すため、
+それをlegacyテキストへのfallback許可には使わない。word/encodingWord/rawBytes/bytesの
+非null入力がある場合は、解釈に失敗してもsymbolic fallbackを拒否する。
+既存テストに短いbytes、不正byte、不正word、NaN、矛盾wordの5ケースを追加した。
+
+- 取り込み直後コードで新しい境界チェックはFAIL:
+  `zip-135-symbolic-call-prior-negative-6abb7e37-127e-4500-8c31-3c2897660fb4.json`
+- 修正後の同じ5ケースPASS:
+  `zip-135-symbolic-call-fixed-d253fd72-42df-47c7-916c-21a09f6733be.json`
+- 既存のdirect-branch operand-shape全体もPASS:
+  `zip-135-control-fixed-6bb817c1-a190-4826-b08d-9eb7ed9cae10.json`
+
+SYM-01/X-03、C1/C3、他担当issue、実機、最新mainの統合は依然このZIP取り込みには含めない。

@@ -198,7 +198,10 @@ function isIndirectControlRegister(operand) {
 const LEGACY_DIRECT_CALL_SYMBOL = /^[A-Za-z_.$][A-Za-z0-9_.$@]{0,255}$/;
 
 function legacySymbolicDirectCallTarget(instruction, operand) {
-  if (instruction?.callTarget != null || arm64DecodedEncodingWord(instruction) != null) return null;
+  // A failed encoding read is not proof that this is a text-only record:
+  // malformed or contradictory bytes/words must never enable this fallback.
+  if (instruction?.callTarget != null || [instruction?.word, instruction?.encodingWord,
+    instruction?.rawBytes, instruction?.bytes].some(value => value != null)) return null;
   if (operand?.k !== 'other' || operand.shift != null || operand.extend != null || typeof operand.text !== 'string') return null;
   const symbol = operand.text.trim();
   if (!LEGACY_DIRECT_CALL_SYMBOL.test(symbol)) return null;
