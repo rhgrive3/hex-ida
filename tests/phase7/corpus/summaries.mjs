@@ -47,7 +47,10 @@ function localSummary(functionId, { calls = [], writes = [], reads = [], indirec
       ...writes.map((regionId) => ({ regionId, regionKind: 'stack-fixed', source: 'proven-summary' })),
       ...(unknowns.length ? [{ regionKind: 'unknown', broad: true, source: 'unknown-call-fallback' }] : []),
     ],
-    memoryReadRegions: reads.map((regionId) => ({ regionId, regionKind: 'stack-fixed', source: 'proven-summary' })),
+    memoryReadRegions: [
+      ...reads.map((regionId) => ({ regionId, regionKind: 'stack-fixed', source: 'proven-summary' })),
+      ...(unknowns.length ? [{ regionKind: 'unknown', broad: true, source: 'unknown-call-fallback' }] : []),
+    ],
     noreturn: unknowns.length ? 'unknown' : false,
     mayThrow: unknowns.length ? 'unknown' : false,
     status: unknowns.length ? partialStatus() : status,

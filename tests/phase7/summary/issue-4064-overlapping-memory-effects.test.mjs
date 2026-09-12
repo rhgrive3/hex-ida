@@ -158,6 +158,7 @@ test('broad and incomplete summaries stay fail-open', () => {
     functionId: 'fn4064', status: partial, noreturn: 'unknown', mayThrow: 'unknown',
     unknownCallEffects: [{ callSiteId: 'call4064', reason: 'summary-missing' }],
     memoryWriteRegions: [{ regionKind: 'unknown', broad: true, addressSpaces: ['memory'], source: 'unknown-call-fallback' }],
+    memoryReadRegions: [{ regionKind: 'unknown', broad: true, addressSpaces: ['memory'], source: 'unknown-call-fallback' }],
   });
   assert.equal(summaryMayWriteRegion(incomplete, query), true);
 });

@@ -203,9 +203,12 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     };
   }
 
-  const ensureBroadWrite = (node) => {
+  const ensureBroadEffects = (node) => {
     if (!memoryWriteRegions.some((effect) => effect.broad)) {
       memoryWriteRegions.push(broadEffect(node, null, 'unknown-call-fallback'));
+    }
+    if (!memoryReadRegions.some((effect) => effect.broad)) {
+      memoryReadRegions.push(broadEffect(node, null, 'unknown-call-fallback'));
     }
   };
 
@@ -506,7 +509,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
         // what stops a recursive fixed point from converging.
         unknownCallEffects.push(unknown);
         controlUnknown = true;
-        ensureBroadWrite(node);
+        ensureBroadEffects(node);
       }
       if (resolved.mayThrow === true) mayThrow = true;
       if (resolved.mayThrow === 'unknown') controlUnknown = true;
@@ -549,7 +552,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
         evidenceIds: evidenceOf(node),
       }));
       controlUnknown = true;
-      ensureBroadWrite(node);
+      ensureBroadEffects(node);
     } else if (node.call.noreturn == null || node.call.mayThrow == null) {
       // Omitted control knowledge is a missing fact, not a negative proof
       // (#5854): promoting null here would publish "returns / does not throw"
@@ -562,7 +565,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
         evidenceIds: evidenceOf(node),
       }));
       controlUnknown = true;
-      ensureBroadWrite(node);
+      ensureBroadEffects(node);
     } else {
       if (node.call.mayThrow === true) mayThrow = true;
       if (node.call.mayThrow === 'unknown') controlUnknown = true;

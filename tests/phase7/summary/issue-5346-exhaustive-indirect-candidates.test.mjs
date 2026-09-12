@@ -59,6 +59,7 @@ test('#5346 an empty non-exhaustive indirect set stays valid (it carries a fallb
     mayThrow: 'unknown',
     status: { ...status, completeness: 'partial', stopReason: 'evidence-missing' },
     memoryWriteRegions: [createMemoryEffect({ regionKind: 'unknown', broad: true, addressSpaces: ['memory'], source: 'unknown-call-fallback', evidenceIds: ['ev-5346'] })],
+    memoryReadRegions: [createMemoryEffect({ regionKind: 'unknown', broad: true, addressSpaces: ['memory'], source: 'unknown-call-fallback', evidenceIds: ['ev-5346'] })],
     unknownCallEffects: [{
       callSiteId: 'call-1',
       reason: 'indirect-incomplete-target-set',
