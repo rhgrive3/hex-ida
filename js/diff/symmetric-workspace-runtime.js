@@ -107,18 +107,32 @@ async function discoverBaselineFunctions(baseline, { signal = null, onProgress =
     });
     try {
       const result = await requestWithSignal(request, signal);
+      let exceedsBudget = false;
       if (result?.starts?.length) {
+        // #5105: `share` is the requested limit, not an enforced one — a
+        // backend that over-returns must never ingest past the global budget.
+        // Bound ingestion to the requested share. Completeness may survive an
+        // over-return only when the canonical symbol index proves every
+        // dropped start was already known; a deduplicated admitted prefix
+        // alone cannot prove anything about the unseen tail.
+        const overReturned = result.starts.length > share;
+        const ingested = overReturned ? result.starts.slice(0, share) : result.starts;
         // #5558: addFunctions() deduplicates known starts and returns the
         // number actually added. The global discovery budget must be debited
         // by that count — duplicate re-discovery from independent region
         // scans must never exhaust the budget ahead of unscanned regions.
-        const added = symbols.addFunctions(result.starts, { source:'heuristic', confidence:0.55, confirmed:false });
+        const added = symbols.addFunctions(ingested, { source:'heuristic', confidence:0.55, confirmed:false });
         symbols.guessed = true;
         remaining = Math.max(0, remaining - added);
+        const droppedTailProvenKnown = overReturned &&
+          typeof symbols.functionEvidence === 'function' &&
+          result.starts.slice(share).every((start) => symbols.functionEvidence(start) != null);
+        exceedsBudget = overReturned && !droppedTailProvenKnown;
       }
-      const complete = result?.discoveryComplete === true || result?.completeness?.complete === true || result?.complete === true;
-      results.push({ regionId:region.id, complete, capped:!!result?.capped, discovered:result?.starts?.length || 0 });
-      if (!complete) reasons.push(`${region.id}:${result?.completeness?.reason || result?.truncationReason || 'function-discovery-incomplete'}`);
+      const complete = !exceedsBudget && (result?.discoveryComplete === true || result?.completeness?.complete === true || result?.complete === true);
+      results.push({ regionId:region.id, complete, capped:exceedsBudget || !!result?.capped, discovered:result?.starts?.length || 0 });
+      if (exceedsBudget) reasons.push(`${region.id}:backend-result-exceeds-budget`);
+      else if (!complete) reasons.push(`${region.id}:${result?.completeness?.reason || result?.truncationReason || 'function-discovery-incomplete'}`);
     } catch (error) {
       if (signal?.aborted || error?.name === 'AbortError') throw error;
       results.push({ regionId:region.id, complete:false, error:true });

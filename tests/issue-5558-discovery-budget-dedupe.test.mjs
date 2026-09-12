@@ -21,6 +21,13 @@ function fixture(symbolsOverrides = {}) {
       addedCalls.push([...starts]);
       return 0; // every returned start is already known -> nothing new added
     },
+    functionEvidence(addr) {
+      // Model the real SymbolIndex authority used to prove an over-returned
+      // tail is duplicate-only without ingesting it beyond the budget.
+      return [0x1234n, 0x9999n, 0x999an, 0x999bn].includes(addr)
+        ? { source: 'metadata', confidence: 0.7, confirmed: false }
+        : null;
+    },
     ...symbolsOverrides,
   };
   const backend = {
