@@ -356,7 +356,10 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     try {
       traceState.runMemoryEvents = run.memoryEvents;
       this.cancelled = run.cancelled;
-      if (sandbox.emulator.stopped === 'paused' || sandbox.emulator.stopped === 'cancelled') sandbox.emulator.stopped = null;
+      if (sandbox.emulator.stopped === 'paused' || sandbox.emulator.stopped === 'cancelled' || sandbox.emulator.maxStepsReached === true) {
+        sandbox.emulator.stopped = null;
+        sandbox.emulator.maxStepsReached = false;
+      }
       onAbort = () => {
         run.cancelled = true;
         run.sandbox.emulator.stopped = 'cancelled';
