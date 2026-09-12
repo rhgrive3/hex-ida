@@ -15,6 +15,29 @@ function estimateBytes(event) {
   catch { return Number.POSITIVE_INFINITY; }
 }
 
+function binaryPayloadBytes(event, limit) {
+  if (event == null || typeof event !== 'object') return 0;
+  const seen = new Set();
+  const stack = [[event, 0]];
+  let total = 0;
+  let nodes = 0;
+  while (stack.length) {
+    const [value, depth] = stack.pop();
+    if (value == null || typeof value !== 'object' || seen.has(value)) continue;
+    seen.add(value);
+    if (depth > 48 || ++nodes > 20000) return limit + 1;
+    if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+      const byteLength = value.byteLength;
+      if (!Number.isSafeInteger(byteLength) || byteLength < 0 || byteLength > limit - total) return limit + 1;
+      total += byteLength;
+      continue;
+    }
+    const children = Array.isArray(value) ? value : Object.values(value);
+    for (const child of children) stack.push([child, depth + 1]);
+  }
+  return total;
+}
+
 function cloneTraceValue(value, state = null, depth = 0) {
   const s = state || { seen: new WeakMap(), nodes: 0 };
   if (value == null || typeof value !== 'object') return value;
@@ -70,12 +93,15 @@ export class TraceRingBuffer {
     this.seen++;
     if (this.sampleRate > 1 && ((this.seen - 1) % this.sampleRate)) { this.dropped++; return false; }
     let safe;
+    let binary = 0;
     try {
       if (this.filter && !this.filter(event)) { this.dropped++; return false; }
+      binary = binaryPayloadBytes(event, this.maxBytes);
+      if (binary > this.maxBytes) { this.dropped++; return false; }
       safe = event && typeof event === 'object' ? cloneTraceValue(event) : { type:'event', value:event };
     }
     catch { this.dropped++; return false; }
-    const size = estimateBytes(safe);
+    const size = estimateBytes(safe) + binary;
     if (size > this.maxBytes) { this.dropped++; return false; }
     const aggregateKey = String(safe.type || 'event').slice(0,128);
     safe.__bytes = size;
