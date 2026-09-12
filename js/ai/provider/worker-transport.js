@@ -76,11 +76,33 @@ export async function acquireDistributedQuota(request, env, sessionId) {
   }
 }
 export async function releaseDistributedQuota(lease) { if (!lease?.stub || !lease.token) return; try { await boundedRpc(lease.stub.release(lease.token), 'release', lease.env); } catch (error) { console.error('[ai-quota] release failed', { message: error?.message || String(error) }); } }
+function hasQuotaMetadata(details) {
+  if (!Array.isArray(details)) return false;
+  for (const detail of details) {
+    if (!detail || typeof detail !== 'object') continue;
+    if (typeof detail['@type'] === 'string' && detail['@type'].includes('QuotaFailure')) return true;
+    if (typeof detail.reason === 'string' && detail.reason.toUpperCase().includes('QUOTA')) return true;
+    if (Array.isArray(detail.violations) && detail.violations.some((violation) => violation && typeof violation === 'object'
+      && (typeof violation.quotaMetric === 'string' || (typeof violation.reason === 'string' && violation.reason.toUpperCase().includes('QUOTA'))))) return true;
+    const metadata = detail.metadata;
+    if (metadata && typeof metadata === 'object' && Object.keys(metadata).some((key) => /quota/i.test(key))) return true;
+  }
+  return false;
+}
+function hasQuotaMessage(message) {
+  return typeof message === 'string' && (/exceeded your current quota/i.test(message) || /check your (?:plan|billing)/i.test(message));
+}
+function normalizeUpstreamErrorCode(error) {
+  if (typeof error.code === 'string') return error.code;
+  if (typeof error.status !== 'string') return null;
+  if (error.status.toUpperCase() === 'RESOURCE_EXHAUSTED' && (hasQuotaMetadata(error.details) || hasQuotaMessage(error.message))) return 'quota_exceeded';
+  return error.status.toLowerCase();
+}
 export async function readUpstreamFailure(response, limit = MAX_RESPONSE_BYTES) {
   let code = null;
   try {
     const body = JSON.parse(await readLimitedText(response, limit));
-    if (body?.error) code = typeof body.error.code === 'string' ? body.error.code : typeof body.error.status === 'string' ? body.error.status.toLowerCase() : null;
+    if (body?.error && typeof body.error === 'object') code = normalizeUpstreamErrorCode(body.error);
   } catch { try { await response.body?.cancel(); } catch {} }
   return { code: typeof code === 'string' ? code.slice(0, 80) : null };
 }
