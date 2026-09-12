@@ -212,7 +212,23 @@ export async function publishRebuildOutput(materialized, validation, options = {
   if (!materialized || materialized.status !== 'materialized') return { status: 'rejected', reason: 'materialization-not-complete' };
   if (!validation || validation.status !== 'valid') return { status: 'rejected', reason: 'validation-not-green' };
   if (typeof options.promote !== 'function') return { status: 'not-published', reason: 'explicit-promotion-required', outputHash: materialized.outputHash };
-  const promoted = await options.promote(materialized.bytes, validation);
+  let promoted;
+  try {
+    promoted = await options.promote(materialized.bytes, validation);
+  } catch (error) {
+    return { status: 'rejected', reason: 'promotion-failed', detail: String(error?.message || error), outputHash: materialized.outputHash };
+  }
+  if (!promoted) return { status: 'not-published', reason: 'promotion-commit-unproven', outputHash: materialized.outputHash };
+  if (typeof promoted === 'object') {
+    const promoterStatus = promoted.status == null ? null : String(promoted.status).toLowerCase();
+    if (promoted.committed === false || promoterStatus === 'rejected' || promoterStatus === 'failed' || promoterStatus === 'not-published') {
+      return { status: 'rejected', reason: promoted.reason || 'promotion-rejected', result: promoted, outputHash: materialized.outputHash };
+    }
+    if (promoted.committed !== true) return { status: 'not-published', reason: 'promotion-commit-unproven', result: promoted, outputHash: materialized.outputHash };
+    if (promoted.outputHash != null && String(promoted.outputHash) !== String(materialized.outputHash)) {
+      return { status: 'rejected', reason: 'promotion-output-mismatch', result: promoted, outputHash: materialized.outputHash };
+    }
+  }
   return { status: 'published', outputHash: materialized.outputHash, result: promoted };
 }
 
