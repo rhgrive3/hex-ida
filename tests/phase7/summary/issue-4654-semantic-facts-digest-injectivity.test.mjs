@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
-import { createAnalysisStatus } from '../js/analysis/status.js';
-import { createFunctionSummary, functionSummaryDigest } from '../js/analysis/summary/contract.js';
+import { createAnalysisStatus } from '../../../js/analysis/status.js';
+import { createFunctionSummary, functionSummaryDigest } from '../../../js/analysis/summary/contract.js';
 
 const status = createAnalysisStatus({
   snapshotId: 'snapshot_4654',
