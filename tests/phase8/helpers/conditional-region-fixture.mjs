@@ -1,3 +1,5 @@
+import { buildSemanticModel } from '../../../js/blocks.js';
+import { buildIR } from '../../../js/ir-core.js';
 import { fixture } from './ir-fixtures.mjs';
 import { identity } from './proof-fixtures.mjs';
 import { decompileSemantic, readSemanticConditionalRegions } from '../../../js/decompiler/semantic-core.js';
@@ -37,4 +39,20 @@ export function conditionalRegionFixture({ kind = 'cbz', predicate = 'xor', afte
   const structure = prepareConditionalRegionStructure(region?.record, ir, { identity, timeoutMs:5000 });
   return { ir, seed, region, structure, run:extra => prepareConditionalRegionReachability(structure, ir,
     { identity, addressBits:8, timeoutMs:5000, backendTier:'exhaustive', ...extra }) };
+}
+
+export function textRowConditionalRegionFixture() {
+  // Exercise the normal model/SSA/compat producer, not a fabricated legacy CFG.
+  // These are parsed instruction rows, not compiler or binary-decoder evidence.
+  const lines = ['eor w1, w0, w0', 'cbnz w1, #0x100000010', 'mov w0, #1',
+    'b #0x100000014', 'mov w0, #2', 'ret'];
+  const rows = lines.map((text, row) => {
+    const [mn, ...ops] = text.split(' ');
+    return { mn, ops:ops.join(' '), row, address:0x100000000n + BigInt(row * 4) };
+  });
+  const options = { startRow:0, endRow:rows.length - 1, semanticMigrationMode:'semantic-v2-compat',
+    rowOfAddress:address => rows.find(row => row.address === BigInt(address))?.row ?? null,
+    addrOfRow:row => rows[row]?.address ?? null };
+  const model = buildSemanticModel(rows, options), ir = buildIR(model, options);
+  return { model, ir, options };
 }

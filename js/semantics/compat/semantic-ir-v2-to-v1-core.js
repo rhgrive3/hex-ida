@@ -371,9 +371,10 @@ export function graphFacts(blocks, blockIndex, entryIndex, functionId = 'semanti
   for (const block of blocks) {
     const cfgBlock = cfgById.get(block.semanticBlockId);
     if (!cfgBlock) throw new TypeError('semantic-v2-v1-compat-cfg-block-mismatch');
-    block.succ = cfgBlock.successors
-      .map((edge) => blockIndex.get(edge.to))
-      .filter((index) => index != null);
+    // v1 adjacency lists contain target blocks once. Canonical typed edges can
+    // share a target (false/fallthrough, switch cases, exceptional paths); keep
+    // their full multiplicity and metadata in successorEdges and edgeFacts.
+    block.succ = unique(cfgBlock.successors.map((edge) => blockIndex.get(edge.to)));
     block.successorEdges = cfgBlock.successors
       .map((edge) => ({
         to: blockIndex.get(edge.to),

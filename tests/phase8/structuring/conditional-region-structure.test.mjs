@@ -5,6 +5,52 @@ import { identity } from '../helpers/proof-fixtures.mjs';
 import { decompileSemantic, readSemanticConditionalRegions } from '../../../js/decompiler/semantic-core.js';
 import { prepareConditionalRegionStructure, readConditionalRegionStructure } from '../../../js/decompiler/phase8/conditional-region-structure.js';
 import { discoverPhase8Tests } from '../run.mjs';
+import { textRowConditionalRegionFixture } from '../helpers/conditional-region-fixture.mjs';
+import { createSemanticCfg } from '../../../js/semantics/cfg/index.js';
+import { graphFacts } from '../../../js/semantics/compat/semantic-ir-v2-to-v1-core.js';
+
+test('canonical CFG projection separates unique adjacency from every typed edge and its metadata', () => {
+  const cfg = createSemanticCfg({ functionId:'multikind', entryBlockId:'a', blocks:[
+    { id:'a', successors:[
+      { to:'b', kind:'conditional-false', metadata:{ source:'condition' } },
+      { to:'b', kind:'fallthrough', metadata:{ source:'next' } },
+      { to:'c', kind:'conditional-true' },
+    ] },
+    { id:'b', successors:[{ to:'c', kind:'switch-case', metadata:{ value:1 } },
+      { to:'c', kind:'switch-case', metadata:{ value:2 } }, { to:'c', kind:'exception' }] },
+    { id:'c', successors:[] },
+  ] });
+  const blocks = cfg.blocks.map((block, index) => ({ index, semanticBlockId:block.id }));
+  const indices = new Map(blocks.map(block => [block.semanticBlockId, block.index]));
+  const graph = graphFacts(blocks, indices, 0, cfg.functionId, cfg);
+  assert.deepEqual(blocks.map(block => block.succ), [[1, 2], [2], []]);
+  assert.deepEqual(blocks.map(block => block.pred), [[], [0], [0, 1]]);
+  assert.deepEqual(graph.cfg, cfg);
+  for (const [index, block] of cfg.blocks.entries()) {
+    assert.deepEqual(blocks[index].successorEdges.map(edge => ({
+      to:edge.semanticTo, kind:edge.kind, ...(edge.metadata == null ? {} : { metadata:edge.metadata }),
+    })), block.successors);
+    assert.deepEqual(graph.edges.filter(edge => edge.from === index).map(({ from, semanticFrom, ...edge }) => edge),
+      blocks[index].successorEdges);
+  }
+});
+
+test('production text-row semantic lowering publishes unique CFG adjacency before structural validation', () => {
+  const { model, ir, options } = textRowConditionalRegionFixture();
+  assert.equal(ir.compat.projection, 'semantic-ir-v2-to-v1');
+  assert.deepEqual(ir.blocks.map(block => block.succ), [[1, 2], [3], [3], []]);
+  assert.deepEqual(ir.blocks[0].successorEdges.map(edge => [edge.to, edge.kind]),
+    [[1, 'conditional-false'], [1, 'fallthrough'], [2, 'conditional-true']]);
+  const seed = decompileSemantic(model, { ...options, ir, deterministicTransforms:true, phase8PrepareRegionProof:true });
+  const region = readSemanticConditionalRegions(seed)?.regions.find(item => item.selection.header === 0);
+  assert.ok(region, 'the actual emitter issues the decoded model region');
+  const structure = prepareConditionalRegionStructure(region.record, ir, { identity, timeoutMs:5000 });
+  assert.equal(structure.status, 'complete', structure.reason);
+  assert.equal(ir.blocks[2].insts.at(-1).op, 'mov');
+  assert.ok(ir.blocks[2].insts.every(inst => structure.instructions.includes(inst)));
+  assert.equal(structure.semanticValidation, 'required');
+  assert.equal(structure.transformAuthorization, false);
+});
 
 function example(kind = 'diamond', mutate = () => {}, options = {}) {
   const f = fixture('structure'); f.block(0);
@@ -67,6 +113,47 @@ test('nested arms are recounted transitively and empty inverted arms stay explic
   assert.equal(empty.status, 'complete', empty.reason);
   assert.equal(empty.region.selection.invert, true);
   assert.deepEqual(empty.arms.map(arm => arm.members.map(block => block.index)), [[], [1]]);
+  const multikind = example('nested', ir => {
+    const edge = ir.blocks[1].successorEdges.find(item => item.kind === 'conditional-false');
+    ir.blocks[1].successorEdges.push({ to:edge.to, kind:'fallthrough' });
+  }).run();
+  assert.equal(multikind.status, 'complete', multikind.reason);
+});
+
+for (const [name, change] of [
+  ['BR labeled fallthrough', ir => { ir.blocks[2].successorEdges[0].kind = 'fallthrough'; }],
+  ['BR targetBlock mismatch', ir => { ir.blocks[2].insts.at(-1).extra = { targetBlock:4 }; }],
+  ['CBR branch-only labels', ir => { ir.blocks[1].successorEdges.forEach(edge => { edge.kind = 'branch'; }); }],
+  ['CBR reversed polarity', ir => { ir.blocks[1].successorEdges.reverse(); ir.blocks[1].successorEdges[0].kind = 'conditional-true'; ir.blocks[1].successorEdges[1].kind = 'conditional-false'; }],
+  ['CBR targetBlock mismatch', ir => { ir.blocks[1].insts.at(-1).extra.targetBlock = 3; }],
+  ['CBR fallthroughBlock mismatch', ir => { ir.blocks[1].insts.at(-1).extra.fallthroughBlock = 2; }],
+]) test(`explicit nested arm terminator agrees with its supplied typed edges: ${name}`, () => {
+  const f = example('nested', change); assert.ok(f.region);
+  const result = f.run();
+  assert.equal(result.status, 'incomplete'); assert.equal(result.reason, 'region-branch-edge-mismatch');
+});
+
+for (const [name, change, reason] of [
+  ...['unknown', 'switch', 'trap'].map(op => [op, inst => { inst.op = op; }, 'unsupported-region-terminator']),
+  ['hidden control', inst => { inst.extra = { unknownCategories:['control'] }; }, 'unsupported-region-control-effect'],
+]) test(`explicit BR and CBR do not hide earlier control: ${name}`, () => {
+  for (const terminator of ['br', 'cbr']) {
+    const f = example('nested', ir => {
+      const block = ir.blocks[2], ordinary = block.insts[0];
+      change(ordinary);
+      if (terminator === 'cbr') {
+        const branch = block.insts.at(-1); branch.op = 'cbr';
+        branch.args = ir.blocks[0].insts.at(-1).args;
+        branch.extra = { targetBlock:5 };
+        block.succ = [5, 3];
+        block.successorEdges = [{ to:5, kind:'conditional-true' }, { to:3, kind:'conditional-false' }];
+        ir.blocks[3].pred.push(2);
+      }
+    });
+    assert.ok(f.region);
+    const result = f.run();
+    assert.equal(result.status, 'incomplete'); assert.equal(result.reason, reason, terminator);
+  }
 });
 
 test('join effects and memory PHIs remain explicit unresolved semantic obligations', () => {
@@ -86,6 +173,50 @@ test('false and fallthrough labels count once while retaining both original edge
   const result = f.run(); assert.equal(result.status, 'complete', result.reason);
   assert.equal(result.edges.length, 4);
   assert.deepEqual(result.edges.find(edge => edge.from === 0 && edge.to === 2).kinds, ['conditional-false', 'fallthrough']);
+});
+
+function implicitArm(change = () => {}) {
+  return example('diamond', ir => {
+    const block = ir.blocks[1], removed = block.insts.pop();
+    ir.instructions.splice(ir.instructions.indexOf(removed), 1);
+    block.endRow = block.insts.at(-1).row;
+    block.successorEdges[0].kind = 'fallthrough';
+    change(ir, block);
+  });
+}
+
+test('implicit fallthrough retains effects as obligations and never manufactures a branch instruction', () => {
+  for (const op of ['store', 'call', 'clobber']) {
+    const f = implicitArm((ir, block) => { block.insts.at(-1).op = op; });
+    const result = f.run();
+    assert.equal(result.status, 'complete', `${op}: ${result.reason}`);
+    assert.equal(result.transformAuthorization, false);
+    assert.equal(result.semanticValidation, 'required');
+    assert.ok(result.instructions.includes(f.ir.blocks[1].insts.at(-1)));
+    assert.ok(!f.ir.blocks[1].insts.some(inst => inst.op === 'br'));
+    f.ir.blocks[1].successorEdges[0].kind = 'branch';
+    assert.equal(readConditionalRegionStructure(result, f.ir, identity), null);
+  }
+});
+
+for (const [name, change, reason] of [
+  ['unlabeled implicit branch', (ir, block) => { block.successorEdges[0].kind = 'branch'; }, 'unsupported-region-terminator'],
+  ['conflicting implicit edge kinds', (ir, block) => { block.successorEdges.push({ to:3, kind:'conditional-false' }); }, 'unsupported-region-terminator'],
+  ['return with a successor', (ir, block) => { block.insts.at(-1).op = 'ret'; }, 'unsupported-region-terminator'],
+  ...['unknown', 'switch', 'trap', 'unknown-control-effect', 'unrecognized-op'].flatMap(op => [
+    [`final ${op}`, (ir, block) => { block.insts.at(-1).op = op; }, 'unsupported-region-terminator'],
+    [`earlier ${op}`, (ir, block) => { block.insts[0].op = op; }, 'unsupported-region-terminator'],
+  ]),
+  ['hidden machine control', (ir, block) => { block.insts[0].extra = { machineControlEffect:{ kind:'trap' } }; }, 'unsupported-region-control-effect'],
+  ['hidden attribute control', (ir, block) => { block.insts[0].extra = { attributes:{ machineControlEffect:{ kind:'trap' } } }; }, 'unsupported-region-control-effect'],
+  ['unknown control category', (ir, block) => { block.insts[0].extra = { unknownCategories:['control'] }; }, 'unsupported-region-control-effect'],
+  ...['br', 'cbr', 'ret'].map(op => [`instruction following ${op}`, (ir, block) => { block.insts[0].op = op; }, 'instruction-after-region-terminator']),
+]) test(`implicit fallthrough rejects contradictory control data: ${name}`, () => {
+  const f = implicitArm(change);
+  assert.ok(f.region, 'actual emitter must issue the tested region');
+  const result = f.run();
+  assert.equal(result.status, 'incomplete'); assert.equal(result.reason, reason);
+  assert.equal(readConditionalRegionStructure(result, f.ir, identity), null);
 });
 
 test('an external incoming edge is rejected even when its source was not emitted', () => {
@@ -109,6 +240,7 @@ test('a cyclic arm cannot be accepted by its finite emitted block inventory', ()
 
 for (const [name, mutate, reason] of [
   ['truncated IR', ir => { ir.truncated = true; }, 'truncated-ir'],
+  ['duplicate successor', ir => { ir.blocks[0].succ.push(ir.blocks[0].succ[0]); }, 'invalid-successor-inventory'],
   ['missing label', ir => { ir.blocks[1].successorEdges = []; }, 'missing-edge-label'],
   ['ambiguous header labels', ir => { for (const edge of ir.blocks[0].successorEdges) edge.kind = 'branch'; }, 'conditional-polarity-unavailable'],
   ['reversed header polarity', ir => { ir.blocks[0].successorEdges[0].kind = 'conditional-false'; ir.blocks[0].successorEdges[1].kind = 'conditional-true'; }, 'conditional-polarity-unavailable'],

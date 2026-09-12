@@ -40,6 +40,19 @@ test('C4 conditional predicate proof and its real projection regression have exa
   assert.equal(assignments.has('js/decompiler/phase8/conditional-region-unreviewed.js'), false);
 });
 
+test('C4 CFG projection has an exact compatibility owner without widening canonical CFG ownership', () => {
+  const manifest = loadRoadmapManifest(), file = 'js/semantics/compat/semantic-ir-v2-to-v1-core.js';
+  const union = [...validateRoadmapManifest(manifest).keys()];
+  assert.equal(validateRoadmapManifest(manifest).get(file), 'semanticCompat');
+  const missing = structuredClone(manifest);
+  missing.owners.semanticCompat = missing.owners.semanticCompat.filter(path => path !== file);
+  assert.throws(() => validateRoadmapInventory(BRANCH, 'phase8', union, missing), /undeclared roadmap path/);
+  missing.owners.phase8.push(file);
+  assert.throws(() => validateRoadmapManifest(missing), /phase8 contract violations/);
+  manifest.owners.semanticCompat.push('js/semantics/cfg/index.js');
+  assert.throws(() => validateRoadmapManifest(manifest), /outside semanticCompat owner/);
+});
+
 test('C4 precondition storage owns exact origin implementation and regression paths only', () => {
   const manifest = loadRoadmapManifest(), assignment = validateRoadmapManifest(manifest);
   for (const file of ['js/core/identity/origin.js', 'tests/core-origin-canonical-reuse.test.mjs']) {

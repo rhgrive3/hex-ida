@@ -318,6 +318,7 @@
       "js/semantics/compat/index.js",
       "js/semantics/compat/legacy-value-ranges.js",
       "js/semantics/compat/semantic-ir-v2-to-v1.js",
+      "js/semantics/compat/semantic-ir-v2-to-v1-core.js",
       "js/semantics/compat/semantic-ir-v2-to-v1-finalize.js",
       "js/semantics/compat/semantic-ir-v2-to-v1-memory.js",
       "js/semantics/compat/semantic-ir-v2-to-v1-nodes.js"

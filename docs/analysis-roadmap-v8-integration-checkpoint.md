@@ -7023,3 +7023,51 @@ tests/semantic-v2/issue-5862-alias-proof-issuer-relation-strict.test.mjs
 開始clean copyへの`git apply --check`→適用後全repo byte一致、最終ZIP再展開で358件/lint/module-boundaries再実行の
 実測receiptはfinal evidenceと外部final manifestへ記録する。sealed ZIP自身のSHAは自己参照を避け外部manifest/SHA256SUMSに記載。
 **本節はC1/C3 user laneの局所仕上げであり、統合releaseや研究全体の完了宣言ではない。**
+
+## C4 canonical CFG adjacency and implicit fallthrough handoff (2026-09-13)
+
+Starting source is `f5f662ee63a8a20054d8c580d4fc3589205e8920` on the existing
+`feat/analysis-roadmap-v8-current-main-20260907` integration branch / PR #7036.
+The reuploaded user ZIP is byte-identical to the archive already integrated at
+`9f2a4e104ca0c446721ddf0a4ede0dbc3164f132`; the user C1 recursive-return lane remains reserved.
+
+The actual parsed-row `buildSemanticModel` → Semantic IR/SSA → `buildIR` compatibility
+producer emitted `succ:[1,1,2]` for conditional-false + fallthrough to the same target.
+`graphFacts` now publishes a unique legacy adjacency list using its existing `unique`
+helper, while retaining every typed successor edge, switch-case metadata, exceptional
+edge and canonical CFG fact. Compatibility version advances from `1.1.3` to `1.1.4`.
+The exact existing core path is assigned to `semanticCompat`; canonical CFG ownership
+is not widened. The downstream duplicate-successor rejection remains enforced.
+
+The next observed boundary was an arm ending in MOV with a canonical fallthrough edge.
+The structural issuer now accepts this supplied edge without inserting a BR or inferring
+physical adjacency. It requires a single resolved successor with exactly the fallthrough
+kind. Ordinary instructions before either implicit fallthrough or explicit BR/CBR must
+have a known non-control shape; UNKNOWN/switch/trap, hidden control metadata, and earlier
+terminators are rejected. Explicit BR/CBR kind/polarity and supplied block-index endpoints
+must agree. Nested false + fallthrough labels remain valid. Exact address resolution,
+full execution, effects, conditions and reachability remain mandatory downstream obligations.
+Known CALL/CLOBBER/store shapes do not certify safe effects or returning behavior.
+
+The regression exercises the production lowering path from parsed instruction rows.
+It is **not** binary-decoder, compiler, real-device or full region-equivalence evidence.
+It verifies all typed-edge metadata, strict duplicate rejection, implicit arm instructions,
+unknown/trailing control, explicit edge contradictions, revocation and canonical test discovery.
+Independent review found two control-classification holes during development; both gained
+regressions and were closed before publication. The initial failing runs remain retained.
+
+**Next first divergence remains open:** public conditional optimization reaches
+`invalid-phi-instruction`: canonical SSA PHIs expose `args` as the incoming-value use list,
+whereas the byte execution contract currently requires empty PHI args. The public boundary
+regression records partial/adopted-zero and unchanged IR/view; that refusal is not feature
+completion or a permanent PHI restriction. Reconcile the existing canonical PHI/use contract,
+then continue through actual state effects (including PSTATE), flag predicates and public proof.
+Do not erase PHI uses, fabricate simpler IR, or omit state effects to obtain acceptance.
+
+The source regression uses the canonical serial test setting. A parallel diagnostic run hit
+a deadline in the production public-path case; its retained failure is not erased or counted
+as success. Exact committed-head tests, generated rebuild, lint, module boundaries, ownership,
+independent review and remote publication receipts are retained under persistent
+`agent-work/evidence/analysis-roadmap-20260909/c4-decoded-cfg-20260913` and sibling gate logs.
+This is a structural handoff increment. FR-C4-02A/04B, the complete production proof route,
+full analysis-roadmap acceptance and **CHECKPOINT-LOCKED** remain open.

@@ -6,10 +6,16 @@ import { readSemanticConditionalRegion } from '../semantic-core.js';
 import { successorEdgesOf } from './structuring.js';
 import { queryArray, queryRecord } from '../../symbolic/memory/data-input.js';
 import { createQueryGuard, sameMemoryIdentity } from '../../symbolic/memory/query-state.js';
+import { OP } from '../../ir-base.js';
 
 const issued = new WeakMap();
 const LIMITS = Object.freeze({ blocks:4096, edges:32768, workItems:262144, allocationUnits:262144 });
 const ORDINARY = new Set(['branch', 'fallthrough', 'conditional-true', 'conditional-false']);
+const TERMINATORS = new Set(['br', 'cbr', 'ret']);
+// This classifies representable instruction shapes, never their effect safety.
+// An UNKNOWN may stand for a switch, trap or unknown control transfer.
+const FALLTHROUGH_OPS = new Set([OP.CONST, OP.MOV, OP.BIN, OP.UN, OP.MAC, OP.BFX, OP.BFI,
+  OP.CMP, OP.SEL, OP.LOAD, OP.STORE, OP.ADDR, OP.CALL, OP.CLOBBER]);
 const freeze = values => Object.freeze(values);
 const sameSet = (array, set) => array.length === set.size && new Set(array).size === array.length
   && array.every(value => set.has(value));
@@ -97,10 +103,56 @@ export function prepareConditionalRegionStructure(record, ir, options = {}) {
         if (!block || !successors?.length) return reject('region-exit-before-join');
         if (raw.entry === index || block.data.isEntry === true) return reject('region-has-function-entry');
         const insts = queryArray(block.data.insts, guard);
-        const op = queryRecord(insts.at(-1), guard, 128).op;
-        // This prerequisite admits only explicit final BR/CBR terminators.
-        // Trailing metadata and switch/residual forms need separate handling.
-        if (!['br', 'cbr'].includes(op) || successors.length !== (op === 'br' ? 1 : 2)) return reject('unsupported-region-terminator');
+        guard.take('workItems', insts.length);
+        guard.take('allocationUnits', insts.length);
+        const operations = insts.map(inst => queryRecord(inst, guard, 128).op);
+        if (operations.some((op, offset) => offset < operations.length - 1 && TERMINATORS.has(op))) {
+          return reject('instruction-after-region-terminator');
+        }
+        const op = operations.at(-1);
+        const explicitBranch = op === 'br' || op === 'cbr';
+        // Validate every preceding instruction for either block ending. An
+        // unknown control transfer followed by a BR is not an ordinary arm.
+        const ordinaryCount = insts.length - (explicitBranch ? 1 : 0);
+        for (let offset = 0; offset < ordinaryCount; offset++) {
+          if (!FALLTHROUGH_OPS.has(operations[offset])) return reject('unsupported-region-terminator');
+          const extra = queryRecord(queryRecord(insts[offset], guard, 128).extra ?? {}, guard);
+          const attributes = queryRecord(extra.attributes ?? {}, guard);
+          if (extra.machineControlEffect != null || attributes.machineControlEffect != null
+              || queryArray(extra.unknownCategories ?? [], guard).includes('control')) {
+            return reject('unsupported-region-control-effect');
+          }
+        }
+        if (explicitBranch) {
+          if (successors.length !== (op === 'br' ? 1 : 2)) return reject('unsupported-region-terminator');
+          if (successors.some(edge => edge.kinds.some(kind => !ORDINARY.has(kind)))) return reject('nonordinary-region-edge');
+          const extra = queryRecord(queryRecord(insts.at(-1), guard, 128).extra ?? {}, guard);
+          if (op === 'br') {
+            if (successors[0].kinds.length !== 1 || successors[0].kinds[0] !== 'branch'
+                || extra.targetBlock != null && extra.targetBlock !== successors[0].to) {
+              return reject('region-branch-edge-mismatch');
+            }
+          } else {
+            const yesEdge = successors.find(edge => edge.kinds.length === 1 && edge.kinds[0] === 'conditional-true');
+            const noEdge = successors.find(edge => edge.kinds.includes('conditional-false')
+              && edge.kinds.every(kind => ['conditional-false', 'fallthrough'].includes(kind)));
+            if (!yesEdge || !noEdge || yesEdge === noEdge
+                || extra.targetBlock != null && extra.targetBlock !== yesEdge.to
+                || extra.fallthroughBlock != null && extra.fallthroughBlock !== noEdge.to) {
+              return reject('region-branch-edge-mismatch');
+            }
+          }
+          // Exact address/target resolution remains mandatory in the existing
+          // execution contract and reachability proof before any publication.
+        } else {
+          // The existing CFG can end a block by an explicit fallthrough edge
+          // without a synthetic BR. This only recounts the supplied edge: all
+          // instructions still require execution/effect validation below.
+          if (!operations.length || successors.length !== 1
+              || successors[0].kinds.length !== 1 || successors[0].kinds[0] !== 'fallthrough') {
+            return reject('unsupported-region-terminator');
+          }
+        }
         guard.take('allocationUnits', successors.length + 2);
         colors.set(index, 1); members.add(index); stack.push([index, true]);
         for (const edge of successors) stack.push([edge.to, false]);

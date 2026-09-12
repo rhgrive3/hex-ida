@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { conditionalRegionFixture } from '../helpers/conditional-region-fixture.mjs';
+import { conditionalRegionFixture, textRowConditionalRegionFixture } from '../helpers/conditional-region-fixture.mjs';
 import { identity } from '../helpers/proof-fixtures.mjs';
 import { enhanceSemanticDecompilation, optimizeSemanticDecompilation, isProducerProjection } from '../../../js/decompiler/pipeline.js';
 import { prepareConditionalRegionCondition, readConditionalRegionCondition } from '../../../js/decompiler/phase8/conditional-region-condition.js';
@@ -27,6 +27,29 @@ function fixture(options = {}) {
   return { ...f, projection };
 }
 const options = { identity, addressBits:8, backendTier:'exhaustive', timeoutMs:5000 };
+
+test('production text-row PHI handoff remains explicitly partial and preserves the original view', async () => {
+  const f = textRowConditionalRegionFixture();
+  const preparedOptions = { ...f.options, ir:f.ir, deterministicTransforms:true,
+    phase8PrepareRegionProof:true, phase8PrepareProof:true, renderProvenance:true };
+  const { decompileSemantic, readSemanticConditionalRegions } = await import('../../../js/decompiler/semantic-core.js');
+  const seed = decompileSemantic(f.model, preparedOptions);
+  const branch = readSemanticConditionalRegions(seed)?.regions.find(region => region.selection.header === 0)?.branch;
+  assert.ok(branch);
+  const projection = enhanceSemanticDecompilation(seed, f.model, preparedOptions);
+  const before = structuredClone(f.ir.instructions);
+  const output = await optimizeSemanticDecompilation(projection, { ...options, conditionalBranch:branch });
+  // Next production boundary: canonical PHIs expose args as their use list;
+  // the byte executor currently accepts only args:[]. This is pending C4 work,
+  // not a completed production proof or a permanent restriction on PHIs.
+  assert.ok(f.ir.blocks.some(block => block.phis.some(phi => phi.args.length > 0)));
+  assert.equal(output.proofOptimization.status, 'partial');
+  assert.equal(output.proofOptimization.reason, 'invalid-phi-instruction');
+  assert.equal(output.proofOptimization.adopted, 0);
+  assert.equal(output.cAst, projection.cAst);
+  assert.equal(output.pseudocode, projection.pseudocode);
+  assert.deepEqual(f.ir.instructions, before);
+});
 async function prepared(input = {}, extra = {}) {
   const f = fixture(input);
   const conditionPlan = await prepareConditionalRegionCondition(f.structure, f.projection, { ...options, ...extra });
