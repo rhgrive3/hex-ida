@@ -1,0 +1,125 @@
+import assert from 'node:assert/strict';
+import { BinaryImage } from '../../../js/binary/model.js';
+import { ByteView } from '../../../js/binary/reader.js';
+import { parseEhFrameHeader } from '../../../js/binary/elf-unwind.js';
+
+const HDR_OFF = 0x20;
+const HDR_VA = 0x5000n;
+
+function putPtr(view, off, bits, value) {
+  if (bits === 64) view.setBigUint64(off, BigInt(value), true);
+  else view.setUint32(off, Number(BigInt(value) & 0xffffffffn), true);
+}
+
+function makeFixture({ bits = 64, target = 0x1004n, mappings, expectedDomain = 0x3000n }) {
+  const bytes = new Uint8Array(0x500);
+  const view = new DataView(bytes.buffer);
+  bytes[HDR_OFF] = 1;
+  bytes[HDR_OFF + 1] = 0x80; // DW_EH_PE_absptr | DW_EH_PE_indirect
+  bytes[HDR_OFF + 2] = 0x03; // fde_count: udata4
+  bytes[HDR_OFF + 3] = 0x03; // table: udata4 (unused because count=0)
+  putPtr(view, HDR_OFF + 4, bits, target);
+  view.setUint32(HDR_OFF + 4 + bits / 8, 0, true);
+
+  const image = new BinaryImage(bytes, { format:'elf', arch:bits === 64 ? 'x86_64' : 'x86', bits, endian:'little' });
+  for (const m of mappings) {
+    image.addSegment({
+      name:m.name || 'LOAD', address:m.address, size:m.size,
+      fileOffset:m.fileOffset, fileSize:m.fileSize,
+      perms:{ read:true, write:false, execute:false }, source:'PT_LOAD',
+    });
+  }
+  image.addSection({
+    name:'.eh_frame', address:expectedDomain, size:0x20n,
+    fileOffset:0x300n, fileSize:0x20n,
+    perms:{ read:true, write:false, execute:false }, source:'ELF-section',
+  });
+  return { bytes, view, image };
+}
+
+function parse(fixture, bits) {
+  parseEhFrameHeader(
+    new ByteView(fixture.bytes, { littleEndian:true }),
+    { addr:HDR_VA, offset:BigInt(HDR_OFF), size:0x20n },
+    fixture.image,
+    bits,
+    null,
+  );
+}
+
+// Fully file-backed pointer inside one mapping remains valid.
+{
+  const f = makeFixture({
+    mappings:[{ address:0x1000n, size:0x20n, fileOffset:0x100n, fileSize:0x20n }],
+  });
+  putPtr(f.view, 0x104, 64, 0x3000n);
+  parse(f, 64);
+  assert.equal(f.image.metadata.ehFrameHeader?.ehFrameAddress, 0x3000n);
+  assert.equal(f.image.metadata.ehFrameHeader?.validation, 'verified');
+}
+
+// File-adjacent but VA-discontinuous mappings must not be concatenated into an
+// indirect pointer. Old code starts at file 0x104 and leaks bytes from file
+// 0x108 even though VA 0x1008 is unmapped.
+{
+  const f = makeFixture({
+    expectedDomain:0x4000n,
+    mappings:[
+      { address:0x1000n, size:8n, fileOffset:0x100n, fileSize:8n },
+      { address:0x3000n, size:8n, fileOffset:0x108n, fileSize:8n },
+    ],
+  });
+  putPtr(f.view, 0x104, 64, 0x4000n);
+  parse(f, 64);
+  assert.equal(f.image.metadata.ehFrameHeader, undefined);
+  assert.ok(f.image.warnings.some((w) => /DW_EH_PE_indirect target 0x1004 is not readable/.test(w)));
+}
+
+// A zero-fill tail is virtual memory, not the following raw file bytes. The
+// low dword names .eh_frame and the zero-fill high dword must stay zero.
+{
+  const f = makeFixture({
+    mappings:[{ address:0x1000n, size:0x10n, fileOffset:0x100n, fileSize:8n }],
+  });
+  f.view.setUint32(0x104, 0x3000, true);
+  f.view.setUint32(0x108, 0xdeadbeef, true); // unrelated raw bytes after p_filesz
+  parse(f, 64);
+  assert.equal(f.image.metadata.ehFrameHeader?.ehFrameAddress, 0x3000n);
+  assert.equal(f.image.metadata.ehFrameHeader?.validation, 'verified');
+}
+
+// VA-contiguous mappings may compose a pointer even when their raw file ranges
+// are discontiguous; virtual mapping semantics, not raw adjacency, decide it.
+{
+  const f = makeFixture({
+    mappings:[
+      { address:0x1000n, size:8n, fileOffset:0x100n, fileSize:8n },
+      { address:0x1008n, size:8n, fileOffset:0x200n, fileSize:8n },
+    ],
+  });
+  f.view.setUint32(0x104, 0x3000, true);
+  f.view.setUint32(0x108, 0xdeadbeef, true); // wrong raw neighbor
+  f.view.setUint32(0x200, 0, true);          // true VA continuation
+  parse(f, 64);
+  assert.equal(f.image.metadata.ehFrameHeader?.ehFrameAddress, 0x3000n);
+  assert.equal(f.image.metadata.ehFrameHeader?.validation, 'verified');
+}
+
+// ELF32 has the same whole-span requirement for a 4-byte indirect pointer.
+{
+  const f = makeFixture({
+    bits:32,
+    target:0x1002n,
+    expectedDomain:0x4000n,
+    mappings:[
+      { address:0x1000n, size:4n, fileOffset:0x100n, fileSize:4n },
+      { address:0x3000n, size:4n, fileOffset:0x104n, fileSize:4n },
+    ],
+  });
+  putPtr(f.view, 0x102, 32, 0x4000n);
+  parse(f, 32);
+  assert.equal(f.image.metadata.ehFrameHeader, undefined);
+  assert.ok(f.image.warnings.some((w) => /DW_EH_PE_indirect target 0x1002 is not readable/.test(w)));
+}
+
+console.log('issue #4261 DW_EH_PE_indirect virtual span validation: PASS');
