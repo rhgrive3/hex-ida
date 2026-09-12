@@ -324,10 +324,21 @@ function parseArm64XdataDescriptor(r, image, begin, xdataRva, budget) {
     if (!budget.take({ inputBytes:4, operations:1 }, 'arm64-xdata-extension')) return null;
   }
   const recordBytes = headerBytes + (packedEpilog ? 0 : epilogCount * 4) + codeWords * 4 + (hasHandler ? 4 : 0);
-  if (!Number.isSafeInteger(recordBytes) || !mappedFileSpanForRva(image, xdataRva, recordBytes)) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-span', `Ignored ARM64 .xdata record that crosses its file-backed mapping at RVA 0x${xdataRva.toString(16)}`);
+  const recordSpan = Number.isSafeInteger(recordBytes) ? mappedFileSpanForRva(image, xdataRva, recordBytes) : null;
+  if (!recordSpan) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-span', `Ignored ARM64 .xdata record that crosses its file-backed mapping at RVA 0x${xdataRva.toString(16)}`);
+  let handlerRva = null;
+  if (hasHandler) {
+    const handlerOffset = recordSpan.spanEnd - 4;
+    if (handlerOffset < 0 || handlerOffset + 4 > r.length) return invalidExceptionRecord(image, kind, budget, 'arm64-handler-tail', `Ignored truncated ARM64 exception handler RVA at .xdata RVA 0x${xdataRva.toString(16)}`);
+    if (!budget.take({ inputBytes:4, operations:1 }, 'arm64-xdata-handler')) return null;
+    handlerRva = r.u32(handlerOffset);
+    if (!handlerRva || !mappedFileRangeForRva(image, handlerRva) || !executableRvaRange(image, handlerRva, 1)) {
+      return invalidExceptionRecord(image, kind, budget, 'arm64-handler-not-executable', `Ignored ARM64 .xdata whose exception handler RVA 0x${handlerRva.toString(16)} is not an executable file-backed routine`);
+    }
+  }
   const bytes = functionLength * 4;
   if (!executableRvaRange(image, begin, bytes)) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-range', `Ignored ARM64 .xdata range outside executable mapping at RVA 0x${begin.toString(16)}`);
-  return { size:bytes, xdataRva, version, hasHandler, packedEpilog, epilogCount, codeWords };
+  return { size:bytes, xdataRva, version, hasHandler, handlerRva, packedEpilog, epilogCount, codeWords };
 }
 
 export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = null) {
