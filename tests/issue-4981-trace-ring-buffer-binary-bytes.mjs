@@ -84,6 +84,8 @@ function slicedArrayBuffer(byteLength) {
   const shared = new ArrayBuffer(3000);
   const once = new TraceRingBuffer({ maxEvents: 16, maxBytes: 4096 });
   assert.equal(once.push({ type: 'shared', first: shared, second: shared }), true);
+  assert.equal(once.events[0].first, once.events[0].second,
+    'a shared binary object must remain one owned copy after snapshotting');
   const control = new TraceRingBuffer({ maxEvents: 16, maxBytes: 4096 });
   assert.equal(control.push({ type: 'shared', first: shared, second: {} }), true);
   assert.equal(once.snapshot().bytes, control.snapshot().bytes,
