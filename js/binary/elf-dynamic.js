@@ -485,7 +485,10 @@ function symbolCountFromGnuHash(r, hashVa, image, bits, { signal = null, onMalfo
   const end=range ? Math.min(range.end,r.length) : 0;
   if(!range||range.start+16>end){markDynamicPartial(image,'DT_GNU_HASH header is not fully file-backed');return 0;}
   const off=range.start;
-  const nbuckets=r.u32(off),symOffset=r.u32(off+4),bloomSize=r.u32(off+8);if(!nbuckets||nbuckets>10_000_000||bloomSize>10_000_000)return 0;const word=bits===64?8:4;
+  const nbuckets=r.u32(off),symOffset=r.u32(off+4),bloomSize=r.u32(off+8);
+  const bloomSizeBig=BigInt(bloomSize);
+  if(!bloomSize||(bloomSizeBig&(bloomSizeBig-1n))!==0n){markDynamicPartial(image,`DT_GNU_HASH bloom_size ${bloomSize} is not a non-zero power of two`);onMalformed?.();return 0;}
+  if(!nbuckets||nbuckets>10_000_000||bloomSize>10_000_000)return 0;const word=bits===64?8:4;
   const bucketsOff=off+16+bloomSize*word,chainsOff=bucketsOff+nbuckets*4;if(!Number.isSafeInteger(bucketsOff)||!Number.isSafeInteger(chainsOff)||chainsOff>end){markDynamicPartial(image,'DT_GNU_HASH header/buckets cross a file-backed PT_LOAD boundary');return 0;}
   let max=null,malformedBucket=false,remainingSteps=Math.min(10_000_000,Math.max(4096,nbuckets*64));
   for(let i=0;i<nbuckets;i++){if(cancelled()){markDynamicPartial(image,'DT_GNU_HASH traversal was cancelled');return 0;}const bucket=r.u32(bucketsOff+i*4);if(!bucket)continue;if(bucket<symOffset){malformedBucket=true;continue;}let idx=bucket,p=chainsOff+(idx-symOffset)*4;for(;p+4<=end;idx++,p+=4){if(cancelled()){markDynamicPartial(image,'DT_GNU_HASH traversal was cancelled');return 0;}if(--remainingSteps<0){markDynamicPartial(image,'GNU hash chain traversal exceeded the global budget');return 0;}const chain=r.u32(p);if(max==null||idx>max)max=idx;if(chain&1)break;}if(p+4>end){markDynamicPartial(image,'DT_GNU_HASH chain crosses a file-backed PT_LOAD boundary');return 0;}}
