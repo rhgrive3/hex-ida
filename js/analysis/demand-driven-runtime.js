@@ -53,6 +53,32 @@ function waitForSearchRequest(request, signal) {
   });
 }
 function optionalCallback(value) { return typeof value === 'function' ? value : null; }
+// Demand-driven cache/single-flight identities are analysis authority. JavaScript
+// numeric coercion collapses distinct raw states (for example ['7'] and 7) onto
+// one producer key, so validate the identity before it can select or populate a
+// cached artifact (#4020). Missing generations keep the legacy zero default.
+function nonNegativeIdentity(value, code) {
+  if (value == null) return 0;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new TypeError(code);
+  return value;
+}
+function demandAnalysisEpoch(app) {
+  return nonNegativeIdentity(app?.backend?.gen ?? app?.analysisEpoch ?? 0, 'demand-analysis-epoch-invalid');
+}
+function demandSymbolGeneration(app) {
+  return nonNegativeIdentity(app?.symbols?.gen ?? 0, 'demand-symbol-generation-invalid');
+}
+function demandKnowledgeRevision(app) {
+  return nonNegativeIdentity(app?.knowledge?.revision ?? 0, 'demand-knowledge-revision-invalid');
+}
+function recognitionSliceIndex(app) {
+  const value = storeValue(app, 'sliceIndex');
+  if (value == null || value === -1) return -1;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError('demand-slice-index-invalid');
+  }
+  return value;
+}
 function addressOf(value) {
   // Same canonical address-domain contract as the query adapter: an address
   // is a non-negative integer regardless of representation. Only the number
@@ -201,7 +227,7 @@ function mergeShapeMaps(maps, reasons = []) {
   return out;
 }
 function recognitionInputKey(app) {
-  return [Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0), Number(app?.symbols?.gen ?? 0), Number(app?.knowledge?.revision ?? 0), objectId(app?.fields), objectId(app?.objcModel), objectId(app?.objcRuntime), objectId(app?.swiftModel), objectId(app?.swiftRuntime)].join(':');
+  return [demandAnalysisEpoch(app), demandSymbolGeneration(app), demandKnowledgeRevision(app), objectId(app?.fields), objectId(app?.objcModel), objectId(app?.objcRuntime), objectId(app?.swiftModel), objectId(app?.swiftRuntime)].join(':');
 }
 
 
@@ -284,16 +310,22 @@ function installDemandRecognition(app) {
   const bootstrapEpochs = new Map(); let acceptedKey = null;
   const beginBootstrap = (epoch) => bootstrapEpochs.set(epoch, (bootstrapEpochs.get(epoch) ?? 0) + 1);
   const endBootstrap = (epoch) => { const owners = bootstrapEpochs.get(epoch) ?? 0; if (owners <= 1) bootstrapEpochs.delete(epoch); else bootstrapEpochs.set(epoch, owners - 1); };
-  const invalidate = (before) => { const after = recognitionInputKey(app); if (before !== after && app.recognition) app.recognition = null; if (before !== after) acceptedKey = null; };
+  const invalidate = (before) => {
+    let after;
+    try { after = recognitionInputKey(app); }
+    catch (error) { app.recognition = null; acceptedKey = null; throw error; }
+    if (before !== after && app.recognition) app.recognition = null;
+    if (before !== after) acceptedKey = null;
+  };
   if (originalObjc) app.ensureObjc = async function (...args) { const before = recognitionInputKey(app); try { return await originalObjc(...args); } finally { invalidate(before); } };
   if (originalSwift) app.ensureSwift = async function (...args) { const before = recognitionInputKey(app); try { return await originalSwift(...args); } finally { invalidate(before); } };
   app.ensureRecognition = async function demandRecognition(options = {}) {
-  const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);
+  const epoch = demandAnalysisEpoch(app);
   if (bootstrapEpochs.has(epoch) && options.force !== true) return app.recognition ?? null;
   for (let attempt = 0; attempt < 2; attempt++) {
     abortIfNeeded(options.signal);
     const metadata = [];
-    const sliceIndex = Number(storeValue(app, 'sliceIndex') ?? -1);
+    const sliceIndex = recognitionSliceIndex(app);
     if (originalObjc && sliceIndex >= 0) metadata.push(app.ensureObjc(sliceIndex));
     if (originalSwift) metadata.push(app.ensureSwift());
     if (metadata.length) await Promise.allSettled(metadata);
@@ -304,7 +336,9 @@ function installDemandRecognition(app) {
     acceptedKey = null;
     const value = await originalRecognition(options);
     abortIfNeeded(options.signal);
-    const after = recognitionInputKey(app);
+    let after;
+    try { after = recognitionInputKey(app); }
+    catch (error) { app.recognition = null; acceptedKey = null; throw error; }
     if (value && after === key) {
       acceptedKey = key;
       return value;
@@ -316,7 +350,7 @@ function installDemandRecognition(app) {
   throw error;
 };
 if (originalApplySlice) app.applySlice = function demandApplySlice(...args) {
-    const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0); beginBootstrap(epoch);
+    const epoch = demandAnalysisEpoch(app); beginBootstrap(epoch);
     try {
       const result = originalApplySlice(...args); const clearBootstrap = () => endBootstrap(epoch); void Promise.resolve(app.symbolsReady).then(clearBootstrap, clearBootstrap); return result;
     } catch (error) {
@@ -333,7 +367,7 @@ function installMultiRegionShapes(app) {
     const onProgress = optionalCallback(typeof progressOrOptions === 'function' ? progressOrOptions : progressOrOptions?.onProgress);
     const signal = typeof progressOrOptions === 'object' ? progressOrOptions?.signal ?? null : null;
     abortIfNeeded(signal);
-    const epoch = Number(app.backend.gen ?? app.analysisEpoch ?? 0); const regions = executableRegions(app);
+    const epoch = demandAnalysisEpoch(app); const regions = executableRegions(app);
     if (!regions.length) return null;
     const key = `${epoch}:${regions.map((r) => r.id).join('|')}`;
     if (app.shapes && combinedKey === key) return app.shapes;
@@ -363,14 +397,14 @@ function installMultiRegionShapes(app) {
                 (error) => { producerController.signal.removeEventListener('abort', onProducerAbort); reject(error); },
               );
             });
-            if (value && !value.cancelled) regionCache.set(cacheKey, value);
+            if (value && !value.cancelled && epoch === demandAnalysisEpoch(app)) regionCache.set(cacheKey, value);
           } catch (error) { if (producerController.signal.aborted || error?.name === 'AbortError') throw error; reasons.push(`${region.id}:shape-scan-failed`); continue; }
           finally { producerController.signal.removeEventListener('abort', onAbort); }
         }
         if (!value || value.cancelled) { reasons.push(`${region.id}:shape-scan-cancelled`); continue; }
         folded.push(foldShapes(value));
       }
-      if (epoch !== Number(app.backend.gen ?? app.analysisEpoch ?? 0)) return null;
+      if (epoch !== demandAnalysisEpoch(app)) return null;
       const merged = mergeShapeMaps(folded, reasons);
       // Partial results remain visible to this caller but are not pinned as the
       // epoch-wide canonical shapes. Missing regions can therefore be retried.
@@ -394,13 +428,13 @@ function installCancellableFunctionDiscovery(app) {
         try { await app.symbolsReady; } catch { /* symbol seeds are optional */ }
       }
       abortIfNeeded(options.signal);
+      const epoch = demandAnalysisEpoch(app);
       const symbols = app.symbols;
       if (!symbols || symbols.functionStartsComplete === true || symbols.functionDiscovery?.complete === true) return symbols;
       const targets = executableRegions(app);
       if (region?.exec === true && canonicalRegionId(region) != null && !targets.some((item) => item.id === region.id)) targets.push(region);
       const unique = dedupeRegions(targets);
       if (!unique.length) return symbols;
-      const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);
       const key = `${epoch}:${unique.map((item) => item.id).join('|')}`;
       if (symbols.functionDiscovery?.attempted === true && symbols.functionDiscovery?.regionSetKey === unique.map((item) => item.id).join('|')) return symbols;
       let entry = producers.get(key);
@@ -430,7 +464,7 @@ function installCancellableFunctionDiscovery(app) {
           };
           for (let index = 0; index < unique.length; index++) {
             abortIfNeeded(producerController.signal);
-            if (epoch !== Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0)) throw Object.assign(new Error('stale function discovery'), { stale:true });
+            if (epoch !== demandAnalysisEpoch(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
             const item = unique[index], size = BigInt(item.size);
             const share = remaining > 0 && remainingBytes > 0n
               ? Math.max(1, Math.min(remaining, Number((BigInt(remaining) * size + remainingBytes - 1n) / remainingBytes)))
@@ -446,6 +480,7 @@ function installCancellableFunctionDiscovery(app) {
             producerController.signal.addEventListener('abort', onAbort, { once:true });
             try {
               const result = await request;
+              if (epoch !== demandAnalysisEpoch(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
               if (result?.starts?.length) {
                 symbols.addFunctions(result.starts, { source:'heuristic', confidence:0.55, confirmed:false });
                 symbols.guessed = true;
@@ -460,7 +495,7 @@ function installCancellableFunctionDiscovery(app) {
             remainingBytes -= size;
           }
           abortIfNeeded(producerController.signal);
-          if (epoch !== Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0)) throw Object.assign(new Error('stale function discovery'), { stale:true });
+          if (epoch !== demandAnalysisEpoch(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
           const complete = results.length === unique.length && results.every((item) => item.complete === true);
           const regionSetKey = unique.map((item) => item.id).join('|');
           symbols.functionDiscovery = {
@@ -508,7 +543,7 @@ function installCancellableFunctionDiscovery(app) {
 function installDemandQueryAPI(app, recognitionVersion) {
   const base = createBaseQueryAdapter(app); const regionScans = new Map();
   const scanRegion = async (region, options = {}, localCount = 1) => {
-    const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);
+    const epoch = demandAnalysisEpoch(app);
     const limits = regionScanLimits(localCount);
     const profile = `${limits.callLimit}:${limits.refLimit}:${limits.kindLimit}`;
     const key = `${epoch}:${region.id}:${profile}`;
