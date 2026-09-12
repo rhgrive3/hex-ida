@@ -31,8 +31,12 @@ export function markMachOMetadataPartial(image, reason) {
  */
 function metadataLimit(value, fallback) {
   if (value === 0) return 0;
-  const n = Number(value);
-  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function metadataCost(value) {
+  if (value === undefined) return 0;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 export function resolveMachOMetadataLimits(overrides = {}) {
@@ -66,16 +70,22 @@ export function createMachOMetadataBudget(image, options = {}) {
     take(cost = {}, reason = 'metadata') {
       if (stopped) return false;
       if (signal?.aborted) return stop('aborted');
-      const opCost = Math.max(0, Number(cost.operations || 0));
+      const resolvedCost = {};
+      for (const key of Object.keys(used)) {
+        const value = metadataCost(cost[key]);
+        if (value == null) return stop(`${reason}:${key}`);
+        resolvedCost[key] = value;
+      }
+      const opCost = resolvedCost.operations;
       if (used.operations + opCost >= nextTimeCheck) {
         nextTimeCheck = used.operations + opCost + 1024;
         if (Date.now() - started > limits.wallClockMs) return stop('wall-clock');
       }
       for (const key of Object.keys(used)) {
-        const next = used[key] + Math.max(0, Number(cost[key] || 0));
-        if (!Number.isFinite(next) || next > limits[key]) return stop(`${reason}:${key}`);
+        const next = used[key] + resolvedCost[key];
+        if (!Number.isSafeInteger(next) || next > limits[key]) return stop(`${reason}:${key}`);
       }
-      for (const key of Object.keys(used)) used[key] += Math.max(0, Number(cost[key] || 0));
+      for (const key of Object.keys(used)) used[key] += resolvedCost[key];
       return true;
     },
     partial(reason, warning = null) {
@@ -98,9 +108,8 @@ export function createMachOMetadataBudget(image, options = {}) {
 
 export function ensureMachOMetadataBudget(image, budget = null) {
   if (budget) {
-    if (!image.__machoMetadataBudget) {
+    if (!image.__machoMetadataBudget)
       Object.defineProperty(image, '__machoMetadataBudget', { value:budget, configurable:true, enumerable:false, writable:false });
-    }
     return budget;
   }
   if (image.__machoMetadataBudget) return image.__machoMetadataBudget;

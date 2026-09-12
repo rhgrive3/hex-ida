@@ -30,6 +30,7 @@ export const PDB_PROVIDER_ID = 'phase7.debug.pdb';
 export const PDB_PROVIDER_VERSION = '1.0.0';
 
 const MSF_MAGIC = 'Microsoft C/C++ MSF 7.00\r\n\u001aDS\0\0\0';
+const MSF_BLOCK_SIZES = Object.freeze([512, 1024, 2048, 4096]);
 
 /** CodeView symbol record kinds this provider models. */
 const S_PUB32 = 0x110e;
@@ -128,6 +129,27 @@ function createPdbByteBudget(maxBytesScanned) {
   };
 }
 
+function createPdbRecordBudget(maxRecords) {
+  let remaining = maxRecords;
+  let exhausted = false;
+  let stopContext = null;
+  return {
+    consume(context) {
+      if (exhausted) return false;
+      if (remaining <= 0) {
+        exhausted = true;
+        stopContext = context ?? 'PDB records';
+        return false;
+      }
+      remaining -= 1;
+      return true;
+    },
+    get exhausted() { return exhausted; },
+    get stopContext() { return stopContext; },
+    get remaining() { return remaining; },
+  };
+}
+
 /** Reads the MSF superblock and stream directory. */
 export function parseMsf(bytes, byteBudget = null) {
   const data = bytesOf(bytes);
@@ -147,7 +169,7 @@ export function parseMsf(bytes, byteBudget = null) {
   const numBlocks = view.getUint32(40, true);
   const numDirectoryBytes = view.getUint32(44, true);
   const blockMapAddr = view.getUint32(52, true);
-  if (blockSize === 0 || (blockSize & (blockSize - 1)) !== 0) {
+  if (!MSF_BLOCK_SIZES.includes(blockSize)) {
     return { streams: [], diagnostics: ['invalid MSF block size'], complete: false };
   }
   if (freeBlockMapBlock !== 1 && freeBlockMapBlock !== 2) {
@@ -366,9 +388,9 @@ export function parseModuleInfo(bytes, dbi) {
 }
 
 /** PE section headers, as stored in the PDB's section-header stream. */
-export function parseSectionHeaders(bytes) {
+function parseSectionHeaderStream(bytes) {
   const headers = [];
-  if (!bytes) return headers;
+  if (!bytes) return { headers, complete: false, trailingBytes: 0 };
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   for (let offset = 0; offset + 40 <= bytes.length; offset += 40) {
     headers.push({
@@ -378,7 +400,12 @@ export function parseSectionHeaders(bytes) {
       sizeOfRawData: view.getUint32(offset + 16, true),
     });
   }
-  return headers;
+  const trailingBytes = bytes.length % 40;
+  return { headers, complete: trailingBytes === 0, trailingBytes };
+}
+
+export function parseSectionHeaders(bytes) {
+  return parseSectionHeaderStream(bytes).headers;
 }
 
 /**
@@ -400,21 +427,19 @@ function sectionVirtualExtent(header) {
  * Records are length-prefixed, so an unrecognised kind can be skipped safely —
  * unlike DWARF forms, which have no self-describing length.
  */
-export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
-  const { maxRecords } = resolveDebugBudget(budget);
+function parseSymbolRecordsWithBudget(bytes, recordBudget, context) {
   const symbols = [];
   const unmodelled = new Set();
   if (!bytes) return { symbols, unmodelled, complete: false };
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let offset = 0;
-  let recordCount = 0;
-  while (offset + 4 <= bytes.length && recordCount < maxRecords) {
+  while (offset + 4 <= bytes.length) {
     const length = view.getUint16(offset, true);
     if (length < 2) break;
     const kind = view.getUint16(offset + 2, true);
     const end = offset + 2 + length;
     if (end > bytes.length) break;
-    recordCount += 1;
+    if (!recordBudget.consume(context)) break;
 
     // Fixed-field reads are confined to the record's own end (#1845): a short
     // known-kind record must fail closed instead of reading the next record's
@@ -468,9 +493,17 @@ export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   return { symbols, unmodelled, complete: offset >= bytes.length };
 }
 
-/** Walks the TPI stream's leaf records. */
-export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
+export function parseSymbolRecords(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   const { maxRecords } = resolveDebugBudget(budget);
+  return parseSymbolRecordsWithBudget(
+    bytes,
+    createPdbRecordBudget(maxRecords),
+    'symbol record stream',
+  );
+}
+
+/** Walks the TPI stream's leaf records. */
+function parseTpiStreamWithBudget(bytes, recordBudget, context) {
   const types = new Map();
   const unmodelled = new Set();
   if (!bytes || bytes.length < 56) return { types, unmodelled, complete: false, firstIndex: 0x1000 };
@@ -500,12 +533,13 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
   let index = firstIndex;
   let fieldListsComplete = true;
 
-  while (offset + 4 <= typeDataEnd && index - firstIndex < expectedCount && types.size < maxRecords) {
+  while (offset + 4 <= typeDataEnd && index - firstIndex < expectedCount) {
     const length = view.getUint16(offset, true);
     if (length < 2) break;
     const leaf = view.getUint16(offset + 2, true);
     const end = offset + 2 + length;
     if (end > typeDataEnd) break;
+    if (!recordBudget.consume(context)) break;
     const body = offset + 4;
 
     // Fixed-field reads are confined to the record's own end (#1845): a short
@@ -604,6 +638,15 @@ export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
     complete: fieldListsComplete && expectedCount >= 0 && offset >= typeDataEnd && index - firstIndex === expectedCount,
     firstIndex,
   };
+}
+
+export function parseTpiStream(bytes, budget = DEBUG_DEFAULT_BUDGET) {
+  const { maxRecords } = resolveDebugBudget(budget);
+  return parseTpiStreamWithBudget(
+    bytes,
+    createPdbRecordBudget(maxRecords),
+    'TPI stream',
+  );
 }
 
 /**
@@ -857,6 +900,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     const diagnostics = [];
     const resolvedBudget = resolveDebugBudget(budget);
     const byteBudget = createPdbByteBudget(resolvedBudget.maxBytesScanned);
+    const recordBudget = createPdbRecordBudget(resolvedBudget.maxRecords);
 
     if (!pdbBytes) {
       return createDebugProviderResult({
@@ -920,7 +964,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     const symbolStream = dbi && dbi.symRecordStreamIndex < msf.streams.length
       ? msf.streams[dbi.symRecordStreamIndex].read()
       : null;
-    const symbols = parseSymbolRecords(symbolStream, resolvedBudget);
+    const symbols = parseSymbolRecordsWithBudget(symbolStream, recordBudget, 'global symbol stream');
     // The DBI header is part of the identity/authority boundary: matching
     // CodeView and Info Stream data must not launder symbols from a missing or
     // truncated DBI into authoritative evidence (#6042).
@@ -978,7 +1022,11 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       // symbol range exactly [4, SymByteSize): SymByteSize == 4 is the valid
       // boundary meaning zero symbol bytes, not a cue to scan line info as
       // symbol records (#5276).
-      const moduleSymbols = parseSymbolRecords(moduleBytes.subarray(4, declaredSize), resolvedBudget);
+      const moduleSymbols = parseSymbolRecordsWithBudget(
+        moduleBytes.subarray(4, declaredSize),
+        recordBudget,
+        `module symbol stream ${module.streamIndex}`,
+      );
       symbols.complete = symbols.complete && moduleSymbols.complete;
       for (const symbol of moduleSymbols.symbols) {
         if (symbol.kind !== 'procedure') continue;
@@ -987,8 +1035,9 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       for (const kind of moduleSymbols.unmodelled) symbols.unmodelled.add(kind);
     }
 
-    const tpi = parseTpiStream(msf.streams[2]?.read(), resolvedBudget);
-    const sectionHeaders = parseSectionHeaders(findSectionHeaderStream(msf, dbi, dbiBytes));
+    const tpi = parseTpiStreamWithBudget(msf.streams[2]?.read(), recordBudget, 'TPI stream');
+    const sectionHeaderStream = parseSectionHeaderStream(findSectionHeaderStream(msf, dbi, dbiBytes));
+    const sectionHeaders = sectionHeaderStream.headers;
     const imageBase = canonicalImageBase(image?.imageBase);
 
     if (byteBudget.exhausted) {
@@ -1000,6 +1049,13 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       tpi.complete = false;
     }
 
+    if (recordBudget.exhausted) {
+      const budgetDetail = `PDB record budget exhausted while reading ${recordBudget.stopContext ?? 'PDB records'}`;
+      if (!diagnostics.includes(budgetDetail)) diagnostics.push(budgetDetail);
+      symbols.complete = false;
+      tpi.complete = false;
+    }
+
     if (symbols.unmodelled.size) {
       diagnostics.push(`unmodelled CodeView symbol kinds: ${[...symbols.unmodelled].map((kind) => `0x${kind.toString(16)}`).slice(0, 8).join(', ')}`);
     }
@@ -1007,6 +1063,9 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       diagnostics.push(`unmodelled TPI leaf kinds: ${[...tpi.unmodelled].map((leaf) => `0x${leaf.toString(16)}`).slice(0, 8).join(', ')}`);
     }
     if (!sectionHeaders.length) diagnostics.push('no section header stream: symbol addresses stay unresolved');
+    if (!sectionHeaderStream.complete && sectionHeaderStream.trailingBytes > 0) {
+      diagnostics.push(`section header stream is truncated: ${sectionHeaderStream.trailingBytes} trailing bytes`);
+    }
     if (imageBase == null) diagnostics.push('PE image base unavailable or invalid: PDB symbol addresses stay unresolved');
 
     const result = createDebugProviderResult({
@@ -1023,7 +1082,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       sections: ['pdb-info', 'dbi', 'tpi', 'symbol-records'],
       counts: { streams: msf.streams.length, symbols: symbols.symbols.length, types: tpi.types.size, modules: modules.length },
       diagnostics,
-      status: byteBudget.exhausted
+      status: byteBudget.exhausted || recordBudget.exhausted
         ? status('truncated', 'budget-exhausted')
         : symbols.complete && tpi.complete && diagnostics.length === 0
           ? status('complete', null)

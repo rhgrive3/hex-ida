@@ -242,7 +242,10 @@ export function groupByFeature(strings, perFeature = 200, options = {}) {
 export async function classifyFeaturesAndEngineAsync(strings, options = {}) {
   const limit = featureRetentionLimit(options.perFeature ?? 200);
   const signal = options.signal || null;
-  const chunkSize = Math.max(100, Math.min(5000, options.chunkSize || 1000));
+  const requestedChunkSize = options.chunkSize;
+  const chunkSize = typeof requestedChunkSize === 'number' && Number.isFinite(requestedChunkSize)
+    ? Math.max(100, Math.min(5000, Math.floor(requestedChunkSize)))
+    : 1000;
   const buckets = new Map();
   for (const f of FEATURES) buckets.set(f.id, []);
   let detectedEngine = null;
