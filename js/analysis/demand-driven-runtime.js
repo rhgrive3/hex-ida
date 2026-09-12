@@ -174,7 +174,24 @@ function pruneSettledCache(cache) {
 // retention contract (#5267) without reaching into the closure.
 const discoveryProducersByApp = new WeakMap();
 function waitForShared(entry, signal, onDetach = null) {
-  abortIfNeeded(signal); entry.waiters++;
+  // A producer can be created before the caller reaches this shared-waiter
+  // boundary (for example a region scan). If that caller was aborted in the
+  // gap, it never becomes a waiter; retire a genuinely unowned producer here
+  // rather than leaving zero-consumer work alive. Existing waiters protect a
+  // shared producer from a pre-aborted joiner (#4749).
+  if (signal?.aborted) {
+    if (!entry.settled && entry.waiters === 0) {
+      entry.cancelled = true;
+      // This path intentionally leaves no consumer attached to the shared
+      // producer. Observe its eventual cancellation rejection before invoking
+      // cancel so a zero-waiter producer cannot escape as an unhandled promise.
+      void Promise.resolve(entry.promise).catch(() => {});
+      try { entry.cancel?.(); } catch { /* cancellation is best-effort */ }
+      try { entry.request?.cancel?.(); } catch { /* cancellation is best-effort */ }
+    }
+    throw abortError(signal);
+  }
+  entry.waiters++;
   return new Promise((resolve, reject) => {
     let settled = false;
     const detach = () => {
@@ -261,6 +278,9 @@ function installWorkerBackedIdentity(app) {
   backend.ensureBinaryId = function ensureBinaryIdFromPlatformWorker(options = {}) {
     if (this.binaryId) return Promise.resolve(this.binaryId);
     if (!this.file) return Promise.reject(new Error('binary-id-file-unavailable'));
+    // Do not create the first shared producer for a caller that has already
+    // left. Cache hits remain usable without starting any new work (#4749).
+    abortIfNeeded(options.signal);
     let entry = this._binaryIdEntry;
     // #4611: a single-flight entry whose last waiter aborted is cancelled but
     // may not have settled yet; the owner must not hand it to a new caller.
