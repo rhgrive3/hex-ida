@@ -19,8 +19,8 @@ function qualifiesAsExactDefault(backend, allowNonExactDefault) {
   try {
     return isExactProofBackend(backend);
   } catch {
-    // A broken capability provider is ineligible; keep replacement selection
-    // available for the remaining exact providers.
+    // Capability providers are external plugin surfaces. A malformed provider
+    // is ineligible, but must not block selection of a later exact backend.
     return false;
   }
 }

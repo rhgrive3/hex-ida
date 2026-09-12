@@ -1,3 +1,4 @@
+import { publishFixtureAnalyses } from '../helpers/analysis-fixtures.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -67,7 +68,7 @@ test('an incomplete optimizer run cannot overwrite a prior complete result', () 
   const ir = { ...CONTEXT.ir, blocks: [{ id: 'entry', index: 0 }] };
   const state = seedAnalysisState(ir);
   const priorRanges = Object.freeze({ completeness: 'complete', marker: 'authoritative' });
-  state.__write('ranges', priorRanges);
+  publishFixtureAnalyses(state, { ranges: priorRanges });
   const before = state.snapshot();
   const { ledger, analysis } = runPhase8Vertical({
     ...CONTEXT,

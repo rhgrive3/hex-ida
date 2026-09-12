@@ -62,6 +62,8 @@ export class InvestigationSessionStore {
   constructor({ persistence } = {}) {
     this.persistence = persistence || null;
     this.sessions = new Map();
+    this.creating = new Map();
+    this.publishing = new Set();
     /* Per-session persistence write ordering (#5556): the read-modify-write,
        durable save, and visibility swap of one session are serialized behind a
        per-id queue, so a slow older save can never commit (or swap) after a
@@ -91,6 +93,9 @@ export class InvestigationSessionStore {
   async delete(id) {
     if (!isValidSessionId(id)) return false;
     const key = id;
+    // A queued delete ends this identity generation. Later creates may reserve
+    // a new generation, but still wait for this durable deletion in saveQueues.
+    this.creating.delete(key);
     return this.enqueueSessionWrite(key, async () => {
       // Delete follows earlier saves in the same queue. Preserve the visible
       // record until durable deletion succeeds, including a failed delete
@@ -106,12 +111,31 @@ export class InvestigationSessionStore {
     // Persistence and visibility both receive the same detached immutable
     // record; a caller cannot mutate either side between the two steps.
     const session = freezeOwned(createInvestigationSession(input));
-    // Durability before visibility: a failed save must not leave the session
-    // in memory presenting a write that never landed (#5434).
-    return this.enqueueSessionWrite(session.id, async () => {
-      await this.persist(session);
-      this.sessions.set(session.id, session);
-      return session;
+    const id = session.id;
+    if (this.creating.has(id)) throw new Error(`AI session id already exists: ${id}`);
+    // Reserve synchronously, before the queue or persistence yields. A delete
+    // can release this generation while its queued write is still pending.
+    const reservation = {};
+    this.creating.set(id, reservation);
+    return this.enqueueSessionWrite(id, async () => {
+      this.publishing.add(id);
+      try {
+        if (this.sessions.has(id)) throw new Error(`AI session id already exists: ${id}`);
+        // Probe inside the canonical write queue so an earlier delete completes
+        // before claiming its slot. Even malformed non-null state owns the ID.
+        if (this.persistence && typeof this.persistence.load === 'function') {
+          const existing = await this.persistence.load(id);
+          if (existing != null) throw new Error(`AI session id already exists: ${id}`);
+        }
+        if (this.sessions.has(id)) throw new Error(`AI session id already exists: ${id}`);
+        // Durability before visibility (#5434), ordered with every update/delete.
+        await this.persist(session);
+        this.sessions.set(id, session);
+        return session;
+      } finally {
+        this.publishing.delete(id);
+        if (this.creating.get(id) === reservation) this.creating.delete(id);
+      }
     });
   }
 
@@ -119,8 +143,14 @@ export class InvestigationSessionStore {
     if (!isValidSessionId(id)) return null;
     const key = id;
     if (this.sessions.has(key)) return this.sessions.get(key);
+    // A persistence adapter may stage a record before its save resolves.
+    // The creating operation owns publication of that ID until durability.
+    // A queued delete may release its reservation, but not this active writer.
+    if (this.creating.has(key) || this.publishing.has(key)) return null;
     if (this.persistence && typeof this.persistence.load === 'function') {
       const loaded = await this.persistence.load(key);
+      if (this.sessions.has(key)) return this.sessions.get(key);
+      if (this.creating.has(key) || this.publishing.has(key)) return null;
       if (loaded) {
         // The lookup key is the session identity, not a search hint: a record
         // whose own id differs is corrupt/stale state from an adapter or
