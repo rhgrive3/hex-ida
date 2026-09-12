@@ -8,6 +8,7 @@
 
 追加の進捗: ME の RV64 命令列反例縮小に続き、C4 の条件領域の発行記録を実装しました。
 C4 は元の出力範囲の取得に加え、腕の全ブロック・辺・合流 PHI の構造照合まで実装しました。
+さらに、発行済みの構造記録を既存の実行器とソルバーへ接続し、非循環 CFG の入口から各腕への到達可能性を検証する準備処理を追加しました。
 コピー先との対応付け、領域の意味的な証明、PHI を含む変換受入は残っています。
 
 結合した入力:
@@ -6373,3 +6374,32 @@ Luna/max の独立レビューで header polarity、join PHI identity、join eff
 最終ソースの 77 件通過記録: `c4-region-structure-boundary-final-604662f8-d04f-481f-b6eb-04249011447d.json`。
 新しい構造照合 API は後続の領域証明から呼ぶための入力処理です。通常の Phase 8 runner には
 まだ登録しておらず、既定の変換動作や意味的な受入を追加したとは扱いません。
+
+
+## C4 条件領域の到達可能性の準備 — 2026-09-12
+
+`conditional-region-reachability.js` は、発行済みの構造記録と同じ IR を既存の
+`symbolicExecute` / execution snapshot / production solver / edge feasibility verifier に接続します。
+関数入口から完了した全経路の条件を集め、実際の CBR の row/address と yes/no を対応付けて、
+各腕を通る経路条件の和を問い合わせます。経路全体の SAT witness も検証し、空の実行領域から
+両腕を到達不能とする判断を発行しません。呼出し元が与えた述語・前提・実行結果・backend は受け取りません。
+
+対象は非循環 CFG の canonical executor の経路到達可能性です。領域の外も含めた辺の種類、
+追加 entry、全 CBR のアドレスと辺ラベルの一致を照合します。未対応命令、探索の打切り、循環、
+不明なメモリ属性・例外・状態効果・除算 policy、実行時の追加前提があれば partial のままです。
+通常の明示的 byte memory と既存のゼロ除算 policy は、実行器の意味評価を再利用します。
+子実行器には親の仕事量・割当上限から予算を予約し、読取り時も query/IR/出力の現在性を確認します。
+
+返す `complete` はこの到達可能性だけです。`transformAuthorization:false` と
+`semanticRegionValidation:'required'` を保持し、実際の領域削除・PHI 書換え・コピー先更新を許可しません。
+残作業は領域の観測値・メモリ・例外を含む意味的検証、コピー先全ノードへの対応付け、既存 transaction
+での受入です。通常 runner への登録もその接続時に行います。FR-C4-02A/04B 全体は未完了です。
+
+新規 15 件で、cbz/cbnz、両腕が生きる場合、後続分岐、通常メモリ・除算の成功、
+属性欠損・例外・hidden state・ループ・外部辺・重複 trace ID・予算・失効を確認しました。
+既存の構造・発行記録・制御履歴・辺 accounting・ownership を含め 92 件が通過しました。
+証拠: `c4-reachability-scoped-9ec08297-85a5-4798-9770-e77290898fa9.json`。
+lint / module-boundaries も通過しています。公開直前の 219 open PR の実ファイル一覧で、
+今回の 5 ソース/文書パスは他 PR と重なっていません。
+一覧: `c4-region-adoption-20260912/reachability-open-pr-files-publish.json`。
+全体 gate・独立 shadow・統合受入の完了は主張しません。

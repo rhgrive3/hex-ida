@@ -156,6 +156,7 @@ export function prepareConditionalRegionStructure(record, ir, options = {}) {
     // opcode shortlist can certify absence of memory, traps or other effects.
     const result = freeze({ version:1, status:'complete', scope:'conditional-region-structure-only',
       transformAuthorization:false, semanticValidation:'required', region,
+      blocks:freeze(blocks), functionEntry:byIndex.get(raw.entry).block, cfgEdges:freeze(edges),
       arms:freeze(arms.map(arm => freeze({ role:arm.role, entry:byIndex.get(arm.entry).block,
         members:freeze([...arm.members].map(index => byIndex.get(index).block)) }))),
       edges:freeze(regionEdges), joinIncomingEdges:freeze(joinIncomingEdges),
