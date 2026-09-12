@@ -9,7 +9,9 @@ export function probeWasm(bytes) {
   if (u8[0] === 0x00 && u8[1] === 0x61 && u8[2] === 0x73 && u8[3] === 0x6d) {
     const version = u8[4] | (u8[5] << 8) | (u8[6] << 16) | (u8[7] << 24);
     if (version === 1) return { supported: true, confidence: 1.0, formatVersion: '1', vmSpecEdition: 'core-3.0' };
-    return { supported: true, confidence: 0.8, formatVersion: String(version), vmSpecEdition: 'unknown' };
+    // Only version 1 is openable; the public probe must not claim support
+    // for versions openManagedImage would reject (#5384).
+    return { supported: false, confidence: 0.6, reason: 'unsupported-version', formatVersion: String(version) };
   }
   return { supported: false, confidence: 0, reason: 'invalid-magic' };
 }
@@ -25,10 +27,11 @@ export function decodeSleb128_64(bytes,offset){let result=0n,shift=0n,pos=offset
 export function decodeName(bytes,offset){const{value:len,nextOffset}=decodeUleb128(bytes,offset);if(nextOffset+len>bytes.length)fail('wasm-truncated-name');const nameBytes=bytes.subarray(nextOffset,nextOffset+len);const name=new TextDecoder('utf-8',{fatal:true}).decode(nameBytes);return{name,nextOffset:nextOffset+len};}
 
 const WASM_VALUE_TYPES=new Set([0x7f,0x7e,0x7d,0x7c,0x7b,0x70,0x6f]);
+const WASM_MEMORY32_MAX_PAGES=65536;
 function readByte(bytes,offset,code){if(!Number.isSafeInteger(offset)||offset<0||offset>=bytes.length)fail(code);return{value:bytes[offset],nextOffset:offset+1};}
 function readValueType(bytes,offset,code='wasm-invalid-value-type'){const{value,nextOffset}=readByte(bytes,offset,code);if(!WASM_VALUE_TYPES.has(value))fail(code);return{value,nextOffset};}
 function readLimits(bytes,offset,code){let r=readByte(bytes,offset,code);const flags=r.value;let pos=r.nextOffset;if((flags&~0x03)!==0)fail(`${code}-flags`);const minR=decodeUleb128(bytes,pos);pos=minR.nextOffset;let max=null;if(flags&1){const maxR=decodeUleb128(bytes,pos);pos=maxR.nextOffset;max=maxR.value;if(max<minR.value)fail(`${code}-max-less-than-min`);}return{value:{min:minR.value,max,shared:Boolean(flags&2),flags},nextOffset:pos};}
-function readMemoryLimits(bytes,offset){const lim=readLimits(bytes,offset,'wasm-invalid-memory-limits');if(lim.value.shared&&lim.value.max==null)fail('wasm-invalid-memory-limits-shared-requires-maximum');return lim;}
+function readMemoryLimits(bytes,offset){const lim=readLimits(bytes,offset,'wasm-invalid-memory-limits');if(lim.value.shared&&lim.value.max==null)fail('wasm-invalid-memory-limits-shared-requires-maximum');if(lim.value.min>WASM_MEMORY32_MAX_PAGES||(lim.value.max!=null&&lim.value.max>WASM_MEMORY32_MAX_PAGES))fail('wasm-invalid-memory-limits-page-limit');return lim;}
 function readTableType(bytes,offset){const elem=readValueType(bytes,offset,'wasm-invalid-table-element-type');if(elem.value!==0x70&&elem.value!==0x6f)fail('wasm-invalid-table-element-type');const lim=readLimits(bytes,elem.nextOffset,'wasm-invalid-table-limits');if(lim.value.shared)fail('wasm-invalid-table-limits-shared-unsupported');return{value:{elemType:elem.value,...lim.value},nextOffset:lim.nextOffset};}
 function readGlobalType(bytes,offset){const vt=readValueType(bytes,offset,'wasm-invalid-global-value-type');const mut=readByte(bytes,vt.nextOffset,'wasm-truncated-global-mutability');if(mut.value!==0&&mut.value!==1)fail('wasm-invalid-global-mutability');return{value:{valType:vt.value,mutable:mut.value===1},nextOffset:mut.nextOffset};}
 function readConstExpr(bytes,offset){const start=offset;let pos=offset;const ops=[];while(pos<bytes.length){const opOffset=pos;const op=bytes[pos++];if(op===0x0b)return{value:{ops,rawBytes:bytes.subarray(start,pos)},nextOffset:pos};if(op===0x41){const r=decodeSleb128(bytes,pos);pos=r.nextOffset;ops.push({opcode:op,value:r.value});}else if(op===0x42){const r=decodeSleb128_64(bytes,pos);pos=r.nextOffset;ops.push({opcode:op,value:r.value});}else if(op===0x43){if(pos+4>bytes.length)fail('wasm-truncated-const-expr');const dv=new DataView(bytes.buffer,bytes.byteOffset+pos,4);ops.push({opcode:op,value:dv.getFloat32(0,true)});pos+=4;}else if(op===0x44){if(pos+8>bytes.length)fail('wasm-truncated-const-expr');const dv=new DataView(bytes.buffer,bytes.byteOffset+pos,8);ops.push({opcode:op,value:dv.getFloat64(0,true)});pos+=8;}else if(op===0x23||op===0xd2){const r=decodeUleb128(bytes,pos);pos=r.nextOffset;ops.push({opcode:op,index:r.value});}else if(op===0xd0){const t=readValueType(bytes,pos,'wasm-invalid-ref-null-type');pos=t.nextOffset;ops.push({opcode:op,refType:t.value});}else fail(`wasm-unsupported-const-expr-opcode-0x${op.toString(16)}`);if(pos<=opOffset)fail('wasm-invalid-const-expr-progress');}fail('wasm-truncated-const-expr');}
@@ -61,7 +64,7 @@ function readFunctionInstructionImmediate(bytes,offset,opcode){
 function validateFunctionExpression(bytecode){if(bytecode.length===0)fail('wasm-function-missing-end');const control=[{kind:'function',elseSeen:false}];let pos=0;while(pos<bytecode.length){const opcode=bytecode[pos++];if(opcode===0x02||opcode===0x03||opcode===0x04){pos=readFunctionBlockType(bytecode,pos);control.push({kind:opcode===0x04?'if':opcode===0x03?'loop':'block',elseSeen:false});continue;}if(opcode===0x05){const frame=control.at(-1);if(!frame||frame.kind!=='if'||frame.elseSeen)fail('wasm-invalid-else');frame.elseSeen=true;continue;}if(opcode===0x0b){const frame=control.pop();if(!frame)fail('wasm-unmatched-end');if(frame.kind==='function'){if(pos!==bytecode.length)fail('wasm-trailing-bytes-after-function-end');return;}continue;}pos=readFunctionInstructionImmediate(bytecode,pos,opcode);}fail('wasm-function-missing-end');}
 
 export function parseWasm(bytes,options={}){
-  const probe=probeWasm(bytes);if(!probe.supported)fail('wasm-unsupported-binary');if(probe.formatVersion!=='1')fail('wasm-unsupported-version');
+  const probe=probeWasm(bytes);if(!probe.supported)fail(probe.reason === 'unsupported-version' ? 'wasm-unsupported-version' : 'wasm-unsupported-binary');if(probe.formatVersion!=='1')fail('wasm-unsupported-version');
   const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes);let pos=8;
   const sections=[],types=[],imports=[],functions=[],tables=[],memories=[],globals=[],exports=[],elements=[],codeBodies=[],dataSegments=[],customSections=[];let startFunction=null;
   const seenSections=new Set();let lastStandardSection=0;

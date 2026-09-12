@@ -12,6 +12,7 @@ import {
   fail,
   nonEmpty,
   object,
+  positiveInteger,
   requiredOrigin,
   serializable,
   sortedUniqueStrings,
@@ -276,6 +277,21 @@ function validateNormalizedFunction(out, options) {
       if (!value) fail('semantic-ir-dangling-value-id');
       if (value.kind !== 'definition' || value.definitionNodeId !== node.id) fail('semantic-ir-output-definition-mismatch');
     }
+    if (node.kind === 'zext' || node.kind === 'sext') {
+      // Canonical extension type relation (#4576): a zext/sext may exist as a
+      // canonical exact operation only when its declared source/target widths
+      // equal the machine types on both sides. This is the non-bypassable
+      // boundary check; the lowering-side guard stays as defense in depth.
+      const fromBits = positiveInteger(node.attributes?.fromBits, 'semantic-ir-extension-width-attributes-required');
+      const toBits = positiveInteger(node.attributes?.toBits, 'semantic-ir-extension-width-attributes-required');
+      if (toBits < fromBits) fail('semantic-ir-extension-width-relation-invalid');
+      if (node.inputs.length !== 1 || node.outputs.length !== 1) fail('semantic-ir-extension-operand-count-invalid');
+      const extensionInput = valueById.get(node.inputs[0]);
+      const extensionOutput = valueById.get(node.outputs[0]);
+      if (!extensionInput || !extensionOutput) fail('semantic-ir-dangling-value-id');
+      if (extensionInput.machineType.widthBits !== fromBits) fail('semantic-ir-extension-input-width-mismatch');
+      if (extensionOutput.machineType.widthBits !== toBits) fail('semantic-ir-extension-output-width-mismatch');
+    }
     if (node.memory && !valueById.has(node.memory.addressExpr.valueId)) fail('semantic-ir-dangling-address-value-id');
     if (node.call) {
       if (!callInputsMatchNode(node)) fail('semantic-ir-call-input-mismatch');
@@ -310,7 +326,10 @@ function validateNormalizedFunction(out, options) {
     if (!node || !node.outputs.includes(value.id)) fail('semantic-ir-value-definition-mismatch');
   }
 
-  const hasUnknownNode = out.nodes.some((node) => SEMANTIC_SETS.unknownOperations.has(node.kind) || node.completeness !== 'complete');
+  // A node-local unknown payload is explicit unknown evidence even on an
+  // ordinary node, so it must keep the function from claiming completeness
+  // (defense in depth alongside the constructor's own conflict check; #5390).
+  const hasUnknownNode = out.nodes.some((node) => SEMANTIC_SETS.unknownOperations.has(node.kind) || node.completeness !== 'complete' || node.unknown != null);
   if (out.completeness === 'complete' && (hasUnknownNode || out.unknowns.length)) fail('semantic-ir-completeness-conflict');
   if (out.completeness !== 'complete' && out.unknowns.length === 0) fail('semantic-ir-function-unknowns-required');
 }

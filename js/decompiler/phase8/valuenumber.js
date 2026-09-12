@@ -175,8 +175,17 @@ function loadIsReusable(definition) {
   if (access.atomic !== false) {
     return { ok: false, reason: `atomicity is ${access.atomic === true ? 'yes' : 'unknown'}` };
   }
-  if (access.ordering != null && access.ordering !== 'unknown' && access.ordering !== 'relaxed') {
-    return { ok: false, reason: `access imposes ordering: ${access.ordering}` };
+  // Ordering follows the same rule: an unproved `unknown` is not evidence of
+  // "no ordering", and reuse across an unknown ordering is a wrong program.
+  // Only an absent or explicit null, or an explicit `relaxed`, proves the
+  // access imposes none (#5541).
+  if (access.ordering != null && access.ordering !== 'relaxed') {
+    return {
+      ok: false,
+      reason: access.ordering === 'unknown'
+        ? 'access ordering is unproved'
+        : `access imposes ordering: ${access.ordering}`,
+    };
   }
   if (definition.unknownAliasBarrier != null) {
     return { ok: false, reason: 'an unknown store lies between this load and its source' };
@@ -436,10 +445,6 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
   }
 
   const congruentClasses = [...classes.values()].filter((members) => members.length > 1);
-  // Published facts are snapshots: the working containers stay alive below (the
-  // blocked-load diagnostic still reads singletonReasons), and a frozen Map
-  // would still be mutable through Map.prototype.set. Consumers get read-only
-  // views so canonical evidence cannot be rewritten in place.
   const facts = Object.freeze({
     passVersion: GVN_PASS.version,
     numbers: readonlyMap(numbers),

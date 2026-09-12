@@ -70,12 +70,19 @@ function finalize(result, model, opts) {
  */
 function strictTextAddress(op) {
   if (!op || op.k !== 'other') return null;
-  const s = String(op.text || '').trim();
+  // Target completion is control-flow authority, not display formatting: only
+  // a raw primitive string can ground it. String()-coercing arrays/objects or
+  // accepting numbers/booleans would launder schema-invalid operands into
+  // definite branch/call targets (#5676).
+  if (typeof op.text !== 'string') return null;
+  const s = op.text.trim();
   if (!/^#?(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(s)) return null;
   try { return BigInt(s.replace(/^#/, '')); } catch { return null; }
 }
 
-function semanticModelForDecompiler(model) {
+// Exported: the CFG-target completion boundary is a fail-closed contract of
+// the decompiler entry, and consumers must be able to pin it (#5676).
+export function semanticModelForDecompiler(model) {
   if (!model?.instructions?.length) return model;
   let changed = false;
   const instructions = model.instructions.map((insn) => {

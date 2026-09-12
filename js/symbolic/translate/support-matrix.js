@@ -32,19 +32,34 @@ export const COMPLETENESS_STATUS = Object.freeze({
   UNSUPPORTED: 'unsupported',
 });
 
-export function createAssumption({ id, kind, statement, source, originIds = [], trust = ASSUMPTION_TRUST.SEMANTIC_FACT }) {
-  if (!id || !kind || !statement) {
-    throw new TypeError('createAssumption: id, kind, and statement are required');
+function requireAssumptionString(value, field) {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new TypeError(`createAssumption: ${field} must be a non-empty string`);
   }
+  return value;
+}
+
+export function createAssumption({ id, kind, statement, source, originIds = [], trust = ASSUMPTION_TRUST.SEMANTIC_FACT }) {
+  requireAssumptionString(id, 'id');
+  requireAssumptionString(kind, 'kind');
+  requireAssumptionString(statement, 'statement');
+  const resolvedSource = source === undefined ? 'translator' : requireAssumptionString(source, 'source');
   if (!Object.values(ASSUMPTION_TRUST).includes(trust)) {
     throw new TypeError(`createAssumption: unknown trust classification '${trust}'`);
   }
+  if (!Array.isArray(originIds)) {
+    throw new TypeError('createAssumption: originIds must be an array of non-empty strings');
+  }
+  const normalizedOriginIds = Array.from(
+    { length: originIds.length },
+    (_, index) => requireAssumptionString(originIds[index], 'originIds entry'),
+  );
   return Object.freeze({
-    id: String(id),
-    kind: String(kind),
-    statement: String(statement),
-    source: String(source || 'translator'),
-    originIds: Object.freeze([...originIds]),
+    id,
+    kind,
+    statement,
+    source: resolvedSource,
+    originIds: Object.freeze(normalizedOriginIds),
     trust,
   });
 }
@@ -77,7 +92,11 @@ export function classifyOpSupport(op, inst = null) {
     case OP.BIN: {
       const sub = inst?.subOp || inst?.name;
       const supportedBin = ['add', 'sub', 'mul', 'and', 'or', 'orr', 'xor', 'eor', 'shl', 'lshr', 'ashr', 'udiv', 'sdiv', 'urem', 'srem'];
-      if (!sub || supportedBin.includes(sub)) {
+      /* #5202: a missing subOp/name is a semantic discriminator the source IR
+         never supplied. Defaulting it to ADD would invent exact semantics, so
+         a BIN instruction without one is unsupported. */
+      if (!sub) return TRANSLATION_STATUS.UNSUPPORTED;
+      if (supportedBin.includes(sub)) {
         return TRANSLATION_STATUS.EXACT;
       }
       return TRANSLATION_STATUS.UNSUPPORTED;
@@ -86,14 +105,24 @@ export function classifyOpSupport(op, inst = null) {
     case OP.UN: {
       const sub = inst?.subOp || inst?.name;
       const supportedUn = ['not', 'neg'];
-      if (!sub || supportedUn.includes(sub)) {
+      /* #5202: missing unary discriminator must not default to NOT. */
+      if (!sub) return TRANSLATION_STATUS.UNSUPPORTED;
+      if (supportedUn.includes(sub)) {
         return TRANSLATION_STATUS.EXACT;
       }
       return TRANSLATION_STATUS.UNSUPPORTED;
     }
 
     case OP.CMP:
+      /* #5202: a comparison without cond/subOp has no ordering or equality
+         semantic; '==' must not be invented. */
+      if (!(inst?.cond || inst?.subOp)) return TRANSLATION_STATUS.UNSUPPORTED;
+      return TRANSLATION_STATUS.EXACT;
+
     case OP.SEL:
+      /* #5202: a select without a condition must not become an
+         always-true ITE. */
+      if (!inst?.cond) return TRANSLATION_STATUS.UNSUPPORTED;
       return TRANSLATION_STATUS.EXACT;
 
     case OP.BFX:

@@ -122,27 +122,8 @@ function orderWithinStage(passes) {
   return ordered;
 }
 
-// A stage selector is a closed-set contract: the pass descriptor side already
-// validates `stage` against PASS_STAGES, so the run side must not silently turn
-// a typo'd request into an empty selection that publishes as complete.
-function validateStageSelector(stages) {
-  if (stages == null) return null;
-  let list;
-  try {
-    list = [...stages];
-  } catch {
-    throw new TypeError(`phase8-stages-invalid:${String(stages)}`);
-  }
-  for (const stage of list) {
-    if (!PASS_STAGES.includes(stage)) {
-      throw new TypeError(`phase8-unknown-stage:${String(stage)}`);
-    }
-  }
-  return new Set(list);
-}
-
 export function phase8Passes({ stages = null } = {}) {
-  const enabled = validateStageSelector(stages);
+  const enabled = stages == null ? null : new Set(stages);
   const selected = [...REGISTERED].filter(({ descriptor }) => enabled == null || enabled.has(descriptor.stage));
   const byStage = new Map();
   for (const pass of selected) {
@@ -284,24 +265,17 @@ function withheldLedger(status, reason, diagnostics, registryDigest, analysisVer
  */
 export function runPhase8Vertical(context = {}, budget = {}) {
   const enabledStages = context.enabledStages ?? null;
-  let passes;
-  try {
-    passes = phase8Passes({ stages: enabledStages });
-  } catch (error) {
-    // An unrecognized stage selector must not masquerade as "the optimizer ran
-    // and found nothing". The requested set is unknown, so nothing runs, no
-    // analysis is seeded, and the ledger is withheld with the reason (#5464).
-    return {
-      ledger: withheldLedger('failed', 'stage-selector-invalid', [{
-        severity: 'error',
-        code: 'phase8.stages.invalid',
-        message: 'Phase 8 could not interpret the requested stage selector.',
-        reason: String(error?.message ?? error),
-      }], null, null),
-      timings: Object.freeze([]),
-      analysis: context.analysis ?? null,
-    };
+  // A stage selector is an explicit caller contract: any unknown stage name
+  // (typo, renamed stage) must fail closed instead of silently selecting no
+  // passes and publishing a "complete" ledger for work that never ran (#5464).
+  if (enabledStages != null) {
+    if (!Array.isArray(enabledStages)) throw new TypeError('phase8-enabled-stages-invalid');
+    const known = new Set(PASS_STAGES);
+    for (const stage of enabledStages) {
+      if (!known.has(stage)) throw new TypeError(`phase8-enabled-stage-unknown:${stage}`);
+    }
   }
+  const passes = phase8Passes({ stages: enabledStages });
   // The digest covers the passes and refinement providers that actually ran.
   // Disabled/custom provider sets therefore cannot reuse a provider artifact
   // produced under a different refinement registry. Provider-free stage sets

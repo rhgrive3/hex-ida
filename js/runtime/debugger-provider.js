@@ -1,6 +1,6 @@
 import { lossyTypeWitness, stableStringify } from '../core/identity/index.js';
 import { DebugAdapterError } from '../debug/adapter.js';
-import { DebugAdapterRuntimeProvider } from './provider.js';
+import { DebugAdapterRuntimeProvider, createRuntimeOperationController } from './provider.js';
 import { RuntimeEventNormalizer } from './events.js';
 import { createInterventionRecord, InterventionLedger } from './evidence-bridge.js';
 import { RuntimeModuleBindingTable } from './provider-identity.js';
@@ -63,6 +63,7 @@ function registerCallOptions(callOptions) {
   return {
     threadId: ownData('threadId'),
     parentInterventionIds: ownData('parentInterventionIds') ?? [],
+    signal: ownData('signal'),
   };
 }
 
@@ -127,6 +128,12 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
       processKey: session.target.processKey,
     }, this.eventOptions);
     const interventions = new InterventionLedger();
+    /* #5224: the intervention identity digest includes `sequence`, but these
+       write paths never supplied one — two identical writes minted the same
+       interventionId and the ledger returned the first record with its stale
+       acknowledgedResult. Each write intervention is a distinct operation and
+       gets a distinct monotonic sequence. */
+    let interventionSequence = 0;
     let unsubscribe = null;
 
     const ingest = (raw) => {
@@ -180,10 +187,30 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
           target: { register: String(name) },
           requestedChange: { value },
           parentInterventionIds: normalizedCallOptions.parentInterventionIds,
+          sequence: ++interventionSequence,
         });
-        const raw = await this.adapter.writeRegister(name, value, normalizedCallOptions.threadId);
-        const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
-        return { result: raw, intervention };
+        // #5696: propagate a session-owned signal to the adapter so an
+        // epoch switch/close can cancel remote work, while retaining the
+        // completion-time generation check for adapters that ignore abort.
+        const operation = createRuntimeOperationController(session, normalizedCallOptions.signal);
+        const startedEpoch = session.epoch;
+        try {
+          const raw = await this.adapter.writeRegister(
+            name,
+            value,
+            normalizedCallOptions.threadId,
+            { signal: operation.signal },
+          );
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
+            throw new DebugAdapterError('runtime-session-stale', 'register write completed after its runtime epoch changed', {
+              startedEpoch, currentEpoch: session.epoch,
+            });
+          }
+          const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
+          return { result: raw, intervention };
+        } finally {
+          operation.release();
+        }
       },
       writeMemory: async (address, bytes, callOptions = {}) => {
         const draft = validateInterventionDraft(interventions, {
@@ -193,10 +220,22 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
           target: { address },
           requestedChange: { bytes },
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
+          sequence: ++interventionSequence,
         });
-        const raw = await this.adapter.writeMemory(address, bytes, callOptions);
-        const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
-        return { result: raw, intervention };
+        const operation = createRuntimeOperationController(session, callOptions?.signal);
+        const startedEpoch = session.epoch;
+        try {
+          const raw = await this.adapter.writeMemory(address, bytes, { ...callOptions, signal: operation.signal });
+          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
+            throw new DebugAdapterError('runtime-session-stale', 'memory write completed after its runtime epoch changed', {
+              startedEpoch, currentEpoch: session.epoch,
+            });
+          }
+          const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
+          return { result: raw, intervention };
+        } finally {
+          operation.release();
+        }
       },
       events: Object.freeze({
         ingest,

@@ -1,4 +1,5 @@
 import { PROTECTED_WORKER_ASSETS } from '../../.runtime-build/embedded-assets.js';
+import { runtimeHostSnapshotFromGlobals, runtimeLocationFromSnapshot } from './runtime-host-location.js';
 
 const CAPSTONE_WASM_BOOTSTRAP = '__hex_capstone_wasm__';
 const NESTED_WORKER_BOOTSTRAP = '__hex_nested_worker_runtime__';
@@ -16,79 +17,103 @@ export function installProtectedWorkers() {
   const NativeWorker = globalThis.Worker;
   if (!NativeWorker) throw new Error('Web Workers are unavailable in this browser.');
 
-  const wasmBytes = decodeArrayBuffer(PROTECTED_WORKER_ASSETS.wasm);
-  const wasmURL = workerStage('protected worker WASM Blob', () =>
-    URL.createObjectURL(new Blob([wasmBytes], { type: 'application/wasm' })));
+  const hostLocation = runtimeLocationFromSnapshot(runtimeHostSnapshotFromGlobals());
   const urls = new Map();
-  const revoke = [wasmURL];
+  const revoke = [];
+  let installedWorker = null;
+  let runtime = null;
+  let ownedByRuntime = false;
+  try {
+    const wasmBytes = decodeArrayBuffer(PROTECTED_WORKER_ASSETS.wasm);
+    const wasmURL = workerStage('protected worker WASM Blob', () =>
+      URL.createObjectURL(new Blob([wasmBytes], { type: 'application/wasm' })));
+    revoke.push(wasmURL);
 
-  for (const [path, source] of Object.entries(PROTECTED_WORKER_ASSETS.classic)) {
-    const url = workerStage(`protected classic worker Blob (${path})`, () =>
-      URL.createObjectURL(new Blob([
-        logicalWorkerPrelude(path),
-        capstonePrelude(wasmURL),
-        source,
-      ], { type: 'text/javascript' })));
-    urls.set(path, url);
-    revoke.push(url);
-  }
-  for (const [path, source] of Object.entries(PROTECTED_WORKER_ASSETS.modules)) {
-    const prelude = path === PLATFORM_WORKER ? nestedWorkerPrelude() : '';
-    const url = workerStage(`protected module worker Blob (${path})`, () =>
-      URL.createObjectURL(new Blob([logicalWorkerPrelude(path), prelude, source], { type: 'text/javascript' })));
-    urls.set(path, url);
-    revoke.push(url);
-  }
-
-  function HexWorker(value, options) {
-    const path = logicalPath(value);
-    const local = path && urls.get(path);
-    const worker = new NativeWorker(local || value, options);
-
-    /* In the ChatGPT sandbox these workers themselves run from blob: URLs.
-       WebKit has repeatedly been fragile when Emscripten then fetches another
-       blob: URL for capstone.wasm. The WASM bytes are already integrity-bound
-       inside the protected runtime, so hand them to Capstone directly. Keep
-       the URL path in the prelude only as a compatibility fallback. */
-    if (local && CAPSTONE_CLASSIC_WORKERS.has(path)) {
-      bootstrapCapstone(worker, wasmBytes, path);
+    for (const [path, source] of Object.entries(PROTECTED_WORKER_ASSETS.classic)) {
+      const url = workerStage(`protected classic worker Blob (${path})`, () =>
+        URL.createObjectURL(new Blob([
+          logicalWorkerPrelude(path),
+          capstonePrelude(wasmURL),
+          source,
+        ], { type: 'text/javascript' })));
+      urls.set(path, url);
+      revoke.push(url);
     }
-    if (local && path === PLATFORM_WORKER) {
-      const semanticURL = urls.get(X86_REVALIDATION_WORKER);
-      if (semanticURL) {
-        const wasmBinary = wasmBytes.slice(0);
-        try {
-          worker.postMessage({
-            t:NESTED_WORKER_BOOTSTRAP,
-            semanticURL,
-            wasmBinary,
-          }, [wasmBinary]);
-        } catch (error) {
-          worker.terminate();
-          throw new Error(`protected nested worker bootstrap (${path}): ${String(error?.message || error || 'failed')}`);
+    for (const [path, source] of Object.entries(PROTECTED_WORKER_ASSETS.modules)) {
+      const prelude = path === PLATFORM_WORKER ? nestedWorkerPrelude() : '';
+      const url = workerStage(`protected module worker Blob (${path})`, () =>
+        URL.createObjectURL(new Blob([logicalWorkerPrelude(path), prelude, source], { type: 'text/javascript' })));
+      urls.set(path, url);
+      revoke.push(url);
+    }
+
+    function HexWorker(value, options) {
+      const path = logicalPath(value, hostLocation);
+      const local = path && urls.get(path);
+      const worker = new NativeWorker(local || value, options);
+
+      /* In the ChatGPT sandbox these workers themselves run from blob: URLs.
+         WebKit has repeatedly been fragile when Emscripten then fetches another
+         blob: URL for capstone.wasm. The WASM bytes are already integrity-bound
+         inside the protected runtime, so hand them to Capstone directly. Keep
+         the URL path in the prelude only as a compatibility fallback. */
+      if (local && CAPSTONE_CLASSIC_WORKERS.has(path)) {
+        bootstrapCapstone(worker, wasmBytes, path);
+      }
+      if (local && path === PLATFORM_WORKER) {
+        const semanticURL = urls.get(X86_REVALIDATION_WORKER);
+        if (semanticURL) {
+          const wasmBinary = wasmBytes.slice(0);
+          try {
+            worker.postMessage({
+              t:NESTED_WORKER_BOOTSTRAP,
+              semanticURL,
+              wasmBinary,
+            }, [wasmBinary]);
+          } catch (error) {
+            worker.terminate();
+            throw new Error(`protected nested worker bootstrap (${path}): ${String(error?.message || error || 'failed')}`);
+          }
         }
       }
+      return worker;
     }
-    return worker;
+
+    HexWorker.prototype = NativeWorker.prototype;
+    Object.setPrototypeOf(HexWorker, NativeWorker);
+    Object.defineProperty(HexWorker, '__hexUserscriptWorker', { value: true });
+    globalThis.Worker = HexWorker;
+    installedWorker = HexWorker;
+
+    let cleaned = false;
+    runtime = {
+      nativeWorker: NativeWorker,
+      workers: urls,
+      cleanup() {
+        if (cleaned) return;
+        cleaned = true;
+        if (globalThis.Worker === HexWorker) globalThis.Worker = NativeWorker;
+        revokeBlobURLs(revoke);
+        if (globalThis.__HEX_WORKER_RUNTIME__ === runtime) delete globalThis.__HEX_WORKER_RUNTIME__;
+      },
+    };
+    globalThis.__HEX_WORKER_RUNTIME__ = runtime;
+    addEventListener('pagehide', () => runtime.cleanup(), { once: true });
+    ownedByRuntime = true;
+    return runtime;
+  } finally {
+    if (!ownedByRuntime) {
+      if (installedWorker && globalThis.Worker === installedWorker) globalThis.Worker = NativeWorker;
+      if (runtime && globalThis.__HEX_WORKER_RUNTIME__ === runtime) delete globalThis.__HEX_WORKER_RUNTIME__;
+      revokeBlobURLs(revoke);
+    }
   }
+}
 
-  HexWorker.prototype = NativeWorker.prototype;
-  Object.setPrototypeOf(HexWorker, NativeWorker);
-  Object.defineProperty(HexWorker, '__hexUserscriptWorker', { value: true });
-  globalThis.Worker = HexWorker;
-
-  const runtime = {
-    nativeWorker: NativeWorker,
-    workers: urls,
-    cleanup() {
-      if (globalThis.Worker === HexWorker) globalThis.Worker = NativeWorker;
-      for (const url of revoke) URL.revokeObjectURL(url);
-      delete globalThis.__HEX_WORKER_RUNTIME__;
-    },
-  };
-  globalThis.__HEX_WORKER_RUNTIME__ = runtime;
-  addEventListener('pagehide', () => runtime.cleanup(), { once: true });
-  return runtime;
+function revokeBlobURLs(urls) {
+  for (const url of new Set(urls)) {
+    try { URL.revokeObjectURL(url); } catch {}
+  }
 }
 
 function bootstrapCapstone(worker, wasmBytes, path) {
@@ -106,10 +131,12 @@ function workerStage(name, operation) {
   catch (error) { throw new Error(`${name}: ${String(error?.message || error || 'failed')}`); }
 }
 
-function logicalPath(value) {
+function logicalPath(value, hostLocation) {
   try {
-    const path = new URL(String(value), location.href).pathname;
-    return path.replace(/^\//, '');
+    if (!hostLocation.origin) return null;
+    const url = new URL(String(value), hostLocation.href);
+    if (url.origin !== hostLocation.origin) return null;
+    return url.pathname.replace(/^\//, '');
   } catch { return null; }
 }
 

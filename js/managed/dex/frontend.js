@@ -41,6 +41,9 @@ export class DexFrontend {
         moduleId: image.moduleId,
         classType: cls.classType,
         superType: cls.superType,
+        // Implemented-interface edges decoded from class_def_item
+        // interfaces_off (#7620) — part of the type identity, not display data.
+        interfaceTypes: cls.interfaceTypes,
         sourceFile: cls.sourceFile,
         accessFlags: cls.accessFlags,
       };
@@ -105,6 +108,7 @@ export class DexFrontend {
         structural: verifier.structuralErrors.length > 0 ? 'failed' : 'complete',
         specValidation: invalid ? 'failed' : verifierPartial || semanticPartial ? 'partial' : 'valid',
         semanticEffect: semanticPartial ? 'partial' : 'complete',
+        resolution: invalid || verifierPartial || semanticPartial ? 'partial' : 'complete',
       },
     });
   }

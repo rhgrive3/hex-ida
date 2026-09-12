@@ -1,3 +1,4 @@
+import { publishFixtureAnalyses } from '../helpers/analysis-fixtures.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -52,12 +53,12 @@ test('GVN refuses a scalar artifact with stale identity', () => {
   f.ret();
   const ir = f.build();
   const state = seedAnalysisState(ir);
-  state.__write('ranges', Object.freeze({
+  publishFixtureAnalyses(state, { ranges: Object.freeze({
     completeness: 'complete',
     identity: { ...VALID_IDENTITY, snapshotId: 'old-snapshot' },
     facts: new Map(),
     constants: new Map(),
-  }));
+  }) });
   const outcome = runPassTransaction(state, { descriptor: GVN_PASS, run: runGvnPass }, {
     analysis: state,
     ir,
@@ -124,7 +125,7 @@ test('an unrepresented operation is never congruent', () => {
  * here would silently never match anything.
  */
 const PROVED_LOAD = Object.freeze({
-  locKey: 'field:root+0', addressSpace: 'memory', volatility: 'unknown', atomic: false, ordering: 'unknown',
+  locKey: 'field:root+0', addressSpace: 'memory', volatility: 'unknown', atomic: false, ordering: null,
   memDefs: ['store_1'], addressPrecise: true,
 });
 
@@ -167,6 +168,7 @@ test('unknown atomicity, real ordering, device memory or known volatility each b
   for (const [field, value, pattern] of [
     ['atomic', 'unknown', /atomicity is unknown/],
     ['atomic', true, /atomicity is yes/],
+    ['ordering', 'unknown', /ordering is unproved/],
     ['ordering', 'acquire', /imposes ordering: acquire/],
     ['ordering', 'seq-cst', /imposes ordering: seq-cst/],
     ['addressSpace', 'device', /not ordinary memory/],

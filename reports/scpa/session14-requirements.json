@@ -1,0 +1,769 @@
+{
+  "schema": "scpa-session14-requirement-audit/v1",
+  "audited_at": "2026-09-12T06:12:59.203741+00:00",
+  "repository": "rhgrive3/hex-ida",
+  "working_head_at_audit": "485a41ba1ef07c8b64efbc003472a399d5038ebb",
+  "source_md": "HEX_ARM64_POST_ROADMAP_COMPETITIVE_SUPREMACY_ARCHITECTURE.md",
+  "source_md_sha256": "76c6d30103ea81ec7353c81b56cc1a957cbe24c0f3110cb4d1ccf6730baaca96",
+  "source_unchanged_requirements": true,
+  "scope": "Original U01-U20 minimal implementation/exit requirements; source review of mutable shared integration tree, not final-head admission. Baseline19 explicitly deferred by user.",
+  "qualification": {
+    "functional_completion_percent": null,
+    "functional_100_percent": "NOT_ADMITTED",
+    "phases_P0_to_P5": "NOT_ADMITTED",
+    "rollout_M3": "NOT_ADMITTED",
+    "competitive_M5": "NOT_ADMITTED",
+    "file_coverage_is_functional_completion": false,
+    "all_code_claim": "The reviewed bounded local U01-U20 producer/consumer contracts are present. U20 installed competitor adapter implementations and all external functional acceptance gates remain unqualified; no blanket100% claim."
+  },
+  "rules": [
+    "No replacement of required independent oracle/device/runtime/competitive gate by local test counts.",
+    "MD section26.3 requires typed UNKNOWN for unsupported or unverified Swift/ObjC/dyld ABI; unknown is not automatically a missing implementation.",
+    "L01-L10 are measurement-triggered optional follow-up lanes, not unconditional 100% denominators.",
+    "No autonomous runtime/offensive target workflows added.",
+    "All recorded paths were checked to exist; this document does not assert that every listed test was rerun by this auditor."
+  ],
+  "units": [
+    {
+      "unit": "U01",
+      "title": "Competitive manifest and native adapter contract",
+      "producer_paths": [
+        "tests/competitive-arm64/manifest/post-b.json",
+        "tools/competitive-arm64/manifest.mjs",
+        "tools/competitive-arm64/source-oracle.mjs",
+        "js/analysis/benchmark/post-b.js"
+      ],
+      "consumer_paths": [
+        "js/analysis/benchmark/competitive-protocol.js",
+        "js/analysis/benchmark/competitive-matrix.js",
+        "js/analysis/benchmark/scoped-trials.js"
+      ],
+      "test_paths": [
+        "tests/scpa/post-b.test.mjs",
+        "tests/scpa/benchmark.test.mjs",
+        "tests/scpa/trials.test.mjs",
+        "tests/scpa/trial-cli.test.mjs"
+      ],
+      "newly_done": [
+        "12 named cases, six language recipes, two required toolchain slots and fixed metric denominator exist.",
+        "Independent add7 source oracle and wrong-oracle rejection sentinel exist.",
+        "Trial admission, cancellation, failed-cell retention and checkpoint continuation are implemented."
+      ],
+      "remaining_concrete_code": [],
+      "external_qualification": [
+        "Toolchain primary/secondary version slots are explicitly UNBOUND. Produce actual debug/stripped twins from each required pinned toolchain, retain executable-byte identity and compiler/linker/strip provenance.",
+        "Native competitors, independent correctness/readability/performance adjudication and all 2304 real measurement cells remain unmeasured."
+      ],
+      "required_sound_fallbacks": [
+        "UNMEASURED is preserved when a required engine, model, compiler or oracle is absent."
+      ],
+      "upstream_dependencies": [],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    },
+    {
+      "unit": "U02",
+      "title": "Scope-qualified judgment envelope",
+      "producer_paths": [
+        "js/core/identity/world.js",
+        "js/core/identity/structured.js",
+        "js/core/evidence/scoped.js"
+      ],
+      "consumer_paths": [
+        "js/analysis/query/scoped-service.js",
+        "js/analysis/query/scoped-app.js",
+        "js/core/evidence/set-envelope.js"
+      ],
+      "test_paths": [
+        "tests/scpa/identity.test.mjs",
+        "tests/scpa/judgments.test.mjs",
+        "tests/scpa/owner-boundaries.test.mjs",
+        "tests/scpa/service.test.mjs"
+      ],
+      "newly_done": [
+        "Current binary/slice/source generation, world/profile, assumptions and snapshot are bound to scoped results.",
+        "Conditional, metadata, observed and unknown claims do not become independently checked exact claims."
+      ],
+      "remaining_concrete_code": [],
+      "external_qualification": [
+        "The profile-qualified production ISA/ABI correctness denominator still requires independent validation; structural scope binding is not that validation."
+      ],
+      "required_sound_fallbacks": [
+        "Source-local immutable identity stays distinct from globally complete content identity."
+      ],
+      "upstream_dependencies": [],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    },
+    {
+      "unit": "U03",
+      "title": "Positive/negative dependency descriptors",
+      "producer_paths": [
+        "js/core/artifacts/dependencies.js",
+        "js/core/artifacts/store.js"
+      ],
+      "consumer_paths": [
+        "js/analysis/query/scoped-service.js",
+        "js/analysis/query/semantic/demand-slice.js"
+      ],
+      "test_paths": [
+        "tests/scpa/dependencies-budget.test.mjs",
+        "tests/scpa/store-producer.test.mjs",
+        "tests/scpa/summary-context-identity.test.mjs"
+      ],
+      "newly_done": [
+        "Positive artifact references, negative partition selectors, coarse epoch invalidation and canonical store publication fencing exist.",
+        "Native source, summary/context, metadata and retained runtime generations are checked before publication."
+      ],
+      "remaining_concrete_code": [],
+      "external_qualification": [
+        "Physical iPad eviction/origin/process-kill and cold/delta costs are not measured."
+      ],
+      "required_sound_fallbacks": [
+        "Conservative snapshot invalidation is allowed when fine-grained negative closure is unavailable."
+      ],
+      "upstream_dependencies": [],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    },
+    {
+      "unit": "U04",
+      "title": "Certificate DAG export and bounded replay",
+      "producer_paths": [
+        "js/core/evidence/certificate.js",
+        "js/core/evidence/proof-dag.js",
+        "js/core/evidence/arm64-integer-fragment.js",
+        "js/core/evidence/range-proof-kernel.js",
+        "js/core/evidence/flow-answer.js",
+        "js/core/evidence/alias-proof-kernel.js",
+        "js/analysis/query/semantic/demand-alias.js"
+      ],
+      "consumer_paths": [
+        "js/analysis/query/semantic/demand-replay.js",
+        "js/core/evidence/portable-replay.js",
+        "js/core/evidence/certificate-pack.js",
+        "js/analysis/query/scoped-service.js"
+      ],
+      "test_paths": [
+        "tests/scpa/certificate-dag.test.mjs",
+        "tests/scpa/integer-range-composition.test.mjs",
+        "tests/scpa/integer-native-replay.test.mjs",
+        "tests/scpa/threaded-native-acceptance.test.mjs",
+        "tests/scpa/alias-derivation.test.mjs"
+      ],
+      "newly_done": [
+        "Bounded dependency DAG export/replay, exact current byte bindings, typed premise references and independent supported integer rules exist.",
+        "Native producer now emits real unsigned-range projection nodes; weaken/intersection compose only independently replayed same-scope premises.",
+        "Root-assigned proof lane delivered native single-byte-address alias candidate producer and independent checker. Two byte-replayed 64-bit singleton integer premises and two freshly source-replayed complete absolute-singleton points-to rows at identical source boundary are mandatory; actual pointsToAlias uses widthBits=8.",
+        "Auditor read the new checker/producer; relation scope explicitly excludes pointer validity, larger accesses, memory effects and reachability. Proof lane reports native no/must and 25 finite concrete oracle pairs plus mutants passing.",
+        "Final independent guards delivered: inherited integer-domain equality and numeric one-byte equality checked independently of alias callback. 17/17 final tests with36 finite oracle pairs; full frozen-tree suite recorded separately."
+      ],
+      "remaining_concrete_code": [],
+      "external_qualification": [
+        "Independent ISA and whole-function/path reachability qualification remain external to the limited integer fragment."
+      ],
+      "required_sound_fallbacks": [
+        "Unsupported instructions, flags, faults, inconsistent premises and unknown graph rules remain UNKNOWN.",
+        "Alias proof is only one-byte address cells under the inherited integer fragment domain; it is not a general memory-access NoAlias or pointer-validity proof."
+      ],
+      "upstream_dependencies": [
+        "PR7036/7097 existing symbolic/verify owners are reused through APIs; no second verification engine."
+      ],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    },
+    {
+      "unit": "U05",
+      "title": "Object lifetime/subobject partition view",
+      "producer_paths": [
+        "js/analysis/pointsto/objects.js",
+        "js/analysis/pointsto/object-lifetime.js",
+        "js/analysis/scoped-demand-projection.js"
+      ],
+      "consumer_paths": [
+        "js/analysis/summary/specialization.js",
+        "js/analysis/apple/scoped-block.js",
+        "js/analysis/query/scoped-service.js"
+      ],
+      "test_paths": [
+        "tests/scpa/object-lifetime.test.mjs",
+        "tests/scpa/native-owner-fixture.mjs",
+        "tests/scpa/native-session14-integration.test.mjs"
+      ],
+      "newly_done": [
+        "Actual canonical roots/points-to/escape owners supply stack/global/heap/object partition and subobject offset views.",
+        "Native lifetime/escape context remains source-bound; same allocation site and frame descriptors are not runtime singleton identities."
+      ],
+      "remaining_concrete_code": [],
+      "external_qualification": [
+        "Compiler/runtime corpus for recursion, TLS, allocator reuse and escaped closures remains required for broad qualification."
+      ],
+      "required_sound_fallbacks": [
+        "Unknown lifetime/cardinality and overlapping subobjects must preserve May/weak update; nominal types cannot produce NoAlias."
+      ],
+      "upstream_dependencies": [],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    },
+    {
+      "unit": "U06",
+      "title": "Query-triggered value promotion",
+      "producer_paths": [
+        "js/decompiler/phase8/demand-range.js",
+        "js/decompiler/phase8/context-inputs.js",
+        "js/decompiler/phase8/range.js"
+      ],
+      "consumer_paths": [
+        "js/analysis/scoped-range-projection.js",
+        "js/analysis/refinement/adaptive-context.js",
+        "js/analysis/query/scoped-service.js"
+      ],
+      "test_paths": [
+        "tests/scpa/abi-range-host.test.mjs",
+        "tests/scpa/adaptive-context.test.mjs",
+        "tests/scpa/native-session14-integration.test.mjs"
+      ],
+      "newly_done": [
+        "Requested values reuse or refresh actual Phase8 SCCP/range state with bits, wrapped interval, congruence/alignment and pointer offset views.",
+        "Conditional inputs use canonical owner transactions and bounded adaptive refinement; source publication is separate."
+      ],
+      "remaining_concrete_code": [],
+      "external_qualification": [
+        "Production value precision/recall and per-device work costs still need corpus measurement."
+      ],
+      "required_sound_fallbacks": [
+        "V2/V3 are explicitly optional in the MD minimal version. Bounded per-function refresh is the current owner implementation; no second value engine is required."
+      ],
+      "upstream_dependencies": [],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    },
+    {
+      "unit": "U07",
+      "title": "Resumable demand-context SCC summaries",
+      "producer_paths": [
+        "js/analysis/summary/interprocedural.js",
+        "js/analysis/summary/specialization.js",
+        "js/analysis/refinement/adaptive-context.js"
+      ],
+      "consumer_paths": [
+        "js/analysis/query/semantic/demand-slice.js",
+        "js/analysis/scoped-demand-projection.js",
+        "js/analysis/query/scoped-service.js"
+      ],
+      "test_paths": [
+        "tests/scpa/native-summary-links.test.mjs",
+        "tests/scpa/summary-context-identity.test.mjs",
+        "tests/scpa/adaptive-context.test.mjs",
+        "tests/scpa/interprocedural-dispatch.test.mjs"
+      ],
+      "newly_done": [
+        "Context0 and selected callsite specialization use actual canonical ABI inputs, nullness/range and object-offset partitions; context identities include source summary and callsite dependencies.",
+        "Existing SCC owner, bounded resume frontier and incomplete-context reasons are retained."
+      ],
+      "remaining_concrete_code": [],
+      "external_qualification": [
+        "Broad compiler corpus comparison of context precision and performance, including physical-device resume costs, remains unqualified."
+      ],
+      "required_sound_fallbacks": [
+        "Unfinished SCCs, missing prototypes and object lifetime uncertainty cannot produce exact summaries."
+      ],
+      "upstream_dependencies": [],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    },
+    {
+      "unit": "U08",
+      "title": "Unified native dispatch upper bounds",
+      "producer_paths": [
+        "js/analysis/dispatch/native-source.js",
+        "js/analysis/dispatch/native-memory-targets.js",
+        "js/analysis/dispatch/native-thunks.js",
+        "js/analysis/dispatch/native-demand.js",
+        "js/analysis/apple/native-metadata.js"
+      ],
+      "consumer_paths": [
+        "js/analysis/dispatch/unified.js",
+        "js/analysis/query/semantic/call-graph.js",
+        "js/analysis/query/semantic/call-targets.js",
+        "js/analysis/query/semantic/demand-slice.js"
+      ],
+      "test_paths": [
+        "tests/scpa/dispatch-native.test.mjs",
+        "tests/scpa/dispatch-source-contract.test.mjs",
+        "tests/scpa/native-apple-metadata.test.mjs",
+        "tests/scpa/native-session14-integration.test.mjs"
+      ],
+      "newly_done": [
+        "Real MemorySSA loads, Phase8 finite values and exact current source mapping resolve bounded register/table/import-slot candidates.",
+        "Signed relative table entries, add/sub/shift transforms, selected BR sites and pure-B thunk chains retain code-location identities/cuts.",
+        "Existing ObjC/Swift metadata feeds the same unified resolver; witness entries skip the ABI conformance header."
+      ],
+      "remaining_concrete_code": [],
+      "external_qualification": [
+        "Runtime table stability, import interposition/resolution, PAC/BTI/trap/code-validity and dynamic image closure remain unqualified."
+      ],
+      "required_sound_fallbacks": [
+        "Candidates and observed targets never imply a closed exact target set."
+      ],
+      "upstream_dependencies": [
+        "Exact PR8086 Swift witness slice imported with preimage checks; see upstream-8086-witness.json.",
+        "PR8197/8203/8205/8213 provider fixes remain upstream-owned; automatic resolver preserves conservative closure and does not duplicate those fixes."
+      ],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    },
+    {
+      "unit": "U09",
+      "title": "Typed bounded flow VM",
+      "producer_paths": [
+        "js/analysis/query/semantic/plan.js",
+        "js/analysis/query/semantic/execute.js",
+        "js/analysis/scoped-flow-projection.js",
+        "js/semantics/compat/index.js"
+      ],
+      "consumer_paths": [
+        "js/analysis/query/semantic/interprocedural.js",
+        "js/analysis/query/semantic/projection.js",
+        "js/analysis/query/scoped-service.js"
+      ],
+      "test_paths": [
+        "tests/scpa/balanced-flow.test.mjs",
+        "tests/scpa/balanced-native-flow.test.mjs",
+        "tests/scpa/balanced-flow-reference.mjs",
+        "tests/scpa/native-flow-ports.test.mjs",
+        "tests/scpa/native-flow-inputs.test.mjs"
+      ],
+      "newly_done": [
+        "Finite flow-kind and callsite-context tabulation rejects wrong-callsite returns while preserving default mixed-dependency paths.",
+        "Actual canonical ABI return and MemorySSA entry/call/exit ports are wired to native ARM64 owners.",
+        "Independent generated finite reference, resume, recursion and real pointer-store/load/address paths are tested by the flow lane."
+      ],
+      "remaining_concrete_code": [],
+      "external_qualification": [
+        "Full ABI/exception/memory semantics and closed-world negative judgments remain unqualified."
+      ],
+      "required_sound_fallbacks": [
+        "Unbound return/exception values, initial caller context, unknown callees, budget cuts and semantic absence stay open/unknown."
+      ],
+      "upstream_dependencies": [
+        "Reused minimum PR7036 compat/index.js return-ABI change from head a0f47590783eb356208c7d833b9264a4f4c69c5f; flow owner has exact preimage/result manifest."
+      ],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    },
+    {
+      "unit": "U10",
+      "title": "End-to-end proof-carrying query vertical slice",
+      "producer_paths": [
+        "js/analysis/scoped-arm64-producer.js",
+        "js/analysis/query/semantic/demand-slice.js",
+        "js/core/evidence/flow-answer.js"
+      ],
+      "consumer_paths": [
+        "js/analysis/query/api.js",
+        "js/analysis/query/app-adapter.js",
+        "js/analysis/query/scoped-app.js",
+        "js/ai/tools/scoped-analysis.js"
+      ],
+      "test_paths": [
+        "tests/scpa/threaded-native-acceptance.test.mjs",
+        "tests/scpa/threaded-call-memory.test.mjs",
+        "tests/scpa/native-worker-integration.test.mjs",
+        "tests/scpa/demand-vertical.test.mjs"
+      ],
+      "newly_done": [
+        "Owned actual ELF bytes -> Capstone WASM -> real Node worker -> canonical semantic/MSSA/summary owners -> public API -> evidence/frontier/cost is implemented.",
+        "Source-sink/allocation-guard/length-buffer templates expose owner references and limited supported proof rules without whole-query exact promotion."
+      ],
+      "remaining_concrete_code": [],
+      "external_qualification": [
+        "Same-Astra native-best pilot, real compiler twins, independent full-query correctness, physical iPad cold/warm/cancel and memory/performance gates remain required."
+      ],
+      "required_sound_fallbacks": [
+        "Node Worker and assembled ELF tests are not browser, physical device, compiler twin or runtime execution proof."
+      ],
+      "upstream_dependencies": [],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    },
+    {
+      "unit": "U11",
+      "title": "Authenticated fixup/world provider adapter",
+      "producer_paths": [
+        "js/chained.js",
+        "js/analysis/apple/scoped-metadata.js",
+        "js/analysis/apple/scoped-worker-pointer.js"
+      ],
+      "consumer_paths": [
+        "js/analysis/query/scoped-app.js",
+        "js/analysis/dispatch/native-demand.js"
+      ],
+      "test_paths": [
+        "tests/scpa/pac-site.test.mjs",
+        "tests/scpa/owner-boundaries.test.mjs",
+        "tests/scpa/dispatch-native.test.mjs"
+      ],
+      "newly_done": [
+        "Versioned raw loader/fixup and pointer view adapters reuse actual source-bound canonical loader records and scoped worker reads."
+      ],
+      "remaining_concrete_code": [],
+      "external_qualification": [
+        "Independent Apple-header parser oracle, supported arm64e binary versions, auth ambient keys/modifiers and physical behavior need qualification."
+      ],
+      "required_sound_fallbacks": [
+        "Unsupported fixup generation, unknown auth/BTI state and open image providers remain typed UNKNOWN; pointer masking cannot fabricate targets."
+      ],
+      "upstream_dependencies": [],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    },
+    {
+      "unit": "U12",
+      "title": "Automatic Swift/ObjC metadata constraints",
+      "producer_paths": [
+        "js/swift.js",
+        "js/swift-context.js",
+        "js/apple/objc-runtime.js",
+        "js/analysis/apple/native-metadata.js"
+      ],
+      "consumer_paths": [
+        "js/analysis/dispatch/unified.js",
+        "js/analysis/query/scoped-service.js",
+        "js/analysis/query/scoped-app.js"
+      ],
+      "test_paths": [
+        "tests/scpa/native-apple-fixture.mjs",
+        "tests/scpa/native-apple-metadata.test.mjs",
+        "tests/scpa/swift-generic.test.mjs",
+        "tests/issue-5341-swift-witness-table-abi-offset.mjs"
+      ],
+      "newly_done": [
+        "Actual ObjC selector/class/IMP and Swift type/protocol/vtable/witness indexes feed public appleMetadataView and unified dispatch.",
+        "Supported fixed nominal generic-context headers, aligned requirements and direct __swift5_capture descriptors now parse from actual source bytes; bounded index maps retain collisions and metadata generation.",
+        "Known nonresilient generic-class vtable placement uses the parsed generic-context end, not a guessed register convention."
+      ],
+      "remaining_concrete_code": [],
+      "external_qualification": [
+        "Two pinned Apple toolchains, independent compiled generic/capture/ABI truth and cross-image language/runtime closure remain required."
+      ],
+      "required_sound_fallbacks": [
+        "Generic declarations are not runtime substitutions, nominal descriptors are not instances, unknown packs/resilience/capture object layouts remain explicit."
+      ],
+      "upstream_dependencies": [
+        "Exact PR8086 witness header correction and three tests reused; no duplicate fix.",
+        "Provider-level PR8197/8203/8205/8213 changes deliberately not duplicated."
+      ],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    },
+    {
+      "unit": "U13",
+      "title": "Physical type and ABI consistency",
+      "producer_paths": [
+        "js/analysis/types/scoped-physical.js",
+        "js/analysis/types/scoped-abi.js",
+        "js/targets/abi/index.js"
+      ],
+      "consumer_paths": [
+        "js/analysis/scoped-demand-projection.js",
+        "js/analysis/summary/specialization.js",
+        "js/analysis/query/scoped-service.js"
+      ],
+      "test_paths": [
+        "tests/scpa/abi-candidates.test.mjs",
+        "tests/scpa/abi-range-host.test.mjs",
+        "tests/scpa/native-session14-integration.test.mjs"
+      ],
+      "newly_done": [
+        "Physical machine/SSA type evidence reuses TypeConstraintGraph; ABI placements reuse the selected canonical ABI plugin and source-bound prototypes.",
+        "HFA/sret/int128/varargs consistency remains separate from guessed language types and actual runtime argument identity."
+      ],
+      "remaining_concrete_code": [],
+      "external_qualification": [
+        "Compiler layout/calling harness for two Apple toolchains and required ABI profiles remains unqualified."
+      ],
+      "required_sound_fallbacks": [
+        "Missing prototypes, ambiguous layouts, resilience and circular metadata-only type support stay candidates/unknown."
+      ],
+      "upstream_dependencies": [],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    },
+    {
+      "unit": "U14",
+      "title": "Composed pure-BV transform receipts",
+      "producer_paths": [
+        "js/decompiler/phase8/scoped-transform-capture.js",
+        "js/analysis/scoped-transform-projection.js",
+        "js/core/evidence/bv-view-proof.js"
+      ],
+      "consumer_paths": [
+        "js/core/evidence/native-transform.js",
+        "js/core/evidence/transform-chain.js",
+        "js/analysis/query/scoped-service.js"
+      ],
+      "test_paths": [
+        "tests/scpa/transform-native.test.mjs",
+        "tests/scpa/certificate-transform.test.mjs",
+        "tests/scpa/bitvector-algebra.test.mjs"
+      ],
+      "newly_done": [
+        "Actual retained transform receipts bind pre/post typed expressions and final statement mapping to canonical source owners.",
+        "Bounded independent supported BV rules and premise/width/flags/fault mismatch rejection compose without accepting hash-only receipts."
+      ],
+      "remaining_concrete_code": [],
+      "external_qualification": [
+        "Broad ISA/ABI/exception semantics and optimizer transformation coverage require independent qualification."
+      ],
+      "required_sound_fallbacks": [
+        "Unsupported expression forms and omitted observables remain UNKNOWN and cannot authorize rewrites."
+      ],
+      "upstream_dependencies": [],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    },
+    {
+      "unit": "U15",
+      "title": "MSSA/fault-preserving memory composition",
+      "producer_paths": [
+        "js/analysis/scoped-memory-transform-projection.js",
+        "js/core/evidence/memory-transform-proof.js",
+        "js/core/evidence/memory-transform-frame.js"
+      ],
+      "consumer_paths": [
+        "js/core/evidence/native-transform.js",
+        "js/core/evidence/transform-chain.js",
+        "js/analysis/query/scoped-service.js"
+      ],
+      "test_paths": [
+        "tests/scpa/memory-transform-composition.test.mjs",
+        "tests/scpa/memory-frame-diagnostic.test.mjs",
+        "tests/scpa/transform-native.test.mjs"
+      ],
+      "newly_done": [
+        "Root-owned new projection consumes existing branded MemorySSA forwarding and actual final statement mapping.",
+        "Supported composition retains event sequence, geometry, reaching definitions, effects and fault prefixes while independently comparing byte values.",
+        "Owner reports exhaustive 65536-assignment finite reference and actual public worker producer tests; no general symbolic memory engine copied."
+      ],
+      "remaining_concrete_code": [],
+      "external_qualification": [
+        "Full ISA fault/exception behavior and relaxed-memory/volatile/atomic transformation qualification remains external."
+      ],
+      "required_sound_fallbacks": [
+        "General load/store elimination stays in existing symbolic/query/memory-equivalence owner; unsupported writes, clobbers, concurrency and unpreserved events must remain UNKNOWN."
+      ],
+      "upstream_dependencies": [
+        "PR7036/7097 audited for owner reuse; no general memory code copied into this SCPA lane."
+      ],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    },
+    {
+      "unit": "U16",
+      "title": "Explicitly authorized experiment broker and SAT replay",
+      "producer_paths": [
+        "js/runtime/scoped-experiment-broker.js",
+        "js/runtime/index.js",
+        "js/symbolic/verify/validate-model.js"
+      ],
+      "consumer_paths": [
+        "js/runtime/scoped-reconciliation.js",
+        "js/analysis/query/scoped-service.js"
+      ],
+      "test_paths": [
+        "tests/scpa/experiment-broker.test.mjs",
+        "tests/scpa/tool-runtime-recognition.test.mjs"
+      ],
+      "newly_done": [
+        "Explicit private owner grants, current session/content binding, bounded capture and single-model SAT-candidate replay contracts exist.",
+        "Solver model validation remains the existing symbolic owner; candidate resolution requires an authoritative scoped host, not user JSON status.",
+        "Grant consumption, generation changes, cancellation, gap/intervention and publish-after-abort fences are implemented."
+      ],
+      "remaining_concrete_code": [],
+      "external_qualification": [
+        "Actual authorized provider/toolchain captures and independently validated SAT replay in the exact runtime environment remain unqualified."
+      ],
+      "required_sound_fallbacks": [
+        "No autonomous SAT-to-target experiment wiring is required or added. Explicit owner authorization is part of the unit, not a missing automatic feature."
+      ],
+      "upstream_dependencies": [],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    },
+    {
+      "unit": "U17",
+      "title": "Automatic retained async/capture context",
+      "producer_paths": [
+        "js/swift-context.js",
+        "js/analysis/apple/scoped-block.js",
+        "js/runtime/trace-provider.js",
+        "js/runtime/native-scoped-context.js",
+        "js/runtime/app-runtime.js"
+      ],
+      "consumer_paths": [
+        "js/runtime/captured-async.js",
+        "js/analysis/apple/scoped-async.js",
+        "js/analysis/query/scoped-app.js",
+        "js/analysis/query/scoped-service.js"
+      ],
+      "test_paths": [
+        "tests/scpa/native-retained-async.test.mjs",
+        "tests/scpa/captured-async.test.mjs",
+        "tests/scpa/native-retained-async-integration.test.mjs",
+        "tests/scpa/native-apple-metadata.test.mjs"
+      ],
+      "newly_done": [
+        "Native block field/capture projection uses actual canonical function/MSSA owners; Swift supported generic/capture metadata reads actual source records.",
+        "New first-party app binder borrows already-open RuntimeProviderPlatform for the pinned file/slice/backend generation.",
+        "Native adapter reads actual current TraceProvider normalizedEvents/module table. Only explicit versioned scpaAsync event/contract/relation records feed the model; no stream, replay, session open or experiment occurs.",
+        "Both native and explicit capture bridges compare supported actual module SHA-256 to current complete-content and/or canonical bin_sha256_ identity. Contradictory hashes reject; incomparable identities stay unsupported.",
+        "21 new subsystem tests plus shared SHA-binding regressions pass; root/native_acceptance reports actual public app API integration 6/6 pass."
+      ],
+      "remaining_concrete_code": [],
+      "external_qualification": [
+        "Independent two-toolchain Swift async/ObjC runtime ownership capture and concrete capture-copy-dispose/continuation ABI/lifetime interpretation remain unqualified."
+      ],
+      "required_sound_fallbacks": [
+        "Equal actor, executor, wall-clock time, arrival sequence or token text alone never creates happens-before.",
+        "No retained canonical trace means unavailable; incomplete/gap/synthetic/intervened/historical/incomparable-build captures do not provide a qualified order.",
+        "Result before-in-model and captured object boundaries are explicit provider premises, not universal runtime lifetime/order proof."
+      ],
+      "upstream_dependencies": [],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    },
+    {
+      "unit": "U18",
+      "title": "MatchCapsule and SDK version family lookup",
+      "producer_paths": [
+        "js/recognition/native-context.js",
+        "js/knowledge/scoped-index.js",
+        "js/knowledge/scoped-pages.js",
+        "js/fingerprint/index.js"
+      ],
+      "consumer_paths": [
+        "js/recognition/scoped-evidence.js",
+        "js/analysis/query/scoped-service.js"
+      ],
+      "test_paths": [
+        "tests/scpa/knowledge-index.test.mjs",
+        "tests/scpa/knowledge-pagination.test.mjs",
+        "tests/scpa/knowledge-indexeddb.test.mjs",
+        "tests/scpa/tool-runtime-recognition.test.mjs"
+      ],
+      "newly_done": [
+        "Actual native fingerprint and KnowledgeDB generation-bound candidate page/index feed MatchCapsule.",
+        "Independent captured-record constraints compare declared architecture, byte size and full byte samples; collisions preserve all alternatives.",
+        "Version-family lookup groups actual stored version annotations without treating versions as qualified SDK identity."
+      ],
+      "remaining_concrete_code": [],
+      "external_qualification": [
+        "Lawful pinned SDK/reference corpus, independently reopened reference worlds/ABI/type/effect owners, intentional-collision recall and wrong-transfer adjudication remain required."
+      ],
+      "required_sound_fallbacks": [
+        "ABI/type/effect/reference-current UNKNOWN is required because current KnowledgeDB records do not contain the independent source owners needed to prove those propositions.",
+        "No metadata transfer is authorized by scores/hashes; unsupported cross-binary equivalence is not an invitation to fabricate proof."
+      ],
+      "upstream_dependencies": [],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    },
+    {
+      "unit": "U19",
+      "title": "Investigation frontier and cost model",
+      "producer_paths": [
+        "js/ai/investigation/scoped-job-context.js",
+        "js/ai/investigation/scoped-frontier.js",
+        "js/ai/investigation/scoped-policy.js"
+      ],
+      "consumer_paths": [
+        "js/ai/ui/bridge.js",
+        "js/analysis/query/scoped-app.js",
+        "js/analysis/query/scoped-service.js"
+      ],
+      "test_paths": [
+        "tests/scpa/investigation.test.mjs",
+        "tests/scpa/investigation-policy.test.mjs",
+        "tests/scpa/native-session14-integration.test.mjs"
+      ],
+      "newly_done": [
+        "Actual existing loaded idle job, session namespace and canonical evidence/hypothesis stores are borrowed read-only.",
+        "Explicit required-obligation denominator, current qualified discharges, goal digest and p75 measured cost calibration drive bounded frontier actions.",
+        "Missing obligation owner, contradictory hypotheses or stale store/job revisions cannot imply completion."
+      ],
+      "remaining_concrete_code": [],
+      "external_qualification": [
+        "Natural-language goal adequacy and same-Astra task/time/token/quality results still require controlled trials."
+      ],
+      "required_sound_fallbacks": [
+        "Read-only inspection is intentional. It must not initialize/load jobs, invoke models, execute recommended tools or infer whole-binary completion."
+      ],
+      "upstream_dependencies": [],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    },
+    {
+      "unit": "U20",
+      "title": "Same-Astra native-best trials and rollout review",
+      "producer_paths": [
+        "js/analysis/benchmark/scoped-trials.js",
+        "tools/competitive-arm64/trials.mjs",
+        "tools/competitive-arm64/trial-worker.mjs",
+        "js/analysis/benchmark/scoped-native-adapter.js"
+      ],
+      "consumer_paths": [
+        "js/analysis/benchmark/competitive-protocol.js",
+        "js/analysis/benchmark/competitive-matrix.js"
+      ],
+      "test_paths": [
+        "tests/scpa/trials.test.mjs",
+        "tests/scpa/trial-cli.test.mjs",
+        "tests/scpa/trial-continuation.test.mjs"
+      ],
+      "newly_done": [
+        "Bounded T0-T3 plan/runner/admission/checkpoint/continuation and current Hex native adapter contract exist.",
+        "Failed/unavailable/unmeasured cells and all common-information/model/knowledge identities are preserved."
+      ],
+      "remaining_concrete_code": [
+        "External-dependent implementation: actual installed IDA/Ghidra native-best adapter bindings cannot be certified by the generic adapter contract or guessed SDK calls. Implement/validate them against lawful pinned installations and APIs when that environment is provided."
+      ],
+      "external_qualification": [
+        "Installed lawful IDA/Ghidra best-native API adapters, exactly pinned same-Astra model/resource/knowledge policies, all required metric observations and independent adjudication are absent.",
+        "Physical iPad/WebKit/origin/cold/warm/cancel/memory results, statistics and human readability study remain required before M3/M5."
+      ],
+      "required_sound_fallbacks": [
+        "Model-free T0 cannot stand in for same-Astra T1-T3; synthetic checkpoint cells are a separate denominator from real competitor cells."
+      ],
+      "upstream_dependencies": [],
+      "functional_exit": "NOT_ADMITTED",
+      "assessment": "source-reviewed bounded implementation; test results only where separately recorded"
+    }
+  ],
+  "upstream_reuse": {
+    "8086": {
+      "head": "d864be09fd53405b3a89b04d5e0cc43bd0e7e5fa",
+      "manifest": "reports/scpa/session14-existing-pr-reuse.json",
+      "scope": "Exact js/swift.js witness header slice plus three upstream tests, preimage hashes checked."
+    },
+    "7036": {
+      "head": "a0f47590783eb356208c7d833b9264a4f4c69c5f",
+      "scope": "Flow lane minimum return-ABI compat/index.js correction. Existing symbolic/summary/pointsto APIs reused; no general memory implementation duplicated."
+    },
+    "7097": {
+      "scope": "Read-only owner audit. No js/runtime/* patch; no general memory patch imported by this lane."
+    },
+    "provider_fixes_8197_8203_8205_8213": {
+      "scope": "Audited and left with upstream owners; conservative native metadata closure retained."
+    }
+  },
+  "auditor_executed_validation": [
+    "timeout60s node --test tests/scpa/native-retained-async.test.mjs: PASS before final shared build-identity additions.",
+    "timeout60s node scripts/run-quiet-command.mjs --label captured-build-identity -- node --test tests/scpa/native-retained-async.test.mjs tests/scpa/captured-async.test.mjs: PASS after SHA mismatch/incomparable identity/direct-host/canonical binary identity regressions.",
+    "timeout90s retained async + existing captured/async + Phase10 app-runtime/trace test matrix: PASS before final shared SHA-binding change.",
+    "Prior Apple metadata owner test matrix across existing Swift/parser/metadata/scoped tests: PASS."
+  ],
+  "audit_updated_at": "2026-09-12T06:13:56.100528+00:00",
+  "reconciled_main": "e60c6a591664447e858a64c80f9ddf5999d0ac68",
+  "integration_validation": "reports/scpa/session14-functional-acceptance.json"
+}
