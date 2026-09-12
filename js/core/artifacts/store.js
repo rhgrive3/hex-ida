@@ -1,6 +1,8 @@
+import { assertDependencyRegistry } from './dependencies.js';
 import {
   ARTIFACT_STORE_VERSION,
   ArtifactCorruptionError,
+  ArtifactStorageError,
   assertCanonicalArtifactDescriptor,
   createArtifactRecord,
   decodeArtifactPayload,
@@ -71,6 +73,10 @@ export class ArtifactStore {
   // matches the identity that minted its artifactId; the cache keeps that
   // proof from degrading into trust (#5770).
   #identityProofs = new Map();
+  #dependencyRegistries = new Map();
+  #retiredDependencyRegistries = new Set();
+  #readReceipts = new WeakMap();
+  #quarantined = new Map();
 
   constructor({ backend = createArtifactBackend(), hotCache = new ArtifactHotCache(), corruptionPolicy = 'delete' } = {}) {
     const backendHooks = snapshotCallableHooks(backend, ['getRaw', 'putAtomic', 'delete', 'capabilities', 'close'], 'artifact-backend-invalid');
@@ -106,7 +112,50 @@ export class ArtifactStore {
       deletes:0,
       deleteMisses:0,
       mutationRetries:0,
+      quarantines:0,
+      scopedDependencyMisses:0,
+      staleScopedPublishes:0,
     };
+  }
+
+  /** Host-only binding. Imported tokens are never accepted without their live owner. */
+  registerDependencyRegistry(registry) {
+    assertDependencyRegistry(registry);
+    const id = registry.registryId;
+    const previous = this.#dependencyRegistries.get(id);
+    if (previous && previous !== registry) throw new TypeError('artifact-dependency-registry-conflict');
+    if (this.#retiredDependencyRegistries.has(id)) throw new TypeError('artifact-dependency-registry-retired');
+    if (!previous && this.#dependencyRegistries.size + this.#retiredDependencyRegistries.size >= 4096) throw new TypeError('artifact-dependency-registry-budget');
+    this.#dependencyRegistries.set(id, registry);
+    return () => {
+      if (this.#dependencyRegistries.get(id) !== registry) return;
+      this.#dependencyRegistries.delete(id);
+      this.#retiredDependencyRegistries.add(id);
+    };
+  }
+
+  #scopedDependenciesCurrent(record) {
+    if (!record.dependencyScope) return true;
+    const registry = this.#dependencyRegistries.get(record.dependencyScope.registryId);
+    return registry?.validate(record.dependencyScope) === true;
+  }
+
+  #verificationContext(options) {
+    return { activePath:new Set(), validated:new Set(), validatedEpochs:new Map(), scopedRecords:new Map(), forceUpstreams:false,
+      maxNodes:Number.isSafeInteger(options.maxNodes) && options.maxNodes >= 0 ? options.maxNodes : 10000, nodesVisited:0 };
+  }
+
+  #scopedVerificationStable(context) {
+    for (const record of context.scopedRecords.values()) if (!this.#scopedDependenciesCurrent(record)) return false;
+    return true;
+  }
+
+  #scopedDependencyMiss(artifactId, source) {
+    this.metrics.scopedDependencyMisses++; this.metrics.misses++;
+    this.#hotCacheHooks.delete(artifactId);
+    // Loss of a live registry is not corruption. Retain the persistent row for
+    // an already-bound owner; never delete because a caller lacks scope authority.
+    return { status:'miss', source, artifactId, reason:'scoped-dependency-stale-or-unbound' };
   }
 
   capabilities() {
@@ -148,13 +197,26 @@ export class ArtifactStore {
 
   async get(descriptorOrId, options = {}) {
     const descriptor = typeof descriptorOrId === 'string' ? null : descriptorOrId;
+    // A caller-supplied descriptor object is read authority. Any object that
+    // carries its own artifactId must be a canonical mint product (the same
+    // boundary publish() enforces) before it is compared against stored
+    // records: a forged lookalike with a valid artifactId must not drive
+    // validateDescriptorRecord() into artifact-record-identity-mismatch and
+    // the delete-on-mismatch path, which would destroy a healthy artifact
+    // because of caller input alone. Objects without an artifactId are not
+    // descriptor attempts and keep the requireArtifactId() boundary below.
+    if (descriptor !== null && typeof descriptor === 'object' && Object.hasOwn(descriptor, 'artifactId')) {
+      assertCanonicalArtifactDescriptor(descriptor);
+    }
     const artifactId = requireArtifactId(descriptor?.artifactId ?? descriptorOrId);
     aborted(options.signal);
     this.metrics.requests++;
+    if (this.#quarantined.has(artifactId)) return { status:'quarantined', artifactId, reason:this.#quarantined.get(artifactId).reason };
 
     for (;;) {
       await this.#waitForMutation(artifactId);
       aborted(options.signal);
+      if (this.#quarantined.has(artifactId)) return { status:'quarantined', artifactId, reason:this.#quarantined.get(artifactId).reason };
       const epoch = this.#epoch(artifactId);
       const cached = this.#hotCacheHooks.get(artifactId);
       if (cached) {
@@ -166,7 +228,9 @@ export class ArtifactStore {
             descriptor,
             allowIncomplete:options.allowIncomplete,
           });
-          const upstreamStatus = await this.#upstreamsValid(validated.record, options);
+          const verification = this.#verificationContext(options);
+          const upstreamStatus = await this.#upstreamsValid(validated.record, options, verification);
+          if (!this.#scopedVerificationStable(verification)) return this.#scopedDependencyMiss(artifactId, 'hot');
           if (upstreamStatus === UPSTREAM_MUTATED || epoch !== this.#epoch(artifactId)) { this.metrics.mutationRetries++; continue; }
           if (upstreamStatus !== UPSTREAM_VALID) {
             if (upstreamStatus === UPSTREAM_BUDGET_EXHAUSTED) return this.#verificationBudgetMiss(artifactId, 'hot');
@@ -174,7 +238,7 @@ export class ArtifactStore {
           }
           if (epoch !== this.#epoch(artifactId)) { this.metrics.mutationRetries++; continue; }
           this.metrics.hotHits++;
-          return { status:'hit', source:'hot', artifactId, record:validated.record, payload:validated.payload };
+          return this.#observedHit('hot', artifactId, validated, epoch, options);
         } catch (error) {
           this.#hotCacheHooks.delete(artifactId);
           if (error instanceof ArtifactCorruptionError) {
@@ -203,7 +267,9 @@ export class ArtifactStore {
           allowIncomplete:options.allowIncomplete,
         });
         this.metrics.readBytes += validated.payloadBytes.byteLength;
-        const upstreamStatus = await this.#upstreamsValid(validated.record, options);
+        const verification = this.#verificationContext(options);
+        const upstreamStatus = await this.#upstreamsValid(validated.record, options, verification);
+        if (!this.#scopedVerificationStable(verification)) return this.#scopedDependencyMiss(artifactId, source);
         if (upstreamStatus === UPSTREAM_MUTATED || epoch !== this.#epoch(artifactId)) { this.metrics.mutationRetries++; continue; }
         if (upstreamStatus !== UPSTREAM_VALID) {
           if (upstreamStatus === UPSTREAM_BUDGET_EXHAUSTED) return this.#verificationBudgetMiss(artifactId, source);
@@ -218,7 +284,7 @@ export class ArtifactStore {
         this.#identityProofs.set(artifactId, validated.record);
         if (source === 'persistent') this.metrics.persistentHits++;
         else this.metrics.memoryHits++;
-        return { status:'hit', source, artifactId, record:validated.record, payload:validated.payload };
+        return this.#observedHit(source, artifactId, validated, epoch, options);
       } catch (error) {
         if (error instanceof ArtifactCorruptionError) {
           if (epoch !== this.#epoch(artifactId)) { this.metrics.mutationRetries++; continue; }
@@ -229,6 +295,49 @@ export class ArtifactStore {
     }
   }
 
+  #observedHit(source, artifactId, validated, epoch, options) {
+    const hit = { status:'hit', source, artifactId, record:validated.record, payload:validated.payload };
+    // A serialized lookalike, a hit from another store, or an edited public
+    // record has no destructive authority. Preserve the observed bytes inside
+    // this store; backend CAS compares them before persistent removal.
+    if (options.observeForQuarantine === true) this.#readReceipts.set(hit, { artifactId, epoch, record:validated.record,
+      payloadBytes:validated.payloadBytes.slice() });
+    return hit;
+  }
+
+  /** Host-only fail-closed withdrawal after a local replay contradiction.
+   * A UNKNOWN/unsupported checker is not a rejection. This API is deliberately
+   * absent from tool schemas: only the service's actual get receipt reaches it.
+   * Persistent rows are removed by compare-and-delete, never by a supplied id.
+   */
+  async quarantineObserved(hit, { reason, signal = null } = {}) {
+    const observed = this.#readReceipts.get(hit);
+    if (!observed || !['source-byte-rejection', 'integrity-rejection', 'semantic-contradiction'].includes(reason)) {
+      throw new TypeError('artifact-quarantine-observation-required');
+    }
+    aborted(signal);
+    const { artifactId, epoch, record, payloadBytes } = observed;
+    if (this.#quarantined.has(artifactId)) return { status:'quarantined', artifactId, ...this.#quarantined.get(artifactId) };
+    if (this.#quarantined.size >= 1024) throw new ArtifactStorageError('artifact-quarantine-cap');
+    return this.#withMutation(artifactId, async () => {
+      aborted(signal);
+      // withMutation increments once on entry. A newer publish/delete must not
+      // be removed because an older read happened to fail its replay.
+      if (this.#epoch(artifactId) !== epoch + 1) return { status:'stale', artifactId, reason:'quarantine-observation-superseded' };
+      this.#quarantined.set(artifactId, Object.freeze({ reason, persistentWithdrawal:false }));
+      this.#hotCacheHooks.delete(artifactId); this.#identityProofs.delete(artifactId);
+      this.metrics.quarantines++;
+      let removed = false;
+      if (typeof this.backend.deleteIfMatches === 'function') {
+        // An abort after this point must never restore rejected canonical data.
+        removed = await this.backend.deleteIfMatches(artifactId, record, payloadBytes);
+      }
+      const verdict = Object.freeze({ reason, persistentWithdrawal:removed === true });
+      this.#quarantined.set(artifactId, verdict);
+      return { status:'quarantined', artifactId, ...verdict };
+    });
+  }
+
   #validatedEpochsStable(context) {
     for (const [artifactId, epoch] of context.validatedEpochs) {
       if (epoch !== this.#epoch(artifactId)) return false;
@@ -237,21 +346,20 @@ export class ArtifactStore {
   }
 
   async #upstreamsValid(record, options, context = null) {
-    if (options.verifyUpstreams === false) return UPSTREAM_VALID;
-    const ctx = context || {
-      activePath: new Set(),
-      validated: new Set(),
-      validatedEpochs: new Map(),
-      maxNodes: Number.isSafeInteger(options.maxNodes) && options.maxNodes >= 0 ? options.maxNodes : 10000,
-      nodesVisited: 0,
-    };
+    const ctx = context || this.#verificationContext(options);
+    if (record.dependencyScope) {
+      ctx.scopedRecords.set(record.artifactId, record);
+      ctx.forceUpstreams = true;
+      if (!this.#scopedDependenciesCurrent(record)) return UPSTREAM_INVALID;
+    }
+    if (options.verifyUpstreams === false && !ctx.forceUpstreams) return UPSTREAM_VALID;
     const currentId = requireArtifactId(record.artifactId);
     if (ctx.activePath.has(currentId)) return UPSTREAM_INVALID;
     ctx.activePath.add(currentId);
     try {
       for (const upstreamId of record.upstreamArtifactIds || []) {
         aborted(options.signal);
-        if (ctx.activePath.has(upstreamId)) return UPSTREAM_INVALID;
+        if (ctx.activePath.has(upstreamId) || this.#quarantined.has(upstreamId)) return UPSTREAM_INVALID;
         if (ctx.validated.has(upstreamId)) continue;
         if (++ctx.nodesVisited > ctx.maxNodes) return UPSTREAM_BUDGET_EXHAUSTED;
 
@@ -263,6 +371,7 @@ export class ArtifactStore {
         // would validate a dependency the store no longer contains.
         await this.#waitForMutation(upstreamId);
         aborted(options.signal);
+        if (this.#quarantined.has(upstreamId)) return UPSTREAM_INVALID;
         const upstreamEpochBefore = this.#epoch(upstreamId);
         let raw;
         try { this.metrics.reads++; raw = await this.#backendHooks.getRaw(upstreamId); }
@@ -313,6 +422,7 @@ export class ArtifactStore {
           throw error;
         }
       }
+      if (!this.#scopedVerificationStable(ctx)) return UPSTREAM_INVALID;
       if (!this.#validatedEpochsStable(ctx)) {
         this.metrics.mutationRetries++;
         return UPSTREAM_MUTATED;
@@ -373,6 +483,7 @@ export class ArtifactStore {
     if (!descriptor?.artifactId) throw new TypeError('artifact-descriptor-required');
     assertCanonicalArtifactDescriptor(descriptor);
     const artifactId = requireArtifactId(descriptor.artifactId);
+    if (this.#quarantined.has(artifactId)) throw new ArtifactStorageError('artifact-quarantined');
     aborted(options.signal);
 
     let payloadBytes;
@@ -391,13 +502,38 @@ export class ArtifactStore {
     }
 
     if (typeof options.validate === 'function') {
-      try { await options.validate(stagedPayload, record, { signal:options.signal }); }
+      // Positive-acknowledgement contract: production callers pass boolean
+      // predicates, so anything but an explicit `true` is a validation
+      // failure. Relying on the validator to throw would let a `false`
+      // return publish a payload that violates its own postconditions
+      // (route/instrumentation/ABI) as a canonical CAS artifact (#5298).
+      let verdict = null;
+      try { verdict = await options.validate(stagedPayload, record, { signal: options.signal }); }
       catch (error) { this.metrics.validationFailures++; throw error; }
+      if (verdict !== true) {
+        this.metrics.validationFailures++;
+        throw new ArtifactStorageError('artifact-validation-not-passed', 'artifact-validation-not-passed', { verdict: String(verdict) });
+      }
     }
     aborted(options.signal);
+    const publicationVerification = record.dependencyScope ? this.#verificationContext(options) : null;
+    if (publicationVerification) {
+      const status = await this.#upstreamsValid(record, options, publicationVerification);
+      if (status !== UPSTREAM_VALID || !this.#scopedVerificationStable(publicationVerification)
+        || !this.#validatedEpochsStable(publicationVerification)) {
+        this.metrics.staleScopedPublishes++;
+        throw new ArtifactStorageError('artifact-scoped-dependencies-not-current');
+      }
+    }
+    if (options.isCurrent != null && typeof options.isCurrent !== 'function') throw new TypeError('artifact-publication-current-hook');
+    const publicationStillCurrent = () => !this.#quarantined.has(artifactId) && (options.isCurrent == null || options.isCurrent() === true)
+      && (!publicationVerification || (this.#scopedVerificationStable(publicationVerification)
+      && this.#validatedEpochsStable(publicationVerification)));
+    if (!publicationStillCurrent()) throw new ArtifactStorageError('artifact-publication-snapshot-changed');
 
     return this.#withMutation(artifactId, async () => {
       aborted(options.signal);
+      if (!publicationStillCurrent()) { this.metrics.staleScopedPublishes++; throw new ArtifactStorageError('artifact-scoped-dependencies-not-current'); }
       let writeResult;
       try {
         writeResult = await this.#backendHooks.putAtomic(record, payloadBytes, { signal:options.signal });
@@ -433,6 +569,7 @@ export class ArtifactStore {
           storedView,
           { artifactId, descriptor, allowIncomplete:(options.completeness ?? 'complete') !== 'complete' },
         );
+        if (!publicationStillCurrent()) { this.metrics.staleScopedPublishes++; throw new ArtifactStorageError('artifact-scoped-dependencies-changed-during-publish'); }
         canonicalRecord = validated.record;
         canonicalPayloadBytes = validated.payloadBytes;
         returnedPayload = validated.payload;
@@ -501,6 +638,8 @@ export class ArtifactStore {
     const pending = [...this.mutations.values()];
     if (pending.length) await Promise.allSettled(pending);
     this.#hotCacheHooks.clear();
+    this.#dependencyRegistries.clear();
+    this.#retiredDependencyRegistries.clear();
     await this.#backendHooks.close();
   }
 

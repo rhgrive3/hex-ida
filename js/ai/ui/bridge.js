@@ -6,6 +6,8 @@ import { createCapabilityCatalog } from '../capabilities/catalog.js';
 import { createCapabilityExecutor } from '../capabilities/executor.js';
 import { createProposalExecutor } from '../interaction/proposal-executor.js';
 import { createProjectSessionPersistence } from '../session-core/index.js';
+import { sessionMatchesSnapshot } from '../control/runtime-support.js';
+import { resolveBinaryIdentity } from '../control/snapshot.js';
 
 async function loadCoreRuntime(localContext, persistence = null) {
   const runtimeModule = await import('../runtime.js');
@@ -49,6 +51,25 @@ export function createAiEngine(app, options = {}) {
   return {
     id: 'bridge', localContext, runtime,
     get sessionStore() { return core?.sessionStore || null; },
+    // Borrow only an ALREADY instantiated core with an exactly matching source
+    // namespace. Do not call runtime(): even lazy provider initialization is
+    // outside a read-only inventory query. Cross-scheme identity aliases need
+    // an owner-issued relation; matching filenames or hashes alone is not one.
+    async getScopedInvestigationContext(jobId, context) {
+      const owner = core;
+      if (!owner || typeof owner.createScopedInvestigationProvider !== 'function') return null;
+      const identity = resolveBinaryIdentity(localContext, {});
+      if (identity.confidence !== 'strong' || identity.state !== 'ready'
+        || !context.world.binarySet.some((member) => member.binaryId === identity.id)) return null;
+      const current = () => core === owner && resolveBinaryIdentity(localContext, {}).id === identity.id;
+      context.work.checkpoint();
+      const provider = await context.work.await(() => owner.createScopedInvestigationProvider({ binaryId: identity.id }));
+      if (!current()) throw new Error('scoped-investigation-runtime-changed');
+      const borrowed = await context.work.await((signal) => provider(jobId, { ...context, signal }));
+      if (!current()) throw new Error('scoped-investigation-runtime-changed');
+      if (!borrowed) return null;
+      return Object.freeze({ ...borrowed, isCurrent: () => current() && borrowed.isCurrent() === true });
+    },
     proposals: () => (core && core.proposalStore) || null,
     capabilities: () => capabilityCatalog.list(capabilityExecutor.context()),
     capabilityExecutor,
@@ -157,6 +178,7 @@ export function createAiEngine(app, options = {}) {
 export function createLiveProjectSessionPersistence(app) {
   let saveTimer = null;
   let flush = null;
+  const saveMutations = new WeakMap();
   const projectFor = () => app?.workspace?.project || app?.activeProject || app?.project || null;
   const ensureProject = () => projectFor() || app?.workspace?.snapshot?.() || null;
   const completeFlush = (error) => {
@@ -186,14 +208,80 @@ export function createLiveProjectSessionPersistence(app) {
   };
   const awaitFlush = () => (flush ? flush.promise : Promise.resolve());
   const adapterFor = (project) => project ? createProjectSessionPersistence(project, { onChange: changed }) : null;
+  const committedRecord = (record) => {
+    while (saveMutations.has(record)) {
+      const mutation = saveMutations.get(record);
+      // A concurrent edit that survived rollback owns this slot. Hiding it
+      // would let a later create overwrite that other owner's record.
+      if (mutation.failed && !mutation.unchanged()) {
+        saveMutations.delete(record);
+        break;
+      }
+      record = mutation.previous;
+    }
+    return record;
+  };
   return {
-    list() { return adapterFor(projectFor())?.list?.() || []; },
-    async load(id) { return (await adapterFor(projectFor())?.load?.(id)) || null; },
+    list() {
+      return (adapterFor(projectFor())?.list?.() || []).flatMap((record) => {
+        const committed = committedRecord(record);
+        return committed == null && saveMutations.has(record) ? [] : [committed];
+      });
+    },
+    async load(id) {
+      // Keep the original project binding across the durability wait. Returning
+      // null before a pending write settles would permit another store's create
+      // to overwrite it; returning the staged row would publish a failed save.
+      const adapter = adapterFor(projectFor());
+      if (!adapter) return null;
+      for (;;) {
+        const record = await adapter.load(id);
+        const mutation = saveMutations.get(record);
+        if (!mutation) return record || null;
+        if (mutation.failed) return committedRecord(record) || null;
+        await mutation.settled;
+      }
+    },
     async save(session) {
-      const adapter = adapterFor(ensureProject());
+      const project = ensureProject();
+      const adapter = adapterFor(project);
       if (!adapter) return;
-      await adapter.save(session);
-      await awaitFlush();
+      const previous = adapter.list().find((item) => item && item.id === session?.id);
+      const pending = adapter.save(session);
+      const durability = awaitFlush();
+      const completion = pending.then(() => durability);
+      // Readers observe settlement, while save() retains the rejection. Attach
+      // both handlers immediately so a delayed reader cannot leak a rejection.
+      const settled = completion.then(() => undefined, () => undefined);
+      // The project adapter stages its detached record synchronously. Keep
+      // ownership of that exact write until the shared autosave settles.
+      const written = adapter.list().find((item) => item && item.id === session?.id);
+      const mutation = written && written !== previous
+        ? { previous, failed: false, settled, unchanged: captureSessionWrite(written) } : null;
+      if (mutation) saveMutations.set(written, mutation);
+      try {
+        await completion;
+        if (mutation) saveMutations.delete(written);
+      } catch (error) {
+        if (mutation) {
+          mutation.failed = true;
+          const entries = project.findings?.investigationSessions;
+          const index = Array.isArray(entries) ? entries.indexOf(written) : -1;
+          // Once another owner has edited the record, its slot remains claimed
+          // and no longer needs our failed write's predecessor history.
+          if (!mutation.unchanged()) saveMutations.delete(written);
+          else if (index >= 0) {
+            let restore = previous;
+            // Coalesced writes can fail together: do not resurrect an earlier
+            // failed write when rolling back the last write for the same ID.
+            while (saveMutations.get(restore)?.failed && saveMutations.get(restore).unchanged()) {
+              restore = saveMutations.get(restore).previous;
+            }
+            if (restore) entries[index] = restore; else entries.splice(index, 1);
+          }
+        }
+        throw error;
+      }
     },
     async delete(id) {
       const adapter = adapterFor(projectFor());
@@ -204,15 +292,47 @@ export function createLiveProjectSessionPersistence(app) {
   };
 }
 
+// Rollback may only remove our unmodified record. Capture data descriptors,
+// including nested fields, without invoking caller-added getters or toJSON.
+function captureSessionWrite(record) {
+  const observations = [];
+  const seen = new Set();
+  const visit = (value) => {
+    if (!value || typeof value !== 'object' || seen.has(value)) return;
+    seen.add(value);
+    const entries = Reflect.ownKeys(value).map((key) => [key, Object.getOwnPropertyDescriptor(value, key)]);
+    observations.push({ value, entries, prototype: Object.getPrototypeOf(value) });
+    for (const [, descriptor] of entries) if ('value' in descriptor) visit(descriptor.value);
+  };
+  visit(record);
+  return () => observations.every(({ value, entries, prototype }) => (
+    Object.getPrototypeOf(value) === prototype
+    && Reflect.ownKeys(value).length === entries.length
+    && entries.every(([key, before]) => {
+      const current = Object.getOwnPropertyDescriptor(value, key);
+      return current && Reflect.ownKeys(before).every((field) => Object.is(current[field], before[field]));
+    })
+  ));
+}
+
 function persistedSessionForConversation(persistence, conversationId, context) {
   const sessions = persistence?.list?.() || [];
-  const binaryId = context?.binaryIdentity?.id || context?.binaryId || null;
+  const binaryIdentity = context?.binaryIdentity || null;
+  const binaryId = binaryIdentity?.id || context?.binaryId || null;
   const projectId = context?.projectId || null;
+  const runtimeSessionId = context?.runtimeSessionId ?? null;
+  const runtimeSessionKnown = context?.runtimeSessionKnown === true || runtimeSessionId != null;
+  const snapshot = {
+    binaryId,
+    binaryIdentity,
+    legacyBinaryId: binaryIdentity?.legacyId || (binaryIdentity ? null : context?.binaryId || null),
+    projectIdentity: projectId,
+    runtimeSessionIdentity: runtimeSessionId,
+    runtimeSessionState: runtimeSessionKnown ? (runtimeSessionId == null ? 'none' : 'bound') : 'unknown',
+  };
   const compatible = sessions.filter((session) => {
     if (!session?.id) return false;
-    if (binaryId && session.binaryId && String(session.binaryId) !== String(binaryId)) return false;
-    if (projectId && session.projectId && String(session.projectId) !== String(projectId)) return false;
-    return true;
+    return sessionMatchesSnapshot(session, snapshot);
   });
   if (conversationId != null) {
     // An explicit conversation identity is authoritative: reuse only the exact

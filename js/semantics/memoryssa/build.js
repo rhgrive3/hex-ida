@@ -25,6 +25,7 @@ import {
   canonicalAliasProof,
   canonicalMemorySsaDigest,
   canonicalStoreValueProof,
+  isCanonicalAccessProvider,
   MEMORY_SSA_PROOF_VERSION,
 } from './proof.js';
 
@@ -714,14 +715,14 @@ function effectSummary(descriptor, relation) {
   return jsonSafe(out);
 }
 function memoryAccessProof(descriptor, options, identity) {
-  const raw = typeof options?.accessProofForDescriptor === 'function'
-    ? options.accessProofForDescriptor(descriptor)
-    : null;
+  const provider = options?.accessProofForDescriptor;
+  const raw = isCanonicalAccessProvider(provider) ? provider(descriptor) : null;
   return canonicalAccessProof({
     raw,
     descriptor,
     identity,
     functionId: identity?.functionId ?? descriptor?.node?.functionId ?? null,
+    providerCallback: provider,
   });
 }
 

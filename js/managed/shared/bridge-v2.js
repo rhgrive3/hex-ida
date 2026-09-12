@@ -5,22 +5,43 @@ import { condenseCallGraph } from '../../analysis/summary/interprocedural.js';
 import * as legacy from './bridge.js';
 import { lowerVMEffectsToSemanticIr as lowerCore } from './bridge-lowering-v2.js';
 import { overlayDexLowering } from './bridge-dex-overlay-v2.js';
+import { overlayJvmControlLowering } from './bridge-jvm-control-overlay-v2.js';
+import { assertVMEffectFunctionBundleOwnership } from './vm-effects.js';
 
 export const MANAGED_BRIDGE_VERSION = legacy.MANAGED_BRIDGE_VERSION;
 export const queryManagedSymbolicVerification = legacy.queryManagedSymbolicVerification;
 export const queryManagedRuntimeProvider = legacy.queryManagedRuntimeProvider;
 export const buildManagedTypeConstraintGraph = legacy.buildManagedTypeConstraintGraph;
-export function lowerVMEffectsToSemanticIr(value, options = {}) { return overlayDexLowering(value, lowerCore(value, options)); }
+export function lowerVMEffectsToSemanticIr(value, options = {}) {
+  assertVMEffectFunctionBundleOwnership(value);
+  const lowered = overlayJvmControlLowering(value, lowerCore(value, options), options);
+  return overlayDexLowering(value, lowered);
+}
 
 function ensureLowered(value, options) { return value && Array.isArray(value.bundles) ? lowerVMEffectsToSemanticIr(value, options) : value; }
 
+const SUMMARY_SCANNED_NODE_KINDS = new Set(['call', 'load', 'store', 'trap']);
+const SUMMARY_UNKNOWN_NODE_MEMORY_CATEGORIES = new Set(['memory', 'heap', 'other']);
+const SUMMARY_UNKNOWN_FUNCTION_MEMORY_CATEGORIES = new Set(['memory', 'heap']);
 export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
   const lowered = ensureLowered(loweredOrFunction, options);
   const methodId = lowered.methodId || 'method_0';
   const semanticIr = lowered.semanticIr;
   const cfg = lowered.cfg;
-  const directCalls = [], dynamicCalls = [], externalCalls = [], memoryReads = [], memoryWrites = [], unknownCallEffects = [], thrownExceptions = [];
+  const directCalls = [], dynamicCalls = [], externalCalls = [], memoryReads = [], memoryWrites = [], unknownCallEffects = [], thrownExceptions = [], semanticFacts = [];
+  const nodesById = new Map((semanticIr.nodes ?? []).map((node) => [node.id, node]));
+  const valuesById = new Map((semanticIr.values ?? []).map((value) => [value.id, value]));
+  const fieldIdentityForMemoryNode = (node) => {
+    const direct = node.attributes?.fieldIdentity;
+    if (typeof direct === 'string' && direct.length > 0 && direct === direct.trim()) return direct;
+    const addressValueId = node.memory?.addressExpr?.valueId;
+    const addressValue = valuesById.get(addressValueId);
+    const addressNode = nodesById.get(addressValue?.definitionNodeId);
+    const derived = addressNode?.attributes?.fieldIdentity;
+    return typeof derived === 'string' && derived.length > 0 && derived === derived.trim() ? derived : null;
+  };
   let hasLanguageThrow = false;
+  let hasUnboundFieldOrdering = false;
   for (const node of semanticIr.nodes) {
     if (node.kind === 'call' && node.call) {
       const call = node.call, candidates = call.targetEntityIds || [];
@@ -29,8 +50,16 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
       if (candidates.length===1&&!isExternal&&dispatchKind==='direct'&&!targetUnresolved) { directCalls.push({target:candidates[0],dispatchKind:'direct',unresolved:false,nodeId:node.id}); if(call.completeness!=='complete')unknownCallEffects.push(createUnknownCallEffect({callSiteId:node.id,reason:'summary-incomplete',targetEntityIds:candidates,evidenceIds:[node.id]})); }
       else if(isExternal){externalCalls.push({target:candidates[0]||'external',dispatchKind:'external',unresolved:true,nodeId:node.id});unknownCallEffects.push(createUnknownCallEffect({callSiteId:node.id,reason:'unresolved-target',targetEntityIds:candidates,evidenceIds:[node.id]}));}
       else {dynamicCalls.push({targets:candidates,dispatchKind:'dynamic',unresolved:true,nodeId:node.id});unknownCallEffects.push(createUnknownCallEffect({callSiteId:node.id,reason:'indirect-incomplete-target-set',targetEntityIds:candidates,evidenceIds:[node.id]}));}
-    } else if(node.kind==='load')memoryReads.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:[node.memory?.addressSpace||'memory'],source:'proven-summary',evidenceIds:[node.id]}));
-    else if(node.kind==='store')memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:[node.memory?.addressSpace||'memory'],source:'proven-summary',evidenceIds:[node.id]}));
+    } else if(node.kind==='load'||node.kind==='store'){
+      const memory=node.memory??{};
+      (node.kind==='load'?memoryReads:memoryWrites).push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:[memory.addressSpace||'memory'],source:'proven-summary',evidenceIds:[node.id]}));
+      if(memory.volatility===true||memory.atomic===true||(memory.ordering!=null&&memory.ordering!=='unknown')) {
+        const fieldIdentity=fieldIdentityForMemoryNode(node);
+        const fieldScoped=memory.addressSpace==='field'||memory.addressSpace==='static-field';
+        if(fieldScoped&&!fieldIdentity)hasUnboundFieldOrdering=true;
+        semanticFacts.push({kind:'managed-memory-ordering',nodeId:node.id,addressSpace:memory.addressSpace||'memory',isWrite:node.kind==='store',volatility:memory.volatility??'unknown',atomic:memory.atomic??'unknown',ordering:memory.ordering??'unknown',...(fieldIdentity?{fieldIdentity}:{})});
+      }
+    }
     else if(node.kind==='trap'){
       // A language-level throw keeps its identity through the bridge (#7311):
       // the lowering stamps metadata.exceptionThrow and keeps the thrown
@@ -41,8 +70,29 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
       if(languageThrow)hasLanguageThrow=true;
     }
   }
-  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(unknownCallEffects.length>0||hasLanguageThrow)?'partial':'complete';
+  const unknownEffectEvidence = new Set();
+  let unknownEffectCalls = false;
+  let functionLevelUnknownEffects = false;
+  for (const node of semanticIr.nodes) {
+    if (SUMMARY_SCANNED_NODE_KINDS.has(node.kind)) continue;
+    const categories = node.unknown?.categories;
+    if (!Array.isArray(categories)) continue;
+    if (categories.some((category) => SUMMARY_UNKNOWN_NODE_MEMORY_CATEGORIES.has(category))) unknownEffectEvidence.add(node.id);
+    if (categories.includes('calls')) { unknownEffectCalls = true; unknownCallEffects.push(createUnknownCallEffect({ callSiteId: node.id, reason: 'summary-incomplete', targetEntityIds: node.call?.targetEntityIds ?? [], evidenceIds: [node.id] })); }
+  }
+  for (const unknown of semanticIr.unknowns ?? []) {
+    const categories = unknown?.categories;
+    if (!Array.isArray(categories)) continue;
+    if (categories.some((category) => SUMMARY_UNKNOWN_FUNCTION_MEMORY_CATEGORIES.has(category))) functionLevelUnknownEffects = true;
+    if (categories.includes('calls') && unknownCallEffects.length === 0) { unknownEffectCalls = true; unknownCallEffects.push(createUnknownCallEffect({ callSiteId: methodId, reason: 'summary-incomplete', targetEntityIds: [], evidenceIds: [] })); }
+  }
+  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(semanticIr.completeness!=null&&semanticIr.completeness!=='complete'||unknownCallEffects.length>0||hasLanguageThrow||hasUnboundFieldOrdering||unknownEffectEvidence.size>0||functionLevelUnknownEffects||unknownEffectCalls)?'partial':'complete';
   if(unknownCallEffects.length>0)memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
+  if(unknownEffectEvidence.size>0||functionLevelUnknownEffects){
+    const evidenceIds=[...unknownEffectEvidence];
+    if(!memoryReads.some((effect)=>effect.broad))memoryReads.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+    if(!memoryWrites.some((effect)=>effect.broad))memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+  }
   const status=createAnalysisStatus({snapshotId:options.snapshotId||'managed-summary-v1',analyzerId:'managed.method.summary',analyzerVersion:'1.0.0',completeness,stopReason:completeness==='complete'?null:'evidence-missing'});
   // Confirmed direct calls are canonical summary effects, not bridge-side
   // trivia: createFunctionSummary() hashes them into the dependency digest,
@@ -51,7 +101,7 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
   // claim ('abi-rule': the direct dispatch was proven by this method's IR,
   // not by a callee summary), so record it at the boundary.
   const summaryDirectCalls=directCalls.map((call)=>createDirectCall({callSiteId:call.nodeId,targetEntityIds:[call.target],effectSource:'abi-rule'}));
-  const summary=createFunctionSummary({functionId:methodId,status,memoryReadRegions:memoryReads,memoryWriteRegions:memoryWrites,unknownCallEffects,directCalls:summaryDirectCalls});
+  const summary=createFunctionSummary({functionId:methodId,status,memoryReadRegions:memoryReads,memoryWriteRegions:memoryWrites,unknownCallEffects,directCalls:summaryDirectCalls,semanticFacts});
   return deepFreeze({methodId,summary,directCalls,dynamicCalls,externalCalls,thrownExceptions,hasExceptionEdges,completeness});
 }
 export function analyzeManagedInterprocedural(methods, options={}){const methodMap=new Map();for(const method of methods){const summary=buildManagedMethodSummary(method,options);methodMap.set(summary.methodId,summary)}const roots=[...methodMap.keys()],successorsOf=id=>{const entry=methodMap.get(id);return entry?entry.directCalls.map(c=>c.target).filter(t=>methodMap.has(t)):[]};const{components,truncated}=condenseCallGraph(roots,successorsOf,options);return deepFreeze({components,truncated,summaries:methodMap})}

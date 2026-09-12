@@ -62,6 +62,7 @@ function importBudget(name, parser = parseImports) {
   if (delay) {
     view.setUint32(0x40, 1, true);        // RVA-based delay descriptor
     view.setUint32(0x44, 0x1060, true);   // library name
+    view.setUint32(0x48, 0x1070, true);   // module-handle storage
     view.setUint32(0x4c, 0x1050, true);   // IAT
     view.setUint32(0x50, 0x1040, true);   // INT
   } else {

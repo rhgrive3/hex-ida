@@ -43,10 +43,31 @@ function cloneTraceValue(value, state = null, depth = 0) {
   return out;
 }
 
-function publicEvent(event) {
-  const copy = cloneTraceValue(event);
-  if (copy && typeof copy === 'object') { delete copy.__bytes; delete copy.__aggregateKey; }
-  return copy;
+function assertWireSafeTrace(value, seen) {
+  if (value == null) return;
+  const type = typeof value;
+  if (type === 'boolean' || type === 'string' || type === 'bigint') return;
+  if (type === 'number') { if (Number.isFinite(value)) return; throw new TypeError('trace number must be finite'); }
+  if (type === 'function' || type === 'symbol') throw new TypeError('trace value is not wire serializable');
+  if (ArrayBuffer.isView(value)) return;
+  const proto = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && proto !== Object.prototype && proto !== null) throw new TypeError('trace object must be plain data');
+  if (seen.has(value)) return;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) assertWireSafeTrace(item, seen);
+    return;
+  }
+  for (const key of Object.keys(value)) {
+    const field = value[key];
+    if (field === undefined || typeof field === 'function' || typeof field === 'symbol') throw new TypeError('trace field is not wire serializable');
+    assertWireSafeTrace(field, seen);
+  }
+}
+
+function publicEvent(entry) {
+  const target = entry && typeof entry === 'object' && 'event' in entry ? entry.event : entry;
+  return cloneTraceValue(target);
 }
 
 export class TraceRingBuffer {
@@ -69,18 +90,26 @@ export class TraceRingBuffer {
   push(event) {
     this.seen++;
     if (this.sampleRate > 1 && ((this.seen - 1) % this.sampleRate)) { this.dropped++; return false; }
-    if (this.filter && !this.filter(event)) { this.dropped++; return false; }
     let safe;
-    try { safe = event && typeof event === 'object' ? cloneTraceValue(event) : { type:'event', value:event }; }
+    try {
+      if (this.filter && !this.filter(event)) { this.dropped++; return false; }
+      safe = event && typeof event === 'object' ? cloneTraceValue(event) : { type:'event', value:event };
+      assertWireSafeTrace(safe, new WeakSet());
+    }
     catch { this.dropped++; return false; }
     const size = estimateBytes(safe);
     if (size > this.maxBytes) { this.dropped++; return false; }
     const aggregateKey = String(safe.type || 'event').slice(0,128);
-    safe.__bytes = size;
-    safe.__aggregateKey = aggregateKey;
-    this.events.push(safe); this.bytes += size; this._increment(aggregateKey);
+    const entry = {
+      event: safe,
+      bytes: size,
+      aggregateKey,
+      get __bytes() { return this.bytes; },
+      get __aggregateKey() { return this.aggregateKey; },
+    };
+    this.events.push(entry); this.bytes += size; this._increment(aggregateKey);
     while (this.events.length > this.maxEvents || this.bytes > this.maxBytes) {
-      const old = this.events.shift(); this.bytes -= old.__bytes || 0; this._decrement(old.__aggregateKey || 'event'); this.dropped++;
+      const old = this.events.shift(); this.bytes -= old.bytes || 0; this._decrement(old.aggregateKey || 'event'); this.dropped++;
     }
     return true;
   }

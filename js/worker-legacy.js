@@ -461,6 +461,10 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
     let nsyms = info.symtab.nsyms;
     if (nsyms > SYMBOL_MAX) { nsyms = SYMBOL_MAX; capped = true; }
     const symBuf = await readRange(base + BigInt(info.symtab.symoff), nsyms * entry);
+    /* A string table beyond STRTAB_MAX is truncated below: symbols past the
+     * clamp parse as '' and vanish from definedSymbols(). That budget cut is
+     * an incompleteness the result must report, not hide (#5372). */
+    if (info.symtab.strsize > STRTAB_MAX) capped = true;
     const strLen = Math.min(info.symtab.strsize, STRTAB_MAX);
     const strBuf = await readRange(base + BigInt(info.symtab.stroff), strLen);
     if (symBuf.length >= entry && strBuf.length) {
@@ -1969,6 +1973,26 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets, request
 const UTF8 = new TextDecoder('utf-8', { fatal: false });
 const MAX_STRING_CHARS = 400;
 
+/** Well-formed UTF-8 sequence length (RFC 3629): lead-byte second-byte
+ * constraints included. 0 = invalid, -1 = truncated tail (more blocks needed). */
+function utf8WellFormedLength(buf, i) {
+  const c = buf[i];
+  if (c < 0x80) return 1;
+  let need = 0, lo = 0x80, hi = 0xbf;
+  if (c >= 0xc2 && c <= 0xdf) need = 1;
+  else if (c === 0xe0) { need = 2; lo = 0xa0; }
+  else if ((c >= 0xe1 && c <= 0xec) || c === 0xee || c === 0xef) need = 2;
+  else if (c === 0xed) { need = 2; hi = 0x9f; }
+  else if (c === 0xf0) { need = 3; lo = 0x90; }
+  else if (c >= 0xf1 && c <= 0xf3) need = 3;
+  else if (c === 0xf4) { need = 3; hi = 0x8f; }
+  else return 0;
+  if (i + need >= buf.length) return -1;
+  if (buf[i + 1] < lo || buf[i + 1] > hi) return 0;
+  for (let k = 2; k <= need; k++) if ((buf[i + k] & 0xc0) !== 0x80) return 0;
+  return need + 1;
+}
+
 /**
  * 「そこに置いてある 1 本の文字列」を読む。読めなければ空文字。
  *
@@ -1981,19 +2005,14 @@ function decodeUtf8Text(bytes) {
   let n = 0;
   while (n < bytes.length) {
     const c = bytes[n];
-    let need;
     if (c < 0x80) {
       if (!((c >= 0x20 && c < 0x7f) || c === 9 || c === 10 || c === 13)) break;
-      need = 0;
-    } else if (c >= 0xc2 && c <= 0xdf) need = 1;
-    else if (c >= 0xe0 && c <= 0xef) need = 2;
-    else if (c >= 0xf0 && c <= 0xf4) need = 3;
-    else break;
-    if (n + need >= bytes.length) break;
-    let ok = true;
-    for (let k = 1; k <= need; k++) if ((bytes[n + k] & 0xc0) !== 0x80) { ok = false; break; }
-    if (!ok) break;
-    n += need + 1;
+      n += 1;
+      continue;
+    }
+    const len = utf8WellFormedLength(bytes, n);
+    if (len <= 0) break;
+    n += len;
   }
   if (!n) return '';
   return UTF8.decode(bytes.subarray(0, n)).replace(/\t/g, '\\t').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
@@ -2010,33 +2029,31 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
   let pos = 0;                 // 次に読むファイル内の位置（region 先頭から）
   let runStart = -1;           // いま伸びている文字列の先頭
   let runBytes = [];
+  let runDropped = 0;          // 表示budgetで保存できなかった run の残り bytes (#5381)
 
   const flush = () => {
     if (runStart >= 0 && runBytes.length) {
+      // Keep the raw run's byte extent: the display text is a decoded,
+      // control-escaped string whose .length is not an address span (#5698).
+      const byteLength = runBytes.length + runDropped;
       const text = UTF8.decode(new Uint8Array(runBytes))
         .replace(/\t/g, '\\t').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
       if (text.length >= minLen) {
-        out.push({ addr: region.vmAddr + BigInt(runStart), offset: runStart, text });
+        const entry = { addr: region.vmAddr + BigInt(runStart), offset: runStart, text, byteLength };
+        if (runDropped > 0) entry.truncated = true;
+        out.push(entry);
       }
     }
     runStart = -1;
     runBytes = [];
+    runDropped = 0;
   };
 
   /** buf[i] から始まる UTF-8 の並びの長さ。文字として読めないなら 0。 */
   const utf8Len = (buf, i) => {
     const c = buf[i];
     if (c < 0x80) return (c >= 0x20 && c < 0x7f) || c === 9 || c === 10 || c === 13 ? 1 : 0;
-    let need = 0;
-    if (c >= 0xc2 && c <= 0xdf) need = 1;
-    else if (c >= 0xe0 && c <= 0xef) need = 2;
-    else if (c >= 0xf0 && c <= 0xf4) need = 3;
-    else return 0;
-    if (i + need >= buf.length) return -1;               // 続きは次の塊にある
-    for (let k = 1; k <= need; k++) {
-      if ((buf[i + k] & 0xc0) !== 0x80) return 0;
-    }
-    return need + 1;
+    return utf8WellFormedLength(buf, i);
   };
 
   let carry = new Uint8Array(0);
@@ -2059,9 +2076,11 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
       const n = utf8Len(buf, i);
       if (n === -1 && !last) break;                      // 途中で切れた。次の塊と合わせる
       if (n <= 0) { flush(); if (out.length >= cap) break; continue; }
-      if (runStart < 0) { runStart = baseOff + i; runBytes = []; }
-      if (runBytes.length < MAX_STRING_CHARS * 4) {
+      if (runStart < 0) { runStart = baseOff + i; runBytes = []; runDropped = 0; }
+      if (runDropped === 0 && runBytes.length + n <= MAX_STRING_CHARS * 4) {
         for (let k = 0; k < n; k++) runBytes.push(buf[i + k]);
+      } else {
+        runDropped += n;
       }
       i += n - 1;
     }

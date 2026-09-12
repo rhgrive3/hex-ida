@@ -6,7 +6,7 @@ import { AdminAuthProvider, AllowAllAdminProvider, readAdminIdentity } from '../
 import { availableAgentProfiles, canSelectAgentProfile } from '../../js/ai/dev/policy/agent-profile.js';
 import { DEV_DECISION_POLICIES, assertDevDecisionPolicy, devDecisionPolicyContract } from '../../js/ai/dev/policy/decision-policy.js';
 import { createAnalysisScopeRequest, createDevAnalysisScopeRequest, toLegacyAnalysisScope } from '../../js/ai/dev/run/analysis-scope.js';
-import { DEV_RUN_IDENTITY_FIELDS, DEV_RUN_STATUS, transitionDevRun } from '../../js/ai/dev/run/dev-run.js';
+import { createDevRun, DEV_RUN_IDENTITY_FIELDS, DEV_RUN_STATUS, transitionDevRun } from '../../js/ai/dev/run/dev-run.js';
 import { DEV_SUPERVISOR_PROTOCOL, DEV_SUPERVISOR_DECISION_TYPES, validateDevSupervisorDecision, parseDevSupervisorDecision } from '../../js/ai/dev/protocol/hex-dev-supervisor-v1.js';
 import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
 import { DevAgentUiSettings } from '../../js/ai/dev/ui/settings.js';
@@ -66,6 +66,32 @@ await check('dev-supervisor-protocol', () => {
   assert.throws(() => validateDevSupervisorDecision({ type: 'tool', tool: 'repo.read', arguments: {}, purpose: 'x', extra: true }), /Malformed/);
   assert.throws(() => validateDevSupervisorDecision({ type: 'worker', worker: 'x' }), /Unsupported/);
   assert.throws(() => parseDevSupervisorDecision('```json\n{}\n```'), /exactly one JSON object/);
+});
+
+await check('dev-run-plan-text-contract', () => {
+  const base = {
+    runId: 'run-plan-text',
+    supervisorSessionKey: 'session-plan-text',
+    goal: 'verify plan normalization',
+    now: '2026-09-10T00:00:00.000Z',
+  };
+  assert.throws(
+    () => createDevRun({ ...base, plan: { items: ['   '] } }),
+    /Dev plan item text is required\./,
+  );
+  assert.throws(
+    () => createDevRun({ ...base, plan: { items: [{ text: '\t\n ' }] } }),
+    /Dev plan item text is required\./,
+  );
+  const valid = createDevRun({ ...base, plan: { items: ['  inspect  '] } });
+  assert.deepEqual(valid.plan.items, [{ id: 'step-1', text: 'inspect', status: 'planned' }]);
+  assert.throws(
+    () => transitionDevRun(createDevRun(base), DEV_RUN_STATUS.PLANNING, {
+      now: '2026-09-10T00:00:01.000Z',
+      plan: { items: ['\u00a0\t '] },
+    }),
+    /Dev plan item text is required\./,
+  );
 });
 
 await check('dev-run-state', () => {

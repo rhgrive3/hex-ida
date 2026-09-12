@@ -71,6 +71,17 @@ function breakpointId(value, fallback) {
   return value;
 }
 
+function breakpointEnabled(spec) {
+  let enabled;
+  try { enabled = spec.enabled; }
+  catch { throw new DebugAdapterError('invalid-breakpoint', 'breakpoint enabled must be a boolean'); }
+  if (enabled === undefined) return true;
+  if (typeof enabled !== 'boolean') {
+    throw new DebugAdapterError('invalid-breakpoint', 'breakpoint enabled must be a boolean');
+  }
+  return enabled;
+}
+
 export function normalizeBreakpoint(spec) {
   if (!spec || typeof spec !== 'object' || Array.isArray(spec)) throw new DebugAdapterError('invalid-breakpoint', 'breakpoint must be an object');
   const kind = spec.kind == null
@@ -80,7 +91,7 @@ export function normalizeBreakpoint(spec) {
   if (kind === 'address') {
     const address = asAddress(spec.address);
     const id = breakpointId(spec.id, `bp:address:${address}`);
-    return { id, kind, address, enabled: spec.enabled !== false };
+    return { id, kind, address, enabled: breakpointEnabled(spec) };
   }
   if (kind === 'function') {
     if (typeof spec.function !== 'string') throw new DebugAdapterError('invalid-breakpoint', 'function breakpoint requires function');
@@ -88,7 +99,7 @@ export function normalizeBreakpoint(spec) {
     if (!fn) throw new DebugAdapterError('invalid-breakpoint', 'function breakpoint requires function');
     const address = spec.address == null ? null : asAddress(spec.address);
     const id = breakpointId(spec.id, `bp:function:${fn}:${address ?? ''}`);
-    return { id, kind, function: fn, address, enabled: spec.enabled !== false };
+    return { id, kind, function: fn, address, enabled: breakpointEnabled(spec) };
   }
   if (kind === 'conditional') {
     if (spec.address == null) throw new DebugAdapterError('invalid-breakpoint', 'conditional breakpoint requires address');
@@ -97,7 +108,7 @@ export function normalizeBreakpoint(spec) {
     const condition = spec.condition.trim();
     if (!condition) throw new DebugAdapterError('invalid-breakpoint', 'conditional breakpoint requires condition');
     const id = breakpointId(spec.id, `bp:conditional:${address}:${condition}`);
-    return { id, kind, address, condition, enabled: spec.enabled !== false };
+    return { id, kind, address, condition, enabled: breakpointEnabled(spec) };
   }
   const address = asAddress(spec.address);
   const size = boundedInteger(spec.size, 1, 1, 4096, 'watchpoint size');
@@ -109,7 +120,7 @@ export function normalizeBreakpoint(spec) {
     throw new DebugAdapterError('invalid-watchpoint-access', `unsupported watchpoint access: ${spec.access}`, { access: spec.access, allowed: WATCHPOINT_ACCESS });
   }
   const id = breakpointId(spec.id, `bp:memory:${address}:${size}:${access}`);
-  return { id, kind: 'memory', address, size, access, enabled: spec.enabled !== false };
+  return { id, kind: 'memory', address, size, access, enabled: breakpointEnabled(spec) };
 }
 
 const METHOD_CAPABILITY = Object.freeze({
@@ -184,7 +195,7 @@ export class DebugAdapter {
     return Object.freeze(out);
   }
   require(capability) {
-    if (!this.capabilities[capability]) throw new DebugAdapterError('unsupported', `${this.kind} adapter does not support ${capability}`, { capability });
+    if (!DEBUG_CAPABILITIES.includes(capability) || this.capabilities[capability] !== true) throw new DebugAdapterError('unsupported', `${this.kind} adapter does not support ${capability}`, { capability });
   }
   requireMethod(method) {
     if (!Object.prototype.hasOwnProperty.call(METHOD_CAPABILITY, method)) {

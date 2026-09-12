@@ -2,8 +2,14 @@ import { stableStringify } from '../../core/identity/index.js';
 import { isPreciseMemoryRegion } from './regions-v2.js';
 
 function widthBytes(region) {
-  const bits = Number(region?.widthBits);
-  if (!Number.isSafeInteger(bits) || bits <= 0) return null;
+  // Width authority must match the canonical MemoryRegionRef contract: only a
+  // primitive positive safe-integer bit width may prove interval separation or
+  // identity. Number() is a conversion API (Number(['8']) === 8, Number(true)
+  // === 1), so a structured/malformed width would launder a strong alias
+  // relation out of a lookalike region (#5223). Malformed widths fail closed
+  // to the weak relation instead.
+  const bits = region?.widthBits;
+  if (typeof bits !== 'number' || !Number.isSafeInteger(bits) || bits <= 0) return null;
   return BigInt(Math.ceil(bits / 8));
 }
 
@@ -158,7 +164,12 @@ export function effectSummaryAliasRelation(memoryWrite, targetRegion, classifyAc
   if (memoryWrite.scope === 'unknown') return 'may';
   if (memoryWrite.scope === 'all') {
     const targetSpace = regionAddressSpace(targetRegion);
-    const rawSpaces = Array.isArray(memoryWrite.addressSpaces) ? memoryWrite.addressSpaces : [];
+    // The canonical MachineEffects contract names the field `spaces`;
+    // `addressSpaces` is the legacy spelling kept for older summaries
+    // (#5576). Accepting only the legacy field meant every canonical
+    // intrinsic summary lost its space separation and degraded to `may`.
+    const rawSpaces = Array.isArray(memoryWrite.spaces) ? memoryWrite.spaces
+      : Array.isArray(memoryWrite.addressSpaces) ? memoryWrite.addressSpaces : [];
     const spaces = rawSpaces.map(addressSpaceString);
     if (spaces.some((space) => space == null)) return 'may';
     if (targetSpace && spaces.length && !spaces.includes(targetSpace)) return 'no';
@@ -167,16 +178,26 @@ export function effectSummaryAliasRelation(memoryWrite, targetRegion, classifyAc
   if (memoryWrite.scope !== 'accesses' || !Array.isArray(memoryWrite.accesses) || !memoryWrite.accesses.length) return 'unknown';
   if (typeof classifyAccess !== 'function') return 'unknown';
 
+  // The accesses form a set of claims about the same summary, so the relation
+  // must be order-independent (#5201): short-circuiting on the first `may`
+  // let a later exact `must` go unseen, making the answer depend on
+  // enumeration order. Aggregate the whole multiset before deciding.
   let sawUnknown = false;
+  let sawMay = false;
+  let sawMust = false;
   for (const access of memoryWrite.accesses) {
     let region;
     try { region = classifyAccess(access); }
     catch { sawUnknown = true; continue; }
     const relation = aliasMemoryRegions(region, targetRegion);
-    if (relation === 'must') return 'must';
-    if (relation === 'may') return 'may';
-    if (relation === 'unknown') sawUnknown = true;
+    if (relation === 'must') sawMust = true;
+    else if (relation === 'may') sawMay = true;
+    else if (relation === 'unknown') sawUnknown = true;
   }
+  // An exact identity among the accesses is the strongest observed claim;
+  // report it even when other accesses only overlap.
+  if (sawMust) return 'must';
+  if (sawMay) return 'may';
   return sawUnknown ? 'unknown' : 'no';
 }
 

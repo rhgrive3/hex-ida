@@ -25,8 +25,9 @@ const result = await runtime.turn({ mode: 'agent', scope: 'binary', goal: 'Locat
 assert.deepEqual(calls.map(([kind]) => kind), ['string', 'function']);
 assert.equal(result.actions[0].target, '0x1000');
 const session = await runtime.sessionStore.get(result.sessionId);
-session.pinnedEvidence = [result.evidence[0].id];
-assert.equal(runtime.contextBroker.buildModelContext({ request: { goal: 'follow up', mode: 'chat', style: 'analyst', scope: 'auto' }, session, evidenceStore: runtime.evidenceStore }).context.pinnedEvidence.length, 1);
+await runtime.sessionStore.update(session.id, { pinnedEvidence: [result.evidence[0].id] });
+const updatedSession = await runtime.sessionStore.get(session.id);
+assert.equal(runtime.contextBroker.buildModelContext({ request: { goal: 'follow up', mode: 'chat', style: 'analyst', scope: 'auto' }, session: updatedSession, evidenceStore: runtime.evidenceStore }).context.pinnedEvidence.length, 1);
 
 // The large real fixtures are opt-in for CI/nightly because opening all three performs full binary indexing.
 if (process.env.HEX_AI_REAL_BINARIES === '1') {
