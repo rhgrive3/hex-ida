@@ -1,0 +1,50 @@
+name: Fixer 4 issue 4093 byte-exact materialize
+
+on:
+  push:
+    branches:
+      - fixer4/transport-4093-20260912
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      BASE_SHA: de6178154884813d90c6437146a99b1155f0c68d
+      FINAL_BRANCH: fixer4/issue-4093-pdb-record-budget
+      SOURCE_SHA: ce3a17477641f7a65ebe29e937e022632d821af0
+      TEST_SHA: cb7148d7a3f7163e8f7d085d1b43b61495ff6ab9
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Materialize and verify exact payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          gzip -dc .fixer4/issue-4093/pdb.js.gz > js/analysis/debug/pdb.js
+          test "$(git hash-object js/analysis/debug/pdb.js)" = "$SOURCE_SHA"
+          test "$(git hash-object tests/phase7/debug/issue-4093-pdb-provider-record-budget.test.mjs)" = "$TEST_SHA"
+          rm -rf .fixer4
+          rm -f .github/workflows/fixer4-4093-materialize.yml
+          git add -A
+          mapfile -t changed < <(git diff --cached --name-only "$BASE_SHA")
+          test "${#changed[@]}" -eq 2
+          printf '%s\n' "${changed[@]}" | grep -Fx 'js/analysis/debug/pdb.js'
+          printf '%s\n' "${changed[@]}" | grep -Fx 'tests/phase7/debug/issue-4093-pdb-provider-record-budget.test.mjs'
+          node --check js/analysis/debug/pdb.js
+          node --check tests/phase7/debug/issue-4093-pdb-provider-record-budget.test.mjs
+          node --test tests/phase7/debug/issue-4093-pdb-provider-record-budget.test.mjs
+      - name: Create clean single-commit branch from current verified base
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Fixer 4 Runtime'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          tree="$(git write-tree)"
+          commit="$(printf '%s\n\n%s\n' 'fix(debug): share PDB record budget (#4093)' 'Share one provider-run maxRecords authority across global symbols, module symbol streams, and TPI while preserving direct-parser local caps and fail-closed exhaustion.' | git commit-tree "$tree" -p "$BASE_SHA")"
+          git push origin "$commit:refs/heads/$FINAL_BRANCH"
+          git push origin --delete "$GITHUB_REF_NAME"
