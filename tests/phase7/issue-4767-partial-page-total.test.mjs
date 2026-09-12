@@ -132,7 +132,7 @@ test('capped and cancelled backend searches keep total unknown', async () => {
   ]) {
     const adapter = createAppAnalysisQueryAdapter(baseApp({ searchResult }));
     const result = await adapter.search({}, { kind: 'text', query: 'needle' }, { offset: 0, limit: 1 });
-    assert.equal(result.status.completeness, 'partial');
+    assert.equal(result.status.completeness, searchResult.capped ? 'truncated' : 'partial');
     assert.equal(result.page.total, null);
     assert.equal(result.page.next, 1);
   }
