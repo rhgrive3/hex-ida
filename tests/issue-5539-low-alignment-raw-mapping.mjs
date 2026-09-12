@@ -29,7 +29,7 @@ function makePE({ sectionAlignment, fileAlignment, machine = 0x014c, bits = 32 }
   else view.setUint32(opt + 28, Number(imageBase), true);
   view.setUint32(opt + 32, sectionAlignment, true);
   view.setUint32(opt + 36, fileAlignment, true);
-  view.setUint32(opt + 56, 0x200, true);
+  view.setUint32(opt + 56, Math.max(0x200, sectionAlignment), true);
   view.setUint32(opt + 60, 0x200, true);
   view.setUint16(opt + 68, 3, true);
   view.setUint32(opt + (bits === 64 ? 108 : 92), 0, true);

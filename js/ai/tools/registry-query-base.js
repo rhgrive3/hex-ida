@@ -1,3 +1,4 @@
+import { installScopedAnalysisTools } from './scoped-analysis.js';
 import { createHexToolRegistry as createBaseHexToolRegistry, ToolRegistry } from './registry-base.js';
 import { shortHash, stableSerialize } from './paging/cursor.js';
 import { addressText } from '../validation.js';
@@ -222,7 +223,7 @@ function installQueryOverrides(registry, context) {
 }
 
 export function createHexToolRegistry(context = {}, options = {}) {
-  return installQueryOverrides(createBaseHexToolRegistry(context, options), context);
+  return installScopedAnalysisTools(installQueryOverrides(createBaseHexToolRegistry(context, options), context), context);
 }
 
 export default createHexToolRegistry;

@@ -31,30 +31,11 @@ export function detectBinary(input, options = {}) {
       const fatLittleEndian = be === 0xbebafeca || be === 0xbfbafeca;
       const nfatArch = r.u32(4, fatLittleEndian);
       if (nfatArch < 1 || nfatArch > 16) return { format: 'unknown' };
-      // #5647 review: when the caller sees the complete file (no prefix
-      // truncation), the declared arch table must fit inside the input —
-      // `CA FE BA BE 00 00 00 01` alone must not confirm a FAT32 image whose
-      // 20-byte fat_arch entry is missing. Source-backed probes hand only a
-      // short 16-byte prefix, so they declare truncated:true and leave the
-      // full-table bounds to the Mach-O parser, which owns the whole input.
-      // FAT64 magics are byte-order independent of the nfat_arch field endianness:
-      // FAT_MAGIC_64 on disk is CA FE BA BF and FAT_CIGAM_64 is BF BA FE CA, so the
-      // big-endian read identifies both (0xcafebabf / 0xbfbafeca) while the
-      // little-endian read swaps the two families.
+      // Complete inputs must contain the declared arch table. Prefix probes
+      // may defer that structural check only when their size metadata is
+      // internally consistent, and stay explicitly provisional (#5647).
       const entrySize = be === 0xcafebabf || be === 0xbfbafeca ? 32 : 20;
       const tableEnd = 8 + nfatArch * entrySize;
-      // #5647 review (R2): probe routing may only bypass the table-bound gate
-      // when the caller genuinely sees a truncated prefix of a larger source,
-      // and the result must then stay PROVISIONAL — a direct caller can always
-      // forge consistent-looking size metadata, so a prefix probe must never
-      // mint the same confirmed shape as a complete arch table. The metadata
-      // is additionally bound to the bytes actually handed over: probeLength
-      // must equal the input length and totalSize must exceed it, otherwise
-      // the declared sizes are self-inconsistent and are ignored entirely
-      // (fail closed to the structural gate). Sizes are compared as BigInt: a
-      // ByteSource's BigInt size authority must survive beyond the safe-integer
-      // domain (a Number narrowing would fail closed for valid fat sources
-      // larger than 2^53).
       const asSize = (value) => {
         if (typeof value === 'bigint') return value;
         if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);

@@ -3,7 +3,8 @@ import { BinaryImage, functionSeed } from './model.js';
 import { parseEhFrameHeader } from './elf-unwind.js';
 import { parseProgramDynamic } from './elf-dynamic.js';
 import { createELFMetadataBudget, markELFMetadataPartial } from './elf-budget.js';
-import { elfInstructionStartAlignmentRejection, executableELFRange, mappedELFFileSpanForVa } from './elf-mapping.js';
+import { elfInstructionStartAlignmentRejection, elfSectionFileSpanConsistentWithLoads, executableELFRange, mappedELFFileSpanForVa } from './elf-mapping.js';
+import { relocationFieldWidth } from './elf-relocation-target.js';
 import { parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
 
 const ET_REL = 1;
@@ -27,68 +28,9 @@ const STT_GNU_IFUNC = 10;
 const SHF_WRITE = 0x1n;
 const SHF_ALLOC = 0x2n;
 const SHF_EXECINSTR = 0x4n;
-const EM_X86_64 = 62;
 const EM_RISCV = 243;
 export const STO_RISCV_VARIANT_CC = 0x80;
 
-// x86-64 psABI relocation storage widths in bytes. A zero width denotes a
-// relocation with no storage field. Relocations whose field is `wordclass`
-// are kept separate because x86-64 ILP32 uses 4-byte words while LP64 uses
-// 8-byte words. Missing entries are intentionally not guessed.
-const X86_64_RELOCATION_FIELD_BYTES = new Map([
-  [0, 0n], // R_X86_64_NONE
-  [1, 8n], // R_X86_64_64
-  [2, 4n], // R_X86_64_PC32
-  [3, 4n], // R_X86_64_GOT32
-  [4, 4n], // R_X86_64_PLT32
-  [5, 0n], // R_X86_64_COPY
-  [9, 4n], // R_X86_64_GOTPCREL
-  [10, 4n], // R_X86_64_32
-  [11, 4n], // R_X86_64_32S
-  [12, 2n], // R_X86_64_16
-  [13, 2n], // R_X86_64_PC16
-  [14, 1n], // R_X86_64_8
-  [15, 1n], // R_X86_64_PC8
-  [16, 8n], // R_X86_64_DTPMOD64
-  [17, 8n], // R_X86_64_DTPOFF64
-  [18, 8n], // R_X86_64_TPOFF64
-  [19, 4n], // R_X86_64_TLSGD
-  [20, 4n], // R_X86_64_TLSLD
-  [21, 4n], // R_X86_64_DTPOFF32
-  [22, 4n], // R_X86_64_GOTTPOFF
-  [23, 4n], // R_X86_64_TPOFF32
-  [24, 8n], // R_X86_64_PC64
-  [25, 8n], // R_X86_64_GOTOFF64
-  [26, 4n], // R_X86_64_GOTPC32
-  [27, 8n], // R_X86_64_GOT64
-  [28, 8n], // R_X86_64_GOTPCREL64
-  [29, 8n], // R_X86_64_GOTPC64
-  [30, 8n], // R_X86_64_GOTPLT64
-  [31, 8n], // R_X86_64_PLTOFF64
-  [32, 4n], // R_X86_64_SIZE32
-  [33, 8n], // R_X86_64_SIZE64
-  [34, 4n], // R_X86_64_GOTPC32_TLSDESC
-  [35, 0n], // R_X86_64_TLSDESC_CALL
-  [36, 16n], // R_X86_64_TLSDESC (pair of word64 fields)
-  [38, 8n], // R_X86_64_RELATIVE64
-  [41, 4n], // R_X86_64_GOTPCRELX
-  [42, 4n], // R_X86_64_REX_GOTPCRELX
-  [43, 4n], // R_X86_64_CODE_4_GOTPCRELX
-  [44, 4n], // R_X86_64_CODE_4_GOTTPOFF
-  [45, 4n], // R_X86_64_CODE_4_GOTPC32_TLSDESC
-  [46, 4n], // R_X86_64_CODE_5_GOTPCRELX
-  [47, 4n], // R_X86_64_CODE_5_GOTTPOFF
-  [48, 4n], // R_X86_64_CODE_5_GOTPC32_TLSDESC
-  [49, 4n], // R_X86_64_CODE_6_GOTPCRELX
-  [50, 4n], // R_X86_64_CODE_6_GOTTPOFF
-  [51, 4n], // R_X86_64_CODE_6_GOTPC32_TLSDESC
-]);
-const X86_64_WORDCLASS_RELOCATIONS = new Set([
-  6, // R_X86_64_GLOB_DAT
-  7, // R_X86_64_JUMP_SLOT
-  8, // R_X86_64_RELATIVE
-  37, // R_X86_64_IRELATIVE
-]);
 const SHT_RISCV_ATTRIBUTES = 0x70000003;
 const R_RISCV_JUMP_SLOT = 5;
 const DT_RISCV_VARIANT_CC = 0x70000001n;
@@ -131,7 +73,12 @@ export function parseELF(input, options = {}) {
         image.warnings.push('RISC-V attributes section is outside the bounded file span');
       } else {
         riscvFileIsa = parseRiscvAttributes(r.bytes.subarray(start, start + size), { littleEndian });
-        if (!riscvFileIsa) image.warnings.push('RISC-V Tag_RISCV_arch is missing or malformed');
+        if (riscvFileIsa && riscvFileIsa.xlen !== bits) {
+          image.warnings.push(`RISC-V Tag_RISCV_arch XLEN ${riscvFileIsa.xlen} disagrees with ELFCLASS${bits}`);
+          riscvFileIsa = null;
+        } else if (!riscvFileIsa) {
+          image.warnings.push('RISC-V Tag_RISCV_arch is missing or malformed');
+        }
       }
     }
   }
@@ -146,16 +93,23 @@ export function parseELF(input, options = {}) {
     // ('unmapped-section').
     const fileSpanInvalid = h.type !== ET_REL && s.type !== 8 && (s.flags & SHF_ALLOC) !== 0n
       && (s.offset > BigInt(r.length) || s.size > BigInt(r.length) - s.offset);
+    const noBits = s.type === 8;
+    const mappingInconsistent = !fileSpanInvalid && h.type !== ET_REL
+      && (s.flags & SHF_ALLOC) !== 0n && s.size > 0n
+      && !elfSectionFileSpanConsistentWithLoads(image, s.addr, s.size, s.offset, noBits);
+    if (mappingInconsistent) {
+      image.warnings.push(`ELF section ${s.index} (${s.name || 'unnamed'}) has a sh_addr/sh_offset relation inconsistent with the runtime PT_LOAD mapping and is excluded from virtual mapping authority`);
+    }
     if (fileSpanInvalid) {
       image.warnings.push(`ELF section ${s.index} (${s.name || 'unnamed'}) has a file span beyond EOF and is excluded from virtual mapping authority`);
     }
     image.addSection({
       name: s.name || `section_${s.index}`, segment: null,
       address: h.type === ET_REL ? (s.syntheticAddr ?? 0n) : s.addr, size: s.size, fileOffset: s.offset,
-      fileSize: s.type === 8 ? 0n : s.size,
+      fileSize: noBits ? 0n : s.size,
       perms: { read: !!(s.flags & SHF_ALLOC), write: !!(s.flags & SHF_WRITE), execute: !!(s.flags & SHF_EXECINSTR) },
       flags: s.flags, type: s.type, index: s.index,
-      source: h.type === ET_REL ? 'ET_REL-synthetic-section' : fileSpanInvalid ? 'unmapped-section' : 'section-header',
+      source: h.type === ET_REL ? 'ET_REL-synthetic-section' : fileSpanInvalid || mappingInconsistent ? 'unmapped-section' : 'section-header',
     });
   }
 
@@ -184,7 +138,12 @@ export function parseELF(input, options = {}) {
       .filter((symbol) => symbol?.defined === true && typeof symbol.name === 'string')
       .map((symbol) => {
         const parsed = parseRiscvMappingSymbol(symbol.name);
-        return parsed ? { address:symbol.address, sectionIndex:symbol.sectionIndex, ...parsed } : null;
+        if (!parsed) return null;
+        if (parsed.isa && parsed.isa.xlen !== bits) {
+          image.warnings.push(`RISC-V mapping symbol ISA XLEN ${parsed.isa.xlen} disagrees with ELFCLASS${bits}`);
+          return { address:symbol.address, sectionIndex:symbol.sectionIndex, kind:parsed.kind, isa:null };
+        }
+        return { address:symbol.address, sectionIndex:symbol.sectionIndex, ...parsed };
       })
       .filter(Boolean)
       .sort((left, right) => left.address < right.address ? -1 : left.address > right.address ? 1 : 0);
@@ -563,7 +522,7 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     const ifunc=type===STT_GNU_IFUNC&&defined===true&&!common;
     const riscvVariantCcFlag=image.metadata.machine===EM_RISCV&&(other&STO_RISCV_VARIANT_CC)!==0;
     const riscvVariantCc=riscvVariantCcFlag&&type===2;
-    const sym={name,address:tls?null:(address??0n),originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??value,resolution:'runtime-resolver'}:{}),
+    const sym={name,address:tls?null:(sectionIdentityKnown?(address??0n):null),originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??value,resolution:'runtime-resolver'}:{}),
       ...(tls?{tlsOffset:value}:{}),...(common?{commonAlignment:value,commonSize:size,allocation:'common-unallocated'}:{}),sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:value}:null,addressDomain:tls?'tls-offset':common?'common-unallocated':elfType===ET_REL&&normal?'section-relative-synthetic':'virtual'};
     image.symbols.push(sym);
     const externallyVisible=bind===1||bind===2||bind===STB_GNU_UNIQUE;
@@ -613,14 +572,6 @@ function validateSectionRiscvVariantCcTag(image, sections) {
   if (!image.warnings.includes(warning)) image.warnings.push(warning);
 }
 
-function relocationFieldWidth(machine, type, bits) {
-  if (machine !== EM_X86_64) return undefined;
-  if (X86_64_WORDCLASS_RELOCATIONS.has(type)) return BigInt(bits === 64 ? 8 : 4);
-  return X86_64_RELOCATION_FIELD_BYTES.has(type)
-    ? X86_64_RELOCATION_FIELD_BYTES.get(type)
-    : null;
-}
-
 function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
   if(!sec.entsize)return;
   const minEnt=BigInt(bits===64?(sec.type===SHT_RELA?24:16):(sec.type===SHT_RELA?12:8));
@@ -659,6 +610,11 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
       if(fieldWidth===null){budget.partial(`relocations:${sec.index}:field-width-unknown`,`ELF ET_REL relocation type ${type} has no supported target-field width for machine ${image.metadata.machine}`);continue;}
       if(fieldWidth!==undefined&&fieldWidth>0n&&fieldWidth>target.size-offset){budget.partial(`relocations:${sec.index}:target-span`,`ELF ET_REL relocation type ${type} has a ${fieldWidth}-byte target field crossing target section ${target.index}`);continue;}
       address=(target.syntheticAddr??0n)+offset;addressDomain='section-relative-synthetic';fileOffset=target.type===8?null:target.offset+offset;
+    }else{
+      const owner=image.segmentAt(offset);
+      if(!owner){budget.partial(`relocations:${sec.index}:unmapped-target`,`ELF relocation section ${sec.index} has a relocation target outside every loaded PT_LOAD memory span`);continue;}
+      const fieldWidth=relocationFieldWidth(Number(image.metadata.machine),type,bits);
+      if(typeof fieldWidth==='bigint'&&fieldWidth>0n&&offset+fieldWidth>owner.address+owner.size){budget.partial(`relocations:${sec.index}:target-span`,`ELF relocation section ${sec.index} has a relocation target field crossing the end of its loaded PT_LOAD memory span`);continue;}
     }
     if(symIndex!==0&&linkedSymbolTable&&symbolEntryCount==null)continue;
     if(symIndex!==0&&symbolEntryCount!=null&&BigInt(symIndex)>=symbolEntryCount){budget.partial(`relocations:${sec.index}:symbol-index-range`,`ELF relocation section ${sec.index} references symbol index ${symIndex} outside its associated table count ${symbolEntryCount}`);continue;}

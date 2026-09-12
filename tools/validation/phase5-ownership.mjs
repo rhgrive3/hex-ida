@@ -161,7 +161,9 @@ export function inventoryFromGit(root, baseSha, headSha) {
   const head = exactCommit(root, headSha, 'headSha');
   const mergeBase = spawnSync('git', ['merge-base', base, head], { cwd: root, encoding: 'utf8' });
   if (mergeBase.status !== 0 || !String(mergeBase.stdout || '').trim()) throw new TypeError(`baseSha and headSha have no merge base: ${base} ${head}`);
-  const result = spawnSync('git', ['diff', '--name-only', '-z', `${base}...${head}`], { cwd: root, encoding: null, maxBuffer: 64 * 1024 * 1024 });
+  // Renames change ownership at both paths. Rename detection reports only the
+  // destination with --name-only and would hide a forbidden source deletion.
+  const result = spawnSync('git', ['diff', '--no-renames', '--name-only', '-z', `${base}...${head}`], { cwd: root, encoding: null, maxBuffer: 64 * 1024 * 1024 });
   if (result.status !== 0) throw new TypeError(`unable to obtain changed-file inventory for ${base}...${head}`);
   const bytes = result.stdout || Buffer.alloc(0);
   const files = [];
