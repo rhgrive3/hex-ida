@@ -6068,3 +6068,69 @@ The repaired27-test focused suite passes in
 including subject-only relocation and source-byte drift checks. These changes
 remain within the same seven paths and reuse the original oracle validator;
 no generic validator, producer, external artifact or runtime source was edited.
+
+## ME-01 input counterexample reduction — 2026-09-12
+
+The offline subject now also accepts explicit RV64 entry GPRs. Their normalized
+values are bound into a separate input-digest domain; the existing self-contained
+Sail-prefix digest and comparison remain unchanged. The corpus adapter reads
+instruction bytes and initial state only, accounts for every effect through the
+same production decoder/MachineEffects/SSA/Expr path, and preserves untouched
+input state only after that scalar-effect check. It does not read the oracle
+operation description or expected state. Memory, faults, control flow, missing
+entry values and unproved state writes still decline.
+
+`tools/validation/machine-effects/minimize-mismatch.mjs` reduces initial lhs/rhs
+register values while keeping the instruction bytes, profile, operation, model
+identity, observable set and masks fixed. For every candidate the existing
+independent reference model recomputes the expected state, `createCorpusCase`
+issues its new identity, and `runIndependentComparison` reruns the actual
+subject. Only a defined-bit mismatch at the same observable is retained. Zero
+and individual set-bit clearing are deterministic and monotone; a full pass
+without an accepted reduction establishes a single-bit-clearing fixed point.
+The final counterexample must replay before that minimum claim is published.
+Comparison/time budgets, cancellation, unknown/missing observations and failed
+final replay cannot publish a minimum. Interrupted runs keep their last confirmed
+counterexample. This diagnostic never contributes a passing oracle result.
+
+The permanent regression changes the actual RV64 ADD producer to SUB through an
+isolated import hook, without changing instruction bytes or the independent
+model. Starting with large x1 and x2=7, reduction reaches x1=0 and x2=1; the
+reference ADD result is1 and the production SUB result is0xffffffffffffffff.
+The reduced case has a fresh validated identity, unchanged masks/semantics, and
+reproduces through the existing independent runner. Tests also cover correct
+production, concrete entry-state identity, invalid/unbound entry state, stale
+case identity, budget exhaustion, cancellation, a stalled subject, unsupported
+memory, deterministic replay and a lost final counterexample.
+
+The focused34-test WIP suite passed in
+`me-minimization-replay-wip-c974a772-6f6b-4a1b-93d2-6cd2ca83a6e9.json`.
+An independent calibration freezes the previous expected state only in an
+import hook: six other tests pass and the real producer reduction test fails
+with `inconclusive` instead of `minimized`. This expected negative result and
+its retained hook are in
+`me-minimization-frozen-reference-red-721a9626-37c4-4de1-acb3-8de1322f6142.json`
+and `me-minimization-calibration-20260912/`. Thus the reduction test requires
+actual reference recomputation, not a frozen expected-value predicate.
+
+Preflight refreshed184 open PRs, including complete paginated file inventories.
+This slice's seven paths have no direct collision with the183 other PRs.
+The previously audited nearest heads7097/8090/8217/8310 are unchanged; their
+generic translator/effect fixes remain separate. Inventory:
+`remaining-fr-preflight-20260912/me-minimization-preflight.json`.
+Only the two new validation/test paths were added to exact integration ownership
+and its existing negative regression. The canonical MachineEffects runner
+automatically discovers the new top-level `.test.mjs` file.
+
+This closes an input-reduction source slice using the existing independent
+arithmetic model, not Sail/Isla reduction across the full locked instruction
+families, instruction-sequence minimization, general ISA/whole-function proof or
+ME-01 completion. ARM's retained Isla trace lacks intermediate definitions, and
+the current canonical ARM path separately declines Z/C/V scalar translation.
+The exact read-only diagnostics and separate reference/translator prerequisites
+are retained in `me-arm64-prerequisites-20260912/handoff.md` and
+`observed-v2.json`. Environment acquisition and other-lane issue repair remain
+excluded by user instruction. C4 proof-to-adoption, relaxed-memory outcomes,
+the broader roadmap and integration acceptance remain open. No production
+runtime/generated output, generic translator or external artifact was changed.
+Goal ACTIVE; integration CHECKPOINT-LOCKED.

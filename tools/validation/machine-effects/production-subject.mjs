@@ -8,6 +8,8 @@ import { buildSemanticV2CompatibilityPipeline } from '../../../js/semantics/comp
 import { translateSemanticIR } from '../../../js/symbolic/translate/semantic-ir.js';
 import { evaluateExpr } from '../../../js/symbolic/expr/evaluate.js';
 import { canonicalStringify } from './oracle-schema.mjs';
+import { productionSubjectObservation } from './oracle-runner.mjs';
+import { PRODUCTION_SUBJECT_IDENTITY } from './oracle-policy.mjs';
 import { assessArchitecturalEvidence, createArchitecturalEvidenceFromArtifactRecord } from './oracle-evidence-v2.mjs';
 
 export const PRODUCTION_SUBJECT_VERSION = 'machine-effects-production-register-subject/v1';
@@ -65,11 +67,12 @@ function pinnedTraceReference(record) {
   return { inputDigest, observables };
 }
 
-/** Observe final written GPRs in a self-contained, straight-line RV64 prefix.
+/** Observe final written GPRs in a straight-line RV64 prefix.
  * This is an offline subject adapter, not an ISA oracle or function executor.
- * Memory, control transfers, faults, unknowns and unbound entry state decline.
+ * Explicit entry registers are inputs, never expected outputs. Memory, control
+ * transfers, faults, unknowns and unbound entry state decline.
  */
-export function observeRv64RegisterPrefix(instructions, { signal, maxInstructions = 32, maxWorkItems = 10000 } = {}) {
+export function observeRv64RegisterPrefix(instructions, { signal, maxInstructions = 32, maxWorkItems = 10000, initialRegisters = null } = {}) {
   if (signal?.aborted) return declined('cancelled', 'subject-cancelled');
   if (!Number.isSafeInteger(maxInstructions) || maxInstructions < 1 || maxInstructions > 32
       || !Number.isSafeInteger(maxWorkItems) || maxWorkItems < 1 || maxWorkItems > 10000) {
@@ -78,6 +81,22 @@ export function observeRv64RegisterPrefix(instructions, { signal, maxInstruction
   if (!Array.isArray(instructions) || instructions.length === 0) return declined('malformed', 'subject-empty-prefix');
   if (instructions.length > maxInstructions) return declined('budget', 'subject-instruction-budget');
   try {
+    const symbolicArgs = {};
+    if (initialRegisters !== null) {
+      if (typeof initialRegisters !== 'object' || ![Object.prototype, null].includes(Object.getPrototypeOf(initialRegisters))) {
+        return declined('malformed', 'subject-invalid-entry-registers');
+      }
+      const keys = Object.keys(initialRegisters).sort();
+      if (keys.length > 31) return declined('budget', 'subject-entry-register-budget');
+      for (const key of keys) {
+        const property = Object.getOwnPropertyDescriptor(initialRegisters, key);
+        if (!/^x(?:[1-9]|[12][0-9]|3[01])$/.test(key) || !Object.hasOwn(property, 'value')
+            || typeof property.value !== 'string' || !/^0x[0-9a-fA-F]{1,16}$/.test(property.value)) {
+          return declined('malformed', 'subject-invalid-entry-register');
+        }
+        symbolicArgs[key] = BigInt(property.value);
+      }
+    }
     const decoded = instructions.map(({ address, rawBytes }) => createRiscv64DecodedInstruction({
       address, rawBytes, size: rawBytes.length, mode: 'rv64imc',
     }));
@@ -89,7 +108,10 @@ export function observeRv64RegisterPrefix(instructions, { signal, maxInstruction
         return declined('unsupported', 'subject-noncontiguous-prefix');
       }
     }
-    const inputDigest = prefixDigest(decoded);
+    const inputDigest = initialRegisters === null ? prefixDigest(decoded) : digest(canonicalStringify({
+      scope: 'rv64-register-prefix-with-entry-state/v1', prefix: prefixDigest(decoded),
+      registers: Object.fromEntries(Object.entries(symbolicArgs).map(([key, value]) => [key, String(value)])),
+    }));
     const pipeline = buildSemanticV2CompatibilityPipeline({
       architecturePlugin: architecturePluginV2('riscv64'),
       decoderSemanticVersion: RISCV64_DECODER_SEMANTIC_VERSION,
@@ -120,7 +142,7 @@ export function observeRv64RegisterPrefix(instructions, { signal, maxInstruction
           || instruction.extra.stateWriteProof?.broadUnknown !== false || physical?.kind !== 'register'
           || !/^x(?:[1-9]|[12][0-9]|3[01])$/.test(physical.registerId)
           || expectedWrites.get(effectId) !== physical.registerId) return declined('partial', 'subject-unproved-state-write');
-      const translated = translateSemanticIR(instruction.dst, { signal, maxWorkItems, maxDepth: 64 });
+      const translated = translateSemanticIR(instruction.dst, { signal, maxWorkItems, maxDepth: 64, symbolicArgs });
       if (translated.status !== 'exact' || translated.semanticUnknowns || translated.assumptions.length) {
         return declined(signal?.aborted ? 'cancelled' : 'partial', 'subject-inexact-scalar-translation');
       }
@@ -136,13 +158,37 @@ export function observeRv64RegisterPrefix(instructions, { signal, maxInstruction
     if (!assignments.length || expectedWrites.size) return declined('partial', 'subject-incomplete-state-write-projection');
     if (signal?.aborted) return declined('cancelled', 'subject-cancelled');
     return Object.freeze({ status: 'observed', reason: null, observables: Object.freeze(observables),
-      subjectVersion: PRODUCTION_SUBJECT_VERSION, scope: 'self-contained-rv64-register-prefix', inputDigest,
+      subjectVersion: PRODUCTION_SUBJECT_VERSION,
+      scope: initialRegisters === null ? 'self-contained-rv64-register-prefix' : 'rv64-register-prefix-with-entry-state', inputDigest,
       instructionCount: decoded.length, assignments: Object.freeze(assignments),
       architectureSemanticVersion: pipeline.architectureSemanticVersion,
       decoderSemanticVersion: pipeline.decoderSemanticVersion, pipelineVersion: pipeline.pipelineVersion });
   } catch (error) {
     return declined(signal?.aborted ? 'cancelled' : 'unsupported', `subject-rejected:${String(error.message).slice(0, 160)}`);
   }
+}
+
+/** Existing independent-oracle runner adapter. Only bytes and initial state
+ * enter production; operation descriptions and expected state are not read.
+ * The prefix observer accounts for every effect before untouched input state
+ * is preserved here. Unsupported observations cannot become comparisons.
+ */
+export function observeRv64CorpusCase({ caseValue, signal }) {
+  const unavailable = (kind, code) => ({ subjectIdentity: PRODUCTION_SUBJECT_IDENTITY,
+    subjectRole: 'production-machine-effects-subject', outcome: { kind, code }, state: null });
+  if (caseValue.profileId !== 'riscv64:rv64imc' || caseValue.architecture !== 'riscv64'
+      || !/^(?:[0-9a-fA-F]{2}){2,4}$/.test(caseValue.instructionBytes)) {
+    return unavailable('unsupported', 'rv64-corpus-subject-scope');
+  }
+  const observation = observeRv64RegisterPrefix([{ address: '0x1000',
+    rawBytes: [...Buffer.from(caseValue.instructionBytes, 'hex')] }], {
+    signal, initialRegisters: caseValue.initialState.registers,
+  });
+  if (observation.status !== 'observed') return unavailable(
+    observation.status === 'cancelled' ? 'cancelled' : 'unsupported', observation.reason);
+  const state = structuredClone(caseValue.initialState);
+  for (const [key, value] of Object.entries(observation.observables)) state.registers[key.slice('register:'.length)] = value;
+  return productionSubjectObservation({ state });
 }
 
 /** One pinned formal comparison, using existing evidence validation/comparison.

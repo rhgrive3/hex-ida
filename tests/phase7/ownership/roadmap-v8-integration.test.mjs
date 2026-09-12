@@ -148,6 +148,7 @@ test('ME-01 matrix owns exact validation paths without claiming sibling semantic
 test('ME-01 production subject owns only its adapter and comparison tests', () => {
   const manifest = loadRoadmapManifest(), assignments = validateRoadmapManifest(manifest);
   for (const file of ['tools/validation/machine-effects/production-subject.mjs',
+    'tools/validation/machine-effects/minimize-mismatch.mjs', 'tests/machine-effects/mismatch-minimization.test.mjs',
     'tests/machine-effects/production-formal-subject.test.mjs', 'tests/machine-effects/generated-formal-evidence.test.mjs']) {
     assert.equal(assignments.get(file), 'integration');
     const missing = structuredClone(manifest);
