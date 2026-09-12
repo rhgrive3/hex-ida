@@ -62,6 +62,16 @@ function semanticFunctionTarget(architecture) {
   return target;
 }
 
+function requirePrimitiveSafeInteger(value, code) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw new TypeError(code);
+  return value;
+}
+
+function requirePrimitiveString(value, code) {
+  if (typeof value !== 'string') throw new TypeError(code);
+  return value;
+}
+
 function semanticFunctionAddress(value) {
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number') {
@@ -645,15 +655,22 @@ export class Backend {
    */
   async analyzeSemanticFunction(options = {}) {
     const address = semanticFunctionAddress(options.address);
-    const length = Number(options.length);
-    if (!Number.isSafeInteger(length) || length < 1 || length > X86_SEMANTIC_FUNCTION_MAX_DECODE_BYTES) {
+    const length = requirePrimitiveSafeInteger(options.length, 'semantic-function-bounded-length-required');
+    if (length < 1 || length > X86_SEMANTIC_FUNCTION_MAX_DECODE_BYTES) {
       throw new TypeError('semantic-function-bounded-length-required');
     }
-    const architecture = String(options.architecture || 'x86_64');
+    const architecture = options.architecture == null || options.architecture === ''
+      ? 'x86_64'
+      : requirePrimitiveString(options.architecture, 'semantic-function-architecture-required');
     const target = semanticFunctionTarget(architecture);
-    const abiId = String(options.abiId || '');
+    const abiId = options.abiId == null || options.abiId === ''
+      ? ''
+      : requirePrimitiveString(options.abiId, 'semantic-function-abi-id-required');
     if (!target.abiIds.includes(abiId)) throw new TypeError(`semantic-function-${architecture}-abi-required`);
-    const sliceIndex = Number(options.sliceIndex ?? 0);
+    const sliceIndex = options.sliceIndex == null
+      ? 0
+      : requirePrimitiveSafeInteger(options.sliceIndex, 'semantic-function-slice-index-required');
+    if (sliceIndex < 0) throw new TypeError('semantic-function-slice-index-required');
     const formatMetadata = this.platformInfo?.productDescriptor?.formatMetadata
       || this.platformInfo?.slices?.[sliceIndex]?.info?.descriptor?.formatMetadata
       || {};
