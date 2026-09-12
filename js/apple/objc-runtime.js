@@ -291,11 +291,13 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
   };
 }
 
-function hierarchy(index, receiverType, budget = 64) {
+function hierarchy(index, receiverType) {
   const out = [];
   let name = cleanClassName(receiverType);
   const seen = new Set();
-  while (name && !seen.has(name) && out.length < budget) {
+  const classCount = Number.isSafeInteger(index.classes?.size) && index.classes.size >= 0 ? index.classes.size : 0;
+  const maxDepth = classCount + 1;
+  while (name && !seen.has(name) && out.length < maxDepth) {
     seen.add(name);
     out.push(name);
     const c = index.classes.get(name);
