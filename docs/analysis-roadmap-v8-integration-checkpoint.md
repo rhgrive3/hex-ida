@@ -6134,3 +6134,17 @@ excluded by user instruction. C4 proof-to-adoption, relaxed-memory outcomes,
 the broader roadmap and integration acceptance remain open. No production
 runtime/generated output, generic translator or external artifact was changed.
 Goal ACTIVE; integration CHECKPOINT-LOCKED.
+
+The minimizer's final review also checked missing required register observations.
+The existing oracle result schema already rejects that shape as malformed, so
+the new coverage confirms an inconclusive result without duplicating that
+validation in the minimizer. A separate root regression did expose an aggregate
+deadline gap: fulfilled comparison promises could postpone the timeout callback.
+The retained failing test is
+`me-minimization-deadline-red-74a24562-4d79-42b8-852a-7102b8eb6a78.json`.
+The minimizer now checks elapsed monotonic time before and after each comparison,
+including the final replay, in addition to its timer for stalled async subjects.
+Synchronous work cannot be preempted, but an over-deadline result cannot publish
+a minimum. The clock regression runs the actual producer path with four30ms
+observations against a100ms aggregate budget and requires resource-limited
+termination with no minimum claim.

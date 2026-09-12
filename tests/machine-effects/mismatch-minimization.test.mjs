@@ -138,6 +138,16 @@ test('real producer ADD-to-SUB mutation is minimized through independent re-exec
     assert.equal(unknown.status,'inconclusive');
     assert.equal(unknown.caseValue.caseId,original.caseId);
     assert.equal(unknown.minimality,'not-established');
+    count = 0;
+    const missing = await minimizeMachineEffectsMismatch({corpusCase:original,subject:context=>{
+      const observation=observeRv64CorpusCase(context);
+      if(++count>1)delete observation.state.registers.x1;
+      return observation;
+    }});
+    assert.equal(missing.status,'inconclusive');
+    assert.equal(missing.caseValue.caseId,original.caseId);
+    assert.equal(missing.steps.length,0);
+    assert.equal(missing.minimality,'not-established');
     const controller = new AbortController(); count = 0;
     const cancelled = await minimizeMachineEffectsMismatch({corpusCase:original,signal:controller.signal,subject:context=>{
       const observed=observeRv64CorpusCase(context);
@@ -155,6 +165,22 @@ test('real producer ADD-to-SUB mutation is minimized through independent re-exec
     assert.equal(lost.status,'inconclusive');
     assert.equal(lost.reason,'final-counterexample-not-reproduced');
     assert.equal(lost.minimality,'not-established');
+    const nowDescriptor=Object.getOwnPropertyDescriptor(performance,'now');
+    let elapsed=0;
+    Object.defineProperty(performance,'now',{configurable:true,value:()=>elapsed});
+    try {
+      const deadline = await minimizeMachineEffectsMismatch({corpusCase:original,timeoutMs:100,subject:context=>{
+        const observation=observeRv64CorpusCase(context);
+        elapsed+=30; // Each call is below100ms; fulfilled microtasks accumulate over100ms.
+        return observation;
+      }});
+      assert.equal(deadline.status,'resource-limited');
+      assert.equal(deadline.minimality,'not-established');
+      assert.equal(deadline.comparisons,4);
+    } finally {
+      if(nowDescriptor)Object.defineProperty(performance,'now',nowDescriptor);
+      else delete performance.now;
+    }
     console.log('actual RV64 producer mismatch reduced to x1=0, x2=1; reference ADD=1, subject SUB=ffffffffffffffff');
   `;
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', program], {

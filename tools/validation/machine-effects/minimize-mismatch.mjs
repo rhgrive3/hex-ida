@@ -11,6 +11,7 @@ const VERSION = 'machine-effects-input-mismatch-minimizer/v1';
  */
 export async function minimizeMachineEffectsMismatch({ corpusCase, subject, signal,
   maxComparisons = 256, timeoutMs = 30000 } = {}) {
+  const startedAt = performance.now();
   const original = validateCorpusCase(corpusCase);
   if (typeof subject !== 'function') throw new TypeError('minimizer-subject-required');
   if (!Number.isSafeInteger(maxComparisons) || maxComparisons < 1 || maxComparisons > 4096
@@ -31,7 +32,7 @@ export async function minimizeMachineEffectsMismatch({ corpusCase, subject, sign
   const cancelled = () => stop('cancelled');
   signal?.addEventListener('abort', cancelled, { once: true });
   if (signal?.aborted) cancelled();
-  const timer = setTimeout(() => stop('resource-limited'), timeoutMs);
+  const timer = setTimeout(() => stop('resource-limited'), Math.max(1, timeoutMs - (performance.now() - startedAt)));
   const finish = (status, reason, minimal = false) => Object.freeze({
     version: VERSION, status, reason, reductionScope: 'lhs-rhs-initial-register-bit-clearing',
     originalCaseId: original.caseId, caseValue: result?.status === 'mismatch' ? current : null,
@@ -41,11 +42,16 @@ export async function minimizeMachineEffectsMismatch({ corpusCase, subject, sign
   const oracle = createReferenceOracle({ identity: original.oracleIdentity, version: original.oracleVersion,
     toolchainIdentity: original.provenance.toolchainIdentity, provenance: original.provenance });
   const compare = async candidate => {
+    if (performance.now() - startedAt >= timeoutMs) stop('resource-limited');
     if (stopped) return null;
     if (comparisons >= maxComparisons) { stop('resource-limited'); return null; }
     comparisons++;
-    return Promise.race([runIndependentComparison({ corpusCase: candidate, subject, oracle,
+    const comparison = await Promise.race([runIndependentComparison({ corpusCase: candidate, subject, oracle,
       signal: controller.signal, budgets: { timeoutMs } }), stopPromise]);
+    // Fulfilled comparison promises may monopolize the microtask queue; a
+    // timer alone cannot enforce the aggregate deadline in that case.
+    if (performance.now() - startedAt >= timeoutMs) stop('resource-limited');
+    return stopped ? null : comparison;
   };
   const sameMismatch = value => value?.status === 'mismatch' && value.mismatches.some(mismatch =>
     mismatch.reason === 'defined-bit-mismatch' && mismatch.observable === signature);
