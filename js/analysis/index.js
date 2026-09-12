@@ -24,6 +24,14 @@ import { TypeConstraintGraph, selectedTypeIfCertain, reconstructStructuralType }
 import { applyDebugTypesToGraph } from './debug/provider.js';
 import { DiscoveryProducerRegistry, fuseFunctionCandidates } from './discovery/fusion.js';
 import { GENERIC_PRODUCERS } from './discovery/producers.js';
+import {
+  discoveryArtifactForRebuild,
+  functionDiscoveryArtifact,
+  isFactoryIssuedDiscoveryArtifact,
+  isFactoryIssuedDiscoveryRebuildBinding,
+  normalizeDiscoveryArtifactBudget,
+  verifyDiscoveryReparse,
+} from './discovery/artifact.js';
 import { validateMemorySsaBinding } from './memoryssa-binding.js';
 import {
   explainMemoryPath as explainMemoryPathQuery,
@@ -268,4 +276,10 @@ export {
   applyDebugTypesToGraph,
   applyLanguageMetadataTypesToGraph,
   languageMetadataFunctionEvidence,
+  functionDiscoveryArtifact,
+  discoveryArtifactForRebuild,
+  isFactoryIssuedDiscoveryArtifact,
+  isFactoryIssuedDiscoveryRebuildBinding,
+  normalizeDiscoveryArtifactBudget,
+  verifyDiscoveryReparse,
 };

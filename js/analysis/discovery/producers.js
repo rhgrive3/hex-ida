@@ -430,3 +430,12 @@ export const GENERIC_PRODUCERS = Object.freeze([
   referenceProducer,
   callGraphProducer,
 ]);
+
+// Factory provenance for consumers that need to distinguish repository-owned
+// discovery authority from caller-supplied heuristic producers. Identity is by
+// object, never by the spoofable producer id string.
+const CANONICAL_DISCOVERY_PRODUCERS = new WeakSet(GENERIC_PRODUCERS);
+
+export function isCanonicalDiscoveryProducer(producer) {
+  return !!producer && CANONICAL_DISCOVERY_PRODUCERS.has(producer);
+}
