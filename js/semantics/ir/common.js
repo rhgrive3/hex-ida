@@ -61,6 +61,10 @@ export function positiveInteger(value, code) {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) fail(code);
   return value;
 }
+export function nonNegativeInteger(value, code) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) fail(code);
+  return value;
+}
 export function optionalPositiveInteger(value, code) {
   return value == null ? null : positiveInteger(value, code);
 }
@@ -93,7 +97,7 @@ export function assertNotAborted(options) {
 }
 export function budgetLimit(options, key) {
   const fallback = SEMANTIC_IR_DEFAULT_BUDGET[key];
-  return options?.budget?.[key] == null ? fallback : positiveInteger(options.budget[key], `semantic-ir-invalid-budget-${key}`);
+  return options?.budget?.[key] == null ? fallback : nonNegativeInteger(options.budget[key], `semantic-ir-invalid-budget-${key}`);
 }
 export function assertWithinBudget(length, options, key) {
   if (length > budgetLimit(options, key)) fail(`semantic-ir-budget-exceeded-${key}`);
