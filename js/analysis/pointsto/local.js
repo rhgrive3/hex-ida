@@ -58,7 +58,7 @@ import {
 } from './lattice.js';
 
 export const A2_ANALYZER_ID = 'phase7.pointsto.a2-local';
-export const A2_ANALYZER_VERSION = '1.2.0';
+export const A2_ANALYZER_VERSION = '1.2.1';
 
 function configuredSummaryArtifactIds(options, calleeId) {
   const ids = [];
@@ -879,7 +879,17 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
       return merged;
     }
 
-    if (WIDTH_PRESERVING_CASTS.has(node.kind) && node.inputs.length === 1) return irGet(node.inputs[0]);
+    if (WIDTH_PRESERVING_CASTS.has(node.kind) && node.inputs.length === 1) {
+      const inputValue = values.get(String(node.inputs[0]));
+      const inputNode = inputValue?.definitionNodeId == null
+        ? null
+        : nodes.get(String(inputValue.definitionNodeId));
+      const inputWidth = widthOf(inputValue, inputNode);
+      if (inputWidth == null || width == null || inputWidth !== width) {
+        return topPointsTo('integer-to-pointer');
+      }
+      return irGet(node.inputs[0]);
+    }
     if (WIDTH_CHANGING_CASTS.has(node.kind) && node.inputs.length === 1) {
       const inputValue = values.get(String(node.inputs[0]));
       const inputWidth = widthOf(inputValue, null);
