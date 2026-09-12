@@ -147,6 +147,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
     let memoryEffects = [];
     let callEffects = [];
     let controlEffects = [];
+    let possibleExceptions = [];
     let producedValues = [];
     let consumedValues = [];
     let unknownEffects = [];
@@ -529,6 +530,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
               token,
               isWrite,
             });
+            possibleExceptions.push({ kind: 'null-reference', condition: 'obj==null' });
           }
           break;
 
@@ -701,7 +703,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
       memoryEffects,
       callEffects,
       controlEffects,
-      possibleExceptions: [],
+      possibleExceptions,
       origin,
       completeness,
       unknownEffects,

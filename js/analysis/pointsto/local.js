@@ -58,7 +58,7 @@ import {
 } from './lattice.js';
 
 export const A2_ANALYZER_ID = 'phase7.pointsto.a2-local';
-export const A2_ANALYZER_VERSION = '1.2.0';
+export const A2_ANALYZER_VERSION = '1.2.1';
 
 function configuredSummaryArtifactIds(options, calleeId) {
   const ids = [];
@@ -144,8 +144,16 @@ function parseInteger(candidate) {
     if (typeof raw === 'number') return Number.isSafeInteger(raw) ? BigInt(raw) : null;
     if (typeof raw !== 'string') return null;
     const text = raw.trim();
-    if (!/^[+-]?(0x[0-9a-fA-F]+|\d+)$/.test(text)) return null;
-    return BigInt(text);
+    // Grammar accepts an explicit `+`/`-` on hex and decimal literals.
+    // `BigInt()` rejects signed radix-prefixed spellings ('-0x10', '+0x10')
+    // and even a signed decimal ('+16'), so the sign is separated before the
+    // magnitude parse; otherwise an accepted input class silently degrades to
+    // an unknown constant while the equivalent spelling stays exact (#5011).
+    if (!/^[+-]?(?:0x[0-9a-fA-F]+|\d+)$/.test(text)) return null;
+    const negative = text.startsWith('-');
+    const magnitude = /^[+-]/.test(text) ? text.slice(1) : text;
+    const parsed = BigInt(magnitude);
+    return negative ? -parsed : parsed;
   } catch { return null; }
 }
 
@@ -871,7 +879,17 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
       return merged;
     }
 
-    if (WIDTH_PRESERVING_CASTS.has(node.kind) && node.inputs.length === 1) return irGet(node.inputs[0]);
+    if (WIDTH_PRESERVING_CASTS.has(node.kind) && node.inputs.length === 1) {
+      const inputValue = values.get(String(node.inputs[0]));
+      const inputNode = inputValue?.definitionNodeId == null
+        ? null
+        : nodes.get(String(inputValue.definitionNodeId));
+      const inputWidth = widthOf(inputValue, inputNode);
+      if (inputWidth == null || width == null || inputWidth !== width) {
+        return topPointsTo('integer-to-pointer');
+      }
+      return irGet(node.inputs[0]);
+    }
     if (WIDTH_CHANGING_CASTS.has(node.kind) && node.inputs.length === 1) {
       const inputValue = values.get(String(node.inputs[0]));
       const inputWidth = widthOf(inputValue, null);

@@ -132,6 +132,46 @@ function nonNegativeInteger(value, code) {
 function assertAllowedKeys(input, allowed, code) {
   for (const key of Object.keys(input)) if (!allowed.has(key)) fail(`${code}:${key}`);
 }
+function validateUnknownEffect(value) {
+  const effect = object(value, 'vm-effect-invalid-unknown-effect');
+  const categoryDescriptor = Object.getOwnPropertyDescriptor(effect, 'category');
+  if (!categoryDescriptor || !Object.prototype.hasOwnProperty.call(categoryDescriptor, 'value')) {
+    fail('vm-effect-invalid-unknown-category');
+  }
+  const category = categoryDescriptor.value;
+  if (typeof category !== 'string' || !SETS.unknownCategories.has(category)) {
+    fail('vm-effect-invalid-unknown-category');
+  }
+  return effect;
+}
+function normalizeUnknownEffect(value) {
+  object(value, 'vm-effect-invalid-unknown-effect');
+  const normalized = jsonSafe(value);
+  validateUnknownEffect(normalized);
+  return normalized;
+}
+function unknownEffectsForValidation(bundle) {
+  const descriptor = Object.getOwnPropertyDescriptor(bundle, 'unknownEffects');
+  if (!descriptor) {
+    if ('unknownEffects' in bundle) fail('vm-effect-invalid-unknown-effects');
+    return [];
+  }
+  if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+    fail('vm-effect-invalid-unknown-effects');
+  }
+  const effects = descriptor.value;
+  if (effects == null) return [];
+  array(effects, 'vm-effect-invalid-unknown-effects');
+  const stable = new Array(effects.length);
+  for (let index = 0; index < effects.length; index += 1) {
+    const elementDescriptor = Object.getOwnPropertyDescriptor(effects, String(index));
+    if (!elementDescriptor || !Object.prototype.hasOwnProperty.call(elementDescriptor, 'value')) {
+      fail('vm-effect-invalid-unknown-effect');
+    }
+    stable[index] = elementDescriptor.value;
+  }
+  return stable;
+}
 function assertNotAborted(options) {
   if (options?.signal?.aborted) {
     const error = new Error('vm-effects-cancelled');
@@ -201,11 +241,11 @@ export function createVMEffectBundle(input, options = {}) {
   const callEffects = array(input.callEffects ?? [], 'vm-effect-invalid-call-effects');
   const controlEffects = array(input.controlEffects ?? [], 'vm-effect-invalid-control-effects');
   const possibleExceptions = array(input.possibleExceptions ?? [], 'vm-effect-invalid-exceptions');
+  const unknownEffects = array(input.unknownEffects ?? [], 'vm-effect-invalid-unknown-effects')
+    .map((effect) => normalizeUnknownEffect(effect));
 
-  if (completeness === 'partial' || completeness === 'unknown') {
-    if (!input.unknownEffects || !Array.isArray(input.unknownEffects) || input.unknownEffects.length === 0) {
-      fail('vm-effect-partial-must-specify-unknown-effects');
-    }
+  if ((completeness === 'partial' || completeness === 'unknown') && unknownEffects.length === 0) {
+    fail('vm-effect-partial-must-specify-unknown-effects');
   }
 
   const schemaVersion = Number(input.schemaVersion ?? VM_EFFECTS_SCHEMA_VERSION);
@@ -235,7 +275,7 @@ export function createVMEffectBundle(input, options = {}) {
     possibleExceptions: deepFreeze(possibleExceptions.map((e) => jsonSafe(e))),
     origin: createOriginSet(input.origin ?? { operationIds: [operationId] }),
     completeness,
-    unknownEffects: input.unknownEffects ? deepFreeze(input.unknownEffects.map((u) => jsonSafe(u))) : Object.freeze([]),
+    unknownEffects: deepFreeze(unknownEffects),
     metadata: input.metadata ? deepFreeze(jsonSafe(input.metadata)) : Object.freeze({}),
   };
 
@@ -246,7 +286,25 @@ export function validateVMEffectBundle(bundle) {
   if (!bundle || typeof bundle !== 'object') fail('vm-effect-bundle-invalid');
   if (!bundle.operationId || !bundle.methodId || !bundle.frontendId) fail('vm-effect-bundle-missing-identity');
   if (!SETS.completeness.has(bundle.completeness)) fail('vm-effect-bundle-invalid-completeness');
+  const unknownEffects = unknownEffectsForValidation(bundle);
+  for (const effect of unknownEffects) validateUnknownEffect(effect);
+  if ((bundle.completeness === 'partial' || bundle.completeness === 'unknown') && unknownEffects.length === 0) {
+    fail('vm-effect-partial-must-specify-unknown-effects');
+  }
   return true;
+}
+
+function validateFunctionBundleOwnership(fn, bundle) {
+  if (bundle.methodId !== fn.methodId) fail('vm-effect-function-bundle-method-mismatch');
+  if (bundle.frontendId !== fn.frontendId) fail('vm-effect-function-bundle-frontend-mismatch');
+  if (fn.profileId != null && bundle.profileId != null && bundle.profileId !== fn.profileId) {
+    fail('vm-effect-function-bundle-profile-mismatch');
+  }
+}
+
+export function assertVMEffectFunctionBundleOwnership(fn, bundles = fn?.bundles) {
+  if (!Array.isArray(bundles)) return;
+  for (const bundle of bundles) validateFunctionBundleOwnership(fn, bundle);
 }
 
 export function createVMEffectFunction(input, options = {}) {
@@ -260,6 +318,7 @@ export function createVMEffectFunction(input, options = {}) {
 
   const methodId = nonEmpty(input.methodId, 'vm-effect-method-id-required');
   const frontendId = nonEmpty(input.frontendId, 'vm-effect-frontend-id-required');
+  const profileId = input.profileId ? String(input.profileId) : null;
   const bundles = array(input.bundles ?? [], 'vm-effect-function-bundles-required');
   const exceptionRegions = array(input.exceptionRegions ?? [], 'vm-effect-function-exceptions-invalid');
   if (bundles.length > budgetValue(options, 'maxOperations')) fail('vm-effect-resource-limit-operations');
@@ -309,9 +368,12 @@ export function createVMEffectFunction(input, options = {}) {
     resolutionCompleteness = 'complete';
   }
 
+  const functionIdentity = { methodId, frontendId, profileId };
+  assertVMEffectFunctionBundleOwnership(functionIdentity, outBundles);
+
   const out = {
     methodId,
-    profileId: input.profileId ? String(input.profileId) : null,
+    profileId,
     frontendId,
     entryState: input.entryState ? deepFreeze(jsonSafe(input.entryState)) : Object.freeze({}),
     bundles: deepFreeze(outBundles),
@@ -344,5 +406,6 @@ export function validateVMEffectFunction(fn) {
   if (AGGREGATE_STRENGTH[fn.aggregateCompleteness] > AGGREGATE_STRENGTH[derived]) {
     fail('vm-effect-aggregate-completeness-contradiction');
   }
+  assertVMEffectFunctionBundleOwnership(fn);
   return true;
 }

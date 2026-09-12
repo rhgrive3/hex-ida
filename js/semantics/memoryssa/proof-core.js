@@ -35,8 +35,10 @@ function canonicalSemanticAccessProvider(descriptor) {
   const machineEffects = descriptor?.node?.attributes?.machineEffects;
   const architectureId = machineEffects?.architectureId;
   const family = machineEffects?.bundleMetadata?.family;
+  const bundleCompleteness = machineEffects?.bundleCompleteness;
   if (!memory || !['arm64', 'arm64e'].includes(architectureId)
-      || family !== 'arm64-memory') return null;
+      || family !== 'arm64-memory'
+      || bundleCompleteness !== 'exact') return null;
   if (typeof descriptor?.node?.id !== 'string' || descriptor.node.id.length === 0) return null;
   if (typeof memory.widthBits !== 'number' || !Number.isSafeInteger(memory.widthBits)
       || memory.widthBits <= 0 || memory.widthBits % 8 !== 0) return null;
