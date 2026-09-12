@@ -68,3 +68,4 @@ await import('./decompiler-switch.mjs');
 await import('./objc-runtime.mjs');
 await import('./objc-metadata.mjs');
 await import('./swift-runtime.mjs');
+await import('./issue-4618-symbolic-width-over-64-fail-closed.mjs');
