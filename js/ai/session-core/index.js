@@ -59,7 +59,11 @@ export function createInvestigationSession(input = {}) {
 }
 
 export class InvestigationSessionStore {
-  constructor({ persistence } = {}) { this.persistence = persistence || null; this.sessions = new Map(); }
+  constructor({ persistence } = {}) {
+    this.persistence = persistence || null;
+    this.sessions = new Map();
+    this.creating = new Set();
+  }
 
   register(session) {
     if (!session || !isValidSessionId(session.id)) return null;
@@ -86,11 +90,34 @@ export class InvestigationSessionStore {
     // Persistence and visibility both receive the same detached immutable
     // record; a caller cannot mutate either side between the two steps.
     const session = freezeOwned(createInvestigationSession(input));
-    // Durability before visibility: a failed save must not leave the session
-    // in memory presenting a write that never landed (#5434).
-    await this.persist(session);
-    this.sessions.set(session.id, session);
-    return session;
+    const id = session.id;
+    if (this.sessions.has(id) || this.creating.has(id)) {
+      throw new Error(`AI session id already exists: ${id}`);
+    }
+
+    // Reserve the identity before the first await. Without this reservation,
+    // two concurrent create() calls can both observe a free id and race their
+    // durable writes, turning create semantics into last-writer-wins upsert.
+    this.creating.add(id);
+    try {
+      // A cold store can already contain the id even when this process has not
+      // hydrated it yet. Probe the persistence authority before save so create
+      // never overwrites an existing durable session. Any non-null record is a
+      // claimed slot; malformed persisted state must not make the id reusable.
+      if (this.persistence && typeof this.persistence.load === 'function') {
+        const existing = await this.persistence.load(id);
+        if (existing != null) throw new Error(`AI session id already exists: ${id}`);
+      }
+      if (this.sessions.has(id)) throw new Error(`AI session id already exists: ${id}`);
+
+      // Durability before visibility: a failed save must not leave the session
+      // in memory presenting a write that never landed (#5434).
+      await this.persist(session);
+      this.sessions.set(id, session);
+      return session;
+    } finally {
+      this.creating.delete(id);
+    }
   }
 
   async get(id) {
