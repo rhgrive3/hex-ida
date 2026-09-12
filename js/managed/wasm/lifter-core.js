@@ -14,6 +14,10 @@ function typeBits(type) {
   return 32;
 }
 
+function sameTypes(a, b) {
+  return a.length === b.length && a.every((type, index) => type === b[index]);
+}
+
 function decodeBlockType(bytecode, pos, wasmModule) {
   if (pos >= bytecode.length) fail('wasm-truncated-blocktype');
   const first = bytecode[pos];
@@ -176,6 +180,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         mnemonic = 'end';
         const frame = controlStack.pop();
         if (!frame) fail('wasm-unmatched-end');
+        if (frame.kind === 'if' && !frame.elseSeen && !sameTypes(frame.params, frame.results)) fail('wasm-invalid-if-without-else-type');
         if (!frame.polymorphic && currentStackHeight !== frame.stackHeight + frame.results.length) fail('wasm-invalid-block-result-stack');
         const continuation = pos;
         frame.endOffset = opOffset;
