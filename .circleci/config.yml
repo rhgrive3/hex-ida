@@ -49,9 +49,12 @@ jobs:
       - configure-public-repository-checkout
       - checkout
       - run:
+          name: Validate agent-loop dependency trigger coverage
+          command: node tests/dev-agent/agent-loop-trigger-coverage.mjs
+      - run:
           name: Detect agent-loop impact
           command: |
-            run_it="$(bash scripts/ci/circleci-impact.sh main-and-branch '^(js/userscript/dev/|tests/dev-agent/agent-loop-resilience\.mjs$|\.github/workflows/agent-loop-resilience\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
+            run_it="$(bash scripts/ci/circleci-impact.sh main-and-branch '^(js/(userscript/|ai/)|tests/dev-agent/agent-loop-(resilience|trigger-coverage)\.mjs$|tests/ci/circleci-impact\.test\.mjs$|\.github/workflows/agent-loop-resilience\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
             echo "export RUN_AGENT_LOOP_RESILIENCE=$run_it" >> "$BASH_ENV"
       - run:
           name: Run unattended agent loop regressions
