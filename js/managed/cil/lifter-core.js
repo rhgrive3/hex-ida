@@ -40,6 +40,19 @@ function methodTokenText(bodyIndex, methodAuthority) {
   return `0x06${(bodyIndex + 1).toString(16).padStart(6, '0')}`;
 }
 
+function cilTokenText(token) {
+  const numeric = typeof token === 'number' ? token >>> 0 : Number.parseInt(String(token), 16);
+  return Number.isSafeInteger(numeric) ? `0x${(numeric >>> 0).toString(16).padStart(8, '0')}` : null;
+}
+
+function resolveCilCalleeIdentity(cilImage, token) {
+  const tokenText = cilTokenText(token);
+  if (!tokenText) return null;
+  const rows = Array.isArray(cilImage.methods) ? cilImage.methods : [];
+  if (!rows.some((row) => cilTokenText(row?.token) === tokenText)) return null;
+  return { tokenText, methodId: createManagedMethodId(cilImage.moduleId, tokenText) };
+}
+
 export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority = null) {
   const methodBody = cilImage.methodBodies[bodyIndex];
   if (!methodBody) fail('cil-invalid-method-body-index');
@@ -330,8 +343,10 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             pc += 4;
             const kind = opcode === 0x28 ? 'call' : opcode === 0x6f ? 'callvirt' : 'newobj';
             mnemonic = kind;
+            const calleeIdentity = kind === 'call' ? resolveCilCalleeIdentity(cilImage, token) : null;
             callEffects.push({
               token,
+              ...(calleeIdentity ? { target: calleeIdentity.tokenText, targetMethodId: calleeIdentity.methodId } : {}),
               dispatchKind: kind === 'callvirt' ? 'virtual' : kind === 'newobj' ? 'constructor' : 'direct',
             });
             if (kind === 'newobj') {

@@ -7,6 +7,7 @@ import { lowerVMEffectsToSemanticIr as lowerCore } from './bridge-lowering-v2.js
 import { overlayDexLowering } from './bridge-dex-overlay-v2.js';
 import { overlayJvmControlLowering } from './bridge-jvm-control-overlay-v2.js';
 import { assertVMEffectFunctionBundleOwnership } from './vm-effects.js';
+import { isManagedMethodId } from './identity.js';
 
 export const MANAGED_BRIDGE_VERSION = legacy.MANAGED_BRIDGE_VERSION;
 export const queryManagedSymbolicVerification = legacy.queryManagedSymbolicVerification;
@@ -45,7 +46,7 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
   for (const node of semanticIr.nodes) {
     if (node.kind === 'call' && node.call) {
       const call = node.call, candidates = call.targetEntityIds || [];
-      const isExternal = candidates.some((c) => { const lc=String(c).toLowerCase(); return lc.includes('jni')||lc.includes('host')||lc.includes('import')||lc.includes('native')||lc.includes('pinvoke'); });
+      const isExternal = candidates.some((c) => { if (isManagedMethodId(c)) return false; const lc=String(c).toLowerCase(); return lc.includes('jni')||lc.includes('host')||lc.includes('import')||lc.includes('native')||lc.includes('pinvoke'); });
       const dispatchKind=node.metadata?.dispatchKind||'unknown', targetUnresolved=node.metadata?.targetUnresolved===true;
       if (candidates.length===1&&!isExternal&&dispatchKind==='direct'&&!targetUnresolved) { directCalls.push({target:candidates[0],dispatchKind:'direct',unresolved:false,nodeId:node.id}); if(call.completeness!=='complete')unknownCallEffects.push(createUnknownCallEffect({callSiteId:node.id,reason:'summary-incomplete',targetEntityIds:candidates,evidenceIds:[node.id]})); }
       else if(isExternal){externalCalls.push({target:candidates[0]||'external',dispatchKind:'external',unresolved:true,nodeId:node.id});unknownCallEffects.push(createUnknownCallEffect({callSiteId:node.id,reason:'unresolved-target',targetEntityIds:candidates,evidenceIds:[node.id]}));}
