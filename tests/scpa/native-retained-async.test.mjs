@@ -7,6 +7,9 @@ import { bindRuntimeProviderPlatformForApp, existingRuntimeProviderPlatformForAp
 import { queryAsyncEventOrder } from '../../js/analysis/apple/scoped-async.js';
 import { CAPTURED_ASYNC_EVENT_SCHEMA } from '../../js/runtime/captured-async.js';
 
+const verifyOwnedTraceModule = (module, context) => module.binaryId === context.binaryId
+  && module.sliceId === context.sliceId;
+
 async function setup(t, mutate = () => {}) {
   const f = fixture(), object = { objectId: 'objc-block:allocation-site', objectGeneration: 'allocation:2' };
   const modelEvents = ['allocate', 'use', 'dispose'].map((kind, sequence) => ({ id: `captured:${sequence}`, kind,
@@ -25,7 +28,9 @@ async function setup(t, mutate = () => {}) {
   mutate(recording);
   // Offline trace import normalizes owned fixture records. No debugger,
   // instrumentation, emulation, stream, or replay is involved in this fixture.
-  const platform = new RuntimeProviderPlatform(); platform.registerTrace(recording, { id: 'owned-retained' });
+  const platform = new RuntimeProviderPlatform(); platform.registerTrace(recording, {
+    id: 'owned-retained', verifyModuleIdentity: verifyOwnedTraceModule,
+  });
   const session = await platform.openSession('owned-retained'); t.after(() => platform.closeAll());
   const scope = { ...f, snapshotId: 'native-async-snapshot', work: workFor(t) };
   let live = true;

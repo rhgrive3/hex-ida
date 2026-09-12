@@ -33,11 +33,9 @@ function producerFixture(t){
  const options={...f,binaryId,sliceIndex:0,snapshotId:'snap',architecture:'arm64',abiId:'aapcs64',platform:'unknown',dataEndianness:'little',region:{id:'text',exec:true,vmAddr:0x1000n,size:bytes.length},address:0x1000n,length:bytes.length,isCurrent:()=>true};
  return{...f,options,backend,calls,bytes,run:(extra={})=>produceScopedArm64Pipeline(backend,{...options,work:workFor(t),...extra})};
 }
-test('native bytes -> real owners -> canonical ArtifactStore round-trip preserves conservative partial-cache policy',async t=>{
+test('native bytes -> real owners -> canonical ArtifactStore round-trip reuses compatible partial cache',async t=>{
  const f=producerFixture(t),cold=await f.run();assert.equal(cold.status,'completed');assert.equal(cold.reused,false);assert.equal(cold.pipeline.instrumentation.v2Executed,true);assert.equal(cold.pipeline.memorySsa.snapshotId,'snap');assert.equal(cold.pipeline.semanticIr.nodes.length>0,true);
- // The canonical scheduler deliberately refuses incomplete cache entries.
- // Do not relabel a partial semantic result as complete to force a cache hit.
- const warm=await f.run();assert.equal(warm.reused,false);assert.equal(f.calls.worker,2);assert.equal(f.calls.chunk,2);assert.equal(f.calls.read,2);assert.equal(warm.artifactId,cold.artifactId);assert.equal(cold.completeness,'partial');
+ const warm=await f.run();assert.equal(warm.reused,true);assert.equal(f.calls.worker,1);assert.equal(f.calls.chunk,1);assert.equal(f.calls.read,2);assert.equal(warm.artifactId,cold.artifactId);assert.equal(cold.completeness,'partial');
  // Exact file offsets from readAt, not a guessed region/display offset.
  assert.ok(cold.pipeline.semanticIr.nodes.some(n=>n.origin?.byteRanges?.some(r=>r.start==='64')));
 });

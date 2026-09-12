@@ -9,6 +9,9 @@ import { RuntimeProviderPlatform } from '../../js/runtime/provider-platform.js';
 import { bindRuntimeProviderPlatformForApp, existingRuntimeProviderPlatformForApp } from '../../js/runtime/app-runtime.js';
 import { CAPTURED_ASYNC_EVENT_SCHEMA } from '../../js/runtime/captured-async.js';
 
+const verifyOwnedTraceModule = (module, context) => module.binaryId === context.binaryId
+  && module.sliceId === context.sliceId;
+
 // A test-owned offline recording is opened through the actual TraceProvider
 // before binding the public app adapter. The query only borrows retained data.
 async function retainedApp(t) {
@@ -38,7 +41,9 @@ async function retainedApp(t) {
       observationMode: 'observed', completeness: 'complete', payload: {
         scpaAsync: { schema: CAPTURED_ASYNC_EVENT_SCHEMA, event, contracts, relations }, privateUnrelatedPayload: 'must-remain-private' } })) };
   const open = async id => {
-    const platform = new RuntimeProviderPlatform(); platform.registerTrace(recording, { id });
+    const platform = new RuntimeProviderPlatform(); platform.registerTrace(recording, {
+      id, verifyModuleIdentity: verifyOwnedTraceModule,
+    });
     const session = await platform.openSession(id); t.after(() => platform.closeAll());
     return { platform, session };
   };
