@@ -1,0 +1,42 @@
+name: temporary reconcile PR 7823
+on:
+  push:
+    branches:
+      - fix/batch4-5647-wire-20260910-l91
+permissions:
+  contents: write
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reconcile onto validated main
+        shell: bash
+        env:
+          BASE_SHA: 4d83fd568f05624052998f87bf4aa3310f35d40b
+          BRANCH: fix/batch4-5647-wire-20260910-l91
+          PAYLOAD: .pr-reconcile-7823.patch
+          WORKFLOW: .github/workflows/pr-7823-reconcile.yml
+        run: |
+          set -euo pipefail
+          ORIG=$(git rev-parse HEAD)
+          git fetch --no-tags origin main
+          test "$(git rev-parse origin/main)" = "$BASE_SHA"
+          git checkout "$BASE_SHA" -- .
+          git apply --check "$PAYLOAD"
+          git apply "$PAYLOAD"
+          git rm -f -- "$PAYLOAD" "$WORKFLOW"
+          git add -A
+          git diff --cached --check
+          timeout 90s node tests/issue-5647-detect-fat-structure.mjs
+          node --check js/binary/detect.js
+          node --check js/binary/source-loaders.js
+          node --check js/platform/worker.js
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          TREE=$(git write-tree)
+          COMMIT=$(printf '%s\n' 'merge main and preserve #5647 FAT detection authority' | git commit-tree "$TREE" -p "$ORIG" -p "$BASE_SHA")
+          git push origin "$COMMIT:refs/heads/$BRANCH"
