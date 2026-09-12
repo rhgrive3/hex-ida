@@ -205,7 +205,7 @@ export class VariableInstructionIndex {
       // Navigation can join a prefetch producer. Protection belongs to all
       // consumers, not just the caller that started decoding (#6094).
       shared.protect ||= protect;
-      return this._join(shared.promise,signal);
+      return this._waitShared(shared, this._interest(shared, signal), signal);
     }
 
     this._metrics.cacheMisses++;
@@ -215,16 +215,15 @@ export class VariableInstructionIndex {
     if(requested<=0)throw new RangeError('variable-viewer-empty-page');
     this._metrics.decodeRequestCount++; this._metrics.requestedDecodeBytes+=requested;
 
-    const relayAbort=()=>{
-      if(!controller.signal.aborted){controller.abort(abortError(signal?.reason));this._metrics.cancelledRequests++;}
-    };
-    signal?.addEventListener?.('abort',relayAbort,{once:true});
-    if(signal?.aborted)relayAbort();
     let resolvePage, rejectPage;
     const promise = new Promise((resolve, reject) => { resolvePage = resolve; rejectPage = reject; });
-    const entry = {controller, promise, generation, start, protect};
+    const entry = {controller, promise, generation, start, protect, consumers:new Set(), settled:false};
     this.inflight.set(key, entry);
     promise.catch(()=>{});
+    // Producer cancellation belongs to the shared entry's consumer interest,
+    // never to an individual consumer signal (#4988). Interest is reserved
+    // before the producer starts so a lone consumer can still release it.
+    const consumer=this._interest(entry, signal);
     // Reserve the entry before invoking a potentially re-entrant decoder.
     // Its finalizer compares the lease, not an uninitialized promise binding.
     (async()=>{
@@ -239,11 +238,43 @@ export class VariableInstructionIndex {
         if(isAbort(error))throw error;
         throw error;
       }finally{
-        signal?.removeEventListener?.('abort',relayAbort);
+        entry.settled=true;
         if(this.inflight.get(key)===entry)this.inflight.delete(key);
       }
     })().then(resolvePage, rejectPage);
-    return this._join(promise,signal);
+    return this._waitShared(entry, consumer, signal);
+  }
+
+  _interest(entry, signal){
+    const consumer={onAbort:null};
+    entry.consumers.add(consumer);
+    if(signal){
+      consumer.onAbort=()=>this._leaveShared(entry, consumer, signal);
+      signal.addEventListener?.('abort',consumer.onAbort,{once:true});
+      if(signal.aborted)consumer.onAbort();
+    }
+    return consumer;
+  }
+
+  async _waitShared(entry, consumer, signal){
+    try{
+      return await this._join(entry.promise, signal);
+    }finally{
+      this._leaveShared(entry, consumer, signal);
+    }
+  }
+
+  _leaveShared(entry, consumer, signal){
+    if(!entry.consumers.delete(consumer))return;
+    if(consumer.onAbort){
+      signal?.removeEventListener?.('abort',consumer.onAbort);
+      consumer.onAbort=null;
+    }
+    if(entry.settled||entry.consumers.size)return;
+    if(!entry.controller.signal.aborted){
+      entry.controller.abort(abortError(signal?.reason));
+      this._metrics.cancelledRequests++;
+    }
   }
 
   async _join(promise,signal){
