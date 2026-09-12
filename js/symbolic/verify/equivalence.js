@@ -506,7 +506,7 @@ export async function verifyBoundedEquivalence({
       targetEntities: [String(query.targetEntity.beforeId), String(query.targetEntity.afterId)],
       queryHash: query.queryHash,
       exprSchemaVersion: '1.0.0',
-      translatorVersion: '1.0.0',
+      translatorVersion: query.translatorVersion,
       semanticIrVersion: query.semanticIrVersion,
       backendId: activeSession.backend?.id || 'unknown',
       backendVersion: activeSession.backend?.version || '0.0.0',

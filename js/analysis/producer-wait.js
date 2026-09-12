@@ -28,9 +28,8 @@ export function appProducerAbortError(signal, message = 'Analysis producer abort
 }
 
 function appProducerAbortReason(signal, message = 'Analysis producer aborted') {
-  // #4290: a consumer's AbortSignal.reason is identity-bearing cancellation
-  // authority. Preserve every provided value exactly; only a missing/unsafe
-  // reason read falls back to the repository's standard AbortError shape.
+  // Consumer AbortSignal.reason is identity-bearing cancellation authority.
+  // Preserve every provided value exactly; only missing/unsafe reads fall back.
   let reason;
   try { reason = signal?.reason; } catch { return appProducerAbortError(null, message); }
   return reason === undefined ? appProducerAbortError(null, message) : reason;
