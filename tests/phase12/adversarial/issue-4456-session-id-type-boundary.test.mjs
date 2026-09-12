@@ -23,7 +23,9 @@ test('#4456 structured store selectors cannot alias a canonical session', async 
     async delete() { deleteCalls++; },
   };
   const store = new InvestigationSessionStore({ persistence });
-  const original = await store.create({ id: 'session-A', goal: 'original' });
+  // Seed the in-memory authority directly: #4578 makes create() probe persistence
+  // for duplicate IDs, while this test intentionally keeps load() as a trap.
+  const original = store.register({ id: 'session-A', goal: 'original' });
 
   assert.equal(await store.get(['session-A']), null);
   assert.equal(await store.update(['session-A'], { goal: 'laundered' }), null);
