@@ -1,5 +1,5 @@
 import { composePrompt } from '../prompts/compose.js';
-import { clientSafeCapabilities, resolveInferenceAdapter } from './worker-adapters.js';
+import { clientSafeCapabilities, clientToolBudget, resolveInferenceAdapter } from './worker-adapters.js';
 import { finalResultTool, normalizeAIInteraction, normalizeAITurnRequest, promptWorkbench } from './worker-protocol.js';
 import {
   acquireDistributedQuota, byteLength, HttpError, isJsonRequest, isRetryableUpstreamFailure,
@@ -26,6 +26,11 @@ export async function handleAITurn(request, env) {
   let payload;
   try { payload = normalizeAITurnRequest(incoming); }
   catch (error) { return error instanceof HttpError ? jsonError(error.status, error.code, error.message) : jsonError(400, 'invalid_request', 'The AI turn request is invalid.'); }
+
+  const clientToolLimit = clientToolBudget(adapter.capabilities.maxTools);
+  if (payload.tools.length > clientToolLimit) {
+    return jsonError(422, 'tool_budget_exceeded', `This provider accepts at most ${clientToolLimit} client tool(s) alongside the required final-result tool.`);
+  }
 
   const quota = await acquireDistributedQuota(request, env, payload.sessionId);
   if (quota.response) return quota.response;

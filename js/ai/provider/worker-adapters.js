@@ -18,6 +18,17 @@ export function resolveInferenceAdapter(env = {}) {
   return geminiAdapter(env);
 }
 
+export const FINAL_RESULT_TOOL_SLOTS = 1;
+
+export function providerMaxTools(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 1 ? n : FINAL_RESULT_TOOL_SLOTS;
+}
+
+export function clientToolBudget(maxTools) {
+  return Math.max(0, providerMaxTools(maxTools) - FINAL_RESULT_TOOL_SLOTS);
+}
+
 export function clientSafeCapabilities(capabilities = {}) {
   const upstreamMax = positiveNumber(capabilities.maxRequestBytes, 160000);
   const reservedBudget = upstreamMax - PROVIDER_ENVELOPE_RESERVE_BYTES;
@@ -25,8 +36,12 @@ export function clientSafeCapabilities(capabilities = {}) {
     ? Math.floor(reservedBudget / PROVIDER_WIRE_EXPANSION_FACTOR)
     : Math.floor(upstreamMax / PROVIDER_WIRE_EXPANSION_FACTOR);
   const safeClientMax = Math.max(1, Math.min(upstreamMax, derived));
+  const upstreamMaxTools = providerMaxTools(capabilities.maxTools);
   return {
     ...capabilities,
+    maxTools: clientToolBudget(upstreamMaxTools),
+    upstreamMaxTools,
+    finalResultToolReserve: FINAL_RESULT_TOOL_SLOTS,
     maxRequestBytes: safeClientMax,
     upstreamMaxRequestBytes: upstreamMax,
     requestEnvelopeReserveBytes: PROVIDER_ENVELOPE_RESERVE_BYTES,
