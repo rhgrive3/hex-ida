@@ -8,6 +8,7 @@ import {
   DICE_KIND_NAMES,
 } from './macho-core.js';
 import { functionSeed, mergeFunctionSeeds } from './model.js';
+import { machoInstructionUnit } from './macho-instruction-unit.js';
 import { ByteView } from './reader.js';
 import { ensureMachOMetadataBudget, markMachOMetadataPartial } from './macho-budget.js';
 import { applyMachOIndirectSymbols } from './macho-indirect-symbols.js';
@@ -55,12 +56,6 @@ function selectedThinBytes(input, image) {
   return bytes.subarray(offset, offset + size);
 }
 
-function machoInstructionUnit(arch) {
-  if (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') return 4n;
-  if (arch === 'arm') return 2n;
-  return 1n;
-}
-
 function isContiguousFileBackedSpan(image, address, size) {
   let previous = null;
   for (let i = 0n; i < size; i++) {
@@ -103,6 +98,7 @@ function parseRoutinesCommands(input, image) {
 
   for (let i = 0; i < ncmds; i++) {
     if (p + 8 > commandEnd) break;
+    if (budget.stopped || !budget.take({ inputBytes:8, operations:1 }, 'routines-command-scan')) break;
     const cmd = r.u32(p), cmdsize = r.u32(p + 4);
     if (cmdsize < 8 || p + cmdsize > commandEnd) break;
     const is32 = cmd === LC_ROUTINES && kind.bits === 32;
@@ -151,9 +147,10 @@ function parseRoutinesCommands(input, image) {
       if (initAddress === 0n) { p += cmdsize; continue; }
 
       const mapping = image.resolveVirtualMapping(initAddress);
-      if (!mapping) record.reason = 'unmapped';
+      if (instructionUnit == null) record.reason = 'unsupported-isa';
+      else if (!mapping) record.reason = 'unmapped';
       else if (!mapping.mapping?.perms?.execute) record.reason = 'non-executable';
-      else if (instructionUnit > 1n && initAddress % instructionUnit !== 0n) record.reason = 'misaligned';
+      else if (initAddress % instructionUnit !== 0n) record.reason = 'misaligned';
       else if (!isContiguousFileBackedSpan(image, initAddress, instructionUnit)) record.reason = 'not-file-backed';
 
       if (record.reason) {
