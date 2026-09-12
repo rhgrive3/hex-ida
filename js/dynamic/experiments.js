@@ -91,7 +91,6 @@ function relationExpected(hypothesis, initial, input, bits, signed) {
   else if (op === 'or') result = x | v;
   else if (op === 'set' || op === 'assign') result = v;
   else return null;
-  result = normalizeInteger(result, bits, signed);
   if (hypothesis.clampMin != null && result < machineIntegerOrThrow(hypothesis.clampMin, 'clampMin')) result = machineIntegerOrThrow(hypothesis.clampMin, 'clampMin');
   if (hypothesis.clampMax != null && result > machineIntegerOrThrow(hypothesis.clampMax, 'clampMax')) result = machineIntegerOrThrow(hypothesis.clampMax, 'clampMax');
   return normalizeInteger(result, bits, signed);
