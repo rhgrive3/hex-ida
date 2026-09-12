@@ -24,7 +24,7 @@ export async function validatedRebuildSupportFixture(format, profileProof) {
   const validators = Object.fromEntries(['layout', 'relocations', 'branch-ranges', 'unwind', 'imports-exports', 'signature-consequence'].map((name) => [name, () => ({ ok: true })]));
   const validation = await validateRebuildTransaction(transaction, materialized, {
     original: source,
-    loaderReparse: () => ({ ok: true }),
+    loaderReparse: () => ({ ok: true, status: 'passed', format: transaction.format, architecture: transaction.architecture, loaderVersion: transaction.loaderVersion, sourceHash: transaction.sourceHash, outputHash: materialized.outputHash }),
     independentOracle: ({ output, transaction }) => ({
       schemaVersion: INDEPENDENT_ORACLE_RESULT_SCHEMA, ok: true, status: 'passed',
       oracleIdentity: 'external:test-reparser', oracleVersion: '1', oracleSource: 'tests/stage2/helpers/rebuild-proof-fixture.mjs',
