@@ -27,6 +27,9 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     'tests/scpa/native-retained-async.test.mjs',
     'tests/scpa/store-producer.test.mjs',
     'tests/scpa/transform-native.test.mjs',
+    'tests/phase4/binary/issue-3787-chained-stub-section-containment.test.mjs',
+    'tests/semantic-v2/issue-4534-ssa-definition-binding.test.mjs',
+    'tests/semantic-v2/issue-5414-5865-ssa-link-budget.test.mjs',
     'tools/validation/machine-effects/x86-long64-integer-denominator.mjs',
   ]),
 });

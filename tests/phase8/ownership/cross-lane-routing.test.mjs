@@ -11,6 +11,7 @@ const BRANCH = 'fix/main-gate-recovery-20260913';
 const CONFIG = readFileSync('.circleci/config.yml', 'utf8');
 const PHASE8_FILES = [
   'tests/phase8/abi/hex-c3-02-boundaries.test.mjs',
+  'tests/phase8/corpus/explicit-compiler-abi.test.mjs',
   'tests/phase8/ownership/cross-lane-routing.test.mjs',
   'tools/validation/phase8/cross-lane-inventory.mjs',
 ];
