@@ -30,6 +30,7 @@ export function validateMemorySsa(memorySsa, options = {}) {
     fail('memory-ssa-validate-build-version-mismatch');
   }
   const built = memorySsa.buildVersion === MEMORY_SSA_BUILD_VERSION;
+  if (built && !Array.isArray(memorySsa.accessMetadata)) fail('memory-ssa-validate-access-metadata-required');
   if (built) {
     for (const definition of contract.definitions) {
       assertNotAborted(options);
@@ -42,7 +43,9 @@ export function validateMemorySsa(memorySsa, options = {}) {
   }
 
   const definitionIds = new Set(contract.definitions.map((definition) => definition.id));
+  const definitionById = new Map(contract.definitions.map((definition) => [definition.id, definition]));
   const useIds = new Set(contract.uses.map((use) => use.id));
+  const useById = new Map(contract.uses.map((use) => [use.id, use]));
   const regionIds = new Set(contract.regions.map((region) => region.id));
   if (memorySsa.useDefLinks != null) {
     const expected = contract.reachingDefinitionLinks
@@ -87,8 +90,16 @@ export function validateMemorySsa(memorySsa, options = {}) {
       metadataIds.add(`${id}\u0000${item.regionId}`);
       if (!definitionIds.has(id) && !useIds.has(id)) fail('memory-ssa-validate-dangling-access-metadata');
       if (!regionIds.has(item.regionId)) fail('memory-ssa-validate-access-metadata-region-mismatch');
+      // The downstream canonical forwarding path accepts only the closed
+      // use|definition vocabulary; an unknown (or missing) kind must fail
+      // closed here instead of surfacing as a downstream reject (#5419).
+      if (item.entityKind !== 'use' && item.entityKind !== 'definition') {
+        fail('memory-ssa-validate-access-metadata-kind-mismatch');
+      }
       if (item.entityKind === 'use' && !useIds.has(id)) fail('memory-ssa-validate-access-metadata-kind-mismatch');
       if (item.entityKind === 'definition' && !definitionIds.has(id)) fail('memory-ssa-validate-access-metadata-kind-mismatch');
+      const entity = item.entityKind === 'use' ? useById.get(id) : definitionById.get(id);
+      if (!entity || entity.regionId !== item.regionId) fail('memory-ssa-validate-access-metadata-region-mismatch');
 
       // Keep the original strict-identity membership semantics while building
       // the coverage index during the validation pass. The previous validator
@@ -128,6 +139,7 @@ export function validateMemorySsa(memorySsa, options = {}) {
         for (const item of state[side]) {
           if (!regionIds.has(item.regionId)) fail('memory-ssa-validate-block-state-region-mismatch');
           if (!definitionIds.has(item.definitionId)) fail('memory-ssa-validate-block-state-definition-mismatch');
+          if (definitionById.get(item.definitionId).regionId !== item.regionId) fail('memory-ssa-validate-block-state-region-mismatch');
           if (seenRegions.has(item.regionId)) fail('memory-ssa-validate-duplicate-block-state-region');
           seenRegions.add(item.regionId);
         }

@@ -19,25 +19,31 @@ import { OP, VK } from './ir.js';
 
 const DEFAULT_LIMIT = 400;
 
+function isPrimitiveFiniteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
 function positiveLimit(value, fallback, minimum = 1) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return fallback;
-  return Math.max(minimum, Math.floor(n));
+  if (!isPrimitiveFiniteNumber(value) || value <= 0) return fallback;
+  return Math.max(minimum, Math.floor(value));
 }
 
 function boundedMemoryLimit(value, fallback, maximum) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || (n === 0 && typeof value !== 'number')) return fallback;
-  return Math.max(1, Math.min(maximum, n));
+  if (!isPrimitiveFiniteNumber(value)) return fallback;
+  return Math.max(1, Math.min(maximum, value));
 }
 
 export function memoryOrigins(node, opts = {}) {
   const maxNodes=boundedMemoryLimit(opts.maxNodes,1024,10000);
-  const maxEdges=boundedMemoryLimit(opts.maxEdges,2048,20000);
+  // Keep the established explicit zero-edge contract while allowing positive
+  // budgets to drain destinations admitted by their final permitted edge.
+  const maxEdges=opts.maxEdges===0?0:boundedMemoryLimit(opts.maxEdges,2048,20000);
   const seen=new Set(), stack=node?[node]:[], stores=[], clobbers=[];
   let edges=0,truncated=false,phiCount=0;
   while(stack.length){
-    if(seen.size>=maxNodes||edges>=maxEdges){truncated=true;break;}
+    // maxEdges is enforced while queueing incoming edges. A destination that
+    // was admitted by the last permitted edge must still be processed.
+    if(seen.size>=maxNodes){truncated=true;break;}
     const cur=stack.pop(); if(!cur||seen.has(cur))continue; seen.add(cur);
     if(cur.kind==='store'){if(cur.inst)stores.push(cur.inst);continue;}
     if(cur.kind==='clobber'||cur.kind==='unknown'){if(cur.inst)clobbers.push(cur.inst);continue;}
@@ -265,9 +271,9 @@ export function causalChain(ir, seed, opts) {
 
 export function findPaths(graph, from, to, opts) {
   const o = opts || {};
-  const maxDepth = Math.max(1, Math.min(12, Number(o.maxDepth) || 6));
-  const maxPaths = Math.max(1, Math.min(32, Number(o.maxPaths) || 8));
-  const maxVisited = Math.max(16, Math.min(20000, Number(o.maxVisited) || 20000));
+  const maxDepth = Math.max(1, Math.min(12, isPrimitiveFiniteNumber(o.maxDepth) ? o.maxDepth : 6));
+  const maxPaths = Math.max(1, Math.min(32, isPrimitiveFiniteNumber(o.maxPaths) ? o.maxPaths : 8));
+  const maxVisited = Math.max(16, Math.min(20000, isPrimitiveFiniteNumber(o.maxVisited) ? o.maxVisited : 20000));
   if (from == null || to == null) return [];
   const paths = [];
   const queue = [[from]];

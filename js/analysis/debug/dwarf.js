@@ -16,6 +16,7 @@
  * accepted — the provider contract rejects it outright.
  */
 
+import { parseELF as parseELFImage } from '../../binary/elf.js';
 import { createAnalysisStatus } from '../status.js';
 import {
   DEBUG_DEFAULT_BUDGET,
@@ -41,6 +42,7 @@ const DW_TAG = Object.freeze({
   member: 0x0d,
   pointer_type: 0x0f,
   compile_unit: 0x11,
+  partial_unit: 0x12,
   base_type: 0x24,
   const_type: 0x26,
   subprogram: 0x2e,
@@ -49,6 +51,8 @@ const DW_TAG = Object.freeze({
   volatile_type: 0x35,
   subroutine_type: 0x15,
 });
+
+const SUPPORTED_DW_TAGS = new Set(Object.values(DW_TAG));
 
 const DW_AT = Object.freeze({
   location: 0x02,
@@ -94,6 +98,10 @@ const DW_FORM = Object.freeze({
 const ADDRX_FORMS = Object.freeze([DW_FORM.addrx, DW_FORM.addrx1, DW_FORM.addrx2, DW_FORM.addrx3, DW_FORM.addrx4]);
 /** Forms whose resolved value is an absolute address (direct or addrx-resolved). */
 const ADDRESS_CLASS_FORMS = Object.freeze([DW_FORM.addr, ...ADDRX_FORMS]);
+// Supplementary-object references live in a distinct debug object namespace.
+// Until that object is loaded and identity-validated, they must never fall
+// back to offsets in the current `.debug_info` / `.debug_str` (#4206).
+const SUPPLEMENTARY_REFERENCE_FORMS = Object.freeze([DW_FORM.ref_sup4, DW_FORM.ref_sup8]);
 const DEFAULT_MAX_ADDR_CONTRIBUTION_SCANS = 4096;
 
 const DW_UT = Object.freeze({
@@ -116,12 +124,38 @@ const ENCODING_CLASS = Object.freeze({
 // or memory before the first DIE is charged (#3932).
 const DEFAULT_MAX_ABBREV_DECLARATIONS = 65_536;
 const DEFAULT_MAX_ABBREV_ATTRIBUTES = 1_048_576;
+const BYTE_BUDGET_DIAGNOSTIC = 'byte budget exhausted';
+const BYTE_BUDGET_ERROR_CODE = 'dwarf-byte-budget-exhausted';
+
+function byteBudgetError() {
+  const error = new RangeError(BYTE_BUDGET_ERROR_CODE);
+  error.code = BYTE_BUDGET_ERROR_CODE;
+  return error;
+}
+
+function isByteBudgetError(error) {
+  return error?.code === BYTE_BUDGET_ERROR_CODE;
+}
+
+function createByteBudget(maxBytesScanned) {
+  let bytesScanned = 0;
+  return {
+    get exhausted() { return bytesScanned >= maxBytesScanned; },
+    get bytesScanned() { return bytesScanned; },
+    charge(count) {
+      if (!Number.isSafeInteger(count) || count < 0) throw new RangeError('dwarf-invalid-byte-charge');
+      if (count > maxBytesScanned - bytesScanned) throw byteBudgetError();
+      bytesScanned += count;
+    },
+  };
+}
 
 class Cursor {
-  constructor(bytes, offset = 0) {
+  constructor(bytes, offset = 0, byteBudget = null) {
     this.bytes = bytes;
     this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     this.offset = offset;
+    this.byteBudget = byteBudget;
     // Reads must not walk past a caller-declared end (a compilation-unit
     // boundary, #1860). `subarray()` silently clamps an out-of-range end, so a
     // short block would otherwise read nothing, advance the offset anyway, and
@@ -131,10 +165,39 @@ class Cursor {
 
   get eof() { return this.offset >= this.limit; }
 
-  u8() { if (this.offset + 1 > this.limit) throw new RangeError('dwarf-read-past-limit'); const value = this.view.getUint8(this.offset); this.offset += 1; return value; }
-  u16() { if (this.offset + 2 > this.limit) throw new RangeError('dwarf-read-past-limit'); const value = this.view.getUint16(this.offset, true); this.offset += 2; return value; }
-  u32() { if (this.offset + 4 > this.limit) throw new RangeError('dwarf-read-past-limit'); const value = this.view.getUint32(this.offset, true); this.offset += 4; return value; }
-  u64() { if (this.offset + 8 > this.limit) throw new RangeError('dwarf-read-past-limit'); const value = this.view.getBigUint64(this.offset, true); this.offset += 8; return value; }
+  charge(count) { this.byteBudget?.charge(count); }
+
+  u8() {
+    if (this.offset + 1 > this.limit) throw new RangeError('dwarf-read-past-limit');
+    this.charge(1);
+    const value = this.view.getUint8(this.offset);
+    this.offset += 1;
+    return value;
+  }
+
+  u16() {
+    if (this.offset + 2 > this.limit) throw new RangeError('dwarf-read-past-limit');
+    this.charge(2);
+    const value = this.view.getUint16(this.offset, true);
+    this.offset += 2;
+    return value;
+  }
+
+  u32() {
+    if (this.offset + 4 > this.limit) throw new RangeError('dwarf-read-past-limit');
+    this.charge(4);
+    const value = this.view.getUint32(this.offset, true);
+    this.offset += 4;
+    return value;
+  }
+
+  u64() {
+    if (this.offset + 8 > this.limit) throw new RangeError('dwarf-read-past-limit');
+    this.charge(8);
+    const value = this.view.getBigUint64(this.offset, true);
+    this.offset += 8;
+    return value;
+  }
 
   uleb() {
     let result = 0n;
@@ -163,10 +226,18 @@ class Cursor {
     return result;
   }
 
-  skip(count) { this.offset += count; }
+  skip(count) {
+    if (!Number.isSafeInteger(count) || count < 0 || this.offset + count > this.limit) {
+      throw new RangeError('dwarf-read-past-limit');
+    }
+    this.charge(count);
+    this.offset += count;
+  }
+
   /** Bounded slice: fails closed rather than silently clamping (#1860). */
   slice(count) {
     if (this.offset + count > this.limit) throw new RangeError('dwarf-read-past-limit');
+    this.charge(count);
     const out = this.bytes.subarray(this.offset, this.offset + count);
     this.offset += count;
     return out;
@@ -181,10 +252,14 @@ class Cursor {
  * returns `null`, which callers propagate as an unresolved attribute instead of
  * silently decoding an empty or unterminated span.
  */
-function cstring(bytes, offset) {
+function cstring(bytes, offset, byteBudget = null) {
   if (!bytes || offset < 0 || offset >= bytes.length) return null;
   let end = offset;
-  while (end < bytes.length && bytes[end] !== 0) end += 1;
+  while (end < bytes.length) {
+    byteBudget?.charge(1);
+    if (bytes[end] === 0) break;
+    end += 1;
+  }
   if (end === bytes.length) return null;
   return new TextDecoder('utf8').decode(bytes.subarray(offset, end));
 }
@@ -196,35 +271,47 @@ function parseAbbrev(bytes, tableOffset, state = null) {
   // declaration makes the DIE→declaration mapping ambiguous, so the table is
   // marked malformed and its duplicates must not silently overwrite (#5728).
   let duplicateCode = false;
-  if (!bytes || tableOffset >= bytes.length) return { table, stopReason: null, duplicateCode };
-  const cursor = new Cursor(bytes, tableOffset);
-  while (!cursor.eof) {
-    if (state?.isCancelled?.()) return { table: null, stopReason: 'cancelled' };
-    const code = Number(cursor.uleb());
-    if (code === 0) break;
-    if (state) {
-      state.declarations += 1;
-      if (state.declarations > state.maxDeclarations) return { table: null, stopReason: 'declaration-budget' };
-    }
-    const tag = Number(cursor.uleb());
-    const hasChildren = cursor.u8() === 1;
-    const attributes = [];
-    for (;;) {
+  // DWARF v5 Table 7.4: the child determination encodes exactly
+  // DW_CHILDREN_no (0x00) or DW_CHILDREN_yes (0x01). Any other byte collapses
+  // to a legal value under a boolean read and must fail the table closed
+  // instead (#5237).
+  let invalidChildByte = false;
+  if (!bytes || tableOffset >= bytes.length) return { table, stopReason: null, duplicateCode, invalidChildByte };
+  const cursor = new Cursor(bytes, tableOffset, state?.byteBudget ?? null);
+  try {
+    while (!cursor.eof) {
       if (state?.isCancelled?.()) return { table: null, stopReason: 'cancelled' };
-      const attribute = Number(cursor.uleb());
-      const form = Number(cursor.uleb());
-      const implicitConst = form === DW_FORM.implicit_const ? cursor.sleb() : null;
-      if (attribute === 0 && form === 0) break;
+      const code = Number(cursor.uleb());
+      if (code === 0) break;
       if (state) {
-        state.attributes += 1;
-        if (state.attributes > state.maxAttributes) return { table: null, stopReason: 'attribute-budget' };
+        state.declarations += 1;
+        if (state.declarations > state.maxDeclarations) return { table: null, stopReason: 'declaration-budget' };
       }
-      attributes.push({ attribute, form, implicitConst });
+      const tag = Number(cursor.uleb());
+      const childByte = cursor.u8();
+      if (childByte > 1) invalidChildByte = true;
+      const hasChildren = childByte === 1;
+      const attributes = [];
+      for (;;) {
+        if (state?.isCancelled?.()) return { table: null, stopReason: 'cancelled' };
+        const attribute = Number(cursor.uleb());
+        const form = Number(cursor.uleb());
+        const implicitConst = form === DW_FORM.implicit_const ? cursor.sleb() : null;
+        if (attribute === 0 && form === 0) break;
+        if (state) {
+          state.attributes += 1;
+          if (state.attributes > state.maxAttributes) return { table: null, stopReason: 'attribute-budget' };
+        }
+        attributes.push({ attribute, form, implicitConst });
+      }
+      if (table.has(code)) duplicateCode = true;
+      else table.set(code, { tag, hasChildren, attributes });
     }
-    if (table.has(code)) duplicateCode = true;
-    else table.set(code, { tag, hasChildren, attributes });
+  } catch (error) {
+    if (isByteBudgetError(error)) return { table: null, stopReason: 'byte-budget' };
+    throw error;
   }
-  return { table, stopReason: null, duplicateCode };
+  return { table, stopReason: null, duplicateCode, invalidChildByte };
 }
 
 /** Reads a bounded little-endian unsigned integer of exactly `width` bytes. */
@@ -244,7 +331,7 @@ function readUnsignedWidth(cursor, width) {
  * the DIE keeps its other attributes and records that one is unknown, which is
  * how a partially understood record stays honest instead of being dropped.
  */
-function readForm(cursor, form, unit, sections, implicitConst) {
+function readForm(cursor, form, unit, sections, implicitConst, byteBudget = null) {
   switch (form) {
     case DW_FORM.addr: {
       // DW_FORM_addr occupies exactly the CU's address size, which the DWARF
@@ -264,10 +351,16 @@ function readForm(cursor, form, unit, sections, implicitConst) {
       const low = cursor.u16();
       return { value: BigInt(low | (cursor.u8() << 16)) };
     }
-    case DW_FORM.data4: case DW_FORM.ref4: case DW_FORM.strx4: case DW_FORM.addrx4: case DW_FORM.ref_sup4:
+    case DW_FORM.data4: case DW_FORM.ref4: case DW_FORM.strx4: case DW_FORM.addrx4:
       return { value: BigInt(cursor.u32()) };
-    case DW_FORM.data8: case DW_FORM.ref8: case DW_FORM.ref_sig8: case DW_FORM.ref_sup8:
+    case DW_FORM.ref_sup4:
+      cursor.u32();
+      return { value: null, unsupported: true };
+    case DW_FORM.data8: case DW_FORM.ref8: case DW_FORM.ref_sig8:
       return { value: cursor.u64() };
+    case DW_FORM.ref_sup8:
+      cursor.u64();
+      return { value: null, unsupported: true };
     case DW_FORM.data16: return { value: cursor.slice(16) };
     case DW_FORM.sdata: return { value: cursor.sleb() };
     case DW_FORM.udata: case DW_FORM.ref_udata: case DW_FORM.strx: case DW_FORM.addrx:
@@ -276,7 +369,11 @@ function readForm(cursor, form, unit, sections, implicitConst) {
     case DW_FORM.string: {
       const start = cursor.offset;
       let end = start;
-      while (end < cursor.limit && cursor.bytes[end] !== 0) end += 1;
+      while (end < cursor.limit) {
+        cursor.charge(1);
+        if (cursor.bytes[end] === 0) break;
+        end += 1;
+      }
       if (end === cursor.limit) throw new RangeError('dwarf-read-past-limit');
       const text = new TextDecoder('utf8').decode(cursor.bytes.subarray(start, end));
       cursor.offset = end + 1;
@@ -284,20 +381,23 @@ function readForm(cursor, form, unit, sections, implicitConst) {
     }
     case DW_FORM.strp: {
       const offset = unit.offsetSize === 8 ? Number(cursor.u64()) : cursor.u32();
-      const text = sections.debug_str ? cstring(sections.debug_str, offset) : null;
+      const text = sections.debug_str ? cstring(sections.debug_str, offset, byteBudget) : null;
       return { value: text, unsupported: !sections.debug_str || text == null };
     }
     case DW_FORM.line_strp: {
       const offset = unit.offsetSize === 8 ? Number(cursor.u64()) : cursor.u32();
-      const text = sections.debug_line_str ? cstring(sections.debug_line_str, offset) : null;
+      const text = sections.debug_line_str ? cstring(sections.debug_line_str, offset, byteBudget) : null;
       return { value: text, unsupported: !sections.debug_line_str || text == null };
     }
     case DW_FORM.ref_addr:
       return { value: unit.version === 2
         ? readUnsignedWidth(cursor, unit.addressSize)
         : (unit.offsetSize === 8 ? cursor.u64() : BigInt(cursor.u32())) };
-    case DW_FORM.sec_offset: case DW_FORM.strp_sup:
+    case DW_FORM.sec_offset:
       return { value: unit.offsetSize === 8 ? cursor.u64() : BigInt(cursor.u32()) };
+    case DW_FORM.strp_sup:
+      if (unit.offsetSize === 8) cursor.u64(); else cursor.u32();
+      return { value: null, unsupported: true };
     case DW_FORM.exprloc: case DW_FORM.block: {
       const length = Number(cursor.uleb());
       return { value: cursor.slice(length) };
@@ -309,7 +409,7 @@ function readForm(cursor, form, unit, sections, implicitConst) {
     case DW_FORM.implicit_const: return { value: implicitConst };
     case DW_FORM.indirect: {
       const actual = Number(cursor.uleb());
-      return readForm(cursor, actual, unit, sections, null);
+      return readForm(cursor, actual, unit, sections, null, byteBudget);
     }
     default:
       // An unrecognised form has an unknown length, so the DIE stream cannot be
@@ -319,16 +419,17 @@ function readForm(cursor, form, unit, sections, implicitConst) {
 }
 
 /** Resolves the string for a DW_FORM_strx index through `.debug_str_offsets`. */
-function strxString(index, unit, sections) {
+function strxString(index, unit, sections, byteBudget = null) {
   const table = sections.debug_str_offsets;
   if (!table || !sections.debug_str) return null;
   const base = unit.strOffsetsBase ?? 8;
   const entrySize = unit.offsetSize;
   const at = base + Number(index) * entrySize;
   if (at + entrySize > table.length) return null;
+  byteBudget?.charge(entrySize);
   const view = new DataView(table.buffer, table.byteOffset, table.byteLength);
   const offset = entrySize === 8 ? Number(view.getBigUint64(at, true)) : view.getUint32(at, true);
-  return cstring(sections.debug_str, offset);
+  return cstring(sections.debug_str, offset, byteBudget);
 }
 
 /**
@@ -353,11 +454,13 @@ function debugAddrContributionAtBase(table, base, state = null) {
     }
     if (state) state.scans += 1;
     if (offset + 4 > table.length) return null;
+    state?.byteBudget?.charge(4);
     const initialLength = view.getUint32(offset, true);
     let length;
     let lengthFieldSize;
     if (initialLength === 0xffffffff) {
       if (offset + 12 > table.length) return null;
+      state?.byteBudget?.charge(8);
       const wideLength = view.getBigUint64(offset + 4, true);
       if (wideLength > BigInt(Number.MAX_SAFE_INTEGER)) return null;
       length = Number(wideLength);
@@ -375,6 +478,7 @@ function debugAddrContributionAtBase(table, base, state = null) {
     if (!Number.isSafeInteger(end) || end > table.length) return null;
     const entriesStart = bodyStart + 4;
     if (entriesStart > end) return null;
+    state?.byteBudget?.charge(4);
     const contribution = {
       entriesStart,
       end,
@@ -420,7 +524,10 @@ function addrxAddress(index, unit, sections, state = null) {
   if (!Number.isSafeInteger(at) || at + entrySize > contribution.end) return null;
   const view = new DataView(table.buffer, table.byteOffset, table.byteLength);
   let value = 0n;
-  for (let i = 0; i < entrySize; i += 1) value |= BigInt(view.getUint8(at + i)) << BigInt(8 * i);
+  for (let i = 0; i < entrySize; i += 1) {
+    state?.byteBudget?.charge(1);
+    value |= BigInt(view.getUint8(at + i)) << BigInt(8 * i);
+  }
   return value;
 }
 
@@ -440,7 +547,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
   // a cap: comparisons against undefined/NaN are always false (#5352, #3932,
   // #5604). maxRecords merges over the shared provider defaults; the abbrev
   // caps use their own DWARF-specific defaults.
-  const { maxRecords } = resolveDebugBudget(budget);
+  const { maxBytesScanned, maxRecords, maxDepth } = resolveDebugBudget(budget);
   const maxAbbrevDeclarations = Number.isSafeInteger(budget?.maxAbbrevDeclarations) && budget.maxAbbrevDeclarations > 0
     ? budget.maxAbbrevDeclarations
     : DEFAULT_MAX_ABBREV_DECLARATIONS;
@@ -449,7 +556,8 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
     : DEFAULT_MAX_ABBREV_ATTRIBUTES;
 
   const units = [];
-  const cursor = new Cursor(info, 0);
+  const byteBudget = createByteBudget(maxBytesScanned);
+  const cursor = new Cursor(info, 0, byteBudget);
   const abbrevCache = new Map();
   const requestedAddrContributionScans = Number.isSafeInteger(budget?.maxAddrContributionScans)
     && budget.maxAddrContributionScans > 0
@@ -457,6 +565,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
     : DEFAULT_MAX_ADDR_CONTRIBUTION_SCANS;
   const addrContributionState = {
     cache: new Map(),
+    byteBudget,
     maxScans: Math.max(1, Math.min(requestedAddrContributionScans, DEFAULT_MAX_ADDR_CONTRIBUTION_SCANS, maxRecords)),
     scans: 0,
     exhausted: false,
@@ -464,6 +573,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
   const abbrevState = {
     declarations: 0,
     attributes: 0,
+    byteBudget,
     maxDeclarations: maxAbbrevDeclarations,
     maxAttributes: maxAbbrevAttributes,
     isCancelled: () => signal?.aborted === true,
@@ -480,35 +590,47 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       break;
     }
     const unitStart = cursor.offset;
-    let length = cursor.u32();
+    let length;
     let offsetSize = 4;
-    if (length === 0xffffffff) {
-      if (cursor.offset + 8 > info.length) {
+    let version;
+    let abbrevOffset;
+    let addressSize;
+    let unitType = 0x01;
+    let unitEnd;
+    try {
+      length = cursor.u32();
+      if (length === 0xffffffff) {
+        if (cursor.offset + 8 > info.length) {
+          diagnostics.push(`truncated compilation unit at 0x${unitStart.toString(16)}`);
+          complete = false;
+          break;
+        }
+        length = Number(cursor.u64());
+        offsetSize = 8;
+      }
+      if (length === 0 || cursor.offset + length > info.length) {
         diagnostics.push(`truncated compilation unit at 0x${unitStart.toString(16)}`);
         complete = false;
         break;
       }
-      length = Number(cursor.u64());
-      offsetSize = 8;
-    }
-    if (length === 0 || cursor.offset + length > info.length) {
-      diagnostics.push(`truncated compilation unit at 0x${unitStart.toString(16)}`);
-      complete = false;
-      break;
-    }
-    const unitEnd = cursor.offset + length;
-    cursor.limit = unitEnd;   // attribute reads are unit-local (#1860)
-    const version = cursor.u16();
-    let abbrevOffset;
-    let addressSize;
-    let unitType = 0x01;
-    if (version >= 5) {
-      unitType = cursor.u8();
-      addressSize = cursor.u8();
-      abbrevOffset = offsetSize === 8 ? Number(cursor.u64()) : cursor.u32();
-    } else {
-      abbrevOffset = offsetSize === 8 ? Number(cursor.u64()) : cursor.u32();
-      addressSize = cursor.u8();
+      unitEnd = cursor.offset + length;
+      cursor.limit = unitEnd;   // attribute reads are unit-local (#1860)
+      version = cursor.u16();
+      if (version >= 5) {
+        unitType = cursor.u8();
+        addressSize = cursor.u8();
+        abbrevOffset = offsetSize === 8 ? Number(cursor.u64()) : cursor.u32();
+      } else {
+        abbrevOffset = offsetSize === 8 ? Number(cursor.u64()) : cursor.u32();
+        addressSize = cursor.u8();
+      }
+    } catch (error) {
+      if (isByteBudgetError(error)) {
+        diagnostics.push(BYTE_BUDGET_DIAGNOSTIC);
+        complete = false;
+        break;
+      }
+      throw error;
     }
     if (version < 2 || version > 5) {
       diagnostics.push(`unsupported DWARF version ${version} at 0x${unitStart.toString(16)}`);
@@ -520,7 +642,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
 
     // DWARF5 extends the common unit header according to unit_type. These bytes
     // are metadata, not DIE abbreviation codes (#3810). Reads stay unit-local so
-    // truncated type signatures/type offsets/dwo_ids fail closed.
+    // truncated type signatures/type_offsets/dwo_ids fail closed.
     if (version === 5) {
       try {
         if (unitType === DW_UT.type || unitType === DW_UT.split_type) {
@@ -530,6 +652,11 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
           cursor.u64();
         }
       } catch (error) {
+        if (isByteBudgetError(error)) {
+          diagnostics.push(BYTE_BUDGET_DIAGNOSTIC);
+          complete = false;
+          break;
+        }
         diagnostics.push(`truncated DWARF5 unit header at 0x${unitStart.toString(16)}`);
         complete = false;
         cursor.offset = unitEnd;
@@ -541,12 +668,27 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
     const unit = { start: unitStart, version, addressSize, offsetSize, abbrevOffset, unitType, strOffsetsBase: null, addrBase: null };
     let abbrev;
     let duplicateCode = false;
+    let invalidChildByte = false;
     if (abbrevCache.has(abbrevOffset)) {
       const cached = abbrevCache.get(abbrevOffset);
       abbrev = cached.table;
       duplicateCode = cached.duplicateCode;
+      invalidChildByte = cached.invalidChildByte ?? false;
     } else {
-      const parsedAbbrev = parseAbbrev(sections.debug_abbrev, abbrevOffset, abbrevState);
+      let parsedAbbrev;
+      try {
+        parsedAbbrev = parseAbbrev(sections.debug_abbrev, abbrevOffset, abbrevState);
+      } catch (error) {
+        const boundedReadFailure = error instanceof RangeError
+          && ['dwarf-read-past-limit', 'dwarf-uleb-too-long', 'dwarf-sleb-too-long'].includes(error.message);
+        if (!boundedReadFailure) throw error;
+        const malformed = error.message !== 'dwarf-read-past-limit';
+        diagnostics.push(`${malformed ? 'malformed' : 'truncated'} abbreviation table for unit at 0x${unitStart.toString(16)}`);
+        complete = false;
+        cursor.offset = unitEnd;
+        cursor.limit = info.length;
+        continue;
+      }
       if (parsedAbbrev.stopReason != null) {
         complete = false;
         if (parsedAbbrev.stopReason === 'cancelled') {
@@ -554,6 +696,8 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
           cancelled = true;
         } else if (parsedAbbrev.stopReason === 'declaration-budget') {
           diagnostics.push('abbreviation declaration budget exhausted');
+        } else if (parsedAbbrev.stopReason === 'byte-budget') {
+          diagnostics.push(BYTE_BUDGET_DIAGNOSTIC);
         } else {
           diagnostics.push('abbreviation attribute budget exhausted');
         }
@@ -561,7 +705,8 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       }
       abbrev = parsedAbbrev.table;
       duplicateCode = parsedAbbrev.duplicateCode;
-      abbrevCache.set(abbrevOffset, { table: abbrev, duplicateCode });
+      invalidChildByte = parsedAbbrev.invalidChildByte;
+      abbrevCache.set(abbrevOffset, { table: abbrev, duplicateCode, invalidChildByte });
     }
     if (abbrev.size === 0) {
       diagnostics.push(`no abbreviations for unit at 0x${unitStart.toString(16)}`);
@@ -574,9 +719,20 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       diagnostics.push(`duplicate abbreviation code in table at 0x${abbrevOffset.toString(16)}`);
       complete = false;
     }
+    if (invalidChildByte) {
+      // DWARF v5 Table 7.4: only 0x00/0x01 are child determination encodings;
+      // anything else made the declaration structure unreliable (#5237).
+      diagnostics.push(`abbreviation table at 0x${abbrevOffset.toString(16)} has an invalid child determination byte`);
+      complete = false;
+    }
 
     const stack = [];
+    let rootDie = null;
     let unitComplete = true;
+    // A structural violation (wrong root tag, extra top-level DIE) fails the
+    // unit closed but does not stop the walk: later DIE offsets and their
+    // facts stay available, and only the completeness claim is withheld.
+    let unitStructurallyMalformed = false;
     while (cursor.offset < unitEnd) {
       if (abbrevState.isCancelled()) {
         diagnostics.push('debug parse cancelled');
@@ -596,6 +752,12 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       try {
         code = Number(cursor.uleb());
       } catch (error) {
+        if (isByteBudgetError(error)) {
+          diagnostics.push(BYTE_BUDGET_DIAGNOSTIC);
+          complete = false;
+          unitComplete = false;
+          break;
+        }
         // A DIE header that overruns the unit is the same truncation as an
         // attribute read past the boundary (#1860): fail closed, do not resync.
         diagnostics.push(`read past unit boundary at 0x${dieOffset.toString(16)}`);
@@ -603,7 +765,25 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
         unitComplete = false;
         break;
       }
-      if (code === 0) { stack.pop(); continue; }
+      if (code === 0) {
+        // DWARF4 §2.3 / v5 §2.3: sibling chains terminate with a null entry.
+        // A null entry with no open sibling chain is structure nobody declared,
+        // not a no-op (#5244).
+        if (stack.length === 0) {
+          diagnostics.push(`unmatched null DIE entry at 0x${dieOffset.toString(16)}`);
+          complete = false;
+          unitComplete = false;
+          continue;
+        }
+        stack.pop();
+        continue;
+      }
+      if (stack.length >= maxDepth) {
+        diagnostics.push('depth budget exhausted');
+        complete = false;
+        unitComplete = false;
+        break;
+      }
       const declaration = abbrev.get(code);
       if (!declaration) {
         diagnostics.push(`unknown abbreviation code ${code} at 0x${dieOffset.toString(16)}`);
@@ -611,14 +791,39 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
         unitComplete = false;
         break;
       }
+      const tagSupported = SUPPORTED_DW_TAGS.has(declaration.tag);
+      if (!tagSupported) {
+        diagnostics.push(`unsupported tag 0x${declaration.tag.toString(16)} at 0x${dieOffset.toString(16)}`);
+        complete = false;
+      }
+      // A .debug_info compilation unit roots at exactly one DW_TAG_compile_unit
+      // or DW_TAG_partial_unit DIE (DWARF4 §7.5). Any other root tag, or a
+      // second top-level DIE, is a structure the format cannot express (#5251).
+      // The unit fails closed; the remaining DIEs keep parsing so their facts
+      // stay available without the result ever claiming completeness. DWARF5
+      // roots are a per-unit-type contract and are validated separately.
+      if (stack.length === 0 && version < 5) {
+        if (rootDie == null) {
+          rootDie = dieOffset;
+          if (declaration.tag !== DW_TAG.compile_unit && declaration.tag !== DW_TAG.partial_unit) {
+            diagnostics.push(`unit at 0x${unitStart.toString(16)} does not start with a compilation or partial unit DIE (tag 0x${declaration.tag.toString(16)})`);
+            complete = false;
+            unitStructurallyMalformed = true;
+          }
+        } else {
+          diagnostics.push(`multiple top-level DIEs in unit at 0x${unitStart.toString(16)}`);
+          complete = false;
+          unitStructurallyMalformed = true;
+        }
+      }
       const attributes = new Map();
       // Keep the first declaration for deterministic decoding, but never
       // publish a DIE from an ambiguous abbreviation table as complete
       // evidence (#5728).
-      let dieComplete = !duplicateCode;
+      let dieComplete = !duplicateCode && tagSupported;
       try {
         for (const spec of declaration.attributes) {
-          const read = readForm(cursor, spec.form, unit, sections, spec.implicitConst);
+          const read = readForm(cursor, spec.form, unit, sections, spec.implicitConst, byteBudget);
           if (read.unsupported) {
             dieComplete = false;
             diagnostics.push(`unsupported form 0x${spec.form.toString(16)} at 0x${dieOffset.toString(16)}`);
@@ -629,6 +834,12 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
           attributes.set(spec.attribute, { form: spec.form, value: read.value });
         }
       } catch (error) {
+        if (isByteBudgetError(error)) {
+          diagnostics.push(BYTE_BUDGET_DIAGNOSTIC);
+          complete = false;
+          unitComplete = false;
+          break;
+        }
         // A read past the unit boundary (a block whose declared length overruns
         // the unit, #1860) is a truncation, not an exception to propagate: the
         // unit fails closed with a diagnostic, like any other truncated record.
@@ -650,32 +861,43 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
           ? base
           : null;
       }
-      for (const [attribute, entry] of attributes) {
-        if ([DW_FORM.strx, DW_FORM.strx1, DW_FORM.strx2, DW_FORM.strx3, DW_FORM.strx4].includes(entry.form)) {
-          const resolved = strxString(entry.value, unit, sections);
-          attributes.set(attribute, { form: entry.form, value: resolved });
-          if (resolved == null) dieComplete = false;
-        } else if (ADDRX_FORMS.includes(entry.form)) {
-          // addrx forms are indices into `.debug_addr`, not addresses (#6184).
-          // An unresolvable index stays unknown (null) and marks the DIE
-          // partial: publishing the raw index as an address would point
-          // consumers at a function start that does not exist.
-          const resolved = unit.version >= 5 ? addrxAddress(entry.value, unit, sections, addrContributionState) : null;
-          attributes.set(attribute, { form: entry.form, value: resolved, addressForm: resolved != null });
-          if (resolved == null) {
-            // An address the parser cannot establish must make the whole unit's
-            // evidence partial, not only the DIE: a raw index must never be
-            // published as a PC (#6184).
-            dieComplete = false;
-            complete = false;
-            diagnostics.push(`unresolved DW_FORM_addrx index ${entry.value} at 0x${dieOffset.toString(16)}`);
-            if (addrContributionState.exhausted) {
-              const diagnostic = 'debug_addr contribution scan budget exhausted';
-              if (!diagnostics.includes(diagnostic)) diagnostics.push(diagnostic);
+      try {
+        for (const [attribute, entry] of attributes) {
+          if ([DW_FORM.strx, DW_FORM.strx1, DW_FORM.strx2, DW_FORM.strx3, DW_FORM.strx4].includes(entry.form)) {
+            const resolved = strxString(entry.value, unit, sections, byteBudget);
+            attributes.set(attribute, { form: entry.form, value: resolved });
+            if (resolved == null) dieComplete = false;
+          } else if (ADDRX_FORMS.includes(entry.form)) {
+            // addrx forms are indices into `.debug_addr`, not addresses (#6184).
+            // An unresolvable index stays unknown (null) and marks the DIE
+            // partial: publishing the raw index as an address would point
+            // consumers at a function start that does not exist.
+            const resolved = unit.version >= 5 ? addrxAddress(entry.value, unit, sections, addrContributionState) : null;
+            attributes.set(attribute, { form: entry.form, value: resolved, addressForm: resolved != null });
+            if (resolved == null) {
+              // An address the parser cannot establish must make the whole unit's
+              // evidence partial, not only the DIE: a raw index must never be
+              // published as a PC (#6184).
+              dieComplete = false;
+              complete = false;
+              diagnostics.push(`unresolved DW_FORM_addrx index ${entry.value} at 0x${dieOffset.toString(16)}`);
+              if (addrContributionState.exhausted) {
+                const diagnostic = 'debug_addr contribution scan budget exhausted';
+                if (!diagnostics.includes(diagnostic)) diagnostics.push(diagnostic);
+              }
             }
           }
         }
+      } catch (error) {
+        if (isByteBudgetError(error)) {
+          diagnostics.push(BYTE_BUDGET_DIAGNOSTIC);
+          complete = false;
+          unitComplete = false;
+        } else {
+          throw error;
+        }
       }
+      if (!unitComplete) { complete = false; break; }
       // DW_AT_ranges carries non-contiguous address evidence in
       // .debug_rnglists/.debug_ranges. No resolver exists for either format,
       // so a DIE that locates its code only through a range list cannot claim
@@ -688,6 +910,25 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
         if (!unit.rangesUnsupportedReported) {
           diagnostics.push('DW_AT_ranges range lists (.debug_rnglists/.debug_ranges) are not resolvable; affected DIEs stay incomplete');
           unit.rangesUnsupportedReported = true;
+        }
+      }
+
+      // An address-class DW_AT_high_pc is an absolute end address, not an
+      // unsigned size. A reversed range is malformed debug evidence: keep the
+      // DIE for pagination/diagnostics, but withhold completeness so it cannot
+      // become an exact function extent (#4232).
+      const lowPcEntry = attributes.get(DW_AT.low_pc);
+      const highPcEntry = attributes.get(DW_AT.high_pc);
+      if (lowPcEntry?.value != null && highPcEntry?.value != null && ADDRESS_CLASS_FORMS.includes(highPcEntry.form)) {
+        const low = BigInt(lowPcEntry.value);
+        const high = BigInt(highPcEntry.value);
+        const extent = high - low;
+        if (extent < 0n || extent > BigInt(Number.MAX_SAFE_INTEGER)) {
+          dieComplete = false;
+          complete = false;
+          diagnostics.push(extent < 0n
+            ? `DW_AT_high_pc precedes DW_AT_low_pc at 0x${dieOffset.toString(16)}`
+            : `DW_AT_high_pc range exceeds exact size bounds at 0x${dieOffset.toString(16)}`);
         }
       }
 
@@ -705,11 +946,28 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       if (die.parent != null) dies.get(die.parent)?.children.push(dieOffset);
       if (declaration.hasChildren) stack.push(dieOffset);
     }
+    // A unit whose bytes exactly fill its declared length can still end with a
+    // child/sibling chain that was never closed by its terminating null entry;
+    // physical truncation and structural truncation are different defects and
+    // both must withhold completeness (#5244).
+    if (unitComplete && stack.length > 0) {
+      diagnostics.push(`unterminated DIE tree at end of unit at 0x${unitStart.toString(16)}`);
+      unitComplete = false;
+      complete = false;
+    }
+    if (unitStructurallyMalformed) unitComplete = false;
     if (!unitComplete) complete = false;
     units.push(unit);
     cursor.offset = unitEnd;
     cursor.limit = info.length;   // the unit-end advance itself is not unit-local
     if (cancelled) break;
+    if (byteBudget.exhausted) {
+      if (cursor.offset < info.length) {
+        if (!diagnostics.includes(BYTE_BUDGET_DIAGNOSTIC)) diagnostics.push(BYTE_BUDGET_DIAGNOSTIC);
+        complete = false;
+      }
+      break;
+    }
   }
 
   if (complete && cursor.offset < info.length) {
@@ -739,14 +997,18 @@ function attributeName(die, dies) {
   return inherited && typeof inherited.entry.value === 'string' ? inherited.entry.value : null;
 }
 
-/** Resolves one DW_AT_specification target, honoring unit-relative ref forms. */
-function specificationTarget(die, dies) {
-  const entry = die.attributes.get(DW_AT.specification);
-  if (!entry) return null;
-  const raw = Number(entry.value ?? 0);
+/** Preserves existing reference dispatch while blocking supplementary-object fallback. */
+function nonSupplementaryReferenceTarget(entry, owner, dies) {
+  if (!entry || entry.value == null || SUPPLEMENTARY_REFERENCE_FORMS.includes(entry.form)) return null;
+  const raw = Number(entry.value);
   const isUnitRelative = [DW_FORM.ref1, DW_FORM.ref2, DW_FORM.ref4, DW_FORM.ref8, DW_FORM.ref_udata].includes(entry.form);
-  const target = isUnitRelative && die.unit ? die.unit.start + raw : raw;
+  const target = isUnitRelative && owner.unit ? owner.unit.start + raw : raw;
   return dies.get(target) ?? null;
+}
+
+/** Resolves one DW_AT_specification target, honoring reference namespaces. */
+function specificationTarget(die, dies) {
+  return nonSupplementaryReferenceTarget(die.attributes.get(DW_AT.specification), die, dies);
 }
 
 /**
@@ -800,11 +1062,7 @@ function specificationResolved(die, dies) {
 function referencedType(die, dies) {
   const effective = effectiveAttribute(die, DW_AT.type, dies);
   if (!effective) return null;
-  const { entry, owner } = effective;
-  const raw = Number(entry.value ?? 0);
-  const isUnitRelative = [DW_FORM.ref1, DW_FORM.ref2, DW_FORM.ref4, DW_FORM.ref8, DW_FORM.ref_udata].includes(entry.form);
-  const target = isUnitRelative && owner.unit ? owner.unit.start + raw : raw;
-  return dies.get(target) ?? null;
+  return nonSupplementaryReferenceTarget(effective.entry, effective.owner, dies);
 }
 
 /**
@@ -822,21 +1080,44 @@ function describeType(die, dies, depth = 0, seen = new Set()) {
 
   switch (die.tag) {
     case DW_TAG.base_type: {
-      const encoding = Number(attributeValue(die, DW_AT.encoding) ?? 0);
+      const rawEncoding = attributeValue(die, DW_AT.encoding);
+      const encoding = rawEncoding == null ? null : Number(rawEncoding);
+      const encodingClass = encoding != null
+        && Object.prototype.hasOwnProperty.call(ENCODING_CLASS, encoding)
+        ? ENCODING_CLASS[encoding]
+        : 'unknown';
       return {
         name: name ?? 'base',
         widthBits: byteSize == null ? null : Number(byteSize) * 8,
-        class: ENCODING_CLASS[encoding] ?? 'integer',
-        complete: byteSize != null && die.complete,
+        class: encodingClass,
+        complete: byteSize != null && encodingClass !== 'unknown' && die.complete,
       };
     }
     case DW_TAG.pointer_type: {
-      const target = describeType(referencedType(die, dies), dies, depth + 1, seen);
+      const specificationComplete = specificationResolved(die, dies);
+      const effectiveType = effectiveAttribute(die, DW_AT.type, dies);
+      const widthBits = byteSize == null ? die.unit.addressSize * 8 : Number(byteSize) * 8;
+
+      // DW_AT_type may be omitted for a genuine void pointer.  That absence is
+      // authoritative only when the specification chain itself is resolved;
+      // otherwise a missing inherited type would be indistinguishable from
+      // a legal void pointee (#4657).
+      if (!effectiveType) {
+        return {
+          name: specificationComplete ? 'void *' : 'unknown *',
+          widthBits,
+          class: 'pointer',
+          complete: die.complete && specificationComplete,
+        };
+      }
+
+      const targetDie = nonSupplementaryReferenceTarget(effectiveType.entry, effectiveType.owner, dies);
+      const target = describeType(targetDie, dies, depth + 1, seen);
       return {
         name: `${target.name} *`,
-        widthBits: byteSize == null ? die.unit.addressSize * 8 : Number(byteSize) * 8,
+        widthBits,
         class: 'pointer',
-        complete: die.complete,
+        complete: die.complete && specificationComplete && target.complete,
       };
     }
     case DW_TAG.typedef: {
@@ -946,6 +1227,33 @@ export function readDebugLink(section) {
   return { name, crc32: view.getUint32(crcOffset, true) >>> 0 };
 }
 
+/**
+ * A CRC-verified split-debug companion is an ELF that carries the .debug_*
+ * sections the stripped binary lacks. Verification alone is not restoration:
+ * after the identity matches, the companion's DWARF sections must become the
+ * parse source or the split-debug configuration loses every symbol/type
+ * (#5461). Anything that is not a readable ELF simply yields no sections.
+ */
+function companionDebugSections(companion) {
+  if (!(companion instanceof Uint8Array) || companion.length < 64) return null;
+  if (companion[0] !== 0x7f || companion[1] !== 0x45 || companion[2] !== 0x4c || companion[3] !== 0x46) return null;
+  let parsed;
+  try {
+    parsed = parseELFImage(companion);
+  } catch {
+    return null;
+  }
+  const out = {};
+  for (const section of parsed.sections) {
+    if (!section.name?.startsWith('.debug_') || section.type === 8) continue;
+    const start = Number(section.fileOffset);
+    const size = Number(section.fileSize);
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(size) || size <= 0 || start < 0 || start + size > companion.length) continue;
+    out[section.name] = companion.slice(start, start + size);
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 export class DwarfDebugInfoProvider extends DebugInfoProvider {
   constructor() {
     super({ id: DWARF_PROVIDER_ID, version: DWARF_PROVIDER_VERSION, ecosystem: 'dwarf' });
@@ -1015,13 +1323,30 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
       detail = expected == null ? 'binary carries no build id' : 'debug source carries no build id';
     }
 
-    if (!sections.debug_info && !sections['.debug_info']) {
+    // Split debug: once the companion is CRC-verified, its .debug_* sections
+    // become the parse source for everything the stripped binary lacks. The
+    // identity verdict is unaffected by whether the extraction succeeds
+    // (#5461).
+    let parseSource = sections;
+    if (verdict === 'matched-authoritative' && method === 'gnu-debuglink-crc32') {
+      const companionSections = companionDebugSections(image?.companionBytes ?? null);
+      if (companionSections) {
+        parseSource = { ...sections };
+        for (const [name, sectionBytes] of Object.entries(companionSections)) {
+          const withoutDot = name.slice(1);
+          if (parseSource[name] == null && parseSource[withoutDot] == null) parseSource[name] = sectionBytes;
+        }
+      }
+    }
+
+    if (!parseSource.debug_info && !parseSource['.debug_info']) {
       diagnostics.push('no .debug_info section');
     }
 
-    const normalized = normalizeSections(sections);
+    const normalized = normalizeSections(parseSource);
     const parsed = parseDebugInfo(normalized, budget, { signal });
     diagnostics.push(...parsed.diagnostics);
+    const budgetExhausted = parsed.diagnostics.some((diagnostic) => diagnostic.includes('budget exhausted'));
 
     const result = createDebugProviderResult({
       ecosystem: 'dwarf',
@@ -1042,7 +1367,7 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
       diagnostics,
       status: parsed.complete && diagnostics.length === 0
         ? status('complete', null)
-        : status('partial', parsed.cancelled ? 'cancelled' : 'evidence-missing'),
+        : status('partial', parsed.cancelled ? 'cancelled' : budgetExhausted ? 'budget-exhausted' : 'evidence-missing'),
     });
     // The parsed forest travels with the result rather than being re-parsed by
     // every reader; it is not part of the frozen contract surface.
@@ -1063,12 +1388,15 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
       // an addrx form resolved through .debug_addr, #6184).
       const highForm = die.attributes.get(DW_AT.high_pc)?.form;
       const highIsAddress = ADDRESS_CLASS_FORMS.includes(highForm);
+      const absoluteRange = highPc != null && highIsAddress && lowPc != null
+        ? BigInt(highPc) - BigInt(lowPc)
+        : null;
       const sizeBytes = highPc == null
         ? null
         : highIsAddress
-          ? lowPc == null
-            ? null
-            : Number(BigInt(highPc) - BigInt(lowPc))
+          ? absoluteRange != null && absoluteRange >= 0n && absoluteRange <= BigInt(Number.MAX_SAFE_INTEGER)
+            ? Number(absoluteRange)
+            : null
           : Number(highPc);
       const descriptor = {
         isFunction,
@@ -1126,8 +1454,12 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
 }
 
 function page(items, cursor, pageSize, map) {
+  /* A page size must make progress: pageSize 0 (or any non-positive value)
+     would otherwise return the same cursor forever, letting a normal
+     nextCursor consumer loop without advancing (#5691). */
+  const size = Number.isSafeInteger(pageSize) && pageSize > 0 ? pageSize : DEBUG_DEFAULT_PAGE_SIZE;
   const start = cursor == null ? 0 : Number(cursor);
-  const slice = items.slice(start, start + pageSize);
+  const slice = items.slice(start, start + size);
   const next = start + slice.length;
   return createDebugPage({
     records: slice.map(map),

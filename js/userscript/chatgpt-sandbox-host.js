@@ -170,7 +170,7 @@ export function createChatGPTSandboxHost(options = {}) {
       setStatus(status, '', true);
       iframe.style.visibility = 'visible';
       if (wantedVisible) show(); else hide();
-      onReady(Object.freeze({ generation: currentGeneration, nonce, sandboxToken: token, childBootstrap }));
+      try { onReady(Object.freeze({ generation: currentGeneration, nonce, sandboxToken: token, childBootstrap })); } catch {}
     } catch (error) {
       if (!isCurrent(currentGeneration) || isAbortError(error)) return;
       fail(currentGeneration, stageFor(error), error);

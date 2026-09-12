@@ -80,18 +80,6 @@ export function conservativeCompleteness(...values) {
   return normalized.reduce((worst, value) => COMPLETENESS_RANK[value] < COMPLETENESS_RANK[worst] ? value : worst, normalized[0]);
 }
 
-function interventionIdentityKey(record) {
-  return stableStringify({
-    runtimeSessionId: record.runtimeSessionId,
-    providerId: record.providerId,
-    kind: record.kind,
-    target: record.target,
-    requestedChange: record.requestedChange,
-    sequence: record.sequence,
-    parentInterventionIds: record.parentInterventionIds,
-  });
-}
-
 function assertInterventionParents(records, record) {
   for (const parent of record.parentInterventionIds) {
     if (!records.has(parent)) throw new DebugAdapterError('runtime-intervention-parent-missing', `intervention parent not found: ${parent}`);
@@ -135,6 +123,7 @@ export function createInterventionRecord(input = {}) {
 
 export class InterventionLedger {
   #records = new Map();
+  #sequence = 0;
 
   validate(input) {
     const record = createInterventionRecord(input);
@@ -142,14 +131,31 @@ export class InterventionLedger {
     return record;
   }
 
+  // Every executed intervention occurrence gets a ledger-local monotonic
+  // sequence (#5327): repeated identical target/change operations are
+  // distinct executions, so their auto-derived intervention identity must
+  // differ — otherwise add() silently dedups the later execution and its
+  // acknowledged backend result is lost. Caller-provided sequences stay
+  // authoritative; a sequence is allocated only when the draft omits it.
+  nextSequence() {
+    const sequence = this.#sequence;
+    this.#sequence += 1;
+    return sequence;
+  }
+
   add(input) {
     const record = createInterventionRecord(input);
     const existing = this.#records.get(record.interventionId);
     if (existing) {
-      if (interventionIdentityKey(existing) !== interventionIdentityKey(record)) {
+      // Same id is idempotent only for the same canonical record content
+      // (#5327, superseding the #3579 identity-only idempotency): silently
+      // returning the existing record for a different execution (a different
+      // acknowledged backend result) loses the later occurrence and its
+      // provenance. Identical re-ingestion (persisted replay) stays allowed.
+      if (stableStringify(existing) !== stableStringify(record)) {
         throw new DebugAdapterError(
           'runtime-intervention-id-collision',
-          `intervention id is already bound to different identity: ${record.interventionId}`,
+          `intervention id is already bound to a different record: ${record.interventionId}`,
           { interventionId: record.interventionId },
         );
       }

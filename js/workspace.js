@@ -4,6 +4,7 @@ import { createHexProject, exportHexProject, importHexProject, serializeHexProje
 import { runDiffInWorker } from './diff/runtime.js';
 import { createCompactFunctionSet, demoteLowInformationAbsenceClaims } from './diff/compact-function-set.js';
 import { stripSecrets } from './ai/session-core/index.js';
+import { PatchSet } from './patch.js';
 
 const LOCAL_PREFIX='hex.project.v1.';
 const MAX_PROJECT_AI_TURNS=200;
@@ -12,6 +13,24 @@ const MAX_DIFF_FUNCTIONS=350000;
 const PROJECT_LANGUAGES=new Set(['ja','en']);
 const PROJECT_TEXT_SIZES=new Set(['s','m','l','xl']);
 
+const IDENTITY_INTEGER_FIELDS=new Set(['sliceIndex','sliceOffset','sliceSize']);
+const IDENTITY_STRING_FIELDS=new Set(['uuid','architecture']);
+function canonicalizeIdentityField(field,value){
+  if(typeof value==='bigint'){
+    if(IDENTITY_INTEGER_FIELDS.has(field))return {state:'match',token:'i:'+value.toString()};
+    return {state:'invalid'};
+  }
+  if(typeof value==='number'){
+    if(IDENTITY_INTEGER_FIELDS.has(field)&&Number.isSafeInteger(value))return {state:'match',token:'i:'+String(value)};
+    return {state:'invalid'};
+  }
+  if(typeof value==='string'){
+    if(IDENTITY_STRING_FIELDS.has(field))return {state:'match',token:'s:'+value};
+    return {state:'invalid'};
+  }
+  if(value==null)return {state:'absent'};
+  return {state:'invalid'};
+}
 function keyOf(value){return value==null?'':String(value);}
 function cleanName(name){return String(name||'analysis').replace(/[^a-z0-9._-]+/gi,'_').replace(/^_+|_+$/g,'').slice(0,120)||'analysis';}
 function asBigInt(value){try{return value==null?null:BigInt(value);}catch{return null;}}
@@ -63,9 +82,12 @@ export function sameProjectIdentity(project, identity){
   const a=project.binary.metadata||{}, b=identity.metadata||{};
   const keys=['sliceIndex','sliceOffset','sliceSize','uuid','architecture'];
   for(const key of keys){
-    if(b[key]==null)continue;
-    if(a[key]==null)return {ok:false,reason:'slice-identity-incomplete',field:key};
-    if(keyOf(a[key])!==keyOf(b[key]))return {ok:false,reason:'slice-identity-mismatch',field:key};
+    const projectValue=canonicalizeIdentityField(key,a[key]);
+    const liveValue=canonicalizeIdentityField(key,b[key]);
+    if(projectValue.state==='invalid'||liveValue.state==='invalid')return {ok:false,reason:'slice-identity-mismatch',field:key};
+    if(liveValue.state==='absent')continue;
+    if(projectValue.state==='absent')return {ok:false,reason:'slice-identity-incomplete',field:key};
+    if(projectValue.token!==liveValue.token)return {ok:false,reason:'slice-identity-mismatch',field:key};
   }
   return {ok:true};
 }
@@ -156,6 +178,19 @@ export function applyWorkspaceProject(app, project){
   // also used directly by local restore and integration code (#5953).
   const navigation=normalizeNavigation(project.navigation??{});
   const replaceVars = project.user?.varsPresent !== false;
+  // Validate-then-commit (#5646): every imported patch is staged into a
+  // throwaway PatchSet BEFORE any live state is touched. PatchSet.add is the
+  // authority on byte shape and overlap, and a mid-import throw used to leave
+  // notes replaced+persisted and the old patch set cleared. If staging fails,
+  // the import fails with the workspace untouched.
+  const stagedPatches=[];
+  const staging=new PatchSet();
+  for(const p of project.user.patches||[]){
+    if(p?.offset==null)continue;
+    const meta={addr:p.addr??null,label:p.label??null,reason:p.reason??null};
+    staging.add(BigInt(p.offset),p.before||[],p.after||[],meta);
+    stagedPatches.push([BigInt(p.offset),p.before||[],p.after||[],meta]);
+  }
   notes.names.clear();notes.comments.clear();notes.types.clear();if(replaceVars)notes.vars.clear();
   for(const entry of project.user.names||[])if(entry?.address!=null&&entry.value)notes.names.set(BigInt(entry.address).toString(),String(entry.value));
   for(const entry of project.user.comments||[])if(entry?.address!=null&&entry.value)notes.comments.set(BigInt(entry.address).toString(),String(entry.value));
@@ -165,16 +200,19 @@ export function applyWorkspaceProject(app, project){
   notes.dirty=true;
   if(!notes.save())throw new Error(notes.lastSaveError?.code||'notes-save-failed');
   app.patches.clear();
-  for(const p of project.user.patches||[]){
-    if(p?.offset==null)continue;
-    app.patches.add(BigInt(p.offset),p.before||[],p.after||[],{addr:p.addr??null,label:p.label??null,reason:p.reason??null});
-  }
+  for(const [offset,before,after,meta] of stagedPatches)app.patches.add(offset,before,after,meta);
   if(app.symbols){for(const entry of notes.nameEntries())app.symbols.rename(entry.addr,entry.name);app.viewer?.setSymbols?.(app.symbols);}
-  if(project.findings?.confirmed?.length||project.findings?.evidence?.length){
-    app.autoReport={
-      report:{confirmed:project.findings.confirmed||[],settled:project.findings.confirmed||[],deep:project.findings.evidence||[],pinned:project.findings.confirmed||[],notes:['restored-project']},
+  const findings=project.findings;
+  if(findings&&typeof findings==='object'&&!Array.isArray(findings)
+    &&(Array.isArray(findings.confirmed)||Array.isArray(findings.evidence))){
+    const confirmed=Array.isArray(findings.confirmed)?findings.confirmed:[];
+    const evidence=Array.isArray(findings.evidence)?findings.evidence:[];
+    // Normalized empty arrays are an explicit replacement state (#3658), so
+    // an import must clear a report from the previously bound project.
+    app.autoReport=confirmed.length||evidence.length?{
+      report:{confirmed,settled:confirmed,deep:evidence,pinned:confirmed,notes:['restored-project']},
       key:app.codeRegion?.()?.id||null,gen:app.symbols?.gen||0,restored:true,
-    };
+    }:null;
   }
   if(Array.isArray(project.findings?.investigationSessions)){
     const currentHash = app?.backend?.contentHash || app?.store?.get?.('fileInfo')?.hash || null;
@@ -327,10 +365,13 @@ export class ProductWorkspace{
     const revision=this.bindingRevision, request=++this.baselineSequence;
     const assertCurrent=()=>{this._assertBinding(revision);if(request!==this.baselineSequence)throw staleWorkspaceError();};
     const ownedBackend=!backend, other=backend||this.backendFactory();
-    const onAbort=()=>{if(ownedBackend)other?.dispose?.();};
-    if(signal?.aborted)throwIfAborted(signal);
-    signal?.addEventListener('abort',onAbort,{once:true});
+    let disposed=false, listenerRegistered=false;
+    const disposeOwned=()=>{if(ownedBackend&&!disposed){disposed=true;other?.dispose?.();}};
+    const onAbort=disposeOwned;
     try{
+      throwIfAborted(signal);
+      if(signal){listenerRegistered=true;signal.addEventListener('abort',onAbort,{once:true});}
+      throwIfAborted(signal);
       const info=await other.open(file);throwIfAborted(signal);assertCurrent();
       const currentArch=this.identity?.metadata?.architecture||null;const sliceIndex=chooseSlice(info,currentArch);
       if(sliceIndex<0)throw new Error('baseline-slice-unavailable');
@@ -344,8 +385,8 @@ export class ProductWorkspace{
       this.baseline={file,backend:other,ownedBackend,info,sliceIndex,slice,architecture:arch,hash,symbols,functions,complete:functions.complete===true};
       if(previous?.ownedBackend&&previous.backend!==other)previous.backend?.dispose?.();
       this.diffState=null;this.busy=null;return this.baseline;
-    }catch(error){if(ownedBackend)other?.dispose?.();throw error;}
-    finally{signal?.removeEventListener('abort',onAbort);}
+    }catch(error){disposeOwned();throw error;}
+    finally{if(listenerRegistered)signal.removeEventListener('abort',onAbort);}
   }
   async diff(options={}){
     if(this.busy)return this.busy;
