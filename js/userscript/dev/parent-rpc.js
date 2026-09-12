@@ -141,6 +141,7 @@ export function createDevWorkerParentRpcClient({ port, timeoutMs = 60000 } = {})
 
     const id = requestId();
     const signal = options.signal;
+    const requestParams = sanitize(params);
     const limit = options.timeoutMs === 0
       ? 0
       : normalizeTimeout(options.timeoutMs, timeoutMs);
@@ -175,13 +176,19 @@ export function createDevWorkerParentRpcClient({ port, timeoutMs = 60000 } = {})
         timer,
         detach: () => signal?.removeEventListener?.('abort', onAbort),
       });
-      post(port, {
+      if (!post(port, {
         protocol: DEV_PARENT_RPC_PROTOCOL,
         kind: 'request',
         id,
         method,
-        params: sanitize(params),
-      });
+        params: requestParams,
+      })) {
+        if (pending.delete(id)) {
+          if (timer) clearTimeout(timer);
+          signal?.removeEventListener?.('abort', onAbort);
+          reject(rpcError('transport-failure', `Dev Worker RPC request send failed: ${method}`));
+        }
+      }
     });
   }
 
@@ -344,7 +351,12 @@ function usablePort(port) {
 }
 
 function post(port, value) {
-  try { port.postMessage(value); } catch {}
+  try {
+    port.postMessage(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 function listen(port, handler) {
   if (typeof port.addEventListener === 'function') {
