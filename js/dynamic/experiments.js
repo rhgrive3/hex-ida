@@ -229,7 +229,8 @@ export class HypothesisVerifier {
           observation = await this.adapter.resume({ maxSteps, timeoutMs, signal:options.signal });
         } catch (error) {
           const code = String(error && error.code || '');
-          const kind = code === 'unsupported' ? 'unsupported' : code === 'timeout' ? 'timeout' : code === 'cancelled' || code === 'stale-request' ? 'cancelled' :
+          const kind = options.signal && options.signal.aborted ? 'cancelled' :
+            code === 'unsupported' ? 'unsupported' : code === 'timeout' ? 'timeout' : code === 'cancelled' || code === 'stale-request' ? 'cancelled' :
             (code === 'oob' || code === 'permission' || code === 'fault' || code === 'mmio-unknown') ? 'fault' : 'exception';
           observation = { stop:{ kind, message:(error && error.message) || String(error) }, memoryDelta:[], memoryAfter:[], returnValue:null };
         }
