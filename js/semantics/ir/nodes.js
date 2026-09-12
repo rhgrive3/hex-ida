@@ -23,13 +23,6 @@ const MEMORY_NODE_KINDS = new Set(['load', 'store']);
 const VARIABLE_NODE_KINDS = new Set(['state-read', 'state-write']);
 const CONTROL_NODE_KINDS = new Set(['branch', 'conditional-branch', 'switch']);
 
-// The operand count a canonical data-operation kind denotes is fixed by the
-// kind itself: a `complete` node outside its contract carries semantics no
-// consumer can interpret consistently, and the v2→v1 projection silently
-// dropped surplus operands instead of failing closed (#4602). Ranges are
-// inclusive [min, max]; a null max is unbounded. Surplus evidence is never a
-// weakening direction, so partial nodes may fall below `min` but never exceed
-// `max`.
 export const SEMANTIC_NODE_DATA_ARITY = Object.freeze(Object.fromEntries(Object.entries({
   const: { inputs: [0, 0], outputs: [1, 1] },
   copy: { inputs: [1, 1], outputs: [1, 1] },
@@ -49,9 +42,6 @@ export const SEMANTIC_NODE_DATA_ARITY = Object.freeze(Object.fromEntries(Object.
   outputs: Object.freeze(entry.outputs),
 })])));
 
-// Intrinsic kinds are n-ary by contract, but machine operators with a fixed
-// semantic operand list (at least `add-with-carry`: lhs, rhs, carry-in) carry
-// that arity as part of their meaning and must fail closed the same way.
 export const SEMANTIC_INTRINSIC_OPERATOR_ARITY = Object.freeze({
   'add-with-carry': Object.freeze({ inputs: Object.freeze([3, 3]), outputs: Object.freeze([0, null]) }),
 });
@@ -65,9 +55,6 @@ export function dataArityContract(kind, operator) {
   return null;
 }
 
-// A missing operand is only a legitimate weakening direction for an explicitly
-// partial/unknown node; a surplus operand changes the operation's meaning in
-// every state and is always a contract violation.
 function arityViolation(node, contract) {
   const deficitOrSurplus = ([min, max], length) => {
     if (length > (max == null ? Number.POSITIVE_INFINITY : max)) return true;
