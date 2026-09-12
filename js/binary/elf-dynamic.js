@@ -2,7 +2,7 @@ import { functionSeed } from './model.js';
 import { createDynamicSymbolBudget } from './dynamic-symbol-budget.js';
 import { createRelocationBudget } from './relocation-budget.js';
 import { collectAndroidPackedRelocations, collectRelrRelocations, parseDynamicSymbolVersions } from './elf-extended.js';
-import { mappedELFFileRangeForVa, mappedELFFileSpanForVa } from './elf-mapping.js';
+import { elfInstructionStartAlignmentRejection, mappedELFFileRangeForVa, mappedELFFileSpanForVa } from './elf-mapping.js';
 import { relocationFieldWidth } from './elf-relocation-target.js';
 
 const PT_DYNAMIC = 2;
@@ -294,6 +294,11 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
         return null;
       })();
       if (owner) {
+        const alignmentRejection = elfInstructionStartAlignmentRejection(image, value);
+        if (alignmentRejection) {
+          markDynamicPartial(image, `ignored PT_DYNAMIC ${type === STT_GNU_IFUNC ? 'STT_GNU_IFUNC resolver' : 'STT_FUNC'} ${name}: ${alignmentRejection}`);
+          continue;
+        }
         image.functions.push(functionSeed(value, {
           size: size || null,
           name: type === STT_GNU_IFUNC ? `${name}$resolver` : name,
