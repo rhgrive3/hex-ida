@@ -36,10 +36,11 @@ export class DomSkillRegistry {
   async validateCandidate({ skillId, programs = null, signal = null } = {}) {
     const record = this.requireRecord(skillId);
     if (!record.candidate) throw skillError('candidate-missing', 'DOM Skill candidate is not installed.');
-    const names = normalizeValidationPrograms(record.candidate, programs);
+    const candidate = record.candidate;
+    const names = normalizeValidationPrograms(candidate, programs);
     const results = {};
     for (const name of names) {
-      const program = record.candidate.programs[name];
+      const program = candidate.programs[name];
       validateAutomationProgram(program, { requireReadOnly: true });
       results[name] = await executeAutomationProgram(program, {
         document: this.document,
@@ -50,12 +51,14 @@ export class DomSkillRegistry {
     }
     const validation = Object.freeze({
       ok: true,
-      version: record.candidate.version,
+      version: candidate.version,
       programs: names,
       results,
       validatedAt: this.now(),
     });
-    const next = Object.freeze({ ...record, candidateValidation: validation, updatedAt: this.now() });
+    const current = this.requireRecord(record.skillId);
+    if (current.candidate !== candidate) throw skillError('candidate-superseded', 'DOM Skill candidate changed during validation.');
+    const next = Object.freeze({ ...current, candidateValidation: validation, updatedAt: this.now() });
     this.records.set(record.skillId, next);
     return { skill: summarizeRecord(next), validation };
   }
