@@ -324,7 +324,22 @@ function parseArm64XdataDescriptor(r, image, begin, xdataRva, budget) {
     if (!budget.take({ inputBytes:4, operations:1 }, 'arm64-xdata-extension')) return null;
   }
   const recordBytes = headerBytes + (packedEpilog ? 0 : epilogCount * 4) + codeWords * 4 + (hasHandler ? 4 : 0);
-  if (!Number.isSafeInteger(recordBytes) || !mappedFileSpanForRva(image, xdataRva, recordBytes)) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-span', `Ignored ARM64 .xdata record that crosses its file-backed mapping at RVA 0x${xdataRva.toString(16)}`);
+  const recordSpan = Number.isSafeInteger(recordBytes)
+    ? mappedFileSpanForRva(image, xdataRva, recordBytes)
+    : null;
+  if (!recordSpan) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-span', `Ignored ARM64 .xdata record that crosses its file-backed mapping at RVA 0x${xdataRva.toString(16)}`);
+  if (!packedEpilog && epilogCount > 0) {
+    const scopeBytes = epilogCount * 4;
+    if (!budget.take({ inputBytes:scopeBytes, operations:epilogCount }, 'arm64-xdata-epilog-scopes')) return null;
+    const scopeStart = recordSpan.start + headerBytes;
+    for (let i = 0; i < epilogCount; i++) {
+      const scope = r.u32(scopeStart + i * 4);
+      if (((scope >>> 18) & 0xf) !== 0) {
+        const scopeRva = xdataRva + headerBytes + i * 4;
+        return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-epilog-reserved', `Ignored ARM64 .xdata epilog scope with nonzero reserved bits at RVA 0x${scopeRva.toString(16)}`);
+      }
+    }
+  }
   const bytes = functionLength * 4;
   if (!executableRvaRange(image, begin, bytes)) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-range', `Ignored ARM64 .xdata range outside executable mapping at RVA 0x${begin.toString(16)}`);
   return { size:bytes, xdataRva, version, hasHandler, packedEpilog, epilogCount, codeWords };
