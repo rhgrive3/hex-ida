@@ -75,6 +75,7 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     'tests/machine-effects/issue-5999-riscv64-compressed-capability-conflict.test.mjs',
     'tests/machine-effects/issue-6133-x87-trusted-terminal-domain.test.mjs',
     'tests/machine-effects/x86-long64-integer-denominator.test.mjs',
+    'tests/machine-effects/a2-denominator-inventory.json',
     'tests/phase11/cil/cil-parser.test.mjs',
     'tests/phase11/dex/dex-class-data-field-index-3729.test.mjs',
     'tests/phase11/dex/dex-validation-1143.test.mjs',

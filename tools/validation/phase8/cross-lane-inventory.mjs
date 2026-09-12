@@ -22,6 +22,7 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     'js/semantics/memoryssa/build.js',
     'js/targets/abi/aapcs64-core.js',
     'js/targets/architecture/riscv64/decoded-instruction.js',
+    'tests/machine-effects/a2-denominator-inventory.json',
     'tests/machine-effects/issue-5566-x86-setssbsy-routing.test.mjs',
     'tests/machine-effects/issue-5999-riscv64-compressed-capability-conflict.test.mjs',
     'tests/machine-effects/issue-6133-x87-trusted-terminal-domain.test.mjs',
