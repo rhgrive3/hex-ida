@@ -14,20 +14,21 @@ export async function decompressGzipExact(bytes) {
 async function decompressWithChunk(chunk) {
   const stream = new DecompressionStream('gzip');
   const output = new Response(stream.readable).arrayBuffer().then(
-    (buffer) => ({ buffer }),
-    (error) => ({ error }),
+    (buffer) => ({ ok: true, buffer }),
+    (error) => ({ ok: false, error }),
   );
   const writer = stream.writable.getWriter();
-  let writeError;
   try {
     await writer.write(chunk);
     await writer.close();
   } catch (error) {
-    writeError = error;
+    // Observe abort/readable failures without waiting for an open readable to settle.
+    // A rejected chunk can leave the stream open while the caller retries its type.
+    try { Promise.resolve(writer.abort?.(error)).catch(() => {}); } catch {}
+    throw error;
   }
   const settled = await output;
-  if (writeError) throw writeError;
-  if (settled.error) throw settled.error;
+  if (!settled.ok) throw settled.error;
   return new Uint8Array(settled.buffer);
 }
 

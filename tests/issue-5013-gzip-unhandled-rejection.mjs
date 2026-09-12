@@ -76,6 +76,82 @@ try {
 
 const source = 'Hex gzip failure must settle both stream promises';
 const gz = gzipSync(Buffer.from(source));
+async function withinDeadline(promise) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('decompression did not settle before fallback deadline')), 1500);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const chunkTypes = [];
+class TypedArrayOnlyDecompressionStream {
+  constructor(format) {
+    const inner = new NativeDecompressionStream(format);
+    const writer = inner.writable.getWriter();
+    this.readable = inner.readable;
+    this.writable = {
+      getWriter() {
+        return {
+          write(chunk) {
+            chunkTypes.push(chunk.constructor);
+            if (chunk instanceof ArrayBuffer) return Promise.reject(new TypeError('typedarray chunk required'));
+            return writer.write(chunk);
+          },
+          close() { return writer.close(); },
+          abort(reason) { return writer.abort(reason); },
+        };
+      },
+    };
+  }
+}
+
+globalThis.DecompressionStream = TypedArrayOnlyDecompressionStream;
+try {
+  const result = await withinDeadline(decompressGzipExact(new Uint8Array(gz)));
+  assert.equal(new TextDecoder().decode(result), source);
+  assert.deepEqual(chunkTypes, [ArrayBuffer, Uint8Array], 'an open readable must not block the typed-array retry');
+} finally {
+  globalThis.DecompressionStream = NativeDecompressionStream;
+}
+
+for (const failure of [undefined, null, false, 0, '']) {
+  for (const failingSide of ['write', 'close', 'read']) {
+    globalThis.DecompressionStream = class {
+      constructor() {
+        this.readable = new ReadableStream({
+          start(controller) {
+            if (failingSide === 'read') controller.error(failure);
+            else controller.close();
+          },
+        });
+        this.writable = {
+          getWriter() {
+            return {
+              async write() { if (failingSide === 'write') throw failure; },
+              async close() { if (failingSide === 'close') throw failure; },
+            };
+          },
+        };
+      }
+    };
+    try {
+      const result = await captureRejection(withinDeadline(decompressGzipExact(new Uint8Array(gz))));
+      assert.equal(result.failed, true, `${failingSide} must reject even with a falsy reason`);
+      assert.equal(result.error, failure, `${failingSide} must preserve the exact rejection reason`);
+    } finally {
+      globalThis.DecompressionStream = NativeDecompressionStream;
+    }
+  }
+}
+await drain();
+
 const roundtrip = await decompressGzipExact(new Uint8Array(gz));
 assert.equal(new TextDecoder().decode(roundtrip), source, 'valid gzip must still decompress exactly');
 
