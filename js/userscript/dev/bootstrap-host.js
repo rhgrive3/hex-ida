@@ -65,27 +65,29 @@ export function installDevBootstrapHost({ host, runtimeIdentity, windowRef = glo
     let pending;
     try {
       pending = host.reload();
-    } catch (error) {
-      settleReload(attempt, error);
+    } catch {
+      settleReload(attempt, false);
       return;
     }
     Promise.resolve(pending).then(
-      () => settleReload(attempt, null),
-      (error) => settleReload(attempt, error),
+      () => settleReload(attempt, true),
+      () => settleReload(attempt, false),
     );
   }
 
-  function settleReload(attempt, error) {
-    if (closed || error === null || !reloadAccepted) return;
+  function settleReload(attempt, succeeded) {
+    if (closed || succeeded || !reloadAccepted) return;
     reloadAccepted = false;
     const current = currentFrameIdentity();
     if (!current || current.iframe !== attempt.frame || current.generation !== attempt.generation || current.sandboxToken !== attempt.sandboxToken) return;
-    attempt.frame.contentWindow.postMessage({
-      protocol: PROTOCOL,
-      type: 'hex.dev.bootstrap.reload-failed',
-      generation: attempt.generation,
-      sandboxToken: attempt.sandboxToken,
-    }, '*');
+    try {
+      attempt.frame.contentWindow.postMessage({
+        protocol: PROTOCOL,
+        type: 'hex.dev.bootstrap.reload-failed',
+        generation: attempt.generation,
+        sandboxToken: attempt.sandboxToken,
+      }, '*');
+    } catch {}
   }
 
   windowRef.addEventListener('message', onMessage);

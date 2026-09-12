@@ -9,7 +9,10 @@ const HANDOFF = { checkpoint: { runId: 'issue-5048' } };
 const unhandled = [];
 process.on('unhandledRejection', (reason) => { unhandled.push(String(reason?.message || reason)); });
 
-await testFailedReloadNotifiesAndRestoresRetry();
+for (const reason of [new Error('pre-start reload failure'), null, undefined, false, 0, 'failed']) {
+  await testFailedReloadNotifiesAndRestoresRetry(reason);
+}
+await testFailedReloadNotifiesAndRestoresRetry(null, true);
 await testStaleGenerationFailureDoesNotTouchCurrentFrame();
 await testSynchronousReloadThrowIsRecovered();
 await testSuccessfulReloadStaysOneShot();
@@ -17,9 +20,9 @@ assert.deepEqual(unhandled, [], 'reload rejections must be reclaimed by the boot
 
 console.log('issue-5048 bootstrap reload failure recovery tests passed');
 
-async function testFailedReloadNotifiesAndRestoresRetry() {
+async function testFailedReloadNotifiesAndRestoresRetry(reason, notificationThrows = false) {
   const parent = fakeWindow();
-  const first = fakeChild();
+  const first = fakeChild(notificationThrows);
   const second = fakeChild();
   let iframe = frame(first, '1');
   let calls = 0;
@@ -27,7 +30,7 @@ async function testFailedReloadNotifiesAndRestoresRetry() {
     get iframe() { return iframe; },
     reload() {
       calls += 1;
-      if (calls === 1) return Promise.reject(new Error('pre-start reload failure'));
+      if (calls === 1) return Promise.reject(reason);
       iframe = frame(second, '2');
       return Promise.resolve();
     },
@@ -154,10 +157,13 @@ function frame(child, generation) {
   return { contentWindow: child, dataset: { hexGeneration: generation, hexSandboxToken: TOKEN } };
 }
 
-function fakeChild() {
+function fakeChild(notificationThrows = false) {
   return {
     messages: [],
-    postMessage(message) { this.messages.push(message); },
+    postMessage(message) {
+      this.messages.push(message);
+      if (notificationThrows && message.type === 'hex.dev.bootstrap.reload-failed') throw new Error('notification transport failed');
+    },
   };
 }
 
