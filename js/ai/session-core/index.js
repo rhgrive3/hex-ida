@@ -124,8 +124,13 @@ export class InvestigationSessionStore {
     if (!isValidSessionId(id)) return null;
     const key = id;
     if (this.sessions.has(key)) return this.sessions.get(key);
+    // A persistence adapter may stage a record before its save resolves.
+    // The creating operation owns publication of that ID until durability.
+    if (this.creating.has(key)) return null;
     if (this.persistence && typeof this.persistence.load === 'function') {
       const loaded = await this.persistence.load(key);
+      if (this.sessions.has(key)) return this.sessions.get(key);
+      if (this.creating.has(key)) return null;
       if (loaded) {
         // The lookup key is the session identity, not a search hint: a record
         // whose own id differs is corrupt/stale state from an adapter or

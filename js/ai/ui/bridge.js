@@ -188,31 +188,69 @@ export function createLiveProjectSessionPersistence(app) {
   };
   const awaitFlush = () => (flush ? flush.promise : Promise.resolve());
   const adapterFor = (project) => project ? createProjectSessionPersistence(project, { onChange: changed }) : null;
+  const committedRecord = (record) => {
+    while (saveMutations.has(record)) {
+      const mutation = saveMutations.get(record);
+      // A concurrent edit that survived rollback owns this slot. Hiding it
+      // would let a later create overwrite that other owner's record.
+      if (mutation.failed && !mutation.unchanged()) {
+        saveMutations.delete(record);
+        break;
+      }
+      record = mutation.previous;
+    }
+    return record;
+  };
   return {
-    list() { return adapterFor(projectFor())?.list?.() || []; },
-    async load(id) { return (await adapterFor(projectFor())?.load?.(id)) || null; },
+    list() {
+      return (adapterFor(projectFor())?.list?.() || []).flatMap((record) => {
+        const committed = committedRecord(record);
+        return committed == null && saveMutations.has(record) ? [] : [committed];
+      });
+    },
+    async load(id) {
+      // Keep the original project binding across the durability wait. Returning
+      // null before a pending write settles would permit another store's create
+      // to overwrite it; returning the staged row would publish a failed save.
+      const adapter = adapterFor(projectFor());
+      if (!adapter) return null;
+      for (;;) {
+        const record = await adapter.load(id);
+        const mutation = saveMutations.get(record);
+        if (!mutation) return record || null;
+        if (mutation.failed) return committedRecord(record) || null;
+        await mutation.settled;
+      }
+    },
     async save(session) {
       const project = ensureProject();
       const adapter = adapterFor(project);
       if (!adapter) return;
       const previous = adapter.list().find((item) => item && item.id === session?.id);
       const pending = adapter.save(session);
+      const durability = awaitFlush();
+      const completion = pending.then(() => durability);
+      // Readers observe settlement, while save() retains the rejection. Attach
+      // both handlers immediately so a delayed reader cannot leak a rejection.
+      const settled = completion.then(() => undefined, () => undefined);
       // The project adapter stages its detached record synchronously. Keep
       // ownership of that exact write until the shared autosave settles.
       const written = adapter.list().find((item) => item && item.id === session?.id);
       const mutation = written && written !== previous
-        ? { previous, failed: false, unchanged: captureSessionWrite(written) } : null;
+        ? { previous, failed: false, settled, unchanged: captureSessionWrite(written) } : null;
       if (mutation) saveMutations.set(written, mutation);
       try {
-        await pending;
-        await awaitFlush();
+        await completion;
         if (mutation) saveMutations.delete(written);
       } catch (error) {
         if (mutation) {
           mutation.failed = true;
           const entries = project.findings?.investigationSessions;
           const index = Array.isArray(entries) ? entries.indexOf(written) : -1;
-          if (index >= 0 && mutation.unchanged()) {
+          // Once another owner has edited the record, its slot remains claimed
+          // and no longer needs our failed write's predecessor history.
+          if (!mutation.unchanged()) saveMutations.delete(written);
+          else if (index >= 0) {
             let restore = previous;
             // Coalesced writes can fail together: do not resurrect an earlier
             // failed write when rolling back the last write for the same ID.
