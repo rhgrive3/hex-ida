@@ -192,12 +192,31 @@ async function boundedMemoryRead(adapter, args) {
 async function boundedMemoryWrite(adapter, args) {
   const bytes = byteArray(args.bytes), expected = byteArray(args.expectedBefore);
   if (!bytes.length || bytes.length > 64 * 1024 || bytes.length !== expected.length) throw new AIError('invalid_tool_call', 'Runtime write bytes and expected-before must have the same length between 1 and 65536.');
-  const before = await adapter.readMemory(args.address, expected.length);
-  if (!equalBytes(before, expected)) throw new AIError('tool_failed', 'Runtime memory target is stale: expected-before does not match.');
-  await adapter.writeMemory(args.address, bytes);
-  const after = await adapter.readMemory(args.address, bytes.length);
-  if (!equalBytes(after, bytes)) throw new AIError('tool_failed', 'Runtime memory write postcondition verification failed.');
-  return { address: String(args.address), written: bytes.length, before: Array.from(expected), after: Array.from(bytes) };
+  const observedBefore = await adapter.readMemory(args.address, expected.length);
+  if (!equalBytes(observedBefore, expected)) throw new AIError('tool_failed', 'Runtime memory target is stale: expected-before does not match.');
+  // Capture an owned pre-mutation snapshot. Runtime adapters may return a view
+  // backed by live target memory, which is not stable enough to serve as
+  // rollback authority once writeMemory() starts mutating it (#4271).
+  const before = Uint8Array.from(observedBefore);
+  try {
+    await adapter.writeMemory(args.address, bytes);
+    const after = await adapter.readMemory(args.address, bytes.length);
+    if (!equalBytes(after, bytes)) throw new AIError('tool_failed', 'Runtime memory write postcondition verification failed.');
+  } catch (error) {
+    try {
+      await adapter.writeMemory(args.address, before);
+      const restored = await adapter.readMemory(args.address, before.length);
+      if (!equalBytes(restored, before)) throw new Error('rollback postcondition verification failed');
+    } catch (rollbackError) {
+      throw new AIError(
+        'tool_failed',
+        'Runtime memory write failed and rollback could not be verified; target state may be mutated.',
+        { cause: String(error?.message || error), rollback: String(rollbackError?.message || rollbackError) },
+      );
+    }
+    throw error;
+  }
+  return { address: String(args.address), written: bytes.length, before: Array.from(before), after: Array.from(bytes) };
 }
 
 function noteStatusSnapshot(notes) {
