@@ -1230,7 +1230,7 @@ function describeType(die, dies, depth = 0, seen = new Set()) {
         };
       }
 
-      const targetDie = nonSupplementaryReferenceTarget(effectiveType.entry, effectiveType.owner, dies);
+      const targetDie = currentDebugInfoReferenceTarget(effectiveType.entry, effectiveType.owner, dies);
       const target = describeType(targetDie, dies, depth + 1, seen);
       return {
         name: `${target.name} *`,
