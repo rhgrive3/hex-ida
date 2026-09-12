@@ -288,6 +288,20 @@ function mappedCStringAtOffset(r, start, end, budget, label) {
   return value;
 }
 
+function validPEForwarderTarget(value) {
+  // The library identifier may itself contain dots, so the final dot owns the target suffix.
+  const separator = value.lastIndexOf('.');
+  if (separator <= 0 || separator === value.length - 1) return false;
+  const target = value.slice(separator + 1);
+  if (target[0] !== '#') return true;
+  if (target.length === 1) return false;
+  for (let i = 1; i < target.length; i++) {
+    const code = target.charCodeAt(i);
+    if (code < 0x30 || code > 0x39) return false;
+  }
+  return true;
+}
+
 export function parseExports(r, dir, image, sharedBudget = null) {
   if (!dir || !dir.rva || dir.size < 40) return;
   const budget=ensureBudget(image,sharedBudget);
@@ -332,6 +346,7 @@ export function parseExports(r, dir, image, sharedBudget = null) {
       const forwarderEnd=Math.min(forwarderRange.end,forwarderRange.start+(dirEnd-frva));
       const forwarder=mappedCStringAtOffset(r,forwarderRange.start,forwarderEnd,budget,'PE export forwarder');
       if(!forwarder)continue;
+      if(!validPEForwarderTarget(forwarder)){budget.partial('exports:forwarder-target-format','Ignored malformed PE export forwarder target');continue;}
       for(const name of publicNames)image.exports.push({name,address:0n,ordinal:baseOrdinal+i,kind:'forwarder',forwarder,source:'PE-export'});
       continue;
     }
