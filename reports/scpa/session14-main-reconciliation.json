@@ -106,5 +106,47 @@
   "postApplicationNonPackageBlobMatches": 38,
   "packageMerge": "Recursive JSON three-way merge; original SCPA scripts and updated main userscript regression entry retained; no conflicting semantic leaf.",
   "verifiedMergeBase": "de6178154884813d90c6437146a99b1155f0c68d",
-  "history": "46 compare commits and2 historical branch-base commit objects SHA verified; private shallow ancestry view matched authoritative GitHub compare merge base."
+  "history": "46 compare commits and2 historical branch-base commit objects SHA verified; private shallow ancestry view matched authoritative GitHub compare merge base.",
+  "followup": {
+    "base": "d7da0f5777ca38ca6b40d9fb16c132d7e1e56ff5",
+    "head": "a0cc692cffe63f4f3674876cd2d77e2bdd6d9a07",
+    "tree": "64399b151ed4919cdf58189839f98f52e76ce448",
+    "changedPathCount": 15,
+    "changedPaths": [
+      "js/analysis/debug/pdb.js",
+      "js/userscript/chatgpt-sandbox-host.js",
+      "js/userscript/decompress.js",
+      "js/userscript/dev/bootstrap-host.js",
+      "js/userscript/dev/skills/automation-program.js",
+      "js/userscript/embed-protocol.js",
+      "js/userscript/protected-workers.js",
+      "package.json",
+      "tests/issue-4940-onready-callback-isolation.mjs",
+      "tests/issue-5013-gzip-unhandled-rejection.mjs",
+      "tests/issue-5017-protected-worker-cleanup-ownership.mjs",
+      "tests/issue-5020-sanitize-details-shared-refs.mjs",
+      "tests/issue-5048-bootstrap-reload-failure-retry.mjs",
+      "tests/issue-5066-sleep-listener-cleanup.mjs",
+      "tests/phase7/debug/issue-4093-pdb-provider-record-budget.test.mjs"
+    ],
+    "blobHashMatches": 15,
+    "signedCommitObjectHashVerified": true,
+    "githubSignatureVerification": true,
+    "PRIntersection": [
+      "package.json"
+    ],
+    "workingChangeIntersection": [],
+    "remoteCompareMergeBase": "d7da0f5777ca38ca6b40d9fb16c132d7e1e56ff5",
+    "historyCommitCount": 22,
+    "historyMissing": [],
+    "mergeBaseVerifiedWithPrivateShallow": "d7da0f5777ca38ca6b40d9fb16c132d7e1e56ff5",
+    "historyCommandFlags": [
+      "--shallow-file",
+      "/workspace/scratch/7f4aea44c0fb/session14-main-rebuild/private-shallow"
+    ],
+    "postApplicationNonPackageBlobMatches": 14,
+    "packageMerge": "Disjoint recursive JSON3-way merge, both script branches retained."
+  },
+  "acceptedMain": "a0cc692cffe63f4f3674876cd2d77e2bdd6d9a07",
+  "acceptedTree": "64399b151ed4919cdf58189839f98f52e76ce448"
 }

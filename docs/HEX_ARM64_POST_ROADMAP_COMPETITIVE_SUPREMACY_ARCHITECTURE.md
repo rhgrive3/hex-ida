@@ -1,6 +1,6 @@
 # HEX ARM64 POST-ROADMAP COMPETITIVE SUPREMACY ARCHITECTURE
 
-> **2026-09-12 implementation update / session14:** 既存PRの実装を再利用し、ARM64のnative解析・証明・Apple metadata・保持traceの不足部分を追加した。main `d7da0f5777ca38ca6b40d9fb16c132d7e1e56ff5` まで整合。**目標100%の受入は未認定。** 現在の実装・検証・残条件は第44章と `docs/SCPA_FUNCTIONAL_ACCEPTANCE.md`。第1–42章は設計時の記録、第43章はsession13の履歴として保持する。
+> **2026-09-12 implementation update / session14:** 既存PRの実装を再利用し、ARM64のnative解析・証明・Apple metadata・保持traceの不足部分を追加した。main `a0cc692cffe63f4f3674876cd2d77e2bdd6d9a07` まで整合。**目標100%の受入は未認定。** 現在の実装・検証・残条件は第44章と `docs/SCPA_FUNCTIONAL_ACCEPTANCE.md`。第1–42章は設計時の記録、第43章はsession13の履歴として保持する。
 
 **Research + Architecture Design only · 2026-09-10 JST · v1.0**\
 Repository: `rhgrive3/hex-ida`\
@@ -2116,7 +2116,9 @@ Post-Bの**実競合2,304セルは全てUNMEASURED**。Session12の2,304セル�
 | #6611・#8203・#8197・#8205・#8213 | 関連変更との境界を確認。今回の限定adapterで重複実装しない |
 | main reconciliation | `de6178154884813d90c6437146a99b1155f0c68d` → `d7da0f5777ca38ca6b40d9fb16c132d7e1e56ff5`、46 commits / 39 paths。38非packageパスのblobはremoteと完全一致。packageはJSON値の3-way mergeで双方のscriptを保持 |
 
-取り込んだmainのtreeは `13327e52ffd36579eb74e5f0fd55e2cbaa777d06`。署名付きcommit objectとtreeを再構成し、GitHubのSHAと一致した。取得後に動くmainへのrelease admissionを意味しない。関連PRの監査であり、repository内の全PRを網羅したと主張しない。
+初回に取り込んだmainのtreeは `13327e52ffd36579eb74e5f0fd55e2cbaa777d06`。署名付きcommit objectとtreeを再構成し、GitHubのSHAと一致した。取得後に動くmainへのrelease admissionを意味しない。関連PRの監査であり、repository内の全PRを網羅したと主張しない。
+
+最終公開確認でmainが `a0cc692cffe63f4f3674876cd2d77e2bdd6d9a07` へ進んだため、追加22 commits /15 pathsを取り込み、packageの双方のscriptを保持して競合を解消した。tree `64399b151ed4919cdf58189839f98f52e76ce448`・署名付きcommit・15 blobを照合。SCPA productionの重複はなく、追加回帰7ファイルとSCPAを再実行した。
 
 ### 44.2 今回の実装
 

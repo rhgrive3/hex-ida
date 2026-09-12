@@ -764,6 +764,6 @@
     "Prior Apple metadata owner test matrix across existing Swift/parser/metadata/scoped tests: PASS."
   ],
   "audit_updated_at": "2026-09-12T06:13:56.100528+00:00",
-  "reconciled_main": "d7da0f5777ca38ca6b40d9fb16c132d7e1e56ff5",
+  "reconciled_main": "a0cc692cffe63f4f3674876cd2d77e2bdd6d9a07",
   "integration_validation": "reports/scpa/session14-functional-acceptance.json"
 }

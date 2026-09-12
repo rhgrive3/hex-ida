@@ -6,12 +6,12 @@
   "releaseQualified": false,
   "defaultRolloutEligible": false,
   "victoryEstablished": false,
-  "sourceMainCommit": "d7da0f5777ca38ca6b40d9fb16c132d7e1e56ff5",
-  "sourceMainTree": "13327e52ffd36579eb74e5f0fd55e2cbaa777d06",
+  "sourceMainCommit": "a0cc692cffe63f4f3674876cd2d77e2bdd6d9a07",
+  "sourceMainTree": "64399b151ed4919cdf58189839f98f52e76ce448",
   "previousMainCommit": "de6178154884813d90c6437146a99b1155f0c68d",
   "previousPRHead": "9233e79e9f902ca6966a19672371dc25f9bc270d",
   "previousLocalHead": "485a41ba1ef07c8b64efbc003472a399d5038ebb",
-  "validatedTreeBeforeThisReport": "8182094bf94d1449279c7fc23dbf8bfd5508201a",
+  "validatedTreeBeforeThisReport": "4c8685f94ce60fb39de269c54ad844d853d78944",
   "reconciliationRecord": "reports/scpa/session14-main-reconciliation.json",
   "existingPRReuseRecord": "reports/scpa/session14-existing-pr-reuse.json",
   "requirementAudit": "reports/scpa/session14-requirements.json",
@@ -28,13 +28,13 @@
     "runtimeExperimentsExecuted": false
   },
   "generated": {
-    "serial": 2322242193,
-    "releaseIdentity": "904c6abdd6a1c9bd73e5d262c654516bbb3a1861a64b7b0eb6c8daeb34a98bd1",
-    "buildId": "f5801aacfa5fe7fad2d60419",
+    "serial": 2322242194,
+    "releaseIdentity": "90e209b8d3743bdefd6077d5dcc5eef9d52675c967c933c71f97ccb843b1368b",
+    "buildId": "5f469b755d414bdf05447a1c",
     "rebuildTrackedDiff": 0,
     "sha256": {
-      "userscript/hex.user.template.js": "bf3a9166f96255ea0214a23a810163d71e150bdea04ee77c063606574a6ded8e",
-      "userscript/release-version.json": "aa16ac426ae472597722f23bc3ba1234d80c3aed2fd6c39221fedfce1965f491"
+      "userscript/hex.user.template.js": "57c9cbae6644a185665afda04a3d7c5aff65b46050b1f441b3b404f430d0faf9",
+      "userscript/release-version.json": "36328a2b69a7af3b0e6e519df8a2c1ebcd2eae3898f08d16576ca51aef5c2343"
     },
     "deployed": false
   },
@@ -296,6 +296,97 @@
       "timedOut": true,
       "logSha256": "f2aafeaceafddd45e5182d6f49c40be82270019da74b2b314ce90b185021760f",
       "qualification": "NOT_COMPLETED; machine-effects-contract reached;90-second timeout is not a reproduced19-failure comparison"
+    },
+    {
+      "label": "session14-committed-scpa",
+      "command": [
+        "npm",
+        "run",
+        "scpa:test"
+      ],
+      "startedUtc": "2026-09-12T06:22:52.242692+00:00",
+      "timeoutSeconds": 240.0,
+      "durationSeconds": 60.132,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "249cec2ee1e91bd2cedd6e8a31d607060b4db3d3eddc00cd0290953cdec814f2"
+    },
+    {
+      "label": "session14-last-main-scpa",
+      "command": [
+        "npm",
+        "run",
+        "scpa:test"
+      ],
+      "startedUtc": "2026-09-12T06:30:55.563320+00:00",
+      "timeoutSeconds": 180.0,
+      "durationSeconds": 56.526,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "249cec2ee1e91bd2cedd6e8a31d607060b4db3d3eddc00cd0290953cdec814f2"
+    },
+    {
+      "label": "session14-last-main-lint",
+      "command": [
+        "npm",
+        "run",
+        "lint"
+      ],
+      "startedUtc": "2026-09-12T06:30:55.568232+00:00",
+      "timeoutSeconds": 90.0,
+      "durationSeconds": 2.579,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "109c796938a2d19095e48d91064f2d004b62d9fd581ebe449704d12c66a21515"
+    },
+    {
+      "label": "session14-last-main-build",
+      "command": [
+        "npm",
+        "run",
+        "userscript:build"
+      ],
+      "startedUtc": "2026-09-12T06:30:55.590252+00:00",
+      "timeoutSeconds": 120.0,
+      "durationSeconds": 5.989,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "beef1112339525db90c00b557fde308091a9bbf44c15cc8e6803f978443405ca"
+    },
+    {
+      "label": "session14-last-main-build-repeat",
+      "command": [
+        "npm",
+        "run",
+        "userscript:build"
+      ],
+      "startedUtc": "2026-09-12T06:32:21.524059+00:00",
+      "timeoutSeconds": 120.0,
+      "durationSeconds": 2.929,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "0737e0dca584d3878a0aa36a99b83bba7a222857966a8de3b14ec9e97133db41"
+    },
+    {
+      "label": "session14-last-main-regressions",
+      "command": [
+        "node",
+        "--test",
+        "--test-concurrency=2",
+        "tests/issue-4940-onready-callback-isolation.mjs",
+        "tests/issue-5013-gzip-unhandled-rejection.mjs",
+        "tests/issue-5017-protected-worker-cleanup-ownership.mjs",
+        "tests/issue-5020-sanitize-details-shared-refs.mjs",
+        "tests/issue-5048-bootstrap-reload-failure-retry.mjs",
+        "tests/issue-5066-sleep-listener-cleanup.mjs",
+        "tests/phase7/debug/issue-4093-pdb-provider-record-budget.test.mjs"
+      ],
+      "startedUtc": "2026-09-12T06:30:55.624743+00:00",
+      "timeoutSeconds": 90.0,
+      "durationSeconds": 1.357,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "ba8f2c45b5df1ae6745a61283802a04172d22cf368e060cc9c3ea87efc1fbaa3"
     }
   ],
   "baselineFailures": {
@@ -988,7 +1079,7 @@
     "js/semantics/compat/semantic-ir-v2-to-v1-nodes.js": "3566ad40e30df9988801a61ed64640bd00275803a1c57f6e11979facbc2946ca",
     "js/swift-context.js": "37733a6752205d41fe6e297ead7a984c0055b7153fbaaf49c15dd802278296f7",
     "js/swift.js": "468e46f8bd1640aab70ec144f32d8b500f1f9a55e713721b15f41232308d0667",
-    "package.json": "d620f8ba07129d0666095d7371ab8b6cf5f857c6abc35a9034d7d2b7c283087f",
+    "package.json": "3d3f6d6e441452b855246a59119f515ecff1496d8f5f13d34e2de9b0460805e3",
     "tests/competitive-arm64/manifest/post-b.json": "12626d19041f86414729f4622ca763d8450e7e9d8a487b1d3dcbe27700ed9d5a",
     "tests/competitive-arm64/manifest/sources/c.c": "0b453fb4ddb19d8f17b12ac2f3e7f0d7cd69e74598a9fe512ea6fd7a589c0afa",
     "tests/competitive-arm64/manifest/sources/cpp.cpp": "25c01d9a03e8519c6486fa62e86c49bf6f18d47ac58b96e93fff4ad8522611ca",
@@ -1108,8 +1199,21 @@
     "tools/portable-checker/bundle.mjs": "130fffd455e1298169bb4020ce793196739b18c9901ba3c8ca91535aca3b8fca",
     "tools/portable-checker/check.mjs": "3fc3b1c6ed389d576dd92124f91193d26258793cda3590e6e5229d07aaac9fe9",
     "tools/validation/competitive/twin-manifest.mjs": "9f6e2164c15578a515a5a11698535ae3ba9a872f1231d988f3010b8991cdd702",
-    "userscript/hex.user.template.js": "bf3a9166f96255ea0214a23a810163d71e150bdea04ee77c063606574a6ded8e",
-    "userscript/release-version.json": "aa16ac426ae472597722f23bc3ba1234d80c3aed2fd6c39221fedfce1965f491"
+    "userscript/hex.user.template.js": "57c9cbae6644a185665afda04a3d7c5aff65b46050b1f441b3b404f430d0faf9",
+    "userscript/release-version.json": "36328a2b69a7af3b0e6e519df8a2c1ebcd2eae3898f08d16576ca51aef5c2343"
   },
-  "codeInventoryDigest": "a6e6352fa72aacde733409d0bd0f8f1eadf0070c56e217a70af84c50698ac52d"
+  "codeInventoryDigest": "7c629e89674fee64fb91116fe4e5431af1cc4245ed7ae414344aa340fb34560f",
+  "followupReconciliation": {
+    "previousMain": "d7da0f5777ca38ca6b40d9fb16c132d7e1e56ff5",
+    "currentMain": "a0cc692cffe63f4f3674876cd2d77e2bdd6d9a07",
+    "commits": 22,
+    "paths": 15,
+    "previousPublishedHead": "77fb0e03ebdf381281bc29518fba6fe960f98b47",
+    "scpaCodeAndFixtureHashesUnchanged": true,
+    "changedPriorCodeInventoryPaths": [
+      "package.json",
+      "userscript/hex.user.template.js",
+      "userscript/release-version.json"
+    ]
+  }
 }
