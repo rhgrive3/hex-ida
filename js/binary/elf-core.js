@@ -36,6 +36,11 @@ const R_RISCV_JUMP_SLOT = 5;
 const DT_RISCV_VARIANT_CC = 0x70000001n;
 const ELF_RUNTIME_PAGE_SIZE = 0x1000n;
 
+function elfAddressRangeFits(bits, address, size) {
+  const limit = 1n << BigInt(bits);
+  return address >= 0n && size >= 0n && address <= limit && size <= limit && address <= limit - size;
+}
+
 export function parseELF(input, options = {}) {
   const initial = new ByteView(input, { littleEndian: true });
   const bytes = initial.bytes;
@@ -84,6 +89,12 @@ export function parseELF(input, options = {}) {
   }
   if (h.type === ET_REL) assignRelocatableSectionAddresses(rawSections, image);
   for (const s of rawSections) {
+    const allocRuntimeRangeInvalid = h.type !== ET_REL && (s.flags & SHF_ALLOC) !== 0n
+      && !elfAddressRangeFits(bits, s.addr, s.size);
+    if (allocRuntimeRangeInvalid) {
+      image.warnings.push(`ELF section ${s.index} (${s.name || 'unnamed'}) virtual range exceeds ELF${bits} address space and is excluded from canonical sections`);
+      continue;
+    }
     // A file-backed SHF_ALLOC section must live inside the file to serve as
     // virtual mapping authority: `sectionHasMappedAddress()` ranks the
     // smallest covering mapping, so an unvalidated section header whose
@@ -383,8 +394,12 @@ function parseProgramHeaders(r, h, image, bits) {
       const fileLength = BigInt(r.length);
       const invalidSize = ph.filesz > ph.memsz;
       const invalidRange = ph.offset > fileLength || ph.filesz > fileLength - ph.offset;
-      if (invalidSize || invalidRange) {
-        image.warnings.push(`invalid ELF PT_LOAD ${i}: ${invalidSize ? 'p_filesz > p_memsz' : 'file range exceeds input'}`);
+      const invalidVmRange = !elfAddressRangeFits(bits, ph.vaddr, ph.memsz);
+      if (invalidSize || invalidRange || invalidVmRange) {
+        const reason = invalidSize ? 'p_filesz > p_memsz'
+          : invalidRange ? 'file range exceeds input'
+            : `virtual range exceeds ELF${bits} address space`;
+        image.warnings.push(`invalid ELF PT_LOAD ${i}: ${reason}`);
         continue;
       }
     }
