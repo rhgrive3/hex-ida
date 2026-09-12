@@ -500,5 +500,77 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     field.rva = row.rva;
   }
 
-  return { types, methods, fields, manifestResources, typeSpecs, assembly, params, properties, events, methodSemantics, interfaceImpls, methodImpls, implMaps, moduleRefs, fieldRvas };
+  // II.22.20 GenericParam (0x2A) + II.22.21 GenericParamConstraint (0x2C):
+  // generic parameter ownership, flags and type constraints are type-system
+  // authority. Leaving them undecoded collapsed `where T : A` and `where T : B`
+  // into the identical canonical image — irreversible semantic data loss
+  // (#7555).
+  const genericOwnerSize = codedIndexSize(counts, [0x02, 0x06], 1);
+  const genericParams = readRows(0x2a, pos => {
+    const number = view.getUint16(pos, true);
+    const flags = view.getUint16(pos + 2, true);
+    const ownerBase = index(pos + 4, genericOwnerSize);
+    const ownerTable = [0x02, 0x06][ownerBase & 1];
+    const ownerRid = Math.floor(ownerBase / 2);
+    if (ownerBase === 0 || ownerTable == null || ownerRid < 1 || ownerRid > counts[ownerTable]) {
+      fail('cil-generic-param-owner-invalid');
+    }
+    const name = text(index(pos + 4 + genericOwnerSize, s));
+    if (name == null || !name.length) fail('cil-generic-param-name-required');
+    if ((flags & ~0x001f) !== 0 || (flags & 0x0003) === 0x0003) {
+      // II.23.1.5 GenericParamAttributes: variance mask 0x0003 (0x3 is not a
+      // variance) and special-constraint mask 0x001c; the rest is reserved.
+      fail('cil-generic-param-flags-invalid');
+    }
+    return { number, flags, ownerToken: cilMetadataToken(ownerTable, ownerRid), name, constraintTokens: [] };
+  });
+  const genericParamNumbers = new Map();
+  for (const row of genericParams) {
+    const numbers = genericParamNumbers.get(row.ownerToken) ?? [];
+    if (numbers.includes(row.number)) fail('cil-generic-param-number-duplicate');
+    numbers.push(row.number);
+    genericParamNumbers.set(row.ownerToken, numbers);
+  }
+  for (const numbers of genericParamNumbers.values()) {
+    // II.22.20: one owner's parameters are the ordinals 0..n-1; gaps and
+    // non-zero starts are invalid metadata.
+    const ordered = [...numbers].sort((a, b) => a - b);
+    if (ordered.some((value, i) => value !== i)) fail('cil-generic-param-number-invalid');
+  }
+  const genericParamConstraintTargetSize = codedIndexSize(counts, [0x02, 0x01, 0x1b], 2);
+  const genericParamConstraintOwnerSize = tableIndexSize(counts, 0x2a);
+  const genericParamConstraints = readRows(0x2c, pos => {
+    const ownerRid = index(pos, genericParamConstraintOwnerSize);
+    if (ownerRid < 1 || ownerRid > counts[0x2a]) fail('cil-generic-param-constraint-owner-invalid');
+    const targetBase = index(pos + genericParamConstraintOwnerSize, genericParamConstraintTargetSize);
+    const targetTable = [0x02, 0x01, 0x1b][targetBase & 3];
+    const targetRid = Math.floor(targetBase / 4);
+    if (targetBase === 0 || targetTable == null || targetRid < 1 || targetRid > counts[targetTable]) {
+      fail('cil-generic-param-constraint-target-invalid');
+    }
+    return { ownerToken: cilMetadataToken(0x2a, ownerRid), constraintToken: cilMetadataToken(targetTable, targetRid) };
+  });
+  const genericParamByToken = new Map(genericParams.map(row => [row.token, row]));
+  const seenGenericConstraint = new Set();
+  for (const row of genericParamConstraints) {
+    const param = genericParamByToken.get(row.ownerToken);
+    if (param == null) fail('cil-generic-param-constraint-owner-invalid');
+    const edge = `${row.ownerToken}\u0000${row.constraintToken}`;
+    if (seenGenericConstraint.has(edge)) fail('cil-generic-param-constraint-duplicate');
+    seenGenericConstraint.add(edge);
+    param.constraintTokens.push(row.constraintToken);
+  }
+  const genericParamsByOwner = new Map();
+  for (const row of genericParams) {
+    const list = genericParamsByOwner.get(row.ownerToken) ?? [];
+    list.push(row);
+    genericParamsByOwner.set(row.ownerToken, list);
+  }
+  for (const [ownerToken, list] of genericParamsByOwner) {
+    const owner = parseInt(ownerToken, 16);
+    const ownerRow = (owner >>> 24) === 2 ? types[(owner & 0xffffff) - 1] : methods[(owner & 0xffffff) - 1];
+    ownerRow.genericParams = Object.freeze(list);
+  }
+
+  return { types, methods, fields, manifestResources, typeSpecs, assembly, params, properties, events, methodSemantics, interfaceImpls, methodImpls, implMaps, moduleRefs, fieldRvas, genericParams, genericParamConstraints };
 }
