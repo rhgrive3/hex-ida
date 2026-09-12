@@ -178,31 +178,70 @@ function regionBounds(region) {
   }
 }
 
-// Every partial range in the same authority tier must be contained in the
-// agreed complete region set. An outside range, a partial ownership
-// contradiction, or an unparseable range withdraws the exact claim.
-function checkPartialContainment(completeRegions, partialItems) {
-  const complete = [];
-  for (const region of completeRegions ?? []) {
-    const bounds = regionBounds(region);
-    if (!bounds) return { kind: 'extent', detail: 'complete extent region is not parseable', alternatives: [] };
-    complete.push(bounds);
-  }
-  const ownershipByRange = new Map();
+// Conflicting ownership applies to the overlapping bytes, not only to ranges
+// with identical endpoints. Track the furthest live end for each ownership so
+// differently-owned partial ranges cannot overlap while retaining exact extent
+// authority (#4952). Half-open touching ranges remain compatible.
+function checkPartialOwnership(partialItems) {
+  const regions = [];
   for (const item of partialItems ?? []) {
     for (const region of item?.regions ?? []) {
       const bounds = regionBounds(region);
       if (!bounds) return { kind: 'extent', detail: 'partial extent region is not parseable', alternatives: [] };
-      const key = `${bounds.start}-${bounds.end}`;
-      const prior = ownershipByRange.get(key);
-      if (prior != null && prior !== region.ownership) {
+      regions.push({ ...bounds, ownership: region.ownership });
+    }
+  }
+  regions.sort((left, right) => {
+    if (left.start < right.start) return -1;
+    if (left.start > right.start) return 1;
+    if (left.end < right.end) return -1;
+    if (left.end > right.end) return 1;
+    return compareText(left.ownership, right.ownership);
+  });
+
+  const maxEndByOwnership = new Map();
+  for (const region of regions) {
+    for (const [ownership, end] of maxEndByOwnership) {
+      if (ownership !== region.ownership && end > region.start) {
         return {
           kind: 'extent',
           detail: 'partial extent ownership evidence disagrees',
-          alternatives: [...new Set([prior, region.ownership])].sort(),
+          alternatives: [ownership, region.ownership].sort(),
         };
       }
-      ownershipByRange.set(key, region.ownership);
+    }
+    const priorEnd = maxEndByOwnership.get(region.ownership);
+    if (priorEnd == null || region.end > priorEnd) maxEndByOwnership.set(region.ownership, region.end);
+  }
+  return null;
+}
+
+// Every partial range in the same authority tier must be contained in the
+// agreed complete region set. An outside range, a partial ownership
+// contradiction, or an unparseable range withdraws the exact claim.
+function checkPartialContainment(completeRegions, partialItems) {
+  const ownershipConflict = checkPartialOwnership(partialItems);
+  if (ownershipConflict) return ownershipConflict;
+
+  const complete = [];
+  for (const region of completeRegions ?? []) {
+    const bounds = regionBounds(region);
+    if (!bounds) return { kind: 'extent', detail: 'complete extent region is not parseable', alternatives: [] };
+    complete.push({ ...bounds, ownership: region.ownership });
+  }
+  for (const item of partialItems ?? []) {
+    for (const region of item?.regions ?? []) {
+      const bounds = regionBounds(region);
+      if (!bounds) return { kind: 'extent', detail: 'partial extent region is not parseable', alternatives: [] };
+      const ownershipConflict = complete.find((c) =>
+        c.start < bounds.end && bounds.start < c.end && c.ownership !== region.ownership);
+      if (ownershipConflict) {
+        return {
+          kind: 'extent',
+          detail: 'partial extent ownership evidence disagrees',
+          alternatives: [ownershipConflict.ownership, region.ownership].sort(),
+        };
+      }
       const contained = complete.some((c) => c.start <= bounds.start && bounds.end <= c.end);
       if (!contained) {
         return {
@@ -229,20 +268,13 @@ function fuseExtent(evidence) {
   const partial = pool.filter((item) => item.extentRole === 'partial');
   const complete = pool.filter((item) => item.extentRole !== 'partial');
   if (complete.length === 0 && partial.length > 0) {
+    const ownershipConflict = checkPartialOwnership(partial);
+    if (ownershipConflict) return { regions: [], state: 'unknown', conflicts: [ownershipConflict] };
+
     const merged = new Map();
-    const ownershipByRange = new Map();
     for (const item of partial) {
       for (const region of item.regions) {
         const rangeKey = `${region.start}-${region.end}`;
-        const priorOwnership = ownershipByRange.get(rangeKey);
-        if (priorOwnership != null && priorOwnership !== region.ownership) {
-          return {
-            regions: [],
-            state: 'unknown',
-            conflicts: [{ kind: 'extent', detail: 'partial extent ownership evidence disagrees', alternatives: [...new Set([priorOwnership, region.ownership])].sort() }],
-          };
-        }
-        ownershipByRange.set(rangeKey, region.ownership);
         merged.set(`${rangeKey}-${region.ownership}`, region);
       }
     }

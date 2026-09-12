@@ -540,9 +540,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
         }
         data = data.subarray(0, n);
       } else {
-        const source = Array.from(bytes || []);
-        for (const byte of source) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value');
-        data = Uint8Array.from(source);
+        throw new DebugAdapterError('invalid-byte', 'memory write requires a byte array');
       }
     }
     if (data.length > WRITE_LIMIT) throw new DebugAdapterError('too-large','memory write exceeds 256 KiB');

@@ -713,8 +713,14 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
             if (prefix == null) { markPartial('shared metadata path string budget exceeded', 'budgetExceeded'); return; }
             const ex = { name: prefix, address, kind, flags, source: 'exports-trie' };
             if (flags & 0x10) { const resolverX = r.uleb(p, 10, terminalEnd); p = resolverX.next; ex.resolver = image.imageBase + resolverX.value; }
-            if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'export-trie-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;} image.exports.push(ex);
-            if (exportKind === 0) { const sec = image.sectionAt(address); if (sec && sec.perms.execute) if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'export-function')){markPartial('shared metadata function budget exceeded','budgetExceeded');return;} image.functions.push(functionSeed(address, { name: prefix, source: 'export', confidence: 0.9 })); }
+            if(!budget.take({objects:1,operations:1,stringBytes:prefix.length*2,estimatedHeapBytes:prefix.length*2+160},'export-trie-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;} image.exports.push(ex);
+            if (exportKind === 0) {
+              const sec = image.sectionAt(address);
+              if (sec && sec.perms.execute && image.addressToOffset(address) != null) {
+                if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'export-function')){markPartial('shared metadata function budget exceeded','budgetExceeded');return;}
+                image.functions.push(functionSeed(address, { name: prefix, source: 'export', confidence: 0.9 }));
+              }
+            }
           }
         }
       }
