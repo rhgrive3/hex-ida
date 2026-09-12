@@ -44,11 +44,22 @@ function cloneTraceValue(value, state = null, depth = 0) {
   if (depth > 48 || ++s.nodes > 20000) throw new RangeError('trace event is too deeply nested');
   if (s.seen.has(value)) return s.seen.get(value);
   if (ArrayBuffer.isView(value)) {
-    if (value instanceof DataView) return new DataView(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
-    return new value.constructor(value);
+    const out = value instanceof DataView
+      ? new DataView(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength))
+      : new value.constructor(value);
+    s.seen.set(value, out);
+    return out;
   }
-  if (value instanceof ArrayBuffer) return value.slice(0);
-  if (value instanceof Date) return new Date(value.getTime());
+  if (value instanceof ArrayBuffer) {
+    const out = value.slice(0);
+    s.seen.set(value, out);
+    return out;
+  }
+  if (value instanceof Date) {
+    const out = new Date(value.getTime());
+    s.seen.set(value, out);
+    return out;
+  }
   const out = Array.isArray(value) ? [] : Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype);
   s.seen.set(value, out);
   if (Array.isArray(value)) {
