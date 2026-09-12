@@ -1,0 +1,50 @@
+name: Fixer2 issue 4659 exact patch
+
+on:
+  push:
+    branches:
+      - fix/issue-4659-dt-syment-exact-size
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fixer2-issue-4659-exact-patch
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Verify baseline and apply exact patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object js/binary/elf-dynamic.js)" = "2098f86f0250c0dae4258125fc84507e42a7e6a8"
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('js/binary/elf-dynamic.js')
+          text = path.read_text()
+          old = """  const defaultSyment = BigInt(bits === 64 ? 24 : 16);\n  const syment = one(DT_SYMENT) ?? defaultSyment;\n  const symentValid = syment >= defaultSyment;\n  if (!symentValid) markDynamicPartial(image, `DT_SYMENT ${syment} is smaller than ${defaultSyment}`);\n"""
+          new = """  const defaultSyment = BigInt(bits === 64 ? 24 : 16);\n  const syment = one(DT_SYMENT) ?? defaultSyment;\n  const symentValid = syment === defaultSyment;\n  if (!symentValid) markDynamicPartial(image, `DT_SYMENT ${syment} does not match ${defaultSyment}`);\n"""
+          if text.count(old) != 1:
+              raise SystemExit('expected DT_SYMENT block exactly once')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          test "$(git hash-object js/binary/elf-dynamic.js)" = "bfb2a992971f81a18c7ab0911e4bf93f3accdb40"
+          node --check js/binary/elf-dynamic.js
+          node tests/universal-binary-sectionless.mjs
+      - name: Commit production patch and remove staging workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/fixer2-issue-4659-apply.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/binary/elf-dynamic.js .github/workflows/fixer2-issue-4659-apply.yml
+          git commit -m "fix(elf): require exact DT_SYMENT size (#4659)"
+          git push origin HEAD:fix/issue-4659-dt-syment-exact-size
