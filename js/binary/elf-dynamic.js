@@ -3,6 +3,7 @@ import { createDynamicSymbolBudget } from './dynamic-symbol-budget.js';
 import { createRelocationBudget } from './relocation-budget.js';
 import { collectAndroidPackedRelocations, collectRelrRelocations, parseDynamicSymbolVersions } from './elf-extended.js';
 import { elfInstructionStartAlignmentRejection, mappedELFFileRangeForVa, mappedELFFileSpanForVa } from './elf-mapping.js';
+import { relocationFieldWidth } from './elf-relocation-target.js';
 
 const PT_DYNAMIC = 2;
 const DT_NULL = 0n;
@@ -420,6 +421,10 @@ function attachDynamicRelocations(image, relocs, symbols) {  const byIndex = new
   const importKey = (name, version, library) => [name || '', version || '', library || ''].join('\0');
   const importByName = new Map(image.imports.filter((x) => x.name).map((x) => [importKey(x.name, x.version, x.versionLibrary), x]));
   for (const rel of relocs) {
+    const owner = image.segmentAt(rel.address);
+    if (!owner) { markDynamicPartial(image, `${rel.source} relocation target is outside every loaded PT_LOAD memory span`); continue; }
+    const width = relocationFieldWidth(Number(image.metadata.machine), rel.type, image.bits);
+    if (typeof width === 'bigint' && width > 0n && rel.address + width > owner.address + owner.size) { markDynamicPartial(image, `${rel.source} relocation target field crosses the end of its loaded PT_LOAD memory span`); continue; }
     const sym = byIndex.get(rel.symIndex) || null;
     const item = {
       address: rel.address,
