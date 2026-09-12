@@ -343,7 +343,7 @@ function segmentFor(segments, addr) {
   return null;
 }
 
-function makeBlockReader(file) {
+function makeBlockReader(file, takeRead = () => true) {
   const BLOCK = 64 * 1024;
   const cache = new Map();
   return async (off) => {
@@ -352,12 +352,16 @@ function makeBlockReader(file) {
     const bi = Math.floor(n / BLOCK);
     let b = cache.get(bi);
     if (!b) {
-      b = await bytes(file, bi * BLOCK, BLOCK);
+      const blockStart = bi * BLOCK;
+      const blockBytes = Math.min(BLOCK, file.size - blockStart);
+      if (!takeRead(blockBytes)) return null;
+      b = await bytes(file, blockStart, blockBytes);
       cache.set(bi, b);
       while (cache.size > 8) cache.delete(cache.keys().next().value);
     }
     const p = n - bi * BLOCK;
     if (p + 8 > b.length) {
+      if (!takeRead(8)) return null;
       const exact = await bytes(file, n, 8);
       if (exact.length < 8) return null;
       return new DataView(exact.buffer, exact.byteOffset, 8).getBigUint64(0, true);
@@ -415,7 +419,21 @@ export async function chainedImportSymbols(file, sliceIndex = 0) {
   const imports = parseImportNames(raw);
   if (!imports || !imports.names.length) return [];
 
-  const read64 = makeBlockReader(file);
+  let supplementalReadBytes = raw.length;
+  let supplementalReadBudgetExhausted = false;
+  const takeSupplementalRead = (amount) => {
+    if (!Number.isSafeInteger(amount) || amount < 0) {
+      supplementalReadBudgetExhausted = true;
+      return false;
+    }
+    if (amount > MAX_SUPPLEMENTAL_READ_BYTES - supplementalReadBytes) {
+      supplementalReadBudgetExhausted = true;
+      return false;
+    }
+    supplementalReadBytes += amount;
+    return true;
+  };
+  const read64 = makeBlockReader(file, takeSupplementalRead);
   /* Page-scoped membership memo: many stubs converge on the same GOT page,
      so cache per (segment, page, chainStart) — a validated member Set (chain
      walked clean) or null (malformed chain). Malformed stays scoped to its
@@ -423,14 +441,12 @@ export async function chainedImportSymbols(file, sliceIndex = 0) {
      review). */
   const chainMembersCache = new Map();
   const out = [];
-  let supplementalReadBytes = raw.length;
   let decodedStubs = 0;
   for (const sec of image.stubs) {
     if (sec.size > BigInt(MAX_STUB_BYTES) || sec.fileoff > image.sliceSize || sec.size > image.sliceSize - sec.fileoff) continue;
     const sectionBytes = Number(sec.size);
-    if (supplementalReadBytes + sectionBytes > MAX_SUPPLEMENTAL_READ_BYTES) break;
+    if (!takeSupplementalRead(sectionBytes)) return [];
     const code = await bytes(file, image.base + sec.fileoff, sectionBytes);
-    supplementalReadBytes += code.length;
     const count = Math.min(Math.floor(Number(sec.size) / sec.stubSize), MAX_STUBS - decodedStubs);
     for (let i = 0; i < count; i++) {
       decodedStubs++;
@@ -455,6 +471,7 @@ export async function chainedImportSymbols(file, sliceIndex = 0) {
         let members = chainMembersCache.get(cacheKey);
         if (members === undefined) {
           members = await chainMembers(segStarts.st, segStarts.page, chainStart, hit.s, read64, image.base);
+          if (supplementalReadBudgetExhausted) return [];
           chainMembersCache.set(cacheKey, members);
         }
         /* A malformed chain proves no membership for its own start only; a
@@ -464,6 +481,7 @@ export async function chainedImportSymbols(file, sliceIndex = 0) {
       if (!member) continue;
       const fileOff = image.base + hit.s.fileoff + (slot - hit.s.vmaddr);
       const ptr = await read64(fileOff);
+      if (supplementalReadBudgetExhausted) return [];
       if (ptr == null) continue;
       const ordinal = bindOrdinal(ptr, format);
       if (ordinal == null || ordinal < 0 || ordinal >= imports.names.length) continue;
