@@ -7,6 +7,7 @@ import { createCapabilityExecutor } from '../capabilities/executor.js';
 import { createProposalExecutor } from '../interaction/proposal-executor.js';
 import { createProjectSessionPersistence } from '../session-core/index.js';
 import { sessionMatchesSnapshot } from '../control/runtime-support.js';
+import { resolveBinaryIdentity } from '../control/snapshot.js';
 
 async function loadCoreRuntime(localContext, persistence = null) {
   const runtimeModule = await import('../runtime.js');
@@ -50,6 +51,25 @@ export function createAiEngine(app, options = {}) {
   return {
     id: 'bridge', localContext, runtime,
     get sessionStore() { return core?.sessionStore || null; },
+    // Borrow only an ALREADY instantiated core with an exactly matching source
+    // namespace. Do not call runtime(): even lazy provider initialization is
+    // outside a read-only inventory query. Cross-scheme identity aliases need
+    // an owner-issued relation; matching filenames or hashes alone is not one.
+    async getScopedInvestigationContext(jobId, context) {
+      const owner = core;
+      if (!owner || typeof owner.createScopedInvestigationProvider !== 'function') return null;
+      const identity = resolveBinaryIdentity(localContext, {});
+      if (identity.confidence !== 'strong' || identity.state !== 'ready'
+        || !context.world.binarySet.some((member) => member.binaryId === identity.id)) return null;
+      const current = () => core === owner && resolveBinaryIdentity(localContext, {}).id === identity.id;
+      context.work.checkpoint();
+      const provider = await context.work.await(() => owner.createScopedInvestigationProvider({ binaryId: identity.id }));
+      if (!current()) throw new Error('scoped-investigation-runtime-changed');
+      const borrowed = await context.work.await((signal) => provider(jobId, { ...context, signal }));
+      if (!current()) throw new Error('scoped-investigation-runtime-changed');
+      if (!borrowed) return null;
+      return Object.freeze({ ...borrowed, isCurrent: () => current() && borrowed.isCurrent() === true });
+    },
     proposals: () => (core && core.proposalStore) || null,
     capabilities: () => capabilityCatalog.list(capabilityExecutor.context()),
     capabilityExecutor,
