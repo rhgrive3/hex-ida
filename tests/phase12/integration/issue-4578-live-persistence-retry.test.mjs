@@ -95,6 +95,65 @@ function deferred() {
   const promise = new Promise((done) => { resolve = done; });
   return { promise, resolve };
 }
+
+await test('#4578/#5556 mutations queued during live create retain every durable revision', async () => {
+  const f = fixture();
+  f.recover();
+  const store = new InvestigationSessionStore({ persistence: f.persistence });
+  const create = store.create({ id: 'queued', goal: 'initial' });
+  const append = store.appendMessage('queued', { content: 'first message' });
+  const memory = store.updateMemory('queued', { confirmedFacts: ['first fact'] });
+  const update = store.update('queued', { goal: 'latest' });
+  await assert.rejects(store.create({ id: 'queued', goal: 'collision' }), /already exists/);
+  assert.equal(await store.get('queued'), null, 'queued operations must not publish the pending create');
+  const [created, appended, remembered, latest] = await Promise.all([create, append, memory, update]);
+  assert.equal(created.goal, 'initial');
+  assert.equal(appended.messages[0].content, 'first message');
+  assert.deepEqual(remembered.investigationMemory.confirmedFacts, ['first fact']);
+  assert.equal(latest.goal, 'latest');
+  assert.equal(latest.messages[0].content, 'first message');
+  assert.strictEqual(await store.get('queued'), latest);
+  const restored = await new InvestigationSessionStore({ persistence: f.persistence }).get('queued');
+  assert.equal(restored.goal, 'latest');
+  assert.deepEqual(restored.messages, latest.messages);
+  assert.deepEqual(restored.investigationMemory, latest.investigationMemory);
+  assert.equal(store.creating.size, 0);
+  assert.equal(store.saveQueues.size, 0);
+});
+
+await test('#4578/#5556 a delete queued during live create removes its eventual durable record', async () => {
+  const f = fixture();
+  f.recover();
+  const store = new InvestigationSessionStore({ persistence: f.persistence });
+  const create = store.create({ id: 'queued-delete' });
+  const deletion = store.delete('queued-delete');
+  await Promise.all([create, deletion]);
+  assert.equal(await store.get('queued-delete'), null);
+  assert.equal(await f.persistence.load('queued-delete'), null);
+  assert.deepEqual(f.persistence.list(), []);
+  assert.equal(store.saveQueues.size, 0);
+  assert.equal((await store.create({ id: 'queued-delete', goal: 'recreated' })).goal, 'recreated');
+});
+
+await test('#4578/#5556 failed live create releases queued mutations and permits durable retry', async () => {
+  const f = fixture();
+  const store = new InvestigationSessionStore({ persistence: f.persistence });
+  const create = store.create({ id: 'queued-failure' });
+  const rejected = assert.rejects(create, /autosave-failed/);
+  const append = store.appendMessage('queued-failure', { content: 'must not survive' });
+  const memory = store.updateMemory('queued-failure', { confirmedFacts: ['must not survive'] });
+  const update = store.update('queued-failure', { goal: 'must not survive' });
+  await rejected;
+  assert.deepEqual(await Promise.all([append, memory, update]), [null, null, null]);
+  assert.deepEqual(f.persistence.list(), []);
+  assert.equal(store.creating.size, 0);
+  assert.equal(store.saveQueues.size, 0);
+  f.recover();
+  const retried = await store.create({ id: 'queued-failure', goal: 'durable retry' });
+  assert.equal(retried.goal, 'durable retry');
+  assert.deepEqual(retried.messages, []);
+  assert.deepEqual(retried.investigationMemory.confirmedFacts, []);
+});
 const outcome = (promise) => promise.then(
   (value) => ({ status: 'fulfilled', value }),
   (error) => ({ status: 'rejected', error }),
