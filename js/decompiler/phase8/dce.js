@@ -136,6 +136,10 @@ function liveUseCount(value, removed) {
  * ever grows.
  */
 export function runDcePass(context = {}, budget = {}, area = null) {
+  // Register on first execution rather than module evaluation.  The proof-plan
+  // and transaction modules form a dependency cycle; eager registration can
+  // observe transaction bindings before their module body has initialized.
+  registerDcePassRunner(runDcePass);
   const analysis = context.analysis;
   const cfg = analysis?.get('cfg');
   const ssa = analysis?.get('ssa');
@@ -257,5 +261,3 @@ export function runDcePass(context = {}, budget = {}, area = null) {
     invalidated: [],
   });
 }
-
-registerDcePassRunner(runDcePass);
