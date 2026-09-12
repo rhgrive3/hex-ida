@@ -4,11 +4,16 @@ import {
   RemoteCollaborationChannel,
   RemoteCollaborationGate,
   createRemoteCollaborationEnvelope,
+  createRemoteTransportVerifier,
   remoteCollaborationSupport,
 } from '../../js/collaboration/remote-authority.js';
 import { applyRemoteEnvelopeQueued } from '../../js/collaboration/remote-delivery.js';
 import { validatedCapabilityProofFixture } from './helpers/profile-proof-fixture.mjs';
 
+const remoteVerifier = createRemoteTransportVerifier({
+  oracleIdentity: 'oracle:S2-P12-COLLAB-REMOTE:independent',
+  verifyTransportProof: (proof) => proof.proofIdentity === 'tls:test',
+});
 function gate(overrides = {}) {
   return new RemoteCollaborationGate({
     projectIdentity: 'project:1',
@@ -23,8 +28,8 @@ function gate(overrides = {}) {
     },
     maxBatch: 8,
     maxMessageBytes: 65536,
-    verifyTransportProof: (proof) => proof.proofIdentity === 'tls:test',
-    transportVerifierIdentity: 'oracle:S2-P12-COLLAB-REMOTE:independent',
+    verifyTransportProof: remoteVerifier.verifyTransportProof,
+    transportVerifierIdentity: remoteVerifier.transportVerifierIdentity,
     ...overrides,
   });
 }
