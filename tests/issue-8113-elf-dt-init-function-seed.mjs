@@ -54,7 +54,10 @@ function buildElf64({
     symView.setBigUint64(24 + 16, 0n, true);
   }
   const shstr = new TextEncoder().encode('\0.text\0.dynamic\0.dynstr\0.shstrtab\0');
-  const phnum = 2 + (withPtDynamic ? 1 : 0);
+  // A loader-invoked .dynamic is itself SHF_ALLOC and backed by a PT_LOAD;
+  // #8096 rejects a file-backed SHF_ALLOC section whose sh_addr/sh_offset is
+  // not reproduced by any PT_LOAD, so the sectioned fixture must model that.
+  const phnum = 2 + (withPtDynamic ? 1 : 0) + (withSections ? 1 : 0);
   const end = Math.max(DYN_OFF + dynSize, DYNSYM_OFF + dynsym.length, withSections ? SH_OFF + 5 * 64 : 0);
   const bytes = new Uint8Array(end);
   const view = new DataView(bytes.buffer);
@@ -88,7 +91,9 @@ function buildElf64({
   };
   phdr(0, PT_LOAD, 5, 0x100, 0x1000, loadFilesz, loadMemsz);
   phdr(1, PT_LOAD, 4, 0x200, 0x2000, 0x200n, 0x200n);
-  if (withPtDynamic) phdr(2, PT_DYNAMIC, 4, DYN_OFF, DYN_VA, BigInt(dynSize), BigInt(dynSize));
+  let phIndex = 2;
+  if (withPtDynamic) phdr(phIndex++, PT_DYNAMIC, 4, DYN_OFF, DYN_VA, BigInt(dynSize), BigInt(dynSize));
+  if (withSections) phdr(phIndex++, PT_LOAD, 4, DYN_OFF, DYN_VA, BigInt(dynSize), BigInt(dynSize));
 
   bytes.set(dynBytes, DYN_OFF);
   bytes.set(dynstr, DYNSTR_OFF);

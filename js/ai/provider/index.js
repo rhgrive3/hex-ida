@@ -1,7 +1,9 @@
 import { AIError } from '../schema.js';
-import { requestJSON } from '../transport.js';
+import { readBoundedText, requestJSON } from '../transport.js';
 import { validateModelDecision } from '../validation.js';
 import { SAFE_PROVIDER_CAPABILITIES } from '../budget/wire.js';
+
+const CAPABILITIES_MAX_RESPONSE_BYTES = 64 * 1024;
 
 export class AIProvider {
   constructor({ capabilities } = {}) {
@@ -119,15 +121,32 @@ export class WorkerAIProvider extends AIProvider {
     try {
       const response = await this.fetchImpl(this.capabilitiesEndpoint, { method: 'GET', headers: { accept: 'application/json' }, signal: controller.signal });
       if (!response?.ok) { this.capabilitiesPrepared = true; return this.getCapabilities(); }
-      const text = await response.text();
-      if (new TextEncoder().encode(text).byteLength > 64 * 1024) { this.capabilitiesPrepared = true; return this.getCapabilities(); }
+      // Capability discovery is optional, but its 64 KiB budget is a hard
+      // transport bound: reject a declared oversize before materializing any body.
+      const contentLength = Number(response.headers?.get?.('content-length'));
+      if (contentLength > CAPABILITIES_MAX_RESPONSE_BYTES) {
+        controller.abort('response-too-large');
+        try { await response.body?.cancel?.('response-too-large'); } catch { /* best effort */ }
+        this.capabilitiesPrepared = true;
+        return this.getCapabilities();
+      }
+      // Missing/untrusted Content-Length still stays bounded by the shared
+      // streaming reader, which cancels on the first chunk crossing the cap.
+      const text = await readBoundedText(response, CAPABILITIES_MAX_RESPONSE_BYTES, controller);
       let payload = null;
       try { payload = JSON.parse(text); } catch { /* conservative fallback below */ }
       if (payload?.capabilities && typeof payload.capabilities === 'object') this.providerCapabilities = { ...this.providerCapabilities, ...payload.capabilities };
       this.capabilitiesPrepared = true;
       return this.getCapabilities();
     } catch (error) {
-      if (options.signal?.aborted || (controller.signal.aborted && controller.signal.reason !== 'timeout')) throw interruptionError(options.signal);
+      // response-too-large is our own conservative-fallback sentinel, not a
+      // caller cancellation. Explicit/shared cancellation must still reject.
+      if (options.signal?.aborted
+          || (controller.signal.aborted
+            && controller.signal.reason !== 'timeout'
+            && controller.signal.reason !== 'response-too-large')) {
+        throw interruptionError(options.signal || controller.signal);
+      }
       // Capability discovery must not make the provider unavailable. A failed or
       // timed-out preflight falls back to the conservative built-in budget.
       this.capabilitiesPrepared = true;

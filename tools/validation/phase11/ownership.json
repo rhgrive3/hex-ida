@@ -107,7 +107,8 @@
     "tests/compiler-truth/extended.mjs",
     "tests/compiler-truth/language-matrix.mjs",
     "tests/compiler-truth/run-core.mjs",
-    "tests/compiler-truth/run.mjs"
+    "tests/compiler-truth/run.mjs",
+    "tests/issue-8004-ldc-resolved-constant.mjs"
   ],
   "forbiddenPrefixes": [
     "js/binary/",

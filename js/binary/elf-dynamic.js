@@ -2,7 +2,8 @@ import { functionSeed } from './model.js';
 import { createDynamicSymbolBudget } from './dynamic-symbol-budget.js';
 import { createRelocationBudget } from './relocation-budget.js';
 import { collectAndroidPackedRelocations, collectRelrRelocations, parseDynamicSymbolVersions } from './elf-extended.js';
-import { mappedELFFileRangeForVa, mappedELFFileSpanForVa, elfInstructionTargetRejection } from './elf-mapping.js';
+import { elfInstructionStartAlignmentRejection, elfInstructionTargetRejection, mappedELFFileRangeForVa, mappedELFFileSpanForVa } from './elf-mapping.js';
+import { relocationFieldWidth } from './elf-relocation-target.js';
 
 const ET_REL = 1;
 const PT_DYNAMIC = 2;
@@ -311,6 +312,11 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
         return null;
       })();
       if (owner) {
+        const alignmentRejection = elfInstructionStartAlignmentRejection(image, value);
+        if (alignmentRejection) {
+          markDynamicPartial(image, `ignored PT_DYNAMIC ${type === STT_GNU_IFUNC ? 'STT_GNU_IFUNC resolver' : 'STT_FUNC'} ${name}: ${alignmentRejection}`);
+          continue;
+        }
         image.functions.push(functionSeed(value, {
           size: size || null,
           name: type === STT_GNU_IFUNC ? `${name}$resolver` : name,
@@ -433,6 +439,10 @@ function attachDynamicRelocations(image, relocs, symbols) {  const byIndex = new
   const importKey = (name, version, library) => [name || '', version || '', library || ''].join('\0');
   const importByName = new Map(image.imports.filter((x) => x.name).map((x) => [importKey(x.name, x.version, x.versionLibrary), x]));
   for (const rel of relocs) {
+    const owner = image.segmentAt(rel.address);
+    if (!owner) { markDynamicPartial(image, `${rel.source} relocation target is outside every loaded PT_LOAD memory span`); continue; }
+    const width = relocationFieldWidth(Number(image.metadata.machine), rel.type, image.bits);
+    if (typeof width === 'bigint' && width > 0n && rel.address + width > owner.address + owner.size) { markDynamicPartial(image, `${rel.source} relocation target field crosses the end of its loaded PT_LOAD memory span`); continue; }
     const sym = byIndex.get(rel.symIndex) || null;
     const item = {
       address: rel.address,
