@@ -1,6 +1,7 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import { createManagedImageId, createManagedModuleId } from '../shared/identity.js';
 import { CLI_HEADER_SIZE, validateCliHeaderSize } from './cli-header.js';
+import { validateMetadataTableValidMask } from './metadata-layout.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -36,6 +37,7 @@ export function align4(offset) {
 
 function parseStringsHeap(bytes, offset, size) {
   checkedRange(bytes, offset, size, 'cil-metadata-strings-out-of-bounds');
+  if (size < 1 || bytes[offset] !== 0) fail('cil-invalid-strings-heap-zero-entry');
   const strings = [];
   let position = offset;
   const end = offset + size;
@@ -245,6 +247,7 @@ function parseMetadataTables(bytes, view, tableStream) {
   const validLow = BigInt(readU32(view, start + 8, 'cil-metadata-tables-truncated'));
   const validHigh = BigInt(readU32(view, start + 12, 'cil-metadata-tables-truncated'));
   const valid = validLow | (validHigh << 32n);
+  validateMetadataTableValidMask(valid);
   const rowCounts = new Array(64).fill(0);
   let pos = start + 24;
   for (let table = 0; table < 64; table++) {
@@ -597,6 +600,7 @@ function parseMethodBody(bytes, view, offset, metadataInfo = null) {
 
   const flags = readU16(view, offset, 'cil-fat-method-header-truncated');
   if ((flags & 0x03) !== 0x03) fail('cil-invalid-method-header');
+  if (offset % 4 !== 0) fail('cil-fat-method-header-unaligned');
   const headerSize = (flags >> 12) * 4;
   if (headerSize < 12 || headerSize % 4 !== 0) fail('cil-invalid-fat-method-header');
   checkedRange(bytes, offset, headerSize, 'cil-fat-method-header-truncated');

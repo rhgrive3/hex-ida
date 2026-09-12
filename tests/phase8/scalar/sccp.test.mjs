@@ -1,3 +1,4 @@
+import { publishFixtureAnalyses } from '../helpers/analysis-fixtures.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -437,11 +438,8 @@ test('replacing canonical ranges invalidates dependent scalar analyses', () => {
   f.block(0);
   f.constant(1, 8);
   f.ret();
-  const seed = seedAnalysisState(f.build());
-  // Use the public initial-state boundary; the private __write API is gone.
-  const initial = Object.fromEntries(Object.keys(seed.snapshot())
-    .filter(key => seed.version(key) > 0).map(key => [key, seed.get(key)]));
-  const state = createAnalysisState({ ...initial,
+  const state = seedAnalysisState(f.build());
+  publishFixtureAnalyses(state, {
     valueNumbers: Object.freeze({ completeness: 'complete' }),
     induction: Object.freeze({ completeness: 'complete' }),
     aggregates: Object.freeze({ completeness: 'complete' }),

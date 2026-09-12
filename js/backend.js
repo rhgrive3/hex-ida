@@ -62,6 +62,16 @@ function semanticFunctionTarget(architecture) {
   return target;
 }
 
+function requirePrimitiveSafeInteger(value, code) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw new TypeError(code);
+  return value;
+}
+
+function requirePrimitiveString(value, code) {
+  if (typeof value !== 'string') throw new TypeError(code);
+  return value;
+}
+
 function semanticFunctionAddress(value) {
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number') {
@@ -351,7 +361,10 @@ export class Backend {
   _releaseDisassembly(error) {
     if (this._disasmWorker) { this._disasmWorker.terminate(); this._disasmWorker = null; }
     const failure = error || new Error('disassembly worker released');
-    for (const pending of this._disasmPending.values()) pending.reject(failure);
+    for (const pending of this._disasmPending.values()) {
+      pending.cleanup?.();
+      pending.reject(failure);
+    }
     this._disasmPending.clear();
   }
 
@@ -642,15 +655,22 @@ export class Backend {
    */
   async analyzeSemanticFunction(options = {}) {
     const address = semanticFunctionAddress(options.address);
-    const length = Number(options.length);
-    if (!Number.isSafeInteger(length) || length < 1 || length > X86_SEMANTIC_FUNCTION_MAX_DECODE_BYTES) {
+    const length = requirePrimitiveSafeInteger(options.length, 'semantic-function-bounded-length-required');
+    if (length < 1 || length > X86_SEMANTIC_FUNCTION_MAX_DECODE_BYTES) {
       throw new TypeError('semantic-function-bounded-length-required');
     }
-    const architecture = String(options.architecture || 'x86_64');
+    const architecture = options.architecture == null || options.architecture === ''
+      ? 'x86_64'
+      : requirePrimitiveString(options.architecture, 'semantic-function-architecture-required');
     const target = semanticFunctionTarget(architecture);
-    const abiId = String(options.abiId || '');
+    const abiId = options.abiId == null || options.abiId === ''
+      ? ''
+      : requirePrimitiveString(options.abiId, 'semantic-function-abi-id-required');
     if (!target.abiIds.includes(abiId)) throw new TypeError(`semantic-function-${architecture}-abi-required`);
-    const sliceIndex = Number(options.sliceIndex ?? 0);
+    const sliceIndex = options.sliceIndex == null
+      ? 0
+      : requirePrimitiveSafeInteger(options.sliceIndex, 'semantic-function-slice-index-required');
+    if (sliceIndex < 0) throw new TypeError('semantic-function-slice-index-required');
     const formatMetadata = this.platformInfo?.productDescriptor?.formatMetadata
       || this.platformInfo?.slices?.[sliceIndex]?.info?.descriptor?.formatMetadata
       || {};
@@ -855,6 +875,7 @@ export class Backend {
         const pending = this._disasmPending.get(event.data?.id);
         if (!pending) return;
         this._disasmPending.delete(event.data.id);
+        pending.cleanup?.();
         if (pending.uiEpoch !== this.gen) { pending.reject(new StaleRequestError()); return; }
         if (event.data.ok) pending.resolve(event.data); else pending.reject(new Error(event.data.error || 'disassembly failed'));
       };
@@ -868,12 +889,17 @@ export class Backend {
     const id = this._disasmSeq++;
     const copy = bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes);
     const priority = decodeContext.priority || 'current';
+    let cleanupSignal = null;
     const promise = new Promise((resolve, reject) => {
-      this._disasmPending.set(id, { resolve, reject, uiEpoch, priority });
+      this._disasmPending.set(id, {
+        resolve, reject, uiEpoch, priority,
+        cleanup: () => cleanupSignal?.(),
+      });
       try {
         this._disasmWorker.postMessage({ id, architecture, address, bytes: copy, riscvIsa:decodeContext.riscvIsa ?? null, priority }, [copy.buffer]);
       } catch (error) {
         this._disasmPending.delete(id);
+        cleanupSignal?.();
         reject(error);
       }
     });
@@ -881,17 +907,22 @@ export class Backend {
       const pending = this._disasmPending.get(id);
       if (!pending) return;
       this._disasmPending.delete(id);
+      pending.cleanup?.();
       try {
         this._disasmWorker?.postMessage({ t: 'cancel', id });
       } catch {}
       pending.reject(cancelledRequestError('disassembly cancelled'));
     };
-    if (decodeContext.signal) {
-      if (decodeContext.signal.aborted) {
-        promise.cancel();
-      } else {
-        decodeContext.signal.addEventListener('abort', () => promise.cancel(), { once: true });
-      }
+    const signal = decodeContext.signal;
+    if (signal) {
+      const onAbort = () => promise.cancel();
+      cleanupSignal = () => {
+        try { signal.removeEventListener?.('abort', onAbort); } catch {}
+      };
+      try {
+        signal.addEventListener?.('abort', onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      } catch {}
     }
     return promise;
   }

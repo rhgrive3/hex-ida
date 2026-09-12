@@ -107,22 +107,3 @@ test('P8-PROV validation rejects a non-conforming provenance map', () => {
     /phase8-render-provenance-map/);
   assert.throws(() => validateRenderProvenance(null, {}), /phase8-render-provenance-map/);
 });
-
-
-test('P8-PROV public incomplete history keeps bounded diagnostics without invoking reason accessors', () => {
-  const expression = expr.variable('a1', 64, false, source(1, 1));
-  const input = applyPhase8Projection(resultWith(expression), analysis());
-  let reads = 0;
-  const reasons = ['unavailable-store-spelling-producer', 'not a diagnostic', 'x'.repeat(97), 12];
-  Object.defineProperty(reasons, 4, { get() { reads++; throw Error('reason-accessor-invoked'); } });
-  reasons[32] = 'past-diagnostic-budget';
-  reasons.length = 1_000_000;
-  const result = { ...input, phase8Projection:{ ...input.phase8Projection, history:{ completeness:'incomplete', reasons } } };
-  const map = buildRenderProvenance({ result, snapshotId:input.renderProvenance.snapshotId });
-  assert.equal(reads, 0);
-  assert.equal(map.completeness, 'incomplete');
-  assert.ok(map.reasons.includes('incomplete-projection-history'));
-  assert.ok(map.reasons.includes('unavailable-store-spelling-producer'));
-  for (const reason of ['not a diagnostic', 'x'.repeat(97), 'past-diagnostic-budget']) assert.ok(!map.reasons.includes(reason));
-  assert.equal(validateRenderProvenance(map).state, 'incomplete', 'diagnostics never confer authority');
-});

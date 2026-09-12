@@ -1,0 +1,553 @@
+{
+  "schema": "scpa-baseline-comparison/v1",
+  "baselineCommit": "de6178154884813d90c6437146a99b1155f0c68d",
+  "timeoutPerProcessSeconds": 30,
+  "processes": 38,
+  "identicalFailures": 19,
+  "conditions": "Both use unchanged/current source trees respectively and the same read-only reconstructed main Git metadata.",
+  "results": [
+    {
+      "file": "a2-denominator.test.mjs",
+      "identicalFailure": true,
+      "sameTestSource": true,
+      "current": {
+        "exit": 1,
+        "firstError": "Error: a2-denominator-arm64e-malformed-exclusion-baseline-unresolved: architecture:arm64e:exclusion[0]",
+        "firstTestLocation": "<TREE>/tests/machine-effects/a2-denominator.test.mjs:13:20",
+        "firstAssertion": [],
+        "failedSubtests": [],
+        "seconds": 4.01
+      },
+      "main": {
+        "exit": 1,
+        "firstError": "Error: a2-denominator-arm64e-malformed-exclusion-baseline-unresolved: architecture:arm64e:exclusion[0]",
+        "firstTestLocation": "<TREE>/tests/machine-effects/a2-denominator.test.mjs:13:20",
+        "firstAssertion": [],
+        "failedSubtests": [],
+        "seconds": 4.15
+      }
+    },
+    {
+      "file": "arm64-a64-control-denominator.test.mjs",
+      "identicalFailure": true,
+      "sameTestSource": true,
+      "current": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: LLVM MC 18 AArch64 oracle is required",
+        "firstTestLocation": "<TREE>/tests/machine-effects/arm64-a64-control-denominator.test.mjs:99:8",
+        "firstAssertion": [
+          "  actual: undefined,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 2.08
+      },
+      "main": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: LLVM MC 18 AArch64 oracle is required",
+        "firstTestLocation": "<TREE>/tests/machine-effects/arm64-a64-control-denominator.test.mjs:99:8",
+        "firstAssertion": [
+          "  actual: undefined,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 3.65
+      }
+    },
+    {
+      "file": "arm64-a64-flags-denominator.test.mjs",
+      "identicalFailure": true,
+      "sameTestSource": true,
+      "current": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:",
+        "firstTestLocation": "<TREE>/tests/machine-effects/arm64-a64-flags-denominator.test.mjs:106:8",
+        "firstAssertion": [
+          "  actual: undefined,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 5.43
+      },
+      "main": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:",
+        "firstTestLocation": "<TREE>/tests/machine-effects/arm64-a64-flags-denominator.test.mjs:106:8",
+        "firstAssertion": [
+          "  actual: undefined,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 6.94
+      }
+    },
+    {
+      "file": "arm64-a64-fp-denominator.test.mjs",
+      "identicalFailure": true,
+      "sameTestSource": true,
+      "current": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: LLVM MC 18 AArch64 oracle is required",
+        "firstTestLocation": "<TREE>/tests/machine-effects/arm64-a64-fp-denominator.test.mjs:144:8",
+        "firstAssertion": [
+          "  actual: undefined,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 6.62
+      },
+      "main": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: LLVM MC 18 AArch64 oracle is required",
+        "firstTestLocation": "<TREE>/tests/machine-effects/arm64-a64-fp-denominator.test.mjs:144:8",
+        "firstAssertion": [
+          "  actual: undefined,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 6.95
+      }
+    },
+    {
+      "file": "arm64-a64-integer-denominator.test.mjs",
+      "identicalFailure": true,
+      "sameTestSource": true,
+      "current": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: LLVM MC 18 AArch64 oracle is required",
+        "firstTestLocation": "<TREE>/tests/machine-effects/arm64-a64-integer-denominator.test.mjs:141:8",
+        "firstAssertion": [
+          "  actual: undefined,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 11.46
+      },
+      "main": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: LLVM MC 18 AArch64 oracle is required",
+        "firstTestLocation": "<TREE>/tests/machine-effects/arm64-a64-integer-denominator.test.mjs:141:8",
+        "firstAssertion": [
+          "  actual: undefined,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 11.98
+      }
+    },
+    {
+      "file": "arm64-a64-memory-denominator.test.mjs",
+      "identicalFailure": true,
+      "sameTestSource": true,
+      "current": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: LLVM/Clang AArch64 integrated assembler is required",
+        "firstTestLocation": "<TREE>/tests/machine-effects/arm64-a64-memory-denominator.test.mjs:32:10",
+        "firstAssertion": [
+          "  actual: undefined,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 7.12
+      },
+      "main": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: LLVM/Clang AArch64 integrated assembler is required",
+        "firstTestLocation": "<TREE>/tests/machine-effects/arm64-a64-memory-denominator.test.mjs:32:10",
+        "firstAssertion": [
+          "  actual: undefined,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 7.29
+      }
+    },
+    {
+      "file": "arm64-a64-simd-denominator.test.mjs",
+      "identicalFailure": true,
+      "sameTestSource": true,
+      "current": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: LLVM MC or Clang integrated LLVM MC AArch64 oracle is required",
+        "firstTestLocation": "<TREE>/tests/machine-effects/arm64-a64-simd-denominator.test.mjs:39:10",
+        "firstAssertion": [
+          "  actual: null,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 7.51
+      },
+      "main": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: LLVM MC or Clang integrated LLVM MC AArch64 oracle is required",
+        "firstTestLocation": "<TREE>/tests/machine-effects/arm64-a64-simd-denominator.test.mjs:39:10",
+        "firstAssertion": [
+          "  actual: null,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 7.72
+      }
+    },
+    {
+      "file": "arm64-a64-system-denominator.test.mjs",
+      "identicalFailure": true,
+      "sameTestSource": true,
+      "current": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: LLVM MC 18 AArch64 oracle is required",
+        "firstTestLocation": "<TREE>/tests/machine-effects/arm64-a64-system-denominator.test.mjs:167:8",
+        "firstAssertion": [
+          "  actual: undefined,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 20.63
+      },
+      "main": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: LLVM MC 18 AArch64 oracle is required",
+        "firstTestLocation": "<TREE>/tests/machine-effects/arm64-a64-system-denominator.test.mjs:167:8",
+        "firstAssertion": [
+          "  actual: undefined,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 26.05
+      }
+    },
+    {
+      "file": "arm64e-pac-denominator.test.mjs",
+      "identicalFailure": true,
+      "sameTestSource": true,
+      "current": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:",
+        "firstTestLocation": "<TREE>/tests/machine-effects/arm64e-pac-denominator.test.mjs:66:8",
+        "firstAssertion": [
+          "  actual: undefined,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 14.88
+      },
+      "main": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:",
+        "firstTestLocation": "<TREE>/tests/machine-effects/arm64e-pac-denominator.test.mjs:66:8",
+        "firstAssertion": [
+          "  actual: undefined,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 19.63
+      }
+    },
+    {
+      "file": "independent-oracle-denominator-preservation.test.mjs",
+      "identicalFailure": true,
+      "sameTestSource": true,
+      "current": {
+        "exit": 1,
+        "firstError": "Error: a2-denominator-arm64e-malformed-exclusion-baseline-unresolved: architecture:arm64e:exclusion[0]",
+        "firstTestLocation": "<TREE>/tests/machine-effects/independent-oracle-denominator-preservation.test.mjs:13:16",
+        "firstAssertion": [],
+        "failedSubtests": [],
+        "seconds": 27.82
+      },
+      "main": {
+        "exit": 1,
+        "firstError": "Error: a2-denominator-arm64e-malformed-exclusion-baseline-unresolved: architecture:arm64e:exclusion[0]",
+        "firstTestLocation": "<TREE>/tests/machine-effects/independent-oracle-denominator-preservation.test.mjs:13:16",
+        "firstAssertion": [],
+        "failedSubtests": [],
+        "seconds": 29.33
+      }
+    },
+    {
+      "file": "independent-oracle-report.test.mjs",
+      "identicalFailure": true,
+      "sameTestSource": true,
+      "current": {
+        "exit": 1,
+        "firstError": "Error: a2-denominator-arm64e-malformed-exclusion-baseline-unresolved: architecture:arm64e:exclusion[0]",
+        "firstTestLocation": "<TREE>/tests/machine-effects/independent-oracle-report.test.mjs:84:18",
+        "firstAssertion": [],
+        "failedSubtests": [],
+        "seconds": 32.8
+      },
+      "main": {
+        "exit": 1,
+        "firstError": "Error: a2-denominator-arm64e-malformed-exclusion-baseline-unresolved: architecture:arm64e:exclusion[0]",
+        "firstTestLocation": "<TREE>/tests/machine-effects/independent-oracle-report.test.mjs:84:18",
+        "firstAssertion": [],
+        "failedSubtests": [],
+        "seconds": 31.7
+      }
+    },
+    {
+      "file": "issue-5566-x86-setssbsy-routing.test.mjs",
+      "identicalFailure": true,
+      "sameTestSource": true,
+      "current": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /ownerId:'system', result:terminalize\\(instruction, 'system', systemSet, context\\)/. Input:",
+        "firstTestLocation": "<TREE>/tests/machine-effects/issue-5566-x86-setssbsy-routing.test.mjs:72:8",
+        "firstAssertion": [
+          "  actual: '// Exact-head CI retrigger marker; semantic no-op.\\n' +",
+          "  expected: /ownerId:'system', result:terminalize\\(instruction, 'system', systemSet, context\\)/,",
+          "  operator: 'match',"
+        ],
+        "failedSubtests": [],
+        "seconds": 29.49
+      },
+      "main": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /ownerId:'system', result:terminalize\\(instruction, 'system', systemSet, context\\)/. Input:",
+        "firstTestLocation": "<TREE>/tests/machine-effects/issue-5566-x86-setssbsy-routing.test.mjs:72:8",
+        "firstAssertion": [
+          "  actual: '// Exact-head CI retrigger marker; semantic no-op.\\n' +",
+          "  expected: /ownerId:'system', result:terminalize\\(instruction, 'system', systemSet, context\\)/,",
+          "  operator: 'match',"
+        ],
+        "failedSubtests": [],
+        "seconds": 29.66
+      }
+    },
+    {
+      "file": "issue-5999-riscv64-compressed-capability-conflict.test.mjs",
+      "identicalFailure": true,
+      "sameTestSource": true,
+      "current": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /riscv64-decoded-instruction-compressed-capability-conflict/. Input:",
+        "firstTestLocation": "tests/machine-effects/issue-5999-riscv64-compressed-capability-conflict.test.mjs:15:1",
+        "firstAssertion": [
+          "    actual: TypeError: riscv64-decoded-instruction-compressed-profile-contradiction",
+          "    expected: /riscv64-decoded-instruction-compressed-capability-conflict/,",
+          "    operator: 'throws',"
+        ],
+        "failedSubtests": [
+          "issue-5999: compressed encoding + compressedInstructions:false is rejected",
+          "issue-5999: mode rv64imc with compressedInstructions:false is rejected even for 4-byte words",
+          "issue-5999: mode rv64im with compressedInstructions:true is rejected",
+          "issue-5999: non-boolean compressedInstructions is rejected instead of silently booleanized"
+        ],
+        "seconds": 29.82
+      },
+      "main": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /riscv64-decoded-instruction-compressed-capability-conflict/. Input:",
+        "firstTestLocation": "tests/machine-effects/issue-5999-riscv64-compressed-capability-conflict.test.mjs:15:1",
+        "firstAssertion": [
+          "    actual: TypeError: riscv64-decoded-instruction-compressed-profile-contradiction",
+          "    expected: /riscv64-decoded-instruction-compressed-capability-conflict/,",
+          "    operator: 'throws',"
+        ],
+        "failedSubtests": [
+          "issue-5999: compressed encoding + compressedInstructions:false is rejected",
+          "issue-5999: mode rv64imc with compressedInstructions:false is rejected even for 4-byte words",
+          "issue-5999: mode rv64im with compressedInstructions:true is rejected",
+          "issue-5999: non-boolean compressedInstructions is rejected instead of silently booleanized"
+        ],
+        "seconds": 29.99
+      }
+    },
+    {
+      "file": "issue-6133-x87-trusted-terminal-domain.test.mjs",
+      "identicalFailure": true,
+      "sameTestSource": true,
+      "current": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:",
+        "firstTestLocation": "<TREE>/tests/machine-effects/issue-6133-x87-trusted-terminal-domain.test.mjs:96:10",
+        "firstAssertion": [
+          "  actual: 'partial',",
+          "  expected: 'exact-with-intrinsic',",
+          "  operator: 'strictEqual',"
+        ],
+        "failedSubtests": [],
+        "seconds": 30.21
+      },
+      "main": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:",
+        "firstTestLocation": "<TREE>/tests/machine-effects/issue-6133-x87-trusted-terminal-domain.test.mjs:96:10",
+        "firstAssertion": [
+          "  actual: 'partial',",
+          "  expected: 'exact-with-intrinsic',",
+          "  operator: 'strictEqual',"
+        ],
+        "failedSubtests": [],
+        "seconds": 30.47
+      }
+    },
+    {
+      "file": "x86-long64-closure-matrix.test.mjs",
+      "identicalFailure": true,
+      "sameTestSource": true,
+      "current": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: No valid witness may remain partial: [{\"id\":5,\"name\":\"fabs\",\"ownerId\":\"fp\",\"completeness\":\"partial\",\"reason\":\"x86-x87-family-requires-dedicated-semantics\"},{\"id\":7,\"name\":\"adcx\",\"ownerId\":\"integer\",\"completeness\":\"partial\",\"reason\":\"x86-bit-manipulation-family-requires-dedicated-semantics\"},{\"id\":13,\"name\":\"addsubpd\",\"ownerId\":\"fp\",\"completeness\":\"partial\",\"reason\":\"x86-vector-family-requires-dedicated-operand-semantics\"},{\"id\":14,\"name\":\"addsubps\",\"ownerId\":\"fp\",\"completeness\":\"partial\",\"reason\":\"x86-vector-family-requires-dedicated-operand-semantics\"},{\"id\":15,\"name\":\"fadd\",\"ownerId\":\"fp\",\"completeness\":\"partial\",\"reason\":\"x86-x87-family-requires-dedicated-semantics\"},{\"id\":16,\"name\":\"fiadd\",\"ownerId\":\"fp\",\"completeness\":\"partial\",\"reason\":\"x86-x87-family-",
+        "firstTestLocation": "<TREE>/tests/machine-effects/x86-long64-closure-matrix.test.mjs:33:10",
+        "firstAssertion": [
+          "  actual: 1159,",
+          "  expected: 0,",
+          "  operator: 'strictEqual',"
+        ],
+        "failedSubtests": [],
+        "seconds": 31.2
+      },
+      "main": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: No valid witness may remain partial: [{\"id\":5,\"name\":\"fabs\",\"ownerId\":\"fp\",\"completeness\":\"partial\",\"reason\":\"x86-x87-family-requires-dedicated-semantics\"},{\"id\":7,\"name\":\"adcx\",\"ownerId\":\"integer\",\"completeness\":\"partial\",\"reason\":\"x86-bit-manipulation-family-requires-dedicated-semantics\"},{\"id\":13,\"name\":\"addsubpd\",\"ownerId\":\"fp\",\"completeness\":\"partial\",\"reason\":\"x86-vector-family-requires-dedicated-operand-semantics\"},{\"id\":14,\"name\":\"addsubps\",\"ownerId\":\"fp\",\"completeness\":\"partial\",\"reason\":\"x86-vector-family-requires-dedicated-operand-semantics\"},{\"id\":15,\"name\":\"fadd\",\"ownerId\":\"fp\",\"completeness\":\"partial\",\"reason\":\"x86-x87-family-requires-dedicated-semantics\"},{\"id\":16,\"name\":\"fiadd\",\"ownerId\":\"fp\",\"completeness\":\"partial\",\"reason\":\"x86-x87-family-",
+        "firstTestLocation": "<TREE>/tests/machine-effects/x86-long64-closure-matrix.test.mjs:33:10",
+        "firstAssertion": [
+          "  actual: 1159,",
+          "  expected: 0,",
+          "  operator: 'strictEqual',"
+        ],
+        "failedSubtests": [],
+        "seconds": 31.98
+      }
+    },
+    {
+      "file": "x86-long64-extended-state.test.mjs",
+      "identicalFailure": true,
+      "sameTestSource": true,
+      "current": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: vxorps_maskz:x86-evex-family-requires-dedicated-semantics",
+        "firstTestLocation": "<TREE>/tests/machine-effects/x86-long64-extended-state.test.mjs:50:12",
+        "firstAssertion": [
+          "  actual: 'partial',",
+          "  expected: 'exact-with-intrinsic',",
+          "  operator: 'strictEqual',"
+        ],
+        "failedSubtests": [],
+        "seconds": 31.92
+      },
+      "main": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: vxorps_maskz:x86-evex-family-requires-dedicated-semantics",
+        "firstTestLocation": "<TREE>/tests/machine-effects/x86-long64-extended-state.test.mjs:50:12",
+        "firstAssertion": [
+          "  actual: 'partial',",
+          "  expected: 'exact-with-intrinsic',",
+          "  operator: 'strictEqual',"
+        ],
+        "failedSubtests": [],
+        "seconds": 32.08
+      }
+    },
+    {
+      "file": "x86-long64-fp-denominator.test.mjs",
+      "identicalFailure": true,
+      "sameTestSource": true,
+      "current": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: x86-evex-family-requires-dedicated-semantics",
+        "firstTestLocation": "<TREE>/tests/machine-effects/x86-long64-fp-denominator.test.mjs:21:476",
+        "firstAssertion": [
+          "  actual: false,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 32.2
+      },
+      "main": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: x86-evex-family-requires-dedicated-semantics",
+        "firstTestLocation": "<TREE>/tests/machine-effects/x86-long64-fp-denominator.test.mjs:21:476",
+        "firstAssertion": [
+          "  actual: false,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 32.3
+      }
+    },
+    {
+      "file": "x86-long64-integer-denominator.test.mjs",
+      "identicalFailure": true,
+      "sameTestSource": true,
+      "current": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: movzx:0fb7:w16:src16:r0:b0:reg0:rm0:x86-movzx-operand-shape-unmodelled",
+        "firstTestLocation": "tests/machine-effects/x86-long64-integer-denominator.test.mjs:59:1",
+        "firstAssertion": [
+          "    actual: 'partial',",
+          "    expected: 'partial',",
+          "    operator: 'notStrictEqual',"
+        ],
+        "failedSubtests": [
+          "finite long-64 integer denominator decodes completely and every integer-owned case lifts non-partially",
+          "MOV extension operand-size states preserve partial-register and 32-bit write semantics"
+        ],
+        "seconds": 33.37
+      },
+      "main": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: movzx:0fb7:w16:src16:r0:b0:reg0:rm0:x86-movzx-operand-shape-unmodelled",
+        "firstTestLocation": "tests/machine-effects/x86-long64-integer-denominator.test.mjs:59:1",
+        "firstAssertion": [
+          "    actual: 'partial',",
+          "    expected: 'partial',",
+          "    operator: 'notStrictEqual',"
+        ],
+        "failedSubtests": [
+          "finite long-64 integer denominator decodes completely and every integer-owned case lifts non-partially",
+          "MOV extension operand-size states preserve partial-register and 32-bit write semantics"
+        ],
+        "seconds": 33.57
+      }
+    },
+    {
+      "file": "x86-long64-simd-denominator.test.mjs",
+      "identicalFailure": true,
+      "sameTestSource": true,
+      "current": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: x86-evex-family-requires-dedicated-semantics",
+        "firstTestLocation": "<TREE>/tests/machine-effects/x86-long64-simd-denominator.test.mjs:26:941",
+        "firstAssertion": [
+          "  actual: false,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 33.07
+      },
+      "main": {
+        "exit": 1,
+        "firstError": "AssertionError [ERR_ASSERTION]: x86-evex-family-requires-dedicated-semantics",
+        "firstTestLocation": "<TREE>/tests/machine-effects/x86-long64-simd-denominator.test.mjs:26:941",
+        "firstAssertion": [
+          "  actual: false,",
+          "  expected: true,",
+          "  operator: '==',"
+        ],
+        "failedSubtests": [],
+        "seconds": 33.33
+      }
+    }
+  ]
+}

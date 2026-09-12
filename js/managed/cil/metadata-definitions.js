@@ -1,6 +1,7 @@
 import { codedIndexSize, tableIndexSize, cilMetadataToken } from './metadata-layout.js';
 import { readCilMetadataBlob } from './call-signature-metadata.js';
-import { parseCilTypeSpecSignature } from './call-signature-types.js';
+import { parseCilMethodSignature, parseCilTypeSpecSignature } from './call-signature-types.js';
+import { stableStringify } from '../../core/identity/index.js';
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 function fail(code) { throw new TypeError(code); }
 
@@ -19,6 +20,11 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     if (pos === end) fail('cil-definition-string-unterminated');
     try { return utf8.decode(bytes.subarray(start, pos)); }
     catch { fail('cil-invalid-strings-utf8'); }
+  };
+  const requiredText = (value, code) => {
+    const valueText = text(value);
+    if (valueText == null || valueText.length === 0) fail(code);
+    return valueText;
   };
   const readRows = (table, decode) => Array.from({ length: counts[table] }, (_, i) => {
     const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
@@ -64,6 +70,49 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
       rawSignature, signature,
     };
   }) : [];
+  const resolutionScopeSize = codedIndexSize(counts, [0x00, 0x1a, 0x23, 0x01], 2);
+  const resolutionScopeTables = [0x00, 0x1a, 0x23, 0x01];
+  const typeRefs = readRows(0x01, pos => {
+    const scope = index(pos, resolutionScopeSize);
+    let resolutionScope = null;
+    if (scope !== 0) {
+      const table = resolutionScopeTables[scope & 3], rid = Math.floor(scope / 4);
+      if (table == null || rid < 1 || rid > counts[table]) fail('cil-typeref-resolution-scope-invalid');
+      resolutionScope = { table, rid, token: cilMetadataToken(table, rid) };
+    }
+    return {
+      resolutionScope,
+      name: requiredText(index(pos + resolutionScopeSize, s), 'cil-typeref-name-required'),
+      namespace: text(index(pos + resolutionScopeSize + s, s)) ?? '',
+    };
+  });
+  const assemblyRefs = readRows(0x23, pos => {
+    const publicKeyOrTokenBlobIndex = index(pos + 12, b);
+    const hashValueBlobIndex = index(pos + 12 + b + s * 2, b);
+    let publicKeyOrToken = null;
+    if (publicKeyOrTokenBlobIndex !== 0) {
+      if (!blobHeap) fail('cil-assembly-ref-public-key-blob-missing');
+      publicKeyOrToken = readCilMetadataBlob(blobHeap, publicKeyOrTokenBlobIndex, 'cil-assembly-ref-public-key-blob-invalid');
+    }
+    let hashValue = null;
+    if (hashValueBlobIndex !== 0) {
+      if (!blobHeap) fail('cil-assembly-ref-hash-value-blob-missing');
+      hashValue = readCilMetadataBlob(blobHeap, hashValueBlobIndex, 'cil-assembly-ref-hash-value-blob-invalid');
+    }
+    return {
+      majorVersion: view.getUint16(pos, true),
+      minorVersion: view.getUint16(pos + 2, true),
+      buildNumber: view.getUint16(pos + 4, true),
+      revisionNumber: view.getUint16(pos + 6, true),
+      flags: view.getUint32(pos + 8, true),
+      publicKeyOrTokenBlobIndex,
+      publicKeyOrToken,
+      name: requiredText(index(pos + 12 + b, s), 'cil-assembly-ref-name-required'),
+      culture: text(index(pos + 12 + b + s, s)),
+      hashValueBlobIndex,
+      hashValue,
+    };
+  });
   const types = readRows(2, pos => {
     const base = index(pos + 4 + s * 2, extendsSize), table = [2, 1, 0x1b][base & 3], rid = Math.floor(base / 4);
     if (base !== 0 && (table == null || rid < 1 || rid > counts[table])) fail('cil-typedef-extends-invalid');
@@ -72,6 +121,7 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
       namespace: text(index(pos + 4 + s, s)) ?? '',
       extendsToken: base === 0 ? null : cilMetadataToken(table, rid),
       extendsTypeSpecRid: base !== 0 && table === 0x1b ? rid : null,
+      extendsTypeRefRid: base !== 0 && table === 0x01 ? rid : null,
       fieldList: index(pos + 4 + s * 2 + extendsSize, tableIndexSize(counts, 4)),
       methodList: index(pos + 4 + s * 2 + extendsSize + tableIndexSize(counts, 4), tableIndexSize(counts, 6)),
     };
@@ -82,6 +132,10 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     if (type.extendsTypeSpecRid != null) {
       type.extendsTypeSpec = typeSpecs[type.extendsTypeSpecRid - 1];
       delete type.extendsTypeSpecRid;
+    }
+    if (type.extendsTypeRefRid != null) {
+      type.extendsTypeRef = typeRefs[type.extendsTypeRefRid - 1];
+      delete type.extendsTypeRefRid;
     }
   }
   // Manifest assembly (0x20): this row is the defining assembly's identity
@@ -330,5 +384,174 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     (owner.accessors ??= []).push({ kind:row.kind, methodToken:row.methodToken });
   }
 
-  return { types, methods, fields, manifestResources, typeSpecs, assembly, params, properties, events, methodSemantics };
+  // ECMA-335 II.22 tables that carry type-system relationships must reach the
+  // canonical image: their rows are dispatch/inheritance authority, not
+  // structural padding. Leaving them undecoded made the projection identical
+  // with and without the rows — irreversible metadata data loss (#7491,
+  // #7506, #7522).
+  const resolveCoded = (base, tables, tagBits) => {
+    const table = tables[base & ((1 << tagBits) - 1)];
+    const rid = Math.floor(base >> tagBits);
+    if (base === 0 || table == null || rid < 1 || rid > counts[table]) return null;
+    return cilMetadataToken(table, rid);
+  };
+  const failIf = (condition, code) => { if (condition) fail(code); };
+
+  // II.22.23 InterfaceImpl: Class implements Interface (TypeOrTypeDefOrRef
+  // coded index, 2 tag bits). Class is a plain TypeDef index; Interface
+  // inheritance uses the same table.
+  const interfaceImplSize = codedIndexSize(counts, [0x02, 0x01, 0x1b], 2);
+  const classIndexSize = tableIndexSize(counts, 2);
+  const interfaceImpls = readRows(0x09, pos => {
+    const classRid = index(pos, classIndexSize);
+    const interfaceBase = index(pos + classIndexSize, interfaceImplSize);
+    failIf(classRid < 1 || classRid > counts[2], 'cil-interfaceimpl-class-invalid');
+    const interfaceToken = resolveCoded(interfaceBase, [0x02, 0x01, 0x1b], 2);
+    failIf(interfaceToken == null, 'cil-interfaceimpl-interface-invalid');
+    return { classToken: cilMetadataToken(2, classRid), interfaceToken };
+  });
+  const typeByToken = new Map(types.map(type => [type.token, type]));
+  const interfaceEdges = new Map();
+  for (const row of interfaceImpls) {
+    const owner = typeByToken.get(row.classToken);
+    if (owner == null) fail('cil-interfaceimpl-class-invalid');
+    const list = interfaceEdges.get(row.classToken) ?? [];
+    if (list.includes(row.interfaceToken)) fail('cil-interfaceimpl-duplicate');
+    list.push(row.interfaceToken);
+    interfaceEdges.set(row.classToken, list);
+  }
+  for (const type of types) type.interfaceTokens = Object.freeze(interfaceEdges.get(type.token) ?? []);
+
+  // II.22.27 MethodImpl: Class implements MethodDeclaration with MethodBody.
+  // MethodBody/MethodDeclaration share the MethodDefOrRef coded index
+  // (MethodDef | MemberRef, 1 tag bit).
+  const methodDefOrRefSize = codedIndexSize(counts, [0x06, 0x0a], 1);
+  const methodImpls = readRows(0x19, pos => {
+    const classRid = index(pos, classIndexSize);
+    const bodyBase = index(pos + classIndexSize, methodDefOrRefSize);
+    const declarationBase = index(pos + classIndexSize + methodDefOrRefSize, methodDefOrRefSize);
+    failIf(classRid < 1 || classRid > counts[2], 'cil-methodimpl-class-invalid');
+    const bodyToken = resolveCoded(bodyBase, [0x06, 0x0a], 1);
+    const declarationToken = resolveCoded(declarationBase, [0x06, 0x0a], 1);
+    failIf(bodyToken == null || declarationToken == null, 'cil-methodimpl-method-invalid');
+    return { classToken: cilMetadataToken(2, classRid), methodBodyToken: bodyToken, methodDeclarationToken: declarationToken };
+  });
+  const overridesByClass = new Map();
+  const seenImplDeclarations = new Set();
+  // ECMA-335 II.22.27: an explicit override must be a virtual method pair
+  // owned consistently by the Class, must not declare the same target twice,
+  // and — where both signatures decode from the #Blob heap — must agree on
+  // shape. Only the checks derivable from existing rows run here; MemberRef
+  // targets keep their token-level binding (#7506).
+  const CIL_METHOD_VIRTUAL = 0x0040;
+  const typeDefOrRefRows = [counts[0x02] ?? 0, counts[0x01] ?? 0, counts[0x1b] ?? 0];
+  for (const row of methodImpls) {
+    const body = methodByToken.get(row.methodBodyToken);
+    const declaration = methodByToken.get(row.methodDeclarationToken);
+    if (body != null) {
+      failIf((body.accessFlags & CIL_METHOD_VIRTUAL) === 0, 'cil-methodimpl-body-not-virtual');
+      failIf(body.declaringTypeToken !== row.classToken, 'cil-methodimpl-body-owner-mismatch');
+    }
+    if (declaration != null) {
+      failIf((declaration.accessFlags & CIL_METHOD_VIRTUAL) === 0, 'cil-methodimpl-declaration-not-virtual');
+    }
+    let decodedBodySig = null;
+    let decodedDeclarationSig = null;
+    if (body != null && declaration != null && blobHeap != null
+        && Number.isSafeInteger(body.signatureBlobIndex) && Number.isSafeInteger(declaration.signatureBlobIndex)) {
+      try {
+        // Only blob/parse failures degrade (#7603/#7604); a decoded but
+        // unequal pair is enforced below, outside this catch.
+        decodedBodySig = parseCilMethodSignature(readCilMetadataBlob(blobHeap, body.signatureBlobIndex, 'cil-methodimpl-signature-invalid'), typeDefOrRefRows);
+        decodedDeclarationSig = parseCilMethodSignature(readCilMetadataBlob(blobHeap, declaration.signatureBlobIndex, 'cil-methodimpl-signature-invalid'), typeDefOrRefRows);
+      } catch {
+        // Undecodable signatures keep the pinned degradation behavior
+        // (#7603/#7604): the token-level binding stays, no extra authority.
+      }
+    }
+    if (decodedBodySig != null && decodedDeclarationSig != null) {
+      const canonicalSig = (sig) => ({
+        callConvention: sig.callConvention,
+        kind: sig.kind,
+        hasThis: sig.hasThis,
+        explicitThis: sig.explicitThis,
+        genericParameterCount: sig.genericParameterCount ?? 0,
+        sentinelIndex: sig.sentinelIndex ?? null,
+        parameters: sig.parameters,
+        returnValue: sig.returnValue,
+      });
+      failIf(stableStringify(canonicalSig(decodedBodySig))
+        !== stableStringify(canonicalSig(decodedDeclarationSig)),
+        'cil-methodimpl-signature-mismatch');
+    }
+    failIf(seenImplDeclarations.has(`${row.classToken}\u0000${row.methodDeclarationToken}`), 'cil-methodimpl-declaration-duplicate');
+    seenImplDeclarations.add(`${row.classToken}\u0000${row.methodDeclarationToken}`);
+    if (body != null) body.explicitOverrideTokens = Object.freeze([...(body.explicitOverrideTokens ?? []), row.methodDeclarationToken]);
+    const list = overridesByClass.get(row.classToken) ?? [];
+    if (list.some(entry => entry.methodDeclarationToken === row.methodDeclarationToken && entry.methodBodyToken === row.methodBodyToken)) {
+      fail('cil-methodimpl-duplicate');
+    }
+    list.push(row);
+    overridesByClass.set(row.classToken, list);
+  }
+  for (const type of types) type.methodImpls = Object.freeze(overridesByClass.get(type.token) ?? []);
+
+  // II.22.22 ImplMap + II.22.30 ModuleRef: P/Invoke dispatch authority. A
+  // mapped method must keep its unmanaged DLL, entrypoint and flags.
+  const memberForwardedSize = codedIndexSize(counts, [0x04, 0x06], 1);
+  const moduleRefs = readRows(0x1a, pos => ({ name: text(index(pos, s)) }));
+  const implMaps = readRows(0x1c, pos => {
+    const flags = view.getUint16(pos, true);
+    const forwardedBase = index(pos + 2, memberForwardedSize);
+    const importName = text(index(pos + 2 + memberForwardedSize, s));
+    const scopeRid = index(pos + 2 + memberForwardedSize + s, tableIndexSize(counts, 0x1a));
+    if ((forwardedBase & 1) !== 1) fail('cil-implmap-memberforwarded-not-methoddef');
+    const methodRid = forwardedBase >> 1;
+    failIf(methodRid < 1 || methodRid > counts[6], 'cil-implmap-memberforwarded-invalid');
+    failIf(importName == null, 'cil-implmap-import-name-invalid');
+    failIf(scopeRid < 1 || scopeRid > moduleRefs.length, 'cil-implmap-import-scope-invalid');
+    return { mappingFlags: flags, memberForwardedToken: cilMetadataToken(6, methodRid), importName, importScope: moduleRefs[scopeRid - 1]?.name ?? null };
+  });
+  const pinvokeByMethod = new Map();
+  for (const row of implMaps) {
+    if (pinvokeByMethod.has(row.memberForwardedToken)) fail('cil-implmap-duplicate');
+    pinvokeByMethod.set(row.memberForwardedToken, row);
+  }
+  for (const method of methods) {
+    const mapping = pinvokeByMethod.get(method.token);
+    if (mapping == null) {
+      // II.22.22 rule 4: a MethodDef without an ImplMap row must not claim
+      // pinvokeimpl.
+      failIf((method.accessFlags & 0x2000) !== 0, 'cil-implmap-flag-without-row');
+    } else {
+      method.pinvoke = Object.freeze(mapping);
+      if ((method.accessFlags & 0x2000) === 0) fail('cil-implmap-row-without-flag');
+    }
+  }
+  // II.22.18 FieldRVA: a static field's initial data lives at an RVA in the
+  // PE image. Without decoding it, changing the mapping or the backing bytes
+  // never reaches the canonical image (#7545). Validation is fail-closed:
+  // RVA != 0, the RVA must map inside the loaded PE image (it may not alias
+  // the metadata root), and one Field binds at most one FieldRVA row.
+  const fieldRvas = readRows(0x1d, pos => {
+    const rva = view.getUint32(pos, true);
+    const fieldRid = index(pos + 4, tableIndexSize(counts, 4));
+    failIf(fieldRid < 1 || fieldRid > counts[4], 'cil-fieldrva-field-invalid');
+    if (rva === 0) fail('cil-fieldrva-rva-required');
+    return { rva, fieldToken: cilMetadataToken(4, fieldRid) };
+  });
+  if (new Set(fieldRvas.map(row => row.fieldToken)).size !== fieldRvas.length) {
+    fail('cil-fieldrva-field-duplicate');
+  }
+  const fieldByToken = new Map(fields.map(field => [field.token, field]));
+  for (const row of fieldRvas) {
+    const field = fieldByToken.get(row.fieldToken);
+    if (field == null) fail('cil-fieldrva-field-invalid');
+    // II.23.1.5: a FieldRVA row targets a field carrying HasFieldRVA (0x0100);
+    // binding initial data to a plain field contradicts its own attributes.
+    if ((field.accessFlags & 0x0100) === 0) fail('cil-fieldrva-field-flag-missing');
+    field.rva = row.rva;
+  }
+
+  return { types, methods, fields, manifestResources, typeSpecs, typeRefs, assemblyRefs, assembly, params, properties, events, methodSemantics, interfaceImpls, methodImpls, implMaps, moduleRefs, fieldRvas };
 }

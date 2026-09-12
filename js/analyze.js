@@ -47,6 +47,15 @@ function isAbort(error, signal) {
   return !!(signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR');
 }
 
+function assertAbortSignalCompatible(signal) {
+  // #5402: a truthy malformed signal ({aborted:false}, etc.) would reach the
+  // listener registration inside awaitAbortable() AFTER the backend operation
+  // started, so operation.cancel() was never reachable. AbortSignal
+  // compatibility is input validation and happens before any backend work —
+  // the canonical producer-wait validation is reused at both entry points.
+  analysisAbortSignalMethods(signal);
+}
+
 async function awaitAbortable(operation, signal) {
   if (!signal) return operation;
   if (signal.aborted) {
@@ -59,7 +68,7 @@ async function awaitAbortable(operation, signal) {
     const finish = (fn, value) => {
       if (settled) return;
       settled = true;
-      signal.removeEventListener('abort', onAbort);
+      try { signal.removeEventListener('abort', onAbort); } catch { /* settlement outcome is authoritative (#5402) */ }
       fn(value);
     };
     onAbort = () => {
@@ -125,6 +134,7 @@ function arm64AddSubImmediateValue(op) {
 
 export async function analyzeFunction(backend, region, startRow, endRow, symbols, onProgress, opts = {}) {
   const signal = opts?.signal || null;
+  assertAbortSignalCompatible(signal);
   throwIfAborted(signal);
   const requestedRows = Math.max(0, endRow - startRow + 1);
   const rows = Math.min(requestedRows, rowBudget(opts));
@@ -336,15 +346,34 @@ function cacheKey(region, startRow, endRow, symbols, maxRows = MAX_INSTRUCTIONS)
 
 function makeShared(map, key, producer) {
   const controller = new AbortController();
-  const entry = { controller, promise: null, waiters: 0, settled: false };
+  const entry = {
+    controller,
+    promise: null,
+    waiters: 0,
+    settled: false,
+    progressListeners: new Set(),
+    lastProgress: null,
+  };
+  const dispatchProgress = (progress) => {
+    entry.lastProgress = progress;
+    for (const listener of Array.from(entry.progressListeners)) {
+      try {
+        listener(progress);
+      } catch {
+        /* progress listener exceptions must not fail the shared producer */
+      }
+    }
+  };
   try {
-    entry.promise = Promise.resolve(producer(controller.signal))
+    entry.promise = Promise.resolve(producer(controller.signal, dispatchProgress))
       .finally(() => {
         entry.settled = true;
+        entry.progressListeners.clear();
         if (map.get(key) === entry) map.delete(key);
       });
   } catch (error) {
     entry.settled = true;
+    entry.progressListeners.clear();
     entry.promise = Promise.reject(error);
     if (map.get(key) === entry) map.delete(key);
   }
@@ -359,7 +388,7 @@ function abortSharedWithoutWaiters(map, key, entry) {
   entry.controller.abort('analysis-no-waiters');
 }
 
-function waitShared(map, key, entry, signal) {
+function waitShared(map, key, entry, signal, onProgress) {
   let subscription;
   try {
     subscription = analysisAbortSignalMethods(signal);
@@ -372,12 +401,26 @@ function waitShared(map, key, entry, signal) {
     return Promise.reject(abortError(subscription.signal));
   }
   entry.waiters++;
+  const hasProgressListener = typeof onProgress === 'function';
+  if (hasProgressListener) {
+    entry.progressListeners?.add(onProgress);
+    if (entry.lastProgress != null) {
+      try {
+        onProgress(entry.lastProgress);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
   let done = false;
   let onAbort = null;
   return new Promise((resolve, reject) => {
     const finish = (fn, value) => {
       if (done) return;
       done = true;
+      if (hasProgressListener) {
+        entry.progressListeners?.delete(onProgress);
+      }
       if (subscription && onAbort) {
         try { subscription.removeEventListener.call(subscription.signal, 'abort', onAbort); } catch { /* accounting is authoritative */ }
       }
@@ -446,9 +489,9 @@ export async function analyzeFunctionCached(backend, region, startRow, endRow, s
   } else {
     let entry = analysisInflight.get(key);
     if (!entry) {
-      entry = makeShared(analysisInflight, key, async (producerSignal) => {
+      entry = makeShared(analysisInflight, key, async (producerSignal, dispatchProgress) => {
         const value = await analyzeFunction(
-          backend, region, startRow, endRow, symbols, onProgress,
+          backend, region, startRow, endRow, symbols, dispatchProgress,
           { ...opts, maxRows: budget, signal: producerSignal },
         );
         value.textsResolved = false;
@@ -456,7 +499,7 @@ export async function analyzeFunctionCached(backend, region, startRow, endRow, s
         return value;
       });
     }
-    res = await waitShared(analysisInflight, key, entry, signal);
+    res = await waitShared(analysisInflight, key, entry, signal, onProgress);
   }
   if (wantTexts && !res.textsResolved) {
     try {

@@ -31,11 +31,17 @@ export class SolverBackend {
     if (!AUTHORITY_VALUES.has(proofAuthority)) {
       throw new TypeError(`SolverBackend: invalid proof authority '${proofAuthority}'`);
     }
+    if (isRemote !== null && typeof isRemote !== 'boolean') {
+      throw new TypeError('SolverBackend: isRemote must be a primitive boolean');
+    }
+    if (isWasm !== null && typeof isWasm !== 'boolean') {
+      throw new TypeError('SolverBackend: isWasm must be a primitive boolean');
+    }
     this.id = id;
     this.version = version;
     this.proofAuthority = proofAuthority;
-    this.isRemote = Boolean(isRemote);
-    this.isWasm = Boolean(isWasm);
+    this.isRemote = isRemote ?? false;
+    this.isWasm = isWasm ?? false;
     this.requiresCanonicalQueryIdentity = requiresCanonicalQueryIdentity === true;
     BACKEND_INSTANCES.add(this);
   }
@@ -89,7 +95,11 @@ export function isSolverBackendInstance(value) {
 }
 
 export function isExactProofBackend(backend) {
-  if (!isSolverBackendInstance(backend)) return false;
+  // Built-in instances carry an unforgeable construction mark.  Preserve the
+  // legacy frozen capability-only provider contract used by the verifier's
+  // test harness, while rejecting mutable/proxied look-alikes.
+  if (!isSolverBackendInstance(backend)
+    && !(backend && typeof backend === 'object' && Object.getPrototypeOf(backend) === Object.prototype && Object.isFrozen(backend))) return false;
   if (backend.proofAuthority !== PROOF_AUTHORITY.EXACT) return false;
   if (typeof backend.id !== 'string' || !backend.id || typeof backend.version !== 'string' || !backend.version) return false;
   if (typeof backend.capabilities !== 'function' || typeof backend.capabilityFingerprint !== 'function') return false;

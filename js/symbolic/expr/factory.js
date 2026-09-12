@@ -31,6 +31,20 @@ export function resetSymbolCounterForTesting(val = 0) {
   symbolCounter = val;
 }
 
+/**
+ * Run deserialization against the fresh-symbol allocator as a transaction.
+ * Malformed payloads must not consume symbol IDs or exhaust the allocator.
+ */
+export function withSymbolAllocatorTransaction(run) {
+  const savedSymbolCounter = symbolCounter;
+  try {
+    return run();
+  } catch (error) {
+    symbolCounter = savedSymbolCounter;
+    throw error;
+  }
+}
+
 export function createBool(value) {
   if (typeof value !== 'boolean') {
     throw new TypeError(`createBool: value must be a boolean, got ${value}`);

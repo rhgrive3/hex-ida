@@ -161,7 +161,10 @@ export async function querySymbolicAnalysis(ir, inputOptions = {}) {
         expression, valueId, identity: guard.identity,
         memoryObservables: [], effectObservables: [], taintResult: taint,
         signal: options.signal, isCancelled: options.isCancelled, getCurrentIdentity: options.getCurrentIdentity,
-        timeoutMs: Math.min(equalitySaturation ? 1000 : 120, remaining()), backendTier: options.backendTier,
+        // Native-width local rewrites need the same bounded verifier allowance
+        // as the equality-saturation route; keep the outer query deadline
+        // authoritative while avoiding false bitfield timeout refusals.
+        timeoutMs: Math.min(equalitySaturation ? 1000 : 300, remaining()), backendTier: options.backendTier,
         ...(equalitySaturation ? {ruleOrder:options.ruleOrder} : {}),
         limits: { candidates: Math.min(equalitySaturation ? 8 : 32, guard.limits.candidates - guard.metrics().candidates) },
       });

@@ -9,7 +9,6 @@ import {
 } from '../targets/abi/evidence.js';
 import { buildSemanticV2CompatibilityPipeline } from '../semantics/compat/index.js';
 import { decompileSemantic } from '../decompiler/semantic.js';
-import { enhanceSemanticDecompilation } from '../decompiler/pipeline.js';
 
 /**
  * Architecture-neutral function-level semantic analysis driver.
@@ -129,6 +128,78 @@ function normalizedProtocolString(value, code, { allowEmpty = false } = {}) {
   const text = value.trim().toLowerCase();
   if (!allowEmpty && !text) throw new TypeError(code);
   return text;
+}
+
+function firstSemanticEndiannessAlias(source, aliases) {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return null;
+  for (const alias of aliases) if (source[alias] != null) return source[alias];
+  return null;
+}
+
+function validateSemanticEndianness(value, code, supported) {
+  if (value == null) return null;
+  const normalized = normalizedProtocolString(value, code);
+  // `unknown` is an explicit fail-open-to-unknown selector used by the
+  // decoder contract. It must not become a target-support claim merely
+  // because one entrypoint validates it before the other.
+  if (normalized !== 'unknown' && supported.length && !supported.includes(normalized)) {
+    const kind = code.endsWith('instruction-endianness') ? 'instruction' : 'memory';
+    throw new TypeError(`semantic-function-unsupported-${kind}-endianness:${normalized}`);
+  }
+  return normalized;
+}
+
+/**
+ * Canonical selector contract shared by both function-level semantic APIs.
+ * More specific fields win over compatibility aliases; an explicit machine
+ * context is only a fallback and is normalized through the same target
+ * capability check so it cannot smuggle an unsupported endian into the
+ * lifter.
+ */
+export function normalizeSemanticEndianness(input = {}, architecturePlugin) {
+  const context = input?.machineEffectsContext;
+  const contextInstruction = firstSemanticEndiannessAlias(context, [
+    'instructionEndianness', 'endianness', 'endian',
+  ]);
+  const contextMemory = firstSemanticEndiannessAlias(context, [
+    'dataEndianness', 'memoryEndianness', 'endianness', 'endian',
+  ]);
+  const instruction = firstSemanticEndiannessAlias(input, [
+    'instructionEndianness', 'endianness', 'endian',
+  ]);
+  const memory = firstSemanticEndiannessAlias(input, [
+    'dataEndianness', 'memoryEndianness', 'endianness', 'endian',
+  ]);
+  const supportedInstruction = architecturePlugin?.supportedInstructionEndianness ?? [];
+  const supportedMemory = architecturePlugin?.supportedMemoryEndianness ?? [];
+  // Validate explicit context independently even when a top-level selector is
+  // present. A conflicting unsupported context must fail closed rather than
+  // be hidden by a more specific alias that happens to win publication.
+  const normalizedContextInstruction = validateSemanticEndianness(
+    contextInstruction, 'semantic-function-invalid-instruction-endianness', supportedInstruction,
+  );
+  const normalizedContextMemory = validateSemanticEndianness(
+    contextMemory, 'semantic-function-invalid-memory-endianness', supportedMemory,
+  );
+  return Object.freeze({
+    dataEndianness: validateSemanticEndianness(
+      memory ?? normalizedContextMemory, 'semantic-function-invalid-memory-endianness', supportedMemory,
+    ),
+    instructionEndianness: validateSemanticEndianness(
+      instruction ?? normalizedContextInstruction, 'semantic-function-invalid-instruction-endianness', supportedInstruction,
+    ),
+  });
+}
+
+export function semanticMachineEffectsContext(input = {}, endianness) {
+  const explicit = input?.machineEffectsContext;
+  // Leave malformed explicit contexts untouched so the compatibility pipeline
+  // remains the authority for its existing object-shape error contract.
+  if (explicit != null && (typeof explicit !== 'object' || Array.isArray(explicit))) return explicit;
+  const context = explicit == null ? {} : { ...explicit };
+  if (endianness?.dataEndianness != null) context.dataEndianness = endianness.dataEndianness;
+  if (endianness?.instructionEndianness != null) context.instructionEndianness = endianness.instructionEndianness;
+  return context;
 }
 
 // Instruction geometry decides block keys and fallthrough edges: it is CFG
@@ -1110,9 +1181,7 @@ function pipelineSnapshot(pipeline) {
   };
 }
 
-// Public presentation data only: never publish the private IR/context or its
-// executable observers through the structured-clone query boundary.
-export function decompilerSnapshot(result) {
+function decompilerSnapshot(result) {
   return {
     semantic:result.semantic === true,
     signature:result.signature,
@@ -1123,14 +1192,8 @@ export function decompilerSnapshot(result) {
     warnings:result.warnings,
     labels:[...(result.labels || [])],
     coverage:result.coverage,
-    ...(result.renderProvenance ? { renderProvenance:result.renderProvenance } : {}),
     unknownInstructions:result.ctx?.unknownInstructions ?? 0,
   };
-}
-
-export function decompileSemanticProjection(model, options) {
-  const result = decompileSemantic(model, options);
-  return result ? enhanceSemanticDecompilation(result, model, { ...options, renderProvenance:true }) : result;
 }
 
 function addressWidthBitsFor(architecturePlugin) {
@@ -1155,24 +1218,7 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
   const architectureId = normalizedProtocolString(input.architecture, 'semantic-function-architecture-required');
   const architecturePlugin = architecturePluginV2(architectureId);
   if (!architecturePlugin) throw new TypeError(`semantic-function-unsupported-architecture:${architectureId}`);
-  const requestedInstructionEndianness = input.instructionEndianness ?? input.endianness ?? input.endian;
-  if (requestedInstructionEndianness != null) {
-    const endian = normalizedProtocolString(requestedInstructionEndianness, 'semantic-function-invalid-instruction-endianness');
-    if (endian !== 'unknown') {
-      const supported = architecturePlugin.supportedInstructionEndianness ?? [];
-      if (supported.length && !supported.includes(endian))
-        throw new TypeError(`semantic-function-unsupported-instruction-endianness:${endian}`);
-    }
-  }
-  const requestedMemoryEndianness = input.dataEndianness ?? input.endianness ?? input.endian;
-  if (requestedMemoryEndianness != null) {
-    const endian = normalizedProtocolString(requestedMemoryEndianness, 'semantic-function-invalid-memory-endianness');
-    if (endian !== 'unknown') {
-      const supported = architecturePlugin.supportedMemoryEndianness ?? [];
-      if (supported.length && !supported.includes(endian))
-        throw new TypeError(`semantic-function-unsupported-memory-endianness:${endian}`);
-    }
-  }
+  const endianness = normalizeSemanticEndianness(input, architecturePlugin);
   const abiPlugin = resolveABIPlugin({ architecture:architectureId, platform:input.platform, abiId:input.abiId });
   if (!abiPlugin?.supported) throw new TypeError('semantic-function-supported-abi-required');
   if (abiPlugin.architectureId !== architectureId) throw new TypeError('semantic-function-abi-architecture-mismatch');
@@ -1201,13 +1247,9 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     blocks,
     completeness: controlUnknowns.length ? 'partial' : 'complete',
     unknowns: controlUnknowns,
-    functionPrototype:input.functionPrototype ?? null,
     abiAdapter,
-    machineEffectsContext:input.machineEffectsContext ?? {
-      dataEndianness:input.dataEndianness,
-      instructionEndianness:input.instructionEndianness,
-    },
-  }, { signal:options.signal, snapshotId:input.snapshotId ?? options.snapshotId, abiAdapter });
+    machineEffectsContext:semanticMachineEffectsContext(input, endianness),
+  }, { signal:options.signal, abiAdapter });
   abortIfRequested(options.signal);
   const decodedByInstructionId = new Map(pipeline.machineEffects.map((bundle, index) => [bundle.instructionId, orderedInstructions[index]]));
   const legacyRows = new Map();
@@ -1237,7 +1279,7 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     }),
     switches:[],
   };
-  const decompiler = decompileSemanticProjection(model, {
+  const decompiler = decompileSemantic(model, {
     ir:pipeline.legacyV1,
     abiAdapter,
     decoderSemanticVersion,
@@ -1246,7 +1288,6 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     addr:addressOf(orderedInstructions[0]),
     name:model.name,
     functionPrototype:input.functionPrototype ?? null,
-    shouldAbort:() => options.signal?.aborted === true,
   });
   if (!decompiler) throw new Error('semantic-function-shared-decompiler-produced-no-result');
   return Object.freeze({
@@ -1258,8 +1299,8 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     abiSemanticVersion:abiPlugin.semanticVersion,
     decoderSemanticVersion,
     analysisContext:Object.freeze({
-      dataEndianness:input.dataEndianness ?? null,
-      instructionEndianness:input.instructionEndianness ?? null,
+      dataEndianness:endianness.dataEndianness,
+      instructionEndianness:endianness.instructionEndianness,
       architectureProfile:input.architectureProfile ?? null,
     }),
     pipeline:pipelineSnapshot(pipeline),

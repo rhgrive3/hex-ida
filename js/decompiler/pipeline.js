@@ -396,12 +396,24 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
 export async function optimizeSemanticDecompilation(result, options = {}) {
   const started = globalThis.performance?.now?.() ?? Date.now();
   let submitted, original = {}, preparedPlan = null, rewritePolicy = 'unavailable';
-  const fail = reason => ({...original, proofOptimization:Object.freeze({status:'partial',reason,adopted:0,
+  const normalizeFailureReason = reason => {
+    // The lower symbolic query uses `deadline` internally; expose the stable
+    // optimizer-level vocabulary at the public proof boundary.
+    if (reason === 'deadline') return 'deadline-exceeded';
+    // Auxiliary bitfield views are unsupported machine instructions when the
+    // scalar bridge cannot preserve their declared width.
+    if (reason === 'unknown-semantic:scalar-input-width-mismatch'
+        && original?.ir?.instructions?.some(inst => inst?.op === 'bfx' || inst?.op === 'bfi')) {
+      return 'unsupported-instruction';
+    }
+    return reason;
+  };
+  const fail = rawReason => { const reason = normalizeFailureReason(rawReason); return {...original, proofOptimization:Object.freeze({status:'partial',reason,adopted:0,
     rewritePolicy,
     targetDecisions:Object.freeze((preparedPlan?.targetDecisions ?? []).map(decision => Object.freeze({ ...decision,
       disposition:'unknown', reason }))),
     decisionCoverage:Object.freeze({ requested:preparedPlan?.decisionCoverage?.requested ?? null, complete:false }),
-    phase8OptimizeStage:null,elapsedMs:(globalThis.performance?.now?.() ?? Date.now())-started})});
+    phase8OptimizeStage:null,elapsedMs:(globalThis.performance?.now?.() ?? Date.now())-started})}; };
   try {
     submitted = queryRecord(options);
     original = queryRecord(result,null,256);
