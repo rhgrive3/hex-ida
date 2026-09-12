@@ -295,28 +295,39 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
         if (accepted && Array.isArray(traceState.runMemoryEvents)) traceState.runMemoryEvents.push(event);
       }
     };
+    const previousRunSignal = emu._runSignal;
+    if (signal) emu._runSignal = signal;
     try {
-      await sandbox.setup(address, {
-        args:spec.arguments || spec.args || [], registers:spec.registers || {}, objectBase, objectAsArg0:spec.objectAsArg0,
-        objectMemory:spec.objectMemory || spec.fakeObject || [], stackMemory:spec.stack || spec.stackMemory || [], watch:spec.watch || [],
-        breakpoints:[...this.breakpoints.values()].filter((b) => b.enabled && b.address != null).map((b) => b.address),
-        // #5268: setup itself observes the launch signal so an abort during
-        // slow initialization stops the remaining setup work.
-        signal,
-      });
+      try {
+        await sandbox.setup(address, {
+          args:spec.arguments || spec.args || [], registers:spec.registers || {}, objectBase, objectAsArg0:spec.objectAsArg0,
+          objectMemory:spec.objectMemory || spec.fakeObject || [], stackMemory:spec.stack || spec.stackMemory || [], watch:spec.watch || [],
+          breakpoints:[...this.breakpoints.values()].filter((b) => b.enabled && b.address != null).map((b) => b.address),
+          // #5268/#4594: the launch signal owns all initialization backing I/O,
+          // including setup and the adapter's post-setup heap/global stores.
+          signal,
+        });
+      } catch (error) {
+        if (error && error.code === 'sandbox-setup-cancelled') {
+          throw new DebugAdapterError('cancelled', 'local sandbox launch was cancelled during setup', { kind: 'cancelled' });
+        }
+        throw error;
+      }
+      for (const item of spec.heap || []) {
+        if (signal?.aborted) throw new DebugAdapterError('cancelled', 'local sandbox launch was cancelled during setup', { kind: 'cancelled' });
+        await emu.store(asAddress(item.address), initialMemorySize(item.size), initialMemoryValue(item.value));
+      }
+      for (const item of spec.globalValues || []) {
+        if (signal?.aborted) throw new DebugAdapterError('cancelled', 'local sandbox launch was cancelled during setup', { kind: 'cancelled' });
+        await emu.store(asAddress(item.address), initialMemorySize(item.size), initialMemoryValue(item.value));
+      }
     } catch (error) {
-      if (error && error.code === 'sandbox-setup-cancelled') {
+      if (signal?.aborted && error && (error.name === 'AbortError' || error.code === 'ABORT_ERR')) {
         throw new DebugAdapterError('cancelled', 'local sandbox launch was cancelled during setup', { kind: 'cancelled' });
       }
       throw error;
-    }
-    for (const item of spec.heap || []) {
-      if (signal?.aborted) throw new DebugAdapterError('cancelled', 'local sandbox launch was cancelled during setup', { kind: 'cancelled' });
-      await emu.store(asAddress(item.address), initialMemorySize(item.size), initialMemoryValue(item.value));
-    }
-    for (const item of spec.globalValues || []) {
-      if (signal?.aborted) throw new DebugAdapterError('cancelled', 'local sandbox launch was cancelled during setup', { kind: 'cancelled' });
-      await emu.store(asAddress(item.address), initialMemorySize(item.size), initialMemoryValue(item.value));
+    } finally {
+      emu._runSignal = previousRunSignal;
     }
     const initialRegisters = cloneRegisters(emu);
     initializing = false;

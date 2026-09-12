@@ -84,8 +84,8 @@ export function translateSemanticIR(target, options = {}) {
         return createUnknownSemantic(bvSort(width), 'invalid-ssa-value-id', { valueIdType: typeof val.id });
       }
     }
-    const memoKey = `${valId || 'anon'}@${fromBlock}@${width}`;
-    if (memo.has(memoKey)) return memo.get(memoKey);
+    const memoKey = valId != null ? `${valId}@${fromBlock}@${width}` : null;
+    if (memoKey != null && memo.has(memoKey)) return memo.get(memoKey);
 
     if (valId && active.has(valId)) {
       semanticUnknowns++;
@@ -159,7 +159,7 @@ export function translateSemanticIR(target, options = {}) {
     }
 
     if (valId) active.delete(valId);
-    memo.set(memoKey, res);
+    if (memoKey != null) memo.set(memoKey, res);
     return res;
   }
 
