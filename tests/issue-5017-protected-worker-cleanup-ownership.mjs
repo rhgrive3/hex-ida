@@ -15,11 +15,15 @@ const assets = {
 
 let objectUrls = 0;
 const revoked = [];
+let failRevoke = false;
 class FakeURL {
   constructor(path, base) { this.href = base ? new URL(String(path), String(base)).href : String(path); }
   toString() { return this.href; }
   static createObjectURL() { return `blob:protected-${++objectUrls}`; }
-  static revokeObjectURL(url) { revoked.push(url); }
+  static revokeObjectURL(url) {
+    revoked.push(url);
+    if (failRevoke) throw new Error('revoke failed');
+  }
 }
 class FakeBlob { constructor(parts, options) { this.parts = parts; this.options = options; } }
 
@@ -48,7 +52,11 @@ const runtimeA = install();
 assert.equal(currentRuntime(), runtimeA, 'install registers its own runtime');
 assert.equal(workerOverridden(), true, 'install overrides Worker');
 
-runtimeA.cleanup();
+const stalePagehide = pagehide[0];
+failRevoke = true;
+assert.doesNotThrow(() => runtimeA.cleanup(), 'URL release errors must not interrupt cleanup');
+failRevoke = false;
+assert.equal(revoked.length, 2, 'cleanup attempts every owned URL even when revocation throws');
 assert.equal(currentRuntime(), undefined, 'own cleanup removes its registration');
 assert.equal(workerOverridden(), false, 'own cleanup restores the native Worker');
 
@@ -64,7 +72,7 @@ assert.equal(
   'Worker override and runtime bookkeeping must never disagree',
 );
 
-const stalePagehide = pagehide[0];
+assert.equal(revoked.length, 2, 'stale cleanup must not revoke URLs again');
 stalePagehide.handler();
 stalePagehide.handler();
 assert.equal(currentRuntime(), runtimeB, 'stale pagehide after cleanup must not disturb the current runtime');
@@ -83,5 +91,11 @@ pagehide.at(-1).handler();
 assert.equal(currentRuntime(), undefined, 'a live runtime reacts to its own pagehide');
 assert.equal(workerOverridden(), false, 'pagehide cleanup restores the native Worker');
 runtimeC.cleanup();
+
+const runtimeD = install();
+const replacement = ev('globalThis.__HEX_WORKER_RUNTIME__ = { replacement: true }');
+runtimeD.cleanup();
+assert.equal(currentRuntime(), replacement, 'first cleanup must preserve a registration it no longer owns');
+assert.equal(workerOverridden(), false, 'cleanup still restores its own Worker override');
 
 console.log('issue 5017 protected worker cleanup ownership regression: ok');

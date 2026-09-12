@@ -182,8 +182,8 @@ export function validatePatchRange(region, addr, length, fileSize, instruction =
   if (!region) return { error: 'コードのセクションが見つかりません。' };
   let a;
   try { a = integerBigInt(addr, 'address'); } catch { return { error: 'アドレスが不正です。' }; }
-  const n = Number(length);
-  if (!Number.isSafeInteger(n) || n <= 0) return { error: '書き換える長さが不正です。' };
+  const n = length;
+  if (typeof n !== 'number' || !Number.isSafeInteger(n) || n <= 0) return { error: '書き換える長さが不正です。' };
   if (instruction && ((a - region.vmAddr) % 4n !== 0n || n !== 4)) return { error: '命令の位置と長さは 4 バイト境界で指定してください。' };
   const rel = a - region.vmAddr; if (rel < 0n || rel + BigInt(n) > region.size) return { error: 'アドレスがコードのセクション範囲外です。' };
   const offset = region.fileOffset + rel;
