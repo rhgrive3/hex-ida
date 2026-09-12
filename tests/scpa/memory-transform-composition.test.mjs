@@ -172,7 +172,7 @@ async function native(t) {
   const f = fixture(d => { d.profile.abiRevision = '2'; d.environment.concurrency = 'single-thread'; });
   const { owner, result } = captured(0x1000n, NATIVE);
   const request = { kind: 'transforms', ...f, worldId: f.world.id, snapshotId: 'snap', producerArtifactId: 'artifact' };
-  const view = await projectScopedTransformOwners(owner, result, request);
+  const view = await projectScopedTransformOwners(owner, result, request, { limits: { deadlineMs: 10000 } });
   const context = { ...f, snapshotId: 'snap', functionId: owner.pipeline.functionId, producerArtifactId: 'artifact', isCurrent: () => true, work: workFor(t) };
   return { owner, view, context };
 }

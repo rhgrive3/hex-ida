@@ -1245,5 +1245,140 @@
     "publicationState": "pre-publication; exact remote head, current-base reviews, CI admission and main arrival must be read back; none is claimed in this file",
     "baselineTracking": "11 prerequisites tracked in issue8299; 8 code/test cases in existingPR7036 scope; not asserted fixed",
     "architecture100Percent": false
+  },
+  "session16FinalReconciliation": {
+    "previousRemoteHead": "1bb4c450f35ee9e54dedc26dc029c027ebf670f3",
+    "main": "e61cb0ce2eea76e37363c90cc39fdba4ad22e084",
+    "mainTree": "07ab9d5382e0ea82898c83c685b52092edf3fbab",
+    "reconciliation": [
+      {
+        "baseTree": "3a691a2f5fb5481bfe0b534ddc8ae652502bde97",
+        "main": "480b028e8215a30549a28c4bfa9ef26750dfb2ca",
+        "mainTree": "afe5238e03c74fe7aeff23c9ce352ed6d177b664",
+        "mainTreeVerified": true,
+        "decisions": [
+          {
+            "path": "js/binary/pe.js",
+            "method": "unchanged locally; main blob"
+          },
+          {
+            "path": "tests/phase4/binary/issue-4282-pe-number-of-sections-loader-limit.test.mjs",
+            "method": "unchanged locally; main blob"
+          }
+        ]
+      },
+      {
+        "baseTree": "afe5238e03c74fe7aeff23c9ce352ed6d177b664",
+        "main": "e61cb0ce2eea76e37363c90cc39fdba4ad22e084",
+        "mainTree": "07ab9d5382e0ea82898c83c685b52092edf3fbab",
+        "mainTreeVerified": true,
+        "decisions": [
+          {
+            "path": "js/binary/elf-core.js",
+            "method": "unchanged locally; main blob"
+          },
+          {
+            "path": "js/binary/elf-dynamic.js",
+            "method": "unchanged locally; main blob"
+          },
+          {
+            "path": "js/binary/elf-relocation-target.js",
+            "method": "unchanged locally; main blob"
+          },
+          {
+            "path": "js/managed/dex/lifter.js",
+            "method": "unchanged locally; main blob"
+          },
+          {
+            "path": "js/managed/shared/bridge-lowering-v2.js",
+            "method": "unchanged locally; main blob"
+          },
+          {
+            "path": "js/managed/shared/bridge.js",
+            "method": "unchanged locally; main blob"
+          },
+          {
+            "path": "tests/issue-8096-elf-unmapped-relocation-target.mjs",
+            "method": "unchanged locally; main blob"
+          },
+          {
+            "path": "tests/phase11/dex/issue-7999-dex-new-instance-compare.test.mjs",
+            "method": "unchanged locally; main blob"
+          }
+        ]
+      }
+    ],
+    "previousCanonicalFailure": {
+      "label": "session16-arrival-scpa",
+      "command": [
+        "npm",
+        "run",
+        "scpa:test"
+      ],
+      "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+      "startedUtc": "2026-09-12T08:13:40.130829+00:00",
+      "timeoutSeconds": 180.0,
+      "durationSeconds": 70.683,
+      "exitCode": 1,
+      "timedOut": false,
+      "logSha256": "c66028487098156c810d5f9937e093599d6b78ff542e033e2b74e2fbc18537e0"
+    },
+    "firstDivergence": "memory-transform-composition native fixture omitted explicit limits; canonical projection reached its default 1000 ms interactive deadline. The unchanged isolated file passed 26/26; parallel contention remains inference.",
+    "fixtureRepair": {
+      "path": "tests/scpa/memory-transform-composition.test.mjs",
+      "change": "One native semantic-composition fixture explicitly requests finite 10000 ms, matching tests/scpa/transform-native.test.mjs. Correctness/mutant assertions, production budgets and deadline negatives unchanged.",
+      "validation": {
+        "label": "session16-memory-transform-fixture-fixed",
+        "command": [
+          "node",
+          "--test",
+          "--test-concurrency=1",
+          "tests/scpa/memory-transform-composition.test.mjs",
+          "tests/scpa/dependencies-budget.test.mjs",
+          "tests/scpa/transform-native.test.mjs"
+        ],
+        "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+        "startedUtc": "2026-09-12T08:17:33.429902+00:00",
+        "timeoutSeconds": 60.0,
+        "durationSeconds": 6.021,
+        "exitCode": 0,
+        "timedOut": false,
+        "logSha256": "0a135b0063f2cb0710c9eb2b286d2f8579c25d7aba06b72f56e780d42d0135d2"
+      },
+      "pass": 90,
+      "independentReview": "Root reviewed one-line patch against neighboring fixture and semantic-composition contract; final R0 review follows on published HEAD."
+    },
+    "mainRegressions": {
+      "label": "session16-exit-main-regressions",
+      "command": [
+        "node",
+        "--test",
+        "tests/issue-8096-elf-unmapped-relocation-target.mjs",
+        "tests/phase11/dex/issue-7999-dex-new-instance-compare.test.mjs",
+        "tests/ci-development-mode.mjs",
+        "tests/issue-458-ghidra-trigger.mjs"
+      ],
+      "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+      "startedUtc": "2026-09-12T08:17:48.229995+00:00",
+      "timeoutSeconds": 60.0,
+      "durationSeconds": 1.876,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "13c079c044162e4323e0ffc73654318a6fdd31972ff5e79df307be4cd51c3cd9"
+    },
+    "generated": {
+      "identical": true,
+      "files": {
+        "userscript/hex.user.template.js": "169f2e2f2e7f42446989a8e52f8c97610d1a1f74aa2180db241c29a8bff7ae43",
+        "userscript/release-version.json": "267a30113fc14804ec8828af8481ecfa25c6a7ce41b4013f6dd72f5d6706aea1"
+      }
+    },
+    "release": {
+      "serial": 2322242201,
+      "releaseIdentity": "c6cb6305bcf565daa890297a10650efd30751535074c6fc26b57b5ed1b22aa62",
+      "buildId": "18e3494e6e3c3a780ba92154"
+    },
+    "canonicalFinalRun": "running during checkpoint preparation; read final published PR evidence, not an inferred pass",
+    "sourceMerge": "pending exact-head admission and expected-head merge; final arrival recorded in PR metadata"
   }
 }
