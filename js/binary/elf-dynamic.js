@@ -423,7 +423,12 @@ function attachDynamicRelocations(image, relocs, symbols) {  const byIndex = new
   for (const rel of relocs) {
     const owner = image.segmentAt(rel.address);
     if (!owner) { markDynamicPartial(image, `${rel.source} relocation target is outside every loaded PT_LOAD memory span`); continue; }
-    const width = relocationFieldWidth(Number(image.metadata.machine), rel.type, image.bits);
+    // RELR carries no machine relocation type; its implicit relative relocation
+    // remains governed by the RELR decoder/mapping checks rather than this
+    // type-width table. Explicit REL/RELA-style records must have known width
+    // on recognized machines.
+    const width = rel.type == null ? undefined : relocationFieldWidth(Number(image.metadata.machine), rel.type, image.bits);
+    if (width === null) { markDynamicPartial(image, `${rel.source} relocation type ${rel.type} has no supported target-field width for machine ${image.metadata.machine}`); continue; }
     if (typeof width === 'bigint' && width > 0n && rel.address + width > owner.address + owner.size) { markDynamicPartial(image, `${rel.source} relocation target field crosses the end of its loaded PT_LOAD memory span`); continue; }
     const sym = byIndex.get(rel.symIndex) || null;
     const item = {

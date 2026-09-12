@@ -614,6 +614,7 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
       const owner=image.segmentAt(offset);
       if(!owner){budget.partial(`relocations:${sec.index}:unmapped-target`,`ELF relocation section ${sec.index} has a relocation target outside every loaded PT_LOAD memory span`);continue;}
       const fieldWidth=relocationFieldWidth(Number(image.metadata.machine),type,bits);
+      if(fieldWidth===null){budget.partial(`relocations:${sec.index}:field-width-unknown`,`ELF relocation type ${type} has no supported target-field width for machine ${image.metadata.machine}`);continue;}
       if(typeof fieldWidth==='bigint'&&fieldWidth>0n&&offset+fieldWidth>owner.address+owner.size){budget.partial(`relocations:${sec.index}:target-span`,`ELF relocation section ${sec.index} has a relocation target field crossing the end of its loaded PT_LOAD memory span`);continue;}
     }
     if(symIndex!==0&&linkedSymbolTable&&symbolEntryCount==null)continue;
