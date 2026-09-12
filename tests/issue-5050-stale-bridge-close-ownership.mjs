@@ -117,4 +117,68 @@ async function settle() {
   assert.notEqual(completions[0].data.completionId, completions[1].data.completionId);
 }
 
+// Both close orders must restore exact native methods, including through a
+// chain of closed predecessors, and leave the surviving bridge usable.
+for (const olderFirst of [true, false]) {
+  const pool = createPool();
+  const nativeStart = pool.start;
+  const nativeFollowup = pool.followup;
+  const coordinator = createCoordinator();
+  const a = new IframeWorkerCompletionBridge({ workerPool: pool, coordinator });
+  const b = new IframeWorkerCompletionBridge({ workerPool: pool, coordinator });
+  await b.claim({ runId: 'run-b' });
+  // A is still live, but B alone must validate and publish these calls.
+  await pool.start({ leaseId: 'lease-1', runId: 'run-b', instruction: 'both live' });
+  await settle();
+  await pool.followup({ leaseId: 'lease-1', runId: 'run-b', text: 'both live followup' });
+  await settle();
+  assert.equal(coordinator.queue.length, 2);
+  assert.equal(a.currentBySlot.size, 0);
+  const first = olderFirst ? a : b;
+  const survivor = olderFirst ? b : a;
+  first.close();
+  first.close();
+  first.start = first.followup = () => { throw new Error('closed bridge invoked'); };
+  assert.equal(pool.start, survivor.startWrapper);
+  assert.equal(pool.followup, survivor.followupWrapper);
+  await survivor.claim({ runId: 'survivor' });
+  await pool.start({ leaseId: 'lease-1', runId: 'survivor', instruction: 'go' });
+  await settle();
+  await pool.followup({ leaseId: 'lease-1', runId: 'survivor', text: 'again' });
+  await settle();
+  assert.equal(coordinator.queue.length, 4, 'each operation publishes exactly once');
+  survivor.close();
+  survivor.close();
+  assert.equal(pool.start, nativeStart, 'restore native start without closed predecessors');
+  assert.equal(pool.followup, nativeFollowup, 'restore native followup without closed predecessors');
+}
+
+// A foreign override belongs to its installer, including on repeated closes.
+{
+  const pool = createPool();
+  const a = new IframeWorkerCompletionBridge({ workerPool: pool, coordinator: createCoordinator() });
+  const foreignStart = () => 'foreign start';
+  const foreignFollowup = () => 'foreign followup';
+  pool.start = foreignStart;
+  pool.followup = foreignFollowup;
+  a.close();
+  a.close();
+  assert.equal(pool.start, foreignStart);
+  assert.equal(pool.followup, foreignFollowup);
+}
+
+// Closing while start awaits acceptance must not recreate completion state.
+{
+  const pool = createPool();
+  const coordinator = createCoordinator();
+  const bridge = new IframeWorkerCompletionBridge({ workerPool: pool, coordinator });
+  await bridge.claim({ runId: 'closing' });
+  const started = pool.start({ leaseId: 'lease-1', runId: 'closing', instruction: 'go' });
+  bridge.close();
+  await started;
+  await settle();
+  assert.equal(bridge.currentBySlot.size, 0);
+  assert.equal(coordinator.queue.length, 0);
+}
+
 console.log('issue #5050 stale bridge close wrapper identity regressions PASS');

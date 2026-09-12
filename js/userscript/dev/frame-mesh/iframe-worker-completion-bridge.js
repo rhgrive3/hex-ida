@@ -1,6 +1,15 @@
 const COMPLETION_SOURCE = 'iframe-worker-pool';
 const GRAPH_COMPLETION_SOURCE = 'dynamic-task-graph';
 const MAX_RETAINED_GRAPH_COMPLETIONS = 2048;
+const poolWrappers = new WeakMap();
+
+function unwrapPoolMethod(method, closedOnly = false) {
+  let record;
+  while ((record = poolWrappers.get(method)) && (!closedOnly || record.bridge.closed)) {
+    method = record.previous;
+  }
+  return method;
+}
 
 export class IframeWorkerCompletionBridge {
   constructor({ workerPool, coordinator, now = () => new Date().toISOString() } = {}) {
@@ -17,10 +26,17 @@ export class IframeWorkerCompletionBridge {
     this.runByLease = new Map();
     this.currentBySlot = new Map();
     this.graphCompletions = new Map();
-    this.originalStart = workerPool.start.bind(workerPool);
-    this.originalFollowup = workerPool.followup.bind(workerPool);
+    this.closed = false;
+    this.previousStart = workerPool.start;
+    this.previousFollowup = workerPool.followup;
+    // Only the active bridge tracks a call; predecessor bridges are restoration
+    // targets, not another layer of completion/lease ownership checks.
+    this.originalStart = unwrapPoolMethod(workerPool.start).bind(workerPool);
+    this.originalFollowup = unwrapPoolMethod(workerPool.followup).bind(workerPool);
     this.startWrapper = (args) => this.start(args);
     this.followupWrapper = (args) => this.followup(args);
+    poolWrappers.set(this.startWrapper, { bridge: this, previous: this.previousStart });
+    poolWrappers.set(this.followupWrapper, { bridge: this, previous: this.previousFollowup });
     workerPool.start = this.startWrapper;
     workerPool.followup = this.followupWrapper;
   }
@@ -97,6 +113,7 @@ export class IframeWorkerCompletionBridge {
   }
 
   trackOccurrence(slot, leaseId, runId) {
+    if (this.closed) return null;
     const occurrence = {
       completionId: `pool-completion-${++this.sequence}`,
       slot: slot.index,
@@ -273,8 +290,10 @@ export class IframeWorkerCompletionBridge {
   }
 
   close() {
-    if (this.workerPool.start === this.startWrapper) this.workerPool.start = this.originalStart;
-    if (this.workerPool.followup === this.followupWrapper) this.workerPool.followup = this.originalFollowup;
+    if (this.closed) return;
+    this.closed = true;
+    if (this.workerPool.start === this.startWrapper) this.workerPool.start = unwrapPoolMethod(this.previousStart, true);
+    if (this.workerPool.followup === this.followupWrapper) this.workerPool.followup = unwrapPoolMethod(this.previousFollowup, true);
     this.runByLease.clear();
     this.currentBySlot.clear();
     this.graphCompletions.clear();
