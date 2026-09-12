@@ -85,17 +85,15 @@ export async function checkPreconditionsConsistency(preconditionsExpr, session, 
   }
 
   if (result.status === SOLVER_STATUS.SAT) {
-    if (result.model) {
-      const validation = validateSatModel(query, result.model);
-      if (!validation.valid) {
-        return Object.freeze({
-          consistent: false,
-          status: SOLVER_STATUS.PROVIDER_FAILURE,
-          reason: 'invalid-precondition-sat-model',
-          validation,
-          result,
-        });
-      }
+    const validation = validateSatModel(query, result.model);
+    if (!validation.valid) {
+      return Object.freeze({
+        consistent: false,
+        status: SOLVER_STATUS.PROVIDER_FAILURE,
+        reason: 'invalid-precondition-sat-model',
+        validation,
+        result,
+      });
     }
     return Object.freeze({
       consistent: true,
