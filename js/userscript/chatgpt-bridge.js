@@ -201,11 +201,11 @@ function rememberLateBinding(map, sessionKey, turnId) {
 }
 
 function explicitTimeout(value) {
-  const raw = Number(value);
-  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : null;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+  return Math.floor(value);
 }
 
 function positiveMs(value, fallback) {
-  const raw = Number(value);
-  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return fallback;
+  return Math.floor(value);
 }

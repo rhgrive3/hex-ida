@@ -380,9 +380,8 @@ function normalizeNonce(value, required = true) {
 }
 function normalizeTimeout(value, fallback) {
   if (value == null) return fallback;
-  const number = Number(value);
-  if (!Number.isFinite(number) || number < 0) throw new TypeError('Embed timeout must be a non-negative finite number.');
-  return Math.floor(number);
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new TypeError('Embed timeout must be a non-negative finite number.');
+  return Math.floor(value);
 }
 function stageFor(error) { return String(error?.stage || error?.code || 'sandbox-startup').toLowerCase(); }
 function stageError(stage, message) { const error = new Error(String(message || 'failed')); error.stage = stage; return error; }
