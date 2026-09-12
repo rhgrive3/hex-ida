@@ -35,6 +35,17 @@ function managedUnaryOperator(mnemonic) {
   return wasm?.[1] || null;
 }
 
+const MANAGED_COMPARE_MNEMONIC_TOKENS = new Set(['cmp', 'cmpl', 'cmpg', 'eqz', 'ceq', 'clt', 'cgt', 'eq', 'ne', 'lt', 'gt', 'le', 'ge']);
+
+function managedMnemonicIsCompare(mnemonic) {
+  const text = typeof mnemonic === 'string' ? mnemonic.trim().toLowerCase() : '';
+  if (!text) return false;
+  for (const token of text.split(/[^a-z0-9]+/)) {
+    if (token && MANAGED_COMPARE_MNEMONIC_TOKENS.has(token)) return true;
+  }
+  return false;
+}
+
 function managedUnaryOperatorForNode(node, mnemonic) {
   const mnemonicOperator = managedUnaryOperator(mnemonic);
   if (node?.operator == null) return mnemonicOperator;
@@ -334,7 +345,7 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
         const mn = (b.mnemonic || '').toLowerCase();
         if (mn.includes('add') || mn.includes('sub') || mn.includes('mul') || mn.includes('div') || mn.includes('and') || mn.includes('or') || mn.includes('xor') || mn.includes('shl') || mn.includes('shr') || mn.includes('rem')) {
           nodeKind = 'binary';
-        } else if (mn.includes('cmp') || mn.includes('eq') || mn.includes('ne') || mn.includes('lt') || mn.includes('gt') || mn.includes('le') || mn.includes('ge')) {
+        } else if (managedMnemonicIsCompare(mn)) {
           nodeKind = 'compare';
         } else if (mn.includes('const') || (frontendId === 'jvm' && (mn === 'bipush' || mn === 'sipush'))) {
           nodeKind = 'const';
