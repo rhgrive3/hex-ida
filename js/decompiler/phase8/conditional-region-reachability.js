@@ -22,6 +22,12 @@ export function readConditionalRegionReachability(result, ir, identity) {
   } catch { return null; }
 }
 
+/** The exact structural input belongs to the private proof, not to matching
+ * branch IDs or a caller-provided pairing of otherwise valid capabilities. */
+export function readConditionalRegionReachabilityStructure(result, ir, identity) {
+  return readConditionalRegionReachability(result, ir, identity) ? issued.get(result).structure : null;
+}
+
 export async function prepareConditionalRegionReachability(structure, ir, options = {}) {
   let guard, session;
   const reject = reason => freeze({ version:1, status:'partial', reason, arms:freeze([]), transformAuthorization:false });

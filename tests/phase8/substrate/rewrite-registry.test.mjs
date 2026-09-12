@@ -7,14 +7,15 @@ import {
 } from '../../../js/decompiler/phase8/index.js';
 import { PROOF_REWRITE_PASS, preparePhase8RewritePlan, isPhase8RewritePlan } from '../../../js/decompiler/phase8/pass-validation.js';
 import { buildRewriteRegistry, passRewritePolicy, rewritePolicyFailure, REWRITE_REGISTRY_VERSION } from '../../../js/decompiler/phase8/rewrite-registry.js';
+import { REGION_ERASURE_PASS } from '../../../js/decompiler/phase8/region-erasure-pass.js';
 import { proofFixture, identity } from '../helpers/proof-fixtures.mjs';
 
-const allPasses = () => [...phase8Passes(), { descriptor:PROOF_REWRITE_PASS }];
+const allPasses = () => [...phase8Passes(), { descriptor:PROOF_REWRITE_PASS }, { descriptor:REGION_ERASURE_PASS }];
 const context = () => ({ ir:{ values:[{id:1}], blocks:[{index:0}], entry:0, origin:{} } });
 
 test('C4-04 rewrite denominator is the exact registered production pass union', () => {
   const registry = phase8RewriteRegistry(), passes = allPasses();
-  assert.equal(registry.length, 9);
+  assert.equal(registry.length, 10);
   assert.deepEqual(new Set(registry.map(row => row.passId)), new Set(passes.map(pass => pass.descriptor.id)));
   // Registration order is not execution order: the runner dependency-sorts
   // within each stage. Coverage must preserve the exact union, not reorder it.
@@ -26,7 +27,7 @@ test('C4-04 rewrite denominator is the exact registered production pass union', 
     assert.equal(row.passVersion, descriptor.version);
     assert.equal(row.stage, descriptor.stage);
     assert.ok(Object.isFrozen(row) && Object.isFrozen(row.families) && Object.isFrozen(row.kinds));
-    assert.equal(row.mode, descriptor === PROOF_REWRITE_PASS ? 'proof-gated-value-projection' : 'analysis-only');
+    assert.equal(row.mode, descriptor === PROOF_REWRITE_PASS ? 'proof-gated-value-projection' : descriptor === REGION_ERASURE_PASS ? 'proof-gated-region-candidate' : 'analysis-only');
   }
   assert.throws(() => buildRewriteRegistry(passes.slice(1)), /registry-incomplete/);
   assert.throws(() => buildRewriteRegistry([...passes, passes[0]]), /unclassified-or-duplicate/);
@@ -54,8 +55,8 @@ test('C4-04 actual ordinary execution accounts for analysis and unsupported pass
   const {ledger} = runPhase8Vertical(context());
   assert.equal(ledger.published, true, ledger.stopReason);
   const coverage = ledger.rewriteCoverage;
-  assert.equal(coverage.registered, 9);
-  assert.equal(coverage.accounted, 9);
+  assert.equal(coverage.registered, 10);
+  assert.equal(coverage.accounted, 10);
   assert.equal(coverage.selected, 8);
   assert.equal(coverage.scope, 'registered-phase8-transactions-not-render-adoption');
   assert.ok(Object.isFrozen(coverage) && Object.isFrozen(coverage.rows) && coverage.rows.every(Object.isFrozen));
@@ -68,7 +69,8 @@ test('C4-04 actual ordinary execution accounts for analysis and unsupported pass
   }
   const interactive = runPhase8Vertical({...context(), enabledStages:['canonical-facts']}).ledger.rewriteCoverage;
   assert.equal(interactive.selected, 1);
-  assert.equal(interactive.rows.filter(row => row.disposition === 'not-requested').length, 8);
+  assert.equal(interactive.rows.filter(row => row.disposition === 'not-requested').length, 9);
+  assert.equal(interactive.rows.find(row => row.passId === REGION_ERASURE_PASS.id).disposition, 'not-requested');
   assert.equal(interactive.rows.find(row => row.passId === 'phase8.identity').disposition, 'analysis-only');
 });
 
@@ -126,7 +128,7 @@ test('C4-04 cancellation at every real transaction check withholds all earlier s
     const {ledger} = runPhase8Vertical({...ctx,analysis}, {shouldAbort:() => ++calls >= at});
     assert.equal(ledger.published, false, `check ${at}/${checks}`);
     assert.deepEqual(analysis.snapshot(), before);
-    assert.equal(ledger.rewriteCoverage.rows.length, 9);
+    assert.equal(ledger.rewriteCoverage.rows.length, 10);
     assert.ok(ledger.rewriteCoverage.rows.every(row => row.proofTransformCount === 0));
     assert.ok(ledger.rewriteCoverage.rows.filter(row => row.selected).every(row => row.disposition === 'unknown'));
   }

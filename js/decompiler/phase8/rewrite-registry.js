@@ -1,7 +1,7 @@
 /** Registered Phase 8 transaction coverage. Policies restrict publication;
  * names, these rows and their digests never issue a semantic proof capability.
  */
-export const REWRITE_REGISTRY_VERSION = 'hex.phase8.rewrite-registry/1';
+export const REWRITE_REGISTRY_VERSION = 'hex.phase8.rewrite-registry/2';
 const facts = (...families) => Object.freeze({mode:'analysis-only',families:Object.freeze(families),kinds:Object.freeze([])});
 const POLICIES = Object.freeze({
   'phase8.identity':facts('canonical-identity'),
@@ -14,6 +14,8 @@ const POLICIES = Object.freeze({
   'phase8.providers':facts('optional-refinement-hints'),
   'phase8.solver-constants':Object.freeze({mode:'proof-gated-value-projection',
     families:Object.freeze(['total-pure-bv-value']),kinds:Object.freeze(['solver-constant','solver-scalar'])}),
+  'phase8.proved-regions':Object.freeze({mode:'proof-gated-region-candidate',
+    families:Object.freeze(['unreachable-arm-body']),kinds:Object.freeze(['proved-unreachable-arm-candidate'])}),
 });
 
 export function passRewritePolicy(descriptor) {
@@ -36,10 +38,14 @@ export function buildRewriteRegistry(passes) {
 
 /** Only called after the ordinary owned PassResult snapshot. Proof identity is
  * checked independently by the existing private admission path, never by ID. */
-export function rewritePolicyFailure(descriptor, result, {required=false, proofPass=false} = {}) {
+export function rewritePolicyFailure(descriptor, result, {required=false, proofPass=false, regionPass=false} = {}) {
   const policy = passRewritePolicy(descriptor);
   if (!policy) return required ? 'rewrite-policy-unclassified' : null;
   if (policy.mode === 'analysis-only') return result.transforms.length ? 'analysis-only-pass-reported-transform' : null;
+  if (policy.mode === 'proof-gated-region-candidate') {
+    if (!regionPass) return 'rewrite-policy-region-pass-identity';
+    return result.transforms.some(transform => !policy.kinds.includes(transform.kind)) ? 'rewrite-policy-undeclared-kind' : null;
+  }
   if (!proofPass) return 'rewrite-policy-proof-pass-identity';
   return result.transforms.some(transform => !policy.kinds.includes(transform.kind)) ? 'rewrite-policy-undeclared-kind' : null;
 }
@@ -58,7 +64,7 @@ export function rewriteCoverage(registry, passes, results, published, reason = n
       : result.transforms.length ? 'proof-committed' : 'unchanged';
     return Object.freeze({...row,selected:enabled,disposition,
       resultStatus:result?.status ?? null,completeness:result?.completeness ?? 'unknown',
-      proofTransformCount:result && row.mode === 'proof-gated-value-projection' ? result.transforms.length : 0,
+      proofTransformCount:result && row.mode.startsWith('proof-gated-') ? result.transforms.length : 0,
       reason:!enabled ? 'stage-or-proof-not-requested' : result?.stopReason ?? (result ? null : reason ?? 'missing-pass-result')});
   });
   return Object.freeze({version:REWRITE_REGISTRY_VERSION,scope:'registered-phase8-transactions-not-render-adoption',

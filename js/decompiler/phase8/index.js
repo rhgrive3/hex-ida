@@ -18,6 +18,7 @@
  */
 
 import { stableDigest } from '../../core/identity/index.js';
+import { REGION_ERASURE_PASS, runRegionErasurePass } from './region-erasure-pass.js';
 import { PROOF_REWRITE_PASS, runProofRewritePass, isPhase8RewritePlan } from './pass-validation.js';
 import { buildRewriteRegistry, passRewritePolicy, rewriteCoverage, REWRITE_REGISTRY_VERSION } from './rewrite-registry.js';
 export { preparePhase8RewritePlan, isPhase8RewritePlan } from './pass-validation.js';
@@ -82,7 +83,7 @@ const REGISTERED = Object.freeze([
 // dependency cycle has completed.
 let rewriteRegistryCache = null;
 function rewriteRegistry() {
-  rewriteRegistryCache ??= buildRewriteRegistry([...REGISTERED, { descriptor:PROOF_REWRITE_PASS }]);
+  rewriteRegistryCache ??= buildRewriteRegistry([...REGISTERED, { descriptor:PROOF_REWRITE_PASS }, { descriptor:REGION_ERASURE_PASS }]);
   return rewriteRegistryCache;
 }
 export function phase8RewriteRegistry() { return rewriteRegistry(); }
@@ -140,11 +141,11 @@ function orderWithinStage(passes) {
   return ordered;
 }
 
-export function phase8Passes({ stages = null, proofRewritePlan = null } = {}) {
+export function phase8Passes({ stages = null, proofRewritePlan = null, regionErasurePlan = null } = {}) {
   const enabled = stages == null ? null : new Set(stages);
-  const registry = proofRewritePlan == null
-    ? REGISTERED
-    : [...REGISTERED, Object.freeze({ descriptor: PROOF_REWRITE_PASS, run: runProofRewritePass })];
+  const registry = [...REGISTERED,
+    ...(proofRewritePlan == null ? [] : [Object.freeze({ descriptor: PROOF_REWRITE_PASS, run: runProofRewritePass })]),
+    ...(regionErasurePlan == null ? [] : [Object.freeze({ descriptor: REGION_ERASURE_PASS, run: runRegionErasurePass })])];
   const selected = [...registry].filter(({ descriptor }) => enabled == null || enabled.has(descriptor.stage));
   const byStage = new Map();
   for (const pass of selected) {
@@ -300,7 +301,8 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     }
   }
   const proofRewritePlan = context.proofRewritePlan ?? context.opts?.phase8RewritePlan;
-  const passes = phase8Passes({ stages: enabledStages, proofRewritePlan });
+  const regionErasurePlan = context.regionErasurePlan ?? context.opts?.phase8RegionErasurePlan;
+  const passes = phase8Passes({ stages: enabledStages, proofRewritePlan, regionErasurePlan });
   const withheldLedger = (status, reason, diagnostics, digest, versions = null) =>
     withheldLedgerBase(status,reason,diagnostics,digest,versions,
       rewriteCoverage(rewriteRegistry(),passes,[],false,reason));

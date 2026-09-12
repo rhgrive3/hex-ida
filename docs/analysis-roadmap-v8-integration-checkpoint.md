@@ -9,6 +9,8 @@
 追加の進捗: ME の RV64 命令列反例縮小に続き、C4 の条件領域の発行記録を実装しました。
 C4 は元の出力範囲の取得に加え、腕の全ブロック・辺・合流 PHI の構造照合まで実装しました。
 さらに、発行済みの構造記録を既存の実行器とソルバーへ接続し、非循環 CFG の入口から各腕への到達可能性を検証する準備処理を追加しました。
+到達不能な腕の候補は専用の `provedRegions` として既存 Phase 8 の一括受入処理へ接続しました。
+表示条件式との意味の対応、コピー先・PHI・削除元の provenance は未検証で、表示を削除する権限は発行していません。
 コピー先との対応付け、領域の意味的な証明、PHI を含む変換受入は残っています。
 
 結合した入力:
@@ -60,7 +62,7 @@ SYM-01/X-03 の再実装は割り当てません。C3 metadata と X-02 の広�
 - 以前の `714bbc56` に対する `npm run check` は MachineEffects の 13 テストファイルで失敗。WebKit の `libxslt.so.1` 不足も含み、すべてを環境原因とは分類していません。
 - 結合後の full check、Phase 8/9、独立 shadow の確定結果が揃うまで CHECKPOINT-LOCKED を解除しません。実機・環境整備・別 issue 修正は今回の担当外です。
 
-生成物は結合ソースから canonical build で再生成済みです（serial `2322242246`、build ID `767489ce6a2bc4c9ed973887`）。公開前に再 build の差分を確認し、公開 SHA と生成 ID の記録を保持します。
+生成物は結合ソースから canonical build で再生成済みです（serial `2322242247`、build ID `696a5b34a5d8077192ea90c9`）。公開前に再 build の差分を確認し、公開 SHA と生成 ID の記録を保持します。
 
 追加修正後の lint と module-boundaries 検査、結合ファイル全体の所有範囲検査は通過しました。
 
@@ -6403,3 +6405,51 @@ lint / module-boundaries も通過しています。公開直前の 219 open PR 
 今回の 5 ソース/文書パスは他 PR と重なっていません。
 一覧: `c4-region-adoption-20260912/reachability-open-pr-files-publish.json`。
 全体 gate・独立 shadow・統合受入の完了は主張しません。
+
+
+## C4 領域候補を既存 transaction へ接続 — 2026-09-12
+
+`conditional-region-erasure.js` は private 発行済みの構造と到達可能性が同一の組であることを確認し、
+一方の腕が到達不能、他方が検証済み SAT の場合に、到達不能な腕の本文を除いた候補範囲を用意します。
+元の header・separator・close・生きている腕・canonical IR・CFG・PHI は変更しません。
+空の本文、別の構造との組合せ、資源不足、失効した入力は候補を発行しません。
+候補の前後 digest は元の表示範囲の監査値で、C の意味的等価性を証明する値ではありません。
+
+`region-erasure-pass.js` を **既存の Phase 8 registry / runPhase8Vertical / runPassTransaction** に登録し、
+`regionErasurePlan`（または `opts.phase8RegionErasurePlan`）が指定されたときだけ実行します。
+`provedRegions` は scalar `provedRewrites` とは別の保存先です。private 発行した結果だけを受け入れ、
+コピーした plan/result、別の pass が持ち込んだ artifact、手動で seeded した overlay は権限を得ません。
+fork/commit と invalidation も既存 transaction の中で扱います。別の scheduler/commit engine は作っていません。
+共有 contract は 8、rewrite registry は 2 に更新し、監査対象は既存 9 pass と新しい候補 pass の計 10 です。
+通常の interactive stage が選ぶ pass は変わりません。
+
+**これは canonical IR の到達不能な腕の候補の受入であり、描画済み C の削除ではありません。**
+plan と保存 artifact は常に `transformAuthorization:false`、`renderValidation:'required'` です。
+公開 ledger の kind も `proved-unreachable-arm-candidate` とし、表示への適用とは区別します。
+
+レビューで、元の条件式が CBR と同じ意味とは限らないことを具体的に確認しました。
+現在の cbnz/xor-self の表示 `if (a1 ^ a1 != 0)` は、C の優先順位では `a1 ^ (a1 != 0)` です。
+入力 2 では canonical `(a1 ^ a1) != 0` と真偽が異なります。元の行と同じオブジェクトであることだけでは
+C 条件式の等価性を証明できません。この反例と、候補を受け入れても表示削除権限を発行しない検査を追加しました。
+元の表示を任意に修正する別 issue 作業には広げず、C4 の実際の適用に必要な条件式証明として残します。
+
+次の未完了項目は、表示条件式の意味的な証明、全コピー先ノードの producer carrier、
+生きている PHI incoming と表示上の代入の対応、削除される各 entity の provenance/tombstone です。
+memory PHI の `validation:'required'` も保持します。これらが揃うまで候補から表示削除へ進めません。
+
+他 PR の実差分も照合しました。`phase8/index.js` は #7097/#7702 と共通ファイルですが、
+#7097 の追加 export と、#7702 の stage selector 検証を再実装していません。
+今回の変更は既存 registry への候補 pass 登録と引数受渡しです。#7702 の将来の結合では、
+同じ関数の新しい region 引数を保持する必要があります。共有ファイルであることを「重複なし」とは扱いません。
+他の今回変更パスには公開 PR の重複がありませんでした。
+証拠: `c4-region-adoption-20260912/region-candidate-overlap.json` と同ディレクトリの open PR 実ファイル一覧。
+
+この段階でも FR-C4-02A/04B、解析 md 全体、統合受入は未完了です。C1/C3 のユーザー担当と
+実機・環境整備・別 issue 修正を今回の担当外とする方針は維持しています。
+
+今回の候補受入 12 件を含む選択検査は 96 件中 94 件通過、残り 2 件は既存 scalar proof の
+`deadline` でした（`c4-region-candidate-final-source-222d10c1-7059-42b4-863b-3f9df1cc97f2.json`）。
+先行する検査では同じ scalar proof は通過しています。並行ビルドと corpus 検査による負荷があるため、
+予算を緩めず対象を再検査します。契約・失効・vertical を含む corpus 検査もまだ実行中です。
+lint、module-boundaries、canonical build は通過。生成物は serial `2322242247`、
+build ID `696a5b34a5d8077192ea90c9` です。これを全体受入完了とは扱いません。

@@ -35,7 +35,7 @@
  * material, so a bump invalidates derived artifacts rather than silently
  * reusing them (EP-005 evidence-invalidation rule, MIGRATION_GUARDRAILS §CI).
  */
-export const PHASE8_CONTRACT_VERSION = 7;
+export const PHASE8_CONTRACT_VERSION = 8;
 
 // Shared storage ceiling lives in the dependency-free contract so importing a
 // producer before its renderer cannot observe an uninitialized cyclic export.
@@ -80,6 +80,7 @@ export const ANALYSIS_KEYS = Object.freeze([
   'structuredRegions',
   'providerHints',
   'provedRewrites',
+  'provedRegions',
 ]);
 
 /** What a pass run did. `unsupported` is a first-class answer, never skip-green. */

@@ -43,6 +43,15 @@ export function registerDcePassRunner(runner, descriptor) {
 // module-evaluation cycle through the public transaction facade while leaving
 // one canonical state/commit engine and one proof authority.
 let phase8ProofApi = null;
+let phase8RegionProofApi = null;
+export function configurePhase8RegionProofApi(api) {
+  if (!api || typeof api !== 'object' || typeof api.REGION_ERASURE_PASS !== 'object'
+    || typeof api.regionAdmissionReason !== 'function' || typeof api.regionPublicationResult !== 'function') {
+    fail('phase8-region-proof-api-invalid');
+  }
+  if (phase8RegionProofApi) fail('phase8-region-proof-api-already-configured');
+  phase8RegionProofApi = Object.freeze({ ...api });
+}
 export function configurePhase8ProofApi(api) {
   if (!api || typeof api !== 'object') fail('phase8-proof-api-required');
   const required = ['PROOF_REWRITE_PASS', 'proofAdmissionReason', 'proofPublicationResult',
@@ -59,6 +68,7 @@ const ANALYSIS_SET = new Set(ANALYSIS_KEYS);
 const ANALYSIS_MUTATORS = new WeakMap();
 const ANALYSIS_LINEAGE = new WeakMap();
 const COMMITTED_PROOF_OVERLAYS = new WeakMap();
+const COMMITTED_REGION_OVERLAYS = new WeakMap();
 const COMMITTED_DCE_ARTIFACTS = new WeakMap();
 
 
@@ -134,6 +144,7 @@ export function forkAnalysisState(source) {
     COMMITTED_PROOF_OVERLAYS.set(working, COMMITTED_PROOF_OVERLAYS.get(source));
   }
   if (COMMITTED_DCE_ARTIFACTS.has(source)) COMMITTED_DCE_ARTIFACTS.set(working, COMMITTED_DCE_ARTIFACTS.get(source));
+  if (COMMITTED_REGION_OVERLAYS.has(source)) COMMITTED_REGION_OVERLAYS.set(working, COMMITTED_REGION_OVERLAYS.get(source));
   ANALYSIS_LINEAGE.set(working, Object.freeze({
     source,
     before: Object.freeze(Object.fromEntries(ANALYSIS_KEYS.map((key) => [key, versions[key]]))),
@@ -177,6 +188,9 @@ export function commitAnalysisState(target, working, before) {
   if (COMMITTED_DCE_ARTIFACTS.has(working) && working.get('deadCode') === COMMITTED_DCE_ARTIFACTS.get(working)) {
     COMMITTED_DCE_ARTIFACTS.set(target, COMMITTED_DCE_ARTIFACTS.get(working));
   } else COMMITTED_DCE_ARTIFACTS.delete(target);
+  if (COMMITTED_REGION_OVERLAYS.has(working) && working.get('provedRegions') === COMMITTED_REGION_OVERLAYS.get(working)) {
+    COMMITTED_REGION_OVERLAYS.set(target, COMMITTED_REGION_OVERLAYS.get(working));
+  } else COMMITTED_REGION_OVERLAYS.delete(target);
   return true;
 }
 
@@ -184,6 +198,11 @@ export function commitAnalysisState(target, working, before) {
 export function committedProofOverlay(state) {
   const overlay = COMMITTED_PROOF_OVERLAYS.get(state);
   return overlay && ANALYSIS_MUTATORS.has(state) && state.get('provedRewrites') === overlay ? overlay : null;
+}
+
+export function committedRegionOverlay(state) {
+  const overlay = COMMITTED_REGION_OVERLAYS.get(state);
+  return overlay && ANALYSIS_MUTATORS.has(state) && state.get('provedRegions') === overlay ? overlay : null;
 }
 
 export function committedDceArtifact(state) {
@@ -294,6 +313,13 @@ function runPassTransactionCore(state, pass, context = {}, budget = {}) {
   // projection for the public ledger. Other pass results stay on the generic
   // untrusted PassResult snapshot path.
   const proofPass = phase8ProofApi?.PROOF_REWRITE_PASS;
+  const regionPass = phase8RegionProofApi?.REGION_ERASURE_PASS;
+  if (descriptor === regionPass) {
+    const failure = phase8RegionProofApi.regionAdmissionReason(rawResult, stagedWrites, descriptor, context);
+    if (failure) return refuse(failure);
+    result = phase8RegionProofApi.regionPublicationResult(rawResult);
+    if (result == null) return refuse('region-proof-publication-invalid');
+  } else if (stagedWrites.has('provedRegions')) return refuse('region-proof-pass-mismatch');
   if (descriptor === proofPass) {
     const proofFailure = phase8ProofApi.proofAdmissionReason(rawResult, stagedWrites, descriptor, context);
     if (proofFailure) return refuse(proofFailure);
@@ -319,7 +345,7 @@ function runPassTransactionCore(state, pass, context = {}, budget = {}) {
     return refuse(`result-descriptor-mismatch:${descriptor.id}`);
   }
   const policyFailure = rewritePolicyFailure(descriptor,result,
-    {required:context.requireRewritePolicy === true,proofPass:descriptor === proofPass});
+    {required:context.requireRewritePolicy === true,proofPass:descriptor === proofPass,regionPass:descriptor === regionPass});
   if (policyFailure) return refuse(policyFailure);
   // A contract violation is refused the same way a cancellation is: nothing
   // commits and the caller gets a reason. Throwing here instead would turn a
@@ -347,6 +373,10 @@ function runPassTransactionCore(state, pass, context = {}, budget = {}) {
     const finalProofFailure = phase8ProofApi.proofAdmissionReason(rawResult, stagedWrites, descriptor, context);
     if (finalProofFailure) return refuse(finalProofFailure);
   }
+  if (descriptor === regionPass) {
+    const failure = phase8RegionProofApi.regionAdmissionReason(rawResult, stagedWrites, descriptor, context);
+    if (failure) return refuse(failure);
+  }
 
   // Commit. Nothing above this line touched authoritative state.
   const mutators = analysisMutators(state);
@@ -363,6 +393,8 @@ function runPassTransactionCore(state, pass, context = {}, budget = {}) {
   } else if (actuallyInvalidated.includes('provedRewrites')) {
     COMMITTED_PROOF_OVERLAYS.delete(state);
   }
+  if (stagedWrites.has('provedRegions')) COMMITTED_REGION_OVERLAYS.set(state, stagedWrites.get('provedRegions'));
+  else if (actuallyInvalidated.includes('provedRegions')) COMMITTED_REGION_OVERLAYS.delete(state);
 
   return Object.freeze({
     committed: true,
