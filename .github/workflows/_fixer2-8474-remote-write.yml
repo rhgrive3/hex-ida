@@ -1,0 +1,54 @@
+name: Fixer2 8474 remote write
+
+on:
+  push:
+    branches:
+      - fix/issue-8474-arm64-xdata-unwind-codes
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.head_commit.message == 'chore(ci): stage fixer2-8474 remote write'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/issue-8474-arm64-xdata-unwind-codes
+          fetch-depth: 0
+
+      - name: Verify base and patch payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 943b13d5abc8c2aed2d489fd7eea2671761c8236 HEAD
+          echo '0f37cebdcc0a91885f53801a3cbcc42b341b2110a742b24572f2249d5daf4fdf  .fixer2-8474.patch' | sha256sum -c -
+          git apply --check .fixer2-8474.patch
+
+      - name: Apply and validate focused fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply .fixer2-8474.patch
+          node --check js/binary/pe-loader-core.js
+          node --check tests/issue-8474-pe-arm64-xdata-unwind-codes.test.mjs
+          node tests/issue-8474-pe-arm64-xdata-unwind-codes.test.mjs
+          node tests/pe-arm64-xdata-header-layout.test.mjs
+          node tests/binary-platform.mjs
+          test "$(git hash-object js/binary/pe-loader-core.js)" = '2216c50af1d0155a162fe0174d0080422cf726d4'
+          test "$(git hash-object tests/binary-platform.mjs)" = '5f03fa81cf860f6fd08b86e91a01a1f8a83e34f6'
+          test "$(git hash-object tests/issue-8474-pe-arm64-xdata-unwind-codes.test.mjs)" = '2e957d7ab9a5e1a03b241131b0f9f9a56ff53741'
+          test "$(git hash-object tests/pe-arm64-xdata-header-layout.test.mjs)" = 'a501d008f0dc5a1c063cb1fb4f7a3b1440e6cebe'
+
+      - name: Commit final tree and remove staging files
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .fixer2-8474.patch .github/workflows/_fixer2-8474-remote-write.yml
+          git config user.name 'Fixer 2 Binary'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix(pe): validate ARM64 xdata unwind-code streams (#8474)'
+          git push origin HEAD:fix/issue-8474-arm64-xdata-unwind-codes
