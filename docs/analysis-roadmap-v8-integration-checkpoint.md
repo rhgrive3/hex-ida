@@ -11,7 +11,8 @@ C4 は元の出力範囲の取得に加え、腕の全ブロック・辺・合�
 さらに、発行済みの構造記録を既存の実行器とソルバーへ接続し、非循環 CFG の入口から各腕への到達可能性を検証する準備処理を追加しました。
 到達不能な腕の候補は専用の `provedRegions` として既存 Phase 8 の一括受入処理へ接続しました。
 元の条件領域から最初の C AST への全ノードの対応付けも実装しました。入れ子と空の腕を保持し、元の IR・出力・コピー先の変更で記録を失効させます。
-後段の projection/recovery への対応記録の引継ぎ、表示条件式との意味の対応、PHI・削除元の provenance は未検証で、表示を削除する権限は発行していません。
+表示用 Phase 8 projection のコピー先への引継ぎも実装し、実際の共通式挿入と再実行を含めて対応を保持します。
+コピー前に AST を変更する recovery 各処理の引継ぎ、表示条件式との意味の対応、PHI・削除元の provenance は未検証で、表示を削除する権限は発行していません。
 領域の意味的な証明、PHI を含む変換受入は残っています。
 
 結合した入力:
@@ -6501,3 +6502,43 @@ Luna/max の独立レビューで、元の記録が関数入口等の IR envelop
 コピー前の変更も再発行できないように修正しました。予算 accessor が例外を投げる場合も表示処理を継続して記録を保留します。
 この修正の回帰 3 件を加え、producer/carrier 検査は 17 件通過しました
 （`c4-region-carrier-freshness-90ae1dea-df4d-4796-a263-894bc08f3c11.json`）。
+
+
+## 2026-09-13: C4 条件領域の表示 projection への引継ぎ
+
+`applyPhase8Projection` の実際の `body.map` で全ノードのコピー対応を記録し、
+`readProjectedConditionalRegions(program, ir)` で現在の生成元が発行した対応だけを取得します。
+通常の public facade の `renderProvenance:true` 経路でも、最初の C AST から表示用 AST への引継ぎを確認しました。
+対応記録を消費する場合は control node もコピーし、条件表示の書換えで元の C AST を変更しません。
+
+共通式の新しいノードは、既存 `shareProvedScalars` が実際に挿入する時点で、生成ノード・挿入先アンカー・既存の変換記録を保持します。
+分岐内・分岐外・入れ子の分岐内の実 CSE を検査し、必要な全領域/腕に挿入ノードが含まれることを確認しました。
+最終 body 全体を、実コピーと実挿入から得た順序で照合するため、未記録の増減・並べ替えを完全な対応と扱いません。
+領域の対応を text/row/index から後付けで推定する API は追加していません。
+
+再実行は最初の core carrier へ平坦化し、古い出力 snapshot の鎖を保持しません。
+過去 projection の private な記録と外側の projection/semanticAst/rewriteProof の同一性を確認し、
+偽造・変更済みの metadata から core carrier へ戻って再発行する経路を拒否します。
+元の C AST/IR と最終出力・挿入記録を観測し、全 callback 後に今回の入力/出力のデータ観測を再確認します。
+これは C AST のコピー/挿入対応であり、別途 semanticAst 全体の同値性や条件同値性を証明するものではありません。
+
+追加の表示経路・再実行・変更/偽造・予算/取消し・最終 callback 検査を含む22件が通過しました
+（`c4-region-projection-source-402b888d-faf2-409f-87e7-8e08e5156a0c.json`）。
+実 CSE の分岐内/外/入れ子行列も通過しました
+（`c4-region-projection-insertion-check-02ccd70f-7e34-475c-bb24-c7d37546abb4.json`）。
+この新しい結合行列は単純な繰り返し算術を使い、既存の8/16/32/64-bit MBA/CSE行列と予算は維持します。
+初期の新規 fixture では候補 query/全体 deadline が発生した記録を保持しています。
+新しい結合 query の全体予算は5秒、候補ごとの既存上限は変更していません。
+
+変更対象の公開 PR 実ファイル一覧を147件照合し、今回の projection と2つのtestに他PRとのパス重複はありませんでした
+（`c4-region-adoption-20260912/region-projection-open-pr-files.json`）。
+ユーザー提供の C1/C3 最終zipは別途差分監査中で、このC4追加に取り込み済みとはしていません。
+
+`transformAuthorization:false` / `conditionValidation:'required'` は維持します。
+元の条件式の優先順位反例、コピー前 recovery の記録、生存 PHI と表示上の代入、削除元 provenance は残件です。
+本項はFR-C4-02A/04Bや解析md全体の完了・統合受入・release許可ではありません。
+
+関連8ファイルの130件はすべて通過しました
+（`c4-region-projection-related-4c02330a-d75f-4f16-a53f-f3a5e9bc7f2a.json`）。
+この選択には既存の4幅MBA/CSE・対照・再実行と、分岐/呼出し/store/領域証明の回帰を含みます。
+コミット後の正確なSHAでの検査、生成物の再ビルド差分、独立レビューと公開結果は永続 publication 記録に保存します。

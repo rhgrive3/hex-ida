@@ -3,6 +3,10 @@ import test from 'node:test';
 import { fixture } from '../helpers/ir-fixtures.mjs';
 import { identity } from '../helpers/proof-fixtures.mjs';
 import { enhanceSemanticDecompilation, optimizeSemanticDecompilation } from '../../../js/decompiler/pipeline.js';
+import { decompileSemantic } from '../../../js/decompiler/semantic-core.js';
+import { readCopiedConditionalRegions } from '../../../js/decompiler/pipeline-core.js';
+import { applyPhase8Projection, readProjectedConditionalRegions } from '../../../js/decompiler/phase8/projection.js';
+import { analysis } from './fixture.js';
 import { evaluateExpression } from '../../../js/decompiler/verify/equivalence.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -30,7 +34,7 @@ function checkPrintedC(result, bits, names, values) {
   assert.equal(executed.status, 0, executed.stderr || 'actual printed C changed a stored value');
 }
 
-function repeatedFixture(bits = 8, { differentInputs = false, separateBlocks = false, nameCollision = false } = {}) {
+function repeatedFixture(bits = 8, { differentInputs = false, separateBlocks = false, nameCollision = false, conditional = false } = {}) {
   const f = fixture('proved-cse'); f.block(0);
   const a = f.opaque(bits), b = f.opaque(bits);
   a.index = 0; a.reg = 'x0'; b.index = 1; b.reg = 'x1';
@@ -39,6 +43,12 @@ function repeatedFixture(bits = 8, { differentInputs = false, separateBlocks = f
   const targets = [];
   const zero = f.constant(0n, bits);
   for (let i = 0; i < 2; i++) {
+    if (conditional) {
+      // The region handoff exercises a real inserted computation; the existing
+      // width/MBA matrix below remains responsible for CSE arithmetic coverage.
+      targets.push(f.binary('add', f.binary('add', a, f.constant(1n, bits), bits), zero, bits));
+      continue;
+    }
     const other = i ? c : b;
     const xor = f.binary('xor', a, other, bits), and = f.binary('and', a, other, bits);
     const sum = f.binary('add', xor, and, bits);
@@ -46,9 +56,18 @@ function repeatedFixture(bits = 8, { differentInputs = false, separateBlocks = f
     // adoption, even if the inner expression is already in extraction order.
     targets.push(f.binary('add', sum, zero, bits));
   }
+  if (conditional && conditional !== 'outside') {
+    f.conditionalBranch(a, 1, conditional === 'nested' ? 4 : 2); f.block(1);
+    if (conditional === 'nested') { f.conditionalBranch(a, 2, 3); f.block(2); }
+  }
   f.store(targets[0], { locKind:'global', locKey:'global:32768' });
   if (separateBlocks) { f.branch(1); f.block(1, { pred:[0] }); }
   f.store(targets[1], { locKind:'global', locKey:'global:32776' });
+  if (conditional === 'nested') { f.branch(5); f.block(3); f.branch(5); f.block(4); f.branch(5); f.block(5); }
+  else if (conditional) {
+    if (conditional === 'outside') { f.conditionalBranch(a, 1, 2); f.block(1); }
+    f.branch(3); f.block(2); f.branch(3); f.block(3);
+  }
   f.ret();
   const ir = f.build(); ir.instructions = ir.blocks.flatMap(block => block.insts);
   for (const [index, store] of ir.instructions.filter(inst => inst.op === 'store').entries()) {
@@ -56,20 +75,64 @@ function repeatedFixture(bits = 8, { differentInputs = false, separateBlocks = f
     Object.assign(store.extra.memoryAccess, { volatility:false, atomic:false, ordering:'none', endian:'little' });
   }
   ir.instructions.forEach((inst, index) => { inst.id = index + 100; inst.row = index; inst.address = 0x6000n + BigInt(index * 4); });
-  if (separateBlocks) {
-    ir.instructions.find(inst => inst.op === 'br').extra = { target:ir.blocks[1].insts[0].address };
+  if (separateBlocks || conditional) {
+    if (separateBlocks) ir.instructions.find(inst => inst.op === 'br').extra = { target:ir.blocks[1].insts[0].address };
+    if (conditional) for (const block of ir.blocks) {
+      const term = block.insts.at(-1);
+      if (term.op === 'br' || term.op === 'cbr') term.extra = {
+        kind:term.op === 'cbr' ? 'cbnz' : 'b', targetBlock:block.succ[0], target:ir.blocks[block.succ[0]].insts[0].address,
+      };
+    }
     for (const block of ir.blocks) { block.startRow = block.insts[0].row; block.endRow = block.insts.at(-1).row; }
   }
   ir.values.forEach(value => { value.signed = false; });
-  const seed = { semantic:true, ir, types:{ values:new Map(), locations:new Map() },
+  const model = conditional ? { name:'proved-cse-region', instructions:ir.instructions, calls:[] } : null;
+  const seed = conditional ? decompileSemantic(model, { ir, deterministicTransforms:true, phase8PrepareRegionProof:true })
+    : { semantic:true, ir, types:{ values:new Map(), locations:new Map() },
     lines:ir.instructions.filter(inst => ['store', 'ret'].includes(inst.op)).map(inst => ({
       kind:'stmt', indent:1, text:inst.op === 'ret' ? 'return;' : 'old = value;', row:inst.row, addr:inst.address,
     })), warnings:[], evidence:[], coverage:{ mode:'structured' }, summary:'' };
-  const result = enhanceSemanticDecompilation(seed, null, { phase8PrepareProof:true, deterministicTransforms:true,
+  const result = enhanceSemanticDecompilation(seed, model, { phase8PrepareProof:true, deterministicTransforms:true,
     decompilerTimeBudgetMs:1000, ...(nameCollision ? { argNames:['hex_cse_0', 'a2'] } : {}) });
   return { ir, targets, a, b, result, options:{ identity:{ ...identity, addressSpace:'memory' }, abiId:'generic-v1', memory:{ addressBits:32 },
     targets, timeoutMs:1000, backendTier:'tiered', candidateStrategy:'equality-saturation' } };
 }
+
+test('real scalar CSE insertion retains its writer inside, outside and within nested conditional regions', async () => {
+ for (const location of ['inside', 'outside', 'nested']) {
+  const f = repeatedFixture(8, { conditional:location });
+  const original = readCopiedConditionalRegions(f.result.cAst, f.ir);
+  assert.equal(original?.regions.length, location === 'nested' ? 2 : 1, 'real initial conditional emitter must issue the predecessor');
+  const result = await optimizeSemanticDecompilation(f.result, { ...f.options, timeoutMs:5000 });
+  assert.equal(result.proofOptimization.status, 'complete', `${location}: ${result.proofOptimization.reason}`);
+  const binding = result.cAst.body.find(node => node.semantic?.op === 'cse-binding');
+  assert.ok(binding, 'the positive must actually insert a proved CSE node');
+  const history = readProjectedConditionalRegions(result.cAst, f.ir);
+  assert.equal(history?.completeness, 'complete');
+  const inserted = history.insertions.find(item => item.node === binding);
+  assert.ok(inserted); assert.equal(inserted.record.kind, 'proved-scalar-cse');
+  assert.ok(result.cAst.body.includes(inserted.before));
+  for (const region of history.regions) {
+    const prior = original.regions.find(item => item.original === region.original);
+    assert.ok(prior);
+    assert.equal(region.nodes.includes(binding), location !== 'outside');
+    assert.equal(region.arms.find(arm => arm.role === 'yes').nodes.includes(binding), location !== 'outside');
+    assert.equal(region.arms.find(arm => arm.role === 'no').nodes.includes(binding), false);
+    if (location !== 'outside') {
+      const index = region.nodes.indexOf(binding);
+      assert.equal(region.nodes[index + 1], inserted.before);
+    }
+    assert.equal(region.nodes.length, prior.nodes.length + (location === 'outside' ? 0 : 1));
+  }
+  assert.equal(history.transformAuthorization, false);
+  const replay = applyPhase8Projection(result, analysis(), { preserveInitialSpelling:true });
+  const next = readProjectedConditionalRegions(replay.cAst, f.ir);
+  assert.equal(next?.completeness, 'complete');
+  assert.equal(next.insertions.length, 1);
+  assert.notEqual(next.insertions[0].node, binding);
+  assert.equal(next.regions[0].nodes.includes(next.insertions[0].node), location !== 'outside');
+ }
+});
 
 test('C4-03 proved repeated scalars are actually bound once and reused by both rendered stores', async t => {
  const rows = [];

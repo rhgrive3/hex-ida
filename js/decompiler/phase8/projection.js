@@ -1,6 +1,6 @@
 import { isProducerProjection, producerExpressionToken, readProducerInputExpressions, producerUsesProofOnlyRewrites } from '../pipeline.js';
 import { readExpressionHistoryConsumer, readStoreSpellingProducer, readInitialControlConsumer, readCallResultSpellingProducer,
-  expressionHistoryRecordCount } from '../pipeline-core.js';
+  expressionHistoryRecordCount, readCopiedConditionalRegions } from '../pipeline-core.js';
 import { expressionOriginHistory } from '../rewrite/engine.js';
 import { readStackPhiHistoryConsumer } from '../passes/stack-phi-recovery.js';
 import { readStackReturnHistoryConsumer } from '../passes/stack-return-recovery.js';
@@ -29,6 +29,114 @@ const controlConsumerSources = new WeakMap();
 // Ordinary result wrappers may retain this AST; copied/replaced AST data cannot
 // manufacture the private transition that carries the original consumers.
 const projectionHistories = new WeakMap();
+const projectedConditionalRegions = new WeakMap();
+
+/** Actual projection handoff only; neither condition equivalence nor erasure. */
+export function readProjectedConditionalRegions(program, ir) {
+  const entry = projectedConditionalRegions.get(program);
+  try { return entry?.ir === ir && entry.isCurrent() ? entry.history : null; }
+  catch { return null; }
+}
+
+function beginRegionProjection(result, opts) {
+  try {
+    const program = result.cAst, ir = result.ir;
+    const projected = readProjectedConditionalRegions(program, ir);
+    const prior = projectedConditionalRegions.get(program);
+    const hasPrior = projectionHistories.has(program) || result.phase8Projection != null || prior != null;
+    if (hasPrior && (!projected || prior.projection !== result.phase8Projection
+        || prior.semanticAst !== result.semanticAst || prior.rewriteProof !== result.rewriteProof)) return null;
+    const history = projected || readCopiedConditionalRegions(program, ir);
+    if (!history) return null;
+    const cap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
+    const requested = opts.phase8RegionCarrierBudget;
+    const nodes = cap(requested?.maxNodes, 10000), regions = cap(requested?.maxRegions, 256);
+    const references = cap(requested?.maxReferences, 40000), edges = cap(requested?.maxEdges, PROJECTION_LIMITS.edges);
+    if (!edges || program.body.length > nodes || history.regions.length > regions) return null;
+    const root = projected ? projectedConditionalRegions.get(program).root : { program, ir, history };
+    const inputObservation = observeProjectionData([program], opts.shouldAbort);
+    if (inputObservation.metrics.edges >= edges) return null;
+    const projection = result.phase8Projection, semanticAst = result.semanticAst, rewriteProof = result.rewriteProof;
+    const ownerCurrent = () => result.cAst === program && result.ir === ir && result.phase8Projection === projection
+      && result.semanticAst === semanticAst && result.rewriteProof === rewriteProof;
+    return { root, history, nodes, references, edges:edges - inputObservation.metrics.edges, inputObservation,
+      copies:new Map(), insertions:[], failed:false, ownerCurrent,
+      predecessorCurrent:() => ownerCurrent()
+        && (projected ? readProjectedConditionalRegions(program, ir)
+          : readCopiedConditionalRegions(program, ir)) === history };
+  } catch { return null; }
+}
+
+function projectedRegionCurrent(root, observation, opts) {
+  return () => !opts.shouldAbort?.()
+    && readCopiedConditionalRegions(root.program, root.ir) === root.history && observation.matches();
+}
+
+function recordRegionInsertion(copy, node, before, record) {
+  if (!copy || copy.failed) return;
+  if (copy.copies.size + copy.insertions.length >= copy.nodes) { copy.failed = true; return; }
+  // Called only at the real CSE insertion, with the actual new node and anchor.
+  copy.insertions.push(Object.freeze({ node, before, record }));
+}
+
+function prepareRegionProjection(copy, program, opts) {
+  if (!copy || copy.failed) return null;
+  try {
+    let remaining = copy.references;
+    const take = (count = 1) => { if ((remaining -= count) < 0) throw new Error('region-projection-reference-budget'); };
+    const mapped = node => {
+      take();
+      if (!copy.copies.has(node)) throw new Error('region-projection-copy-missing');
+      return copy.copies.get(node);
+    };
+    const before = new Map();
+    for (const inserted of copy.insertions) {
+      take();
+      if (!before.has(inserted.before)) before.set(inserted.before, []);
+      before.get(inserted.before).push(inserted.node);
+    }
+    const span = nodes => Object.freeze(nodes.flatMap(node => {
+      const next = mapped(node), inserted = before.get(next) || [];
+      take(inserted.length);
+      return [...inserted, next];
+    }));
+    const regions = Object.freeze(copy.history.regions.map(region => Object.freeze({
+      original:region.original, record:region.record,
+      header:mapped(region.header), separator:region.separator === null ? null : mapped(region.separator),
+      close:mapped(region.close), nodes:span(region.nodes),
+      arms:Object.freeze(region.arms.map(arm => Object.freeze({ original:arm.original, role:arm.role, nodes:span(arm.nodes) }))),
+    })));
+    const insertions = Object.freeze([...(copy.history.insertions || []).map(item => Object.freeze({
+      node:mapped(item.node), before:mapped(item.before), record:item.record,
+    })), ...copy.insertions]);
+    // Verify completeness/order against the actual final body. This check does
+    // not infer a mapping: every pair and insertion was observed at its writer.
+    if (program.body.length > copy.nodes) return null;
+    const expectedBody = [];
+    for (const next of copy.copies.values()) {
+      const inserted = before.get(next) || [];
+      take(1 + inserted.length);
+      expectedBody.push(...inserted, next);
+    }
+    if (expectedBody.length !== program.body.length
+        || expectedBody.some((node, index) => program.body[index] !== node)) return null;
+    const positions = new Map(program.body.map((node, index) => [node, index]));
+    if (positions.size !== program.body.length || regions.some(region => {
+      const start = positions.get(region.header);
+      return start == null || region.nodes.some((node, index) => program.body[start + index] !== node)
+        || region.nodes.at(-1) !== region.close;
+    }) || insertions.some(item => !positions.has(item.node) || !positions.has(item.before))) return null;
+    const observation = observeProjectionData([program, insertions], opts.shouldAbort);
+    if (observation.metrics.edges > copy.edges) return null;
+    const history = Object.freeze({ version:1, scope:'original-to-projected-conditional-regions',
+      completeness:'complete', transformAuthorization:false, conditionValidation:'required', regions, insertions });
+    const root = copy.root;
+    // Flatten replay to the initial producer. The predecessor is revalidated
+    // at publication; future reads retain no chain of old output snapshots.
+    const isCurrent = projectedRegionCurrent(root, observation, opts);
+    return { ir:root.ir, root, history, isCurrent, observation };
+  } catch { return null; }
+}
 // Output snapshots retain every mutable field and exact immutable descriptor
 // reference. Data certification is not a producer token or a render binding.
 const observeProjectionData = (roots, shouldAbort = null) => createProjectionIrObserver().captureCertifiedData(roots, shouldAbort);
@@ -368,7 +476,7 @@ function refreshMetrics(result, semanticAst, printed, records) {
 // existing solver admission boundary. GVN names/hashes and expression text are
 // not equivalence authority. This initial adoption is local to one straight-line
 // block and immutable entry inputs; it never removes canonical instructions.
-function shareProvedScalars(result, bindings, consumers, records, shouldAbort) {
+function shareProvedScalars(result, bindings, consumers, records, shouldAbort, regionCopy) {
   const body = result.cAst.body;
   const ordered = result.ir.instructions ?? [];
   if (body.length > 4096 || bindings.size > 32 || ordered.length > PROJECTION_LIMITS.nodes) return;
@@ -435,6 +543,7 @@ function shareProvedScalars(result, bindings, consumers, records, shouldAbort) {
         records:Object.freeze([...item.consumer.records, record]) });
     }
     body.splice(group.items[0].index, 0, node);
+    recordRegionInsertion(regionCopy, node, group.items[0].node, record);
     consumers.splice(group.items[0].index, 0, consumer);
     bindings.set(node.semantic.expression, group.binding);
     records.push(record);
@@ -497,6 +606,7 @@ function deadCallResultPlans(result, analysis, consumers, shouldAbort) {
 export function applyPhase8Projection(result, analysis, opts = {}) {
   if (!result?.semantic || !result.semanticAst || !result.cAst || !analysis) return result;
   const original = result;
+  const regionCopy = beginRegionProjection(result, opts);
   const scopedCapture = beginScopedTransformCapture(result, opts.scopedTransformEvidence);
   const renderOnly = opts.preserveInitialSpelling === true && opts.phase8RewritePlan == null;
   const proofOnly = opts.phase8ProofOnlyRewrites === true || producerUsesProofOnlyRewrites(original);
@@ -541,8 +651,15 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   // update. Initial controls retain their existing exact text-write handoff;
   // proof/DCE transactions isolate those nodes too for cancellation rollback.
   result = {...result,semanticAst:{...result.semanticAst},cAst:{...result.cAst,
-    body:(result.cAst.body ?? []).map(node => !proofRequested && !dcePlans.length && node.semantic?.op === 'control-render'
-      ? node : {...node,semantic:node.semantic ? {...node.semantic} : node.semantic})}};
+    body:(result.cAst.body ?? []).map(node => {
+      const next = !regionCopy && !proofRequested && !dcePlans.length && node.semantic?.op === 'control-render'
+        ? node : {...node,semantic:node.semantic ? {...node.semantic} : node.semantic};
+      if (regionCopy && !regionCopy.failed) {
+        if (regionCopy.copies.has(node) || regionCopy.copies.size >= regionCopy.nodes) regionCopy.failed = true;
+        else regionCopy.copies.set(node, next);
+      }
+      return next;
+    })}};
   for (const key of ['values','stores','outputs','conditions']) result.semanticAst[key] =
     (original.semanticAst[key] ?? []).map(item=>({...item}));
   const records = [], replacements = new Map(), memo = new Map(), proofExpressions = new Map(), proofRecords = new Map();
@@ -796,7 +913,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
 
   if (spellingRecords.length || controlRecords.length || dceRecords.length) result = { ...result, rewriteProof:[...(result.rewriteProof || []), ...spellingRecords, ...controlRecords, ...dceRecords] };
 
-  if (proved && (!hasPriorHistory || inherited)) shareProvedScalars(result, proofExpressions, expressionConsumers, records, opts.shouldAbort);
+  if (proved && (!hasPriorHistory || inherited)) shareProvedScalars(result, proofExpressions, expressionConsumers, records, opts.shouldAbort, regionCopy);
 
   if (dceRecords.length && !currentDce()) return original;
   if (proofRequested && (opts.shouldAbort?.() || !isProducerProjection(original) || proved && !readProvedRewrites(analysis,proofContext))) return original;
@@ -896,6 +1013,16 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     projectionHistories.set(result.cAst, { ...pendingHistory, projection:withLines.phase8Projection });
   }
   const scopedTransforms = finishScopedTransformCapture(scopedCapture, withLines);
+  const regionHistory = prepareRegionProjection(regionCopy, result.cAst, opts);
+  // All external cancellation callbacks and the complete projection run before
+  // publication. A changed predecessor cannot be refreshed by copying it.
+  try {
+    if (regionHistory && regionHistory.isCurrent() && regionCopy.predecessorCurrent()
+        && regionCopy.ownerCurrent() && regionCopy.inputObservation.matches() && regionHistory.observation.matches()) {
+      projectedConditionalRegions.set(result.cAst, Object.freeze({ ...regionHistory,
+        projection:withLines.phase8Projection, semanticAst:withLines.semanticAst, rewriteProof:withLines.rewriteProof }));
+    }
+  } catch { /* Optional observation never changes the ordinary output. */ }
   return {
     ...withLines,
     renderProvenance,

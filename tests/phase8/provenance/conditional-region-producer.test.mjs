@@ -5,6 +5,9 @@ import { decompileSemantic, readSemanticConditionalRegions, readSemanticConditio
   readSemanticControlLineHistory } from '../../../js/decompiler/semantic-core.js';
 import { enhanceSemanticDecompilation, readExpressionHistoryConsumer,
   readCopiedConditionalRegions } from '../../../js/decompiler/pipeline-core.js';
+import { enhanceSemanticDecompilation as enhancePublic } from '../../../js/decompiler/pipeline.js';
+import { applyPhase8Projection, readProjectedConditionalRegions } from '../../../js/decompiler/phase8/projection.js';
+import { analysis } from './fixture.js';
 
 function render(kind = 'diamond', options = {}) {
   const f = fixture('region'); f.block(0);
@@ -296,4 +299,107 @@ test('throwing carrier budget access withholds optional observation and preserve
   assert.equal(readCopiedConditionalRegions(output.cAst, input.ir), null);
   const ordinary = enhanceSemanticDecompilation(input.seed, input.model, input.opts);
   assert.equal(output.pseudocode, ordinary.pseudocode);
+});
+
+test('actual public presentation and explicit projection carry nested and empty regions', () => {
+  for (const kind of ['plain', 'diamond', 'one-sided', 'nested']) {
+    const input = copiedRegion(kind), before = structuredClone(input.output.cAst);
+    for (const preserveInitialSpelling of [true, false]) {
+      const projected = applyPhase8Projection(input.output, analysis(), { preserveInitialSpelling });
+      const history = readProjectedConditionalRegions(projected.cAst, input.ir);
+      assert.equal(history?.completeness, 'complete', kind);
+      assert.equal(history.transformAuthorization, false);
+      assert.equal(history.conditionValidation, 'required');
+      assert.equal(history.regions.length, input.history.regions.length);
+      for (const region of history.regions) {
+        const prior = input.history.regions.find(item => item.original === region.original);
+        const expected = node => projected.cAst.body[input.output.cAst.body.indexOf(node)];
+        assert.deepEqual(region.nodes, prior.nodes.map(expected));
+        assert.equal(region.header, expected(prior.header));
+        assert.ok(region.nodes.every(node => !input.output.cAst.body.includes(node)));
+        for (const arm of region.arms) assert.deepEqual(arm.nodes, prior.arms.find(item => item.original === arm.original).nodes.map(expected));
+      }
+      assert.deepEqual(input.output.cAst, before, 'projection leaves the actual predecessor untouched');
+      assert.equal(readCopiedConditionalRegions(input.output.cAst, input.ir), input.history);
+    }
+    const publicResult = enhancePublic(input.seed, input.model, { ...input.opts, renderProvenance:true, decompilerTimeBudgetMs:5000 });
+    assert.equal(readProjectedConditionalRegions(publicResult.cAst, input.ir)?.completeness, 'complete', kind);
+  }
+});
+
+test('projection replay preserves original region identity without a previous-output chain', () => {
+  const input = copiedRegion('nested');
+  let result = applyPhase8Projection(input.output, analysis(), { preserveInitialSpelling:true });
+  const first = result;
+  for (let i = 0; i < 8; i++) {
+    result = applyPhase8Projection(result, analysis(), { preserveInitialSpelling:true });
+    const history = readProjectedConditionalRegions(result.cAst, input.ir);
+    assert.equal(history?.completeness, 'complete');
+    assert.deepEqual(history.regions.map(region => region.original), input.history.regions.map(region => region.original));
+    assert.equal(result.pseudocode, first.pseudocode);
+  }
+  first.cAst.body[0].text += ' changed historical copy';
+  assert.equal(readProjectedConditionalRegions(first.cAst, input.ir), null);
+  assert.ok(readProjectedConditionalRegions(result.cAst, input.ir), 'a completed owned copy discharges the old output snapshot');
+  input.ir.entry = 1;
+  assert.equal(readProjectedConditionalRegions(result.cAst, input.ir), null, 'original canonical owner remains live');
+});
+
+test('copied, stale or forged projection metadata cannot mint or refresh a carrier', () => {
+  for (const mutation of [
+    result => { result.cAst.body[0].text += ' '; },
+    result => { result.cAst.body = [...result.cAst.body]; },
+    result => { result.phase8Projection = { ...result.phase8Projection }; },
+    result => { result.semanticAst = { ...result.semanticAst }; },
+    result => { result.rewriteProof = [...result.rewriteProof]; },
+  ]) {
+    const input = copiedRegion();
+    const result = applyPhase8Projection(input.output, analysis(), { preserveInitialSpelling:true });
+    assert.ok(readProjectedConditionalRegions(result.cAst, input.ir));
+    assert.equal(readProjectedConditionalRegions({ ...result.cAst }, input.ir), null);
+    assert.equal(readProjectedConditionalRegions(result.cAst, { ...input.ir }), null);
+    mutation(result);
+    const replay = applyPhase8Projection(result, analysis(), { preserveInitialSpelling:true });
+    assert.equal(readProjectedConditionalRegions(replay.cAst, input.ir), null);
+  }
+  const input = copiedRegion();
+  input.output.phase8Projection = { history:{ completeness:'complete' } };
+  const forged = applyPhase8Projection(input.output, analysis(), { preserveInitialSpelling:true });
+  assert.equal(readProjectedConditionalRegions(forged.cAst, input.ir), null);
+});
+
+test('projection carrier budgets and cancellation withhold mapping without dropping output', () => {
+  for (const budget of [{ maxRegions:0 }, { maxNodes:0 }, { maxReferences:0 }, { maxEdges:0 }, { maxEdges:1 },
+    { get maxNodes() { throw new Error('budget'); } }]) {
+    const input = copiedRegion();
+    const output = applyPhase8Projection(input.output, analysis(), { preserveInitialSpelling:true, phase8RegionCarrierBudget:budget });
+    assert.equal(readProjectedConditionalRegions(output.cAst, input.ir), null);
+    assert.equal(output.pseudocode, input.output.pseudocode);
+  }
+  const input = copiedRegion(); let cancelled = false;
+  const result = applyPhase8Projection(input.output, analysis(), { preserveInitialSpelling:true, shouldAbort:() => cancelled });
+  assert.ok(readProjectedConditionalRegions(result.cAst, input.ir)); cancelled = true;
+  assert.equal(readProjectedConditionalRegions(result.cAst, input.ir), null);
+});
+
+test('a final replay callback cannot refresh a mutated predecessor into a carrier', () => {
+  const prepare = () => {
+    const input = copiedRegion();
+    return { ...input, first:applyPhase8Projection(input.output, analysis(), { preserveInitialSpelling:true }) };
+  };
+  let calls = 0;
+  const baseline = prepare();
+  const result = applyPhase8Projection(baseline.first, analysis(), { preserveInitialSpelling:true, shouldAbort:() => { calls++; return false; } });
+  const lastCall = calls;
+  assert.ok(readProjectedConditionalRegions(result.cAst, baseline.ir));
+  assert.ok(lastCall > 1);
+  for (const at of [lastCall - 1, lastCall]) {
+    const input = prepare(); let count = 0, mutated = false;
+    const replay = applyPhase8Projection(input.first, analysis(), { preserveInitialSpelling:true, shouldAbort:() => {
+      if (++count === at) { input.first.cAst.body[0].text += ' stale'; mutated = true; }
+      return false;
+    } });
+    assert.equal(mutated, true, `callback ${at} must actually run`);
+    assert.equal(readProjectedConditionalRegions(replay.cAst, input.ir), null);
+  }
 });
