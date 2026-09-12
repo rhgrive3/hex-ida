@@ -12,10 +12,44 @@ export const MANAGED_BRIDGE_VERSION = legacy.MANAGED_BRIDGE_VERSION;
 export const queryManagedSymbolicVerification = legacy.queryManagedSymbolicVerification;
 export const queryManagedRuntimeProvider = legacy.queryManagedRuntimeProvider;
 export const buildManagedTypeConstraintGraph = legacy.buildManagedTypeConstraintGraph;
+
+const UNREPRESENTABLE_EFFECT_REASON = 'managed-effect-shape-unrepresentable';
+
+function effectRepresentabilityGap(bundle) {
+  const memory = bundle.memoryEffects?.length ?? 0;
+  const calls = bundle.callEffects?.length ?? 0;
+  const control = bundle.controlEffects?.length ?? 0;
+  const categories = [];
+  if (memory > 0) categories.push('memory');
+  if (calls > 0) categories.push('calls');
+  if (control > 0) categories.push('control');
+  return calls > 1 || control > 1 || categories.length > 1 ? categories : null;
+}
+
+function maskUnrepresentableEffects(value) {
+  let changed = false;
+  const bundles = value.bundles.map((bundle) => {
+    const categories = effectRepresentabilityGap(bundle);
+    if (!categories) return bundle;
+    changed = true;
+    return {
+      ...bundle,
+      completeness: 'unknown',
+      unknownEffects: [
+        { reason: UNREPRESENTABLE_EFFECT_REASON, categories },
+        ...(bundle.unknownEffects ?? []),
+      ],
+    };
+  });
+  if (!changed) return value;
+  return { ...value, bundles, aggregateCompleteness: 'partial' };
+}
+
 export function lowerVMEffectsToSemanticIr(value, options = {}) {
   assertVMEffectFunctionBundleOwnership(value);
-  const lowered = overlayJvmControlLowering(value, lowerCore(value, options), options);
-  return overlayDexLowering(value, lowered);
+  const representable = maskUnrepresentableEffects(value);
+  const lowered = overlayJvmControlLowering(representable, lowerCore(representable, options), options);
+  return overlayDexLowering(representable, lowered);
 }
 
 function ensureLowered(value, options) { return value && Array.isArray(value.bundles) ? lowerVMEffectsToSemanticIr(value, options) : value; }
