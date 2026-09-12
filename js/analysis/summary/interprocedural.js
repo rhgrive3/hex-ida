@@ -25,6 +25,13 @@
 
 import { createAnalysisStatus, mergeAnalysisStatus, weakestCompleteness } from '../status.js';
 import { mergeOriginSets } from '../../core/identity/origin.js';
+import { deepFreeze as deepFreezeSummaryView, stableDigest as summaryStableDigest, createEntityId as summaryEntityId } from '../../core/identity/index.js';
+import { assertWorldScope as assertSummaryWorld, assertAssumptionSet as assertSummaryAssumptions } from '../../core/identity/world.js';
+import { assertScopedAnalysisWork as assertSummaryWork, workStopStatus as summaryWorkStopStatus, AnalysisWorkStopped as SummaryWorkStopped } from '../../core/budgets/scoped-work.js';
+import { ResourceBudget as SummaryResourceBudget, BudgetExceededError as SummaryBudgetExceededError } from '../../core/budgets/index.js';
+import { snapshotContractData as strictSummaryData, recordFields as strictSummaryFields, exactInteger as strictSummaryInteger,
+  exactString as strictSummaryString, stringSet as strictSummaryStrings } from '../../core/identity/structured.js';
+import { summaryIdentityMatches as summaryIdentityMatchesForDemand } from './contract.js';
 import {
   EFFECT_SOURCES,
   createFunctionSummary,
@@ -741,4 +748,278 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     semanticFacts: local.semanticFacts,
     status: calleeStatuses.length ? mergeAnalysisStatus(localStatus, calleeStatuses) : localStatus,
   });
+}
+
+/* SCPA demand execution: same transfer function, separately owned publication. */
+export const DEMAND_SUMMARY_SESSION_VERSION = '1.0.0';
+const DEMAND_SUMMARY_OUTPUT_BYTES = 2 * 1024 * 1024;
+const DEMAND_SUMMARY_OUTPUT_ROWS = 64;
+const DEMAND_SUMMARY_TOTAL_LIMITS = Object.freeze({ workUnits: 2000000, residentBytes: 32 * 1024 * 1024,
+  bytesRead: 64 * 1024 * 1024, calls: 4096, nodes: 65536, edges: 262144, results: 4096,
+  artifactsMaterialized: 1024, pagesFetched: 4096, queueOperations: 1000000, transfers: 32768, steps: 128 });
+
+/**
+ * A single-writer, resumable execution of this owner's SCC transfer. Optimistic
+ * recursive states are PRIVATE. A pause between two members of an SCC exposes
+ * none of that SCC, unlike copying the old solver's working map mid-iteration.
+ * Session checkpoints are diagnostic/restart hints, never canonical summaries.
+ *
+ * v1 is deliberately context-insensitive. Context specialization needs actual
+ * argument/object substitution by this owner, not a new label on the same fact.
+ */
+export class DemandSummarySession {
+  #world; #assumptions; #snapshotId; #limits; #locals; #models; #components;
+  #successors; #settled = new Map(); #active = null; #component = 0;
+  #iterations = 0; #transfers = 0; #busy = false; #closed = false; #id;
+  #assertCurrent; #roots; #inputDigest; #statusFactory;
+  #ledger; #terminalReason = null; #settledSizes = new Map(); #settledDigests = new Map();
+
+  constructor(token, state) {
+    if (token !== DEMAND_SUMMARY_CONSTRUCTOR) fail('demand-summary-use-prepare');
+    this.#world = state.world; this.#assumptions = state.assumptions;
+    this.#snapshotId = state.snapshotId; this.#limits = state.limits;
+    this.#locals = state.locals; this.#models = state.models;
+    this.#components = state.components; this.#successors = state.successors;
+    this.#roots = state.roots; this.#inputDigest = state.inputDigest;
+    this.#assertCurrent = state.assertCurrent; this.#id = state.id; this.#ledger = state.ledger;
+    this.#statusFactory = (completeness, stopReason) => createAnalysisStatus({
+      snapshotId: state.snapshotId, analyzerId: INTERPROCEDURAL_ANALYZER_ID,
+      analyzerVersion: INTERPROCEDURAL_ANALYZER_VERSION, completeness,
+      budgetClass: 'interactive', stopReason,
+    });
+  }
+  get id() { return this.#id; }
+  get done() { return this.#component >= this.#components.length; }
+  get resumable() { return !this.#closed && !this.done && this.#terminalReason === null; }
+  #consume(resource, amount = 1) {
+    try { this.#ledger.consume(resource, amount); }
+    catch (error) {
+      if (error instanceof SummaryBudgetExceededError) this.#terminalReason = `session-${resource}-budget`;
+      throw error;
+    }
+  }
+  #charge(work, resource, amount = 1) {
+    // Separate per-invocation and lifetime scopes both use ResourceBudget.
+    // The lifetime ledger cannot be reset by consuming a new continuation.
+    work.charge(resource, amount); this.#consume(resource, amount);
+  }
+  #current() {
+    if (this.#closed) throw new Error('demand-summary-session-closed');
+    // A host closure checks immutable input identities/negative-dependency
+    // epochs. It is not supplied over the AI or plugin RPC interface.
+    if (this.#assertCurrent && this.#assertCurrent() !== true) {
+      this.close(); throw new Error('demand-summary-input-stale');
+    }
+  }
+  #beginComponent() {
+    const members = this.#components[this.#component];
+    const activeValues = new Map();
+    const solved = { get: (id) => activeValues.get(id) ?? this.#settled.get(id) };
+    this.#active = { members, values: activeValues, solved, digests: new Map(), sizes: new Map(),
+      position: 0, iteration: 1, changed: false, conservative: false,
+      recursive: members.length > 1 || this.#successors.get(members[0]).includes(members[0]) };
+    this.#iterations++;
+  }
+  #publishComponent() {
+    const active = this.#active;
+    // No await, event-loop yield or consumer callback in this atomic commit.
+    for (const id of active.members) {
+      this.#settled.set(id, active.values.get(id));
+      this.#settledDigests.set(id, active.digests.get(id));
+      this.#settledSizes.set(id, active.sizes.get(id));
+    }
+    this.#active = null; this.#component++;
+  }
+  #view(executionStatus, cost) {
+    // A diagnostic result must remain bounded even after timeout. Digests and
+    // retained payload sizes were computed before publication, not in this
+    // finalizer; no expensive stringification occurs after a cancelled step.
+    const values = [], omittedFunctionIds = [];
+    let outputBytes = 0;
+    let completeness = this.done ? 'complete' : 'partial';
+    let reason = this.done ? null : 'dependency-missing';
+    for (const [functionId, summary] of this.#settled) {
+      completeness = weakestCompleteness(completeness, summary.status.completeness);
+      reason ??= summary.status.stopReason;
+      const bytes = this.#settledSizes.get(functionId) ?? DEMAND_SUMMARY_OUTPUT_BYTES + 1;
+      if (values.length >= DEMAND_SUMMARY_OUTPUT_ROWS || outputBytes + bytes > DEMAND_SUMMARY_OUTPUT_BYTES) {
+        omittedFunctionIds.push(functionId); continue;
+      }
+      outputBytes += bytes;
+      values.push({ functionId, summary, digest: this.#settledDigests.get(functionId) });
+    }
+    values.sort((a, b) => a.functionId < b.functionId ? -1 : a.functionId > b.functionId ? 1 : 0);
+    omittedFunctionIds.sort();
+    if (omittedFunctionIds.length) { completeness = weakestCompleteness(completeness, 'partial'); reason = 'budget-exhausted'; }
+    if (executionStatus !== 'completed' && executionStatus !== 'paused') {
+      completeness = weakestCompleteness(completeness, 'partial');
+      reason = executionStatus === 'stale' ? 'dependency-mismatch' : executionStatus;
+    }
+    if (completeness === 'complete') reason = null;
+    return deepFreezeSummaryView({ schema: 'demand-summary-result/v1', sessionId: this.#id,
+      worldId: this.#world.id, assumptionsId: this.#assumptions.id, snapshotId: this.#snapshotId,
+      context: 'context-insensitive', inputDigest: this.#inputDigest,
+      executionStatus, status: this.#statusFactory(completeness, reason),
+      done: this.done, resumable: this.resumable, terminalReason: this.#terminalReason,
+      summaries: values, requestedRoots: this.#roots,
+      output: { complete: omittedFunctionIds.length === 0, omittedFunctionIds, estimatedBytes: outputBytes,
+        maximumBytes: DEMAND_SUMMARY_OUTPUT_BYTES, maximumRows: DEMAND_SUMMARY_OUTPUT_ROWS,
+        recovery: 'request-a-narrower-root-scope-or-read-settled-summary-through-host' },
+      unresolvedRoots: this.#roots.filter((id) => !this.#settled.has(id)),
+      components: { settled: this.#component, total: this.#components.length,
+        activeMembers: this.#active?.members ?? [], activePublished: false },
+      iterations: this.#iterations, transfers: this.#transfers, cost,
+      cumulativeBudget: this.#ledger.snapshot() });
+  }
+  async step(work, { maximumTransfers = 256 } = {}) {
+    assertSummaryWork(work);
+    strictSummaryInteger(maximumTransfers, 'demand-summary-step-budget', { min: 1, max: 65536 });
+    if (this.#busy) fail('demand-summary-concurrent-step');
+    this.#current(); this.#busy = true;
+    let transferred = 0;
+    try {
+      if (this.#terminalReason !== null) return this.#view('budget-exhausted', work.cost());
+      this.#consume('steps');
+      while (!this.done && transferred < maximumTransfers) {
+        work.checkpoint(); this.#current();
+        if (!this.#active) this.#beginComponent();
+        const active = this.#active, functionId = active.members[active.position];
+        const local = this.#locals.get(functionId);
+        // Per-function cost includes caller effects/targets. A single transfer
+        // still has the owner's maxEffectsPerSummary cap, not an unbounded SMT.
+        const weight = 1 + local.memoryReadRegions.length + local.memoryWriteRegions.length
+          + local.directCalls.reduce((n, call) => n + 1 + call.targetEntityIds.length, 0)
+          + local.indirectCallSets.reduce((n, call) => n + 1 + call.candidateEntityIds.length, 0);
+        this.#charge(work, 'workUnits', weight); this.#consume('transfers');
+        const next = composeSummary({ functionId, locals: this.#locals, models: this.#models,
+          solved: active.solved, component: active.members, limits: this.#limits,
+          status: this.#statusFactory, snapshotId: this.#snapshotId, unconverged: active.conservative });
+        let bounded;
+        try { bounded = strictSummaryData(next, { allowBigInt: true, maxBytes: 1048576, maxNodes: 32768 }); }
+        catch (error) {
+          if (typeof error?.code !== 'string' || !error.code.startsWith('analysis-contract-') || !error.code.includes('budget')) throw error;
+          this.#terminalReason = 'summary-transfer-payload-budget';
+          throw new SummaryWorkStopped('budget-exhausted', this.#terminalReason);
+        }
+        const payloadBytes = 512 + JSON.stringify(bounded, (_, value) => typeof value === 'bigint' ? value.toString() : value).length * 2;
+        this.#charge(work, 'residentBytes', payloadBytes);
+        const digest = functionSummaryDigest(next);
+        if (active.digests.get(functionId) !== digest) {
+          active.digests.set(functionId, digest); active.sizes.set(functionId, payloadBytes); active.values.set(functionId, next); active.changed = true;
+        }
+        active.position++; transferred++; this.#transfers++;
+        if (active.position === active.members.length) {
+          if (active.conservative || !active.recursive || !active.changed) this.#publishComponent();
+          else {
+            active.position = 0; active.changed = false;
+            if (active.iteration >= this.#limits.maxIterationsPerComponent) active.conservative = true;
+            else { active.iteration++; this.#iterations++; }
+          }
+        }
+        await work.yieldIfNeeded();
+      }
+      this.#current();
+      return this.#view(this.done ? 'completed' : 'paused', work.cost());
+    } catch (error) {
+      if (error?.message === 'demand-summary-input-stale') return this.#view('stale', work.cost());
+      const stopped = summaryWorkStopStatus(error, work.signal);
+      if (!stopped) throw error;
+      return this.#view(stopped, work.cost());
+    } finally { this.#busy = false; }
+  }
+  /** Returns ONLY settled owner summaries, never the active SCC work map. */
+  summary(functionId) { this.#current(); return this.#settled.get(functionId) ?? null; }
+  checkpoint() {
+    this.#current();
+    return deepFreezeSummaryView({ schema: 'demand-summary-restart-hint/v1', sessionId: this.#id,
+      inputDigest: this.#inputDigest, worldId: this.#world.id, assumptionsId: this.#assumptions.id,
+      settledComponentCount: this.#component, settledFunctionIds: [...this.#settled.keys()].sort(),
+      activeIteration: this.#active?.iteration ?? null, canonicalAuthority: false,
+      restorePolicy: 'restart-from-pinned-inputs; no optimistic-state-import' });
+  }
+  close() {
+    this.#closed = true; this.#active = null; this.#settled.clear(); this.#settledSizes.clear(); this.#settledDigests.clear();
+    this.#locals.clear(); this.#models.clear(); this.#successors.clear();
+  }
+}
+const DEMAND_SUMMARY_CONSTRUCTOR = Symbol('demand-summary-constructor');
+
+/**
+ * Prepare a bounded demand subgraph. Callers supply only their query frontier;
+ * no whole-program materialization is requested here. Canonical transfer and
+ * model validation remain the existing functions in this module.
+ */
+export async function prepareDemandSummarySession({ roots, localSummaries, libraryModels = new Map(),
+  world, assumptions, snapshotId, work, limits = {}, assertCurrent = null,
+  context = 'context-insensitive' } = {}) {
+  assertSummaryWorld(world); assertSummaryAssumptions(assumptions, world); assertSummaryWork(work);
+  strictSummaryString(snapshotId, 'demand-summary-snapshot');
+  if (context !== 'context-insensitive') return deepFreezeSummaryView({ status: 'unsupported', reason: 'context-substitution-owner-unavailable', session: null });
+  if (assertCurrent !== null && typeof assertCurrent !== 'function') fail('demand-summary-current-check');
+  const pinnedRoots = strictSummaryStrings(roots, 'demand-summary-roots', 256);
+  if (!pinnedRoots.length || !(localSummaries instanceof Map) || !(libraryModels instanceof Map)) fail('demand-summary-input-map');
+  const options = strictSummaryData(limits);
+  strictSummaryFields(options, ['maxIterationsPerComponent', 'maxComponents', 'maxEffectsPerSummary', 'maxNodes', 'maxEdges'], 'demand-summary-limit-fields');
+  const caps = {
+    maxIterationsPerComponent: strictSummaryInteger(options.maxIterationsPerComponent ?? 16, 'demand-summary-iterations', { min: 1, max: 256 }),
+    maxComponents: strictSummaryInteger(options.maxComponents ?? 1024, 'demand-summary-components', { min: 1, max: 8192 }),
+    maxEffectsPerSummary: strictSummaryInteger(options.maxEffectsPerSummary ?? 512, 'demand-summary-effects', { min: 1, max: 4096 }),
+    maxNodes: strictSummaryInteger(options.maxNodes ?? 4096, 'demand-summary-nodes', { min: 1, max: 16384 }),
+    maxEdges: strictSummaryInteger(options.maxEdges ?? 16384, 'demand-summary-edges', { min: 1, max: 131072 }),
+  };
+  const locals = new Map(), models = new Map(), successors = new Map(), queue = [...pinnedRoots], queued = new Set(queue);
+  let cursor = 0, edges = 0;
+  while (cursor < queue.length) {
+    work.charge('nodes'); work.charge('workUnits'); work.charge('residentBytes', 1024);
+    if (locals.size >= caps.maxNodes) return { status: 'budget-exhausted', reason: 'demand-summary-node-cap', session: null };
+    const id = queue[cursor++], source = localSummaries.get(id);
+    if (!summaryIdentityMatchesForDemand(source, { functionId: id, snapshotId })) {
+      if (pinnedRoots.includes(id)) return { status: 'unsupported', reason: 'demand-summary-root-identity', session: null };
+      continue;
+    }
+    const detachedSource = strictSummaryData(source, { allowBigInt: true, maxBytes: 1048576, maxNodes: 32768 });
+    work.charge('residentBytes', JSON.stringify(detachedSource, (_, value) => typeof value === 'bigint' ? value.toString() : value).length * 2);
+    const local = createFunctionSummary(detachedSource); // preserve the sole owner contract
+    locals.set(id, local);
+    const targets = [...new Set([...local.directCalls.flatMap((call) => call.targetEntityIds),
+      ...local.indirectCallSets.flatMap((call) => call.candidateEntityIds)])].sort();
+    edges += targets.length;
+    work.charge('edges', targets.length); work.charge('workUnits', targets.length);
+    if (edges > caps.maxEdges) return { status: 'budget-exhausted', reason: 'demand-summary-edge-cap', session: null };
+    const adjacent = [];
+    for (const target of targets) {
+      if (summaryIdentityMatchesForDemand(localSummaries.get(target), { functionId: target, snapshotId })) {
+        adjacent.push(target);
+        if (!queued.has(target)) { queued.add(target); queue.push(target); work.charge('queueOperations'); }
+      } else if (!localSummaries.has(target) && libraryModels.has(target)) {
+        const model = strictSummaryData(libraryModels.get(target), { allowBigInt: true, maxBytes: 1048576 });
+        work.charge('residentBytes', JSON.stringify(model, (_, value) => typeof value === 'bigint' ? value.toString() : value).length * 2);
+        if (validateLibraryModel(model, { targetEntityId: target, snapshotId })) models.set(target, model);
+      }
+    }
+    successors.set(id, adjacent);
+    await work.yieldIfNeeded();
+  }
+  work.checkpoint();
+  const condensed = condenseCallGraph(pinnedRoots, (id) => successors.get(id) ?? [], { ...caps, signal: work.signal });
+  work.charge('workUnits', locals.size + edges);
+  if (condensed.truncated || condensed.cancelled) return { status: condensed.cancelled ? 'cancelled' : 'budget-exhausted', reason: 'demand-summary-condensation-incomplete', session: null };
+  if (assertCurrent && assertCurrent() !== true) return { status: 'stale', reason: 'demand-summary-input-stale', session: null };
+  const input = { snapshotId, roots: pinnedRoots, context, limits: caps, worldId: world.id, assumptionsId: assumptions.id,
+    localDigests: [...locals].map(([id, summary]) => [id, functionSummaryDigest(summary)]).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
+    models: [...models].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0) };
+  const inputDigest = summaryStableDigest(input);
+  const id = summaryEntityId({ binaryId: world.binarySet[0].binaryId, kind: 'demand-summary-session-input', identity: input });
+  const ledger = new SummaryResourceBudget(DEMAND_SUMMARY_TOTAL_LIMITS, { name: 'demand-summary-session' });
+  // Preparation is part of the lifetime cost, including source reads charged
+  // by the containing query. Counting shared preparation twice is conservative;
+  // silently erasing it at the first resume would not be.
+  try { for (const [resource, used] of Object.entries(work.cost().used)) ledger.consume(resource, used); }
+  catch (error) {
+    if (!(error instanceof SummaryBudgetExceededError)) throw error;
+    return { status: 'budget-exhausted', reason: 'demand-summary-preparation-total-budget', session: null, cost: work.cost() };
+  }
+  const session = new DemandSummarySession(DEMAND_SUMMARY_CONSTRUCTOR, { world, assumptions, snapshotId, limits: caps,
+    locals, models, successors, components: condensed.components, roots: pinnedRoots, inputDigest, id, assertCurrent, ledger });
+  return { status: 'prepared', session, inputDigest, cost: work.cost() };
 }
