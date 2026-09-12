@@ -7,6 +7,7 @@ import { lowerVMEffectsToSemanticIr as lowerCore } from './bridge-lowering-v2.js
 import { overlayDexLowering } from './bridge-dex-overlay-v2.js';
 import { overlayJvmControlLowering } from './bridge-jvm-control-overlay-v2.js';
 import { assertVMEffectFunctionBundleOwnership } from './vm-effects.js';
+import { overlayWasmSelect, projectWasmSelectView } from './bridge-wasm-select-overlay-v2.js';
 
 export const MANAGED_BRIDGE_VERSION = legacy.MANAGED_BRIDGE_VERSION;
 export const queryManagedSymbolicVerification = legacy.queryManagedSymbolicVerification;
@@ -14,7 +15,7 @@ export const queryManagedRuntimeProvider = legacy.queryManagedRuntimeProvider;
 export const buildManagedTypeConstraintGraph = legacy.buildManagedTypeConstraintGraph;
 export function lowerVMEffectsToSemanticIr(value, options = {}) {
   assertVMEffectFunctionBundleOwnership(value);
-  const lowered = overlayJvmControlLowering(value, lowerCore(value, options), options);
+  const lowered = overlayJvmControlLowering(value, overlayWasmSelect(value, lowerCore(value, options), options), options);
   return overlayDexLowering(value, lowered);
 }
 
@@ -81,4 +82,4 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
   return deepFreeze({methodId,summary,directCalls,dynamicCalls,externalCalls,thrownExceptions,hasExceptionEdges,completeness});
 }
 export function analyzeManagedInterprocedural(methods, options={}){const methodMap=new Map();for(const method of methods){const summary=buildManagedMethodSummary(method,options);methodMap.set(summary.methodId,summary)}const roots=[...methodMap.keys()],successorsOf=id=>{const entry=methodMap.get(id);return entry?entry.directCalls.map(c=>c.target).filter(t=>methodMap.has(t)):[]};const{components,truncated}=condenseCallGraph(roots,successorsOf,options);return deepFreeze({components,truncated,summaries:methodMap})}
-export function decompileManagedMethod(loweredOrFunction,options={}){return legacy.decompileManagedMethod(ensureLowered(loweredOrFunction,options),options)}
+export function decompileManagedMethod(loweredOrFunction,options={}){const lowered=ensureLowered(loweredOrFunction,options);return legacy.decompileManagedMethod(projectWasmSelectView(lowered),options)}
