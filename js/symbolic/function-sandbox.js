@@ -33,12 +33,20 @@ function boundedObjectSize(value) {
   return Math.min(Math.max(0x100, value), MAX_SANDBOX_OBJECT_SIZE);
 }
 
+function memoryWriteSize(value, label) {
+  if (value === undefined || value === null) return 8;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw new TypeError(`${label} must be a positive safe integer, got ${String(value)}`);
+  }
+  return value;
+}
+
 function normalizeWatch(watch, objectBase) {
   const out = [];
   const list = Array.isArray(watch) ? watch : [];
   for (const w of list) {
     if (!w) continue;
-    const size = Math.max(1, Number(w.size || 8));
+    const size = memoryWriteSize(w.size, 'watch size');
     const addr = w.address != null ? asBig(w.address) : objectBase + asBig(w.offset || 0);
     out.push({ name: w.name || null, address: addr, offset: addr - objectBase, size });
   }
