@@ -328,7 +328,7 @@ function fullPhase8Projection(result, model, opts, interactiveStage) {
     // Projection is part of ordinary presentation, not permission to run the
     // opt-in optimizer set. Reuse the core's existing canonical-facts stage.
     return interactiveStage?.ledger?.published === true && interactiveStage.analysis
-      ? applyPhase8Projection(result, interactiveStage.analysis, opts) : result;
+      ? applyPhase8Projection(result, interactiveStage.analysis, { ...opts, preserveInitialSpelling:true }) : result;
   }
   const stage = runPhase8Stage(
     { ir:result.ir, types:result.types, opts },

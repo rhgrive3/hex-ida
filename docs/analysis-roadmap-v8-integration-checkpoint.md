@@ -5331,3 +5331,99 @@ require their own actual runtime identities. None is replaced by Node tests.
 Resume on this worktree and the same PR. Inspect Git status, HEAD/MERGE_HEAD,
 live PR/main and current test handles before acting. Do not restart tests from
 an old log alone. Update this checkpoint at the next integration transition.
+
+## 2026-09-12 停止・別ローカルへの引き継ぎ（最新）
+
+ユーザー指示: 「リモート反映して一回止まってくれ。残作業もかけ。そっちでやる」。
+この節が以前の継続指示・実行中表示より優先する。追加実装・追加テストは停止。
+完成扱いではなく **WIP source backup / CHECKPOINT-LOCKED**。main にはマージしない。
+
+- 引き継ぎブランチ: `feat/analysis-roadmap-v8-current-main-20260907`、既存 PR #7036。
+- この節を含む WIP コミットの親: `eaac5b29f088ef8a3b70b1446b21db9b65ae46ae`。
+- 前回リモート反映済み: `cf7ef7adda68c9633ca467b317c542d7eacb868d`。
+- 今回反映する既存コミット: `9d6a98ae2`（通常解析・Query 経路への provenance 接続）、
+  `eaac5b29f`（中間表現・proof preparation 境界、循環 import、ゼロ予算の修正）。
+- 加えて `pipeline.js` / `phase8/projection.js` / `initial-store-history.test.mjs`
+  の通常表示 spelling 保持を **未完成のまま** 保存する。成功扱いにはしない。
+- **SYM-01 と X-03 の recovery はユーザー担当**。C1/C3 別ブランチは保存済み・未統合。
+  既存 PR/他ブランチと main を比較して再利用し、二重実装しない。
+
+### 最優先の残作業（現在の赤いテスト）
+
+1. `tests/decompiler-semantic.mjs:104` の `apply_damage` 表示互換性を修正。
+   期待は `self->hp -= (uint32_t)a2 * self->damageRate`、現状は
+   `self->hp = self->hp - (uint32_t)a2 * self->damageRate;` に展開される。
+   これは今回の通常表示経路で生じた新規 regression。既知の別 issue と混同しない。
+   先に失敗していた line 43 の coins `+=` は最新 WIP で通過したが、全体は FAIL。
+2. 新規 `render-only spelling retention refuses copied and changed store emitters`
+   が `tests/phase8/provenance/initial-store-history.test.mjs:84` で FAIL。
+   `completeness === 'incomplete'` の後の
+   `reasons.includes('unavailable-store-spelling-producer')` が成立しない。
+   正しい producer/currentness と拒否理由を確認すること。文字列一致による権限の捏造、
+   copied emitter の再承認、テストを消して通す対応は不可。
+3. 修正後の exact committed head で上記互換性テスト、provenance canonical group、
+   補助契約・lint/modules を再実行する。親コミットの PASS を最新 WIP の証拠に流用しない。
+
+通常表示 WIP は `preserveInitialSpelling:true` を渡し、render-only では式の identity を
+保持して追加 normalization/DCE を避ける。store spelling を保持する条件は現在有効な
+private producer と同一 expression object。proof/明示 rewrite 経路の契約を維持すること。
+
+### 検証状況（停止前に実行済みの結果のみ）
+
+| 対象 | 結果と証拠の範囲 |
+|---|---|
+| `eaac5b29f` exact head | provenance canonical PASS、全 141 discovered test files 中 group 対象 43 files、325.6 秒 |
+| `eaac5b29f` exact head | supplemental 8 files / core / lint / modules PASS、24.7 秒 |
+| `eaac5b29f` exact head | 互換性 9 files 中 8 PASS / 1 FAIL（coins 表示展開） |
+| 今回の spelling WIP | `decompiler-semantic.mjs` FAIL、15.7 秒、上記 line 104 |
+| 今回の spelling WIP | initial-store-history + navigation 合計 43 tests 中 42 PASS / 1 FAIL、上記 line 84 |
+
+最後の小テストは terminal receipt を確認済み。停止時にこの作業の test/build/census
+プロセスは残っていない。停止依頼後、新しい検証は開始していない。
+
+ローカル証拠の保存先は
+`/mnt/workspace/.dev-state/agent-work/evidence/analysis-roadmap-20260909/`。
+以下は **この環境にのみ存在する receipt**（別ローカルに自動配布されない）。
+この表の要約はリモートに引き継ぐが、独立 verifier の代わりにはならない。
+
+- canonical: `c4-default-route-canonical-repaired-exact-f0e67b33-d526-44e0-afff-323b72010174.json`
+- supplemental: `c4-default-route-supplemental-exact-1dfa1616-8795-4b90-b755-117948b425ad.json`
+- compatibility: `c4-default-route-compatibility-exact-e4d5de13-7bd5-4ec6-a815-8e9233a1b4c8.json`
+- latest semantic FAIL: `c4-default-spelling-semantic-wip-v2-126642b7-d280-4f7f-ba97-0feaa3ae2f57.json`
+- latest 42/43: `c4-render-only-spelling-contract-wip-bba3cc8c-8ac7-4104-9a45-dd2e36d69721.json`
+
+### その後の残作業と統合条件
+
+1. frozen 135-case census の再実測。最後の全体計測は `1246` 時点の
+   rendered complete **121/125（総数 135）**。残り 4 native cases は以前の個別試験で
+   通過したが、新しい集計で 125/125 を確認したとは言えない。
+   強化版 census は準備のみ・未実行。app-adapter → Query clone → line/reverse navigation、
+   stale epoch refusal、5 safety counters を含むが独立 semantic verifier ではない。
+2. 永続 cache の無効化。Backend `_semanticFunctionArtifactDescriptor` は target schemaVersion
+   を利用し、x86/RISC-V は
+   `js/targets/architecture/x86_64/semantic-function-contract.js` の
+   `X86_SEMANTIC_FUNCTION_SCHEMA_VERSION='semantic-ir-v2-compat-function-v1'` を共有する。
+   古い map なし cache も現在の validation を満たし得る。適切な共有 presentation schema
+   更新と旧 cache/new cache regression、ownership 確認が必要。まだ変更していない。
+3. 二重 build / generated-output 同期と exact-head 検証は今回未実施。
+   dist は以前の `1246` 状態。インストール esbuild 0.28.1 / lock 0.28.2 の差も未解消。
+   build 再現性・生成物一致・release 完了は主張しない。
+4. 最新 main と PR の再確認・統合。最後に確認した main は
+   `c90d8b38833ae664defb512be58538e397967f72`（再開時に再取得）。
+   main の `608f54da` / PR #3421 の typed BigInt ledger addresses とローカル decimal strings
+   の整合は未解決。既存成果を無視せず比較して統合する。
+5. 既知の別問題: issue #3749、line 345 の classified prototypes が期待 2 に対し 4。
+   `cf7ef7add` の prior baseline でも再現し、decompiler 呼び出し前に失敗する。
+   これは上記の新規 spelling regression とは別で、他担当の issue 作業を重複しない。
+6. この文書の Completion audit と integration exit は依然未達。
+   C1/C3 統合、全 canonical/repository gates、generated-output、candidate merge tree、
+   independent review、CI、必要な active-runtime/device の確認を省略しない。
+
+準備済み補助スクリプトはこの環境の
+`/mnt/workspace/.dev-state/agent-work/scratch/analysis-roadmap-20260909/` にある
+`c4-corpus-navigation-census.mjs`、`c4-default-supplemental-gates.mjs`、
+`c4-default-route-prior-loader.mjs`、`run-retained-gate.mjs`、
+`build-integration-source-checkpoint.mjs`。これらは repo 管理外・別ローカルには存在しない。
+旧 `validate-c4-certified-data.mjs` は古い head 前提なのでそのまま実行しない。
+必要ならスクリプトと依存 receipt を別途取得・点検するか、repo の canonical runners で
+検証を構成する。scratch の存在を完了証拠にはしない。

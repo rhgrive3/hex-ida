@@ -54,6 +54,39 @@ function assertCanonical(f) {
   for (const [key, value] of f.roots) assert.equal(f.ir[key], value);
 }
 
+test('ordinary render-only projection retains the exact initial store spelling and expression', () => {
+  for (const [op,one] of [['add',false],['add',true],['sub',true],['mul',false]]) {
+    const f = fixture({op,one});
+    const original = enhanceSemanticDecompilation(f.seed,f.model,f.opts);
+    const originalText = original.pseudocode;
+    const expressions = original.cAst.body.map(node=>node.semantic?.expression);
+    const result = applyPhase8Projection(original,analysis(),{preserveInitialSpelling:true});
+    assert.equal(result.pseudocode,originalText);
+    assert.equal(original.pseudocode,originalText);
+    result.cAst.body.forEach((node,index)=>assert.equal(node.semantic?.expression,expressions[index]));
+    assert.equal(result.renderProvenance.completeness,'complete',JSON.stringify(result.renderProvenance.reasons));
+    assert.ok(records(result.renderProvenance).every(record=>record.renderedBinding==='producer-bound'));
+    assert.ok(!result.renderProvenance.ledger.some(record=>record.rule==='expand-projected-store-spelling'));
+    assert.deepEqual(result.phase8Projection.transforms,[],'render-only projection does not add normalization transforms');
+    assertCanonical(f);
+  }
+});
+
+test('render-only spelling retention refuses copied and changed store emitters', () => {
+  for (const copied of [false,true]) {
+    const f = fixture({one:true}), original = enhanceSemanticDecompilation(f.seed,f.model,f.opts);
+    const node = original.cAst.body.find(node=>/\+\+;$/.test(node.text));
+    assert.ok(node);
+    if (copied) original.cAst.body = original.cAst.body.map(item=>item===node ? {...item} : item);
+    else node.text = 'forged_pointer++;';
+    const result = applyPhase8Projection(original,analysis(),{preserveInitialSpelling:true});
+    assert.equal(result.renderProvenance.completeness,'incomplete');
+    assert.ok(result.renderProvenance.reasons.includes('unavailable-store-spelling-producer'));
+    assert.ok(!result.pseudocode.includes('forged_pointer'));
+    assertCanonical(f);
+  }
+});
+
 test('seven actual initial RMW spellings retain canonical inputs across eight widths and the public pipeline', () => {
   let cells = 0;
   for (const bits of [1, 2, 3, 4, 8, 16, 32, 64]) for (const [op, one, form, spelling] of [

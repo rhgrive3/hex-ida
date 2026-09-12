@@ -496,6 +496,7 @@ function deadCallResultPlans(result, analysis, consumers, shouldAbort) {
 export function applyPhase8Projection(result, analysis, opts = {}) {
   if (!result?.semantic || !result.semanticAst || !result.cAst || !analysis) return result;
   const original = result;
+  const renderOnly = opts.preserveInitialSpelling === true && opts.phase8RewritePlan == null;
   const proofOnly = opts.phase8ProofOnlyRewrites === true || producerUsesProofOnlyRewrites(original);
   const inherited = readProjectionHistory(original);
   const historyReasons = new Set();
@@ -526,7 +527,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   const proofContext = {ir:result.ir,opts};
   const provedInputs = proofRequested ? readProvedInputBindings(analysis,proofContext) : null;
   const proved = provedInputs?.artifact ?? null;
-  const dcePlans = hasPriorHistory ? [] : deadCallResultPlans(result, analysis, expressionConsumers, opts.shouldAbort);
+  const dcePlans = hasPriorHistory || renderOnly ? [] : deadCallResultPlans(result, analysis, expressionConsumers, opts.shouldAbort);
   const currentDce = () => !opts.shouldAbort?.() && (!dcePlans.length || dcePlans[0].proof.isCurrent())
     && dcePlans.every(plan => readCallResultSpellingProducer(original.cAst.body[plan.index], original.ir) === plan.spelling);
   if (proofRequested) {
@@ -651,8 +652,13 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     const row = Number(condition.row);
     conditionConsumers.set(row,conditionConsumers.has(row) ? null : conditionBindings[index]);
   }
-  const names = inductionNames(analysis);
-  const transform = (expression) => transformExpression(expression, names, records, memo, replacements, node=>producerExpressionToken(original,node), proofOnly);
+  const names = renderOnly ? new Map() : inductionNames(analysis);
+  const transform = (expression) => {
+    // The default product route requests a map of the existing representation,
+    // not another expression normalization or DCE pass. Keep exact identity.
+    if (renderOnly) { memo.set(expression,expression); return expression; }
+    return transformExpression(expression, names, records, memo, replacements, node=>producerExpressionToken(original,node), proofOnly);
+  };
 
   for (const item of result.semanticAst.values || []) item.expression = transform(item.expression);
   for (const item of result.semanticAst.stores || []) if (item.expression) item.expression = transform(item.expression);
@@ -706,7 +712,12 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
         const spellingCurrent = spelling && spelling.consumer === consumer && spelling.text === node.text
           && spelling.observation.matches();
         if (spelling && !spellingCurrent) historyReasons.add('stale-store-spelling-producer');
-        if (spellingCurrent && node.text !== text) {
+        // Ordinary presentation may retain the actual initial emitter only
+        // when projection did not replace its expression object. Equal text,
+        // copied descriptors and merely equivalent expressions are not enough.
+        const retainSpelling = opts.preserveInitialSpelling === true && spellingCurrent
+          && node.semantic.expression === consumer.expression;
+        if (spellingCurrent && node.text !== text && !retainSpelling) {
           if (existingHistoryRecords + spellingRecords.length >= spellingLimit) historyReasons.add('store-spelling-history-budget');
           else {
             const source = mergeSource(node.source, consumer.expression?.source, node.semantic.expression.source);
@@ -720,7 +731,7 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
             expressionConsumers[index] = Object.freeze({ ...consumer, records:Object.freeze([...consumer.records, record]) });
           }
         }
-        node.text = text;
+        if (!retainSpelling) node.text = text;
       }
     }
     const rows = sourceOf(node.source).rows.map(Number);
