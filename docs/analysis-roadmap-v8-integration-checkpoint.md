@@ -7066,7 +7066,10 @@ Do not erase PHI uses, fabricate simpler IR, or omit state effects to obtain acc
 
 The source regression uses the canonical serial test setting. A parallel diagnostic run hit
 a deadline in the production public-path case; its retained failure is not erased or counted
-as success. Exact committed-head tests, generated rebuild, lint, module boundaries, ownership,
+as success. The PHI mismatch now has a separate direct execution-contract assertion, while
+the public refusal test requires unchanged IR/view for either that mismatch or an earlier
+deadline. Neither outcome is counted as a completed production proof.
+Exact committed-head tests, generated rebuild, lint, module boundaries, ownership,
 independent review and remote publication receipts are retained under persistent
 `agent-work/evidence/analysis-roadmap-20260909/c4-decoded-cfg-20260913` and sibling gate logs.
 This is a structural handoff increment. FR-C4-02A/04B, the complete production proof route,
