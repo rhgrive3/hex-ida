@@ -14,11 +14,11 @@ function fakeScript(src) {
   };
 }
 
-function harness({ withFetch = true } = {}) {
+function harness({ withFetch = true, scriptSources = SCRIPT_SOURCES } = {}) {
   const document = {
     title: 'ChatGPT',
     location: { href: 'https://chatgpt.com/g/g-p-demo/project' },
-    scripts: SCRIPT_SOURCES.map((entry) => fakeScript(entry.src)),
+    scripts: scriptSources.map((entry) => fakeScript(entry.src)),
     querySelectorAll() { return []; },
     querySelector() { return null; },
   };
@@ -49,6 +49,12 @@ async function rejectsScriptNotLoaded(inspector, args, label) {
 }
 
 assert.equal(SCRIPT_SOURCES.length, 3);
+
+{
+  const { inspector, fetched } = harness({ scriptSources: [] });
+  await rejectsScriptNotLoaded(inspector, { index: 0 }, 'index 0 with no loaded scripts');
+  assert.deepEqual(fetched, [], 'empty script list must not trigger any fetch');
+}
 
 {
   const { inspector } = harness();
