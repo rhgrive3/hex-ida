@@ -14,12 +14,12 @@ const writeRel=(field,target)=>put(field,rel32(field,target));
 
 const TYPE_SEC=0x1000n,PROTO_SEC=0x1100n,CONF_SEC=0x1200n;
 const TYPE=0x2000n,TYPE_NAME=0x2100n,PROTO=0x3000n,PROTO_NAME=0x3100n,CONF=0x4000n,WIT=0x5000n,IMPL=0x6000n;
-put(TYPE,new Uint8Array(28));put(PROTO,new Uint8Array(32));put(CONF,new Uint8Array(16));put(WIT,new Uint8Array(8));
+put(TYPE,new Uint8Array(28));put(PROTO,new Uint8Array(32));put(CONF,new Uint8Array(16));put(WIT,new Uint8Array(16));
 writeRel(TYPE_SEC,TYPE);writeRel(PROTO_SEC,PROTO);writeRel(CONF_SEC,CONF);
 write32(TYPE,17);writeRel(TYPE+8n,TYPE_NAME);put(TYPE_NAME,cstr('T'));
 write32(PROTO,3);writeRel(PROTO+8n,PROTO_NAME);put(PROTO_NAME,cstr('P'));write32(PROTO+16n,1);write32(PROTO+24n,1);
 writeRel(CONF,PROTO);writeRel(CONF+4n,TYPE);writeRel(CONF+8n,WIT);
-put(WIT,u64(IMPL));
+put(WIT,u64(CONF));put(WIT+8n,u64(IMPL));
 const sections=[{section:'__swift5_types',vmAddr:TYPE_SEC,size:4},{section:'__swift5_protos',vmAddr:PROTO_SEC,size:4},{section:'__swift5_proto',vmAddr:CONF_SEC,size:4}];
 const opts={budget:128,resolvePointer:async(raw)=>raw};
 

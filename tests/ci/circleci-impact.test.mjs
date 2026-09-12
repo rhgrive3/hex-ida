@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 const router = resolve('scripts/ci/circleci-impact.sh');
 const root = mkdtempSync(join(tmpdir(), 'hex-circleci-impact-'));
@@ -114,6 +115,42 @@ try {
   const invalidPattern = routeResult(commitD, 'feature', 'main-and-branch', '[');
   assert.notEqual(invalidPattern.status, 0);
   assert.match(invalidPattern.stderr, /invalid CircleCI impact path pattern/);
+
+  // Issue #5904: exercise the real lane regex with one-file branch diffs and
+  // main first-parent deltas. The old regex demonstrably misses both files.
+  const config = readFileSync(resolve('.circleci/config.yml'), 'utf8');
+  const agentJob = config.match(/^  agent-loop-resilience:\n([\s\S]*?)(?=^  [\w-]+:)/m)?.[1];
+  const agentPattern = agentJob?.match(/circleci-impact\.sh main-and-branch '([^']+)'/)?.[1];
+  assert.ok(agentPattern, 'read the actual resilience lane filter');
+  const oldAgentPattern = '^js/userscript/dev/';
+  for (const [index, file] of ['js/userscript/chatgpt-adapter.js', 'js/ai/dev/workers/contracts.js'].entries()) {
+    const branch = `resilience-counterexample-${index}`;
+    git(repo, 'checkout', '-b', branch, 'main');
+    write(join(repo, file), 'export const changed = true;\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-m', `Change only ${file}`);
+    git(repo, 'push', 'origin', branch);
+    const head = git(repo, 'rev-parse', 'HEAD');
+    for (const routedBranch of [branch, 'main']) {
+      assert.equal(route(head, routedBranch, 'main-and-branch', oldAgentPattern), 'false',
+        `old policy misses ${file} on ${routedBranch}`);
+      assert.equal(route(head, routedBranch, 'main-and-branch', agentPattern), 'true',
+        `actual policy must run ${file} on ${routedBranch}`);
+    }
+  }
+  assert.equal(route(commitB, 'main', 'main-and-branch', agentPattern), 'false',
+    'unrelated docs-only main delta must keep skipping the resilience lane');
+
+  // Importing coverage must not terminate the caller before CI policy assertions.
+  const policyEntry = resolve('tests/ci-development-mode.mjs');
+  const policy = spawnSync(process.execPath, [policyEntry], { encoding: 'utf8', env: process.env });
+  assert.equal(policy.status, 0, policy.stderr || policy.stdout);
+  assert.match(policy.stdout, /CI development mode contract: PASS/, 'all existing CI assertions must execute');
+  const continuation = spawnSync(process.execPath, ['--input-type=module', '-e',
+    `await import(${JSON.stringify(pathToFileURL(policyEntry).href)}); throw new Error('ci-policy-continuation-sentinel');`,
+  ], { encoding: 'utf8', env: process.env });
+  assert.equal(continuation.status, 1, 'coverage import must not exit its caller with success');
+  assert.match(continuation.stderr, /ci-policy-continuation-sentinel/);
 
   console.log('circleci-impact routing: PASS');
 } finally {
