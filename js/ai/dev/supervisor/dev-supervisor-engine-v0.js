@@ -39,6 +39,22 @@ const MAX_DECISIONS = 16;
 const HARD_MAX_DECISIONS = 256;
 const HARD_MAX_TOOL_ERROR_RECOVERIES = 64;
 
+const DEV_PUBLIC_RUNTIME_ACTIVATION_KEYS = Object.freeze([
+  'expectedCommit',
+  'expectedBuildId',
+  'expectedUserscriptVersion',
+  'capabilities',
+  'reason',
+]);
+const DEV_RUNTIME_ACTIVATION_REJECTION_CODE = 'dev-runtime-activation-argument-rejected';
+const DEV_RUNTIME_ACTIVATION_REJECTION_KIND = 'dev-runtime-activation-rejected';
+
+function unauthorizedRuntimeActivationKeys(args) {
+  if (!args || typeof args !== 'object') return [];
+  const allowed = new Set(DEV_PUBLIC_RUNTIME_ACTIVATION_KEYS);
+  return Object.keys(args).filter((key) => !allowed.has(key));
+}
+
 function assertValidBudget(value, { name, min = 1, max, defaultValue }) {
   if (value === undefined) return defaultValue;
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {
@@ -377,6 +393,17 @@ export class DevSupervisorEngineV0 {
 
           try {
             if (decision.tool === DEV_RUNTIME_ACTIVATION_TOOL) {
+              const rejectedKeys = unauthorizedRuntimeActivationKeys(decision.arguments);
+              if (rejectedKeys.length > 0) {
+                history.push({
+                  kind: DEV_RUNTIME_ACTIVATION_REJECTION_KIND,
+                  tool: decision.tool,
+                  code: DEV_RUNTIME_ACTIVATION_REJECTION_CODE,
+                  message: `dev.runtime.require_activation は公開 contract の keys (${DEV_PUBLIC_RUNTIME_ACTIVATION_KEYS.join(', ')}) のみ受理する。clear などの未記載 key は拒否され、gate の状態は変更されない。`,
+                  state: this.selfUpdateGate.state,
+                });
+                continue;
+              }
               const result = this.selfUpdateGate.requireActivation(decision.arguments);
               history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });
               continue;
