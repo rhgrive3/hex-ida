@@ -24,7 +24,9 @@ export class ContextBroker {
   }
 
   buildModelContext({ request, session, evidenceStore, hypotheses = [], observations = [], budgetBytes, snapshot = null, effectiveScope = null, includeHistory = true } = {}) {
-    const maxBytes = Math.min(this.maxBytes, boundedPositiveNumber(budgetBytes, this.maxBytes, 4096));
+    // Per-turn context budgets are hard ceilings and may be lower than the
+    // broker's 4 KiB configured-capacity floor (#5103).
+    const maxBytes = Math.min(this.maxBytes, boundedPositiveNumber(budgetBytes, this.maxBytes, 1));
     const scope = effectiveScope || request?.effectiveScope || request?.scope || 'auto';
     const context = {
       protocol: 'hex-ai-turn-v2',
@@ -85,8 +87,8 @@ export class ContextBroker {
 export { UNTRUSTED_NOTICE };
 
 function boundedPositiveNumber(value, fallback, minimum, integer = false) {
-  const numeric = Number(value ?? fallback);
-  if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
+  const numeric = value ?? fallback;
+  if (typeof numeric !== 'number' || !Number.isFinite(numeric) || numeric <= 0) return fallback;
   const bounded = Math.max(minimum, numeric);
   return integer ? Math.floor(bounded) : bounded;
 }

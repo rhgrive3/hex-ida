@@ -14,6 +14,10 @@ on:
       - 'tools/validation/phase-ownership/phase7.json'
       - 'reports/phase7/**'
       - '.github/workflows/phase7-ownership.yml'
+      - 'tools/validation/phase5-ownership.mjs'
+      - 'tools/validation/scpa-integration-ownership.mjs'
+      - 'tools/validation/phase-ownership/scpa-integration.json'
+      - 'tests/ci/scpa-integration-ownership.test.mjs'
   workflow_dispatch:
     inputs:
       base:
@@ -64,6 +68,12 @@ jobs:
           if [[ "$HEAD_REF" == "feat/analysis-roadmap-v8-current-main-20260907" ]]; then
             FILES_JSON="$(node tools/validation/analysis-roadmap/ownership.mjs \
               --branch "$HEAD_REF" --phase phase7 --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA")"
+            node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+          elif [[ "$HEAD_REF" == "feat/scpa-functional-acceptance-20260912" ]]; then
+            node --test tests/ci/scpa-integration-ownership.test.mjs
+            FILES_JSON="$(node tools/validation/scpa-integration-ownership.mjs \
+              --branch "$HEAD_REF" --phase 7 \
+              --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA")"
             node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
           elif [[ "$HEAD_REF" == "codex/lane5-6633-abi-a8b2" ]]; then
             # #6975 intentionally pairs a Phase 7 production-path regression

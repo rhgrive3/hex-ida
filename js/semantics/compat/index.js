@@ -50,7 +50,7 @@ export const SEMANTIC_V2_MIGRATION_MODES = Object.freeze({
   SHADOW_DIFFERENTIAL: 'semantic-v2-shadow-differential',
 });
 
-export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.5.0';
+export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.5.1';
 export const SEMANTIC_V2_COMPAT_PATH = Object.freeze([
   'machine-effects',
   'semantic-ir-v2',
@@ -309,6 +309,15 @@ function declaredValuesObservable(ir) {
     && ir.nodes.filter(node => node.kind === 'call').every(node => node.attributes?.abiCallBinding != null);
 }
 
+// AAPCS64's existing classifier spells a declared argument with the explicit
+// possible/mustUse pair; other registered ABIs also publish exact. Preserve
+// both positive contracts without treating a missing/false flag as authority.
+function declaredExactArgument(argument) {
+  return argument?.possible !== true && argument?.mustUse !== false
+    && (argument?.exact === true || argument?.exact === undefined
+      && argument?.possible === false && argument?.mustUse === true);
+}
+
 function bindDeclaredScalarReturns(ir, input, options) {
   const adapter = input.abiAdapter ?? options.abiAdapter ?? options.compatOptions?.abiAdapter;
   if (!adapter || !declaredValuesObservable(ir)
@@ -394,7 +403,7 @@ function bindDeclaredEntryArguments(ir, input, options) {
   const values = [...ir.values];
   for (const argument of classified.arguments) {
     assertNotAborted(options);
-    if (argument.location !== 'register' || argument.exact !== true || argument.possible === true
+    if (argument.location !== 'register' || !declaredExactArgument(argument) || argument.possible === true
       || argument.aggregate === true || argument.pieces?.length || argument.regs?.length > 1
       || !Number.isSafeInteger(argument.index) || argument.index < 0) continue;
     const descriptor = descriptors.find(reg => reg.id === argument.reg && reg.kind === 'gp');
@@ -456,7 +465,7 @@ function bindDeclaredCallValues(ir, input, options) {
       || (snapshotId != null && identity.snapshotId !== snapshotId)) { nodes.push(node); continue; }
     const returned = physical(raw.returnLocations[0]);
     const args = raw.explicitArguments.map((argument, index) => argument.index === index
-      && argument.location === 'register' && argument.exact === true && argument.possible !== true
+      && argument.location === 'register' && declaredExactArgument(argument) && argument.possible !== true
       && !argument.pieces?.length && !(argument.regs?.length > 1) ? physical(argument) : null);
     if (!returned || args.some(argument => !argument)
       || new Set(args.map(argument => argument.variable.key)).size !== args.length) { nodes.push(node); continue; }

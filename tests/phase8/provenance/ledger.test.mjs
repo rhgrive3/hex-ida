@@ -130,8 +130,8 @@ test('P8-PROV address-only rewrite records target the canonical address entity',
 
   const collapse = result.renderProvenance.ledger.find((record) => record.kind === 'exact-view-collapse');
   assert.ok(collapse, 'address-only collapse rewrite must be recorded');
-  // Public ledger addresses use the canonical serializable decimal form.
-  assert.deepEqual(collapse.origin.addresses, ['17476']);
+  // Transform-ledger addresses retain their canonical typed identity.
+  assert.deepEqual(collapse.origin.addresses, [0x4444n]);
   assert.deepEqual(collapse.targets, ['addr:17476']);
   assert.ok(!collapse.targets.some((target) => target.startsWith('proof:')), 'canonical address must not be replaced by proof fallback');
   assert.ok(collapse.producedRefs.length > 0, 'address-only rewrite must remain linked to the rendered entity');

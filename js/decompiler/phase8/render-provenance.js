@@ -140,14 +140,30 @@ function canonicalList(values, sortNumeric) {
   return out;
 }
 
+// Entity/reverse-map identities remain JSON-safe, while the transform ledger
+// retains typed address identity for audit and replay checks.
+function canonicalLedgerAddresses(values) {
+  const typed = sourceOf({ addresses:values }).addresses;
+  const out = [];
+  for (const value of typed) {
+    if (!out.some((existing) => existing === value)) out.push(value);
+  }
+  out.sort((left, right) => {
+    if (typeof left === 'bigint' && typeof right === 'bigint') return left < right ? -1 : left > right ? 1 : 0;
+    return String(left).localeCompare(String(right), 'en');
+  });
+  return out;
+}
+
 function canonicalOrigins(raw) {
+  const typed = sourceOf(raw);
   return {
-    rows: canonicalList(raw.rows, true),
-    addresses: canonicalList(raw.addresses, false),
-    ir: canonicalList(raw.ir, false),
+    rows: canonicalList(typed.rows, true),
+    addresses: canonicalList(typed.addresses, false),
+    ir: canonicalList(typed.ir, false),
     ssaRefs: [
-      ...canonicalList((raw.ssaDefs ?? []).map((value) => `def:${value}`), false),
-      ...canonicalList((raw.ssaUses ?? []).map((value) => `use:${value}`), false),
+      ...canonicalList(typed.ssaDefs.map((value) => `def:${value}`), false),
+      ...canonicalList(typed.ssaUses.map((value) => `use:${value}`), false),
     ].sort((left, right) => left.localeCompare(right, 'en')),
   };
 }
@@ -687,7 +703,7 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     ...record,
     ...(record.originHistory ? { renderedBinding:entityRefs.size ? 'producer-bound' : 'unresolved' } : {}),
     origin:Object.freeze({
-      addresses:Object.freeze(canonicalList(record.origin.addresses, false)),
+      addresses:Object.freeze(canonicalLedgerAddresses(sourceOf(record.origin).addresses)),
       rows:Object.freeze(canonicalList(record.origin.rows, true)),
       ir:Object.freeze(canonicalList(record.origin.ir, false)),
       ssaDefs:Object.freeze(canonicalList(record.origin.ssaDefs, false)),

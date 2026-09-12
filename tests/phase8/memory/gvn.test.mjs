@@ -1,3 +1,4 @@
+import { publishFixtureAnalyses } from '../helpers/analysis-fixtures.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -51,12 +52,8 @@ test('GVN refuses a scalar artifact with stale identity', () => {
   f.constant(7, 32);
   f.ret();
   const ir = f.build();
-  const seed = seedAnalysisState(ir);
-  // __write was intentionally removed. Seed the same stale fixture through
-  // the public constructor; do not restore an unguarded mutation capability.
-  const initial = Object.fromEntries(Object.keys(seed.snapshot())
-    .filter(key => seed.version(key) > 0).map(key => [key, seed.get(key)]));
-  const state = createAnalysisState({ ...initial, ranges: Object.freeze({
+  const state = seedAnalysisState(ir);
+  publishFixtureAnalyses(state, { ranges: Object.freeze({
     completeness: 'complete',
     identity: { ...VALID_IDENTITY, snapshotId: 'old-snapshot' },
     facts: new Map(),

@@ -510,9 +510,16 @@ export function projectNode(node, context) {
         setBasic(V1_OP.ADDR, node.operator || 'address', []);
         inst.extra.value = c.value;
         if (primaryOutput) primaryOutput.const = BigInt.asUintN(primaryOutput.bits || 64, c.value);
-      } else {
-        setBasic(V1_OP.MOV, null);
+      } else if (['add', 'sub'].includes(node.operator) && inputValues.length === 2
+        && inputValues.every(value => value.bits === primaryOutput?.bits)) {
+        // The canonical address already contains the shift/extension nodes.
+        // Preserve both operands; MOV would silently discard the index in SCCP.
+        setBasic(V1_OP.BIN, node.operator);
         inst.extra.addressSemantic = true;
+      } else {
+        setBasic(V1_OP.UNKNOWN, 'address');
+        inst.extra.addressSemantic = true;
+        inst.extra.reason = 'canonical-address-operation-not-projected';
       }
       break;
     }

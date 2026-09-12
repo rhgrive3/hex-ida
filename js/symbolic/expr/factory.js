@@ -31,6 +31,23 @@ export function resetSymbolCounterForTesting(val = 0) {
   symbolCounter = val;
 }
 
+/**
+ * Runs a deserialization body against the process-global fresh-symbol
+ * allocator as a single transaction: reservations made by restoreFreshSymbol
+ * while the body executes are committed only if the body returns normally.
+ * Any throw restores the counter to its pre-call value, so a malformed
+ * payload can never permanently advance (or exhaust) the id space (#5149).
+ */
+export function withSymbolAllocatorTransaction(run) {
+  const savedSymbolCounter = symbolCounter;
+  try {
+    return run();
+  } catch (error) {
+    symbolCounter = savedSymbolCounter;
+    throw error;
+  }
+}
+
 export function createBool(value) {
   if (typeof value !== 'boolean') {
     throw new TypeError(`createBool: value must be a boolean, got ${value}`);
@@ -183,7 +200,11 @@ export function createCompare(op, left, right) {
 }
 
 export function createConnective(op, ...args) {
-  return createConnectiveFromArray(op, args);
+  // Accept an array as the sole argument for callers which cannot use a
+  // variadic call (deserialization of a large connective), while retaining
+  // the dense-data validation in the array constructor.
+  const actualArgs = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
+  return createConnectiveFromArray(op, actualArgs);
 }
 
 // Deserialization can admit more operands than the engine's call-argument

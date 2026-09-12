@@ -16,6 +16,7 @@ import {
   createBv,
   createFreshSymbol,
   restoreFreshSymbol,
+  withSymbolAllocatorTransaction,
   createUnknownSemantic,
   createUnary,
   createBinary,
@@ -301,13 +302,19 @@ function plainNodeToExpr(plain, depth = 0, budget = { nodes: 0 }) {
 }
 
 export function plainToExpr(plain) {
-  // The symbol-reservation pass and materialization pass are two traversals of
-  // the same logical DAG. Keep independent work counters so the public node
-  // budget describes input nodes rather than being consumed twice (#5489).
-  const reserveBudget = { nodes: 0 };
-  reserveCanonicalFreshSymbolIds(plain, new Map(), 0, reserveBudget);
-  const materializeBudget = { nodes: 0 };
-  return plainNodeToExpr(plain, 0, materializeBudget);
+  // The reservation and materialization passes both mint/advance global fresh
+  // symbol ids, so run them as one allocator transaction: a throw from either
+  // pass must roll the counter back and cannot deplete the id space (#5149).
+  return withSymbolAllocatorTransaction(() => {
+    // The symbol-reservation pass and materialization pass are two traversals
+    // of the same logical DAG. Keep independent work counters so the public
+    // node budget describes input nodes rather than being consumed twice
+    // (#5489).
+    const reserveBudget = { nodes: 0 };
+    reserveCanonicalFreshSymbolIds(plain, new Map(), 0, reserveBudget);
+    const materializeBudget = { nodes: 0 };
+    return plainNodeToExpr(plain, 0, materializeBudget);
+  });
 }
 
 export function serializeExprDag(node, options = {}) {

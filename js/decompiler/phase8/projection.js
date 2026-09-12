@@ -19,6 +19,7 @@ import {
 import { buildRenderProvenance, DEFAULT_RENDER_TRANSFORM_RECORDS } from './render-provenance.js';
 import { readDceResultProof } from './dce.js';
 import { normalizeCompatibilityLine } from '../switch.js';
+import { beginScopedTransformCapture, finishScopedTransformCapture } from './scoped-transform-capture.js';
 
 export const PHASE8_PROJECTION_VERSION = 3;
 
@@ -496,6 +497,7 @@ function deadCallResultPlans(result, analysis, consumers, shouldAbort) {
 export function applyPhase8Projection(result, analysis, opts = {}) {
   if (!result?.semantic || !result.semanticAst || !result.cAst || !analysis) return result;
   const original = result;
+  const scopedCapture = beginScopedTransformCapture(result, opts.scopedTransformEvidence);
   const renderOnly = opts.preserveInitialSpelling === true && opts.phase8RewritePlan == null;
   const proofOnly = opts.phase8ProofOnlyRewrites === true || producerUsesProofOnlyRewrites(original);
   const inherited = readProjectionHistory(original);
@@ -893,8 +895,10 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   } else if (stillCurrent) {
     projectionHistories.set(result.cAst, { ...pendingHistory, projection:withLines.phase8Projection });
   }
+  const scopedTransforms = finishScopedTransformCapture(scopedCapture, withLines);
   return {
     ...withLines,
     renderProvenance,
+    ...(scopedTransforms ? { scopedTransforms } : {}),
   };
 }

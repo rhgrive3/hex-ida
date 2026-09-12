@@ -67,6 +67,17 @@ function integerConstant(value, node) {
   return parsed;
 }
 
+function integerConstantForOperand(operand, nodeByOutput, valueById) {
+  if (operand == null || (typeof operand === 'object' && operand !== null) || typeof operand === 'function') return null;
+  const producer = nodeByOutput.get(operand);
+  const value = valueById.get(String(operand));
+  const hasConstantSource = producer != null || value?.metadata?.constant != null;
+  if (hasConstantSource) return integerConstant(value, producer);
+  return typeof operand === 'number' || typeof operand === 'bigint'
+    ? parseIntegerConstant(operand)
+    : null;
+}
+
 // Instruction origin evidence carries the same primitive non-empty string
 // contract as the canonical origin set (#5776): a structured value must never
 // launder into a canonical instruction evidence ID via String(), so malformed
@@ -312,12 +323,19 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       } else if (producer?.kind === 'copy' || producer?.kind === 'bitcast') {
         next(producer.inputs?.[0]);
       } else if (producer?.kind === 'binary' && ['add', 'sub'].includes(producer.operator)) {
-        const right = producer.inputs?.[1], rightProducer = nodeByOutput.get(right), rightValue = valueById.get(String(right));
-        const num = rightProducer != null || rightValue?.metadata?.constant != null
-          ? integerConstant(rightValue, rightProducer)
-          : (typeof right === 'number' || typeof right === 'bigint' ? parseIntegerConstant(right) : null);
-        if (num != null) next(producer.inputs?.[0], false, producer.operator === 'sub' ? -num : num);
-        else result.push({ curr, offset });
+        const left = producer.inputs?.[0];
+        const right = producer.inputs?.[1];
+        const rightConstant = integerConstantForOperand(right, nodeByOutput, valueById);
+        if (rightConstant != null) {
+          next(left, false, producer.operator === 'sub' ? -rightConstant : rightConstant);
+        } else if (producer.operator === 'add') {
+          // Addition is commutative. Recover a constant-left form while
+          // retaining the same conservative fail-closed handling as the
+          // right-constant path; subtraction remains base-minus-constant only.
+          const leftConstant = integerConstantForOperand(left, nodeByOutput, valueById);
+          if (leftConstant != null) next(right, false, leftConstant);
+          else result.push({ curr, offset });
+        } else result.push({ curr, offset });
       } else result.push({ curr, offset });
     }
     return result;

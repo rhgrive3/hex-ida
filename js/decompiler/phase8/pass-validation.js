@@ -8,14 +8,19 @@
  * memory access, exceptional edge or architectural side effect is removed.
  */
 import { stableDigest } from '../../core/identity/index.js';
-import { committedProofOverlay } from './transaction.js';
-import { OP } from '../../ir-base.js';
+import { committedProofOverlay, configurePhase8ProofApi } from './transaction.js';
+// Use the dependency-free canonical opcode vocabulary. Importing the public
+// ir-base facade would route through pipeline/index and create an evaluation
+// cycle before this pass can issue its descriptor.
+import { OP } from '../../architecture/compat/ir-core-arm64-aapcs64-v1.js';
 import { createTaintModels } from '../../symbolic/taint/models.js';
 import { queryRecord, queryArray } from '../../symbolic/memory/data-input.js';
 import { createQueryGuard, QueryFailure, memoryIdentity, sameMemoryIdentity } from '../../symbolic/memory/query-state.js';
 import { semanticValueIdentity } from '../../symbolic/memory/value-identity.js';
 import { createPassDescriptor, createPassResult, unchangedResult, ANALYSIS_KEYS } from './contract.js';
 import { compileProofExpression } from './proof-expression.js';
+import { hasCanonicalEquivalenceAuthority, recomputeEquivalenceProofId } from './pass-validation-core.js';
+export * from './pass-validation-core.js';
 
 const plans = new WeakMap();
 const validations = new WeakMap();
@@ -394,3 +399,149 @@ export function readProvedInputBindings(analysis, context) {
   const record = plans.get(artifacts.get(artifact));
   return Object.freeze({ artifact, bindings:record.inputBindings });
 }
+
+// Generic C4-04 validation metadata is retained as a private sidecar. The
+// scalar proof plan above remains the only producer of solver proof overlays;
+// these helpers only preserve validated transform annotations across wrappers.
+const VALIDATED_REWRITE_METADATA = new WeakMap();
+const STATUSES = new Set(['equivalent', 'refuted', 'unknown', 'unsupported']);
+const METADATA_LIMITS = Object.freeze({ maxDepth:64, maxNodes:16384, maxArrayLength:8192, maxObjectKeys:4096 });
+
+function metadataFail(code) { throw new TypeError(code); }
+function metadataNonEmpty(value, code) {
+  if (typeof value !== 'string' || value.length === 0) metadataFail(code);
+  return value;
+}
+
+function metadataCloneOwned(value, state = { depth:0, nodes:0, active:new WeakSet() }) {
+  state.nodes += 1;
+  if (state.nodes > METADATA_LIMITS.maxNodes || state.depth > METADATA_LIMITS.maxDepth) metadataFail('phase8-rewrite-metadata-limit');
+  if (value == null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) metadataFail('phase8-rewrite-metadata-nonfinite-number');
+    return value;
+  }
+  if (typeof value === 'undefined') return undefined;
+  if (typeof value !== 'object') metadataFail('phase8-rewrite-metadata-unsupported-value');
+  if (state.active.has(value)) metadataFail('phase8-rewrite-metadata-cycle');
+  state.active.add(value); state.depth += 1;
+  try {
+    if (Array.isArray(value)) {
+      if (value.length > METADATA_LIMITS.maxArrayLength) metadataFail('phase8-rewrite-metadata-limit');
+      const out = [];
+      for (let i = 0; i < value.length; i += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(i));
+        if (!descriptor || !Object.hasOwn(descriptor, 'value')) metadataFail('phase8-rewrite-metadata-accessor');
+        out.push(metadataCloneOwned(descriptor.value, state));
+      }
+      return Object.freeze(out);
+    }
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) metadataFail('phase8-rewrite-metadata-noncanonical-object');
+    const keys = Reflect.ownKeys(value);
+    if (keys.length > METADATA_LIMITS.maxObjectKeys || keys.some((key) => typeof key !== 'string')) metadataFail('phase8-rewrite-metadata-noncanonical-object');
+    const out = {};
+    for (const key of keys.sort()) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !Object.hasOwn(descriptor, 'value')) metadataFail('phase8-rewrite-metadata-accessor');
+      out[key] = metadataCloneOwned(descriptor.value, state);
+    }
+    return Object.freeze(out);
+  } finally {
+    state.depth -= 1;
+    state.active.delete(value);
+  }
+}
+
+function metadataValidationRecord(value) {
+  if (typeof value === 'string') {
+    if (!STATUSES.has(value)) metadataFail(`phase8-pass-transform-validation-unknown:${value}`);
+    if (value === 'equivalent') metadataFail('phase8-pass-transform-validation-equivalence-authority-required');
+    return Object.freeze({ record:Object.freeze({ validation:value }), equivalenceAuthority:false });
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) metadataFail('phase8-pass-transform-validation-invalid');
+  const validation = metadataNonEmpty(value.validation, 'phase8-pass-transform-validation-required');
+  if (!STATUSES.has(validation)) metadataFail(`phase8-pass-transform-validation-unknown:${validation}`);
+  if (validation === 'equivalent') {
+    const record = Object.freeze({
+      validation,
+      equivalenceProofId:metadataNonEmpty(value.equivalenceProofId, 'phase8-pass-transform-validation-proof-required'),
+      verifier:metadataNonEmpty(value.verifier, 'phase8-pass-transform-validation-verifier-required'),
+      verdictSource:value.verdictSource == null ? null : metadataNonEmpty(value.verdictSource, 'phase8-pass-transform-validation-verdict-source-required'),
+      solverStatus:value.solverStatus == null ? null : metadataNonEmpty(value.solverStatus, 'phase8-pass-transform-validation-solver-status-required'),
+      completeness:value.completeness == null ? null : metadataCloneOwned(value.completeness),
+      queryHash:metadataNonEmpty(value.queryHash, 'phase8-pass-transform-validation-query-hash-required'),
+    });
+    if (!hasCanonicalEquivalenceAuthority(value)) metadataFail('phase8-pass-transform-validation-equivalence-authority-required');
+    return Object.freeze({ record, equivalenceAuthority:true });
+  }
+  return Object.freeze({
+    record:Object.freeze({
+      validation,
+      reason:value.reason == null ? null : metadataNonEmpty(value.reason, 'phase8-pass-transform-validation-reason-required'),
+      verifier:value.verifier == null ? null : metadataNonEmpty(value.verifier, 'phase8-pass-transform-validation-verifier-required'),
+      solverStatus:value.solverStatus == null ? null : metadataNonEmpty(value.solverStatus, 'phase8-pass-transform-validation-solver-status-required'),
+      counterexample:value.counterexample == null ? null : metadataCloneOwned(value.counterexample),
+    }),
+    equivalenceAuthority:false,
+  });
+}
+
+function metadataSameList(left, right) {
+  return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+    && left.every((value, index) => value === right[index]);
+}
+
+export function createValidatedPassResult(input = {}) {
+  const rawTransforms = input.transforms ?? [];
+  if (!Array.isArray(rawTransforms)) metadataFail('phase8-pass-transforms-invalid');
+  const baseTransforms = [];
+  const extras = [];
+  for (const raw of rawTransforms) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) metadataFail('phase8-pass-transform-invalid');
+    baseTransforms.push({ kind:raw.kind, targets:raw.targets, proof:raw.proof, originRefs:raw.originRefs });
+    const extra = {};
+    let equivalenceAuthority = false;
+    if (Object.hasOwn(raw, 'rewrite')) extra.rewrite = metadataCloneOwned(raw.rewrite);
+    if (Object.hasOwn(raw, 'unvalidatedReason')) extra.unvalidatedReason = metadataNonEmpty(raw.unvalidatedReason, 'phase8-pass-transform-unvalidated-reason-required');
+    if (Object.hasOwn(raw, 'validation')) {
+      const validated = metadataValidationRecord(raw.validation);
+      extra.validation = validated.record;
+      equivalenceAuthority = validated.equivalenceAuthority;
+    }
+    extras.push(Object.freeze({ extra:Object.freeze(extra), equivalenceAuthority }));
+  }
+  const result = createPassResult({ ...input, transforms:baseTransforms });
+  const entries = result.transforms.map((transform, index) => Object.freeze({
+    base:Object.freeze({ kind:transform.kind, targets:transform.targets, proof:transform.proof, originRefs:transform.originRefs }),
+    extra:extras[index].extra,
+    equivalenceAuthority:extras[index].equivalenceAuthority,
+  }));
+  VALIDATED_REWRITE_METADATA.set(result, Object.freeze(entries));
+  return result;
+}
+
+export function validatedRewriteMetadataFor(result) { return VALIDATED_REWRITE_METADATA.get(result) ?? null; }
+
+export function attachValidatedRewriteMetadata(result, metadata) {
+  if (!Array.isArray(metadata) || metadata.length !== result.transforms.length) metadataFail('phase8-rewrite-metadata-mismatch');
+  const transforms = result.transforms.map((transform, index) => {
+    const entry = metadata[index];
+    if (!entry || entry.base.kind !== transform.kind || entry.base.proof !== transform.proof
+      || !metadataSameList(entry.base.targets, transform.targets) || !metadataSameList(entry.base.originRefs, transform.originRefs)) metadataFail('phase8-rewrite-metadata-mismatch');
+    return Object.freeze({ ...transform, ...entry.extra });
+  });
+  return Object.freeze({ ...result, transforms:Object.freeze(transforms) });
+}
+
+// Bind the private producer/admission capability only after this module has
+// issued its descriptor and helper functions. transaction-core never imports
+// this module statically, so the binding does not create an evaluation cycle.
+configurePhase8ProofApi({
+  PROOF_REWRITE_PASS,
+  proofAdmissionReason,
+  proofPublicationResult,
+  attachValidatedRewriteMetadata,
+  recomputeEquivalenceProofId,
+  validatedRewriteMetadataFor,
+});
