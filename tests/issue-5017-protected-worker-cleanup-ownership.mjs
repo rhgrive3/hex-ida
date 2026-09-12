@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 const modulePath = new URL('../js/userscript/protected-workers.js', import.meta.url);
-const source = fs.readFileSync(modulePath, 'utf8')
+const hostSource = fs.readFileSync(new URL('../js/userscript/runtime-host-location.js', import.meta.url), 'utf8').replace(/^export /gm, '');
+const source = hostSource + '\n' + fs.readFileSync(modulePath, 'utf8')
   .replace(/^import[^\n]*;\n/gm, '')
   .replace(/^export /gm, '');
 
