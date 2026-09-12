@@ -58,7 +58,7 @@ import {
 } from './lattice.js';
 
 export const A2_ANALYZER_ID = 'phase7.pointsto.a2-local';
-export const A2_ANALYZER_VERSION = '1.2.0';
+export const A2_ANALYZER_VERSION = '1.2.1';
 
 function configuredSummaryArtifactIds(options, calleeId) {
   const ids = [];
@@ -130,6 +130,8 @@ function artifactDescriptorForRun(options, calleeSummaryIds) {
 /** Casts that keep pointer provenance intact when the width does not change. */
 const WIDTH_PRESERVING_CASTS = new Set(['copy', 'bitcast']);
 const WIDTH_CHANGING_CASTS = new Set(['zext', 'sext', 'trunc']);
+const ADDRESS_INTEGER_MACHINE_KINDS = new Set(['bitvector', 'address']);
+const INTEGER_CONSTANT_KINDS = new Set(['bitvector', 'integer']);
 
 function parseInteger(candidate) {
   if (candidate == null) return null;
@@ -142,8 +144,16 @@ function parseInteger(candidate) {
     if (typeof raw === 'number') return Number.isSafeInteger(raw) ? BigInt(raw) : null;
     if (typeof raw !== 'string') return null;
     const text = raw.trim();
-    if (!/^[+-]?(0x[0-9a-fA-F]+|\d+)$/.test(text)) return null;
-    return BigInt(text);
+    // Grammar accepts an explicit `+`/`-` on hex and decimal literals.
+    // `BigInt()` rejects signed radix-prefixed spellings ('-0x10', '+0x10')
+    // and even a signed decimal ('+16'), so the sign is separated before the
+    // magnitude parse; otherwise an accepted input class silently degrades to
+    // an unknown constant while the equivalent spelling stays exact (#5011).
+    if (!/^[+-]?(?:0x[0-9a-fA-F]+|\d+)$/.test(text)) return null;
+    const negative = text.startsWith('-');
+    const magnitude = /^[+-]/.test(text) ? text.slice(1) : text;
+    const parsed = BigInt(magnitude);
+    return negative ? -parsed : parsed;
   } catch { return null; }
 }
 
@@ -152,11 +162,43 @@ function parseInteger(candidate) {
  * does, so A2 and the root service never disagree about what "constant" means.
  */
 function constantOf(value, node) {
-  for (const candidate of [value?.metadata?.constant, node?.attributes?.constant, node?.metadata?.constant]) {
-    const parsed = parseInteger(candidate);
-    if (parsed != null) return parsed;
+  // Canonical address derivation only reads compile-time constants from const
+  // nodes (canonical-address-v2-core derives constants exclusively under
+  // node.kind === 'const'). Adopting integer-looking metadata on state-read/
+  // copy/any non-const operand let A2 mint exact displacements the canonical
+  // authority would reject (#5633).
+  if (node?.kind !== 'const') return null;
+  const candidates = [value?.metadata?.constant, node?.attributes?.constant, node?.metadata?.constant];
+  // Keep A2's displacement authority aligned with the canonical-address
+  // boundary: a float/vector/predicate constant is not an integer offset just
+  // because its payload text parses as one (#5228). Legacy untyped fixtures
+  // remain accepted; canonical Semantic IR always carries a machine kind.
+  const machineType = value?.machineType;
+  let machineKind = null;
+  if (machineType != null && typeof machineType === 'object' && !Array.isArray(machineType)
+      && Object.hasOwn(machineType, 'kind')) {
+    if (!ADDRESS_INTEGER_MACHINE_KINDS.has(machineType.kind)) return null;
+    machineKind = machineType.kind;
   }
-  return null;
+  for (const candidate of candidates) {
+    if (candidate == null || typeof candidate !== 'object' || Array.isArray(candidate)
+        || !Object.hasOwn(candidate, 'kind')) continue;
+    const kind = candidate.kind;
+    const integerKind = INTEGER_CONSTANT_KINDS.has(kind);
+    const addressKind = kind === 'address' && (machineKind == null || machineKind === 'address');
+    if (!integerKind && !addressKind) return null;
+  }
+  let resolved = null;
+  for (const candidate of candidates) {
+    const parsed = parseInteger(candidate);
+    if (parsed == null) continue;
+    if (resolved == null) {
+      resolved = parsed;
+      continue;
+    }
+    if (parsed !== resolved) return null;
+  }
+  return resolved;
 }
 
 function widthOf(value, node) {
@@ -200,7 +242,7 @@ function storedPointerSetIsValid(set, value, widthBits) {
   if (!originIds.size) return false;
   for (const target of set.targets) {
     if (!target || typeof target !== 'object' || !target.rootKey) return false;
-    if (!['rooted', 'stack-like', 'absolute'].includes(String(target.rootKind))) return false;
+    if (!['rooted', 'stack-like', 'absolute', 'allocation'].includes(String(target.rootKind))) return false;
     if (target.widthBits !== widthBits) return false;
     if (!target.offsetRange || typeof target.offsetRange !== 'object') return false;
     const { min, max } = target.offsetRange;
@@ -460,7 +502,7 @@ function prepareMemoryBoundary(ir, nodes, values, options, budget) {
 }
 
 /** Turns an exact canonical proof into a singleton points-to set. */
-function targetFromCanonicalProof(proof, evidenceIds) {
+export function targetFromCanonicalProof(proof, evidenceIds) {
   if (!proof || proof.kind === 'unknown' || proof.kind === 'root-only') return null;
   if (proof.kind === 'constant') {
     return createPointsToTarget({
@@ -556,17 +598,27 @@ function targetFromReturnProvenance(provenance, widthBits, evidenceIds) {
   if (provenance?.kind !== 'root' && provenance?.kind !== 'allocation') return null;
   const rootEntityId = provenance.rootEntityId ?? provenance.allocationSiteId ?? null;
   if (rootEntityId == null || !String(rootEntityId).trim()) return null;
+  // Storage space is required canonical identity on root/allocation facts
+  // (#5242), so the caller's target keeps the callee's storage semantics.
+  // A fact without one is a legacy/under-specified shape: fail closed to
+  // unresolved rather than fabricating a memory root (#5956 refused the
+  // self-asserted addressSpace; #5242 makes the canonical one real).
+  const addressSpace = typeof provenance.addressSpace === 'string' && provenance.addressSpace.trim()
+    ? provenance.addressSpace.trim()
+    : null;
+  if (addressSpace == null) return null;
   let offset;
   try { offset = BigInt(provenance.offset ?? 0n); }
   catch { return null; }
   // Only canonical wire-contract fields are read here. Extra fields a forged
-  // serialized summary might carry (addressSpace/separationClass/
-  // separationAuthority) are not producer-emittable and must never become
-  // target authority (#5956).
+  // serialized summary might carry (separationClass/separationAuthority/
+  // rootIdentity) are not producer-emittable and must never become target
+  // authority (#5956): separation authority stays at the mint boundary
+  // (#6066), and rootIdentity is not part of the FunctionSummary contract.
   return createPointsToTarget({
-    addressSpace: 'memory',
+    addressSpace,
     rootKind: provenance.kind === 'allocation' ? 'allocation' : 'rooted',
-    rootIdentity: provenance.rootIdentity ?? null,
+    rootIdentity: null,
     rootEntityId: String(rootEntityId),
     offsetRange: exactRange(offset),
     widthBits,
@@ -621,6 +673,20 @@ function entryRootTarget(definition, functionId, values) {
  */
 export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
   const budget = { ...POINTS_TO_DEFAULT_BUDGET, ...(options.budget ?? {}) };
+  // The termination gates compare against these numbers, so a non-finite or
+  // non-integer cap (e.g. NaN) would silently disable both the iteration cap
+  // and the widening switch and hang the synchronous solve (#5322). Fail
+  // closed at the option boundary, matching the lattice's budget contract.
+  for (const key of ['maxIterations', 'widenAfterIterations']) {
+    const value = budget[key];
+    const minimum = key === 'maxIterations' ? 1 : 0;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) {
+      throw new TypeError('points-to-invalid-budget-value');
+    }
+  }
+  if (typeof budget.maxValues !== 'number' || !Number.isSafeInteger(budget.maxValues) || budget.maxValues <= 0) {
+    throw new TypeError('points-to-invalid-budget-value');
+  }
   const values = new Map((ir.values ?? []).map((value) => [String(value.id), value]));
   const nodes = new Map((ir.nodes ?? []).map((node) => [String(node.id), node]));
   const functionId = String(ir.functionId);
@@ -673,10 +739,30 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
 
   // Canonical proofs are computed once per value. They are the exact answers;
   // the fixed point only has to improve on the merged and cyclic ones.
+  // Each address-typed value carries its own physical address space; without
+  // it the derivation assumes 'memory' and identical numeric pointers from
+  // different spaces collapse into false MustAlias targets (#5234).
   const canonical = new Map();
+  const canonicalOptions = options.canonicalOptions ?? {};
+  const configuredAddressSpace = canonicalOptions?.addressSpace ?? null;
   for (const id of values.keys()) {
     let proof;
-    try { proof = deriveCanonicalAddressProof(ir, id, { ssa, ...(options.canonicalOptions ?? {}) }); }
+    try {
+      const value = values.get(id);
+      const valueSpace = value?.machineType?.kind === 'address' && value.machineType.addressSpace != null
+        ? value.machineType.addressSpace
+        : null;
+      // A global caller authority and the per-value machine type are both
+      // provenance claims. If they disagree, choosing either side would mint
+      // an exact proof from contradictory metadata, so fail closed (#5234).
+      proof = valueSpace != null && configuredAddressSpace != null && valueSpace !== configuredAddressSpace
+        ? null
+        : deriveCanonicalAddressProof(ir, id, {
+          ssa,
+          ...canonicalOptions,
+          ...(valueSpace != null ? { addressSpace: valueSpace } : {}),
+        });
+    }
     catch { proof = null; }
     canonical.set(id, proof);
   }
@@ -793,7 +879,17 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
       return merged;
     }
 
-    if (WIDTH_PRESERVING_CASTS.has(node.kind) && node.inputs.length === 1) return irGet(node.inputs[0]);
+    if (WIDTH_PRESERVING_CASTS.has(node.kind) && node.inputs.length === 1) {
+      const inputValue = values.get(String(node.inputs[0]));
+      const inputNode = inputValue?.definitionNodeId == null
+        ? null
+        : nodes.get(String(inputValue.definitionNodeId));
+      const inputWidth = widthOf(inputValue, inputNode);
+      if (inputWidth == null || width == null || inputWidth !== width) {
+        return topPointsTo('integer-to-pointer');
+      }
+      return irGet(node.inputs[0]);
+    }
     if (WIDTH_CHANGING_CASTS.has(node.kind) && node.inputs.length === 1) {
       const inputValue = values.get(String(node.inputs[0]));
       const inputWidth = widthOf(inputValue, null);

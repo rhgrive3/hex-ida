@@ -40,7 +40,10 @@ const AMBIGUOUS_TAIL_A = { name: '__TAILA', vmaddr: 0x1000, vmsize: 0x180, fileo
 const AMBIGUOUS_TAIL_B = { name: '__TAILB', vmaddr: 0x1080, vmsize: 0x200, fileoff: 0x300, filesize: 0x80 };
 
 function fatMachO32(thin) {
-  const offset = 0x1000;
+  // arm64 thin slices are 16K-page-aligned containers (validateFatSlice gate,
+  // 873441606): the slice offset must stay within the alignment contract so
+  // this fixture exercises the #7064 ownership gate, not the alignment gate.
+  const offset = 0x4000;
   const bytes = new Uint8Array(offset + thin.length);
   const view = new DataView(bytes.buffer);
   view.setUint32(0, 0xcafebabe, false);

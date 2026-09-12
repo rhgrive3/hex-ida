@@ -1,3 +1,4 @@
+import { stableDigest } from '../core/identity/index.js';
 import { validatePluginManifest, checkManifestCompatibility, PluginCompatibilityError } from './plugin-manifest.js';
 
 const TYPES = new Set(['format', 'architecture', 'analyzer', 'knowledgeProvider', 'signatureProvider', 'recognitionProvider', 'viewContribution', 'goalProvider']);
@@ -36,6 +37,30 @@ function safeSnapshot(value) {
   if (typeof structuredClone === 'function') { try { clone = structuredClone(value); } catch { clone = fallbackClone(value); } }
   else clone = fallbackClone(value);
   return deepFreeze(clone);
+}
+
+function makeBudgetCapability(budget) {
+  if (!budget || (typeof budget !== 'object' && typeof budget !== 'function')) return undefined;
+  const capability = Object.create(null);
+  if (typeof budget.consume === 'function') {
+    Object.defineProperty(capability, 'consume', {
+      enumerable: true,
+      value: (resource, amount = 1) => budget.consume(resource, amount),
+    });
+  }
+  if (typeof budget.remaining === 'function') {
+    Object.defineProperty(capability, 'remaining', {
+      enumerable: true,
+      value: (resource) => budget.remaining(resource),
+    });
+  }
+  if (typeof budget.snapshot === 'function') {
+    Object.defineProperty(capability, 'snapshot', {
+      enumerable: true,
+      value: (options) => safeSnapshot(options === undefined ? budget.snapshot() : budget.snapshot(safeSnapshot(options))),
+    });
+  }
+  return Object.freeze(capability);
 }
 
 function withInvocationSignal(snapshot, signal) {
@@ -166,6 +191,25 @@ function validateContributionId(id) {
   return id;
 }
 
+const LEGACY_ANALYZER_PLUGIN_PREFIX = 'legacy.analyzer.';
+const LEGACY_ANALYZER_HASHED_PLUGIN_PREFIX = 'legacy.analyzer-hash.';
+const PLUGIN_ID_MAX_LENGTH = 128;
+
+function legacyAnalyzerPluginId(id) {
+  const direct = `${LEGACY_ANALYZER_PLUGIN_PREFIX}${id}`;
+  if (direct.length <= PLUGIN_ID_MAX_LENGTH) return direct;
+
+  // Keep long synthetic IDs in a disjoint namespace so no valid short legacy
+  // analyzer ID can alias the bounded representation. The contribution ID
+  // itself remains untouched and continues to carry the public identity.
+  const digest = stableDigest(id);
+  const retainedLength = PLUGIN_ID_MAX_LENGTH
+    - LEGACY_ANALYZER_HASHED_PLUGIN_PREFIX.length
+    - 1
+    - digest.length;
+  return `${LEGACY_ANALYZER_HASHED_PLUGIN_PREFIX}${id.slice(0, retainedLength)}.${digest}`;
+}
+
 export class PlatformPluginRegistry {
   constructor(options = {}) {
     this.entries = new Map([...TYPES].map((type) => [type, new Map()]));
@@ -181,7 +225,7 @@ export class PlatformPluginRegistry {
     if (!contribution || typeof contribution !== 'object') throw new TypeError('plugin contribution must be an object');
     const validId = validateContributionId(id);
     const legacyManifest = {
-      id: `legacy.analyzer.${validId}`,
+      id: legacyAnalyzerPluginId(validId),
       name: `Legacy analyzer ${validId}`,
       version: '1.0.0',
       apiVersion: '2.0.0',
@@ -308,7 +352,7 @@ export class PlatformPluginRegistry {
       const safeContext = Object.freeze({
         binary: safeSnapshot(context.binary), capability: safeSnapshot(context.capability), project: safeSnapshot(context.project),
         read: makeReadCapability(context, pluginScope, record),
-        resourceBudget: pluginScope || context.resourceBudget,
+        resourceBudget: makeBudgetCapability(pluginScope || context.resourceBudget),
         reportProgress: typeof context.reportProgress === 'function' ? (...progressArgs) => context.reportProgress(...progressArgs.map((x) => safeSnapshot(x))) : undefined,
         signal: invocationController.signal,
       });

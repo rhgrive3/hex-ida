@@ -4,6 +4,8 @@ const MASK64 = 0xffffffffffffffffn;
 const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
 export const FUNCTION_FINGERPRINT_VERSION = 4;
+const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const RELOCATION_INTEGER_PATTERN = /^[+-]?(?:0[xX][0-9a-fA-F]+|[0-9]+)$/;
 
 export class FingerprintVersionError extends Error {
   constructor(version, schema) {
@@ -50,6 +52,33 @@ function nonEmptyHash(value) {
   if (Array.isArray(value) && value.length === 0) return null;
   if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) return null;
   return hashText(stable(value));
+}
+
+// Relocation coordinates are authority-bearing metadata: only primitive exact
+// integers may become mask ranges. In particular, do not let Number() invoke
+// Array/Object coercion (e.g. ['0'] -> 0) at this identity boundary.
+function primitiveRelocationInteger(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value === 'string' && value === value.trim() && RELOCATION_INTEGER_PATTERN.test(value)) {
+    try { return BigInt(value); } catch {}
+  }
+  return null;
+}
+
+function safeRelocationNumber(value) {
+  const integer = primitiveRelocationInteger(value);
+  return integer == null || integer < -MAX_SAFE_BIGINT || integer > MAX_SAFE_BIGINT ? null : Number(integer);
+}
+
+function isRelocationRecord(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function relocationType(value) {
+  if (!isRelocationRecord(value)) return null;
+  const type = value.type ?? value.relocationType ?? value.kind;
+  return typeof type === 'string' ? type : null;
 }
 
 function fingerprintSchema(value) {
@@ -108,9 +137,34 @@ function numericOther(op) {
   } catch { return null; }
 }
 
+/* Structured immediate payloads are authority-bearing fingerprint material:
+   only canonical primitives may mint a constant — bigint, finite safe-integer
+   number, or a canonical integer string. BigInt() coercion would launder
+   booleans, arrays and structured values into real immediates, and
+   non-coercible shapes would throw (#5036). */
+function canonicalIntegerValue(raw) {
+  if (typeof raw === 'bigint') return raw;
+  if (typeof raw === 'number' && Number.isSafeInteger(raw)) return BigInt(raw);
+  if (typeof raw === 'string') {
+    const text = raw.trim();
+    // BigInt() rejects signed hex ('-0x10'), so split an optional sign from
+    // the magnitude before parsing and reapply it afterwards (#5036).
+    const match = /^([+-]?)(0[xX][0-9a-fA-F]+|\d+)$/.exec(text);
+    if (match) {
+      try {
+        const magnitude = BigInt(match[2]);
+        return match[1] === '-' ? -magnitude : magnitude;
+      } catch { return null; }
+    }
+  }
+  return null;
+}
+
 function canonicalImmediate(op) {
-  if (op?.float != null) return String(op.float);
-  const value = op?.value != null ? BigInt(op.value) : numericOther(op);
+  if (op?.float != null) {
+    return typeof op.float === 'number' && Number.isFinite(op.float) ? String(op.float) : String(op?.text || '');
+  }
+  const value = op?.value != null ? canonicalIntegerValue(op.value) : numericOther(op);
   return value == null ? String(op?.text || '') : '#' + value.toString(10);
 }
 
@@ -135,7 +189,7 @@ function canonicalMem(op, options) {
 function canonicalOperand(op, mnemonic, index, options) {
   const isBranchTarget = BRANCH_MNEMONICS.test(mnemonic) && index === (mnemonic.startsWith('cb') ? 1 : mnemonic.startsWith('tb') ? 2 : 0);
   const isAddressValue = /^adrp?$/.test(mnemonic) && index === 1;
-  const rawNumeric = op?.k === 'imm' ? op.value : numericOther(op);
+  const rawNumeric = op?.k === 'imm' ? canonicalIntegerValue(op.value) : numericOther(op);
   if ((isBranchTarget || isAddressValue) && rawNumeric != null) return isBranchTarget ? '@branch' : '@address';
   if (ADDRESS_MNEMONICS.test(mnemonic) && op?.k !== 'mem' && rawNumeric != null && BigInt(rawNumeric < 0n ? -rawNumeric : rawNumeric) >= 0x1000n) return '@address';
   if (op?.k === 'reg') return canonicalRegister(op, options) + (op.shift ? ',' + canonicalShift(op.shift) : '');
@@ -180,18 +234,23 @@ export function normalizeInstruction(instruction, options = {}) {
 }
 
 function inferredRelocationWidth(raw, architecture = 'unknown') {
-  if (!raw || typeof raw !== 'object') return null;
+  if (!isRelocationRecord(raw)) return null;
   if (raw.width != null || raw.size != null) {
-    const width = Number(raw.width ?? raw.size);
-    return Number.isSafeInteger(width) && width > 0 && width <= 16 ? width : null;
+    const width = primitiveRelocationInteger(raw.width ?? raw.size);
+    return width != null && width > 0n && width <= 16n ? Number(width) : null;
   }
   const length = raw.length ?? raw.r_length;
   if (length != null) {
-    const n = Number(length);
-    if (Number.isSafeInteger(n) && n >= 0 && n <= 4) return 1 << n;
+    const n = primitiveRelocationInteger(length);
+    if (n != null && n >= 0n && n <= 4n) return 1 << Number(n);
+    return null;
   }
-  const arch = String(raw.architecture || raw.arch || architecture || '').toLowerCase();
-  const type = String(raw.type || raw.relocationType || raw.kind || '').toLowerCase();
+  const rawArchitecture = raw.architecture ?? raw.arch;
+  const rawType = raw.type ?? raw.relocationType ?? raw.kind;
+  if ((rawArchitecture != null && typeof rawArchitecture !== 'string')
+    || (rawType != null && typeof rawType !== 'string')) return null;
+  const arch = String(rawArchitecture || architecture || '').toLowerCase();
+  const type = String(rawType || '').toLowerCase();
   if (/arm64|aarch64/.test(arch)) {
     if (/branch26|page21|pageoff12|got_load_page|got_load_pageoff|pointer_to_got|tlvp_load_page|tlvp_load_pageoff|addend/.test(type)) return 4;
     if (/unsigned|authenticated_pointer|pointer64|abs64/.test(type)) return 8;
@@ -208,14 +267,17 @@ function normalizeRelocationsDetailed(bytes, relocationOffsets = [], relocationR
   if (!bytes || !bytes.length) return { bytes:null, unknown:[], masked:[] };
   const out = bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes);
   const ranges = [];
-  for (const raw of relocationOffsets || []) ranges.push(typeof raw === 'object' ? raw : { offset:raw });
-  for (const raw of relocationRanges || []) ranges.push(raw || {});
+  for (const raw of relocationOffsets || []) ranges.push(isRelocationRecord(raw) ? raw : { offset:raw });
+  for (const raw of relocationRanges || []) ranges.push(isRelocationRecord(raw) ? raw : { offset:raw });
   const unknown = [], masked = [];
   for (const raw of ranges) {
-    const offset = Number(raw.offset);
+    const offset = safeRelocationNumber(raw.offset);
     const width = inferredRelocationWidth(raw, architecture);
-    if (!Number.isSafeInteger(offset) || offset < 0 || offset >= out.length) continue;
-    if (!Number.isSafeInteger(width) || width <= 0) { unknown.push({ offset, type:raw.type || raw.relocationType || null }); continue; }
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset >= out.length) {
+      unknown.push({ offset, type: relocationType(raw) });
+      continue;
+    }
+    if (!Number.isSafeInteger(width) || width <= 0) { unknown.push({ offset, type: relocationType(raw) }); continue; }
     const end = Math.min(out.length, offset + width);
     out.fill(0, offset, end);
     masked.push({ offset, width:end - offset });

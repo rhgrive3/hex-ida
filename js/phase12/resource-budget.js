@@ -2,9 +2,12 @@ import { deepFreeze } from '../core/identity/index.js';
 
 export const RESOURCE_BUDGET_VERSION = 'hex-phase12-resource-budget-v1';
 
+function isSafeIntegerNumber(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value);
+}
+
 function positive(value, fallback) {
-  const n = Number(value);
-  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+  return isSafeIntegerNumber(value) && value > 0 ? value : fallback;
 }
 
 /**
@@ -31,8 +34,10 @@ export function createResourceBudget(options = {}) {
   const check = (kind, amount, limit, reason) => {
     if (stopped) return false;
     if (signal?.aborted) return stop('cancelled', signal.reason?.message || null);
-    const value = Number(amount);
-    if (!Number.isSafeInteger(value) || value < 0 || used[kind] + value > limit) return stop(reason, { kind, amount: value, used: used[kind], limit });
+    const value = amount;
+    if (!isSafeIntegerNumber(value) || value < 0 || used[kind] + value > limit) {
+      return stop(reason, { kind, amount: typeof value === 'number' ? value : null, used: used[kind], limit });
+    }
     used[kind] += value;
     return true;
   };
@@ -48,10 +53,10 @@ export function createResourceBudget(options = {}) {
     checkDepth: (depth) => {
       if (stopped) return false;
       if (signal?.aborted) return stop('cancelled', signal.reason?.message || null);
-      const value = Number(depth);
-      return Number.isSafeInteger(value) && value >= 0 && value <= limits.maxDepth
+      const value = depth;
+      return isSafeIntegerNumber(value) && value >= 0 && value <= limits.maxDepth
         ? true
-        : stop('resource-limit-depth', { depth: value, limit: limits.maxDepth });
+        : stop('resource-limit-depth', { depth: typeof value === 'number' ? value : null, limit: limits.maxDepth });
     },
     checkpoint: () => {
       if (stopped) return false;
