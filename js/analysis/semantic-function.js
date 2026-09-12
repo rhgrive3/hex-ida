@@ -9,6 +9,8 @@ import {
   canonicalDecodedInstructions,
   createSemanticCallPrototypeAuthority,
   isSemanticCallPrototypeAuthority,
+  normalizeSemanticEndianness,
+  semanticMachineEffectsContext,
   semanticAbiAdapter,
   semanticControlUnknowns,
 } from './semantic-function-base.js';
@@ -273,19 +275,7 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
   const architecturePlugin = architecturePluginV2(architectureId);
   if (!architecturePlugin || architecturePlugin.id !== architectureId) throw new TypeError('semantic-function-architecture-not-registered');
   if (typeof architecturePlugin.liftExact !== 'function') throw new TypeError('semantic-function-architecture-lifter-required');
-  const requestedInstructionEndianness = input.instructionEndianness ?? input.endianness ?? input.endian;
-  if (requestedInstructionEndianness != null) {
-    const endian = normalizedProtocolSelector(requestedInstructionEndianness, 'semantic-function-invalid-instruction-endianness');
-    const supported = architecturePlugin.supportedInstructionEndianness ?? [];
-    if (supported.length && !supported.includes(endian))
-      throw new TypeError(`semantic-function-unsupported-instruction-endianness:${endian}`);
-  }
-  const requestedMemoryEndianness = input.dataEndianness ?? input.memoryEndianness ?? input.endian ?? null;
-  if (requestedMemoryEndianness != null) {
-    const endian = normalizedProtocolSelector(requestedMemoryEndianness, 'semantic-function-invalid-memory-endianness');
-    const supported = architecturePlugin.supportedMemoryEndianness ?? [];
-    if (supported.length && !supported.includes(endian)) throw new TypeError(`semantic-function-unsupported-memory-endianness:${endian}`);
-  }
+  const endianness = normalizeSemanticEndianness(input, architecturePlugin);
   const abiPlugin = resolveABIPlugin({ architecture:architectureId, platform:input.platform, abiId:input.abiId });
   if (!abiPlugin?.supported) throw new TypeError('semantic-function-supported-abi-required');
   if (abiPlugin.architectureId !== architectureId) throw new TypeError('semantic-function-abi-architecture-mismatch');
@@ -315,10 +305,7 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
     completeness: controlUnknowns.length ? 'partial' : 'complete',
     unknowns: controlUnknowns,
     abiAdapter,
-    machineEffectsContext:input.machineEffectsContext ?? {
-      dataEndianness:input.dataEndianness,
-      instructionEndianness:input.instructionEndianness,
-    },
+    machineEffectsContext:semanticMachineEffectsContext(input, endianness),
   }, { signal:options.signal, abiAdapter });
   abortIfRequested(options.signal);
   const decodedByInstructionId = new Map(pipeline.machineEffects.map((bundle, index) => [bundle.instructionId, orderedInstructions[index]]));
@@ -369,8 +356,8 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
     abiSemanticVersion:abiPlugin.semanticVersion,
     decoderSemanticVersion,
     analysisContext:Object.freeze({
-      dataEndianness:input.dataEndianness ?? null,
-      instructionEndianness:input.instructionEndianness ?? null,
+      dataEndianness:endianness.dataEndianness,
+      instructionEndianness:endianness.instructionEndianness,
       architectureProfile:input.architectureProfile ?? null,
     }),
     pipeline:pipelineSnapshot(pipeline),
