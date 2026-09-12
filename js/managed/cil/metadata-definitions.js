@@ -21,6 +21,11 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     try { return utf8.decode(bytes.subarray(start, pos)); }
     catch { fail('cil-invalid-strings-utf8'); }
   };
+  const requiredText = (value, code) => {
+    const valueText = text(value);
+    if (valueText == null || valueText.length === 0) fail(code);
+    return valueText;
+  };
   const readRows = (table, decode) => Array.from({ length: counts[table] }, (_, i) => {
     const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
     return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
@@ -77,7 +82,7 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     }
     return {
       resolutionScope,
-      name: text(index(pos + resolutionScopeSize, s)),
+      name: requiredText(index(pos + resolutionScopeSize, s), 'cil-typeref-name-required'),
       namespace: text(index(pos + resolutionScopeSize + s, s)) ?? '',
     };
   });
@@ -102,7 +107,7 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
       flags: view.getUint32(pos + 8, true),
       publicKeyOrTokenBlobIndex,
       publicKeyOrToken,
-      name: text(index(pos + 12 + b, s)),
+      name: requiredText(index(pos + 12 + b, s), 'cil-assembly-ref-name-required'),
       culture: text(index(pos + 12 + b + s, s)),
       hashValueBlobIndex,
       hashValue,

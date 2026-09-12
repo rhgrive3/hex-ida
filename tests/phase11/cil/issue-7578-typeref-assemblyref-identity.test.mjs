@@ -1,9 +1,9 @@
 // #7578: TypeRef (0x01) / AssemblyRef (0x23) external type identity authority.
 import assert from 'node:assert/strict';
 
-import { buildCil, collect } from './phase11/fixtures/medium-cil.mjs';
-import { parseCil, probeCil } from '../js/managed/cil/parser.js';
-import { CilFrontend } from '../js/managed/cil/frontend.js';
+import { buildCil, collect } from '../fixtures/medium-cil.mjs';
+import { parseCil, probeCil } from '../../../js/managed/cil/parser.js';
+import { CilFrontend } from '../../../js/managed/cil/frontend.js';
 
 const utf8 = (s) => [...new TextEncoder().encode(s), 0];
 
@@ -177,6 +177,16 @@ assert.throws(() => parseCil(baseFixture(typeRefRow(SCOPE_ASSEMBLYREF_A, 200)), 
 assert.throws(() => parseCil(baseFixture(typeRefRow(SCOPE_ASSEMBLYREF_A), assemblyRefRows({ corruptNameIndex: 200 })),
   { binaryId: 'badrefname' }),
   /cil-definition-string-index-invalid|cil-unsupported-binary/);
+assert.throws(() => parseCil(baseFixture(typeRefRow(SCOPE_ASSEMBLYREF_A, 0)), { binaryId: 'typeref-null-name' }),
+  /cil-typeref-name-required|cil-unsupported-binary/);
+assert.throws(() => parseCil(baseFixture(typeRefRow(SCOPE_ASSEMBLYREF_A, STR.N - 1)), { binaryId: 'typeref-empty-name' }),
+  /cil-typeref-name-required|cil-unsupported-binary/);
+assert.throws(() => parseCil(baseFixture(typeRefRow(SCOPE_ASSEMBLYREF_A), assemblyRefRows({ corruptNameIndex: 0 })),
+  { binaryId: 'assemblyref-null-name' }),
+  /cil-assembly-ref-name-required|cil-unsupported-binary/);
+assert.throws(() => parseCil(baseFixture(typeRefRow(SCOPE_ASSEMBLYREF_A), assemblyRefRows({ corruptNameIndex: STR.N - 1 })),
+  { binaryId: 'assemblyref-empty-name' }),
+  /cil-assembly-ref-name-required|cil-unsupported-binary/);
 assert.throws(() => parseCil(baseFixture(typeRefRow(SCOPE_ASSEMBLYREF_A), assemblyRefRows({ corruptPublicKeyIndex: 100 })),
   { binaryId: 'badpk' }),
   /cil-assembly-ref-public-key-blob-invalid|cil-unsupported-binary/);
