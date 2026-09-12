@@ -46,6 +46,18 @@ function canonicalizeValue(val) {
   return sorted;
 }
 
+function requireIdentityText(value, label) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new TypeError(`${label} must be a non-empty string`);
+  }
+  return value;
+}
+
+function optionalIdentityText(value, label) {
+  if (value == null) return null;
+  return requireIdentityText(value, label);
+}
+
 export function computeVerifierFingerprint({
   queryKind,
   exprSchemaVersion = EXPR_SCHEMA_VERSION,
@@ -77,6 +89,9 @@ export function computeVerifierFingerprint({
   if (!translatorVersion || typeof translatorVersion !== 'string') {
     throw new TypeError('computeVerifierFingerprint: translatorVersion is required and must be a string');
   }
+  if (!semanticIrVersion || typeof semanticIrVersion !== 'string') {
+    throw new TypeError('computeVerifierFingerprint: semanticIrVersion is required and must be a string');
+  }
   if (!backendVersion || typeof backendVersion !== 'string') {
     throw new TypeError('computeVerifierFingerprint: backendVersion is required and must be a string');
   }
@@ -93,18 +108,27 @@ export function computeVerifierFingerprint({
     throw new TypeError('computeVerifierFingerprint: bitWidth must be a positive safe integer or null');
   }
 
+  const capabilityIdentity = optionalIdentityText(
+    capabilityFingerprint,
+    'computeVerifierFingerprint: capabilityFingerprint',
+  );
+  const assumptionsIdentity = optionalIdentityText(
+    assumptionsFingerprint,
+    'computeVerifierFingerprint: assumptionsFingerprint',
+  );
+
   const payload = {
     backendId: String(backendId),
     backendVersion: String(backendVersion),
     exprDagVersion: String(exprDagVersion),
     exprSchemaVersion: String(exprSchemaVersion),
-    semanticIrVersion: String(semanticIrVersion),
+    semanticIrVersion,
     queryKind: String(queryKind),
     proofAuthority: String(proofAuthority),
-    capabilityFingerprint: capabilityFingerprint == null ? null : String(capabilityFingerprint),
+    capabilityFingerprint: capabilityIdentity,
     architecture: String(architecture),
     bitWidth: bitWidth == null ? null : bitWidth,
-    assumptionsFingerprint: assumptionsFingerprint == null ? null : String(assumptionsFingerprint),
+    assumptionsFingerprint: assumptionsIdentity,
     proofScope: proofScope ? canonicalizeValue(proofScope) : null,
     solverOptions: solverOptions ? canonicalizeValue(solverOptions) : null,
     translatorVersion: String(translatorVersion),
@@ -190,7 +214,10 @@ export function isCacheableProof({
 }
 
 export function getProofToolCacheOptions(options = {}) {
-  const verifierFingerprint = options?.verifierFingerprint ? String(options.verifierFingerprint) : null;
+  const verifierFingerprint = optionalIdentityText(
+    options?.verifierFingerprint,
+    'getProofToolCacheOptions: verifierFingerprint',
+  );
   return Object.freeze({
     storeResult: true,
     deterministic: false,
@@ -212,12 +239,15 @@ export function computeProofCacheKey({
     throw new TypeError('computeProofCacheKey: verifierFingerprint is required and must be a string');
   }
 
+  const binaryIdentityText = optionalIdentityText(binaryIdentity, 'computeProofCacheKey: binaryIdentity') ?? 'binary:unknown';
+  const analysisRevisionText = optionalIdentityText(analysisRevision, 'computeProofCacheKey: analysisRevision') ?? 'analysis:0';
+
   const parts = [
-    String(baseKey),
-    binaryIdentity ? String(binaryIdentity) : 'binary:unknown',
-    analysisRevision ? String(analysisRevision) : 'analysis:0',
-    String(verifierFingerprint),
-    String(queryHash),
+    requireIdentityText(baseKey, 'computeProofCacheKey: baseKey'),
+    binaryIdentityText,
+    analysisRevisionText,
+    verifierFingerprint,
+    queryHash,
   ];
   return parts.join('::');
 }
