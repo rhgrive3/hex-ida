@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -114,6 +114,31 @@ try {
   const invalidPattern = routeResult(commitD, 'feature', 'main-and-branch', '[');
   assert.notEqual(invalidPattern.status, 0);
   assert.match(invalidPattern.stderr, /invalid CircleCI impact path pattern/);
+
+  // Issue #5904: exercise the real lane regex with one-file branch diffs and
+  // main first-parent deltas. The old regex demonstrably misses both files.
+  const config = readFileSync(resolve('.circleci/config.yml'), 'utf8');
+  const agentJob = config.match(/^  agent-loop-resilience:\n([\s\S]*?)(?=^  [\w-]+:)/m)?.[1];
+  const agentPattern = agentJob?.match(/circleci-impact\.sh main-and-branch '([^']+)'/)?.[1];
+  assert.ok(agentPattern, 'read the actual resilience lane filter');
+  const oldAgentPattern = '^js/userscript/dev/';
+  for (const [index, file] of ['js/userscript/chatgpt-adapter.js', 'js/ai/dev/workers/contracts.js'].entries()) {
+    const branch = `resilience-counterexample-${index}`;
+    git(repo, 'checkout', '-b', branch, 'main');
+    write(join(repo, file), 'export const changed = true;\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-m', `Change only ${file}`);
+    git(repo, 'push', 'origin', branch);
+    const head = git(repo, 'rev-parse', 'HEAD');
+    for (const routedBranch of [branch, 'main']) {
+      assert.equal(route(head, routedBranch, 'main-and-branch', oldAgentPattern), 'false',
+        `old policy misses ${file} on ${routedBranch}`);
+      assert.equal(route(head, routedBranch, 'main-and-branch', agentPattern), 'true',
+        `actual policy must run ${file} on ${routedBranch}`);
+    }
+  }
+  assert.equal(route(commitB, 'main', 'main-and-branch', agentPattern), 'false',
+    'unrelated docs-only main delta must keep skipping the resilience lane');
 
   console.log('circleci-impact routing: PASS');
 } finally {
