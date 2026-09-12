@@ -60,6 +60,7 @@ export class DiscoveryProducerRegistry {
     // manufacture a second "independent" producer (#5792).
     if (typeof producer.id !== 'string' || producer.id.trim() === '' || producer.id.trim() !== producer.id) throw new TypeError('discovery-producer-id-required');
     const id = producer.id;
+    if (this.producers.has(id)) throw new TypeError('discovery-producer-id-duplicate');
     this.producers.set(id, producer);
     return this;
   }
@@ -100,6 +101,10 @@ function primitiveInteger(value, code) {
   if (type !== 'bigint' && type !== 'string' && !(type === 'number' && Number.isSafeInteger(value))) {
     throw new TypeError(code);
   }
+  // A whitespace-only string would become BigInt('') === 0n and launder a
+  // blank start/size into the canonical address 0 (#5733). It names no number,
+  // so it must fail closed exactly like the evidence constructors do.
+  if (type === 'string' && value.trim().length === 0) throw new TypeError(code);
   try {
     return BigInt(value);
   } catch {
@@ -321,7 +326,24 @@ export function fuseFunctionCandidates(evidence, options = {}) {
   // Validate and canonicalize before sorting. Comparators are not validation
   // boundaries: malformed plugin records must fail closed deterministically
   // instead of invoking methods on attacker-controlled field shapes.
-  const canonical = evidence.map((item) => canonicalEvidence(item));
+  //
+  // `maxCandidates` is also a work budget, not only a result-size check. Once
+  // one more distinct start than the budget permits has been observed, the
+  // final result is irreversibly `truncated` with no published candidates.
+  // Stop at that boundary instead of materializing and sorting the remaining
+  // evidence only to discard it afterwards (#4795).
+  const canonical = [];
+  const candidateStarts = new Set();
+  for (let index = 0; index < evidence.length; index += 1) {
+    const item = canonicalEvidence(evidence[index]);
+    canonical.push(item);
+    if (item.start == null) continue;
+    candidateStarts.add(item.start);
+    if (candidateStarts.size > budget.maxCandidates) {
+      return { candidates: [], status: status('truncated', 'budget-exhausted') };
+    }
+  }
+
   const byStart = new Map();
   const orderedEvidence = canonical.sort(compareEvidence);
   for (const item of orderedEvidence) {

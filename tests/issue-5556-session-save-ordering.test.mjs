@@ -136,6 +136,61 @@ test('issue #5556 - different sessions are not serialized against each other', a
   assert.equal(persisted.a.goal, 'slow');
 });
 
+test('issue #5556/#4450 - failed queued deletion preserves the latest durable update', async () => {
+  let persisted = null;
+  const enteredSave = deferred();
+  const releaseSave = deferred();
+  const enteredDelete = deferred();
+  const releaseDelete = deferred();
+  const store = new InvestigationSessionStore({ persistence: {
+    async save(session) {
+      if (session.goal === 'latest') {
+        enteredSave.resolve();
+        await releaseSave.promise;
+      }
+      persisted = structuredClone(session);
+    },
+    async load() { return persisted; },
+    async delete() {
+      enteredDelete.resolve();
+      await releaseDelete.promise;
+      throw new Error('delete failed');
+    },
+  } });
+  await store.create({ id: 'delete-failure', goal: 'initial' });
+  const update = store.update('delete-failure', { goal: 'latest' });
+  await enteredSave.promise;
+  const deletion = store.delete('delete-failure');
+  const rejected = assert.rejects(deletion, /delete failed/);
+  assert.equal(store.list()[0].goal, 'initial', 'queued delete cannot hide the durable record');
+  releaseSave.resolve();
+  await update;
+  await enteredDelete.promise;
+  assert.equal(store.list()[0].goal, 'latest', 'pending durable delete keeps the updated record visible');
+  releaseDelete.resolve();
+  await rejected;
+  assert.equal((await store.get('delete-failure')).goal, 'latest');
+  assert.equal(persisted.goal, 'latest');
+  await store.update('delete-failure', { goal: 'after-failure' });
+  assert.equal(persisted.goal, 'after-failure', 'failed delete does not stall later queued writes');
+});
+
+test('issue #5556/#4456 - queued mutation APIs preserve primitive session identity', async () => {
+  const store = new InvestigationSessionStore();
+  await store.create({ id: 'typed-id', goal: 'unchanged' });
+  let coercions = 0;
+  const forged = { toString() { coercions += 1; return 'typed-id'; } };
+  for (const id of [forged, ['typed-id'], 7, true, null, undefined, ' ']) {
+    assert.equal(await store.update(id, { goal: 'changed' }), null);
+    assert.equal(await store.updateMemory(id, { goal: 'changed' }), null);
+    assert.equal(await store.appendMessage(id, { content: 'changed' }), null);
+    assert.equal(await store.delete(id), false);
+  }
+  assert.equal(coercions, 0);
+  assert.equal((await store.get('typed-id')).goal, 'unchanged');
+  assert.deepEqual((await store.get('typed-id')).messages, []);
+});
+
 test('issue #5556 - a failed save does not stall the queue for later updates', async () => {
   let attempts = 0;
   let persisted = null;

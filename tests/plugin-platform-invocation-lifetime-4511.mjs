@@ -62,6 +62,7 @@ async function exerciseLateCapabilities({ abort = false } = {}) {
   } else {
     assert.equal(result.timeout, true);
   }
+  assert.equal(result.executionMayContinue, true, 'settlement must disclose that arbitrary plugin code may still be running');
 
   gate.resolve();
   await finished.promise;
@@ -97,5 +98,69 @@ await exerciseLateCapabilities({ abort: true });
 
   assert.equal(result.ok, true);
   assert.equal(result.value, 2);
+  assert.equal(result.executionMayContinue, undefined, 'successful invocations must not report a late-execution boundary');
   assert.deepEqual(counters, { read: 1, progress: 1, budget: 2 });
+}
+
+{
+  const registry = new PlatformPluginRegistry({ timeoutMs: 1000 });
+  const started = deferred();
+  const stopped = deferred();
+  const controller = new AbortController();
+  registry.registerAnalyzer('cooperative.abort', {
+    async analyze(_context, options) {
+      started.resolve(options.signal);
+      await new Promise((resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+        if (options.signal.aborted) reject(options.signal.reason);
+      }).catch(() => stopped.resolve());
+      return { reachedAfterAbort: false };
+    },
+  });
+
+  const invocation = registry.invoke(
+    'analyzer',
+    'cooperative.abort',
+    'analyze',
+    {},
+    { timeoutMs: 1000, signal: controller.signal },
+  );
+  const invocationSignal = await started.promise;
+  assert.notEqual(invocationSignal, controller.signal, 'plugin must receive a per-invocation signal');
+  assert.equal(invocationSignal.aborted, false);
+  controller.abort(new Error('cooperative stop'));
+  await stopped.promise;
+  const result = await invocation;
+  assert.equal(result.ok, false, 'external abort remains the invocation result even when the plugin cooperates');
+  assert.match(result.error, /cooperative stop|aborted/i);
+  assert.equal(result.executionMayContinue, true);
+  assert.equal(invocationSignal.aborted, true);
+}
+
+{
+  const registry = new PlatformPluginRegistry({ timeoutMs: 15 });
+  const started = deferred();
+  const stopped = deferred();
+  registry.registerAnalyzer('cooperative.timeout', {
+    async analyze(context) {
+      started.resolve(context.signal);
+      await new Promise((resolve, reject) => {
+        context.signal.addEventListener('abort', () => {
+          stopped.resolve(context.signal.reason);
+          reject(context.signal.reason);
+        }, { once: true });
+      });
+      return { unreachable: true };
+    },
+  });
+
+  const invocation = registry.invoke('analyzer', 'cooperative.timeout', 'analyze', {});
+  const invocationSignal = await started.promise;
+  const reason = await stopped.promise;
+  const result = await invocation;
+  assert.equal(result.ok, false);
+  assert.equal(result.timeout, true);
+  assert.equal(result.executionMayContinue, true);
+  assert.equal(invocationSignal.aborted, true);
+  assert.equal(reason.code, 'PLUGIN_INVOCATION_TIMEOUT');
 }

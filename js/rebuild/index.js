@@ -3,6 +3,9 @@ import { PatchSet } from '../patch.js';
 
 export const REBUILD_PLAN_VERSION = 'hex-rebuild-plan-v1';
 export const REBUILD_LEVELS = Object.freeze(['R0', 'R1', 'R2', 'R3', 'R4', 'R5']);
+const BASELINE_REBUILD_VALIDATORS = Object.freeze([
+  'source-precondition', 'structure', 'loader-reparse', 'unchanged-regions', 'evidence',
+]);
 
 function required(value, code) { const text = String(value ?? '').trim(); if (!text) throw new TypeError(code); return text; }
 function explicitBigInt(value, code) {
@@ -16,7 +19,7 @@ function hashBytes(value) { return `bytes:${stableDigest(Array.from(bytes(value)
 function clone(value) { if (typeof structuredClone === 'function') return structuredClone(value); if (Array.isArray(value)) return value.map(clone); if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, clone(item)])); return value; }
 function sortedStrings(value) { return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort(); }
 function impactValidators(impact) {
-  const validators = new Set(['source-precondition', 'structure', 'loader-reparse', 'unchanged-regions', 'evidence']);
+  const validators = new Set(BASELINE_REBUILD_VALIDATORS);
   if (impact?.layoutMoving) validators.add('layout');
   if (impact?.relocations) validators.add('relocations');
   if (impact?.branchRanges) validators.add('branch-ranges');
@@ -24,6 +27,26 @@ function impactValidators(impact) {
   if (impact?.importsExports) validators.add('imports-exports');
   if (impact?.signature) validators.add('signature-consequence');
   return [...validators].sort();
+}
+
+function rebuildPlanId(plan) {
+  return `rebuild-plan:${stableDigest({ ...plan, planId: null })}`;
+}
+
+function assertRebuildPlanIntegrity(plan) {
+  if (!plan || plan.schemaVersion !== REBUILD_PLAN_VERSION) throw new TypeError('rebuild-plan-schema-invalid');
+  if (!Array.isArray(plan.operations)) throw new TypeError('rebuild-plan-operations-invalid');
+  if (typeof plan.planId !== 'string' || plan.planId !== rebuildPlanId(plan)) throw new TypeError('rebuild-plan-integrity-invalid');
+  if (!Array.isArray(plan.requiredValidators)
+    || plan.requiredValidators.some((validator) => typeof validator !== 'string' || !validator)
+    || new Set(plan.requiredValidators).size !== plan.requiredValidators.length) {
+    throw new TypeError('rebuild-plan-validators-invalid');
+  }
+  const required = new Set(plan.requiredValidators);
+  for (const validator of impactValidators(plan.impact)) {
+    if (!required.has(validator)) throw new TypeError('rebuild-plan-baseline-validators-invalid');
+  }
+  return plan.requiredValidators;
 }
 
 export function createRebuildPlan(input = {}) {
@@ -40,12 +63,12 @@ export function createRebuildPlan(input = {}) {
   for (let i = 1; i < operations.length; i++) { const previous = operations[i - 1], current = operations[i]; if (BigInt(current.offset) < BigInt(previous.offset) + BigInt(previous.before.length)) throw new TypeError('rebuild-overlapping-operations'); }
   const impact = { sourceRanges: clone(input.impact?.sourceRanges || operations.map((operation) => ({ offset: operation.offset, length: operation.before.length }))), sections: clone(input.impact?.sections || []), layoutMoving: input.impact?.layoutMoving === true, relocations: input.impact?.relocations === true, branchRanges: input.impact?.branchRanges === true, unwind: input.impact?.unwind === true, importsExports: input.impact?.importsExports === true, signature: input.impact?.signature === true };
   const plan = { schemaVersion: REBUILD_PLAN_VERSION, planId: null, binaryId, sourceHash, loaderVersion, operations, expectedOriginalState: clone(input.expectedOriginalState || { sourceHash }), layoutEffects: clone(input.layoutEffects || { sizeChange: false }), relocationEffects: clone(input.relocationEffects || {}), branchRangeEffects: clone(input.branchRangeEffects || {}), unwindEffects: clone(input.unwindEffects || {}), signatureEffects: clone(input.signatureEffects || {}), impact, unresolvedRisks: sortedStrings(input.unresolvedRisks), requiredValidators: impactValidators(impact), authority: 'L3-explicit-proposal', publication: 'not-published' };
-  plan.planId = `rebuild-plan:${stableDigest(plan)}`;
+  plan.planId = rebuildPlanId(plan);
   return deepFreeze(plan);
 }
 
 export function adaptPatchSetToRebuildPlan(patchSet, input = {}) {
-  if (!(patchSet instanceof PatchSet) && !patchSet?.list) throw new TypeError('PatchSet required');
+  if (!(patchSet instanceof PatchSet) && typeof patchSet?.list !== 'function') throw new TypeError('PatchSet required');
   const operations = patchSet.list().map((item) => ({ id: `patch:${item.offset.toString()}`, offset: item.offset, before: item.before, after: item.after, address: item.addr, provenance: { source: 'PatchSet' } }));
   return createRebuildPlan({ ...input, operations });
 }
@@ -56,7 +79,7 @@ async function sourceBytes(source) {
 }
 
 export async function materializeRebuildPlan(plan, source, options = {}) {
-  if (!plan || plan.schemaVersion !== REBUILD_PLAN_VERSION) throw new TypeError('rebuild-plan-schema-invalid');
+  assertRebuildPlanIntegrity(plan);
   const original = await sourceBytes(source);
   if (options.signal?.aborted) return { status: 'cancelled', reason: 'cancelled-before-materialization', planId: plan.planId };
   if (plan.sourceHash && plan.sourceHash !== hashBytes(original) && options.allowSourceHashMismatch !== true) return { status: 'rejected', reason: 'source-identity-mismatch', planId: plan.planId, expected: plan.sourceHash, observed: hashBytes(original) };
@@ -83,13 +106,16 @@ function unchangedRegions(original, output, touched) {
 function validatorResult(validator, status, reason = null) {
   return { validator, status, ...(reason ? { reason } : {}) };
 }
+function validatorPassed(result) {
+  return result === true || result?.ok === true || result?.status === 'passed' || result?.status === 'valid';
+}
 
 async function runValidatorOracle(name, output, plan, materialized, options) {
   const oracle = options.validators?.[name];
   if (typeof oracle !== 'function') return validatorResult(name, 'unavailable', 'validator-oracle-unavailable');
   try {
     const result = await oracle(output, { plan, materialized });
-    if (result === true || result?.ok === true || result?.status === 'passed' || result?.status === 'valid') return validatorResult(name, 'passed');
+    if (validatorPassed(result)) return validatorResult(name, 'passed');
     return validatorResult(name, 'failed', result?.reason || 'validator-rejected-output');
   } catch (error) {
     return validatorResult(name, 'failed', error?.message || String(error));
@@ -97,9 +123,20 @@ async function runValidatorOracle(name, output, plan, materialized, options) {
 }
 
 export async function validateRebuildOutput(plan, materialized, options = {}) {
+  let required;
+  try {
+    required = assertRebuildPlanIntegrity(plan);
+  } catch (error) {
+    return {
+      status: 'invalid',
+      reason: error?.message || 'rebuild-plan-integrity-invalid',
+      planId: plan?.planId || null,
+      validators: [],
+      failures: [{ validator: 'plan-integrity', reason: error?.message || 'rebuild-plan-integrity-invalid' }],
+    };
+  }
   if (!materialized || materialized.status !== 'materialized') return { status: 'invalid', reason: 'materialization-not-complete', planId: plan?.planId || null };
   const output = materialized.bytes;
-  const required = Array.isArray(plan?.requiredValidators) ? plan.requiredValidators : [];
   const results = new Map();
 
   const sourcePreconditionPassed = materialized.planId === plan.planId
@@ -131,7 +168,7 @@ export async function validateRebuildOutput(plan, materialized, options = {}) {
   if (typeof options.loaderReparse === 'function') {
     try {
       const result = await options.loaderReparse(output);
-      const passed = result?.status !== 'unsupported' && result?.ok !== false;
+      const passed = validatorPassed(result);
       results.set('loader-reparse', validatorResult('loader-reparse', passed ? 'passed' : 'failed', passed ? null : (result?.reason || 'loader-rejected-output')));
     } catch (error) {
       results.set('loader-reparse', validatorResult('loader-reparse', 'failed', error?.message || String(error)));
