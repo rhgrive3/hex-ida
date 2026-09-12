@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import {
   createSoftEvidence,
-} from '../js/analysis/types/constraints.js';
-import { TypeConstraintGraph } from '../js/analysis/types/graph.js';
+} from '../../../js/analysis/types/constraints.js';
+import { TypeConstraintGraph } from '../../../js/analysis/types/graph.js';
 
 console.log('Testing #4705: soft evidence weight must reject Number() coercion...');
 
