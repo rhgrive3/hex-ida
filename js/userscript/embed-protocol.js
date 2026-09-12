@@ -462,15 +462,13 @@ function validToken(value, min, max) {
 }
 function normalizeTimeout(value, fallback) {
   if (value == null) return fallback;
-  const number = Number(value);
-  if (!Number.isFinite(number) || number < 0) throw new TypeError('RPC timeout must be a non-negative finite number.');
-  return Math.floor(number);
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new TypeError('RPC timeout must be a non-negative finite number.');
+  return Math.floor(value);
 }
 function normalizePositiveInteger(value, fallback) {
   if (value == null) return fallback;
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 0) throw new TypeError('RPC request id cache limit must be a non-negative safe integer.');
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new TypeError('RPC request id cache limit must be a non-negative safe integer.');
+  return value;
 }
 function safeNow(now) {
   const value = Number(now());

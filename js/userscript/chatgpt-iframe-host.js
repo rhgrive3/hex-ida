@@ -282,9 +282,8 @@ export function createChatGPTIframeHost(options = {}) {
 
 function normalizeTimeout(value, fallback) {
   if (value == null) return fallback;
-  const number = Number(value);
-  if (!Number.isFinite(number) || number < 0) throw new TypeError('Iframe timeout must be a non-negative finite number.');
-  return Math.floor(number);
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new TypeError('Iframe timeout must be a non-negative finite number.');
+  return Math.floor(value);
 }
 function safeErrorMessage(error) {
   const message = error?.message;
