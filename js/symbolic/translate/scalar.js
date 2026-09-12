@@ -70,7 +70,7 @@ export function scalarOperation(inst) {
 export function scalarOperationSupported(inst, op = inst?.op) {
   const operation = scalarOperation(inst);
   if (op === OP.BIN) return BINARY.has(operation);
-  if (op === OP.UN) return UNARY.has(operation) || CASTS.has(operation);
+  if (op === OP.UN) return UNARY.has(operation) || CASTS.has(operation) || operation === 'is-zero';
   return true;
 }
 
@@ -158,6 +158,14 @@ export function lowerScalarInstruction(inst, args, bits, condition = null) {
         || inst.extra?.targetBits != null && inst.extra.targetBits !== bits) return undef(bits, 'cast-width-contract');
     try { return createCast(operation, args[0], bits); }
     catch (error) { if (!(error instanceof TypeError || error instanceof RangeError)) throw error; return undef(bits, 'cast-width-contract'); }
+  }
+  if (inst.op === OP.UN && operation === 'is-zero') {
+    if (bits !== 1 || args[0]?.sort?.kind !== 'bv') return undef(bits, 'zero-predicate-contract');
+    // Machine-effects predicates use the declared BV1 carrier (0/1), not
+    // Expr's Bool sort. Keep the input width and encode that carrier using
+    // the existing comparison and conditional-expression factories.
+    const predicate = createCompare('eq', args[0], createBv(args[0].sort.width, 0n));
+    return createIte(predicate, createBv(1, 1n), createBv(1, 0n));
   }
   if (inst.op === OP.CMP) {
     const signedDeclarations = [inst.signed, inst.extra?.signed].filter(x => x != null);

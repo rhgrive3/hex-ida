@@ -6,6 +6,8 @@ import { spawnSync } from 'node:child_process';
 import { conditionalRegionFixture, textRowConditionalRegionFixture } from '../helpers/conditional-region-fixture.mjs';
 import { identity } from '../helpers/proof-fixtures.mjs';
 import { validateExecutionContract } from '../../../js/symbolic/memory/execution-contract.js';
+import { symbolicExecute } from '../../../js/symbolic/executor.js';
+import { translateSemanticIR } from '../../../js/symbolic/translate/semantic-ir.js';
 import { enhanceSemanticDecompilation, optimizeSemanticDecompilation, isProducerProjection } from '../../../js/decompiler/pipeline.js';
 import { prepareConditionalRegionCondition, readConditionalRegionCondition } from '../../../js/decompiler/phase8/conditional-region-condition.js';
 import { prepareConditionalRegionErasure } from '../../../js/decompiler/phase8/conditional-region-erasure.js';
@@ -29,7 +31,7 @@ function fixture(options = {}) {
 }
 const options = { identity, addressBits:8, backendTier:'exhaustive', timeoutMs:5000 };
 
-test('production text-row PHI uses pass the execution contract before the remaining public proof boundary', async () => {
+test('production text-row PHIs and BV1 predicates execute before the remaining public proof boundary', async () => {
   const f = textRowConditionalRegionFixture();
   const preparedOptions = { ...f.options, ir:f.ir, deterministicTransforms:true,
     phase8PrepareRegionProof:true, phase8PrepareProof:true, renderProvenance:true };
@@ -42,15 +44,32 @@ test('production text-row PHI uses pass the execution contract before the remain
   // Pin the real canonical PHI handoff independently of the public query's
   // wall-clock deadline. This validation does not execute or prove the region.
   assert.doesNotThrow(() => validateExecutionContract(f.ir, { chargeExecution() {} }));
-  const output = await optimizeSemanticDecompilation(projection, { ...options, conditionalBranch:branch });
-  // The canonical PHI use list now passes. The next production boundary is
-  // the is-zero predicate's BV input and Bool destination in scalar lowering;
-  // full production proof remains pending until that handoff is implemented.
+  const predicate = f.ir.instructions.find(inst => inst.sub === 'is-zero');
+  assert.deepEqual(predicate.dst.machineType, { kind:'bitvector', widthBits:1 });
+  assert.equal(translateSemanticIR(predicate).status, 'exact');
+  for (const x0 of [0n, 0x80000000n, 0xffffffffffffffffn]) {
+    const executed = symbolicExecute(f.ir, { symbolicArgs:{ 0:x0, 30:0x100n },
+      captureValues:true, byteMemory:{ identity, addressBits:8 } });
+    assert.equal(executed.status, 'complete', executed.reason);
+    assert.equal(executed.paths.length, 1);
+    const snapshot = executed.paths[0].snapshot;
+    for (const [target, expected] of [[predicate.dst, 1n], [branch.conditionValue, 0n]]) {
+      const translated = translateSemanticIR(target, { executionSnapshot:snapshot, identity, ir:f.ir });
+      assert.equal(translated.status, 'exact_with_assumptions', translated.reason);
+      assert.equal(translated.expression.value, expected);
+      assert.deepEqual(translated.expression.sort, { kind:'bv', width:1 });
+    }
+  }
+  // Use the production solver tier for actual 64-bit inputs; the exhaustive
+  // floor used by the small synthetic fixtures has a finite assignment budget.
+  const output = await optimizeSemanticDecompilation(projection, { ...options, backendTier:'tiered', conditionalBranch:branch });
+  // Scalar execution does not prove architectural state effects. Keep that
+  // independent full-region obligation explicit at the public boundary.
   assert.ok(f.ir.blocks.some(block => block.phis.some(phi => phi.args.length > 0)));
   assert.equal(output.proofOptimization.status, 'partial');
   // A finite public query may exhaust its deadline before reaching that node;
   // either refusal must retain the exact original view and IR.
-  assert.ok(['unknown-semantic:scalar-input-width-mismatch', 'deadline-exceeded'].includes(output.proofOptimization.reason),
+  assert.ok(['unproved-state-effects', 'deadline-exceeded'].includes(output.proofOptimization.reason),
     output.proofOptimization.reason);
   assert.equal(output.proofOptimization.adopted, 0);
   assert.equal(output.cAst, projection.cAst);

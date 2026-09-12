@@ -7114,3 +7114,48 @@ are recorded under persistent `agent-work/evidence/analysis-roadmap-20260909`, i
 the `c4-phi-handoff-20260913` inventory and sibling `c4-phi-*` gate receipts.
 The ZIP recheck again found no new user delta. The user C1 recursive-return lane
 remains reserved. Full roadmap acceptance and **CHECKPOINT-LOCKED** remain open.
+
+## C4 canonical BV1 zero predicate handoff (2026-09-13)
+
+Starting source is `57c72ca05eaa7820a10b4cfa9589b240d56143b8` on PR #7036.
+The previous PHI section described the next destination as Bool1. Inspection of
+the actual producer corrects that description: `valueOp('is-zero', ..., 1)`
+emits a **bitvector of width 1**, and compatibility retains that exact machine
+type. Its following `not-bool` projects to BV1 bitwise NOT. Neither destination
+is the canonical Expr Bool sort. Existing compatibility constant evaluation also
+defines is-zero as integer 1/0, independently corroborating this carrier contract.
+
+The shared static/execution scalar lowerer now accepts `UN is-zero` with one BV
+input and a one-bit destination. It constructs the existing canonical expression
+`ite(eq(input, zero_of_input_width), bv1(1), bv1(0))`. Opcode classification now
+recognizes that operation. Operand widths, output sort checks, unknown propagation,
+casts and the existing BV1 NOT implementation are preserved. No extra ISA evaluator,
+Boolean coercion or producer type rewrite is introduced.
+
+New regressions cover zero/nonzero and high-bit values at widths 1/8/32/64,
+symbolic input dependence despite stale propagated constants, malformed arity,
+conflicting operations, wrong output width and Bool input rejection. Both raw
+translation and execution use the same existing Expr factories. The actual parsed
+ARM64-row fixture also executes its original PHIs and zero/NOT nodes, and issued
+terminal snapshots return BV1 values 1 and 0 for three concrete 64-bit inputs.
+These are parsed-row and scalar-execution observations, not architectural effect,
+binary-decoder or whole-function equivalence certificates.
+
+The public fixture now uses the existing production `tiered` solver for its 64-bit
+inputs. The explicitly selected exhaustive floor stops at its assignment budget;
+that diagnostic remains retained and is not interpreted as a semantic failure.
+The public route now reaches `unproved-state-effects`, keeps the exact original
+IR/view and adopts nothing. Existing register/PSTATE state reads and writes and
+subsequent possible-fault obligations must be bound to authentic producer facts.
+State-normalization history is not by itself an architectural effect certificate.
+No state metadata or possible faults were removed to obtain acceptance.
+
+The precommit scoped run observed 145 passing tests across 11 existing files.
+It also requested a nonexistent solver test path which Node ignored; that path
+is not counted as coverage. The exact-head command validates every requested
+path before launch and includes the real `tiered-sym01-rescue.test.mjs` instead.
+Pre-fix failures, exact-head tests, generated rebuild, lint, module boundaries,
+ownership and independent source/PR review are retained under persistent
+`agent-work/evidence/analysis-roadmap-20260909/c4-bool-predicate-20260913` and sibling
+`c4-predicate-*` receipts. The user C1 recursive-return lane remains reserved;
+full production state/flags/region proof and **CHECKPOINT-LOCKED** remain open.

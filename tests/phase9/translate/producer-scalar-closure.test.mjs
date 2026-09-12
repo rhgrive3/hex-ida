@@ -4,7 +4,7 @@ import { OP } from '../../../js/ir-base.js';
 import { translateSemanticIR } from '../../../js/symbolic/translate/semantic-ir.js';
 import { evaluateExpr } from '../../../js/symbolic/expr/index.js';
 import { translateMemoryScalar } from '../../../js/symbolic/translate/memory.js';
-import { createBv } from '../../../js/symbolic/expr/index.js';
+import { createBv, createBool } from '../../../js/symbolic/expr/index.js';
 import { classifyOpSupport } from '../../../js/symbolic/translate/support-matrix.js';
 const literal = (id, bits, n) => ({ id, bits, const: BigInt(n) });
 const instruction = (op, fields, values, bits) => {
@@ -30,6 +30,37 @@ test('casts retain source width and literal producer payload', () => {
   assert.equal(value(instruction(OP.MOV, { sub: 'sext' }, [source], 32)), 0xffffff80n);
   assert.equal(value(instruction(OP.UN, { sub: 'zext' }, [source], 32)), 128n);
   assert.equal(value(instruction(OP.CONST, { extra: { value: 257n } }, [], 8)), 1n);
+});
+test('canonical is-zero retains its BV1 carrier independently of operand width', () => {
+  for (const bits of [1, 8, 32, 64]) for (const n of [0n, 1n, 1n << BigInt(bits - 1), (1n << BigInt(bits)) - 1n]) {
+    const inst = instruction(OP.UN, { sub:'is-zero' }, [literal('input', bits, n)], 1);
+    inst.dst.machineType = { kind:'bitvector', widthBits:1 };
+    const expected = n === 0n ? 1n : 0n;
+    assert.equal(classifyOpSupport(inst.op, inst), 'exact');
+    const raw = translated(inst), executed = translateMemoryScalar(inst, [createBv(bits, n)], 1);
+    assert.equal(raw.status, 'exact', JSON.stringify(raw.unsupportedEntities));
+    assert.deepEqual(raw.expression.sort, { kind:'bv', width:1 });
+    assert.deepEqual(executed.sort, raw.expression.sort);
+    assert.equal(evaluateExpr(raw.expression).value, expected);
+    assert.equal(evaluateExpr(executed).value, expected);
+  }
+});
+test('canonical is-zero keeps symbolic dependence and rejects malformed predicate contracts', () => {
+  const input = { id:'input', bits:32, kind:'arg', reg:'x0' };
+  const inst = instruction(OP.UN, { sub:'is-zero' }, [input], 1);
+  inst.dst.machineType = { kind:'bitvector', widthBits:1 };
+  inst.dst.const = 1n;
+  const raw = translated(inst);
+  assert.equal(raw.status, 'exact', JSON.stringify(raw.unsupportedEntities));
+  assert.equal(evaluateExpr(raw.expression, { arg_x0:0n }).value, 1n);
+  assert.equal(evaluateExpr(raw.expression, { arg_x0:0x80000000n }).value, 0n);
+  for (const invalid of [
+    instruction(OP.UN, { sub:'is-zero' }, [input], 8),
+    instruction(OP.UN, { sub:'is-zero' }, [], 1),
+    instruction(OP.UN, { sub:'is-zero' }, [input, input], 1),
+    instruction(OP.UN, { sub:'is-zero', subOp:'not' }, [input], 1),
+  ]) assert.notEqual(translated(invalid).status, 'exact');
+  assert.equal(translateMemoryScalar(inst, [createBool(false)], 1).kind, 'unknown_semantic');
 });
 test('raw select consumes canonical conditionValue and does not default to true', () => {
   const cond = instruction(OP.CMP, { cond: 'eq' }, [literal('a', 8, 1), literal('b', 8, 2)], 1);
