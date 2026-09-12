@@ -1043,7 +1043,7 @@ export class App {
     const endRow=Math.min(Number((range.end-region.vmAddr+width-1n)/width)-1, Math.max(0,Number(region.size/width)-1));
     if(endRow<startRow)return null;
     try {
-      const res=await analyzeFunctionCached(this.backend,region,startRow,endRow,sym);
+      const res=await analyzeFunctionCached(this.backend,region,startRow,endRow,sym,null,{ architecture });
       if(this.store.get('sliceIndex')<0 || this.executableRegionFor(range.start)!==region)return null;
       res.completeness={complete:range.complete!==false,reason:range.reason||null,provenance:range.provenance,regionId:region.id};
       this.semantic={regionId:region.id,model:res.model,result:res};

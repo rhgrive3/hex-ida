@@ -417,7 +417,7 @@ export function createAppAnalysisQueryAdapter(app) {
       const maxRow = Math.max(0, Number(maxRowExact));
       const endRow = Math.min(Number(endRowExact), maxRow);
       if (startRow < 0 || endRow < startRow) return unsupported(id, 'function-range-empty');
-      const value = await analyzeFunctionCached(app.backend, range.region, startRow, endRow, symbols, options.onProgress, options);
+      const value = await analyzeFunctionCached(app.backend, range.region, startRow, endRow, symbols, options.onProgress, { ...options, architecture });
       const completeness = value?.truncated ? 'truncated' : range.complete === false ? 'partial' : 'complete';
       const queryValue = value?.model ? { ...value, model:cloneableLegacyModel(value.model) } : value;
       const enriched = {
