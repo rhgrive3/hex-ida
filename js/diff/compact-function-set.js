@@ -27,6 +27,12 @@ function canonicalAddressKey(value) {
   return address.toString();
 }
 
+function snapshotColumn(values) {
+  if (Array.isArray(values)) return Object.freeze(values.slice());
+  if (ArrayBuffer.isView(values) && typeof values.length === 'number') return values.slice();
+  return Object.freeze([]);
+}
+
 function symbolColumns(addresses, names) {
   const addressColumn = Array.isArray(addresses) || (ArrayBuffer.isView(addresses) && typeof addresses.length === 'number') ? addresses : [];
   const nameColumn = Array.isArray(names) ? names : [];
@@ -46,7 +52,7 @@ function symbolColumns(addresses, names) {
 }
 
 export function createCompactFunctionSet(symbols, architecture, limit = 350000) {
-  const functionAddresses = symbols?.funcs || [];
+  const functionAddresses = snapshotColumn(symbols?.funcs);
   const total = Number(functionAddresses.length || 0);
   const count = boundedFunctionCount(limit, total);
   const symbolsForIdentity = symbolColumns(symbols?.addrs, symbols?.names);
@@ -55,8 +61,8 @@ export function createCompactFunctionSet(symbols, architecture, limit = 350000) 
     evidenceProfile: SYMMETRIC_DIFF_PROFILE,
     architecture: String(architecture || 'unknown').toLowerCase(),
     functionAddresses,
-    symbolAddresses: symbolsForIdentity.addresses,
-    symbolNames: symbolsForIdentity.names,
+    symbolAddresses: snapshotColumn(symbolsForIdentity.addresses),
+    symbolNames: snapshotColumn(symbolsForIdentity.names),
     count,
     total,
     complete: count === total && symbols?.functionStartsComplete === true,
