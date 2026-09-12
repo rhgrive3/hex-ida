@@ -190,6 +190,9 @@ export class EvidenceGraph {
   #nodes = new Map();
   #edges = [];
   #edgeKeys = new Set();
+  #revision = 0;
+  #outgoingIndex = null;
+  #incomingIndex = null;
   #maxNodes = 500_000;
   #maxEdges = 1_000_000;
 
@@ -226,6 +229,7 @@ export class EvidenceGraph {
       return existing;
     }
     this.#nodes.set(node.id, node);
+    this.#revision++;
     return node;
   }
 
@@ -235,10 +239,85 @@ export class EvidenceGraph {
     if (!this.#edgeKeys.has(key)) {
       if (this.#edges.length >= this.#maxEdges) fail('evidence-graph-edge-budget-exceeded');
       this.#edgeKeys.add(key);
+      const edgeIndex = this.#edges.length;
       this.#edges.push(edge);
+      if (this.#outgoingIndex) {
+        this.#indexEdge(this.#outgoingIndex, edge.from, edgeIndex);
+        this.#indexEdge(this.#incomingIndex, edge.to, edgeIndex);
+      }
+      this.#revision++;
     }
     return edge;
   }
+
+  get revision() { return this.#revision; }
+  get nodeCount() { return this.#nodes.size; }
+  get edgeCount() { return this.#edges.length; }
+
+  #indexEdge(index, id, position) {
+    const positions = index.get(id);
+    if (positions) positions.push(position);
+    else index.set(id, [position]);
+  }
+
+  /** Optional disposable index, inside the canonical EvidenceGraph owner. */
+  async prepareEdgeIndex(work, { maxEdges = 262144 } = {}) {
+    if (!work || typeof work.charge !== 'function' || typeof work.yieldIfNeeded !== 'function') fail('evidence-index-work-required');
+    if (!Number.isSafeInteger(maxEdges) || maxEdges < 0 || maxEdges > 1000000) fail('evidence-index-budget-invalid');
+    work.checkpoint();
+    if (this.#outgoingIndex) return Object.freeze({ status:'ready', revision:this.#revision });
+    if (this.#edges.length > maxEdges) return Object.freeze({ status:'unsupported', reason:'evidence-index-edge-budget' });
+    const revision = this.#revision;
+    const outgoing = new Map(), incoming = new Map();
+    for (let index = 0; index < this.#edges.length; index++) {
+      work.charge('workUnits'); work.charge('residentBytes', 96);
+      const edge = this.#edges[index];
+      this.#indexEdge(outgoing, edge.from, index); this.#indexEdge(incoming, edge.to, index);
+      await work.yieldIfNeeded();
+      if (revision !== this.#revision) return Object.freeze({ status:'stale', reason:'evidence-graph-mutated' });
+    }
+    work.checkpoint();
+    if (revision !== this.#revision) return Object.freeze({ status:'stale', reason:'evidence-graph-mutated' });
+    this.#outgoingIndex = outgoing; this.#incomingIndex = incoming;
+    return Object.freeze({ status:'ready', revision });
+  }
+
+  /**
+   * Cursor offset refers to the reported mode (global edge array or adjacency).
+   * Filtering has a scan cap: an empty page with nextOffset is NOT absence.
+   */
+  edgePage(id, { direction = 'outgoing', offset = 0, limit = 256, maxScanned = 4096,
+    types = null, expectedRevision = null, mode = null, signal = null } = {}) {
+    const nodeId = required(id, 'evidence-id-required');
+    if (!['outgoing', 'incoming'].includes(direction)) fail('evidence-page-direction');
+    for (const [name, value, maximum] of [['offset', offset, Number.MAX_SAFE_INTEGER], ['limit', limit, 4096], ['max-scanned', maxScanned, 65536]]) {
+      if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < (name === 'offset' ? 0 : 1) || value > maximum) fail(`evidence-page-${name}`);
+    }
+    if (expectedRevision !== null && expectedRevision !== this.#revision) return Object.freeze({ status:'stale', revision:this.#revision, edges:[], nextOffset:null, scanned:0, complete:false });
+    let filter = null;
+    if (types !== null) {
+      if (!Array.isArray(types) || types.length > EVIDENCE_EDGE_FAMILIES.length || types.some((type) => !EVIDENCE_EDGE_FAMILIES.includes(type))) fail('evidence-page-types');
+      filter = new Set(types);
+    }
+    const index = direction === 'outgoing' ? this.#outgoingIndex : this.#incomingIndex;
+    const selectedMode = mode ?? (index ? 'adjacency' : 'linear');
+    if (!['linear', 'adjacency'].includes(selectedMode) || (selectedMode === 'adjacency' && !index)) fail('evidence-page-index-mode');
+    const positions = selectedMode === 'adjacency' ? index.get(nodeId) ?? [] : null;
+    const length = positions ? positions.length : this.#edges.length;
+    if (offset > length) fail('evidence-page-offset-out-of-range');
+    const edges = [];
+    let cursor = offset, scanned = 0;
+    while (cursor < length && edges.length < limit && scanned < maxScanned) {
+      if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+      const edge = this.#edges[positions ? positions[cursor] : cursor]; cursor++; scanned++;
+      if ((direction === 'outgoing' ? edge.from : edge.to) !== nodeId || (filter && !filter.has(edge.type))) continue;
+      edges.push(edge);
+    }
+    return Object.freeze({ status:'ready', revision:this.#revision, mode:selectedMode, edges:Object.freeze(edges),
+      nextOffset:cursor < length ? cursor : null, scanned, complete:cursor >= length });
+  }
+
+  discardEdgeIndex() { this.#outgoingIndex = null; this.#incomingIndex = null; }
 
   getNode(id) { return this.#nodes.get(required(id, 'evidence-id-required')) || null; }
   hasNode(id) { return this.#nodes.has(required(id, 'evidence-id-required')); }
@@ -269,7 +348,9 @@ export class EvidenceGraph {
     const supporting = new Set(claim.supportingEvidenceIds);
     const contradicting = new Set(claim.contradictingEvidenceIds);
     const confirmedBy = new Set(claim.confirmedByEvidenceIds);
-    for (const edge of this.#edges) {
+    const relevantEdges = this.#outgoingIndex
+      ? (this.#outgoingIndex.get(claim.id) ?? []).map((index) => this.#edges[index]) : this.#edges;
+    for (const edge of relevantEdges) {
       if (edge.from !== claim.id) continue;
       if (edge.type === 'supports') supporting.add(edge.to);
       else if (edge.type === 'contradicts') contradicting.add(edge.to);

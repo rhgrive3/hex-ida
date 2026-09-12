@@ -205,6 +205,42 @@ function canonicalDescriptorString(layer, descriptor) {
   return stableStringify(canonicalDescriptorMaterial(layer, descriptor));
 }
 
+export function canonicalDependencyIdentity(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text.length > 0 ? text : null;
+}
+
+const STRUCTURAL_IDENTITY_FIELDS = Object.freeze(['targetEntityId', 'elementEntityId']);
+
+function validateStructuralIdentityFields(node) {
+  if (node == null || typeof node !== 'object') return;
+  for (const field of STRUCTURAL_IDENTITY_FIELDS) {
+    const value = node[field];
+    if (value != null && canonicalDependencyIdentity(value) == null) fail('structural-identity-invalid');
+  }
+}
+
+function validateStructuralDescriptorIdentities(descriptor) {
+  validateStructuralIdentityFields(descriptor);
+  validateStructuralIdentityFields(descriptor.elementType);
+  const memberType = descriptor.memberType;
+  validateStructuralIdentityFields(memberType);
+  if (memberType != null && typeof memberType === 'object') {
+    validateStructuralIdentityFields(memberType.elementType);
+  }
+  if (Array.isArray(descriptor.members)) {
+    for (const member of descriptor.members) {
+      validateStructuralIdentityFields(member);
+      const memberTypeOfMember = member == null || typeof member !== 'object' ? null : member.memberType;
+      validateStructuralIdentityFields(memberTypeOfMember);
+      if (memberTypeOfMember != null && typeof memberTypeOfMember === 'object') {
+        validateStructuralIdentityFields(memberTypeOfMember.elementType);
+      }
+    }
+  }
+}
+
 function validateDescriptor(layer, descriptor) {
   if (descriptor == null || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
     fail('type-claim-descriptor-required');
@@ -230,6 +266,7 @@ function validateDescriptor(layer, descriptor) {
       const len = toBigInt(descriptor.length, null);
       if (len == null || len < 0n) fail('structural-length-invalid');
     }
+    validateStructuralDescriptorIdentities(descriptor);
   }
 }
 
