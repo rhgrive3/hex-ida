@@ -185,10 +185,50 @@ function softIdentity(evidence) {
   });
 }
 
+const TYPE_DEPENDENCY_IDENTITY_KEYS = Object.freeze(['targetEntityId', 'elementEntityId']);
+const TYPE_DEPENDENCY_CHILD_KEYS = Object.freeze(['elementType', 'pointeeType', 'memberType', 'members']);
+const MAX_TYPE_DEPENDENCY_NODES = 4096;
+const MAX_TYPE_DEPENDENCY_DEPTH = 256;
+
+function walkTypeDependencies(root) {
+  const deps = new Set();
+  let exhausted = false;
+  if (!root || typeof root !== 'object') return { deps, exhausted };
+
+  const visited = new Set();
+  let nodes = 0;
+  const stack = [[root, 0]];
+  while (stack.length > 0) {
+    const [node, depth] = stack.pop();
+    if (!node || typeof node !== 'object' || visited.has(node)) continue;
+    if (depth > MAX_TYPE_DEPENDENCY_DEPTH || nodes >= MAX_TYPE_DEPENDENCY_NODES) {
+      exhausted = true;
+      continue;
+    }
+    visited.add(node);
+    nodes += 1;
+
+    if (Array.isArray(node)) {
+      for (const child of node) stack.push([child, depth + 1]);
+      continue;
+    }
+
+    for (const key of TYPE_DEPENDENCY_IDENTITY_KEYS) {
+      const value = node[key];
+      if (typeof value === 'string' && value.trim()) deps.add(value.trim());
+    }
+    for (const key of TYPE_DEPENDENCY_CHILD_KEYS) {
+      const child = node[key];
+      if (child && typeof child === 'object') stack.push([child, depth + 1]);
+    }
+  }
+  return { deps, exhausted };
+}
+
 function extractDependencies(claim) {
   const deps = new Set();
   const d = claim?.descriptor;
-  if (!d || typeof d !== 'object') return deps;
+  if (!d || typeof d !== 'object') return { deps, exhausted: false };
 
   if (typeof d.targetEntityId === 'string' && d.targetEntityId.trim()) {
     deps.add(d.targetEntityId.trim());
@@ -199,32 +239,39 @@ function extractDependencies(claim) {
   if (typeof d.entityId === 'string' && d.entityId.trim() && d.entityId !== claim.entityId) {
     deps.add(d.entityId.trim());
   }
+  let exhausted = false;
   if (d.memberType && typeof d.memberType === 'object') {
-    if (typeof d.memberType.targetEntityId === 'string' && d.memberType.targetEntityId.trim()) {
-      deps.add(d.memberType.targetEntityId.trim());
-    }
-    if (typeof d.memberType.elementEntityId === 'string' && d.memberType.elementEntityId.trim()) {
-      deps.add(d.memberType.elementEntityId.trim());
-    }
-    if (d.memberType.elementType?.targetEntityId) {
-      deps.add(String(d.memberType.elementType.targetEntityId).trim());
-    }
+    const walked = walkTypeDependencies(d.memberType);
+    for (const dep of walked.deps) deps.add(dep);
+    exhausted = exhausted || walked.exhausted;
   }
   if (Array.isArray(d.members)) {
     for (const member of d.members) {
-      if (member?.memberType?.targetEntityId) deps.add(String(member.memberType.targetEntityId).trim());
-      if (member?.memberType?.elementEntityId) deps.add(String(member.memberType.elementEntityId).trim());
-      if (member?.memberType?.elementType?.targetEntityId) deps.add(String(member.memberType.elementType.targetEntityId).trim());
+      const walked = walkTypeDependencies(member);
+      for (const dep of walked.deps) deps.add(dep);
+      exhausted = exhausted || walked.exhausted;
     }
   }
+  return { deps, exhausted };
+}
+
+function memberDependencyIdentities(member) {
+  const deps = new Set();
+  if (member && typeof member === 'object') {
+    for (const key of TYPE_DEPENDENCY_IDENTITY_KEYS) {
+      const value = member[key];
+      if (typeof value === 'string' && value.trim()) deps.add(value.trim());
+    }
+  }
+  const walked = walkTypeDependencies(member?.memberType);
+  for (const dep of walked.deps) deps.add(dep);
   return deps;
 }
 
 function isMemberRecursive(member, entityId, sccMembers = []) {
-  const target = member?.memberType?.targetEntityId ?? member?.targetEntityId ?? null;
-  const elementTarget = member?.memberType?.elementType?.targetEntityId ?? member?.memberType?.elementEntityId ?? null;
-  if (target === entityId || (target && sccMembers.includes(target))) return true;
-  if (elementTarget === entityId || (elementTarget && sccMembers.includes(elementTarget))) return true;
+  for (const identity of memberDependencyIdentities(member)) {
+    if (identity === entityId || sccMembers.includes(identity)) return true;
+  }
   return member?.isRecursive === true || member?.memberType?.isRecursive === true;
 }
 
@@ -434,6 +481,8 @@ export class TypeConstraintGraph {
     this.entities = new Map();
     /** entityId -> Set<dependentEntityId> */
     this.dependencies = new Map();
+    /** entityIds whose dependency walk hit the bounded walker budget */
+    this.dependencyTruncated = new Set();
     this.userConstraintDigests = new Set();
   }
 
@@ -453,7 +502,8 @@ export class TypeConstraintGraph {
   }
 
   #recordDependencies(claim) {
-    const deps = extractDependencies(claim);
+    const { deps, exhausted } = extractDependencies(claim);
+    if (exhausted) this.dependencyTruncated.add(claim.entityId);
     if (deps.size === 0) return;
     if (!this.dependencies.has(claim.entityId)) {
       this.dependencies.set(claim.entityId, new Set());
@@ -582,6 +632,7 @@ export class TypeConstraintGraph {
       }
       if (solved.stopReason === 'budget-exhausted') stopReason = stopReason ?? 'budget-exhausted';
     }
+    if (this.dependencyTruncated.has(entityId)) stopReason = stopReason ?? 'budget-exhausted';
     return createTypeResult({
       entityId,
       status: stopReason === 'cancelled'
