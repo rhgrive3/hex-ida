@@ -1,3 +1,4 @@
+import { normalizeDependencyScope } from '../dependencies.js';
 import {
   ArtifactCorruptionError,
   canonicalSerializeArtifactRecord,
@@ -78,6 +79,13 @@ export function validateArtifactRecordShape(record) {
   }
   stringArray(record.upstreamArtifactIds, 'artifact-record-malformed');
   stringArray(record.originRefs, 'artifact-record-malformed');
+  if (Object.hasOwn(record, 'dependencyScope')) {
+    try {
+      const scope = normalizeDependencyScope(record.dependencyScope);
+      if (canonicalSerializeArtifactRecord(scope) !== canonicalSerializeArtifactRecord(record.dependencyScope)
+        || scope.positiveArtifactIds.some((id) => !record.upstreamArtifactIds.includes(id))) throw new Error('dependency-scope-noncanonical');
+    } catch (error) { throw new ArtifactCorruptionError('artifact-dependency-scope-malformed', 'Invalid scoped dependency record', { cause:String(error) }); }
+  }
   return true;
 }
 
@@ -160,6 +168,7 @@ export function validateDescriptorRecord(record, descriptor) {
   if (record.upstreamArtifactIds.length !== expectedUpstreams.length || record.upstreamArtifactIds.some((id, index) => id !== expectedUpstreams[index])) {
     mismatches.push('upstreamArtifactIds');
   }
+  if (canonicalSerializeArtifactRecord(record.dependencyScope ?? null) !== canonicalSerializeArtifactRecord(descriptor.dependencyScope ?? null)) mismatches.push('dependencyScope');
   if (mismatches.length) {
     throw new ArtifactCorruptionError(
       'artifact-record-identity-mismatch',
@@ -237,6 +246,7 @@ const PUBLICATION_IDENTITY_KEYS = Object.freeze([
   'canonicalConfigHash',
   'versions',
   'upstreamArtifactIds',
+  'dependencyScope',
   'payloadEncoding',
   'payloadEncodingVersion',
   'payloadChecksum',

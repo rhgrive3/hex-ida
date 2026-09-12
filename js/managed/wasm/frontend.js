@@ -79,6 +79,7 @@ export class WasmFrontend {
         structural: 'complete',
         specValidation,
         semanticEffect: status === 'valid' ? 'complete' : 'partial',
+        resolution: status === 'valid' && specValidation === 'valid' ? 'complete' : 'partial',
       },
     });
   }

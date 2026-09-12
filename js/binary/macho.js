@@ -10,6 +10,7 @@ import {
 import { functionSeed, mergeFunctionSeeds } from './model.js';
 import { ByteView } from './reader.js';
 import { markMachOMetadataPartial } from './macho-budget.js';
+import { applyMachOIndirectSymbols } from './macho-indirect-symbols.js';
 
 export {
   DICE_KIND_DATA,
@@ -98,5 +99,7 @@ export function repairMachOZeroEntrypoint(image) {
 export function parseMachO(input, opts = {}) {
   const image = parseMachOCore(input, opts);
   validateKnownLoadCommandSizes(input, image);
+  const thin = selectedThinBytes(input, image);
+  if (thin) applyMachOIndirectSymbols(thin, image, opts);
   return repairMachOZeroEntrypoint(image);
 }
