@@ -17,17 +17,18 @@ import {
 } from '../arm64/effects/addressing.js';
 import { ARM64E_PAUTH_KEYS } from './effects.js';
 
-export const ARM64E_EFFECTS_MEMORY_SEMANTIC_VERSION = '1';
+export const ARM64E_EFFECTS_MEMORY_SEMANTIC_VERSION = '2';
 
 const POINTER_BITS = 64;
 const KEY_BITS = 128;
 const PAUTH_STATE_BITS = 64;
 const PAUTH_STATE_ID = 'PAuthState';
-const SIGNED_IMM9_MIN = -256n;
-const SIGNED_IMM9_MAX = 255n;
+const AUTHENTICATED_LOAD_OFFSET_MIN = -4096n;
+const AUTHENTICATED_LOAD_OFFSET_MAX = 4088n;
+const AUTHENTICATED_LOAD_OFFSET_SCALE = 8n;
 
 // FEAT_PAuth authenticated loads: LDRAA/LDRAB authenticate the base register
-// with a zero modifier (Key A / Key B), add a signed unscaled imm9 offset,
+// with a zero modifier (Key A / Key B), add the signed S:imm9 offset scaled by 8,
 // load a 64-bit doubleword, and write the base back only in the pre-index
 // form. They are ARM64e extension-owned memory semantics, not PAC encodings,
 // so they stay outside the PAC encoding registry on purpose.
@@ -37,6 +38,19 @@ const AUTHENTICATED_LOADS = Object.freeze({
 });
 
 export const ARM64E_AUTHENTICATED_LOAD_MNEMONICS = Object.freeze(Object.keys(AUTHENTICATED_LOADS));
+
+function signedIntegerText(text) {
+  if (typeof text !== 'string') return null;
+  const normalized = text.trim();
+  if (!/^-?(?:0x[0-9a-f]+|\d+)$/i.test(normalized)) return null;
+  const negative = normalized.startsWith('-');
+  try {
+    const magnitude = BigInt(negative ? normalized.slice(1) : normalized);
+    return negative ? -magnitude : magnitude;
+  } catch {
+    return null;
+  }
+}
 
 function mnemonicOf(decoded) {
   const raw = typeof decoded?.mnemonic === 'string' ? decoded.mnemonic : typeof decoded?.opcode === 'string' ? decoded.opcode : null;
@@ -60,10 +74,10 @@ function pointerDestinationRegister(operand) {
 }
 
 // Raw Capstone rows carry only `opStr`; recover the structured memory operand
-// (base / signed unscaled displacement / pre-index marker) from it. Only the
+// (base / signed scaled displacement / pre-index marker) from it. Only the
 // two LDRAA/LDRAB encodable shapes are recognized; anything else stays
 // unstructured and fails closed downstream.
-const MEMORY_TEXT = /^\[\s*(x(?:[0-9]|[12][0-9]|30))\s*(?:,\s*#(-?(?:0x[0-9a-f]+|\d+)))?\s*\]\s*(!?)$/i;
+const MEMORY_TEXT = /^\[\s*(x(?:[0-9]|[12][0-9]|30)|sp)\s*(?:,\s*#(-?(?:0x[0-9a-f]+|\d+)))?\s*\]\s*(!?)$/i;
 const DESTINATION_TEXT = /^(?:xzr|(x(?:[0-9]|[12][0-9]|30)))$/i;
 
 function structuredOperandList(decoded) {
@@ -89,7 +103,7 @@ function structuredOperandList(decoded) {
   if (typeof destinationText !== 'string' || typeof memoryText !== 'string') return parts;
   const destinationMatch = DESTINATION_TEXT.exec(destinationText.trim());
   const memoryMatch = MEMORY_TEXT.exec(memoryText.trim());
-  if (!destinationMatch || !memoryMatch) return list;
+  if (!destinationMatch || !memoryMatch) return parts;
   const destination = {
     k: 'reg',
     text: destinationText.trim(),
@@ -97,13 +111,15 @@ function structuredOperandList(decoded) {
     bits: POINTER_BITS,
     num: destinationMatch[1] ? Number(destinationMatch[1].slice(1)) : 31,
   };
-  const baseNumber = Number(memoryMatch[1].slice(1));
-  const displacement = memoryMatch[2] == null ? null : BigInt(memoryMatch[2]);
+  const baseText = memoryMatch[1].toLowerCase();
+  const baseIsSp = baseText === 'sp';
+  const baseNumber = baseIsSp ? 31 : Number(baseText.slice(1));
+  const displacement = memoryMatch[2] == null ? null : signedIntegerText(memoryMatch[2]);
   const preIndex = memoryMatch[3] === '!';
   const memory = {
     k: 'mem',
     text: memoryText.trim(),
-    base: { k: 'reg', text: memoryMatch[1], cls: 'gp', bits: POINTER_BITS, num: baseNumber },
+    base: { k: 'reg', text: baseText, cls: baseIsSp ? 'sp' : 'gp', bits: POINTER_BITS, num: baseNumber },
     index: null,
     disp: displacement == null ? null : { k: 'imm', text: `#${memoryMatch[2]}`, value: displacement },
     addressDisp: displacement,
@@ -127,7 +143,7 @@ function displacementValue(mem) {
   if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
   if (typeof value === 'string') {
     const text = value.trim();
-    if (/^-?(?:0x[0-9a-f]+|\d+)$/i.test(text)) return BigInt(text);
+    return signedIntegerText(text);
   }
   return null;
 }
@@ -187,16 +203,27 @@ function authenticatedLoadFault(mnemonic, keyId) {
   };
 }
 
-function dataAbortFault(mnemonic, accessIndex) {
+function dataAbortFault(mnemonic, accessIndex, { tagChecked = true } = {}) {
+  const causes = ['address-size', 'translation', 'access-flag', 'permission', 'external'];
+  if (tagChecked) causes.push('tag-check');
   return {
     kind: 'data-abort',
     condition: { kind: 'memory-access-fault', access: 'read', accessIndex },
     detail: {
-      causes: ['address-size', 'translation', 'access-flag', 'permission', 'external'],
-      tagChecked: true,
+      causes,
+      tagChecked,
       mnemonic,
     },
   };
+}
+
+function stackPointerAlignmentFault(base, accessIndex) {
+  if (base?.kind !== 'sp') return [];
+  return [{
+    kind: 'stack-pointer-alignment-fault',
+    condition: { kind: 'sp-misaligned', alignment: 16, accessIndex },
+    detail: { baseRegister: 'sp', architecturalCheck: 'CheckSPAlignment' },
+  }];
 }
 
 function keyStateReads(operations, keyCode, instructionId) {
@@ -241,8 +268,11 @@ export function liftArm64eAuthenticatedLoadEffects(decoded, context = {}) {
     return partialMissing(decoded, context, instructionId, 'authenticated load register offset addressing is not encodable');
   }
   const displacement = displacementValue(mem);
-  if (displacement == null || displacement < SIGNED_IMM9_MIN || displacement > SIGNED_IMM9_MAX) {
-    return partialMissing(decoded, context, instructionId, 'authenticated load displacement is outside the signed imm9 encoding');
+  if (displacement == null
+      || displacement < AUTHENTICATED_LOAD_OFFSET_MIN
+      || displacement > AUTHENTICATED_LOAD_OFFSET_MAX
+      || displacement % AUTHENTICATED_LOAD_OFFSET_SCALE !== 0n) {
+    return partialMissing(decoded, context, instructionId, 'authenticated load displacement is outside the signed scaled S:imm9 encoding');
   }
 
   let addressing;
@@ -253,7 +283,6 @@ export function liftArm64eAuthenticatedLoadEffects(decoded, context = {}) {
     throw error;
   }
   const base = addressing.base;
-  if (base.kind === 'sp') return partialMissing(decoded, context, instructionId, 'authenticated load base register SP is not encodable');
 
   const operations = [...addressing.readOperations];
   const baseValue = addressing.readOperations[0]?.value;
@@ -342,7 +371,11 @@ export function liftArm64eAuthenticatedLoadEffects(decoded, context = {}) {
     mode: modeOf(decoded, context),
     operations,
     controlEffect: { kind: 'fallthrough' },
-    possibleFaults: [authenticatedLoadFault(mnemonic, keyId), dataAbortFault(mnemonic, 0)],
+    possibleFaults: [
+      authenticatedLoadFault(mnemonic, keyId),
+      ...stackPointerAlignmentFault(base, 0),
+      dataAbortFault(mnemonic, 0, { tagChecked: base.kind !== 'sp' || addressing.mode !== 'offset' }),
+    ],
     origin: originOf(decoded, context, instructionId),
     completeness: 'exact-with-intrinsic',
     metadata: {
