@@ -45,7 +45,9 @@ test('the gate-repair route rejects an unregistered or extra foreign path', () =
 });
 
 test('CircleCI derives the Phase 8 subset through the exact route helper', () => {
-  const routeIndex = CONFIG.indexOf(`fix/main-gate-recovery-20260913`);
+  const routeIndex = CONFIG.indexOf(
+    `            elif [ "\${CIRCLE_BRANCH:-}" = 'fix/main-gate-recovery-20260913' ]; then`,
+  );
   assert.notEqual(routeIndex, -1);
   const helperIndex = CONFIG.indexOf('node tools/validation/phase8/cross-lane-inventory.mjs', routeIndex);
   const validatorIndex = CONFIG.indexOf('node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"', routeIndex);
