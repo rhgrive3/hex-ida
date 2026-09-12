@@ -11,6 +11,7 @@ import { functionSeed, mergeFunctionSeeds } from './model.js';
 import { ByteView } from './reader.js';
 import { markMachOMetadataPartial } from './macho-budget.js';
 import { applyMachOIndirectSymbols } from './macho-indirect-symbols.js';
+import { applyMachOTlvInitializers } from './macho-tlv-init.js';
 
 export {
   DICE_KIND_DATA,
@@ -100,6 +101,9 @@ export function parseMachO(input, opts = {}) {
   const image = parseMachOCore(input, opts);
   validateKnownLoadCommandSizes(input, image);
   const thin = selectedThinBytes(input, image);
-  if (thin) applyMachOIndirectSymbols(thin, image, opts);
+  if (thin) {
+    applyMachOIndirectSymbols(thin, image, opts);
+    applyMachOTlvInitializers(thin, image);
+  }
   return repairMachOZeroEntrypoint(image);
 }
