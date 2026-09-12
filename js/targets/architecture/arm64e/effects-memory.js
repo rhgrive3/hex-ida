@@ -283,6 +283,12 @@ export function liftArm64eAuthenticatedLoadEffects(decoded, context = {}) {
     throw error;
   }
   const base = addressing.base;
+  if (addressing.mode !== 'offset'
+      && base.kind === 'gp'
+      && !destination.zero
+      && destination.physicalId === base.physicalId) {
+    return partialMissing(decoded, context, instructionId, 'authenticated load pre-index destination/base writeback overlap is constrained-unpredictable');
+  }
 
   const operations = [...addressing.readOperations];
   const baseValue = addressing.readOperations[0]?.value;
