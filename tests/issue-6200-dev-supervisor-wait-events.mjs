@@ -5,7 +5,7 @@ import {
   parseDevSupervisorDecision,
   validateDevSupervisorDecision,
 } from '../js/ai/dev/protocol/hex-dev-supervisor-v1.js';
-import { DEV_EVENT_TYPES } from '../js/ai/dev/events/dev-events.js';
+import { DEV_EVENT_TYPE, DEV_WORKER_EVENT_TYPES } from '../js/ai/dev/events/dev-events.js';
 import { DevSupervisorEngineV0 } from '../js/ai/dev/supervisor/dev-supervisor-engine-v0.js';
 import { DevSupervisorV0 } from '../js/ai/dev/supervisor/dev-supervisor-v0.js';
 import { DevAgentUiSettings } from '../js/ai/dev/ui/settings.js';
@@ -15,19 +15,20 @@ function waitDecision(events) {
   return { type: 'wait', events, reason: 'wait for worker' };
 }
 
-test('#6200 accepts only the declared Dev event vocabulary', () => {
+test('#6200 accepts only the declared Worker wait event vocabulary', () => {
   assert.deepEqual(validateDevSupervisorDecision(waitDecision(['worker.completed'])).events, ['worker.completed']);
   assert.deepEqual(
     validateDevSupervisorDecision(waitDecision(['worker.failed', 'worker.cancelled'])).events,
     ['worker.failed', 'worker.cancelled'],
   );
-  for (const event of DEV_EVENT_TYPES) {
+  for (const event of DEV_WORKER_EVENT_TYPES) {
     assert.deepEqual(validateDevSupervisorDecision(waitDecision([event])).events, [event]);
   }
 });
 
 test('#6200 rejects unknown, mixed, blank and malformed event values', () => {
   for (const events of [
+    [DEV_EVENT_TYPE.HUMAN_RESPONDED],
     ['worker.teleported'],
     ['worker.completed', 'worker.teleported'],
     [''],

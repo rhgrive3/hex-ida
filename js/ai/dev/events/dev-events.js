@@ -9,6 +9,14 @@ export const DEV_EVENT_TYPE = Object.freeze({
 });
 
 export const DEV_EVENT_TYPES = Object.freeze(Object.values(DEV_EVENT_TYPE));
+export const DEV_WORKER_EVENT_TYPES = Object.freeze([
+  DEV_EVENT_TYPE.WORKER_REGISTERED,
+  DEV_EVENT_TYPE.WORKER_STARTED,
+  DEV_EVENT_TYPE.WORKER_PROGRESS,
+  DEV_EVENT_TYPE.WORKER_COMPLETED,
+  DEV_EVENT_TYPE.WORKER_FAILED,
+  DEV_EVENT_TYPE.WORKER_CANCELLED,
+]);
 
 export function createDevEvent(type, data = {}, { now = () => new Date().toISOString() } = {}) {
   if (!DEV_EVENT_TYPES.includes(type)) throw new TypeError(`Unsupported Dev event: ${type}`);
