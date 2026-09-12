@@ -90,7 +90,12 @@ function installWorkerOverride(base, workerURLs, { revoke = [] } = {}) {
       if (globalThis.__HEX_WORKER_RUNTIME__ === runtime) delete globalThis.__HEX_WORKER_RUNTIME__;
     },
   };
-  addEventListener('pagehide', () => runtime.cleanup(), { once: true });
+  try {
+    addEventListener('pagehide', () => runtime.cleanup(), { once: true });
+  } catch (error) {
+    if (globalThis.Worker === HexWorker) globalThis.Worker = NativeWorker;
+    throw error;
+  }
   return runtime;
 }
 

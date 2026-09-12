@@ -41,7 +41,7 @@ async function runWorkerAssetsScenario({ manifest, responses, body }) {
   globalThis.addEventListener = () => {};
   delete globalThis.__HEX_WORKER_RUNTIME__;
   try {
-    await body({ nativeWorker, manifest });
+    await body({ nativeWorker, manifest, created, revoked });
     return { created: [...created], revoked: [...revoked] };
   } finally {
     URL.createObjectURL = realCreate;
@@ -175,7 +175,7 @@ const protectedAssets = {
   },
 };
 
-function runProtectedScenario({ failOnCreate }) {
+function runProtectedScenario({ failOnCreate, failPagehide = false, foreign = null }) {
   const created = [];
   const revoked = [];
   const pagehide = [];
@@ -193,14 +193,20 @@ function runProtectedScenario({ failOnCreate }) {
     },
     atob: (value) => Buffer.from(value, 'base64').toString('binary'),
     Worker: nativeWorker,
-    addEventListener: (type, handler) => { if (type === 'pagehide') pagehide.push(handler); },
+    addEventListener: (type, handler) => {
+      if (failPagehide) {
+        if (foreign) { context.Worker = foreign.worker; context.__HEX_WORKER_RUNTIME__ = foreign.runtime; }
+        throw new Error('pagehide-registration-denied');
+      }
+      if (type === 'pagehide') pagehide.push(handler);
+    },
     __HEX_TEST_PROTECTED_ASSETS__: protectedAssets,
   });
   vm.runInContext(`${protectedSource}\nglobalThis.__install = installProtectedWorkers;`, context);
   let error = null;
   let runtime = null;
   try { runtime = vm.runInContext('__install()', context); } catch (reason) { error = reason; }
-  return { error, runtime, created: [...created], revoked, context, nativeWorker, pagehide };
+  return { error, runtime, created, revoked, context, nativeWorker, pagehide };
 }
 
 function assertProtectedFailure(outcome, stagePattern) {
@@ -236,6 +242,61 @@ for (let attempt = 0; attempt < 2; attempt++) {
   assert.deepEqual(outcome.revoked, outcome.created, 'cleanup must revoke each owned URL exactly once');
   assert.equal(outcome.context.Worker, outcome.nativeWorker, 'cleanup must restore the native Worker');
   assert.equal(outcome.context.__HEX_WORKER_RUNTIME__, undefined, 'cleanup must retire the runtime');
+}
+
+for (const replaceOwner of [false, true]) {
+  await runWorkerAssetsScenario({
+    manifest: legacyManifest({ classicAssets: ['workers/a.js'], classicEntries: ['workers/a.js'], moduleBundles: {} }),
+    responses: { 'capstone.wasm': { buffer: new ArrayBuffer(16) }, 'workers/a.js': { text: '' } },
+    body: async ({ nativeWorker, manifest, created, revoked }) => {
+      const foreignWorker = class {};
+      const foreignRuntime = {};
+      globalThis.addEventListener = () => {
+        if (replaceOwner) { globalThis.Worker = foreignWorker; globalThis.__HEX_WORKER_RUNTIME__ = foreignRuntime; }
+        throw new Error('pagehide-registration-denied');
+      };
+      await assert.rejects(prepareUserscriptWorkers({ origin, manifest }), /pagehide-registration-denied/);
+      assert.equal(globalThis.Worker, replaceOwner ? foreignWorker : nativeWorker, 'failed registration restores only its own Worker');
+      assert.equal(globalThis.__HEX_WORKER_RUNTIME__, replaceOwner ? foreignRuntime : undefined);
+      assertFullyRevoked({ created, revoked });
+      if (replaceOwner) return;
+      const failedCount = created.length;
+      globalThis.addEventListener = () => {};
+      const runtime = await prepareUserscriptWorkers({ origin, manifest });
+      assert.equal(globalThis.__HEX_WORKER_RUNTIME__, runtime);
+      assert.notEqual(globalThis.Worker, nativeWorker);
+      assert.equal(revoked.length, failedCount, 'retry URLs remain live until cleanup');
+      runtime.cleanup();
+      assertFullyRevoked({ created, revoked });
+      assert.equal(globalThis.Worker, nativeWorker);
+      assert.equal(globalThis.__HEX_WORKER_RUNTIME__, undefined);
+    },
+  });
+}
+
+{
+  const outcome = runProtectedScenario({ failOnCreate: Infinity, failPagehide: true });
+  assertProtectedFailure(outcome, /pagehide-registration-denied/);
+  const failedCount = outcome.created.length;
+  outcome.context.addEventListener = () => {};
+  const runtime = vm.runInContext('__install()', outcome.context);
+  assert.equal(outcome.context.__HEX_WORKER_RUNTIME__, runtime);
+  assert.notEqual(outcome.context.Worker, outcome.nativeWorker);
+  assert.equal(outcome.created.length, failedCount * 2, 'retry creates fresh URLs');
+  assert.equal(outcome.revoked.length, failedCount, 'retry URLs remain live until cleanup');
+  runtime.cleanup();
+  assertFullyRevoked(outcome);
+  assert.equal(outcome.context.Worker, outcome.nativeWorker);
+  assert.equal(outcome.context.__HEX_WORKER_RUNTIME__, undefined);
+}
+
+{
+  const foreign = { worker: class {}, runtime: {} };
+  const outcome = runProtectedScenario({ failOnCreate: Infinity, failPagehide: true, foreign });
+  assert.match(outcome.error.message, /pagehide-registration-denied/);
+  assertFullyRevoked(outcome);
+  assert.equal(outcome.context.Worker, foreign.worker, 'rollback preserves a replacement Worker');
+  assert.equal(outcome.context.__HEX_WORKER_RUNTIME__, foreign.runtime, 'rollback preserves a replacement runtime');
 }
 
 console.log('issue #5034 worker blob URL failure-cleanup regressions PASS');

@@ -18,7 +18,8 @@ export function installProtectedWorkers() {
 
   const urls = new Map();
   const revoke = [];
-  let overrideInstalled = false;
+  let installedWorker = null;
+  let runtime = null;
   let ownedByRuntime = false;
   try {
     const wasmBytes = decodeArrayBuffer(PROTECTED_WORKER_ASSETS.wasm);
@@ -80,9 +81,9 @@ export function installProtectedWorkers() {
     Object.setPrototypeOf(HexWorker, NativeWorker);
     Object.defineProperty(HexWorker, '__hexUserscriptWorker', { value: true });
     globalThis.Worker = HexWorker;
-    overrideInstalled = true;
+    installedWorker = HexWorker;
 
-    const runtime = {
+    runtime = {
       nativeWorker: NativeWorker,
       workers: urls,
       cleanup() {
@@ -97,7 +98,8 @@ export function installProtectedWorkers() {
     return runtime;
   } finally {
     if (!ownedByRuntime) {
-      if (overrideInstalled) globalThis.Worker = NativeWorker;
+      if (installedWorker && globalThis.Worker === installedWorker) globalThis.Worker = NativeWorker;
+      if (runtime && globalThis.__HEX_WORKER_RUNTIME__ === runtime) delete globalThis.__HEX_WORKER_RUNTIME__;
       revokeBlobURLs(revoke);
     }
   }
