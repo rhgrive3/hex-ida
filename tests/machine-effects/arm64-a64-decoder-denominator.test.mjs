@@ -60,7 +60,7 @@ const structural = validateArm64A64DecoderDenominator();
 assert.equal(structural.denominatorId, ARM64_A64_DECODER_DENOMINATOR_ID);
 assert.equal(structural.denominatorAuthority, 'independent-arm-encoding-family-union-plus-fixed-decoder-audit');
 assert.equal(structural.decoderProvider, 'capstone/backend');
-assert.equal(structural.architectureSemanticVersion, '7');
+assert.equal(structural.architectureSemanticVersion, '8');
 assert.equal(structural.scopeShrinkGuard, true);
 assert.equal(structural.corpusShrinkGuard, true);
 assert.equal(structural.decoderAuditObserved, false, 'static flags cannot substitute for an observed decoder audit');
@@ -125,7 +125,7 @@ try {
     { ...identity, capstoneApi:{ ...identity.capstoneApi, minor:1 } },
     { ...identity, artifacts:{ ...identity.artifacts, 'capstone.wasm':'0'.repeat(64) } },
     { ...identity, instructionRegistry:{ ...identity.instructionRegistry, count:identity.instructionRegistry.count - 1 } },
-    { ...identity, machineEffectsSemanticVersion:'8' },
+    { ...identity, machineEffectsSemanticVersion:'9' },
   ]) assert.throws(() => verifyArm64A64DecoderIdentity(mutation), /drift/);
 
   decoderAudit = auditArm64A64DecoderOwnership({

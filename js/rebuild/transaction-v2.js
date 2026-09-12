@@ -1,5 +1,10 @@
 import { deepFreeze, stableDigest } from '../core/identity/index.js';
 import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';
+import {
+  discoveryArtifactForRebuild,
+  isFactoryIssuedDiscoveryRebuildBinding,
+  verifyDiscoveryReparse,
+} from '../analysis/discovery/artifact.js';
 
 export const REBUILD_TRANSACTION_SCHEMA = 'hex-rebuild-transaction-v2';
 export const REBUILD_VALIDATION_SCHEMA = 'hex-rebuild-validation-v2';
@@ -585,9 +590,39 @@ export function createRebuildTransaction(input = {}) {
   const architecture = required(input.architecture, 'rebuild-v2-architecture-required').toLowerCase();
   const sourceHash = canonicalHash(input.sourceHash);
   const loaderVersion = required(input.loaderVersion, 'rebuild-v2-loader-version-required');
-  const expectedOriginalState = optionalRecord(input.expectedOriginalState || { sourceHash }, 'rebuild-v2-original-state-invalid');
+  const rawExpectedOriginalState = input.expectedOriginalState || { sourceHash };
+  const directDiscoveryBinding = rawExpectedOriginalState?.discoveryBinding ?? null;
+  let discoveryBinding = null;
+  if (input.discoveryArtifact != null) {
+    discoveryBinding = discoveryArtifactForRebuild(input.discoveryArtifact, {
+      binaryId: input.binaryId,
+      sourceHash,
+      architectureId: architecture,
+    });
+    if (directDiscoveryBinding != null
+        && (!isFactoryIssuedDiscoveryRebuildBinding(directDiscoveryBinding)
+          || directDiscoveryBinding.digest !== discoveryBinding.digest)) {
+      throw new TypeError('rebuild-v2-discovery-binding-mismatch');
+    }
+  } else if (directDiscoveryBinding != null) {
+    if (!isFactoryIssuedDiscoveryRebuildBinding(directDiscoveryBinding)) {
+      throw new TypeError('rebuild-v2-discovery-binding-untrusted');
+    }
+    if (directDiscoveryBinding.binding?.binaryId !== input.binaryId
+        || directDiscoveryBinding.binding?.sourceHash !== sourceHash
+        || directDiscoveryBinding.binding?.architectureId !== architecture) {
+      throw new TypeError('rebuild-v2-discovery-binding-mismatch');
+    }
+    discoveryBinding = directDiscoveryBinding;
+  }
+  if (input.discoveryRequired === true && discoveryBinding == null) {
+    throw new TypeError('rebuild-v2-discovery-binding-required');
+  }
+  const discoveryRequired = discoveryBinding != null;
+  const expectedOriginalState = optionalRecord(rawExpectedOriginalState, 'rebuild-v2-original-state-invalid');
   if (expectedOriginalState.sourceHash != null && canonicalHash(expectedOriginalState.sourceHash) !== sourceHash) throw new TypeError('rebuild-v2-original-state-identity-mismatch');
   expectedOriginalState.sourceHash = sourceHash;
+  if (discoveryBinding != null) expectedOriginalState.discoveryBinding = discoveryBinding;
   const relocationBindings = input.relocationBindings ?? declaredImpact.relocationBindings ?? [];
   if (!Array.isArray(relocationBindings)) throw new TypeError('rebuild-v2-relocation-bindings-invalid');
   const impact = {
@@ -600,7 +635,10 @@ export function createRebuildTransaction(input = {}) {
     sections: clone(declaredImpact.sections || []),
     relocationBindings: clone(relocationBindings),
   };
-  const requireIndependentOracle = input.requireIndependentOracle === true;
+  // A discovery-bound rebuild may only publish through X-01's existing
+  // independent differential authority. X-03 adds evidence; it does not create
+  // a private self-oracle path.
+  const requireIndependentOracle = input.requireIndependentOracle === true || discoveryRequired;
   const transaction = {
     schemaVersion: REBUILD_TRANSACTION_SCHEMA,
     transactionId: null,
@@ -614,6 +652,7 @@ export function createRebuildTransaction(input = {}) {
     impact,
     relocationBindings: clone(relocationBindings),
     expectedOriginalState,
+    ...(discoveryRequired ? { discoveryRequired: true } : {}),
     requiredValidators: requiredValidators(impact, input.additionalValidators || [], requireIndependentOracle),
     requireIndependentOracle,
     unresolvedRisks: sorted(input.unresolvedRisks),
@@ -645,6 +684,14 @@ function transactionIdentityValid(transaction) {
     if (!Array.isArray(transaction.impact?.sections)) return false;
     if (typeof transaction.impact.layoutMoving !== 'boolean' || typeof transaction.impact.relocations !== 'boolean' || typeof transaction.impact.branchRanges !== 'boolean' || typeof transaction.impact.unwind !== 'boolean' || typeof transaction.impact.importsExports !== 'boolean' || typeof transaction.impact.signature !== 'boolean') return false;
     if (transaction.expectedOriginalState?.sourceHash !== transaction.sourceHash) return false;
+    if (transaction.discoveryRequired != null && transaction.discoveryRequired !== true) return false;
+    const discoveryBinding = transaction.expectedOriginalState?.discoveryBinding ?? null;
+    if (transaction.discoveryRequired === true) {
+      if (!isFactoryIssuedDiscoveryRebuildBinding(discoveryBinding)) return false;
+      if (discoveryBinding.binding?.binaryId !== transaction.binaryId
+          || discoveryBinding.binding?.sourceHash !== transaction.sourceHash
+          || discoveryBinding.binding?.architectureId !== transaction.architecture) return false;
+    } else if (discoveryBinding != null) return false;
     const expected = requiredValidators(transaction.impact, transaction.requiredValidators.filter((name) => ![
       'source-precondition', 'structure', 'loader-reparse', 'unchanged-regions', 'evidence',
       'layout', 'relocations', 'branch-ranges', 'unwind', 'imports-exports', 'signature-consequence', 'independent-differential',
@@ -871,6 +918,16 @@ async function executeExternal(name, fn, context) {
     }
     const identityFailure = formatIdentityMismatch(result, context.transaction, context.expectedOutputHash);
     if (identityFailure) return validatorResult(name, true, false, identityFailure, result);
+    if (name === 'loader-reparse' && context.transaction.discoveryRequired) {
+      const sourceBinding = context.transaction.expectedOriginalState?.discoveryBinding;
+      const reparsedArtifact = result.discoveryArtifact ?? null;
+      const discoveryValidation = verifyDiscoveryReparse(sourceBinding, reparsedArtifact, {
+        expectedOutputHash: context.expectedOutputHash,
+      });
+      if (!discoveryValidation.ok) {
+        return validatorResult(name, true, false, discoveryValidation.reason, discoveryValidation);
+      }
+    }
     const relocationFailure = name === 'relocations' ? relocationResultFailure(result) : null;
     if (relocationFailure) return validatorResult(name, true, false, relocationFailure, result);
     return validatorResult(name, true, true, null, result);

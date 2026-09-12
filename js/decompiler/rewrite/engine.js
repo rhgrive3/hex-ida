@@ -1,13 +1,89 @@
-import { children, mapChildren, nodeCount, structuralKey } from '../ast/nodes.js';
+import { children, mapChildren, nodeCount, sourceOf, structuralKey } from '../ast/nodes.js';
 
 export const DEFAULT_REWRITE_BUDGET = Object.freeze({
   maxIterations: 12,
   nodeBudget: 4096,
   timeBudgetMs: 18,
   maxApplications: 2048,
+  maxHistoryOrigins: 512,
 });
 
 function now() { return globalThis.performance?.now ? globalThis.performance.now() : Date.now(); }
+
+// Producer-local storage of already normalized immutable payloads, never of
+// operations, source objects, currentness or proof authority. Both entry count
+// and retained key/data units are bounded; oversized payloads remain ordinary
+// fresh snapshots and are still subject to downstream observation limits.
+function createSnapshotStorage() {
+  const entries = new Map();
+  let units = 0;
+  return snapshot => {
+    let key = '', elements = 0;
+    for (const [kind, values] of Object.entries(snapshot)) {
+      key += `${kind}:${values.length}:[`;
+      for (const value of values) {
+        if (typeof value === 'string' && value.length > 2048
+            || typeof value === 'bigint' && value >= (1n << 1024n)) return snapshot;
+        // Length-prefix primitive text directly. JSON serialization could
+        // execute an inherited toJSON hook on the encoding's own arrays.
+        const text = Object.is(value, -0) ? '-0' : String(value);
+        key += `${typeof value}:${text.length}:${text}`;
+        elements++;
+        if (key.length > 8192) return snapshot;
+      }
+      key += ']';
+    }
+    if (key.length > 8192) return snapshot;
+    const prior = entries.get(key);
+    if (prior) {
+      entries.delete(key); entries.set(key, prior);
+      return prior.snapshot;
+    }
+    const cost = key.length + elements * 8 + 64;
+    if (cost > 131072) return snapshot;
+    while (entries.size >= 512 || units + cost > 131072) {
+      const oldest = entries.keys().next().value;
+      units -= entries.get(oldest).cost; entries.delete(oldest);
+    }
+    entries.set(key, { snapshot, cost }); units += cost;
+    return snapshot;
+  };
+}
+
+// A historical source snapshot, not a new AST/semantic identity. Do not retain
+// mutable nodes or evidence chains here: later rewrites and callers may mutate
+// them, and recursively retaining proof evidence would grow the history.
+function sourceSnapshot(node, cap, storage = null) {
+  const { evidence, ...origins } = sourceOf(node?.source);
+  let remaining = cap, truncated = false;
+  const snapshot = {};
+  for (const [kind, values] of Object.entries(origins)) {
+    const retained = values.slice(0, remaining);
+    remaining -= retained.length;
+    truncated ||= retained.length !== values.length;
+    snapshot[kind] = Object.freeze(retained);
+  }
+  const frozen = Object.freeze(snapshot);
+  return { origins:storage ? storage(frozen) : frozen, truncated };
+}
+
+// Shared by real expression producers, including CFG-backed recovery passes.
+// This records history only; it grants neither rewrite admission nor a binding.
+export function expressionOriginHistory(before, after, maximum = 512) {
+  return originHistory(before, after, maximum, null);
+}
+
+export function createExpressionOriginHistoryRecorder() {
+  const storage = createSnapshotStorage();
+  return (before, after, maximum = 512) => originHistory(before, after, maximum, storage);
+}
+
+function originHistory(before, after, maximum, storage) {
+  const cap = Number.isSafeInteger(maximum) && maximum >= 0 ? Math.min(maximum, 512) : 512;
+  const left = sourceSnapshot(before, cap, storage), right = sourceSnapshot(after, cap, storage);
+  return Object.freeze({ before:left.origins, after:right.origins,
+    truncated:left.truncated || right.truncated });
+}
 
 function validTimeBudgetMs(value, fallback) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
@@ -31,6 +107,8 @@ function validateRule(rule) {
 }
 
 export class RewriteEngine {
+  #snapshotStorage = createSnapshotStorage();
+
   constructor(rules = [], budget = {}) {
     this.rules = rules.map(validateRule);
     this.budget = { ...DEFAULT_REWRITE_BUDGET, ...budget };
@@ -38,6 +116,7 @@ export class RewriteEngine {
     this.budget.maxIterations = validWorkLimit(this.budget.maxIterations, DEFAULT_REWRITE_BUDGET.maxIterations);
     this.budget.nodeBudget = validWorkLimit(this.budget.nodeBudget, DEFAULT_REWRITE_BUDGET.nodeBudget);
     this.budget.maxApplications = validWorkLimit(this.budget.maxApplications, DEFAULT_REWRITE_BUDGET.maxApplications);
+    this.budget.maxHistoryOrigins = validWorkLimit(this.budget.maxHistoryOrigins, DEFAULT_REWRITE_BUDGET.maxHistoryOrigins);
   }
 
   rewrite(root, context = {}) {
@@ -100,6 +179,7 @@ export class RewriteEngine {
           if (!match) continue;
           if (rule.precondition && !rule.precondition(candidate, match, context)) continue;
           const beforeKey = structuralKey(candidate);
+          const beforeOrigins = sourceSnapshot(candidate, this.budget.maxHistoryOrigins, this.#snapshotStorage);
           const next = rule.rewrite(candidate, match, context);
           if (!next) continue;
           const afterKey = structuralKey(next);
@@ -109,7 +189,10 @@ export class RewriteEngine {
           if (!rule.allowExpansion && afterCost > beforeCost) continue;
           const evidence = typeof rule.proof === 'function' ? rule.proof(candidate, next, match, context) : rule.proof;
           if (!evidence) continue;
-          proof.push({ rule: rule.name, phase: rule.phase, before: beforeKey, after: afterKey, evidence });
+          const afterOrigins = sourceSnapshot(next, this.budget.maxHistoryOrigins, this.#snapshotStorage);
+          proof.push({ rule: rule.name, phase: rule.phase, before: beforeKey, after: afterKey, evidence,
+            originHistory:Object.freeze({ before:beforeOrigins.origins, after:afterOrigins.origins,
+              truncated:beforeOrigins.truncated || afterOrigins.truncated }) });
           stats.applications++;
           stats.byRule[rule.name] = (stats.byRule[rule.name] || 0) + 1;
           candidate = next;
@@ -137,4 +220,29 @@ export class RewriteEngine {
     stats.elapsedMs = now() - started;
     return { root: current, proof, stats };
   }
+}
+
+// A bounded journal around the existing engine, not another optimizer. Recovery
+// may explore a subtree and later reject it; marks let that producer discard
+// tentative history instead of presenting it as an applied output transform.
+export class RewriteHistoryJournal {
+  constructor(engine, maximum = 1024) {
+    this.engine = engine;
+    this.maximum = Number.isSafeInteger(maximum) && maximum >= 0 ? Math.min(maximum, 1024) : 1024;
+    this.records = [];
+    this.truncated = false;
+  }
+
+  rewrite(root, context = {}) {
+    const result = this.engine.rewrite(root, context);
+    for (const record of result.proof) {
+      if (this.records.length < this.maximum) this.records.push(Object.freeze(record));
+      else this.truncated = true;
+    }
+    return result;
+  }
+
+  mark() { return { length:this.records.length, truncated:this.truncated }; }
+  rollback(mark) { this.records.length = mark.length; this.truncated = mark.truncated; }
+  recordsSince(mark) { return Object.freeze(this.records.slice(mark.length)); }
 }

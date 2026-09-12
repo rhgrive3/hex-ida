@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { createX86DecodedInstruction } from '../../js/targets/architecture/x86_64/decoded-instruction.js';
-import { liftX86MachineEffects } from '../../js/targets/architecture/x86_64/effects/index.js';
 import { x86RegisterDescriptor } from '../../js/targets/architecture/x86_64/registers.js';
-import { createCapstoneX86Session } from '../phase5/helpers/capstone-session.mjs';
+import { forEachX86BrowserSession } from './helpers/x86-browser-effects.mjs';
 import { X86_LONG64_FP_DENOMINATOR_ID,X86_LONG64_FP_EXACT_FORMS,X86_LONG64_FP_SHARED_BLOCKERS,validateX86Long64FpDenominator } from '../../tools/validation/machine-effects/x86-long64-fp-denominator.mjs';
 import { effects,reg,legacy,vex128,vex256,evex,operations } from './helpers/x86-long64-fp-simd.mjs';
 const d=validateX86Long64FpDenominator();assert.equal(d.denominatorId,X86_LONG64_FP_DENOMINATOR_ID);assert.equal(d.exactFormCount,68);assert.equal(d.ownedRemainingCount,0);assert.equal(d.sharedBlockerCount,0);assert.equal(d.closed,true);assert.deepEqual(X86_LONG64_FP_SHARED_BLOCKERS,[]);
@@ -18,5 +17,24 @@ const x87=effects('fldz',[],legacy());assert.equal(x87.completeness,'partial');a
 // The physical contract now contains the former shared dependencies directly.
 const st0=x86RegisterDescriptor('st(0)'),mm0=x86RegisterDescriptor('mm0'),fpswDescriptor=x86RegisterDescriptor('fpsw'),fpcw=x86RegisterDescriptor('fpcw'),zmm0Descriptor=x86RegisterDescriptor('zmm0'),k0=x86RegisterDescriptor('k0');
 assert.equal(st0?.dynamicView?.kind,'x87-top-relative');assert.equal(st0?.physicalId,'x87-stack');assert.equal(mm0?.physicalId,'x87-stack');assert.equal(fpswDescriptor?.kind,'x87-status');assert.equal(fpcw?.kind,'x87-control');assert.equal(zmm0Descriptor?.viewBits,512);assert.equal(Array.isArray(zmm0Descriptor?.compositeParts),true);assert.equal(k0?.kind,'opmask');
-const capstone=await createCapstoneX86Session();try{const zmm=capstone.decode([0x62,0xf1,0x7c,0x48,0x58,0xc1],0x700000n)[0];assert.equal(zmm.mnemonic,'vaddps');const decodedZmm=createX86DecodedInstruction(zmm);const zmm0=decodedZmm.detail.operands[0]?.register;assert.equal(zmm0?.id,'zmm0');assert.equal(zmm0?.viewBits,512);assert.equal(Array.isArray(zmm0?.compositeParts),true);const zmmEffects=liftX86MachineEffects(decodedZmm,{instructionId:'fp:real-evex-vaddps'});assert.ok(['exact','exact-with-intrinsic'].includes(zmmEffects?.completeness),zmmEffects?.unknownEffects?.reason);assert.equal(zmmEffects?.metadata?.family,'fp');const fldz=capstone.decode([0xd9,0xee],0x700100n)[0];assert.equal(fldz.mnemonic,'fldz');const decodedFldz=createX86DecodedInstruction(fldz);const fpsw=decodedFldz.detail.implicitWrites.find((register)=>register.id==='fpsw');assert.ok(fpsw);assert.equal(fpsw.physicalId,'fpsw');assert.equal(fpsw.kind,'x87-status');const fldzEffects=liftX86MachineEffects(decodedFldz,{instructionId:'fp:real-x87-fldz'});assert.ok(['exact','exact-with-intrinsic'].includes(fldzEffects?.completeness),fldzEffects?.unknownEffects?.reason);assert.equal(fldzEffects?.metadata?.family,'fp');}finally{capstone.close();}
+await forEachX86BrowserSession(async ({ decodeAndLift }) => {
+  const [{ decoded:zmm, effects:zmmEffects }] = await decodeAndLift([0x62,0xf1,0x7c,0x48,0x58,0xc1],0x700000n);
+  assert.equal(zmm.mnemonic,'vaddps');
+  const decodedZmm=createX86DecodedInstruction(zmm);
+  const zmm0=decodedZmm.detail.operands[0]?.register;
+  assert.equal(zmm0?.id,'zmm0');
+  assert.equal(zmm0?.viewBits,512);
+  assert.equal(Array.isArray(zmm0?.compositeParts),true);
+  assert.ok(['exact','exact-with-intrinsic'].includes(zmmEffects?.completeness),zmmEffects?.unknownEffects?.reason);
+  assert.equal(zmmEffects?.metadata?.family,'fp');
+  const [{ decoded:fldz, effects:fldzEffects }] = await decodeAndLift([0xd9,0xee],0x700100n);
+  assert.equal(fldz.mnemonic,'fldz');
+  const decodedFldz=createX86DecodedInstruction(fldz);
+  const fpsw=decodedFldz.detail.implicitWrites.find((register)=>register.id==='fpsw');
+  assert.ok(fpsw);
+  assert.equal(fpsw.physicalId,'fpsw');
+  assert.equal(fpsw.kind,'x87-status');
+  assert.ok(['exact','exact-with-intrinsic'].includes(fldzEffects?.completeness),fldzEffects?.unknownEffects?.reason);
+  assert.equal(fldzEffects?.metadata?.family,'fp');
+});
 console.log(`x86 long64 FP denominator: ${d.exactFormCount} exact forms + ${d.sharedBlockerCount} shared blockers: PASS`);

@@ -60,4 +60,10 @@ test('C4-03 a real shared-cleanup residual goto is never emitted sourceless', ()
   const gotos = result.lines.filter((line) => /^goto loc_1004;$/i.test(line.text || ''));
   assert.ok(gotos.length > 0, 'fixture must retain the shared-cleanup edge explicitly');
   assert.ok(gotos.every((line) => hasCanonicalOrigin(line.source)), 'every rendered residual goto must retain a canonical origin');
+  for (const line of gotos) {
+    assert.ok(line.source.addresses.includes(0x1010n), 'the actual branch owns the control edge');
+    assert.ok(line.source.addresses.includes(0x1004n), 'the canonical destination remains navigable');
+    assert.ok(!line.source.addresses.includes(0x1000n), 'an unrelated conditional branch is not an origin');
+    assert.ok(line.source.ir.length > 0, 'navigation must retain canonical IR references');
+  }
 });

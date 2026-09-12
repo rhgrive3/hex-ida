@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createCapstoneX86Session } from '../phase5/helpers/capstone-session.mjs';
 import { createX86DecodedInstruction } from '../../js/targets/architecture/x86_64/decoded-instruction.js';
 import { dispatchX86MachineEffects } from '../../js/targets/architecture/x86_64/effects/index.js';
+import { closeTrustedX86Partial } from '../../js/targets/architecture/x86_64/effects/trusted-decoder-terminal.js';
 
 // Issue #5569: SAVEPREVSSP is an operandless CET instruction that
 // architecturally reads (pops) the previous-SSP token from the current shadow
@@ -12,13 +13,16 @@ import { dispatchX86MachineEffects } from '../../js/targets/architecture/x86_64/
 // fail-closed system partial is the only safe state until dedicated
 // shadow-stack semantics prove the implicit access surface.
 
-// Exercise the receiver-revalidated terminalizer exactly like the dedicated
-// revalidation worker realm does; rows without that provenance can never
-// reach closeTrustedX86Partial and would make this proof vacuous.
-globalThis.WorkerGlobalScope = class WorkerGlobalScope {};
-Object.setPrototypeOf(globalThis, WorkerGlobalScope.prototype);
-globalThis.__HEX_PROTECTED_WORKER_LOGICAL_PATH__ = 'js/targets/architecture/x86_64/semantic-revalidation-worker.js';
-const { markReceiverRevalidatedX86Row } = await import('../../js/targets/architecture/x86_64/runtime-provenance.js');
+// Reuse #7514's terminal projection regression without impersonating a
+// Worker realm or minting private row authority. Public dispatch stays partial;
+// the real receiver path is separately exercised by phase6:browser.
+function projectTerminal(instruction) {
+  const outcome = dispatchX86MachineEffects(instruction, { closureMatrixTerminal: true });
+  assert.equal(outcome.result?.completeness, 'partial', 'unbranded public dispatch stays fail-closed');
+  return { ownerId: outcome.ownerId, result: closeTrustedX86Partial(
+    instruction, outcome.ownerId, outcome.result, { closureMatrixTerminal: true },
+  ) };
+}
 
 const capstone = await createCapstoneX86Session();
 try {
@@ -35,11 +39,10 @@ try {
       detail: { ...(decoded[0].detail ?? {}), flagsKind: 'eflags' },
     });
     assert.equal(instruction.mnemonic, mnemonic);
-    markReceiverRevalidatedX86Row(instruction);
     const memoryOperands = (instruction.detail?.operands || []).filter((operand) => operand?.type === 'memory');
     assert.equal(memoryOperands.length, 0, `${mnemonic} must be operandless for this proof`);
 
-    const outcome = dispatchX86MachineEffects(instruction, { closureMatrixTerminal: true });
+    const outcome = projectTerminal(instruction);
     assert.equal(outcome.ownerId, 'system', `${mnemonic} must stay with the system owner`);
     const result = outcome.result;
     assert.equal(result?.completeness, 'partial', `${mnemonic} without an implicit-memory proof must stay partial`);
@@ -72,8 +75,7 @@ try {
     instructionId: 'issue-5569:sgdt-explicit-memory',
     detail: { ...(sgdt[0].detail ?? {}), flagsKind: 'eflags' },
   });
-  markReceiverRevalidatedX86Row(sgdtInstruction);
-  const sgdtOutcome = dispatchX86MachineEffects(sgdtInstruction, { closureMatrixTerminal: true });
+  const sgdtOutcome = projectTerminal(sgdtInstruction);
   assert.equal(sgdtOutcome.ownerId, 'system');
   assert.equal(sgdtOutcome.result?.completeness, 'exact-with-intrinsic');
   const sgdtSummary = sgdtOutcome.result?.operations?.[0]?.effectSummary;

@@ -15,6 +15,7 @@ const defaultedHooks = new Set([
 const optionalHooks = new Set([
   'decode',
   'liftExact',
+  'liftDecodedExact',
   'assemble',
   'validateEncoding',
 ]);

@@ -32,7 +32,7 @@
           "architectureProfileId": "arm64:a64",
           "denominatorAuthority": "independent-arm-encoding-family-union-plus-fixed-decoder-audit",
           "decoderIdentityId": "capstone/backend:arm64:a64:5.0:cb88f8a5:2e71bc20:6b108b95",
-          "architectureSemanticVersion": "7",
+          "architectureSemanticVersion": "8",
           "source": "tools/validation/machine-effects/arm64-a64-decoder-denominator.mjs",
           "test": "tests/machine-effects/arm64-a64-decoder-denominator.test.mjs",
           "candidateCaseCount": 376186,

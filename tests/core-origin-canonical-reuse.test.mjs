@@ -24,6 +24,113 @@ function resultOf(fn) {
   catch(error) { return {ok:false, name:error.name, message:error.message}; }
 }
 
+test('canonical origin list storage preserves distinct records and exact normalized element identities', () => {
+  const first = candidate.createTransformRecord(transform()), second = candidate.createTransformRecord(transform());
+  assert.notEqual(first, second);
+  assert.equal(first.consumedEntityIds, second.consumedEntityIds);
+  assert.equal(first.producedEntityIds, second.producedEntityIds);
+  const input = { instructionIds:['b','a','a'], operationIds:['op'], transforms:[first] };
+  const a = candidate.createOriginSet(input), b = candidate.createOriginSet(input);
+  assert.notEqual(a, b, 'origin envelopes are not coalesced');
+  for (const field of ['instructionIds','operationIds','transforms']) assert.equal(a[field], b[field], field);
+  const c = candidate.createOriginSet({ ...input, transforms:[second] });
+  assert.notEqual(a.transforms, c.transforms, 'equal serialized transforms are still different operations');
+  assert.equal(c.transforms[0], second);
+  assert.equal(candidate.mergeOriginSets(a, c).transforms, c.transforms, 'last exact record identity wins');
+  assert.equal(candidate.mergeOriginSets(c, a).transforms, a.transforms);
+  input.instructionIds.push('changed');
+  const changed = candidate.createOriginSet(input);
+  assert.notEqual(changed.instructionIds, a.instructionIds);
+  assert.deepEqual(a.instructionIds, ['a','b']);
+  same(changed, oracle.createOriginSet(input));
+  deeplyFrozen(changed);
+});
+
+test('canonical list storage preserves signed-zero last values and unusual-mapper isolation', () => {
+  const first = candidate.createOriginSet({ sourceLocations:[0] });
+  const second = candidate.createOriginSet({ sourceLocations:[-0] });
+  assert.notEqual(first.sourceLocations, second.sourceLocations);
+  assert.ok(Object.is(candidate.mergeOriginSets(first, second).sourceLocations[0], -0));
+  assert.ok(Object.is(candidate.mergeOriginSets(second, first).sourceLocations[0], 0));
+  const normal = candidate.createOriginSet({ instructionIds:['canonical-list-isolation'] });
+  const unusual = [];
+  Object.defineProperty(unusual, 'map', { value:() => ['canonical-list-isolation'] });
+  const invalid = candidate.createOriginSet({ byteRanges:unusual });
+  assert.throws(() => candidate.mergeOriginSets(invalid), /invalid-byte-range/);
+  assert.equal(candidate.isReusableOriginSet(normal), true);
+  assert.equal(candidate.createOriginSet({ instructionIds:['canonical-list-isolation'] }).instructionIds, normal.instructionIds);
+});
+
+test('canonical list storage bounds entries and retained volume without revoking canonical origins', () => {
+  const first = candidate.createOriginSet({ instructionIds:['entry-first'] });
+  for (let i = 0; i < 4200; i++) candidate.createOriginSet({ instructionIds:[i.toString(36)] });
+  assert.notEqual(candidate.createOriginSet({ instructionIds:['entry-first'] }).instructionIds, first.instructionIds);
+  const input = index => ({ instructionIds:Array.from({ length:200 }, (_, i) => `list-volume-${index}-${i}`) });
+  const wide = candidate.createOriginSet(input('first'));
+  for (let i = 0; i < 100; i++) candidate.createOriginSet(input(i));
+  assert.notEqual(candidate.createOriginSet(input('first')).instructionIds, wide.instructionIds);
+  assert.equal(candidate.createOriginSet(wide), wide);
+  assert.equal(candidate.isReusableOriginSet(wide), true);
+  same(candidate.mergeOriginSets(wide, wide), oracle.createOriginSet(input('first')));
+  for (const instructionIds of [Array.from({ length:513 }, (_, i) => String(i)), ['x'.repeat(8193)]]) {
+    const a = candidate.createOriginSet({ instructionIds }), b = candidate.createOriginSet({ instructionIds });
+    assert.notEqual(a.instructionIds, b.instructionIds, 'oversized data never enters optional storage');
+    same(a, oracle.createOriginSet({ instructionIds }));
+  }
+});
+
+test('immutable precondition payloads share storage, not transform records or caller state', () => {
+  const payload = [{ condition:'storage-only', operands:['left', 'right'], bits:64 }];
+  const first = candidate.createTransformRecord(transform(payload));
+  const second = candidate.createTransformRecord({ ...transform(structuredClone(payload)), ruleId:'another-rule', producedEntityIds:['other'] });
+  assert.notEqual(first, second);
+  assert.equal(first.preconditions, second.preconditions);
+  assert.notEqual(first.ruleId, second.ruleId);
+  assert.notDeepEqual(first.producedEntityIds, second.producedEntityIds);
+  const equal = candidate.createTransformRecord(transform(payload));
+  assert.notEqual(equal, first, 'equal descriptions are still distinct newly issued transform records');
+  assert.equal(equal.preconditions, first.preconditions);
+  payload[0].operands[0] = 'changed';
+  const changed = candidate.createTransformRecord(transform(payload));
+  assert.notEqual(changed.preconditions, first.preconditions);
+  assert.equal(first.preconditions[0].operands[0], 'left');
+  assert.equal(changed.preconditions[0].operands[0], 'changed');
+  deeplyFrozen(first.preconditions);
+  same(changed, oracle.createTransformRecord(transform(payload)));
+});
+
+test('shared precondition keys preserve primitive types, signed zero, order and delimiter content', () => {
+  const inputs = [[0],[-0],['0'],[false],[null],['left','right'],['right','left'],['a:1:[','};'],
+    [{a:1,b:'2'}],[{a:'1',b:2}],[[1]],['array:1:[number:1:1};']];
+  const results = inputs.map(input=>candidate.createTransformRecord(transform(input)));
+  assert.equal(new Set(results.map(record=>record.preconditions)).size, inputs.length);
+  for (const [i, input] of inputs.entries()) {
+    same(results[i], oracle.createTransformRecord(transform(input)));
+    assert.equal(candidate.createTransformRecord(transform(input)).preconditions, results[i].preconditions);
+  }
+});
+
+test('precondition payload storage has entry and volume limits without invalidating prior records', () => {
+  const initial = candidate.createTransformRecord(transform(['storage-entry-first']));
+  for (let i=0;i<600;i++) candidate.createTransformRecord(transform([`storage-entry-${i}`]));
+  assert.notEqual(candidate.createTransformRecord(transform(['storage-entry-first'])).preconditions, initial.preconditions);
+  const large = i => [{ marker:`storage-volume-${i}`, contents:'x'.repeat(1800) }];
+  const first = candidate.createTransformRecord(transform(large('first')));
+  for (let i=0;i<100;i++) candidate.createTransformRecord(transform(large(i)));
+  assert.notEqual(candidate.createTransformRecord(transform(large('first'))).preconditions, first.preconditions);
+  assert.equal(candidate.createTransformRecord(first), first, 'eviction cannot revoke canonical record identity');
+  same(first, oracle.createTransformRecord(transform(large('first'))));
+  let deep = 'leaf';
+  for (let i=0;i<20;i++) deep = { next:deep };
+  for (const input of [['x'.repeat(2049)], Array.from({length:257},(_,i)=>i), deep,
+    Array.from({length:3},()=>Array.from({length:100},(_,i)=>i)),
+    Array.from({length:5},()=> 'x'.repeat(1800))]) {
+    const a=candidate.createTransformRecord(transform(input)), b=candidate.createTransformRecord(transform(input));
+    assert.notEqual(a.preconditions, b.preconditions, 'oversized data remains freshly normalized');
+    same(a, oracle.createTransformRecord(transform(input)));
+  }
+});
+
 test('canonical origin merges preserve content, digest, locale order, and deep immutability', () => {
   const inputs = [
     {byteRanges:[{binaryId:' bin ',offset:16n,length:4n},{start:0,end:'4'}],virtualRanges:[{imageId:' img ',sliceId:' slice ',address:'0x20',length:4}],instructionIds:['z','ä','é','e\u0301','A','a',' a ','"','\\'],bytecodeOperationIds:['op2','op1'],sourceLocations:[{file:'a.c',line:7n}],transforms:[transform([{bound:9n}])]},

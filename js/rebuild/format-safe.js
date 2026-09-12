@@ -725,6 +725,7 @@ export function createFormatSafeRebuildTransaction(input = {}) {
     operations,
     impact: { layoutMoving: ['elf-add-nobits-section', 'pe-section-virtual-size', 'macho-section-size'].includes(mutation.kind), sections: [safeState.section || safeState.field], relocationBindings: [] },
     expectedOriginalState: { sourceHash, formatSafe: safeState },
+    ...(input.discoveryArtifact == null ? {} : { discoveryArtifact: input.discoveryArtifact }),
     additionalValidators: ['format-invariants'],
     requireIndependentOracle: true,
   });

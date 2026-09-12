@@ -4,24 +4,270 @@
  * re-interpret ARM64 instruction text. The legacy decompiler remains an isolated
  * fallback at the public facade.
  */
-import { expr, mergeSource, sourceOf, mapChildren, structuralKey, sameExpr } from './ast/nodes.js';
-import { RewriteEngine } from './rewrite/engine.js';
+import { children, expr, mergeSource, sourceOf, mapChildren, structuralKey, sameExpr } from './ast/nodes.js';
+import { RewriteEngine, createExpressionOriginHistoryRecorder } from './rewrite/engine.js';
 import { DEFAULT_RULES } from './rewrite/rules.js';
+import { captureProjectionIrData, PROJECTION_LIMITS } from './phase8/projection-origin.js';
+import { createProjectionIrObserver } from '../core/identity/live-data.js';
+import { renderBitvectorCast } from './phase8/proof-expression.js';
 import { recoverArm64ClangIdiom, recognizeClamp, recognizeDivisionByConstant } from './idioms/arm64-clang.js';
 import { recoverHighVariables } from './types/high-variables.js';
 import { recoverFunctionPrototype } from './types/prototype.js';
 import { recoverAggregateLayouts } from './types/layout.js';
 import { PassManager } from './passes/manager.js';
+import { MAX_EXPRESSION_CONSUMER_WITNESSES } from './phase8/contract.js';
+export { MAX_EXPRESSION_CONSUMER_WITNESSES } from './phase8/contract.js';
 import { INTERACTIVE_STAGES as PHASE8_INTERACTIVE_STAGES, PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
 import { printExpression, printProgram, expressionReadability } from './pretty/c.js';
 import { explainSemanticFacts } from './explain.js';
+import { readSwitchLineHistory, readSwitchRenderHistory } from './switch.js';
+import { readSemanticStoreLineHistory, readSemanticStoreRenderHistory,
+  readSemanticStatementLineHistory, readSemanticStatementRenderHistory,
+  readSemanticControlLineHistory, readSemanticControlRenderHistory } from './semantic-core.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
+import { readProjectedMemoryOperandTransition, projectedMemoryOperandTransitionExpected,
+  projectedConstantTransitionCandidate, projectedConstantTransitionExpected,
+  projectedStateTransitionCandidates, projectedStateTransitionExpected } from '../semantics/compat/semantic-ir-v2-to-v1.js';
+import { readFacadeConstantTransitions, facadeConstantTransitionExpected, facadeStateTransitionCandidates, facadeProjectedConstantTransitionCandidate,
+  readFacadePreservedStateHistory, facadePreservedStateTransitionExpected,
+  readFacadeLocationHistory, facadeLocationTransitionExpected,
+  readFacadeTypedResultHistory, facadeTypedResultTransitionExpected,
+  readFacadeStackEscapeHistory, facadeStackEscapeTransitionExpected,
+  readFacadeAbiBindingHistory, facadeAbiBindingExpected, readFacadeProjectedMemoryOperandTransition } from '../ir-core.js';
+import { semanticViewStateCandidates, semanticViewPredecessorCandidate, readSemanticViewPredecessor,
+  readSemanticViewHistory, semanticViewTransitionExpected } from './semantic-views.js';
+
+const readViewCarried = (channel, original) => (ir, source) => readSemanticViewPredecessor(ir, channel, source) || original(ir, source);
 import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
 } from '../semantics/memoryssa/queries.js';
 
 function valueOf(a) { return a?.value || null; }
+
+// Presentation provenance belongs to the actual producer/consumer pair, not
+// to an expression's text or a shared input's source IDs. No public metadata
+// can issue a binding, and the expression/load identity is never modified.
+const expressionHistoryConsumers = new WeakMap();
+const expressionHistoryInputs = new WeakMap();
+const initialControlConsumers = new WeakMap();
+
+export function readInitialControlConsumer(consumer) {
+  return initialControlConsumers.get(consumer) || null;
+}
+const storeSpellingProducers = new WeakMap();
+const callResultSpellingProducers = new WeakMap();
+
+export function readCallResultSpellingProducer(node, ir) {
+  const entry = callResultSpellingProducers.get(node);
+  return entry && entry.ir === ir && entry.observation.matches() && entry.consumer.isCurrent() ? entry : null;
+}
+const buildHistoryObservations = new WeakMap();
+const compatOperationEvents = new WeakMap();
+// Issued descriptions only, not a currentness certificate. The renderer must
+// also find this exact event in the current owning normalization history.
+export function compatOperationEventCandidate(record, ir) {
+  const candidate = compatOperationEvents.get(record);
+  return candidate?.ir === ir ? candidate.event : null;
+}
+// Count exact issued public-state events once, not their different expression
+// consumers. This is storage accounting only; each consumer keeps its own
+// original observation and source history below.
+export function expressionHistoryRecordCount(records, ir) {
+  if ((records?.length || 0) > MAX_EXPRESSION_CONSUMER_WITNESSES) return records.length;
+  return new Set((records || []).map(record => {
+    const event = compatOperationEventCandidate(record, ir);
+    return event?.stage === 'public-state-normalization' ? event : record;
+  })).size;
+}
+const reusableBuildHistoryRecords = new WeakSet();
+function buildOriginHistory(state, before, after) {
+  state.recordOriginHistory ??= createExpressionOriginHistoryRecorder();
+  return state.recordOriginHistory(before, after);
+}
+function valueHistoryRecord(record, valueId) {
+  // One observed builder operation is not a new transformation each time a
+  // downstream value inherits it. Keep its producer-assigned valueId and exact
+  // identity; consumer.records carries each actual dependency.
+  // Public copies and unobserved rewrite descriptions cannot acquire membership.
+  if (reusableBuildHistoryRecords.has(record)) return record;
+  const copy = { ...record, valueId };
+  const observation = buildHistoryObservations.get(record);
+  if (observation) buildHistoryObservations.set(copy, observation);
+  return copy;
+}
+function currentBuildHistory(records) {
+  const checked = new Set();
+  return records.every(record => {
+    const observation = buildHistoryObservations.get(record);
+    for (const current of observation?.producerChecks || []) if (!checked.has(current)) {
+      checked.add(current);
+      if (!current()) return false;
+    }
+    if (!observation || checked.has(observation.matches)) return true;
+    checked.add(observation.matches);
+    return observation.matches() !== false;
+  });
+}
+function consumerObservationBudget(state) {
+  const requested = state.opts?.renderProvenanceBindingBudget;
+  const cap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
+  return state.expressionBindingBudget ??= {
+    consumers:cap(requested?.maxConsumers, 4096), edges:cap(requested?.maxEdges, PROJECTION_LIMITS.edges),
+    reasons:new Set(),
+  };
+}
+
+function captureConsumerIrData(roots, state, graph = false) {
+  state.projectionIrObserver ??= createProjectionIrObserver();
+  return state.projectionIrObserver[graph ? 'captureCertifiedDataGraph' : 'captureCertifiedData'](roots, state.opts?.shouldAbort);
+}
+
+function fieldProjectionRecords(semantic, state) {
+  if (!state.fieldLocations?.size) return [];
+  // Only actual consumed locations get history. Equal names/offsets and
+  // speculative aggregate layouts cannot identify an emitted access.
+  const records = new Set(), seen = new Set(), pending = [semantic.expression];
+  const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
+  const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
+  const collect = location => {
+    const producer = state.fieldLocations.get(location);
+    if (!producer) return;
+    if (!producer.record) {
+      if ((state.fieldProjectionCount || 0) >= maximum) {
+        consumerObservationBudget(state).reasons.add('field-projection-history-budget'); return;
+      }
+      producer.record = Object.freeze({ rule:'render-field-access', phase:'render',
+        before:`memory:${producer.instruction.op}:${producer.instruction.id}`, after:structuralKey(producer.access),
+        evidence:Object.freeze({ kind:'canonical-memory-access-projection', detail:'field spelling projects an existing memory access; a supplied field name is presentation metadata, not type or layout proof' }),
+        originHistory:buildOriginHistory(state, { source:mergeSource(origin(producer.instruction), producer.access.base?.source) }, producer.access),
+      });
+      (state.rewriteProof ??= []).push(producer.record);
+      state.fieldProjectionCount = (state.fieldProjectionCount || 0) + 1;
+    }
+    records.add(producer.record);
+    // Loads are leaves in the ordinary expression walker; an address can
+    // itself contain a field load whose canonical origin must remain visible.
+    pending.push(location.base);
+  };
+  collect(semantic.location);
+  while (pending.length && seen.size < 4096) {
+    const node = pending.pop();
+    if (!node || seen.has(node)) continue;
+    seen.add(node);
+    if (node.kind === 'load') collect(node.location);
+    pending.push(...children(node));
+  }
+  if (pending.length) consumerObservationBudget(state).reasons.add('field-projection-traversal-budget');
+  return [...records];
+}
+
+function containsExpression(root, expression) {
+  const pending = [root], seen = new Set();
+  while (pending.length && seen.size < 4096) {
+    const node = pending.pop();
+    if (node === expression) return true;
+    if (!node || seen.has(node)) continue;
+    seen.add(node); pending.push(...children(node));
+  }
+  return false;
+}
+function semanticExpressionConsumer(semantic, value, instruction, state, nested = false, rendered = null) {
+  const selected = compatOperationSelection(value, state, [instruction], false);
+  const operations = recordCompatOperationSelection(value, semantic.expression, selected, state).map(record => valueHistoryRecord(record, value?.id ?? null));
+  (state.rewriteProof ??= []).push(...operations);
+  const produced = state.expressionProofs?.get(value?.id);
+  const elisions = state.renderElisions?.get(instruction?.id);
+  const fields = fieldProjectionRecords(semantic, state);
+  const records = elisions?.length || fields.length || rendered?.records.length || operations.length
+    ? Object.freeze([...(produced?.records || []), ...(elisions || []), ...fields, ...(rendered?.records || []), ...operations]) : produced?.records;
+  if (!records?.length) return semantic;
+  if (!produced || (produced.expression !== semantic.expression
+      && (!nested || !containsExpression(semantic.expression, produced.expression)))) {
+    if (fields.length) consumerObservationBudget(state).reasons.add('field-projection-consumer-unavailable');
+    return semantic;
+  }
+  return bindObservedExpressionConsumer(semantic, value, instruction, state, records, rendered);
+}
+
+function bindObservedExpressionConsumer(semantic, value, instruction, state, records, rendered = null) {
+  if (!records?.length) return semantic;
+  // Bound cumulative observation work for the function, not just each
+  // individual graph: many consumers may share a large definition graph.
+  const budget = consumerObservationBudget(state);
+  if (budget.consumers <= 0 || budget.edges <= 0) {
+    budget.reasons.add('binding-budget');
+    return semantic;
+  }
+  budget.consumers--;
+  try {
+    const inputs = state.constructionInputObservation;
+    const shared = inputs?.contains(value, instruction) ? inputs : null;
+    const observation = captureConsumerIrData([semantic, records, ...(shared ? [] : [value, instruction])], state);
+    const remaining = budget.edges - observation.metrics.edges;
+    budget.edges = Math.max(0, remaining);
+    if (remaining < 0) {
+      budget.reasons.add('binding-budget');
+      return semantic;
+    }
+    if (shared && !shared.matches()) {
+      budget.reasons.add('stale-expression-build-history'); return semantic;
+    }
+    if (!currentBuildHistory(records)) {
+      budget.reasons.add('stale-expression-build-history'); return semantic;
+    }
+    if (rendered && !rendered.isCurrent()) {
+      budget.reasons.add(rendered.reason ?? 'stale-store-render-history'); return semantic;
+    }
+    const inputsCurrent = () => (!shared || shared.matches()) && observation.matches() && currentBuildHistory(records);
+    const consumer = Object.freeze({
+      ir:state.ir, expression:semantic.expression, op:semantic.op, instructionId:semantic.ir,
+      location:semantic.location, records,
+      isCurrent:() => inputsCurrent() && (!rendered || rendered.isCurrent()),
+    });
+    expressionHistoryInputs.set(consumer, inputsCurrent);
+    expressionHistoryConsumers.set(semantic, consumer);
+  } catch {
+    // A failed bounded observation must not be retried for every later line.
+    budget.edges = 0;
+    budget.reasons.add('binding-observation-unavailable');
+  }
+  return semantic;
+}
+
+export function readExpressionHistoryConsumer(semantic, ir) {
+  const binding = expressionHistoryConsumers.get(semantic);
+  if (!binding || binding.ir !== ir) return null;
+  const data = key => Object.getOwnPropertyDescriptor(semantic, key)?.value;
+  if (data('expression') !== binding.expression || data('op') !== binding.op
+      || data('ir') !== binding.instructionId || data('location') !== binding.location
+      || !binding.isCurrent()) return null;
+  return binding;
+}
+
+// A spelling transition needs the actual C AST node as well as the semantic
+// expression consumer. Equal text, copied nodes or a public descriptor cannot
+// establish which spelling this producer emitted.
+export function readStoreSpellingProducer(node, ir) {
+  const entry = storeSpellingProducers.get(node);
+  return entry && entry.ir === ir && entry.observation.matches() && entry.consumer.isCurrent() ? entry : null;
+}
+
+function bindStoreSpelling(node, known, state) {
+  if (!known?.storeSpelling || known.storeSpelling.form === 'assignment') return;
+  const consumer = readExpressionHistoryConsumer(node.semantic, state.ir);
+  if (!consumer) return;
+  const budget = consumerObservationBudget(state);
+  try {
+    if (budget.edges <= 0) throw new Error('store-spelling-observation-budget');
+    const observation = captureConsumerIrData([node], state);
+    budget.edges -= observation.metrics.edges;
+    if (budget.edges < 0 || !consumer.isCurrent() || node.text !== known.text) throw new Error('store-spelling-observation-unavailable');
+    storeSpellingProducers.set(node, Object.freeze({ ir:state.ir, consumer, observation,
+      form:known.storeSpelling.form, text:known.text, valueId:known.storeSpelling.valueId,
+    }));
+  } catch { budget.edges = 0; budget.reasons.add('store-spelling-observation-unavailable'); }
+}
 function safeIdent(s, fallback = 'value') {
   const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_$]/g, '_').replace(/^([0-9])/, '_$1');
   return x || fallback;
@@ -110,7 +356,9 @@ function memoryLocation(inst, state) {
     const base = buildValue(loc.base || addr.base, state, { forAddress: true });
     const name = safeIdent(known?.name || `field_${off.toString(16).toUpperCase()}`);
     const access = expr.field(base, name, off, Number(loc.size || inst?.size || 64), origin(inst));
-    return { kind: 'field', key: loc.key, offset: off, base, name, expression: access, text: printExpression(access) };
+    const location = { kind: 'field', key: loc.key, offset: off, base, name, expression: access, text: printExpression(access) };
+    (state.fieldLocations ??= new Map()).set(location, { instruction:inst, access });
+    return location;
   }
   if (addr.base && addr.index) {
     const base = buildValue(addr.base, state, { forAddress: true });
@@ -142,6 +390,29 @@ function nzcvCondition(value, cond) {
 function compareFromFlags(flagValue, cond, state) {
   const d = flagValue?.def;
   if (!d || d.op !== 'cmp') return expr.variable('condition_' + (cond || 'flags'), 1, false);
+  const selection = observeBuildSelection(flagValue, d, state, 'flag-condition');
+  const expression = compareFromFlagsRaw(flagValue, cond, state);
+  recordCompatOperationSelection(flagValue, expression, compatOperationSelection(flagValue, state, [d], false), state);
+  const observation = finishBuildSelection(expression, selection, state);
+  if (observation) {
+    const before = { source:mergeSource(origin(d, flagValue), ...(d.args || []).map(arg => {
+      const value = valueOf(arg); return origin(value?.def, value);
+    })) };
+    const record = Object.freeze({ rule:'reconstruct-flag-condition', phase:'expression-build', valueId:null,
+      before:`cmp:${d.sub || 'sub'}:${cond || 'flags'}`, after:`expression:${expression.kind}`,
+      evidence:Object.freeze({ kind:'observed-flag-reconstruction-not-equivalence',
+        detail:'actual existing NZCV/conditional-compare display construction and visited inputs; not an independent flag, scalar, path or CFG equivalence proof' }),
+      originHistory:buildOriginHistory(state, before, expression),
+    });
+    buildHistoryObservations.set(record, observation);
+    reusableBuildHistoryRecords.add(record);
+    (state.buildHistoryFrame.records ??= new Set()).add(record);
+  }
+  return expression;
+}
+
+function compareFromFlagsRaw(flagValue, cond, state) {
+  const d = flagValue.def;
   const a = buildArg(d.args?.[0], state);
   let b = buildArg(d.args?.[1], state);
   // ARM compare immediates inherit the register operand width. The IR wrapper
@@ -224,7 +495,561 @@ function branchCondition(inst, state) {
   return compareFromFlags(valueOf(inst?.args?.at?.(-1)), inst?.cond || inst?.extra?.cond, state);
 }
 
+function semanticBranchCondition(inst, state) {
+  const kind = inst.extra?.kind || inst.sub || '';
+  const direct = ['cbz', 'cbnz', 'tbz', 'tbnz'].includes(kind);
+  if (direct) {
+    const e = branchCondition(inst, state);
+    return semanticExpressionConsumer({ expression:e, text:printExpression(e), row:inst.row, address:inst.address, ir:inst.id },
+      valueOf(inst.args?.[0]), inst, state, true);
+  }
+  // Flag reconstruction consumes buildArg rather than expressionFor. Keep its
+  // actual visited frame, never borrow/overwrite an unrelated SSA value proof.
+  const flags = valueOf(inst.args?.at?.(-1)), parent = state.buildHistoryFrame, frame = { records:null };
+  const selected = flags?.def?.op === 'cmp'
+    ? observeBuildSelection(flags, inst, state, 'flag-branch', [], false) : null;
+  state.buildHistoryFrame = frame;
+  try {
+    const e = branchCondition(inst, state);
+    const semantic = { expression:e, text:printExpression(e), row:inst.row, address:inst.address, ir:inst.id };
+    recordCompatOperationSelection(flags, e, compatOperationSelection(flags, state, [inst], false), state);
+    const built = [...(frame.records || [])].map(record => valueHistoryRecord(record, null));
+    (state.rewriteProof ??= []).push(...built);
+    const records = Object.freeze([...built, ...fieldProjectionRecords(semantic, state)]);
+    const observation = finishBuildSelection(e, selected, state);
+    if (!observation) return semantic;
+    return bindObservedExpressionConsumer(semantic, flags, inst, state, records,
+      { isCurrent:observation.matches, reason:'stale-flag-branch-history' });
+  } finally { state.buildHistoryFrame = parent; }
+}
+
 function buildValue(v, state, flags = {}) {
+  // Follow only dependencies actually visited by this existing builder. A
+  // matching expression pointer/source is not evidence that a consumer used a
+  // collapsed phi: unrelated values can legitimately share the same AST node.
+  const parent = state.buildHistoryFrame, frame = { records:null };
+  const key = `${v?.id}:${flags.forAddress ? 'a' : 'v'}`;
+  state.buildHistoryFrame = frame;
+  try {
+    const result = buildValueRaw(v, state, flags);
+    const cached = state.buildHistories?.get(key);
+    const records = frame.records ? Object.freeze([...frame.records]) : cached;
+    if (records?.length) {
+      if (state.expressionMemo.get(key) === result) (state.buildHistories ??= new Map()).set(key, records);
+      if (parent) for (const record of records) (parent.records ??= new Set()).add(record);
+    }
+    return result;
+  } finally { state.buildHistoryFrame = parent; }
+}
+
+function recordPhiCollapse(v, instruction, incoming, expression, state) {
+  const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
+  const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
+  if ((state.phiHistoryCount || 0) >= maximum) {
+    consumerObservationBudget(state).reasons.add('phi-collapse-history-unavailable'); return;
+  }
+  const budget = consumerObservationBudget(state);
+  let observation;
+  try {
+    if (budget.edges <= 0) throw new Error('phi-history-budget');
+    // Observe the actual choice before polling a caller callback. A later
+    // change cannot attach yesterday's selected input to today's phi edges.
+    observation = captureConsumerIrData([instruction, incoming], state);
+    budget.edges = Math.max(-1, budget.edges - observation.metrics.edges);
+    if (budget.edges < 0 || state.opts?.shouldAbort?.() || !observation.matches()) throw new Error('phi-history-unavailable');
+  } catch {
+    budget.edges = 0; budget.reasons.add('phi-collapse-observation-unavailable'); return;
+  }
+  const before = { source:mergeSource(origin(instruction, v), ...incoming.map(node => node?.source),
+    ...(instruction.incoming || []).map(item => origin(item.value?.def, item.value))) };
+  const record = Object.freeze({ rule:'collapse-equal-incoming-phi', phase:'expression-build', valueId:v?.id ?? null,
+    before:'phi:equal-incoming-expressions', after:`expression:${expression.kind}`,
+    evidence:Object.freeze({ kind:'observed-phi-view-collapse-not-equivalence',
+      detail:'actual legacy expression-builder selection; canonical phi/edges are retained, not independently proved eliminated' }),
+    originHistory:buildOriginHistory(state, before, expression),
+  });
+  buildHistoryObservations.set(record, observation);
+  reusableBuildHistoryRecords.add(record);
+  (state.buildHistoryFrame.records ??= new Set()).add(record);
+  state.phiHistoryCount = (state.phiHistoryCount || 0) + 1;
+}
+
+function reserveBuildSelection(state, kind, event = null) {
+  const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
+  const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
+  const requestedWitnesses = state.opts?.renderProvenanceBudget?.maxConsumerWitnesses;
+  const witnessLimit = Number.isSafeInteger(requestedWitnesses) && requestedWitnesses >= 0
+    ? Math.min(requestedWitnesses, MAX_EXPRESSION_CONSUMER_WITNESSES) : MAX_EXPRESSION_CONSUMER_WITNESSES;
+  const budget = consumerObservationBudget(state);
+  const shared = event?.stage === 'public-state-normalization';
+  state.normalizationSelectionEvents ??= new WeakSet();
+  const retained = shared && state.normalizationSelectionEvents.has(event);
+  if (!retained && (state.buildSelectionHistoryCount || 0) >= maximum) {
+    budget.reasons.add(`${kind}-selection-history-budget`); return false;
+  }
+  if ((state.buildSelectionWitnessCount || 0) >= witnessLimit) {
+    budget.reasons.add(`${kind}-selection-witness-budget`); return false;
+  }
+  state.buildSelectionWitnessCount = (state.buildSelectionWitnessCount || 0) + 1;
+  if (!retained) state.buildSelectionHistoryCount = (state.buildSelectionHistoryCount || 0) + 1;
+  if (shared) state.normalizationSelectionEvents.add(event);
+  return true;
+}
+
+function observeBuildSelection(value, instruction, state, kind = 'mov', related = [], reserve = true) {
+  const budget = consumerObservationBudget(state);
+  // Reserve before recursive input construction; nested selections cannot all see
+  // the same last free record. Failed observations never refill this budget.
+  // A branch consumer only observes roots; the actual CMP producer reserves its
+  // transform slot. Both observations still spend the shared edge budget.
+  if (reserve && !reserveBuildSelection(state, kind)) return null;
+  try {
+    if (budget.edges <= 0) throw new Error('build-selection-observation-budget');
+    const values = state.ir.values, valueIndex = values?.indexOf(value);
+    const blocks = state.ir.blocks, flat = state.ir.instructions;
+    const locations = [instruction, ...related].map(selected => {
+      const block = blocks?.find(item => item.index === selected.block);
+      const blockIndex = blocks?.indexOf(block), listKey = block?.phis?.includes(selected) ? 'phis' : 'insts';
+      const instructions = block?.[listKey];
+      const instructionIndex = instructions?.indexOf(selected), flatIndex = flat?.indexOf(selected);
+      if (value != null && !(valueIndex >= 0) || !(instructionIndex >= 0) || flat != null && !(flatIndex >= 0)) throw new Error('build-definition-unavailable');
+      return { selected, block, blockIndex, blockId:block.index, listKey, instructions, instructionIndex, flatIndex };
+    });
+    // Snapshot BEFORE buildArg can invoke an input's symbol/type callback.
+    // Exact roots/positions bind the observed definition, not just its ID.
+    // Canonical construction already captured every value and definition
+    // before callbacks. These exact root/slot checks select within that same
+    // observed graph; retain its live matcher instead of recapturing overlapping
+    // inputs for each MOV/precomputed/address selection. Output expressions and
+    // consumer descriptors still get their own observations below.
+    const shared = state.stateHistoryTransaction?.observation || state.constructionInputObservation;
+    const captured = shared || captureConsumerIrData([value, instruction, ...related], state);
+    budget.edges -= shared ? 0 : captured.metrics.edges;
+    if (budget.edges < 0) throw new Error('build-selection-observation-budget');
+    const own = (object, key) => Object.getOwnPropertyDescriptor(object, key)?.value;
+    return Object.freeze({ kind, matches:() => own(state.ir, 'values') === values && (value == null || own(values, valueIndex) === value)
+      && own(state.ir, 'blocks') === blocks && own(state.ir, 'instructions') === flat
+      && locations.every(({ selected, block, blockIndex, blockId, listKey, instructions, instructionIndex, flatIndex }) =>
+        own(blocks, blockIndex) === block && own(block, 'index') === blockId
+        && own(block, listKey) === instructions && own(instructions, instructionIndex) === selected
+        && (flat == null || own(flat, flatIndex) === selected)) && captured.matches() });
+  } catch {
+    budget.edges = 0; budget.reasons.add(`${kind}-selection-observation-unavailable`); return null;
+  }
+}
+
+function finishBuildSelection(expression, selection, state) {
+  if (!selection) return null;
+  const budget = consumerObservationBudget(state);
+  let observation;
+  try {
+    if (budget.edges <= 0) throw new Error('build-selection-observation-budget');
+    // The same actual builder output can serve multiple observed selections.
+    // Retain its original snapshot, not a cached truth value or a replacement
+    // observation after mutation. Every finish/read still checks it live.
+    state.buildOutputObservations ??= new WeakMap();
+    // Raw call/void-return descriptors can have no expression object. They
+    // remain valid ordinary data observations, not WeakMap keys.
+    const cacheable = expression !== null && typeof expression === 'object';
+    let output = cacheable ? state.buildOutputObservations.get(expression) : null;
+    if (!output) {
+      output = captureConsumerIrData([expression], state);
+      budget.edges -= output.metrics.edges;
+      if (cacheable) state.buildOutputObservations.set(expression, output);
+    }
+    const deferred = state.stateHistoryTransaction?.observation === selection;
+    if (budget.edges < 0 || state.opts?.shouldAbort?.() || (!deferred && !selection.matches()) || !output.matches()) throw new Error('build-selection-unavailable');
+    observation = Object.freeze({ matches:() => selection.matches() && output.matches(),
+      sourceMatches:selection.matches, outputMatches:output.matches });
+  } catch {
+    budget.edges = 0; budget.reasons.add(`${selection.kind}-selection-observation-unavailable`); return null;
+  }
+  return observation;
+}
+
+function recordMovSelection(value, instruction, expression, selection, state, flags, cast = null, operandBits = null) {
+  const observation = finishBuildSelection(expression, selection, state);
+  if (!observation) return;
+  const input = valueOf(instruction.args?.[0]);
+  const before = { source:mergeSource(origin(instruction, value), origin(input?.def, input), expression.source) };
+  const record = Object.freeze({ rule:cast ? 'render-proof-mov-cast' : 'select-mov-operand', phase:'expression-build', valueId:value?.id ?? null,
+    before:cast ? `mov:${cast}:${operandBits}->${value.bits}` : `mov:${flags.forAddress ? 'address' : 'value'}`, after:`expression:${expression.kind}`,
+    evidence:Object.freeze({ kind:cast ? 'observed-explicit-mov-cast-not-equivalence' : 'observed-mov-view-selection-not-equivalence',
+      detail:cast ? 'actual proof-preparation rendering of an explicit MOV cast through shared bounded scalar lowering; not a proof or copy/forwarding elimination'
+        : 'actual legacy builder operand selection including existing operand-width/shift views; canonical MOV and memory facts remain, not independently proved copy elimination or forwarding' }),
+    originHistory:buildOriginHistory(state, before, expression),
+  });
+  buildHistoryObservations.set(record, observation);
+  reusableBuildHistoryRecords.add(record);
+  (state.buildHistoryFrame.records ??= new Set()).add(record);
+}
+
+function recordAddressLoadSelection(value, instruction, store, expression, selection, state) {
+  const observation = finishBuildSelection(expression, selection, state);
+  if (!observation) return;
+  const input = valueOf(store.args?.[0]);
+  const before = { source:mergeSource(origin(instruction, value), origin(store), origin(input?.def, input), expression.source) };
+  const record = Object.freeze({ rule:'select-address-load-store-operand', phase:'expression-build', valueId:value?.id ?? null,
+    before:'load:address-reaching-store', after:`expression:${expression.kind}`,
+    evidence:Object.freeze({ kind:'observed-address-load-selection-not-memory-equivalence',
+      detail:'actual legacy address-mode reachingStore operand selection; canonical load/store and unknown access qualifiers remain, not independent memory forwarding or alias proof' }),
+    originHistory:buildOriginHistory(state, before, expression),
+  });
+  buildHistoryObservations.set(record, observation);
+  reusableBuildHistoryRecords.add(record);
+  (state.buildHistoryFrame.records ??= new Set()).add(record);
+}
+
+function selectedValueOrigins(value, state) {
+  const pending = [value], seen = new Set(), definitions = new Set(), sources = [], memoryChecks = [];
+  const started = performance.now();
+  let incomplete = false;
+  while (pending.length && seen.size < 512) {
+    if (performance.now() - started >= 250) { incomplete = true; break; }
+    const current = pending.pop();
+    if (!current || seen.has(current)) continue;
+    seen.add(current);
+    const definition = current.def;
+    sources.push(origin(definition, current));
+    if (!definition) continue;
+    definitions.add(definition);
+    pending.push(...(definition.args || []).map(valueOf), ...(definition.incoming || []).map(item => item.value),
+      definition.addr?.base, definition.addr?.index, definition.loc?.base);
+    if (definition.op === 'load') {
+      const fact = definition.memoryForwarding;
+      // The observed supplied constant/load origin needs no memory theorem.
+      // Only an explicit exact-forwarding claim offers additional store roots;
+      // absent/non-exact facts must not invent those roots or an upstream trace.
+      if (fact?.status !== 'exact') continue;
+      const isCurrent = () => isCanonicalExactMemoryForwarding(fact, canonicalMemoryForwardingContextForLoad(fact, definition,
+        definition.memoryForwardingContext ?? definition.extra?.memoryForwardingContext));
+      const width = Number(current.bits);
+      if (!isCurrent() || current.constKind === 'float' || current.floatConst != null || current.float != null
+        || current.const != null && (typeof current.const !== 'bigint' || !Number.isSafeInteger(width) || width <= 0 || width > 1024
+          || current.const !== BigInt.asUintN(width, fact.value))) {
+        incomplete = true; continue;
+      }
+      memoryChecks.push(isCurrent);
+      // Only the existing proof issuer can supply store dependencies. A bare
+      // reachingStore link is not a source certificate for a numeric constant.
+      for (const id of fact.provenance.sourceEntityIds) {
+        const matches = (state.ir.instructions || []).filter(inst => inst.semanticNodeId === id || inst.sourceEntityId === id);
+        if (matches.length !== 1) { incomplete = true; continue; }
+        const store = matches[0];
+        definitions.add(store); sources.push(origin(store));
+        pending.push(...(store.args || []).map(valueOf));
+      }
+    }
+  }
+  if (pending.length) incomplete = true;
+  return { source:mergeSource(...sources), definitions:[...definitions], incomplete, memoryChecks };
+}
+
+function constantValueSelection(value, state, kind = 'precomputed') {
+  // A literal has no selected-away computation. Other precomputed values do,
+  // but this consumer must not invent which upstream folding passes ran.
+  if (!value.def || value.def.op === 'const') return null;
+  const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
+  const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
+  if ((state.buildSelectionHistoryCount || 0) >= maximum || consumerObservationBudget(state).edges <= 0) {
+    observeBuildSelection(value, value.def, state, kind); return null;
+  }
+  const origins = selectedValueOrigins(value, state);
+  const observation = observeBuildSelection(value, value.def, state, kind,
+    origins.definitions.filter(definition => definition !== value.def));
+  if (origins.incomplete) consumerObservationBudget(state).reasons.add(`${kind}-source-history-incomplete`);
+  return { origins, observation, kind };
+}
+
+function recordConstantValueSelection(value, expression, selected, state) {
+  if (!selected) return;
+  const observation = finishBuildSelection(expression, selected.observation, state);
+  if (!observation) return;
+  const history = buildOriginHistory(state, { source:selected.origins.source }, expression);
+  const canonicalLoad = selected.kind === 'canonical-load';
+  const record = Object.freeze({ rule:canonicalLoad ? 'select-canonical-load-constant' : 'select-precomputed-value', phase:'expression-build', valueId:value?.id ?? null,
+    before:canonicalLoad ? 'load:canonical-numeric-forwarding' : `precomputed:${value.def.op}`, after:`expression:${expression.kind}`,
+    evidence:Object.freeze({ kind:canonicalLoad ? 'observed-canonical-load-selection-not-new-memory-proof' : 'observed-precomputed-value-selection-not-equivalence',
+      detail:canonicalLoad
+        ? 'actual numeric constant selection admitted by the existing current canonical forwarding gate and its contributing sources; not an upstream pass trace or a new memory proof'
+        : 'actual supplied constant selection and declared dependency sources; not an upstream folding trace, executed path, scalar equivalence or new memory proof' }),
+    originHistory:selected.origins.incomplete ? Object.freeze({ ...history, truncated:true }) : history,
+  });
+  buildHistoryObservations.set(record, Object.freeze({ matches:() => observation.matches() && selected.origins.memoryChecks.every(current => current()) }));
+  reusableBuildHistoryRecords.add(record);
+  (state.buildHistoryFrame.records ??= new Set()).add(record);
+}
+
+function compatMemorySelection(value, state) {
+  const instruction = value.def;
+  const expected = projectedMemoryOperandTransitionExpected(state.ir, instruction);
+  const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
+  const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
+  // Do not repeatedly scan the sealed upstream graph after the downstream
+  // cumulative observation/record allowance has already been exhausted.
+  if (expected && ((state.buildSelectionHistoryCount || 0) >= maximum || consumerObservationBudget(state).edges <= 0)) {
+    observeBuildSelection(value, instruction, state, 'compat-memory'); return null;
+  }
+  const transition = readSemanticViewPredecessor(state.ir, 'memoryOperand', instruction)
+    || readFacadeProjectedMemoryOperandTransition(state.ir, instruction)
+    || readProjectedMemoryOperandTransition(state.ir, instruction);
+  if (!transition) {
+    if (expected
+      || instruction?.sub === 'memory-forward' || instruction?.extra?.originalMemoryOp === 'load') {
+      consumerObservationBudget(state).reasons.add('compat-memory-transition-unavailable');
+    }
+    return null;
+  }
+  const related = [transition.store, transition.input.def, ...transition.beforeInputs.map(input => input.def)]
+    .filter(instruction => instruction && instruction !== value.def);
+  return { transition, observation:observeBuildSelection(value, instruction, state, 'compat-memory', [...new Set(related)]) };
+}
+
+function recordCompatMemorySelection(value, expression, selected, state) {
+  if (!selected) return;
+  const observation = finishBuildSelection(expression, selected.observation, state);
+  if (!observation) return;
+  const transition = selected.transition;
+  if (!transition.isCurrent()) {
+    consumerObservationBudget(state).reasons.add('compat-memory-transition-stale'); return;
+  }
+  const before = { source:mergeSource(origin(transition.source, value), origin(transition.store),
+    origin(transition.input.def, transition.input), ...transition.beforeInputs.map(input => origin(input.def, input))) };
+  const record = Object.freeze({ rule:'project-stack-load-to-operand', phase:'compatibility-projection', valueId:value?.id ?? null,
+    before:'load:canonical-stack-operand', after:'mov:memory-forward',
+    evidence:Object.freeze({ kind:'observed-compat-memory-transition-not-new-proof',
+      detail:'actual compatibility LOAD-to-MOV operation admitted by the existing canonical stack operand-identity query; original access and store sources retained, not a new memory theorem' }),
+    originHistory:buildOriginHistory(state, before, expression),
+  });
+  buildHistoryObservations.set(record, Object.freeze({ matches:() => observation.matches() && transition.isCurrent() }));
+  reusableBuildHistoryRecords.add(record);
+  (state.buildHistoryFrame.records ??= new Set()).add(record);
+}
+
+function compatOperationSelection(value, state, roots = [value?.def, value], followInputs = true) {
+  const pending = [...roots], seen = new Set(), events = new Set(), selected = [];
+  const observeSelected = () => {
+    // One construction transaction can consume many events from the same
+    // sealed producer graph. Capture their union before input callbacks, not
+    // the same overlapping graph once per event. Record slots remain per event.
+    const groups = new Map();
+    for (const item of selected) {
+      let group = groups.get(item.transition.isCurrent);
+      if (!group) groups.set(item.transition.isCurrent, group = { items:[], roots:new Set() });
+      group.items.push(item);
+      group.roots.add(item.event.source);
+      for (const definition of item.related) group.roots.add(definition);
+    }
+    for (const group of groups.values()) {
+      const [source, ...related] = group.roots;
+      const transaction = state.stateHistoryTransaction;
+      const observation = transaction?.check === group.items[0].transition.isCurrent
+        ? transaction.values.includes(value) ? transaction.observation : null
+        : observeBuildSelection(value, source, state, 'compat-constant', related, false);
+      for (const item of group.items) item.observation = observation;
+    }
+    return selected;
+  };
+  const stateCandidates = semanticViewStateCandidates(state.ir) || facadeStateTransitionCandidates(state.ir)
+    || projectedStateTransitionCandidates(state.ir), checkedState = new Map();
+  const readCandidate = record => {
+    if (!record) return null;
+    const checked = state.stateHistoryTransaction?.checks || checkedState;
+    if (!checked.has(record.isCurrent)) checked.set(record.isCurrent, record.isCurrent());
+    return checked.get(record.isCurrent) ? record : null;
+  };
+  const budget = consumerObservationBudget(state);
+  while (pending.length && seen.size < 512) {
+    const key = pending.pop();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const expectedProjection = projectedConstantTransitionExpected(state.ir, key);
+    const expectedFacade = facadeConstantTransitionExpected(state.ir, key);
+    const expectedState = projectedStateTransitionExpected(state.ir, key);
+    const expectedPreserved = facadePreservedStateTransitionExpected(state.ir, key);
+    const expectedLocation = facadeLocationTransitionExpected(state.ir, key);
+    const expectedTypedResult = facadeTypedResultTransitionExpected(state.ir, key);
+    const expectedStackEscape = facadeStackEscapeTransitionExpected(state.ir, key);
+    const expectedAbiBinding = facadeAbiBindingExpected(state.ir, key);
+    const expectedView = semanticViewTransitionExpected(state.ir, key);
+    if (!expectedProjection && !expectedFacade && !expectedState && !expectedPreserved && !expectedLocation && !expectedTypedResult && !expectedStackEscape && !expectedAbiBinding && !expectedView) continue;
+    if (budget.edges <= 0) {
+      budget.reasons.add('compat-constant-selection-history-budget'); return observeSelected();
+    }
+    const transitions = [];
+    for (const [expected, read, kind] of [[expectedProjection, (ir, key) => readCandidate(semanticViewPredecessorCandidate(ir, 'projectedConstant', key)
+      || facadeProjectedConstantTransitionCandidate(ir, key) || projectedConstantTransitionCandidate(ir, key)), 'constant'],
+      [expectedFacade, readViewCarried('facadeConstant', readFacadeConstantTransitions), 'constant'],
+      [expectedState, (_, key) => readCandidate(stateCandidates?.get(key)), 'state'],
+      [expectedPreserved, readViewCarried('preservedState', readFacadePreservedStateHistory), 'preserved-state'],
+      [expectedLocation, readViewCarried('location', readFacadeLocationHistory), 'public-location'],
+      [expectedTypedResult, readViewCarried('typedResult', readFacadeTypedResultHistory), 'typed-call-result'],
+      [expectedStackEscape, readViewCarried('stackEscape', readFacadeStackEscapeHistory), 'stack-escape'],
+      [expectedAbiBinding, readViewCarried('abiBinding', readFacadeAbiBindingHistory), 'abi-binding'],
+      [expectedView, readSemanticViewHistory, 'committed-view']]) {
+      if (!expected) continue;
+      const transition = read(state.ir, key);
+      if (transition) transitions.push(transition);
+      else budget.reasons.add(`compat-${kind}-transition-unavailable`);
+    }
+    for (const transition of transitions) {
+    const candidates = [...transition.events], queued = new Set(candidates);
+    for (const event of candidates) {
+      if (events.has(event)) continue;
+      events.add(event);
+      for (const cause of event.causes || []) if (!events.has(cause) && !queued.has(cause)) {
+        if (queued.size >= 1024) { budget.reasons.add('compat-state-cause-budget'); return observeSelected(); }
+        queued.add(cause); candidates.push(cause);
+      }
+      const source = event.source;
+      // Source-less public-state operations have canonical product history,
+      // not a fictitious expression consumer. The projection publishes them.
+      if (!source && event.stage === 'public-state-normalization') continue;
+      if (!source) { budget.reasons.add('compat-state-consumer-unavailable'); continue; }
+      // Traverse actual recorded input definitions, not a guessed upstream pass
+      // inferred from a supplied constant. Precomputed rendering need not visit
+      // these expressions, but it still consumes their observed folding chain.
+      // Ordering/version inputs are metadata dependencies, not scalar operands.
+      // Their original references stay in this event, but their computations
+      // must not be recursively attributed to the current expression.
+      if (followInputs && event.stage !== 'public-state-normalization') pending.push(...event.inputs.flatMap(input => [input.definition, input.value]));
+      if (budget.edges <= 0 || !reserveBuildSelection(state, 'compat-constant', event)) {
+        budget.reasons.add('compat-constant-selection-history-budget'); return observeSelected();
+      }
+      const origins = event.op === 'load' && !['facade-public-location', 'facade-stack-escape'].includes(event.stage) ? selectedValueOrigins(event.output, state) : null;
+      const related = [...new Set([...event.beforeInputs.map(input => input.def), ...(event.related || []), ...(origins?.definitions || [])])]
+        .filter(definition => definition && definition !== source);
+      if (origins?.incomplete) budget.reasons.add('compat-constant-source-history-incomplete');
+      selected.push({ event, transition, origins, related });
+    }
+    }
+  }
+  if (pending.length) budget.reasons.add('compat-constant-dependency-budget');
+  return observeSelected();
+}
+
+function recordCompatOperationSelection(value, expression, selected, state) {
+  const records = [], pending = [], finished = new Map();
+  for (const { event, transition, origins, observation:selection } of selected) {
+    if (!finished.has(selection)) finished.set(selection, finishBuildSelection(expression, selection, state));
+    const observation = finished.get(selection);
+    if (!observation) continue;
+    const source = mergeSource(origin(event.source, event.output), origin(value?.def, value), origins?.source,
+      ...event.beforeInputs.map(input => origin(input.def, input)), ...(event.related || []).map(inst => origin(inst)));
+    const history = buildOriginHistory(state, { source }, expression);
+    const facade = event.stage === 'facade-exact-constants';
+    const preserved = event.stage === 'facade-preserved-state';
+    const location = event.stage === 'facade-public-location';
+    const typedResult = event.stage === 'facade-typed-call-result';
+    const stackEscape = event.stage === 'facade-stack-escape';
+    const abiBinding = event.stage === 'facade-abi-binding';
+    const view = event.stage === 'decompiler-committed-view';
+    const stateOperation = !!event.kind;
+    const identityText = identity => `${String(identity.reg)}:${String(identity.stateKey)}:${String(identity.version)}:${String(identity.compatDerived)}`;
+    const record = Object.freeze({ rule:view || location || typedResult || stackEscape || abiBinding ? event.operation : preserved ? 'restore-abi-preserved-state' : stateOperation ? 'compact-public-state' : facade ? 'fold-facade-constant' : 'fold-compatibility-constant', phase:'compatibility-projection',
+      valueId:value?.id ?? null,
+      before:view ? `${event.operation}:${event.ordinal}:${event.beforeOp}:${event.beforeSub ?? ''}:value:${event.before?.id ?? 'none'}` : abiBinding ? `${event.stage}:${event.direction}:${event.ordinal}:arguments:${event.beforeArguments.map(arg => arg.value?.id).join(',')}` : stackEscape ? `${event.stage}:${event.ordinal}:store:${event.store.id}` : typedResult ? `${event.stage}:${event.ordinal}:${event.before?.id ?? 'no-public-result'}` : location ? `${event.stage}:${event.ordinal}:${event.before.key}` : preserved ? `${event.stage}:${event.ordinal}:value:${event.before.id}` : stateOperation ? `${event.kind}:${event.ordinal}:${event.path || 'identity'}:${event.identity ? identityText(event.before) : event.before.id}`
+        : `${event.stage}:${event.round}:${event.ordinal}:${event.op}:${event.sub ?? ''}:${String(event.beforeConstant)}`,
+      after:view ? `${event.afterOp}:${event.afterSub ?? ''}:value:${event.after?.id ?? 'none'}` : abiBinding ? `${event.direction}:${event.outcome}:arguments:${event.afterArguments.map(arg => arg.value?.id).join(',')}` : stackEscape ? `compatibility-clobber:call:${event.call.id}` : typedResult ? `call-result-view:${event.output.id}:${event.registerId}:${event.bits}` : location ? `location:${event.after.key}` : preserved ? `value:${event.after.id}:${event.evidence}` : stateOperation ? `${event.identity ? identityText(event.after) : event.after.id}` : `constant:${event.bits}:${String(event.afterConstant)}`,
+      evidence:Object.freeze({ kind:view ? 'observed-committed-view-not-equivalence' : abiBinding ? 'observed-abi-argument-binding-not-new-abi-proof' : stackEscape ? 'observed-stack-escape-invalidation-not-new-memory-proof' : typedResult ? 'observed-typed-call-result-not-new-abi-proof' : location ? 'observed-public-location-restoration-not-new-memory-proof' : preserved ? 'observed-abi-state-restoration-not-equivalence' : stateOperation ? 'observed-state-compaction-not-equivalence'
+        : facade ? 'observed-facade-constant-write-not-equivalence' : 'observed-compat-constant-write-not-equivalence',
+        detail:view ? 'actual decompiler view replacement with original operands, stores, block selection and predecessor histories; not a new scalar, memory or ABI theorem'
+          : abiBinding ? 'actual canonical ABI descriptors and ordered reaching-value selection replaced compatibility arguments; original control and value sources retained, not a new ABI theorem'
+          : stackEscape ? 'actual compatibility store-link invalidation by the first intervening call with a stack-carrying argument; original store and canonical memory facts are retained, not re-proved'
+          : typedResult ? 'actual typed result attachment from the selected canonical ABI adapter, anchored to the original CALL; compatibility value identity is not a new canonical SSA definition'
+          : location ? 'actual public location reuse/replacement and map write with original address inputs and existing evidence; not a new alias, memory forwarding or field-layout theorem'
+          : preserved ? 'actual facade operand restoration through the selected canonical ABI adapter, with original call-clobbered and reaching state sources; not a new ABI or scalar theorem'
+          : stateOperation ? 'actual public-state shadow or reference replacement with original values and alias-producing operations; not an independent state, scalar, memory or CFG proof'
+          : 'actual compatibility constant write and its original input facts, retained through the consuming expression; not a new scalar or memory theorem' }),
+      originHistory:origins?.incomplete ? Object.freeze({ ...history, truncated:true }) : history,
+    });
+    const producerChecks = Object.freeze([transition.isCurrent, observation.sourceMatches, ...(origins?.memoryChecks || [])]);
+    buildHistoryObservations.set(record, Object.freeze({ matches:observation.outputMatches, producerChecks }));
+    compatOperationEvents.set(record, Object.freeze({ ir:state.ir, event }));
+    reusableBuildHistoryRecords.add(record);
+    pending.push({ record, producerChecks });
+  }
+  // All local finish callbacks have run. Outside canonical construction,
+  // revalidate now; its private batch is checked at the construction boundary.
+  // Neither result is cached across later consumer reads.
+  const current = new Map();
+  for (const { producerChecks } of pending) for (const check of producerChecks) if (!current.has(check)) {
+    // Canonical construction holds these records privately until its final
+    // validation, after ALL nested input callbacks. No intermediate result is
+    // treated as a current producer certificate or published as rewrite proof.
+    const transaction = state.stateHistoryTransaction;
+    current.set(check, transaction?.checks.has(check) ? transaction.checks.get(check)
+      : transaction?.observation?.matches === check ? transaction.initiallyCurrent : check());
+  }
+  for (const { record, producerChecks } of pending) {
+    if (!producerChecks.every(check => current.get(check))) {
+      consumerObservationBudget(state).reasons.add('compat-constant-transition-stale'); continue;
+    }
+    records.push(record);
+    if (state.buildHistoryFrame) (state.buildHistoryFrame.records ??= new Set()).add(record);
+  }
+  return records;
+}
+
+function buildCanonicalExpressions(state) {
+  const batch = semanticViewStateCandidates(state.ir) || facadeStateTransitionCandidates(state.ir) || projectedStateTransitionCandidates(state.ir);
+  if (!batch) {
+    for (const value of state.ir.values || []) buildValue(value, state);
+    return state;
+  }
+  const transaction = { check:batch.isCurrent, initiallyCurrent:batch.isCurrent(), values:state.ir.values, observation:null };
+  transaction.checks = new Map([[transaction.check, transaction.initiallyCurrent]]);
+  const budget = consumerObservationBudget(state);
+  if (transaction.initiallyCurrent) try {
+    if (budget.edges <= 0) throw new Error('state-construction-budget');
+    const values = state.ir.values, blocks = state.ir.blocks, instructions = state.ir.instructions;
+    // Capture all initial construction inputs once, before any symbol/type/
+    // cancellation callback. This is data observation, not producer resealing.
+    const captured = captureConsumerIrData([values, blocks, instructions], state, true);
+    budget.edges -= captured.metrics.edges;
+    if (budget.edges < 0) throw new Error('state-construction-budget');
+    const own = (key) => Object.getOwnPropertyDescriptor(state.ir, key)?.value;
+    const valueMembers = new WeakSet(values), instructionMembers = new WeakSet(instructions);
+    transaction.observation = Object.freeze({ kind:'compat-state', matches:() => own('values') === values
+      && own('blocks') === blocks && own('instructions') === instructions && captured.matches(),
+    contains:(value, instruction) => (value == null || valueMembers.has(value)) && (instruction == null || instructionMembers.has(instruction)) });
+    // Keep the original data observation for later C-AST consumers too. It
+    // never caches currentness: every selection and read rechecks this matcher,
+    // and output descriptors/records are still separately observed.
+    state.constructionInputObservation = transaction.observation;
+  } catch {
+    budget.edges = 0; budget.reasons.add('compat-state-construction-observation-unavailable');
+  }
+  state.stateHistoryTransaction = transaction;
+  try {
+    for (const value of state.ir.values || []) buildValue(value, state);
+  } finally {
+    delete state.stateHistoryTransaction;
+    // The shared producer is checked once after construction, never carried
+    // across this boundary. Consumer reads still perform their fresh checks.
+    const matches = new Map();
+    for (const [check, initiallyCurrent] of transaction.checks) matches.set(check, initiallyCurrent && check());
+    for (const [key, records] of state.buildHistories || []) {
+      const retained = records.filter(record => {
+        const observation = buildHistoryObservations.get(record);
+        if (!observation?.producerChecks?.some(check => transaction.checks.has(check))) return true;
+        for (const check of observation.producerChecks) {
+          if (!matches.has(check)) matches.set(check, check());
+          if (!matches.get(check)) return false;
+        }
+        if (!matches.has(observation.matches)) matches.set(observation.matches, observation.matches());
+        return matches.get(observation.matches);
+      });
+      if (retained.length !== records.length) {
+        consumerObservationBudget(state).reasons.add('compat-state-construction-stale');
+        state.buildHistories.set(key, Object.freeze(retained));
+      }
+    }
+  }
+  return state;
+}
+
+function buildValueRaw(v, state, flags = {}) {
   if (!v) return expr.variable('unknown', 64, null);
   const memoKey = `${v.id}:${flags.forAddress ? 'a' : 'v'}`;
   if (state.expressionMemo.has(memoKey)) return state.expressionMemo.get(memoKey);
@@ -232,14 +1057,34 @@ function buildValue(v, state, flags = {}) {
   state.expressionActive.add(v.id);
   let out = null;
   const d = v.def;
-  if (v.constKind === 'float' || v.floatConst != null || (v.float != null && v.const == null)) out = expr.floatConstant(v.floatConst ?? v.float, v.bits || 64, origin(d, v));
-  if (!out && v.const != null && d?.op !== 'addr') out = constNode(v);
+  const compatSelection = compatMemorySelection(v, state);
+  const compatOperations = compatOperationSelection(v, state);
+  if (v.constKind === 'float' || v.floatConst != null || (v.float != null && v.const == null)) {
+    const selected = constantValueSelection(v, state);
+    out = expr.floatConstant(v.floatConst ?? v.float, v.bits || 64, origin(d, v));
+    recordConstantValueSelection(v, out, selected, state);
+  }
+  if (!out && v.const != null && d?.op !== 'addr') {
+    const selected = constantValueSelection(v, state);
+    out = constNode(v);
+    recordConstantValueSelection(v, out, selected, state);
+  }
   if (!out && (v.kind === 'arg' || !d)) out = expr.variable(argumentName(v, state), v.bits || 64, signedFor(state, v), origin(d, v), { ssaId: v.id, range: v.range ? { ...v.range } : null });
   if (!out && d) {
     if (d.op === 'const') out = (v.constKind === 'float' || v.floatConst != null || v.float != null)
       ? expr.floatConstant(v.floatConst ?? v.float, v.bits || 64, origin(d, v))
       : constNode(v, v.const ?? d.extra?.value ?? 0n);
-    else if (d.op === 'mov') out = buildArg(d.args?.[0], state, flags);
+    else if (d.op === 'mov') {
+      const selection = observeBuildSelection(v, d, state);
+      out = buildArg(d.args?.[0], state, flags);
+      const operandBits = out.bits;
+      // A width-changing MOV must retain its own observed endpoint in proof
+      // preparation. Reusing the operand root loses the target width and can
+      // alias unrelated consumers. Ordinary legacy rendering stays unchanged.
+      const cast = state.proofOnlyRewrites ? renderBitvectorCast(out,d.sub,v.bits) : null;
+      if (cast) out = {...cast,source:mergeSource(cast.source,origin(d,v))};
+      recordMovSelection(v, d, out, selection, state, flags, cast ? d.sub : null, cast ? operandBits : null);
+    }
     else if (d.op === 'bin') {
       const a = buildArg(d.args?.[0], state), b = d.args?.[1] ? buildArg(d.args[1], state) : expr.constant(0, v.bits || 64);
       if (d.sub === 'bic') out = expr.binary('and', a, expr.unary('not', b, v.bits || b.bits || 64, b.signed), v.bits || 64, signedFor(state, v), origin(d, v));
@@ -291,9 +1136,14 @@ function buildValue(v, state, flags = {}) {
         canonicalMemoryForwardingContextForLoad(d.memoryForwarding, d,
           d.memoryForwardingContext ?? d.extra?.memoryForwardingContext))
         && d.memoryForwarding.value != null) {
+        const selection = constantValueSelection(v, state, 'canonical-load');
         out = constNode(v, d.memoryForwarding.value);
+        recordConstantValueSelection(v, out, selection, state);
       } else if (flags.forAddress && d.reachingStore && d.reachingStore !== d) {
-        out = buildArg(d.reachingStore.args?.[0], state, flags);
+        const store = d.reachingStore;
+        const selection = observeBuildSelection(v, d, state, 'address-load', [store]);
+        out = buildArg(store.args?.[0], state, flags);
+        recordAddressLoadSelection(v, d, store, out, selection, state);
       } else {
         out = expr.load(loc, v.bits || Number((d.size || 8) * 8), origin(d, v), { signed: d.signed ?? signedFor(state, v), volatile: !!d.volatile });
       }
@@ -303,9 +1153,12 @@ function buildValue(v, state, flags = {}) {
       const incoming = (d.incoming || []).map((x) => buildValue(x.value, state));
       const unique = new Map(incoming.map((x) => [structuralKey(x), x]));
       out = unique.size === 1 ? incoming[0] : expr.variable(`local_phi_${v.id}`, v.bits || 64, signedFor(state, v), origin(d, v), { phi: true, incoming });
+      if (unique.size === 1) recordPhiCollapse(v, d, incoming, out, state);
     }
   }
   if (!out) out = expr.variable(argumentName(v, state), v.bits || 64, signedFor(state, v), origin(d, v), { ssaId: v.id, range: v.range ? { ...v.range } : null });
+  recordCompatMemorySelection(v, out, compatSelection, state);
+  recordCompatOperationSelection(v, out, compatOperations, state);
   state.expressionActive.delete(v.id);
   state.expressionMemo.set(memoKey, out);
   return out;
@@ -314,21 +1167,42 @@ function buildValue(v, state, flags = {}) {
 function rewriteAll(state, budget) {
   const engine = new RewriteEngine(DEFAULT_RULES, { timeBudgetMs: Math.max(4, Math.min(22, budget.timeBudgetMs / 2)), nodeBudget: Math.min(4096, budget.nodeBudget) });
   state.expressions = new Map();
+  state.expressionProofs = new Map();
   state.rewriteProof = [];
   state.rewriteStats = { applications: 0, budgetExceeded: false, byRule: {} };
+  if (state.proofOnlyRewrites) {
+    // Keep the ordinary builder's typed expression as the fallback. Optional
+    // rule/idiom proposals are generated and verified by the existing async
+    // Phase 8 path; their truthy local evidence cannot pre-apply them here.
+    state.rewriteStats.deferred = 'phase8-proof-projection';
+    for (const v of state.ir.values || []) {
+      const root = buildValue(v, state);
+      const records = Object.freeze((state.buildHistories?.get(`${v.id}:v`) || []).map(p => valueHistoryRecord(p, v.id)));
+      state.expressions.set(v.id, root);
+      state.expressionProofs.set(v.id, { expression:root, records });
+      state.rewriteProof.push(...records);
+    }
+    state.rewriteProof = [...new Set(state.rewriteProof)];
+    return state;
+  }
   for (const v of state.ir.values || []) {
     let root = buildValue(v, state);
-    root = walkIdiom(root);
+    const idiomRecords = [];
+    root = walkIdiom(root, state, idiomRecords);
     // `deterministicTransforms` is an opt-in measurement mode: it removes the
     // rewrite engine's wall-clock cutoff so the fixed point depends only on the
     // input and the rules. Work bounds still apply. Production leaves it unset.
     const r = engine.rewrite(root, { state, deterministicTransforms: state.opts?.deterministicTransforms === true });
     state.expressions.set(v.id, r.root);
-    state.rewriteProof.push(...r.proof.map((p) => ({ ...p, valueId: v.id })));
+    const built = state.buildHistories?.get(`${v.id}:v`) || [];
+    const records = Object.freeze([...built, ...idiomRecords, ...r.proof].map(p => valueHistoryRecord(p, v.id)));
+    state.rewriteProof.push(...records);
+    state.expressionProofs.set(v.id, { expression:r.root, records });
     state.rewriteStats.applications += r.stats.applications;
     state.rewriteStats.budgetExceeded ||= r.stats.budgetExceeded;
     for (const [k, n] of Object.entries(r.stats.byRule)) state.rewriteStats.byRule[k] = (state.rewriteStats.byRule[k] || 0) + n;
   }
+  state.rewriteProof = [...new Set(state.rewriteProof)];
   // A truncated rewrite is a truncated result. Before this, `rewriteStats.budgetExceeded`
   // could be true while the pipeline still reported `degraded: false`, so a consumer
   // reading the pipeline's own completeness flag was told the output was complete
@@ -338,10 +1212,29 @@ function rewriteAll(state, budget) {
   return state;
 }
 
-function walkIdiom(n) {
+function walkIdiom(n, state, records) {
   if (!n) return n;
-  const mapped = mapChildren(n, walkIdiom);
-  return recoverArm64ClangIdiom(mapped);
+  const mapped = mapChildren(n, child => walkIdiom(child, state, records));
+  const recovered = recoverArm64ClangIdiom(mapped);
+  if (recovered !== mapped) {
+    const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
+    const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
+    if ((state.idiomHistoryCount || 0) >= maximum || state.opts?.shouldAbort?.()) {
+      consumerObservationBudget(state).reasons.add('idiom-history-unavailable');
+    } else {
+      // This is an observed legacy display transformation, not an independently
+      // verified rewrite. Shape labels are descriptive, never semantic IDs or
+      // equivalence certificates. The existing consumer owns the actual edge.
+      records.push(Object.freeze({ rule:`recognize-${recovered.name}`, phase:'idiom',
+        before:`${mapped.kind}:${mapped.op}`, after:`${recovered.kind}:${recovered.name}`,
+        evidence:Object.freeze({ kind:'legacy-idiom-recognition-not-equivalence',
+          detail:'actual existing recognizer application; no independent equivalence proof is claimed' }),
+        originHistory:buildOriginHistory(state, mapped, recovered),
+      }));
+      state.idiomHistoryCount = (state.idiomHistoryCount || 0) + 1;
+    }
+  }
+  return recovered;
 }
 
 // Dominance walk shared by the reaching-definition queries. Prefer the
@@ -444,7 +1337,32 @@ function reachingRegisterValue(ir, atInst, reg) {
   return best;
 }
 
-function expressionFor(v, state) { return state.expressions?.get(v?.id) || walkIdiom(buildValue(v, state)); }
+function expressionFor(v, state) {
+  const existing = state.expressions?.get(v?.id);
+  if (existing) {
+    // Mandatory finalization can reuse the actual raw builder cache after the
+    // optional rewrite pass hit its deadline. Carry that builder's observed
+    // history too; a cached expression alone is not a rewrite/consumer proof.
+    // Never replace a proof from an executed pass or admit a lookalike root.
+    if (!state.expressionProofs?.has(v?.id) && state.expressionMemo.get(`${v?.id}:v`) === existing) {
+      const built = state.buildHistories?.get(`${v?.id}:v`) || [];
+      const records = Object.freeze(built.map(record => valueHistoryRecord(record, v?.id ?? null)));
+      (state.expressionProofs ??= new Map()).set(v?.id, { expression:existing, records });
+      (state.rewriteProof ??= []).push(...records);
+    }
+    return existing;
+  }
+  // The mandatory representation fallback also executes the recognizer when
+  // optional passes did not run. Retain those actual events and their current
+  // consumer instead of treating a degraded pipeline as history-free.
+  const history = [], builtRoot = buildValue(v, state);
+  const root = state.proofOnlyRewrites ? builtRoot : walkIdiom(builtRoot, state, history);
+  const built = state.buildHistories?.get(`${v?.id}:v`) || [];
+  const records = Object.freeze([...built, ...history].map(record => valueHistoryRecord(record, v?.id ?? null)));
+  (state.rewriteProof ??= []).push(...records);
+  (state.expressionProofs ??= new Map()).set(v?.id, { expression:root, records });
+  return root;
+}
 // A read-modify-write claim is only sound when the selected operator operand is
 // directly the load of the canonical location being overwritten. A nested load
 // proves only a dependency, not that the outer operator is a compound update.
@@ -500,8 +1418,7 @@ function semanticFacts(state, result) {
       const runtime = /objc_msgSend/.test(name) ? 'objc' : /^_?swift_/.test(name) ? 'swift' : null;
       facts.calls.push({ name, runtime, row: inst.row, address: inst.address, ir: inst.id });
     } else if (inst.op === 'cbr') {
-      const e = branchCondition(inst, state);
-      facts.conditions.push({ expression: e, text: printExpression(e), row: inst.row, address: inst.address, ir: inst.id });
+      facts.conditions.push(semanticBranchCondition(inst, state));
     } else if (inst.op === 'ret') {
       const rv = returnValueAt(inst, state);
       if (rv) facts.outputs.push({ name: 'return', type: typeFor(state, rv), expression: expressionFor(rv, state) });
@@ -572,17 +1489,119 @@ function isElidableReturnSpillStore(store, state) {
     if (ret.op !== 'ret' || ret.row == null || Number(ret.row) <= Number(load.row)) continue;
     const returned = returnValueAt(ret, state);
     if (!returned || !valueDependsOnAny(returned, loadIds)) continue;
-    if (structuralKey(expressionFor(returned, state)) === storedKey) return true;
+    if (structuralKey(expressionFor(returned, state)) === storedKey) return { ret, returned, load, storedValue };
   }
   return false;
 }
 
-function knownStatementForLine(line, state) {
+function compoundStoreObservationRoots(expression, location) {
+  // Expression trees can legitimately exceed the generic nested-data depth
+  // limit even though their total graph is small and already printable. Seed
+  // every actual AST vertex as a graph root so the bounded observer measures
+  // root distance instead of an arbitrary recursive path through the tree.
+  // Canonical instruction/value inputs are covered by the construction graph
+  // observation when available; node/edge/expanded-work/deadline limits remain
+  // enforced for these producer-owned render objects.
+  const roots = [location];
+  const pending = [expression], seen = new Set();
+  while (pending.length) {
+    const current = pending.pop();
+    if (!current || typeof current !== 'object' || seen.has(current)) continue;
+    if (roots.length >= PROJECTION_LIMITS.nodes) throw new TypeError('compound-store-expression-node-budget');
+    seen.add(current);
+    roots.push(current);
+    pending.push(...children(current));
+  }
+  return roots;
+}
+
+function compoundStoreHistory(instruction, value, expression, location, form, state) {
+  const budget = consumerObservationBudget(state);
+  const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
+  const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
+  if ((state.compoundStoreHistoryCount || 0) >= maximum) {
+    budget.reasons.add('compound-store-history-budget'); return null;
+  }
+  // This is the actual text-rendering branch, not the readModifyWrite analysis
+  // fact or a memory-equivalence proof. The repeated load and the arithmetic
+  // remain semantic inputs even when their spelling is implicit in ++ or +=.
+  const source = mergeSource(origin(instruction, value), expression.source,
+    location.expression?.source, location.base?.source, location.index?.source);
+  const record = Object.freeze({ rule:'render-compound-store', phase:'render', valueId:value?.id ?? null,
+    before:'store:assignment', after:`store:${form}`,
+    evidence:Object.freeze({ kind:'observed-store-spelling-not-memory-equivalence',
+      detail:'actual C AST store spelling; no atomicity, alias, overflow or memory-equivalence proof is issued' }),
+    originHistory:buildOriginHistory(state, { source }, { source }),
+  });
+  (state.rewriteProof ??= []).push(record);
+  state.compoundStoreHistoryCount = (state.compoundStoreHistoryCount || 0) + 1;
+  const ir = state.ir, instructions = ir.instructions, position = instructions.indexOf(instruction);
+  let observation = null;
+  try {
+    if (budget.edges <= 0 || position < 0) throw new Error('store-render-observation-budget');
+    // Observe the selected inputs before invoking a caller's abort hook. A
+    // callback must not bind yesterday's spelling to today's changed operands.
+    const shared = state.constructionInputObservation?.contains(value, instruction) ? state.constructionInputObservation : null;
+    const roots = compoundStoreObservationRoots(expression, location);
+    if (!shared) roots.unshift(instruction, value);
+    const captured = captureConsumerIrData(roots, state, true);
+    budget.edges -= captured.metrics.edges;
+    if (budget.edges < 0 || state.opts?.shouldAbort?.() || !captured.matches() || shared && !shared.matches()) {
+      throw new Error('store-render-observation-unavailable');
+    }
+    observation = Object.freeze({ matches:() => captured.matches() && (!shared || shared.matches()) });
+  } catch {
+    observation = null; budget.edges = 0; budget.reasons.add('compound-store-observation-unavailable');
+  }
+  return { records:Object.freeze([record]), isCurrent:() => Object.getOwnPropertyDescriptor(ir, 'instructions')?.value === instructions
+    && Object.getOwnPropertyDescriptor(instructions, position)?.value === instruction && observation?.matches() === true };
+}
+
+function initialStoreExpansion(initialStore, instruction, value, expression, location, state) {
+  const requested = state.opts?.renderProvenanceBudget?.maxTransformRecords;
+  const maximum = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 1024) : 1024;
+  if ((state.initialStoreExpansionCount || 0) >= maximum) {
+    consumerObservationBudget(state).reasons.add('initial-store-expansion-history-budget'); return [];
+  }
+  const source = mergeSource(initialStore.records[0].originHistory.after, origin(instruction, value), expression.source,
+    location.expression?.source, location.base?.source, location.index?.source);
+  const record = Object.freeze({ rule:initialStore.spelling.form === 'assignment' ? 'replace-initial-store-expression' : 'expand-initial-store-spelling', phase:'c-ast-render', valueId:value?.id ?? null,
+    before:`store:${initialStore.spelling.form}`, after:'store:assignment',
+    evidence:Object.freeze({ kind:'observed-store-spelling-not-memory-equivalence',
+      detail:'actual owned initial-line to C AST assignment transition; no memory equivalence proof' }),
+    originHistory:buildOriginHistory(state, { source }, { source }),
+  });
+  (state.rewriteProof ??= []).push(record);
+  state.initialStoreExpansionCount = (state.initialStoreExpansionCount || 0) + 1;
+  return [record];
+}
+
+function knownStatementForLine(line, state, lineIndex, initialStore = null, initialStatement = null) {
   if (line?.row == null || line.kind !== 'stmt') return null;
   const insts = (state.ir.instructions || []).filter((i) => i.row === line.row);
   const store = insts.find((i) => i.op === 'store');
   if (store) {
-    if (isElidableReturnSpillStore(store, state)) {
+    const elision = isElidableReturnSpillStore(store, state);
+    if (elision) {
+      const hasVisibleStatement = String(line.text || '').trim().length > 0;
+      const maximum = Number.isSafeInteger(state.opts?.renderProvenanceBudget?.maxTransformRecords)
+        ? Math.max(0, Math.min(1024, state.opts.renderProvenanceBudget.maxTransformRecords)) : 1024;
+      if (hasVisibleStatement && (state.renderElisionCount || 0) < maximum) {
+        const expression = expressionFor(elision.returned, state);
+        const record = Object.freeze({ rule:'suppress-return-spill-statement', phase:'render',
+          evidence:Object.freeze({ kind:'memoryssa-return-spill', detail:'existing C AST producer suppressed this return-preservation spill statement' }),
+          originHistory:buildOriginHistory(state, { source:mergeSource(line.source, origin(store, elision.storedValue), origin(elision.load)) }, expression),
+          renderedRemoval:Object.freeze({ scope:'pre-transform-render', operation:'suppress', lineIndex, kind:line.kind || 'null' }),
+        });
+        state.renderElisions ??= new Map();
+        const records = state.renderElisions.get(elision.ret.id) || [];
+        state.renderElisions.set(elision.ret.id, [...records, record]);
+        (state.rewriteProof ??= []).push(record);
+        state.renderElisionCount = (state.renderElisionCount || 0) + 1;
+      } else if (hasVisibleStatement) {
+        state.expressionBindingBudget ??= { consumers:0, edges:0, reasons:new Set() };
+        state.expressionBindingBudget.reasons.add('render-removal-history-budget');
+      }
       return {
         text:'',
         semantic:{ op:'elided-return-spill', ir:store.id },
@@ -590,33 +1609,130 @@ function knownStatementForLine(line, state) {
       };
     }
     const location = memoryLocation(store, state), value = valueOf(store.args?.[0]), e = expressionFor(value, state);
-    let text = `${location.text} = ${printExpression(e)};`;
+    let text = `${location.text} = ${printExpression(e)};`, rendered = null, form = 'assignment';
     if (e?.kind === 'binary' && ['add','sub','mul'].includes(e.op) && e.left?.kind === 'load' && e.left.location?.key === location.key) {
       const rhs = printExpression(e.right);
-      if (e.op === 'add' && e.right?.kind === 'const' && e.right.value === 1n) text = `${location.text}++;`;
-      else if (e.op === 'sub' && e.right?.kind === 'const' && e.right.value === 1n) text = `${location.text}--;`;
-      else text = `${location.text} ${{add:'+=',sub:'-=',mul:'*='}[e.op]} ${rhs};`;
+      if (e.op === 'add' && e.right?.kind === 'const' && e.right.value === 1n) { text = `${location.text}++;`; form = 'post-increment'; }
+      else if (e.op === 'sub' && e.right?.kind === 'const' && e.right.value === 1n) { text = `${location.text}--;`; form = 'post-decrement'; }
+      else { text = `${location.text} ${{add:'+=',sub:'-=',mul:'*='}[e.op]} ${rhs};`; form = `${e.op}-assignment`; }
+      rendered = compoundStoreHistory(store, value, e, location, form, state);
     }
-    return { text, semantic: { op: 'store', location, expression: e, ir: store.id }, source: mergeSource(line.source, e?.source, origin(store, store.dst)) };
+    if (initialStore?.instruction === store) {
+      const current = rendered;
+      const expanded = form === 'assignment' && initialStore.spelling.text !== text
+        ? initialStoreExpansion(initialStore, store, value, e, location, state) : [];
+      rendered = { records:Object.freeze([...(current?.records || []), ...initialStore.records, ...expanded]),
+        isCurrent:() => (!current || current.isCurrent()) && initialStore.isCurrent() };
+    }
+    return { text, semantic: semanticExpressionConsumer({ op: 'store', location, expression: e, ir: store.id }, value, store, state, false, rendered),
+      source: mergeSource(line.source, e?.source, origin(store, store.dst)), storeSpelling:{ form, valueId:value?.id ?? null } };
   }
   const ret = insts.find((i) => i.op === 'ret');
   if (ret && /^return\b/.test(String(line.text || ''))) {
     const rv = returnValueAt(ret, state);
-    if (rv) { const e = expressionFor(rv, state); return { text: `return ${printExpression(e)};`, semantic: { op: 'return', expression: e, ir: ret.id }, source: mergeSource(line.source, e?.source, origin(ret, rv)) }; }
+    if (rv) { const e = expressionFor(rv, state); return { text: `return ${printExpression(e)};`, semantic: semanticExpressionConsumer({ op: 'return', expression: e, ir: ret.id }, rv, ret, state, false,
+      initialStatement?.instruction === ret ? initialStatement : null), source: mergeSource(line.source, e?.source, origin(ret, rv)) }; }
   }
   return null;
 }
 
 function cAstFromLines(result, state) {
   const body = [];
+  const initialControls = readSemanticControlRenderHistory(result);
+  if (initialControls) {
+    state.rewriteProof.push(...initialControls.records);
+    for (const reason of initialControls.reasons) consumerObservationBudget(state).reasons.add(reason);
+  } else if (result.semanticControlRenderHistory) consumerObservationBudget(state).reasons.add('initial-control-history-unavailable');
+  const initialStatements = readSemanticStatementRenderHistory(result);
+  if (initialStatements) {
+    state.rewriteProof.push(...initialStatements.records);
+    for (const reason of initialStatements.reasons) consumerObservationBudget(state).reasons.add(reason);
+  } else if (result.semanticStatementRenderHistory) consumerObservationBudget(state).reasons.add('initial-statement-history-unavailable');
+  const initialStores = readSemanticStoreRenderHistory(result);
+  if (initialStores) {
+    state.rewriteProof.push(...initialStores.records);
+    for (const reason of initialStores.reasons) consumerObservationBudget(state).reasons.add(reason);
+  } else if (result.semanticStoreRenderHistory) consumerObservationBudget(state).reasons.add('initial-store-history-unavailable');
+  const switchHistory = readSwitchRenderHistory(result);
+  if (switchHistory) {
+    state.rewriteProof.push(...switchHistory.records);
+    for (const reason of switchHistory.reasons) consumerObservationBudget(state).reasons.add(reason);
+  } else if (result.switchRenderHistory) consumerObservationBudget(state).reasons.add('switch-history-unavailable');
   for (const line of result.lines || []) {
-    const known = knownStatementForLine(line, state);
+    const initialStore = initialStores && readSemanticStoreLineHistory(line, state.ir);
+    const initialStatement = initialStatements && readSemanticStatementLineHistory(line, state.ir);
+    const initialControl = initialControls && readSemanticControlLineHistory(line, state.ir);
+    const known = knownStatementForLine(line, state, body.length, initialStore, initialStatement);
     const carried = line.source || { address: line.addr, row: line.row };
     const source = known?.source || sourceOf({
       ...carried,
       evidence: [...(carried.evidence || []), ...(line.note ? [{ reason: line.note }] : [])],
     });
-    body.push({ kind: line.kind || 'raw', indent: line.indent || 0, text: known?.text ?? line.text ?? '', source, semantic: known?.semantic || null });
+    let semantic = known?.semantic || null;
+    const switched = switchHistory && readSwitchLineHistory(line, state.ir);
+    if (switched && !known) semantic = { op:'switch-render', expression:null, ir:null };
+    const node = { kind: line.kind || 'raw', indent: line.indent || 0, text: known?.text ?? line.text ?? '', source, semantic };
+    const initial = initialStatement || initialControl;
+    if (initial && !known && !switched) {
+      // This exact line was emitted by the earlier CALL/RET producer. A null
+      // expression is intentional: do not manufacture a scalar AST for it.
+      const instruction = initial.instruction;
+      semantic = node.semantic = { op:initialControl ? 'control-render' : `${instruction.op}-render`, expression:null, ir:instruction?.id ?? null };
+      const selected = compatOperationSelection(null, state, instruction ? [instruction] : [], false);
+      const operations = recordCompatOperationSelection(null, null, selected, state);
+      state.rewriteProof.push(...operations);
+      const records = Object.freeze([...initial.records, ...operations]);
+      const budget = consumerObservationBudget(state);
+      try {
+        const output = captureConsumerIrData([node], state);
+        budget.edges -= output.metrics.edges;
+        const rendered = { isCurrent:() => initial.isCurrent() && output.matches() };
+        bindObservedExpressionConsumer(semantic, null, instruction, state, records, rendered);
+        if (initialControl) {
+          const consumer = readExpressionHistoryConsumer(semantic, state.ir);
+          if (consumer) {
+            // The consumer already observed this exact descriptor, records and
+            // canonical inputs. Reuse that observation instead of traversing
+            // and charging the same graph again for the owned text handoff.
+            const inputsCurrent = expressionHistoryInputs.get(consumer);
+            if (!inputsCurrent) throw new Error('initial-control-consumer-inputs-unavailable');
+            // Only the actual Phase8 condition replacement may refresh its
+            // output-node observation. This retained check never forgets the
+            // original emitter, canonical inputs or semantic descriptor.
+            initialControlConsumers.set(consumer, Object.freeze({
+              isCurrent:() => initial.isCurrent() && inputsCurrent(),
+            }));
+          }
+        }
+      } catch { budget.edges = 0; budget.reasons.add('initial-statement-consumer-unavailable'); }
+    }
+    bindStoreSpelling(node, known, state);
+    if (switched && !known) {
+      const budget = consumerObservationBudget(state);
+      try {
+        if (budget.consumers <= 0 || budget.edges <= 0) throw new Error('switch-consumer-budget');
+        budget.consumers--;
+        const observation = captureConsumerIrData([node], state);
+        budget.edges -= observation.metrics.edges;
+        if (budget.edges < 0) throw new Error('switch-consumer-budget');
+        expressionHistoryConsumers.set(semantic, Object.freeze({ ...switched,
+          expression:null, op:semantic.op, instructionId:null, location:undefined,
+          isCurrent:() => switched.isCurrent() && observation.matches(),
+        }));
+      } catch { budget.edges = 0; budget.reasons.add('switch-consumer-unavailable'); }
+    }
+    if (initialStatement?.resultBinding && initialStatement.instruction?.op === 'call') {
+      const consumer = readExpressionHistoryConsumer(node.semantic, state.ir), binding = initialStatement.resultBinding;
+      const budget = consumerObservationBudget(state);
+      try {
+        if (!consumer || budget.edges <= 0 || node.text !== `${binding.name} = ${binding.callText}`) throw new Error('call-result-spelling-unavailable');
+        const observation = captureConsumerIrData([node], state);
+        budget.edges -= observation.metrics.edges;
+        if (budget.edges < 0) throw new Error('call-result-spelling-budget');
+        callResultSpellingProducers.set(node, Object.freeze({ ir:state.ir, consumer, observation, ...binding }));
+      } catch { budget.reasons.add('call-result-spelling-unavailable'); }
+    }
+    body.push(node);
   }
   return { kind: 'CProgram', body, source: mergeSource(...body.map((x) => x.source)) };
 }
@@ -627,7 +1743,12 @@ function semanticAstOf(state, facts) {
     values: [...state.expressions.entries()].map(([valueId, expression]) => ({ kind: 'SemanticValue', valueId, expression, type: state.types?.values?.get?.(valueId) || null, source: expression.source })),
     stores: facts.stores.map((s) => ({ kind: 'SemanticStore', ...s })),
     calls: facts.calls.map((c) => ({ kind: 'SemanticCall', ...c })),
-    conditions: facts.conditions.map((c) => ({ kind: 'SemanticCondition', ...c })),
+    conditions: facts.conditions.map((c) => {
+      const condition = { kind:'SemanticCondition', ...c };
+      const binding = readExpressionHistoryConsumer(c, state.ir);
+      if (binding) expressionHistoryConsumers.set(condition, binding);
+      return condition;
+    }),
     inputs: facts.inputs,
     outputs: facts.outputs,
   };
@@ -665,10 +1786,20 @@ function pipelineCompleteness(state) {
   return 'complete';
 }
 
+const representationStages = new WeakMap();
+
+// The wrapper reuses this already-executed interactive stage after recovery.
+// It is not serialized as public result metadata or recomputed for rendering.
+export function readRepresentationStage(result) {
+  const entry = representationStages.get(result);
+  return entry?.ir === result?.ir ? entry.stage : null;
+}
+
 export function enhanceSemanticDecompilation(result, model, opts = {}) {
   if (!result?.semantic || !result.ir) return result;
   const state = {
     ir: result.ir, model, opts, types: result.types || null,
+    proofOnlyRewrites:opts.phase8ProofOnlyRewrites === true,
     expressionMemo: new Map(), expressionActive: new Set(),
     warnings: [],
   };
@@ -702,7 +1833,7 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
     { name: 'high-variable-recovery', run(s) { s.highVariables = recoverHighVariables(s.ir, s.types, opts); return s; } },
     { name: 'prototype-recovery', run(s) { s.prototype = recoverFunctionPrototype(s.ir, s.types, opts); return s; } },
     { name: 'aggregate-layout-recovery', run(s) { s.aggregateLayouts = recoverAggregateLayouts(s.ir, s.types, opts); return s; } },
-    { name: 'canonical-expression-build', run(s) { for (const v of s.ir.values || []) buildValue(v, s); return s; } },
+    { name: 'canonical-expression-build', run:buildCanonicalExpressions },
     { name: 'semantic-rewrite', run: rewriteAll },
     { name: 'semantic-facts', run(s) { s.facts = semanticFacts(s, result); return s; } },
     { name: 'typed-semantic-ast', run(s) { s.semanticAst = semanticAstOf(s, s.facts); return s; } },
@@ -727,18 +1858,30 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
   advanced.printed ||= printProgram(advanced.cAst, { columnWidth: opts.columnWidth || opts.prettyColumnWidth || 88 });
   const explanation = explainSemanticFacts(advanced.facts, result.summary);
   const lines = advanced.cAst.body.map((n) => ({ kind: n.kind, indent: n.indent, text: n.text, row: n.source.rows[0] ?? null, addr: n.source.addresses[0] ?? null, note: null, source: n.source }));
-  return {
+  const enhanced = {
     ...result,
     lines,
     pseudocode: advanced.printed.text,
     semanticAst: advanced.semanticAst,
     cAst: advanced.cAst,
     semanticFacts: advanced.facts,
-    sourceMap: advanced.printed.mapping,
+    // A selected-away operation may have no surviving AST source. Retain its
+    // observed origins on the actual consumer's output span, not on every line
+    // sharing an input. Keep the expression/load identity and sources intact.
+    sourceMap: advanced.printed.mapping.map((entry, index) => {
+      const consumer = readExpressionHistoryConsumer(advanced.cAst.body[index]?.semantic, advanced.ir);
+      return consumer ? { ...entry, source:mergeSource(entry.source,
+        ...consumer.records.map(record => record.originHistory?.before).filter(Boolean)) } : entry;
+    }),
     highVariables: advanced.highVariables,
     prototype: advanced.prototype,
     aggregateLayouts: advanced.aggregateLayouts,
-    rewriteProof: advanced.rewriteProof,
+    rewriteProof: [...new Set(advanced.rewriteProof)],
+    expressionHistoryBinding:Object.freeze({
+      scope:'producer-consumer-observations',
+      completeness:advanced.expressionBindingBudget?.reasons.size ? 'incomplete' : 'complete',
+      reasons:Object.freeze([...(advanced.expressionBindingBudget?.reasons ?? [])]),
+    }),
     rewriteStats: advanced.rewriteStats,
     passMetrics: advanced.passMetrics,
     // Phase 8's frozen ledger. It is published or withheld as a whole; a missing
@@ -766,6 +1909,8 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
       phase8ElapsedMs: advanced.phase8ElapsedMs ?? null,
     } },
   };
+  representationStages.set(enhanced, { ir:enhanced.ir, stage:phase8 });
+  return enhanced;
 }
 
 export function buildExpressionForTesting(value, state) {

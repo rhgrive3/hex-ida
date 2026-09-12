@@ -125,8 +125,10 @@ test('verifyBoundedEquivalence: rejects sort and width mismatches immediately', 
     backend,
   });
 
-  assert.equal(res.verdict, VERDICT.REFUTED);
+  assert.equal(res.verdict, VERDICT.UNKNOWN);
   assert.equal(res.reasonCode, 'sort-width-mismatch');
+  assert.equal(res.query, null);
+  assert.equal(res.solverResult, null);
 });
 
 test('verifyBoundedEquivalence: reports symbolic sort mismatch before correspondence', async () => {
@@ -141,7 +143,9 @@ test('verifyBoundedEquivalence: reports symbolic sort mismatch before correspond
     backend,
   });
 
-  assert.equal(res.verdict, VERDICT.REFUTED);
+  assert.equal(res.verdict, VERDICT.UNKNOWN);
   assert.equal(res.reasonCode, 'sort-width-mismatch');
+  assert.equal(res.query, null);
+  assert.equal(res.solverResult, null);
   assert.equal(res.unresolvedSymbols, undefined);
 });

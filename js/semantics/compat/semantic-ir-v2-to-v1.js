@@ -12,6 +12,240 @@ import {
   assignInstructionIds, memorySafetySummary,
 } from './semantic-ir-v2-to-v1-memory.js';
 import { isCanonicalMemorySsaProducerArtifact } from '../memoryssa/build.js';
+import { createProjectionIrObserver, PROJECTION_LIMITS } from '../../core/identity/live-data.js';
+import { observedRangeAnnotationsMatch } from './legacy-value-ranges.js';
+
+const memoryOperandTransitions = new WeakMap();
+const expectedMemoryOperandTransitions = new WeakMap();
+const constantTransitions = new WeakMap();
+const expectedConstantTransitions = new WeakMap();
+const stateTransitions = new WeakMap();
+const expectedStateTransitions = new WeakMap();
+const expectedStateNormalizations = new WeakMap();
+
+// Producer identity only, not a currentness or semantic-equivalence claim.
+export function isIssuedSemanticProjection(projected) {
+  return expectedStateTransitions.has(projected);
+}
+
+// Shared pure-data observation for projector and facade operation issuers. This
+// function registers nothing: only private owning call sites issue records;
+// obtaining a data matcher cannot attach/reseal a public or copied history.
+export function observeProjectedOperationData(projected, transitions) {
+  const own = (object, key) => Object.getOwnPropertyDescriptor(object, key)?.value;
+  const rootKeys = ['instructions', 'values', 'blocks', 'compat', 'functionId', 'semanticIrVersion', 'origin'];
+  const prototype = Object.getPrototypeOf(projected);
+  const roots = rootKeys.map(key => own(projected, key));
+  const locations = [...new Set(transitions.flatMap(({ source, store, input, beforeInputs }) => [source, store, input?.def,
+    ...beforeInputs.map(value => value.def)]).filter(Boolean))].map(instruction => {
+    const blockIndex = projected.blocks.findIndex(block => block.index === instruction.block);
+    const block = projected.blocks[blockIndex], key = block?.phis?.includes(instruction) ? 'phis' : 'insts';
+    const list = block?.[key], index = list?.indexOf(instruction), flatIndex = projected.instructions.indexOf(instruction);
+    if (!(index >= 0) || flatIndex < 0) throw new Error('compat-transition-definition-missing');
+    return { instruction, blockIndex, block, blockId:block.index, key, list, index, flatIndex };
+  });
+  const values = [...new Set(transitions.flatMap(({ source, input, beforeInputs }) => [source?.dst, input, ...beforeInputs]).filter(Boolean))]
+    .map(value => {
+      const index = projected.values.indexOf(value);
+      if (index < 0) throw new Error('compat-transition-value-missing');
+      return { value, index };
+    });
+  // Transition roots are vertices of one cyclic SSA graph. Observe every
+  // mutable field by distance from these exact roots, with a fresh observer.
+  // Immutable descriptions have separately bounded data certificates; origins
+  // also retain their normalization guards. Exact references, not equal IDs,
+  // bind these descriptions; shallow freezes remain live observations.
+  // Unrelated projection members are not additional observation roots.
+  const captured = createProjectionIrObserver().captureCertifiedDataGraph([projected.compat,
+    ...transitions.flatMap(({ source, store, input, beforeInputs, memory, object, emptyUses }) => [source, store, input, ...beforeInputs, memory, object, emptyUses])]);
+  const matches = (writes = null) => (writes == null || Array.isArray(writes) && writes.length <= PROJECTION_LIMITS.nodes)
+    && Object.getPrototypeOf(projected) === prototype && rootKeys.every((key, i) => own(projected, key) === roots[i])
+    && values.every(({ value, index }) => own(roots[1], index) === value)
+    && locations.every(({ instruction, blockIndex, block, blockId, key, list, index, flatIndex }) =>
+      own(roots[2], blockIndex) === block && own(block, 'index') === blockId && own(block, key) === list && own(list, index) === instruction
+      && own(roots[0], flatIndex) === instruction)
+    && (writes == null ? captured.matches() || observedRangeAnnotationsMatch(projected, captured)
+      : captured.matchesThroughWrites(writes) || observedRangeAnnotationsMatch(projected,
+        { matchesThroughWrites:ranges => captured.matchesThroughWrites([...writes, ...ranges]) }));
+  // The ordinary predicate remains strict even if a caller passes arguments.
+  // The separate method is only a pure-data comparison, never write authority.
+  return Object.freeze(Object.assign(() => matches(), { matchesThroughWrites:writes => matches(writes) }));
+}
+
+// Private finalization is the issuer. Calling attachMemorySsa separately or
+// copying its descriptions cannot register a transition on another projection.
+function sealMemoryOperandTransitions(projected, transitions) {
+  if (!transitions?.length) return;
+  expectedMemoryOperandTransitions.set(projected, new WeakSet(transitions.map(transition => transition.source)));
+  try {
+    const valid = transitions.filter(({ source, input, store, proof, memory }) => source?.op === V1_OP.MOV
+      && source.sub === 'memory-forward' && source.memoryOperandForwarding === proof
+      && source.extra?.memoryOperandForwarding === proof && source.extra?.originalMemoryOp === V1_OP.LOAD
+      && source.extra?.memoryAccess === memory && source.semanticNodeId === proof.loadSourceEntityId
+      && source.dst?.semanticValueId === proof.outputValueId && input?.semanticValueId === proof.storedValueId
+      && source.args?.length === 1 && source.args[0]?.value === input
+      && store?.op === V1_OP.STORE && store.semanticNodeId === proof.storedSourceEntityId
+      && store.args?.[0]?.value === input);
+    const isCurrent = observeProjectedOperationData(projected, valid);
+    const records = new Map();
+    for (const transition of valid) records.set(transition.source, Object.freeze({ ...transition, isCurrent }));
+    memoryOperandTransitions.set(projected, records);
+  } catch {
+    // The projection is still returned unchanged. Missing bounded observation
+    // cannot be relabelled complete by a later reader of public proof metadata.
+  }
+}
+
+export function readProjectedMemoryOperandTransition(projected, instruction) {
+  const record = projectedMemoryOperandTransitionCandidate(projected, instruction);
+  return record?.isCurrent() ? record : null;
+}
+
+// Descriptions are not current authority. The owning facade must validate the
+// predecessor before its writes and retain the exact observed write handoff.
+export function projectedMemoryOperandTransitionCandidate(projected, instruction) {
+  return memoryOperandTransitions.get(projected)?.get(instruction) ?? null;
+}
+
+export function projectedMemoryOperandTransitionExpected(projected, instruction) {
+  return expectedMemoryOperandTransitions.get(projected)?.has(instruction) === true;
+}
+
+function sealConstantTransitions(projected, observer) {
+  expectedConstantTransitions.set(projected, observer.expected);
+  if (!observer.records.length) return;
+  try {
+    const state = stateTransitions.get(projected), aliasedSources = new Set();
+    let stateCurrent = null;
+    const matchesInput = (source, input, index) => {
+      if (input.argument?.value === input.value) return true;
+      const history = state?.get(input.argument);
+      if (!history || !(stateCurrent ??= state.isCurrent())) return false;
+      let expected = input.value, written = false;
+      for (const event of history.events) {
+        if (event.kind !== 'resolve-state-alias' || event.source !== source || event.object !== input.argument
+          || event.key !== 'value' || event.path !== `args:${index}`) continue;
+        if (event.before !== expected) return false;
+        expected = event.after; written = true;
+      }
+      if (!written || input.argument.value !== expected) return false;
+      aliasedSources.add(source);
+      return true;
+    };
+    const grouped = new Map();
+    for (const event of observer.records) {
+      if (!grouped.has(event.source)) grouped.set(event.source, []);
+      grouped.get(event.source).push(event);
+    }
+    const valid = [...grouped].filter(([source, events]) => !observer.unavailable.has(source)
+      && source.dst?.const === events.at(-1).afterConstant
+      && events.every(event => source.dst === event.output && source.op === event.op && source.sub === event.sub
+        && source.dst.bits === event.bits && source.args?.length === event.inputs.length
+        && event.inputs.every((input, i) => source.args[i] === input.argument && matchesInput(source, input, i)
+          && input.value?.def === input.definition)
+        && (event.op !== V1_OP.LOAD || source.memoryForwarding === event.memoryForwarding)));
+    const output = observeProjectedOperationData(projected, valid.flatMap(([, events]) => events));
+    // Keep the original constant reads/operations. Only the already-issued
+    // state writer can account for intervening argument aliases; a matching
+    // scalar constant or public alias annotation is not a handoff.
+    const aliased = valid.some(([source]) => aliasedSources.has(source));
+    const isCurrent = !aliased ? output : Object.freeze(Object.assign(() => state.isCurrent() && output(), {
+      matchesThroughWrites:writes => state.matchesThroughWrites(writes) && output.matchesThroughWrites(writes),
+    }));
+    constantTransitions.set(projected, new Map(valid.map(([source, events]) => [source,
+      Object.freeze({ source, events:Object.freeze(events), isCurrent })])));
+  } catch {
+    // Preserve the scalar result. Unavailable observation remains expected and
+    // cannot be reissued from a later public constant or copied description.
+  }
+}
+
+export function readProjectedConstantTransitions(projected, instruction) {
+  const record = projectedConstantTransitionCandidate(projected, instruction);
+  return record?.isCurrent() ? record : null;
+}
+
+// Unvalidated owning descriptions for a private construction transaction. The
+// public current reader above and every publishing consumer retain validation.
+export function projectedConstantTransitionCandidate(projected, instruction) {
+  return constantTransitions.get(projected)?.get(instruction) ?? null;
+}
+
+export function projectedConstantTransitionExpected(projected, instruction) {
+  return expectedConstantTransitions.get(projected)?.has(instruction) === true;
+}
+
+function sealStateTransitions(projected, observer) {
+  expectedStateTransitions.set(projected, observer.expected);
+  expectedStateNormalizations.set(projected, observer.publicStateExpected || 0);
+  if (!observer.records.length) return;
+  try {
+    const finalIdentity = new Map();
+    for (const event of observer.records) if (event.identity) {
+      if (!finalIdentity.has(event.output)) finalIdentity.set(event.output, new Map());
+      for (const key of event.identityFields) finalIdentity.get(event.output).set(key, event.after[key]);
+    }
+    const own = (object, key) => Object.getOwnPropertyDescriptor(object, key)?.value;
+    const eligible = new Set(observer.records.filter(event => !event.keys.some(key => observer.unavailable.has(key))
+      && event.source?.op === event.op && event.source?.sub === event.sub
+      && event.inputs.every(input => input.value.def === input.definition)
+      && (event.kind !== 'suppress-unused-entry-state' || event.output.uses === event.emptyUses && !event.emptyUses?.length)
+      && (event.identity ? [...finalIdentity.get(event.output)].every(([key, value]) => own(event.output, key) === value)
+        : own(event.object, event.key) === event.after)));
+    const accepted = new Set();
+    for (const event of eligible) if (!event.causes?.some(cause => !accepted.has(cause))) accepted.add(event);
+    const valid = [...accepted];
+    const observation = observeProjectedOperationData(projected, valid);
+    const locations = projected.locations;
+    const mapped = valid.filter(event => event.path === 'locations:base').flatMap(event => {
+      const entries = [...Map.prototype.entries.call(locations)].filter(([, value]) => value === event.object);
+      if (!entries.length) throw new Error('state-alias-location-missing');
+      return entries;
+    });
+    const mappedCurrent = () => !mapped.length || own(projected, 'locations') === locations
+      && mapped.every(([key, value]) => Map.prototype.get.call(locations, key) === value);
+    const isCurrent = () => observation() && mappedCurrent();
+    const records = new Map();
+    for (const event of valid) for (const key of event.keys) {
+      if (!records.has(key)) records.set(key, []);
+      records.get(key).push(event);
+    }
+    const byKey = new Map([...records].map(([key, events]) => [key,
+      Object.freeze({ events:Object.freeze(events), isCurrent })]));
+    const normalized = Object.freeze(valid.filter(event => event.stage === 'public-state-normalization'));
+    const normalization = Object.freeze({ events:normalized, isCurrent,
+      completeness:normalized.length === (observer.publicStateExpected || 0) ? 'complete' : 'incomplete' });
+    stateTransitions.set(projected, Object.freeze({ get:key => byKey.get(key) ?? null, isCurrent, normalization,
+      // Pure data matching is not write authority. Only the private facade
+      // writer can issue a successor after observing its actual argument writes.
+      matchesThroughWrites:writes => observation.matchesThroughWrites(writes) && mappedCurrent() }));
+  } catch { /* State projection is unchanged; missing history remains expected. */ }
+}
+
+export function readProjectedStateTransitions(projected, source) {
+  const record = projectedStateTransitionCandidates(projected)?.get(source);
+  return record?.isCurrent() ? record : null;
+}
+
+// Private-producer descriptions, NOT a current certificate. Consumers must
+// validate each selected record before use and again after their callbacks.
+export function projectedStateTransitionCandidates(projected) {
+  return stateTransitions.get(projected) ?? null;
+}
+
+export function readProjectedStateNormalization(projected) {
+  if (!projectedStateNormalizationExpected(projected)) return null;
+  const record = stateTransitions.get(projected)?.normalization;
+  return record?.isCurrent() ? record : null;
+}
+
+export function projectedStateNormalizationExpected(projected) {
+  return (expectedStateNormalizations.get(projected) || 0) > 0;
+}
+
+export function projectedStateTransitionExpected(projected, source) {
+  return expectedStateTransitions.get(projected)?.has(source) === true;
+}
 
 function rowForNode(node, fallback, options) {
   if (typeof options.rowOfNode === 'function') {
@@ -447,8 +681,11 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   addScalarSsaPhis(projected, ssa, valuesById, blockIndexById, instructionBySemanticId);
   appendFunctionUnknowns(projected, ir);
 
-  if (memorySsa) attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir);
-  else attachFallbackMemory(projected);
+  const constantObserver = { records:[], expected:new WeakSet(), unavailable:new WeakSet() };
+  const stateObserver = { records:[], expected:new WeakSet(), unavailable:new WeakSet() };
+  const memoryTransitions = memorySsa
+    ? attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir, constantObserver) : null;
+  if (!memorySsa) attachFallbackMemory(projected);
 
   for (const inst of projected.instructions) {
     const mustClobberMemory = inst.memoryBarrier === true
@@ -469,10 +706,13 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     list.push(inst.id);
   }
   attachAbiProjectedArguments(projected);
-  finalizeLegacyProjection(projected);
+  finalizeLegacyProjection(projected, constantObserver, stateObserver);
   populateLegacyArguments(projected);
   projected.memorySafety = memorySafetySummary(projected);
   projected.defUse = () => projected.values;
+  sealMemoryOperandTransitions(projected, memoryTransitions);
+  sealStateTransitions(projected, stateObserver);
+  sealConstantTransitions(projected, constantObserver);
   return projected;
 }
 

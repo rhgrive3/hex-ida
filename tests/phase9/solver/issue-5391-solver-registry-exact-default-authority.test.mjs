@@ -12,6 +12,7 @@ import { SolverRegistry, createProductionSolverRegistry } from '../../../js/symb
 import { isExactProofBackend } from '../../../js/symbolic/solver/backend.js';
 import { ExhaustiveBvBackend, EXHAUSTIVE_BACKEND_ID } from '../../../js/symbolic/solver/exhaustive-backend.js';
 import { FakeSolverBackend } from '../../../js/symbolic/solver/fake-backend.js';
+import { TieredBvBackend } from '../../../js/symbolic/solver/tiered-backend.js';
 
 // 1. The issue's scenario: a forged self-declared exact object must NOT become
 //    the production default.
@@ -52,7 +53,9 @@ import { FakeSolverBackend } from '../../../js/symbolic/solver/fake-backend.js';
   const registry = new SolverRegistry({ allowNonExactDefault: false });
   registry.registerBackend(new ExhaustiveBvBackend());
   assert.equal(registry.getDefaultBackend().constructor.name, 'ExhaustiveBvBackend');
-  assert.equal(createProductionSolverRegistry({ preferWorker: false }).getDefaultBackend().constructor.name, 'ExhaustiveBvBackend');
+  const productionDefault = createProductionSolverRegistry({ preferWorker: false }).getDefaultBackend();
+  assert.ok(productionDefault instanceof TieredBvBackend, 'HEX-SYM-01 production default is the exact tiered backend');
+  assert.equal(productionDefault.capabilities().maxBvWidth, 64);
 }
 
 // 5. Acceptance: an exact backend whose advertised capabilities do not pair

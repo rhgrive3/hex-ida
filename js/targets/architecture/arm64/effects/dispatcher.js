@@ -8,7 +8,7 @@ import { liftArm64MemoryEffects } from './memory.js';
 import { liftArm64SimdEffects } from './simd.js';
 import { liftArm64SystemEffects } from './system.js';
 
-export const ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION = '7';
+export const ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION = '8';
 
 const ARM64_EFFECT_FAMILIES = Object.freeze([
   Object.freeze({ id:'flags', lift:liftArm64FlagEffects }),

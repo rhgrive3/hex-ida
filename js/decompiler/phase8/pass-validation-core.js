@@ -1,6 +1,11 @@
 import { stableDigest } from '../../core/identity/index.js';
-import { verifyBoundedEquivalence } from '../../symbolic/verify/equivalence.js';
-import { VERDICT, CLAIM_KIND } from '../../symbolic/verify/query.js';
+
+// Keep the pass-validation schema dependency-free at module evaluation time.
+// The full verifier is loaded only when an adoption request is actually made;
+// importing its support matrix would otherwise recurse through phase8/index.js
+// before PROOF_REWRITE_PASS has been issued.
+const CLAIM_KIND = Object.freeze({ EQUIVALENT:'equivalent' });
+const VERDICT = Object.freeze({ PROVED:'proved', REFUTED:'refuted' });
 
 export const REWRITE_VALIDATION_VERIFIER = 'hex.symbolic.verify.bounded-equivalence';
 export const REWRITE_VALIDATION_STATUSES = Object.freeze(['equivalent', 'refuted', 'unknown', 'unsupported']);
@@ -167,6 +172,7 @@ export async function validateRewriteAdoption({
   const rewritePayload = rewrite ?? Object.freeze({ before: beforeTarget, after: afterTarget });
   const binding = rewriteBinding(rewritePayload, { beforeTarget, afterTarget });
 
+  const { verifyBoundedEquivalence } = await import('../../symbolic/verify/equivalence.js');
   const outcome = await verifyBoundedEquivalence({
     beforeIr,
     afterIr,

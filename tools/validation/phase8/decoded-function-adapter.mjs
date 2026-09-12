@@ -64,7 +64,7 @@ export function decompileDecodedProductFunction(input, options = {}) {
   const architectureId = String(input.architecture || '').toLowerCase();
   const plugin = architecturePluginV2(architectureId);
   if (!plugin || plugin.id !== architectureId) throw new TypeError(`phase8-measurement-architecture-unavailable:${architectureId}`);
-  const abi = resolveABIPlugin({ architecture:architectureId, platform:input.platform || 'linux' });
+  const abi = resolveABIPlugin({ architecture:architectureId, platform:input.platform || 'linux', callingConvention:input.callingConvention ?? null });
   if (!abi?.supported || abi.architectureId !== architectureId) throw new TypeError(`phase8-measurement-abi-unavailable:${architectureId}`);
   const abiAdapter = semanticAbiAdapter(abi, input);
   const blocks = partitionDecodedFunction(input.instructions, plugin, { callPrototype:input.callPrototype ?? null });
@@ -100,6 +100,10 @@ export function decompileDecodedProductFunction(input, options = {}) {
     rowOfAddress:(address) => rowByAddress.get(BigInt(address).toString()) ?? null,
     deterministicTransforms:options.deterministicTransforms === true,
     phase8Optimize:options.phase8Optimize === true,
+    // This adapter measures the final product presentation, not the optional
+    // pre-projection IR API. Match the production driver's explicit request
+    // for its map even when optimizer stages are not enabled.
+    renderProvenance:true,
     decompilerTimeBudgetMs:Number(options.decompilerTimeBudgetMs ?? 5000),
     ...(options.phase8TimeBudgetMs != null ? { phase8TimeBudgetMs:Number(options.phase8TimeBudgetMs) } : {}),
     ...(options.phase8WorkBudget != null ? { phase8WorkBudget:options.phase8WorkBudget } : {}),

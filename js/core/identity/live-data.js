@@ -1,0 +1,383 @@
+import { isReusableOriginSet } from './origin.js';
+
+/** Shared bounded plain-data observation. No semantic evaluation or proof issuance.
+ * Existing solver/decompiler entry points re-export these exact implementations. */
+export function ownDataEntries(value, maxEntries = 40000) {
+  if (!value || typeof value !== 'object') throw new TypeError('noncanonical-data-object');
+  const array = Array.isArray(value), prototype = Object.getPrototypeOf(value);
+  if (array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError('noncanonical-data-prototype');
+  }
+  if (array && value.length > maxEntries) throw new TypeError('data-entry-budget-exceeded');
+  const keys = Reflect.ownKeys(value);
+  if (keys.length > maxEntries + (array ? 1 : 0)) throw new TypeError('data-entry-budget-exceeded');
+  const entries = [];
+  for (const key of keys) {
+    if (array && key === 'length') continue;
+    if (typeof key !== 'string') throw new TypeError('symbol-keyed-data');
+    if (array && (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= value.length)) throw new TypeError('noncanonical-data-array');
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) throw new TypeError('accessor-data');
+    if (!descriptor.enumerable) throw new TypeError('non-enumerable-data');
+    entries.push([key, descriptor.value]);
+  }
+  if (array && entries.length !== value.length) throw new TypeError('sparse-data-array');
+  return entries;
+}
+
+export const PROJECTION_LIMITS = Object.freeze({nodes:10000,edges:100000,depth:96,expandedUnits:2000000,string:65536});
+
+// Separate work budget for certifying producer-owned immutable origin payloads.
+// These are not retained live-object observations. The ordinary capture APIs
+// keep their original limits and never infer this mode from a frozen shape.
+export const ORIGIN_CERTIFICATION_LIMITS = Object.freeze({ nodes:100000, edges:1000000, expandedUnits:2000000 });
+export const DATA_CERTIFICATION_LIMITS = Object.freeze({ nodes:100000, edges:1000000, expandedUnits:2000000 });
+const normalizationChecks = new WeakMap();
+const normalizationGuard = (origins, guards) => {
+  const current = (seen = new WeakSet()) => {
+    if (seen.has(current)) return true;
+    seen.add(current);
+    return origins.every(isReusableOriginSet) && guards.every(check => check(seen));
+  };
+  return current;
+};
+
+/**
+ * Bounded live-object observation for the SSA/definition graph behind a
+ * producer-issued projection. Canonical IR is cyclic (`value.def.dst === value`),
+ * so this guard records each plain object once rather than treating cycles as a
+ * serialization error. It issues no token and carries no proof authority: its
+ * only operation is an exact mutation check over the producer-owned objects.
+ */
+export function captureProjectionIrData(roots, shouldAbort = null) {
+  return captureIrData(roots, shouldAbort, null);
+}
+
+// A producer-local observer can reuse data proven recursively immutable during
+// an earlier capture. The cache is private: callers cannot seed it or exempt
+// mutable objects from live checks. This shares observations, not authority.
+export function createProjectionIrObserver() {
+  const immutable = new WeakMap();
+  const data = { eligibility:new WeakMap(), guards:new WeakMap(), certificates:new WeakMap() };
+  return Object.freeze({
+    capture:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable),
+    // Complete graph inputs already enumerate their vertices. Visit by distance
+    // from those real roots, not by an arbitrary walk around SSA cycles. This
+    // observes every field; it is not a caller-provided list of exempt objects.
+    captureGraph:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, true),
+    // Canonical origins are immutable DATA, not transformation authority. Bind
+    // each exact issued envelope and certify its data once; mutable IR and
+    // unbranded/copy payloads still receive the ordinary full observation.
+    captureOriginGraph:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, 'canonical-origins'),
+    // Explicit data-only certificates for recursively immutable descriptions.
+    // Mutable descendants and frozen cycles remain full live observations.
+    // No certificate establishes semantic truth or private producer identity.
+    captureCertifiedDataGraph:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, 'canonical-origins', data),
+    captureCertifiedData:(roots, shouldAbort = null) => captureIrData(roots, shouldAbort, immutable, false, data),
+  });
+}
+
+function captureIrData(roots, shouldAbort, immutable, graph = false, data = null, normalizationGuards = null) {
+  if (!Array.isArray(roots)) throw new TypeError('projection-ir-roots-array-required');
+  const records = [], seen = new WeakMap();
+  const originCertificates = [], certification = { nodes:0, edges:0, expandedUnits:0 };
+  const dataGuards = [], dataCertification = { nodes:0, edges:0, expandedUnits:0 };
+  let eligibilityNodes = 0, eligibilityEdges = 0;
+  const canonicalOrigins = graph === 'canonical-origins';
+  let edges = 0, nodes = 0, expandedUnits = 0;
+  const started = performance.now();
+  function check() {
+    if (performance.now()-started >= 250 || shouldAbort?.()) throw new TypeError('projection-capture-cancelled-or-deadline');
+  }
+  function scalarCost(value) {
+    if (value == null || typeof value === 'boolean') return 1;
+    if (typeof value === 'bigint') {
+      if (value >= (1n<<1024n) || value <= -(1n<<1024n)) throw new TypeError('projection-bigint-budget');
+      return 128;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) return 1;
+    if (typeof value === 'string') {
+      if (value.length > PROJECTION_LIMITS.string) throw new TypeError('projection-string-budget');
+      return value.length+1;
+    }
+    if (typeof value !== 'object') throw new TypeError('projection-non-data');
+    return null;
+  }
+  function chargeData(work) {
+    for (const key of Object.keys(dataCertification)) {
+      dataCertification[key] += work[key] ?? 0;
+      if (dataCertification[key] > DATA_CERTIFICATION_LIMITS[key]) throw new TypeError('projection-data-certification-budget');
+    }
+  }
+  function eligible(value, active = new WeakSet(), depth = 1) {
+    check();
+    if (value === null || typeof value !== 'object') return 0;
+    if (!Object.isFrozen(value) || active.has(value) || depth > PROJECTION_LIMITS.depth) return null;
+    if (data.eligibility.has(value)) return data.eligibility.get(value);
+    chargeData({ nodes:1 }); eligibilityNodes++;
+    const entries = ownDataEntries(value, DATA_CERTIFICATION_LIMITS.edges - dataCertification.edges);
+    chargeData({ edges:entries.length }); eligibilityEdges += entries.length;
+    active.add(value);
+    let height = 1;
+    for (const [key, child] of entries) {
+      if (key === 'uses') continue;
+      const childHeight = eligible(child, active, depth + 1);
+      if (childHeight == null) { height = null; break; }
+      height = Math.max(height, childHeight + 1);
+    }
+    active.delete(value);
+    data.eligibility.set(value, height);
+    return height;
+  }
+  function certifyData(value, depth) {
+    // A scalar-only leaf has no descendants to compact. Keep its ordinary
+    // record instead of allocating a separate certificate for the same node.
+    if (!data || !(eligible(value) > 1)) return null;
+    let certificate = data.certificates.get(value);
+    if (!certificate) {
+      // The existing bounded observer validates all descriptors, scalar limits,
+      // cycles and origins. Eligibility alone is never a data certificate.
+      // Reuse each immutable subtree together with its normalization guard.
+      // A shared origin-bearing description must not be walked again for each
+      // owning record; the exact owner references are still observed outside.
+      const observed = captureIrData([value], shouldAbort, immutable, false, null, data.guards);
+      chargeData(observed.metrics);
+      for (const key of Object.keys(certification)) {
+        certification[key] += observed.originCertification?.[key] ?? 0;
+        if (certification[key] > ORIGIN_CERTIFICATION_LIMITS[key]) throw new TypeError('projection-origin-certification-budget');
+      }
+      const height = immutable.get(value);
+      if (height == null) throw new TypeError('projection-data-not-immutable');
+      certificate = { height, check:normalizationChecks.get(observed) };
+      data.certificates.set(value, certificate);
+    }
+    if (depth + certificate.height - 1 > PROJECTION_LIMITS.depth) throw new TypeError('projection-depth-budget');
+    dataGuards.push(certificate.check);
+    return certificate.height;
+  }
+  function visit(value, depth) {
+    check();
+    const primitive = scalarCost(value);
+    if (primitive != null) return primitive;
+    if (depth > PROJECTION_LIMITS.depth) throw new TypeError('projection-depth-budget');
+    const cachedHeight = data || normalizationGuards && !normalizationGuards.has(value) ? null : immutable?.get(value);
+    if (cachedHeight != null) {
+      if (depth + cachedHeight - 1 > PROJECTION_LIMITS.depth) throw new TypeError('projection-depth-budget');
+      if (normalizationGuards) dataGuards.push(normalizationGuards.get(value));
+      return 1;
+    }
+    if (seen.has(value)) return 1;
+    if (nodes >= PROJECTION_LIMITS.nodes) throw new TypeError('projection-node-budget');
+    nodes++;
+    const certifiedHeight = certifyData(value, depth);
+    if (certifiedHeight != null) { seen.set(value, certifiedHeight); return 1; }
+    // Cycles remain ordinary live observations, even if some members are frozen.
+    seen.set(value, 1);
+    const entries = ownDataEntries(value,PROJECTION_LIMITS.edges-edges);
+    edges += entries.length;
+    records.push({value,prototype:Object.getPrototypeOf(value),entries,arrayLength:Array.isArray(value)?value.length:null});
+    let cost = 1, height = 1, stable = immutable != null && Object.isFrozen(value);
+    for (const [key,child] of entries) {
+      if (key.length > PROJECTION_LIMITS.string) throw new TypeError('projection-key-budget');
+      // `uses` is the reverse SSA index, not execution semantics. Keep its
+      // field identity bound without recursively pulling unrelated users into
+      // the producer expression's graph.
+      const childCost = key === 'uses' ? 1 : visit(child,depth+1);
+      cost += key.length + childCost + 1;
+      if (immutable && key !== 'uses' && child !== null && typeof child === 'object') {
+        const childHeight = immutable.get(child);
+        height = Math.max(height, (childHeight ?? seen.get(child)) + 1);
+        stable &&= childHeight != null;
+      }
+      if (cost > PROJECTION_LIMITS.expandedUnits) throw new TypeError('projection-expansion-budget');
+    }
+    seen.set(value, height);
+    if (stable) {
+      immutable.set(value, height);
+      if (normalizationGuards) {
+        const guards = entries.filter(([key, child]) => key !== 'uses' && child !== null && typeof child === 'object')
+          .map(([, child]) => normalizationGuards.get(child));
+        const current = normalizationGuard(isReusableOriginSet(value) ? [value] : [], guards);
+        normalizationGuards.set(value, current);
+        dataGuards.push(current);
+      }
+    }
+    return cost;
+  }
+  if (graph) {
+    // No immutable subtree is skipped here: graph depth is rooted distance,
+    // whereas cached heights belong to the ordinary nested-data observer.
+    const enqueue = (value, depth) => {
+      check();
+      const primitive = scalarCost(value);
+      if (primitive != null) return primitive;
+      if (depth > PROJECTION_LIMITS.depth) throw new TypeError('projection-depth-budget');
+      if (seen.has(value)) return 1;
+      if (nodes >= PROJECTION_LIMITS.nodes) throw new TypeError('projection-node-budget');
+      nodes++; seen.set(value, 1);
+      if (canonicalOrigins && isReusableOriginSet(value)) {
+        // The private origin issuer establishes normalization provenance; this
+        // ordinary nested capture independently certifies recursive immutable
+        // plain data, scalar limits and height. Merely Object.freeze() is not
+        // sufficient. No public description registers an observation here.
+        const certificate = captureIrData([value], shouldAbort, immutable);
+        check();
+        for (const key of Object.keys(certification)) {
+          certification[key] += certificate.metrics[key];
+          if (certification[key] > ORIGIN_CERTIFICATION_LIMITS[key]) throw new TypeError('projection-origin-certification-budget');
+        }
+        const height = immutable.get(value);
+        if (height == null) throw new TypeError('projection-origin-not-immutable');
+        if (depth + height - 1 > PROJECTION_LIMITS.depth) throw new TypeError('projection-depth-budget');
+        originCertificates.push(value);
+        return 1;
+      }
+      if (certifyData(value, depth) != null) return 1;
+      const entries = ownDataEntries(value, PROJECTION_LIMITS.edges - edges);
+      edges += entries.length;
+      records.push({ value, depth, prototype:Object.getPrototypeOf(value), entries,
+        arrayLength:Array.isArray(value) ? value.length : null });
+      return 1;
+    };
+    const charge = cost => {
+      expandedUnits += cost;
+      if (expandedUnits > PROJECTION_LIMITS.expandedUnits) throw new TypeError('projection-expansion-budget');
+    };
+    for (const root of roots) charge(enqueue(root, 1));
+    for (let index = 0; index < records.length; index++) {
+      const { entries, depth } = records[index];
+      for (const [key, child] of entries) {
+        if (key.length > PROJECTION_LIMITS.string) throw new TypeError('projection-key-budget');
+        charge(key.length + 1 + (key === 'uses' ? 1 : enqueue(child, depth + 1)));
+      }
+    }
+    // Bottom-up immutable certification is linear in the observed graph.
+    // Mutable descendants and frozen cycles never enter the ready queue.
+    const parents = new WeakMap(), ready = [];
+    for (const record of records) {
+      check();
+      if (!Object.isFrozen(record.value)) continue;
+      record.pending = 0; record.height = 1;
+      for (const [key, child] of record.entries) if (key !== 'uses' && child !== null && typeof child === 'object') {
+        const height = immutable.get(child);
+        if (height != null) record.height = Math.max(record.height, height + 1);
+        else {
+          record.pending++;
+          if (!parents.has(child)) parents.set(child, []);
+          parents.get(child).push(record);
+        }
+      }
+      if (!record.pending) ready.push(record);
+    }
+    for (let index = 0; index < ready.length; index++) {
+      check();
+      const record = ready[index];
+      immutable.set(record.value, record.height);
+      for (const parent of parents.get(record.value) || []) {
+        parent.height = Math.max(parent.height, record.height + 1);
+        if (!--parent.pending) ready.push(parent);
+      }
+    }
+  } else {
+    for (const root of roots) {
+      expandedUnits += visit(root,1);
+      if (expandedUnits > PROJECTION_LIMITS.expandedUnits) throw new TypeError('projection-expansion-budget');
+    }
+  }
+  check();
+  const normalizationCurrent = normalizationGuard(originCertificates, dataGuards);
+  function matches(writes = null) {
+    try {
+      // Envelopes and descendants cannot change after certification. Parent
+      // fields still bind the exact envelope identity; copied/equal origins or
+      // an ambient normalization-hook change cannot refresh an old binding.
+      if (!normalizationCurrent()) return false;
+      let changed = null;
+      if (writes != null) {
+        if (!Array.isArray(writes) || writes.length > PROJECTION_LIMITS.nodes) return false;
+        changed = new WeakMap();
+        for (const write of writes) {
+          const own = key => Object.getOwnPropertyDescriptor(write, key)?.value;
+          const object = own('object'), key = own('key');
+          if (!object || typeof object !== 'object' || typeof key !== 'string') return false;
+          if (!changed.has(object)) changed.set(object, new Map());
+          const byKey = changed.get(object);
+          if (!byKey.has(key)) byKey.set(key, []);
+          const beforePresent = own('beforePresent'), afterPresent = own('afterPresent');
+          if ((beforePresent !== undefined && typeof beforePresent !== 'boolean')
+              || (afterPresent !== undefined && typeof afterPresent !== 'boolean')
+              || (beforePresent === false && own('before') !== undefined)
+              || (afterPresent === false && own('after') !== undefined)) return false;
+          byKey.get(key).push({ before:own('before'), after:own('after'), beforePresent, afterPresent });
+        }
+      }
+      for (const {value,prototype,entries,arrayLength} of records) {
+        if (Object.getPrototypeOf(value)!==prototype) return false;
+        const currentLength = arrayLength == null ? null : Object.getOwnPropertyDescriptor(value, 'length')?.value;
+        if (arrayLength != null && currentLength !== arrayLength) {
+          // Dense append only, with BOTH the actual length-write chain and each
+          // new index recorded. This comparator still grants no writer authority.
+          if (!Number.isSafeInteger(currentLength) || currentLength < arrayLength || currentLength > PROJECTION_LIMITS.edges) return false;
+          let expected = arrayLength, started = false;
+          for (const write of changed?.get(value)?.get('length') || []) {
+            if (!started && !Object.is(write.before, expected)) continue;
+            started = true;
+            if (write.beforePresent === false || write.afterPresent === false || !Object.is(write.before, expected)
+                || !Number.isSafeInteger(write.after) || write.after < expected) return false;
+            expected = write.after;
+          }
+          if (!started || expected !== currentLength) return false;
+        }
+        const keys=Reflect.ownKeys(value);
+        if (arrayLength != null && keys.length !== currentLength + 1) return false;
+        if (arrayLength == null ? keys.length !== entries.length || changed?.has(value) : currentLength > arrayLength) {
+          // Only an explicitly described absent-to-own-data write can account
+          // for a new field. This remains pure matching, never writer admission.
+          const originalKeys = new Set(entries.map(([key]) => key));
+          for (const key of keys) if (!originalKeys.has(key)) {
+            if (arrayLength != null && key === 'length') continue;
+            if (arrayLength != null && (typeof key !== 'string' || !/^(0|[1-9]\d*)$/.test(key)
+                || Number(key) < arrayLength || Number(key) >= currentLength)) return false;
+            const writes = changed?.get(value)?.get(key), first = writes?.[0];
+            if (!first || first.beforePresent !== false || first.before !== undefined) return false;
+            let expected = first.after, present = first.afterPresent !== false;
+            for (const write of writes.slice(1)) {
+              if ((write.beforePresent !== false) !== present || !Object.is(write.before, expected)) return false;
+              expected = write.after; present = write.afterPresent !== false;
+            }
+            const descriptor = Object.getOwnPropertyDescriptor(value, key);
+            if (!present || !descriptor || !Object.hasOwn(descriptor, 'value') || !descriptor.enumerable
+                || !Object.is(descriptor.value, expected)) return false;
+          }
+        }
+        for(const [key,previous] of entries) {
+          const descriptor=Object.getOwnPropertyDescriptor(value,key);
+          if (descriptor && (!Object.hasOwn(descriptor,'value') || !descriptor.enumerable)) return false;
+          if (!descriptor || !Object.is(descriptor.value,previous)) {
+            if (arrayLength != null && !descriptor) return false;
+            let expected = previous, present = true, started = false;
+            for (const write of changed?.get(value)?.get(key) || []) {
+              if (!started && (write.beforePresent === false || !Object.is(write.before, expected))) continue;
+              started = true;
+              if ((write.beforePresent !== false) !== present || !Object.is(write.before, expected)) return false;
+              expected = write.after; present = write.afterPresent !== false;
+            }
+            if (!started || !!descriptor !== present || descriptor && !Object.is(descriptor.value, expected)) return false;
+          }
+        }
+      }
+      return true;
+    } catch { return false; }
+  }
+  const observation = Object.freeze({metrics:Object.freeze({nodes,edges,expandedUnits}),
+    ...(canonicalOrigins ? { originCertification:Object.freeze({ envelopes:originCertificates.length,
+      ...certification }) } : {}),
+    ...(data ? { dataCertification:Object.freeze({ envelopes:dataGuards.length,
+      eligibilityNodes, eligibilityEdges, ...dataCertification }) } : {}), matches:() => matches(),
+    // Data matching is not write authority. Callers must authenticate the actual
+    // writer and bind its new object graphs before supplying a transition list.
+    matchesThroughWrites:writes => matches(writes),
+  });
+  normalizationChecks.set(observation, normalizationCurrent);
+  return observation;
+}

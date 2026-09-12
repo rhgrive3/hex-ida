@@ -50,6 +50,27 @@ assertAccepted('b.eq', '.LBB0_1', { branchTarget:0x1000n });
 assertAccepted('cbz', 'w0, .LBB0_1', { branchTarget:0x1000n });
 assertAccepted('tbnz', 'x0, #0, .LBB0_1', { branchTarget:0x1000n });
 assertAccepted('bl', 'callee', { callTarget:0x1000n });
+assertAccepted('bl', 'opaque');
+
+for (const operands of ['opaque+4', 'opaque label', '@bad', '']) {
+  assertRejected('bl', operands);
+}
+{
+  const encodedPresentationOnly = lift('bl', 'opaque', 0x800n, { rawBytes:Uint8Array.of(0,0,0,0x94) });
+  assert.equal(encodedPresentationOnly.completeness, 'partial', 'encoded BL cannot trust unresolved presentation text');
+  assert.equal(encodedPresentationOnly.unknownEffects?.reason, 'arm64-bl-operand-shape-invalid');
+}
+assertRejected('b', 'opaque');
+
+for (const evidence of [
+  { rawBytes:Uint8Array.of(0x94) }, { bytes:[0,0,0,256] },
+  { word:-1 }, { encodingWord:NaN },
+  { word:0x94000000, encodingWord:0x94000001 },
+]) {
+  const effects = lift('bl', 'opaque', 0x800n, evidence);
+  assert.equal(effects.completeness, 'partial', 'invalid present encoding is not absent legacy encoding');
+  assert.equal(effects.unknownEffects?.reason, 'arm64-bl-operand-shape-invalid');
+}
 
 for (const [mnemonic, operands] of [
   ['b', '#0x1000, x0'],

@@ -27,6 +27,7 @@ import { productDescriptor } from '../platform/product-descriptor.js';
 import { queryFunctions, queryStrings } from './explorer-index.js';
 import { genericEvidenceStatus, ownerEvidence, summaryEvidenceStatus, provenanceStatus } from './evidence-model.js';
 import { uiRoot } from '../ui-root.js';
+import { createDecompilerProvenanceView } from './decompiler-provenance.js';
 
 
 let _productPanelsPromise = null;
@@ -858,19 +859,21 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
           content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('現在のSemantic DecompilerはARM64を対象にしています。未対応のCPUをARM64として表示することはしません。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
           return;
         }
-        const val = res.value;
-        const out = typeof val === 'string' ? val : (val.code ?? decompiledText(val));
         const toolbar = h('div', 'ui-code-toolbar');
-        const code = h('pre', 'ui-pseudocode mono');
-        code.tabIndex = 0;
-        code.textContent = typeof out === 'string' ? out : decompiledText(out);
+        const provenanceView = createDecompilerProvenanceView(res, {
+          text, signal:routeSignal,
+          isCurrent:() => viewCurrent() && !routeSignal.aborted,
+          currentSnapshot:() => app.analysisQueries.snapshot({ signal:routeSignal }),
+          onNavigate:address => router.navigate('/code/' + address.toString()),
+        });
+        const code = provenanceView.code;
         let wrap = false;
         toolbar.append(
           uiButton(text('コピー', 'Copy'), { cls: 'ui-secondary-action', onClick: () => copyText(code.textContent, text('疑似C', 'Pseudocode')) }),
           uiButton(text('折り返し', 'Wrap'), { cls: 'ui-secondary-action', onClick: (e) => { wrap = !wrap; code.classList.toggle('wrap', wrap); e.currentTarget.setAttribute('aria-pressed', String(wrap)); } }),
           uiButton(text('アセンブリへ', 'Assembly'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/code/' + addr.toString()) }),
         );
-        content.replaceChildren(toolbar, code);
+        content.replaceChildren(toolbar, provenanceView.root);
         return;
       } catch (err) {
         if (routeSignal.aborted) return;

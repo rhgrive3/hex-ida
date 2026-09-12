@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { createCapstoneX86Session } from '../phase5/helpers/capstone-session.mjs';
 import { createX86DecodedInstruction } from '../../js/targets/architecture/x86_64/decoded-instruction.js';
 import { dispatchX86MachineEffects } from '../../js/targets/architecture/x86_64/effects/index.js';
+import { closeTrustedX86Partial } from '../../js/targets/architecture/x86_64/effects/trusted-decoder-terminal.js';
 
 // Issue #5563: the trusted decoder terminal must not convert IRET/IRETD/IRETQ
 // into a `trap` control effect. The Capstone `iret` group is classification
@@ -11,13 +12,16 @@ import { dispatchX86MachineEffects } from '../../js/targets/architecture/x86_64/
 // While dedicated interrupt-return semantics are unproven, the system owner's
 // fail-closed `unknown` control must survive terminalization.
 
-// Exercise the receiver-revalidated terminalizer exactly like the dedicated
-// revalidation worker realm does; rows without that provenance can never
-// reach closeTrustedX86Partial and would make this proof vacuous.
-globalThis.WorkerGlobalScope = class WorkerGlobalScope {};
-Object.setPrototypeOf(globalThis, WorkerGlobalScope.prototype);
-globalThis.__HEX_PROTECTED_WORKER_LOGICAL_PATH__ = 'js/targets/architecture/x86_64/semantic-revalidation-worker.js';
-const { markReceiverRevalidatedX86Row } = await import('../../js/targets/architecture/x86_64/runtime-provenance.js');
+// Reuse #7514's terminal projection regression without impersonating a
+// Worker realm or minting private row authority. Public dispatch stays partial;
+// the real receiver path is separately exercised by phase6:browser.
+function projectTerminal(instruction) {
+  const outcome = dispatchX86MachineEffects(instruction, { closureMatrixTerminal: true });
+  assert.equal(outcome.result?.completeness, 'partial', 'unbranded public dispatch stays fail-closed');
+  return { ownerId: outcome.ownerId, result: closeTrustedX86Partial(
+    instruction, outcome.ownerId, outcome.result, { closureMatrixTerminal: true },
+  ) };
+}
 
 const capstone = await createCapstoneX86Session();
 try {
@@ -34,12 +38,9 @@ try {
       detail: { ...(decoded[0].detail ?? {}), flagsKind: 'eflags' },
     });
     assert.equal(instruction.mnemonic, mnemonic);
-    markReceiverRevalidatedX86Row(instruction);
 
-    // The closure-matrix dispatch context is the only realm where the
-    // trusted-decoder terminalizer is reachable for local rows; it must not
-    // promote the unproven IRET* control into a trap.
-    const outcome = dispatchX86MachineEffects(instruction, { closureMatrixTerminal: true });
+    // Even the legacy closure-matrix option must not invent a trap.
+    const outcome = projectTerminal(instruction);
     assert.equal(outcome.ownerId, 'system', `${mnemonic} must stay with the system owner`);
     const result = outcome.result;
     assert.equal(result?.completeness, 'partial', `${mnemonic} without dedicated semantics must stay partial`);

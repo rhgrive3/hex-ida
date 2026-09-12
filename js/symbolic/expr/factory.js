@@ -32,11 +32,8 @@ export function resetSymbolCounterForTesting(val = 0) {
 }
 
 /**
- * Runs a deserialization body against the process-global fresh-symbol
- * allocator as a single transaction: reservations made by restoreFreshSymbol
- * while the body executes are committed only if the body returns normally.
- * Any throw restores the counter to its pre-call value, so a malformed
- * payload can never permanently advance (or exhaust) the id space (#5149).
+ * Run deserialization against the fresh-symbol allocator as a transaction.
+ * Malformed payloads must not consume symbol IDs or exhaust the allocator.
  */
 export function withSymbolAllocatorTransaction(run) {
   const savedSymbolCounter = symbolCounter;
@@ -200,30 +197,44 @@ export function createCompare(op, left, right) {
 }
 
 export function createConnective(op, ...args) {
+  // Accept an array as the sole argument for callers which cannot use a
+  // variadic call (deserialization of a large connective), while retaining
+  // the dense-data validation in the array constructor.
   const actualArgs = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
+  return createConnectiveFromArray(op, actualArgs);
+}
+
+// Deserialization can admit more operands than the engine's call-argument
+// limit. Use the same constructor validation without a variadic call.
+export function createConnectiveFromArray(op, args) {
+  if (!Array.isArray(args)) throw new TypeError('createConnective: arguments must be an array');
   if (!Object.values(BOOL_CONNECTIVE_OP).includes(op)) {
     throw new TypeError(`createConnective: unknown boolean connective op '${op}'`);
   }
-  if (actualArgs.length === 0) {
+  if (args.length === 0) {
     throw new TypeError(`createConnective (${op}): requires at least one argument`);
   }
-  for (let i = 0; i < actualArgs.length; i++) {
-    const a = actualArgs[i];
+  const operands = [];
+  for (let i = 0; i < args.length; i++) {
+    const descriptor = Object.getOwnPropertyDescriptor(args, String(i));
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) throw new TypeError('createConnective: dense data arguments required');
+    const a = descriptor.value;
     if (!a || !isBoolSort(a.sort)) {
       throw new TypeError(`createConnective (${op}): arg[${i}] must have Bool sort, got ${sortToString(a?.sort)}`);
     }
+    operands.push(a);
   }
-  if (op === BOOL_CONNECTIVE_OP.NOT && actualArgs.length !== 1) {
-    throw new TypeError(`createConnective (not): exactly one argument required, got ${actualArgs.length}`);
+  if (op === BOOL_CONNECTIVE_OP.NOT && args.length !== 1) {
+    throw new TypeError(`createConnective (not): exactly one argument required, got ${args.length}`);
   }
-  if ((op === BOOL_CONNECTIVE_OP.IMPLIES || op === BOOL_CONNECTIVE_OP.EQ || op === BOOL_CONNECTIVE_OP.NE) && actualArgs.length !== 2) {
-    throw new TypeError(`createConnective (${op}): exactly two arguments required, got ${actualArgs.length}`);
+  if ((op === BOOL_CONNECTIVE_OP.IMPLIES || op === BOOL_CONNECTIVE_OP.EQ || op === BOOL_CONNECTIVE_OP.NE) && args.length !== 2) {
+    throw new TypeError(`createConnective (${op}): exactly two arguments required, got ${args.length}`);
   }
   return Object.freeze({
     kind: EXPR_KIND.CONNECTIVE,
     sort: boolSort(),
     op,
-    args: Object.freeze(Array.isArray(actualArgs) ? actualArgs.slice() : Array.from(actualArgs)),
+    args: Object.freeze(operands),
   });
 }
 

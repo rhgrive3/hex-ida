@@ -50,7 +50,7 @@ export const SEMANTIC_V2_MIGRATION_MODES = Object.freeze({
   SHADOW_DIFFERENTIAL: 'semantic-v2-shadow-differential',
 });
 
-export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.2.0';
+export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.5.1';
 export const SEMANTIC_V2_COMPAT_PATH = Object.freeze([
   'machine-effects',
   'semantic-ir-v2',
@@ -293,10 +293,6 @@ function canonicalMemoryAccessProof(descriptor, architectureId) {
  * not rediscover CFG structure or parse mnemonics. Stable FunctionId, BlockId,
  * and InstructionId values are minted only through the canonical identity API.
  */
-// Canonical ABI value binding reused from rhgrive3/hex-ida PR #7036,
-// upstream head a0f47590783eb356208c7d833b9264a4f4c69c5f. Only the existing
-// ABI-to-IR binding lane is imported; target resolution and summary closure
-// remain with their respective owners.
 /**
  * Observe a declared scalar ABI result before SSA, not by searching rendered
  * register names after projection. The architectural return target stays in
@@ -516,12 +512,14 @@ function bindDeclaredCallValues(ir, input, options) {
   }, options.semanticIrOptions ?? {});
 }
 
-
 export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   assertNotAborted(options);
   input = object(input, 'semantic-v2-integration-input-required');
   const architecturePlugin = object(input.architecturePlugin, 'semantic-v2-integration-architecture-plugin-required');
   if (typeof architecturePlugin.liftExact !== 'function') fail('semantic-v2-lift-exact-required');
+  if (architecturePlugin.liftDecodedExact != null && typeof architecturePlugin.liftDecodedExact !== 'function') {
+    fail('semantic-v2-lift-decoded-exact-invalid');
+  }
   const architectureId = nonEmpty(architecturePlugin.id, 'semantic-v2-integration-architecture-id-required');
   const architectureSemanticVersion = nonEmpty(architecturePlugin.semanticVersion, 'semantic-v2-integration-architecture-semantic-version-required');
   const decoderSemanticVersion = nonEmpty(input.decoderSemanticVersion, 'semantic-v2-integration-decoder-semantic-version-required');
@@ -621,15 +619,20 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
       });
       const origin = originWithInstruction(item, instructionId, architecturePlugin);
       const decoded = object(item.decoded ?? item, 'semantic-v2-integration-decoded-instruction-required');
-      const prepared = { ...decoded, instructionId, origin, mode };
-      let bundle = architecturePlugin.liftExact(prepared, {
+      const liftContext = {
         ...machineEffectsContext,
         instructionId,
         origin,
         mode,
         signal: options.signal,
         machineEffectsOptions: options.machineEffectsOptions ?? {},
-      });
+      };
+      // A spread copy cannot carry private receiver/decoder object identity.
+      // Let an architecture preserve its original object while binding the
+      // canonical metadata itself. Existing liftExact plugins keep their API.
+      let bundle = architecturePlugin.liftDecodedExact
+        ? architecturePlugin.liftDecodedExact(decoded, liftContext)
+        : architecturePlugin.liftExact({ ...decoded, instructionId, origin, mode }, liftContext);
       if (bundle && typeof bundle.then === 'function') fail('semantic-v2-integration-async-lifter-not-supported');
       if (bundle == null) {
         unsupportedInstructionCount++;
@@ -706,7 +709,6 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     unknowns: [...issues.values()],
     origin: functionOrigin,
   }, options.semanticIrOptions ?? {});
-
   const callIr = bindDeclaredCallValues(machineIr, input, options);
   const ir = bindDeclaredEntryArguments(bindDeclaredScalarReturns(callIr, input, options), input, options);
 

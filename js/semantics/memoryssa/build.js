@@ -29,7 +29,7 @@ import {
   MEMORY_SSA_PROOF_VERSION,
 } from './proof.js';
 
-export const MEMORY_SSA_BUILD_VERSION = '1.0.1';
+export const MEMORY_SSA_BUILD_VERSION = '1.0.2';
 export const MEMORY_SSA_BUILD_DEFAULT_BUDGET = Object.freeze({
   ...MEMORY_SSA_DEFAULT_BUDGET,
   maxAliasQueries: 1048576,
@@ -1113,7 +1113,10 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       id,
       kind: 'entry',
       regionId: region.id,
-      blockId: cfg.entryBlockId,
+      // This is boundary memory, not an instruction in the CFG entry block.
+      // It also seeds unreachable roots, which the live entry cannot dominate.
+      // Keep real writes and phis pinned to their actual defining blocks.
+      blockId: null,
       previousDefinitionIds: [],
       incoming: [],
       aliasRelation: null,

@@ -14,8 +14,11 @@
  */
 
 import { createAnalysisStatus, isCompleteStatus, mergeAnalysisStatus } from '../status.js';
+import { stableDigest, stableStringify } from '../../core/identity/index.js';
+import { buildSemanticSsa, validateSemanticSsa } from '../../semantics/ssa/index.js';
 import {
-  classifyCallTargetProof,
+  createSemanticCallTargetClassifier,
+  RETURN_SUMMARY_CANDIDATE_LIMIT,
   createFunctionSummary,
   createMemoryEffect,
   createUnknownCallEffect,
@@ -23,7 +26,7 @@ import {
 } from './contract.js';
 
 export const LOCAL_SUMMARY_ANALYZER_ID = 'phase7.summary.local';
-export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.2.0';
+export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.3.4';
 
 const DEFAULT_ADDRESS_SPACES = Object.freeze(['memory']);
 
@@ -169,6 +172,9 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   const calleeSummaries = options.calleeSummaries instanceof Map
     ? options.calleeSummaries
     : new Map(Object.entries(options.calleeSummaries ?? {}));
+  const classifyTarget = createSemanticCallTargetClassifier(ir, memorySsa, {
+    ...options, summaryForTarget:target => calleeSummaries.get(target),
+  });
 
   const memoryReadRegions = [];
   const memoryWriteRegions = [];
@@ -180,6 +186,10 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   const writtenVariables = new Set();
   const returnValues = new Set();
   const statuses = [];
+  const closedNativeCalls = new Map();
+  const escapes = [...(options.escapes ?? [])];
+  const allocations = new Set(options.allocations ?? []);
+  const frees = new Set(options.frees ?? []);
 
   let sawReturn = false;
   let sawNoreturnCall = false;
@@ -232,6 +242,8 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   }
 
   const returnProvenance = [];
+  const nativeAbiFacts = new Map();
+  let nativeReturnIncomplete = false;
   const nodeByOutput = new Map();
   const valueById = new Map((ir.values ?? []).map((value) => [String(value.id), value]));
   for (const n of ir.nodes ?? []) {
@@ -245,12 +257,88 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     if (valueId == null || (typeof valueId === 'object' && valueId !== null) || typeof valueId === 'function') return -1;
     if (Array.isArray(ir.inputs)) return ir.inputs.indexOf(valueId);
     const value = valueById.get(String(valueId));
+    const binding = value?.metadata?.abiArgumentBinding;
+    if (binding != null) {
+      if (value.kind !== 'entry' || binding.kind !== 'abi-entry-argument' || binding.version !== 1
+        || binding.functionId !== ir.functionId || binding.variableKey !== value.variableKey
+        || binding.argumentIndex !== value.metadata.argumentIndex
+        || binding.location?.bits !== value.machineType?.widthBits
+        || binding.abiIdentity?.snapshotId !== (options.snapshotId ?? 'snapshot-unbound')) return -1;
+    }
     const explicit = value?.metadata?.argumentIndex
       ?? value?.metadata?.argIndex
       ?? value?.metadata?.abiArgIndex;
-    return typeof explicit === 'number' && Number.isSafeInteger(explicit) && explicit >= 0
-      ? explicit
-      : -1;
+    if (typeof explicit !== 'number' || !Number.isSafeInteger(explicit) || explicit < 0) return -1;
+    if (binding != null) nativeAbiFacts.set(value.id, binding);
+    return explicit;
+  };
+
+  // SSA is an authority boundary. Structural validation alone only establishes
+  // dominance; it does not reject a forged link to an older dominating write.
+  // Replay the existing canonical builder once on demand, under a fixed work
+  // ceiling, and compare the whole normalized contract before traversing it.
+  let nativeSsa = null, nativeSsaChecked = false;
+  const nativeSsaIndex = () => {
+    if (nativeSsaChecked) return nativeSsa;
+    nativeSsaChecked = true;
+    try {
+      const settings = { signal:options.signal, budget:{ maxWorkItems:65536 } };
+      const verified = validateSemanticSsa(ssa, ir, cfg, settings);
+      const rebuilt = buildSemanticSsa(ir, cfg, settings);
+      if (stableStringify(verified) !== stableStringify(rebuilt)) throw new Error('summary-ssa-binding-mismatch');
+      nativeSsa = { definitions:new Map(verified.definitions.map(def => [def.valueId, def])),
+        reads:new Map(verified.uses.filter(use => use.proof?.kind === 'renamed-use')
+          .map(use => [use.proof.sourceSemanticValueId, use])) };
+    } catch { nativeReturnIncomplete = true; }
+    return nativeSsa;
+  };
+  const returnTerminals = valueId => {
+    const result = [], pending = [{ curr:valueId, offset:0n, seen:new Set() }];
+    let work = 0;
+    while (pending.length) {
+      if (++work > 4096 || result.length >= 63 || options.signal?.aborted) {
+        nativeReturnIncomplete = true;
+        result.push({ curr:null, offset:0n }); break;
+      }
+      const item = pending.pop(), { curr, offset } = item;
+      const key = `${item.ssa ? 'ssa' : 'value'}:${curr}`;
+      if (curr == null || item.seen.has(key)) { result.push({ curr:null, offset }); continue; }
+      const seen = new Set(item.seen); seen.add(key);
+      const next = (id, ssaValue = false, add = 0n) => pending.push({ curr:id, offset:offset + add, seen, ssa:ssaValue });
+      if (item.ssa) {
+        const definition = nativeSsaIndex()?.definitions.get(curr);
+        if (definition?.kind === 'phi' && definition.incoming.length) {
+          for (const input of definition.incoming) next(input.valueId, true);
+        } else if (definition?.kind === 'entry' || definition?.kind === 'definition') {
+          next(definition.proof?.sourceSemanticValueId);
+        } else result.push({ curr:null, offset });
+        continue;
+      }
+      if (formalArgumentIndex(curr) >= 0) { result.push({ curr, offset }); continue; }
+      const producer = nodeByOutput.get(curr);
+      if (producer?.kind === 'state-read') {
+        const use = nativeSsaIndex()?.reads.get(curr);
+        if (use?.sourceEntityId === producer.id) next(use.valueId, true);
+        else result.push({ curr:null, offset });
+      } else if (producer?.kind === 'copy' || producer?.kind === 'bitcast') {
+        next(producer.inputs?.[0]);
+      } else if (producer?.kind === 'binary' && ['add', 'sub'].includes(producer.operator)) {
+        const left = producer.inputs?.[0];
+        const right = producer.inputs?.[1];
+        const rightConstant = integerConstantForOperand(right, nodeByOutput, valueById);
+        if (rightConstant != null) {
+          next(left, false, producer.operator === 'sub' ? -rightConstant : rightConstant);
+        } else if (producer.operator === 'add') {
+          // Addition is commutative. Recover a constant-left form while
+          // retaining the same conservative fail-closed handling as the
+          // right-constant path; subtraction remains base-minus-constant only.
+          const leftConstant = integerConstantForOperand(left, nodeByOutput, valueById);
+          if (leftConstant != null) next(right, false, leftConstant);
+          else result.push({ curr, offset });
+        } else result.push({ curr, offset });
+      } else result.push({ curr, offset });
+    }
+    return result;
   };
 
   const summaryIdentityOptions = (functionId) => {
@@ -270,20 +358,23 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
   };
 
   const callInfo = (node) => {
-    const targetProof = classifyCallTargetProof(node.call);
+    const targetProof = classifyTarget(node);
     const targets = targetProof.candidateEntityIds;
-    const calleeId = targetProof.exactSingletonEntityId;
-    const supplied = calleeId == null ? null : calleeSummaries.get(calleeId);
-    const current = supplied != null && summaryIdentityMatches(supplied, summaryIdentityOptions(calleeId))
-      ? supplied
-      : null;
-    return {
-      targetProof,
-      targets,
-      supplied,
-      resolved: current,
-      identityMismatch: supplied != null && current == null,
-    };
+    const info = { targetProof, targets, resolved:null, identityMismatch:false };
+    if (!targetProof.exhaustive || !targets.length || targets.length > RETURN_SUMMARY_CANDIDATE_LIMIT) return info;
+    const resolved = [];
+    for (const calleeId of targets) {
+      if (options.signal?.aborted) return info;
+      const supplied = calleeSummaries.get(calleeId);
+      if (supplied == null) continue;
+      if (!summaryIdentityMatches(supplied, summaryIdentityOptions(calleeId))) {
+        info.identityMismatch = true;
+        continue;
+      }
+      resolved.push(supplied);
+    }
+    if (resolved.length === targets.length) info.resolved = resolved;
+    return info;
   };
 
   /**
@@ -294,14 +385,20 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
    */
   const composeCallReturnProvenance = (callNode, outputValueId, outerReturnIndex, outerOffset) => {
     const info = callInfo(callNode);
-    const callee = info.resolved;
-    if (!callee || !isCompleteStatus(callee.status) || callee.unknownCallEffects.length > 0) return null;
+    const callees = info.resolved;
+    if (!callees || callees.some(callee => !isCompleteStatus(callee.status) || callee.unknownCallEffects.length > 0)) return null;
     const callReturnIndex = (callNode.outputs ?? []).indexOf(outputValueId);
     if (callReturnIndex < 0) return null;
-    const alternatives = (callee.returnProvenance ?? []).filter(
-      (provenance) => Number(provenance.returnIndex ?? 0) === callReturnIndex,
-    );
-    if (!alternatives.length) return null;
+    const alternatives = [];
+    for (const callee of callees) {
+      const returns = callee.returnProvenance.filter(
+        (provenance) => Number(provenance.returnIndex ?? 0) === callReturnIndex,
+      );
+      // One missing candidate return is unknown, not an empty set. It must
+      // never disappear while composing the remaining finite alternatives.
+      if (!returns.length) return null;
+      alternatives.push(...returns);
+    }
     // Canonical Semantic IR carries the argument list independently from a
     // runtime target value; an explicit empty array means a zero-argument
     // call, not a missing field. `callNode.inputs` is a legacy fallback for
@@ -335,17 +432,13 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
         // explicit formal mapping (legacy `ir.inputs` or value metadata); an
         // ABI call ordinal alone is not proof that an internal value is a
         // current function argument.
-        const callerArgIndex = formalArgumentIndex(argumentId);
-        if (!Number.isSafeInteger(callerArgIndex) || callerArgIndex < 0) {
-          composed.push({ kind: 'unknown', returnIndex: outerReturnIndex });
-          continue;
+        for (const terminal of returnTerminals(argumentId)) {
+          const callerArgIndex = formalArgumentIndex(terminal.curr);
+          if (!Number.isSafeInteger(callerArgIndex) || callerArgIndex < 0) {
+            composed.push({ kind:'unknown', returnIndex:outerReturnIndex });
+          } else composed.push({ kind:'arg', returnIndex:outerReturnIndex,
+            argIndex:callerArgIndex, offset:(offset + terminal.offset).toString(10) });
         }
-        composed.push({
-          kind: 'arg',
-          returnIndex: outerReturnIndex,
-          argIndex: callerArgIndex,
-          offset: offset.toString(10),
-        });
         continue;
       }
       if (provenance.kind === 'root' || provenance.kind === 'allocation') {
@@ -414,51 +507,33 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       for (let retIdx = 0; retIdx < (node.inputs ?? []).length; retIdx++) {
         const inputValId = node.inputs[retIdx];
         returnValues.add(String(inputValId));
-        let curr = inputValId;
-        let offset = 0n;
-        const visited = new Set();
-        while (curr && !visited.has(curr)) {
-          visited.add(curr);
-          const producer = nodeByOutput.get(curr);
-          if (!producer) break;
-          if (producer.kind === 'copy' || producer.kind === 'bitcast') {
-            curr = producer.inputs?.[0];
-          } else if (producer.kind === 'binary' && (producer.operator === 'add' || producer.operator === 'sub')) {
-            const leftOperand = producer.inputs?.[0];
-            const rightOperand = producer.inputs?.[1];
-            const rightConstant = integerConstantForOperand(rightOperand, nodeByOutput, valueById);
-            if (rightConstant != null) {
-              offset += producer.operator === 'sub' ? -rightConstant : rightConstant;
-              curr = leftOperand;
-            } else if (producer.operator === 'add') {
-              const leftConstant = integerConstantForOperand(leftOperand, nodeByOutput, valueById);
-              if (leftConstant == null) break;
-              offset += leftConstant;
-              curr = rightOperand;
-            } else break;
-          } else break;
-        }
-        const terminalProducer = nodeByOutput.get(curr);
-        const composed = terminalProducer?.kind === 'call'
-          ? composeCallReturnProvenance(terminalProducer, curr, retIdx, offset)
-          : null;
-        if (composed) {
-          returnProvenance.push(...composed);
-          continue;
-        }
-        const inputIndex = formalArgumentIndex(curr);
-        if (inputIndex >= 0) {
-          returnProvenance.push({
-            kind: 'arg',
-            returnIndex: retIdx,
-            argIndex: inputIndex,
-            offset: offset.toString(10),
-          });
-        } else {
-          // Absence of a recovered alternative is not proof that the other
-          // alternatives are exhaustive. Keep an explicit unknown member so a
-          // caller cannot turn one understood return path into a singleton.
-          returnProvenance.push({ kind: 'unknown', returnIndex: retIdx });
+        const binding = node.attributes?.abiReturnBinding;
+        if (binding?.kind === 'abi-return-location' && binding.version === 1
+          && binding.functionId === ir.functionId && binding.returnNodeId === node.id && binding.valueId === inputValId
+          && binding.abiIdentity?.snapshotId === (options.snapshotId ?? 'snapshot-unbound')) nativeAbiFacts.set(node.id, binding);
+        for (const { curr, offset } of returnTerminals(inputValId)) {
+          const terminalProducer = nodeByOutput.get(curr);
+          const composed = terminalProducer?.kind === 'call'
+            ? composeCallReturnProvenance(terminalProducer, curr, retIdx, offset)
+            : null;
+          if (composed) {
+            returnProvenance.push(...composed);
+            continue;
+          }
+          const inputIndex = formalArgumentIndex(curr);
+          if (inputIndex >= 0) {
+            returnProvenance.push({
+              kind: 'arg',
+              returnIndex: retIdx,
+              argIndex: inputIndex,
+              offset: offset.toString(10),
+            });
+          } else {
+            // Absence of a recovered alternative is not proof that the other
+            // alternatives are exhaustive. Keep an explicit unknown member so a
+            // caller cannot turn one understood return path into a singleton.
+            returnProvenance.push({ kind: 'unknown', returnIndex: retIdx });
+          }
         }
       }
       continue;
@@ -488,30 +563,67 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
 
     if (node.kind !== 'call') continue;
 
+    const binding = node.attributes?.abiCallBinding;
+    if (binding?.kind === 'abi-call-values' && binding.version === 1
+      && binding.functionId === ir.functionId && binding.callNodeId === node.id
+      && binding.abiIdentity?.snapshotId === (options.snapshotId ?? 'snapshot-unbound')
+      && stableStringify(binding.argumentValueIds) === stableStringify(node.call.arguments)
+      && node.call.returns.length === 1 && binding.returnValueId === node.call.returns[0]) {
+      nativeAbiFacts.set(node.id, binding);
+    }
+
     const { targetProof, targets, resolved, identityMismatch } = callInfo(node);
+    if (targetProof.nativeTargetFact) nativeAbiFacts.set(`target:${node.id}`, targetProof.nativeTargetFact);
 
     if (resolved) {
       // A callee summary can be exact only after the call-site target universe
       // itself is proven. A non-exhaustive singleton must not take this branch.
-      statuses.push(resolved.status);
       // Consuming an identity-matched callee summary authorizes folding its
       // effects in, not re-grading their authority: each effect keeps the
       // source it was built with, so a library-model or abi-rule fact cannot
       // be laundered into proven-summary by one composition step.
-      memoryReadRegions.push(...resolved.memoryReadRegions.map((effect) => createMemoryEffect({ ...effect })));
-      memoryWriteRegions.push(...resolved.memoryWriteRegions.map((effect) => createMemoryEffect({ ...effect })));
-      for (const unknown of resolved.unknownCallEffects) {
-        // Keep the originating call site. Composing a path prefix here would
-        // make the effect set grow every time a summary is recomposed, which is
-        // what stops a recursive fixed point from converging.
-        unknownCallEffects.push(unknown);
-        controlUnknown = true;
-        ensureBroadWrite(node);
+      for (const callee of resolved) {
+        statuses.push(callee.status);
+        const contextualEffect = effect => {
+          // A callee-local/argument region is not the caller's region identity.
+          // Without an actual-argument region substitution proof, preserve its
+          // address-space effect conservatively rather than asserting disjointness.
+          if (targetProof.nativeTargetFact && !effect.broad && effect.regionKind !== 'global-absolute') {
+            return createMemoryEffect({ regionKind:'unknown', broad:true,
+              addressSpaces:effect.addressSpaces, source:effect.source, evidenceIds:effect.evidenceIds });
+          }
+          return createMemoryEffect({ ...effect });
+        };
+        memoryReadRegions.push(...callee.memoryReadRegions.map(contextualEffect));
+        memoryWriteRegions.push(...callee.memoryWriteRegions.map(contextualEffect));
+        if (targetProof.nativeTargetFact) {
+          for (const input of callee.inputs) readVariables.add(input);
+          for (const effect of callee.registerEffects) registerEffects.add(effect);
+          for (const site of callee.allocations) allocations.add(site);
+          for (const site of callee.frees) frees.add(site);
+          escapes.push(...callee.escapes.map(escape => JSON.parse(stableStringify(escape))));
+        }
+        for (const unknown of callee.unknownCallEffects) {
+          // Keep the originating call site. Composing a path prefix here would
+          // make the effect set grow every time a summary is recomposed, which is
+          // what stops a recursive fixed point from converging.
+          unknownCallEffects.push(unknown);
+          controlUnknown = true;
+          ensureBroadWrite(node);
+        }
+        if (callee.mayThrow === true) mayThrow = true;
+        if (callee.mayThrow === 'unknown' || callee.noreturn === 'unknown') controlUnknown = true;
       }
-      if (resolved.mayThrow === true) mayThrow = true;
-      if (resolved.mayThrow === 'unknown') controlUnknown = true;
-      if (resolved.noreturn === true) sawNoreturnCall = true;
-      if (resolved.noreturn === 'unknown') controlUnknown = true;
+      if (targetProof.nativeTargetFact && resolved.every(callee => isCompleteStatus(callee.status)
+        && callee.unknownCallEffects.length === 0 && callee.noreturn === false
+        && typeof callee.mayThrow === 'boolean' && callee.escapes.length === 0)) {
+        // Escape roots need caller-context substitution and non-returning calls
+        // need CFG continuation reconciliation before either can close this scope.
+        closedNativeCalls.set(node.id, targetProof.nativeTargetFact);
+      }
+      // A possible non-returning target does not prove that the call cannot
+      // return. That fact requires agreement of the entire candidate set.
+      if (resolved.every(callee => callee.noreturn === true)) sawNoreturnCall = true;
       if (targetProof.kind === 'indirect') {
         indirectCallSets.push({
           callSiteId: node.id,
@@ -522,7 +634,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       } else {
         directCalls.push({
           callSiteId: node.id, targetEntityIds: targets,
-          summaryId: resolved.functionId, effectSource: 'proven-summary',
+          summaryId: resolved[0].functionId, effectSource: 'proven-summary',
         });
       }
       continue;
@@ -585,14 +697,48 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     }
   }
 
-  const hasUnknown = unknownCallEffects.length > 0 || intrinsicScopeUnknown;
+  const hasUnknown = unknownCallEffects.length > 0 || intrinsicScopeUnknown || nativeReturnIncomplete;
   // A canonical Semantic IR may record what is missing at the function level:
   // `completeness: 'partial'|'unknown'` with the reasons in `ir.unknowns`,
   // while every individual node stays complete (#5226). Ignoring those fields
   // publishes a complete (even pure) summary for a function whose lowering
   // never covered part of its scope — missing work laundered into "no effect".
-  const functionLevelUnknown = (ir.completeness != null && ir.completeness !== 'complete')
+  let functionLevelUnknown = (ir.completeness != null && ir.completeness !== 'complete')
     || (Array.isArray(ir.unknowns) && ir.unknowns.length > 0);
+
+  // Discharge only the exact native-lowering obligations that were solved in
+  // this run. Unknown reasons elsewhere, unaccounted partial nodes, missing
+  // evidence and a different SSA snapshot keep the original partial status.
+  // This changes the contextual summary, never the canonical IR/SSA artifacts.
+  if (functionLevelUnknown && !hasUnknown && !controlUnknown && ir.completeness === 'partial'
+    && ir.unknowns?.length && closedNativeCalls.size && nativeSsaIndex()
+    && memorySsa?.identity?.scalarSsaDigest === stableDigest(ssa)) {
+    const categories = ['control', 'memory', 'state'];
+    const expectedIssues = new Set();
+    const coveredNodes = ir.nodes.every(node => {
+      if (node.kind !== 'call') return node.completeness === 'complete' && node.unknown == null;
+      if (!closedNativeCalls.has(node.id)) return false;
+      const control = node.attributes?.machineControlEffect;
+      const reason = 'ABI and callee effects are outside MachineEffects-to-SemanticIR lowering';
+      if (node.completeness !== 'partial'
+        || stableStringify(node.unknown) !== stableStringify({ reason, categories, knownParts:{ machineControlEffect:control } })
+        || stableStringify(node.call.unknownEffects) !== stableStringify({ reason, categories })) return false;
+      expectedIssues.add(stableStringify({ reason:'call-context-effects-not-enriched', categories, detail:{ control } }));
+      return true;
+    });
+    const actualIssues = new Set(ir.unknowns.map(issue => stableStringify(issue)));
+    if (coveredNodes && actualIssues.size === expectedIssues.size
+      && [...actualIssues].every(issue => expectedIssues.has(issue))) {
+      functionLevelUnknown = false;
+      nativeAbiFacts.set('contextual-call-discharge', {
+        kind:'native-call-effects-discharge', version:1, functionId:ir.functionId,
+        snapshotId:options.snapshotId ?? 'snapshot-unbound',
+        semanticIrDigest:memorySsa.identity.semanticIrDigest, scalarSsaDigest:memorySsa.identity.scalarSsaDigest,
+        calls:[...closedNativeCalls.values()].sort((a, b) => a.callSiteId.localeCompare(b.callSiteId)),
+        obligations:[...actualIssues].sort().map(issue => JSON.parse(issue)),
+      });
+    }
+  }
 
   const localStatus = createAnalysisStatus({
     snapshotId: options.snapshotId ?? 'snapshot-unbound',
@@ -612,9 +758,9 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     registerEffects: [...registerEffects],
     memoryReadRegions,
     memoryWriteRegions,
-    escapes: options.escapes ?? [],
-    allocations: options.allocations ?? [],
-    frees: options.frees ?? [],
+    escapes,
+    allocations: [...allocations],
+    frees: [...frees],
     directCalls,
     indirectCallSets,
     unknownCallEffects,
@@ -622,7 +768,11 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     noreturn: controlUnknown ? 'unknown' : (sawNoreturnCall && !sawReturn),
     mayThrow: controlUnknown ? 'unknown' : mayThrow,
     stackDelta: options.stackDelta ?? null,
-    semanticFacts: options.semanticFacts ?? [],
+    // The summary owns its fact snapshots, including when a deserialized IR
+    // was supplied. Freezing a summary must not freeze the caller's IR graph.
+    semanticFacts: [...(options.semanticFacts ?? []), ...[...nativeAbiFacts]
+      .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+      .map(([, fact]) => JSON.parse(stableStringify(fact)))],
     status,
   });
 

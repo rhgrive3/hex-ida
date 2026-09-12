@@ -1,5 +1,9 @@
-import { expr, structuralKey } from '../ast/nodes.js';
-import { RewriteEngine } from '../rewrite/engine.js';
+import { expr, structuralKey, mergeSource } from '../ast/nodes.js';
+import { RewriteEngine, RewriteHistoryJournal, expressionOriginHistory } from '../rewrite/engine.js';
+import { captureRecoveryIrData, PROJECTION_LIMITS } from '../phase8/projection-origin.js';
+import { readStackPhiHistoryConsumer } from './stack-phi-recovery.js';
+import { readLegacyStackHistoryConsumer } from './legacy-stack-recovery.js';
+import { readExpressionHistoryConsumer } from '../pipeline-core.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { printExpression, printProgram } from '../pretty/c.js';
 import { buildNZCVConditionExpression } from '../flag-semantics.js';
@@ -11,6 +15,49 @@ import { uniqueReachableMergePredecessorIndex } from './stack-join-arm-proof.js'
 
 const INVERSE = Object.freeze({ eq:'ne', ne:'eq', lt:'ge', le:'gt', gt:'le', ge:'lt' });
 const EXACT_VIEW_MOV_SUBS = new Set([null, 'copy', 'bitcast', 'trunc', 'zext']);
+
+const returnHistoryConsumers = new WeakMap();
+export function readStackReturnHistoryConsumer(semantic, ir) {
+  const binding = returnHistoryConsumers.get(semantic);
+  if (!binding || binding.ir !== ir) return null;
+  const data = key => Object.getOwnPropertyDescriptor(semantic, key)?.value;
+  return data('expression') === binding.expression && data('op') === binding.op
+    && data('ir') === binding.instructionId && data('location') === binding.location
+    && binding.isCurrent() ? binding : null;
+}
+
+function bindReturnHistory(result, transitions, opts) {
+  const cap = (value, max) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, max) : max;
+  const budget = opts.renderProvenanceBindingBudget;
+  const reasons = new Set(result.expressionHistoryBinding?.reasons || []);
+  const ir = result.ir;
+  try {
+    const observation = captureRecoveryIrData(ir, [
+      transitions.map(item => [item.before, item.node.semantic?.expression, item.records])], opts.shouldAbort);
+    if (observation.metrics.edges > cap(budget?.maxEdges, PROJECTION_LIMITS.edges)) reasons.add('recovery-binding-budget');
+    else {
+      let remaining = cap(budget?.maxConsumers, 4096);
+      for (const item of transitions) {
+        const semantic = item.node.semantic;
+        if (!semantic || (item.prior && !item.prior.isCurrent())) { reasons.add('recovery-consumer-unavailable'); continue; }
+        if (remaining-- <= 0) { reasons.add('recovery-binding-budget'); continue; }
+        const upstreamChecks = item.prior?.upstreamChecks || Object.freeze(item.prior ? [item.prior.isCurrent] : []);
+        returnHistoryConsumers.set(semantic, Object.freeze({ ir,
+          expression:semantic.expression, op:semantic.op, instructionId:semantic.ir,
+          location:semantic.location, records:item.records,
+          // Re-observe current IR once while retaining the original producer's
+          // displaced before-images. Repeated return recovery reuses this fixed
+          // check list rather than nesting all earlier return closures.
+          upstreamChecks,
+          isCurrent:() => observation.matches() && upstreamChecks.every(check => check()),
+        }));
+      }
+    }
+  } catch { reasons.add('recovery-binding-observation-unavailable'); }
+  if (reasons.size) result.expressionHistoryBinding = Object.freeze({
+    completeness:'incomplete', reasons:Object.freeze([...reasons].sort()),
+  });
+}
 
 function valueOf(a) { return a?.value || null; }
 
@@ -466,7 +513,10 @@ function rewriteReturn(result, expression, opts) {
   for (const node of result.cAst?.body || []) {
     if (node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim())) {
       node.text = `return ${printExpression(expression)};`;
-      if (node.semantic) node.semantic.expression = expression;
+      // Retain the predecessor descriptor observed by the incoming consumer.
+      // The owning recovery below binds this new descriptor to that preimage;
+      // mutating the old descriptor would revoke the history being carried.
+      if (node.semantic) node.semantic = { ...node.semantic, expression };
       changed = true;
     }
   }
@@ -493,20 +543,34 @@ function committedStackSpillOnExactReturnPath(result, root, ret) {
   return null;
 }
 
-function removeProofOnlyStackSpill(result, stackStore, opts) {
+function removeProofOnlyStackSpill(result, stackStore, expression, opts) {
   const body = result.cAst?.body;
-  if (!Array.isArray(body) || !stackStore) return false;
+  if (!Array.isArray(body) || !stackStore) return [];
+  const removed = [];
   const storeRow = Number(stackStore.row);
   const storeId = String(stackStore.id);
-  const filtered = body.filter((node) => {
+  const filtered = body.filter((node, lineIndex) => {
     const text = String(node?.text || '');
     if (!/^\s*local_[A-Za-z0-9_]+\s*=/.test(text)) return true;
     const rows = node?.source?.rows || [];
     const ir = node?.source?.ir || [];
     const isSpill = rows.some((row) => Number(row) === storeRow) || ir.some((id) => String(id) === storeId);
+    if (isSpill) {
+      const maximum = Number.isSafeInteger(opts.renderProvenanceBudget?.maxTransformRecords)
+        ? Math.max(0, Math.min(1024, opts.renderProvenanceBudget.maxTransformRecords)) : 1024;
+      if (removed.length < maximum) removed.push(Object.freeze({
+        rule:'remove-proof-only-stack-spill', phase:'render',
+        evidence:Object.freeze({ kind:'committed-return-spill', detail:'existing return recovery removed this proof-only C statement' }),
+        originHistory:expressionOriginHistory({ source:mergeSource(node.source,
+          { ir:stackStore.id, row:stackStore.row, address:stackStore.address }) }, expression),
+        renderedRemoval:Object.freeze({ scope:'pre-transform-render', operation:'remove', lineIndex, kind:node.kind || 'null' }),
+      }));
+      else result.expressionHistoryBinding = Object.freeze({ ...result.expressionHistoryBinding, completeness:'incomplete',
+        reasons:Object.freeze([...new Set([...(result.expressionHistoryBinding?.reasons || []), 'render-removal-history-budget'])]) });
+    }
     return !isSpill;
   });
-  if (filtered.length === body.length) return false;
+  if (filtered.length === body.length) return [];
   result.cAst.body = filtered;
   const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
   result.pseudocode = printed.text;
@@ -516,7 +580,7 @@ function removeProofOnlyStackSpill(result, stackStore, opts) {
     row:node.source?.rows?.[0] ?? null, addr:node.source?.addresses?.[0] ?? null,
     note:null, source:node.source,
   }));
-  return true;
+  return removed;
 }
 
 export function recoverExactStackReturn(result, opts = {}) {
@@ -528,12 +592,12 @@ export function recoverExactStackReturn(result, opts = {}) {
   if (!ret) return result;
 
   const values = mapsOf(result);
-  const engine = new RewriteEngine(DEFAULT_RULES, {
+  const engine = new RewriteHistoryJournal(new RewriteEngine(DEFAULT_RULES, {
     maxIterations:10,
     nodeBudget:Math.min(2048, Number(opts.decompilerNodeBudget || 12000)),
     timeBudgetMs:Math.min(12, Math.max(4, Number(opts.decompilerTimeBudgetMs || 50) / 4)),
     maxApplications:512,
-  });
+  }), opts.renderProvenanceBudget?.maxTransformRecords);
   let committed = committedReturnValue(result, root, ret, opts);
   let committedSpill = null;
   if (!committed) {
@@ -547,15 +611,33 @@ export function recoverExactStackReturn(result, opts = {}) {
     }
   }
   const recovered = committed || resolve(result.ir, ret.block, ret.row, root.location.key, values, opts, engine, new Set());
+  const transitions = (result.cAst.body || [])
+    .filter(node => node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim()))
+    .map(node => ({ node, before:node.semantic?.expression || root,
+      prior:readStackReturnHistoryConsumer(node.semantic, result.ir)
+        || readStackPhiHistoryConsumer(node.semantic, result.ir)
+        || readLegacyStackHistoryConsumer(node.semantic, result.ir)
+        || readExpressionHistoryConsumer(node.semantic, result.ir) }));
   // A stack load means no useful reconstruction happened. A committed non-stack
   // field/global load is an intentional high-level return and must be retained.
   if (!recovered || (recovered.kind === 'load' && recovered.location?.kind === 'stack') || !rewriteReturn(result, recovered, opts)) return result;
-  if (committedSpill) removeProofOnlyStackSpill(result, committedSpill, opts);
+  const removals = committedSpill ? removeProofOnlyStackSpill(result, committedSpill, recovered, opts) : [];
 
-  result.rewriteProof = [...(result.rewriteProof || []), {
-    rule:'exact-stack-return-recovery', phase:'memory-ssa',
-    evidence:{ kind:'cfg-memory-ssa', detail:'exact stack return reconstructed from predecessor stores and flag-producing SSA evidence' },
-  }];
+  const records = transitions.map(item => {
+    const record = Object.freeze({ rule:'exact-stack-return-recovery', phase:'memory-ssa',
+      before:structuralKey(item.before), after:structuralKey(recovered),
+      evidence:Object.freeze({ kind:'cfg-memory-ssa', detail:'exact stack return reconstructed from predecessor stores and flag-producing SSA evidence' }),
+      originHistory:expressionOriginHistory({ source:mergeSource(item.before?.source, root.source) }, recovered),
+    });
+    item.records = Object.freeze([...(item.prior?.records || []), ...engine.records, record, ...removals]);
+    return record;
+  });
+  result.rewriteProof = [...(result.rewriteProof || []), ...engine.records, ...records, ...removals];
+  if (engine.truncated) result.expressionHistoryBinding = Object.freeze({
+    ...result.expressionHistoryBinding, completeness:'incomplete',
+    reasons:Object.freeze([...new Set([...(result.expressionHistoryBinding?.reasons || []), 'recovery-rewrite-history-budget'])]),
+  });
+  bindReturnHistory(result, transitions, opts);
   result.metrics = { ...(result.metrics || {}), rewrittenExpressions:(result.metrics?.rewrittenExpressions || 0) + 1, sourceMappedNodes:result.sourceMap?.length || 0 };
   result.ctx = { ...(result.ctx || {}), decompilerPipeline:{ ...(result.ctx?.decompilerPipeline || {}), exactStackReturnRecovered:true } };
   return result;

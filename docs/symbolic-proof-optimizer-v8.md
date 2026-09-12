@@ -1,0 +1,295 @@
+# Explicit solver-backed Phase 8 scalar projection
+
+Ordinary `decompile()` stays synchronous. Optional solver/e-graph code is loaded
+on demand by the asynchronous proof entry, not by the Phase 8 pass registry.
+The default UI and query adapter currently call synchronous `decompile()`.
+Proof-API regressions exercise the exported producer/transaction path; they do
+not establish default application activation. The protected userscript build may
+omit unused asynchronous exports, so unchanged build output is not activation evidence.
+
+```js
+import { decompileWithProof } from './js/decompile.js';
+const output = await decompileWithProof(model, decompileOptions, {
+  identity: { queryId, binaryId, snapshotId, functionId,
+    architecture, addressSpace, semanticsVersion },
+  abiId,
+  backendTier: 'tiered',
+  candidateStrategy: 'equality-saturation',
+  timeoutMs: 1000,
+  phase8TimeBudgetMs: 120,
+  phase8WorkBudget: 1000000,
+  signal,
+});
+if (output.proofOptimization.status === 'complete') {
+  // Existing output.pseudocode/sourceMap, with authentic proof evidence.
+}
+```
+
+For two steps, use `decompile(model, {...options, phase8PrepareProof:true})` and
+then `optimizeSemanticDecompilation(result, proofOptions)`. JSON reconstruction
+or a manually asserted AST/SSA map has no producer authority. Capture is opt-in,
+bounded, and binds exact expression origins. Input AST and IR remain mutable for
+their owner; any change invalidates the captured capability rather than freezing
+the caller's data. A failed optional query returns the original projection with
+`proofOptimization.status:'partial'`, a reason, and no newly adopted rewrites.
+
+## Exact scope
+
+Only unconditional total pure BV expressions with a solver-proved scalar
+result are projected. Integer add/sub/mul/bitwise/shifts, pure comparisons and
+casts are admitted. Loads/stores/calls/division, partial semantics and unsupported
+sorts are refused. A MOV reading an executed register assignment may supply its
+value; the assignment instruction and all architectural effects remain in IR.
+Nonempty preconditions and input renamings are refused, not silently discarded.
+An empty target list can run taint plus ordinary optimization without proof-backed
+changes. `adopted` counts SSA projection bindings, not removed instructions.
+
+This is value projection, **not whole-machine observable equivalence**. Registers,
+memory accesses, traps/faults/calls/atomic ordering remain in canonical IR. Existing
+memory proof APIs are unchanged and do not authorize this scalar-only gate.
+
+The display lowering uses the actual translator-owned, target-local SSA input
+relation and the actual representation producer's observed input expressions.
+No symbol-name parsing or caller-provided input map authorizes a substitution.
+Immutable recipes cover constants, inputs, arithmetic/bitwise/unary operations,
+guarded saturating shifts, comparisons, Boolean connectives, selection, casts,
+extraction and concatenation within 1–64 bits. C integer promotions and odd BV
+widths are made explicit with native-width casts/masks; sign extension is widened
+before arithmetic. Division, memory and unknown terms remain unsupported.
+The legacy pass ID `phase8.solver-constants` is retained at version `2.3.0`;
+new nonconstant records use `solver-scalar`, constants retain `solver-constant`.
+
+Each inspected request has a decision row. `selected` means a current eligible
+plan; `adopted` requires a committed and applied projection. Missing bindings,
+unsupported recipes or resource refusal never count as adoption. Decision
+coverage is a requested-target denominator, not proof that all targets are
+supported. A privately recorded published recipe is retained on replay without
+counting it again. Source/IR remain unchanged; history retains the original proof.
+
+## Reusing the existing display rules
+
+`candidateStrategy: 'representation-rules'` runs the actual 64 `DEFAULT_RULES`
+through the existing RewriteEngine on a disposable, bounded typed pattern tree.
+This is an alternative candidate source, not a replacement solver or a second
+definition of Semantic IR. The source is the canonical translator's issued
+universal-input relation, obtained using its `translate-only` analysis mode.
+Each tree leaf keeps an object binding to the actual canonical input; equal
+display names never establish that relation.
+
+Version 4 added proposals for the existing sign-mask idiom `x & ~(x >>s (bits-1))`
+through `recoverArm64ClangIdiom`. A distinct internal proposal phase runs before
+the unchanged 64-rule schedule, using the same engine and shared work/node/
+application limits. Phase/name collisions are rejected. This recognizer's
+signed `max(x,0)` family is admitted as an idiom proposal.
+
+`idiomCoverage` and the captured `idiomTrace` / `idiomApplications` record that
+work separately from `ruleCoverage` and ordinary rule traces. Their combined
+application count is the actual shared engine count. The version and digest
+bind both registries. Recognition alone never authorizes adoption: the proposed
+max is compiled to canonical signed compare/ITE, independently proved, and
+rendered through the existing safe recipe. Literal legacy `max(...)` spelling
+is not substituted as proof. Regressions cover actual generic BV4/BV8 production
+targets, exhaustive values, mixed ordinary-rule scheduling, stale input, replay
+and withheld publication; they do not certify native-width or other idiom families.
+
+Version 5 adds the existing logical-shift/contiguous-low-mask `bit_extract`
+recognizer in that same proposal phase. It selects only a positive constant-width
+slice contained within the source width. Invalid zero-width and out-of-input
+slices are declined before selection, keeping ordinary zero/full-mask rewrites
+available. Each extracted field is explicitly zero-extended back to the replaced
+expression width before enclosing comparisons or sign extensions observe it;
+restoring only the final root width would change intermediate domains. Proof
+never substitutes the smaller field domain for the original target.
+The added genuine BV4/BV8 cases cover exhaustive canonical and adopted values,
+nested extraction with ordinary rules, private API adoption/replay and conservative
+refusal. Default UI activation and native-width proof remain outside this evidence.
+
+The resulting proposal is compiled into the existing Expr DAG, then independently
+checked against the **original canonical target**, not against a rewritten view
+or the rule's own `proof` text. Only the existing private receipt/plan/transaction
+path can adopt it. The temporary pattern tree is never published: the proved
+canonical term goes through the same native-width-safe display compiler as the
+other strategies. Generator work/allocation counts also charge the parent plan.
+
+`targetDecisions[].ruleCoverage` lists all registered rules, including rules that
+did not contribute. `candidateApplications` counts work on the private candidate
+tree; `proved-candidate` describes a contributor to a proved whole proposal, not
+a universal theorem about the rule or an applied legacy render transform.
+`adopted` remains solely the actual projection count. A cancelled or exhausted
+candidate batch reports unknown rows and no candidates. Refuted and unsupported
+proposals cannot enter the proof plan; replay does not count adoption twice.
+
+The regression matrix keeps an actual BV1 add-to-multiply/shift proposal and an
+unsigned-select-to-abs proposal as refuted cases. Their legacy rule evidence is
+truthy but the independent verifier finds a behavioral difference. This path
+does not repair or certify the ordinary synchronous legacy rendering rules.
+Full rule-by-width/operator/idiom closure, every legacy view transition, and
+memory/CFG/exception observables remain separate unfinished roadmap work.
+
+## Adopted equality-candidate audit
+
+Each adopted equality-saturation transform now retains `generatorAudit` in its
+committed plan entry, `phase8Projection.transforms` and `renderProvenance.ledger`.
+The record contains the actual candidate/proof query IDs, rule-set version,
+rule order, applied search rules, extraction cost, effective query limits and
+measured resource counters. The symbolic query reports its captured limits and
+the owned target result carries them to the Phase 8 plan; callers cannot supply
+replacement audit metadata. The pass version is 2.3.0.
+
+`appliedRules` is the complete query search's applied-rule set, **not** a derivation
+certificate for one extracted term. `extractionCost` belongs to that specific
+candidate. Limits and counters describe the encompassing query, not independent
+per-rule resource use, the whole function or the solver's internal limits.
+Allocation/e-class counters are not physical peak memory measurements.
+
+Audit fields are bounded, snapshotted, validated and deeply frozen before they
+enter the plan's audit identity. Capture charges the parent work/allocation
+budget. Wall-clock observations stay in existing query/plan metrics outside the
+stable audit digest; timing does not make the same semantic plan acquire a new
+identity on every replay. Replay retains the actual prior transform and its audit
+without counting another adoption.
+
+The strict canonical PassResult schema is unchanged: its validation still has
+four fields, including plan and proof query IDs, and rewrite data still has two
+hash fields. Its committed overlay contains the audited entry; the actual rendered
+transform ledger retains the corresponding audit. No parallel ledger or proof
+capability was added. Serialized/copied audits and edited plans do not authorize
+adoption. Legitimate wrappers around an unchanged owned AST remain usable, but
+substituting unowned history produces explicitly incomplete history and cannot
+smuggle in a forged transform. The optional legacy representation/local generators
+are not mislabeled as equality-saturation audits.
+
+`tests/phase8/substrate/generator-audit.test.mjs` covers captured nondefault limits,
+owned target propagation, genuine committed overlays, constant/nonconstant output
+under all three schedules, provenance/replay, stable audit identity, copy/edit
+refusal, N-1/N/N+1 parent budgets and withheld/stale transactions. This completes
+the C4-05 generator-metadata path for actually adopted equality candidates, not
+the full native proof, memory/CFG/exception or compiler/device denominator.
+
+## Authority and lifecycle
+
+The existing symbolic query, genuine candidate consumer and real backend judge
+issue the plan. A private WeakMap capability, not a digest, `verified:true` or an
+e-class membership, binds before/after, exact SSA inputs, model, binary/snapshot/
+function/architecture/address-space/semantics identity, ABI, pass, transform kind,
+observable scope and query hash. The ordinary Phase 8 transaction revalidates it
+before mutation. Forged/serialized/stale receipts, changed targets/payloads and
+cancelled observers refuse the entire proof batch. A seeded or merely staged
+artifact is not a committed overlay. `provedRewrites` is a versioned analysis key;
+passes not preserving it invalidate it. Contract version 7 invalidates old keys.
+
+Projection checks the committed overlay and unchanged producer AST. Exact typed
+data identities include full origins: display-name equality never associates SSA
+values. Cloned expressions retain all applicable proof/source evidence. Signal
+checks follow callbacks, final measurements and materialization, immediately
+before publication. The original result remains unchanged after late refusal.
+
+`proofOptimization.taint` and `taintEvidence` describe the original IR, not an
+invented clean flow after simplification. They come from the existing first-class
+taint/evidence owner. Results contain native BigInt/Expr objects: use existing
+Expr/evidence serialization for transport. Serialized data never carries reusable
+proof authority; another process must verify anew.
+
+## Resources and measurement
+
+Query preparation (including module loading and solver work) has its own
+`timeoutMs`. The existing full Phase 8 stage has a separate work/deadline budget.
+`phase8OptimizeStage` is that stage's actual elapsed time, not the total query or
+rendering time and not an iPad/WebKit certificate. Fixed nine-case performance
+IDs/thresholds are unchanged. Additional measurements distinguish a refused
+query from an explicit fresh replay and never fabricate a zero elapsed value.
+
+Producer capture bounds objects, edges, depth, string/BigInt sizes and DAG tree
+expansion before recursive rendering. See `phase8/projection-origin.js`. Default
+interactive behavior, corpus, thresholds, existing solver and judge are unchanged.
+Intentional lifecycle callbacks are trusted executable interfaces, not a sandbox:
+a Proxy trap or callback that never returns cannot be preempted on the same JS
+thread. Use existing worker isolation for hostile executable providers.
+
+Scalar recipes additionally cap 128 unique nodes, depth 24 and 512 expanded
+operand units, including operand duplication introduced by guarded shifts.
+These bounds do not silently truncate a term. Unsupported compilation remains an
+explicit no-adoption decision; cancellation still gates the entire transaction.
+The scalar regression includes exhaustive small-width canonical-BV versus AST
+evaluation, native-width boundaries, real printed-C/UBSan regressions, actual
+nonconstant MBA publication and private-history replay. Native C tests use `CC`
+or `cc`; they do not certify WebKit/iPad runtime behavior.
+
+Run the new discovered `tests/phase8/{substrate,integration,performance}/proof-*.test.mjs`
+and `tests/phase9/taint/v8-query-lifecycle.test.mjs`, then Phase 8/9, existing
+semantic/decompiler tests, lint and module/evidence checks. Regression coverage
+includes real assembly-to-render flow, independent BV enumeration, tampering,
+DAG bounds, N-1/N/N+1, stale identities and late cancellation.
+
+### Frozen C4-05 family/width regression
+
+The canonical Phase 9 egraph group now discovers
+`tests/phase9/egraph/family-width-matrix.test.mjs`: 34 scalar families across
+1/2/3/4/8/16/32/64 bits (272 cells), plus 14 distinct Bool families, off-by-one
+MBA counterexamples, zero-work refusal for every scalar cell, and cancellation
+association/discovery variants with deterministic replay. Independent integer
+formulas check source and candidate outputs, exhaustively at widths 1–4 and on
+boundary cross-products at larger widths. E-class membership remains insufficient;
+every eligible candidate needs its own actual verifier receipt.
+
+The matrix is a coverage inventory, not an all-proved benchmark. Initial results
+were 240 cells with proved candidates, 5 retaining the original equal-cost term,
+24 unknown/withheld proof attempts and 3 unsupported BV65 intermediate cases.
+Only explicitly enumerated native-width proof gaps may return bounded refusal;
+other cells retain mandatory positive proof assertions. Refusal always publishes
+zero candidates. `completeProofCoverage:false` remains explicit, and synthetic
+coverage does not replace the compiler denominator or physical-device evidence.
+
+Set `HEX_EGRAPH_MATRIX_REPORT` to a new persistent file path to retain the full
+scalar report (never reuse an existing receipt path). The report is atomically
+published after the matrix's assertions pass and includes IDs, hashes, proof
+query hashes, costs and actual resource counters. It does not attest deployed
+runtime identity or real process peak memory. Bind it to the exact clean test head
+in the checkpoint evidence. The existing Phase 8 scalar substrate test separately
+checks all eight MBA widths through the real producer and projection boundary:
+proved cases adopt with provenance; unproved cases preserve the original result.
+
+### Rule-order metamorphism
+
+The optional equality-saturation route accepts
+`ruleOrder:'canonical' | 'reverse' | 'discovery'`. Omission keeps the original
+canonical rule-name/owner ordering and its work charge. Reverse applies the same
+completed proposal batch in descending order; discovery preserves its generation
+order. These are finite built-in schedules, not externally supplied rules or
+comparators. Read/search, batch addition/union and rebuild remain separate stages.
+All schedules retain the existing hard limits and independent proof requirement.
+
+The order is captured before asynchronous verification, reported on the query
+and its candidates, and carried through symbolic analysis into the real Phase 8
+plan and target decisions. It participates in the plan's audit digest. It is not
+part of proof authority: identical before/after terms still need an actual
+privately issued verification receipt. Unknown orders,
+non-data fields and orders supplied to a different candidate strategy fail closed.
+
+`tests/phase9/egraph/rule-order.test.mjs` exercises the actual scheduling primitive
+and the existing shared 34-family/8-width fixtures at all three orders (816 cells).
+It compares complete Pareto extractions, independently verifies each schedule's
+candidates and checks concrete output formulas. It retains the existing explicit
+wide proof gaps and unsupported BV65 rows. It also checks all 14 Bool families,
+replay, N-1/N/N+1 work/allocation ceilings, cancellation and stale identities.
+The real producer/optimizer regression proves that all three orders reach actual
+projection and proof-linked origins, with distinct plan audit IDs and the same
+output. No helper-produced AST or copied receipt authorizes that test's adoption.
+
+Set `HEX_EGRAPH_RULE_ORDER_REPORT` to a fresh persistent file path to retain the
+816-row scalar report, separately from `HEX_EGRAPH_MATRIX_REPORT`. A matrix report
+is not whole-suite or release acceptance; bind it to a successful exact-head
+test receipt. These checks establish the declared three-schedule denominator,
+not every possible permutation or all unbounded expressions. Native proof gaps,
+ordinary legacy-render coverage, memory/CFG/exception proofs and full integration
+acceptance remain open.
+
+## Current-main reconciliation (2026-09-07)
+
+The publication branch is reconciled onto the then-current `main` lineage.  In
+particular, the newer Phase 8 untrusted `PassResult` snapshot/descriptor boundary
+is retained rather than replaced by the earlier v8 transaction shape.  Genuine
+proof capabilities are checked privately before and immediately before commit;
+the public ledger receives only a bounded plain-data audit projection of the
+rewrite/validation fields.  The snapshot itself is therefore not proof authority,
+and cloning or JSON-roundtripping it cannot authorize a rewrite.

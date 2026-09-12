@@ -2,6 +2,7 @@ import { scopedAnalysisHost, scopedImmutableSourceIdentity } from './scoped-host
 import { analyzeFunctionCached, supportsArm64SemanticAnalysis } from '../../analyze.js';
 import { buildOverlay } from '../../narrate.js';
 import { decompile } from '../../decompile.js';
+import { decompilerSnapshot } from '../semantic-function.js';
 import { inferTypes } from '../../types.js';
 import { resolveABIPlugin } from '../../targets/abi/index.js';
 import { riscvAbiFromElfFlags } from '../../targets/abi/riscv-lp64.js';
@@ -834,13 +835,16 @@ export function createAppAnalysisQueryAdapter(app) {
     async decompile(_snapshot, id, options = {}) {
       if (typeof app?.getDecompile === 'function') {
         const value = await app.getDecompile(id, options);
-        if (value != null) return wrap(value);
+        if (value != null) return wrap(decompilerSnapshot(value), completenessOf(value));
       }
       const result = await loadFunction(id, options);
       if (result?.value?.decompiler) return wrap(result.value.decompiler, result.status?.completeness);
       if (!result?.value?.model) return unsupported(id, 'decompiler-projection-unavailable');
       const address = addressOf(id) ?? result.value.startAddr ?? result.value.startAddress;
-      return wrap(decompile(result.value.model, { name:address == null ? null : app?.symbols?.nameAt?.(address), addr:address }), result.status?.completeness);
+      const value = decompile(result.value.model, { name:address == null ? null : app?.symbols?.nameAt?.(address), addr:address,
+        shouldAbort:() => options.signal?.aborted === true });
+      return value == null ? unsupported(id, 'decompiler-projection-unavailable')
+        : wrap(decompilerSnapshot(value), result.status?.completeness);
     },
 
     async search(_snapshot, query, page = {}, options = {}) {

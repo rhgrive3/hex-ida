@@ -41,6 +41,9 @@ export class ArchitecturePluginV2 {
     this.decode = normalizeArchitectureHook(definition.decode, 'decode');
     this.decodeProvider = definition.decodeProvider || null;
     this.liftExact = normalizeArchitectureHook(definition.liftExact, 'liftExact');
+    // Optional identity-preserving path: the original decoder object is passed
+    // unchanged, with canonical instruction metadata supplied in the context.
+    this.liftDecodedExact = normalizeArchitectureHook(definition.liftDecodedExact, 'liftDecodedExact');
     this.classifyControlFlow = normalizeArchitectureHook(definition.classifyControlFlow, 'classifyControlFlow', () => null);
     this.directControlTarget = normalizeArchitectureHook(definition.directControlTarget, 'directControlTarget', () => null);
     this.assemble = normalizeArchitectureHook(definition.assemble, 'assemble');

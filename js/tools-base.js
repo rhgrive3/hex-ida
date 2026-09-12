@@ -27,6 +27,7 @@ import {
 import { addrHex } from './format.js';
 import { decompile, decompiledText } from './decompile.js';
 import { decompilerSourceRows, formatDecompilerSource, fullDecompilerSourceText, hasSingleDecompilerInstruction, primaryDecompilerAddress } from './decompiler/provenance.js';
+import { showDecompilerProvenanceSheet } from './ui/decompiler-provenance-sheet.js';
 import { cfgGraph, callGraph, renderGraph, graphLegend } from './graphview.js';
 import { inferTypes, recoverStruct, TypeStore, structToC, BASIC_TYPES, typeJa } from './types.js';
 import { readableName, shortName, isMangled, findCxxClasses, readVtable } from './rtti.js';
@@ -334,6 +335,7 @@ export async function showDecompiler(app, addr) {
   });
   chips.append(asmChip, noteChip);
   chips.append(button('コピー', 'chip', () => copyText(decompiledText(out), '逆コンパイル結果')));
+  chips.append(button('命令との双方向対応', 'chip', () => showDecompilerProvenanceSheet(app, addr)));
   chips.append(button('図で見る', 'chip', () => { sheet.close(); showCfg(app, addr); }));
   head.append(chips);
   sheet.body.append(head);

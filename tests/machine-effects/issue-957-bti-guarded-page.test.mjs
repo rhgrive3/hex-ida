@@ -70,7 +70,7 @@ function btypeWrites(bundle) {
     operation.kind === 'register-write' && operation.register?.registerId === 'pstate.btype');
 }
 
-assert.equal(ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, '7');
+assert.equal(ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, '8');
 
 {
   const result = liftArm64MachineEffects(bti('c'), context('bti-unguarded', {

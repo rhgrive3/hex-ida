@@ -115,9 +115,11 @@ function dominanceIndex(idom, reachable) {
   return { tin, tout, depth };
 }
 
+const issuedDominanceViews = new WeakSet();
 class DominanceView {
   constructor(node, idom, reachable, index, excluded = -1) {
     this.node = node; this.idom = idom; this.reachable = reachable; this.index = index; this.excluded = excluded;
+    issuedDominanceViews.add(this);
   }
   has(candidate) {
     if (!Number.isInteger(candidate) || candidate < 0 || candidate >= this.idom.length) return false;
@@ -138,6 +140,26 @@ class DominanceView {
       cur = this.idom[cur];
     }
   }
+}
+
+const dominanceViewMethods = Object.getOwnPropertyDescriptors(DominanceView.prototype);
+// Observation only: expose the backing data of this producer's actual view,
+// without iterating/recomputing dominance or accepting a shape-compatible has().
+export function readDominanceViewInputs(view) {
+  if (!issuedDominanceViews.has(view) || Object.getPrototypeOf(view) !== DominanceView.prototype) return null;
+  for (const key of Reflect.ownKeys(dominanceViewMethods)) {
+    const expected = dominanceViewMethods[key], current = Object.getOwnPropertyDescriptor(DominanceView.prototype, key);
+    if (!current || current.value !== expected.value || current.get !== expected.get || current.set !== expected.set) return null;
+  }
+  const keys = ['node', 'idom', 'reachable', 'index', 'excluded'];
+  if (Reflect.ownKeys(view).length !== keys.length) return null;
+  const inputs = {};
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(view, key);
+    if (!descriptor || !Object.hasOwn(descriptor, 'value') || !descriptor.enumerable) return null;
+    inputs[key] = descriptor.value;
+  }
+  return inputs;
 }
 
 function dominanceViews(idom, reachable, excluded = -1) {

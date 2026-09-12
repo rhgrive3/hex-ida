@@ -15,6 +15,9 @@ import { sourceOf, mergeSource } from './ast/nodes.js';
 import { isNZCVCondition, renderNZCVCondition } from './flag-semantics.js';
 import { renderIndexedMemory } from './address-semantics.js';
 import { integerText } from './pretty/c.js';
+import { captureProjectionIrData, captureRecoveryIrData, captureRecoveryDominators, PROJECTION_LIMITS } from './phase8/projection-origin.js';
+import { ownDataEntries } from '../core/identity/live-data.js';
+import { expressionOriginHistory } from './rewrite/engine.js';
 import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
@@ -23,6 +26,461 @@ import {
 const MAX_EXPR_DEPTH = 48;
 const MAX_EXPR_NODES = 512;
 const MAX_BLOCKS = 6000;
+
+const storeRenderLines = new WeakMap(), storeRenderHistories = new WeakMap();
+const statementRenderLines = new WeakMap(), statementRenderHistories = new WeakMap();
+const controlRenderLines = new WeakMap(), controlRenderHistories = new WeakMap();
+const conditionalRegionHistories = new WeakMap(), conditionalRegionsByRecord = new WeakMap();
+
+/** Initial-emitter identity only. This never authorizes a CFG transform or a
+ * copied C AST span. A later carrier must bind every copied node explicitly. */
+export function readSemanticConditionalRegions(result) {
+  const binding = conditionalRegionHistories.get(result);
+  try { return binding?.isCurrent() ? binding.history : null; } catch { return null; }
+}
+
+export function readSemanticConditionalRegion(record, ir) {
+  const binding = conditionalRegionsByRecord.get(record);
+  try { return binding?.ir === ir && binding.isCurrent() ? binding.region : null; } catch { return null; }
+}
+
+function beginConditionalRegion(ctx, out, state) {
+  const history = ctx.conditionalRegionHistory;
+  if (!history) return null;
+  if (history.events.length >= history.limit || state.visited.size > history.remaining || history.remaining <= 0) {
+    history.reasons.add('conditional-region-budget'); return null;
+  }
+  // Reserve before allocation: nested open regions must not each retain a
+  // fresh full visited set against the same still-unspent budget.
+  history.remaining -= state.visited.size;
+  return { start:out.length, visited:new Set(state.visited), armStart:null, arms:[] };
+}
+
+function startConditionalArm(marker, out) {
+  if (marker) marker.armStart = out.length;
+}
+
+function finishConditionalArm(marker, out, state, role, ctx) {
+  if (!marker) return;
+  const history = ctx.conditionalRegionHistory;
+  const work = state.visited.size * 4;
+  if (work > history.remaining || out.length - marker.start > history.remaining) {
+    history.reasons.add('conditional-region-budget'); marker.failed = true; return;
+  }
+  history.remaining -= work;
+  const blocks = [...state.visited].filter(index => !marker.visited.has(index)).map(index => ctx.ir.blocks[index]);
+  marker.arms.push({ role, start:marker.armStart, end:out.length, blocks });
+  marker.visited = new Set(state.visited);
+}
+
+function finishConditionalRegion(marker, out, ctx, branch, selection, separator, close) {
+  if (!marker || marker.failed) return;
+  const history = ctx.conditionalRegionHistory, size = out.length - marker.start;
+  const joinBlock = ctx.ir.blocks[selection.join], phis = joinBlock?.phis ?? [];
+  const cost = size * 2 + phis.length + marker.arms.reduce((sum, arm) => sum + arm.blocks.length, 0);
+  if (history.events.length >= history.limit || cost > history.remaining) {
+    history.reasons.add('conditional-region-budget'); return;
+  }
+  const header = out[marker.start], binding = readSemanticControlLineHistory(header, ctx.ir);
+  if (!binding || binding.instruction !== branch || !joinBlock || !Array.isArray(phis)) {
+    history.reasons.add('conditional-region-producer-unavailable'); return;
+  }
+  history.remaining -= cost;
+  history.events.push(Object.freeze({ record:binding.records[0], branch,
+    selection:Object.freeze({ ...selection }), header, separator, close,
+    nodes:Object.freeze(out.slice(marker.start)), joinBlock, joinPhis:Object.freeze([...phis]),
+    arms:Object.freeze(['yes', 'no'].map(role => {
+      const arm = marker.arms.find(item => item.role === role);
+      return Object.freeze({ role, entryBlock:ctx.ir.blocks[selection[role]],
+        nodes:Object.freeze(arm ? out.slice(arm.start, arm.end) : []), emittedBlocks:Object.freeze(arm?.blocks ?? []) });
+    })),
+  }));
+}
+
+function bindConditionalRegionHistory(result, ctx) {
+  const pending = ctx.conditionalRegionHistory;
+  if (!pending) return result;
+  const lines = result.lines, canonical = ctx.controlRenderHistory.canonical;
+  let observation = null;
+  try {
+    if (result.coverage.mode !== 'structured') pending.reasons.add('conditional-region-cfg-fallback');
+    if (ctx.opts.shouldAbort?.()) pending.reasons.add('conditional-region-cancelled');
+    if (!canonical?.isCurrent()) pending.reasons.add('conditional-region-stale-input');
+    if (!pending.reasons.size) {
+      // One final output observation for all nested regions, rather than a
+      // recursive full-line scan per region. Node identity, order and contents
+      // are certified before any downstream copying or representation pass.
+      // Empty complete histories also observe their input and output: absence
+      // of emitted regions cannot outlive the program it describes.
+      observation = captureProjectionIrData([lines], ctx.opts.shouldAbort);
+      if (observation.metrics.edges > pending.maxEdges) pending.reasons.add('conditional-region-budget');
+      const positions = new Map(lines.map((node, index) => [node, index]));
+      if (positions.size !== lines.length || pending.events.some(region => {
+        const start = positions.get(region.header);
+        return start == null || region.nodes.some((node, index) => lines[start + index] !== node)
+          || region.nodes.at(-1) !== region.close;
+      })) pending.reasons.add('conditional-region-output-identity');
+    }
+  } catch { pending.reasons.add('conditional-region-observation-unavailable'); }
+  const history = Object.freeze({ version:1, scope:'initial-emitter-spans-only-not-cfg-proof',
+    completeness:pending.reasons.size ? 'incomplete' : 'complete', transformAuthorization:false,
+    reasons:Object.freeze([...pending.reasons]), regions:Object.freeze(pending.reasons.size ? [] : [...pending.events]) });
+  const isCurrent = () => result.ir === ctx.ir && result.lines === lines
+    && (history.completeness === 'incomplete' || canonical?.isCurrent()) && (!observation || observation.matches())
+    && !ctx.opts.shouldAbort?.();
+  const binding = Object.freeze({ history, isCurrent });
+  conditionalRegionHistories.set(result, binding);
+  try {
+    if (isCurrent()) for (const region of history.regions) {
+      conditionalRegionsByRecord.set(region.record, Object.freeze({ ir:ctx.ir, region, isCurrent }));
+    }
+  } catch { /* A throwing cancellation observer cannot issue a record binding. */ }
+  return result;
+}
+// Issued only by the real initial function renderer. Primitive string returns
+// stay unchanged; invocation tickets never become semantic identities.
+const initialValueTraces = new WeakMap();
+
+function beginInitialValueTrace(ctx) {
+  initialValueTraces.set(ctx, { active:null, roots:[], memo:new Map(), calls:new Map(),
+    remaining:historyCap(ctx.opts.renderProvenanceBudget?.maxTransformRecords, 1024),
+    reasons:new Set(), canonical:ctx.statementRenderHistory.canonical });
+}
+
+function initialValueCursor(ctx) {
+  const trace = initialValueTraces.get(ctx);
+  const list = trace && (trace.active?.children || trace.roots);
+  return list ? { list, start:list.length } : null;
+}
+
+function selectInitialValueTickets(cursor, selected = []) {
+  if (cursor) cursor.list.splice(cursor.start, cursor.list.length - cursor.start, ...selected.filter(Boolean));
+}
+
+function resetInitialValueOwner(ctx) {
+  const trace = initialValueTraces.get(ctx);
+  if (trace) trace.roots.length = 0;
+}
+
+function initialValueForm(ctx, form, text) {
+  const frame = initialValueTraces.get(ctx)?.active;
+  if (frame) frame.form = form;
+  return text;
+}
+
+function takeInitialValueRecords(ctx, owner) {
+  const trace = initialValueTraces.get(ctx);
+  if (!trace) return [];
+  for (const reason of trace.reasons) owner.reasons.add(reason);
+  const pending = [...trace.roots], seen = new Set(), records = [];
+  trace.roots.length = 0;
+  while (pending.length) {
+    const ticket = pending.pop();
+    if (!ticket || seen.has(ticket)) continue;
+    seen.add(ticket);
+    if (seen.size > 1024) { owner.reasons.add('initial-expression-history-budget'); break; }
+    if (ticket.record) records.push(ticket.record);
+    else owner.reasons.add('initial-expression-history-unavailable');
+    pending.push(...ticket.children);
+  }
+  return records;
+}
+export const INITIAL_CONTROL_RENDER_FORMS = Object.freeze([
+  'unsupported-statement', 'while-loop', 'for-loop', 'revisit-goto', 'loop-continue', 'loop-break',
+  'residual-branch-goto', 'switch-header', 'switch-case-goto', 'switch-default-goto', 'one-sided-if', 'if-else',
+  'residual-conditional-goto', 'residual-false-goto', 'cfg-label', 'cfg-conditional-goto', 'cfg-false-goto', 'cfg-branch-goto',
+]);
+const historyCap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
+
+export function readSemanticStatementLineHistory(line, ir) {
+  const entry = statementRenderLines.get(line);
+  return entry && entry.ir === ir && entry.isCurrent() ? entry : null;
+}
+
+export function readSemanticStatementRenderHistory(result) {
+  const entry = statementRenderHistories.get(result);
+  return entry && entry.ir === result.ir && entry.disposition === result.semanticStatementRenderHistory ? entry : null;
+}
+
+function beginStatementRenderHistory(ctx) {
+  const history = ctx.statementRenderHistory;
+  if (!ctx.ir.instructions.some(inst => [OP.CALL, OP.RET, OP.STORE, OP.BR, OP.CBR, OP.UNKNOWN].includes(inst.op))) return;
+  try {
+    if (history.limit <= 0 || history.edges <= 0 || history.consumers <= 0) throw new Error('initial-statement-budget');
+    // One bounded preimage, before rendering or prototype/symbol callbacks.
+    // Reaching selection scans values beyond the finally selected operands;
+    // reusing the existing IR observer keeps those rejected candidates too.
+    const callsDescriptor = Object.getOwnPropertyDescriptor(ctx.model, 'calls');
+    if (callsDescriptor && (!Object.hasOwn(callsDescriptor, 'value') || !callsDescriptor.enumerable)) throw new Error('initial-statement-model-data-required');
+    const calls = callsDescriptor?.value, argsDescriptor = Object.getOwnPropertyDescriptor(ctx.ir, 'args');
+    if (argsDescriptor && (!Object.hasOwn(argsDescriptor, 'value') || !argsDescriptor.enumerable)) throw new Error('initial-statement-args-data-required');
+    const args = argsDescriptor?.value;
+    if (args != null && (Object.getPrototypeOf(args) !== Map.prototype || Reflect.ownKeys(args).length)) throw new Error('initial-statement-args-map-required');
+    const bindings = args == null ? [] : [...Map.prototype.entries.call(args)];
+    if (bindings.length > 512) throw new Error('initial-statement-args-budget');
+    const observation = captureRecoveryIrData(ctx.ir, [calls, bindings, ...ctx.ir.values.map(value => Object.getOwnPropertyDescriptor(value, 'uses')?.value)]);
+    history.edges -= observation.metrics.edges;
+    if (history.edges < 0) throw new Error('initial-statement-budget');
+    const sameData = (object, key, descriptor) => {
+      const now = Object.getOwnPropertyDescriptor(object, key);
+      return descriptor ? !!now && Object.hasOwn(now, 'value') && now.enumerable && now.value === descriptor.value : !now;
+    };
+    const size = Object.getOwnPropertyDescriptor(Map.prototype, 'size').get;
+    history.canonical = { isCurrent:() => sameData(ctx.model, 'calls', callsDescriptor) && sameData(ctx.ir, 'args', argsDescriptor)
+      && (args == null || Object.getPrototypeOf(args) === Map.prototype && !Reflect.ownKeys(args).length && size.call(args) === bindings.length
+        && bindings.every(([key, value]) => Map.prototype.has.call(args, key) && Map.prototype.get.call(args, key) === value)) && observation.matches() };
+  } catch { history.edges = 0; }
+}
+
+export function readSemanticControlLineHistory(line, ir) {
+  const entry = controlRenderLines.get(line);
+  return entry && entry.ir === ir && entry.isCurrent() ? entry : null;
+}
+
+export function readSemanticControlRenderHistory(result) {
+  const entry = controlRenderHistories.get(result);
+  return entry && entry.ir === result.ir && entry.disposition === result.semanticControlRenderHistory ? entry : null;
+}
+
+function beginControlRenderHistory(ctx) {
+  const history = ctx.controlRenderHistory;
+  if (!ctx.conditionalRegionHistory && !ctx.ir.instructions.some(inst => [OP.BR, OP.CBR, OP.UNKNOWN].includes(inst.op))) return;
+  try {
+    if (history.limit <= 0 || history.edges <= 0 || !ctx.statementRenderHistory.canonical) throw new Error('initial-control-budget');
+    // Structural facts are the existing graph producer's data, not a second
+    // CFG/dominance calculation. Sets are observed natively and not iterated
+    // through caller-supplied has()/iterator implementations.
+    const loops = ctx.graph.loops, loopEntries = ownDataEntries(loops, MAX_BLOCKS);
+    const members = [ctx.graph.reachable], plain = [ctx.graph.immediatePostDominators, ctx.model.instructions];
+    const records = loopEntries.map(([key, loop]) => {
+      const fields = ownDataEntries(loop, 16);
+      for (const [name, value] of fields) {
+        if (['nodes', 'exits', 'latches'].includes(name)) members.push(value); else plain.push(value);
+      }
+      return { key, loop, fields };
+    });
+    const roots = [[ctx.ir, 'loops'], [ctx.ir, 'ipdom'], [ctx.ir, 'postDominators'], [ctx.model, 'instructions'],
+      [ctx.opts, 'switches'], [ctx.model, 'switches']].map(([object, key]) => {
+      const descriptor = Object.getOwnPropertyDescriptor(object, key);
+      if (descriptor && (!Object.hasOwn(descriptor, 'value') || !descriptor.enumerable)) throw new Error('initial-control-data-required');
+      if (key === 'switches') plain.push(descriptor?.value);
+      return { object, key, descriptor };
+    });
+    const switches = [...Map.prototype.entries.call(ctx.switchByRow)];
+    plain.push(switches);
+    const sets = captureRecoveryDominators(members), post = captureRecoveryDominators(ctx.graph.postDominators);
+    const data = captureProjectionIrData(plain);
+    history.edges -= sets.edges + post.edges + data.metrics.edges;
+    if (history.edges < 0) throw new Error('initial-control-budget');
+    history.canonical = { isCurrent:() => { try { return ctx.statementRenderHistory.canonical.isCurrent()
+      && roots.every(({ object, key, descriptor }) => {
+        const now = Object.getOwnPropertyDescriptor(object, key);
+        return descriptor ? !!now && Object.hasOwn(now, 'value') && now.enumerable && now.value === descriptor.value : !now;
+      }) && loops.length === loopEntries.length && records.every(({ key, loop, fields }) => {
+        if (Object.getOwnPropertyDescriptor(loops, key)?.value !== loop) return false;
+        const now = ownDataEntries(loop, 16);
+        return now.length === fields.length && fields.every(([name, value], index) => now[index][0] === name && now[index][1] === value);
+      }) && sets.matches() && post.matches() && data.matches(); } catch { return false; } } };
+  } catch { history.edges = 0; }
+}
+
+function retainStatementRenderLine(node, inst, detail, ctx, control = null, resultBinding = null) {
+  const history = control ? ctx.controlRenderHistory : ctx.statementRenderHistory;
+  const expressions = takeInitialValueRecords(ctx, history);
+  const prefix = control ? 'initial-control' : 'initial-statement';
+  if (history.events.length >= history.limit) { history.reasons.add(`${prefix}-history-budget`); return; }
+  const own = (object, key) => object == null ? undefined : Object.getOwnPropertyDescriptor(object, key)?.value;
+  const source = control ? mergeSource(node.source, inst ? sourceOf({ address:own(inst, 'address'), row:own(inst, 'row'),
+    ir:own(inst, 'id'), ssaDef:own(own(inst, 'dst'), 'id') }) : null, detail?.source) : node.source;
+  const record = Object.freeze({ rule:control ? `render-initial-${control}` : inst.op === OP.CALL ? 'render-initial-call' : 'render-initial-return', phase:'initial-semantic-render',
+    before:`canonical:${inst?.op ?? 'block'}:${inst?.id ?? 'target'}`, after:control ? `control:${control}` : `statement:${inst.op}`,
+    evidence:Object.freeze({ kind:control ? 'observed-control-render-not-cfg-equivalence' : 'observed-call-return-render-not-abi-equivalence',
+      detail:control ? 'actual selected control/unsupported-statement emission; source/target identities retained, not a new CFG, flag or scalar equivalence proof'
+        : 'actual emitted call/return statement; existing source identities retained, not a new ABI, scalar or control-flow proof' }),
+    originHistory:expressionOriginHistory({ source }, { source }),
+  });
+  const records = Object.freeze([record, ...expressions]);
+  history.events.push({ node, record, records });
+  try {
+    if (history.edges <= 0 || history.consumers <= 0 || !history.canonical?.isCurrent()) throw new Error(`${prefix}-binding-unavailable`);
+    history.consumers--;
+    // A selected canonical return value is already inside the pre-render
+    // whole-IR observation, including every candidate and reverse-use index.
+    // Do not recursively observe the same SSA cycle from a single value again.
+    // Nonmember details and call/control bindings still need their own capture.
+    const sharedReturn = !control && inst.op === OP.RET && resultBinding == null && detail != null && ctx.ir.values.includes(detail);
+    const inputs = sharedReturn ? { metrics:{ edges:0 }, matches:() => ctx.ir.values.includes(detail) }
+      : captureProjectionIrData([detail, resultBinding]);
+    const output = captureProjectionIrData([node]);
+    history.edges -= inputs.metrics.edges + output.metrics.edges;
+    const canonical = Object.freeze({ isCurrent:() => history.canonical.isCurrent() && inputs.matches() });
+    if (history.edges < 0 || ctx.opts.shouldAbort?.() || !canonical.isCurrent() || !output.matches()) throw new Error(`${prefix}-binding-unavailable`);
+    (control ? controlRenderLines : statementRenderLines).set(node, Object.freeze({ ir:ctx.ir, instruction:inst, canonical, records, resultBinding,
+      isCurrent:() => canonical.isCurrent() && output.matches() }));
+  } catch { history.edges = 0; history.reasons.add(`${prefix}-binding-unavailable`); }
+}
+
+function retainControlRenderLine(node, inst, form, selection, ctx) {
+  if (!INITIAL_CONTROL_RENDER_FORMS.includes(form)) {
+    ctx.controlRenderHistory.reasons.add('unregistered-control-render-form'); return node;
+  }
+  retainStatementRenderLine(node, inst, selection, ctx, form);
+  return node;
+}
+
+function bindStatementRenderHistory(result, ctx, control = false) {
+  const history = control ? ctx.controlRenderHistory : ctx.statementRenderHistory;
+  if (!history.events.length && !history.reasons.size) return result;
+  const disposition = Object.freeze({ scope:control ? 'initial-control-render-producer' : 'initial-call-return-render-producer',
+    completeness:history.reasons.size ? 'incomplete' : 'complete', reasons:Object.freeze([...history.reasons]) });
+  result[control ? 'semanticControlRenderHistory' : 'semanticStatementRenderHistory'] = disposition;
+  (control ? controlRenderHistories : statementRenderHistories).set(result, Object.freeze({ ir:ctx.ir, disposition,
+    records:Object.freeze([...new Set(history.events.flatMap(event => event.records || [event.record]))]), reasons:disposition.reasons }));
+  return result;
+}
+
+export function readSemanticStoreLineHistory(line, ir) {
+  const entry = storeRenderLines.get(line);
+  return entry && entry.ir === ir && entry.isCurrent() ? entry : null;
+}
+
+export function readSemanticStoreRenderHistory(result) {
+  const entry = storeRenderHistories.get(result);
+  return entry && entry.ir === result.ir && entry.disposition === result.semanticStoreRenderHistory ? entry : null;
+}
+
+// The compatibility facade's existing spelling normalization is an owned
+// transition. Public copies/edits cannot substitute for the observed input line.
+export function normalizeSemanticCompatibilityLine(line, ir) {
+  if (!line || typeof line.text !== 'string') return;
+  const text = line.text.replace(/\blocal_([0-9a-f]+)\b/gi, (_m, h) => 'var_' + h.toUpperCase())
+    .replace(/\bvar_([0-9a-f]+)\b/gi, (_m, h) => 'var_' + h.toUpperCase());
+  if (text === line.text) return;
+  const entry = readSemanticStoreLineHistory(line, ir);
+  const statement = readSemanticStatementLineHistory(line, ir);
+  const control = readSemanticControlLineHistory(line, ir);
+  line.text = text;
+  for (const [binding, table] of [[entry, storeRenderLines], [statement, statementRenderLines], [control, controlRenderLines]]) {
+    if (!binding) continue;
+    try {
+      const observation = captureProjectionIrData([line]);
+      table.set(line, Object.freeze({ ...binding,
+        ...(binding.spelling ? { spelling:Object.freeze({ ...binding.spelling, text:line.text }) } : {}),
+        isCurrent:() => binding.canonical.isCurrent() && observation.matches(),
+      }));
+    } catch { /* No inferred continuity when the exact line cannot be observed. */ }
+  }
+}
+
+function observeStoreSelection(inst, rmw, upd, ctx) {
+  const history = ctx.storeRenderHistory;
+  if (history.events.length >= history.limit) { history.reasons.add('initial-store-history-budget'); return null; }
+  const source = storeSource(inst, ctx), ir = ctx.ir, instructions = ir.instructions, position = instructions.indexOf(inst);
+  let observation = null;
+  try {
+    if (history.edges <= 0 || history.consumers <= 0 || position < 0) throw new Error('initial-store-binding-budget');
+    // Capture before renderValue can invoke a symbol callback. This is a
+    // display selection, not an independent proof of the RMW analysis fact.
+    observation = captureProjectionIrData([inst, rmw, upd]);
+    history.edges -= observation.metrics.edges;
+    if (history.edges < 0) throw new Error('initial-store-binding-budget');
+  } catch { observation = null; history.edges = 0; history.reasons.add('initial-store-observation-unavailable'); }
+  return Object.freeze({ source, valueId:valueOf(inst.args?.[0])?.id ?? null,
+    isCurrent:() => Object.getOwnPropertyDescriptor(ir, 'instructions')?.value === instructions
+    && Object.getOwnPropertyDescriptor(instructions, position)?.value === inst && observation?.matches() === true });
+}
+
+function retainStoreRenderLine(node, inst, rendered, ctx) {
+  const history = ctx.storeRenderHistory;
+  const expressions = takeInitialValueRecords(ctx, history);
+  const selected = rendered.history, originalValues = ctx.statementRenderHistory.canonical;
+  const canonical = selected && expressions.length ? Object.freeze({ ...selected,
+    isCurrent:() => selected.isCurrent() && originalValues?.isCurrent() === true })
+    : selected || (expressions.length && originalValues ? Object.freeze({ isCurrent:() => originalValues.isCurrent() }) : null);
+  if (!canonical) return;
+  const record = rendered.history ? Object.freeze({ rule:'render-initial-compound-store', phase:'initial-semantic-render',
+    before:'store:assignment', after:`store:${rendered.form}`, valueId:canonical.valueId,
+    evidence:Object.freeze({ kind:'observed-store-spelling-not-memory-equivalence',
+      detail:'actual initial RMW renderer output, not an independent alias/atomicity/overflow/memory proof' }),
+    originHistory:expressionOriginHistory({ source:canonical.source }, { source:canonical.source }),
+  }) : null;
+  const records = Object.freeze([...(record ? [record] : []), ...expressions]);
+  history.events.push({ node, record, records });
+  try {
+    if (history.consumers <= 0 || history.edges <= 0 || !canonical.isCurrent()) throw new Error('initial-store-binding-unavailable');
+    history.consumers--;
+    const observation = captureProjectionIrData([node], ctx.opts.shouldAbort);
+    history.edges -= observation.metrics.edges;
+    if (history.edges < 0 || !canonical.isCurrent()) throw new Error('initial-store-binding-unavailable');
+    storeRenderLines.set(node, Object.freeze({ ir:ctx.ir, instruction:inst, canonical, records,
+      spelling:Object.freeze({ form:rendered.form || 'assignment', text:node.text }),
+      isCurrent:() => canonical.isCurrent() && observation.matches(),
+    }));
+  } catch { history.edges = 0; history.reasons.add('initial-store-binding-unavailable'); }
+}
+
+function bindStoreRenderHistory(result, ctx) {
+  const history = ctx.storeRenderHistory;
+  if (!history.events.length && !history.reasons.size) return result;
+  const disposition = Object.freeze({ scope:'initial-store-render-producer',
+    completeness:history.reasons.size ? 'incomplete' : 'complete', reasons:Object.freeze([...history.reasons]) });
+  result.semanticStoreRenderHistory = disposition;
+  storeRenderHistories.set(result, Object.freeze({ ir:ctx.ir, disposition,
+    records:Object.freeze([...new Set(history.events.flatMap(event => event.records || [event.record]))]), reasons:disposition.reasons }));
+  return result;
+}
+
+// Historical display events, not a proof that the suppressed operation is
+// semantically dead. Only the actual emitter can issue this private binding.
+const suppressionHistories = new WeakMap();
+export function readSemanticSuppressionHistory(result) {
+  const entry = suppressionHistories.get(result?.ctx?.suppressed);
+  return entry && entry.ir === result.ir && entry.disposition === result.semanticSuppressionHistory
+    && entry.isCurrent() ? entry : null;
+}
+
+function recordSuppression(ctx, inst, reason, rule) {
+  ctx.suppressed.push(evidenceOf(inst, reason));
+  const history = ctx.suppressionHistory;
+  if (history.events.length >= history.limit) { history.reasons.add('semantic-suppression-history-budget'); return; }
+  history.events.push({ inst, reason, rule, id:inst.id, row:inst.row, address:inst.address, op:inst.op });
+}
+
+function bindSuppressionHistory(result, ctx) {
+  const history = ctx.suppressionHistory;
+  let observation = null, locations = [];
+  const ir = ctx.ir, instructions = ir.instructions;
+  try {
+    const positions = history.events.length ? new Map(instructions.map((inst, index) => [inst, index])) : new Map();
+    locations = history.events.map(event => [positions.get(event.inst), event.inst]);
+    if (locations.some(([index]) => index == null)) throw new TypeError('suppression-instruction-unavailable');
+    observation = captureProjectionIrData([ctx.suppressed, ...history.events.map(event => event.inst)], ctx.opts.shouldAbort);
+    if (history.events.some(event => ['id', 'row', 'address', 'op'].some(key => !Object.is(event[key], event.inst[key])))) {
+      throw new TypeError('suppression-source-changed-during-render');
+    }
+    const maxEdges = ctx.opts.renderProvenanceBindingBudget?.maxEdges;
+    if (Number.isSafeInteger(maxEdges) && maxEdges >= 0 && observation.metrics.edges > maxEdges) {
+      throw new TypeError('suppression-observation-budget');
+    }
+  } catch { observation = null; history.reasons.add('semantic-suppression-observation-unavailable'); }
+  const records = Object.freeze(observation ? history.events.map(({ id, row, address, reason, rule }) => Object.freeze({
+    kind:'display-suppression', proof:'observed-display-event-not-semantic-equivalence', rule,
+    targets:Object.freeze([`ir:${id}`]),
+    origin:Object.freeze({ addresses:Object.freeze(address == null ? [] : [address]),
+      rows:Object.freeze(row == null ? [] : [row]), ir:Object.freeze([id]),
+      ssaDefs:Object.freeze([]), ssaUses:Object.freeze([]) }),
+    suppressedRender:Object.freeze({ scope:'initial-semantic-render', operation:'omit', reason }),
+  })) : []);
+  result.semanticSuppressionHistory = Object.freeze({ scope:'semantic-render-producer',
+    completeness:history.reasons.size ? 'incomplete' : 'complete', reasons:Object.freeze([...history.reasons]) });
+  const disposition = result.semanticSuppressionHistory;
+  suppressionHistories.set(ctx.suppressed, Object.freeze({ ir, disposition, records,
+    isCurrent() {
+      return !!observation && ir.instructions === instructions && locations.every(([index, inst]) =>
+        Object.getOwnPropertyDescriptor(instructions, index)?.value === inst) && observation.matches();
+    } }));
+  return result;
+}
 
 function line(kind, indent, text, row = null, addr = null, extra = null) {
   return { kind, indent, text, row, addr, note: null, ...(extra || {}) };
@@ -491,15 +949,21 @@ function selectAsMinMax(inst, ctx) {
   if (!cmp || cmp.args.length < 2 || cmp.sub !== 'sub' || cmp.extra?.conditional) return null;
   const a = valueOf(cmp.args[0]), b = valueOf(cmp.args[1]);
   const cond = inst.cond;
-  const tt = renderValue(t, ctx), ff = renderValue(f, ctx), aa = renderValue(a, ctx), bb = renderValue(b, ctx);
+  const cursor = initialValueCursor(ctx);
+  const tt = renderValue(t, ctx), ff = renderValue(f, ctx);
+  // These two existing evaluations populate the original expression cache,
+  // but their strings are not selected by this min/max producer.
+  selectInitialValueTickets(cursor);
+  const aa = renderValue(a, ctx), bb = renderValue(b, ctx);
   if (cond === 'gt' || cond === 'hi') {
-    if (sameValue(t, b) && sameValue(f, a)) return `min(${aa}, ${bb})`;
-    if (sameValue(t, a) && sameValue(f, b)) return `max(${aa}, ${bb})`;
+    if (sameValue(t, b) && sameValue(f, a)) return initialValueForm(ctx, 'select-min', `min(${aa}, ${bb})`);
+    if (sameValue(t, a) && sameValue(f, b)) return initialValueForm(ctx, 'select-max', `max(${aa}, ${bb})`);
   }
   if (cond === 'lt' || cond === 'lo') {
-    if (sameValue(t, b) && sameValue(f, a)) return `max(${aa}, ${bb})`;
-    if (sameValue(t, a) && sameValue(f, b)) return `min(${aa}, ${bb})`;
+    if (sameValue(t, b) && sameValue(f, a)) return initialValueForm(ctx, 'select-max', `max(${aa}, ${bb})`);
+    if (sameValue(t, a) && sameValue(f, b)) return initialValueForm(ctx, 'select-min', `min(${aa}, ${bb})`);
   }
+  selectInitialValueTickets(cursor);
   return null;
 }
 
@@ -528,13 +992,23 @@ function unaryText(inst, ctx) {
 }
 
 function callRecord(inst, ctx) {
-  if (ctx.callCache.has(inst.id)) return ctx.callCache.get(inst.id);
+  if (ctx.callCache.has(inst.id)) {
+    const trace = initialValueTraces.get(ctx), cursor = initialValueCursor(ctx);
+    if (cursor) selectInitialValueTickets(cursor, trace.calls.get(inst.id) || []);
+    return ctx.callCache.get(inst.id);
+  }
   const target = inst.extra?.target ?? null;
   const modelCall = (ctx.model.calls || []).find((c) => c.row === inst.row) || null;
   const name = modelCall?.name || (target != null ? ctx.opts.symbolFor?.(target) : null) || inst.extra?.name || '';
   const values = [];
   for (let i = 0; i < 8; i++) values.push(reachingRegisterValue(ctx.ir, inst, 'x' + i));
-  const argText = values.map((v) => v ? renderValue(v, ctx) : null);
+  const cursor = initialValueCursor(ctx), argumentTickets = [];
+  const argText = values.map((v) => {
+    const input = initialValueCursor(ctx);
+    const text = v ? renderValue(v, ctx) : null;
+    argumentTickets.push(input ? input.list.slice(input.start) : []);
+    return text;
+  });
   const origin = runtimeOriginForSymbol(name);
   const objc = origin === 'objc' || /objc_msgSend/.test(name);
   let selector = modelCall?.selector || null;
@@ -585,6 +1059,12 @@ function callRecord(inst, ctx) {
   const resolved = resolveAppleCall(ctx.runtime, info);
   const rec = { ...info, resolved };
   ctx.callCache.set(inst.id, rec);
+  const trace = initialValueTraces.get(ctx);
+  if (trace) {
+    const selected = sourceArgIndices.flatMap(index => argumentTickets[index]);
+    if (selected.length) trace.calls.set(inst.id, Object.freeze(selected));
+    selectInitialValueTickets(cursor, selected);
+  }
   return rec;
 }
 
@@ -604,66 +1084,112 @@ function renderCall(inst, ctx) {
 
 /** Reconstruct one SSA value as an expression with memoization and hard budgets. */
 export function renderValue(value, ctx, flags = {}) {
-  if (!value) return 'unknown';
-  if (ctx.materialNames?.has(value.id) && !flags.ignoreMaterial) return ctx.materialNames.get(value.id);
+  const trace = initialValueTraces.get(ctx);
+  if (!trace) return renderValueText(value, ctx, flags);
+  if (trace.remaining <= 0) {
+    trace.reasons.add('initial-expression-history-budget');
+    // Stop allocating tickets, not evaluating the original renderer. Removing
+    // this private observer during the synchronous call also prevents a nested
+    // unobserved value from overwriting its parent's selected form.
+    initialValueTraces.delete(ctx);
+    try { return renderValueText(value, ctx, flags); }
+    finally { initialValueTraces.set(ctx, trace); }
+  }
+  trace.remaining--;
+  const parent = trace.active, frame = { form:null, children:[], record:null };
+  trace.active = frame;
+  try {
+    const text = renderValueText(value, ctx, flags);
+    try {
+      if (!trace.canonical || !frame.form) throw new Error('initial-expression-history-unavailable');
+      const own = (object, key) => object == null ? undefined : Object.getOwnPropertyDescriptor(object, key)?.value;
+      const definition = own(value, 'def');
+      const source = sourceOf({ ir:own(definition, 'id'), address:own(definition, 'address'),
+        row:own(definition, 'row'), ssaDef:own(value, 'id') });
+      frame.record = Object.freeze({ rule:`render-initial-value-${frame.form}`, phase:'initial-expression-render',
+        valueId:own(value, 'id') ?? null, before:'canonical:value', after:`initial-expression:${frame.form}`,
+        evidence:Object.freeze({ kind:'observed-initial-expression-not-equivalence',
+          detail:'actual initial string-render selection; invocation and canonical identities retained, not a new scalar, memory or ABI proof' }),
+        originHistory:expressionOriginHistory({ source }, { source }),
+      });
+    } catch { trace.reasons.add('initial-expression-history-unavailable'); }
+    Object.freeze(frame.children); Object.freeze(frame);
+    (parent?.children || trace.roots).push(frame);
+    return text;
+  } finally { trace.active = parent; }
+}
+
+function renderValueText(value, ctx, flags) {
+  if (!value) return initialValueForm(ctx, 'unknown', 'unknown');
+  if (ctx.materialNames?.has(value.id) && !flags.ignoreMaterial) return initialValueForm(ctx, 'materialized-reference', ctx.materialNames.get(value.id));
   const key = `${value.id}:${flags.asBase ? 'b' : 'v'}`;
-  if (ctx.exprCache.has(key)) return ctx.exprCache.get(key);
-  if (ctx.exprActive.has(value.id) || ctx.exprNodes++ > MAX_EXPR_NODES) return value.reg ? safeIdent(value.reg) : `v${value.id}`;
+  if (ctx.exprCache.has(key)) {
+    const trace = initialValueTraces.get(ctx), cached = trace?.memo.get(key);
+    if (trace?.active) {
+      if (cached) trace.active.children.push(cached);
+      else trace.reasons.add('initial-expression-memo-unavailable');
+    }
+    return initialValueForm(ctx, 'memo-reuse', ctx.exprCache.get(key));
+  }
+  if (ctx.exprActive.has(value.id) || ctx.exprNodes++ > MAX_EXPR_NODES) return initialValueForm(ctx, 'bounded-fallback', value.reg ? safeIdent(value.reg) : `v${value.id}`);
   ctx.exprActive.add(value.id);
   let out = null;
-  if (value.constKind === 'float' || value.floatConst != null || (value.float != null && value.const == null)) out = formatFloatConst(value.floatConst ?? value.float, value.bits);
-  if (!out && value.const != null && value.def?.op !== OP.ADDR) out = stringLiteralForValue(value, ctx) || formatConst(value.const, value.bits);
-  if (!out && value.kind === VK.ARG) out = argName(value, ctx);
+  if (value.constKind === 'float' || value.floatConst != null || (value.float != null && value.const == null)) out = initialValueForm(ctx, 'precomputed-float', formatFloatConst(value.floatConst ?? value.float, value.bits));
+  if (!out && value.const != null && value.def?.op !== OP.ADDR) out = initialValueForm(ctx, 'precomputed-integer-or-literal', stringLiteralForValue(value, ctx) || formatConst(value.const, value.bits));
+  if (!out && value.kind === VK.ARG) out = initialValueForm(ctx, 'argument', argName(value, ctx));
   const d = value.def;
   if (!out && d) {
-    if (d.op === OP.CONST) out = (value.constKind === 'float' || value.floatConst != null || value.float != null)
+    if (d.op === OP.CONST) out = initialValueForm(ctx, 'constant-definition', (value.constKind === 'float' || value.floatConst != null || value.float != null)
       ? formatFloatConst(value.floatConst ?? value.float, value.bits)
-      : formatConst(value.const ?? d.extra?.value ?? 0n, value.bits, value.signed ?? null);
-    else if (d.op === OP.MOV) out = renderValue(valueOf(d.args?.[0]), ctx);
-    else if (d.op === OP.BIN) out = binText(d, ctx);
-    else if (d.op === OP.UN) out = unaryText(d, ctx);
+      : formatConst(value.const ?? d.extra?.value ?? 0n, value.bits, value.signed ?? null));
+    else if (d.op === OP.MOV) out = initialValueForm(ctx, 'mov-operand', renderValue(valueOf(d.args?.[0]), ctx));
+    else if (d.op === OP.BIN) out = initialValueForm(ctx, 'binary', binText(d, ctx));
+    else if (d.op === OP.UN) out = initialValueForm(ctx, 'unary', unaryText(d, ctx));
     else if (d.op === OP.MAC) {
       const a = renderValue(valueOf(d.args?.[0]), ctx), b0 = renderValue(valueOf(d.args?.[1]), ctx), c0 = renderValue(valueOf(d.args?.[2]), ctx);
       const widen=d.extra?.widen;
       const b=widen==='signed'?`(int64_t)(int32_t)${paren(b0)}`:widen==='unsigned'?`(uint64_t)(uint32_t)${paren(b0)}`:b0;
       const c=widen==='signed'?`(int64_t)(int32_t)${paren(c0)}`:widen==='unsigned'?`(uint64_t)(uint32_t)${paren(c0)}`:c0;
-      out = d.sub === 'msub' ? `${paren(a)} - ${paren(b)} * ${paren(c)}` : `${paren(a)} + ${paren(b)} * ${paren(c)}`;
+      out = initialValueForm(ctx, 'multiply-accumulate', d.sub === 'msub' ? `${paren(a)} - ${paren(b)} * ${paren(c)}` : `${paren(a)} + ${paren(b)} * ${paren(c)}`);
     } else if (d.op === OP.BFX) {
       const a = renderValue(valueOf(d.args?.[0]), ctx), l=d.extra?.lsb ?? 0, w=d.extra?.width ?? '?';
-      if (d.extra?.toward === 'left') out = `${d.extra?.signed?'__arm64_sbfiz':'__arm64_ubfiz'}(${a}, ${l}, ${w})`;
-      else out = `${d.extra?.signed?'__arm64_sbfx':'bit_extract'}(${a}, ${l}, ${w})`;
+      if (d.extra?.toward === 'left') out = initialValueForm(ctx, 'bitfield-insert-zero', `${d.extra?.signed?'__arm64_sbfiz':'__arm64_ubfiz'}(${a}, ${l}, ${w})`);
+      else out = initialValueForm(ctx, 'bit-extract', `${d.extra?.signed?'__arm64_sbfx':'bit_extract'}(${a}, ${l}, ${w})`);
     } else if (d.op === OP.BFI) {
       const a = renderValue(valueOf(d.args?.[0]), ctx), b = renderValue(valueOf(d.args?.[1]), ctx), l=d.extra?.lsb ?? 0, w=d.extra?.width ?? '?';
-      out = d.extra?.bitfieldKind === 'bfxil' ? `bit_insert(${a}, bit_extract(${b}, ${l}, ${w}), 0, ${w})` : `bit_insert(${a}, ${b}, ${l}, ${w})`;
+      out = initialValueForm(ctx, 'bit-insert', d.extra?.bitfieldKind === 'bfxil' ? `bit_insert(${a}, bit_extract(${b}, ${l}, ${w}), 0, ${w})` : `bit_insert(${a}, ${b}, ${l}, ${w})`);
     } else if (d.op === OP.LOAD) {
       if (isCanonicalExactMemoryForwarding(d.memoryForwarding,
         canonicalMemoryForwardingContextForLoad(d.memoryForwarding, d,
           d.memoryForwardingContext ?? d.extra?.memoryForwardingContext))
           && !flags.noMemoryFold && d.memoryForwarding.value != null) {
-        out = formatConst(d.memoryForwarding.value, value.bits, value.signed ?? null);
+        out = initialValueForm(ctx, 'canonical-load-constant', formatConst(d.memoryForwarding.value, value.bits, value.signed ?? null));
       }
-      if (!out) out = renderMemoryLocation(d.loc, d, ctx);
+      if (!out) out = initialValueForm(ctx, 'memory-load', renderMemoryLocation(d.loc, d, ctx));
     } else if (d.op === OP.SEL) {
       out = selectAsMinMax(d, ctx);
       if (!out) {
         const t = renderValue(valueOf(d.args?.[0]), ctx), f = renderValue(valueOf(d.args?.[1]), ctx);
         const cond = renderCmp(cmpFromFlags(valueOf(d.args?.[2])), d.cond, ctx);
-        out = `(${cond} ? ${t} : ${f})`;
+        out = initialValueForm(ctx, 'select-conditional', `(${cond} ? ${t} : ${f})`);
       }
     } else if (d.op === OP.ADDR) {
       const addr = value.const ?? d.extra?.value ?? d.extra?.target;
       const literal = stringLiteralForValue(value, ctx) || stringLiteralAt(addr, ctx);
-      out = literal || (addr != null ? (ctx.opts.symbolFor?.(addr) ? safeIdent(ctx.opts.symbolFor(addr)) : `&global_${hex(addr)}`) : 'address_unknown');
-    } else if (d.op === OP.CALL) out = renderCall(d, ctx);
+      out = initialValueForm(ctx, 'address', literal || (addr != null ? (ctx.opts.symbolFor?.(addr) ? safeIdent(ctx.opts.symbolFor(addr)) : `&global_${hex(addr)}`) : 'address_unknown'));
+    } else if (d.op === OP.CALL) out = initialValueForm(ctx, 'call', renderCall(d, ctx));
     else if (d.op === OP.PHI) {
       const parts = (d.incoming || []).map((x) => renderValue(x.value, ctx)).filter(Boolean);
       const uniq = [...new Set(parts)];
-      out = uniq.length === 1 ? uniq[0] : `phi(${uniq.join(', ')})`;
+      if (uniq.length === 1) out = initialValueForm(ctx, 'phi-deduplication', uniq[0]);
+      else out = initialValueForm(ctx, 'phi-multiple', `phi(${uniq.join(', ')})`);
     }
   }
-  if (!out) out = value.reg ? safeIdent(value.reg) : `v${value.id}`;
+  if (!out) out = initialValueForm(ctx, 'register-fallback', value.reg ? safeIdent(value.reg) : `v${value.id}`);
   ctx.exprActive.delete(value.id);
   ctx.exprCache.set(key, out);
+  const trace = initialValueTraces.get(ctx);
+  if (trace?.active) trace.memo.set(key, trace.active);
   return out;
 }
 
@@ -725,15 +1251,16 @@ function statementForStore(inst, ctx) {
     const hasSelect = (rmw.chain || []).some((x) => x.op === OP.SEL);
     const upd = rmwOperand(rmw, ctx);
     if (upd && !hasSelect && !upd.reversed) {
+      const history = observeStoreSelection(inst, rmw, upd, ctx);
       const rhs = renderValue(upd.other, ctx);
       const op = { add: '+=', sub: '-=', mul: '*=', sdiv: '/=', udiv: '/=' }[upd.op];
-      if (upd.op === 'add' && upd.other?.const === 1n) return `${lhs}++;`;
-      if (upd.op === 'sub' && upd.other?.const === 1n) return `${lhs}--;`;
-      if (op) return `${lhs} ${op} ${rhs};`;
+      if (upd.op === 'add' && upd.other?.const === 1n) return { text:`${lhs}++;`, form:'post-increment', history };
+      if (upd.op === 'sub' && upd.other?.const === 1n) return { text:`${lhs}--;`, form:'post-decrement', history };
+      if (op) return { text:`${lhs} ${op} ${rhs};`, form:`${upd.op}-assignment`, history };
     }
   }
   const rhs = renderValue(valueOf(inst.args?.[0]), ctx, { noMemoryFold: true });
-  return `${lhs} = ${rhs};`;
+  return { text:`${lhs} = ${rhs};` };
 }
 
 function evidenceOf(inst, reason) {
@@ -743,28 +1270,47 @@ function evidenceOf(inst, reason) {
 function emitBlockStatements(block, out, ctx, indent) {
   const term = blockTerm(block);
   for (const inst of block.insts || []) {
+    resetInitialValueOwner(ctx);
     if (inst === term || inst.op === OP.CMP || inst.op === OP.PHI || inst.op === OP.LOAD || inst.op === OP.CONST || inst.op === OP.MOV || inst.op === OP.BIN || inst.op === OP.UN || inst.op === OP.SEL || inst.op === OP.ADDR || inst.op === OP.MAC || inst.op === OP.BFX || inst.op === OP.BFI || inst.op === OP.CLOBBER) continue;
     if (inst.op === OP.STORE) {
       if (isMechanicalStackSpill(inst, ctx)) {
-        ctx.suppressed.push(evidenceOf(inst, 'compiler-only stack spill'));
+        recordSuppression(ctx, inst, 'compiler-only stack spill', 'omit-mechanical-stack-spill');
         continue;
       }
-      const text = statementForStore(inst, ctx);
-      out.push(line('stmt', indent, text, inst.row, inst.address, { source: storeSource(inst, ctx) }));
+      const rendered = statementForStore(inst, ctx);
+      const node = line('stmt', indent, rendered.text, inst.row, inst.address, { source: storeSource(inst, ctx) });
+      retainStoreRenderLine(node, inst, rendered, ctx);
+      out.push(node);
       ctx.evidence.push(evidenceOf(inst, 'Memory SSA store'));
     } else if (inst.op === OP.CALL) {
       const c = callRecord(inst, ctx);
-      if (shouldFoldRuntimeCall(c.name, { expert: ctx.opts.expert })) { ctx.suppressed.push(evidenceOf(inst, `folded runtime noise: ${c.name}`)); continue; }
+      if (shouldFoldRuntimeCall(c.name, { expert: ctx.opts.expert })) {
+        recordSuppression(ctx, inst, `folded runtime noise: ${c.name}`, 'omit-runtime-noise-call'); continue;
+      }
       const call = renderCall(inst, ctx);
       const extra = { source: callSource(inst, c, ctx) };
-      if (inst.dst && ctx.materialNames.has(inst.dst.id)) out.push(line('stmt', indent, `${ctx.materialNames.get(inst.dst.id)} = ${call};`, inst.row, inst.address, extra));
-      else out.push(line('stmt', indent, `${call};`, inst.row, inst.address, extra));
+      const node = inst.dst && ctx.materialNames.has(inst.dst.id)
+        ? line('stmt', indent, `${ctx.materialNames.get(inst.dst.id)} = ${call};`, inst.row, inst.address, extra)
+        : line('stmt', indent, `${call};`, inst.row, inst.address, extra);
+      const resultBinding = inst.dst && ctx.materialNames.has(inst.dst.id)
+        ? Object.freeze({ name:ctx.materialNames.get(inst.dst.id), callText:`${call};`, value:inst.dst }) : null;
+      retainStatementRenderLine(node, inst, c, ctx, null, resultBinding);
+      out.push(node);
       ctx.evidence.push(evidenceOf(inst, c.resolved.runtime === 'objc' ? 'Objective-C dispatch' : c.resolved.runtime === 'swift' ? 'Swift dispatch' : 'call'));
     } else if (inst.op === OP.UNKNOWN) {
-      out.push(line('stmt', indent, `__asm(${JSON.stringify(inst.text || 'unknown')});`, inst.row, inst.address, { source: sourceForInst(inst, 'unsupported instruction') })); ctx.unknown++;
+      // Unknown semantics do not erase known SSA inputs. In particular, an
+      // unresolved indirect transfer still depends on its computed target.
+      // Follow only those inputs, using the same bounded traversal and stack
+      // boundaries as other statements; nearby instructions are not evidence.
+      const seen = new Set();
+      const source = mergeSource(sourceForInst(inst, 'unsupported instruction'),
+        ...(inst.args || []).map(arg => dependencySource(valueOf(arg), ctx, seen)));
+      out.push(retainControlRenderLine(line('stmt', indent, `__asm(${JSON.stringify(inst.text || 'unknown')});`, inst.row, inst.address, { source }),
+        inst, 'unsupported-statement', { op:inst.op }, ctx)); ctx.unknown++;
       ctx.evidence.push(evidenceOf(inst, 'unsupported IR instruction retained faithfully'));
     }
   }
+  resetInitialValueOwner(ctx);
   return term;
 }
 
@@ -805,15 +1351,17 @@ function loopRender(loop, block, term, ctx, state, indent, stop) {
   const exit = yesInside ? no : yes;
   const invert = !yesInside;
   const iv = ctx.inductions.find((x) => x.loop.header === loop.header);
-  let head;
+  let head, form = 'while-loop';
   if (iv && iv.init && iv.conditionInst === term) {
+    form = 'for-loop';
     ctx.materialNames.set(iv.value.id, iv.name);
     const init = renderValue(iv.init, ctx, { ignoreMaterial: true });
     let cond = renderBranchCondition(term, ctx, invert);
     const step = iv.step === 1n ? `${iv.name}++` : iv.step === -1n ? `${iv.name}--` : `${iv.name} += ${iv.step}`;
     head = `for (${typeNameOf(ctx.types.values.get(iv.value.id)) === 'unknown' ? 'int64' : typeNameOf(ctx.types.values.get(iv.value.id))} ${iv.name} = ${init}; ${cond}; ${step})`;
   } else head = `while (${renderBranchCondition(term, ctx, invert)})`;
-  const lines = [line('ctrl', indent, `${head} {`, term.row, term.address, { source: controlSource(term, ctx) })];
+  const lines = [retainControlRenderLine(line('ctrl', indent, `${head} {`, term.row, term.address, { source: controlSource(term, ctx) }),
+    term, form, { header:loop.header, bodyStart, exit, invert, inductionValueId:form === 'for-loop' ? iv.value.id : null }, ctx)];
   const local = { ...state, activeLoop: loop, loopHeader: loop.header, loopExit: exit };
   emitRegion(bodyStart, loop.header, lines, ctx, local, indent + 1, loop.nodes);
   lines.push(line('ctrl', indent, '}'));
@@ -823,13 +1371,15 @@ function loopRender(loop, block, term, ctx, state, indent, stop) {
 function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
   let bi = start, guard = 0;
   while (bi != null && bi !== stop && guard++ < MAX_BLOCKS) {
+    resetInitialValueOwner(ctx);
     if (allowed && !allowed.has(bi)) return;
     if (state.activeLoop && bi === state.loopHeader) return;
     if (state.visited.has(bi)) {
       // HEX-C4-03: a residual goto is a control-flow claim, so it must carry
       // the canonical origin of the block it jumps into. Emitting it
       // sourceless made the claim unauditable from the rendered line.
-      out.push(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(bi))};`, null, null, { source: jumpTargetSource(bi, ctx) }));
+      out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(bi))};`, null, null, { source: jumpTargetSource(bi, ctx) }),
+        null, 'revisit-goto', { target:bi, stop, loopHeader:state.loopHeader ?? null }, ctx));
       state.gotos++; return;
     }
     state.visited.add(bi);
@@ -849,27 +1399,35 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
     if (term2.op === OP.RET) {
       const rv = returnValueAt(term2, ctx);
       const text = rv && ((rv.uses || []).length || rv.const != null || rv.def) ? `return ${renderValue(rv, ctx)};` : 'return;';
-      out.push(line('stmt', indent, text, term2.row, term2.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term2, 'return')) })); ctx.evidence.push(evidenceOf(term2, 'return')); return;
+      const node = line('stmt', indent, text, term2.row, term2.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term2, 'return')) });
+      retainStatementRenderLine(node, term2, rv, ctx);
+      out.push(node); ctx.evidence.push(evidenceOf(term2, 'return')); return;
     }
     if (term2.op === OP.BR) {
       const next = block.succ[0] ?? null;
-      if (state.activeLoop && next === state.loopHeader) { out.push(line('ctrl', indent, 'continue;', term2.row, term2.address, { source: controlSource(term2, ctx) })); return; }
-      if (state.activeLoop && next === state.loopExit) { out.push(line('ctrl', indent, 'break;', term2.row, term2.address, { source: controlSource(term2, ctx) })); return; }
+      if (state.activeLoop && next === state.loopHeader) { out.push(retainControlRenderLine(line('ctrl', indent, 'continue;', term2.row, term2.address, { source: controlSource(term2, ctx) }),
+        term2, 'loop-continue', { target:next, header:state.loopHeader }, ctx)); return; }
+      if (state.activeLoop && next === state.loopExit) { out.push(retainControlRenderLine(line('ctrl', indent, 'break;', term2.row, term2.address, { source: controlSource(term2, ctx) }),
+        term2, 'loop-break', { target:next, header:state.loopHeader }, ctx)); return; }
       if (next === stop) return;
       if (next != null && !state.visited.has(next) && (!allowed || allowed.has(next))) { bi = next; continue; }
-      if (next != null) { out.push(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(next))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(next, ctx)) })); state.gotos++; }
+      if (next != null) { out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(next))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(next, ctx)) }),
+        term2, 'residual-branch-goto', { target:next, stop }, ctx)); state.gotos++; }
       return;
     }
     if (term2.op === OP.CBR) {
       const sw = ctx.switchByRow.get(term2.row);
       if (sw) {
         const expr = sw.expr || renderValue(reachingRegisterValue(ctx.ir, term2, sw.reg || 'x0'), ctx);
-        out.push(line('ctrl', indent, `switch (${expr}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }));
+        out.push(retainControlRenderLine(line('ctrl', indent, `switch (${expr}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
+          term2, 'switch-header', { switch:sw }, ctx));
         for (const c of sw.cases || []) {
-          out.push(line('ctrl', indent + 1, `case ${c.value}: goto loc_${hex(ctx.blockAddress(c.block))};`, null, null, { source: jumpTargetSource(c.block, ctx) }));
+          out.push(retainControlRenderLine(line('ctrl', indent + 1, `case ${c.value}: goto loc_${hex(ctx.blockAddress(c.block))};`, null, null, { source: jumpTargetSource(c.block, ctx) }),
+            term2, 'switch-case-goto', { switch:sw, case:c }, ctx));
         }
         if (sw.defaultBlock != null) {
-          out.push(line('ctrl', indent + 1, `default: goto loc_${hex(ctx.blockAddress(sw.defaultBlock))};`, null, null, { source: jumpTargetSource(sw.defaultBlock, ctx) }));
+          out.push(retainControlRenderLine(line('ctrl', indent + 1, `default: goto loc_${hex(ctx.blockAddress(sw.defaultBlock))};`, null, null, { source: jumpTargetSource(sw.defaultBlock, ctx) }),
+            term2, 'switch-default-goto', { switch:sw, target:sw.defaultBlock }, ctx));
         }
         out.push(line('ctrl', indent, '}')); state.gotos += (sw.cases || []).length + (sw.defaultBlock != null ? 1 : 0); return;
       }
@@ -877,28 +1435,42 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
       const join = ctx.graph.immediatePostDominators?.[bi];
       const structural = join != null && join !== bi && yes != null && no != null && (!allowed || (allowed.has(yes) && allowed.has(no)));
       if (structural) {
+        const region = beginConditionalRegion(ctx, out, state);
+        let separator = null, close;
         const yesEmpty = yes === join;
         const noEmpty = no === join;
         if (yesEmpty !== noEmpty) {
           const invert = yesEmpty;
           const bodyStart = yesEmpty ? no : yes;
           const cond = renderBranchCondition(term2, ctx, invert);
-          out.push(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }));
+          out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
+            term2, 'one-sided-if', { yes, no, join, invert, bodyStart }, ctx));
+          startConditionalArm(region, out);
           emitRegion(bodyStart, join, out, ctx, state, indent + 1, allowed);
-          out.push(line('ctrl', indent, '}'));
+          finishConditionalArm(region, out, state, yesEmpty ? 'no' : 'yes', ctx);
+          close = line('ctrl', indent, '}'); out.push(close);
         } else {
           const cond = renderBranchCondition(term2, ctx);
-          out.push(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }));
+          out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
+            term2, 'if-else', { yes, no, join }, ctx));
+          startConditionalArm(region, out);
           emitRegion(yes, join, out, ctx, state, indent + 1, allowed);
-          out.push(line('ctrl', indent, '} else {'));
+          finishConditionalArm(region, out, state, 'yes', ctx);
+          separator = line('ctrl', indent, '} else {'); out.push(separator);
+          startConditionalArm(region, out);
           emitRegion(no, join, out, ctx, state, indent + 1, allowed);
-          out.push(line('ctrl', indent, '}'));
+          finishConditionalArm(region, out, state, 'no', ctx);
+          close = line('ctrl', indent, '}'); out.push(close);
         }
+        finishConditionalRegion(region, out, ctx, term2,
+          { header:bi, yes, no, join, invert:yesEmpty !== noEmpty && yesEmpty, form:yesEmpty !== noEmpty ? 'one-sided-if' : 'if-else' }, separator, close);
         bi = join; continue;
       }
       const cond = renderBranchCondition(term2, ctx);
-      if (yes != null) out.push(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: controlSource(term2, ctx) }));
-      if (no != null) out.push(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(no))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(no, ctx)) }));
+      if (yes != null) out.push(retainControlRenderLine(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: controlSource(term2, ctx) }),
+        term2, 'residual-conditional-goto', { yes, no, join }, ctx));
+      if (no != null) out.push(retainControlRenderLine(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(no))};`, term2.row, term2.address, { source: mergeSource(controlSource(term2, ctx), jumpTargetSource(no, ctx)) }),
+        term2, 'residual-false-goto', { yes, no, join }, ctx));
       state.gotos += (yes != null ? 1 : 0) + (no != null ? 1 : 0); return;
     }
   }
@@ -909,19 +1481,28 @@ function faithfulCfg(ctx, indent = 1) {
   const reachable = ctx.graph.reachable || new Set(ctx.ir.blocks.map((b) => b.index));
   for (const bi of [...reachable].sort((a, b) => ctx.ir.blocks[a].startRow - ctx.ir.blocks[b].startRow)) {
     const block = ctx.ir.blocks[bi];
-    out.push(line('label', indent, `loc_${hex(ctx.blockAddress(bi))}:`, block.startRow, ctx.blockAddress(bi)));
+    const label = line('label', indent, `loc_${hex(ctx.blockAddress(bi))}:`, block.startRow, ctx.blockAddress(bi));
+    // Keep the public label shape unchanged; its private producer retains the
+    // canonical destination source without inventing a branch instruction.
+    out.push(retainControlRenderLine(label, null, 'cfg-label', { target:bi,
+      source:sourceOf({ row:block.startRow, address:label.addr, ir:block.insts.map(inst => Object.getOwnPropertyDescriptor(inst, 'id')?.value) }) }, ctx));
     const term = emitBlockStatements(block, out, ctx, indent + 1);
     if (!term) continue;
     if (term.op === OP.RET) {
       const rv = returnValueAt(term, ctx);
-      out.push(line('stmt', indent + 1, rv ? `return ${renderValue(rv, ctx)};` : 'return;', term.row, term.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term, 'return')) }));
+      const node = line('stmt', indent + 1, rv ? `return ${renderValue(rv, ctx)};` : 'return;', term.row, term.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term, 'return')) });
+      retainStatementRenderLine(node, term, rv, ctx);
+      out.push(node);
     } else if (term.op === OP.CBR) {
       const { yes, no } = branchSucc(ctx.ir, block, term, ctx);
-      if (yes != null) out.push(line('ctrl', indent + 1, `if (${renderBranchCondition(term, ctx)}) goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address, { source: controlSource(term, ctx) }));
-      if (no != null) out.push(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(no))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(no, ctx)) }));
+      if (yes != null) out.push(retainControlRenderLine(line('ctrl', indent + 1, `if (${renderBranchCondition(term, ctx)}) goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address, { source: controlSource(term, ctx) }),
+        term, 'cfg-conditional-goto', { yes, no }, ctx));
+      if (no != null) out.push(retainControlRenderLine(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(no))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(no, ctx)) }),
+        term, 'cfg-false-goto', { yes, no }, ctx));
     } else if (term.op === OP.BR && block.succ[0] != null) {
       const next = block.succ[0];
-      out.push(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(next))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(next, ctx)) }));
+      out.push(retainControlRenderLine(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(next))};`, term.row, term.address, { source: mergeSource(controlSource(term, ctx), jumpTargetSource(next, ctx)) }),
+        term, 'cfg-branch-goto', { target:next }, ctx));
     }
   }
   return out;
@@ -974,9 +1555,27 @@ export function decompileSemantic(model, opts = {}) {
     returnInsts: (ir.instructions || []).filter((i) => i.op === OP.RET),
     exprCache: new Map(), exprActive: new Set(), exprNodes: 0,
     callCache: new Map(), evidence: [], suppressed: [], unknown: 0, unknownCallArities: 0,
+    suppressionHistory: { events:[], reasons:new Set(), limit:Number.isSafeInteger(opts.renderProvenanceBudget?.maxTransformRecords)
+      && opts.renderProvenanceBudget.maxTransformRecords >= 0 ? Math.min(opts.renderProvenanceBudget.maxTransformRecords, 1024) : 1024 },
+    storeRenderHistory: { events:[], reasons:new Set(), limit:historyCap(opts.renderProvenanceBudget?.maxTransformRecords, 1024),
+      consumers:historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096),
+      edges:historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges) },
+    statementRenderHistory: { events:[], reasons:new Set(), limit:historyCap(opts.renderProvenanceBudget?.maxTransformRecords, 1024),
+      consumers:historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096),
+      edges:historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges), canonical:null },
+    controlRenderHistory: { events:[], reasons:new Set(), limit:historyCap(opts.renderProvenanceBudget?.maxTransformRecords, 1024),
+      consumers:historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096),
+      edges:historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges), canonical:null },
+    conditionalRegionHistory: opts.phase8PrepareRegionProof === true ? { events:[], reasons:new Set(),
+      limit:historyCap(opts.renderProvenanceBudget?.maxTransformRecords, 1024),
+      remaining:historyCap(opts.renderProvenanceBindingBudget?.maxConsumers, 4096),
+      maxEdges:historyCap(opts.renderProvenanceBindingBudget?.maxEdges, PROJECTION_LIMITS.edges) } : null,
     materialNames: new Map(), switchByRow: new Map((opts.switches || model.switches || []).map((s) => [s.row, s])),
     blockAddress: (bi) => model.instructions?.find((x) => x.row === ir.blocks[bi]?.startRow)?.address ?? firstAddr + BigInt(ir.blocks[bi]?.startRow || 0) * 4n,
   };
+  beginStatementRenderHistory(ctx);
+  beginControlRenderHistory(ctx);
+  beginInitialValueTrace(ctx);
   ctx.materialNames = materialization(ctx);
   ctx.inductions = recoverInductionVariables(ir, ctx);
 
@@ -991,6 +1590,13 @@ export function decompileSemantic(model, opts = {}) {
   let coverage = { mode: 'structured', reachable: reachable.size, emitted: state.visited.size, missing: missing.length, recovered: 0, structuredMissing: missing.length };
   if (missing.length) {
     body.length = 0; state.visited.clear(); state.gotos = 0;
+    // Only the selected final emission belongs to the history. Keep legacy
+    // ctx.suppressed diagnostics unchanged, including the abandoned attempt.
+    ctx.suppressionHistory.events.length = 0; ctx.suppressionHistory.reasons.clear();
+    ctx.storeRenderHistory.events.length = 0; ctx.storeRenderHistory.reasons.clear();
+    ctx.statementRenderHistory.events.length = 0; ctx.statementRenderHistory.reasons.clear();
+    ctx.controlRenderHistory.events.length = 0; ctx.controlRenderHistory.reasons.clear();
+    if (ctx.conditionalRegionHistory) ctx.conditionalRegionHistory.events.length = 0;
     body.push(...faithfulCfg(ctx, 1));
     coverage = { mode: 'linear', reachable: reachable.size, emitted: reachable.size, missing: 0, recovered: missing.length, structuredMissing: missing.length };
   }
@@ -1010,10 +1616,10 @@ export function decompileSemantic(model, opts = {}) {
   if (ir.truncated) warnings.push('Semantic IR budget truncated this function; the result is partial.');
 
   const summary = summarize(body, ctx);
-  return {
+  return bindConditionalRegionHistory(bindStatementRenderHistory(bindStatementRenderHistory(bindStoreRenderHistory(bindSuppressionHistory({
     lines, signature, types, summary, pseudocode: pseudocode(lines),
     evidence: ctx.evidence, warnings, labels: new Set(body.filter((l) => l.kind === 'label').map((l) => l.text.replace(/:$/, ''))),
     coverage, ir, ctx: { runtime, suppressed: ctx.suppressed, inductions: ctx.inductions, irPrimary: true, unknownInstructions: ctx.unknown },
     semantic: true,
-  };
+  }, ctx), ctx), ctx), ctx, true), ctx);
 }

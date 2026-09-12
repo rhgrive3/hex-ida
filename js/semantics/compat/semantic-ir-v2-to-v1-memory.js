@@ -10,7 +10,70 @@ import {
 } from '../memoryssa/queries.js';
 import { isCanonicalMemorySsaProducerArtifact } from '../memoryssa/build.js';
 import { forwardExactStackOperandIdentity } from '../memoryssa/operand-forwarding.js';
+import { stableDigest } from '../../core/identity/index.js';
 import { propagateScalarConstants } from './semantic-ir-v2-to-v1-finalize.js';
+
+// Projection-issued access capabilities: normalized qualifier evidence is not
+// a reaching-store / MustAlias proof. It only describes this original access.
+const projectedAccesses = new WeakMap();
+const projectedAccessContexts = new WeakMap();
+function attachAccessCapabilities(projected, artifact, canonicalIr, instructionBySemanticId) {
+  if (!isCanonicalMemorySsaProducerArtifact(artifact) || !canonicalIr
+      || artifact.functionId !== canonicalIr.functionId || projected.functionId !== canonicalIr.functionId) return;
+  const identity = artifact.identity;
+  const context = Object.freeze({ binaryId:identity?.binaryId, functionId:artifact.functionId,
+    snapshotId:artifact.snapshotId, architecture:identity?.architectureId,
+    semanticsVersion:identity?.architectureSemanticVersion ?? identity?.analyzerVersion });
+  if (Object.values(context).some(value => typeof value !== 'string' || !value)) return;
+  const nodes = new Map(canonicalIr.nodes.map(node => [node.id, node]));
+  const groups = new Map();
+  for (const metadata of artifact.accessMetadata ?? []) {
+    if (!['load','store'].includes(metadata.sourceKind)) continue;
+    const id = metadata.sourceEntityId;
+    if (!groups.has(id)) groups.set(id, []);
+    groups.get(id).push(metadata);
+  }
+  for (const [id, records] of groups) {
+    const node = nodes.get(id), inst = instructionBySemanticId.get(id);
+    const memory = node?.memory;
+    if (!memory || !inst || inst.extra?.memoryAccess !== memory
+        || inst.op !== (node.kind === 'load' ? V1_OP.LOAD : V1_OP.STORE)) continue;
+    // The original immutable Semantic IR and the privately branded builder
+    // artifact must agree on every field other than the normalized qualifiers.
+    // Never infer ordinary storage from region names, addresses or mnemonics.
+    const normalized = { ...memory, volatility:false, atomic:false };
+    const digest = stableDigest(normalized);
+    if (!records.every(record => record.sourceKind === node.kind && record.memory
+        && record.memory.volatility === false && record.memory.atomic === false
+        && record.memory.ordering === 'unknown' && stableDigest(record.memory) === digest
+        && record.accessProof?.sourceEntityId === id && record.accessProof.volatility === false
+        && record.accessProof.atomic === false && record.accessProof.ordering === 'unknown')) continue;
+    if (![false, 'unknown'].includes(memory.volatility) || ![false, 'unknown'].includes(memory.atomic)
+        || memory.ordering !== 'unknown') continue;
+    const published = Object.freeze({ schemaVersion:'hex-projected-memory-access/v1',
+      context, sourceEntityId:id, artifactDigest:artifact.canonicalDigest,
+      memory:records[0].memory, possibleFaults:memory.faults,
+      scope:'normal-completion-only' });
+    projectedAccesses.set(inst, { projected, artifact, canonicalIr, node, original:memory,
+      op:inst.op, published });
+  }
+  projectedAccessContexts.set(projected, { context, canonicalIr, artifact });
+}
+/** Return canonical identity, not a caller-supplied same-shaped attestation. */
+export function projectedMemoryAccessContext(projected) {
+  const record = projectedAccessContexts.get(projected);
+  return record && projected.functionId === record.context.functionId ? record.context : null;
+}
+export function projectedMemoryAccessForInstruction(inst, projected, identity) {
+  const record = projectedAccesses.get(inst);
+  if (!record || record.projected !== projected || projected.functionId !== record.published.context.functionId
+      || inst.op !== record.op || inst.semanticNodeId !== record.node.id
+      || inst.extra?.semanticNodeId !== record.node.id || inst.extra?.memoryAccess !== record.original
+      || inst.extra?.completeness !== 'complete' || !isCanonicalMemorySsaProducerArtifact(record.artifact)) return null;
+  const context = record.published.context;
+  if (!identity || !Object.keys(context).every(key => identity[key] === context[key])) return null;
+  return record.published;
+}
 
 const MEMORY_CLOBBER_KINDS = new Set(['may-alias-clobber', 'unknown-clobber', 'call-clobber', 'intrinsic-clobber']);
 
@@ -196,8 +259,9 @@ function replaceLoadWithForwardedValue(source, forwardedValue, proof) {
   };
 }
 
-export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null) {
-  propagateScalarConstants(projected);
+export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null, constantObserver = null) {
+  const operandTransitions = [];
+  propagateScalarConstants(projected, constantObserver);
   const regionById = new Map(memorySsa.regions.map((region) => [region.id, region]));
   const locationByRegion = new Map();
   for (const region of memorySsa.regions) {
@@ -374,6 +438,15 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
       }
     }
     for (const [source, { forwardedValue, operandProof }] of deferredStackOperandRewrites) {
+      // This is a description of an operation actually performed below, not a
+      // public provenance issuer. Only the owning projector can seal it after
+      // final IDs and def-use links have been assigned.
+      if (operandTransitions.length < 1024) operandTransitions.push(Object.freeze({
+        source, input:forwardedValue, store:instructionBySemanticId.get(operandProof.storedSourceEntityId),
+        proof:operandProof, memory:source.extra?.memoryAccess,
+        beforeInputs:Object.freeze([...new Set([...(source.args || []).map(arg => arg.value),
+          source.addr?.base, source.addr?.index, source.loc?.base].filter(Boolean))]),
+      }));
       // Deferral allowed the structural compatibility link to be populated in
       // the loop. The MOV publishes only the canonical operand proof.
       delete source.reachingStore;
@@ -404,12 +477,15 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
     }
   }
 
+  attachAccessCapabilities(projected, memorySsa, canonicalIr, instructionBySemanticId);
+
   projected.compat.memoryDefinitionById = Object.fromEntries([...memoryNodeById.entries()].map(([id, node]) => [id, {
     kind: node.kind,
     regionId: node.regionId,
     sourceSemanticNodeId: node.inst?.sourceEntityId ?? null,
     previousDefinitionIds: definitionById.get(id)?.previousDefinitionIds?.slice() ?? [],
   }]));
+  return Object.freeze(operandTransitions);
 }
 
 export function attachFallbackMemory(projected) {

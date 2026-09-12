@@ -1,11 +1,12 @@
 import { build, transform } from 'esbuild';
 import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
-import { access, readFile, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, readFile, mkdir, rm } from 'node:fs/promises';
 import { dirname, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveUserscriptReleaseVersion } from './userscript-release-version.mjs';
 import { parseImportScriptsArguments } from './userscript-classic-imports.mjs';
+import { writeFileVerified as writeFile, publishUserscriptFiles } from './userscript-publication.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = resolve(root, 'dist');
@@ -18,6 +19,8 @@ const MAX_LOADER_BYTES = 64 * 1024;
 const CLASSIC_ENTRIES = ['js/worker.js', 'js/platform/capstone-probe-worker.js', 'js/platform/capstone-disasm-worker.js'];
 const OPTIONAL_BUNDLED_CLASSIC_ENTRIES = ['js/targets/architecture/x86_64/semantic-revalidation-worker.js'];
 const MODULE_WORKER_ENTRIES = ['js/platform/worker.js', 'js/symbolic/solver/worker-entry.js'];
+const previousReleaseBytes = await readFile(releaseStatePath);
+const previousTemplateBytes = await readFile(committedTemplate);
 
 await Promise.all([rm(dist, { recursive: true, force: true }), rm(generated, { recursive: true, force: true })]);
 await Promise.all([mkdir(resolve(dist, 'assets'), { recursive: true }), mkdir(resolve(dist, '.runtime'), { recursive: true }), mkdir(resolve(dist, 'userscript'), { recursive: true }), mkdir(generated, { recursive: true })]);
@@ -35,11 +38,11 @@ const releaseIdentity = sha256(Buffer.concat([
   Buffer.from(contentHash, 'utf8'),
   Buffer.from(sha256(loaderBundle), 'utf8'),
   await readFile(fileURLToPath(import.meta.url)),
+  await readFile(new URL('./userscript-publication.mjs', import.meta.url)),
 ]));
-const previousRelease = JSON.parse(await readFile(releaseStatePath, 'utf8'));
+const previousRelease = JSON.parse(previousReleaseBytes.toString('utf8'));
 const release = resolveUserscriptReleaseVersion(previousRelease, { releaseIdentity, buildId });
 const LOADER_VERSION = release.version;
-if (release.changed) await writeFile(releaseStatePath, JSON.stringify(release.state, null, 2) + '\n');
 const compressed = gzipSync(runtime, { level: 9 });
 const contentKey = randomBytes(32), iv = randomBytes(12);
 const runtimeVersion = `2.${LOADER_VERSION}`;
@@ -63,11 +66,15 @@ await writeFile(resolve(dist, 'assets', loaderName), publicLoader);
 const metadata = userscriptMetadata();
 const template = metadata + loaderForOrigin(ORIGIN_TOKEN);
 if (Buffer.byteLength(template) > MAX_LOADER_BYTES) throw new Error(`hex.user.js template exceeds ${MAX_LOADER_BYTES} bytes.`);
-await Promise.all([writeFile(resolve(dist, 'userscript/hex.user.template.js'), template), writeFile(committedTemplate, template)]);
+await writeFile(resolve(dist, 'userscript/hex.user.template.js'), template);
 
 const index = standaloneIndex(htmlSource, `/assets/${loaderName}`);
 await writeFile(resolve(dist, 'index.html'), index);
 await writeFile(resolve(dist, 'runtime-manifest.json'), JSON.stringify(publicManifest(manifest), null, 2));
+await publishUserscriptFiles([
+  { path:committedTemplate, expected:previousTemplateBytes, content:template },
+  { path:releaseStatePath, expected:previousReleaseBytes, content:JSON.stringify(release.state, null, 2) + '\n' },
+]);
 
 console.log(`built tiny userscript loader ${LOADER_VERSION} (${Buffer.byteLength(template)} bytes)`);
 console.log(`userscript release identity ${releaseIdentity}${release.changed ? " (version advanced)" : ""}`);

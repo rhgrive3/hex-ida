@@ -54,10 +54,15 @@ extract a concrete value for it.
 
 ### User Story 3 — Undefined-bit masks survive the pipeline (P1)
 
-An instruction with partially undefined output bits (e.g. variable shift left where
-shift ≥ width empties the register) carries the undefined-bit mask in its effect
+An instruction with partially undefined output bits carries the undefined-bit mask in its effect
 summary; the mask survives lowering into Semantic IR V2 and the differential
 harness classifies the case without treating masked bits as proven.
+
+Phase 1 transport cases may use explicitly synthetic descriptors, not proof that
+an ARM64 instruction has undefined bits. ARM64 variable register shifts use count
+modulo width and are not an undefined-mask example. Available pinned formal
+artifacts contain no ARM64 undefined-output partition; keep that evidence gap
+visible instead of counting it as proved.
 
 ## Requirements
 

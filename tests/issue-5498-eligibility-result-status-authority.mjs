@@ -3,23 +3,16 @@ import test from 'node:test';
 
 import { checkProofEligibility } from '../js/symbolic/verify/eligibility.js';
 import { isExactProofBackend } from '../js/symbolic/solver/backend.js';
+import { ExhaustiveBvBackend } from '../js/symbolic/solver/exhaustive-backend.js';
 import { createSolverResult, SOLVER_STATUS, isValidSolverResult } from '../js/symbolic/solver/result.js';
 import { TRANSLATION_STATUS, COMPLETENESS_STATUS } from '../js/symbolic/translate/support-matrix.js';
 import { createVerificationQuery } from '../js/symbolic/verify/query.js';
 
-const capabilities = Object.freeze({
-  proofAuthority: 'exact',
-  exactProofs: true,
-  supportsModelExtraction: true,
-  capabilityFingerprint: 'fp-1',
-});
-const backend = Object.freeze({
-  id: 'fake-exact',
-  version: '1.0.0',
-  proofAuthority: 'exact',
-  capabilities: () => capabilities,
-  capabilityFingerprint: () => 'fp-1',
-});
+// HEX-SYM-01 exact authority is branded at SolverBackend construction time;
+// use a real exact provider for the positive eligibility fixture rather than a
+// self-reported plain object.
+const backend = new ExhaustiveBvBackend({ id: 'eligibility-exact', version: '1.0.0' });
+const capabilities = backend.capabilities();
 
 const COMPLETE_SCOPE = Object.freeze({
   translation: COMPLETENESS_STATUS.COMPLETE,
@@ -82,6 +75,9 @@ test('#5498 a consistent UNSAT result stays eligible', () => {
   });
   assert.deepEqual([...gate.reasons], []);
   assert.equal(gate.eligible, true);
+  const lookalike = { ...backend, capabilities: () => capabilities, capabilityFingerprint: () => backend.capabilityFingerprint() };
+  assert.equal(checkProofEligibility({ ...greenGateInput(unsatResult), query, backend: lookalike }).eligible, false,
+    'a copied backend declaration cannot inherit genuine exact-provider authority');
 });
 
 test('#5498 a non-UNSAT result object fails closed even with a matching label', () => {

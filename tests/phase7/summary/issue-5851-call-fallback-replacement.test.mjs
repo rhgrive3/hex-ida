@@ -10,7 +10,8 @@ import {
   createUnknownCallEffect,
   summaryIsPure,
 } from '../../../js/analysis/summary/contract.js';
-import { solveInterproceduralSummaries } from '../../../js/analysis/summary/interprocedural.js';
+import { solveInterproceduralSummaries, LIBRARY_MODEL_SCHEMA, LIBRARY_MODEL_VERSION,
+  LIBRARY_MODEL_PROVENANCE_SCHEMA } from '../../../js/analysis/summary/interprocedural.js';
 
 const completeStatus = () => createAnalysisStatus({
   snapshotId: 'snapshot_issue_5851',
@@ -126,6 +127,7 @@ test('#5851 an incomplete callee keeps the caller fallback conservative', () => 
   const localA = callerWithFallback('A', 'B');
   const localB = createFunctionSummary({
     functionId: 'B',
+    memoryWriteRegions: [broadFallbackWrite()],
     unknownCallEffects: [createUnknownCallEffect({
       callSiteId: 'unresolved_B', reason: 'unresolved-target',
     })],
@@ -267,11 +269,18 @@ test('#5851 a library-model-covered external call keeps its conservative treatme
   // place and the boundary remains explicitly unresolved.
   const localA = callerWithFallback('A', 'ext');
   const model = {
+    modelSchema: LIBRARY_MODEL_SCHEMA, modelVersion: LIBRARY_MODEL_VERSION,
+    targetEntityId: 'ext', snapshotId: completeStatus().snapshotId,
+    completeness: 'complete', stopReason: null, current: true,
+    provenance: { schema: LIBRARY_MODEL_PROVENANCE_SCHEMA, providerId: 'fallback-test',
+      providerVersion: '1', evidenceIds: ['model:ext'] },
+    memoryReadRegions: [], escapes: [],
     memoryWriteRegions: [createMemoryEffect({
       regionId: 'region_model',
       regionKind: 'global-absolute',
       addressSpaces: ['memory'],
       source: 'library-model',
+      evidenceIds: ['effect:ext:write'],
     })],
     noreturn: false,
     mayThrow: false,
@@ -281,6 +290,7 @@ test('#5851 a library-model-covered external call keeps its conservative treatme
     roots: ['A'],
     localSummaries: new Map([['A', localA]]),
     libraryModels: new Map([['ext', model]]),
+    snapshotId: completeStatus().snapshotId,
   }).summaries.get('A');
 
   assert.ok(summary.memoryWriteRegions.some((effect) => effect.regionId === 'region_model'),

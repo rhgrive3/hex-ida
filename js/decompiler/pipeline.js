@@ -1,16 +1,96 @@
-import { enhanceSemanticDecompilation as enhanceCore } from './pipeline-core.js';
+import { enhanceSemanticDecompilation as enhanceCore, readRepresentationStage } from './pipeline-core.js';
 import { recoverExactStackPhiExpressions } from './passes/stack-phi-recovery.js';
 import { recoverExactStackReturn } from './passes/stack-return-recovery.js';
-import { expr, mapChildren, sourceOf } from './ast/nodes.js';
+import { recoverLegacySameBlockStackSpills } from './passes/legacy-stack-recovery.js';
+import { expr, sourceOf } from './ast/nodes.js';
 import { printExpression, printProgram } from './pretty/c.js';
 import { PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
 import { applyPhase8Projection } from './phase8/projection.js';
+import { captureProjectionData, captureProjectionIrData } from './phase8/projection-origin.js';
+import { preparePhase8RewritePlan, isPhase8RewritePlan } from './phase8/pass-validation.js';
+import { queryRecord, queryArray } from '../symbolic/memory/data-input.js';
 import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
 } from '../semantics/memoryssa/queries.js';
 
 export { buildExpressionForTesting } from './pipeline-core.js';
+export { exactLegacySameBlockStackStore } from './passes/legacy-stack-recovery.js';
+
+// Only this existing producer issues a usable projection. Neither a serialized
+// AST nor a caller-supplied valueId map establishes the IR -> rendered binding.
+const producerProjections = new WeakMap();
+function producerIrRoots(result) {
+  const irValues = queryArray(queryRecord(result?.ir,null,128).values ?? [],null,10000);
+  const byId = new Map();
+  for (const value of irValues) {
+    const id = queryRecord(value,null,128).id;
+    if (id == null || byId.has(id)) throw new TypeError('projection-ir-value-identity-invalid');
+    byId.set(id,value);
+  }
+  const rendered = queryArray(queryRecord(result?.semanticAst,null,128).values ?? [],null,10000);
+  const roots = [];
+  for (const item of rendered) {
+    const valueId = queryRecord(item,null,64).valueId;
+    if (!byId.has(valueId)) throw new TypeError('projection-ir-value-binding-missing');
+    roots.push(byId.get(valueId));
+  }
+  return Object.freeze(roots);
+}
+function sameProducerIrRoots(result, expected) {
+  const current = producerIrRoots(result);
+  return current.length === expected.length && current.every((value,index) => value === expected[index]);
+}
+function rememberProducerProjection(result, options) {
+  if (options.phase8PrepareProof !== true || !result?.semanticAst || !result?.cAst) return result;
+  try {
+    const observation = captureProjectionData([result.semanticAst,result.cAst],options.shouldAbort);
+    const irRoots = producerIrRoots(result);
+    const irObservation = captureProjectionIrData(irRoots,options.shouldAbort);
+    producerProjections.set(result.semanticAst,{ir:result.ir,cAst:result.cAst,observation,irRoots,irObservation,
+      proofOnlyRewrites:options.phase8ProofOnlyRewrites === true});
+  } catch { /* The ordinary decompile still works; optional proof is withheld. */ }
+  return result;
+}
+export function producerExpressionToken(result, expression) {
+  const record = producerProjections.get(result?.semanticAst);
+  return record?.ir === result?.ir && record?.cAst === result?.cAst ? record.observation.tokenOf(expression) : null;
+}
+/** Sticky policy of an actual prepared producer, not caller/result metadata.
+ * Full freshness/admission checks remain at the existing proof boundaries. */
+export function producerUsesProofOnlyRewrites(result) {
+  const record = producerProjections.get(result?.semanticAst);
+  return record?.ir === result?.ir && record?.cAst === result?.cAst && record?.proofOnlyRewrites === true;
+}
+export function isProducerProjection(result) {
+  try {
+    const raw = queryRecord(result,null,256), record = producerProjections.get(raw.semanticAst);
+    return !!record && record.ir===raw.ir && record.cAst===raw.cAst
+      && sameProducerIrRoots(raw,record.irRoots) && record.irObservation.matches() && record.observation.matches();
+  } catch { return false; }
+}
+
+/** Resolve actual SSA input objects through this producer's observed value/AST
+ * relation. No caller-provided ID/name map can stand in for either endpoint. */
+export function readProducerInputExpressions(result, values) {
+  try {
+    if (!isProducerProjection(result)) return null;
+    const requested = queryArray(values, null, 4096);
+    const record = producerProjections.get(result.semanticAst), byValue = new Map();
+    for (const [index, value] of record.irRoots.entries()) {
+      byValue.set(value, byValue.has(value) ? null : result.semanticAst.values[index].expression);
+    }
+    const inputs = [];
+    for (const value of requested) {
+      const fields = queryRecord(value), expression = byValue.get(value);
+      if (fields.kind !== 'arg' || !expression || expression.effect !== 'pure' || expression.bits !== fields.bits) return null;
+      const token = record.observation.tokenOf(expression);
+      if (token == null) return null;
+      inputs.push(Object.freeze({ value, expression, token }));
+    }
+    return Object.freeze(inputs);
+  } catch { return null; }
+}
 
 function valueOf(arg) { return arg?.value || null; }
 
@@ -156,101 +236,6 @@ function reanchorExactStackReturn(result, opts = {}) {
   return result;
 }
 
-export function exactLegacySameBlockStackStore(load, ir) {
-  if (!load?.reachingStore || load.loc?.kind !== 'stack' || !load.loc?.key) return null;
-  const store = load.reachingStore;
-  const loadSize = Number(load.loc?.size);
-  const storeSize = Number(store?.loc?.size);
-  if (!Number.isSafeInteger(loadSize) || loadSize <= 0
-      || !Number.isSafeInteger(storeSize) || storeSize !== loadSize) return null;
-  if (store.op !== 'store' || store.block !== load.block || store.loc?.kind !== 'stack'
-      || store.loc.key !== load.loc.key || store.row == null || load.row == null
-      || Number(store.row) >= Number(load.row)) return null;
-  const block = ir?.blocks?.[load.block];
-  if (!block) return null;
-  for (const inst of block.insts || []) {
-    if (inst === store || inst === load || inst?.row == null) continue;
-    if (Number(inst.row) <= Number(store.row) || Number(inst.row) >= Number(load.row)) continue;
-    if (inst.op === 'call' || inst.op === 'clobber' || inst.op === 'unknown') return null;
-    if (inst.op === 'store' && (!inst.loc?.key || inst.loc?.kind === 'unknown')) return null;
-  }
-  return store;
-}
-
-/* Legacy-v1 keeps its historical MemorySSA `reachingStore` pointer. Use that
- * existing proof only for a trivially ordered same-block fixed-stack spill.
- * No CFG/path inference is added here, and any call/unknown barrier keeps the
- * load explicit. This is intentionally narrower than canonical v2 forwarding. */
-function recoverLegacySameBlockStackSpills(result, opts = {}) {
-  if (!result?.semanticAst || !result?.ir || result.ir.compat?.projection === 'semantic-ir-v2-to-v1') return result;
-  const instructionById = new Map((result.ir.instructions || []).map((inst) => [String(inst.id), inst]));
-  const expressions = new Map((result.semanticAst.values || []).map((item) => [String(item.valueId), item.expression]));
-  const active = new Set();
-
-  const rewrite = (node, depth = 0) => {
-    if (!node || depth > 64) return node;
-    if (node.kind === 'load' && node.location?.kind === 'stack' && node.location?.key) {
-      const ids = [...new Set((node.source?.ir || []).map(String))];
-      if (ids.length !== 1) return node;
-      const load = instructionById.get(ids[0]);
-      if (!load || load.op !== 'load' || load.loc?.key !== node.location.key) return node;
-      const store = exactLegacySameBlockStackStore(load, result.ir);
-      const storedValue = store?.args?.[0]?.value;
-      if (!storedValue) return node;
-      const key = String(storedValue.id);
-      if (active.has(key)) return node;
-      const replacement = expressions.get(key);
-      if (!replacement) return node;
-      active.add(key);
-      let resolved = rewrite(replacement, depth + 1);
-      active.delete(key);
-      const bytes = Number(store.size || store.loc?.size || store.addr?.size || 0);
-      const storeBits = bytes > 0 ? bytes * 8 : 0;
-      if (storeBits > 0 && Number(resolved?.bits || storeBits) > storeBits) {
-        resolved = expr.unary('trunc', resolved, storeBits, resolved.signed ?? null, {
-          address:store.address,
-          row:store.row,
-          ir:store.id,
-          evidence:[{ reason:`exact ${storeBits}-bit legacy stack store width` }],
-        }, { fromBits:Number(resolved.bits || storeBits) });
-      }
-      return resolved;
-    }
-    return mapChildren(node, (child) => rewrite(child, depth + 1));
-  };
-
-  for (const item of result.semanticAst.values || []) {
-    const resolved = rewrite(item.expression);
-    item.expression = resolved;
-    expressions.set(String(item.valueId), resolved);
-  }
-  for (const output of result.semanticAst.outputs || []) {
-    if (output?.expression) output.expression = rewrite(output.expression);
-  }
-
-  let printedChanged = false;
-  for (const node of result.cAst?.body || []) {
-    if (!(node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim()))) continue;
-    const expression = node.semantic?.expression;
-    if (!expression) continue;
-    const resolved = rewrite(expression);
-    if (resolved === expression) continue;
-    if (node.semantic) node.semantic.expression = resolved;
-    node.text = `return ${printExpression(resolved)};`;
-    printedChanged = true;
-  }
-  if (!printedChanged) return result;
-  const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
-  result.pseudocode = printed.text;
-  result.sourceMap = printed.mapping;
-  result.lines = result.cAst.body.map((node) => ({
-    kind:node.kind, indent:node.indent, text:node.text,
-    row:node.source?.rows?.[0] ?? null, addr:node.source?.addresses?.[0] ?? null,
-    note:null, source:node.source,
-  }));
-  result.metrics = { ...(result.metrics || {}), sourceMappedNodes:printed.mapping.length };
-  return result;
-}
 
 /* When a return stack LOAD has a proven same-slot reaching STORE, the spill
  * STORE remains proof provenance but does not own the reconstructed C return
@@ -332,13 +317,24 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
   return result;
 }
 
-function fullPhase8Projection(result, model, opts) {
-  if (opts.phase8Optimize !== true || !result?.semantic || !result?.ir) return result;
+function fullPhase8Projection(result, model, opts, interactiveStage) {
+  if (!result?.semantic || !result?.ir) return result;
+  if (opts.phase8Optimize !== true) {
+    // The intermediate representation API and explicit proof preparation keep
+    // their existing pre-projection endpoint. Product presentation facades
+    // request the final map; a zero history allowance still disables history.
+    if (opts.renderProvenance !== true || opts.phase8PrepareProof === true
+        || opts.renderProvenanceBudget?.maxTransformRecords === 0) return result;
+    // Projection is part of ordinary presentation, not permission to run the
+    // opt-in optimizer set. Reuse the core's existing canonical-facts stage.
+    return interactiveStage?.ledger?.published === true && interactiveStage.analysis
+      ? applyPhase8Projection(result, interactiveStage.analysis, { ...opts, preserveInitialSpelling:true }) : result;
+  }
   const stage = runPhase8Stage(
     { ir:result.ir, types:result.types, opts },
     {
       stages:PHASE8_ALL_STAGES,
-      ...(opts.phase8TimeBudgetMs != null ? { timeBudgetMs:Number(opts.phase8TimeBudgetMs) } : {}),
+      ...(opts.phase8TimeBudgetMs != null ? { timeBudgetMs:opts.phase8TimeBudgetMs } : {}),
       ...(opts.phase8WorkBudget != null ? { maxWorkItems:opts.phase8WorkBudget } : {}),
       shouldAbort:opts.shouldAbort,
       budgetClass:'standard',
@@ -367,18 +363,107 @@ function fullPhase8Projection(result, model, opts) {
 }
 
 export function enhanceSemanticDecompilation(result, model, opts = {}) {
+  const proofOnlyRewrites = opts.phase8ProofOnlyRewrites === true;
   const restore = normalizeConditionalSelectAliases(result?.ir);
-  let core;
+  let core, interactiveStage;
   try {
     // The final Phase 8 path executes the full optimizer set once below, after
     // the existing representation pipeline reaches its stable AST. The core is
     // kept on its interactive/canonical lane here so the optimizer is not run
     // twice and does not borrow the PassManager rewrite deadline.
-    core = constrainSemanticValueWidths(enhanceCore(result, model, { ...opts, phase8Optimize:false }));
+    core = enhanceCore(result, model, { ...opts, phase8Optimize:false,phase8ProofOnlyRewrites:proofOnlyRewrites });
+    interactiveStage = readRepresentationStage(core);
+    core = constrainSemanticValueWidths(core);
   } finally { restore(); }
+  if (proofOnlyRewrites) {
+    // Recovery uses additional optional scalar rewrite engines and may remove
+    // memory-bearing statements. Preserve the pre-recovery view while this
+    // proof path is restricted to independently checked total scalar values.
+    const prepared = {...opts,phase8ProofOnlyRewrites:proofOnlyRewrites};
+    return rememberProducerProjection(fullPhase8Projection(core, model, prepared, interactiveStage), prepared);
+  }
   const reanchored = reanchorExactStackReturn(core, opts);
   const legacySpillsRecovered = recoverLegacySameBlockStackSpills(reanchored, opts);
   const stackPhiRecovered = recoverExactStackPhiExpressions(legacySpillsRecovered, opts);
   const recovered = recoverExactStackReturn(reanchorExactStackReturn(stackPhiRecovered, opts), opts);
-  return fullPhase8Projection(reanchorRecoveredReturnSource(recovered, opts), model, opts);
+  const prepared = {...opts,phase8ProofOnlyRewrites:proofOnlyRewrites};
+  return rememberProducerProjection(fullPhase8Projection(reanchorRecoveredReturnSource(recovered, opts), model, prepared, interactiveStage),prepared);
+}
+
+/** Demand-driven asynchronous proof path. The representation result comes from
+ * the existing decompiler; publication uses the existing Phase 8 stage and final
+ * projection, never a second optimizer or an in-place IR rewrite. */
+export async function optimizeSemanticDecompilation(result, options = {}) {
+  const started = globalThis.performance?.now?.() ?? Date.now();
+  let submitted, original = {}, preparedPlan = null, rewritePolicy = 'unavailable';
+  const normalizeFailureReason = reason => {
+    // The lower symbolic query uses `deadline` internally; expose the stable
+    // optimizer-level vocabulary at the public proof boundary.
+    if (reason === 'deadline') return 'deadline-exceeded';
+    // Auxiliary bitfield views are unsupported machine instructions when the
+    // scalar bridge cannot preserve their declared width.
+    if (reason === 'unknown-semantic:scalar-input-width-mismatch'
+        && original?.ir?.instructions?.some(inst => inst?.op === 'bfx' || inst?.op === 'bfi')) {
+      return 'unsupported-instruction';
+    }
+    return reason;
+  };
+  const fail = rawReason => { const reason = normalizeFailureReason(rawReason); return {...original, proofOptimization:Object.freeze({status:'partial',reason,adopted:0,
+    rewritePolicy,
+    targetDecisions:Object.freeze((preparedPlan?.targetDecisions ?? []).map(decision => Object.freeze({ ...decision,
+      disposition:'unknown', reason }))),
+    decisionCoverage:Object.freeze({ requested:preparedPlan?.decisionCoverage?.requested ?? null, complete:false }),
+    phase8OptimizeStage:null,elapsedMs:(globalThis.performance?.now?.() ?? Date.now())-started})}; };
+  try {
+    submitted = queryRecord(options);
+    original = queryRecord(result,null,256);
+    if (!result?.semantic || !result.ir || !result.semanticAst || !result.cAst) return fail('semantic-projection-required');
+    if (!isProducerProjection(result)) return fail('unissued-or-stale-projection');
+    const proofOnlyRewrites = producerUsesProofOnlyRewrites(result);
+    rewritePolicy = proofOnlyRewrites ? 'deferred-optional-scalar-rewrites' : 'existing-projection';
+    if (submitted.requireProofOnlyRewrites === true && !proofOnlyRewrites) return fail('proof-only-preparation-required');
+    // Snapshot request scope before any asynchronous work. The prepared plan
+    // will separately bind the exact execution-relevant IR graph.
+    const identity = queryRecord(submitted.identity);
+    const rawValues = queryArray(queryRecord(original.ir,null,128).values ?? []);
+    const auto=[];
+    for(const value of rawValues) {
+      const fields=queryRecord(value), definition=fields.def==null?null:queryRecord(fields.def);
+      if(fields.const==null && ['bin','un','cmp','mov','sel','bfx','bfi'].includes(definition?.op)) auto.push(value);
+    }
+    const targets = queryArray(submitted.targets ?? auto);
+    const plan = await preparePhase8RewritePlan(result.ir,{...submitted,identity,targets,backendTier:submitted.backendTier ?? 'tiered'});
+    preparedPlan = plan;
+    const proofContext = {ir:result.ir,proofIdentity:identity,abiId:submitted.abiId};
+    if (!isProducerProjection(result) || plan.status !== 'complete' || !isPhase8RewritePlan(plan,proofContext)) return fail(plan.reason ?? 'stale-proof-plan');
+    // Keep hot-loop cancellation checks O(1). Full IR/proof freshness is
+    // revalidated by admission and the final publication boundary.
+    const aborted = () => {try {if(submitted.signal?.aborted)return true;const stopped=submitted.isCancelled?.()===true;return stopped || submitted.signal?.aborted===true;} catch {return true;}};
+    // fullPhase8Projection is also the synchronous production callsite. The
+    // plan is opt-in and never reaches the ordinary interactive stage.
+    const projected = fullPhase8Projection(result,null,{phase8Optimize:true,phase8RewritePlan:plan,
+      phase8ProofOnlyRewrites:proofOnlyRewrites,
+      phase8ProofIdentity:identity,phase8AbiId:submitted.abiId,
+      phase8TimeBudgetMs:submitted.phase8TimeBudgetMs ?? 120,
+      phase8WorkBudget:submitted.phase8WorkBudget ?? 1000000,shouldAbort:aborted});
+    if (aborted() || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext) || projected.phase8?.published !== true || projected.phase8?.completeness !== 'complete') return fail('optimizer-withheld');
+    const applied = projected.phase8Projection?.transforms.filter(t=>['solver-constant','solver-scalar'].includes(t.kind)) ?? [];
+    const targetDecisions = Object.freeze(plan.targetDecisions.map(decision => {
+      if (decision.disposition !== 'selected') return decision;
+      const adopted = applied.some(transform => transform.valueId === decision.valueId && transform.queryHash === decision.queryHash);
+      return Object.freeze({ ...decision, disposition:adopted ? 'adopted' : 'unknown',
+        reason:adopted ? 'committed-and-rendered-scalar-projection' : 'selected-projection-not-rendered' });
+    }));
+    const proofOptimization = Object.freeze({status:'complete',reason:null,
+      rewritePolicy,
+      adopted:applied.length,targetDecisions,decisionCoverage:plan.decisionCoverage,
+      planId:plan.planId,scope:plan.observableScope,taintEvidence:plan.taintEvidence,taintMetrics:plan.taintMetrics,taint:plan.taintResult,
+      phase8OptimizeStage:projected.ctx?.decompilerPipeline?.phase8ElapsedMs ?? null,
+      elapsedMs:(globalThis.performance?.now?.() ?? Date.now())-started});
+    if (aborted() || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext)) return fail('cancelled-before-projection-publication');
+    const final=rememberProducerProjection({...projected,proofOptimization},{phase8PrepareProof:true,
+      phase8ProofOnlyRewrites:proofOnlyRewrites,shouldAbort:aborted});
+    if(aborted() || !isProducerProjection(final) || !isProducerProjection(result) || !isPhase8RewritePlan(plan,proofContext)) return fail('cancelled-or-stale-at-final-publication');
+    return final;
+  } catch { return fail('invalid-or-unsupported-proof-optimization'); }
 }

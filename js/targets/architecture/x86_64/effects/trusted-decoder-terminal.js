@@ -56,10 +56,12 @@ function isX87ByIdentity(instruction, family) {
 function flagDomain(instruction, family) {
   const isX87 = isX87ByIdentity(instruction, family);
   const usesRflags = isX87RflagsInstruction(instruction, family);
+  const writesComparisonRflags = isX87 && usesRflags && !family.startsWith('fcmov');
   const expected = isX87 && !usesRflags ? 'fpu-flags' : 'eflags';
   return Object.freeze({
     isX87,
     usesRflags,
+    writesComparisonRflags,
     usesFpuFlags:expected === 'fpu-flags',
     valid:instruction?.detail?.flagsKind === expected,
   });
@@ -105,6 +107,19 @@ function flagSets(instruction, domain) {
   const writes = new Set();
   const raw = BigInt(instruction?.detail?.eflags ?? 0n);
   let nondeterministic = false;
+
+  if (domain.writesComparisonRflags) {
+    // FCOMI[P]/FUCOMI[P] write arithmetic flags. Capstone 5's single
+    // union word is zero for some popping forms and contains FPU-mask bits
+    // for others; interpreting it as EFLAGS invents prior-flag dependencies.
+    // Comparison outputs ZF/PF/CF and clears OF/SF/AF. Do not infer a C1
+    // reset from SDM 253666-088US pp. 3-366/367: the native oracle (including
+    // FCOM controls) and independent QEMU hardware testing preserve C1.
+    // https://www.mail-archive.com/qemu-devel@nongnu.org/msg1222232.html
+    // This is a summary surface, not a numerical/fault-path evaluation.
+    for (const name of ['cf', 'pf', 'zf', 'of', 'sf', 'af']) writes.add(`rflags.${name}`);
+    return { reads, writes, nondeterministic };
+  }
 
   if (domain.usesFpuFlags) {
     for (const [name, modify, reset, set, undef, test] of FPU_FLAG_BITS) {

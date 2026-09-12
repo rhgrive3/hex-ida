@@ -168,6 +168,38 @@ function structuredCalculation(instruction, memory, state) {
   return Object.freeze({ calculation, base, index, displacement, nextInstructionAddress });
 }
 
+// Project the architecture-owned offset calculation into existing generic
+// MachineEffects expressions. Shared Semantic IR must not learn x86 wrapper
+// names. Arithmetic is modular at each node's width, before address-size
+// zero extension. A vector lane calculation is not a scalar address.
+function scalarAddressCalculation(expression) {
+  switch (expression.kind) {
+    case 'register':
+    case 'bitvector': return expression;
+    case 'next-instruction-address': return bitvector(expression.value, expression.widthBits);
+    case 'scaled-index': return scalarAddressCalculation(expression.calculation);
+    case 'wrap': {
+      const value = scalarAddressCalculation(expression.value);
+      return value?.widthBits === expression.widthBits ? value : null;
+    }
+    case 'add': {
+      const left = scalarAddressCalculation(expression.left);
+      const right = scalarAddressCalculation(expression.right);
+      return left && right ? add(left, right, expression.widthBits) : null;
+    }
+    case 'shift-left': {
+      const value = scalarAddressCalculation(expression.value);
+      return value ? Object.freeze({ kind:'shift-left', value, amount:expression.amount, widthBits:expression.widthBits }) : null;
+    }
+    case 'zero-extend': {
+      const value = scalarAddressCalculation(expression.value);
+      return value ? Object.freeze({ kind:'zero-extend', value,
+        fromBits:expression.fromWidthBits, toBits:expression.toWidthBits, widthBits:expression.toWidthBits }) : null;
+    }
+    default: return null;
+  }
+}
+
 export function x86EffectiveAddressExpression(instruction, memoryOperand) {
   const memory = memoryOperand?.memory;
   const state = validatedComponents(instruction, memory);
@@ -175,9 +207,15 @@ export function x86EffectiveAddressExpression(instruction, memoryOperand) {
   const structured = structuredCalculation(instruction, memory, state);
   if (!structured) return null;
   const originInstructionId = instruction?.instructionId == null ? null : String(instruction.instructionId);
+  // FS/GS needs the hidden base PLUS invalidation for every base writer. Its
+  // offset alone is not a linear address and TLS spelling is not a NoAlias
+  // proof. Keep that unresolved wrapper until the shared state contract is
+  // integrated. Likewise, do not scalarize unproven VSIB lane semantics.
+  const scalar = state.segment.space === 'memory' && !state.vectorIndex
+    ? scalarAddressCalculation(structured.calculation) : null;
 
   const expression = Object.freeze({
-    kind:'x86-effective-address',
+    ...(scalar ?? { kind:'x86-effective-address' }),
     widthBits:64,
     addressSizeBits:state.widthBits,
     calculation:structured.calculation,

@@ -127,7 +127,7 @@ function terminalize(instruction, ownerId, result, context, provenanceSource) {
   return closeTrustedX86Partial(instruction, ownerId, result, context);
 }
 
-export function dispatchX86MachineEffects(decoded, context = {}) {
+function dispatchWithDecoderSource(decoded, context, provenanceSource) {
   const instruction = normalizeX86Instruction(decoded, context);
   if (!instruction.detailAvailable) return Object.freeze({ ownerId: 'fallback', result: null });
   if (invalidNonEvexExtendedVector(instruction)) throw new TypeError('x86-decoded-instruction-high-vector-register-requires-evex');
@@ -140,7 +140,7 @@ export function dispatchX86MachineEffects(decoded, context = {}) {
   if (instructionFamily.startsWith('set') && !isCanonicalSetccFamily(instructionFamily)) {
     const systemSet = liftX86SystemEffects(instruction, context);
     if (systemSet != null) {
-      return Object.freeze({ ownerId:'system', result:terminalize(instruction, 'system', systemSet, context, decoded) });
+      return Object.freeze({ ownerId:'system', result:terminalize(instruction, 'system', systemSet, context, provenanceSource) });
     }
     return Object.freeze({ ownerId:'fallback', result:null });
   }
@@ -150,7 +150,7 @@ export function dispatchX86MachineEffects(decoded, context = {}) {
   // CR/DR physical state and privilege/debug effects would be lost.
   const systemRegisterMove = liftX86SystemRegisterMoveEffects(instruction, context);
   if (systemRegisterMove != null) {
-    return Object.freeze({ ownerId:'system', result:terminalize(instruction, 'system', systemRegisterMove, context, decoded) });
+    return Object.freeze({ ownerId:'system', result:terminalize(instruction, 'system', systemRegisterMove, context, provenanceSource) });
   }
 
   // The terminal long-64 residual lane is deliberately provenance- and
@@ -163,7 +163,7 @@ export function dispatchX86MachineEffects(decoded, context = {}) {
     const integrated = integrateX86ExtendedStateAliases(instruction, terminalResidual.result, context);
     return Object.freeze({
       ownerId:terminalResidual.ownerId,
-      result:terminalize(instruction, terminalResidual.ownerId, integrated, context, decoded),
+      result:terminalize(instruction, terminalResidual.ownerId, integrated, context, provenanceSource),
     });
   }
 
@@ -171,7 +171,7 @@ export function dispatchX86MachineEffects(decoded, context = {}) {
   if (extended != null && extended.result != null) {
     return Object.freeze({
       ownerId: extended.ownerId,
-      result: terminalize(instruction, extended.ownerId, extended.result, context, decoded),
+      result: terminalize(instruction, extended.ownerId, extended.result, context, provenanceSource),
     });
   }
   for (const family of FAMILIES) {
@@ -180,11 +180,28 @@ export function dispatchX86MachineEffects(decoded, context = {}) {
       const integrated = integrateX86ExtendedStateAliases(instruction, result, context);
       return Object.freeze({
         ownerId: family.id,
-        result: terminalize(instruction, family.id, integrated, context, decoded),
+        result: terminalize(instruction, family.id, integrated, context, provenanceSource),
       });
     }
   }
   return Object.freeze({ ownerId: 'fallback', result: null });
+}
+
+export function dispatchX86MachineEffects(decoded, context = {}) {
+  return dispatchWithDecoderSource(decoded, context, decoded);
+}
+
+// Only canonical identity/origin/mode metadata is rebound. Semantic fields
+// still come from the original row, which alone supplies receiver authority.
+// No brand is minted or transferred to this prepared copy.
+export function liftX86DecodedMachineEffects(decoded, context = {}) {
+  const prepared = {
+    ...decoded,
+    instructionId:context.instructionId ?? decoded.instructionId,
+    origin:context.origin ?? decoded.origin,
+    mode:context.mode ?? decoded.mode,
+  };
+  return dispatchWithDecoderSource(prepared, context, decoded).result;
 }
 
 export function liftX86MachineEffects(decoded, context = {}) {
