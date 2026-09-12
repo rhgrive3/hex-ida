@@ -760,6 +760,13 @@ export class App {
    * exact seedの正確さと一覧の網羅性は分離し、全region走査済みの時だけcompleteにする。
    */
   async ensureFunctions(region, onProgress) {
+    // A non-function progress observer must never reach the backend callback:
+    // truthy junk (true, {}, []) would be invoked by the backend at the first
+    // progress tick and abort discovery with a raw TypeError. Normalize the
+    // options-object spelling exactly like ensureProgram/ensureStrings (#5448).
+    const progressFn = typeof onProgress === 'function'
+      ? onProgress
+      : (typeof onProgress === 'object' && typeof onProgress?.onProgress === 'function' ? onProgress.onProgress : null);
     const epoch=this.backend.gen;
     if(this.symbolsReady){try{await this.symbolsReady;}catch{/* names are optional */}}
     if(epoch!==this.backend.gen)return null;
@@ -780,7 +787,7 @@ export class App {
         ? Math.max(1,Math.min(remaining,Number((BigInt(remaining)*size+remainingBytes-1n)/remainingBytes))) : 0;
       if(share<=0){reasons.push(`function-global-budget:${r.id}`);results.push({regionId:r.id,complete:false,skipped:true});remainingBytes-=size;continue;}
       try{
-        const res=await this.backend.guessFunctions(r.id,share,onProgress&&((p)=>onProgress({phase:'functions',done:i+(p.all?Math.min(1,p.done/p.all):0),all:targets.length,region:r.id})));
+        const res=await this.backend.guessFunctions(r.id,share,progressFn&&((p)=>progressFn({phase:'functions',done:i+(p.all?Math.min(1,p.done/p.all):0),all:targets.length,region:r.id})));
         if(epoch!==this.backend.gen)return null;
         if(res?.starts?.length){sym.addFunctions(res.starts,{source:'heuristic',confidence:0.55,confirmed:false});sym.guessed=true;remaining=Math.max(0,remaining-res.starts.length);}
         const complete=res?.discoveryComplete===true || res?.completeness?.complete===true || res?.complete===true;
@@ -980,7 +987,7 @@ export class App {
         if (!res.complete) { backendIncomplete = true; if (!skipped.includes(r)) skipped.push(r); }
         for (const s of res.results || []) {
           if (!collectionBudget.accept(s.text)) break;
-          out.push({ addr: s.addr, text: s.text, region: r });
+          out.push({ addr: s.addr, text: s.text, byteLength: s.byteLength, region: r });
         }
         if (res.capped && !collectionBudget.truncationReason) collectionBudget.truncationReason = res.truncationReason || 'result-budget';
       }

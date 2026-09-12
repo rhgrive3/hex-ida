@@ -5,8 +5,9 @@ import {
   buildClassificationInput,
   createProductSurfaceQueries,
 } from '../js/analysis/query/product-surface.js';
+import { createAnalysisSnapshot } from '../js/analysis/query/snapshot.js';
 
-const SNAPSHOT = Object.freeze({ snapshotId:'snap-1', analysisEpoch:1 });
+const SNAPSHOT = createAnalysisSnapshot({ binaryId:'binary-1', analysisEpoch:1 });
 
 function store(values = {}) {
   return { get(key) { return values[key] ?? null; } };
@@ -94,6 +95,8 @@ test('last cancelled string-query waiter cancels the in-flight backend request',
   const regions = [{ id:'r1', section:'__cstring', size:100n }];
   let cancelled = 0;
   let rejectRequest;
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
   const request = new Promise((_resolve, reject) => { rejectRequest = reject; });
   request.cancel = () => {
     cancelled++;
@@ -103,12 +106,14 @@ test('last cancelled string-query waiter cancels the in-flight backend request',
   };
   const app = baseApp({
     store:store({ sliceIndex:0, regions, currentRegion:regions[0], architecture:'arm64' }),
-    backend:{ gen:1, strings:() => request },
+    backend:{ gen:1, strings:() => { markStarted(); return request; } },
   });
   const query = createProductSurfaceQueries(app);
   const controller = new AbortController();
   const pending = query.strings(SNAPSHOT, { text:'alpha' }, { offset:0, limit:2 }, { signal:controller.signal });
-  await Promise.resolve();
+  // Cancellation of an in-flight request requires the backend to have started;
+  // snapshot validation may legitimately cross more than one microtask first.
+  await started;
   controller.abort('view-closed');
   await assert.rejects(pending, (error) => error?.name === 'AbortError');
   assert.equal(cancelled, 1);

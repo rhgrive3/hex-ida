@@ -150,4 +150,20 @@ test('publication snapshots accessor-backed bytes once before hashing and promot
   assert.notEqual(promotedBytes, materialized.bytes);
 });
 
+test('plan-integrity failures remain immutable and cannot authorize publication (#4516/#4521)', async () => {
+  const source = Uint8Array.from([0x11]);
+  const rebuildPlan = plan('binary-A', source);
+  const materialized = await materializeRebuildPlan(rebuildPlan, source);
+  const weakenedPlan = { ...rebuildPlan, requiredValidators: [] };
+  const validation = await validValidation(weakenedPlan, materialized);
+
+  assert.equal(validation.status, 'invalid');
+  assert.equal(validation.failures[0].validator, 'plan-integrity');
+  assert.equal(Object.isFrozen(validation), true);
+  assert.throws(() => { validation.status = 'valid'; }, TypeError);
+  assert.deepEqual(await publishRebuildOutput(materialized, validation, {
+    promote: () => { throw new Error('promotion must not run'); },
+  }), { status: 'rejected', reason: 'validation-not-green' });
+});
+
 console.log('issue #4516 rebuild publication binding regressions: PASS');

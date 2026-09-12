@@ -1,12 +1,26 @@
 version: 2.1
 
+commands:
+  configure-public-repository-checkout:
+    description: Use HTTPS for this public repository's built-in checkout
+    steps:
+      - run:
+          name: Configure HTTPS for public repository checkout
+          command: |
+            set -euo pipefail
+            git config --global url."https://github.com/rhgrive3/hex-ida.git".insteadOf "git@github.com:rhgrive3/hex-ida.git"
+
 jobs:
   migration-guardrails:
     docker:
       - image: cimg/node:22.23
     resource_class: medium
     steps:
+      - configure-public-repository-checkout
       - checkout
+      - run:
+          name: Validate public repository checkout policy
+          command: node tests/ci/circleci-checkout.test.mjs
       - run:
           name: Validate CircleCI impact router
           command: node tests/ci/circleci-impact.test.mjs
@@ -32,6 +46,7 @@ jobs:
       - image: cimg/node:22.23
     resource_class: small
     steps:
+      - configure-public-repository-checkout
       - checkout
       - run:
           name: Detect agent-loop impact
@@ -49,6 +64,7 @@ jobs:
       - image: cimg/node:22.23
     resource_class: small
     steps:
+      - configure-public-repository-checkout
       - checkout
       - run:
           name: Detect canonical-claims impact
@@ -66,6 +82,7 @@ jobs:
       - image: cimg/node:20.19
     resource_class: small
     steps:
+      - configure-public-repository-checkout
       - checkout
       - run:
           name: Detect AI evaluation impact
@@ -101,6 +118,7 @@ jobs:
       - image: cimg/node:22.23
     resource_class: small
     steps:
+      - configure-public-repository-checkout
       - checkout
       - run:
           name: Detect Phase 7 ownership impact
@@ -186,6 +204,16 @@ jobs:
                   --head-sha "$OWNERSHIP_HEAD_SHA")"
                 node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
                 ;;
+              dev-agent-hardening/integration/issue-batch-20260909)
+                # #7535 is the exact living integration route for the reviewed
+                # seven-component union. The helper enumerates every foreign
+                # path and returns only the Phase 7-owned subset for validation.
+                FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+                  --branch "$CIRCLE_BRANCH" \
+                  --base-sha "$OWNERSHIP_BASE_SHA" \
+                  --head-sha "$OWNERSHIP_HEAD_SHA")"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
               *)
                 node tools/validation/phase7-ownership.mjs --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA"
                 ;;
@@ -200,6 +228,7 @@ jobs:
       - image: cimg/node:22.23
     resource_class: small
     steps:
+      - configure-public-repository-checkout
       - checkout
       - run:
           name: Detect Phase 8 ownership impact

@@ -39,7 +39,7 @@ import { AbortOnCommitBackend, FailingBackend, PersistentMemoryBackend, descript
   let enteredResolve;
   const entered = new Promise((resolve) => { enteredResolve = resolve; });
   const gate = new Promise((resolve) => { release = resolve; });
-  const promise = store.publish(staged, { value:1 }, { signal:controller.signal, validate:async () => { enteredResolve(); await gate; } });
+  const promise = store.publish(staged, { value:1 }, { signal:controller.signal, validate:async () => { enteredResolve(); await gate; return true; } });
   await entered;
   controller.abort(new DOMException('cancelled while staged', 'AbortError'));
   release();
@@ -50,7 +50,7 @@ import { AbortOnCommitBackend, FailingBackend, PersistentMemoryBackend, descript
   const beforeController = new AbortController();
   await assert.rejects(store.publish(before, { value:2 }, {
     signal:beforeController.signal,
-    validate:async () => { beforeController.abort(new DOMException('cancelled before publish', 'AbortError')); },
+    validate:async () => { beforeController.abort(new DOMException('cancelled before publish', 'AbortError')); return true; },
   }), (error) => error?.name === 'AbortError');
   assert.equal(await backend.has(before.artifactId), false);
 
@@ -70,7 +70,7 @@ import { AbortOnCommitBackend, FailingBackend, PersistentMemoryBackend, descript
   let enteredResolve;
   const entered = new Promise((resolve) => { enteredResolve = resolve; });
   const gate = new Promise((resolve) => { release = resolve; });
-  const publishing = store.publish(d, { complete:true, nested:{ x:1 } }, { validate:async () => { enteredResolve(); await gate; } });
+  const publishing = store.publish(d, { complete:true, nested:{ x:1 } }, { validate:async () => { enteredResolve(); await gate; return true; } });
   await entered;
   assert.equal((await store.get(d)).status, 'miss');
   release();

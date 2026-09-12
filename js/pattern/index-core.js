@@ -79,11 +79,12 @@ function validateType(type, depth = 0, names = new Set()) {
   if (type.kind === 'array') {
     const countType = typeof type.count;
     if (countType === 'number') {
-      if (!Number.isSafeInteger(type.count) || type.count < 0) fail('pattern-array-count-invalid');
+      if (!isArrayCountNumber(type.count)) fail('pattern-array-count-invalid');
     } else if (countType === 'string') {
       if (!/^[A-Za-z_][A-Za-z0-9_.]*$/.test(type.count)) fail('pattern-array-count-ref-invalid');
     } else if (type.count && countType === 'object' && !Array.isArray(type.count)) {
       validateExpression(type.count);
+      if (type.count.op === 'const' && !isArrayCountNumber(type.count.value)) fail('pattern-array-count-invalid');
     } else {
       fail('pattern-array-count-invalid');
     }
@@ -138,6 +139,8 @@ function createSource(input, options = {}) {
   throw new TypeError('pattern ByteSource is required');
 }
 function safeNumber(value, code = 'pattern-integer-overflow') { const number = Number(value); if (!Number.isSafeInteger(number) || number < 0) fail(code); return number; }
+function isArrayCountNumber(value) { return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0; }
+function arrayCountNumber(value) { if (!isArrayCountNumber(value)) fail('pattern-array-count-invalid'); return value; }
 function primitiveValue(raw, name) { return typeof raw === 'bigint' && raw <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(raw) : raw; }
 function provenance(ctx, offset, length, space = 'file') { return { patternId: ctx.patternId, snapshotId: ctx.source.snapshotId, space, offset: String(offset), length: String(length) }; }
 function fieldValue(type, value, ctx, offset, length, space = 'file', extra = {}) { return { type: type.kind === 'primitive' ? type.name : type.kind, value, provenance: provenance(ctx, offset, length, space), ...extra }; }
@@ -193,8 +196,8 @@ function knownExpression(expression, values) {
 }
 
 function staticSize(type, ctx, values = {}, resolving = new Set()) {
-  if (type.kind === 'primitive') return PRIMITIVES.get(type.name).bytes;
-  if (type.kind === 'pointer' || type.kind === 'offset') return 8;
+  if (type.kind === 'primitive') return BigInt(PRIMITIVES.get(type.name).bytes);
+  if (type.kind === 'pointer' || type.kind === 'offset') return 8n;
   if (type.kind === 'named') {
     if (resolving.has(type.name)) return null;
     const target = ctx.types?.get(type.name);
@@ -205,11 +208,11 @@ function staticSize(type, ctx, values = {}, resolving = new Set()) {
   }
   if (type.kind === 'enum' || type.kind === 'bitfield') return staticSize(type.base, ctx, values, resolving);
   if (type.kind === 'array' && Number.isSafeInteger(type.count)) {
-    if (type.count === 0) return 0;
-    const item = staticSize(type.element, ctx, values, resolving); return item == null ? null : item * type.count;
+    if (type.count === 0) return 0n;
+    const item = staticSize(type.element, ctx, values, resolving); return item == null ? null : item * BigInt(type.count);
   }
   if (type.kind === 'struct') {
-    let total = 0;
+    let total = 0n;
     for (const field of type.fields) {
       if (field.when) {
         const state = knownExpression(field.when, values);
@@ -226,7 +229,7 @@ function staticSize(type, ctx, values = {}, resolving = new Set()) {
     const state = knownExpression(type.when, values);
     if (!state.known) return null;
     if (state.value) return staticSize(type.then, ctx, values, resolving);
-    return type.else ? staticSize(type.else, ctx, values, resolving) : 0;
+    return type.else ? staticSize(type.else, ctx, values, resolving) : 0n;
   }
   if (type.kind === 'union') {
     // A fixed-alternative union occupies at least its largest alternative
@@ -250,7 +253,7 @@ function consumedSize(type, result, ctx, values) {
   const length = result?.provenance?.length;
   if (typeof length === 'string' && /^\d+$/.test(length)) return { size: BigInt(length) };
   const size = staticSize(type, ctx, values);
-  return size == null ? null : { size: BigInt(size) };
+  return size == null ? null : { size };
 }
 
 function readType(type, offset, space, ctx, values, depth = 0) {
@@ -274,12 +277,12 @@ function readType(type, offset, space, ctx, values, depth = 0) {
     const pointer = readType({ kind: 'primitive', name: 'u64le' }, offset, space, ctx, values, depth + 1); if (pointer.status) return pointer;
     const address = pointer.value; const targetSpace = type.space;
     const out = fieldValue(type, address, ctx, offset, 8, space, { targetSpace, lazy: true });
-    out.dereference = () => readType(type.target, safeNumber(address), targetSpace, ctx, values, depth + 1);
+    out.dereference = () => readType(type.target, address, targetSpace, ctx, values, depth + 1);
     return out;
   }
   if (type.kind === 'array') {
     const countValue = typeof type.count === 'number' ? type.count : typeof type.count === 'string' ? valueAt(values, type.count) : evaluateExpression(type.count, values);
-    const count = safeNumber(countValue, 'pattern-array-count-invalid');
+    const count = arrayCountNumber(countValue);
     const out = fieldValue(type, null, ctx, offset, 0, space, { length: count, lazy: true, materialized: [] });
     const elementSize = staticSize(type.element, ctx, values);
     const elementOffsets = [];
@@ -292,7 +295,7 @@ function readType(type, offset, space, ctx, values, depth = 0) {
           continue;
         }
         if (!ctx.budget.consumeEntries()) return ctx.budget.partial();
-        const at = elementSize == null ? next : BigInt(offset) + BigInt(j) * BigInt(elementSize);
+        const at = elementSize == null ? next : BigInt(offset) + BigInt(j) * elementSize;
         const item = readType(type.element, at, space, ctx, values, depth + 1);
         if (item.status) return item;
         const measured = consumedSize(type.element, item, ctx, values);
@@ -307,7 +310,7 @@ function readType(type, offset, space, ctx, values, depth = 0) {
     };
     out[ARRAY_CONSUMED_SIZE] = () => {
       if (count === 0) return { size: 0n };
-      if (elementSize != null) return { size: BigInt(elementSize) * BigInt(count) };
+      if (elementSize != null) return { size: elementSize * BigInt(count) };
       const result = ensureElements(count - 1);
       if (result?.status) return result;
       return { size: elementOffsets[count - 1] + elementLengths[count - 1] - BigInt(offset) };

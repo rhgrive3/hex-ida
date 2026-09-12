@@ -1,3 +1,4 @@
+import { riscv64HasReturnAddressStackPopHint, riscv64IsStandardReturn } from '../control-flow.js';
 import { RISCV64_XLEN, createRiscv64EffectContext } from './common.js';
 
 /** RV64 control-transfer effects. */
@@ -97,13 +98,14 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
     const target = ctx.valueOp('and', [sum, ctx.constant(RISCV64_XLEN, -2n)], RISCV64_XLEN, { targetLowBitCleared: true });
     const linked = ctx.writeRegister(fields.rd, ctx.constant(RISCV64_XLEN, next));
     const isCallHint = linked && RETURN_ADDRESS_HINT_REGISTERS.includes(fields.rd);
-    const isReturnHint = !linked && RETURN_ADDRESS_HINT_REGISTERS.includes(fields.rs1);
-    const kind = isCallHint ? 'call' : isReturnHint ? 'return' : 'indirect';
+    const hasReturnAddressStackPopHint = riscv64HasReturnAddressStackPopHint(fields);
+    const isSemanticReturn = riscv64IsStandardReturn(fields);
+    const kind = isCallHint ? 'call' : isSemanticReturn ? 'return' : 'indirect';
     return ctx.finish({
       controlEffect: { kind, target, ...(kind === 'call' ? { fallthrough: addressRef(next) } : {}) },
       possibleFaults: runtimeTargetAlignmentFaults(ctx, target),
       family: 'control',
-      metadata: { operation: op, indirect: true, linkRegister: linked ? fields.rd : null, returnAddressStackHint: isReturnHint ? fields.rs1 : null, jumpWithLinkage: linked && !isCallHint, abiSemantics: false },
+      metadata: { operation: op, indirect: true, linkRegister: linked ? fields.rd : null, returnAddressStackHint: hasReturnAddressStackPopHint ? fields.rs1 : null, jumpWithLinkage: linked && !isCallHint, abiSemantics: false },
     });
   }
   return null;

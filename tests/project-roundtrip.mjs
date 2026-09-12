@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { NavigationHistory } from '../js/navigation.js';
 import {
   HEX_PROJECT_VERSION,
   ProjectFormatError,
@@ -20,7 +21,7 @@ if (!globalThis.localStorage) {
 }
 
 import { NoteStore } from '../js/names.js';
-import { applyWorkspaceProject, snapshotWorkspace } from '../js/workspace.js';
+import { ProductWorkspace, applyWorkspaceProject, snapshotWorkspace } from '../js/workspace.js';
 
 const project = createHexProject({
   binaryHash: 'fnv1a64:10:abc',
@@ -195,7 +196,114 @@ assert.equal((await importHexProject(new Blob([unicodeBytes]))).user.comments[0]
   applyWorkspaceProject(fakeApp, truncatedNavigationProject);
   assert.equal(fakeApp.navigation.index, 20, 'cursor must remain unchanged when history is not truncated');
 
+  // Issue #5488: project import must honor the real history capacity, including zero.
+  for (const limit of [0, 1, 40]) {
+    for (const cursorIndex of [70, null]) {
+      let restoredSnapshot;
+      fakeApp.navigation = new NavigationHistory({
+        limit,
+        onChange(snapshot) { restoredSnapshot = snapshot; },
+      });
+      applyWorkspaceProject(fakeApp, {
+        ...truncatedNavigationProject,
+        navigation: { ...truncatedNavigationProject.navigation, history: longHistory, cursorIndex },
+      });
+      const navigation = fakeApp.navigation;
+      assert.equal(navigation.entries.length, limit);
+      assert.equal(navigation.index, limit === 0 ? -1 : cursorIndex === null ? limit - 1 : Math.max(0, cursorIndex - (100 - limit)));
+      assert.deepEqual(restoredSnapshot, navigation.snapshot(), 'import must notify observers of the restored capacity');
+      if (limit === 0) {
+        assert.deepEqual(navigation.entries, []);
+        assert.deepEqual(navigation.snapshot(), { length: 0, canBack: false, canForward: false, current: null });
+      } else {
+        assert.equal(navigation.entries[0].addr, BigInt(100 - limit));
+        assert.equal(navigation.entries.at(-1).addr, 99n);
+      }
+    }
+  }
+
   fakeApp.notes.clear();
+}
+
+// Issue #3658: importing an explicit empty findings state must clear the
+// previous report before ProductWorkspace autosaves or exports the project.
+{
+  class Storage {
+    constructor() { this.values = new Map(); }
+    getItem(key) { return this.values.get(String(key)) ?? null; }
+    setItem(key, value) { this.values.set(String(key), String(value)); }
+  }
+
+  const identity = {
+    hash: 'hash-3658',
+    metadata: {
+      name: 'issue-3658.bin', size: 4, format: 'macho', sliceIndex: 0,
+      sliceOffset: 0n, sliceSize: 4n, uuid: 'uuid-3658', architecture: 'arm64',
+    },
+  };
+  const fileInfo = {
+    name: identity.metadata.name, size: identity.metadata.size, format: identity.metadata.format,
+    slices: [{
+      offset: 0n, size: 4n,
+      info: { uuid: identity.metadata.uuid, architecture: identity.metadata.architecture },
+      capability: { architecture: identity.metadata.architecture },
+    }],
+  };
+  const values = new Map([['fileInfo', fileInfo], ['sliceIndex', 0], ['architecture', 'arm64']]);
+  const makeApp = () => ({
+    notes: new NoteStore('test-ws-3658'),
+    patches: { list: () => [], add() {}, clear() {} },
+    bookmarks: { list: () => [], restore() {} },
+    navigation: {
+      entries: [], index: -1, limit: 40,
+      snapshot() { return { entries: this.entries, index: this.index }; },
+      onChange() {},
+    },
+    store: { get: (key) => values.get(key), set() {} },
+    backend: {
+      contentHash: identity.hash, gen: 1,
+      async ensureContentHash() { return this.contentHash; },
+    },
+    symbols: { gen: 0, rename() {} },
+    codeRegion: () => ({ id: 'text', vmAddr: 0n, size: 0x1000n }),
+    viewer: { setSymbols() {}, goToAddress() {} },
+    prefs: { lang: 'en', explain: true, textSize: 'm' },
+  });
+  const readExport = async (workspace) => parseHexProject(await workspace.exportProject().text());
+
+  const app = makeApp();
+  const storage = new Storage();
+  const workspace = new ProductWorkspace(app, { storage });
+  app.workspace = workspace;
+  await workspace.bind();
+
+  const projectA = createHexProject({
+    binary: identity,
+    confirmedFindings: [{ id: 'finding-A' }],
+    evidence: [{ id: 'evidence-A' }],
+  });
+  await workspace.importProject(serializeHexProject(projectA));
+  assert.deepEqual(app.autoReport.report.confirmed, [{ id: 'finding-A' }], 'non-empty findings must restore');
+  assert.deepEqual(app.autoReport.report.deep, [{ id: 'evidence-A' }], 'non-empty evidence must restore');
+  const exportedA = await readExport(workspace);
+  assert.deepEqual(exportedA.findings.confirmed, [{ id: 'finding-A' }]);
+  assert.deepEqual(exportedA.findings.evidence, [{ id: 'evidence-A' }]);
+
+  const projectB = createHexProject({ binary: identity, confirmedFindings: [], evidence: [] });
+  await workspace.importProject(serializeHexProject(projectB));
+  assert.equal(app.autoReport, null, 'empty findings must clear stale autoReport');
+  const savedB = parseHexProject(storage.getItem(workspace._localKey(workspace.identity)));
+  assert.deepEqual(savedB.findings.confirmed, [], 'autosave must not reintroduce stale confirmed findings');
+  assert.deepEqual(savedB.findings.evidence, [], 'autosave must not reintroduce stale evidence');
+  const exportedB = await readExport(workspace);
+  assert.deepEqual(exportedB.findings.confirmed, [], 'A→B import must not leak confirmed findings');
+  assert.deepEqual(exportedB.findings.evidence, [], 'A→B import must not leak evidence');
+
+  await workspace.importProject(serializeHexProject(exportedB));
+  const exportedB2 = await readExport(workspace);
+  assert.deepEqual(exportedB2.findings.confirmed, [], 'empty findings export/import must be idempotent');
+  assert.deepEqual(exportedB2.findings.evidence, [], 'empty evidence export/import must be idempotent');
+  app.notes.clear();
 }
 
 console.log('project-roundtrip: PASS');

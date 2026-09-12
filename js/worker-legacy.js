@@ -461,6 +461,10 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
     let nsyms = info.symtab.nsyms;
     if (nsyms > SYMBOL_MAX) { nsyms = SYMBOL_MAX; capped = true; }
     const symBuf = await readRange(base + BigInt(info.symtab.symoff), nsyms * entry);
+    /* A string table beyond STRTAB_MAX is truncated below: symbols past the
+     * clamp parse as '' and vanish from definedSymbols(). That budget cut is
+     * an incompleteness the result must report, not hide (#5372). */
+    if (info.symtab.strsize > STRTAB_MAX) capped = true;
     const strLen = Math.min(info.symtab.strsize, STRTAB_MAX);
     const strBuf = await readRange(base + BigInt(info.symtab.stroff), strLen);
     if (symBuf.length >= entry && strBuf.length) {
@@ -2013,10 +2017,13 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
 
   const flush = () => {
     if (runStart >= 0 && runBytes.length) {
+      // Keep the raw run's byte extent: the display text is a decoded,
+      // control-escaped string whose .length is not an address span (#5698).
+      const byteLength = runBytes.length;
       const text = UTF8.decode(new Uint8Array(runBytes))
         .replace(/\t/g, '\\t').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
       if (text.length >= minLen) {
-        out.push({ addr: region.vmAddr + BigInt(runStart), offset: runStart, text });
+        out.push({ addr: region.vmAddr + BigInt(runStart), offset: runStart, text, byteLength });
       }
     }
     runStart = -1;
