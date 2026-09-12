@@ -743,5 +743,41 @@
         "status": "environment-blocked; not represented as passing and no override supplied"
       }
     ]
+  },
+  "postCommitScaleVerification": {
+    "initialRun": {
+      "label": "session15-committed-scpa",
+      "command": [
+        "npm",
+        "run",
+        "scpa:test"
+      ],
+      "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+      "startedUtc": "2026-09-12T07:27:24.441214+00:00",
+      "timeoutSeconds": 180.0,
+      "durationSeconds": 72.927,
+      "exitCode": 1,
+      "timedOut": false,
+      "logSha256": "562a633dc8ec52fea0bada3c1e7e8c9b0fcff29f5103844fa01405e83e2ab663"
+    },
+    "failure": "2304-cell persistence test reported two FAILED rows; old assertion did not record reasons",
+    "causeQualification": "Short inherited 100ms trial /25ms cleanup deadlines were timing-sensitive under parallel load; CPU contention is an inference, not a confirmed reason for the two rows",
+    "repair": "Only this synthetic persistence test now uses the existing finite production-default trial/cleanup budgets; 2304 cells, nine batches, all correctness assertions and20s whole-test timeout retained. Dedicated15ms/10ms and250ms timeout tests unchanged. First8failed rows gain bounded diagnostics.",
+    "independentReview": "Reviewed as a fixture contract correction, not a change to production timeout policy or competitor acceptance",
+    "focusedRun": {
+      "label": "session15-continuation-default-budgets",
+      "command": [
+        "node",
+        "--test",
+        "tests/scpa/trial-continuation.test.mjs"
+      ],
+      "cwd": "/workspace/scratch/7f4aea44c0fb/hex-ida",
+      "startedUtc": "2026-09-12T07:30:36.410778+00:00",
+      "timeoutSeconds": 45.0,
+      "durationSeconds": 4.159,
+      "exitCode": 0,
+      "timedOut": false,
+      "logSha256": "a26fa7331a89dddcd9d8d20f5e83006fe0696e37af747aa3d0d91a4ba5df616d"
+    }
   }
 }

@@ -194,7 +194,10 @@ test('a synthetic 2304-cell scale plan survives nine bounded wire checkpoints wi
     raw.track={T0:'scripted-substrate',T1:'native-best',T2:'knowledge-equalized',T3:'native-best'}[mode];
     return [mode,createCompetitiveProtocol(raw)];
   }));
-  const config={...fixture().config,cacheStates:['cold','warm']};
+  // This checks checkpoint persistence, not sub-100ms host latency. Keep the
+  // production's finite default budgets when the full suite competes for CPU;
+  // dedicated timeout tests continue to use the short deadline fixture.
+  const config={...fixture().config,resources:{},cacheStates:['cold','warm']};
   const plan=createAstraTrialPlan(protocols,config),f={plan,protocols},h=hosts(f);
   assert.equal(plan.denominator,2304);
   let result=null;
@@ -203,7 +206,8 @@ test('a synthetic 2304-cell scale plan survives nine bounded wire checkpoints wi
     assert.equal(result.progress.nextOrdinal,(batch+1)*256);
     assert.equal(result.attempted,256);
     assert.equal(result.trials.length,2304);
-    assert.equal(result.trials.filter(row=>row.state==='FAILED').length,0);
+    const failed=result.trials.filter(row=>row.state==='FAILED');
+    assert.equal(failed.length,0,JSON.stringify(failed.slice(0,8).map(({ordinal,reason,executionState,cleanup})=>({ordinal,reason,executionState,cleanup}))));
   }
   const packed=packAstraTrialContinuation(plan,result);
   const restored=validateAstraTrialContinuation(plan,protocols,wire(packed));

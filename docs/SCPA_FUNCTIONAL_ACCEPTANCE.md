@@ -65,3 +65,5 @@ Node `v24.19.0`、package-lock指定のesbuild **0.28.2**で生成した。添�
 最終main取り込み後のSCPA全70ファイルは **1,403/1,403 PASS**。#8086変更6ファイル、関連consumer7ファイル、metadata、取り込みmain回帰、lint、module boundaries、evidence writersを確認した。最初のSCPA実行は60秒上限で未完了だったため、canonical runnerの180秒上限に合わせて再実行し65.942秒で完了した。main回帰のGhidra trigger 2ファイルは修復前FAIL、修復後PASSであり、既知main失敗とは扱わない。
 
 Node v24.19.0 / lock指定esbuild0.28.2でcanonical build・再buildを実行し、生成差分0。release serial2322242197。詳細な検証記録・統合source identityは `reports/scpa/session15-integration.json`。GitHubの最新HEADとBASEに対する正規admission、および実際のmain到達は別途readbackで確認する。
+
+公開前clean commitでの再実行では、2304セルの保存・復元試験にFAILED行が2つ発生した。旧assertionは理由を記録していなかったためCPU競合は推定に留める。このsynthetic試験のみ継承した100ms/25msの短いfixture期限を既存の有限production既定値へ合わせ、全2304セル・9batch・assertion・20秒総上限を維持した。独立したtimeout試験は変更せず、失敗先頭8行の診断を追加した。詳細と最終再検証はsession15記録と公開PR本文を参照。
