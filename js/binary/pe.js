@@ -182,6 +182,19 @@ export function parsePE(input, options = {}) {
   const directoryShortfall = requiredKnownEntries - dirCount;
   for (let i = 0; i < dirCount; i++) directories.push({ rva: r.u32(dirBase + i * 8), size: r.u32(dirBase + i * 8 + 4) });
 
+  const secBase = opt + sizeOptional;
+  if (numberOfSections > WINDOWS_IMAGE_MAX_SECTIONS) {
+    throw new Error(`PE NumberOfSections ${numberOfSections} exceeds Windows image loader limit ${WINDOWS_IMAGE_MAX_SECTIONS}`);
+  }
+  const sectionTableEnd = secBase + numberOfSections * 40;
+  if (sectionTableEnd > r.length) throw new Error('PE section table is invalid');
+  if (sizeOfHeaders < sectionTableEnd) {
+    throw new Error(`PE SizeOfHeaders ${sizeOfHeaders} does not cover section table ending at ${sectionTableEnd}`);
+  }
+  if (validPEFileAlignment(fileAlignment, sectionAlignment) && sizeOfHeaders % fileAlignment !== 0) {
+    throw new Error(`PE SizeOfHeaders ${sizeOfHeaders} is not aligned to FileAlignment ${fileAlignment}`);
+  }
+
   const image = new BinaryImage(bytes, {
     format: 'pe', arch: peMachineName(machine), bits, endian: 'little', platform: 'windows',
     imageBase, entrypoint: entryRva ? imageBase + BigInt(entryRva) : null,
@@ -194,11 +207,6 @@ export function parsePE(input, options = {}) {
   }
 
   image.addSegment({ name: 'headers', address: imageBase, size: BigInt(sizeOfHeaders), fileOffset: 0n, fileSize: BigInt(Math.min(sizeOfHeaders, bytes.length)), perms: { read: true, write: false, execute: false }, source: 'PE-headers' });
-  const secBase = opt + sizeOptional;
-  if (numberOfSections > WINDOWS_IMAGE_MAX_SECTIONS) {
-    throw new Error(`PE NumberOfSections ${numberOfSections} exceeds Windows image loader limit ${WINDOWS_IMAGE_MAX_SECTIONS}`);
-  }
-  if (secBase + numberOfSections * 40 > r.length) throw new Error('PE section table is invalid');
   for (let i = 0; i < numberOfSections; i++) {
     const p = secBase + i * 40;
     // Executable-image section-table names are literal 8-byte fields. The
