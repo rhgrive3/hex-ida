@@ -300,10 +300,12 @@ export async function executeTurn(input = {}, options = {}) {
             ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
             request.effectiveScope = scopeController.effectiveScope;
             const caps = providerCapabilities(this.provider);
-            const maxTools = Math.max(1, Math.min(10, typeof caps.maxTools === 'number' && Number.isFinite(caps.maxTools) && caps.maxTools > 0 ? Math.floor(caps.maxTools) : 10));
+            const maxTools = typeof caps.maxTools === 'number' && Number.isFinite(caps.maxTools) && caps.maxTools >= 0
+              ? Math.max(0, Math.min(10, Math.floor(caps.maxTools)))
+              : 10;
             const window = selectToolWindow(registry, { mode: request.mode, requestedScope: request.scope, effectiveScope: scopeController.effectiveScope, intent, observations, hypotheses: hypothesisStore.all(), maxTools });
             const tools = window.tools;
-            if (!tools.length) throw new AIError('invalid_tool_call', `No model-visible tools are available in ${scopeController.effectiveScope} scope.`);
+            if (!tools.length && maxTools !== 0) throw new AIError('invalid_tool_call', `No model-visible tools are available in ${scopeController.effectiveScope} scope.`);
             const messages = session.messages.slice(-8).map(({ role, content }) => ({ role, content }));
             const semanticBytes = semanticBudgetFor({ messages, tools, meta: wireMeta(request, scopeController, intent, session.id), capabilities: caps, configuredBytes: budget.contextBytes });
             const built = this.contextBroker.buildModelContext({
