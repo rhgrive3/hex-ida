@@ -10,6 +10,7 @@ import {
 const BRANCH = 'fix/main-gate-recovery-20260913';
 const CONFIG = readFileSync('.circleci/config.yml', 'utf8');
 const PHASE8_FILES = [
+  '.github/workflows/phase8-ownership.yml',
   'tests/phase8/abi/hex-c3-02-boundaries.test.mjs',
   'tests/phase8/corpus/explicit-compiler-abi.test.mjs',
   'tests/phase8/ownership/cross-lane-routing.test.mjs',
@@ -44,6 +45,13 @@ test('CircleCI derives the Phase 8 subset through the exact route helper', () =>
   const validatorIndex = CONFIG.indexOf('node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"', routeIndex);
   assert.ok(helperIndex > routeIndex);
   assert.ok(validatorIndex > helperIndex);
+  const fallback = readFileSync('.github/workflows/phase8-ownership.yml', 'utf8');
+  const fallbackRouteIndex = fallback.indexOf('fix/main-gate-recovery-20260913');
+  const fallbackHelperIndex = fallback.indexOf('node tools/validation/phase8/cross-lane-inventory.mjs', fallbackRouteIndex);
+  const fallbackValidatorIndex = fallback.indexOf('node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"', fallbackRouteIndex);
+  assert.ok(fallbackRouteIndex >= 0);
+  assert.ok(fallbackHelperIndex > fallbackRouteIndex);
+  assert.ok(fallbackValidatorIndex > fallbackHelperIndex);
 });
 
 console.log('phase8 cross-lane ownership routing: PASS');
