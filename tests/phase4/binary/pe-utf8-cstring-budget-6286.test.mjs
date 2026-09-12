@@ -58,6 +58,7 @@ function importBudget(name, parser = parseImports) {
   const view = new DataView(bytes.buffer);
   const image = mappedImage('.idata');
   const delay = parser === parseDelayImports;
+  if (delay) image.sections[0].perms.write = true;
 
   if (delay) {
     view.setUint32(0x40, 1, true);        // RVA-based delay descriptor
