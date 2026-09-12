@@ -137,8 +137,7 @@ export function createAiEngine(app, options = {}) {
     },
     async aiCapabilities(options = {}) {
       const engine = await runtime();
-      const provider = engine?.provider;
-      return typeof provider?.capabilities === 'function' ? provider.capabilities(options) : { providers: [] };
+      return discoverProviderCapabilities(engine?.provider, options);
     },
     async aiStatus() {
       const engine = await runtime();
@@ -168,6 +167,29 @@ export function createAiEngine(app, options = {}) {
       const removed = sessions.delete(String(conversationId)); persistConversationBindings(sessions); return removed;
     },
   };
+}
+
+async function discoverProviderCapabilities(provider, options) {
+  if (!provider) return { providers: [] };
+  if (typeof provider.capabilities === 'function') {
+    const discovery = await provider.capabilities(options);
+    if (discovery && typeof discovery === 'object' && Array.isArray(discovery.providers)) return discovery;
+    return adaptProviderCapabilityState(discovery);
+  }
+  if (typeof provider.prepareCapabilities === 'function') return adaptProviderCapabilityState(await provider.prepareCapabilities(options));
+  if (typeof provider.getCapabilities === 'function') return adaptProviderCapabilityState(provider.getCapabilities());
+  return { providers: [] };
+}
+
+function adaptProviderCapabilityState(capabilities) {
+  const id = typeof capabilities?.provider === 'string' ? capabilities.provider.trim() : '';
+  if (!id || id.toLowerCase() === 'unknown') return { providers: [] };
+  const entry = { id, available: true };
+  if (typeof capabilities.displayName === 'string' && capabilities.displayName) entry.displayName = capabilities.displayName;
+  if (capabilities.models != null) entry.models = capabilities.models;
+  if (capabilities.reasoning != null) entry.reasoning = capabilities.reasoning;
+  if (capabilities.defaultModel != null) entry.defaultModel = String(capabilities.defaultModel);
+  return { providers: [entry] };
 }
 
 // The live persistence defers its durable write to a debounced
