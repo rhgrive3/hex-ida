@@ -10,6 +10,7 @@ const RUNTIME_TOOLS = new Set(['get_runtime_observations','verify_runtime_hypoth
 const TOOL_NON_ADDRESS_KEYS = new Map([
   ['inspect_function_region', new Set(['start'])],
 ]);
+const FUNCTION_ADDRESS_LIST_KEYS = new Set(['functions']);
 
 export class ScopeController {
   constructor(snapshot, requestedScope = 'auto', { onExpand } = {}) {
@@ -47,6 +48,7 @@ export class ScopeController {
     if (PROJECT_TOOLS.has(tool) && effective !== 'project') return false;
     if (RUNTIME_TOOLS.has(tool) && effective !== 'runtime') return false;
     if (effective === 'function' || effective === 'selection' || effective === 'neighborhood') {
+      for (const address of collectFunctionAddresses(args)) if (!this.scopeContainsFunction(effective, address)) return false;
       for (const address of collectAddresses(args, '', tool)) if (!this.scopeContainsAddress(effective, address)) return false;
     }
     return true;
@@ -76,6 +78,9 @@ export class ScopeController {
 
   assertToolCall(tool, args = {}) {
     if (!this.scopeAllowsTool(this.effectiveScope, tool, args)) throw new AIError('scope_violation', `${tool} is outside ${this.effectiveScope} scope.`);
+    for (const address of collectFunctionAddresses(args)) {
+      if (!this.scopeContainsFunction(this.effectiveScope, address)) throw new AIError('scope_violation', `Function ${addressText(address)} is outside ${this.effectiveScope} scope.`);
+    }
     for (const address of collectAddresses(args, '', tool)) {
       if (!this.scopeContainsAddress(this.effectiveScope, address)) throw new AIError('scope_violation', `Address ${addressText(address)} is outside ${this.effectiveScope} scope.`);
     }
@@ -120,6 +125,19 @@ function isAddressKey(key) {
   return /^(address|addr|start|end|from|to|target)$/i.test(text)
     || /_(address|addr|start|end|from|to|target)$/i.test(text)
     || /(Address|Addr|Start|End|From|To|Target)$/.test(text);
+}
+function collectFunctionAddresses(value) {
+  const out = [];
+  if (!value || typeof value !== 'object') return out;
+  if (Array.isArray(value)) { for (const item of value) out.push(...collectFunctionAddresses(item)); return out; }
+  for (const [childKey, child] of Object.entries(value)) {
+    if (FUNCTION_ADDRESS_LIST_KEYS.has(childKey)) {
+      for (const item of Array.isArray(child) ? child : [child]) out.push(item);
+      continue;
+    }
+    out.push(...collectFunctionAddresses(child));
+  }
+  return out;
 }
 function inFunction(target, fn) {
   if (fn?.address == null) return false;
