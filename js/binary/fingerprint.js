@@ -162,65 +162,70 @@ function subtractIntervals(start, end, covered) {
   return result;
 }
 
+function compareFingerprintSpans(a, b) {
+  if (a.start < b.start) return -1;
+  if (a.start > b.start) return 1;
+  if (a.end < b.end) return -1;
+  if (a.end > b.end) return 1;
+  if (a.bias == null) return b.bias == null ? 0 : 1;
+  if (b.bias == null) return -1;
+  if (a.bias < b.bias) return -1;
+  if (a.bias > b.bias) return 1;
+  return 0;
+}
+
+function collectFingerprintSpans(mappings, spans, unrepresentable) {
+  for (const mapping of mappings) {
+    if (mapping.fileOffset == null) {
+      unrepresentable.push(mapping);
+      continue;
+    }
+    const start = BigInt(mapping.fileOffset);
+    spans.push({
+      start,
+      end: start + BigInt(mapping.fileSize),
+      bias: mapping.address == null ? null : start - BigInt(mapping.address),
+      name: mapping.name,
+      perms: mapping.perms,
+    });
+  }
+}
+
 function fingerprintRanges(image, executableOnly) {
   const sections = (image.sections || []).filter((x) => BigInt(x.fileSize ?? 0) > 0n && (!executableOnly || (x.perms?.execute && sectionHasMappedAddress(x))));
   const segments = (image.segments || []).filter((x) => BigInt(x.fileSize ?? 0) > 0n && (!executableOnly || x.perms?.execute));
 
-  if (!sections.length) return segments;
-  if (!segments.length) return sections;
+  const spans = [];
+  const unrepresentable = [];
+  collectFingerprintSpans(sections, spans, unrepresentable);
+  collectFingerprintSpans(segments, spans, unrepresentable);
+  if (!spans.length) return unrepresentable;
 
-  const ranges = [...sections];
+  spans.sort(compareFingerprintSpans);
 
-  for (const seg of segments) {
-    if (seg.address == null) continue;
-    const segStart = BigInt(seg.address);
-    const segFileSize = BigInt(seg.fileSize ?? 0);
-    if (segFileSize <= 0n) continue;
-    const segEnd = segStart + segFileSize;
-    const segBias = BigInt(seg.fileOffset ?? 0) - segStart;
-
-    const coveredIntervals = [];
-    for (const sec of sections) {
-      if (sec.address == null || !sectionHasMappedAddress(sec)) continue;
-      const secStart = BigInt(sec.address);
-      const secSize = BigInt(sec.fileSize ?? sec.size ?? 0);
-      if (secSize <= 0n) continue;
-      const secEnd = secStart + secSize;
-      if (secEnd <= segStart || secStart >= segEnd) continue;
-
-      if (sec.fileOffset != null && seg.fileOffset != null) {
-        const secBias = BigInt(sec.fileOffset) - secStart;
-        if (secBias !== segBias) {
-          // Inconsistent file mapping: section does not cover segment file bytes
-          continue;
-        }
-      } else {
-        continue;
-      }
-
-      const overlapStart = secStart > segStart ? secStart : segStart;
-      const overlapEnd = secEnd < segEnd ? secEnd : segEnd;
-      if (overlapStart < overlapEnd) {
-        coveredIntervals.push({ start: overlapStart, end: overlapEnd });
-      }
-    }
-
-    const mergedCovered = mergeIntervals(coveredIntervals);
-    const uncovered = subtractIntervals(segStart, segEnd, mergedCovered);
-    for (const span of uncovered) {
-      const spanSize = span.end - span.start;
-      const offsetDelta = span.start - segStart;
-      const fileOffset = BigInt(seg.fileOffset ?? 0) + offsetDelta;
+  const covered = [];
+  const ranges = [];
+  for (const span of spans) {
+    const uncovered = subtractIntervals(span.start, span.end, covered);
+    if (!uncovered.length) continue;
+    for (const piece of uncovered) covered.push(piece);
+    const merged = mergeIntervals([...covered]);
+    covered.length = 0;
+    covered.push(...merged);
+    for (const piece of uncovered) {
       ranges.push({
-        name: seg.name,
-        address: span.start,
-        fileOffset,
-        fileSize: spanSize,
-        perms: seg.perms,
+        name: span.name,
+        address: span.bias == null ? null : piece.start - span.bias,
+        fileOffset: piece.start,
+        fileSize: piece.end - piece.start,
+        perms: span.perms,
       });
     }
   }
 
+  ranges.sort((a, b) => (a.fileOffset < b.fileOffset ? -1 : a.fileOffset > b.fileOffset ? 1
+    : a.fileSize < b.fileSize ? -1 : a.fileSize > b.fileSize ? 1 : 0));
+  for (const mapping of unrepresentable) ranges.push(mapping);
   return ranges;
 }
 
