@@ -135,10 +135,24 @@ export class FunctionSandbox {
 
   async setup(address, opts) {
     const o = opts || {};
+    const signal = o.signal && typeof o.signal === 'object' && typeof o.signal.addEventListener === 'function' ? o.signal : null;
+    const previousRunSignal = this.emulator._runSignal;
+    try {
+      return await this._setupWithBackingIo(address, o, signal);
+    } catch (error) {
+      if (signal && signal.aborted && error && (error.name === 'AbortError' || error.code === 'ABORT_ERR')) {
+        throw Object.assign(new Error('sandbox setup cancelled'), { code: 'sandbox-setup-cancelled' });
+      }
+      throw error;
+    } finally {
+      this.emulator._runSignal = previousRunSignal;
+    }
+  }
+
+  async _setupWithBackingIo(address, o, signal) {
     // #5268: setup is the longest launch phase (mapping + memory stores); an
     // aborted signal must stop the remaining setup work, not just be observed
     // by the caller afterwards. Each checkpoint re-samples signal.aborted.
-    const signal = o.signal && typeof o.signal === 'object' && typeof o.signal.addEventListener === 'function' ? o.signal : null;
     const throwIfCancelled = () => {
       if (signal && signal.aborted) {
         throw Object.assign(new Error('sandbox setup cancelled'), { code: 'sandbox-setup-cancelled' });
@@ -152,6 +166,7 @@ export class FunctionSandbox {
     else if (o.objectAsArg0 !== false && args[0] == null) args[0] = objectBase;
     const firstSetupHeapOverride = this._setupCount === 0 && this.emulator.heap !== this._initialHeapBase ? this.emulator.heap : null;
     this.emulator.reset();
+    if (signal) this.emulator._runSignal = signal;
     if (firstSetupHeapOverride != null) {
       this.emulator.heapBase = firstSetupHeapOverride;
       this.emulator.heap = firstSetupHeapOverride;
