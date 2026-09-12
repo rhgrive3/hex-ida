@@ -118,6 +118,15 @@ export class ProposalStore {
     return proposalSnapshot(record);
   }
 
+  restorePersistedPending(initial = []) {
+    if (!Array.isArray(initial)) return this;
+    for (const persisted of initial) {
+      const record = restoredPendingRecord(this, persisted);
+      if (record) this.records.set(record.id, record);
+    }
+    return this;
+  }
+
   approve(id) {
     const proposal = requireProposalRecord(this, id);
     const authority = proposalAuthority(proposal);
@@ -306,6 +315,58 @@ function requireProposalRecord(store, id) {
   const value = store.records.get(id);
   if (!value) throw new AIError('invalid_tool_call', 'Unknown proposal.');
   return value;
+}
+
+function restoredPendingRecord(store, persisted) {
+  if (!persisted || typeof persisted !== 'object' || Array.isArray(persisted)) return null;
+  if (persisted.status !== 'pending') return null;
+  const id = persisted.id;
+  if (typeof id !== 'string' || !id || store.records.has(id)) return null;
+  const kind = persisted.kind;
+  const capability = PROPOSAL_CAPABILITIES[kind];
+  if (!PROPOSAL_KINDS.has(kind) || !capability) return null;
+  if (persisted.capability != null && persisted.capability !== capability) return null;
+  if (typeof persisted.createdAt !== 'string' || !persisted.createdAt) return null;
+  if (typeof persisted.revision !== 'string' || !persisted.revision) return null;
+  if (typeof persisted.bindingRevision !== 'string' || !persisted.bindingRevision) return null;
+  const evidenceIds = Array.from(new Set(Array.isArray(persisted.evidenceIds)
+    ? persisted.evidenceIds.filter((value) => typeof value === 'string' && value)
+    : []));
+  if (!evidenceIds.length || !evidenceIds.every((value) => store.evidenceStore?.has(value))) return null;
+  let binding;
+  let payload;
+  try {
+    binding = store.binding?.() || null;
+    if (fingerprint(binding) !== persisted.bindingRevision) return null;
+    rejectUnstableProposalState(persisted);
+    payload = snapshotProposalPayload(persisted);
+    if (fingerprint(payload.before) !== persisted.revision) return null;
+  } catch {
+    return null;
+  }
+  const record = {
+    id,
+    kind,
+    target: jsonSafe(payload.target),
+    before: jsonSafe(payload.before),
+    after: jsonSafe(payload.after),
+    reason: String(persisted.reason || '').slice(0, 2000),
+    evidenceIds,
+    createdAt: persisted.createdAt,
+    status: 'pending',
+    revision: persisted.revision,
+    binding: jsonSafe(binding),
+    bindingRevision: persisted.bindingRevision,
+  };
+  EXECUTION_PAYLOADS.set(record, payload);
+  PROPOSAL_AUTHORITIES.set(record, Object.freeze({
+    id,
+    kind,
+    capability,
+    revision: persisted.revision,
+    bindingRevision: persisted.bindingRevision,
+  }));
+  return record;
 }
 
 function proposalAuthority(proposal) {
