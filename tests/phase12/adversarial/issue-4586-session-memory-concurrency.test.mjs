@@ -116,6 +116,7 @@ test('#4586 a failed memory write releases the per-session serialization lane', 
   assert.deepEqual(ids((await store.get('issue-4586-retry')).investigationMemory.confirmedFacts), ['kept']);
 });
 
+
 test('#4586 different session IDs are not globally serialized', async () => {
   let releaseA;
   let enteredA;
