@@ -158,6 +158,7 @@ export function createAiEngine(app, options = {}) {
 export function createLiveProjectSessionPersistence(app) {
   let saveTimer = null;
   let flush = null;
+  const saveMutations = new WeakMap();
   const projectFor = () => app?.workspace?.project || app?.activeProject || app?.project || null;
   const ensureProject = () => projectFor() || app?.workspace?.snapshot?.() || null;
   const completeFlush = (error) => {
@@ -191,10 +192,38 @@ export function createLiveProjectSessionPersistence(app) {
     list() { return adapterFor(projectFor())?.list?.() || []; },
     async load(id) { return (await adapterFor(projectFor())?.load?.(id)) || null; },
     async save(session) {
-      const adapter = adapterFor(ensureProject());
+      const project = ensureProject();
+      const adapter = adapterFor(project);
       if (!adapter) return;
-      await adapter.save(session);
-      await awaitFlush();
+      const previous = adapter.list().find((item) => item && item.id === session?.id);
+      const pending = adapter.save(session);
+      // The project adapter stages its detached record synchronously. Keep
+      // ownership of that exact write until the shared autosave settles.
+      const written = adapter.list().find((item) => item && item.id === session?.id);
+      const mutation = written && written !== previous
+        ? { previous, failed: false, unchanged: captureSessionWrite(written) } : null;
+      if (mutation) saveMutations.set(written, mutation);
+      try {
+        await pending;
+        await awaitFlush();
+        if (mutation) saveMutations.delete(written);
+      } catch (error) {
+        if (mutation) {
+          mutation.failed = true;
+          const entries = project.findings?.investigationSessions;
+          const index = Array.isArray(entries) ? entries.indexOf(written) : -1;
+          if (index >= 0 && mutation.unchanged()) {
+            let restore = previous;
+            // Coalesced writes can fail together: do not resurrect an earlier
+            // failed write when rolling back the last write for the same ID.
+            while (saveMutations.get(restore)?.failed && saveMutations.get(restore).unchanged()) {
+              restore = saveMutations.get(restore).previous;
+            }
+            if (restore) entries[index] = restore; else entries.splice(index, 1);
+          }
+        }
+        throw error;
+      }
     },
     async delete(id) {
       const adapter = adapterFor(projectFor());
@@ -203,6 +232,29 @@ export function createLiveProjectSessionPersistence(app) {
       await awaitFlush();
     },
   };
+}
+
+// Rollback may only remove our unmodified record. Capture data descriptors,
+// including nested fields, without invoking caller-added getters or toJSON.
+function captureSessionWrite(record) {
+  const observations = [];
+  const seen = new Set();
+  const visit = (value) => {
+    if (!value || typeof value !== 'object' || seen.has(value)) return;
+    seen.add(value);
+    const entries = Reflect.ownKeys(value).map((key) => [key, Object.getOwnPropertyDescriptor(value, key)]);
+    observations.push({ value, entries, prototype: Object.getPrototypeOf(value) });
+    for (const [, descriptor] of entries) if ('value' in descriptor) visit(descriptor.value);
+  };
+  visit(record);
+  return () => observations.every(({ value, entries, prototype }) => (
+    Object.getPrototypeOf(value) === prototype
+    && Reflect.ownKeys(value).length === entries.length
+    && entries.every(([key, before]) => {
+      const current = Object.getOwnPropertyDescriptor(value, key);
+      return current && Reflect.ownKeys(before).every((field) => Object.is(current[field], before[field]));
+    })
+  ));
 }
 
 function persistedSessionForConversation(persistence, conversationId, context) {
