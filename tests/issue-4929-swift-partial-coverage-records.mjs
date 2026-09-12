@@ -43,6 +43,7 @@ function buildPartialSwiftFixture() {
   // Class vtable header at descriptor + 44: { vtableOffset, count }
   dv.setUint32(0x112c, 0, true);
   dv.setUint32(0x1130, 1, true); // one method entry at 0x1134
+  dv.setInt32(0x1138, 0x5000 - 0x1138, true); // parsed implementation target
   const nameStr = 'Foo';
   for (let i = 0; i < nameStr.length; i++) mem[0x1200 + i] = nameStr.charCodeAt(i);
   mem[0x1200 + nameStr.length] = 0;
@@ -72,11 +73,8 @@ async function partialProbe() {
   return { provider, probe };
 }
 
-// A matched-partial identity evaluated on a structurally complete result is
-// the documented coverage-authority boundary (#5954 tracks the separate
-// built-in completeness gate). #4929 is strictly about the coverage
-// coordinates published by probe() lining up with the records the provider
-// actually emits.
+// Complete result controls continue to exercise non-authoritative verdicts.
+// The positive regression below uses the actual incomplete probe() result.
 function coverageResult(identity) {
   return createLanguageMetadataResult({
     identity,
@@ -104,7 +102,7 @@ assert.notEqual(typeRecord.address, vtableRecord.address);
 assert.notEqual(vtableRecord.address, conformanceRecord.address);
 assert.notEqual(typeRecord.address, conformanceRecord.address);
 
-const result = coverageResult(probe.identity);
+const result = probe;
 
 // The kind dimension of the published coverage keeps covering all three
 // Swift record kinds.
@@ -195,13 +193,12 @@ for (const verdict of ['identity-mismatch', 'malformed', 'identity-unavailable',
   assert.equal(isLanguageRecordAuthoritative(degradedResult, conformanceRecord), false, `${verdict} must not authorize conformances`);
 }
 
-// (6c) an incomplete result keeps the #5954 completeness gate: no partial
-// coverage reaches authority through the built-in provider path.
-{
-  assert.equal(probe.completeness.complete, false);
-  assert.equal(isLanguageRecordAuthoritative(probe, typeRecord), false);
-  assert.equal(isLanguageRecordAuthoritative(probe, vtableRecord), false);
-  assert.equal(isLanguageRecordAuthoritative(probe, conformanceRecord), false);
+// (6c) Whole-model incompleteness remains explicit. The separately proven
+// bound covers these records even though witness projection is unavailable.
+assert.equal(probe.completeness.complete, false);
+assert.equal(probe.status.completeness, 'bounded');
+for (const reader of [provider.types, provider.vtables, provider.conformances]) {
+  assert.equal(provider.authoritativeRecords(probe, reader).records.length, 1);
 }
 
 console.log('issue-4929 swift partial coverage records: ok');

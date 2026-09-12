@@ -21,6 +21,33 @@ import {
 export const SWIFT_PROVIDER_ID = 'metadata.swift';
 export const SWIFT_PROVIDER_VERSION = '1.0.0';
 
+function swiftPartialCoverage(model) {
+  const complete = (kind) => model.completeness?.[kind]?.complete === true;
+  return {
+    recordKinds: ['type', 'vtable', 'conformance'],
+    entityIds: [
+      ...(complete('types') ? model.types || [] : [])
+        .filter((type) => {
+          const declared = type.kind === 'enum' ? type.numCases : type.numFields;
+          return type.address != null && Number.isSafeInteger(declared) && declared >= 0
+            && type.fields?.length === declared
+            && type.fields.every((field) => typeof field.mangledType === 'string' && field.mangledType.length > 0);
+        })
+        .map((type) => `type@0x${type.address.toString(16)}`),
+      ...(complete('vtables') ? model.vtables || [] : [])
+        .filter((vtable) => vtable.address != null && Number.isSafeInteger(vtable.count)
+          && vtable.count >= 0 && vtable.methods?.length === vtable.count
+          && vtable.methods.every((method) => method.impl != null))
+        .map((vtable) => `vtable@0x${vtable.address.toString(16)}`),
+      ...(complete('conformances') ? model.conformances || [] : [])
+        .filter((conformance) => conformance.address != null && conformance.protocol != null
+          && conformance.typeRef != null && [0, 1].includes(conformance.typeReferenceKind)
+          && conformance.conditionalRequirements === 0 && conformance.resilientWitnesses === false)
+        .map((conformance) => `conf@0x${conformance.address.toString(16)}`),
+    ],
+  };
+}
+
 export class SwiftMetadataProvider extends LanguageMetadataProvider {
   constructor({
     readAt = null,
@@ -103,7 +130,7 @@ export class SwiftMetadataProvider extends LanguageMetadataProvider {
     }
 
     const model = await buildSwiftMetadataModel(this.readAt, this.sections, this.options);
-    if (!model) {
+    if (!model || this.options.signal?.aborted === true) {
       return createLanguageMetadataResult({
         providerId: this.id,
         providerVersion: this.version,
@@ -128,6 +155,14 @@ export class SwiftMetadataProvider extends LanguageMetadataProvider {
     this.cachedIndex = buildSwiftRuntimeIndex(model);
 
     const isComplete = model.complete === true;
+    const coverage = isComplete ? null : swiftPartialCoverage(model);
+    // The adapter publishes descriptor records, not witness projections. Prove
+    // that narrower universe only when all contributing scans are complete.
+    // A truncated/capped scan or caller-injected table is not subset proof.
+    const boundedSubset = !isComplete && this.binaryIdentity != null && coverage.entityIds.length > 0
+      && ['types', 'protocols', 'conformances', 'vtables'].every((kind) => model.completeness?.[kind]?.complete === true)
+      && model.completeness?.witnessTables?.complete === false
+      && this.options.vtables == null && this.options.witnessTables == null;
     const identity = createLanguageMetadataIdentity({
       verdict: isComplete ? 'matched-authoritative' : 'matched-partial',
       providerId: this.id,
@@ -141,20 +176,8 @@ export class SwiftMetadataProvider extends LanguageMetadataProvider {
       platform: this.platform,
       method: 'swift5-abi',
       detail: `Swift 5 ABI (${model.types?.length || 0} types, ${model.protocols?.length || 0} protocols)`,
-      coverage: isComplete ? null : {
-        recordKinds: ['type', 'vtable', 'conformance'],
-        entityIds: [
-          ...(model.types || [])
-            .filter((t) => t.address != null)
-            .map((t) => `type@0x${t.address.toString(16)}`),
-          ...(model.vtables || [])
-            .filter((v) => v.address != null)
-            .map((v) => `vtable@0x${v.address.toString(16)}`),
-          ...(model.conformances || [])
-            .filter((c) => c.address != null)
-            .map((c) => `conf@0x${c.address.toString(16)}`),
-        ],
-      },
+      // No declared subset is authoritative without the bound's proof.
+      coverage: coverage == null || boundedSubset ? coverage : { ...coverage, entityIds: [] },
     });
 
     const counts = {
@@ -171,6 +194,13 @@ export class SwiftMetadataProvider extends LanguageMetadataProvider {
       identity,
       sections: swiftSections.map((s) => s.section || s.name || String(s)),
       counts,
+      status: boundedSubset ? {
+        snapshotId: this.binaryIdentity,
+        analyzerId: this.id,
+        analyzerVersion: this.version,
+        completeness: 'bounded',
+        stopReason: 'evidence-missing',
+      } : undefined,
       completeness: {
         present: true,
         declared: (model.completeness?.types?.declared || 0) + (model.completeness?.protocols?.declared || 0),
