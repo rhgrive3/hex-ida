@@ -215,6 +215,7 @@ export function clonePlainData(value) {
 
 const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const MAX_PLAIN_DEPTH = 64;
+const MAX_ARRAY_INDEX = 2 ** 32 - 2;
 
 function inspectPlainData(value, seen, depth) {
   if (value === null) return true;
@@ -231,6 +232,7 @@ function inspectPlainData(value, seen, depth) {
       for (const key of Reflect.ownKeys(descriptors)) {
         if (key === 'length') continue;
         if (typeof key !== 'string' || !/^(?:0|[1-9]\d*)$/.test(key)) return false;
+        if (Number(key) > MAX_ARRAY_INDEX) return false;
         const descriptor = descriptors[key];
         if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) return false;
         if (!inspectPlainData(descriptor.value, seen, depth + 1)) return false;
