@@ -441,3 +441,6 @@ console.log('runtime platform tests: ok');
 
 // Keep the #5679 breakpoint snapshot regression on the canonical runtime:test path.
 await import('./issue-5679-sandbox-listbreakpoints-snapshot.mjs');
+
+// Keep clamp saturation coverage on the canonical runtime:test path.
+await import('./issue-5060-clamp-before-wrap.mjs');
