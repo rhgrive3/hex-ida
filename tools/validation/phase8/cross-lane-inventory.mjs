@@ -16,6 +16,7 @@ const MAIN_GATE_BATCH_LANE = 'fix/main-gate-recovery-20260913';
 export const CROSS_LANE_ROUTES = Object.freeze({
   [MAIN_GATE_BATCH_LANE]: Object.freeze([
     '.circleci/config.yml',
+    '.github/workflows/phase7-ownership.yml',
     'js/analysis/debug/dwarf.js',
     'js/binary/macho-dyld.js',
     'js/semantics/memoryssa/build.js',
@@ -44,6 +45,7 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     'tests/phase4/integration/issues-2502-2522-demand-analysis.test.mjs',
     'tests/phase4/issue-3695-pe-import-descriptor-termination.test.mjs',
     'tests/phase4/run.mjs',
+    'tests/phase7/ownership/cross-lane-routing.test.mjs',
     'tests/phase7/corpus/fixtures.mjs',
     'tests/phase7/debug/issue-4657-dwarf-pointer-completeness.test.mjs',
     'tests/phase7/helpers/fixtures.mjs',
@@ -57,6 +59,8 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     'tests/semantic-v2/memoryssa-cfg.test.mjs',
     'tools/validation/machine-effects/x86-long64-integer-denominator.mjs',
     'tools/validation/phase12/denominator-inventory.json',
+    'tools/validation/phase7/cross-lane-inventory.mjs',
+    'tools/validation/stage2/profile-denominators.lock.json',
   ]),
 });
 

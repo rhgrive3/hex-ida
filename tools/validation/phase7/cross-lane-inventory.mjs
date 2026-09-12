@@ -104,6 +104,7 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     'tests/semantic-v2/memoryssa-cfg.test.mjs',
     'tools/validation/machine-effects/x86-long64-integer-denominator.mjs',
     'tools/validation/phase12/denominator-inventory.json',
+    'tools/validation/stage2/profile-denominators.lock.json',
     'tools/validation/phase8/cross-lane-inventory.mjs',
     'tools/validation/phase8/decoded-function-adapter.mjs',
     'tools/validation/phase8/decompile-corpus.mjs',
