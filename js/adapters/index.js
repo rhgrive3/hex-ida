@@ -395,6 +395,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     this.activeRun = run;
     this.running = true;
     try {
+      if (sandbox.emulator.stopped === 'paused') sandbox.emulator.stopped = null;
       const before = cloneRegisters(sandbox.emulator); const raw = await sandbox.step();
       if (this.activeRun !== run || sandbox !== this.sandbox || run.epoch !== this.epoch) {
         throw new DebugAdapterError('stale-run', 'local sandbox step was invalidated by a newer launch or session change', { runEpoch:run.epoch, currentEpoch:this.epoch });

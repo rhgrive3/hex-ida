@@ -241,6 +241,7 @@ export function parsePE(input, options = {}) {
     const beyondRvaDomain = endRva > rvaLimit;
     const beyondSizeOfImage = !peImageRvaRangeFits(sizeOfImage, startRva, virtualExtent);
     const virtualRangeInvalid = beyondRvaDomain || beyondSizeOfImage;
+    const virtualAddressMisaligned = sectionAlignment > 0 && virtualAddress % sectionAlignment !== 0;
     const rawMapping = windowsImageSectionRawMapping(ptrRaw, { sectionAlignment });
     const rawSize = windowsImageSectionRawSize(sizeRaw, fileAlignment, sectionAlignment);
     const availableFileBytes = rawMapping.fileBacked ? Math.max(0, bytes.length - rawMapping.effectiveFileOffset) : 0;
@@ -282,6 +283,17 @@ export function parsePE(input, options = {}) {
       image.warnings.push(`PE section ${name || `#${i + 1}`} raw mapping is truncated: 0x${rawAvailableNumber.toString(16)} of 0x${rawSize.effectiveRawSize.toString(16)} bytes are available`);
     }
     const effectiveFileOffset = BigInt(rawMapping.effectiveFileOffset);
+    if (virtualAddressMisaligned) {
+      const reason = 'pe:section-virtual-address-misaligned';
+      image.metadata.peMetadata ||= { complete: true, reasons: [] };
+      image.metadata.peMetadata.complete = false;
+      if (!image.metadata.peMetadata.reasons.includes(reason)) image.metadata.peMetadata.reasons.push(reason);
+      image.metadata.peSectionsWithMisalignedVirtualAddress ||= [];
+      image.metadata.peSectionsWithMisalignedVirtualAddress.push({
+        sectionIndex: i + 1, name, virtualAddress, sectionAlignment,
+      });
+      image.warnings.push(`PE section ${name || `#${i + 1}`} VirtualAddress 0x${virtualAddress.toString(16)} is not aligned to SectionAlignment 0x${sectionAlignment.toString(16)}; excluded from canonical mapping`);
+    }
     if (virtualRangeInvalid) {
       const reason = beyondRvaDomain ? 'pe:section-virtual-range-rva-overflow' : 'pe:section-virtual-range-exceeds-size-of-image';
       image.metadata.peMetadata ||= { complete: true, reasons: [] };
@@ -293,8 +305,8 @@ export function parsePE(input, options = {}) {
         endRva: endRva.toString(), beyondRvaDomain, beyondSizeOfImage,
       });
       image.warnings.push(`PE section ${name || `#${i + 1}`} virtual range RVA 0x${virtualAddress.toString(16)}+0x${virtualExtent.toString(16)} exceeds ${beyondRvaDomain ? 'the 32-bit RVA domain' : `SizeOfImage 0x${sizeOfImage.toString(16)}`}; excluded from canonical mapping`);
-      continue;
     }
+    if (virtualAddressMisaligned || virtualRangeInvalid) continue;
     image.addSegment({ name, address, size: virtualExtent, fileOffset: effectiveFileOffset, fileSize: mappedFileSize, perms, flags, source: 'PE-section' });
     image.addSection({ name, address, size: virtualExtent, fileOffset: effectiveFileOffset, fileSize: mappedFileSize, perms, flags, type: null, index: i + 1, source: 'PE-section' });
   }

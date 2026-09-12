@@ -6,6 +6,7 @@ import { completenessOf, projectBounded } from "./projections/index.js";
 export const COST_WEIGHT = Object.freeze({ cheap: 1, medium: 4, expensive: 12 });
 export const TOOL_TIMEOUT_MS = Object.freeze({ cheap: 20_000, medium: 45_000, expensive: 60_000 });
 export const ADDRESS_KEYS = new Set(["address", "functionAddress", "from", "to", "start", "end", "target"]);
+export const ADDRESS_ARRAY_KEYS = new Set(["functions"]);
 
 // These zero-argument tools are deterministic for one immutable turn snapshot,
 // but their result depends on UI state that is not part of ObservationStore's
@@ -215,6 +216,12 @@ export function collectAddresses(value) {
   if (!value || typeof value !== "object") return out;
   for (const [key, item] of Object.entries(value)) {
     if ((ADDRESS_KEYS.has(key) || /Address$/.test(key)) && typeof item === "string" && addressText(item)) out.push(addressText(item));
+    else if (ADDRESS_ARRAY_KEYS.has(key)) {
+      for (const candidate of Array.isArray(item) ? item : [item]) {
+        const text = addressText(candidate);
+        if (text) out.push(text);
+      }
+    }
     else if (item && typeof item === "object") out.push(...collectAddresses(item));
   }
   return out;

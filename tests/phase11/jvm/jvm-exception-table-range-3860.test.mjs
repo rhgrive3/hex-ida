@@ -20,14 +20,16 @@ function buildClassWithExceptionEntry({ startPc, endPc, handlerPc }) {
   };
 
   u4(0xcafebabe); u2(0); u2(52);
-  u2(6);
+  u2(8);
   utf8('A');
   u1(7); u2(1);
   utf8('m');
   utf8('()V');
   utf8('Code');
+  utf8('java/lang/Object');
+  u1(7); u2(6);
 
-  u2(0x0021); u2(2); u2(0);
+  u2(0x0021); u2(2); u2(7);
   u2(0);
   u2(0);
   u2(1);

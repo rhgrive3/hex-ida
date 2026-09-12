@@ -27,6 +27,20 @@ import { wrap } from './bitvector.js';
 let symbolCounter = 0;
 const MAX_FRESH_SYMBOL_INDEX = Number.MAX_SAFE_INTEGER - 1;
 
+function deepFreezePlainJson(value) {
+  if (!value || typeof value !== 'object') return value;
+  const pending = [value];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    Object.freeze(current);
+    for (const key of Object.keys(current)) {
+      const child = current[key];
+      if (child && typeof child === 'object') pending.push(child);
+    }
+  }
+  return value;
+}
+
 export function resetSymbolCounterForTesting(val = 0) {
   symbolCounter = val;
 }
@@ -132,7 +146,7 @@ export function createUnknownSemantic(sort, reason, detail = null) {
     kind: EXPR_KIND.UNKNOWN_SEMANTIC,
     sort,
     reason,
-    detail: detail ? Object.freeze(JSON.parse(JSON.stringify(detail))) : null,
+    detail: detail ? deepFreezePlainJson(JSON.parse(JSON.stringify(detail))) : null,
   });
 }
 

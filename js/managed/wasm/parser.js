@@ -64,6 +64,9 @@ export function parseWasm(bytes, options = {}) {
   }
   for (const element of module.elements || []) {
     if (element?.mode === 'active') validateConstExpr(element.offsetExpr, 0x7f, importedGlobals, functionCount);
+    for (const initializer of element?.initializers || []) {
+      validateConstExpr(initializer, element.refType, importedGlobals, functionCount);
+    }
   }
   for (const segment of module.dataSegments || []) {
     if (segment?.mode === 'active') validateConstExpr(segment.offsetExpr, 0x7f, importedGlobals, functionCount);

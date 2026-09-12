@@ -45,8 +45,12 @@ function symbolColumns(addresses, names) {
   return { addresses:safeAddresses, names:safeNames, count:safeAddresses.length };
 }
 
+function snapshotColumn(column) {
+  return ArrayBuffer.isView(column) ? column.slice() : Object.freeze(column);
+}
+
 export function createCompactFunctionSet(symbols, architecture, limit = 350000) {
-  const functionAddresses = symbols?.funcs || [];
+  const functionAddresses = snapshotColumn(symbols?.funcs || []);
   const total = Number(functionAddresses.length || 0);
   const count = boundedFunctionCount(limit, total);
   const symbolsForIdentity = symbolColumns(symbols?.addrs, symbols?.names);
@@ -55,8 +59,8 @@ export function createCompactFunctionSet(symbols, architecture, limit = 350000) 
     evidenceProfile: SYMMETRIC_DIFF_PROFILE,
     architecture: String(architecture || 'unknown').toLowerCase(),
     functionAddresses,
-    symbolAddresses: symbolsForIdentity.addresses,
-    symbolNames: symbolsForIdentity.names,
+    symbolAddresses: snapshotColumn(symbolsForIdentity.addresses),
+    symbolNames: snapshotColumn(symbolsForIdentity.names),
     count,
     total,
     complete: count === total && symbols?.functionStartsComplete === true,
