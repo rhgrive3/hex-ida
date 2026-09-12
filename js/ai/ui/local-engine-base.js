@@ -11,6 +11,7 @@
  * Agent : deterministic goal planner (js/query/planner.js) with live activity.
  */
 import { runDeterministicAgent } from '../../agent/runtime.js';
+import { plannerGoalWithTargetHint } from '../context/planner-target-hint.js';
 import { streamGemini } from '../../gemini.js';
 import { addrHex } from '../../format.js';
 import { pick } from '../../i18n.js';
@@ -189,7 +190,8 @@ async function runAgent({ app, localContext, question, mode, style, signal, onAc
   // dominant first-answer cost and could outlive a cancelled Assistant turn.
   onActivity({ label: pick('候補を探索', 'Searching candidates'), state: 'running' });
   const started = Date.now();
-  const result = await runDeterministicAgent(question, localContext || {}, {
+  const plannerGoal = plannerGoalWithTargetHint(question, context?.untrustedTarget);
+  const result = await runDeterministicAgent(plannerGoal, localContext || {}, {
     maxFunctions: 24, maxDisassembly: 40000, timeoutMs: 20000,
     signal,
     isCancelled: () => !!(signal && signal.aborted),

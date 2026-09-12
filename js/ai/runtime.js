@@ -1,6 +1,7 @@
 import { planAnalysisGoal } from '../query/planner.js';
 import { PROPOSAL_DRAFT_SCHEMA } from './schema.js';
 import { ContextBroker } from './context/index.js';
+import { normalizePlannerTargetHint, plannerGoalWithTargetHint } from './context/planner-target-hint.js';
 import { EvidenceStore } from './evidence.js';
 import { HypothesisStore } from './hypothesis.js';
 import { ProposalStore } from './proposals.js';
@@ -58,7 +59,42 @@ export class AIRuntime {
     return stores;
   }
 
-  async turn(input = {}, options = {}) { return executeTurn.call(this, input, options); }
+  async turn(input = {}, options = {}) {
+    const targetHint = input?.mode === 'agent' ? normalizePlannerTargetHint(input.untrustedTarget) : null;
+    if (!targetHint || !this.planner || input.planner === false) return executeTurn.call(this, input, options);
+
+    // Contextual binary data stays out of the trusted user goal. Bind it only
+    // to this turn's deterministic planner so concurrent turns cannot share or
+    // overwrite target state (#4288).
+    const sourcePlanner = this.planner;
+    const turnRuntime = {
+      localContext: this.localContext,
+      provider: this.provider,
+      sessionStore: this.sessionStore,
+      contextBroker: this.contextBroker,
+      activeControllers: this.activeControllers,
+      evidenceStore: this.evidenceStore,
+      hypothesisStore: this.hypothesisStore,
+      proposalStore: this.proposalStore,
+      planner: (goal, context, plannerOptions) => sourcePlanner.call(
+        this,
+        plannerGoalWithTargetHint(goal, input.untrustedTarget),
+        context,
+        plannerOptions,
+      ),
+      storesFor: (...args) => this.storesFor(...args),
+      finalize: (...args) => this.finalize(...args),
+    };
+    const routedInput = input.intent == null ? { ...input, intent: 'find-behaviour' } : input;
+    try {
+      return await executeTurn.call(turnRuntime, routedInput, options);
+    } finally {
+      // Keep the existing post-turn introspection projection on AIRuntime.
+      this.evidenceStore = turnRuntime.evidenceStore;
+      this.hypothesisStore = turnRuntime.hypothesisStore;
+      this.proposalStore = turnRuntime.proposalStore;
+    }
+  }
   // Optional first-party setup only. Does not create/load a job, bind a fresh
   // evidence namespace, enable SCPA or perform an investigation action.
   async createScopedInvestigationProvider(options = {}) {

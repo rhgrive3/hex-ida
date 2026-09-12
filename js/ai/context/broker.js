@@ -44,6 +44,7 @@ export class ContextBroker {
       pinnedEvidence: evidenceStore ? evidenceStore.pinned(session?.pinnedEvidence).slice(-32).map(compactEvidence) : [],
       activeHypotheses: hypotheses.filter((item) => item.status === 'open' || item.status === 'supported').slice(-20).map(compactHypothesis),
       recentObservations: compactObservations(observations, this.maxObservationBytes),
+      untrustedTarget: compactUntrustedTarget(request?.untrustedTarget),
       current: this.currentProjection(scope, snapshot),
     };
     // Legacy direct callers can still request bounded transcript history. The
@@ -85,6 +86,21 @@ export class ContextBroker {
 }
 
 export { UNTRUSTED_NOTICE };
+
+function compactUntrustedTarget(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const kind = typeof value.kind === 'string' ? value.kind.trim().slice(0, 64) : '';
+  if (!kind) return undefined;
+  const out = { kind, trust: 'untrusted-data' };
+  if (typeof value.address === 'string') {
+    const address = value.address.trim().slice(0, 128);
+    if (address) out.address = address;
+  }
+  for (const [key, max] of [['text', 2048], ['name', 1024], ['label', 1024]]) {
+    if (typeof value[key] === 'string') out[key] = value[key].slice(0, max);
+  }
+  return out;
+}
 
 function boundedPositiveNumber(value, fallback, minimum, integer = false) {
   const numeric = value ?? fallback;
