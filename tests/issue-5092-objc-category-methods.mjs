@@ -85,6 +85,26 @@ console.log('Testing #5092: ObjcMetadataProvider must publish category methods..
   assert.equal(categoryLevel.name, '+[Target(Extras) sharedClass]');
 }
 
+// 2b. Category identity never coerces a structured address fallback.
+{
+  let coercions = 0;
+  const provider = new ObjcMetadataProvider();
+  provider.cachedModel = {
+    classes: [],
+    categories: [{
+      name: '',
+      className: 'Target',
+      address: { toString() { coercions += 1; return '5632'; } },
+      instanceMethods: [{ sel: 'safe', addr: 0x1400n }],
+      classMethods: [],
+    }],
+  };
+  const page = provider.methods();
+  assert.equal(page.records.length, 1);
+  assert.equal(coercions, 0, 'structured category addresses must not be coerced into identity');
+  assert.equal(page.records[0].entityId, 'method@Target(#0@#0):-:safe');
+}
+
 // 3. Real runtime model end to end: probe() counts and the published page must
 //    agree, and both must contain category methods.
 function image() {
@@ -125,12 +145,18 @@ function image() {
   methodList(0x1500, [{ sel: 'targetClassOnly', imp: 0x2020 }]);
 
   p64(0x300, 0x1600);
+  p64(0x308, 0x1680);
   p64(0x1600, str('Extras'));
   p64(0x1600 + 8, 0x1000);
   p64(0x1600 + 16, 0x1700);
   p64(0x1600 + 24, 0x1780);
   methodList(0x1700, [{ sel: 'shared', imp: 0x2030 }, { sel: 'extraInstance', imp: 0x2040 }]);
   methodList(0x1780, [{ sel: 'extraClass', imp: 0x2050 }]);
+
+  p64(0x1680, str('Extras'));
+  p64(0x1680 + 8, 0x1000);
+  p64(0x1680 + 16, 0x1800);
+  methodList(0x1800, [{ sel: 'shared', imp: 0x2060 }]);
 
   const read = async (addr, len) => {
     const at = Number(addr);
@@ -144,13 +170,13 @@ function providerFor(read) {
   return new ObjcMetadataProvider({
     sections: [
       { name: '__objc_classlist', section: '__objc_classlist', vmAddr: 0x200n, size: 8n },
-      { name: '__objc_catlist', section: '__objc_catlist', vmAddr: 0x300n, size: 8n },
+      { name: '__objc_catlist', section: '__objc_catlist', vmAddr: 0x300n, size: 16n },
     ],
     readAt: read,
     binaryIdentity: 'sha256:objc-category-runtime-model',
     options: {
       runtimeSections: {
-        categoryList: { vmAddr: 0x300n, size: 8n },
+        categoryList: { vmAddr: 0x300n, size: 16n },
         executableRanges: [{ vmAddr: 0x2000n, size: 0x100n }],
       },
     },
@@ -166,12 +192,20 @@ function providerFor(read) {
 
   assert.equal(result.identity.verdict, 'matched-authoritative', JSON.stringify(result.identity));
   assert.equal(result.completeness.complete, true);
-  assert.deepEqual(selectors, ['extraClass', 'extraInstance', 'shared', 'shared', 'targetClassOnly', 'targetOnly']);
+  assert.deepEqual(selectors, ['extraClass', 'extraInstance', 'shared', 'shared', 'shared', 'targetClassOnly', 'targetOnly']);
   assert.equal(result.counts.methods, page.records.length, 'counts.methods must match the published method collection');
   assert.ok(
     page.records.some((r) => r.descriptor.selector === 'extraInstance' && /Extras/.test(r.entityId)),
     'category instance methods must be attributed to their category owner',
   );
+  const categorySharedIds = page.records
+    .filter((r) => r.descriptor.category === 'Extras' && r.descriptor.selector === 'shared')
+    .map((r) => r.entityId)
+    .sort();
+  assert.deepEqual(categorySharedIds, [
+    'method@Target(Extras@0x1600):-:shared',
+    'method@Target(Extras@0x1680):-:shared',
+  ], 'same-name categories must retain distinct runtime-owner identities');
   assert.equal(new Set(page.records.map((r) => r.entityId)).size, page.records.length);
 }
 
