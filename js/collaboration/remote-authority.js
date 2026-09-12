@@ -109,37 +109,31 @@ function isSharedMemory(value) {
   return isSharedArrayBuffer(value.buffer);
 }
 
-function scanMapEntries(value, depth, seen) {
-  let entries;
-  try { entries = Map.prototype.entries.call(value); }
-  catch { return null; }
-  for (const [key, item] of entries) {
-    if (!scanForSnapshotUnsafeValues(key, depth + 1, seen)) return false;
-    if (!scanForSnapshotUnsafeValues(item, depth + 1, seen)) return false;
-  }
-  return true;
+function isMutableCollection(value) {
+  if (value == null || typeof value !== 'object') return false;
+  try { Map.prototype.has.call(value, undefined); return true; } catch { }
+  try { Set.prototype.has.call(value, undefined); return true; } catch { }
+  return false;
 }
 
-function scanSetValues(value, depth, seen) {
-  let values;
-  try { values = Set.prototype.values.call(value); }
-  catch { return null; }
-  for (const item of values) {
-    if (!scanForSnapshotUnsafeValues(item, depth + 1, seen)) return false;
+function containsMutableCollection(value, seen = new WeakSet()) {
+  if (value == null || typeof value !== 'object') return false;
+  if (isMutableCollection(value)) return true;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  for (const key of Object.keys(value)) {
+    if (containsMutableCollection(value[key], seen)) return true;
   }
-  return true;
+  return false;
 }
 
 function scanForSnapshotUnsafeValues(value, depth, seen) {
   if (value == null || typeof value !== 'object') return true;
   if (isSharedMemory(value)) return false;
+  if (isMutableCollection(value)) return false;
   if (depth > SNAPSHOT_SCAN_DEPTH_LIMIT) return false;
   if (seen.has(value)) return true;
   seen.add(value);
-  const mapSafe = scanMapEntries(value, depth, seen);
-  if (mapSafe !== null) return mapSafe;
-  const setSafe = scanSetValues(value, depth, seen);
-  if (setSafe !== null) return setSafe;
   if (Object.getOwnPropertySymbols(value).length > 0) return false;
   for (const key of Object.keys(value)) {
     if (hasAccessorProperty(value, key)) return false;
@@ -192,6 +186,7 @@ export function createRemoteCollaborationEnvelope(input = {}) {
   const sequence = input.sequence;
   if (!validSequence(sequence)) throw new TypeError('remote-sequence-invalid');
   if (!Array.isArray(input.operations) || input.operations.length === 0) throw new TypeError('remote-operations-required');
+  if (containsMutableCollection(input.operations)) throw new TypeError('remote-operation-mutable-collection-forbidden');
   const operations = input.operations.map((operation) => createProjectOperation({
     ...operation,
     projectIdentity,
