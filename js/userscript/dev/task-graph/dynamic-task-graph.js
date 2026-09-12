@@ -302,31 +302,31 @@ export class DynamicTaskGraph {
         }
         task.attempts += 1;
         const trace = this.beginAttemptTrace(task);
-        const supervisorDeadline = this.runId ? Date.now() + this.supervisorWatchdogTimeoutMs : null;
+        const deadline = attemptDeadline(task, this.runId ? this.supervisorWatchdogTimeoutMs : null);
         let lease = null;
         let outcome = null;
         let attemptError = null;
         try {
-          lease = await this.claimWorker(task, supervisorDeadline);
+          lease = await this.claimWorker(task, deadline);
           trace.leaseClaimedAt = this.now();
           trace.leaseId = lease.leaseId;
           trace.slot = lease.slot ?? null;
           trace.workerId = lease.workerId || null;
           task.owner = Object.freeze({ leaseId: lease.leaseId, slot: lease.slot, workerId: lease.workerId || null });
-          await this.awaitSupervisorPhase(
+          await this.awaitAttemptPhase(
             () => this.workerPool.createChat({ leaseId: lease.leaseId }),
             task,
-            supervisorDeadline,
+            deadline,
             'creating the Worker chat',
           );
-          await this.awaitSupervisorPhase(
+          await this.awaitAttemptPhase(
             () => this.workerPool.start({ leaseId: lease.leaseId, instruction: buildDevWorkerInstruction(task.instruction) }),
             task,
-            supervisorDeadline,
+            deadline,
             'submitting the Worker task',
           );
           trace.promptSubmitAt = this.now();
-          outcome = await this.waitForWorkerResult(task, lease.leaseId, supervisorDeadline);
+          outcome = await this.waitForWorkerResult(task, lease.leaseId, deadline);
           trace.completionDetectedAt = this.now();
           const succeeded = workerSucceeded(outcome);
           trace.resultParsedAt = this.now();
@@ -389,10 +389,13 @@ export class DynamicTaskGraph {
 
   /* One await for the whole model turn. The Pool owns the turn and wakes us
      when it settles, so nothing re-reads it on a timer while the Worker
-     generates. An explicit task deadline remains caller-owned. Supervisor-owned
-     unattended graphs additionally carry one bounded per-attempt safety watchdog
-     across claim/create/start/result so infrastructure loss cannot strand the run
-     forever. Cleanup remains the existing stop -> release -> discard transaction. */
+     generates. An explicit task deadline remains caller-owned: one absolute
+     per-attempt budget shared by claim/create/start/result, never re-armed when
+     the result wait begins. Unattended graphs owned by a Supervisor run carry a
+     second bounded per-attempt safety watchdog over the same phases so
+     infrastructure loss cannot strand the run forever, and the earlier of the two
+     deadlines decides the failure under its own error code. Cleanup remains the
+     existing stop -> release -> discard transaction. */
   beginAttemptTrace(task) {
     const trace = {
       graphId: this.graphId,
@@ -437,69 +440,63 @@ export class DynamicTaskGraph {
     return null;
   }
 
-  async claimWorker(task, supervisorDeadline) {
+  async claimWorker(task, deadline) {
+    const phase = 'claiming a Worker lease';
+    if (deadlineExpired(deadline)) throw this.attemptDeadlineFailure(deadlineErrorCode(deadline), task, phase);
     const controller = new AbortController();
-    let watchdogExpired = false;
+    let claimExpired = null;
     const onGraphCancel = () => controller.abort(this.cancelReason || 'cancelled');
     this.abortController.signal.addEventListener('abort', onGraphCancel, { once: true });
-    let watchdog = null;
-    if (supervisorDeadline != null) {
-      const remaining = Math.max(0, supervisorDeadline - Date.now());
-      watchdog = setTimeout(() => {
-        watchdogExpired = true;
-        controller.abort('supervisor-watchdog-timeout');
-      }, remaining);
-    }
+    const timers = armDeadline(deadline, (code) => {
+      if (claimExpired) return;
+      claimExpired = code;
+      controller.abort(code);
+    });
     try {
       return await this.workerPool.claim({ taskId: task.id, wait: true, signal: controller.signal });
     } catch (error) {
-      if (watchdogExpired) throw supervisorWatchdogError(task, this.supervisorWatchdogTimeoutMs, 'claiming a Worker lease');
+      if (claimExpired) throw this.attemptDeadlineFailure(claimExpired, task, phase);
       if (this.abortController.signal.aborted) throw graphError('cancelled', this.cancelReason || 'cancelled');
       throw error;
     } finally {
-      if (watchdog) clearTimeout(watchdog);
+      for (const timer of timers) clearTimeout(timer);
       this.abortController.signal.removeEventListener('abort', onGraphCancel);
     }
   }
 
-  async awaitSupervisorPhase(operation, task, supervisorDeadline, phase) {
-    if (supervisorDeadline == null) return operation();
-    const remaining = Math.max(0, supervisorDeadline - Date.now());
+  async awaitAttemptPhase(operation, task, deadline, phase) {
+    if (deadlineExpired(deadline)) throw this.attemptDeadlineFailure(deadlineErrorCode(deadline), task, phase);
+    const remaining = deadlineRemainingMs(deadline);
+    if (remaining == null) return operation();
     const settled = await settleWithin(operation, remaining);
-    if (!settled.settled) throw supervisorWatchdogError(task, this.supervisorWatchdogTimeoutMs, phase);
+    if (!settled.settled) throw this.attemptDeadlineFailure(deadlineErrorCode(deadline), task, phase);
     if (settled.error) throw settled.error;
     return settled.value;
   }
 
-  async waitForWorkerResult(task, leaseId, supervisorDeadline = null) {
+  attemptDeadlineFailure(code, task, phase) {
+    if (code === 'supervisor-watchdog-timeout') return supervisorWatchdogError(task, this.supervisorWatchdogTimeoutMs, phase);
+    return callerTimeoutError(task);
+  }
+
+  async waitForWorkerResult(task, leaseId, deadline) {
     if (this.abortController.signal.aborted) throw graphError('cancelled', this.cancelReason || 'cancelled');
+    const phase = 'waiting for a terminal Worker result';
+    if (deadlineExpired(deadline)) throw this.attemptDeadlineFailure(deadlineErrorCode(deadline), task, phase);
     const controller = new AbortController();
     const onGraphCancel = () => controller.abort(this.cancelReason || 'cancelled');
     this.abortController.signal.addEventListener('abort', onGraphCancel, { once: true });
     let timeoutCode = null;
-    const timers = [];
-    if (task.timeoutMs != null) {
-      timers.push(setTimeout(() => {
-        if (timeoutCode) return;
-        timeoutCode = 'task-timeout';
-        controller.abort(timeoutCode);
-      }, task.timeoutMs));
-    }
-    if (supervisorDeadline != null) {
-      const remaining = Math.max(0, supervisorDeadline - Date.now());
-      timers.push(setTimeout(() => {
-        if (timeoutCode) return;
-        timeoutCode = 'supervisor-watchdog-timeout';
-        controller.abort(timeoutCode);
-      }, remaining));
-    }
+    const timers = armDeadline(deadline, (code) => {
+      if (timeoutCode) return;
+      timeoutCode = code;
+      controller.abort(code);
+    });
     try {
       return await this.workerPool.waitResult({ leaseId }, { signal: controller.signal });
     } catch (error) {
-      if (timeoutCode === 'task-timeout') throw graphError('task-timeout', `Task ${task.id} exceeded ${task.timeoutMs}ms.`);
-      if (timeoutCode === 'supervisor-watchdog-timeout') {
-        throw supervisorWatchdogError(task, this.supervisorWatchdogTimeoutMs, 'waiting for a terminal Worker result');
-      }
+      if (timeoutCode === 'task-timeout') throw callerTimeoutError(task);
+      if (timeoutCode === 'supervisor-watchdog-timeout') throw supervisorWatchdogError(task, this.supervisorWatchdogTimeoutMs, phase);
       if (this.abortController.signal.aborted) throw graphError('cancelled', this.cancelReason || 'cancelled');
       throw error;
     } finally {
@@ -736,11 +733,58 @@ function spanMs(from, to) {
   return end - start;
 }
 
+/* One attempt carries a single absolute budget per deadline owner. The caller
+   timeout is measured from the start of the attempt, so lease claim, chat
+   creation, task submission, and result waiting all share the same remaining
+   time instead of re-arming the clock at the last phase. A caller deadline
+   applies whether or not a Supervisor run owns the graph. */
+function attemptDeadline(task, watchdogTimeoutMs) {
+  const startedAt = Date.now();
+  return {
+    callerAt: task.timeoutMs == null ? null : startedAt + task.timeoutMs,
+    supervisorAt: watchdogTimeoutMs == null ? null : startedAt + watchdogTimeoutMs,
+  };
+}
+function deadlineLegs(deadline) {
+  const legs = [];
+  if (deadline?.callerAt != null) legs.push({ at: deadline.callerAt, code: 'task-timeout' });
+  if (deadline?.supervisorAt != null) legs.push({ at: deadline.supervisorAt, code: 'supervisor-watchdog-timeout' });
+  return legs;
+}
+function earliestDeadlineLeg(deadline) {
+  let first = null;
+  for (const leg of deadlineLegs(deadline)) {
+    if (first == null || leg.at < first.at) first = leg;
+  }
+  return first;
+}
+function deadlineRemainingMs(deadline) {
+  const first = earliestDeadlineLeg(deadline);
+  return first == null ? null : Math.max(0, first.at - Date.now());
+}
+function deadlineExpired(deadline) {
+  const remaining = deadlineRemainingMs(deadline);
+  return remaining != null && remaining <= 0;
+}
+function deadlineErrorCode(deadline) {
+  const first = earliestDeadlineLeg(deadline);
+  return first == null ? null : first.code;
+}
+function armDeadline(deadline, onExpire) {
+  const timers = [];
+  for (const leg of deadlineLegs(deadline)) {
+    timers.push(setTimeout(() => onExpire(leg.code), Math.max(0, leg.at - Date.now())));
+  }
+  return timers;
+}
 function supervisorWatchdogError(task, timeoutMs, phase) {
   return graphError(
     'supervisor-watchdog-timeout',
     `Supervisor-owned task ${task.id} exceeded the ${timeoutMs}ms unattended safety watchdog while ${phase}.`,
   );
+}
+function callerTimeoutError(task) {
+  return graphError('task-timeout', `Task ${task.id} exceeded ${task.timeoutMs}ms.`);
 }
 function normalizeError(error, fallbackCode) {
   if (error && typeof error === 'object' && error.code && error.message) {
