@@ -100,3 +100,12 @@ test('#5769 same hash and same identity-bound slice remain equivalent', () => {
   );
   assert.equal(snapshot.binaryIdentity.id, 'content:aaaa:1');
 });
+
+test('#5769 sliced strong request remains usable when live workbench has no slice authority', () => {
+  const snapshot = createTurnSnapshot({}, {
+    binaryIdentity:strongIdentity('aaaa', 'content:aaaa:1'),
+  });
+  assert.equal(snapshot.binaryIdentitySource, 'request-fallback');
+  assert.equal(snapshot.binaryIdentity.id, 'content:aaaa:1');
+  assert.equal(snapshot.binaryIdentity.hash, 'aaaa');
+});

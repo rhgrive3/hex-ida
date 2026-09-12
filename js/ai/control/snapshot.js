@@ -238,13 +238,12 @@ function assertedContentBinding(identity) {
 }
 
 function requestIdentityConsistent(identity, local) {
-  const id = canonicalBindingId(identity?.id);
-  const hash = canonicalBindingId(identity?.hash);
-  if (hash == null || typeof id !== 'string' || !id.startsWith('content:')) return true;
-  const slice = selectedSlice(local);
-  if (slice.invalid) return false;
-  const suffix = slice.value == null ? '' : `:${slice.value}`;
-  return id === `content:${hash}${suffix}`;
+  const binding = assertedContentBinding(identity);
+  if (binding.invalid) return false;
+  const liveSlice = selectedSlice(local);
+  if (liveSlice.invalid) return false;
+  if (liveSlice.value == null || binding.slice == null) return true;
+  return binding.slice === liveSlice.value;
 }
 
 function normalizeIdentity(value) {
