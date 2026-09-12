@@ -76,6 +76,27 @@ assert.equal(intrinsicOf(lift('ldrab', 'x0, [x1]')).metadata.keyIdentity, 'APIBK
   assert.equal(writeback.value.temporaryId, addressOperation.outputs[0].temporaryId, 'writeback must be the authenticated data address');
 }
 
+// Pre-index GP base/destination overlap is architecturally constrained-unpredictable.
+// Do not publish one deterministic load/writeback outcome as exact authority.
+for (const mnemonic of ['ldraa', 'ldrab']) {
+  const bundle = lift(mnemonic, 'x1, [x1, #8]!');
+  assert.equal(bundle.completeness, 'partial', `${mnemonic}: writeback overlap must fail closed`);
+  assert.equal(bundle.operations.some((operation) => operation.kind === 'memory-read'), false, `${mnemonic}: no definite memory-read authority`);
+  assert.deepEqual(writesOf(bundle), [], `${mnemonic}: no definite destination/writeback authority`);
+  assert.equal(bundle.metadata.failClosed, true, `${mnemonic}: overlap must be marked fail-closed`);
+  assert.match(bundle.unknownEffects?.reason ?? '', /overlap|constrained-unpredictable/i, `${mnemonic}: reason must identify overlap`);
+}
+
+// Non-overlap GP pre-index and SP pre-index remain exact positive controls.
+{
+  const gp = lift('ldraa', 'x1, [x2, #8]!');
+  assert.equal(gp.completeness, 'exact-with-intrinsic');
+  assert.deepEqual(writesOf(gp), ['x1', 'x2']);
+  const sp = lift('ldrab', 'x1, [sp, #8]!');
+  assert.equal(sp.completeness, 'exact-with-intrinsic');
+  assert.deepEqual(writesOf(sp), ['x1', 'sp']);
+}
+
 // Signed S:imm9 offset is scaled by 8: exact architectural boundaries are
 // -4096..4088 bytes, and non-multiples of 8 are not encodable.
 for (const opStr of ['x4, [x5, #-4096]!', 'x4, [x5, #4088]!', 'x4, [x5, #-256]!']) {
