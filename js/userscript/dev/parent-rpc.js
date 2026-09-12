@@ -61,8 +61,8 @@ export function createDevWorkerParentRpc({ port, runtime } = {}) {
     active.get(message.id)?.abort('remote-cancel');
   };
 
-  listen(port, onMessage);
-  listen(port, onCancel);
+  const detachMessage = listen(port, onMessage);
+  const detachCancel = listen(port, onCancel);
   port.start?.();
 
   async function handle(message) {
@@ -103,8 +103,8 @@ export function createDevWorkerParentRpc({ port, runtime } = {}) {
     close() {
       if (closed) return;
       closed = true;
-      unlisten(port, onMessage);
-      unlisten(port, onCancel);
+      detachCancel();
+      detachMessage();
       for (const controller of active.values()) controller.abort('rpc-closed');
       active.clear();
     },
@@ -130,7 +130,7 @@ export function createDevWorkerParentRpcClient({ port, timeoutMs = 60000 } = {})
     else current.reject(remoteError(message.error));
   };
 
-  listen(port, onMessage);
+  const detachMessage = listen(port, onMessage);
   port.start?.();
 
   async function call(method, params = {}, options = {}) {
@@ -229,7 +229,7 @@ export function createDevWorkerParentRpcClient({ port, timeoutMs = 60000 } = {})
     close() {
       if (closed) return;
       closed = true;
-      unlisten(port, onMessage);
+      detachMessage();
       for (const [id, current] of pending) {
         if (current.timer) clearTimeout(current.timer);
         current.detach?.();
@@ -349,12 +349,16 @@ function post(port, value) {
 function listen(port, handler) {
   if (typeof port.addEventListener === 'function') {
     port.addEventListener('message', handler);
-    return;
+    return () => unlisten(port, handler);
   }
   const previous = port.onmessage;
-  port.onmessage = (event) => {
+  const wrapper = (event) => {
     previous?.(event);
     handler(event);
+  };
+  port.onmessage = wrapper;
+  return () => {
+    if (port.onmessage === wrapper) port.onmessage = previous;
   };
 }
 function unlisten(port, handler) {
