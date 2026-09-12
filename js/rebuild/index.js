@@ -21,7 +21,7 @@ const BASELINE_REBUILD_VALIDATORS = Object.freeze([
   'source-precondition', 'structure', 'loader-reparse', 'unchanged-regions', 'evidence',
 ]);
 
-function required(value, code) { const text = String(value ?? '').trim(); if (!text) throw new TypeError(code); return text; }
+function identityText(value, code) { if (typeof value !== 'string') throw new TypeError(code); const text = value.trim(); if (!text) throw new TypeError(code); return text; }
 function explicitBigInt(value, code) {
   if (typeof value === 'number') { if (!Number.isSafeInteger(value)) throw new TypeError(code); return BigInt(value); }
   if (typeof value === 'bigint') return value;
@@ -64,15 +64,15 @@ function assertRebuildPlanIntegrity(plan) {
 }
 
 export function createRebuildPlan(input = {}) {
-  const binaryId = required(input.binaryId, 'rebuild-binary-id-required');
-  const sourceHash = required(input.sourceHash, 'rebuild-source-hash-required');
-  const loaderVersion = required(input.loaderVersion || 'n/a', 'rebuild-loader-version-required');
+  const binaryId = identityText(input.binaryId, 'rebuild-binary-id-required');
+  const sourceHash = identityText(input.sourceHash, 'rebuild-source-hash-required');
+  const loaderVersion = identityText(input.loaderVersion ?? 'n/a', 'rebuild-loader-version-required');
   if (!Array.isArray(input.operations)) throw new TypeError('rebuild-operations-required');
   const operations = input.operations.map((operation) => {
     const offset = explicitBigInt(operation.offset ?? operation.fileOffset, 'rebuild-operation-offset-invalid');
     const before = bytes(operation.before || []), after = bytes(operation.after || []);
     if (offset < 0n || !before.length || before.length !== after.length) throw new TypeError('rebuild-operation-same-size-precondition-required');
-    return { id: String(operation.id || `operation:${stableDigest({ offset: offset.toString(), before: Array.from(before), after: Array.from(after) })}`), offset: offset.toString(), before: Array.from(before), after: Array.from(after), address: operation.address == null ? null : String(operation.address), provenance: clone(operation.provenance || { source: 'local-patch' }) };
+    return { id: operation.id == null ? `operation:${stableDigest({ offset: offset.toString(), before: Array.from(before), after: Array.from(after) })}` : identityText(operation.id, 'rebuild-operation-id-invalid'), offset: offset.toString(), before: Array.from(before), after: Array.from(after), address: operation.address == null ? null : String(operation.address), provenance: clone(operation.provenance || { source: 'local-patch' }) };
   }).sort((a, b) => BigInt(a.offset) < BigInt(b.offset) ? -1 : BigInt(a.offset) > BigInt(b.offset) ? 1 : a.id.localeCompare(b.id));
   for (let i = 1; i < operations.length; i++) { const previous = operations[i - 1], current = operations[i]; if (BigInt(current.offset) < BigInt(previous.offset) + BigInt(previous.before.length)) throw new TypeError('rebuild-overlapping-operations'); }
   const impact = { sourceRanges: clone(input.impact?.sourceRanges || operations.map((operation) => ({ offset: operation.offset, length: operation.before.length }))), sections: clone(input.impact?.sections || []), layoutMoving: input.impact?.layoutMoving === true, relocations: input.impact?.relocations === true, branchRanges: input.impact?.branchRanges === true, unwind: input.impact?.unwind === true, importsExports: input.impact?.importsExports === true, signature: input.impact?.signature === true };
