@@ -5,6 +5,7 @@
  */
 
 import { PROOF_AUTHORITY, SolverBackend } from './backend.js';
+import { positiveFiniteBudget } from './budget.js';
 import { ExhaustiveBvBackend } from './exhaustive-backend.js';
 import { SOLVER_STATUS, createSolverResult } from './result.js';
 import { SolverSession } from './session.js';
@@ -176,10 +177,10 @@ export class WorkerSolverBackend extends SolverBackend {
     workerFactory = defaultWorkerFactory,
   } = {}) {
     super({ id, version, proofAuthority: PROOF_AUTHORITY.EXACT, isRemote: false, isWasm: false });
-    this.maxBvWidth = Math.max(1, Math.floor(Number(maxBvWidth)));
-    this.maxAssignments = Math.max(1, Math.floor(Number(maxAssignments)));
-    this.maxConstraints = Math.max(1, Math.floor(Number(maxConstraints)));
-    this.maxExprNodes = Math.max(1, Math.floor(Number(maxExprNodes)));
+    this.maxBvWidth = positiveFiniteBudget(maxBvWidth, 8);
+    this.maxAssignments = positiveFiniteBudget(maxAssignments, 1 << 20);
+    this.maxConstraints = positiveFiniteBudget(maxConstraints, 4096);
+    this.maxExprNodes = positiveFiniteBudget(maxExprNodes, 100000);
     this.workerFactory = workerFactory;
   }
 
