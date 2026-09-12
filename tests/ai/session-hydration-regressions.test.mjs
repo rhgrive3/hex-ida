@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { AIRuntime } from '../../js/ai/runtime.js';
 import { EvidenceStore } from '../../js/ai/evidence.js';
 import { HypothesisStore } from '../../js/ai/hypothesis.js';
+import { InvestigationSessionStore } from '../../js/ai/session-core/index.js';
 
 const savedEvidence = {
   id: 'ev_saved',
@@ -27,13 +28,15 @@ const session = {
 // Ordinary input is still untrusted and cannot manufacture verification authority.
 assert.equal(new EvidenceStore([savedEvidence]).get('ev_saved')?.status, 'supported');
 
+const persistedSession = new InvestigationSessionStore().register(session);
+
 // Runtime-owned persisted confirmed findings retain their deterministic authority.
-const restoredDirect = new EvidenceStore().restorePersistedConfirmed([savedEvidence]);
+const restoredDirect = new EvidenceStore().restorePersistedConfirmed(persistedSession.confirmedFindings);
 assert.equal(restoredDirect.get('ev_saved')?.status, 'verified');
 
 // #1701/#1702: the first namespace opened by a fresh runtime hydrates persisted state.
 const runtime = new AIRuntime({ planner: false });
-const restored = runtime.storesFor(session, 'bin-1');
+const restored = runtime.storesFor(persistedSession, 'bin-1');
 assert.equal(restored.evidenceStore.get('ev_saved')?.status, 'verified');
 assert.equal(restored.hypothesisStore.get('hyp_saved')?.status, 'verified');
 

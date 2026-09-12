@@ -1,4 +1,5 @@
 import { AI_MODES, AI_SCOPES, AI_STYLES } from '../schema.js';
+import { sealPersistedConfirmedEnvelope } from './persisted-confirmed.js';
 
 let sessionSequence = 1;
 const MEMORY_KEYS = ['goal','anchor','confirmedFacts','activeHypotheses','rejectedHypotheses','unresolvedQuestions','userConstraints','importantPriorActions'];
@@ -49,7 +50,7 @@ export function createInvestigationSession(input = {}) {
     investigationMemory: createInvestigationMemory(input.investigationMemory || { goal: input.goal }),
     pinnedEvidence: Array.isArray(input.pinnedEvidence) ? Array.from(new Set(input.pinnedEvidence.map(String))) : [],
     hypotheses: Array.isArray(input.hypotheses) ? input.hypotheses.map(cloneRecord) : [],
-    confirmedFindings: Array.isArray(input.confirmedFindings) ? input.confirmedFindings.map(cloneRecord) : [],
+    confirmedFindings: sealPersistedConfirmedEnvelope(Array.isArray(input.confirmedFindings) ? input.confirmedFindings.map(cloneRecord) : []),
     rejectedHypotheses: Array.isArray(input.rejectedHypotheses) ? input.rejectedHypotheses.map(cloneRecord) : [],
     proposedActions: Array.isArray(input.proposedActions) ? input.proposedActions.map(cloneRecord) : [],
     lastActivity: cloneOwned(input.lastActivity || null),
@@ -134,6 +135,7 @@ export class InvestigationSessionStore {
     if (!Object.prototype.hasOwnProperty.call(patch, 'binaryId') && patch.binaryIdentity?.id) candidate.binaryId = String(patch.binaryIdentity.id);
     if (candidate.binaryId != null) candidate.binaryId = String(candidate.binaryId);
     candidate.updatedAt = new Date().toISOString();
+    sealPersistedConfirmedEnvelope(candidate.confirmedFindings);
     const ownedCandidate = freezeOwned(candidate);
     await this.persist(ownedCandidate);
     this.sessions.set(id, ownedCandidate);
