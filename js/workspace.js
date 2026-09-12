@@ -344,11 +344,13 @@ export class ProductWorkspace{
     const revision=this.bindingRevision, request=++this.baselineSequence;
     const assertCurrent=()=>{this._assertBinding(revision);if(request!==this.baselineSequence)throw staleWorkspaceError();};
     const ownedBackend=!backend, other=backend||this.backendFactory();
-    const onAbort=()=>{if(ownedBackend)other?.dispose?.();};
-    if(signal?.aborted)throwIfAborted(signal);
-    signal?.addEventListener('abort',onAbort,{once:true});
-    if(signal?.aborted){signal.removeEventListener('abort',onAbort);onAbort();throwIfAborted(signal);}
+    let disposed=false, listenerRegistered=false;
+    const disposeOwned=()=>{if(ownedBackend&&!disposed){disposed=true;other?.dispose?.();}};
+    const onAbort=disposeOwned;
     try{
+      throwIfAborted(signal);
+      if(signal){listenerRegistered=true;signal.addEventListener('abort',onAbort,{once:true});}
+      throwIfAborted(signal);
       const info=await other.open(file);throwIfAborted(signal);assertCurrent();
       const currentArch=this.identity?.metadata?.architecture||null;const sliceIndex=chooseSlice(info,currentArch);
       if(sliceIndex<0)throw new Error('baseline-slice-unavailable');
@@ -362,8 +364,8 @@ export class ProductWorkspace{
       this.baseline={file,backend:other,ownedBackend,info,sliceIndex,slice,architecture:arch,hash,symbols,functions,complete:functions.complete===true};
       if(previous?.ownedBackend&&previous.backend!==other)previous.backend?.dispose?.();
       this.diffState=null;this.busy=null;return this.baseline;
-    }catch(error){if(ownedBackend)other?.dispose?.();throw error;}
-    finally{signal?.removeEventListener('abort',onAbort);}
+    }catch(error){disposeOwned();throw error;}
+    finally{if(listenerRegistered)signal.removeEventListener('abort',onAbort);}
   }
   async diff(options={}){
     if(this.busy)return this.busy;

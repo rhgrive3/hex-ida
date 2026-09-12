@@ -94,7 +94,7 @@ const file = new Blob([new Uint8Array(32)]);
   assert.equal(backendState.disposed, 0, 'an externally owned backend must never be disposed here');
 }
 
-// 3. Already-aborted signal: legacy behavior — never start baseline work.
+// 3. Already-aborted signal: never start work and release the allocated backend.
 {
   const { backend, state: backendState } = makeBackend();
   const workspace = makeWorkspace(() => backend);
@@ -106,6 +106,7 @@ const file = new Blob([new Uint8Array(32)]);
   assert.equal(load.outcome().error.name, 'AbortError');
   assert.equal(backendState.openCalls, 0, 'an already-aborted signal must not start baseline work');
   assert.equal(state.listenerAdds, 0, 'no listener is needed when the signal is already aborted');
+  assert.equal(backendState.disposed, 1, 'the allocated owned backend must be disposed exactly once');
 }
 
 // 4. Ordinary abort during open keeps working and cleans up the listener.
@@ -125,14 +126,46 @@ const file = new Blob([new Uint8Array(32)]);
   assert.equal(load.outcome(), null, 'the load must stay pending while open is in flight');
   state.aborted = true;
   state.listener();
-  assert.ok(backendState.disposed >= 1, 'the owned backend must be disposed on abort during open');
+  assert.equal(backendState.disposed, 1, 'the owned backend must be disposed immediately on abort during open');
   backendState.releaseOpen(makeInfo('base.bin', 'B'));
   await load.settled;
   assert.equal(load.outcome().ok, false, 'an aborted load must never resolve as success');
   assert.equal(load.outcome().error.name, 'AbortError');
   assert.equal(backendState.ensureHashCalls, 0, 'no baseline phase may run after the post-open abort check');
   assert.equal(state.listenerRemoves, 1, 'the finally block must still remove the abort listener');
+  assert.equal(backendState.disposed, 1, 'settling the aborted open must not dispose the backend twice');
   assert.equal(workspace.baseline, null, 'an aborted load must not publish a baseline');
+}
+
+// 5. A wrapper registers with a real signal, then aborts synchronously.
+// The listener fires before the registration re-check observes cancellation.
+for (const owned of [true, false]) {
+  const { backend, state } = makeBackend();
+  const workspace = makeWorkspace(() => backend);
+  await workspace.bind();
+  const controller = new AbortController();
+  let listenerAdds = 0, listenerRemoves = 0;
+  const signal = {
+    get aborted() { return controller.signal.aborted; },
+    get reason() { return controller.signal.reason; },
+    addEventListener(type, listener, options) {
+      listenerAdds++;
+      controller.signal.addEventListener(type, listener, options);
+      controller.abort('cancelled');
+    },
+    removeEventListener(type, listener) {
+      listenerRemoves++;
+      controller.signal.removeEventListener(type, listener);
+    },
+  };
+  await assert.rejects(workspace.loadBaseline(file, { signal, ...(owned ? {} : { backend }) }), { name: 'AbortError', code: 'ABORT_ERR' });
+  assert.equal(state.openCalls, 0, 'registration-time cancellation must prevent open');
+  assert.equal(state.ensureHashCalls, 0);
+  assert.equal(state.analyzeCalls, 0);
+  assert.equal(state.disposed, owned ? 1 : 0, 'listener and catch must share one owned cleanup');
+  assert.equal(listenerAdds, 1);
+  assert.equal(listenerRemoves, 1);
+  assert.equal(workspace.baseline, null);
 }
 
 console.log('issue #5240 loadBaseline abort-race regressions PASS');
