@@ -345,7 +345,10 @@ export function createAppAnalysisQueryAdapter(app) {
   let metadataTask = null;
 
   const metadataSummary = () => {
-    const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);
+    const epoch = identityGeneration(
+      app?.backend?.gen ?? app?.analysisEpoch ?? 0,
+      'analysis-query-epoch-invalid',
+    );
     if (metadataEpoch === epoch && metadataTask) return metadataTask;
     metadataEpoch = epoch;
     metadataTask = typeof app?.backend?.binaryMetadata === 'function'
