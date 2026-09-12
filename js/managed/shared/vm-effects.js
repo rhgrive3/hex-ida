@@ -294,6 +294,19 @@ export function validateVMEffectBundle(bundle) {
   return true;
 }
 
+function validateFunctionBundleOwnership(fn, bundle) {
+  if (bundle.methodId !== fn.methodId) fail('vm-effect-function-bundle-method-mismatch');
+  if (bundle.frontendId !== fn.frontendId) fail('vm-effect-function-bundle-frontend-mismatch');
+  if (fn.profileId != null && bundle.profileId != null && bundle.profileId !== fn.profileId) {
+    fail('vm-effect-function-bundle-profile-mismatch');
+  }
+}
+
+export function assertVMEffectFunctionBundleOwnership(fn, bundles = fn?.bundles) {
+  if (!Array.isArray(bundles)) return;
+  for (const bundle of bundles) validateFunctionBundleOwnership(fn, bundle);
+}
+
 export function createVMEffectFunction(input, options = {}) {
   assertNotAborted(options);
   input = object(input, 'vm-effect-function-invalid');
@@ -305,6 +318,7 @@ export function createVMEffectFunction(input, options = {}) {
 
   const methodId = nonEmpty(input.methodId, 'vm-effect-method-id-required');
   const frontendId = nonEmpty(input.frontendId, 'vm-effect-frontend-id-required');
+  const profileId = input.profileId ? String(input.profileId) : null;
   const bundles = array(input.bundles ?? [], 'vm-effect-function-bundles-required');
   const exceptionRegions = array(input.exceptionRegions ?? [], 'vm-effect-function-exceptions-invalid');
   if (bundles.length > budgetValue(options, 'maxOperations')) fail('vm-effect-resource-limit-operations');
@@ -354,9 +368,12 @@ export function createVMEffectFunction(input, options = {}) {
     resolutionCompleteness = 'complete';
   }
 
+  const functionIdentity = { methodId, frontendId, profileId };
+  assertVMEffectFunctionBundleOwnership(functionIdentity, outBundles);
+
   const out = {
     methodId,
-    profileId: input.profileId ? String(input.profileId) : null,
+    profileId,
     frontendId,
     entryState: input.entryState ? deepFreeze(jsonSafe(input.entryState)) : Object.freeze({}),
     bundles: deepFreeze(outBundles),
@@ -389,5 +406,6 @@ export function validateVMEffectFunction(fn) {
   if (AGGREGATE_STRENGTH[fn.aggregateCompleteness] > AGGREGATE_STRENGTH[derived]) {
     fail('vm-effect-aggregate-completeness-contradiction');
   }
+  assertVMEffectFunctionBundleOwnership(fn);
   return true;
 }

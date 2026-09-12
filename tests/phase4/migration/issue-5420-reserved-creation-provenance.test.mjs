@@ -145,7 +145,6 @@ try {
     },
   });
 
-  // Let the first request create the shared producer before the second joins it.
   await Promise.resolve();
   const second = concurrentRuntime.request({
     descriptor:concurrentDescriptor,
