@@ -397,6 +397,33 @@ export function tripCountOf({ predicate, init, bound, step, bits, signedness }) 
   return { exact: iterations, reason: null };
 }
 
+
+/**
+ * Counts a loop whose guard may observe either the incoming phi value or the
+ * value after this iteration's update.
+ *
+ * A post-test loop executes the update once before its first guard check.  It
+ * therefore cannot be modelled by counting from `init` and adding one: that
+ * over-counts ordinary bounds and turns `init == bound && updated != bound`
+ * into a fabricated one-iteration proof.  Instead, prove the first update is
+ * representable at the declared width, then count the remaining pre-test
+ * checks from that updated state.
+ */
+function guardedTripCount({ predicate, init, bound, step, bits, signedness, comparesUpdated }) {
+  if (!comparesUpdated) return tripCountOf({ predicate, init, bound, step, bits, signedness });
+
+  const mode = signedness === 'signed' ? 'signed' : 'unsigned';
+  const start = mode === 'signed' ? signedOf(init, bits) : unsignedOf(init, bits);
+  const first = start + step;
+  if (!fitsWidth(first, bits, mode)) {
+    return { exact: null, reason: 'the first post-test update wraps its width before the guard can be proved' };
+  }
+
+  const remaining = tripCountOf({ predicate, init: first, bound, step, bits, signedness: mode });
+  if (remaining.exact == null) return remaining;
+  return { exact: 1n + remaining.exact, reason: null };
+}
+
 /**
  * Value ids that appear as the base or index of a memory address.
  *
@@ -703,28 +730,26 @@ export function runInductionPass(context = {}, budget = {}, area = null) {
 
       let trip = { exact: null, minimum: null, maximum: null, completeness: 'unknown', reason: blockers[0] ?? null };
       if (blockers.length === 0) {
-        const counted = tripCountOf({
+        const counted = guardedTripCount({
           predicate,
           init: initConstant,
           bound: bound.constant,
           step,
           bits: target.bits,
           signedness: signedness === 'signed' ? 'signed' : 'unsigned',
-          // A post-test guard compares the value after the update, so the loop
-          // runs once more than the pre-test form with the same numbers.
+          comparesUpdated,
         });
         if (counted.exact != null) {
-          const iterations = comparesUpdated ? counted.exact + 1n : counted.exact;
-          trip = { exact: iterations, minimum: iterations, maximum: iterations, completeness: 'complete', reason: null };
+          trip = { exact: counted.exact, minimum: counted.exact, maximum: counted.exact, completeness: 'complete', reason: null };
         } else {
           trip = { exact: null, minimum: null, maximum: null, completeness: 'partial', reason: counted.reason };
         }
       } else if (blockers.length === 1 && earlyExitEdges.length > 0 && predicate != null && step != null && initConstant != null && bound?.constant != null && target.bits != null) {
         // An early exit can only make the loop run fewer times, so the counted
         // form is still a sound upper bound.
-        const counted = tripCountOf({ predicate, init: initConstant, bound: bound.constant, step, bits: target.bits, signedness: signedness === 'signed' ? 'signed' : 'unsigned' });
+        const counted = guardedTripCount({ predicate, init: initConstant, bound: bound.constant, step, bits: target.bits, signedness: signedness === 'signed' ? 'signed' : 'unsigned', comparesUpdated });
         trip = counted.exact != null
-          ? { exact: null, minimum: 0n, maximum: comparesUpdated ? counted.exact + 1n : counted.exact, completeness: 'partial', reason: 'an early exit can end the loop sooner' }
+          ? { exact: null, minimum: 0n, maximum: counted.exact, completeness: 'partial', reason: 'an early exit can end the loop sooner' }
           : { exact: null, minimum: null, maximum: null, completeness: 'partial', reason: counted.reason };
       } else {
         trip = { exact: null, minimum: null, maximum: null, completeness: 'partial', reason: blockers[0] };
