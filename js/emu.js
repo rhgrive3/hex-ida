@@ -109,6 +109,7 @@ export class Emulator {
     this.syntheticRangeGated = new Set();
     this.steps = 0;
     this.stopped = null;
+    this.maxStepsReached = false;
     this.faultCode = null;
     this.callStack = [];
     this.trace = [];
@@ -365,6 +366,7 @@ export class Emulator {
       }
     }
     this.stopped = null;
+    this.maxStepsReached = false;
     this.faultCode = null;
     this.callStack = [{ addr: BigInt(addr), ret: 0n }];
   }
@@ -417,11 +419,12 @@ export class Emulator {
     const signal = options?.signal ?? null;
     const limit = Number(maxSteps);
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000000) throw new EmulatorFault('invalid-step-budget', 'maxSteps must be an integer in 1..1000000');
+    this.maxStepsReached = false;
     let n = 0;
     while (n < limit && !this.stopped) {
       throwIfAborted(signal);
       if (this.breakpoints.has(this.pc.toString())) {
-        return { hitBreakpoint: true, steps: n, finalPc:this.pc, traceTruncated:this.traceTruncated, traceDropped:this.traceDropped };
+        return { hitBreakpoint: true, maxStepsReached:false, steps: n, finalPc:this.pc, traceTruncated:this.traceTruncated, traceDropped:this.traceDropped };
       }
       const r = await this.step({ signal });
       n++;
@@ -433,8 +436,8 @@ export class Emulator {
       }
     }
     throwIfAborted(signal);
-    if (n >= limit && !this.stopped) this.stopped = limit.toLocaleString() + ' 命令ぶん進んだので、いったん止めました。';
-    return { hitBreakpoint: false, steps: n, finalPc:this.pc, traceTruncated:this.traceTruncated, traceDropped:this.traceDropped };
+    if (n >= limit && !this.stopped) { this.maxStepsReached = true; this.stopped = limit.toLocaleString() + ' 命令ぶん進んだので、いったん止めました。'; }
+    return { hitBreakpoint: false, maxStepsReached:this.maxStepsReached, steps: n, finalPc:this.pc, traceTruncated:this.traceTruncated, traceDropped:this.traceDropped };
   }
 
   traceSnapshot() {
