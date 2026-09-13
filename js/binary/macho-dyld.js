@@ -33,7 +33,9 @@ export function describeMachOPointerSite(image, rawValue, addressValue) {
     return Object.freeze({ ...base, status: 'recorded-site', pointerFormat: site.pointerFormat,
       decoded: decoded ? Object.freeze({ bind: decoded.bind === true, ordinal: decoded.ordinal ?? null,
         addend: decoded.addend ?? null, target: decoded.target ?? null, next: decoded.next ?? null,
-        stride: decoded.stride ?? null, authenticated: decoded.authenticated ?? null,
+        stride: decoded.stride ?? null,
+        ...(decoded.coOpted === true ? { coOpted: true, coOptedValue: decoded.coOptedValue ?? null } : {}),
+        authenticated: decoded.authenticated ?? null,
         authenticationKey: decoded.authenticationKey ?? null, discriminator: decoded.discriminator ?? null,
         addressDiversity: decoded.addressDiversity ?? null }) : null });
   }
@@ -350,7 +352,7 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
             fail(`segment ${segIndex} page ${page} chain address is not backed by its owning segment`); break;
           }
           const raw = width === 4 ? BigInt(r.u32(Number(expectedOff))) : r.u64(Number(expectedOff));
-          const d = decodeChainedPointer(raw, pointerFormat, image.imageBase);
+          const d = decodeChainedPointer(raw, pointerFormat, image.imageBase, maxValidPointer);
           if (!d) { markUnsupportedChainedFormat(image, pointerFormat); fail(`segment ${segIndex} pointer format ${pointerFormat} could not be decoded`); break; }
           rememberChainedPointerSite(image, address, raw, pointerFormat, d);
           if (d.bind) {
@@ -375,7 +377,6 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
       }
       if (failureEpoch === pageFailureEpoch) markChainedPointerCoverageComplete(image, coverageKey);
     }
-    void maxValidPointer; // value classification for 32-bit pointers, never an address-ownership bound
   }
   status.bindingSites = decoded;
   return status;
@@ -393,12 +394,24 @@ function markUnsupportedChainedFormat(image, format) {
   const list = image.metadata.chainedFixups.unsupportedPointerFormats ||= [];
   if (!list.includes(format)) { list.push(format); image.warnings.push(`chained pointer format ${format} is not supported; binding sites are partial`); }
 }
-function decodeChainedPointer(raw, format, imageBase = null) {
+function decodeChainedPointer(raw, format, imageBase = null, maxValidPointer = null) {
   const base = imageBase == null ? null : BigInt(imageBase);
   if (format === 3) {
     const bind = !!((raw >> 31n) & 1n);
     const next = Number((raw >> 26n) & 0x1fn);
-    if (!bind) return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, target: null };
+    if (!bind) {
+      // Apple fixup-chains.h dyld_chained_ptr_32_rebase: target is a 26-bit
+      // vmaddr. An entry above the starts record's max_valid_pointer is not a
+      // pointer at all but a value co-opted into the chain; dyld restores it
+      // by subtracting the bias (64MB + max_valid_pointer) / 2 (#4120).
+      const target = raw & 0x3ffffffn;
+      if (maxValidPointer != null && target > BigInt(maxValidPointer)) {
+        const bias = (0x4000000n + BigInt(maxValidPointer)) / 2n;
+        return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, target: null,
+          coOpted: true, coOptedValue: (target - bias) & 0xffffffffn };
+      }
+      return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, target };
+    }
     const ordinal = Number(raw & 0xfffffn);
     const addend = Number((raw >> 20n) & 0x3fn);
     return { bind: true, ordinal, addend: BigInt(addend), next, stride: 4, target: null };
