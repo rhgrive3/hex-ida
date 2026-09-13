@@ -90,14 +90,14 @@
 
   function isCallImm(w) { return masked(w, 0xfc000000) === 0x94000000; }
   function isBranchImm(w) { return masked(w, 0xfc000000) === 0x14000000; }
-  function isRet(w) { return masked(w, 0xfffffc1f) === 0xd65f0000; }
-  function isBr(w) { return masked(w, 0xfffffc1f) === 0xd61f0000; }
+  function isRet(w) { return masked(w, 0xfffffc1f) === 0xd65f0000 || masked(w, 0xfffff81f) === 0xd65f081f; }
+  function isBr(w) { return masked(w, 0xfffffc1f) === 0xd61f0000 || masked(w, 0xfffff800) === 0xd61f0800 || masked(w, 0xfffff800) === 0xd71f0800; }
 
   /** blr / blraa / blrab — 行き先が実行時に決まる呼び出し。 */
   function isIndirectCall(w) {
     if (masked(w, 0xfffffc1f) === 0xd63f0000) return true;         // blr
     if (masked(w, 0xfffff800) === 0xd63f0800) return true;         // blraaz / blrabz
-    if (masked(w, 0xffe0f800) === 0xd73f0800) return true;         // blraa / blrab
+    if (masked(w, 0xfffff800) === 0xd73f0800) return true;         // blraa / blrab
     return false;
   }
 
