@@ -45,6 +45,96 @@ test('#4201 generic Advanced SIMD integer instructions have the same access gate
   assert.equal(bundle.metadata.family, 'arm64-simd');
 });
 
+test('#4201 scalar and vector single memory transfers retain the access trap', () => {
+  for (const prefix of ['b', 'h', 's', 'd', 'q']) {
+    for (const mnemonic of ['ldr', 'str', 'ldur', 'stur']) {
+      const bundle = lift(mnemonic, `${prefix}0, [x2]`);
+      assert.equal(bundle.completeness, 'exact', `${mnemonic} ${prefix}`);
+      assert.equal(bundle.metadata.family, 'arm64-memory');
+      assert.equal(accessFault(bundle)?.condition.accessState, 'unknown', `${mnemonic} ${prefix}`);
+      assert.ok(bundle.possibleFaults.some((fault) => fault.kind === 'data-abort'));
+    }
+  }
+});
+
+test('#4201 vector pair transfers retain one access trap before both memory accesses', () => {
+  for (const prefix of ['s', 'd', 'q']) {
+    for (const mnemonic of ['ldp', 'stp', 'ldnp', 'stnp']) {
+      const bundle = lift(mnemonic, `${prefix}0, ${prefix}1, [x2]`);
+      assert.equal(bundle.completeness, 'exact', `${mnemonic} ${prefix}`);
+      assert.equal(bundle.possibleFaults[0]?.kind, 'fp-advsimd-access-trap', `${mnemonic} ${prefix}`);
+      assert.equal(bundle.possibleFaults.filter((fault) => fault.kind === 'fp-advsimd-access-trap').length, 1);
+      assert.equal(bundle.possibleFaults.filter((fault) => fault.kind === 'data-abort').length, 2);
+    }
+  }
+});
+
+test('#4201 vector literal loads also recognize the operands-array decode surface', () => {
+  for (const prefix of ['s', 'd', 'q']) {
+    const bundle = liftArm64MachineEffects({
+      instructionId:`issue-4201:literal:${prefix}`,
+      mnemonic:'ldr',
+      address:0x1000n,
+      literalTarget:0x1010n,
+      operands:parseOperands(`${prefix}0, #0x1010`),
+      mode:'a64',
+    });
+    assert.doesNotThrow(() => validateMachineEffectBundle(bundle));
+    assert.equal(bundle.completeness, 'exact');
+    assert.equal(bundle.metadata.transfer, 'literal');
+    assert.equal(accessFault(bundle)?.condition.accessState, 'unknown', prefix);
+  }
+});
+
+test('#4201 memory access controls preserve memory effects and unrelated faults', () => {
+  for (const [mnemonic, operands] of [['ldr', 'q0, [sp]'], ['stp', 'd0, d1, [sp]']]) {
+    const unknown = lift(mnemonic, operands);
+    const trapped = lift(mnemonic, operands, {
+      fpAdvSimdAccess:{ currentEL:0, cpacrEl1Fpen:0, ...noUpperTrapControls },
+    });
+    const allowed = lift(mnemonic, operands, {
+      fpAdvSimdAccess:{ currentEL:0, cpacrEl1Fpen:3, ...noUpperTrapControls },
+    });
+    assert.equal(accessFault(trapped)?.condition.accessState, 'trapped');
+    assert.equal(accessFault(trapped)?.detail.normalCompletionEffectsCommitOnFault, false);
+    assert.equal(accessFault(allowed), undefined);
+    assert.deepEqual(trapped.operations, unknown.operations);
+    assert.deepEqual(allowed.operations, unknown.operations);
+    assert.deepEqual(allowed.possibleFaults,
+      unknown.possibleFaults.filter((fault) => fault.kind !== 'fp-advsimd-access-trap'));
+    assert.ok(allowed.possibleFaults.some((fault) => fault.kind === 'data-abort'));
+    assert.ok(allowed.possibleFaults.some((fault) => fault.kind === 'stack-pointer-alignment-fault'));
+  }
+});
+
+test('#4201 equivalent FP and SIMD register transfers retain the access gate', () => {
+  for (const [mnemonic, operands] of [
+    ['fmov', 'd0, x1'], ['fmov', 'x0, d1'],
+    ['fmov', 's0, w1'], ['fmov', 'w0, s1'],
+    ['ins', 'v0.d[1], x1'], ['umov', 'x0, v1.d[1]'],
+    ['smov', 'x0, v1.b[0]'], ['dup', 'v0.4s, w1'],
+  ]) {
+    const bundle = lift(mnemonic, operands);
+    assert.ok(['exact', 'exact-with-intrinsic'].includes(bundle.completeness), `${mnemonic} ${operands}`);
+    assert.equal(accessFault(bundle)?.condition.accessState, 'unknown', `${mnemonic} ${operands}`);
+  }
+});
+
+test('#4201 integer memory transfers and partial vector forms do not gain an access trap', () => {
+  for (const [mnemonic, operands] of [
+    ['ldr', 'x0, [x2]'], ['str', 'w0, [x2]'],
+    ['ldur', 'x0, [x2]'], ['stur', 'w0, [x2]'],
+    ['ldp', 'x0, x1, [x2]'], ['stp', 'w0, w1, [x2]'],
+  ]) {
+    const bundle = lift(mnemonic, operands);
+    assert.equal(bundle.completeness, 'exact');
+    assert.equal(accessFault(bundle), undefined);
+  }
+  const partial = lift('ldp', 'q0, q0, [x2]');
+  assert.equal(partial.completeness, 'partial');
+  assert.equal(accessFault(partial), undefined);
+});
+
 test('#4201 scalar FP exception semantics compose after the access check', () => {
   const bundle = lift('fdiv', 's0, s1, s2');
   assert.ok(accessFault(bundle));
@@ -147,6 +237,24 @@ test('#4201 VHE guest EL0 FPEN=01 does not trap when CPACR_EL1 also allows', () 
     cptrEl2Fpen:1,
     el3Present:false,
   }), 'allowed');
+});
+
+test('#4201 VHE raw trap wins over a contradictory allowed claim', () => {
+  const fault = accessFault(lift('fadd', 's0, s1, s2', {
+    fpAdvSimdAccess:{
+      state:'allowed',
+      proven:true,
+      currentEL:0,
+      el2Enabled:true,
+      hcrEl2E2h:true,
+      hcrEl2Tge:true,
+      cptrEl2Fpen:1,
+      el3Present:false,
+    },
+  }));
+  assert.ok(fault);
+  assert.equal(fault.condition.accessState, 'trapped');
+  assert.equal(fault.condition.evidenceConflict, true);
 });
 
 test('#4201 legacy CPTR_EL2.TFP remains the non-VHE EL2 access control', () => {

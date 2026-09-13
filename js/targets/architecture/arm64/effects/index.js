@@ -1,4 +1,5 @@
 import { createMachineEffectBundle } from '../../../../semantics/effects/index.js';
+import { arm64RegisterOperand } from './addressing.js';
 import { instructionMnemonic } from './common.js';
 import {
   ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION,
@@ -16,12 +17,18 @@ function registerReadValue(bundle, registerId) {
   return read?.value ?? null;
 }
 
-function isArm64FpAdvSimdBundle(bundle) {
-  return bundle?.metadata?.family === 'arm64-fp' || bundle?.metadata?.family === 'arm64-simd';
+function isArm64FpAdvSimdBundle(instruction, bundle) {
+  const family = bundle?.metadata?.family;
+  if (family === 'arm64-fp' || family === 'arm64-simd') return true;
+  if (family !== 'arm64-memory') return false;
+  // Memory-family transfers use the same FP/AdvSIMD registers and access controls.
+  const operands = Array.isArray(instruction?.ops) ? instruction.ops
+    : Array.isArray(instruction?.operands) ? instruction.operands : [];
+  return operands.some((operand) => arm64RegisterOperand(operand)?.kind === 'vector');
 }
 
 function decorateArm64FpAdvSimdAccessTrapEffects(instruction, bundle, context = {}) {
-  if (!bundle || !isArm64FpAdvSimdBundle(bundle)) return bundle;
+  if (!bundle || !isArm64FpAdvSimdBundle(instruction, bundle)) return bundle;
   if (bundle.completeness !== 'exact' && bundle.completeness !== 'exact-with-intrinsic') return bundle;
 
   const existingFaults = Array.isArray(bundle.possibleFaults) ? bundle.possibleFaults : [];
