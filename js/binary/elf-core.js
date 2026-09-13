@@ -497,6 +497,12 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
   if (tableStart == null || ent == null || strStart == null || strBytes == null || tableStart > r.length || strStart > r.length || strBytes > r.length-strStart) {
     budget.partial(`symbols:${table.index}:file-span`, `ELF symbol/string table ${table.index} exceeds the file`); return;
   }
+  if (table.size % table.entsize !== 0n) {
+    budget.partial(
+      `symbols:${table.index}:trailing-bytes`,
+      `ELF symbol table ${table.index} size ${table.size} is not a multiple of entry size ${table.entsize}`,
+    );
+  }
   const declaredBig = table.size / table.entsize;
   const fileCapacity = Math.floor((r.length-tableStart)/ent);
   const declared = declaredBig > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(declaredBig);
@@ -603,6 +609,7 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
   const minEnt=BigInt(bits===64?(sec.type===SHT_RELA?24:16):(sec.type===SHT_RELA?12:8));
   if(sec.entsize<minEnt){budget.partial(`relocations:${sec.index}:entry-size`,`ELF relocation section ${sec.index} entry size ${sec.entsize} is smaller than ${minEnt}`);return;}
   const tableStart=safeOffset(sec.offset),ent=safeOffset(sec.entsize);if(tableStart==null||ent==null||tableStart>r.length){budget.partial(`relocations:${sec.index}:file-span`,`ELF relocation section ${sec.index} has an invalid file span`);return;}
+  if(sec.size%sec.entsize!==0n)budget.partial(`relocations:${sec.index}:trailing-bytes`,`ELF relocation section ${sec.index} size ${sec.size} is not a multiple of entry size ${sec.entsize}`);
   const declaredBig=sec.size/sec.entsize,fileCapacity=Math.floor((r.length-tableStart)/ent),declared=declaredBig>BigInt(Number.MAX_SAFE_INTEGER)?Number.MAX_SAFE_INTEGER:Number(declaredBig),count=Math.min(declared,fileCapacity);
   if(declaredBig>BigInt(fileCapacity))budget.partial(`relocations:${sec.index}:truncated`,`ELF relocation section ${sec.index} exceeds its file-backed capacity`);
   const symbolTable=sections[sec.link];
@@ -673,6 +680,12 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
   if (start == null || start > r.length) {
     budget.partial(`dynamic-section:${sec.index}:span`, `ELF SHT_DYNAMIC ${sec.index} has an invalid file span`);
     return;
+  }
+  if (sec.size % rawEnt !== 0n) {
+    budget.partial(
+      `dynamic-section:${sec.index}:trailing-bytes`,
+      `ELF SHT_DYNAMIC ${sec.index} size ${sec.size} is not a multiple of entry size ${rawEnt}`,
+    );
   }
   const declaredBig = sec.size / rawEnt;
   const fileCapacity = Math.floor((r.length - start) / ent);
