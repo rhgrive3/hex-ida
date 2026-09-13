@@ -14,6 +14,7 @@ const SPECIAL_PATHS = Object.freeze({
     "js/targets/architecture/arm64/effects/common.js",
     "js/targets/architecture/arm64/effects/integer.js",
     "js/targets/architecture/x86_64/effects/integer.js",
+    "tests/machine-effects/x86-long64-integer-denominator.test.mjs",
     "tests/arm64-direct-branch-target-alignment.test.mjs",
     "tests/machine-effects/arm64-adr-strict-address-evidence.test.mjs",
     "tests/machine-effects/arm64-literal-memory-encoding.test.mjs",

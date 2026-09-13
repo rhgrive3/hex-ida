@@ -15,16 +15,32 @@ test('v8 ownership validates the complete declared component union before select
   }
 });
 
-test('C4 terminal observations and their regression have exact symbolic ownership', () => {
+test('C4 terminal observations and reconciled typed SSA identity regression have exact symbolic ownership', () => {
   const manifest = loadRoadmapManifest(), assignments = validateRoadmapManifest(manifest);
   const union = [...assignments.keys()];
-  for (const file of ['js/symbolic/memory/terminal-control.js', 'tests/phase9/memory/terminal-control.test.mjs']) {
+  for (const file of ['js/symbolic/memory/terminal-control.js', 'tests/phase9/memory/terminal-control.test.mjs',
+    'tests/phase9/translate/issue-4690-structured-ssa-id-memo-collision.test.mjs']) {
     assert.equal(assignments.get(file), 'symbolic');
     const missing = structuredClone(manifest);
     missing.owners.symbolic = missing.owners.symbolic.filter(path => path !== file);
     for (const phase of ['phase7', 'phase8']) {
       assert.throws(() => validateRoadmapInventory(BRANCH, phase, union, missing), /undeclared/);
     }
+  }
+});
+
+test('main reconciliation regression changes require their exact existing owners', () => {
+  const manifest = loadRoadmapManifest(), assignments = validateRoadmapManifest(manifest);
+  const union = [...assignments.keys()];
+  for (const [file, owner] of [
+    ['tests/machine-effects/x86-long64-integer-denominator.test.mjs', 'integration'],
+    ['tests/phase7/summary/issue-6208-local-summary-identity.test.mjs', 'phase7'],
+    ['tests/phase7/types/issue-5184-structural-member-order.test.mjs', 'phase7'],
+  ]) {
+    assert.equal(assignments.get(file), owner);
+    const missing = structuredClone(manifest);
+    missing.owners[owner] = missing.owners[owner].filter(path => path !== file);
+    assert.throws(() => validateRoadmapInventory(BRANCH, 'phase7', union, missing), /undeclared/);
   }
 });
 

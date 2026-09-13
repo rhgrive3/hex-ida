@@ -174,6 +174,10 @@ function snapshotDescriptor(descriptor, layer) {
         if (typeof key !== 'string' || !property.enumerable) fail('type-claim-descriptor-invalid');
         if (!Object.hasOwn(property,'value')) fail('type-claim-descriptor-accessor');
         if (key === 'abiProfile' && property.value != null && typeof property.value !== 'string') fail('abi-profile-invalid');
+        if (layer === 'structural' && (key === 'targetEntityId' || key === 'elementEntityId')
+            && property.value != null && canonicalDependencyIdentity(property.value) == null) {
+          fail('structural-identity-invalid');
+        }
         if (layer === 'structural' && NUMERIC_DESCRIPTOR_FIELDS.has(key) && property.value != null
             && canonicalInteger(property.value) == null) {
           fail(`structural-${({sizeBytes:'size',alignBytes:'align',strideBytes:'stride',totalSizeBytes:'total-size',widthBits:'width'})[key] ?? key}-invalid`);
