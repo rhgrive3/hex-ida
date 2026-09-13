@@ -98,6 +98,7 @@ export function createHexProject(input = {}) {
       evidence: list(input.evidence ?? input.findings?.evidence, 'findings.evidence'),
       investigationSessions: list(input.investigationSessions ?? input.findings?.investigationSessions, 'findings.investigationSessions'),
     },
+    projectAnnotations: list(input.projectAnnotations, 'projectAnnotations'),
     analysis: { settings: input.analysisSettings || input.analysis?.settings || {}, cacheReferences: list(input.cacheReferences ?? input.analysis?.cacheReferences, 'analysis.cacheReferences') },
     navigation: normalizeNavigation(input.navigation ?? {}),
   };
@@ -340,6 +341,7 @@ export function normalizeHexProjectV1(project) {
       evidence: list(project.findings?.evidence, 'findings.evidence'),
       investigationSessions: list(project.findings?.investigationSessions, 'findings.investigationSessions'),
     },
+    projectAnnotations: list(project.projectAnnotations, 'projectAnnotations'),
     analysis: {
       settings: project.analysis?.settings && typeof project.analysis.settings === 'object' && !Array.isArray(project.analysis.settings)
         ? { ...project.analysis.settings }
