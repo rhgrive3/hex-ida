@@ -152,7 +152,8 @@ export function buildCfg(model, opts) {
     }
   }
 
-  const graph = analyzeGraph(nodes.map((n) => n.succ.filter((s) => s.to >= 0).map((s) => s.to)), entryBlock);
+  const terminating = nodes.filter((n) => n.succ.some((s) => s.to < 0)).map((n) => n.index);
+  const graph = analyzeGraph(nodes.map((n) => n.succ.filter((s) => s.to >= 0).map((s) => s.to)), entryBlock, terminating);
   backEdges.push(...graph.backEdges.map((e) => ({ from: e.from, to: e.to })));
   const loopHeaders = new Set(graph.backEdges.map((e) => e.to));
   for (const n of nodes) n.isLoopHeader = loopHeaders.has(n.index);
