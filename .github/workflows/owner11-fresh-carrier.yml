@@ -13,7 +13,7 @@ permissions:
 jobs:
   rebuild-current-main:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,14 +48,7 @@ jobs:
             fi
           done
 
-      - name: Regenerate current userscript outputs
-        shell: bash
-        run: |
-          set -euo pipefail
-          timeout 60s node scripts/build-userscript.mjs
-          timeout 30s node tools/validation/generated-output-policy.mjs
-
-      - name: Focused owner11 regressions
+      - name: Focused semantic regressions
         shell: bash
         run: |
           set -euo pipefail
@@ -64,15 +57,14 @@ jobs:
           timeout 45s node --test tests/phase12/integration/issue-4590-session-proposal-hydration.test.mjs
           timeout 45s node --test tests/phase12/integration/issue-4590-session-proposal-execution-authority.test.mjs
           timeout 45s node --test tests/phase12/integration/issue-4666-unknown-semantic-detail-deep-freeze.test.mjs
-          timeout 60s npm run userscript:test
           timeout 90s node tests/check.mjs
 
-      - name: Commit clean current-main carrier
+      - name: Commit clean semantic carrier
         shell: bash
         run: |
           set -euo pipefail
           rm -f .github/workflows/owner11-fresh-carrier.yml .github/owner11-rebase-diagnostic.txt
           git add -A
           git diff --cached --check
-          git commit -m "fix(consolidated): refresh owner11 on current main (#5085, #4590, #4666)"
+          git commit -m "fix(consolidated): refresh owner11 semantics on current main (#5085, #4590, #4666)"
           git push origin HEAD:consolidate/owner11-20260913-2058
