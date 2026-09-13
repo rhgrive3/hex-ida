@@ -95,6 +95,7 @@ const NO_DEST_MNEMONICS = new Set([
   'prfm', 'msr', 'drps', 'eret', 'eretaa', 'eretab',
 ]);
 const ATOMIC_READ_WRITE_DEST_RE = /^cas(?:al|a|l)?(?:b|h)?$/;
+const EXCLUSIVE_STORE_RE = /^st(?:l)?x(?:r[bh]?|p)$/;
 
 function destIndex(mn) {
   const b = mn.toLowerCase();
@@ -242,7 +243,8 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
           }
         }
       }
-      for (const op of ops) {
+      for (let i = EXCLUSIVE_STORE_RE.test(b) ? 1 : 0; i < ops.length; i++) {
+        const op = ops[i];
         if (op.k === 'reg' && op.cls === 'gp') {
           if (op.num === 30 && /^st/.test(b)) res.savesLr = true;
           if (op.num >= 19 && op.num <= 28 && /^st/.test(b)) calleeSaved.add(op.num);
