@@ -314,7 +314,7 @@ async function cstring(get, addr) {
 function newLegacyCompleteness(present, declared = 0) {
   return {
     present: !!present, declared, scanned: 0, parsed: 0, capped: false,
-    unreadableSlots: 0, invalidEntries: 0, invalidIvars: 0, invalidProtocols: 0, incompleteMethodLists: 0,
+    unreadableSlots: 0, invalidEntries: 0, invalidIvars: 0, invalidProperties: 0, invalidProtocols: 0, incompleteMethodLists: 0,
     misalignedBytes: 0, sizeValid: true, reasons: [], complete: !present,
   };
 }
@@ -577,24 +577,25 @@ export function parsePropertyAttributes(attr) {
 }
 
 /** property_list_t を読む。読めない項目は黙って飛ばす。 */
-async function readProperties(get, listAddr) {
+async function readProperties(get, listAddr, completeness = null, reasonPrefix = 'property') {
   const out = [];
   if (listAddr == null) return out;
   const head = await get(listAddr, 8);
-  if (!head) return out;
+  if (!head) { markLegacyPartial(completeness, `${reasonPrefix}-list-unreadable`, 'invalidProperties'); return out; }
   const entsize = u32(head, 0);
   const count = u32(head, 4);
-  if (!count || count > MAX_PROPS) return out;
+  if (!count) return out;
+  if (count > MAX_PROPS) { markLegacyPartial(completeness, `${reasonPrefix}-list-capped`, 'invalidProperties'); return out; }
   const layout = legacyLayout(pointerBytesOf(get));
   const stride = entsize & 0xffff;
-  if (stride < layout.propStride) return out;
+  if (stride < layout.propStride) { markLegacyPartial(completeness, `${reasonPrefix}-list-stride-invalid`, 'invalidProperties'); return out; }
 
   for (let i = 0; i < count; i++) {
     const entry = listAddr + 8n + BigInt(i) * BigInt(stride);
     const b = await get(entry, layout.propStride);
-    if (!b) break;
+    if (!b) { markLegacyPartial(completeness, `${reasonPrefix}-entry-unreadable`, 'invalidProperties'); break; }
     const name = await cstring(get, cleanPointer(get, readWord(get, b, 0)));
-    if (!name) continue;
+    if (!name) { markLegacyPartial(completeness, `${reasonPrefix}-name-invalid`, 'invalidProperties'); continue; }
     const attrText = await cstring(get, cleanPointer(get, readWord(get, b, layout.pointerBytes)));
     const attrs = parsePropertyAttributes(attrText);
     out.push({
@@ -670,6 +671,7 @@ async function readClass(get, classAddr, out, seen, meta, completeness = null) {
     methods,
     ivars: [],
     properties: [],
+    classProperties: [],
   };
 
   // ivar とプロパティはインスタンス側にしかない（クラスメソッド側には持たせない）
@@ -688,6 +690,12 @@ async function readClass(get, classAddr, out, seen, meta, completeness = null) {
         info.protocols = await readProtocolList(get, cleanPointer(get, readWord(get, ro, layout.roProtocols)), completeness);
       }
     } catch { info.protocols = []; }
+  } else {
+    try {
+      if (ro.length >= layout.roProps + layout.pointerBytes) {
+        info.classProperties = await readProperties(get, cleanPointer(get, readWord(get, ro, layout.roProps)), completeness, 'class-property');
+      }
+    } catch { info.classProperties = []; }
   }
 
   // isa はメタクラス。そちらにクラスメソッド（+）が入っている。
@@ -696,6 +704,9 @@ async function readClass(get, classAddr, out, seen, meta, completeness = null) {
     if (isa != null) {
       const metaInfo = await readClass(get, isa, out, seen, true, completeness);
       if (metaInfo && metaInfo.methods) info.classMethods = metaInfo.methods;
+      if (metaInfo && Array.isArray(metaInfo.classProperties) && metaInfo.classProperties.length) {
+        info.classProperties = metaInfo.classProperties;
+      }
     }
   }
   return info;
