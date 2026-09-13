@@ -8,7 +8,7 @@ const originalLocation = globalThis.location;
 const requests = [];
 
 function mockRequest(details) {
-  assert.equal(details.responseType, 'text');
+  assert.equal(details.responseType, 'arraybuffer');
   requests.push(details);
   let aborted = false;
   const handle = {
@@ -22,8 +22,7 @@ function mockRequest(details) {
     details.onload?.({
       status: 200,
       statusText: 'OK',
-      response: 'gm-ok',
-      responseText: 'gm-ok',
+      response: new TextEncoder().encode('gm-ok').buffer,
       responseHeaders: 'content-type: text/plain\r\nx-test: yes\r\n',
     });
   });
