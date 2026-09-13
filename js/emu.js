@@ -763,6 +763,11 @@ export class Emulator {
     const signed = /^ldrs|^ldurs/.test(mn);
 
     if (pair) {
+      for (const reg of [ops[0], ops[1]]) {
+        if (isFloatReg(reg) && reg.bits && reg.bits > 64) {
+          throw new EmulatorFault('unsupported', `${mn} does not support Q register pair operand: ${reg.text}`, { register: reg.text });
+        }
+      }
       const each = signedWordPair ? 4 : (isWide(ops[0]) ? 8 : 4);
       let a = await this.load(addr, each);
       let b = await this.load(addr + BigInt(each), each);
@@ -770,8 +775,8 @@ export class Emulator {
         a = BigInt.asUintN(64, BigInt.asIntN(32, a));
         b = BigInt.asUintN(64, BigInt.asIntN(32, b));
       }
-      this.set(ops[0].text, a);
-      this.set(ops[1].text, b);
+      if (isFloatReg(ops[0])) this.setFpBits(ops[0], a); else this.set(ops[0].text, a);
+      if (isFloatReg(ops[1])) this.setFpBits(ops[1], b); else this.set(ops[1].text, b);
     } else {
       let v = await this.load(addr, size);
       if (signed) v = BigInt.asUintN(64, BigInt.asIntN(size * 8, v));
@@ -804,9 +809,16 @@ export class Emulator {
       return null;
     }
     if (pair) {
+      for (const reg of [ops[0], ops[1]]) {
+        if (isFloatReg(reg) && reg.bits && reg.bits > 64) {
+          throw new EmulatorFault('unsupported', `${mn} does not support Q register pair operand: ${reg.text}`, { register: reg.text });
+        }
+      }
       const each = isWide(ops[0]) ? 8 : 4;
-      await this.store(addr,each,this.get(ops[0].text));
-      await this.store(addr + BigInt(each),each,this.get(ops[1].text));
+      const a = isFloatReg(ops[0]) ? this.fpBits(ops[0]) : this.get(ops[0].text);
+      const b = isFloatReg(ops[1]) ? this.fpBits(ops[1]) : this.get(ops[1].text);
+      await this.store(addr, each, a);
+      await this.store(addr + BigInt(each), each, b);
     } else if (isFloatReg(ops[first])) await this.store(addr,size,this.fpBits(ops[first]));
     else await this.store(addr,size,this.get(ops[first].text));
     this.effectiveAddress(mem,true);
