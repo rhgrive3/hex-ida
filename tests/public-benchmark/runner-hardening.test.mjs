@@ -62,6 +62,8 @@ function createGitManifestFixture() {
   const manifestFile = path.join(suiteRoot, 'manifest.json');
   fs.writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
   fs.writeFileSync(path.join(repo, 'source.txt'), 'committed source\n');
+  fs.mkdirSync(path.join(repo, 'js'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'js', 'module.js'), 'committed module\n');
   git(repo, ['add', '.']);
   git(repo, ['-c', 'user.name=Benchmark Fixture', '-c', 'user.email=benchmark-fixture@example.invalid', 'commit', '-m', 'fixture']);
   return { parent, repo, manifestFile, suiteRoot, commit: git(repo, ['rev-parse', 'HEAD']) };
@@ -151,7 +153,7 @@ test('UNSUPPORTED stays explicit and function crashes/timeouts are counted as ca
 
 test('runner discards stale case output, honors runner failure, and binds JSON/Markdown to source and manifest', () => {
   const fixture = createGitManifestFixture();
-  const outputDir = path.join(fixture.parent, 'report');
+  const outputDir = path.join(fixture.repo, 'reports', 'runner-output');
   const resultPath = path.join(outputDir, Buffer.from('sample').toString('hex') + '.json');
   fs.mkdirSync(outputDir, { recursive: true });
   fs.writeFileSync(resultPath, payload('PASS', [{ address: '16', state: 'PASS' }]));
@@ -185,6 +187,8 @@ test('runner discards stale case output, honors runner failure, and binds JSON/M
     assert.equal(run.summary.results[0].runnerExitCode, 7);
     assert.equal(run.summary.provenance.git.sha, fixture.commit);
     assert.equal(run.summary.provenance.git.dirty, true);
+    assert.ok(run.summary.provenance.git.dirtyEntries.some(entry => entry.includes('source.txt')));
+    assert.ok(!run.summary.provenance.git.dirtyEntries.some(entry => entry.includes('reports/runner-output')));
     assert.equal(run.summary.provenance.manifest.sha256, sha256(fs.readFileSync(fixture.manifestFile)));
     assert.notEqual(run.summary.results[0].state, 'PASS');
 
@@ -248,16 +252,20 @@ test('runner discards stale case output, honors runner failure, and binds JSON/M
   }
 });
 
-test('report provenance excludes prior report output from candidate dirty state', () => {
+test('report provenance excludes generated output without hiding tracked source beneath output directory', () => {
   const fixture = createGitManifestFixture();
-  const outputDir = path.join(fixture.repo, 'public-report');
+  const outputDir = path.join(fixture.repo, 'js');
   fs.mkdirSync(outputDir, { recursive: true });
-  fs.writeFileSync(path.join(outputDir, 'previous-summary.json'), '{}\n');
+  fs.writeFileSync(path.join(outputDir, 'summary.json'), '{}\n');
+  fs.writeFileSync(path.join(outputDir, 'module.js'), 'uncommitted source edit\n');
+  fs.writeFileSync(path.join(outputDir, 'local-notes.txt'), 'untracked source beside report output\n');
   try {
     const provenance = captureRunProvenance({ repoRoot: fixture.repo, manifestFile: fixture.manifestFile, outputDir });
     assert.equal(provenance.git.sha, fixture.commit);
-    assert.equal(provenance.git.dirty, false);
-    assert.deepEqual(provenance.git.dirtyEntries, []);
+    assert.equal(provenance.git.dirty, true);
+    assert.ok(provenance.git.dirtyEntries.some(entry => entry.endsWith('js/module.js')));
+    assert.ok(provenance.git.dirtyEntries.some(entry => entry.endsWith('js/local-notes.txt')));
+    assert.ok(!provenance.git.dirtyEntries.some(entry => entry.endsWith('js/summary.json')));
   } finally {
     fs.rmSync(fixture.parent, { recursive: true, force: true });
   }

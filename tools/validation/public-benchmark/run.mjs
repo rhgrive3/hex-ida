@@ -30,24 +30,34 @@ function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function outputPathspec(repoRoot, outputDir) {
-  const relative = path.relative(repoRoot, outputDir).split(path.sep).join('/');
-  if (!relative || relative === '.' || relative === '..' || relative.startsWith('../') || path.isAbsolute(relative)) return null;
-  return `:(exclude)${relative}/**`;
-}
-
-export function captureRunProvenance({ repoRoot = REPOSITORY_ROOT, manifestFile, outputDir, gitExec = execFileSync } = {}) {
+export function captureRunProvenance({
+  repoRoot = REPOSITORY_ROOT,
+  manifestFile,
+  outputDir,
+  generatedOutputFiles = ['summary.json'],
+  gitExec = execFileSync,
+} = {}) {
   const root = path.resolve(repoRoot);
   const manifestBytes = fs.readFileSync(manifestFile);
   const gitOptions = { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] };
   const gitSha = gitExec('git', ['rev-parse', 'HEAD'], gitOptions).trim();
   if (!/^[0-9a-f]{40,64}$/.test(gitSha)) throw new Error('public-benchmark-source-sha-invalid');
 
-  const statusArgs = ['status', '--porcelain=v1', '--untracked-files=all', '--', '.'];
-  const excludedOutput = outputPathspec(root, path.resolve(outputDir));
-  if (excludedOutput) statusArgs.push(excludedOutput);
-  const status = gitExec('git', statusArgs, gitOptions).trim();
-  const dirtyEntries = status ? status.split(/\r?\n/).filter(Boolean) : [];
+  const status = gitExec('git', [
+    'status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames', '--', '.',
+  ], gitOptions);
+  const outputRelative = path.relative(root, path.resolve(outputDir)).split(path.sep).join('/');
+  const outputIsInRepo = outputRelative === ''
+    || (outputRelative !== '..' && !outputRelative.startsWith('../') && !path.isAbsolute(outputRelative));
+  const outputPrefix = outputRelative ? `${outputRelative}/` : '';
+  const generatedPaths = new Set(outputIsInRepo
+    ? generatedOutputFiles.map(file => `${outputPrefix}${String(file).replaceAll('\\', '/')}`)
+    : []);
+  const dirtyEntries = String(status).split('\0').filter(Boolean).filter(entry => {
+    const state = entry.slice(0, 2);
+    const file = entry.slice(3);
+    return state !== '??' || !generatedPaths.has(file);
+  });
   const manifestPath = path.relative(root, path.resolve(manifestFile)).split(path.sep).join('/');
 
   return {
@@ -121,7 +131,11 @@ export function runBenchmark({
   if (!Number.isSafeInteger(limit) || limit < 0) throw new Error('benchmark-limit-invalid');
 
   const manifest = loadManifest(manifestFile);
-  const provenance = captureRunProvenance({ repoRoot, manifestFile, outputDir });
+  const generatedOutputFiles = [
+    'summary.json',
+    ...manifest.cases.map(entry => `${Buffer.from(entry.id).toString('hex')}.json`),
+  ];
+  const provenance = captureRunProvenance({ repoRoot, manifestFile, outputDir, generatedOutputFiles });
   const suiteRoot = path.dirname(manifestFile);
   const inputs = verifyInputs(manifest, suiteRoot);
   const selected = limit > 0 ? inputs.slice(0, limit) : inputs;
