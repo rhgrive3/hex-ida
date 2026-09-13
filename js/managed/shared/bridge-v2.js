@@ -14,11 +14,53 @@ export const MANAGED_BRIDGE_VERSION = legacy.MANAGED_BRIDGE_VERSION;
 export const queryManagedSymbolicVerification = legacy.queryManagedSymbolicVerification;
 export const queryManagedRuntimeProvider = legacy.queryManagedRuntimeProvider;
 export const buildManagedTypeConstraintGraph = legacy.buildManagedTypeConstraintGraph;
+const UNREPRESENTABLE_EFFECT_REASON = 'managed-effect-shape-unrepresentable';
+const UNREPRESENTABLE_EFFECT_FIELDS = Object.freeze([
+  Object.freeze(['memoryEffects', 'memory']),
+  Object.freeze(['callEffects', 'calls']),
+  Object.freeze(['controlEffects', 'control']),
+]);
+const EXACT_BUNDLE_COMPLETENESS = new Set(['exact', 'exact-with-intrinsic']);
+
+function effectRepresentabilityGap(bundle) {
+  const categories = [];
+  let collapsed = false;
+  for (const [field, category] of UNREPRESENTABLE_EFFECT_FIELDS) {
+    const count = Array.isArray(bundle?.[field]) ? bundle[field].length : 0;
+    if (count > 0) categories.push(category);
+    if (field !== 'memoryEffects' && count > 1) collapsed = true;
+  }
+  return collapsed || categories.length > 1 ? categories : null;
+}
+
+function maskUnrepresentableEffects(value) {
+  if (!value || !Array.isArray(value.bundles)) return value;
+  let changed = false;
+  const bundles = value.bundles.map((bundle) => {
+    const categories = effectRepresentabilityGap(bundle);
+    if (!categories) return bundle;
+    changed = true;
+    const gaps = categories.map((category) => ({ category, categories: [category], reason: UNREPRESENTABLE_EFFECT_REASON }));
+    return deepFreeze({
+      ...bundle,
+      completeness: EXACT_BUNDLE_COMPLETENESS.has(bundle.completeness) ? 'partial' : bundle.completeness,
+      unknownEffects: [...gaps, ...(bundle.unknownEffects ?? [])],
+    });
+  });
+  if (!changed) return value;
+  return deepFreeze({
+    ...value,
+    bundles,
+    aggregateCompleteness: value.aggregateCompleteness === 'unknown' ? 'unknown' : 'partial',
+  });
+}
+
 export function lowerVMEffectsToSemanticIr(value, options = {}) {
   assertVMEffectFunctionBundleOwnership(value);
-  const lowered = overlayJvmControlLowering(value, overlayWasmSelect(value, lowerCore(value, options), options), options);
-  const overlaid = overlayDexLowering(value, lowered);
-  const hasUnrepresentedFunctionExit = value.bundles?.some((bundle) =>
+  const representable = maskUnrepresentableEffects(value);
+  const lowered = overlayJvmControlLowering(representable, overlayWasmSelect(representable, lowerCore(representable, options), options), options);
+  const overlaid = overlayDexLowering(representable, lowered);
+  const hasUnrepresentedFunctionExit = representable.bundles?.some((bundle) =>
     bundle.controlEffects?.some((effect) => effect.kind === 'switch'
       && (effect.caseKinds?.some((kind) => kind === 'function-exit')
         || effect.defaultKind === 'function-exit')),
