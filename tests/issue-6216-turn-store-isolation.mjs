@@ -179,7 +179,10 @@ async function waitFor(entered, running, message) {
         }
         const evidenceId = 'live-evidence';
         stores.evidenceStore.add({ id: evidenceId, kind: 'provider', status: 'supported', title: 'live evidence', sourceTool: 'test-provider' });
-        const proposal = proposalFor(stores, live ? 'B' : 'A', evidenceId);
+        const proposalEvidence = stores.evidenceStore.ingestPlan(planFor(`proposal-${label}`))
+          .find((item) => item.status === 'verified');
+        assert.ok(proposalEvidence, 'proposal fixture must use deterministic verified evidence');
+        const proposal = proposalFor(stores, live ? 'B' : 'A', proposalEvidence.id);
         return decisionFor(label, { evidenceId, proposalId: proposal.id });
       },
     },
@@ -237,7 +240,10 @@ async function waitFor(entered, running, message) {
         }
         const evidenceId = `${label.toLowerCase()}-evidence`;
         stores.evidenceStore.add({ id: evidenceId, kind: 'provider', status: 'supported', title: `${label} evidence`, sourceTool: 'test-provider' });
-        const proposal = proposalFor(stores, isJob ? 'A' : 'B', evidenceId);
+        const proposalEvidence = stores.evidenceStore.ingestPlan(planFor(`proposal-${label}`))
+          .find((item) => item.status === 'verified');
+        assert.ok(proposalEvidence, 'proposal fixture must use deterministic verified evidence');
+        const proposal = proposalFor(stores, isJob ? 'A' : 'B', proposalEvidence.id);
         return decisionFor(label, { evidenceId, proposalId: proposal.id });
       },
     },
