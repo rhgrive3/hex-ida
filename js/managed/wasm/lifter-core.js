@@ -143,8 +143,8 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
     const producedValues = [];
     const consumedValues = [];
     const possibleExceptions = [];
-    const unknownEffects = [];
     let compare = null;
+    const unknownEffects = [];
 
     switch (opcode) {
       case 0x00:
@@ -323,10 +323,10 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         mnemonic = cmp.mnemonic; compare = { predicate:cmp.predicate, signedness:cmp.signedness, operandBits:32, arity:cmp.arity };
         for (let i=0;i<cmp.arity;i++) consumedValues.push({ id:`arg_${i}`, bits:32 }); consume(cmp.arity); producedValues.push({bits:32}); produce(1); break;
       }
-      case 0x6a: case 0x6b: case 0x6c: case 0x6d: case 0x6e: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x76: {
-        const names = { 0x6a:'i32.add',0x6b:'i32.sub',0x6c:'i32.mul',0x6d:'i32.div_s',0x6e:'i32.div_u',0x71:'i32.and',0x72:'i32.or',0x73:'i32.xor',0x74:'i32.shl',0x75:'i32.shr_s',0x76:'i32.shr_u' };
+      case 0x6a: case 0x6b: case 0x6c: case 0x6d: case 0x6e: case 0x6f: case 0x70: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x76: {
+        const names = { 0x6a:'i32.add',0x6b:'i32.sub',0x6c:'i32.mul',0x6d:'i32.div_s',0x6e:'i32.div_u',0x6f:'i32.rem_s',0x70:'i32.rem_u',0x71:'i32.and',0x72:'i32.or',0x73:'i32.xor',0x74:'i32.shl',0x75:'i32.shr_s',0x76:'i32.shr_u' };
         mnemonic = names[opcode]; consumedValues.push({ id:'rhs',bits:32 },{ id:'lhs',bits:32 }); consume(2); producedValues.push({bits:32}); produce(1);
-        if (opcode === 0x6d || opcode === 0x6e) possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
+        if (opcode === 0x6d || opcode === 0x6e || opcode === 0x6f || opcode === 0x70) possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
         if (opcode === 0x6d) possibleExceptions.push({ kind: 'integer-divide-overflow', condition: 'lhs==INT32_MIN&&rhs==-1' });
         break;
       }
