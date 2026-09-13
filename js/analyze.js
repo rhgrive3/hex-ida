@@ -96,6 +96,24 @@ const NO_DEST_MNEMONICS = new Set([
 ]);
 const ATOMIC_READ_WRITE_DEST_RE = /^cas(?:al|a|l)?(?:b|h)?$/;
 const EXCLUSIVE_STORE_RE = /^st(?:l)?x(?:r[bh]?|p)$/;
+const OPAQUE_JUMP_RE = /^(?:br|braa|brab|braaz|brabz)$/;
+
+function reachableRowSet(startRow, end, edges) {
+  const live = new Uint8Array(end - startRow + 1);
+  const pending = [startRow];
+  while (pending.length) {
+    let row = pending.pop();
+    while (row >= startRow && row <= end && !live[row - startRow]) {
+      live[row - startRow] = 1;
+      const edge = edges.get(row);
+      if (!edge) { row++; continue; }
+      if (edge.target != null) pending.push(edge.target);
+      if (!edge.fall) break;
+      row++;
+    }
+  }
+  return live;
+}
 
 function destIndex(mn) {
   const b = mn.toLowerCase();
@@ -158,7 +176,15 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   const written = new Set();
   const argsRead = new Set();
   const calleeSaved = new Set();
-  let lastX0Write = -1;
+  const x0WriteRows = [];
+  const flowEdges = new Map();
+  let flowIsClosed = true;
+  const absoluteRowOf = (addr) => {
+    if (addr == null) return null;
+    const rel = addr - region.vmAddr;
+    if (rel < 0n || rel % 4n !== 0n) return null;
+    return Number(rel / 4n);
+  };
   const rawInsns = [];
   // Set when the row cap actually dropped instructions. The old code relied on
   // overshooting the cap by one so `buildSemanticModel` would notice the excess
@@ -223,11 +249,11 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       for (const r of reads) if (r <= 7 && !written.has(r)) argsRead.add(r);
       if (destReg != null) {
         written.add(destReg);
-        if (destReg === 0) lastX0Write = row;
+        if (destReg === 0) x0WriteRows.push(row);
       }
       if (pairDestReg != null) {
         written.add(pairDestReg);
-        if (pairDestReg === 0) lastX0Write = row;
+        if (pairDestReg === 0) x0WriteRows.push(row);
       }
 
       if (b === 'sub' && ops[0] && ops[0].cls === 'sp' && ops[1] && ops[1].cls === 'sp' && ops[2] && ops[2].k === 'imm' && ops[2].value != null) {
@@ -262,13 +288,24 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         pageOf.delete(30);
       } else if (isReturn(b)) {
         res.returns++;
+        flowEdges.set(row, { target: null, fall: false });
       } else if (/^b\./.test(b) || b === 'cbz' || b === 'cbnz' || b === 'tbz' || b === 'tbnz') {
         res.condBranches++;
         const t = referenceTarget(b, opsStr);
         if (t != null && t <= addr) res.loops.push({ from: addr, to: t });
+        const tr = absoluteRowOf(t);
+        if (tr == null) flowIsClosed = false;
+        else flowEdges.set(row, { target: tr >= startRow && tr <= end ? tr : null, fall: true });
       } else if (b === 'b') {
         const t = referenceTarget(b, opsStr);
         if (t != null && t <= addr) res.loops.push({ from: addr, to: t });
+        const tr = absoluteRowOf(t);
+        if (tr == null) flowIsClosed = false;
+        else flowEdges.set(row, { target: tr >= startRow && tr <= end ? tr : null, fall: false });
+      } else if (OPAQUE_JUMP_RE.test(b)) {
+        flowIsClosed = false;
+      } else if (b === 'brk' || b === 'udf') {
+        flowEdges.set(row, { target: null, fall: false });
       }
 
       // Consume the previous ADRP fact before invalidating a destination. This
@@ -301,7 +338,12 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   throwIfAborted(signal);
   res.argRegs = Array.from(argsRead).sort((a, b) => a - b);
   res.savesCallee = Array.from(calleeSaved).sort((a, b) => a - b);
-  res.setsReturnValue = lastX0Write >= 0;
+  if (x0WriteRows.length && flowIsClosed) {
+    const live = reachableRowSet(startRow, end, flowEdges);
+    res.setsReturnValue = x0WriteRows.some((r) => live[r - startRow] === 1);
+  } else {
+    res.setsReturnValue = x0WriteRows.length > 0;
+  }
   const seen = new Set();
   res.loops = res.loops.filter((l) => {
     const k = l.from + ':' + l.to;
