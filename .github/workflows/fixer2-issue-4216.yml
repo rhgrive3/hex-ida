@@ -1,0 +1,49 @@
+name: fixer2 issue 4216 remote write
+on:
+  push:
+    branches:
+      - fixer2/issue-4216-chained-reserved-bits
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Apply exact patch
+        run: |
+          set -euo pipefail
+          test -f .fixer2/issue-4216.patch
+          git apply --check .fixer2/issue-4216.patch
+          git apply .fixer2/issue-4216.patch
+      - name: Verify exact target blobs
+        run: |
+          set -euo pipefail
+          test "$(git hash-object js/binary/macho-chained-pointer.js)" = 2a3e96da4106bef9cbf5c5033a4829f36dbe2c2f
+          test "$(git hash-object js/binary/macho-dyld.js)" = acfbaaa8d9bdcafbff188902c479abb2d8355bf4
+          test "$(git hash-object js/chained.js)" = df641bd73e9196cec41d2fb79d66291cbd0c1350
+          test "$(git hash-object tests/issue-4216-chained-pointer-reserved-bits.mjs)" = 77660152cd5b7513d4356d2698316204a927c979
+          test "$(git hash-object tests/issue-5388-chained-fixups-chain-membership.mjs)" = d372967e40d6697871092fba87501356839bcf9c
+          test "$(git hash-object tests/scpa/pac-site.test.mjs)" = bc013a5f31b2b9e1cad969d9c26e1e55a76920ac
+      - name: Focused validation
+        run: |
+          set -euo pipefail
+          node --check js/binary/macho-chained-pointer.js
+          node --check js/binary/macho-dyld.js
+          node --check js/chained.js
+          node tests/issue-4216-chained-pointer-reserved-bits.mjs
+          node tests/issue-5388-chained-fixups-chain-membership.mjs
+          node --test tests/scpa/pac-site.test.mjs
+      - name: Commit production patch and remove staging files
+        run: |
+          set -euo pipefail
+          rm -f .fixer2/issue-4216.patch .github/workflows/fixer2-issue-4216.yml
+          git add -A
+          git config user.name 'Fixer 2 Binary'
+          git config user.email 'fixer2-binary@users.noreply.github.com'
+          git commit -m 'fix(macho): reject reserved chained-pointer bits (#4216) [skip actions]'
+          git push origin HEAD:fixer2/issue-4216-chained-reserved-bits
