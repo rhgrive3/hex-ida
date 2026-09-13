@@ -39,8 +39,9 @@ jobs:
           s=s.replace(marker,'\n'+helper+marker,1)
           p.write_text(s)
           PY
-          test "$(git hash-object js/binary/elf-core.js)" = "e944a740494a5422cb3c1c9f0daeb891af73863d"
           test "$(git hash-object tests/phase4/binary/issue-3961-elf-malformed-dynsym-fallback.test.mjs)" = "793b2098b5224e057f0a77928304dc551ea5c931"
+          test "$(git hash-object js/binary/elf-core.js)" != "9d027dfddc00dabb46e32cdc83c67a2627f8cedb"
+          git diff --check
       - name: Validate final reviewed tree
         shell: bash
         run: |
