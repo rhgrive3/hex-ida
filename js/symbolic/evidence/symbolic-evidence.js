@@ -284,6 +284,15 @@ export function createSymbolicEvidence({
     throw new Error('createSymbolicEvidence: cannot mint refuted evidence when witness model validation was rejected');
   }
 
+  // Invariant 5 (#3995): a SAT provider assertion alone cannot mint REFUTED
+  // authority — the witness must be independently validated and present.
+  if (verdict === EVIDENCE_VERDICT.REFUTED && normValidationStatus !== VALIDATION_STATUS.VALIDATED) {
+    throw new Error(`createSymbolicEvidence: refuted evidence requires validated witness model, got '${normValidationStatus}'`);
+  }
+  if (verdict === EVIDENCE_VERDICT.REFUTED && !witnessModel) {
+    throw new Error('createSymbolicEvidence: refuted evidence requires a witness model');
+  }
+
   // Normalize targetEntities
   const normalizedTargets = targetEntities.map((t) => (typeof t === 'string' ? t : JSON.stringify(canonicalize(t))));
 
@@ -405,7 +414,8 @@ export function isRefutedEvidence(evidence) {
     isCanonicalSymbolicEvidence(evidence) &&
     evidence.verdict === EVIDENCE_VERDICT.REFUTED &&
     evidence.solverStatus === SOLVER_STATUS.SAT &&
-    evidence.validationStatus !== VALIDATION_STATUS.REJECTED &&
+    evidence.validationStatus === VALIDATION_STATUS.VALIDATED &&
+    evidence.witnessModel != null &&
     !isSolverFailure({ status: evidence.solverStatus })
   );
 }
