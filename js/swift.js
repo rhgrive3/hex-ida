@@ -100,10 +100,11 @@ export async function readSwiftMangledName(read, address, options = {}) {
       }
       const payload = bytes.subarray(i + 1, i + 1 + payloadBytes);
       const referenceAddress = base + BigInt(i);
+      const relativeFieldAddress = base + BigInt(i + 1);
       let candidateTarget = null, rawTarget = null;
       if (byte <= 0x17) {
         relativeReferenceSeen = true;
-        candidateTarget = referenceAddress + BigInt(i32(payload, 0));
+        candidateTarget = relativeFieldAddress + BigInt(i32(payload, 0));
       } else {
         rawTarget = payloadBytes === 8 ? u64(payload, 0) : BigInt(u32(payload, 0));
       }
