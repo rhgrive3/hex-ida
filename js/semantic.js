@@ -130,7 +130,8 @@ export function proveClampSelect(sel) {
   const reversed = sameSemanticValue(whenTrue, rhs) && sameSemanticValue(whenFalse, lhs);
   if (!direct && !reversed) return null;
 
-  const cond = String(sel.cond || '').toLowerCase();
+  const rawCondition = sel.cond || '';
+  const cond = typeof rawCondition === 'string' ? rawCondition.toLowerCase() : '';
   let kind = null;
   if (GREATER_CONDITIONS.has(cond)) kind = direct ? 'max' : 'min';
   else if (LESSER_CONDITIONS.has(cond)) kind = direct ? 'min' : 'max';
@@ -167,7 +168,8 @@ export function canonicalThresholdComparison(c) {
   const left = c.value || null, right = c.other || null;
   const leftConst = left?.const != null, rightConst = right?.const != null;
   if (leftConst === rightConst) return null;
-  const originalCondition = String(c.cond || '').toLowerCase();
+  const rawConditionToken = c.cond || '';
+  const originalCondition = typeof rawConditionToken === 'string' ? rawConditionToken.toLowerCase() : '';
   const rawOperator = THRESHOLD_OPERATOR[originalCondition];
   if (!rawOperator) return null;
   const swapped = leftConst;
