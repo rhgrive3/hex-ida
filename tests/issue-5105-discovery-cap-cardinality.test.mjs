@@ -159,7 +159,7 @@ test('5105: a malformed non-array starts payload fails closed without ingestion'
   assert.ok(out.functionDiscovery.reasons.includes('text-a:backend-result-malformed'));
 });
 
-test('5105: over-limit responses whose ingested window was pure duplicates keep the #5558 dedupe policy', async () => {
+test('5105: an unexamined overflow suffix cannot be certified complete even with a duplicate prefix', async () => {
   const { baseline, symbols, addedBatches } = fixture({
     functionCount: DISCOVERY_GLOBAL_CAP - 1,
     known: [0x9999n, 0x999an, 0x999bn],
@@ -169,9 +169,31 @@ test('5105: over-limit responses whose ingested window was pure duplicates keep 
   const out = await __symmetricWorkspaceInternalsForTests.discoverBaselineFunctions(baseline, {});
   assert.ok(addedBatches.every((batch) => batch.length <= 1), 'ingestion remains bounded by the budget');
   assert.equal(symbols.functionCount, DISCOVERY_GLOBAL_CAP - 1, 'duplicates debit nothing');
-  assert.equal(out.functionDiscovery.complete, true, 'a budget slack response with no new starts stays complete');
-  assert.deepEqual(out.functionDiscovery.reasons, []);
+  assert.equal(out.functionDiscovery.complete, false, 'the clipped suffix has not been examined');
+  assert.equal(out.functionDiscovery.capped, true);
+  assert.deepEqual(out.functionDiscovery.reasons, ['text-a:backend-result-exceeds-budget']);
 });
+
+for (const prefix of [[0x1000n], [0x1000n, 0x1004n]]) {
+  test(`5105: ${prefix.length}-entry duplicate-containing prefix cannot hide a dropped new start`, async () => {
+    const { baseline, symbols, addedBatches } = fixture({
+      functionCount: DISCOVERY_GLOBAL_CAP - prefix.length,
+      known: [0x1000n],
+      regions: singleRegion,
+      responses: { 'text-a': { starts: [...prefix, 0x1008n], complete: true } },
+    });
+    const out = await __symmetricWorkspaceInternalsForTests.discoverBaselineFunctions(baseline, {});
+    assert.deepEqual(addedBatches, [prefix], 'the ingestion window stays bounded');
+    assert.equal(symbols.functionCount, DISCOVERY_GLOBAL_CAP - 1, 'only new admitted starts spend budget');
+    assert.equal(symbols.known.has(0x1008n), false, 'the new suffix start was dropped');
+    assert.equal(out.functionStartsComplete, false, 'a dropped new start forbids global completion');
+    assert.equal(out.functionDiscovery.complete, false);
+    assert.equal(out.functionDiscovery.capped, true);
+    assert.equal(out.functionDiscovery.regions[0].complete, false);
+    assert.equal(out.functionDiscovery.regions[0].capped, true);
+    assert.deepEqual(out.functionDiscovery.reasons, ['text-a:backend-result-exceeds-budget']);
+  });
+}
 
 test('5105: cancellation behavior is preserved', async () => {
   const controller = new AbortController();
