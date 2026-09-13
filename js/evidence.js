@@ -125,14 +125,29 @@ export function groupOf(item) {
  * 証拠から数え直す。それも無理なら 0 を返す ＝ 確定を名乗らせない。
  * 分からないときに緩いほうへ倒さない。
  */
+const CANONICAL_GROUPS = new Set(Object.values(GROUP));
+
 export function independentGroupCount(fusion) {
   if (!fusion) return 0;
-  if (Number.isFinite(fusion.independentGroups)) return fusion.independentGroups;
-  if (Array.isArray(fusion.groups)) return fusion.groups.length;
   if (Array.isArray(fusion.items)) {
     const seen = new Set();
     for (const it of fusion.items) if (it && it.applied > 0) seen.add(groupOf(it));
     return seen.size;
+  }
+  if (Array.isArray(fusion.groups)) {
+    const distinct = new Set();
+    for (const g of fusion.groups) {
+      if (typeof g !== 'string' || !CANONICAL_GROUPS.has(g)) return 0;
+      distinct.add(g);
+    }
+    if (fusion.independentGroups !== undefined) {
+      if (!Number.isSafeInteger(fusion.independentGroups) || fusion.independentGroups < 0) return 0;
+      if (fusion.independentGroups !== distinct.size) return 0;
+    }
+    return distinct.size;
+  }
+  if (Number.isSafeInteger(fusion.independentGroups) && fusion.independentGroups >= 0) {
+    return fusion.independentGroups;
   }
   return 0;
 }
