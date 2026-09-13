@@ -22,6 +22,18 @@ const DATA_VIEW_BUFFER_GETTER = Object.getOwnPropertyDescriptor(DataView.prototy
 const DATA_VIEW_BYTE_OFFSET_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteOffset')?.get;
 const DATA_VIEW_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteLength')?.get;
 const ARRAY_BUFFER_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')?.get;
+const MAP_ENTRIES = Map.prototype.entries;
+const SET_VALUES = Set.prototype.values;
+const SUPPORTED_PROPOSAL_STATE_PROTOTYPES = new Set([
+  Array.prototype, Date.prototype, Map.prototype, Set.prototype, RegExp.prototype,
+  ArrayBuffer.prototype, DataView.prototype,
+  ...[
+    Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array,
+    Int32Array, Uint32Array, Float32Array, Float64Array,
+    ...(typeof BigInt64Array === 'function' ? [BigInt64Array] : []),
+    ...(typeof BigUint64Array === 'function' ? [BigUint64Array] : []),
+  ].map((typedArrayConstructor) => typedArrayConstructor.prototype),
+]);
 let proposalSequence = 1;
 
 export class ProposalStore {
@@ -427,6 +439,10 @@ function rejectUnstableProposalState(value, seen = new Set()) {
   if (seen.has(value)) return;
   seen.add(value);
   try {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null && !SUPPORTED_PROPOSAL_STATE_PROTOTYPES.has(prototype)) {
+      throw new AIError('tool_failed', 'Proposal state contains an unsupported non-plain object and cannot be snapshotted safely.');
+    }
     const keys = Reflect.ownKeys(value);
     if (keys.some((key) => typeof key === 'symbol')) {
       throw new AIError('tool_failed', 'Proposal state contains symbol-keyed own properties and cannot be fingerprinted safely.');
@@ -437,6 +453,14 @@ function rejectUnstableProposalState(value, seen = new Set()) {
         throw new AIError('tool_failed', 'Proposal state contains accessor-backed state and cannot be snapshotted safely.');
       }
       rejectUnstableProposalState(descriptor.value, seen);
+    }
+    if (prototype === Map.prototype) {
+      for (const [key, item] of MAP_ENTRIES.call(value)) {
+        rejectUnstableProposalState(key, seen);
+        rejectUnstableProposalState(item, seen);
+      }
+    } else if (prototype === Set.prototype) {
+      for (const item of SET_VALUES.call(value)) rejectUnstableProposalState(item, seen);
     }
   } catch (error) {
     if (error instanceof AIError) throw error;
