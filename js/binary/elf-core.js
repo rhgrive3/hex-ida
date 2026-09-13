@@ -505,11 +505,21 @@ function nameSections(r, sections, h, image) {
   }
 }
 
+function markFixedTableRemainder(section, entrySize, budget, label) {
+  if (entrySize > 0n && section.size % entrySize !== 0n) {
+    budget.partial(
+      `${label}:${section.index}:trailing-bytes`,
+      `ELF ${label} section ${section.index} size ${section.size} is not divisible by entry size ${entrySize}`,
+    );
+  }
+}
+
 export function parseSymbols(r, table, sections, image, bits, elfType, budget) {
   const str = sections[table.link];
   if (!str || str.type !== SHT_STRTAB || !table.entsize) return;
   const minEnt = BigInt(bits === 64 ? 24 : 16);
   if (table.entsize < minEnt) { budget.partial(`symbols:${table.index}:entry-size`, `ELF symbol table ${table.index} entry size ${table.entsize} is smaller than ${minEnt}`); return; }
+  markFixedTableRemainder(table, table.entsize, budget, 'symbols');
   const tableStart = safeOffset(table.offset), ent = safeOffset(table.entsize);
   const strStart = safeOffset(str.offset), strBytes = safeOffset(str.size);
   if (tableStart == null || ent == null || strStart == null || strBytes == null || tableStart > r.length || strStart > r.length || strBytes > r.length-strStart) {
@@ -628,6 +638,7 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
   if(!sec.entsize)return;
   const minEnt=BigInt(bits===64?(sec.type===SHT_RELA?24:16):(sec.type===SHT_RELA?12:8));
   if(sec.entsize<minEnt){budget.partial(`relocations:${sec.index}:entry-size`,`ELF relocation section ${sec.index} entry size ${sec.entsize} is smaller than ${minEnt}`);return;}
+  markFixedTableRemainder(sec, sec.entsize, budget, 'relocations');
   const tableStart=safeOffset(sec.offset),ent=safeOffset(sec.entsize);if(tableStart==null||ent==null||tableStart>r.length){budget.partial(`relocations:${sec.index}:file-span`,`ELF relocation section ${sec.index} has an invalid file span`);return;}
   const declaredBig=sec.size/sec.entsize,fileCapacity=Math.floor((r.length-tableStart)/ent),declared=declaredBig>BigInt(Number.MAX_SAFE_INTEGER)?Number.MAX_SAFE_INTEGER:Number(declaredBig),count=Math.min(declared,fileCapacity);
   if(declaredBig>BigInt(fileCapacity))budget.partial(`relocations:${sec.index}:truncated`,`ELF relocation section ${sec.index} exceeds its file-backed capacity`);
@@ -685,6 +696,7 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
     budget.partial(`dynamic-section:${sec.index}:entry-size`, `ELF SHT_DYNAMIC ${sec.index} entry size ${rawEnt} is smaller than ${minEnt}`);
     return;
   }
+  markFixedTableRemainder(sec, rawEnt, budget, 'dynamic-section');
   const ent = safeOffset(rawEnt);
   if (ent == null || !ent) {
     budget.partial(`dynamic-section:${sec.index}:entry-size`, `ELF SHT_DYNAMIC ${sec.index} entry size is not safely representable`);
