@@ -296,6 +296,7 @@ acquire, release,
       const load = ((w >>> 22) & 1) === 1;
       const opc = (w >>> 30) & 3;
       const vector = ((w >>> 26) & 1) === 1;
+      if (opc === 3) return null;
       const signedWordPair = !vector && load && opc === 1; // LDPSW: two 32-bit words -> X regs
       // Integer opc=0 => W pair, opc=1 => LDPSW, opc=2 => X pair.
       // SIMD opc=0/1/2 => S/D/Q pairs.

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 vm.runInThisContext(fs.readFileSync(path.join(root, 'js', 'words.js'), 'utf8'), { filename: 'js/words.js' });
 
-const { KIND, classifyWord } = globalThis.Words;
+const { KIND, classifyWord, memoryAccess } = globalThis.Words;
 let passed = 0;
 
 function eq(word, want, label) {
@@ -55,6 +55,44 @@ eq(0x1e614020, KIND.FARITH, 'fneg d0, d1');
 eq(0x1e61c020, KIND.FARITH, 'fsqrt d0, d1');
 eq(0x1e22c020, KIND.FCONV,  'fcvt d0, s1');
 eq(0x1e624020, KIND.FCONV,  'fcvt s0, d1');
+
+const pairShape = (word, want, label) => {
+  const mem = memoryAccess(word >>> 0);
+  const got = mem
+    ? `${mem.pair ? 'pair' : 'single'}:${mem.elementSize}:${mem.size}:${mem.vector ? 'vector' : 'integer'}`
+    : 'null';
+  if (got !== want) {
+    throw new Error(`${label}: got ${got}, want ${want} for 0x${(word >>> 0).toString(16)}`);
+  }
+  if (classifyWord(word >>> 0) !== KIND.LOAD) {
+    throw new Error(`${label}: got kind ${classifyWord(word >>> 0)}, want LOAD for 0x${(word >>> 0).toString(16)}`);
+  }
+  passed++;
+};
+
+const unallocatedPair = (word, label) => {
+  const mem = memoryAccess(word >>> 0);
+  if (mem) {
+    const got = `${mem.pair ? 'pair' : 'single'}:${mem.elementSize}:${mem.size}:${mem.vector ? 'vector' : 'integer'}:${mem.load ? 'load' : 'store'}`;
+    throw new Error(`${label}: memoryAccess returned ${got} for 0x${(word >>> 0).toString(16)}`);
+  }
+  const kind = classifyWord(word >>> 0);
+  if (kind !== KIND.OTHER) {
+    throw new Error(`${label}: got kind ${kind}, want OTHER for 0x${(word >>> 0).toString(16)}`);
+  }
+  passed++;
+};
+
+pairShape(0x29400440, 'pair:4:8:integer', 'ldp w0, w1, [x2] stays a 2x32-bit pair load');
+pairShape(0xa9400440, 'pair:8:16:integer', 'ldp x0, x1, [x2] stays a 2x64-bit pair load');
+pairShape(0x69400440, 'pair:4:8:integer', 'ldpsw x0, x1, [x2] stays a signed-word pair load');
+pairShape(0x2d400440, 'pair:4:8:vector', 'ldp s0, s1, [x2] stays a 2x32-bit SIMD pair load');
+pairShape(0x6d400440, 'pair:8:16:vector', 'ldp d0, d1, [x2] stays a 2x64-bit SIMD pair load');
+pairShape(0xad400440, 'pair:16:32:vector', 'ldp q0, q1, [x2] stays a 2x128-bit SIMD pair load');
+unallocatedPair(0xe9400440, 'integer opc=11 pair load');
+unallocatedPair(0xe9000440, 'integer opc=11 pair store');
+unallocatedPair(0xed400440, 'SIMD/FP opc=11 pair load');
+unallocatedPair(0xed000440, 'SIMD/FP opc=11 pair store');
 
 // The patch assembler must accept disassembler condition aliases and preserve their canonical encoding.
 const { assemble, suggestPatches } = await import('../js/patch.js');
