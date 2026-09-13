@@ -367,14 +367,34 @@ export function parseGoFunctions(buf, header, options = {}) {
   };
 }
 
+const GO_TYPE_LAYOUT_CURRENT = Object.freeze({
+  strNameOffset: (ptrSize) => ptrSize * 4 + 8,
+  headerBytes: (ptrSize) => ptrSize * 4 + 16,
+});
+
+const GO_TYPE_LAYOUTS_BY_VERSION = Object.freeze({
+  '1.16': GO_TYPE_LAYOUT_CURRENT,
+  '1.18': GO_TYPE_LAYOUT_CURRENT,
+  '1.20+': GO_TYPE_LAYOUT_CURRENT,
+});
+
+function resolveGoTypeLayout(version) {
+  if (version == null) return GO_TYPE_LAYOUT_CURRENT;
+  if (typeof version !== 'string') return null;
+  if (!Object.hasOwn(GO_TYPE_LAYOUTS_BY_VERSION, version)) return null;
+  return GO_TYPE_LAYOUTS_BY_VERSION[version];
+}
+
 /**
  * Parses Go type descriptor (_type) at a given buffer offset.
  */
 export function parseGoTypeDescriptor(buf, typeOff, options = {}) {
   const ptrSize = options.ptrSize ?? 8;
   const little = options.little ?? true;
+  const layout = resolveGoTypeLayout(options.version);
 
-  if (typeOff < 0 || typeOff + ptrSize * 4 + 8 > buf.length) return null;
+  if (!layout) return null;
+  if (typeOff < 0 || typeOff + layout.headerBytes(ptrSize) > buf.length) return null;
 
   const size = Number(readPtr(buf, typeOff, ptrSize, little));
   const ptrdata = Number(readPtr(buf, typeOff + ptrSize, ptrSize, little));
@@ -388,8 +408,7 @@ export function parseGoTypeDescriptor(buf, typeOff, options = {}) {
   const kindId = rawKind & 0x1f;
   const kind = GO_TYPE_KINDS[kindId] || 'unknown';
 
-  // In Go 1.7+, str is a name offset (int32 or ptr)
-  const nameOff = i32(buf, typeOff + ptrSize * 2 + 8, little);
+  const nameOff = i32(buf, typeOff + layout.strNameOffset(ptrSize), little);
   let name = null;
   if (options.typesBase != null && nameOff != null) {
     const strPos = options.typesBase + nameOff;
