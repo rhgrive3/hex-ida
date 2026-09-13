@@ -441,7 +441,7 @@ export async function executeTurn(input = {}, options = {}) {
         effectiveScope: scopeController.effectiveScope, hypotheses: hypothesisStore.all(),
         confirmedFindings: typeof evidenceStore.byStatus === 'function'
           ? evidenceStore.byStatus('verified')
-          : evidenceStore.all().filter((item) => item.status === 'verified'), proposedActions: proposalStore.all(),
+          : evidenceStore.all().filter((item) => item.status === 'verified'), proposedActions: proposalStore.persistedActions(),
         lastActivity: activity[activity.length - 1] || null,
       }));
       result.sessionId = session.id;
