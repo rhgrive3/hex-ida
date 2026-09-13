@@ -191,6 +191,11 @@ function parseThin(bytes, opts) {
     p += cmdsize;
   }
 
+  if (commands.length === ncmds && p !== commandEnd) {
+    markMachOMetadataPartial(image, 'load-command-count-size-mismatch');
+    image.warnings.push(`Mach-O ncmds consumes ${p - headerSize} bytes but sizeofcmds declares ${sizeofcmds}`);
+  }
+
   image.metadata.loadCommands = commands.length;
   if (linkeditData.encryption) image.metadata.encryption = linkeditData.encryption;
   image.metadata.segmentOrder = segmentOrder.map((s) => s.name);
