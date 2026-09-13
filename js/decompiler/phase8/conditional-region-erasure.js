@@ -56,7 +56,10 @@ export function prepareConditionalRegionErasure(structure, reachability, ir, opt
     guard.take('workItems', region.nodes.length + structure.instructions.length + structure.phis.length + structure.memoryPhis.length);
     guard.take('allocationUnits', region.nodes.length * 2 + erased.nodes.length);
     const removed = new Set(erased.nodes);
-    if (!removed.size) return reject('empty-unreachable-arm');
+    // Production rendering may already omit a pure arm's unused statements.
+    // Its issued predicate proof can still update the header through this
+    // transaction; an empty body alone cannot create an erasure candidate.
+    if (!removed.size && !condition) return reject('empty-unreachable-arm');
     if (removed.size !== erased.nodes.length || removed.has(region.header) || removed.has(region.separator)
       || removed.has(region.close) || retained.nodes.some(node => removed.has(node))) return reject('overlapping-region-erasure');
     const candidateNodes = region.nodes.filter(node => !removed.has(node));
@@ -70,7 +73,7 @@ export function prepareConditionalRegionErasure(structure, reachability, ir, opt
       branchId:region.branch.id, role:erased.role, queryHash:dead[0].queryHash,
       domainQueryHash:reachability.domainQueryHash, liveQueryHash:live[0].queryHash, conditionPlanId:condition?.plan.planId ?? null });
     const plan = freeze({ version:2, status:'complete', planId, beforeHash, afterHash, identity:guard.identity,
-      scope:'canonical-unreachable-arm-erasure-candidate',
+      scope:removed.size ? 'canonical-unreachable-arm-erasure-candidate' : 'canonical-conditional-predicate-candidate',
       transformAuthorization:false, renderValidation:'required',
       conditionValidation:condition ? 'proved' : 'required', conditionPlanId:condition?.plan.planId ?? null,
       pendingValidation:freeze([...(condition ? [] : ['rendered-condition-equivalence','copied-region-carrier']),

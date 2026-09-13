@@ -7349,3 +7349,45 @@ structural check. Structure consumption now runs related execution/state checks
 before its final pure region observation. The mutation test fails on the earlier
 candidate and rejects the stale capability after this ordering fix. This keeps
 both IR/state and rendered-region observations after the relevant callbacks.
+
+### Executed branch inputs and native conditional predicate publication (2026-09-13)
+
+The public condition preparation now consumes the canonical executor's actual
+CBR operand/input relation independently of complete ABI-return/taint analysis.
+Only complete exploration, or the specific covered-but-unproved normal RET
+completion, can supply this relation. It conveys no terminal snapshots, memory,
+taint, normal-return proof, or transformation authorization. The following
+reachability query must still prove the entry domain and terminal fault
+infeasibility before a predicate can be published.
+
+The opt-in observer binds exact canonical IR values and instructions. Membership
+comes from each path's evaluated value/cache maps and is intersected over branch
+visits; the shared identity catalog does not count as evaluation on a sibling.
+The relation is revoked by operand/definition/inventory/lifecycle changes.
+The reader validates the IR after the last lifecycle callback and checks the
+real query deadline after that scan without another caller clock/callback.
+Regressions cover sibling-only values, final-callback mutation, and a deadline
+crossed inside the final execution-currentness check.
+
+A parsed ARM64 sequence that masks x30's low two bits now reaches the existing
+condition transaction and commits a proved predicate. Rendering may already
+omit a pure arm's unused statements: an empty arm can carry this transaction
+only with an independently issued condition proof. Its scope is explicitly
+`canonical-conditional-predicate-candidate`; every IR instruction, PHI, CFG edge,
+and remaining rendered body is retained, with arm erasure unauthorized.
+Empty arms without the condition proof continue to be rejected.
+
+The positive native test explicitly grants a 1000 ms Phase 8 stage within the
+5000 ms query. The default 120 ms stage produced `cancelled-before-commit` in a
+retained diagnostic; default-budget performance is still unresolved. This is
+parsed-row functional evidence, not compiler/device evidence or full C4 closure.
+The 102-test dirty-tree regression run and canonical build passed before final
+source publication; only subsequent exact-head receipts attest committed code.
+
+All 23 findings / 21 FR requirements remain in scope. C4 whole-region/PHI/memory/
+exception/loop transformations, full provenance and expression acceptance,
+the broader Phase 9 deadline failures, and final reconciliation remain open.
+The reviewed X-02 delivery is backed up separately at `684f1f0bb` and has not
+been merged through the still-locked integration checkpoint. ME formal breadth
+requires missing independent inputs; existing RV64 subject/minimization and
+submitted user acceptance work must not be reassigned as new implementation.

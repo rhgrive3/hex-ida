@@ -42,11 +42,14 @@ export function conditionalRegionFixture({ kind = 'cbz', predicate = 'xor', afte
     { identity, addressBits:8, timeoutMs:5000, backendTier:'exhaustive', ...extra }) };
 }
 
-export function textRowConditionalRegionFixture() {
+export function textRowConditionalRegionFixture({ returnSetup = null } = {}) {
   // Exercise the normal model/SSA/compat producer, not a fabricated legacy CFG.
   // These are parsed instruction rows, not compiler or binary-decoder evidence.
-  const lines = ['eor w1, w0, w0', 'cbnz w1, #0x100000010', 'mov w0, #1',
-    'b #0x100000014', 'mov w0, #2', 'ret'];
+  const lines = returnSetup
+    ? [returnSetup, 'eor w1, w0, w0', 'cbnz w1, #0x100000014', 'mov w0, #1',
+      'b #0x100000018', 'mov w0, #2', 'ret']
+    : ['eor w1, w0, w0', 'cbnz w1, #0x100000010', 'mov w0, #1',
+      'b #0x100000014', 'mov w0, #2', 'ret'];
   const rows = lines.map((text, row) => {
     const [mn, ...ops] = text.split(' ');
     return { mn, ops:ops.join(' '), row, address:0x100000000n + BigInt(row * 4) };

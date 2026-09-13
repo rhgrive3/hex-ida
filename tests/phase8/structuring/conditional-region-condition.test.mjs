@@ -31,6 +31,31 @@ function fixture(options = {}) {
 }
 const options = { identity, addressBits:8, backendTier:'exhaustive', timeoutMs:5000 };
 
+test('public native conditional path proves a masked RET fault before committing its predicate', async () => {
+  const f=textRowConditionalRegionFixture({returnSetup:'and x30, x30, #0xfffffffffffffffc'});
+  const {decompileSemantic,readSemanticConditionalRegions}=await import('../../../js/decompiler/semantic-core.js');
+  const preparedOptions={...f.options,ir:f.ir,deterministicTransforms:true,
+    phase8PrepareRegionProof:true,phase8PrepareProof:true,renderProvenance:true};
+  const seed=decompileSemantic(f.model,preparedOptions);
+  const branch=readSemanticConditionalRegions(seed)?.regions.find(region=>region.selection.header===0)?.branch;
+  const projection=enhanceSemanticDecompilation(seed,f.model,preparedOptions);
+  const execution=symbolicExecute(f.ir,{captureValues:true,timeoutMs:5000,
+    byteMemory:{identity:f.identity,timeoutMs:5000}});
+  assert.equal(execution.status,'partial');
+  assert.equal(execution.reason,'return-control-normal-completion-unproved');
+  assert.deepEqual(execution.paths,[]);
+  const before=structuredClone(f.ir.instructions);
+  const output=await optimizeSemanticDecompilation(projection,{identity:f.identity,addressBits:64,
+    backendTier:'tiered',timeoutMs:5000,phase8TimeBudgetMs:1000,conditionalBranch:branch});
+  assert.equal(output.proofOptimization.status,'complete',output.proofOptimization.reason);
+  assert.equal(output.proofOptimization.adopted,1);
+  assert.equal(output.proofOptimization.scope,'conditional-predicate-only');
+  assert.equal(output.proofOptimization.armErasureAuthorized,false);
+  assert.ok(isProducerProjection(output));
+  assert.ok(output.rewriteProof.some(row=>row.rule==='project-proved-conditional-predicate'));
+  assert.deepEqual(f.ir.instructions,before,'no branch, PHI or terminal state is erased');
+});
+
 test('production text-row PHIs and BV1 predicates execute before the remaining public proof boundary', async () => {
   const f = textRowConditionalRegionFixture();
   const identity = f.identity;
@@ -64,14 +89,13 @@ test('production text-row PHIs and BV1 predicates execute before the remaining p
   // Use the production solver tier for actual 64-bit inputs; the exhaustive
   // floor used by the small synthetic fixtures has a finite assignment budget.
   const output = await optimizeSemanticDecompilation(projection, { ...options, identity, backendTier:'tiered', conditionalBranch:branch });
-  // Register assignments are now bound to canonical SSA. The public query has
-  // no concrete x30 binding, so terminal normal completion or the wider machine
-  // effects remain an explicit unresolved obligation at this boundary.
+  // Branch input translation no longer requires an ABI return proof. The
+  // public query has no x30 alignment proof, so reachability still refuses it.
   assert.ok(f.ir.blocks.some(block => block.phis.some(phi => phi.args.length > 0)));
   assert.equal(output.proofOptimization.status, 'partial');
   // A finite public query may exhaust its deadline before reaching that node;
   // either refusal must retain the exact original view and IR.
-  assert.ok(['return-control-normal-completion-unproved', 'unproved-machine-effects', 'deadline-exceeded'].includes(output.proofOptimization.reason),
+  assert.ok(['unproved-terminal-fault-infeasibility', 'unproved-machine-effects', 'deadline-exceeded'].includes(output.proofOptimization.reason),
     output.proofOptimization.reason);
   assert.equal(output.proofOptimization.adopted, 0);
   assert.equal(output.cAst, projection.cAst);

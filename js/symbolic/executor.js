@@ -571,6 +571,7 @@ function executePaths(ir, opts) {
         const cond = branchCondition(inst, state, ir, opts, memo);
         if (state.byteMemory && (cond.kind === 'unknown_semantic' || cond.sort?.kind !== 'bool')) throw new QueryFailure(cond.reason ?? 'unsupported-branch-condition');
         if (cond.kind === SYM.UNKNOWN) { paths.push(stopResult(state, cond.reason, inst)); transferred = true; break; }
+        opts._executionCapture?.observeBranch(inst,state);
         const next = successorsForBranch(ir, block, inst, addressMap);
         if (next.target == null || next.fallthrough == null) { paths.push(stopResult(state, 'unresolved-branch-target', inst)); transferred = true; break; }
         const inverse = cond.sort && cond.kind === 'const' ? Object.freeze({ ...cond, value: !cond.value }) : negate(cond);

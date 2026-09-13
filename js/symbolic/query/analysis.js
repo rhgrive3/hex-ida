@@ -5,9 +5,10 @@ import {queryRecord,queryArray} from '../memory/data-input.js';
  */
 import { OP } from '../../ir-base.js';
 import { restoreFreshSymbol } from '../expr/factory.js';
-import { createQueryGuard, QueryFailure, sameMemoryIdentity } from '../memory/query-state.js';
+import { createQueryGuard, QueryFailure, sameMemoryIdentity, monotonicNow } from '../memory/query-state.js';
 import { semanticValueIdentity } from '../memory/value-identity.js';
-import { isExecutionSnapshotTarget } from '../memory/execution-snapshot.js';
+import { isExecutionSnapshotTarget, isExecutionBranchTarget } from '../memory/execution-snapshot.js';
+import { symbolicExecute } from '../executor.js';
 import { assertMemoryExpr } from '../memory/byte-memory.js';
 import { translateExecutionValue } from '../translate/memory.js';
 import { queryTaint, isTaintQueryResult } from './taint.js';
@@ -17,6 +18,7 @@ import { queryDeobfuscationCandidates } from './deobfuscation.js';
 import { isAdoptableCandidate } from '../taint/proof-consumer.js';
 
 const issued = new WeakMap();
+const branchTranslations = new WeakMap();
 const LIMITS = Object.freeze({ targets: 32, candidates: 64, workItems: 250000, allocationUnits: 100000 });
 const PURE = new Set([OP.CONST, OP.ADDR, OP.MOV, OP.BIN, OP.UN, OP.CMP, OP.SEL, OP.BFX, OP.BFI]);
 
@@ -87,6 +89,61 @@ function translatePureTarget(root, guard) {
   }
   return Object.freeze({ scope:'query-local-universal-inputs', expression:state.values.get(root.id),
     inputs:Object.freeze(inputs), dependencies:Object.freeze(ordered) });
+}
+
+/** The same universal scalar lowering as analysis, bound to an actually
+ * evaluated branch operand. Later terminal faults cannot establish or erase
+ * this input relation; they remain separate obligations for the consumer. */
+export function querySymbolicBranchInputs(ir,branch,inputOptions={}) {
+  let guard;
+  const reject=reason=>Object.freeze({schemaVersion:'hex-branch-inputs/v1',status:'partial',reason,transformAuthorization:false});
+  try {
+    const options=queryRecord(inputOptions);
+    const allowed=new Set(['identity','timeoutMs','limits','signal','isCancelled','getCurrentIdentity','now','addressBits','endian']);
+    if(Object.keys(options).some(key=>!allowed.has(key))) throw new QueryFailure('unsupported-branch-input-option');
+    const realStarted=monotonicNow();
+    guard=createQueryGuard(options,{workItems:98304,allocationUnits:49152});guard.check();
+    const realDeadline=realStarted+(options.timeoutMs??250);
+    const data=queryRecord(branch,guard,128),extra=queryRecord(data.extra??{},guard),args=queryArray(data.args??[],guard);
+    if(data.op!==OP.CBR || !['cbz','cbnz','tbz','tbnz'].includes(extra.kind)
+        || args.length!==1) throw new QueryFailure('unsupported-branch-input');
+    const target=queryRecord(args[0],guard).value;
+    const memoryLimits={workItems:Math.min(65536,guard.limits.workItems),allocationUnits:Math.min(32768,guard.limits.allocationUnits)};
+    guard.take('workItems',memoryLimits.workItems);guard.take('allocationUnits',memoryLimits.allocationUnits);
+    const timeoutMs=Math.max(0,Math.floor(guard.remainingMilliseconds()));
+    const execution=symbolicExecute(ir,{captureValues:true,captureBranchTargets:true,timeoutMs,
+      signal:options.signal,isCancelled:options.isCancelled,
+      byteMemory:{identity:guard.identity,addressBits:options.addressBits??64,endian:options.endian??'little',
+        timeoutMs,limits:memoryLimits,signal:options.signal,isCancelled:options.isCancelled,
+        getCurrentIdentity:options.getCurrentIdentity,now:options.now}});
+    guard.check();
+    const covered=execution.status==='complete' || execution.status==='partial'
+      && execution.reason==='return-control-normal-completion-unproved' && execution.terminalControlCoverage==='complete';
+    if(!covered || execution.truncated || execution.assumptions?.length || execution.memoryObservationRequests?.length)
+      throw new QueryFailure(execution.reason??'incomplete-branch-execution');
+    if(!isExecutionBranchTarget(execution,branch,target,guard.identity,ir)) throw new QueryFailure('unexecuted-branch-target');
+    const binding=translatePureTarget(target,guard);
+    const current=()=>isExecutionBranchTarget(execution,branch,target,guard.identity,ir,binding.dependencies);
+    guard.check();if(!current()) throw new QueryFailure('unexecuted-branch-dependency');
+    if(monotonicNow()>=realDeadline)guard.fail('deadline');
+    const result=Object.freeze({schemaVersion:'hex-branch-inputs/v1',identity:guard.identity,status:'complete',reason:null,
+      scope:'executed-branch-universal-input-relation',transformAuthorization:false});
+    branchTranslations.set(result,{branch,binding,guard,current,realDeadline});return result;
+  } catch(error) { return reject(guard?.reason()??error.reason??'branch-inputs-unavailable'); }
+}
+
+export function readSymbolicBranchInputs(result,branch,identity) {
+  const record=branchTranslations.get(result);
+  try {
+    if(!record || record.branch!==branch || !sameMemoryIdentity(record.guard.identity,identity))return null;
+    record.guard.check();
+    if(!record.current())return null;
+    // current() validates IR after its final lifecycle callback. Sampling only
+    // the real clock here bounds that scan without invoking another observer
+    // that could mutate the just-validated input.
+    if(monotonicNow()>=record.realDeadline)record.guard.fail('deadline');
+    return record.binding;
+  } catch { return null; }
 }
 
 /** Read only the actual translator-produced input relation for this issued

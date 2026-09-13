@@ -6,7 +6,6 @@ import { stableDigest } from '../../core/identity/index.js';
 import { createProjectionIrObserver } from '../../core/identity/live-data.js';
 import { queryRecord } from '../../symbolic/memory/data-input.js';
 import { createQueryGuard, sameMemoryIdentity, QueryFailure } from '../../symbolic/memory/query-state.js';
-import { createTaintModels } from '../../symbolic/taint/models.js';
 import { readConditionalRegionStructure } from './conditional-region-structure.js';
 import { readCopiedConditionalRegions } from '../pipeline-core.js';
 import { readSemanticConditionalRegion } from '../semantic-core.js';
@@ -15,8 +14,6 @@ import { children, mergeSource } from '../ast/nodes.js';
 import { printExpression } from '../pretty/c.js';
 
 const issued = new WeakMap();
-const MODELS = createTaintModels({ id:'phase8-condition-empty', version:'1',
-  provenance:'hex.phase8.explicit-empty-model/v1', sources:[], sinks:[] });
 const LIMITS = Object.freeze({ workItems:262144, allocationUnits:131072 });
 const OPTIONS = new Set(['identity','timeoutMs','limits','signal','isCancelled','getCurrentIdentity','now',
   'addressBits','endian','backendTier']);
@@ -41,7 +38,7 @@ export async function prepareConditionalRegionCondition(structure, projection, o
     if (!readConditionalRegionStructure(structure, ir, guard.identity)) return reject('unissued-or-stale-structure');
     const [{ isProducerProjection, readProducerInputExpressions, producerExpressionToken },
       { readProjectedConditionalRegions, readProjectedConditionConsumer, readProjectedRegionControl },
-      { querySymbolicAnalysis, readSymbolicTargetInputs },
+      { querySymbolicBranchInputs, readSymbolicBranchInputs },
       { lowerDirectBranchCondition }, { compileRepresentationProposal },
       { verifyDeobfuscationCandidate, isAdoptableCandidate }, E] = await Promise.all([
       import('../pipeline.js'), import('./projection.js'), import('../../symbolic/query/analysis.js'),
@@ -63,24 +60,18 @@ export async function prepareConditionalRegionCondition(structure, projection, o
     if (!['cbz','cbnz','tbz','tbnz'].includes(branch.extra?.kind) || branch.args?.length !== 1) {
       return reject('unsupported-condition-semantics');
     }
-    const target = branch.args[0].value;
     const observation = createProjectionIrObserver().captureCertifiedData([projection.cAst, projection.semanticAst]);
     guard.take('workItems', observation.metrics.edges); guard.take('allocationUnits', observation.metrics.edges);
     const timeout = () => Math.max(0, Math.floor(guard.remainingMilliseconds()));
-    // Reserve the existing query's translation, execution and flow allowances
-    // separately. A small outer allowance cannot hide a larger child query.
-    const analysisLimits = { workItems:32768, allocationUnits:16384, targets:1, candidates:0 };
-    const memoryLimits = { workItems:65536, allocationUnits:32768 };
-    const flowLimits = { workItems:32768, latticeValues:1024, flowEdges:4096, emittedRecords:2048 };
-    guard.take('workItems', analysisLimits.workItems + memoryLimits.workItems + flowLimits.workItems);
-    guard.take('allocationUnits', analysisLimits.allocationUnits + memoryLimits.allocationUnits
-      + 8 * flowLimits.latticeValues + flowLimits.flowEdges + flowLimits.emittedRecords);
-    const query = await querySymbolicAnalysis(ir, { identity:guard.identity, targets:[target], models:MODELS,
-      candidateStrategy:'translate-only', timeoutMs:timeout(), analysisLimits, limits:flowLimits,
-      memory:{ addressBits:submitted.addressBits ?? 64, endian:submitted.endian ?? 'little', limits:memoryLimits },
-      signal:submitted.signal, isCancelled:submitted.isCancelled, getCurrentIdentity:submitted.getCurrentIdentity });
+    // Reserve the complete child allowance. Only the observed branch's input
+    // relation is needed; full taint/ABI/normal-return proof stays independent.
+    const limits = { workItems:98304, allocationUnits:49152 };
+    guard.take('workItems', limits.workItems); guard.take('allocationUnits', limits.allocationUnits);
+    const query = querySymbolicBranchInputs(ir, branch, { identity:guard.identity,
+      timeoutMs:timeout(), limits, addressBits:submitted.addressBits ?? 64, endian:submitted.endian ?? 'little',
+      signal:submitted.signal, isCancelled:submitted.isCancelled, getCurrentIdentity:submitted.getCurrentIdentity, now:submitted.now });
     guard.check();
-    const binding = readSymbolicTargetInputs(query, target, guard.identity);
+    const binding = readSymbolicBranchInputs(query, branch, guard.identity);
     if (!binding) return reject(query.reason ?? 'unbound-condition-inputs');
     const inputs = readProducerInputExpressions(projection, binding.inputs.map(input => input.value));
     if (!inputs || inputs.some(input => input.expression.kind !== 'var')) return reject('unbound-condition-display-inputs');
@@ -132,7 +123,7 @@ export async function prepareConditionalRegionCondition(structure, projection, o
     const isCurrent = () => {
       guard.check();
       return readConditionalRegionStructure(structure, ir, guard.identity)
-        && readSymbolicTargetInputs(query, target, guard.identity) === binding && sourceCurrent();
+        && readSymbolicBranchInputs(query, branch, guard.identity) === binding && sourceCurrent();
     };
     if (!isCurrent()) return reject('stale-condition-proof');
     const queryHash = verification.evidence.queryHash;

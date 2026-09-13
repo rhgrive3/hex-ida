@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { symbolicExecute } from '../../../js/symbolic/executor.js';
 import { evaluateExpr } from '../../../js/symbolic/expr/index.js';
-import { isExecutionResult, isExecutionSnapshot } from '../../../js/symbolic/memory/execution-snapshot.js';
+import { isExecutionResult, isExecutionSnapshot, isExecutionBranchTarget } from '../../../js/symbolic/memory/execution-snapshot.js';
+import { querySymbolicBranchInputs, readSymbolicBranchInputs, querySymbolicAnalysis } from '../../../js/symbolic/query/analysis.js';
+import { createTaintModels } from '../../../js/symbolic/taint/models.js';
 import { queryMemoryEquivalence } from '../../../js/symbolic/query/memory-equivalence.js';
 import { buildSemanticV2CompatibilityPipeline } from '../../../js/semantics/compat/index.js';
 import { ARM64_ARCHITECTURE } from '../../../js/targets/architecture/index.js';
@@ -12,6 +14,128 @@ import { machineIR, partialStoreFixture, identity } from './main-fixtures.mjs';
 const run = (ir, options = {}) => symbolicExecute(ir, { captureValues:true, timeoutMs:5000,
   byteMemory:{ identity, timeoutMs:5000 }, ...options });
 const retOf = ir => ir.instructions.find(inst => inst.op === 'ret');
+const branchIR = () => machineIR(['cbz x0, #0x1008', 'ret', 'ret']);
+
+test('executed branch input relation survives an unproved RET without publishing taint or terminal values', async () => {
+  const ir=branchIR(),branch=ir.instructions.find(inst=>inst.op==='cbr'),target=branch.args[0].value;
+  const execution=run(ir,{captureBranchTargets:true});
+  assert.equal(execution.status,'partial');
+  assert.equal(execution.reason,'return-control-normal-completion-unproved');
+  assert.equal(execution.terminalControlCoverage,'complete');
+  assert.deepEqual(execution.paths,[]);
+  assert.equal(isExecutionBranchTarget(execution,branch,target,identity,ir),true);
+  assert.equal(isExecutionBranchTarget({...execution},branch,target,identity,ir),false);
+  assert.equal(isExecutionBranchTarget(execution,{...branch},target,identity,ir),false);
+  assert.equal(isExecutionBranchTarget(execution,branch,{...target},identity,ir),false);
+  assert.equal(isExecutionBranchTarget(run(ir),branch,target,identity,ir),false,'observer is opt-in');
+  const query=querySymbolicBranchInputs(ir,branch,{identity,timeoutMs:5000});
+  assert.equal(query.status,'complete',query.reason);
+  assert.equal(query.transformAuthorization,false);
+  const binding=readSymbolicBranchInputs(query,branch,identity);
+  assert.ok(binding && binding.dependencies.includes(target));
+  assert.ok(binding.inputs.every(input=>input.value.kind==='arg'));
+  assert.equal(readSymbolicBranchInputs({...query},branch,identity),null);
+  assert.equal(readSymbolicBranchInputs(query,{...branch},identity),null);
+  for(const key of ['execution','paths','snapshot','returnValue','taint','memory'])assert.equal(Object.hasOwn(query,key),false);
+  assert.equal(isExecutionSnapshot(query,identity,ir),false);
+  const models=createTaintModels({id:'terminal-branch-empty',version:'1',provenance:'test:terminal-branch',sources:[],sinks:[]});
+  const generic=await querySymbolicAnalysis(ir,{identity,models,targets:[target],candidateStrategy:'translate-only',timeoutMs:5000});
+  assert.equal(generic.status,'partial','generic analysis still requires complete taint');
+  assert.equal(generic.targets.length,0);
+});
+
+test('branch membership excludes values evaluated only on a sibling predecessor', () => {
+  const ir=machineIR(['cbz x0, #0x1010','add x5, x2, #1','b #0x1014','nop','nop',
+    'cbz x0, #0x101c','ret','ret']);
+  const branch=ir.instructions.filter(inst=>inst.op==='cbr')[1],target=branch.args[0].value;
+  const siblingInput=ir.values.find(value=>value.kind==='arg' && value.reg==='x2');
+  assert.ok(siblingInput);
+  const execution=run(ir,{captureBranchTargets:true});
+  assert.equal(execution.reason,'return-control-normal-completion-unproved');
+  assert.equal(execution.terminalControlCoverage,'complete');
+  assert.equal(isExecutionBranchTarget(execution,branch,target,identity,ir,[target]),true);
+  assert.equal(isExecutionBranchTarget(execution,branch,target,identity,ir,[siblingInput]),false);
+  const query=querySymbolicBranchInputs(ir,branch,{identity,timeoutMs:5000});
+  assert.equal(query.status,'complete',query.reason);
+  assert.ok(readSymbolicBranchInputs(query,branch,identity));
+});
+
+test('branch input relation revokes on operand, dependency, instruction, or lifecycle changes', () => {
+  for(const mutate of [
+    (ir,branch)=>{branch.args=[{value:{...branch.args[0].value}}];},
+    (ir,branch)=>{branch.extra={...branch.extra,kind:'cbnz'};},
+    (ir,branch)=>{branch.args[0].value.bits=32;},
+    (ir,branch)=>{const block=ir.blocks.find(block=>block.insts.includes(branch));block.insts=block.insts.map(inst=>inst===branch?{...inst}:inst);},
+    (ir)=>{retOf(ir).returnTargetValue={...retOf(ir).returnTargetValue};},
+  ]) {
+    const ir=branchIR(),branch=ir.instructions.find(inst=>inst.op==='cbr');
+    const query=querySymbolicBranchInputs(ir,branch,{identity,timeoutMs:5000});
+    assert.equal(query.status,'complete',query.reason);mutate(ir,branch);
+    assert.equal(readSymbolicBranchInputs(query,branch,identity),null);
+  }
+  const ir=branchIR(),branch=ir.instructions.find(inst=>inst.op==='cbr'),controller=new AbortController();
+  const query=querySymbolicBranchInputs(ir,branch,{identity,timeoutMs:5000,signal:controller.signal});
+  assert.equal(query.status,'complete',query.reason);controller.abort();
+  assert.equal(readSymbolicBranchInputs(query,branch,identity),null);
+});
+
+test('branch inputs reject foreign branches, incomplete exploration and stop conditions', () => {
+  for(const options of [{timeoutMs:0},{limits:{workItems:0}},{isCancelled:()=>true},{symbolicArgs:{0:0n}}]) {
+    const ir=branchIR(),branch=ir.instructions.find(inst=>inst.op==='cbr');
+    const query=querySymbolicBranchInputs(ir,branch,{identity,timeoutMs:5000,...options});
+    assert.equal(query.status,'partial');assert.equal(readSymbolicBranchInputs(query,branch,identity),null);
+  }
+  const ir=branchIR(),branch=ir.instructions.find(inst=>inst.op==='cbr');
+  assert.equal(querySymbolicBranchInputs(ir,{...branch},{identity,timeoutMs:5000}).reason,'unexecuted-branch-target');
+  const loop=machineIR(['b #0x1004','cbz x0, #0x100c','b #0x1004','ret']),loopBranch=loop.instructions.find(inst=>inst.op==='cbr');
+  const query=querySymbolicBranchInputs(loop,loopBranch,{identity,timeoutMs:5000});
+  assert.equal(query.status,'partial');assert.equal(readSymbolicBranchInputs(query,loopBranch,identity),null);
+});
+
+test('branch reader validates IR after its final lifecycle callback', () => {
+  const prepare=()=>{
+    const ir=branchIR(),branch=ir.instructions.find(inst=>inst.op==='cbr');
+    let count=0,mutateAt=Infinity;
+    const query=querySymbolicBranchInputs(ir,branch,{identity,timeoutMs:5000,isCancelled:()=>{
+      if(++count===mutateAt)branch.args=[{value:{...branch.args[0].value}}];return false;
+    }});
+    assert.equal(query.status,'complete',query.reason);
+    return {ir,branch,query,reset(at=Infinity){count=0;mutateAt=at;},calls:()=>count};
+  };
+  const baseline=prepare();baseline.reset();
+  assert.ok(readSymbolicBranchInputs(baseline.query,baseline.branch,identity));
+  const calls=baseline.calls();assert.ok(calls>0);
+  const changed=prepare();changed.reset(calls);
+  assert.equal(readSymbolicBranchInputs(changed.query,changed.branch,identity),null);
+  assert.equal(changed.calls(),calls,'mutation occurs in the last observed callback');
+});
+
+test('branch reader cannot return a binding when its final currentness scan exceeds the real deadline', () => {
+  const ir=branchIR(),branch=ir.instructions.find(inst=>inst.op==='cbr');
+  let armed=false,calls=0;
+  const query=querySymbolicBranchInputs(ir,branch,{identity,timeoutMs:2000,isCancelled:()=>{
+    // The first callback belongs to the reader guard, the second to the
+    // execution capture. The latter must not bypass the query's deadline.
+    if(armed && ++calls===2)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,2100);
+    return false;
+  }});
+  assert.equal(query.status,'complete',query.reason);armed=true;
+  assert.equal(readSymbolicBranchInputs(query,branch,identity),null);
+  assert.ok(calls>=2);
+});
+
+test('branch input translation requires canonical value and definition inventory despite executable labels', () => {
+  for(const mutate of [
+    (ir,branch)=>{branch.args=[{value:{...branch.args[0].value,id:'foreign-input',semanticSsaValueId:'foreign-input',semanticValueId:'foreign-input'}}];},
+    (ir,branch)=>{ir.values=ir.values.filter(value=>value!==branch.args[0].value);},
+    (ir,branch)=>{ir.values.push({...branch.args[0].value});},
+    (ir,branch)=>{const value=branch.args[0].value;value.def={op:'const',dst:value,args:[],extra:{value:0n}};value.kind='temp';},
+  ]) {
+    const ir=branchIR(),branch=ir.instructions.find(inst=>inst.op==='cbr');mutate(ir,branch);
+    const result=querySymbolicBranchInputs(ir,branch,{identity,timeoutMs:5000});
+    assert.equal(result.status,'partial');assert.equal(readSymbolicBranchInputs(result,branch,identity),null);
+  }
+});
 function mutableFaultIR(lines = ['mov x30, #4096', 'ret']) {
   const ir = machineIR(lines);
   retOf(ir).extra.attributes = structuredClone(retOf(ir).extra.attributes);

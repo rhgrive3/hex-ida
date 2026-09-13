@@ -90,6 +90,23 @@ function captureContract(ir,memory) {
 }
 export function createExecutionCapture(ir,memory,options={}) {
   const contract=captureContract(ir,memory);
+  const branchTargets=new Map();
+  const canonicalValues=new Set(),canonicalInstructions=new Set(),canonicalByRawId=new Map();
+  if (options.captureBranchTargets) {
+    const semanticIds=new Map();
+    const values=queryArray(ir.values);memory.chargeExecution(values.length+1,values.length);
+    for (const value of values) {
+      memory.chargeExecution(3,3);
+      const semanticId=semanticValueIdentity(value);
+      if (canonicalValues.has(value) || canonicalByRawId.has(value.id) || semanticIds.has(semanticId)) throw new QueryFailure('ambiguous-branch-value-inventory');
+      canonicalValues.add(value);semanticIds.set(semanticId,value);canonicalByRawId.set(value.id,value);
+    }
+    for (const block of ir.blocks) for (const inst of [...(block.phis??[]),...block.insts]) {
+      memory.chargeExecution(1,1);canonicalInstructions.add(inst);
+    }
+  }
+  const canonicalValue=value=>canonicalValues.has(value)
+    && (!value.def || canonicalInstructions.has(value.def) && value.def.dst===value);
   const identity=memory.identity;
   const signal=options.signal ?? options.byteMemory?.signal;
   const cancelled=options.isCancelled ?? options.byteMemory?.isCancelled;
@@ -114,7 +131,31 @@ export function createExecutionCapture(ir,memory,options={}) {
   };
   return Object.freeze({
     check:checkActive,
-    publish(result) { checkActive();executions.set(result,{ir,check});return result; },
+    publish(result) { checkActive();executions.set(result,{ir,check,branchTargets});return result; },
+    observeBranch(branch,state) {
+      if (!options.captureBranchTargets || branch.op !== 'cbr'
+          || !['cbz','cbnz','tbz','tbnz'].includes(branch.extra?.kind)) return;
+      const target=branch.args?.[0]?.value;
+      if (!canonicalInstructions.has(branch) || !canonicalValue(target)
+          || state.valueIdentities.get(target.id)?.value !== target
+          || !state.values.has(target.id) && !state.scalarCache.has(target.id)) throw new QueryFailure('unexecuted-branch-target');
+      const previous=branchTargets.get(branch);
+      const count=state.values.size+state.scalarCache.size;
+      memory.chargeExecution(count + (previous?.values.size ?? 0) + 2, count + 2);
+      // Identity catalogs are shared across siblings for ambiguity detection.
+      // Only the path-local caches attest evaluation on this particular visit.
+      const values=new Set();
+      for (const cache of [state.values,state.scalarCache]) for (const rawId of cache.keys()) {
+        const value=canonicalByRawId.get(rawId);
+        if (canonicalValue(value) && state.valueIdentities.get(rawId)?.value===value) values.add(value);
+      }
+      if (previous) {
+        if (previous.target !== target) throw new QueryFailure('changed-branch-target');
+        // Membership must hold on every observed visit, never a union assembled
+        // from different paths. No symbolic values or memory escape this set.
+        for (const value of previous.values) if (!values.has(value)) previous.values.delete(value);
+      } else branchTargets.set(branch,{target,values});
+    },
     capture(state,pathIndex,memoryObservations=Object.freeze([])) {
       memory.check();checkActive();
       memory.chargeExecution(state.values.size+state.scalarCache.size,state.values.size+state.scalarCache.size);
@@ -141,6 +182,14 @@ export function isExecutionResult(result,identity,ir=null) {
   if(identity === undefined) identity = result.identity;
   if(!sameMemoryIdentity(result.identity,identity) || ir && ir!==record.ir) return false;
   try { record.check();return true; } catch {return false;}
+}
+/** Exact executed CBR/operand/dependency membership only. This does not expose
+ * terminal snapshots, taint, ABI results or normal-completion authority. */
+export function isExecutionBranchTarget(result,branch,target,identity,ir,dependencies=[]) {
+  const record=executions.get(result), binding=record?.branchTargets.get(branch);
+  if (!binding || !isExecutionResult(result,identity,ir) || binding.target !== target || branch.args?.[0]?.value !== target
+      || !binding.values.has(target) || dependencies.some(value=>!binding.values.has(value))) return false;
+  return true;
 }
 export function isExecutionSnapshot(snapshot,identity,ir=null) {
   const record=issued.get(snapshot);
