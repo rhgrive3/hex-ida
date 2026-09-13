@@ -31,6 +31,8 @@ import { deepFreeze, stableDigest, stableStringify } from '../../core/identity/i
 import { ANALYSIS_STATUS_SCHEMA_VERSION, createAnalysisStatus, isCompleteStatus, weakestCompleteness } from '../status.js';
 import {
   TYPE_LAYERS,
+  canonicalDependencyIdentity,
+  canonicalizeStructuralMembers,
   claimsConflict,
   createContradiction,
   createHardConstraint,
@@ -40,7 +42,7 @@ import {
 import { condenseTypeGraph } from './scc.js';
 
 export const TYPE_GRAPH_ANALYZER_ID = 'phase7.types.constraint-graph';
-export const TYPE_GRAPH_ANALYZER_VERSION = '1.1.0';
+export const TYPE_GRAPH_ANALYZER_VERSION = '1.1.1';
 export const TYPE_RESULT_SCHEMA_VERSION = 1;
 export const TYPE_GRAPH_RESULT_SCHEMA_VERSION = 1;
 
@@ -185,6 +187,11 @@ function softIdentity(evidence) {
   });
 }
 
+function addDependencyIdentity(deps, value) {
+  const identity = canonicalDependencyIdentity(value);
+  if (identity != null) deps.add(identity);
+}
+
 const TYPE_DEPENDENCY_IDENTITY_KEYS = Object.freeze(['targetEntityId', 'elementEntityId']);
 const TYPE_DEPENDENCY_CHILD_KEYS = Object.freeze(['elementType', 'pointeeType', 'memberType', 'members']);
 const MAX_TYPE_DEPENDENCY_NODES = 4096;
@@ -194,11 +201,10 @@ function walkTypeDependencies(root) {
   const deps = new Set();
   let exhausted = false;
   if (!root || typeof root !== 'object') return { deps, exhausted };
-
   const visited = new Set();
-  let nodes = 0;
   const stack = [[root, 0]];
-  while (stack.length > 0) {
+  let nodes = 0;
+  while (stack.length) {
     const [node, depth] = stack.pop();
     if (!node || typeof node !== 'object' || visited.has(node)) continue;
     if (depth > MAX_TYPE_DEPENDENCY_DEPTH || nodes >= MAX_TYPE_DEPENDENCY_NODES) {
@@ -207,16 +213,11 @@ function walkTypeDependencies(root) {
     }
     visited.add(node);
     nodes += 1;
-
     if (Array.isArray(node)) {
       for (const child of node) stack.push([child, depth + 1]);
       continue;
     }
-
-    for (const key of TYPE_DEPENDENCY_IDENTITY_KEYS) {
-      const value = node[key];
-      if (typeof value === 'string' && value.trim()) deps.add(value.trim());
-    }
+    for (const key of TYPE_DEPENDENCY_IDENTITY_KEYS) addDependencyIdentity(deps, node[key]);
     for (const key of TYPE_DEPENDENCY_CHILD_KEYS) {
       const child = node[key];
       if (child && typeof child === 'object') stack.push([child, depth + 1]);
@@ -230,42 +231,22 @@ function extractDependencies(claim) {
   const d = claim?.descriptor;
   if (!d || typeof d !== 'object') return { deps, exhausted: false };
 
-  if (typeof d.targetEntityId === 'string' && d.targetEntityId.trim()) {
-    deps.add(d.targetEntityId.trim());
-  }
-  if (typeof d.elementEntityId === 'string' && d.elementEntityId.trim()) {
-    deps.add(d.elementEntityId.trim());
-  }
-  if (typeof d.entityId === 'string' && d.entityId.trim() && d.entityId !== claim.entityId) {
-    deps.add(d.entityId.trim());
-  }
+  addDependencyIdentity(deps, d.targetEntityId);
+  addDependencyIdentity(deps, d.elementEntityId);
+  if (typeof d.entityId === 'string' && d.entityId.trim() && d.entityId !== claim.entityId) deps.add(d.entityId.trim());
+
   let exhausted = false;
-  if (d.memberType && typeof d.memberType === 'object') {
-    const walked = walkTypeDependencies(d.memberType);
+  for (const root of [d.memberType, ...(Array.isArray(d.members) ? d.members : [])]) {
+    const walked = walkTypeDependencies(root);
     for (const dep of walked.deps) deps.add(dep);
     exhausted = exhausted || walked.exhausted;
-  }
-  if (Array.isArray(d.members)) {
-    for (const member of d.members) {
-      const walked = walkTypeDependencies(member);
-      for (const dep of walked.deps) deps.add(dep);
-      exhausted = exhausted || walked.exhausted;
-    }
   }
   return { deps, exhausted };
 }
 
 function memberDependencyIdentities(member) {
-  const deps = new Set();
-  if (member && typeof member === 'object') {
-    for (const key of TYPE_DEPENDENCY_IDENTITY_KEYS) {
-      const value = member[key];
-      if (typeof value === 'string' && value.trim()) deps.add(value.trim());
-    }
-  }
-  const walked = walkTypeDependencies(member?.memberType);
-  for (const dep of walked.deps) deps.add(dep);
-  return deps;
+  const walked = walkTypeDependencies(member);
+  return walked.deps;
 }
 
 function isMemberRecursive(member, entityId, sccMembers = []) {
@@ -363,13 +344,9 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       }
     }
 
-    const members = [...membersByOffset.values()]
-      .sort((left, right) => {
-        if (left.offset < right.offset) return -1;
-        if (left.offset > right.offset) return 1;
-        return stableStringify(left.member).localeCompare(stableStringify(right.member));
-      })
-      .map((entry) => entry.member);
+    const members = canonicalizeStructuralMembers(
+      [...membersByOffset.values()].map((entry) => entry.member),
+    );
 
     const sccMembers = sccContext?.sccMembers ?? [entityId];
     const isRecursive = sccContext?.isRecursive === true
@@ -481,7 +458,6 @@ export class TypeConstraintGraph {
     this.entities = new Map();
     /** entityId -> Set<dependentEntityId> */
     this.dependencies = new Map();
-    /** entityIds whose dependency walk hit the bounded walker budget */
     this.dependencyTruncated = new Set();
     this.userConstraintDigests = new Set();
   }
