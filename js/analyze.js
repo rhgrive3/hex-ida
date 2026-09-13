@@ -95,7 +95,13 @@ async function awaitAbortable(operation, signal) {
   });
 }
 
-const ATOMIC_SOURCE_RESULT_RE = /^(?:swp|ldadd|ldset|ldclr|ldeor)(?:al|a|l)?(?:b|h)?$/;
+// Returning LSE atomics publish the old memory value through operand 1; operand 0
+// is always the source value. The max/min family belongs to the same contract and
+// was missing from the inventory (#3702).
+const ATOMIC_SOURCE_RESULT_RE = /^(?:swp|ld(?:add|set|clr|eor|smax|smin|umax|umin))(?:al|a|l)?(?:b|h)?$/;
+// Without-return aliases (`LD<op> <Ws>, WZR, [<Xn>]`) have no GPR result, so the
+// lone register operand is a source read rather than a destination (#3702).
+const ATOMIC_STORE_ONLY_RE = /^st(?:add|clr|eor|set|smax|smin|umax|umin)l?(?:b|h)?$/;
 // Mnemonics without a writable destination register. Matched as whole words so
 // that e.g. `bic` is not swallowed by `b` (#2188).
 const NO_DEST_MNEMONICS = new Set([
@@ -112,6 +118,9 @@ const ATOMIC_PAIR_READ_WRITE_DEST_RE = /^casp(?:al|a|l)?$/;
 function destIndex(mn) {
   const b = mn.toLowerCase();
   if (ATOMIC_SOURCE_RESULT_RE.test(b)) return 1;
+  // Without-return LSE aliases discard the loaded value, so operand 0 is a
+  // source read and there is no destination register (#3702).
+  if (ATOMIC_STORE_ONLY_RE.test(b)) return -1;
   if (/^(str|stp|stur|strb|strh|sturb|sturh|stnp|sttr|st1|st2|st3|st4|stlr)/.test(b)) return -1;
   // Full-mnemonic matching only: a bare `b` alternative here also prefix-matched
   // every `b*` mnemonic with a destination register (bic/bfi/bfm/...), so their
