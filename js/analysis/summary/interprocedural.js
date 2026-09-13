@@ -726,6 +726,28 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     hasUnknown ? (unconverged ? 'iteration-limit' : 'evidence-missing') : null,
   );
 
+  const baseStatus = calleeStatuses.length ? mergeAnalysisStatus(localStatus, calleeStatuses) : localStatus;
+  const localInput = local.status;
+  const relaxLocalFloor = replaceCallFallbacks
+    && local.unknownCallEffects.length > 0
+    && localInput?.completeness === 'partial'
+    && localInput?.stopReason === 'evidence-missing';
+  const flooredCompleteness = relaxLocalFloor || !localInput?.completeness
+    ? baseStatus.completeness
+    : weakestCompleteness(baseStatus.completeness, localInput.completeness);
+  const composedStatus = flooredCompleteness === baseStatus.completeness
+    ? baseStatus
+    : createAnalysisStatus({
+      snapshotId: baseStatus.snapshotId,
+      analyzerId: baseStatus.analyzerId,
+      analyzerVersion: baseStatus.analyzerVersion,
+      completeness: flooredCompleteness,
+      budgetClass: baseStatus.budgetClass,
+      stopReason: baseStatus.stopReason ?? localInput?.stopReason ?? 'evidence-missing',
+      evidenceIds: [...(baseStatus.evidenceIds ?? []), ...(localInput?.evidenceIds ?? [])],
+      dependencyIds: [...(baseStatus.dependencyIds ?? []), ...(localInput?.dependencyIds ?? [])],
+    });
+
   return createFunctionSummary({
     functionId,
     inputs: local.inputs,
@@ -748,7 +770,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     mayThrow: hasUnknown ? 'unknown' : unionKnowledge(mayThrow),
     stackDelta: local.stackDelta,
     semanticFacts: local.semanticFacts,
-    status: calleeStatuses.length ? mergeAnalysisStatus(localStatus, calleeStatuses) : localStatus,
+    status: composedStatus,
   });
 }
 
