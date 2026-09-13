@@ -455,6 +455,12 @@ export function createFunctionSummary(input = {}) {
   if (nonExhaustiveIndirect && unknownCallEffects.length === 0) {
     fail('function-summary-nonexhaustive-indirect-requires-unknown-effect');
   }
+  const unknownEffectSites = new Set(unknownCallEffects.map((effect) => effect.callSiteId));
+  for (const call of summary.directCalls) {
+    if (call.effectSource === 'unknown-call-fallback' && !unknownEffectSites.has(call.callSiteId)) {
+      fail('function-summary-fallback-direct-call-requires-unknown-effect');
+    }
+  }
 
   return deepFreeze(summary);
 }
