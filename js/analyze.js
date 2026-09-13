@@ -673,7 +673,7 @@ function pointerAt(bytes, width) {
   if (v === 0n) return null;
   if (width === 4) return v;
   if (v < 0x0001000000000000n) return v;
-  return v & 0x0000000fffffffffn;
+  return v & 0x0000ffffffffffffn;
 }
 
 const HINTS = [
