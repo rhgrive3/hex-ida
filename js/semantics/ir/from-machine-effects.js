@@ -69,6 +69,19 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
   const valueIds = new Set();
   const nodeIdSet = new Set();
   const temporaryDefinitions = new Map();
+  // A MachineEffects operation reads only state defined by strictly earlier
+  // operations. The definition prepass registers every temporary up front, so
+  // resolution must be gated to definitions from strictly earlier operations
+  // or a use-before-definition would be laundered into canonical IR (#5410).
+  const effectOrder = new Map(normalized.effects.map((effect, index) => [effect, index]));
+  let currentEffectIndex = 0;
+
+  function resolvableTemporaryDefinition(key) {
+    const planned = temporaryDefinitions.get(key);
+    if (!planned) return null;
+    if (!(planned.effectIndex < currentEffectIndex)) return null;
+    return planned;
+  }
   const issues = new Map();
   let completeness = semanticCompletenessFromMachineEffects(bundle.completeness);
 
@@ -172,7 +185,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
     if (referenceKey?.startsWith('temporary:')) {
       const previous = temporaryDefinitions.get(referenceKey);
       if (previous && previous.valueId !== id) fail('semantic-ir-lowering-duplicate-temporary-definition');
-      temporaryDefinitions.set(referenceKey, { valueId: id, effect, value, role, ordinal });
+      temporaryDefinitions.set(referenceKey, { valueId: id, effect, value, role, ordinal, effectIndex: effectOrder.get(effect) });
     }
     return id;
   }
@@ -323,7 +336,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
     if (!machineValue || typeof machineValue !== 'object') return unresolved('machine-input-shape-not-representable');
     if (machineValue.kind === 'temporary') {
       const key = machineValueReferenceKey(machineValue);
-      const planned = temporaryDefinitions.get(key);
+      const planned = resolvableTemporaryDefinition(key);
       if (planned) return { valueId: planned.valueId, exact: true };
       const machineType = machineValueMachineType(machineValue, { addressWidthBits });
       const reason = 'temporary-value-has-no-defining-machine-effect';
@@ -392,7 +405,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
 
     if (expression.kind === 'temporary') {
       const key = `temporary:${String(expression.temporaryId ?? '')}`;
-      const planned = temporaryDefinitions.get(key);
+      const planned = resolvableTemporaryDefinition(key);
       if (planned) return { valueId: planned.valueId };
       const type = rawBitvectorType(expression.widthBits);
       const reason = 'address-temporary-has-no-defining-machine-effect';
@@ -914,8 +927,9 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
     addIssue(reason, all, detail, severity);
   }
 
-  for (const effect of normalized.effects) {
+  for (const [effectIndex, effect] of normalized.effects.entries()) {
     assertNotAborted(options);
+    currentEffectIndex = effectIndex;
     const operation = effect.operation;
     if (operation.kind === 'value') lowerValueOperation(effect);
     else if (operation.kind === 'register-read') lowerStateRead(effect, operation.register, operation.value, 'register-read');
@@ -929,6 +943,9 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
     else if (operation.kind === 'unknown') emitUnknownEffects(effect, operation.reason, operation.categories, operation.metadata ?? null);
     else emitUnknownEffects(effect, 'unsupported-machine-operation-kind', ['other'], { operationKind: operation.kind });
   }
+  // Control and annotation projections run after every operation, so their
+  // temporaries may reference any definition in the bundle.
+  currentEffectIndex = normalized.effects.length;
 
   if (normalized.unknown) {
     emitUnknownEffects({
@@ -995,7 +1012,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
   function resolveControlCondition(effect, condition) {
     if (!condition || typeof condition !== 'object') return null;
     if (condition.kind === 'temporary') {
-      const planned = temporaryDefinitions.get(`temporary:${String(condition.temporaryId ?? '')}`);
+      const planned = resolvableTemporaryDefinition(`temporary:${String(condition.temporaryId ?? '')}`);
       if (planned) return planned.valueId;
       const type = rawBitvectorType(condition.widthBits);
       return createUnknownValue(effect, type, 'control-condition', 'control-condition-temporary-unresolved', condition, 0);

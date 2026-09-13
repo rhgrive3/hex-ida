@@ -270,8 +270,37 @@ function validateNormalizedFunction(out, options) {
   }
   if (placedNodes.size !== out.nodes.length) fail('semantic-ir-unplaced-node');
 
+  // Same-block uses must follow their definition: a block is a linear node
+  // list, so no control-flow arrangement can make a later node dominate an
+  // earlier one. A use whose definition sits later in the same block is a
+  // non-dominant forward reference and can never be a complete function
+  // boundary obligation (#5410).
+  const nodePositionsByBlock = new Map();
+  for (const block of out.blocks) {
+    const positions = new Map();
+    block.nodeIds.forEach((nodeId, index) => positions.set(nodeId, index));
+    nodePositionsByBlock.set(block.id, positions);
+  }
+
   for (const node of out.nodes) {
     for (const id of node.inputs) if (!valueById.has(id)) fail('semantic-ir-dangling-value-id');
+    const positions = nodePositionsByBlock.get(node.blockId);
+    const usedValueIds = [
+      ...node.inputs,
+      ...(node.memory ? [node.memory.addressExpr.valueId] : []),
+      ...(node.call ? (node.call.memoryRead.accesses ?? []).concat(node.call.memoryWrite.accesses ?? []).map((access) => access.addressExpr.valueId) : []),
+      ...(node.intrinsic ? (node.intrinsic.memoryRead.accesses ?? []).concat(node.intrinsic.memoryWrite.accesses ?? []).map((access) => access.addressExpr.valueId) : []),
+    ];
+    for (const id of usedValueIds) {
+      const value = valueById.get(id);
+      if (!value || value.definitionNodeId == null) continue;
+      const definitionNode = nodeById.get(value.definitionNodeId);
+      if (!definitionNode || definitionNode.blockId !== node.blockId) continue;
+      const definitionPosition = positions.get(definitionNode.id);
+      if (definitionPosition != null && definitionPosition >= positions.get(node.id)) {
+        fail('semantic-ir-value-use-before-definition-in-block');
+      }
+    }
     for (const id of node.outputs) {
       const value = valueById.get(id);
       if (!value) fail('semantic-ir-dangling-value-id');
