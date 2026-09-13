@@ -259,8 +259,12 @@ export function functionCandidates({ input, architectureId = 'generic', producer
   const registry = new DiscoveryProducerRegistry();
   for (const producer of GENERIC_PRODUCERS) registry.register(producer);
   for (const producer of producers) registry.register(producer);
-  const { evidence } = registry.collect(input, architectureId, options);
-  return fuseFunctionCandidates(evidence, { architectureId, ...options });
+  const collected = registry.collect(input, architectureId, options);
+  return fuseFunctionCandidates(collected.evidence, {
+    architectureId,
+    ...options,
+    producerStatus: { truncated: collected.truncated, stopReason: collected.stopReason },
+  });
 }
 
 import {

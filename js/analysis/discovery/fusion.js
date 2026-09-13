@@ -39,6 +39,29 @@ function canonicalEvidence(item, code = 'discovery-fusion-evidence-item-invalid'
   return createDiscoveryEvidence(item);
 }
 
+const PRODUCER_STOP_COMPLETENESS = new Map([
+  ['cancelled', 'partial'],
+  ['budget-exhausted', 'truncated'],
+  ['memory-limit', 'truncated'],
+  ['iteration-limit', 'truncated'],
+]);
+
+const PRODUCER_STOP_REASONS = new Set(PRODUCER_STOP_COMPLETENESS.keys());
+
+function canonicalProducerOutput(produced) {
+  if (produced == null) return { items: [], truncated: false, stopReason: null };
+  if (Array.isArray(produced)) return { items: produced, truncated: false, stopReason: null };
+  if (typeof produced !== 'object') throw new TypeError('discovery-producer-evidence-invalid');
+  if (!Array.isArray(produced.evidence)) throw new TypeError('discovery-producer-evidence-invalid');
+  if (typeof produced.truncated !== 'boolean') throw new TypeError('discovery-producer-evidence-invalid');
+  if (produced.truncated !== true) {
+    if (produced.stopReason != null) throw new TypeError('discovery-producer-evidence-invalid');
+    return { items: produced.evidence, truncated: false, stopReason: null };
+  }
+  if (!PRODUCER_STOP_REASONS.has(produced.stopReason)) throw new TypeError('discovery-producer-evidence-invalid');
+  return { items: produced.evidence, truncated: true, stopReason: produced.stopReason };
+}
+
 /**
  * A registry of evidence producers.
  *
@@ -75,11 +98,20 @@ export class DiscoveryProducerRegistry {
   collect(input, architectureId, options = {}) {
     const evidence = [];
     const producerIds = [];
+    let truncated = false;
+    let stopReason = null;
+    const stop = (reason) => {
+      truncated = true;
+      if (stopReason == null || stopReason === 'budget-exhausted') stopReason = reason;
+    };
     for (const producer of this.for(architectureId)) {
-      if (options.signal?.aborted) break;
-      const produced = producer.produce(input, options);
-      if (produced != null && !Array.isArray(produced)) throw new TypeError('discovery-producer-evidence-invalid');
-      for (const item of produced ?? []) {
+      if (options.signal?.aborted) {
+        stop('cancelled');
+        break;
+      }
+      const produced = canonicalProducerOutput(producer.produce(input, options));
+      if (produced.truncated) stop(produced.stopReason);
+      for (const item of produced.items) {
         evidence.push(canonicalEvidence({
           ...item,
           producerId: producer.id,
@@ -88,7 +120,7 @@ export class DiscoveryProducerRegistry {
       }
       producerIds.push(producer.id);
     }
-    return { evidence, producerIds };
+    return { evidence, producerIds, truncated, stopReason };
   }
 }
 
@@ -353,6 +385,19 @@ export function fuseFunctionCandidates(evidence, options = {}) {
 
   if (options.signal?.aborted) {
     return { candidates: [], status: status('partial', 'cancelled') };
+  }
+
+  const producerStatus = options.producerStatus;
+  if (producerStatus != null) {
+    if (typeof producerStatus !== 'object' || Array.isArray(producerStatus)
+      || typeof producerStatus.truncated !== 'boolean'
+      || (producerStatus.truncated && !PRODUCER_STOP_REASONS.has(producerStatus.stopReason))
+      || (!producerStatus.truncated && producerStatus.stopReason != null)) {
+      throw new TypeError('discovery-fusion-producer-status-invalid');
+    }
+    if (producerStatus.truncated) {
+      return { candidates: [], status: status(PRODUCER_STOP_COMPLETENESS.get(producerStatus.stopReason), producerStatus.stopReason) };
+    }
   }
 
   // Validate and canonicalize before sorting. Comparators are not validation
