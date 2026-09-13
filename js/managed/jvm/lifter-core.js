@@ -189,6 +189,59 @@ function withJvmLocalType(value, type) {
   return type ? { ...value, type } : value;
 }
 
+function collectJvmControlFlowJoins(bytecode, exceptionTable) {
+  const view = new DataView(bytecode.buffer, bytecode.byteOffset, bytecode.byteLength);
+  const joinOffsets = new Set();
+  let dynamicJump = false;
+  let offset = 0;
+  while (offset < bytecode.length) {
+    const boundary = decodeJvmInstructionBoundary(bytecode, offset);
+    if (!boundary.complete || boundary.end <= offset) break;
+    const opcode = bytecode[offset];
+    if (opcode >= 0x99 && opcode <= 0xa8) {
+      joinOffsets.add(offset + view.getInt16(offset + 1, false));
+    } else if (opcode === 0xa9) {
+      dynamicJump = true;
+    } else if (opcode === 0xaa) {
+      let pos = offset + 1;
+      pos += (4 - (pos & 3)) & 3;
+      joinOffsets.add(offset + view.getInt32(pos, false));
+      const low = view.getInt32(pos + 4, false);
+      const high = view.getInt32(pos + 8, false);
+      const count = high - low + 1;
+      if (Number.isSafeInteger(count) && count > 0) {
+        for (let i = 0; i < count; i += 1) joinOffsets.add(offset + view.getInt32(pos + 12 + i * 4, false));
+      }
+    } else if (opcode === 0xab) {
+      let pos = offset + 1;
+      pos += (4 - (pos & 3)) & 3;
+      joinOffsets.add(offset + view.getInt32(pos, false));
+      const pairs = view.getInt32(pos + 4, false);
+      if (Number.isSafeInteger(pairs) && pairs > 0) {
+        for (let i = 0; i < pairs; i += 1) joinOffsets.add(offset + view.getInt32(pos + 8 + i * 8, false));
+      }
+    } else if (opcode === 0xc4 && bytecode[offset + 1] === 0xa9) {
+      dynamicJump = true;
+    }
+    offset = boundary.end;
+  }
+  for (const region of exceptionTable ?? []) {
+    if (Number.isSafeInteger(region?.handlerPc)) joinOffsets.add(region.handlerPc);
+  }
+  return { joinOffsets, dynamicJump };
+}
+
+function jvmProducedValueCategory(value) {
+  if (value?.category === 2) return 2;
+  if (value?.category === 1) return 1;
+  if (value?.typeUnknown === true) return 0;
+  if (value?.type?.kind === 'float' && value.type.widthBits === 64) return 2;
+  if (value?.isNull === true || typeof value?.cpClassIndex === 'number') return 1;
+  if (value?.bits === 64) return 2;
+  if (Number.isSafeInteger(value?.bits)) return 1;
+  return 0;
+}
+
 export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
   const method = jvmClass.methods[methodIdx];
   if (!method) fail('jvm-invalid-method-index');
@@ -225,10 +278,13 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
   const view = new DataView(bytecode.buffer, bytecode.byteOffset, bytecode.byteLength);
   const codeOffset = Number(codeAttr.offset ?? 0);
   const instructionStarts = collectJvmInstructionStarts(bytecode);
+  const { joinOffsets, dynamicJump } = collectJvmControlFlowJoins(bytecode, codeAttr.exceptionTable);
 
   let pc = 0;
   let opSeq = 0;
   let currentStackHeight = 0;
+  const stackCategories = [];
+  let stackModelTrusted = !dynamicJump;
   const bundles = [];
 
   const exceptionRegions = (codeAttr.exceptionTable || []).map((exc, idx) => ({
@@ -243,6 +299,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
     const opOffset = pc;
     const opcode = bytecode[pc++];
     opSeq++;
+    if (joinOffsets.has(opOffset)) stackModelTrusted = false;
 
     const opId = createVMOperationId(methodId, opOffset, opSeq);
 
@@ -420,12 +477,46 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
         }
         break;
 
-      case 0x57: // pop
-      case 0x58: // pop2
-        mnemonic = opcode === 0x57 ? 'pop' : 'pop2';
-        consumedValues.push({ id: 'top' });
-        currentStackHeight -= opcode === 0x57 ? 1 : 2;
+      case 0x57: { // pop
+        mnemonic = 'pop';
+        const topCategory = stackCategories[stackCategories.length - 1];
+        if (stackModelTrusted && topCategory === 2) {
+          completeness = 'partial';
+          stackModelTrusted = false;
+          unknownEffects.push({ category: 'stack', reason: 'jvm-pop-category2-top-invalid' });
+        } else {
+          consumedValues.push({ id: 'top' });
+        }
+        currentStackHeight -= 1;
         break;
+      }
+
+      case 0x58: { // pop2
+        mnemonic = 'pop2';
+        const topCategory = stackCategories[stackCategories.length - 1];
+        const underCategory = stackCategories[stackCategories.length - 2];
+        if (!stackModelTrusted) {
+          completeness = 'partial';
+          unknownEffects.push({ category: 'stack', reason: 'jvm-pop2-category-unresolved' });
+        } else if (topCategory === 2) {
+          consumedValues.push({ id: 'top', category: 2 });
+        } else if (topCategory === 1 && underCategory === 1) {
+          consumedValues.push({ id: 'top' }, { id: 'under' });
+        } else {
+          completeness = 'partial';
+          stackModelTrusted = false;
+          unknownEffects.push({
+            category: 'stack',
+            reason: topCategory === 0 || underCategory === 0
+              ? 'jvm-pop2-category-unresolved'
+              : topCategory === undefined || underCategory === undefined
+                ? 'jvm-pop2-stack-underflow'
+                : 'jvm-pop2-category1-over-category2',
+          });
+        }
+        currentStackHeight -= 2;
+        break;
+      }
 
       case 0x59: // dup
         mnemonic = 'dup';
@@ -615,6 +706,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
             cpIndex: methIdx,
             dispatchKind: kinds[opcode],
           });
+          stackModelTrusted = false;
         }
         break;
 
@@ -683,6 +775,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           pc = Math.max(pc, boundary.end);
           mnemonic = `jvm_op_0x${opcode.toString(16)}`;
           completeness = 'partial';
+          stackModelTrusted = false;
           unknownEffects.push({
             category: 'other',
             reason: boundary.complete
@@ -691,6 +784,14 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           });
         }
         break;
+    }
+
+    for (let i = 0; i < consumedValues.length; i += 1) stackCategories.pop();
+    for (const value of producedValues) stackCategories.push(jvmProducedValueCategory(value));
+    if (completeness !== 'exact') stackModelTrusted = false;
+    if (controlEffects.some((effect) =>
+      effect?.kind === 'branch' || effect?.kind === 'return' || effect?.kind === 'throw')) {
+      stackModelTrusted = false;
     }
 
     const origin = createOriginSet({

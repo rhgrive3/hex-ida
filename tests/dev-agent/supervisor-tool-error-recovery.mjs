@@ -17,6 +17,7 @@ await testTerminalToolErrorStillFails();
 await testAbortStillCancels();
 await testRecoveryBudgetIsBounded();
 await testWorkerClaimFailureKeepsCleanupObligation();
+await testAmbiguousClaimExplicitReleaseSuccessClearsCleanupObligation();
 await testAbandonedAmbiguousClaimStillReleases();
 await testReleaseFailureKeepsClaimOwnership();
 await testErrorMessageSecretRedaction();
@@ -189,6 +190,39 @@ async function testWorkerClaimFailureKeepsCleanupObligation() {
   assert.equal(result.answer, 'claim recovered');
   assert.equal(claims, 2, 'the Supervisor must be able to retry a failed claim');
   assert.deepEqual(calls.map((call) => call[0]), ['claim', 'claim', 'release'], 'the recovered claim must still be released exactly once');
+  assert.equal(harness.settings.lastRun.status, DEV_RUN_STATUS.COMPLETED);
+}
+
+/* #4624: if a failed claim leaves ownership ambiguous and the Supervisor then
+   explicitly releases that slot successfully, final cleanup must not release it
+   a second time. The successful release proves the cleanup obligation settled. */
+async function testAmbiguousClaimExplicitReleaseSuccessClearsCleanupObligation() {
+  const calls = [];
+  const harness = createHarness({
+    client: workerClient({
+      claim: async () => {
+        calls.push('claim');
+        throw Object.assign(new Error('claim transport failed after lease'), { code: 'transport-failure' });
+      },
+      release: async () => { calls.push('release'); return { released: true }; },
+    }),
+    decisions: [
+      { type: 'tool', tool: 'worker.claim', arguments: {}, purpose: 'claim a worker' },
+      { type: 'tool', tool: 'worker.release', arguments: {}, purpose: 'release the ambiguous slot' },
+      { type: 'final', answer: 'settled by explicit release', completedTasks: ['release'], remaining: [] },
+    ],
+  });
+
+  const result = await harness.engine.run({
+    goal: 'explicit release after ambiguous claim',
+    conversationId: 'conversation-4624-success',
+  });
+  assert.equal(result.answer, 'settled by explicit release');
+  assert.deepEqual(
+    calls,
+    ['claim', 'release'],
+    'a successful explicit release must clear the ambiguous-claim obligation so final cleanup never releases twice',
+  );
   assert.equal(harness.settings.lastRun.status, DEV_RUN_STATUS.COMPLETED);
 }
 
