@@ -448,7 +448,10 @@ export class Emulator {
     const ops = parseOperands(opsStr);
     const R = (op) => this.valueOf(op);
 
-    if (/^(nop|hint|bti|paciasp|pacibsp|autiasp|autibsp|xpaclri|dmb|dsb|isb|prfm|pacia|autia|pacibz)$/.test(mn)) return null;
+    if (/^(nop|hint|bti|dmb|dsb|isb|prfm)$/.test(mn)) return null;
+    if (/^(pac|aut)(ia|ib)(z|sp)?$/.test(mn) || mn === 'xpaclri' || mn === 'retaa' || mn === 'retab') {
+      throw new EmulatorFault('pointer-authentication-unsupported', `pointer authentication命令はまだ実行できません: ${mn}`, { instruction: mn });
+    }
 
     if (mn === 'b') return this.branchTarget(ops);
     if (/^b\.(\w+)$/.test(mn)) {
@@ -496,7 +499,7 @@ export class Emulator {
       }
       return target;
     }
-    if (/^(ret|retaa|retab)$/.test(mn)) {
+    if (mn === 'ret') {
       const target = ops.length ? R(ops[0]) : this.x[30];
       this.callStack.pop();
       return target;
