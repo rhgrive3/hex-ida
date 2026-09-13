@@ -42,7 +42,7 @@ export async function runProductionDevBootstrap({ engine, session, bridge = glob
       });
     }
 
-    const hexConversationId = String(session.current.id || '').trim();
+    const hexConversationId = requirePrimitiveText(session.current.id, 'Bootstrap Hex conversation identity');
     const checkpointSession = engine.devBootstrap.sessionFor(hexConversationId);
     const conversation = await establishSupervisorConversation(bridge, checkpointSession.supervisorSessionKey, session.current);
     const checkpoint = engine.devBootstrap.createCheckpoint({
@@ -119,17 +119,26 @@ function exchangeWithParent(globalObject, requestType, responseType, payload) {
 }
 
 function normalizeConversation(value) {
-  const id = String(value?.id || '').trim();
+  if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.id !== 'string') return null;
+  const id = value.id.trim();
   if (!id) return null;
   return Object.freeze({ id });
 }
 
 function normalizeIdentity(value) {
-  const commit = String(value?.commit || '').trim().toLowerCase();
-  const buildId = String(value?.buildId || '').trim().toLowerCase();
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Production runtime identity is unavailable.');
+  const commit = requirePrimitiveText(value.commit, 'Production deployment commit identity').toLowerCase();
+  const buildId = requirePrimitiveText(value.buildId, 'Production runtime build identity').toLowerCase();
   if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error('Production deployment commit identity is unavailable.');
   if (!/^[0-9a-f]{24}$/.test(buildId)) throw new Error('Production runtime build identity is unavailable.');
   return Object.freeze({ commit, buildId });
+}
+
+function requirePrimitiveText(value, label) {
+  if (typeof value !== 'string') throw new TypeError(`${label} must be a string.`);
+  const text = value.trim();
+  if (!text) throw new TypeError(`${label} is unavailable.`);
+  return text;
 }
 
 function isSandboxChild(globalObject) {
