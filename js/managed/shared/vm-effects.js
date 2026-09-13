@@ -142,6 +142,24 @@ const SEMANTIC_COLLECTION_FIELDS = Object.freeze([
   'possibleExceptions',
 ]);
 
+// Exact operations with no explicit effect payload still need canonical
+// frontend semantics. Raw opcode/mnemonic identity is not proof: only known
+// zero-effect operations may use the empty exact representation.
+const EXACT_EMPTY_OPERATION_KEYS = new Set([
+  'wasm:1:nop',
+  'wasm:2:block',
+  'wasm:3:loop',
+  'wasm:11:end',
+  'dex:0:nop',
+  'cil:0:nop',
+  'cil:1:break',
+  'cil:65042:prefix_12',
+  'cil:65044:prefix_14',
+  'cil:65046:prefix_16',
+  'cil:65054:prefix_1e',
+  'jvm:0:nop',
+]);
+
 function hasSemanticCollectionEntry(value) {
   if (!Array.isArray(value)) return false;
   for (let index = 0; index < value.length; index += 1) {
@@ -151,10 +169,26 @@ function hasSemanticCollectionEntry(value) {
   return false;
 }
 
+function hasCanonicalEmptyOperationSemantics(bundle) {
+  if (typeof bundle.frontendId !== 'string') return false;
+  const opcode = bundle.opcode == null ? null : bundle.opcode;
+  const mnemonic = typeof bundle.mnemonic === 'string' ? bundle.mnemonic.trim() : '';
+  if (!mnemonic) return false;
+  if (opcode != null && EXACT_EMPTY_OPERATION_KEYS.has(`${bundle.frontendId}:${opcode}:${mnemonic}`)) return true;
+  // Test/compat callers may omit the raw opcode, but only an exact canonical
+  // mnemonic from this fixed frontend vocabulary may stand in for it.
+  if (opcode == null) {
+    for (const key of EXACT_EMPTY_OPERATION_KEYS) {
+      const [frontend, , knownMnemonic] = key.split(':');
+      if (frontend === bundle.frontendId && knownMnemonic === mnemonic) return true;
+    }
+  }
+  return false;
+}
+
 function hasOperationSemantics(bundle) {
-  if (bundle.opcode != null) return true;
-  if (typeof bundle.mnemonic === 'string' && bundle.mnemonic.trim()) return true;
-  return SEMANTIC_COLLECTION_FIELDS.some((field) => hasSemanticCollectionEntry(bundle[field]));
+  if (SEMANTIC_COLLECTION_FIELDS.some((field) => hasSemanticCollectionEntry(bundle[field]))) return true;
+  return hasCanonicalEmptyOperationSemantics(bundle);
 }
 
 function requireExactOperationSemantics(bundle, completeness) {
@@ -295,6 +329,7 @@ export function createVMEffectBundle(input, options = {}) {
   const opcode = input.opcode != null ? nonNegativeInteger(input.opcode, 'vm-effect-invalid-opcode') : null;
 
   requireExactOperationSemantics({
+    frontendId,
     opcode,
     mnemonic,
     consumedValues,

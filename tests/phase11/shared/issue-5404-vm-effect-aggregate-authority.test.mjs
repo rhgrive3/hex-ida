@@ -46,7 +46,7 @@ const exactBundle = createVMEffectBundle({ frontendId: 'wasm', methodId: 'method
   });
   const intrinsicBundle = createVMEffectBundle({
     frontendId: 'wasm', methodId: 'method:1', operationId: 'op:3',
-    opcode: 0x01, mnemonic: 'intrinsic.nop', completeness: 'exact-with-intrinsic',
+    opcode: 0x01, mnemonic: 'nop', completeness: 'exact-with-intrinsic',
   });
   assert.throws(
     () => createVMEffectFunction({ frontendId: 'wasm', methodId: 'method:1', bundles: [unknownBundle], aggregateCompleteness: 'partial' }),

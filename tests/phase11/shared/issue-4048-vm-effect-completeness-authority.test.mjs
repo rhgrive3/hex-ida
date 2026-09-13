@@ -60,6 +60,39 @@ test('#4048 exact authority requires structural operation semantics', () => {
   }
 });
 
+test('#4048 unsupported operation identity cannot mint exact authority', () => {
+  for (const completeness of ['exact', 'exact-with-intrinsic']) {
+    assert.throws(
+      () => createVMEffectBundle({
+        ...identity,
+        opcode: 0x7fffffff,
+        completeness,
+      }),
+      /vm-effect-exact-semantics-required/,
+      `${completeness} unsupported opcode must fail closed`,
+    );
+    assert.throws(
+      () => createVMEffectBundle({
+        ...identity,
+        mnemonic: 'definitely-not-a-wasm-operation',
+        completeness,
+      }),
+      /vm-effect-exact-semantics-required/,
+      `${completeness} arbitrary mnemonic must fail closed`,
+    );
+    assert.throws(
+      () => createVMEffectBundle({
+        ...identity,
+        opcode: 0x7fffffff,
+        mnemonic: 'nop',
+        completeness,
+      }),
+      /vm-effect-exact-semantics-required/,
+      `${completeness} unsupported opcode cannot borrow canonical nop semantics`,
+    );
+  }
+});
+
 test('#4048 known operations remain exact across all four managed frontends', () => {
   const fixtures = [
     ['wasm', 0x41, 'i32.const', { producedValues: [{ bits: 32, constant: 1 }] }],
