@@ -8,6 +8,7 @@ const S_MOD_INIT_FUNC_POINTERS = 0x9;
 const S_MOD_TERM_FUNC_POINTERS = 0xa;
 const S_INIT_FUNC_OFFSETS = 0x16;
 const S_ATTR_PURE_INSTRUCTIONS = 0x80000000;
+const S_INTERPOSING = 0x0d;
 
 export const DICE_KIND_DATA = 1;
 export const DICE_KIND_JUMP_TABLE8 = 2;
@@ -234,6 +235,7 @@ function parseThin(bytes, opts) {
     if (!linkeditData.exportsTrie && info.export.size) parseExportTrie(r, info.export, image, metadataBudget);
   }
   if (linkeditData.exportsTrie) parseExportTrie(r, linkeditData.exportsTrie, image, metadataBudget);
+  parseInterposingSections(r, image, bits, metadataBudget);
   parseModLifecycleFunctions(r, image, bits, metadataBudget);
   parseInitFuncOffsets(r, image, metadataBudget);
 
@@ -946,6 +948,119 @@ export function parseCompactUnwind(r, image, metadataBudget = null) {
     if (range.primary) image.functions.push(functionSeed(range.start, { source:'unwind', confidence:0.95 }));
   }
   status.recovered = ranges.length;
+}
+
+
+function importIdentityAtSite(image, address) {
+  for (const imp of image.imports || []) {
+    for (const site of imp?.sites || []) {
+      if (site?.address !== address) continue;
+      return {
+        name: imp.name || null,
+        library: imp.library || null,
+        ordinal: Number.isSafeInteger(imp.ordinal) ? imp.ordinal : null,
+        weak: !!imp.weak,
+        source: imp.source || null,
+      };
+    }
+  }
+  return null;
+}
+
+function isInterposeInstructionAllowed(image, address) {
+  if (!image.isInstructionAllowed(address)) return false;
+  const instructionBytes = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32')
+    ? 4n : image.arch === 'arm' ? 2n : 1n;
+  const mapping = image.resolveVirtualMapping(address);
+  return mapping?.kind === 'file' && mapping.available >= instructionBytes;
+}
+
+function parseInterposingSections(r, image, bits, metadataBudget) {
+  const sections = image.sections.filter((section) =>
+    (section.flags & 0xff) === S_INTERPOSING
+    || (section.segment === '__DATA' && section.name === '__interpose'));
+  if (sections.length === 0) return;
+
+  image.metadata.interpose ||= [];
+  const ptrSize = bits === 64 ? 8 : 4;
+  const tupleSize = ptrSize * 2;
+  const tupleSizeBig = BigInt(tupleSize);
+  const recoveredTargets = new Set();
+
+  for (const sec of sections) {
+    const provenance = (sec.flags & 0xff) === S_INTERPOSING ? 'S_INTERPOSING' : '__DATA,__interpose';
+    if (sec.size % tupleSizeBig !== 0n) {
+      metadataBudget.partial(
+        'interpose:truncated-section',
+        `Mach-O interpose section ${sec.segment || ''},${sec.name} size ${sec.size} is not a multiple of tuple width ${tupleSize}`,
+      );
+    }
+    const count = Number(sec.size / tupleSizeBig);
+    const secFileOffset = sec.fileOffset != null ? Number(sec.fileOffset) : null;
+    const secFileSize = sec.fileSize != null ? Number(sec.fileSize) : 0;
+    const fileAvailable = secFileOffset != null && Number.isSafeInteger(secFileOffset)
+      && secFileOffset >= 0 && secFileOffset <= r.length
+      ? Math.max(0, Math.min(secFileSize, r.length - secFileOffset)) : 0;
+    const safeCount = Math.min(count, Math.floor(fileAvailable / tupleSize));
+    if (safeCount < count) {
+      metadataBudget.partial(
+        'interpose:file-truncated',
+        `Mach-O interpose section ${sec.segment || ''},${sec.name} file data is truncated or zero-fill`,
+      );
+    }
+
+    for (let index = 0; index < safeCount; index += 1) {
+      if (!metadataBudget.take({ inputBytes: tupleSize, records: 1, objects: 3, operations: 4, estimatedHeapBytes: 384 }, 'interpose')) break;
+      const tupleAddress = sec.address + BigInt(index * tupleSize);
+      const replacementSlotAddress = tupleAddress;
+      const replaceeSlotAddress = tupleAddress + BigInt(ptrSize);
+      const filePos = secFileOffset + index * tupleSize;
+      const rawReplacement = bits === 64 ? r.u64(filePos) : BigInt(r.u32(filePos));
+      const rawReplacee = bits === 64 ? r.u64(filePos + ptrSize) : BigInt(r.u32(filePos + ptrSize));
+      const replacement = resolveMachOPointer(image, rawReplacement, { address: replacementSlotAddress });
+      const replacee = resolveMachOPointer(image, rawReplacee, { address: replaceeSlotAddress });
+      const replaceeImport = replacee == null ? importIdentityAtSite(image, replaceeSlotAddress) : null;
+
+      let failureReason = null;
+      if (replacement == null) failureReason = 'replacement-unresolved';
+      else if (!isInterposeInstructionAllowed(image, replacement)) failureReason = 'replacement-not-instruction';
+      else if (replacee == null && replaceeImport == null) failureReason = 'replacee-unresolved';
+      else if (replacee != null && !isInterposeInstructionAllowed(image, replacee)) failureReason = 'replacee-not-instruction';
+
+      const valid = failureReason == null;
+      image.metadata.interpose.push({
+        section: sec.name,
+        segment: sec.segment,
+        source: provenance,
+        tupleAddress,
+        replacementSlotAddress,
+        replaceeSlotAddress,
+        rawReplacement,
+        rawReplacee,
+        replacement,
+        replacee,
+        replaceeImport,
+        valid,
+      });
+      if (!valid) {
+        metadataBudget.partial(
+          `interpose:${failureReason}`,
+          `Ignored Mach-O interpose tuple at 0x${tupleAddress.toString(16)}: ${failureReason}`,
+        );
+        continue;
+      }
+      const key = replacement.toString();
+      if (recoveredTargets.has(key)) continue;
+      recoveredTargets.add(key);
+      image.functions.push(functionSeed(replacement, {
+        source: 'interpose',
+        confidence: 0.995,
+        exactFunctionStart: true,
+        functionStartEvidence: 'Mach-O S_INTERPOSING/__DATA,__interpose dyld replacement in validated executable mapping with file-backed instruction bytes',
+        abiMetadata: { machoInterpose: true },
+      }));
+    }
+  }
 }
 
 function parseModLifecycleFunctions(r, image, bits, metadataBudget) {
