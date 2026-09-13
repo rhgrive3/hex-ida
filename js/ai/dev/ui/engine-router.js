@@ -1,4 +1,4 @@
-import { AGENT_PROFILE } from '../policy/agent-profile.js';
+import { AGENT_PROFILE, canSelectAgentProfile } from '../policy/agent-profile.js';
 import { DevSupervisorV0 } from '../supervisor/dev-supervisor-v0.js';
 import { ProgressBudgetDevSupervisorEngineV0 } from '../supervisor/dev-supervisor-progress-budget.js';
 
@@ -18,6 +18,9 @@ export function createAgentProfileEngine({ standardEngine, settings, supervisor 
 
   const routeRun = async (input = {}) => {
     if (input.mode !== 'agent' || settings.agentProfile !== AGENT_PROFILE.DEV) return standardEngine.run(input);
+    await settings.authProvider?.authorize?.(settings.decisionPolicy);
+    settings.refreshIdentity?.();
+    if (!canSelectAgentProfile(settings.identity, AGENT_PROFILE.DEV) || settings.agentProfile !== AGENT_PROFILE.DEV) throw new Error('Dev authorization denied.');
     return dev.run(input);
   };
   const surface = Object.create(Object.getPrototypeOf(standardEngine));

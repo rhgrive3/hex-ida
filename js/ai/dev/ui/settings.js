@@ -1,4 +1,4 @@
-import { AllowAllAdminProvider, readAdminIdentity } from '../auth/admin-provider.js';
+import { DenyAdminProvider, readAdminIdentity } from '../auth/admin-provider.js';
 import { AGENT_PROFILE, assertAgentProfile, availableAgentProfiles, canSelectAgentProfile } from '../policy/agent-profile.js';
 import { DEV_DECISION_POLICY, assertDevDecisionPolicy } from '../policy/decision-policy.js';
 import { createDevAnalysisScopeRequest, ANALYSIS_SCOPE_INITIALS } from '../run/analysis-scope.js';
@@ -6,22 +6,32 @@ import { createDevAnalysisScopeRequest, ANALYSIS_SCOPE_INITIALS } from '../run/a
 const STORAGE_KEY = 'hex.ai.dev.settings.v1';
 
 export class DevAgentUiSettings {
-  constructor({ authProvider = new AllowAllAdminProvider(), storage = defaultStorage(), key = STORAGE_KEY } = {}) {
+  constructor({ authProvider = new DenyAdminProvider(), storage = defaultStorage(), key = STORAGE_KEY } = {}) {
     this.authProvider = authProvider;
     this.identity = readAdminIdentity(authProvider);
     this.storage = storage;
     this.key = key;
     this.listeners = new Set();
     const saved = this.load();
-    this.agentProfile = saved.agentProfile || AGENT_PROFILE.STANDARD;
+    this.agentProfile = safeProfile(saved.agentProfile);
     if (!canSelectAgentProfile(this.identity, this.agentProfile)) this.agentProfile = AGENT_PROFILE.STANDARD;
-    this.decisionPolicy = safePolicy(saved.decisionPolicy);
+    this.decisionPolicy = this.identity.capabilities.canUseDevYolo ? safePolicy(saved.decisionPolicy) : DEV_DECISION_POLICY.NORMAL;
     this.analysisScope = safeScope(saved.analysisScope);
     this.lastRun = null;
+    this.unsubscribeAuth = authProvider.subscribe?.(() => this.refreshIdentity());
   }
 
+  refreshIdentity() {
+    this.identity = readAdminIdentity(this.authProvider);
+    if (!this.identity.capabilities.canUseDevAgent) this.agentProfile = AGENT_PROFILE.STANDARD;
+    if (!this.identity.capabilities.canUseDevYolo) this.decisionPolicy = DEV_DECISION_POLICY.NORMAL;
+    if (!this.identity.capabilities.canUseDevAgent || !this.identity.capabilities.canUseDevYolo) this.persist();
+    this.emit(); return this.identity;
+  }
+  destroy() { this.unsubscribeAuth?.(); this.listeners.clear(); }
   profiles() { return availableAgentProfiles(this.identity); }
   setAgentProfile(profile) {
+    this.refreshIdentity();
     const next = assertAgentProfile(profile);
     if (!canSelectAgentProfile(this.identity, next)) throw new Error('Admin privileges are required for the Dev profile.');
     if (this.agentProfile === next) return false;
@@ -30,6 +40,8 @@ export class DevAgentUiSettings {
   }
   setDecisionPolicy(policy) {
     const next = assertDevDecisionPolicy(policy);
+    this.refreshIdentity();
+    if (next === DEV_DECISION_POLICY.YOLO && !this.identity.capabilities.canUseDevYolo) throw new Error('Admin privileges are required for YOLO.');
     if (this.decisionPolicy === next) return false;
     this.decisionPolicy = next;
     this.persist(); this.emit(); return true;
@@ -78,3 +90,5 @@ export class DevAgentUiSettings {
 function safePolicy(value) { try { return assertDevDecisionPolicy(value || DEV_DECISION_POLICY.NORMAL); } catch { return DEV_DECISION_POLICY.NORMAL; } }
 function safeScope(value) { try { return value?.initial ? createDevAnalysisScopeRequest(value.initial) : createDevAnalysisScopeRequest(); } catch { return createDevAnalysisScopeRequest(); } }
 function defaultStorage() { try { return typeof localStorage === 'undefined' ? null : localStorage; } catch { return null; } }
+
+function safeProfile(value) { try { return assertAgentProfile(value || AGENT_PROFILE.STANDARD); } catch { return AGENT_PROFILE.STANDARD; } }

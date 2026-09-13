@@ -4,6 +4,18 @@ await run(async ({ browser }) => {
   const { check, state } = reporter();
   const { context, page, errors } = await openApp(browser, { width: 744, height: 1133 });
 
+  await page.evaluate(async () => {
+    const { setAuthContext } = await import('/js/auth/runtime-context.js');
+    const { identityForUser } = await import('/js/auth/capabilities.js');
+    const { installChildExtension } = await import('/js/auth/privileged/child-entry.js');
+    const { installAssistant } = await import('/js/ai/ui/assistant.js');
+    const identity = identityForUser({ discord_id: '333333333333333333', username: 'Admin fixture', role: 'admin', enabled: 1 }, '');
+    const auth = { getIdentity: () => identity, refresh: async () => identity, authorize: async () => identity, subscribe: () => () => {} };
+    const childExtension = await installChildExtension({ auth });
+    window.__hexAi.destroy();
+    setAuthContext({ auth, childExtension, login() {}, logout: async () => {}, close() { childExtension.close(); } });
+    installAssistant(window.__app, window.__hexUi);
+  });
   await page.click('#ai-launcher');
   await page.waitForTimeout(200);
 
@@ -24,7 +36,7 @@ await run(async ({ browser }) => {
     policyHidden: document.querySelector('.ai-dev-policy').hidden,
     scope: document.querySelector('.ai-scope-chip').textContent,
   }));
-  check('Agent exposes Standard/Dev for the current all-admin provider', !standard.profileHidden && JSON.stringify(standard.profiles) === JSON.stringify(['standard', 'dev']), JSON.stringify(standard));
+  check('Agent exposes Standard/Dev for the explicit Admin session fixture', !standard.profileHidden && JSON.stringify(standard.profiles) === JSON.stringify(['standard', 'dev']), JSON.stringify(standard));
   check('Standard stays selected by default and keeps Dev policy hidden', standard.selected === 'standard' && standard.policyHidden === true, JSON.stringify(standard));
   check('Standard keeps the existing Auto analysis scope', /自動|Auto/.test(standard.scope || ''), standard.scope);
 

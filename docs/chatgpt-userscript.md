@@ -26,8 +26,12 @@ Client-side decryption cannot make source cryptographically secret from the pers
 ```sh
 npm ci
 npm run userscript:test
-npx wrangler deploy
+npm run deploy:production
 ```
+
+The production command validates the configured D1 binding before invoking
+Wrangler. Keep the local-only sentinel in `wrangler.jsonc` for local development;
+production validation must pass with the real D1 UUID before deployment.
 
 The build produces:
 

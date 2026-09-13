@@ -1,3 +1,4 @@
+import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import assert from 'node:assert/strict';
 import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
 import { ProgressBudgetDevSupervisorEngineV0 } from '../../js/ai/dev/supervisor/dev-supervisor-progress-budget.js';
@@ -19,7 +20,7 @@ async function successfulToolsResetDecisionBudgetWithFrozenBridge() {
     now: () => '2026-08-18T08:00:00.000Z',
   });
   const storage = { getItem: () => null, setItem() {} };
-  const settings = new DevAgentUiSettings({ storage });
+  const settings = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage });
   settings.setAgentProfile(AGENT_PROFILE.DEV);
 
   let count = 0;

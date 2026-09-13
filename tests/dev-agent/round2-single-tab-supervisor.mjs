@@ -1,3 +1,4 @@
+import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import assert from 'node:assert/strict';
 import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
 import { DevAgentUiSettings } from '../../js/ai/dev/ui/settings.js';
@@ -386,7 +387,7 @@ function createWorkerClient(ops) {
 
 function devSettings() {
   const storage = { getItem: () => null, setItem() {} };
-  const settings = new DevAgentUiSettings({ storage });
+  const settings = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage });
   settings.setAgentProfile(AGENT_PROFILE.DEV);
   return settings;
 }

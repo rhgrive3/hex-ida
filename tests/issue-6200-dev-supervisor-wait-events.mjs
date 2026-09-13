@@ -1,3 +1,4 @@
+import { AllowAllAdminProvider } from '../js/ai/dev/auth/admin-provider.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -70,7 +71,7 @@ test('#6200 invalid model wait never reaches WAITING_EVENT or worker wait transp
     idFactory: (kind) => `issue-6200-${kind}`,
     now: () => '2026-09-05T00:00:00.000Z',
   });
-  const settings = new DevAgentUiSettings({ storage: { getItem: () => null, setItem() {} } });
+  const settings = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage: { getItem: () => null, setItem() {} } });
   settings.setAgentProfile(AGENT_PROFILE.DEV);
   const bridge = Object.freeze({
     request: async () => ({ text: JSON.stringify(waitDecision(['worker.teleported'])) }),
