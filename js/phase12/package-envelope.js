@@ -22,11 +22,10 @@ function required(value, code) {
 
 function positiveLimit(value, fallback, name, code = 'package-resource-limit-invalid') {
   if (value == null) return fallback;
-  const n = Number(value);
-  if (!Number.isSafeInteger(n) || n <= 0) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
     throw new PackageValidationError(code, `${name} must be a positive safe integer`, { name, value });
   }
-  return n;
+  return value;
 }
 
 function normalizedPackageLimits(options = {}) {
