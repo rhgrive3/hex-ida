@@ -12,6 +12,30 @@ import {
 
 const DARWIN_PLATFORMS = new Set(['darwin','apple','ios','ios-simulator','ipados','ipados-simulator','macos','maccatalyst','tvos','tvos-simulator','watchos','watchos-simulator','visionos','visionos-simulator','maccatalyst']);
 
+/* Apple anonymous variadic arguments are stack-only and live in the separate
+ * Stage C variadic area, not in the compact fixed-argument area.  That area is
+ * word based: every value is promoted into a word-aligned vararg slot, so a
+ * 4-byte `int` vararg occupies an 8-byte slot on LP64 arm64/arm64e and the
+ * next anonymous argument starts a full word later.  Fixed stack arguments keep
+ * the compact natural-size rule (#5607) because both areas coexist in one
+ * frame: the fixed prefix stays compact and only the variadic cursor switches
+ * policy (#8527).  Single source of truth for the value published as
+ * stackRules().variadicStackSlotAlignment and variadicTail.slotAlignmentBytes. */
+const DARWIN_VARIADIC_SLOT_ALIGNMENT = 8;
+
+function darwinVariadicSlotBytes(naturalStackBytes) {
+  return Math.max(DARWIN_VARIADIC_SLOT_ALIGNMENT,
+    alignUp(naturalStackBytes, DARWIN_VARIADIC_SLOT_ALIGNMENT));
+}
+
+function darwinVariadicSlotEvidence(naturalStackBytes) {
+  return {
+    variadicAnonymous:true,
+    varargSlotBytes:darwinVariadicSlotBytes(naturalStackBytes),
+    varargSlotAlignmentBytes:DARWIN_VARIADIC_SLOT_ALIGNMENT,
+  };
+}
+
 function callPrototypeOf(insn, opts) {
   // Calls may arrive through the production functionPrototype field while
   // older callers still provide callPrototype. Normalize both to one source.
@@ -263,7 +287,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
     }
     if (c.aggregate && aggregateRequiresIndirectCopy(c.aggregateBytes)) {
       const reg = !forceStack && gp < 8 ? `x${gp++}` : null;
-      const stackPointerOffset = reg ? null : alignUp(stackOffset, 8);
+      const stackPointerOffset = reg ? null : alignUp(stackOffset, DARWIN_VARIADIC_SLOT_ALIGNMENT);
       const entry = reg
         ? {
           index, location:'register', reg, abiClass:'aggregate-indirect-copy', pointer:true, bits:64, bytes:8,
@@ -277,7 +301,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
           pointeeBits:c.bits, aggregate:true, callerCopy:true,
           mayContainPointers:param?.mayContainPointers === true || param?.containsPointers === true,
           possible:false, mustUse:true,
-          ...(forceStack ? { variadicAnonymous:true } : {}),
+          ...(forceStack ? darwinVariadicSlotEvidence(8) : {}),
         };
       if (reg) srcs.push(registerSource(reg, 64));
       else { stackArguments.push(entry); stackOffset = stackPointerOffset + 8; }
@@ -383,9 +407,16 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       }
     }
 
-    const stackAlignmentBytes = c.homogeneous
+    const naturalStackAlignmentBytes = c.homogeneous
       ? Math.max(c.elementBytes ?? 1, c.explicitAlignmentBytes ?? 0)
       : c.alignmentBytes;
+    /* An anonymous variadic argument leaves the compact fixed-argument area and
+     * enters the word-based variadic area, so its placement alignment is at
+     * least the vararg word even when the value itself is narrower (int → 8).
+     * Fixed stack arguments keep their own natural alignment. */
+    const stackAlignmentBytes = forceStack
+      ? Math.max(DARWIN_VARIADIC_SLOT_ALIGNMENT, naturalStackAlignmentBytes)
+      : naturalStackAlignmentBytes;
     stackOffset = alignUp(stackOffset, stackAlignmentBytes);
     /* Apple ARM64 stack arguments consume compact slots of their natural
      * layout, not 8-byte-padded registers ("Function arguments may consume
@@ -431,12 +462,15 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       } : {}),
       possible:false,
       mustUse:true,
-      compactDarwinSlot:true,
-      ...(forceStack ? { variadicAnonymous:true } : {}),
+      /* The compact natural-size rule advances the cursor by the argument's own
+       * size; that is correct for the Apple fixed-argument area and wrong for
+       * the variadic area, whose cursor advances by the whole word slot. */
+      compactDarwinSlot:!forceStack,
+      ...(forceStack ? darwinVariadicSlotEvidence(stackBytes) : {}),
     };
     stackArguments.push(entry);
     arguments_.push(entry);
-    stackOffset += stackBytes;
+    stackOffset += forceStack ? darwinVariadicSlotBytes(stackBytes) : stackBytes;
     if (c.pointer || param?.mayContainPointers === true || param?.containsPointers === true) stackArgsMayContainPointers = true;
   }
 
@@ -454,7 +488,7 @@ export function classifyDarwinArm64Arguments(insn, opts = {}) {
       mustUse:false,
       exact:false,
       certainty:'unknown',
-      slotAlignmentBytes:8,
+      slotAlignmentBytes:DARWIN_VARIADIC_SLOT_ALIGNMENT,
       mayContainPointers:true,
       reason:'darwin-arm64-variadic-stage-c-stack-only',
     } : null,
@@ -541,7 +575,7 @@ export const DARWIN_ARM64_ABI = new ABIPlugin({
     compactArgumentSlots:true,
     argumentSlotBytes:null,
     variadicAnonymousArguments:'stack-only',
-    variadicStackSlotAlignment:8,
+    variadicStackSlotAlignment:DARWIN_VARIADIC_SLOT_ALIGNMENT,
     reservedRegisters:Object.freeze(['x18']),
     narrowIntegerArguments:'caller-extends-to-32',
     vaListKind:'char-pointer',
