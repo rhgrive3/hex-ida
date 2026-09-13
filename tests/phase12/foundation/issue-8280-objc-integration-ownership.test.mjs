@@ -9,6 +9,8 @@ const objcPaths = [
   'js/objc.js',
   'tests/objc-metadata.mjs',
   'tests/phase12/integration/issue-8280-objc-arm64-32-pointer-width.test.mjs',
+  'tests/phase12/integration/fixtures/issue-8280-arm64_32-objc.m',
+  'tests/phase12/integration/fixtures/issue-8280-arm64_32-objc.o',
 ];
 const lane = validateFiles(objcPaths, 'p12-integration', manifest);
 assert.equal(lane.ok, true, JSON.stringify(lane.violations));

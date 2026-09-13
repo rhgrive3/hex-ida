@@ -9,8 +9,10 @@
 // the legacy parser, the extended parser, and the runtime facade, and a
 // declared-but-unknown ABI fails closed instead of being widened to LP64.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
+import { parseMachO } from '../../../js/binary/macho.js';
 import {
   buildObjcModel,
   resolveObjcPointerBytes,
@@ -36,6 +38,65 @@ function fixture() {
     mem[at + bytes.length] = 0;
   };
   return { mem, p32, str, read: readerFor(mem) };
+}
+
+function fixedMachOString(bytes, at, length) {
+  return new TextDecoder().decode(bytes.subarray(at, at + length)).replace(/\0.*$/s, '');
+}
+
+function compilerFixtureRelocations(bytes, sectionName) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  assert.equal(view.getUint32(0, true), 0xfeedface, 'fixture is a 32-bit ARM64_32 Mach-O object');
+  const ncmds = view.getUint32(16, true);
+  let commandAt = 28;
+  let section = null;
+  let symbolTable = null;
+
+  for (let index = 0; index < ncmds; index++) {
+    const command = view.getUint32(commandAt, true);
+    const commandSize = view.getUint32(commandAt + 4, true);
+    if (command === 1) { // LC_SEGMENT
+      const sectionCount = view.getUint32(commandAt + 48, true);
+      for (let sectionIndex = 0; sectionIndex < sectionCount; sectionIndex++) {
+        const entryAt = commandAt + 56 + sectionIndex * 68;
+        if (fixedMachOString(bytes, entryAt, 16) !== sectionName) continue;
+        section = {
+          address: view.getUint32(entryAt + 32, true),
+          fileOffset: view.getUint32(entryAt + 40, true),
+          relocationOffset: view.getUint32(entryAt + 48, true),
+          relocationCount: view.getUint32(entryAt + 52, true),
+        };
+      }
+    } else if (command === 2) { // LC_SYMTAB
+      symbolTable = {
+        symbolOffset: view.getUint32(commandAt + 8, true),
+        symbolCount: view.getUint32(commandAt + 12, true),
+        stringOffset: view.getUint32(commandAt + 16, true),
+      };
+    }
+    commandAt += commandSize;
+  }
+
+  assert.ok(section, `compiler fixture has ${sectionName}`);
+  assert.ok(symbolTable, 'compiler fixture has an LC_SYMTAB command');
+  const symbolNames = Array.from({ length: symbolTable.symbolCount }, (_, index) => {
+    const stringIndex = view.getUint32(symbolTable.symbolOffset + index * 12, true);
+    const start = symbolTable.stringOffset + stringIndex;
+    let end = start;
+    while (end < bytes.length && bytes[end] !== 0) end++;
+    return fixedMachOString(bytes, start, end - start);
+  });
+  const relocations = Array.from({ length: section.relocationCount }, (_, index) => {
+    const entryAt = section.relocationOffset + index * 8;
+    const address = view.getInt32(entryAt, true);
+    const info = view.getUint32(entryAt + 4, true);
+    const symbolIndex = info & 0x00ffffff;
+    return {
+      address,
+      symbol: info & 0x08000000 ? symbolNames[symbolIndex] : null,
+    };
+  });
+  return { section, relocations };
 }
 
 // A minimal arm64_32 Objective-C image: one class with one non-relative 12-byte
@@ -164,6 +225,53 @@ test('#8280 the native pointer ABI authority is explicit, total, and ordered', (
   const invalid = resolveObjcPointerBytes({ pointerBytes: 16 });
   assert.equal(invalid.bytes, null);
   assert.equal(invalid.reason, 'objc-pointer-abi-invalid');
+});
+
+test('#8280 compiler-generated ARM64_32 Mach-O confirms Objective-C field offsets and strides', () => {
+  // Generated from the neighboring .m fixture with clang 14:
+  // clang --target=arm64_32-apple-watchos7.0 -fobjc-runtime=watchos -fno-objc-arc -c
+  const bytes = new Uint8Array(readFileSync(new URL('./fixtures/issue-8280-arm64_32-objc.o', import.meta.url)));
+  const image = parseMachO(bytes);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  assert.equal(image.arch, 'arm64_32');
+  for (const name of ['__objc_classlist', '__objc_protolist', '__objc_catlist']) {
+    assert.equal(image.sections.find((section) => section.name === name)?.size, 4n, `${name} holds one native pointer`);
+  }
+
+  const classData = image.sections.find((section) => section.name === '__objc_data');
+  const classSymbol = image.symbols.find((symbol) => symbol.name === '_OBJC_CLASS_$_Foo');
+  const classDataRelocations = compilerFixtureRelocations(bytes, '__objc_data').relocations;
+  assert.ok(classData && classSymbol);
+  assert.ok(classDataRelocations.some((relocation) => (
+    relocation.address === Number(classSymbol.address - classData.address) + 16
+      && relocation.symbol === '__OBJC_CLASS_RO_$_Foo'
+  )), 'class_t data relocation is at +16');
+
+  const classRoSection = image.sections.find((section) => section.name === '__objc_const');
+  const classRoSymbol = image.symbols.find((symbol) => symbol.name === '__OBJC_CLASS_RO_$_Foo');
+  const classRoRelocations = compilerFixtureRelocations(bytes, '__objc_const').relocations;
+  assert.ok(classRoSection && classRoSymbol);
+  const classRoOffset = Number(classRoSymbol.address - classRoSection.address);
+  const fieldOffsets = Object.fromEntries(classRoRelocations
+    .filter((relocation) => relocation.address >= classRoOffset && relocation.address < classRoOffset + 40)
+    .map((relocation) => [relocation.symbol, relocation.address - classRoOffset]));
+  assert.deepEqual(fieldOffsets, {
+    l_OBJC_CLASS_NAME_: 16,
+    '__OBJC_$_INSTANCE_METHODS_Foo': 20,
+    '__OBJC_$_INSTANCE_VARIABLES_Foo': 28,
+    '__OBJC_$_PROP_LIST_Foo': 36,
+  });
+
+  for (const [symbolName, stride] of [
+    ['__OBJC_$_INSTANCE_METHODS_Foo', 12],
+    ['__OBJC_$_INSTANCE_VARIABLES_Foo', 20],
+    ['__OBJC_$_PROP_LIST_Foo', 8],
+  ]) {
+    const symbol = image.symbols.find((item) => item.name === symbolName);
+    assert.ok(symbol, `compiler fixture has ${symbolName}`);
+    const entryAt = Number(classRoSection.fileOffset + symbol.address - classRoSection.address);
+    assert.equal(view.getUint32(entryAt, true) & 0xffff, stride, `${symbolName} stride`);
+  }
 });
 
 test('#8280 legacy model decodes the 4-byte class list and 12-byte method entry only under ILP32', async () => {
