@@ -1,0 +1,58 @@
+name: Fixer2 8610 remote write
+
+on:
+  push:
+    branches:
+      - fixer2/issue-8610-arm64-32-fat-default
+    paths:
+      - .github/workflows/fixer2-8610-remote-write.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-validate-commit:
+    if: github.event.head_commit.message == 'chore(fixer2): launch #8610 remote write'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify exact base and apply patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "abc974714602c8549debe900bb33f108f3f36052"
+          git apply --check .github/fixer2-8610.patch
+          git apply .github/fixer2-8610.patch
+      - name: Focused and nearby validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check js/binary/macho-fat.js
+          node --check js/binary/macho-core.js
+          node --check js/binary/source-loaders.js
+          node --check tests/phase4/binary/issue-8610-macho-fat-arm64-32-default.test.mjs
+          node tests/phase4/binary/issue-8610-macho-fat-arm64-32-default.test.mjs
+          node tests/issue-5638-resident-slice-index.mjs
+          node tests/issue-6317-macho-fat-compat-arm64.mjs
+          node tests/issue-6316-macho-fat-page-align.mjs
+          node tests/issue-6129-fat-table-bounded-read.mjs
+          node tests/issue-4246-macho-x86_64h.mjs
+          node tests/universal-binary-source.mjs
+          npm run binary:test
+          npm run lint
+      - name: Commit production fix and remove staging files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/binary/macho-fat.js js/binary/macho-core.js js/binary/source-loaders.js tests/phase4/binary/issue-8610-macho-fat-arm64-32-default.test.mjs
+          git rm .github/fixer2-8610.patch .github/workflows/fixer2-8610-remote-write.yml
+          git commit -m 'fix(macho): prefer arm64_32 FAT slices by default (#8610)'
+          git push origin HEAD:fixer2/issue-8610-arm64-32-fat-default
