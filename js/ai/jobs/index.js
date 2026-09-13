@@ -109,7 +109,8 @@ export class AgentJobManager {
       if (options.checkpointOnly === true) return checkpoint(job);
       if (job.status === 'complete' || job.status === 'hard-limit') return checkpoint(job);
       if (job.status === 'running') throw new Error('Agent job already has an active slice');
-      if (hardLimit(job)) {
+      const remainingElapsedMs = remainingElapsedBudgetMs(job);
+      if (hardLimit(job) || remainingElapsedMs <= 0) {
         const prevStatus = job.status;
         job.status = 'hard-limit';
         job.updatedAt = new Date().toISOString();
@@ -154,7 +155,7 @@ export class AgentJobManager {
           ...job.request, goal: job.goal, mode: 'agent', scope: job.effectiveScope,
           sessionId: job.sessionId, conversationId: job.conversationId,
           provider: job.provider, model: job.model, reasoning: job.reasoning,
-        }, options);
+        }, withElapsedDeadline(options, remainingElapsedMs));
       } catch (error) {
         const attemptElapsedMs = monotonicNow() - attemptStartedMs;
         if (Number.isFinite(attemptElapsedMs) && attemptElapsedMs >= 0) job.budgetUsage.elapsedMs += attemptElapsedMs;
@@ -330,6 +331,22 @@ function identityString(value) { return typeof value === 'string' && value ? val
 function requireIdentityString(value, label) {
   if (typeof value !== 'string' || !value) throw new TypeError(`${label} must be a non-empty string`);
   return value;
+}
+function remainingElapsedBudgetMs(job) {
+  return Math.floor(job.limits.maxElapsedMs - job.budgetUsage.elapsedMs);
+}
+function withElapsedDeadline(options, remainingElapsedMs) {
+  const turnOptions = { ...(options || {}) };
+  const budget = { ...(turnOptions.budget || {}) };
+  const requested = budget.timeoutMs;
+  const callerTimeoutMs = typeof requested === 'number' && Number.isFinite(requested)
+    ? Math.max(1, Math.floor(requested))
+    : null;
+  budget.timeoutMs = callerTimeoutMs == null
+    ? remainingElapsedMs
+    : Math.min(remainingElapsedMs, callerTimeoutMs);
+  turnOptions.budget = budget;
+  return turnOptions;
 }
 function hardLimit(job) { return job.budgetUsage.slices >= job.limits.maxSlices || job.budgetUsage.elapsedMs >= job.limits.maxElapsedMs; }
 function compactResult(result) { return { answer: result?.answer || '', confidence: result?.confidence ?? null, limits: result?.limits || { exhausted: false }, usage: result?.usage || {}, sessionId: result?.sessionId || null }; }
