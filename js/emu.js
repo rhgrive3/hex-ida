@@ -443,7 +443,6 @@ export class Emulator {
       this._branchTraceEvent = null;
     }
     this.pc = next;
-    if (this.pc === 0n) this.stopped = '最初の呼び出し元まで戻ってきました（実行おわり）。';
     return { ok: !this.stopped, text, reason: this.stopped };
   }
 
@@ -545,7 +544,10 @@ export class Emulator {
     }
     if (mn === 'ret') {
       const target = ops.length ? R(ops[0]) : this.x[30];
+      const frame = this.callStack[this.callStack.length - 1];
+      const returnedToTopLevel = this.callStack.length === 1 && frame != null && frame.ret === target;
       this.callStack.pop();
+      if (returnedToTopLevel) this.stopped = '最初の呼び出し元まで戻ってきました（実行おわり）。';
       return target;
     }
 

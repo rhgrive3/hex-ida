@@ -21,7 +21,12 @@ import {
   isBvSort,
 } from '../expr/kinds.js';
 import { evaluateExpr, EVAL_STATUS } from '../expr/evaluate.js';
-import { validateVerificationQuery } from '../verify/query.js';
+import { ownDataEntries } from '../expr/data-boundary.js';
+import {
+  QUERY_METADATA_MAX_DEPTH,
+  QUERY_METADATA_MAX_NODES,
+  validateVerificationQuery,
+} from '../verify/query.js';
 import { PROOF_AUTHORITY, SolverBackend } from './backend.js';
 import { effectivePositiveSafeInteger, requirePositiveSafeInteger } from './limits.js';
 import { validateExactModelBindings } from './model-boundary.js';
@@ -33,6 +38,58 @@ export const EXHAUSTIVE_BACKEND_VERSION = '1.0.0';
 
 function monotonicNow() {
   return typeof globalThis.performance?.now === 'function' ? globalThis.performance.now() : Date.now();
+}
+
+function scaledSnapshotBudget(value, multiplier, extra) {
+  const ceiling = Number.MAX_SAFE_INTEGER;
+  return value > Math.floor((ceiling - extra) / multiplier)
+    ? ceiling
+    : value * multiplier + extra;
+}
+
+function snapshotCanonicalQuery(query, maxExprNodes) {
+  const maxNodes = scaledSnapshotBudget(maxExprNodes, 8, QUERY_METADATA_MAX_NODES + 64);
+  const maxEdges = scaledSnapshotBudget(maxExprNodes, 16, QUERY_METADATA_MAX_NODES * 4 + 256);
+  const maxDepth = scaledSnapshotBudget(maxExprNodes, 1, QUERY_METADATA_MAX_DEPTH + 16);
+  const cloneContainer = value => Array.isArray(value)
+    ? []
+    : Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype);
+  const root = cloneContainer(query);
+  const copies = new WeakMap([[query, root]]);
+  const pending = [{ source: query, target: root, depth: 0 }];
+  let nodeCount = 1;
+  let edgeCount = 0;
+
+  while (pending.length) {
+    const frame = pending.pop();
+    if (frame.depth > maxDepth) throw new RangeError('solver-query-snapshot-budget-exceeded');
+    const entries = ownDataEntries(frame.source, Math.max(0, maxEdges - edgeCount));
+    edgeCount += entries.length;
+    if (edgeCount > maxEdges) throw new RangeError('solver-query-snapshot-budget-exceeded');
+
+    for (const [key, value] of entries) {
+      let snapshot = value;
+      if (value && typeof value === 'object') {
+        snapshot = copies.get(value);
+        if (!snapshot) {
+          if (nodeCount >= maxNodes) throw new RangeError('solver-query-snapshot-budget-exceeded');
+          const depth = frame.depth + 1;
+          if (depth > maxDepth) throw new RangeError('solver-query-snapshot-budget-exceeded');
+          snapshot = cloneContainer(value);
+          copies.set(value, snapshot);
+          nodeCount++;
+          pending.push({ source: value, target: snapshot, depth });
+        }
+      }
+      Object.defineProperty(frame.target, key, {
+        value: snapshot,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+  }
+  return root;
 }
 
 function childExpressions(expr) {
@@ -273,38 +330,68 @@ class ExhaustiveSolverSession extends SolverSession {
       });
     }
 
-    const constraints = Array.isArray(query.constraints) ? query.constraints : [];
-    const expressions = [...constraints, ...(query.assertion ? [query.assertion] : [])];
+    // Enumeration yields to the event loop, so keeping the caller's mutable
+    // object would let its contents change after identity validation. Detach
+    // only after the bounded validator has checked the source, then validate
+    // the clone again before using it as the proof input.
+    let querySnapshot;
+    try {
+      querySnapshot = snapshotCanonicalQuery(query, maxExprNodes);
+    } catch (error) {
+      const limitExceeded = error instanceof RangeError && error.message === 'solver-query-snapshot-budget-exceeded';
+      return createSolverResult({
+        status: limitExceeded ? SOLVER_STATUS.RESOURCE_LIMIT : SOLVER_STATUS.INVALID_QUERY,
+        reason: limitExceeded ? 'solver-query-snapshot-budget-exceeded' : 'solver-query-snapshot-failed',
+        backend: this.backend.id,
+        backendVersion: this.backend.version,
+        queryHash: null,
+        lifecycle: { budgetExceeded: limitExceeded, publishable: false },
+      });
+    }
+    const snapshotValidation = validateVerificationQuery(querySnapshot, { maxExprNodes });
+    if (!snapshotValidation.valid || snapshotValidation.recomputedHash !== queryValidation.recomputedHash) {
+      return createSolverResult({
+        status: snapshotValidation.limitExceeded ? SOLVER_STATUS.RESOURCE_LIMIT : SOLVER_STATUS.INVALID_QUERY,
+        reason: snapshotValidation.valid ? 'solver-query-snapshot-identity-mismatch' : snapshotValidation.reason,
+        backend: this.backend.id,
+        backendVersion: this.backend.version,
+        queryHash: null,
+        lifecycle: { budgetExceeded: snapshotValidation.limitExceeded === true, publishable: false },
+      });
+    }
+
+    const constraints = Array.isArray(querySnapshot.constraints) ? querySnapshot.constraints : [];
+    const expressions = [...constraints, ...(querySnapshot.assertion ? [querySnapshot.assertion] : [])];
     if (constraints.length > maxConstraints) {
-      return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'constraint-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+      return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'constraint-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash });
     }
 
     const collected = collectSymbols(expressions, { maxExprNodes, maxExprDepth });
     if (collected.limitExceeded) {
-      return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-node-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+      return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-node-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash });
     }
     if (collected.depthExceeded) {
-      return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-depth-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { budgetExceeded: true, publishable: false } });
+      return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-depth-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash, lifecycle: { budgetExceeded: true, publishable: false } });
     }
     if (collected.unsupportedReason) {
-      return createSolverResult({ status: SOLVER_STATUS.UNSUPPORTED, reason: collected.unsupportedReason, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+      return createSolverResult({ status: SOLVER_STATUS.UNSUPPORTED, reason: collected.unsupportedReason, backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash });
     }
     if (constraints.some((constraint) => constraint?.sort?.kind !== SORT_KIND.BOOL) ||
-        (query.assertion && query.assertion.sort?.kind !== SORT_KIND.BOOL)) {
-      return createSolverResult({ status: SOLVER_STATUS.UNSUPPORTED, reason: 'non-boolean-query-predicate', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+        (querySnapshot.assertion && querySnapshot.assertion.sort?.kind !== SORT_KIND.BOOL)) {
+      return createSolverResult({ status: SOLVER_STATUS.UNSUPPORTED, reason: 'non-boolean-query-predicate', backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash });
     }
 
     if (collected.symbols.some((symbol) => symbol.sort.kind === SORT_KIND.BV && symbol.sort.width > maxBvWidth)) {
-      return createSolverResult({ status: SOLVER_STATUS.UNSUPPORTED, reason: `bitvector-width-exceeds-${maxBvWidth}`, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+      return createSolverResult({ status: SOLVER_STATUS.UNSUPPORTED, reason: `bitvector-width-exceeds-${maxBvWidth}`, backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash });
     }
 
     const preEnumerationStop = guard();
-    if (preEnumerationStop === 'cancelled') return createSolverResult({ status: SOLVER_STATUS.CANCELLED, reason: 'provider-aborted', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { cancelled: true, publishable: false } });
-    if (preEnumerationStop === 'timeout') return createSolverResult({ status: SOLVER_STATUS.TIMEOUT, reason: 'enumeration-deadline-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { timedOut: true, publishable: false } });
+    if (preEnumerationStop === 'cancelled') return createSolverResult({ status: SOLVER_STATUS.CANCELLED, reason: 'provider-aborted', backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash, lifecycle: { cancelled: true, publishable: false } });
+    if (preEnumerationStop === 'timeout') return createSolverResult({ status: SOLVER_STATUS.TIMEOUT, reason: 'enumeration-deadline-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash, lifecycle: { timedOut: true, publishable: false } });
 
     const derived = deriveFixedBindings(constraints);
     if (derived.contradiction) {
-      return createSolverResult({ status: SOLVER_STATUS.UNSAT, stats: { solveTimeMs: Date.now() - startedAt, nodesEvaluated: 0 }, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+      return createSolverResult({ status: SOLVER_STATUS.UNSAT, stats: { solveTimeMs: Date.now() - startedAt, nodesEvaluated: 0 }, backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash });
     }
 
     const assignments = new Map(derived.fixed);
@@ -314,7 +401,7 @@ class ExhaustiveSolverSession extends SolverSession {
     for (const symbol of freeSymbols) {
       totalAssignments *= domainSize(symbol);
       if (totalAssignments > maxAssignmentsBigInt) {
-        return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'assignment-budget-exceeded', stats: { solveTimeMs: Date.now() - startedAt, nodesEvaluated: 0 }, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+        return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'assignment-budget-exceeded', stats: { solveTimeMs: Date.now() - startedAt, nodesEvaluated: 0 }, backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash });
       }
     }
 
@@ -332,7 +419,7 @@ class ExhaustiveSolverSession extends SolverSession {
       if (stopped) { outcome = stopped; break; }
       nodesEvaluated++;
       // Reuse the private environment. Only a SAT witness is materialized.
-      if (evaluateAll(query, assignments)) found = assignmentModel(collected.symbols, assignments);
+      if (evaluateAll(querySnapshot, assignments)) found = assignmentModel(collected.symbols, assignments);
       if (nodesEvaluated % yieldEvery === 0) await new Promise((resolve) => setTimeout(resolve, 0));
       const afterEvaluation = guard();
       if (afterEvaluation) { outcome = afterEvaluation; break; }
@@ -352,18 +439,18 @@ class ExhaustiveSolverSession extends SolverSession {
       if (outcome !== 'continue' || position < 0) break;
     }
     if (outcome === 'cancelled') {
-      return createSolverResult({ status: SOLVER_STATUS.CANCELLED, reason: 'provider-aborted', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { cancelled: true, publishable: false } });
+      return createSolverResult({ status: SOLVER_STATUS.CANCELLED, reason: 'provider-aborted', backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash, lifecycle: { cancelled: true, publishable: false } });
     }
     if (outcome === 'timeout') {
-      return createSolverResult({ status: SOLVER_STATUS.TIMEOUT, reason: 'internal-deadline-exceeded', stats: { solveTimeMs: Date.now() - startedAt, nodesEvaluated }, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { timedOut: true, publishable: false } });
+      return createSolverResult({ status: SOLVER_STATUS.TIMEOUT, reason: 'internal-deadline-exceeded', stats: { solveTimeMs: Date.now() - startedAt, nodesEvaluated }, backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash, lifecycle: { timedOut: true, publishable: false } });
     }
     const stats = { solveTimeMs: Date.now() - startedAt, nodesEvaluated };
     if (found) {
       const bindingValidation = validateExactModelBindings(collected.symbols, found);
-      if (!bindingValidation.valid) return createSolverResult({ status: SOLVER_STATUS.PROVIDER_FAILURE, reason: bindingValidation.reason, stats, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { publishable: false } });
-      return createSolverResult({ status: SOLVER_STATUS.SAT, model: found, stats, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+      if (!bindingValidation.valid) return createSolverResult({ status: SOLVER_STATUS.PROVIDER_FAILURE, reason: bindingValidation.reason, stats, backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash, lifecycle: { publishable: false } });
+      return createSolverResult({ status: SOLVER_STATUS.SAT, model: found, stats, backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash });
     }
-    return createSolverResult({ status: SOLVER_STATUS.UNSAT, stats, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+    return createSolverResult({ status: SOLVER_STATUS.UNSAT, stats, backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash });
   }
 }
 

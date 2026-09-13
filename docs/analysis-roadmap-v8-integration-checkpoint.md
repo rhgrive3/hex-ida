@@ -1,5 +1,28 @@
 # Analysis roadmap v8 integration checkpoint
 
+## 2026-09-14: main 再統合と実行環境の復旧
+
+`6ace26e6e` で main `adbede3310` を再統合し、`30eb1880f` で C1 の型・要約契約、
+MOVZX/MOVSX の 16-bit operand-size 回帰、変更ファイルの正確な所有権を修正しました。
+次の main 入力は `04ede7cc0bbf10fbf531e74807ad872b6544e2af` に固定します。
+ObjC の部分的な収集結果は、収集済み type/method の entityId に結び付けます。
+category/protocol 対応と RISC-V の厳密な入力識別は保持します。
+
+独立レビューで、Worker の結果検証へハッシュのみを渡していた不整合、
+結果の不正なモデル正規化で待機が終わらない経路、非同期列挙中の入力可変性を確認しました。
+これらは公開済みの意味・ハッシュ検証を維持し、失敗の明示と入力の切り離しで修正します。
+対応する限定回帰を追加し、レビュー前後のログを分離します。
+
+固定 Playwright 1.63.0 の Chromium と WebKit、Ubuntu LLVM 18.1.3 の実バイナリを使用できる状態になりました。
+LLVM は公式署名とパッケージ SHA-256 を照合して永続領域へ展開しています。
+`6ace26e6e` の canonical check は machine-effects 5 ファイルで失敗しました。
+続く限定実行では ARM64 integer/memory 分母と MOV extension 回帰が通過しましたが、
+全体再受入とは区別します。x86 long-64 の 1487 witness 中 137 partial は未実装の残件です。
+
+全 23 finding / 21 FR、元の X-02 120 行、独立・実機・公開受入は継続対象です。
+ベンチマークと Discord ログインの追加 ZIP は、別の単一統合候補でソースをまとめて検証します。
+この記録はソース保存の checkpoint であり、PR #7036 の **CHECKPOINT-LOCKED** を解除しません。
+
 ## 2026-09-14: ローカル引き継ぎと ARM64 ソースの再照合
 
 PR #7036 の `53b6d2a7ef0695e63111689f7d36598724722f49` を入力に、ローカル引き継ぎの

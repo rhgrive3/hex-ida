@@ -150,50 +150,83 @@ export class SolverSession {
       }
       this._inFlight.delete(token);
 
-      let result = rawResult;
-      if (!result || typeof result !== 'object' || !Object.values(SOLVER_STATUS).includes(result.status)) {
-        result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'provider-returned-invalid-result', {}, record.queryHash);
-      }
+      let result;
+      try {
+        result = rawResult;
+        if (!result || typeof result !== 'object' || !Object.values(SOLVER_STATUS).includes(result.status)) {
+          result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'provider-returned-invalid-result', {}, record.queryHash);
+        }
 
-      if (record.timedOut) {
-        result = this._result(SOLVER_STATUS.TIMEOUT, safeReason(result.reason, 'query timed out'), {
-          timedOut: true,
-          late: rawResult?.status === SOLVER_STATUS.SAT || rawResult?.status === SOLVER_STATUS.UNSAT,
-        }, record.queryHash);
-      } else if (record.cancelled || record.disposed || record.stale || token !== this.currentQueryToken) {
-        result = this._result(
-          SOLVER_STATUS.CANCELLED,
-          record.disposed ? 'session-disposed-during-execution' : record.stale || token !== this.currentQueryToken
-            ? 'stale-query-token-discarded'
-            : 'session-cancelled-during-execution',
-          {
-            cancelled: true,
-            stale: record.stale || token !== this.currentQueryToken,
-            disposed: record.disposed,
+        if (record.timedOut) {
+          result = this._result(SOLVER_STATUS.TIMEOUT, safeReason(result.reason, 'query timed out'), {
+            timedOut: true,
             late: rawResult?.status === SOLVER_STATUS.SAT || rawResult?.status === SOLVER_STATUS.UNSAT,
-          },
-          record.queryHash,
-        );
-      } else {
-        const finalIdentity = this.backend?.requiresCanonicalQueryIdentity
-          ? validateVerificationQuery(query, { maxExprNodes: this.backend.maxExprNodes || 100000 })
-          : null;
-        if (finalIdentity && (!finalIdentity.valid || finalIdentity.recomputedHash !== record.queryHash)) {
+          }, record.queryHash);
+        } else if (record.cancelled || record.disposed || record.stale || token !== this.currentQueryToken) {
           result = this._result(
-            finalIdentity.limitExceeded ? SOLVER_STATUS.RESOURCE_LIMIT : SOLVER_STATUS.INVALID_QUERY,
-            `query-identity-changed-during-execution:${finalIdentity.reason || 'hash-mismatch'}`,
-            { budgetExceeded: finalIdentity.limitExceeded === true },
-            null,
+            SOLVER_STATUS.CANCELLED,
+            record.disposed ? 'session-disposed-during-execution' : record.stale || token !== this.currentQueryToken
+              ? 'stale-query-token-discarded'
+              : 'session-cancelled-during-execution',
+            {
+              cancelled: true,
+              stale: record.stale || token !== this.currentQueryToken,
+              disposed: record.disposed,
+              late: rawResult?.status === SOLVER_STATUS.SAT || rawResult?.status === SOLVER_STATUS.UNSAT,
+            },
+            record.queryHash,
           );
-        } else if (this.backend?.requiresCanonicalQueryIdentity &&
-            (result.status === SOLVER_STATUS.SAT || result.status === SOLVER_STATUS.UNSAT) &&
-            result.queryHash !== record.queryHash) {
-          result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'provider-result-query-identity-mismatch', {}, record.queryHash);
         } else {
-          result = createSolverResult({
-            ...result,
-            lifecycle: { ...(result.lifecycle || {}), publishable: result.lifecycle?.publishable !== false },
-          });
+          const finalIdentity = this.backend?.requiresCanonicalQueryIdentity
+            ? validateVerificationQuery(query, { maxExprNodes: this.backend.maxExprNodes || 100000 })
+            : null;
+          if (finalIdentity && (!finalIdentity.valid || finalIdentity.recomputedHash !== record.queryHash)) {
+            result = this._result(
+              finalIdentity.limitExceeded ? SOLVER_STATUS.RESOURCE_LIMIT : SOLVER_STATUS.INVALID_QUERY,
+              `query-identity-changed-during-execution:${finalIdentity.reason || 'hash-mismatch'}`,
+              { budgetExceeded: finalIdentity.limitExceeded === true },
+              null,
+            );
+          } else if (this.backend?.requiresCanonicalQueryIdentity &&
+              (result.status === SOLVER_STATUS.SAT || result.status === SOLVER_STATUS.UNSAT) &&
+              result.queryHash !== record.queryHash) {
+            result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'provider-result-query-identity-mismatch', {}, record.queryHash);
+          } else {
+            result = createSolverResult({
+              ...result,
+              lifecycle: { ...(result.lifecycle || {}), publishable: result.lifecycle?.publishable !== false },
+            });
+          }
+        }
+      } catch {
+        // Provider objects are untrusted until normalized. In particular, a
+        // malformed or cyclic SAT model/stats payload must settle as failure
+        // after the in-flight record has already been retired, never leave its
+        // caller waiting or turn a normalization exception into proof success.
+        if (record.timedOut) {
+          result = this._result(
+            SOLVER_STATUS.TIMEOUT,
+            'provider-result-normalization-failed-after-timeout',
+            { timedOut: true },
+            record.queryHash,
+          );
+        } else if (record.cancelled || record.disposed || record.stale || token !== this.currentQueryToken) {
+          const stale = record.stale || token !== this.currentQueryToken;
+          result = this._result(
+            SOLVER_STATUS.CANCELLED,
+            record.disposed ? 'session-disposed-during-execution' : stale
+              ? 'stale-query-token-discarded'
+              : 'session-cancelled-during-execution',
+            { cancelled: true, stale, disposed: record.disposed },
+            record.queryHash,
+          );
+        } else {
+          result = this._result(
+            SOLVER_STATUS.PROVIDER_FAILURE,
+            'provider-result-normalization-failed',
+            {},
+            record.queryHash,
+          );
         }
       }
       record.resolve(result);

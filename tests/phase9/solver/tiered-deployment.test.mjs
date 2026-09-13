@@ -764,6 +764,32 @@ test('canonical query identity rejects reused hashes after content and identity 
   assert.deepEqual(posted, []);
 });
 
+test('exhaustive solver uses a detached query snapshot across event-loop yields', async () => {
+  const x = createFreshSymbol(bvSort(1), 'query_snapshot_mutation_x');
+  const originalAssertion = createCompare(BV_COMPARE_OP.NE, x, x);
+  const alteredAssertion = createCompare(BV_COMPARE_OP.EQ, x, x);
+  const candidate = structuredClone(query(originalAssertion));
+  const originalCandidateAssertion = candidate.assertion;
+  const originalQueryHash = candidate.queryHash;
+  const session = new ExhaustiveBvBackend({ maxBvWidth: 1, maxAssignments: 4, yieldEvery: 1 }).createSession();
+
+  // The first valuation is false for the submitted query. Change the caller's
+  // object during that yield, then restore it before result publication. A
+  // solver that continues reading caller memory can otherwise publish SAT
+  // under the original query hash.
+  const mutationTimer = setTimeout(() => {
+    candidate.assertion = alteredAssertion;
+    setTimeout(() => { candidate.assertion = originalCandidateAssertion; }, 0);
+  }, 0);
+  const result = await session.check(candidate, { timeoutMs: 1000, yieldEvery: 1 });
+  clearTimeout(mutationTimer);
+
+  assert.equal(candidate.assertion, originalCandidateAssertion);
+  assert.equal(result.status, SOLVER_STATUS.UNSAT);
+  assert.equal(result.queryHash, originalQueryHash);
+  assert.equal(result.lifecycle.publishable, true);
+});
+
 test('tiered worker ignores noncanonical response request IDs without consuming the pending query', async () => {
   class ManualWorker {
     constructor() {
@@ -904,6 +930,73 @@ test('result snapshots are transitively immutable including Map models and neste
   assert.throws(() => { result.stats.evidence.path.push('b'); }, TypeError);
   assert.throws(() => { result.status = SOLVER_STATUS.UNSAT; }, TypeError);
   assert.equal(result.status, SOLVER_STATUS.SAT);
+});
+
+test('session normalization failures resolve as nonpublishable provider failures and clean up', async () => {
+  const candidate = query(createBool(true));
+  for (const corruptField of ['model', 'stats']) {
+    const cyclic = {};
+    cyclic.self = cyclic;
+    const session = new ExhaustiveBvBackend().createSession();
+    session._executeCheck = async (checkedQuery) => ({
+      status: SOLVER_STATUS.SAT,
+      model: corruptField === 'model' ? cyclic : {},
+      stats: corruptField === 'stats' ? { evidence: cyclic } : {},
+      backend: session.backend.id,
+      backendVersion: session.backend.version,
+      queryHash: checkedQuery.queryHash,
+      lifecycle: { publishable: true },
+    });
+
+    let timeout;
+    const pending = session.check(candidate);
+    const result = await Promise.race([
+      pending,
+      new Promise((resolve) => { timeout = setTimeout(() => resolve(null), 250); }),
+    ]);
+    clearTimeout(timeout);
+
+    assert.ok(result, `cyclic ${corruptField} must settle instead of hanging`);
+    assert.equal(result.status, SOLVER_STATUS.PROVIDER_FAILURE);
+    assert.equal(result.reason, 'provider-result-normalization-failed');
+    assert.equal(result.queryHash, candidate.queryHash);
+    assert.equal(result.model, null);
+    assert.equal(result.lifecycle.publishable, false);
+    assert.equal(session._inFlight.size, 0);
+    await session.cancel();
+    assert.equal(session.isCancelled(), true);
+    await session.dispose();
+    assert.equal(session.isDisposed(), true);
+  }
+});
+
+test('session normalization failures preserve timeout, cancellation, disposal, and stale status', async () => {
+  const candidate = query(createBool(true));
+  const cases = [
+    { flag: 'timedOut', status: SOLVER_STATUS.TIMEOUT, lifecycle: { timedOut: true } },
+    { flag: 'cancelled', status: SOLVER_STATUS.CANCELLED, lifecycle: { cancelled: true } },
+    { flag: 'disposed', status: SOLVER_STATUS.CANCELLED, lifecycle: { cancelled: true, disposed: true } },
+    { flag: 'stale', status: SOLVER_STATUS.CANCELLED, lifecycle: { cancelled: true, stale: true } },
+  ];
+  for (const { flag, status, lifecycle } of cases) {
+    const session = new ExhaustiveBvBackend().createSession();
+    const malformed = Object.defineProperty({}, 'status', {
+      enumerable: true,
+      get() { throw new Error('malformed provider result'); },
+    });
+    session._executeCheck = async (_checkedQuery, _options, token) => {
+      session._inFlight.get(token)[flag] = true;
+      return malformed;
+    };
+
+    const result = await session.check(candidate);
+    assert.equal(result.status, status);
+    assert.equal(result.queryHash, candidate.queryHash);
+    assert.equal(result.lifecycle.publishable, false);
+    for (const [key, value] of Object.entries(lifecycle)) assert.equal(result.lifecycle[key], value);
+    assert.equal(session._inFlight.size, 0);
+    await session.dispose();
+  }
 });
 
 test('identity data is canonical plain immutable data with bounded edges and longest DAG depth', async () => {
