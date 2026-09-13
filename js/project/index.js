@@ -87,7 +87,7 @@ export function createHexProject(input = {}) {
     createdAt: input.createdAt || now, updatedAt: now,
     binary: { hash: input.binaryHash || input.binary?.hash || null, metadata: input.binaryMetadata || input.binary?.metadata || null, embedded: false },
     user: {
-      names: list(input.userNames ?? input.user?.names, 'user.names'), comments: list(input.comments ?? input.user?.comments, 'user.comments'),
+      names: validateAnnotationEntries(input.userNames ?? input.user?.names, 'user.names'), comments: validateAnnotationEntries(input.comments ?? input.user?.comments, 'user.comments'),
       types: list(input.types ?? input.user?.types, 'user.types'), vars: list(input.vars ?? input.user?.vars ?? input.varNames ?? input.user?.varNames, 'user.vars'), varsPresent: true,
       structs: list(input.structs ?? input.user?.structs, 'user.structs'),
       bookmarks: list(input.bookmarks ?? input.user?.bookmarks, 'user.bookmarks'), patches: list(input.patches ?? input.user?.patches, 'user.patches'),
@@ -115,6 +115,54 @@ function normalizeCursorIndex(value) {
 
 const DECIMAL_ADDRESS = /^(?:0|[1-9][0-9]*)$/;
 const HEX_ADDRESS = /^0[xX][0-9a-fA-F]+$/;
+
+function canonicalAnnotationAddressKey(value, field = 'address') {
+  if (typeof value === 'bigint') {
+    if (value < 0n) throw new ProjectFormatError(`${field} must be a non-negative canonical address`);
+    return value.toString();
+  }
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0 || Object.is(value, -0)) {
+      throw new ProjectFormatError(`${field} must be a non-negative canonical address`);
+    }
+    return BigInt(value).toString();
+  }
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!DECIMAL_ADDRESS.test(text) && !HEX_ADDRESS.test(text)) {
+      throw new ProjectFormatError(`${field} must be a canonical decimal or hex address`);
+    }
+    try {
+      return BigInt(text).toString();
+    } catch {
+      throw new ProjectFormatError(`${field} must be a canonical decimal or hex address`);
+    }
+  }
+  throw new ProjectFormatError(`${field} must be a bigint, safe integer, or canonical address string`);
+}
+
+function validateAnnotationEntries(entries, name) {
+  const items = list(entries, name);
+  for (let index = 0; index < items.length; index += 1) {
+    const entry = items[index];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    if (entry.address == null || entry.value == null) continue;
+    canonicalAnnotationAddressKey(entry.address, `${name}[${index}].address`);
+    if (typeof entry.value !== 'string') throw new ProjectFormatError(`${name}[${index}].value must be a string`);
+  }
+  return items;
+}
+
+export function projectAnnotationCommitList(entries, name) {
+  const items = validateAnnotationEntries(entries, name);
+  const out = [];
+  for (const entry of items) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    if (entry.address == null || entry.value == null || entry.value === '') continue;
+    out.push([canonicalAnnotationAddressKey(entry.address, `${name}[].address`), entry.value]);
+  }
+  return out;
+}
 
 function normalizeCurrentFunction(value) {
   if (value == null) return null;
@@ -325,8 +373,8 @@ export function normalizeHexProjectV1(project) {
       embedded: false,
     },
     user: {
-      names: list(project.user?.names, 'user.names'),
-      comments: list(project.user?.comments, 'user.comments'),
+      names: validateAnnotationEntries(project.user?.names, 'user.names'),
+      comments: validateAnnotationEntries(project.user?.comments, 'user.comments'),
       types: list(project.user?.types, 'user.types'),
       vars: list(project.user?.vars ?? project.user?.varNames, 'user.vars'),
       varsPresent: project.user?.varsPresent !== false && (Object.prototype.hasOwnProperty.call(project.user || {}, 'vars') || Object.prototype.hasOwnProperty.call(project.user || {}, 'varNames')),

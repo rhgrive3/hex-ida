@@ -1557,7 +1557,7 @@ function showScriptHelp() {
       'await hex.bytes(addr, 16)  生バイト',
       'await hex.string(addr)     文字列として読む',
       'await hex.loadStrings()    文字列を集める',
-      'hex.findStrings("error")   文字列を探す',
+    'await hex.findStrings("error")   文字列を探す',
     ]],
     ['書く・動かす', [
       'hex.rename(addr, "名前")   名前を付ける',

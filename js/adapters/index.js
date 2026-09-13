@@ -440,6 +440,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     this.activeRun = run;
     this.running = true;
     try {
+      if (sandbox.emulator.stopped === 'paused') sandbox.emulator.stopped = null;
       const before = cloneRegisters(sandbox.emulator); const raw = await sandbox.step();
       if (this.activeRun !== run || sandbox !== this.sandbox || run.epoch !== this.epoch) {
         throw new DebugAdapterError('stale-run', 'local sandbox step was invalidated by a newer launch or session change', { runEpoch:run.epoch, currentEpoch:this.epoch });
@@ -567,6 +568,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   async getModules() { return [{ id:'sandbox', name:'local function sandbox', base:null, synthetic:true }]; }
   async getBacktrace() { return (this.ensureSandbox().emulator.callStack || []).slice(-256).reverse().map((f,i) => ({ index:i, address:f.addr, returnAddress:f.ret })); }
   async evaluate(expression) {
+    if (typeof expression !== 'string') throw new DebugAdapterError('unsupported-expression','local evaluate only accepts register names');
     const text = evaluateExpressionText(expression).trim(); if (/^(x([0-9]|[12][0-9]|30)|sp|pc)$/.test(text)) return this.ensureSandbox().getRegister(text);
     throw new DebugAdapterError('unsupported-expression','local evaluate only accepts register names');
   }
@@ -656,7 +658,9 @@ export class RemoteDebugAdapter extends DebugAdapter {
     });
   }
   async connect(options = {}) {
-    const hello = await this.protocol.request('connect', { client:'hex', requestedVersion:1, options }, { epoch:this.epoch });
+    const epoch = this.epoch;
+    const hello = await this.protocol.request('connect', { client:'hex', requestedVersion:1, options }, { epoch });
+    if (epoch !== this.epoch) throw new DebugAdapterError('stale-request', 'connect was invalidated before it completed');
     const advertised = normalizeCapabilities(hello && hello.capabilities || {});
     const negotiated = {};
     for (const [key, allowed] of Object.entries(this.allowedCapabilities)) negotiated[key] = key === 'connect' || key === 'disconnect' ? !!allowed : !!allowed && !!advertised[key];
@@ -667,7 +671,7 @@ export class RemoteDebugAdapter extends DebugAdapter {
     if (wasConnected) { try { await this.protocol.request('disconnect',{}, { epoch:this.epoch, timeoutMs:1000 }); } catch {} }
     this.connected = false;
     this.eventListeners.clear();
-    if (wasConnected) this.nextEpoch();
+    this.nextEpoch();
     return { disconnected:true };
   }
   setEpoch(epoch) {

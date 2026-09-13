@@ -1085,6 +1085,9 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       }
       const nodeId = nodeIdFor(effect, 'call-control');
       const categories = ['state', 'memory', 'control'];
+      // The function issue below explicitly identifies this call node. Sharing
+      // a reason alone cannot locate an otherwise unrepresented state effect.
+      const reason = 'call-context-effects-not-enriched';
       const origin = effectOrigin(effect, 'abi-neutral-call-projection', [nodeId]);
       addNode({
         id: nodeId,
@@ -1107,13 +1110,13 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
           summarySource: 'machine-effects-abi-neutral-call',
           completeness: 'unknown',
           unknownEffects: {
-            reason: 'ABI and callee effects are outside MachineEffects-to-SemanticIR lowering',
+            reason,
             categories,
           },
         },
         completeness: 'partial',
         unknown: {
-          reason: 'ABI and callee effects are outside MachineEffects-to-SemanticIR lowering',
+          reason,
           categories,
           knownParts: { machineControlEffect: control },
         },
@@ -1121,7 +1124,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
         sourceEffectIds: [effect.sourceEffectId],
         origin,
       });
-      addIssue('call-context-effects-not-enriched', categories, { control });
+      addIssue(reason, categories, { nodeId, control });
       return;
     }
     if (control.kind === 'return') {

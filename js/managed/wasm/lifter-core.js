@@ -26,6 +26,10 @@ function typeBits(type) {
   return 32;
 }
 
+function sameTypes(a, b) {
+  return a.length === b.length && a.every((type, index) => type === b[index]);
+}
+
 function decodeBlockType(bytecode, pos, wasmModule) {
   if (pos >= bytecode.length) fail('wasm-truncated-blocktype');
   const first = bytecode[pos];
@@ -189,6 +193,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         mnemonic = 'end';
         const frame = controlStack.pop();
         if (!frame) fail('wasm-unmatched-end');
+        if (frame.kind === 'if' && !frame.elseSeen && !sameTypes(frame.params, frame.results)) fail('wasm-invalid-if-without-else-type');
         if (!frame.polymorphic && currentStackHeight !== frame.stackHeight + frame.results.length) fail('wasm-invalid-block-result-stack');
         const continuation = pos;
         frame.endOffset = opOffset;
@@ -229,9 +234,12 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         mnemonic = 'br_table';
         consumedValues.push({ id: 'index', bits: 32 }); consume(1);
         const ce = { kind: 'switch', targetOffsets: new Array(labelDepths.length - 1).fill(null), defaultTargetOffset: null, labelDepths: labelDepths.slice(0, -1), defaultLabelDepth: labelDepths.at(-1) };
-        for (let i = 0; i < labelDepths.length - 1; i++) labelTarget(controlStack[controlStack.length - 1 - labelDepths[i]], ce, `__case_${i}`);
+        const caseFrames = [];
+        for (let i = 0; i < labelDepths.length - 1; i++) { const target = controlStack[controlStack.length - 1 - labelDepths[i]]; caseFrames.push(target); labelTarget(target, ce, `__case_${i}`); }
         const defFrame = controlStack[controlStack.length - 1 - labelDepths.at(-1)];
         const defHolder = { kind: 'branch', targetOffset: null }; labelTarget(defFrame, defHolder); ce.__defaultHolder = defHolder;
+        ce.caseKinds = caseFrames.map((frame) => (frame.kind === 'function' ? 'function-exit' : 'offset'));
+        ce.defaultKind = defFrame.kind === 'function' ? 'function-exit' : 'offset';
         controlEffects.push(ce);
         markUnreachable();
         break;
@@ -359,7 +367,8 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
   if (!stoppedOnUnsupported && controlStack.length !== 0) fail('wasm-missing-function-end');
   for (const d of drafts) for (const c of d.controlEffects) if (c.kind === 'switch') {
     for (let i = 0; i < c.targetOffsets.length; i++) { const k = `__case_${i}`; if (c[k] != null) c.targetOffsets[i] = c[k]; delete c[k]; }
-    if (c.__defaultHolder) { c.defaultTargetOffset = c.__defaultHolder.targetOffset; delete c.__defaultHolder; }
+    if (c.__defaultHolder) { c.defaultTargetOffset = c.__defaultHolder.targetOffset; if (c.defaultKind == null && c.__defaultHolder.targetKind === 'function-exit') c.defaultKind = 'function-exit'; delete c.__defaultHolder; }
+    delete c.targetKind;
   }
   const bundles = drafts.map((d) => createVMEffectBundle(d, options));
   const aggregateCompleteness = bundles.some((b) => b.completeness === 'unknown') ? 'unknown' : bundles.some((b) => b.completeness === 'partial') ? 'partial' : bundles.some((b) => b.completeness === 'exact-with-intrinsic') ? 'exact-with-intrinsic' : 'exact';

@@ -29,7 +29,9 @@ const SHF_WRITE = 0x1n;
 const SHF_ALLOC = 0x2n;
 const SHF_EXECINSTR = 0x4n;
 const EM_RISCV = 243;
+export const EM_AARCH64 = 183;
 export const STO_RISCV_VARIANT_CC = 0x80;
+export const STO_AARCH64_VARIANT_PCS = 0x80;
 
 const SHT_RISCV_ATTRIBUTES = 0x70000003;
 const R_RISCV_JUMP_SLOT = 5;
@@ -61,11 +63,24 @@ export function parseELF(input, options = {}) {
     format: 'elf', arch: elfMachineName(h.machine, bits), bits,
     endian: littleEndian ? 'little' : 'big', platform: elfOsAbi(r.u8(7)),
     entrypoint: h.entry, imageBase: 0n,
-    metadata: { type: h.type, machine: h.machine, flags: h.flags, osabi: r.u8(7), abiVersion: r.u8(8), extendedProgramHeaderCount: h.extendedPhnum ?? null },
+    abi: h.machine === 183 && bits === 32 ? 'aapcs64-ilp32' : null,
+    metadata: {
+      type: h.type, machine: h.machine, flags: h.flags, osabi: r.u8(7), abiVersion: r.u8(8),
+      extendedProgramHeaderCount: h.extendedPhnum ?? null,
+      dataModel: bits === 32 ? 'ilp32' : 'lp64',
+      pointerBits: bits,
+    },
   });
 
   const programHeaders = parseProgramHeaders(r, h, image, bits);
   const rawSections = parseSectionHeaders(r, h, bits, image);
+  // Keep section-table presence separate from parse success. `[]` can mean a
+  // genuinely sectionless ELF *or* a declared table that was truncated /
+  // invalid; PT_DYNAMIC symbol authority must not conflate those cases (#4197).
+  image.metadata.elfSectionTableAuthority = Object.freeze({
+    declared: h.shoff !== 0n,
+    valid: h.shoff === 0n || rawSections.length > 0,
+  });
   nameSections(r, rawSections, h, image);
   let riscvFileIsa = null;
   if (image.arch === 'riscv64') {
@@ -488,7 +503,7 @@ function nameSections(r, sections, h, image) {
   }
 }
 
-function parseSymbols(r, table, sections, image, bits, elfType, budget) {
+export function parseSymbols(r, table, sections, image, bits, elfType, budget) {
   const str = sections[table.link];
   if (!str || str.type !== SHT_STRTAB || !table.entsize) return;
   const minEnt = BigInt(bits === 64 ? 24 : 16);
@@ -552,8 +567,10 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     const ifunc=type===STT_GNU_IFUNC&&defined===true&&!common;
     const riscvVariantCcFlag=image.metadata.machine===EM_RISCV&&(other&STO_RISCV_VARIANT_CC)!==0;
     const riscvVariantCc=riscvVariantCcFlag&&type===2;
+    const aarch64VariantPcsFlag=Number(image.metadata.machine)===EM_AARCH64&&(other&STO_AARCH64_VARIANT_PCS)!==0;
+    const aarch64VariantPcs=aarch64VariantPcsFlag&&type===2;
     const canonicalAddress=tls?null:sectionIdentityKnown?(elfType===ET_REL&&normal&&address==null?null:(address??0n)):null;
-    const sym={name:name||'',address:canonicalAddress,originalValue:value,isThumb,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??(elfType===ET_REL&&normal?null:effectiveValue),resolution:'runtime-resolver'}:{}),
+    const sym={name:name||'',address:canonicalAddress,originalValue:value,isThumb,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,aarch64VariantPcsFlag,aarch64VariantPcs,callingConvention:aarch64VariantPcs?'aarch64-variant-pcs':riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??(elfType===ET_REL&&normal?null:effectiveValue),resolution:'runtime-resolver'}:{}),
       ...(tls?{tlsOffset:value}:{}),...(common?{commonAlignment:value,commonSize:size,allocation:'common-unallocated'}:{}),sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:effectiveValue}:null,addressDomain:tls?'tls-offset':common?'common-unallocated':elfType===ET_REL&&normal?(address==null?'section-relative-unmapped':'section-relative-synthetic'):'virtual'};
     image.symbols.push(sym);
     const externallyVisible=Boolean(name)&&(bind===1||bind===2||bind===STB_GNU_UNIQUE);
@@ -569,7 +586,9 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
       if(owner){
         const alignmentRejection=elfInstructionStartAlignmentRejection(image,address);
         if(alignmentRejection){budget.partial(`symbols:${table.index}:function-alignment`,`Ignored ELF ${type===STT_GNU_IFUNC?'STT_GNU_IFUNC resolver':'STT_FUNC'} ${name}: ${alignmentRejection}`);continue;}
-        if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'symbol-function'))break;image.functions.push(functionSeed(address,{size:size||null,name:type===STT_GNU_IFUNC?`${name}$resolver`:name,source:type===STT_GNU_IFUNC?'ifunc-resolver':'symbol',confidence:0.995,exactFunctionStart:true,functionStartEvidence:type===STT_GNU_IFUNC?'ELF STT_GNU_IFUNC resolver with validated executable section extent':elfType===ET_REL?'ELF ET_REL STT_FUNC with validated executable section-relative extent':'ELF STT_FUNC with validated executable section extent',callingConvention:riscvVariantCc?'riscv-vector-variant':null,abiMetadata:riscvVariantCc?{riscvVariantCc:true,stOther:other}:null}));if(riscvVariantCc){if(!Array.isArray(image.metadata.riscvVariantCcFunctions))image.metadata.riscvVariantCcFunctions=[];image.metadata.riscvVariantCcFunctions.push({name,address,symbolIndex:i,tableIndex:table.index,stOther:other,callingConvention:'riscv-vector-variant'});}}
+        if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'symbol-function'))break;image.functions.push(functionSeed(address,{size:size||null,name:type===STT_GNU_IFUNC?`${name}$resolver`:name,source:type===STT_GNU_IFUNC?'ifunc-resolver':'symbol',confidence:0.995,exactFunctionStart:true,functionStartEvidence:type===STT_GNU_IFUNC?'ELF STT_GNU_IFUNC resolver with validated executable section extent':elfType===ET_REL?'ELF ET_REL STT_FUNC with validated executable section-relative extent':'ELF STT_FUNC with validated executable section extent',callingConvention:aarch64VariantPcs?'aarch64-variant-pcs':riscvVariantCc?'riscv-vector-variant':null,abiMetadata:aarch64VariantPcs?{aarch64VariantPcs:true,stOther:other}:riscvVariantCc?{riscvVariantCc:true,stOther:other}:null}));
+        if(riscvVariantCc){if(!Array.isArray(image.metadata.riscvVariantCcFunctions))image.metadata.riscvVariantCcFunctions=[];image.metadata.riscvVariantCcFunctions.push({name,address,symbolIndex:i,tableIndex:table.index,stOther:other,callingConvention:'riscv-vector-variant'});}
+        if(aarch64VariantPcs){if(!Array.isArray(image.metadata.aarch64VariantPcsFunctions))image.metadata.aarch64VariantPcsFunctions=[];image.metadata.aarch64VariantPcsFunctions.push({name,address,symbolIndex:i,tableIndex:table.index,stOther:other,callingConvention:'aarch64-variant-pcs'});}}
       else image.warnings.push(`Ignored ELF ${type===STT_GNU_IFUNC?'STT_GNU_IFUNC resolver':'STT_FUNC'} ${name} outside its canonical executable extent`);
     }
   }

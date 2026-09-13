@@ -19,6 +19,11 @@ import { parseQuietCommandArgs, runQuietCommand } from "../scripts/run-quiet-com
 
 console.log("Testing Phase test runner contract...");
 
+// A root regression must remain reachable from the canonical npm test gate.
+const packageScripts = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).scripts;
+assert.ok(packageScripts.test.split("&&").map(command => command.trim())
+  .includes("node --test tests/issue-5900-findstrings-cancellation.test.mjs"));
+
 function withTempDir(fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hex-phase-test-"));
   try {
@@ -441,6 +446,23 @@ withTempDir((temp) => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
   console.log("  ok 23 whole-command waits for delayed descriptor close");
+}
+
+// 24. root-level regressions must be reachable from the canonical gate (EP-005).
+{
+  const packageJson = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const commands = packageJson.scripts.test.split("&&").map((command) => command.trim());
+  for (const file of [
+    "issue-4663-symbolic-evidence-scope-metadata.mjs",
+    "issue-4818-hexproj-annotation-address-coercion.mjs",
+    "issue-4964-raw-binary-egress-classification.mjs",
+    "issue-5138-authoritative-partial-not-exact-extent.mjs",
+  ]) {
+    assert.ok(commands.includes(`node tests/${file}`), `${file} must run in npm test`);
+  }
+  assert.ok(packageJson.scripts.check.split("&&").some((command) => command.trim() === "npm test"),
+    "npm run check must run the canonical regression chain");
+  console.log("  ok 24 root-level regression discovery");
 }
 
 console.log("All Phase test runner contract tests PASS!");

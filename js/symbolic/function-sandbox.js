@@ -53,12 +53,20 @@ function boundedObjectSize(value) {
   return Math.min(Math.max(0x100, value), MAX_SANDBOX_OBJECT_SIZE);
 }
 
+function memoryWriteSize(value, label) {
+  if (value === undefined || value === null) return 8;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw new TypeError(`${label} must be a positive safe integer, got ${String(value)}`);
+  }
+  return value;
+}
+
 function normalizeWatch(watch, objectBase) {
   const out = [];
   const list = Array.isArray(watch) ? watch : [];
   for (const w of list) {
     if (!w) continue;
-    const size = Math.max(1, Number(w.size || 8));
+    const size = memoryWriteSize(w.size, 'watch size');
     const addr = w.address != null ? asConcreteAddress(w.address, 'watch address') : objectBase + asConcrete(w.offset === undefined ? 0n : w.offset, 'watch offset');
     out.push({ name: w.name || null, address: addr, offset: addr - objectBase, size });
   }
@@ -251,7 +259,7 @@ export class FunctionSandbox {
     for (const item of o.stackMemory || []) {
       throwIfCancelled();
       if (!item) continue;
-      await this.emulator.store(this.emulator.sp + asConcrete(item.offset === undefined ? 0n : item.offset, 'stackMemory offset'), Number(item.size || 8), asConcrete(item.value, 'stackMemory value'));
+      await this.emulator.store(this.emulator.sp + asConcrete(item.offset === undefined ? 0n : item.offset, 'stackMemory offset'), memoryWriteSize(item.size, 'stackMemory size'), asConcrete(item.value, 'stackMemory value'));
     }
     throwIfCancelled();
     for (const bp of o.breakpoints || []) this.emulator.breakpoints.add(asConcreteAddress(bp, 'breakpoint').toString());
