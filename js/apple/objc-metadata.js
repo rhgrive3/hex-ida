@@ -39,7 +39,7 @@ function protocolLayout(pointerBytes) {
     sizeField:pointerBytes * 8,
     classProperties:ilp32 ? 48 : 88,
     classPropertiesEnd:ilp32 ? 52 : 96,
-    fixedSize:ilp32 ? 36 : 72,
+    fixedSize:ilp32 ? 40 : 72,
     prefixReadBytes:ilp32 ? 32 : 64,
     prefixRequiredBytes:ilp32 ? 28 : 56,
     prefixCompleteBytes:ilp32 ? 32 : 64,

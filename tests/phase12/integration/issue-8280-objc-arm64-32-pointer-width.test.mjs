@@ -194,6 +194,7 @@ function ilp32Image() {
 
   return {
     read: f.read,
+    setProtocolSize(value) { f.p32(protocol + 32, value); },
     classList: { vmAddr: BigInt(classList), size: 4n },
     protocolList: { vmAddr: BigInt(protocolList), size: 4n },
     categoryList: { vmAddr: BigInt(categoryList), size: 4n },
@@ -333,6 +334,17 @@ test('#8280 extended protocol parser reads 4-byte pointers on ILP32', async () =
   assert.equal(ilp32Result.completeness.protocols.declared, 1);
   assert.equal(ilp32Result.completeness.protocols.misalignedBytes, 0);
   assert.equal(ilp32Result.completeness.complete, true);
+
+  const undersized = ilp32Image();
+  undersized.setProtocolSize(39);
+  const undersizedResult = await parseObjcExtendedMetadata(undersized.read, {
+    protocolList: undersized.protocolList,
+  }, options);
+  assert.equal(undersizedResult.protocols[0]?.size, 39);
+  assert.equal(undersizedResult.protocols[0]?.completeness.complete, false,
+    'the ILP32 protocol_t size must include both 32-bit size and flags fields');
+  assert.equal(undersizedResult.completeness.protocols.incompleteItems, 1);
+  assert.equal(undersizedResult.completeness.complete, false);
 
   const byWidth = await parseObjcExtendedMetadata(ilp32.read, sections, { ...options, pointerBytes: 4 });
   assert.equal(byWidth.protocols[0]?.name, 'ILP32Protocol');
